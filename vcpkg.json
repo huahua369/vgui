@@ -1,0 +1,24 @@
+{
+  "name": "vgui",
+  "version-string": "1.0.0",
+  "builtin-baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
+  "dependencies": [
+    {
+      "name": "pkgconf"
+    },
+    {
+      "name": "sdl3",
+      "version>=": "3.4.2#1",
+      "features": [
+        "vulkan"
+      ]
+    },
+    {
+      "name": "stb",
+      "version>=": "2024-07-29#1"
+    },
+    {
+      "name": "glm"
+    }
+  ]
+}
