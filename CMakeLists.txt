@@ -1,7 +1,7 @@
 ﻿# CMakeList.txt: vgui 的 CMake 项目，在此处包括源代码并定义
 # 项目特定的逻辑。
 #
-cmake_minimum_required (VERSION 3.12)
+cmake_minimum_required (VERSION 3.16)
 
 # 如果支持，请为 MSVC 编译器启用热重载。
 if (POLICY CMP0141)
@@ -36,6 +36,8 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 LINK_DIRECTORIES(${EXECUTABLE_OUTPUT_PATH})
 
 include_directories("backends")
+include_directories("gui")
+include_directories("third_party/ovg/ovg")
 
 # ---- 查找 lib ----
 find_package(SDL3 REQUIRED)
@@ -46,6 +48,6 @@ find_package(glm CONFIG REQUIRED)
 find_package(zlib CONFIG REQUIRED)
 
 # 包含子项目。
-add_subdirectory ("ovg")
+add_subdirectory ("third_party/ovg")
 add_subdirectory ("backends")
 add_subdirectory ("sample")
