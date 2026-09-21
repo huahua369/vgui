@@ -25,6 +25,12 @@ using namespace std;
 #define TECS_IMPLEMENTATION
 #include <tiny_ecs.h>
 #include <entt/entt.hpp>
+#if defined(__cpp_pp_embed) && __cpp_pp_embed >= 202502L
+const unsigned char image_data[] = {
+	#embed "button.png"
+};
+#endif
+
 // timeline_components.h
 struct CTimeline {
 	float duration = 10.0f;   // 总时长（秒）
