@@ -148,3 +148,8 @@ public:
 private:
 	void set_syscursor(int type);
 };
+
+// 获取粘贴板文本
+std::string get_clipboard();
+// 设置粘贴板文本
+void set_clipboard(const char* str);

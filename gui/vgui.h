@@ -222,7 +222,7 @@ public:
 	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
 	int _bst = 1;					// 鼠标状态
 	int _old_bst = 0;				// 鼠标状态  
-	std::unordered_map<int, std::function<void()>>* calls = 0;
+	std::unordered_map<int, std::vector<std::function<void()>>>* calls = 0;
 	dev_event_t* cde = 0;		// 临时指针
 	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
 	event_type_e etype = {};	// on事件类型
@@ -231,40 +231,68 @@ public:
 	bool has_drag = false;			// 是否有拖动事件 
 	bool is_drag = false;			// 拖动状态
 	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
+	bool _absolute = false;
+	bool _disabled_events = false;
+	bool visible = false;
+	bool valid = true;
+	bool uplayout = true;
 public:
 	event_obj_t();
 	virtual ~event_obj_t();
 	// event_type_e::none则监听所有
-	void set_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb);
-	void set_on_event(event_type_e e, std::function<void(event_type_e type, const glm::vec2& mps)> cb);
-	void set_on_text(std::function<void(text_input_et* t)> cb);
-	void set_on_editing(std::function<void(text_editing_et* te)> cb);
-	void remove(dev_event_type_e e);
+	void add_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb);
+	void add_on_event(event_type_e e, std::function<void(event_type_e type, const glm::ivec2& mps)> cb);
+	void add_on_text(std::function<void(text_input_et* t)> cb);
+	void add_on_editing(std::function<void(text_editing_et* te)> cb);
+	void remove(dev_event_type_e e);// 清空
 	void remove(event_type_e e);
 	// 删除on_text和on_editing事件监听
 	void remove_on_text();
 	void call(int idx, int type);
 	bool hittest(const glm::ivec2& mpos)const;
-	std::unordered_map<int, std::function<void()>>& get_cbs(int i);
+	std::vector<std::function<void()>>& get_cbs(int i, int etype);
+	bool is_hover();
 };
 
 enum class widget_type :uint8_t
 {
 	WT_WIDGET,
 	WT_DIV,
+	WT_EDIT,
+	WT_COLOR_BTN, WT_IMAGE_BTN, WT_GRADIENT_BTN,
+	WT_RADIO,
+	WT_CHECKBOX,
+	WT_SWITCH,
+	WT_PROGRESS,
+	WT_SLIDER,
+	WT_COLORPICK,
+	WT_SCROLL_BAR,
 };
 class widget_t :public event_obj_t
 {
 public:
 	widget_type wtype = widget_type::WT_WIDGET;
 	std::string _name;
+	std::string text;
 	widget_t* parent = 0;
+	text_style_t style = {};		// 文本样式
+	int rounding = 0;
+	int thickness = 0;
+	int dindex = 0;
 public:
 	widget_t();
 	widget_t(widget_type t);
 	~widget_t();
 	virtual widget_t* hit_test(const glm::ivec2& mpos);
 	virtual bool dispatch_event(dev_event_t* e);
+	virtual	void set_pos(const glm::ivec2& ps);
+	virtual	void set_size(const glm::vec2& ss);
+	virtual void set_family(font_familys_t* family, int fontsize);
+	virtual	glm::ivec2 get_size();
+	virtual	glm::ivec2 get_pos();
+	virtual	glm::ivec2 get_scroll_pos();
+	virtual bool on_mevent(int type, const glm::ivec2& mps, void* e);
+	virtual bool update(float delta);
 private:
 
 };
@@ -339,6 +367,7 @@ public:
 	glm::dvec4 _hover_eq = { 0,0.5,0,0 };	// 时间
 	glm::ivec4 border = {};	// 颜色，线粗，圆角，背景色 
 	glm::ivec2 _move_pos = {};
+	glm::ivec2 fpos = {};	// 窗口坐标
 	int evupdate = 0;
 	int ckinc = 0;
 	int ckup = 0;
@@ -383,7 +412,7 @@ public:
 	scroll2_t new_scroll2(const glm::ivec2& viewsize, int width, int rcw, const glm::ivec2& pos_width, const glm::ivec2& vnpos, const glm::ivec2& hnpos);
 public:
 	//void on_event(uint32_t type, et_un_t* ep);
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	// 返回是否命中ui
 	bool hittest(const glm::ivec2& pos);
 	bool press_test();
@@ -467,7 +496,7 @@ public:
 	void set_image(image_ptr_t* img);
 	void set_vkimage(void* vkimage, int width, int height, int type);
 	void set_surface(void* surf, int width, int height);
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -484,7 +513,7 @@ struct color_style {
 	const char* str = 0;
 	int str_len = 0;
 	int _bst = 1;					// 鼠标状态	
-	int _old_bst = 0;			// 鼠标状态
+	int _old_bst = 0;				// 鼠标状态
 	uTheme effect = uTheme::dark;
 	uint8_t disabled_alpha = 0x30;
 	bool circle = false;			// 圆形按钮
@@ -602,7 +631,7 @@ public:
 	void set_value(bool v);
 	void set_value();
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -619,7 +648,7 @@ public:
 	void set_value(bool v);
 	void set_value();
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -643,7 +672,7 @@ public:
 	void set_value(bool b);
 	void set_value();
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -666,7 +695,7 @@ public:
 	void set_vr(const glm::ivec2& r);
 	double get_v();
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -691,7 +720,7 @@ public:
 	void set_cw(int cw);
 	double get_v();
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -720,7 +749,7 @@ public:
 	void set_hsv(const glm::vec4& c);
 	void set_posv(int poss_x);
 
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 	void draw(rvg_cx* rv);
 };
@@ -748,7 +777,7 @@ public:
 	void set_hsv(const glm::vec3& c);
 	void set_hsv(const glm::vec4& c);
 	void set_posv(const glm::ivec2& poss);
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 private:
 
@@ -783,7 +812,7 @@ public:
 	scroll_bar();
 	~scroll_bar();
 	void set_viewsize(int64_t vs, int64_t cs, int rcw);
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
 	bool update(float delta);
 
 	void draw(rvg_cx* rv);
@@ -841,7 +870,7 @@ public:
 	void set_cursor(const glm::ivec3& c);
 	// 背景色、文本颜色、选择背景色、输入法编辑文本颜色
 	void set_color(const glm::ivec4& c);
-	void set_family(font_family_t* family, int fontsize);
+	void set_family(font_familys_t* family, int fontsize);
 	// 设置是否显示输入光标
 	void set_show_input_cursor(bool ab);
 	// 设置自动换行
@@ -853,8 +882,8 @@ public:
 	bool remove_bounds();
 	// 发送事件到本edit
 	//void on_event_e(uint32_t type, et_un_t* e);
-	bool on_mevent(int type, const glm::vec2& mps, void* e);
-	//void on_keyboard(et_un_t* ep);
+	bool on_mevent(int type, const glm::ivec2& mps, void* e);
+	void on_keyboard(keyboard_et* ep);
 	// 更新渲染啥的
 	bool update(float delta);
 	void draw(rvg_cx* rv);

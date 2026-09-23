@@ -48,6 +48,7 @@
     },
     {
       "name": "entt"
-    }
+    },
+    { "name": "clipper2" }
   ]
 }

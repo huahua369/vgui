@@ -405,6 +405,9 @@ namespace md {
 	std::string trim_ch(const std::string& str, const std::string& pch);
 	int64_t file_size(FILE* fp);
 }
+#ifndef PG_UTILITY
+#define PG_UTILITY
+#endif // !PG_UTILITY
 
 namespace pg
 {

@@ -47,6 +47,8 @@ find_package(Fontconfig REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(glm CONFIG REQUIRED)
 find_package(zlib CONFIG REQUIRED)
+pkg_check_modules(Clipper2 REQUIRED IMPORTED_TARGET Clipper2)
+pkg_check_modules(Clipper2Z REQUIRED IMPORTED_TARGET Clipper2Z)
 
 # 包含子项目。
 add_subdirectory ("third_party/ovg")
