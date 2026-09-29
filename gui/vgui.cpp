@@ -4917,6 +4917,7 @@ glm::ivec2 edit_cx::get_pixel_size(const char* str, int len)
 	}
 	return glm::ivec2(w, h);
 }
+#if 0
 size_t edit_cx::get_xy_to_index(int x, int y, const char* str)
 {
 	auto pstr = ctx->str.c_str();
@@ -4973,7 +4974,7 @@ size_t edit_cx::get_xy_to_index(int x, int y, const char* str)
 	//curx = cw;
 	return (size_t)index;
 }
-
+#endif
 void edit_cx::up_caret()
 {
 	glm::ivec4 caret = {};

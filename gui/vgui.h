@@ -898,7 +898,6 @@ public:
 	glm::ivec2 get_bounds();
 	std::vector<glm::ivec4> get_bounds_px();
 	glm::ivec2 get_pixel_size(const char* str, int len);
-	size_t get_xy_to_index(int x, int y, const char* str);
 	glm::ivec3 get_line_length(int idx);
 	void up_caret();
 	void up_cursor(bool is);
