@@ -924,22 +924,22 @@ const char* gradient_btn::c_str()
 
 void gradient_btn::init(glm::ivec4 rect, const std::string& text, uint32_t back_color, uint32_t text_color)
 {
-	auto p = this;
+	auto p = &gs;
 	auto& info = *p;
-	info._pos = { rect.x, rect.y };
-	info._size = { rect.z, rect.w };
-	info.rounding = 4;
+	_pos = { rect.x, rect.y };
+	_size = { rect.z, rect.w };
+	rounding = 4;
 	info.back_color = back_color;
-	info.style.color = text_color;
+	style.color = text_color;
 	info.opacity = 1;
-	info.str = text.c_str();
+	str = text.c_str();
 	info.borderLight = 0xff5c5c5c;
 	info.borderDark = 0xff1d1d1d;
 	return;
 }
 bool gradient_btn::update(float delta)
 {
-	auto p = this;
+	auto p = &gs;
 	if (!p)return false;
 	if (_bst == _old_bst)return false;
 	_old_bst = _bst;

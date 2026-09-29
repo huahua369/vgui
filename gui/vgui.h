@@ -521,22 +521,8 @@ struct color_style {
 	bool _disabled = false;
 	bool hover = false;
 };
-// 纯色按钮
-struct color_btn :public widget_t
+struct gradient_style
 {
-	std::string str;
-	color_style cs = {};
-public:
-	color_btn();
-	~color_btn();
-	btn_cols_t* set_btn_color_bgr(size_t idx);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 渐变按钮
-struct gradient_btn :public widget_t
-{
-	std::string str;
 	uint32_t back_color = 0;
 	uint32_t text_color_shadow = 0x88111111;
 	double opacity = 1.0;
@@ -553,6 +539,24 @@ struct gradient_btn :public widget_t
 	bool mMouseFocus = false;
 	bool mEnabled = true;
 	bool is_muilt = true;
+};
+// 纯色按钮
+struct color_btn :public widget_t
+{
+	std::string str;
+	color_style cs = {};
+public:
+	color_btn();
+	~color_btn();
+	btn_cols_t* set_btn_color_bgr(size_t idx);
+	bool update(float delta);
+	void draw(rvg_cx* rv);
+};
+// 渐变按钮
+struct gradient_btn :public widget_t
+{
+	std::string str;
+	gradient_style gs = {};
 public:
 	gradient_btn();
 	~gradient_btn();
