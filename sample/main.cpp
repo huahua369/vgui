@@ -213,6 +213,7 @@ int main()
 	ovg_image_data img[1] = {};
 	int channels = 0;
 	img->data = (uint32_t*)stbi_load("res/button.png", &img->width, &img->height, &channels, 4);
+	img->valid = true;
 	SDL_ShowWindow(form1->window);
 	CTimeline tl[2] = {}; CTimelineTrack tk[10] = {}; int tkcount = 10;
 	for (size_t i = 0; i < tkcount; i++)

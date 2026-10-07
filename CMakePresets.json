@@ -10,7 +10,8 @@
           "cacheVariables": {
             "CMAKE_C_COMPILER": "cl.exe",
             "CMAKE_CXX_COMPILER": "cl.exe",
-            "VCPKG_TARGET_TRIPLET": "x64-windows-static"
+            "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+            "OVG_ENABLE_SAMPLE": "ON"
           },
             "condition": {
                 "type": "equals",
