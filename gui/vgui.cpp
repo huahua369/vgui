@@ -934,7 +934,7 @@ widget_t* widget_t::hit_test(const glm::ivec2& mpos) {
 
 bool widget_t::dispatch_event(dev_event_t* e) {
 	return on_gui_event(this, e, {});
-} 
+}
 void widget_t::set_pos(const glm::ivec2& ps)
 {
 	_pos = ps; valid = true;
@@ -1198,27 +1198,21 @@ bool image_btn::on_mevent(int type, const glm::ivec2& mps, void* e)
 
 bool image_btn::update(float) {
 	show_idx = 0;
-	if (_bst & (int)BTN_STATE::STATE_HOVER) {
-		show_idx = 1;
-	}
-	if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
-		show_idx = 2;
-	}
-	if (_bst & (int)BTN_STATE::STATE_FOCUS) {
-		show_idx = 3;
-	}
-	if (_bst & (int)BTN_STATE::STATE_DISABLE) {
-		show_idx = 4;
-	}
-	if (multi == 0)
+	if (multi)
 	{
-		show_idx = 0;
+		if (_bst & (int)BTN_STATE::STATE_HOVER) {
+			show_idx = 1;
+		}
+		if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
+			show_idx = 2;
+		}
+		if (_bst & (int)BTN_STATE::STATE_FOCUS) {
+			show_idx = 3;
+		}
+		if (_bst & (int)BTN_STATE::STATE_DISABLE) {
+			show_idx = 4;
+		}
 	}
-	//  STATE_NOMAL = BIT_INC(0),
-	//	STATE_HOVER = BIT_INC(1),
-	//	STATE_ACTIVE = BIT_INC(2),
-	//	STATE_FOCUS = BIT_INC(3),
-	//	STATE_DISABLE = BIT_INC(4),
 	return false;
 }
 
