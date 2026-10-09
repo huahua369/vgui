@@ -65,7 +65,16 @@
         {
           "type": "circle",
           "x": 150, "y": 150, "radius": 90,
-          "fill": "@grad_rad"
+          "fill": "@grad_rad",
+          "stroke": "@solid_red",
+          "stroke_style": { "width": 0.0, "cap": "round", "join": "round", "miter_limit": 4.0 }
+        },
+        {
+          "type": "circle",
+          "x": 150, "y": 390, "radius": 90,
+          "fill": "@solid_gray",
+          "stroke": "@solid_red",
+          "stroke_style": { "width": 2.0, "cap": "round", "join": "round", "miter_limit": 4.0 }
         },
         {
           "type": "path",

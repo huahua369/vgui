@@ -95,13 +95,11 @@ int main()
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
-
 	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #ifdef __ANDROID__
 	f |= SDL_INIT_HAPTIC;
 #endif
 	int kr = SDL_Init(f);
-
 	auto wg = new app_mgr();
 	if (!wg->init_gpu(true))return -1;
 	//auto vp = new gui_viewport();

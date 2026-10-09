@@ -981,7 +981,7 @@ namespace ovg {
 				}
 				cb->stroke(rvg);
 			}
-			if (!filled && !stroked) cb->clear_path(rvg);
+			if (!stroked) cb->clear_path(rvg);
 		}
 
 		void render_impl(RectShape& r) {
@@ -1003,21 +1003,22 @@ namespace ovg {
 				apply_pattern_ref(r.stroke_ref);
 				cb->stroke(rvg);
 			}
-			if (r.fill_ref.empty() && r.stroke_ref.empty()) cb->clear_path(rvg);
+			if (r.stroke_ref.empty()) cb->clear_path(rvg);
 		}
 
 		void render_impl(CircleShape& c) {
 			cb->circle(rvg, c.x, c.y, c.radius);
+			cb->arc(rvg, c.x, c.y, c.radius, 0, 2.0 * glm::pi<float>());
 			if (!c.fill_ref.empty()) { apply_pattern_ref(c.fill_ref); cb->fill_preserve(rvg); }
 			if (!c.stroke_ref.empty()) { apply_stroke_style(c.stroke); apply_pattern_ref(c.stroke_ref); cb->stroke(rvg); }
-			if (c.fill_ref.empty() && c.stroke_ref.empty()) cb->clear_path(rvg);
+			if (c.stroke_ref.empty()) cb->clear_path(rvg);
 		}
 
 		void render_impl(EllipseShape& e) {
 			cb->ellipse(rvg, e.rx, e.ry, e.cx, e.cy, 0);
 			if (!e.fill_ref.empty()) { apply_pattern_ref(e.fill_ref); cb->fill_preserve(rvg); }
 			if (!e.stroke_ref.empty()) { apply_stroke_style(e.stroke); apply_pattern_ref(e.stroke_ref); cb->stroke(rvg); }
-			if (e.fill_ref.empty() && e.stroke_ref.empty()) cb->clear_path(rvg);
+			if (e.stroke_ref.empty()) cb->clear_path(rvg);
 		}
 
 		void render_impl(ImageNode& im) {
