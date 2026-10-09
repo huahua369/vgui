@@ -10,11 +10,11 @@
     "solid_gray":  { "type": "solid",  "color": "FFC2C2C2" },
     "grad_line": {
       "type": "linear",
-      "p0": [0, 0], "p1": [200, 0],
+      "p0": [0, 0], "p1": [800, 0],
       "extend": "pad", "filter": "bilinear",
       "stops": [
         { "offset": 0.0, "color": "FFFF0000" },
-        { "offset": 1.0, "color": "FF0000FF" }
+        { "offset": 1.0, "color": "8F0000FF" }
       ]
     },
     "grad_rad": {

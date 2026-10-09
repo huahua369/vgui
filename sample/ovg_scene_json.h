@@ -988,8 +988,8 @@ namespace ovg {
 			// 圆角通过附加路径实现（若 rx/ry>0）
 			if (r.rx > 0 || r.ry > 0) {
 				// 简化：直接 rounded_rectangle
-				//cb->rounded_rectangle2(rvg, r.x, r.y, r.w, r.h, r.rx > 0 ? r.rx : r.ry, r.ry > 0 ? r.ry : r.rx);
-				cb->rounded_rectangle(rvg, r.x, r.y, r.w, r.h, r.rx);
+				cb->rounded_rectangle2(rvg, r.x, r.y, r.w, r.h, r.rx > 0 ? r.rx : r.ry, r.ry > 0 ? r.ry : r.rx);
+				//cb->rounded_rectangle(rvg, r.x, r.y, r.w, r.h, r.rx);
 			}
 			else {
 				cb->rectangle(rvg, r.x, r.y, r.w, r.h);
