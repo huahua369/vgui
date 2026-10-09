@@ -166,3 +166,37 @@ private:
 std::string get_clipboard();
 // 设置粘贴板文本
 void set_clipboard(const char* str);
+
+struct vg_pattern_data {
+	union {
+		glm::vec4 linear;		// float x0, float y0, float x1, float y1
+		glm::vec3 radial[2];	// float cx0, float cy0, float radius0, float cx1, float cy1, float radius1
+		glm::vec4 sweep;		// float cx, float cy, float start_angle, float end_angle
+	}g;
+	int count;
+	glm::vec4 colors[32];
+	float stops[32];
+	glm::mat3x2 matrix;	// 
+	int extend;
+	int filter;
+	bool is_ellipse;	// radial用
+};
+struct vg_types_data
+{
+	float opacity;
+	uint32_t c;
+	float width;
+	float limit;
+	uint8_t cap;
+	uint8_t join;
+	uint8_t op;
+	uint8_t fill_rule;
+	int id_pattern;
+	int id_image;// glm::vec2 surf_pos;
+	int id_dashes;
+	//const float* dashes; uint32_t num_dashes; float offset;
+	glm::mat3x2 transform;
+	glm::vec2 translate;
+	glm::vec2 scale;
+	float radians;
+};

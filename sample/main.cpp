@@ -196,7 +196,7 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
 	bool running = true;
 	runtime_cx rtc = {};
-
+	FrameProfiler fps;
 	// 渲染 
 	auto fp = fopen("E:\\1.txt", "r");
 	std::string buff;
@@ -221,7 +221,9 @@ int main()
 		tk[i].track_index = i;
 	}
 	tl->cursor = 2.0;
+
 	while (running) {
+		fps.beginFrame();
 		if (wg->get_event() < 0)
 		{
 			running = false;
@@ -280,7 +282,7 @@ int main()
 			//cb->set_source_color(vg, -1);
 			cb->fill(vg);
 			cb->add_text(vg, &text4, &style4, nullptr);
-			text4.text = (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
+			text4.text = fps.c_str();// (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
 			text4.pos.y += 260;
 			cb->add_text(vg, &text4, &style4, nullptr);
 			ovg_image_r rimg = {};
@@ -314,7 +316,8 @@ int main()
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
-		SDL_Delay(16);  /* ~60 FPS */
+		fps.endFrame();
+		//SDL_Delay(16);  /* ~60 FPS */
 	}
 
 	SDL_WaitForGPUIdle(wg->device);

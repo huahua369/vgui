@@ -48,3 +48,114 @@ public:
 private:
 
 };
+class SmoothFpsCounter {
+public:
+	SmoothFpsCounter(std::size_t maxSamples = 60)
+		: maxSamples_(maxSamples) {}
+
+	void tick() {
+		auto now = std::chrono::steady_clock::now();
+		samples_.push_back(now);
+
+		if (samples_.size() > maxSamples_) {
+			samples_.pop_front();
+		}
+	}
+
+	double getFps() const {
+		if (samples_.size() < 2)
+			return 0.0;
+
+		auto duration = samples_.back() - samples_.front();
+		double seconds =
+			std::chrono::duration_cast<std::chrono::microseconds>(duration).count()
+			/ 1'000'000.0;
+
+		if (seconds <= 0.0)
+			return 0.0;
+
+		return (samples_.size() - 1) / seconds;
+	}
+	const char* c_str() {
+		int n = getFps(); str = std::to_string(n);
+		return str.c_str();
+	}
+private:
+	std::deque<std::chrono::steady_clock::time_point> samples_;
+	std::size_t maxSamples_;
+	std::string str;
+};
+
+class FrameProfiler {
+public:
+	FrameProfiler(size_t avgWindow = 60)
+		: avgWindow_(avgWindow) {}
+
+	void beginFrame() {
+		frameStart_ = std::chrono::steady_clock::now();
+	}
+
+	void endFrame() {
+		auto now = std::chrono::steady_clock::now();
+
+		// 单帧 CPU 耗时（微秒）
+		auto frameTimeUs =
+			std::chrono::duration_cast<std::chrono::microseconds>(
+				now - frameStart_
+			).count();
+
+		lastFrameTimeMs_ = frameTimeUs / 1000.0;
+
+		// 滑动窗口
+		frameTimes_.push_back(frameTimeUs);
+		if (frameTimes_.size() > avgWindow_) {
+			frameTimes_.pop_front();
+		}
+
+		// 实时 FPS（基于最近 N 帧）
+		auto windowDuration =
+			std::chrono::duration<double>(now - windowStart_);
+
+		if (windowDuration.count() >= 0.5) {
+			fps_ = static_cast<double>(frameTimes_.size()) /
+				windowDuration.count();
+			windowStart_ = now;
+		}
+	}
+
+	double getFps() const {
+		return fps_;
+	}
+
+	double getLastFrameTimeMs() const {
+		return lastFrameTimeMs_;
+	}
+
+	double getAverageFrameTimeMs() const {
+		if (frameTimes_.empty()) return 0.0;
+
+		uint64_t sum = std::accumulate(
+			frameTimes_.begin(), frameTimes_.end(), 0ULL
+		);
+		return (sum / frameTimes_.size()) / 1000.0;
+	}
+
+	const char* c_str() {
+		int n = getFps();
+		int ms = getLastFrameTimeMs();
+		str = "fps: " + std::to_string(n) + " ";
+		str += "ms: " + std::to_string(ms) + " ";
+		return str.c_str();
+	}
+private:
+	std::chrono::steady_clock::time_point frameStart_;
+	std::chrono::steady_clock::time_point windowStart_ =
+		std::chrono::steady_clock::now();
+
+	std::deque<uint64_t> frameTimes_;  // us
+	size_t avgWindow_;
+
+	double fps_ = 0.0;
+	double lastFrameTimeMs_ = 0.0;
+	std::string str;
+};
