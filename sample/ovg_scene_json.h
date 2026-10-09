@@ -597,7 +597,8 @@ namespace ovg {
 					seg.op = SegmentOp::ArcTo; seg.x = s["x"]; seg.y = s["y"];
 					seg.large_arc = s.value("large_arc", false); seg.sweep = s.value("sweep", false);
 					seg.radius_x = s["rx"]; seg.radius_y = s["ry"]; seg.rotation = s.value("phi", 0.f);
-				}else if (op == "close") seg.op = SegmentOp::Close;
+				}
+				else if (op == "close") seg.op = SegmentOp::Close;
 			}
 			p.segments.push_back(seg);
 		}
@@ -984,11 +985,14 @@ namespace ovg {
 		}
 
 		void render_impl(RectShape& r) {
-			cb->rectangle(rvg, r.x, r.y, r.w, r.h);
 			// 圆角通过附加路径实现（若 rx/ry>0）
 			if (r.rx > 0 || r.ry > 0) {
 				// 简化：直接 rounded_rectangle
-				cb->rounded_rectangle2(rvg, r.x, r.y, r.w, r.h, r.rx > 0 ? r.rx : r.ry, r.ry > 0 ? r.ry : r.rx);
+				//cb->rounded_rectangle2(rvg, r.x, r.y, r.w, r.h, r.rx > 0 ? r.rx : r.ry, r.ry > 0 ? r.ry : r.rx);
+				cb->rounded_rectangle(rvg, r.x, r.y, r.w, r.h, r.rx);
+			}
+			else {
+				cb->rectangle(rvg, r.x, r.y, r.w, r.h);
 			}
 			if (!r.fill_ref.empty()) {
 				apply_pattern_ref(r.fill_ref);

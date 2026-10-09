@@ -56,7 +56,7 @@
       "clip_rect": [0, 0, 760, 560],
       "children": [
         {
-          "type": "rounded_rect",
+          "type": "rect",
           "x": 0, "y": 0, "w": 760, "h": 560, "rx": 12, "ry": 12,
           "fill": "@grad_line",
           "stroke": "@solid_gray",
