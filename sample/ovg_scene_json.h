@@ -1008,7 +1008,6 @@ namespace ovg {
 
 		void render_impl(CircleShape& c) {
 			cb->circle(rvg, c.x, c.y, c.radius);
-			cb->arc(rvg, c.x, c.y, c.radius, 0, 2.0 * glm::pi<float>());
 			if (!c.fill_ref.empty()) { apply_pattern_ref(c.fill_ref); cb->fill_preserve(rvg); }
 			if (!c.stroke_ref.empty()) { apply_stroke_style(c.stroke); apply_pattern_ref(c.stroke_ref); cb->stroke(rvg); }
 			if (c.stroke_ref.empty()) cb->clear_path(rvg);
