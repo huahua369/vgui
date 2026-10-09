@@ -1,0 +1,125 @@
+{
+  "format": "ovgs",
+  "version": 1,
+  "width": 800,
+  "height": 600,
+  "background": "FF502820",
+  "resources": {
+    "solid_red":   { "type": "solid",  "color": "FFFF0000" },
+    "solid_blue":  { "type": "solid",  "color": "FF2196F3" },
+    "solid_gray":  { "type": "solid",  "color": "FFC2C2C2" },
+    "grad_line": {
+      "type": "linear",
+      "p0": [0, 0], "p1": [200, 0],
+      "extend": "pad", "filter": "bilinear",
+      "stops": [
+        { "offset": 0.0, "color": "FFFF0000" },
+        { "offset": 1.0, "color": "FF0000FF" }
+      ]
+    },
+    "grad_rad": {
+      "type": "radial",
+      "c0": [100, 100], "r0": 0,
+      "c1": [100, 100], "r1": 90,
+      "ellipse": false,
+      "extend": "pad",
+      "stops": [
+        { "offset": 0.0, "color": "FFFFFFFF" },
+        { "offset": 1.0, "color": "FF000000" }
+      ]
+    },
+    "grad_sweep": {
+      "type": "sweep",
+      "center": [400, 300],
+      "start_angle": 0,
+      "end_angle": 6.2831853,
+      "stops": [
+        { "offset": 0.0, "color": "FFFF0000" },
+        { "offset": 0.5, "color": "FF00FF00" },
+        { "offset": 1.0, "color": "FF0000FF" }
+      ]
+    },
+    "tex_logo": {
+      "type": "texture",
+      "format": "rgba8",
+      "width": 64, "height": 64,
+      "stride": 0,
+      "multiply": false,
+      "pixels_base64": ""
+    }
+  },
+  "nodes": [
+    {
+      "type": "group",
+      "name": "panel",
+      "transform": { "translate": [20, 20] },
+      "clip_rect": [0, 0, 760, 560],
+      "children": [
+        {
+          "type": "rounded_rect",
+          "x": 0, "y": 0, "w": 760, "h": 560, "rx": 12, "ry": 12,
+          "fill": "@grad_line",
+          "stroke": "@solid_gray",
+          "stroke_style": { "width": 2.0, "cap": "round", "join": "round", "miter_limit": 4.0 }
+        },
+        {
+          "type": "circle",
+          "x": 150, "y": 150, "radius": 90,
+          "fill": "@grad_rad"
+        },
+        {
+          "type": "path",
+          "winding": "nonzero",
+          "fill": "@solid_blue",
+          "stroke": "@solid_red",
+          "stroke_style": { "width": 3.0, "cap": "round", "join": "miter", "miter_limit": 4.0, "dash": { "array": [8, 4], "offset": 0 } },
+          "segments": [
+            { "op": "move_to", "x": 300, "y": 100 },
+            { "op": "line_to", "x": 500, "y": 100 },
+            { "op": "line_to", "x": 500, "y": 250 },
+            { "op": "quad_to", "x1": 400, "y1": 320, "x2": 300, "y2": 250 },
+            { "op": "close" }
+          ]
+        },
+        {
+          "type": "image",
+          "image": "@tex_logo",
+          "src_rect": [0, 0, 64, 64],
+          "dst_rect": [550, 60, 128, 128],
+          "sliced": [0, 0, 0, 0],
+          "color": "FFFFFFFF",
+          "flip": "none"
+        },
+        {
+          "type": "text",
+          "text": "Hello OVGS",
+          "box": [40, 420, 680, 60, 0, 0],
+          "font": { "family": "Noto Sans", "style": "Regular" },
+          "style": {
+            "fontsize": 32, "lineheight": 1.2,
+            "align": [0.0, 0.5], "box_align": [0.0, 0.0],
+            "color": "FFC2C2C2", "stroke_color": "FF000000",
+            "stroke_width": 0,
+            "shadow_color": "CC121212", "shadow_offset": [1, 1],
+            "min_subpixel": 0,
+            "word_wrap": 2, "auto_break": 1, "ellipsis": 0
+          }
+        },
+        {
+          "type": "geometry",
+          "mode": "triangles",
+          "blend": "normal",
+          "cull": "none",
+          "double_sided": false,
+          "vertices": [
+            { "pos": [600, 300, 0], "uv": [0, 0], "color": "FFFFFFFF" },
+            { "pos": [700, 300, 0], "uv": [1, 0], "color": "FFFF0000" },
+            { "pos": [650, 400, 0], "uv": [0.5, 1], "color": "FF00FF00" }
+          ],
+          "indices": [0, 1, 2],
+          "instances": []
+        }
+      ]
+    }
+  ]
+}

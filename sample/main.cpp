@@ -31,130 +31,59 @@ const unsigned char image_data[] = {
 };
 #endif
 
-// timeline_components.h
-struct CTimeline {
-	float duration = 10.0f;   // 总时长（秒）
-	float cursor = 0.0f;    // 当前播放头位置
-	float zoom = 1.0f;    // 时间缩放
-	float scroll_x = 0.0f;    // 水平滚动
-	float track_height = 24.0f;
-	float header_height = 20.0f;
-	int   active_track = 0;
-};
-
-struct CTimelineTrack {
-	int  track_index = 0;
-	bool expanded = true;
-};
-
-struct CTimelineClip {
-	float start = 0.0f;
-	float end = 1.0f;
-	uint32_t color = 0xFF4FA3FF; // ABGR
-};
-void timeline_draw_system(CTimeline* tl, CTimelineTrack* tk, int tkcount, ovg_ctx_cb* ovg, rvg_t* vg, font_familys_t* familys)
+#include "ovg_scene_json.h"
+rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 {
-	if (!tl) return;
-	// 1. 背景
-	ovg->rectangle(vg, 0, 0, 800, 600);
-	ovg->set_source_color(vg, 0xFF222222);
-	ovg->fill(vg);
-	// 2. 时间刻度
-	float px_per_sec = 60.0f * tl->zoom;
-	int first_tick = (int)(tl->scroll_x / px_per_sec);
-	int last_tick = (int)((tl->scroll_x + 800) / px_per_sec) + 1;
+	/* ========= 2. 构建场景 ========= */
+	ovg::Scene scene;
+	scene.name = "demo_scene";
+	scene.width = 800.0f; scene.height = 600.0f;
 
-	ovg->set_source_color(vg, 0xFF444444);
-	for (int i = first_tick; i <= last_tick; ++i) {
-		float x = i * px_per_sec - tl->scroll_x;
-		ovg->move_to(vg, x, tl->header_height);
-		ovg->line_to(vg, x, 600);
-		ovg->stroke(vg);
-		char buf[32];
-		snprintf(buf, sizeof(buf), "%.1fs", (float)i);
-		text_style_t style4 = {};
-		style4.family = familys;
-		style4.fontsize = 12;
-		style4.color = 0xff0080f0;
-		style4.color_stroke = 0xFF0000f0;
-		text_st_t text4 = {};
-		text4.text = (char*)buf;
-		text4.text_len = -1;
-		text4.pos = { x + 2,30 };
-		ovg->add_text(vg, &text4, &style4, nullptr);
+
+	/* ========= 3. 保存为 JSON ========= */
+	std::string jsonPath = "res/example.ovgs";
+	//if (!ovg::JsonIO::save(jsonPath, scene)) {
+	//	std::cerr << "Failed to save scene\n";
+	//}
+	//else {
+	//	std::cout << "Scene saved to " << jsonPath << "\n";
+	//}
+
+	/* ========= 4. 从 JSON 加载 ========= */
+	ovg::Scene loadedScene;
+	if (!ovg::JsonIO::load(jsonPath, loadedScene)) {
+		std::cerr << "Failed to load scene\n";
+		//free_ctx_cb(ovg);
+		return 0;
 	}
 
-	// 3. Tracks
-	for (size_t i = 0; i < tkcount; i++)
-	{
-		auto* track = tk + i;
-		float y = tl->header_height + track->track_index * tl->track_height;
-		ovg->rectangle(vg, 0, y, 4, tl->track_height);
-		ovg->set_source_color(vg, track->track_index % 2 ? 0xFF2A2A2A : 0xFF303030);
-		ovg->fill(vg);
+	std::cout << "Loaded scene: " << loadedScene.name
+		<< " (" << loadedScene.width << "x"
+		<< loadedScene.height << ")\n";
+
+	/* ========= 5. 渲染 ========= */
+	rvg_t* rvg = ovg->new_rvg(ovg->ac);
+	if (!rvg) {
+		std::cerr << "Failed to create rvg\n";
+		//free_ctx_cb(ovg);
+		return 0;
 	}
+	ovg->clear(rvg); ovg->reset_clip(rvg, 1);
+	ovg::SceneRenderer renderer(ovg);
+	renderer.render(rvg, loadedScene);
 
+	/* 这里你可以： */
+	/* - 提交 draw list */
+	/* - 或继续录制/编辑 */
 
-	// 5. 播放头
-	float cx = tl->cursor * px_per_sec - tl->scroll_x;
-	ovg->move_to(vg, cx, 0);
-	ovg->line_to(vg, cx, 600);
-	ovg->set_source_color(vg, 0xaFFF5000);
-	ovg->stroke(vg);
+	ovg_draw_data_t drawData = get_draw_list(rvg);
+	std::cout << "Draw commands: " << drawData.count << "\n";
+	std::cout << "VG vertices:   " << drawData.v_count << "\n";
+
+	/* 清理 */
+	//ovg->destroy_rvg(rvg);
+	return rvg;
 }
-
-void test_ecs() {
-	struct CButton {
-		void (*on_click)() = nullptr;
-	};
-	struct CTransform {
-		float x = 0, y = 0;
-	};
-	struct CColor {
-		float r, g, b, a;
-	};
-	struct CWorldRect {
-		float x = 0, y = 0, w = 0, h = 0;
-	};
-	tecs::reg_world world;
-
-	tecs::Entity btn = world.create();
-	world.emplace<CButton>(btn, [] {
-		printf("Clicked!\n");
-		});
-	world.emplace<CTransform>(btn, CTransform(0.2, 1.0));
-	world.emplace<CColor>(btn, CColor(1.0, 0.5, 0.0, 1.0));
-	auto* p = world.get<CButton>(btn);
-	if (p) {
-		if (p->on_click)
-			p->on_click();
-	}
-
-	for (auto e : world.view<CButton>()) {
-		printf("Button entity: %d\n", e);
-	}
-	world.query<CTransform, CColor>(
-		[](tecs::Entity e, CTransform& t, CColor& c) {
-			printf("Entity %u: (%.1f,%.1f) #%02X%02X%02X\n",
-				tecs::entity_index(e), t.x, t.y,
-				uint8_t(c.r * 255), uint8_t(c.g * 255), uint8_t(c.b * 255));
-		}
-	);
-	world.destroy(btn);
-	tecs::Entity btn1 = world.create();
-	tecs::Entity btn2 = world.create();
-	world.destroy(btn1);
-	tecs::Entity btn3 = world.create();
-	assert(!world.is_valid(btn));
-	entt::registry reg;
-	auto e = reg.create();
-	auto e0 = reg.create();
-	reg.emplace_or_replace<CColor>(e, CColor(1.0, 0.5, 0.0, 1.0));
-	reg.destroy(e0);
-	auto e1 = reg.create(e0);
-	return;
-}
-
 
 int main()
 {
@@ -165,7 +94,6 @@ int main()
 	font_cache_cx* font_ctx = new_font_cache();
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Tahoma,Calibri,Noto Serif Devanagari", 0);
 
-	test_ecs();
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 
@@ -214,14 +142,10 @@ int main()
 	int channels = 0;
 	img->data = (uint32_t*)stbi_load("res/button.png", &img->width, &img->height, &channels, 4);
 	img->valid = true;
-	SDL_ShowWindow(form1->window);
-	CTimeline tl[2] = {}; CTimelineTrack tk[10] = {}; int tkcount = 10;
-	for (size_t i = 0; i < tkcount; i++)
-	{
-		tk[i].track_index = i;
-	}
-	tl->cursor = 2.0;
-
+	auto rwvg = test_vgrw(cb);
+	std::string showstr;
+	int vgms = 0, fms = 0;
+	int scount = 0;
 	while (running) {
 		fps.beginFrame();
 		if (wg->get_event() < 0)
@@ -282,7 +206,7 @@ int main()
 			//cb->set_source_color(vg, -1);
 			cb->fill(vg);
 			cb->add_text(vg, &text4, &style4, nullptr);
-			text4.text = fps.c_str();// (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
+			text4.text = showstr.c_str();// (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
 			text4.pos.y += 260;
 			cb->add_text(vg, &text4, &style4, nullptr);
 			ovg_image_r rimg = {};
@@ -306,18 +230,24 @@ int main()
 				cb->image_update(vg, img, &desc);
 			}
 			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
-			int ms = rtc.end();
+			vgms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { get_draw_list(vg) };
+			ovg_draw_data_t dlist[] = { /*get_draw_list(vg),*/ get_draw_list(rwvg) };
 			rtc.begin();
 			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
-			ms = rtc.end();
+			fms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
+		SDL_Delay(16);  /* ~60 FPS */
 		fps.endFrame();
-		//SDL_Delay(16);  /* ~60 FPS */
+		if (++scount > 20) {
+			scount = 0;
+			showstr = fps.c_str();
+			showstr += " vgms: " + std::to_string(vgms);
+			showstr += " vg_render: " + std::to_string(fms);
+		}
 	}
 
 	SDL_WaitForGPUIdle(wg->device);
