@@ -200,7 +200,3 @@ struct vg_types_data
 	glm::vec2 scale;
 	float radians;
 };
-struct ovg_ctx_cb;
-struct rvg_t;
-struct color_style;
-void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size);

@@ -1247,6 +1247,15 @@ btn_colorlist::btn_colorlist()
 
 btn_colorlist::~btn_colorlist()
 {}
+void set_btn_color_idx(color_style* cs, int idx)
+{
+	static btn_colorlist clst;
+	auto ret = clst.get(idx);
+	if (ret && cs)
+	{
+		cs->pdc = *ret;
+	}
+}
 btn_cols_t* color_btn::set_btn_color_bgr(size_t idx)
 {
 	static btn_colorlist clst;
@@ -1322,6 +1331,19 @@ inline glm::vec4 to_c4(uint32_t c)
 	}
 	return  fc;
 }
+bool is_alpha(uint32_t c)
+{
+	return (c & 0xFF000000);
+}
+struct u84
+{
+	uint8_t r, g, b, a;
+};
+double get_alpha_f(uint32_t c)
+{
+	auto* t = (u84*)&c;
+	return  t->a / 255.0;
+}
 
 bool update_color_btn(color_style* p, float delta)
 {
@@ -1334,7 +1356,7 @@ bool update_color_btn(color_style* p, float delta)
 	p->_old_bst = p->_bst;
 	btn_cols_t* pdc = &p->pdc;
 	p->_disabled = (p->_bst & (int)BTN_STATE::STATE_DISABLE);
-	auto text_color = p->ptext_style ? p->ptext_style->color : 0;
+	auto text_color = p->text.ptext_style ? p->text.ptext_style->color : 0;
 	if (p->_disabled)
 	{
 		p->hover = false;
@@ -1480,9 +1502,9 @@ bool gradient_btn::update(float delta)
 
 
 bool color_btn::update(float delta) {
-	cs.str = str.c_str();
-	cs.str_len = str.size();
-	cs.ptext_style = &style;
+	cs.text.str = str.c_str();
+	cs.text.str_len = str.size();
+	cs.text.ptext_style = &style;
 	cs._bst = _bst;
 	cs.rounding = rounding;
 	return update_color_btn(&cs, delta);
@@ -5541,6 +5563,199 @@ void edit_cx::up_cursor(bool is)
 
 
 // todo draw ct
+
+
+void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size)
+{
+	auto ns = size;	auto ss = size;	int thickness = t->thickness;	auto psv = pos;
+	auto view = glm::ivec4(psv, ns + thickness);
+	//rv->push_view(view, t); 
+	cb->save(vg);
+	cb->translate(vg, psv.x, psv.y);
+	if (t->dfill)
+	{
+		if (t->circle)
+		{
+			glm::vec2 sp = {};
+			int r = lround(ss.y * 0.5);
+			sp += r;
+			cb->circle(vg, sp.x, sp.y, r);
+		}
+		else { cb->rounded_rectangle(vg, 0, 0, ss.x, ss.y, t->rounding); }
+		cb->set_source_color(vg, t->dfill);
+		cb->fill(vg);
+	}
+	// 渲染标签
+	glm::vec2 ps = { thickness * 2, thickness * 2 };
+	if (t->mPushed) {
+		ps += t->pushedps;
+	}
+	ns -= thickness * 4;
+	float padding = thickness == 1 ? 0.5f : 0.0f;
+	glm::vec4 rc = { ps, ns };
+	if (t->dcol)
+	{
+		if (t->circle)
+		{
+			glm::vec2 sp = {};
+			int r = lround(ss.y * 0.5);
+			sp += r;
+			cb->circle(vg, sp.x, sp.y, r);
+		}
+		else { cb->rounded_rectangle(vg, padding, padding, ss.x, ss.y, t->rounding); }
+		cb->set_line_width(vg, thickness);
+		cb->set_source_color(vg, t->dcol);
+		cb->stroke(vg);
+	}
+	text_st_t dt = {};
+	dt.text = (char*)t->text.str;
+	dt.text_len = t->text.str_len;
+	dt.pos = ps;
+	dt.size = ns;
+	cb->add_text(vg, &dt, t->text.ptext_style, nullptr);
+	cb->restore(vg);
+}
+
+void gradient_btn_init(gradient_style* p, uint32_t back_color, uint32_t text_color)
+{
+	auto& info = *p;
+	info.back_color = back_color;
+	if (p->text.ptext_style)
+		p->text.ptext_style->color = text_color;
+	info.opacity = 1;
+	info.borderLight = 0xff5c5c5c;
+	info.borderDark = 0xff1d1d1d;
+	return;
+}
+bool gradient_btn_update(gradient_style* p, float delta)
+{
+	if (!p)return false;
+	if (p->_bst == p->_old_bst)return false;
+	p->_old_bst = p->_bst;
+	auto& info = *p;
+
+	// (sta & hz::BTN_STATE::STATE_FOCUS)
+	uint32_t gradTop = info.gradTop.x;// 0xff4a4a4a; 
+	uint32_t gradBot = info.gradBot.x;// 0xff3a3a3a;
+
+	info.mPushed = (p->_bst & (int)BTN_STATE::STATE_ACTIVE);
+	info.mMouseFocus = (p->_bst & (int)BTN_STATE::STATE_HOVER);
+	if (p->_bst & (int)BTN_STATE::STATE_DISABLE)
+		info.mEnabled = false;
+	if (info.mPushed) {
+		gradTop = info.gradTop.z;//0xff292929;
+		gradBot = info.gradBot.z;//0xff1d1d1d;
+	}
+	else if (info.mMouseFocus && info.mEnabled) {
+		gradTop = info.gradTop.y;// 0x80404040;
+		gradBot = info.gradBot.y;//0x80303030;
+	}
+	info._gradTop = gradTop;
+	info._gradBot = gradBot;
+	return true;
+}
+void paint_linear(ovg_ctx_cb* cb, rvg_t* vg, const glm::vec2& gsize, const glm::vec2& box, const glm::vec4& c, const glm::vec4& c1, int rounding)
+{
+	auto pat = cb->new_pattern_linear(vg, 0, 0, gsize.x, gsize.y);
+	if (pat) {
+		cb->pattern_add_color_stop(pat, 0, c.x, c.y, c.z, c.w);
+		cb->pattern_add_color_stop(pat, 1, c1.x, c1.y, c1.z, c1.w);
+		cb->set_source(vg, pat);
+		cb->rounded_rectangle(vg, 0, 0, box.x, box.y, rounding);
+		cb->fill(vg);
+	}
+}
+void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size)
+{
+	auto psv = pos;// get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
+	float x = psv.x, y = psv.y, w = size.x, h = size.y;
+	int pushed = p->mPushed ? 0 : 1;
+	uint32_t gradTop = p->_gradTop;
+	uint32_t gradBot = p->_gradBot;
+	uint32_t borderDark = p->borderDark;
+	uint32_t borderLight = p->borderLight;
+	double oa = p->opacity;
+	auto ns = size;
+
+	auto bc = p->effect == uTheme::light ? p->back_color : set_alpha_xf2(p->back_color, get_alpha_f(p->back_color));
+	double rounding = p->rounding;
+	glm::vec2 ns1 = { w * 0.5, h * 0.5 };
+	auto nr = (int)std::min(ns1.x, ns1.y);
+	if (rounding > nr)
+	{
+		rounding = nr;
+	}
+	auto thickness = p->thickness;
+	glm::vec2 tps = { 0.5,0.5 };	// thickness等于1时需要偏移0.5才能正常渲染线框
+	if (thickness > 1)tps *= 0.0;
+	cb->save(vg);
+	cb->translate(vg, x, y);
+	if (is_alpha(bc))
+	{
+		bc = set_alpha_f(bc, oa);
+		cb->rounded_rectangle(vg, thickness, thickness, w - thickness * 2, h - thickness * 2, rounding);
+		cb->set_source_color(vg, bc);
+		cb->fill(vg);
+	}
+	if (p->mPushed) {
+		gradTop = set_alpha_f(gradTop, 0.8f);
+		gradBot = set_alpha_f(gradBot, 0.8f);
+	}
+	else {
+		double v = 1.0 - get_alpha_f(p->back_color);
+		auto gv = p->mEnabled ? v : v * .5f + .5f;
+		gradTop = set_alpha_xf(gradTop, gv);
+		gradBot = set_alpha_xf(gradBot, gv);
+	}
+	auto gt = to_c4(gradTop);
+	auto gt1 = to_c4(gradBot);
+	gradTop = set_alpha_xf(gradTop, oa);
+	gradBot = set_alpha_xf(gradBot, oa);
+	borderLight = set_alpha_xf(borderLight, oa);
+	borderDark = set_alpha_xf(borderDark, oa);
+	// 渐变
+	glm::vec4 r;
+	if (rounding > 0)
+	{
+		r = { rounding, rounding, rounding, rounding };
+	}
+	glm::vec2 rct = { w - thickness, h - thickness * 2.0 };
+	glm::vec4 gtop = to_c4(gradTop);
+	glm::vec4 gbot = to_c4(gradBot);
+
+	//rv->save();
+	if (p->effect == uTheme::dark || p->mPushed)
+		cb->translate(vg, thickness, thickness);
+	paint_linear(cb, vg, glm::vec2(0, rct.y), { rct.x, rct.y }, gtop, gbot, rounding);// 垂直方向
+	if (p->effect == uTheme::dark || p->mPushed)
+		cb->translate(vg, -thickness, -thickness);
+	//rv->restore();
+	// 渲染标签
+
+	glm::vec2 ps = { thickness * 2,thickness * 2 };
+	if (p->mPushed) {
+		ps += thickness;
+	}
+	ns -= thickness * 4;
+	glm::vec4 rc = { ps, ns };
+	// 边框
+	w -= 1;	h -= 1;
+	cb->set_line_width(vg, thickness);
+	cb->set_source_color(vg, borderLight);
+	cb->rounded_rectangle(vg, tps.x, tps.y + (p->mPushed ? 0.f : 1.0f), w, h - (p->mPushed ? 0.0f : 1.0f), rounding);
+	cb->stroke(vg);
+	cb->set_source_color(vg, borderDark);
+	cb->rounded_rectangle(vg, tps.x, tps.y, w, h, rounding);
+	cb->stroke(vg);
+	text_st_t dt = {};
+	dt.text = (char*)p->text.str;
+	dt.text_len = p->text.str_len;
+	dt.pos = { 0,thickness * .5 };
+	dt.size = size;
+	cb->add_text(vg, &dt, p->text.ptext_style, nullptr);
+	cb->restore(vg);
+}
+
 #if 0
 
 void draw_color_btn(rvg_cx* rv, color_style* t, const glm::ivec2& pos, const glm::ivec2& size)

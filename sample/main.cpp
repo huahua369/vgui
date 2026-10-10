@@ -32,6 +32,285 @@ const unsigned char image_data[] = {
 #endif
 
 #include "ovg_scene_json.h"
+
+
+
+typedef struct node_dt node_dt;
+
+typedef enum grid_align {
+	ALIGN_AUTO = 0,
+	ALIGN_STRETCH,
+	ALIGN_CENTER,
+	ALIGN_START,
+	ALIGN_END,
+	ALIGN_SPACE_BETWEEN,
+	ALIGN_SPACE_AROUND,
+	ALIGN_SPACE_EVENLY,
+	ALIGN_BASELINE
+} grid_align;
+
+/* ---- Grid 容器参数 ---- */
+typedef struct grid_data {
+	int cols;              /* 列数 */
+	int rows;              /* 行数 */
+
+	float* col_widths;     /* 每列宽度（px 或 FR） */
+	float* row_heights;    /* 每行高度（px 或 FR） */
+
+	float gap_x;           /* 列间距 */
+	float gap_y;           /* 行间距 */
+
+	grid_align justify_items; /* 单元格内水平对齐 */
+	grid_align align_items;   /* 单元格内垂直对齐 */
+
+	int auto_flow;         /* 0 = row, 1 = column */
+} grid_data;
+
+/* ---- Grid 子元素参数 ---- */
+typedef struct grid_child {
+	int col;          /* 起始列（0-based） */
+	int row;          /* 起始行（0-based） */
+	int col_span;     /* 跨列数（默认 1） */
+	int row_span;     /* 跨行数（默认 1） */
+
+	grid_align justify_self; /* 覆盖容器对齐 */
+	grid_align align_self;
+} grid_child;
+
+/* ---- 创建 / 销毁 ---- */
+grid_data* grid_create(int cols, int rows);
+void       grid_destroy(grid_data* g);
+
+/* ---- 设置轨道尺寸 ---- */
+void grid_set_col_widths(grid_data* g, const float* widths);
+void grid_set_row_heights(grid_data* g, const float* heights);
+
+/* ---- 设置间距 ---- */
+void grid_set_gap(grid_data* g, float gap_x, float gap_y);
+
+/* ---- 布局计算 ---- */
+void grid_layout(
+	grid_data* g,
+	float container_width,
+	float container_height,
+	node_dt* children,
+	size_t count
+);
+
+
+
+#if 1
+#ifndef MALLOC
+#define MALLOC(sz)    malloc(sz)
+#define FREE(p)       free(p)
+#endif
+/* ---- 创建 / 销毁 ---- */
+grid_data* grid_create(int cols, int rows) {
+	if (cols <= 0 || rows <= 0) return NULL;
+
+	grid_data* g = (grid_data*)MALLOC(sizeof(grid_data));
+	if (!g) return NULL;
+
+	memset(g, 0, sizeof(grid_data));
+	g->cols = cols;
+	g->rows = rows;
+
+	g->col_widths = (float*)MALLOC(sizeof(float) * cols);
+	g->row_heights = (float*)MALLOC(sizeof(float) * rows);
+
+	if (!g->col_widths || !g->row_heights) {
+		FREE(g->col_widths);
+		FREE(g->row_heights);
+		FREE(g);
+		return NULL;
+	}
+
+	for (int i = 0; i < cols; i++) g->col_widths[i] = 1.0f;
+	for (int i = 0; i < rows; i++) g->row_heights[i] = 1.0f;
+
+	g->justify_items = ALIGN_STRETCH;
+	g->align_items = ALIGN_STRETCH;
+	g->auto_flow = 0;
+
+	return g;
+}
+
+void grid_destroy(grid_data* g) {
+	if (!g) return;
+	FREE(g->col_widths);
+	FREE(g->row_heights);
+	FREE(g);
+}
+
+/* ---- 设置轨道尺寸 ---- */
+void grid_set_col_widths(grid_data* g, const float* widths) {
+	if (!g || !widths) return;
+	for (int i = 0; i < g->cols; i++)
+		g->col_widths[i] = widths[i];
+}
+
+void grid_set_row_heights(grid_data* g, const float* heights) {
+	if (!g || !heights) return;
+	for (int i = 0; i < g->rows; i++)
+		g->row_heights[i] = heights[i];
+}
+
+/* ---- 设置间距 ---- */
+void grid_set_gap(grid_data* g, float gap_x, float gap_y) {
+	if (!g) return;
+	g->gap_x = gap_x;
+	g->gap_y = gap_y;
+}
+
+/* ---- 计算轨道尺寸（FR 分配） ---- */
+static void grid_calc_tracks(
+	grid_data* g,
+	float container_width,
+	float container_height
+) {
+	float total_gap_x = g->gap_x * (g->cols - 1);
+	float total_gap_y = g->gap_y * (g->rows - 1);
+
+	float avail_w = container_width - total_gap_x;
+	float avail_h = container_height - total_gap_y;
+
+	if (avail_w < 0) avail_w = 0;
+	if (avail_h < 0) avail_h = 0;
+
+	float total_fr_w = 0.0f;
+	float total_fr_h = 0.0f;
+
+	for (int i = 0; i < g->cols; i++)
+		if (g->col_widths[i] > 0) total_fr_w += g->col_widths[i];
+
+	for (int i = 0; i < g->rows; i++)
+		if (g->row_heights[i] > 0) total_fr_h += g->row_heights[i];
+
+	for (int i = 0; i < g->cols; i++) {
+		if (g->col_widths[i] > 0)
+			g->col_widths[i] = avail_w * (g->col_widths[i] / total_fr_w);
+	}
+
+	for (int i = 0; i < g->rows; i++) {
+		if (g->row_heights[i] > 0)
+			g->row_heights[i] = avail_h * (g->row_heights[i] / total_fr_h);
+	}
+}
+
+/* ---- 获取单元格对齐偏移 ---- */
+static void grid_align_in_cell(
+	grid_data* g,
+	grid_child* gc,
+	float cell_w,
+	float cell_h,
+	float item_w,
+	float item_h,
+	float* ox,
+	float* oy
+) {
+	grid_align j = (gc && gc->justify_self != ALIGN_AUTO)
+		? gc->justify_self
+		: g->justify_items;
+
+	grid_align a = (gc && gc->align_self != ALIGN_AUTO)
+		? gc->align_self
+		: g->align_items;
+
+	*ox = 0;
+	*oy = 0;
+
+	if (j == ALIGN_CENTER)
+		*ox = (cell_w - item_w) * 0.5f;
+	else if (j == ALIGN_END)
+		*ox = cell_w - item_w;
+
+	if (a == ALIGN_CENTER)
+		*oy = (cell_h - item_h) * 0.5f;
+	else if (a == ALIGN_END)
+		*oy = cell_h - item_h;
+}
+
+/* ---- 主布局函数 ---- */
+void grid_layout(
+	grid_data* g,
+	float container_width,
+	float container_height,
+	node_dt* children,
+	size_t count
+) {
+	if (!g || !children || count == 0) return;
+
+	grid_calc_tracks(g, container_width, container_height);
+
+	int* cell_occupied = (int*)MALLOC(sizeof(int) * g->cols * g->rows);
+	memset(cell_occupied, 0, sizeof(int) * g->cols * g->rows);
+
+	for (size_t i = 0; i < count; i++) {
+		grid_child* gc = NULL;
+		if (children[i].user)
+			gc = (grid_child*)children[i].user;
+
+		int col = 0, row = 0;
+		int cspan = 1, rspan = 1;
+
+		if (gc) {
+			col = gc->col;
+			row = gc->row;
+			cspan = gc->col_span > 0 ? gc->col_span : 1;
+			rspan = gc->row_span > 0 ? gc->row_span : 1;
+		}
+		else {
+			/* 自动流布局 */
+			if (g->auto_flow == 0) {
+				col = (int)(i % g->cols);
+				row = (int)(i / g->cols);
+			}
+			else {
+				row = (int)(i % g->rows);
+				col = (int)(i / g->rows);
+			}
+		}
+
+		/* 边界保护 */
+		if (col < 0) col = 0;
+		if (row < 0) row = 0;
+		if (col + cspan > g->cols) cspan = g->cols - col;
+		if (row + rspan > g->rows) rspan = g->rows - row;
+
+		/* 计算单元格位置 */
+		float x = 0, y = 0;
+		for (int c = 0; c < col; c++)
+			x += g->col_widths[c] + g->gap_x;
+
+		for (int r = 0; r < row; r++)
+			y += g->row_heights[r] + g->gap_y;
+
+		float cell_w = 0, cell_h = 0;
+		for (int c = 0; c < cspan; c++)
+			cell_w += g->col_widths[col + c] + (c ? g->gap_x : 0);
+
+		for (int r = 0; r < rspan; r++)
+			cell_h += g->row_heights[row + r] + (r ? g->gap_y : 0);
+
+		/* 子元素尺寸 */
+		float item_w = children[i].size.x;
+		float item_h = children[i].size.y;
+
+		float ox = 0, oy = 0;
+		grid_align_in_cell(g, gc, cell_w, cell_h, item_w, item_h, &ox, &oy);
+
+		children[i].frame.x = x + ox;
+		children[i].frame.y = y + oy;
+		children[i].frame.z = item_w;
+		children[i].frame.w = item_h;
+	}
+
+	FREE(cell_occupied);
+}
+#endif // 1
+
+
+
 rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 {
 	/* ========= 2. 构建场景 ========= */
@@ -84,7 +363,7 @@ rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	font_cache_cx* font_ctx = new_font_cache();
@@ -141,6 +420,13 @@ int main()
 	int vgms = 0, fms = 0;
 	int scount = 0;
 	color_style btn = {};
+	gradient_style btn1 = {};
+	set_btn_color_idx(&btn, 0);//0-7
+	update_color_btn(&btn, 0);
+	gradient_btn_init(&btn1, 0x5ffc6122, -1);
+	btn.rounding = 4;
+	btn1.rounding = 4;
+	gradient_btn_update(&btn1, 0);
 	while (running) {
 		fps.beginFrame();
 		if (wg->get_event() < 0)
@@ -220,13 +506,13 @@ int main()
 				img->valid = false;
 				cb->image_update(vg, img, &desc);
 			}
-			draw_color_btn(cb, vg, &btn, { 100,100 }, { 300,30 });
-
+			draw_color_btn(cb, vg, &btn, { 400,380 }, { 200,30 });
+			gradient_btn_draw(cb, vg, &btn1, { 400,420 }, { 200,30 });
 			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			vgms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(rwvg) };
+			ovg_draw_data_t dlist[] = { get_draw_list(vg)/*, get_draw_list(rwvg)*/ };
 			rtc.begin();
 			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			fms = rtc.end();

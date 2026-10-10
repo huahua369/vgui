@@ -298,6 +298,11 @@ enum class BTN_STATE0 :uint8_t
 	STATE_FOCUS = BIT_INC(3),
 	STATE_DISABLE = BIT_INC(4),
 };
+struct label_text_t {
+	text_style_t* ptext_style = 0;
+	const char* str = 0;
+	int str_len = 0;
+};
 // 纯色按钮风格
 struct color_style {
 	btn_cols_t pdc = {};			// 颜色配置
@@ -307,10 +312,8 @@ struct color_style {
 	glm::vec2 pushedps = {};
 	int rounding = 0;
 	int thickness = 1;
-	text_style_t* ptext_style = 0;
 	double dtime = 0.0;
-	const char* str = 0;
-	int str_len = 0;
+	label_text_t text = {};
 	int _bst = 1;					// 鼠标状态	
 	int _old_bst = 0;				// 鼠标状态
 	uTheme effect = uTheme::dark;
@@ -332,6 +335,11 @@ struct gradient_style
 	uint32_t _gradBot = 0;
 	uint32_t borderLight = 0;
 	uint32_t borderDark = 0;
+	int rounding = 0;
+	int thickness = 1;
+	label_text_t text = {};
+	int _bst = 1;					// 鼠标状态	
+	int _old_bst = 0;				// 鼠标状态
 	uTheme effect = uTheme::light;	// dark
 	bool mPushed = false;
 	bool mChecked = false;
@@ -383,3 +391,14 @@ struct checkbox_info_t
 	bool value = 0;			// 选中值
 	bool value1 = 1;		// 选中值动画
 };
+
+void set_btn_color_idx(color_style* cs, int idx);
+bool update_color_btn(color_style* p, float delta);
+void gradient_btn_init(gradient_style* p, uint32_t back_color, uint32_t text_color);
+bool gradient_btn_update(gradient_style* p, float delta);
+
+struct ovg_ctx_cb;
+struct rvg_t;
+struct color_style;
+void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size);
+void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size);
