@@ -24,7 +24,7 @@ vgui sdl3实现
 #include <stb_image.h>
 
 #include <vulkan/vulkan.h>
-
+#include <ovg_c.h>
 
 std::string get_clipboard()
 {
@@ -901,4 +901,62 @@ void app_mgr::set_defcursor(cursor_st t)
 	default:
 		break;
 	}
+}
+
+
+void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size)
+{
+	auto ns = size;	auto ss = size;	int thickness = t->thickness;	auto psv = pos;
+	auto view = glm::ivec4(psv, ns + thickness);
+	//rv->push_view(view, t); 
+	cb->save(vg);
+	cb->translate(vg, psv.x, psv.y);
+	if (t->dfill)
+	{
+		if (t->circle)
+		{
+			glm::vec2 sp = {};
+			int r = lround(ss.y * 0.5);
+			sp += r;
+			cb->circle(vg, sp.x, sp.y, r);
+		}
+		else { cb->rounded_rectangle(vg, 0, 0, ss.x, ss.y, t->rounding); }
+		cb->set_source_color(vg, t->dfill);
+		cb->fill(vg);
+	}
+	// 渲染标签
+	glm::vec2 ps = { thickness * 2, thickness * 2 };
+	if (t->mPushed) {
+		ps += t->pushedps;
+	}
+	ns -= thickness * 4;
+	float padding = thickness == 1 ? 0.5f : 0.0f;
+	glm::vec4 rc = { ps, ns };
+	if (t->dcol)
+	{
+		if (t->circle)
+		{
+			glm::vec2 sp = {};
+			int r = lround(ss.y * 0.5);
+			sp += r;
+			cb->circle(vg, sp.x, sp.y, r);
+		}
+		else { cb->rounded_rectangle(vg, padding, padding, ss.x, ss.y, t->rounding); }
+		cb->set_line_width(vg, thickness);
+		cb->set_source_color(vg, t->dcol);
+		cb->stroke(vg);
+	}
+	text_style_t style4 = {};
+	style4.family = 0;// familys;
+	style4.fontsize = 18;
+	style4.color = 0xff0080f0;
+	style4.color_stroke = 0xFF0000f0;
+	style4.min_subpixel = 0;
+	text_st_t text4 = {};
+	text4.text = (char*)t->str;
+	text4.text_len = t->str_len;
+	text4.pos = ps;
+	text4.size = ns;
+	cb->add_text(vg, &text4, t->ptext_style, nullptr);
+	cb->restore(vg);
 }

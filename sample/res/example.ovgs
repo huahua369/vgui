@@ -14,7 +14,7 @@
       "p0": [0, 0], "p1": [800, 0],
       "extend": "pad", "filter": "bilinear",
       "stops": [
-        { "offset": 0.0, "color": "FFFF1000" },
+        { "offset": 0.0, "color": "8FFF1000" },
         { "offset": 1.0, "color": "8F0010FF" }
       ]
     },

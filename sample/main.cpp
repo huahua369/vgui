@@ -140,6 +140,7 @@ int main()
 	std::string showstr;
 	int vgms = 0, fms = 0;
 	int scount = 0;
+	color_style btn = {};
 	while (running) {
 		fps.beginFrame();
 		if (wg->get_event() < 0)
@@ -183,7 +184,6 @@ int main()
 
 			style4.min_subpixel = 0;
 			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起";
-
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
 
@@ -220,6 +220,8 @@ int main()
 				img->valid = false;
 				cb->image_update(vg, img, &desc);
 			}
+			draw_color_btn(cb, vg, &btn, { 100,100 }, { 300,30 });
+
 			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			vgms = rtc.end();
 			//if (ms > 0)
