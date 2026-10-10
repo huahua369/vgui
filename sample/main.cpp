@@ -363,7 +363,7 @@ rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 
 int main()
 {
-	LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
 	font_cache_cx* font_ctx = new_font_cache();
@@ -379,7 +379,7 @@ int main()
 	auto wg = new app_mgr();
 	if (!wg->init_gpu(true))return -1;
 	//auto vp = new gui_viewport();
-	auto form1 = wg->create("SDL3 GPU Vector Graphics", surfsize.x, surfsize.y, 0);
+	auto form1 = wg->create("SDL3GPU render", surfsize.x, surfsize.y, 0);
 	//form1->viewport = vp;
 	//vp->set_viewport({ 0,0,surfsize.x, surfsize.y });
 	//auto div0 = new div_cx0({ 100,100,50,50 });
@@ -423,10 +423,26 @@ int main()
 	gradient_style btn1 = {};
 	set_btn_color_idx(&btn, 0);//0-7
 	update_color_btn(&btn, 0);
-	gradient_btn_init(&btn1, 0x5ffc6122, -1);
+	gradient_btn_init(&btn1, 0x2fff8000, -1);
 	btn.rounding = 4;
 	btn1.rounding = 4;
 	gradient_btn_update(&btn1, 0);
+	node_dt nodes[6] = { };
+	{
+		grid_data* g = grid_create(3, 2);
+		float cw[] = { 1, 1, 1 };
+		float rh[] = { 40, 40 };
+		grid_set_col_widths(g, cw);
+		grid_set_row_heights(g, rh);
+		grid_set_gap(g, 8, 8);
+		for (int i = 0; i < 6; i++) {
+			nodes[i].size.x = 60;
+			nodes[i].size.y = 30;
+		}
+		grid_layout(g, 200, 100, nodes, 6);
+		grid_destroy(g);
+	}
+
 	while (running) {
 		fps.beginFrame();
 		if (wg->get_event() < 0)
@@ -488,7 +504,7 @@ int main()
 			cb->add_text(vg, &text4, &style4, nullptr);
 			ovg_image_r rimg = {};
 			rimg.img = img;
-			rimg.dst = { 108,108,img->width * 2.8,img->height * 1.5 };
+			rimg.dst = { 108,508,img->width * 2.8,img->height * 1.5 };
 			rimg.rc = { 0,0,img->width,img->height };
 			rimg.sliced = { 4,4,4,4 };
 			rimg.color = -1;
@@ -507,7 +523,11 @@ int main()
 				cb->image_update(vg, img, &desc);
 			}
 			draw_color_btn(cb, vg, &btn, { 400,380 }, { 200,30 });
-			gradient_btn_draw(cb, vg, &btn1, { 400,420 }, { 200,30 });
+			cb->translate(vg, 10, 10);
+			for (int i = 0; i < 6; i++) {
+				auto it = &nodes[i];
+				gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
+			}
 			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			vgms = rtc.end();
 			//if (ms > 0)
