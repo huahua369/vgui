@@ -48,15 +48,12 @@ rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 	//else {
 	//	std::cout << "Scene saved to " << jsonPath << "\n";
 	//}
-
 	/* ========= 4. 从 JSON 加载 ========= */
 	ovg::Scene loadedScene;
 	if (!ovg::JsonIO::load(jsonPath, loadedScene)) {
 		std::cerr << "Failed to load scene\n";
-		//free_ctx_cb(ovg);
 		return 0;
 	}
-
 	std::cout << "Loaded scene: " << loadedScene.name
 		<< " (" << loadedScene.width << "x"
 		<< loadedScene.height << ")\n";
@@ -177,18 +174,15 @@ int main()
 			text4.text_len = -1;
 
 			text4.pos = { 10.0f, 200.0f };
-
-			cb->move_to(vg, 0, text4.pos.y + 0.5);
+			cb->move_to(vg, 0, text4.pos.y);
 			cb->rel_line_to(vg, 1800, 0);
 			cb->set_source_color(vg, 0xff00ff00);
-			cb->set_line_width(vg, 1);
+			cb->set_line_width(vg, 2);
 			cb->stroke(vg);
-
 			cb->add_text(vg, &text4, &style4, nullptr);
 
 			style4.min_subpixel = 0;
 			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起";
-
 
 			//style4.stroke = -1;
 			text4.pos = { 10.0f, 120 + 200.0f };
@@ -230,7 +224,7 @@ int main()
 			vgms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { /*get_draw_list(vg),*/ get_draw_list(rwvg) };
+			ovg_draw_data_t dlist[] = { get_draw_list(vg), get_draw_list(rwvg) };
 			rtc.begin();
 			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			fms = rtc.end();

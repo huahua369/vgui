@@ -3,18 +3,19 @@
   "version": 1,
   "width": 800,
   "height": 600,
-  "background": "FF502820",
+  "background": "",
   "resources": {
     "solid_red":   { "type": "solid",  "color": "FFFF0000" },
     "solid_blue":  { "type": "solid",  "color": "FF2196F3" },
     "solid_gray":  { "type": "solid",  "color": "FFC2C2C2" },
+    "solid_green":  { "type": "solid",  "color": "FF10ff10" },
     "grad_line": {
       "type": "linear",
       "p0": [0, 0], "p1": [800, 0],
       "extend": "pad", "filter": "bilinear",
       "stops": [
-        { "offset": 0.0, "color": "FFFF0000" },
-        { "offset": 1.0, "color": "8F0000FF" }
+        { "offset": 0.0, "color": "FFFF1000" },
+        { "offset": 1.0, "color": "8F0010FF" }
       ]
     },
     "grad_rad": {
@@ -25,7 +26,7 @@
       "extend": "pad",
       "stops": [
         { "offset": 0.0, "color": "FFFFFFFF" },
-        { "offset": 1.0, "color": "FF000000" }
+        { "offset": 1.0, "color": "00000000" }
       ]
     },
     "grad_sweep": {
@@ -52,14 +53,14 @@
     {
       "type": "group",
       "name": "panel",
-      "transform": { "translate": [20, 20] },
-      "clip_rect": [0, 0, 760, 560],
+      "transform": { "translate": [26, 26] },
+      "clip_rect": [0, 0, 762, 562],
       "children": [
         {
           "type": "rect",
-          "x": 0, "y": 0, "w": 760, "h": 560, "rx": 12, "ry": 12,
+          "x": 1, "y": 1, "w": 760, "h": 560, "rx": 12, "ry": 12,
           "fill": "@grad_line",
-          "stroke": "@solid_gray",
+          "stroke": "@solid_green",
           "stroke_style": { "width": 2.0, "cap": "round", "join": "round", "miter_limit": 4.0 }
         },
         {

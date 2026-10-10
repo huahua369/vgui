@@ -900,8 +900,10 @@ namespace ovg {
 					for (auto& s : g->stops) {
 						float r, gc, b, a;
 						uint32_t c = s.color;
-						r = ((c >> 24) & 255) / 255.f; gc = ((c >> 16) & 255) / 255.f;
-						b = ((c >> 8) & 255) / 255.f; a = (c & 255) / 255.f;
+						a = ((c >> 24) & 255) / 255.f;
+						b = ((c >> 16) & 255) / 255.f;
+						gc = ((c >> 8) & 255) / 255.f;
+						r = (c & 255) / 255.f;
 						cb->pattern_add_color_stop(pat, s.offset, r, gc, b, a);
 					}
 				}
@@ -986,6 +988,7 @@ namespace ovg {
 
 		void render_impl(RectShape& r) {
 			// 圆角通过附加路径实现（若 rx/ry>0）
+			float pad = ((int)r.stroke.width) == 1 ? 0.5 : 0.0;
 			if (r.rx > 0 || r.ry > 0) {
 				// 简化：直接 rounded_rectangle
 				cb->rounded_rectangle2(rvg, r.x, r.y, r.w, r.h, r.rx > 0 ? r.rx : r.ry, r.ry > 0 ? r.ry : r.rx);
