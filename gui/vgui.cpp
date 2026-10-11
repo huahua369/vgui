@@ -5956,6 +5956,40 @@ void draw_checkbox(ovg_ctx_cb* cb, rvg_t* vg, check_style_t* p, checkbox_info_t*
 	}
 }
 
+void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& pos, const glm::ivec2& size0)
+{
+	auto psv = pos;
+	cb->save(vg);
+	glm::ivec2 poss = psv;
+	auto h = p->height;
+	auto size = size0;
+	auto fc = h * p->cv * 0.5;
+	auto ss = h * p->wf;
+	if (size.x <= 0) {
+		size.x = ss;
+	}
+	if (size.y <= 0) {
+		size.y = h;
+	}
+	poss.x += (size.x - ss) * 0.5;
+	poss.y += (size.y - p->height) * 0.5;
+	cb->translate(vg, poss.x, poss.y);
+	cb->rounded_rectangle(vg, 0.5, 0.5, ss, h, h * 0.5);
+	cb->set_source_color(vg, p->dcol);
+	cb->fill(vg);
+	glm::vec2 cp = {};
+	{
+		auto ps = h * 0.5;
+		cp.x += (ss - h) * p->cpos + h * 0.5;
+		cp.y += ps;
+		cb->circle(vg, cp.x, cp.y, fc);
+		cb->set_source_color(vg, p->color.z);
+		cb->fill(vg);
+	}
+	cb->stroke(vg);
+	cb->restore(vg);
+}
+
 #if 0
 
 
@@ -6036,41 +6070,6 @@ void checkbox_tl::draw(rvg_cx* rv)
 		rv->pop_view();
 #endif
 	}
-}
-void switch_tl::draw(rvg_cx* rv)
-{
-#if 1
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-
-	glm::ivec2 poss = psv;
-	auto h = height;
-	auto fc = h * cv * 0.5;
-	auto ss = h * wf;
-	if (_size.x <= 0) {
-		_size.x = ss;
-	}
-	if (_size.y <= 0) {
-		_size.y = h;
-	}
-	poss.x += (_size.x - ss) * 0.5;
-	poss.y += (_size.y - height) * 0.5;
-	rv->translate((glm::vec2)poss);
-	rv->add_rect({ 0.5,0.5, ss, h }, h * 0.5);
-	rv->submit(dcol, 0, 0);
-	glm::vec2 cp = {};
-	{
-		auto ps = h * 0.5;
-		cp.x += (ss - h) * cpos + h * 0.5;
-		cp.y += ps;
-		rv->add_circle(cp, fc);
-		rv->submit(color.z, 0, 0);
-	}
-	rv->stroke();
-
-	rv->pop_view();
-#endif
 }
 void progress_tl::draw(rvg_cx* rv)
 {

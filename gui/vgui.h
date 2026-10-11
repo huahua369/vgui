@@ -401,6 +401,18 @@ struct checkbox_info_t
 	bool value = 0;			// 选中值
 	bool value1 = 1;		// 选中值动画
 };
+struct switch_info_t
+{
+	glm::ivec3 color = { 0xffff9e40, 0xff4c4c4c,-1 }; // 开/关/圆点颜色 { 0xff66ce13, 0xff4949ff };
+	glm::ivec2 text_color = { 0xffff9e40, 0xff4c4c4c }; // 文本颜色;
+	uint32_t dcol = 0;	// 渲染的颜色 
+	float cpos = 0;		// 动画坐标
+	float cv = 0.7;		// 圆点大小 
+	float height = 20;
+	float wf = 2.1;		// 宽比例 
+	checkbox_info_t v = {};
+	bool inline_prompt = false;
+};
 
 void set_btn_color_idx(color_style* cs, int idx);
 bool update_color_btn(color_style* p, float delta);
