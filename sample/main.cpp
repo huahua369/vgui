@@ -179,8 +179,8 @@ int main()
 		grid_data* g = grid_create(3, 2);
 		float cw[] = { 1, 1, 1 };
 		float rh[] = { 40, 40 };
-		grid_set_col_widths(g, cw);
-		grid_set_row_heights(g, rh);
+		grid_set_col_widths(g, cw, 3);
+		grid_set_row_heights(g, rh, 2);
 		grid_set_gap(g, 8, 8);
 		for (int i = 0; i < 6; i++) {
 			nodes[i].size.x = 160;
