@@ -5974,7 +5974,7 @@ void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& 
 	poss.x += (size.x - ss) * 0.5;
 	poss.y += (size.y - p->height) * 0.5;
 	cb->translate(vg, poss.x, poss.y);
-	cb->rounded_rectangle(vg, 0.5, 0.5, ss, h, h * 0.5);
+	cb->rounded_rectangle(vg, 0, 0, ss, h, h * 0.5);
 	cb->set_source_color(vg, p->dcol);
 	cb->fill(vg);
 	glm::vec2 cp = {};

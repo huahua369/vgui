@@ -189,7 +189,8 @@ int main()
 		grid_layout(g, 600, 100, nodes, 6);
 		grid_destroy(g);
 	}
-
+	switch_info_t sw[1] = {};
+	sw->dcol = sw->color.x;
 	while (running) {
 		fps.beginFrame();
 		if (wg->get_event() < 0)
@@ -281,7 +282,10 @@ int main()
 			for (int i = 0; i < 6; i++) {
 				auto it = &nodes[i];
 				btn1.back_color = colors[i];
-				gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
+				if (i < 5)
+					gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
+				else
+					switch_draw(cb, vg, sw, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
 			}
 			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
 			vgms = rtc.end();
