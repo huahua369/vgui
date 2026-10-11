@@ -5665,6 +5665,88 @@ void paint_linear(ovg_ctx_cb* cb, rvg_t* vg, const glm::vec2& gsize, const glm::
 		cb->fill(vg);
 	}
 }
+
+#define getrgba(a,b,sp) lerp(a.sp,b.sp,ratio)
+
+glm::dvec4 mix_colors0(glm::vec4 a, glm::vec4 b, float ratio)
+{
+	auto lerp = [](double v0, double v1, double t) { return (1.0 - t) * v0 + t * v1; };
+	glm::dvec4 result = {};
+	result.x = getrgba(a, b, x);
+	result.y = getrgba(a, b, y);
+	result.z = getrgba(a, b, z);
+	result.w = getrgba(a, b, w);
+	return result;
+}
+vg_pattern_t* new_cubic_gradient(ovg_ctx_cb* cb, rvg_t* vg, glm::vec4 rect, glm::vec4 from, glm::vec4 to, glm::vec2 ctrl1, glm::vec2 ctrl2, glm::vec2 p0 = {}, glm::vec2 p1 = { 1,1 }, int steps = 8);
+vg_pattern_t* new_cubic_gradient(ovg_ctx_cb* cb, rvg_t* vg, glm::vec4 rect, glm::vec4 from, glm::vec4 to, glm::vec2 ctrl1, glm::vec2 ctrl2, glm::vec2 p0, glm::vec2 p1, int steps)
+{
+	// validate input points
+	for (auto&& pt : { p0, ctrl1, ctrl2, p1 }) {
+		if (pt.x < 0 || pt.x > 1 ||
+			pt.y < 0 || pt.y > 1) {
+			assert(0);
+			return 0;
+			//throw std::invalid_argument("Invalid points for cubic gradient; 0..1 coordinates expected.");
+		}
+	}
+	if (steps < 2 || steps > 32) {
+		assert(0);
+		return 0;
+		//throw std::invalid_argument("Invalid number of steps for cubic gradient; 2 to 32 steps expected.");
+	}
+	if (rect.x > rect.z)
+	{
+		std::swap(rect.x, rect.z);
+	}
+	if (rect.y > rect.w)
+	{
+		std::swap(rect.y, rect.w);
+	}
+	vg_pattern_t* g = cb->new_pattern_linear(vg, rect.x, rect.y, rect.z, rect.w);
+	--steps;
+	for (int step = 0; step <= steps; ++step) {
+		auto t = 1.0 * step / steps;
+		auto s = 1.0 - t;
+		auto p0t = p0;
+		auto p1t = p1;
+		auto c1 = ctrl1;
+		auto c2 = ctrl2;
+		p0t *= (t * t * t);
+		c1 *= (3 * t * t * s);
+		c2 *= (3 * t * s * s);
+		p1t *= (s * s * s);
+		//auto p = (t * t * t) * p0 + (3 * t * t * s) * ctrl1 + (3 * t * s * s) * ctrl2 + (s * s * s) * p1;
+		auto p = p0t + c1 + c2 + p1t;
+		auto offset = p.x;
+		auto ratio = p.y;
+		auto color = mix_colors0(from, to, ratio);
+		cb->pattern_add_color_stop(g, offset, color.x, color.y, color.z, color.w);
+	}
+
+	return g;
+}
+void paint_shadow_v(ovg_ctx_cb* cb, rvg_t* vg, double size_x, double size_y, double width, double height, const glm::vec4& shadow, bool rev, float r)
+{
+	auto trans = shadow;
+	trans.w = 0;
+	auto gr = rev ?
+		new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), trans, shadow, glm::vec2(0.5, 0.0), glm::vec2(1.0, 0.5))
+		: new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), shadow, trans, glm::vec2(0, 0.5), glm::vec2(0.5, 1));
+	cb->rounded_rectangle(vg, 0, 0, width, height, r);
+	cb->set_source(vg, gr);
+	cb->fill(vg);
+}
+void paint_shadow_v(ovg_ctx_cb* cb, rvg_t* vg, double size_x, double size_y, double width, double height, const glm::vec4& shadow, const glm::vec4& color_to, bool rev, float r)
+{
+	auto gr = rev ?
+		new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), color_to, shadow, glm::vec2(0.5, 0.0), glm::vec2(1.0, 0.5))
+		: new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), shadow, color_to, glm::vec2(0, 0.5), glm::vec2(0.5, 1));
+	cb->rounded_rectangle(vg, 0, 0, width, height, r);
+	cb->set_source(vg, gr);
+	cb->fill(vg);
+}
+
 void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size)
 {
 	auto psv = pos;// get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
@@ -5726,7 +5808,11 @@ void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::
 	//rv->save();
 	if (p->effect == uTheme::dark || p->mPushed)
 		cb->translate(vg, thickness, thickness);
-	paint_linear(cb, vg, glm::vec2(0, rct.y), { rct.x, rct.y }, gtop, gbot, rounding);// 垂直方向
+	// 垂直方向
+	if (p->cubic_gradient)
+		paint_shadow_v(cb, vg, 0, rct.y, rct.x, rct.y, gtop, gbot, 0, rounding);
+	else
+		paint_linear(cb, vg, glm::vec2(0, rct.y), { rct.x, rct.y }, gtop, gbot, rounding);
 	if (p->effect == uTheme::dark || p->mPushed)
 		cb->translate(vg, -thickness, -thickness);
 	//rv->restore();
@@ -5756,221 +5842,57 @@ void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::
 	cb->restore(vg);
 }
 
-#if 0
-
-void draw_color_btn(rvg_cx* rv, color_style* t, const glm::ivec2& pos, const glm::ivec2& size)
-{
-	auto ns = size;	auto ss = size;	int thickness = t->thickness;	auto psv = pos;
-	auto view = glm::ivec4(psv, ns + thickness);
-	rv->push_view(view, t);
-	rv->translate(psv);
-	if (t->dfill)
-	{
-		if (t->circle)
-		{
-			glm::vec2 sp = {};
-			int r = lround(ss.y * 0.5);
-			sp += r;
-			rv->add_circle(sp, r);
-		}
-		else { rv->add_rect({ 0.,0., ss }, t->rounding); }
-		rv->set_color(t->dfill);
-		rv->fill();
-	}
-	// 渲染标签
-	glm::vec2 ps = { thickness * 2, thickness * 2 };
-	if (t->mPushed) {
-		ps += t->pushedps;
-	}
-	ns -= thickness * 4;
-	float padding = thickness == 1 ? 0.5f : 0.0f;
-	glm::vec4 rc = { ps, ns };
-	if (t->dcol)
-	{
-		if (t->circle)
-		{
-			glm::vec2 sp = {};
-			int r = lround(ss.y * 0.5);
-			sp += r;
-			rv->add_circle(sp, r);
-		}
-		else { rv->add_rect({ padding,padding, ss }, t->rounding); }
-		rv->set_color(t->dcol);
-		rv->set_line_width(thickness);
-		rv->stroke();
-	}
-	text_st tx = {};
-	tx.pos = ps;
-	tx.size = ns;
-	tx.text = t->str; tx.text_len = t->str_len;
-	rv->add_text(&tx, t->ptext_style);
-	rv->pop_view();
-}
-
-
-void widget_t::draw(rvg_cx* rv)
-{}
-
-void image_btn::draw(rvg_cx* rv) {
-	auto ss = get_size();
-	auto psv = get_scroll_pos(); psv += _pos;
+void image_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, image_btn_style* p, const glm::ivec2& pos, const glm::ivec2& size) {
+	cb->save(vg);
+	auto ss = size;
+	auto psv = pos;
 	auto view = glm::ivec4(psv, ss);
-	rv->push_view(view, this);
-	rv->translate(psv);
-	auto p = &state_img[show_idx];
-	image_r r = {};
-	r.img = (image_ptr_t*)(imgptr.img);
-	r.rc = p->tex_rc;// glm::ivec4(0, 0, ss);		// 所在纹理区域
-	r.sliced = p->sliced;	// 九宫格
-	r.dsize = { p->img_rc.z, p->img_rc.w };	// 渲染大小
-	r.pos = psv + glm::ivec2(p->img_rc);		// 渲染坐标
-	r.color = -1;		// 混合颜色
-	r.type = img_type;
-	rv->add_image(&r);
-
-	text_st tx = {};
-	tx.pos = {};
-	tx.size = get_size();
-	tx.text_len = str.size();
-	if (tx.text_len > 0) {
-		tx.text = str.c_str();
-		rv->add_text(&tx, &style);
-	}
-
-	rv->pop_view();
-}
-
-void color_btn::draw(rvg_cx* rv)
-{
-	draw_color_btn(rv, &cs, get_scroll_pos() + glm::ivec2(_pos), get_size());
-}
-
-void gradient_btn::draw(rvg_cx* rv)
-{
-#if 1
-	auto p = this;
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	float x = psv.x, y = psv.y, w = p->_size.x, h = p->_size.y;
-	int pushed = p->mPushed ? 0 : 1;
-	uint32_t gradTop = p->_gradTop;
-	uint32_t gradBot = p->_gradBot;
-	uint32_t borderDark = p->borderDark;
-	uint32_t borderLight = p->borderLight;
-	double oa = p->opacity;
-	auto ns = p->_size;
-
-	auto bc = effect == uTheme::light ? p->back_color : set_alpha_xf2(p->back_color, get_alpha_f(p->back_color));
-	double rounding = p->rounding;
-	glm::vec2 ns1 = { w * 0.5, h * 0.5 };
-	auto nr = (int)std::min(ns1.x, ns1.y);
-	if (rounding > nr)
+	cb->translate(vg, psv.x, psv.y);
+	auto pimg = &p->state_img[p->show_idx];
+	ovg_image_r rimg = *pimg;
+	cb->add_image(vg, &rimg);
+	auto img = pimg->img;
+	if (img->valid)
 	{
-		rounding = nr;
+		vg_image_desc_t desc = {};
+		desc.width = img->width;
+		desc.height = img->height;
+		desc.format = VG_FORMAT_RGBA8;
+		desc.stride = desc.width * sizeof(int);
+		desc.pixels = p->imgdata;
+		desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
+		desc.is_copy = true;
+		img->valid = false;
+		cb->image_update(vg, img, &desc);
 	}
-	glm::vec2 tps = { 0.5,0.5 };	// thickness等于1时需要偏移0.5才能正常渲染线框
-	if (thickness > 1)tps *= 0.0;
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-	//rv->save();
-	rv->translate({ x, y });
-	if (is_alpha(bc))
-	{
-		bc = set_alpha_f(bc, oa);
-		rv->add_rect({ thickness, thickness, w - thickness * 2, h - thickness * 2 }, rounding);
-		rv->set_color(bc);
-		rv->fill();
-	}
-	if (p->mPushed) {
-		gradTop = set_alpha_f(gradTop, 0.8f);
-		gradBot = set_alpha_f(gradBot, 0.8f);
-	}
-	else {
-		double v = 1.0 - get_alpha_f(p->back_color);
-		auto gv = p->mEnabled ? v : v * .5f + .5f;
-		gradTop = set_alpha_xf(gradTop, gv);
-		gradBot = set_alpha_xf(gradBot, gv);
-	}
-	auto gt = to_c4(gradTop);
-	auto gt1 = to_c4(gradBot);
-	gradTop = set_alpha_xf(gradTop, oa);
-	gradBot = set_alpha_xf(gradBot, oa);
-	borderLight = set_alpha_xf(borderLight, oa);
-	borderDark = set_alpha_xf(borderDark, oa);
-	// 渐变
-	glm::vec4 r;
-	if (rounding > 0)
-	{
-		r = { rounding, rounding, rounding, rounding };
-	}
-	glm::vec2 rct = { w - thickness, h - thickness * 2.0 };
-	glm::vec4 gtop = to_c4(gradTop);
-	glm::vec4 gbot = to_c4(gradBot);
-
-	//rv->save();
-	if (effect == uTheme::dark || p->mPushed)
-		rv->translate({ thickness, thickness });
-	//else
-	//	rv->translate({ 0, 0 });
-	rv->paint_shadow(0, rct.y, rct.x, rct.y, gtop, gbot, 0, rounding);// 垂直方向
-	if (effect == uTheme::dark || p->mPushed)
-		rv->translate({ -thickness, -thickness });
-	//rv->restore();
-	// 渲染标签
-
-	glm::vec2 ps = { thickness * 2,thickness * 2 };
-	if (p->mPushed) {
-		ps += thickness;
-	}
-	ns -= thickness * 4;
-	glm::vec4 rc = { ps, ns };
-	// 边框
-	w -= 1;	h -= 1;
-	rv->set_line_width(thickness);
-	rv->set_color(borderLight);
-	rv->add_rect({ tps.x,tps.y + (p->mPushed ? 0.f : 1.0f), w, h - (p->mPushed ? 0.0f : 1.0f) }, rounding);
-	rv->stroke();
-	rv->set_color(borderDark);
-	rv->add_rect({ tps.x,tps.y, w , h }, rounding);
-	rv->stroke();
-	text_st tx = {};
-	tx.pos = { 0,thickness * .5 };
-	tx.size = get_size();
-	tx.text = p->str.c_str(); tx.text_len = p->str.size();
-	rv->add_text(&tx, &style);
-
-	//rv->restore();
-
-	rv->pop_view();
-
-#endif
+	cb->restore(vg);
 }
-
-
-void menu_btn::draw(rvg_cx* rv)
+void draw_radio(ovg_ctx_cb* cb, rvg_t* vg, radio_info_t* p, radio_style_t* ps)
 {
-
-}
-
-
-
-void draw_radios(rvg_cx* rv, radio_info_t* p, radio_style_t* ps)
-{
+	cb->set_line_width(vg, ps->thickness);
 	if (ps->radius > 0) {
-		rv->add_circle(p->pos, ps->radius);
+		cb->circle(vg, p->pos.x, p->pos.y, ps->radius);
 		if (p->value || p->swidth > 0)
-			rv->submit(ps->col, 0, ps->thickness);
+		{
+			cb->set_source_color(vg, ps->col);
+			cb->fill(vg);
+		}
 		else
-			rv->submit(ps->innc * 0, ps->line_col, ps->thickness);
+		{
+			cb->set_source_color(vg, ps->line_col);
+			cb->stroke(vg);
+		}
 	}
 	if (p->swidth > 0) {
-		rv->add_circle(p->pos, p->swidth);
-		rv->submit(ps->innc, 0, ps->thickness);
+		cb->circle(vg, p->pos.x, p->pos.y, p->swidth);
+		cb->set_source_color(vg, ps->innc);
+		cb->fill(vg);
 	}
 }
 
 
 // check打勾
-void drawCheckMark(rvg_cx* rv, glm::vec2 pos, uint32_t col, float sz1, bool mixed)
+void drawCheckMark(ovg_ctx_cb* cb, rvg_t* vg, glm::vec2 pos, uint32_t col, float sz1, bool mixed)
 {
 	if (!col)
 		return;
@@ -5978,7 +5900,6 @@ void drawCheckMark(rvg_cx* rv, glm::vec2 pos, uint32_t col, float sz1, bool mixe
 	float thickness = std::max(sz / 5.0f, 1.0f);
 	sz -= thickness * 0.5f;
 	pos += glm::vec2(thickness * 0.25f, thickness * 0.25f);
-
 	float third = sz / 3.0f;
 	float bx = pos.x + third;
 	float td = sz - third * 0.5f;
@@ -5989,34 +5910,55 @@ void drawCheckMark(rvg_cx* rv, glm::vec2 pos, uint32_t col, float sz1, bool mixe
 		auto ps = glm::vec2(pos.x + td, by - third);
 		auto ps1 = ps;
 		ps1.x += sz1 - thickness;
-		rv->add_line(ps, ps1);
+		cb->move_to(vg, ps.x, ps.y); cb->line_to(vg, ps1.x, ps1.y);
 	}
 	else {
-		glm::vec2 ps[3];
+		glm::vec2 ps[3] = {};
 		ps[0] = glm::vec2(bx - third, by - third);
 		ps[1] = glm::vec2(bx, by);
 		ps[2] = glm::vec2(bx + third * 2.0f, by - third * 2.0f);
-		rv->add_polyline(ps, 3);
+		cb->move_to(vg, ps[0].x, ps[0].y);
+		cb->line_to(vg, ps[1].x, ps[1].y);
+		cb->line_to(vg, ps[2].x, ps[2].y);
 	}
-	rv->submit(0, col, thickness);
+	cb->set_source_color(vg, col);
+	cb->set_line_width(vg, thickness);
+	cb->stroke(vg);
 }
-void draw_checkbox(rvg_cx* rv, check_style_t* p, checkbox_info_t* pn)
+void vg_fillstroke(ovg_ctx_cb* cb, rvg_t* vg, uint32_t fill, uint32_t linecol, int thickness)
+{
+	if (fill) {
+		cb->set_source_color(vg, fill);
+		cb->fill_preserve(vg);
+	}
+	if (linecol) {
+		cb->set_source_color(vg, linecol);
+		cb->set_line_width(vg, thickness);
+		cb->stroke(vg);
+	}
+	else  if (fill) { cb->clear_path(vg); }
+}
+void draw_checkbox(ovg_ctx_cb* cb, rvg_t* vg, check_style_t* p, checkbox_info_t* pn)
 {
 	if (!p)return;
 	auto cc = p->check_col;
 	glm::ivec2 ps = pn->pos;
-	rv->add_rect({ ps.x,ps.y,p->square_sz,p->square_sz }, p->rounding);
+	cb->rounded_rectangle(vg, ps.x, ps.y, p->square_sz, p->square_sz, p->rounding);
 	if (pn->value || pn->new_alpha > 0)
-		rv->submit(p->fill, p->col, p->thickness);
+		vg_fillstroke(cb, vg, p->fill, p->col, p->thickness);
 	else
-		rv->submit(0, p->line_col, p->thickness);
+		vg_fillstroke(cb, vg, 0, p->line_col, p->thickness);
 	const float pad = std::max(1.0f, floor(p->square_sz / 6.0f));
 	if (pn->new_alpha > 0)
 	{
 		cc = set_alpha_f(cc, pn->new_alpha);
-		drawCheckMark(rv, (glm::vec2)ps + glm::vec2(pad, pad), cc, p->square_sz - pad * 2.0f, pn->mixed);
+		drawCheckMark(cb, vg, (glm::vec2)ps + glm::vec2(pad, pad), cc, p->square_sz - pad * 2.0f, pn->mixed);
 	}
 }
+
+#if 0
+
+
 
 void radio_tl::draw(rvg_cx* rv)
 {

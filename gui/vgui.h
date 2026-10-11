@@ -268,6 +268,7 @@ enum class widget_type :uint8_t
 	WT_SCROLL_BAR,
 };
 
+struct ovg_image_r;
 struct text_style_t;
 struct btn_cols_t {
 	uint32_t font_color = 0xFF222222;
@@ -302,6 +303,14 @@ struct label_text_t {
 	text_style_t* ptext_style = 0;
 	const char* str = 0;
 	int str_len = 0;
+};
+struct image_btn_style {
+	std::string str;
+	ovg_image_r* state_img = 0;// [5] = {};
+	void* imgdata = 0;
+	int show_idx = 0;	// 参考BTN_STATE
+	int img_type = 0;	//  0 image_ptr_t, 1 VkvgSurface, 2 vkimage
+	int multi = 0;		// 多状态按钮，0=单状态，1=多状态
 };
 // 纯色按钮风格
 struct color_style {
@@ -346,6 +355,7 @@ struct gradient_style
 	bool mMouseFocus = false;
 	bool mEnabled = true;
 	bool is_muilt = true;
+	bool cubic_gradient = true;
 };
 struct radio_style_t
 {
