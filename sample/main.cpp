@@ -101,6 +101,7 @@ int main()
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
+	auto vg1 = cb->new_rvg(cb->ac);
 	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #ifdef __ANDROID__
 	f |= SDL_INIT_HAPTIC;
@@ -127,7 +128,7 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
 	bool running = true;
 	runtime_cx rtc = {};
-	FrameProfiler fps;
+	FpsCounter fps;
 	// 渲染 
 	auto fp = fopen("E:\\1.txt", "r");
 	std::string buff;
@@ -191,23 +192,32 @@ int main()
 	}
 	switch_info_t sw[1] = {};
 	sw->dcol = sw->color.x;
+	sw->cpos = 1.0;
 	while (running) {
-		fps.beginFrame();
+		//fps.beginFrame();
+		fps.tick();
 		if (wg->get_event() < 0)
 		{
 			running = false;
 		}
-		if (ovg_get_window_swapchain(ctx, &fbo))
+		if (ovg_get_window_swapchain(ctx, &fbo, true))
 		{
 			rtc.begin();
 			cb->clear(vg);
 			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
+
 			glm::vec2 sf = fbo.display_size;
-			draw_grid_fill(vg, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+			if (fbo.upsize)
+			{
+				fbo.upsize = false;
+				vg->width = fbo.display_size.x;
+				vg->height = fbo.display_size.y;
+				vg1->width = fbo.display_size.x;
+				vg1->height = fbo.display_size.y;
+				cb->clear(vg1);
+				draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+			}
 			cb->reset_clip(vg, 1);
-
-			vg->width = fbo.display_size.x; vg->height = fbo.display_size.y;
-
 			//draw_test3d(&fbo, cb, vg);
 			text_style_t style4 = {};
 			style4.family = familys;
@@ -291,15 +301,18 @@ int main()
 			vgms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { get_draw_list(vg)/*, get_draw_list(rwvg)*/ };
+			ovg_draw_data_t dlist[] = { get_draw_list(vg1),get_draw_list(vg)/*, get_draw_list(rwvg)*/ };
 			rtc.begin();
 			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
 			fms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
-		SDL_Delay(16);  /* ~60 FPS */
-		fps.endFrame();
+		else {
+			SDL_Delay(16);
+		}
+		//SDL_Delay(16);  /* ~60 FPS */
+		//fps.endFrame();
 		if (++scount > 20) {
 			scount = 0;
 			showstr = fps.c_str();

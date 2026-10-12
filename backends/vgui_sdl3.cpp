@@ -906,3 +906,35 @@ void app_mgr::set_defcursor(cursor_st t)
 		break;
 	}
 }
+
+FpsCounter::FpsCounter()
+{}
+
+FpsCounter::~FpsCounter()
+{}
+float FpsCounter::tick()
+{
+	float delta = 0.0f;
+	do {
+		uint32_t curr_time = SDL_GetTicks();
+		if (prev_time > 0)
+		{
+			delta = (float)(curr_time - prev_time) / 1000.0f;
+			avg_delta = avg_delta * (1.0 - talpha) + delta * talpha;
+			cfps = 1.0 / avg_delta;
+			cfps1 = 1.0 / delta;
+		}
+		prev_time = curr_time;
+	} while (0);
+	return delta;
+}
+
+int FpsCounter::get_fps()
+{
+	return cfps;
+}
+const char* FpsCounter::c_str()
+{
+	str = std::to_string(cfps);
+	return str.c_str();
+}

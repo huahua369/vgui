@@ -200,3 +200,21 @@ struct vg_types_data
 	glm::vec2 scale;
 	float radians;
 };
+
+class FpsCounter
+{
+public:
+	FpsCounter();
+	~FpsCounter();
+
+	float tick();
+	int get_fps();
+	const char* c_str();
+private:
+	uint32_t prev_time = 0;
+	float avg_delta = 0.0f;
+	float talpha = 0.05f;  // 采样系数（调整平滑度）
+	int cfps = 0;
+	int cfps1 = 0;
+	std::string str;
+};
