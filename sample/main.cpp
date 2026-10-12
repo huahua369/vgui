@@ -124,7 +124,7 @@ int main()
 	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, form1->window);
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
 	assert(ctx);
-
+	draw_datas_cx drawable;
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
 	bool running = true;
 	runtime_cx rtc = {};
@@ -305,15 +305,18 @@ int main()
 			vgms = rtc.end();
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
-			ovg_draw_data_t dlist[] = { get_draw_list(vg1),get_draw_list(vg)/*, get_draw_list(rwvg)*/ };
+			drawable.clear();
+			drawable.add(vg1);
+			drawable.add(vg);
+
 			rtc.begin();
-			ovg_render_frame(ctx, &fbo, dlist, sizeof(dlist) / sizeof(ovg_draw_data_t));// 提交渲染 
+			drawable.render(ctx, &fbo);// 提交渲染 
 			fms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
-		else {
-			SDL_Delay(1);
+		{
+			SDL_Delay(32);
 		}
 		int ams = rtc0.end();
 		//SDL_Delay(16);  /* ~60 FPS */

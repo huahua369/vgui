@@ -19,16 +19,18 @@ vgui sdl3实现
 #endif  
 #include <typeindex>
 #include <mutex>
+#include <ovg_c.h>
 #include <vgui.h>
 #include "vgui_sdl3.h"
 #include <stb_image.h>
 
 #include <vulkan/vulkan.h>
-#include <ovg_c.h>
 #ifdef min
 #undef min
 #undef max
 #endif // min
+
+#include <ovg_renderer_sdl3.h>
 
 std::string get_clipboard()
 {
@@ -959,4 +961,27 @@ const char* FpsCounter::c_str()
 {
 	str = std::to_string(cfps);
 	return str.c_str();
+}
+
+draw_datas_cx::draw_datas_cx()
+{}
+
+draw_datas_cx::~draw_datas_cx()
+{}
+void draw_datas_cx::clear()
+{
+	v.clear(); data.clear();
+}
+void draw_datas_cx::add(rvg_t* p)
+{
+	if (p)
+	{
+		v.push_back(p);
+		data.push_back(get_draw_list(p));
+	}
+}
+void draw_datas_cx::render(ovg_ctx_t* ctx, vg_fbo_t* fbo)
+{
+	if (!ctx || !fbo || data.empty())return;
+	ovg_render_frame(ctx, fbo, data.data(), data.size());
 }

@@ -7,6 +7,7 @@ vgui sdl3
 #include <mutex>
 #include <vector>
 #include <string>
+#include <ovg_c.h>
 #include <vgui.h>
 
 
@@ -217,4 +218,20 @@ private:
 	int cfps = 0;
 	int cfps1 = 0;
 	std::string str;
+};
+struct ovg_ctx_t;
+struct vg_fbo_t;
+class draw_datas_cx
+{
+public:
+	std::vector<rvg_t*> v;
+	std::vector<ovg_draw_data_t> data;
+public:
+	draw_datas_cx();
+	~draw_datas_cx();
+	void clear();
+	void add(rvg_t* p);
+	void render(ovg_ctx_t* ctx, vg_fbo_t* fbo);
+private:
+
 };
