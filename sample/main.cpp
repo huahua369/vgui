@@ -318,7 +318,7 @@ int main()
 		int ams = rtc0.end();
 		//SDL_Delay(16);  /* ~60 FPS */
 		//fps.endFrame();
-		if (js > 0.1) {
+		if (js > 0.5) {
 			js = 0.0;
 			scount = 0;
 			showstr = "fps: "; showstr += fps.c_str();
