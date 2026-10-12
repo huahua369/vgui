@@ -110,7 +110,7 @@ int main()
 	auto wg = new app_mgr();
 	if (!wg->init_gpu(true))return -1;
 	//auto vp = new gui_viewport();
-	auto form1 = wg->create("SDL3GPU render", surfsize.x, surfsize.y, 0);
+	auto form1 = wg->create("SDL3GPU render", surfsize.x, surfsize.y, 0, true);
 	//form1->viewport = vp;
 	//vp->set_viewport({ 0,0,surfsize.x, surfsize.y });
 	//auto div0 = new div_cx0({ 100,100,50,50 });
@@ -128,6 +128,7 @@ int main()
 	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
 	bool running = true;
 	runtime_cx rtc = {};
+	runtime_cx rtc0 = {};
 	FpsCounter fps;
 	// 渲染 
 	auto fp = fopen("E:\\1.txt", "r");
@@ -193,10 +194,12 @@ int main()
 	switch_info_t sw[1] = {};
 	sw->dcol = sw->color.x;
 	sw->cpos = 1.0;
-
+	double js = 0.0;
 	while (running) {
 		//fps.beginFrame();
-		fps.tick();
+		auto delta = fps.tick();
+		js += delta;
+		rtc0.begin();
 		if (wg->get_event() < 0)
 		{
 			running = false;
@@ -310,16 +313,20 @@ int main()
 			//	printf("submit draw ms: %d\n", ms);
 		}
 		else {
-			SDL_Delay(16);
+			SDL_Delay(1);
 		}
+		int ams = rtc0.end();
 		//SDL_Delay(16);  /* ~60 FPS */
 		//fps.endFrame();
-		if (++scount > 20) {
+		if (js > 0.1) {
+			js = 0.0;
 			scount = 0;
 			showstr = "fps: "; showstr += fps.c_str();
+			showstr += "\ncpu ms: " + std::to_string(ams);
 			showstr += "\nvgms: " + std::to_string(vgms);
 			showstr += " vg_render: " + std::to_string(fms);
-			int rfps = 1000.0 / (fms + vgms);
+			int rfps = (fms + vgms);
+			rfps = (rfps > 0) ? 1000.0 / rfps : 0;
 			showstr += "\nfps render: " + std::to_string(rfps);
 		}
 	}

@@ -425,7 +425,7 @@ bool app_mgr::has_maximized(void* nwptr)
 	}
 	return ret;
 }
-os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags) {
+os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, bool vsync) {
 	SDL_Window* window = 0;
 	auto flags = pce::get_flags(iflags);
 	SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
@@ -442,13 +442,16 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags) {
 		p = win.get();
 		windows_.push_back(std::move(win));
 		SDL_GPUPresentMode chosen = SDL_GPU_PRESENTMODE_VSYNC; // 垂直同步
-		if (SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX) &&
-			SDL_WindowSupportsGPUSwapchainComposition(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR)) {
-			chosen = SDL_GPU_PRESENTMODE_MAILBOX;
-		}
-		else if (SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_IMMEDIATE) &&
-			SDL_WindowSupportsGPUSwapchainComposition(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR)) {
-			chosen = SDL_GPU_PRESENTMODE_IMMEDIATE;
+		if (!vsync)
+		{
+			if (SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_MAILBOX) &&
+				SDL_WindowSupportsGPUSwapchainComposition(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR)) {
+				chosen = SDL_GPU_PRESENTMODE_MAILBOX;
+			}
+			else if (SDL_WindowSupportsGPUPresentMode(device, window, SDL_GPU_PRESENTMODE_IMMEDIATE) &&
+				SDL_WindowSupportsGPUSwapchainComposition(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR)) {
+				chosen = SDL_GPU_PRESENTMODE_IMMEDIATE;
+			}
 		}
 
 		if (!SDL_SetGPUSwapchainParameters(device, window, SDL_GPU_SWAPCHAINCOMPOSITION_SDR, chosen)) {

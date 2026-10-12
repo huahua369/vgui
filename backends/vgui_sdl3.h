@@ -139,7 +139,7 @@ public:
 
 	bool init_gpu(bool is_vulkan);
 	// 创建主窗口、普通窗口
-	os_window* create(const char* title, int w, int h, uint32_t flags);
+	os_window* create(const char* title, int w, int h, uint32_t flags, bool vsync);
 	// 创建普通窗口、菜单、工具提示、实用窗口、可指定父级的窗口
 	os_window* create2(const char* title, int x, int y, int w, int h, uint32_t flags, os_window* parent);
 	os_window* find(uint32_t id);
