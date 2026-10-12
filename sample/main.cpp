@@ -193,6 +193,7 @@ int main()
 	switch_info_t sw[1] = {};
 	sw->dcol = sw->color.x;
 	sw->cpos = 1.0;
+
 	while (running) {
 		//fps.beginFrame();
 		fps.tick();
@@ -315,9 +316,11 @@ int main()
 		//fps.endFrame();
 		if (++scount > 20) {
 			scount = 0;
-			showstr = fps.c_str();
-			showstr += " vgms: " + std::to_string(vgms);
+			showstr = "fps: "; showstr += fps.c_str();
+			showstr += "\nvgms: " + std::to_string(vgms);
 			showstr += " vg_render: " + std::to_string(fms);
+			int rfps = 1000.0 / (fms + vgms);
+			showstr += "\nfps render: " + std::to_string(rfps);
 		}
 	}
 
