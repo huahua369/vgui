@@ -226,12 +226,14 @@ class draw_datas_cx
 public:
 	std::vector<rvg_t*> v;
 	std::vector<ovg_draw_data_t> data;
+	vg_fbo_t* fbo = 0;
 public:
 	draw_datas_cx();
 	~draw_datas_cx();
 	void clear();
+	void set(vg_fbo_t* fbo);
 	void add(rvg_t* p);
-	void render(ovg_ctx_t* ctx, vg_fbo_t* fbo);
+	void render(ovg_ctx_t* ctx);
 private:
 
 };

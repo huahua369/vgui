@@ -972,16 +972,22 @@ void draw_datas_cx::clear()
 {
 	v.clear(); data.clear();
 }
+void draw_datas_cx::set(vg_fbo_t* p)
+{
+	fbo = p;
+}
 void draw_datas_cx::add(rvg_t* p)
 {
 	if (p)
 	{
 		v.push_back(p);
-		data.push_back(get_draw_list(p));
+		auto d = get_draw_list(p);
+		d.fbo = fbo;
+		data.push_back(d);
 	}
 }
-void draw_datas_cx::render(ovg_ctx_t* ctx, vg_fbo_t* fbo)
+void draw_datas_cx::render(ovg_ctx_t* ctx)
 {
 	if (!ctx || !fbo || data.empty())return;
-	ovg_render_frame(ctx, fbo, data.data(), data.size());
+	ovg_render_frame(ctx, data.data(), data.size());
 }

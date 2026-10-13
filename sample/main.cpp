@@ -204,7 +204,7 @@ int main()
 		{
 			running = false;
 		}
-		if (ovg_get_window_swapchain(ctx, &fbo, true))
+		if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
 		{
 			rtc.begin();
 			cb->clear(vg);
@@ -306,17 +306,19 @@ int main()
 			//if (ms > 0)
 			//	printf("draw build ms: %d\n", ms);
 			drawable.clear();
+			drawable.set(&fbo);
 			drawable.add(vg1);
 			drawable.add(vg);
 
 			rtc.begin();
-			drawable.render(ctx, &fbo);// 提交渲染 
+			drawable.render(ctx);// 提交渲染 
 			fms = rtc.end();
 			//if (ms > 0)
 			//	printf("submit draw ms: %d\n", ms);
 		}
+		else
 		{
-			SDL_Delay(32);
+			SDL_Delay(1);
 		}
 		int ams = rtc0.end();
 		//SDL_Delay(16);  /* ~60 FPS */
