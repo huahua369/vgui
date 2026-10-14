@@ -96,36 +96,19 @@ int main()
 	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
 	cout << "Hello ovg." << endl;
 	glm::ivec2 surfsize = { 1024,800 };
-	font_cache_cx* font_ctx = new_font_cache();
+	auto wg = new app_mgr();
+	font_cache_cx* font_ctx = wg->font_ctx;
 	font_familys_t* familys = new_font_family(font_ctx, (char*)u8"微软雅黑,Segoe UI Emoji,Consolas,Times New Roman,Tahoma,Calibri,Noto Serif Devanagari", 0);
 
 	auto cb = new_ctx_cb();
 	auto vg = cb->new_rvg(cb->ac);
 	auto vg1 = cb->new_rvg(cb->ac);
-	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
-#ifdef __ANDROID__
-	f |= SDL_INIT_HAPTIC;
-#endif
-	int kr = SDL_Init(f);
-	auto wg = new app_mgr();
+
 	if (!wg->init_gpu(true))return -1;
-	//auto vp = new gui_viewport();
 	auto form1 = wg->create("SDL3GPU render", surfsize.x, surfsize.y, 0, true);
-	//form1->viewport = vp;
-	//vp->set_viewport({ 0,0,surfsize.x, surfsize.y });
-	//auto div0 = new div_cx0({ 100,100,50,50 });
-	//vp->add_div(div0);
-	//if (!vg_sdl3_init(g, surfsize.x, surfsize.y, true)) {
-	//	SDL_Log("Init failed: %s", SDL_GetError());
-	//	return 1;
-	//}
-	auto dev = new_sdl3gpu_device(wg->device);
-	assert(dev);
-	auto format = SDL_GetGPUSwapchainTextureFormat(wg->device, form1->window);
-	ovg_ctx_t* ctx = new_ovgctx_sdl3(dev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_4);
-	assert(ctx);
+
 	draw_datas_cx drawable;
-	vg_fbo_t fbo = new_vgfbo_sdl3(ctx, surfsize.x, surfsize.y, form1->window);
+	vg_fbo_t* fbo = &form1->fbo;
 	bool running = true;
 	runtime_cx rtc = {};
 	runtime_cx rtc0 = {};
@@ -205,20 +188,20 @@ int main()
 			running = false;
 		}
 		do {
-			if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
+			if (ovg_get_window_swapchain(wg->vgctx, fbo, 1, true))
 			{
 				rtc.begin();
 				cb->clear(vg);
 				cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 
-				glm::vec2 sf = fbo.display_size;
-				if (fbo.upsize)
+				glm::vec2 sf = fbo->display_size;
+				if (fbo->upsize)
 				{
-					fbo.upsize = false;
-					vg->width = fbo.display_size.x;
-					vg->height = fbo.display_size.y;
-					vg1->width = fbo.display_size.x;
-					vg1->height = fbo.display_size.y;
+					fbo->upsize = false;
+					vg->width = fbo->display_size.x;
+					vg->height = fbo->display_size.y;
+					vg1->width = fbo->display_size.x;
+					vg1->height = fbo->display_size.y;
 					cb->clear(vg1);
 					rtc.begin();
 					cb->set_enable_tess2(vg1, true);
@@ -316,12 +299,12 @@ int main()
 				//if (ms > 0)
 				//	printf("draw build ms: %d\n", ms);
 				drawable.clear();
-				drawable.set(&fbo);
+				drawable.set(fbo);
 				drawable.add(vg1);
 				drawable.add(vg);
 
 				rtc.begin();
-				drawable.render(ctx);// 提交渲染 
+				drawable.render(wg->vgctx);// 提交渲染 
 				fms = rtc.end();
 				//if (ms > 0)
 				//	printf("submit draw ms: %d\n", ms);
@@ -342,21 +325,14 @@ int main()
 			showstr += "\nfps render: " + std::to_string(rfps);
 		}
 	}
+	wg->wait_gpu();
 
-	SDL_WaitForGPUIdle(wg->device);
-	/* Cleanup */
-
-	free_vgfbo_sdl3(&fbo);
-	free_ovgctx_sdl3(ctx);
-	free_sdl3gpu_device(dev);
 
 	delete_font_family(familys);
-	free_font_cache(font_ctx);
 	// 删除vg对象
 	cb->destroy_rvg(vg);
 	if (cb)free_ctx_cb(cb);
 	delete wg;
-	SDL_Quit();
 
 	return 0;
 }

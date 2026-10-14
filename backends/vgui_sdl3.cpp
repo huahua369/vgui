@@ -19,6 +19,7 @@ vgui sdl3实现
 #endif  
 #include <typeindex>
 #include <mutex>
+#include <array>
 #include <ovg_c.h>
 #include <vgui.h>
 #include "vgui_sdl3.h"
@@ -30,7 +31,6 @@ vgui sdl3实现
 #undef max
 #endif // min
 
-#include <ovg_renderer_sdl3.h>
 
 std::string get_clipboard()
 {
@@ -233,6 +233,7 @@ void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
 
 
 os_window::~os_window() {
+	free_vgfbo_sdl3(&fbo);
 	window = 0;
 }
 void os_window::set_capture()
@@ -319,6 +320,11 @@ void os_window::hide_cursor()
 
 app_mgr::app_mgr()
 {
+	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+#ifdef __ANDROID__
+	f |= SDL_INIT_HAPTIC;
+#endif
+	int kr = SDL_Init(f);
 	SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, false);
 	SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, false);
 	// Enable native IME.
@@ -333,11 +339,17 @@ app_mgr::app_mgr()
 #endif
 
 	UpdateMonitors();
+	font_ctx = new_font_cache();
 }
-app_mgr::~app_mgr() { shutdown(); }
+app_mgr::~app_mgr() {
+	shutdown();
+	free_font_cache(font_ctx); font_ctx = 0;
+	SDL_Quit();
+}
 
 bool app_mgr::init_gpu(bool is_vulkan)
 {
+	if (device)return false;
 	bool debugmode = false;
 #ifdef _DEBUG
 	debugmode = true;
@@ -397,7 +409,22 @@ bool app_mgr::init_gpu(bool is_vulkan)
 		SDL_Log("GPU device create failed: %s", SDL_GetError());
 		return false;
 	}
+	assert(!vgdev);
+	vgdev = new_sdl3gpu_device(device);
 	return true;
+}
+SDL_GPUSampleCount get_gpusamplecount(SDL_GPUDevice* device, SDL_GPUTextureFormat color_fmt = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPUTextureFormat depth_fmt = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT)
+{
+	SDL_GPUSampleCount sc = SDL_GPU_SAMPLECOUNT_1;
+	std::array<SDL_GPUSampleCount, 3> scs = { SDL_GPU_SAMPLECOUNT_8,SDL_GPU_SAMPLECOUNT_4,SDL_GPU_SAMPLECOUNT_2 };
+	for (SDL_GPUSampleCount c : scs) {
+		if (SDL_GPUTextureSupportsSampleCount(device, color_fmt, c) && SDL_GPUTextureSupportsSampleCount(device, depth_fmt, c))
+		{
+			sc = c;
+			break;
+		}
+	}
+	return sc;
 }
 
 void app_mgr::kncdown()
@@ -429,6 +456,7 @@ bool app_mgr::has_maximized(void* nwptr)
 }
 os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, bool vsync) {
 	SDL_Window* window = 0;
+	if (!device || !vgdev)return 0;
 	auto flags = pce::get_flags(iflags);
 	SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
 	window = SDL_CreateWindow(title, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
@@ -465,30 +493,35 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		if (chosen == SDL_GPU_PRESENTMODE_MAILBOX) {
 			SDL_SetGPUAllowedFramesInFlight(device, 2);
 		}
+		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
+		if (!vgctx)
+			vgctx = new_ovgctx_sdl3(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+		assert(vgctx);
+		p->fbo = new_vgfbo_sdl3(vgctx, w, h, window);
 	}
 	return p;
 }
 os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint32_t iflags, os_window* parent) {
-	SDL_Window* handle = 0;
+	SDL_Window* window = 0;
 	auto flags = pce::get_flags(iflags);
 	if (iflags & ef_tooltip || iflags & ef_popup)
 	{
 		SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
-		handle = SDL_CreatePopupWindow(parent ? parent->window : nullptr, x, y, w, h, flags | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_NOT_FOCUSABLE);
-		SDL_SetWindowAlwaysOnTop(handle, true);
+		window = SDL_CreatePopupWindow(parent ? parent->window : nullptr, x, y, w, h, flags | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_NOT_FOCUSABLE);
+		SDL_SetWindowAlwaysOnTop(window, true);
 	}
 	else {
 		SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
-		handle = SDL_CreateWindow(title, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+		window = SDL_CreateWindow(title, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
 	}
 	os_window* p = 0;
-	if (handle)
+	if (window)
 	{
 		auto win = std::make_unique<os_window>();
-		win->window = handle;
+		win->window = window;
 		p = win.get();
-		pce::set_property(handle, "osw.ptr", p);
-		win->id = SDL_GetWindowID(handle);
+		pce::set_property(window, "osw.ptr", p);
+		win->id = SDL_GetWindowID(window);
 		if (iflags & ef_popup)
 			win->type = WindowType::PopupMenu;
 		if (iflags & ef_tooltip)
@@ -498,8 +531,13 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 			parent->children.push_back(p);
 			win->parent = parent;
 		}
-		SDL_ClaimWindowForGPUDevice(device, handle);
+		SDL_ClaimWindowForGPUDevice(device, window);
 		windows_.push_back(std::move(win));
+		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
+		if (!vgctx)
+			vgctx = new_ovgctx_sdl3(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+		assert(vgctx);
+		p->fbo = new_vgfbo_sdl3(vgctx, w, h, window);
 	}
 	return p;
 }
@@ -522,7 +560,11 @@ void app_mgr::destroy(uint32_t id) {
 		}
 	}
 }
-
+void app_mgr::wait_gpu()
+{
+	if (device)
+		SDL_WaitForGPUIdle(device);
+}
 void app_mgr::shutdown() {
 	if (device)
 		SDL_WaitForGPUIdle(device);
@@ -532,6 +574,8 @@ void app_mgr::shutdown() {
 			SDL_DestroyWindow(w->window);
 	}
 	windows_.clear();
+	free_ovgctx_sdl3(vgctx); vgctx = 0;
+	free_sdl3gpu_device(vgdev); vgdev = 0;
 	if (device) {
 		SDL_DestroyGPUDevice(device);
 		device = nullptr;

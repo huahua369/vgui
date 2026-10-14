@@ -10,6 +10,7 @@ vgui sdl3
 #include <ovg_c.h>
 #include <vgui.h>
 
+#include <ovg_renderer_sdl3.h>
 
 namespace hz {
 	// 获取监视器缩放比例,glm::ivec2*
@@ -21,6 +22,8 @@ namespace hz {
 	class drop_regs;
 }
 
+struct ovg_device_t;
+struct ovg_ctx_t;
 
 enum form_flags_e
 {
@@ -77,6 +80,7 @@ public:
 struct os_window {
 	SDL_Window* window = nullptr;
 	os_window* parent = 0;      // 0 = 顶级窗口
+	vg_fbo_t fbo = {};
 	gui_viewport* viewport = nullptr;
 	uint32_t id = 0;
 	WindowType type = WindowType::Regular;
@@ -126,6 +130,11 @@ public:
 	SDL_Cursor* system_cursor[SDL_SYSTEM_CURSOR_COUNT] = {};
 	std::vector<PlatformMonitor> monitors;
 	os_window* main_window = 0;
+	ovg_device_t* vgdev = 0;		// vg渲染设备
+	font_cache_cx* font_ctx = 0;
+	ovg_ctx_t* vgctx = 0;
+
+	SDL_GPUSampleCount samplecount = SDL_GPU_SAMPLECOUNT_1; // 默认samplecount
 	gui_io_mk_state _mouse_key = {};
 	gui_viewport* active_viewport_ = 0;
 	docking_mgr docking_ = {};
@@ -146,6 +155,7 @@ public:
 	os_window* find(uint32_t id);
 	void destroy(uint32_t id);
 
+	void wait_gpu();
 	void shutdown();
 
 	size_t window_count() const;
