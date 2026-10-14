@@ -204,133 +204,131 @@ int main()
 		{
 			running = false;
 		}
-		if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
-		{
-			rtc.begin();
-			cb->clear(vg);
-			cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
-
-			glm::vec2 sf = fbo.display_size;
-			if (fbo.upsize)
+		do {
+			if (ovg_get_window_swapchain(ctx, &fbo, 1, true))
 			{
-				fbo.upsize = false;
-				vg->width = fbo.display_size.x;
-				vg->height = fbo.display_size.y;
-				vg1->width = fbo.display_size.x;
-				vg1->height = fbo.display_size.y;
-				cb->clear(vg1);
 				rtc.begin();
-				cb->set_enable_tess2(vg1, true);
-				draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
-				auto ms = rtc.end();
-				printf("draw_grid_fill ms: %d enable_tess2\n", ms);
-				rtc.begin();
-				cb->set_enable_tess2(vg1, false);
-				draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
-				ms = rtc.end();
-				printf("draw_grid_fill ms: %d\n", ms);
-			}
-			cb->reset_clip(vg, 1);
-			//draw_test3d(&fbo, cb, vg);
-			text_style_t style4 = {};
-			style4.family = familys;
-			style4.fontsize = 18;
-			style4.color = 0xff0080f0;
-			style4.color_stroke = 0xFF0000f0;
-			style4.min_subpixel = 0;
-			//style4.stroke = 1;
-			//style4.color_shadow = 0xa6000000;
-			style4.shadow_pos = { 2.0f, 2.0f };
+				cb->clear(vg);
+				cb->set_fill_rule(vg, VG_FILL_RULE_NON_ZERO);
 
-			text_st_t text4 = {};
-			text4.text = (char*)u8"🍕➗☂️-abgyh彩色渐变字体";
-			//text4.text = (char*)buff.c_str();
-			text4.text_len = -1;
+				glm::vec2 sf = fbo.display_size;
+				if (fbo.upsize)
+				{
+					fbo.upsize = false;
+					vg->width = fbo.display_size.x;
+					vg->height = fbo.display_size.y;
+					vg1->width = fbo.display_size.x;
+					vg1->height = fbo.display_size.y;
+					cb->clear(vg1);
+					rtc.begin();
+					cb->set_enable_tess2(vg1, true);
+					draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+					auto ms = rtc.end();
+					printf("draw_grid_fill ms: %d enable_tess2\n", ms);
+					rtc.begin();
+					cb->set_enable_tess2(vg1, false);
+					draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+					ms = rtc.end();
+					printf("draw_grid_fill ms: %d\n", ms);
+				}
+				cb->reset_clip(vg, 1);
+				//draw_test3d(&fbo, cb, vg);
+				text_style_t style4 = {};
+				style4.family = familys;
+				style4.fontsize = 18;
+				style4.color = 0xff0080f0;
+				style4.color_stroke = 0xFF0000f0;
+				style4.min_subpixel = 0;
+				//style4.stroke = 1;
+				//style4.color_shadow = 0xa6000000;
+				style4.shadow_pos = { 2.0f, 2.0f };
 
-			text4.pos = { 10.0f, 500.0f };
-			cb->move_to(vg, 0, text4.pos.y);
-			cb->rel_line_to(vg, 1800, 0);
-			cb->set_source_color(vg, 0xff00ff00);
-			cb->set_line_width(vg, 2);
-			cb->stroke(vg);
-			cb->add_text(vg, &text4, &style4, nullptr);
+				text_st_t text4 = {};
+				text4.text = (char*)u8"🍕➗☂️-abgyh彩色渐变字体";
+				//text4.text = (char*)buff.c_str();
+				text4.text_len = -1;
 
-			style4.min_subpixel = 0;
-			text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起";
-			//style4.stroke = -1;
-			text4.pos = { 10.0f, 120 + 200.0f };
+				text4.pos = { 10.0f, 500.0f };
+				cb->move_to(vg, 0, text4.pos.y);
+				cb->rel_line_to(vg, 1800, 0);
+				cb->set_source_color(vg, 0xff00ff00);
+				cb->set_line_width(vg, 2);
+				cb->stroke(vg);
+				cb->add_text(vg, &text4, &style4, nullptr);
 
-			cb->move_to(vg, 0, text4.pos.y + 0.5);
-			cb->rel_line_to(vg, 1800, 0);
-			cb->set_source_color(vg, 0xff00ff00);
-			cb->set_line_width(vg, 1);
-			cb->stroke(vg);
-			cb->rectangle(vg, 0, text4.pos.y - 20, 200, 200);
-			cb->set_source_color(vg, 0xff000000);
-			//cb->set_source_color(vg, -1);
-			cb->fill(vg);
-			cb->add_text(vg, &text4, &style4, nullptr);
-			text4.text = showstr.c_str();// (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
-			text4.pos.y += 260;
-			cb->add_text(vg, &text4, &style4, nullptr);
-			ovg_image_r rimg = {};
-			rimg.img = img;
-			rimg.dst = { 108,508,img->width * 2.8,img->height * 1.5 };
-			rimg.rc = { 0,0,img->width,img->height };
-			rimg.sliced = { 4,4,4,4 };
-			rimg.color = -1;
-			cb->add_image(vg, &rimg);
-			if (img->valid)
-			{
-				vg_image_desc_t desc = {};
-				desc.width = img->width;
-				desc.height = img->height;
-				desc.format = VG_FORMAT_RGBA8;
-				desc.stride = desc.width * sizeof(int);
-				desc.pixels = img->data;
-				desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
-				desc.is_copy = true;
-				img->valid = false;
-				cb->image_update(vg, img, &desc);
-			}
-			draw_color_btn(cb, vg, &btn, { 400,380 }, { 200,30 });
-			cb->translate(vg, 10, 10);
-			for (int i = 0; i < 6; i++) {
-				auto it = &nodes[i];
-				btn1.back_color = colors[i];
-				gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
-			}
-			cb->translate(vg, 0, 100);
-			btn1.cubic_gradient = false;
-			for (int i = 0; i < 6; i++) {
-				auto it = &nodes[i];
-				btn1.back_color = colors[i];
-				if (i < 5)
+				style4.min_subpixel = 0;
+				text4.text = (char*)u8"-+abg➗🍕☂️灰度+彩色渐变字体\n右起";
+				//style4.stroke = -1;
+				text4.pos = { 10.0f, 120 + 200.0f };
+
+				cb->move_to(vg, 0, text4.pos.y + 0.5);
+				cb->rel_line_to(vg, 1800, 0);
+				cb->set_source_color(vg, 0xff00ff00);
+				cb->set_line_width(vg, 1);
+				cb->stroke(vg);
+				cb->rectangle(vg, 0, text4.pos.y - 20, 200, 200);
+				cb->set_source_color(vg, 0xff000000);
+				//cb->set_source_color(vg, -1);
+				cb->fill(vg);
+				cb->add_text(vg, &text4, &style4, nullptr);
+				text4.text = showstr.c_str();// (char*)u8"./+*@#!@#$%^&*()_+[];'/.,";
+				text4.pos.y += 260;
+				cb->add_text(vg, &text4, &style4, nullptr);
+				ovg_image_r rimg = {};
+				rimg.img = img;
+				rimg.dst = { 108,508,img->width * 2.8,img->height * 1.5 };
+				rimg.rc = { 0,0,img->width,img->height };
+				rimg.sliced = { 4,4,4,4 };
+				rimg.color = -1;
+				cb->add_image(vg, &rimg);
+				if (img->valid)
+				{
+					vg_image_desc_t desc = {};
+					desc.width = img->width;
+					desc.height = img->height;
+					desc.format = VG_FORMAT_RGBA8;
+					desc.stride = desc.width * sizeof(int);
+					desc.pixels = img->data;
+					desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
+					desc.is_copy = true;
+					img->valid = false;
+					cb->image_update(vg, img, &desc);
+				}
+				draw_color_btn(cb, vg, &btn, { 400,380 }, { 200,30 });
+				cb->translate(vg, 10, 10);
+				for (int i = 0; i < 6; i++) {
+					auto it = &nodes[i];
+					btn1.back_color = colors[i];
 					gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
-				else
-					switch_draw(cb, vg, sw, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
-			}
-			//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
-			vgms = rtc.end();
-			//if (ms > 0)
-			//	printf("draw build ms: %d\n", ms);
-			drawable.clear();
-			drawable.set(&fbo);
-			drawable.add(vg1);
-			drawable.add(vg);
+				}
+				cb->translate(vg, 0, 100);
+				btn1.cubic_gradient = false;
+				for (int i = 0; i < 6; i++) {
+					auto it = &nodes[i];
+					btn1.back_color = colors[i];
+					if (i < 5)
+						gradient_btn_draw(cb, vg, &btn1, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
+					else
+						switch_draw(cb, vg, sw, { it->frame.x,it->frame.y }, { it->frame.z,it->frame.w });
+				}
+				//timeline_draw_system(tl, tk, tkcount, cb, vg, familys);
+				vgms = rtc.end();
+				//if (ms > 0)
+				//	printf("draw build ms: %d\n", ms);
+				drawable.clear();
+				drawable.set(&fbo);
+				drawable.add(vg1);
+				drawable.add(vg);
 
-			rtc.begin();
-			drawable.render(ctx);// 提交渲染 
-			fms = rtc.end();
-			//if (ms > 0)
-			//	printf("submit draw ms: %d\n", ms);
-		}
-		else
-		{
-			SDL_Delay(1);
-		}
+				rtc.begin();
+				drawable.render(ctx);// 提交渲染 
+				fms = rtc.end();
+				//if (ms > 0)
+				//	printf("submit draw ms: %d\n", ms);
+			}
+		} while (0);
 		int ams = rtc0.end();
-		//SDL_Delay(16);  /* ~60 FPS */
+		SDL_Delay(32);
 		//fps.endFrame();
 		if (js > 0.5) {
 			js = 0.0;
