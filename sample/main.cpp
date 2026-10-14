@@ -219,7 +219,16 @@ int main()
 				vg1->width = fbo.display_size.x;
 				vg1->height = fbo.display_size.y;
 				cb->clear(vg1);
+				rtc.begin();
+				cb->set_enable_tess2(vg1, true);
 				draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+				auto ms = rtc.end();
+				printf("draw_grid_fill ms: %d enable_tess2\n", ms);
+				rtc.begin();
+				cb->set_enable_tess2(vg1, false);
+				draw_grid_fill(vg1, sf, glm::ivec2(-1, 0xffdfdfdf), 20);
+				ms = rtc.end();
+				printf("draw_grid_fill ms: %d\n", ms);
 			}
 			cb->reset_clip(vg, 1);
 			//draw_test3d(&fbo, cb, vg);
