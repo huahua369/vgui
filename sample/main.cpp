@@ -93,8 +93,7 @@ rvg_t* test_vgrw(ovg_ctx_cb* ovg)
 
 int main()
 {
-	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)");
-	cout << "Hello ovg." << endl;
+	//LoadLibraryA(R"(E:\Program Files\RenderDoc_1.37_64\renderdoc.dll)"); 
 	glm::ivec2 surfsize = { 1024,800 };
 	auto wg = new app_mgr();
 	font_cache_cx* font_ctx = wg->font_ctx;
@@ -178,6 +177,7 @@ int main()
 	sw->dcol = sw->color.x;
 	sw->cpos = 1.0;
 	double js = 0.0;
+	bool is_draw = true;
 	while (running) {
 		//fps.beginFrame();
 		auto delta = fps.tick();
@@ -188,6 +188,7 @@ int main()
 			running = false;
 		}
 		do {
+			if (!is_draw)break;
 			if (ovg_get_window_swapchain(wg->vgctx, fbo, 1, true))
 			{
 				rtc.begin();
@@ -331,6 +332,7 @@ int main()
 	delete_font_family(familys);
 	// 删除vg对象
 	cb->destroy_rvg(vg);
+	cb->destroy_rvg(vg1);
 	if (cb)free_ctx_cb(cb);
 	delete wg;
 
