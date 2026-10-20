@@ -6,3562 +6,26 @@ gui实现
 
 #include "pch.h"
 #include <SDL3/SDL.h>
+#include "vgui_internal.h"
 #include "vgui.h"
 
 #include <vgui_sdl3.h>
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <cstring>
+#include <unordered_set>
+
 #include <mapView.h>
 
 #include <ovg_c.h>
+#include <harfbuzz/hb.h>
 
 #include <clipper2/clipper.h> 
 using namespace Clipper2Lib;
 //--------------------------------------------------------------------------------------------------------------------------------------------------
-
-class widget_t :public event_obj_t
-{
-public:
-	widget_type wtype = widget_type::WT_WIDGET;
-	std::string _name;
-	std::string text;
-	widget_t* parent = 0;
-	text_style_t style = {};		// 文本样式
-	int rounding = 0;
-	int thickness = 0;
-	int dindex = 0;
-public:
-	widget_t();
-	widget_t(widget_type t);
-	~widget_t();
-	virtual widget_t* hit_test(const glm::ivec2& mpos);
-	virtual bool dispatch_event(dev_event_t* e);
-	virtual	void set_pos(const glm::ivec2& ps);
-	virtual	void set_size(const glm::vec2& ss);
-	virtual void set_family(font_familys_t* family, int fontsize);
-	virtual	glm::ivec2 get_size();
-	virtual	glm::ivec2 get_pos();
-	virtual	glm::ivec2 get_scroll_pos();
-	virtual bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	virtual bool update(float delta);
-private:
-
-};
-
-class div_cx0 :public widget_t
-{
-public:
-	std::vector<widget_t*> _v;
-public:
-	div_cx0();
-	div_cx0(const glm::ivec4& rc);
-	~div_cx0();
-	void clear();
-	void add(widget_t* c);
-	widget_t* hit_test(const glm::ivec2& mpos);
-	bool dispatch_event(dev_event_t* e) override;
-private:
-
-};
-
-class ui_builder_cx
-{
-public:
-	ui_builder_cx();
-	~ui_builder_cx();
-
-private:
-
-};
-
-#ifndef NOT_OLDGUI
-
-class rvg_cx;
-
-struct drag_v6
-{
-	glm::ivec2 pos;
-	glm::ivec2 size;
-	glm::ivec2 tp, cp0, cp1;
-	int ck = 0;
-	int z = 0;
-};
-class scroll_bar;
-struct scroll2_t
-{
-	scroll_bar* h = 0,		// 水平
-		* v = 0;			// 垂直
-};
-class div_cx;
-struct div_ev
-{
-	div_cx* p;
-	int down;		// 是否按下
-	int clicks;		// 单击次数
-	glm::ivec2 mpos;// 鼠标坐标
-	bool drag;		// 是否拖动
-};
-class div_cx :public widget_t
-{
-public:
-	glm::dvec4 _hover_eq = { 0,0.5,0,0 };	// 时间
-	glm::ivec4 border = {};	// 颜色，线粗，圆角，背景色 
-	glm::ivec2 _move_pos = {};
-	glm::ivec2 fpos = {};	// 窗口坐标
-	int evupdate = 0;
-	int ckinc = 0;
-	int ckup = 0;
-	flex_data flex = {};
-	flex_data flex_child = {};
-	scroll_bar* horizontal = 0, * vertical = 0;//水平滚动条 ，垂直滚动条 
-	std::vector<widget_t*> widgets, event_wts, event_wts1;
-	std::vector<widget_t*> tadd, tremove;
-	std::vector<widget_t*> sort_draw;	// 排序渲染
-	std::vector<glm::ivec2> lines;	// 控件分行
-	std::vector<drag_v6> drags;	// 拖动坐标
-	std::vector<drag_v6*> dragsp;	// 拖动区域
-	std::function<void(div_ev* e)> on_click;
-	std::function<void(div_ev* e)> on_click_outer;//模态窗口点中外围时
-	std::string editingstr;						// 编辑状态文本
-	uint32_t editing_color = 0xff121212;		// 编辑状态文本颜色
-	int line_height = 0;
-	glm::ivec2 editpos = {};
-	std::vector<node_dt> tempfv;
-	flex_run* lctx = 0;
-	int order = 0;
-	bool update_drag = false;		// 是否更新拖动坐标
-	bool draggable = false;
-	bool docking = false;
-public:
-	div_cx();
-	~div_cx();
-	void add_widget(widget_t* p);
-	void remove_widget(widget_t* p);
-	// 设置本面板滚动条，pos_width每次滚动量,垂直vnpos,水平hnpos为滚动条容器内偏移
-	void set_scroll(int width, int rcw, const glm::ivec2& pos_width, const glm::ivec2& vnpos = {}, const glm::ivec2& hnpos = {});
-	void set_scroll_hide(bool is);// 是否隐藏滚动条
-	void set_scroll_pos(const glm::ivec2& ps, bool v);
-	void set_scroll_size(const glm::ivec2& ps, bool v);
-	void set_view(const glm::ivec2& view_size, const glm::ivec2& content_size);
-	void set_scroll_visible(const glm::ivec2& hv);
-	glm::ivec2 get_scroll_range();
-	// 设置位置，t=0设置，1加减
-	void set_scroll_pts(const glm::ivec2& pts, int t);
-	// 创建滚动条
-	scroll_bar* new_scroll_bar(const glm::ivec2& size, int vs, int cs, int rcw, bool v, const glm::ivec2& npos = {});
-	scroll2_t new_scroll2(const glm::ivec2& viewsize, int width, int rcw, const glm::ivec2& pos_width, const glm::ivec2& vnpos, const glm::ivec2& hnpos);
-public:
-	//void on_event(uint32_t type, et_un_t* ep);
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	// 返回是否命中ui
-	bool hittest(const glm::ivec2& pos);
-	bool press_test();
-	size_t add_dragpos(const glm::ivec2& pos, const glm::ivec2& size = {});
-	void remove_dragpos(size_t idx);
-	glm::ivec3 get_dragpos(size_t idx);
-	drag_v6* get_dragv6(size_t idx);
-
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-	void draw_last(rvg_cx* rv);
-	void set_editing(const std::string& str, const glm::ivec2& cpos, int lineheight);
-	void clayout();
-private:
-	void sortdg();
-	void bind_scroll_bar(scroll_bar* p, bool v);	// 绑定到面板	
-	void on_motion(const glm::vec2& pos);
-	// 	idx=1左，3右，2中
-	void on_button(int idx, int down, const glm::vec2& pos, int clicks, int r);
-	void on_wheel(double x, double y);
-};
-
-#if 1
-
-
-// 控件相关
-
-
-// todo图片按钮
-struct image_btn :public widget_t {
-	std::string str;
-	union {
-		void* vkimage;	// vk图像
-		image_ptr_t* img;
-		void* surf;			// vkvg表面
-	}imgptr = {};
-	ovg_image_r state_img[5] = {};
-	image_ptr_t st = {};
-	std::vector<glm::ivec4> data;
-	int show_idx = 0;	// 参考BTN_STATE
-	int img_type = 0;	//  0 image_ptr_t, 1 VkvgSurface, 2 vkimage
-	int multi = 0;		// 多状态按钮，0=单状态，1=多状态
-public:
-	image_btn();
-	~image_btn();
-	void set_size(const glm::vec2& ss);
-	// 设置按钮状态分区，rc空则平分
-	void set_state(BTN_STATE m, const glm::ivec2& rc);
-	// 设置单个状态区域 
-	void set_state1(BTN_STATE m, const glm::ivec4& rc);
-
-	void set_image(image_ptr_t* img);
-	void set_vkimage(void* vkimage, int width, int height, int type);
-	void set_surface(void* surf, int width, int height);
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 纯色按钮
-struct color_btn :public widget_t
-{
-	std::string str;
-	color_style cs = {};
-public:
-	color_btn();
-	~color_btn();
-	btn_cols_t* set_btn_color_bgr(size_t idx);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 渐变按钮
-struct gradient_btn :public widget_t
-{
-	std::string str;
-	gradient_style gs = {};
-public:
-	gradient_btn();
-	~gradient_btn();
-	const char* c_str();
-	void init(glm::ivec4 rect, const std::string& text, uint32_t back_color = 0, uint32_t text_color = -1);
-
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-std::string save_color_style(const color_style* data, int indent);
-
-struct radio_tl;
-struct group_radio_t
-{
-	radio_tl* active = 0;	// 激活的radio
-	int ct = 0;				// 引用计数
-};
-// 单选
-struct radio_tl :public widget_t
-{
-	radio_style_t _style = {};	// 风格id
-	radio_info_t v = {};
-private:
-	group_radio_t* gr = 0;		// 组 
-public:
-	radio_tl();
-	~radio_tl();
-public:
-	void set_group(group_radio_t* p);
-	void bind_ptr(bool* p);
-	void set_value(const std::string& str, bool v);
-	void set_value(bool v);
-	void set_value();
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 复选
-struct checkbox_tl :public widget_t
-{
-	check_style_t _style = {};	// 风格id
-	checkbox_info_t v = {};
-public:
-	checkbox_tl();
-	~checkbox_tl();
-	void bind_ptr(bool* p);
-	void set_value(const std::string& str, bool v);
-	void set_value(bool v);
-	void set_value();
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-
-// 开关
-struct switch_tl :public widget_t
-{
-	glm::ivec3 color = { 0xffff9e40, 0xff4c4c4c,-1 }; // 开/关/圆点颜色 { 0xff66ce13, 0xff4949ff };
-	glm::ivec2 text_color = { 0xffff9e40, 0xff4c4c4c }; // 文本颜色;
-	uint32_t dcol = 0;	// 渲染的颜色 
-	float cpos = 0;		// 动画坐标
-	float cv = 0.7;		// 圆点大小 
-	float height = 20;
-	float wf = 2.1;		// 宽比例 
-	checkbox_info_t v = {};
-	bool inline_prompt = false;
-public:
-	switch_tl();
-	~switch_tl();
-	void bind_ptr(bool* p);
-	void set_value(bool b);
-	void set_value();
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 进度条
-struct progress_tl :public widget_t
-{
-	std::string format = "%";				// 格式
-	glm::vec2 vr = { 0, 100 };		// 范围
-	glm::ivec2 color = { 0xffff9e40, 0x806c6c6c };//前景色，背景色
-
-	double value = 0.0;				// 当前进度
-	int width = 0;					// 宽度
-	int height = 0;					// 高度
-	bool right_inside = false;			// 右对齐
-	bool text_inside = true;
-public:
-	progress_tl();
-	~progress_tl();
-	void set_value(double b);
-	void set_vr(const glm::ivec2& r);
-	double get_v();
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 滑块
-struct slider_tl :public widget_t
-{
-	glm::vec2 vr = { 0, 100 };		// 范围
-	glm::ivec2 color = { 0xffff9e40, 0x806c6c6c };//前景色，背景色 
-	glm::ivec2 sl = { 6,0xff363636 };	// 滑块半径颜色
-	int wide = 0;
-	double value = 0.0;				// 当前进度
-	double* pv = 0;
-	int vertical = 0;				// 垂直模式1
-	bool reverse_color = 0;
-public:
-	slider_tl();
-	~slider_tl();
-	void bind_ptr(double* p);
-	void set_value(double b);
-	void set_vr(const glm::ivec2& r);
-	// 设置圆大小
-	void set_cw(int cw);
-	double get_v();
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-// 颜色控件
-struct colorpick_tl :public widget_t
-{
-	glm::ivec2 color = { -1, -1 };	//当前颜色，旧颜色
-	glm::vec4 hsv = {}, oldhsv = {};// 0-1保存hsv
-	uint32_t bc_color = 0xff232323;	//边框 
-	int width = 0;					// 宽度
-	int height = 0;					// 单行高度 
-	int step = 4;					// 行间隔 
-	int colorw = 100;				// 颜色宽
-	int cpx = 0;					// 颜色x坐标
-	int dx = -1;
-	std::string hsvstr, colorstr;
-	std::function<void(colorpick_tl* p, uint32_t col)> on_change_cb;
-	bool alpha = true;				// 显示透明通道
-public:
-	colorpick_tl();
-	~colorpick_tl();
-	void init(uint32_t c, int w, int h, bool alpha);
-	uint32_t get_color();	// 获取颜色
-	void set_color2hsv(uint32_t c);
-	void set_hsv(const glm::vec3& c);
-	void set_hsv(const glm::vec4& c);
-	void set_posv(int poss_x);
-
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-};
-class colorpick_cx :public div_cx
-{
-public:
-	glm::ivec2 color = { -1, -1 };	//当前颜色，旧颜色
-	glm::vec4 hsv = {}, oldhsv = {};// 0-1保存hsv
-	uint32_t bc_color = 0xff232323;	//边框 
-	int width = 0;					// 宽度
-	int height = 0;					// 单行高度 
-	int step = 4;					// 行间隔 
-	int colorw = 100;				// 颜色宽
-	int cpx = 0;					// 颜色x坐标
-	int dx = -1;
-	std::string hsvstr, colorstr;
-	std::function<void(colorpick_cx* p, uint32_t col)> on_change_cb;
-public:
-	colorpick_cx();
-	~colorpick_cx();
-	void init(uint32_t c, int w, int h);
-
-	uint32_t get_color();	// 获取颜色
-	void set_color2hsv(uint32_t c);
-	void set_hsv(const glm::vec3& c);
-	void set_hsv(const glm::vec4& c);
-	void set_posv(const glm::ivec2& poss);
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-private:
-
-};
-
-// 滚动条
-struct scroll_bar :public widget_t
-{
-	int64_t _view_size = 0;			// 视图大小
-	int64_t _content_size = 0;		// 内容大小 
-	int _rc_width = 0;			// 滑块宽度
-	int _dir = 0;				// 方向，0=水平，1=垂直
-	glm::ivec3 thumb_size_m = {};// 滚动范围
-	glm::vec2 tps = {};
-	glm::ivec4 _color = { 0xff363636,0xffcccccc,0xffffffff,0xffC8641E };		// 背景色，滑块颜色，滑块高亮颜色，激活颜色
-	uint32_t _tcc = 0;			// 滑块当前颜色
-	float _pos_width = 1;		// 滚动宽度
-	int t_offset = 0;			// 偏移量
-	float scale_w = 1.0;		// 滚动比例
-	float scale_s = 0.6;		// 显示比例
-	glm::vec2 scale_s0 = { 0.8,0.8 };	// 显示比例，用于鼠标进入变形
-	bool hover = 0;				// 保存鼠标进入状态
-	bool hover_sc = 0;
-	bool hideble = 0;			// 隐藏滚动条
-	bool limit = 1;				// 是否限制在滚动范围
-	bool valid = 1;				// 是否重新渲染
-	bool d_drag = 0;
-private:
-	int64_t _offset = 0;			// 偏移量
-	int64_t c_offset = 0;			// 内容偏移量
-public:
-	scroll_bar();
-	~scroll_bar();
-	void set_viewsize(int64_t vs, int64_t cs, int rcw);
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	bool update(float delta);
-
-	void draw(rvg_cx* rv);
-	int64_t get_offset();			// 获取滚动偏移
-	int64_t get_offset_ns();			// 获取滚动偏移
-	int get_range();			// 获取滚动偏移最大范围
-	void set_offset(int pts);			// 设置滚动偏移
-	void set_offset_inc(int inc);			// 增加滚动偏移
-	void set_posv(const glm::ivec2& poss);
-};
-
-struct text_control;
-// 输入框：单行/多行
-class edit_cx :public widget_t
-{
-public:
-	std::function<void(edit_cx* ptr)> change_cb;	// 文本改变时执行回调函数 
-	std::function<void(edit_cx* ptr, std::string& str)> input_cb;	// 文本输入时执行回调函数，可修改此字符串返回
-	text_control* ctx = 0;			// stb_textedit	
-	std::string stext;				// 显示的文本，密码显示用
-	std::string editingstr;			// 输入中的文本，输入法编辑时用
-	std::string placeholder;		// 占位符
-	glm::ivec4 _color = { 0xff282828, 0xffffffff, 0xf0ff7a4d, 0xff2c2c2c };				// 背景色、文本颜色、选择背景色、输入法编辑文本颜色
-	glm::ivec3 _cursor = { 1,-1,500 };				// 闪烁光标。宽度、颜色、毫秒
-	glm::ivec2 _cmpos = {};				// 当前鼠标坐标
-	std::wstring wstr;
-	glm::ivec3 _cursor_px = {};		// 光标坐标xy，当前行z
-	char pwdch = {};				// 密码显示字符
-	int _istate = 0;
-	int fix_line_height = 0;		// 固定行高，0则自动计算
-	int _baseline = 0;
-	bool mdown = false;
-	bool _read_only = false;
-	bool is_input = false;
-	bool show_input_cursor = true;
-	bool roundselect = true;	// 圆角选区
-	bool up_text = true;	// 更新文本了
-	bool first_height = false;
-public:
-	edit_cx();
-	~edit_cx();
-	void set_single(bool is);
-	// 设置为密码框比如'*'
-	void set_pwd(char ch);
-	// 设置utf8文本
-	void set_text(const void* str, int len);
-	void add_text(const void* str, int len);
-	// 设置文本框大小
-	void set_size(const glm::ivec2& ss);
-	// 设置文本框坐标
-	void set_pos(const glm::ivec2& pos);
-	void set_align_pos(const glm::vec2& pos);
-	void set_align(const glm::vec2& a);
-	// 闪烁光标。宽度、颜色、毫秒
-	void set_cursor(const glm::ivec3& c);
-	// 背景色、文本颜色、选择背景色、输入法编辑文本颜色
-	void set_color(const glm::ivec4& c);
-	void set_family(font_familys_t* family, int fontsize);
-	// 设置是否显示输入光标
-	void set_show_input_cursor(bool ab);
-	// 设置自动换行
-	void set_autobr(bool ab);
-	void set_round_path(float v);
-	// 删除位置，字符数量
-	void remove_char(size_t idx, int count);
-	// 删除选择的文本
-	bool remove_bounds();
-	// 发送事件到本edit
-	//void on_event_e(uint32_t type, et_un_t* e);
-	bool on_mevent(int type, const glm::ivec2& mps, void* e);
-	void on_keyboard(keyboard_et* ep);
-	// 更新渲染啥的
-	bool update(float delta);
-	void draw(rvg_cx* rv);
-	glm::ivec4 input_pos();
-	int get_cursor_idx();
-	std::string get_select_str();
-	std::wstring get_select_wstr();
-	glm::ivec2 get_bounds();
-	std::vector<glm::ivec4> get_bounds_px();
-	//glm::ivec2 get_pixel_size(const char* str, int len);
-	glm::ivec3 get_line_length(int idx);
-	void up_caret();
-	void up_cursor(bool is);
-};
-
-#endif // 1
-
-#endif // !NOT_OLDGUI
-
-//--------------------------------------------------------------------------------------------------------------------------------------------------
-// end h
-
-// Convert rgb floats ([0-1],[0-1],[0-1]) to hsv floats ([0-1],[0-1],[0-1]), from Foley & van Dam p592
-// Optimized http://lolengine.net/blog/2013/01/13/fast-rgb-to-hsv
-glm::vec4 RGBtoHSV(uint32_t col)
-{
-	glm::u8vec4* c = (glm::u8vec4*)&col;
-	double r = c->x / 255.0, g = c->y / 255.0, b = c->z / 255.0, a = c->w / 255.0;
-	double K = 0.;
-	if (g < b)
-	{
-		std::swap(g, b);
-		K = -1.;
-	}
-	if (r < g)
-	{
-		std::swap(r, g);
-		K = -2. / 6. - K;
-	}
-	const float chroma = r - (g < b ? g : b);
-	glm::vec4 hsv = { fabs(K + (g - b) / (6.0 * chroma + 1e-20f)), chroma / (r + 1e-20f), r ,a };
-	return hsv;
-}
-// Convert hsv floats ([0-1],[0-1],[0-1]) to rgb floats ([0-1],[0-1],[0-1]), from Foley & van Dam p593
-// also http://en.wikipedia.org/wiki/HSL_and_HSV
-glm::vec4 HSVtoRGB(const glm::vec4& hsv)
-{
-	glm::vec4 c = {};
-	float h = hsv.x, s = hsv.y, v = hsv.z;
-	c.w = hsv.w;
-	if (s == 0.0f)
-	{
-		c.x = c.y = c.z = v;	// gray
-		return c;
-	}
-	h = fmod(h, 1.0f) / (60.0f / 360.0f);
-	int   i = (int)h;
-	float f = h - (float)i;
-	float p = v * (1.0f - s);
-	float q = v * (1.0f - s * f);
-	float t = v * (1.0f - s * (1.0f - f));
-	switch (i)
-	{
-	case 0: c.x = v; c.y = t; c.z = p; break;
-	case 1: c.x = q; c.y = v; c.z = p; break;
-	case 2: c.x = p; c.y = v; c.z = t; break;
-	case 3: c.x = p; c.y = q; c.z = v; break;
-	case 4: c.x = t; c.y = p; c.z = v; break;
-	case 5: default: c.x = v; c.y = p; c.z = q; break;
-	}
-	return c;
-}
-
-//--------------------------------------------------------------------------------------------------------------------------------------------------
-//--------------------------------------------------------------------------------------------------------------------------------------------------
-
-
-
-
-
-event_obj_t::event_obj_t()
-{}
-
-event_obj_t::~event_obj_t()
-{
-	if (calls)delete[] calls;
-	calls = 0;
-}
-void event_obj_t::add_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb)
-{
-	auto cbs = get_cbs(0, (int)e);
-	if (cb)
-	{
-		cbs.push_back([=]() { cb(cde); });
-	}
-	cb_count.x = cbs.size();
-}
-void event_obj_t::add_on_event(event_type_e e, std::function<void(event_type_e type, const glm::ivec2& mps)> cb)
-{
-	auto cbs = get_cbs(1, (int)e);
-	if (cb)
-	{
-		if (e == event_type_e::on_drag || e == event_type_e::on_dragstart || e == event_type_e::on_dragend)
-			has_drag = true;
-		cbs.push_back([=]() { cb(etype, mouse_pos); });
-	}
-	cb_count.y = cbs.size();
-}
-
-void event_obj_t::add_on_text(std::function<void(text_input_et*)> cb)
-{
-	if (cb)
-		add_event_dev(dev_event_type_e::text_input_e, [=](dev_event_t* dv) {cb(dv->v.t); });
-}
-
-void event_obj_t::add_on_editing(std::function<void(text_editing_et*)> cb)
-{
-	if (cb)
-		add_event_dev(dev_event_type_e::text_editing_e, [=](dev_event_t* dv) {cb(dv->v.e); });
-}
-
-void event_obj_t::remove(dev_event_type_e e)
-{
-	if (calls)
-		calls[0].erase((int)e);
-	cb_count.x = calls[0].size();
-}
-
-void event_obj_t::remove(event_type_e e)
-{
-	if (calls)
-		calls[1].erase((int)e);
-	cb_count.y = calls[1].size();
-}
-
-void event_obj_t::remove_on_text()
-{
-	if (calls)
-	{
-		calls[0].erase((int)dev_event_type_e::text_input_e);
-		calls[0].erase((int)dev_event_type_e::text_editing_e);
-		cb_count.x = calls[0].size();
-	}
-}
-
-void event_obj_t::call(int idx, int type)
-{
-	if (calls && idx >= 0 && idx < 2) {
-		if (cb_count[idx] > 0)
-		{
-			auto& c = calls[idx];
-			auto it = c.find(type);
-			if (it != c.end() && it->second.size()) {
-				for (auto& cb : it->second)
-				{
-					if (cb)
-						cb();
-				}
-			}
-		}
-	}
-}
-
-// rc= left,top,right,bottom
-bool rect_includes(const glm::vec4& rc, const glm::vec2& p)
-{
-	return (p.x >= rc.x) && (p.x <= rc.z) && (p.y >= rc.y) && (p.y <= rc.w);
-}
-
-
-bool in_rect_box(const glm::ivec4& rect, const glm::ivec2& mousePos) {
-	return mousePos.x >= rect.x && mousePos.x <= (rect.x + rect.z) && mousePos.y >= rect.y && mousePos.y <= (rect.y + rect.w);
-}
-glm::ivec2 check_box_cr1(const glm::vec2& p, const glm::vec4* d, size_t count, int stride)
-{
-	bool ret = false;
-	if (!d)
-	{
-		return {};
-	}
-	glm::ivec2 rs = {};
-	auto t = (char*)d;
-	for (size_t i = 0; i < count; i++, t += stride)
-	{
-		auto c = (glm::vec4*)t;
-		if ((int)c->w > 0)
-		{
-			auto r = *c;
-			ret = in_rect_box(r, p); //!((p.x < r.x) || (p.y < r.y) || (p.x > r.x + r.z /*- 1*/) || (p.y > r.y + r.w /*- 1*/));
-			if (ret)
-			{
-				rs.x = ret;
-				rs.y = i;
-				break;
-			}
-		}
-		else {
-			//计算点p和 当前圆圆心c 的距离
-			int dis = distance(p, glm::vec2(c->x, c->y));
-			auto r = c->z /*- 1*/; if (ret)
-			{
-				//和半径比较
-				ret = (dis <= r * r);
-				rs.x = ret;
-				rs.y = i;
-				break;
-			}
-		}
-	}
-	return  rs;
-}
-
-bool event_obj_t::hittest(const glm::ivec2& mpos)const
-{
-	glm::vec4 rc = { _pos, _pos + _size };
-	return rect_includes(rc, mpos);
-}
-std::vector<std::function<void()>>& event_obj_t::get_cbs(int i, int etype)
-{
-	if (!calls)
-		calls = new std::unordered_map<int, std::vector<std::function<void()>>>[2]();
-	return calls[i][etype];
-}
-bool event_obj_t::is_hover()
-{
-	return _bst & (int)BTN_STATE::STATE_HOVER;
-}
-// 通用控件鼠标事件处理 type有on_move/on_scroll/on_drag/on_down/on_up/on_click/on_dblclick/on_tripleclick
-bool widget_on_move(event_obj_t* wp, dev_event_t* dv, const glm::vec2& pos) {
-	bool hover = false;
-	if (!wp)return hover;
-	auto e = &dv->v;
-	auto t = dv->type;
-	if (t == dev_event_type_e::mouse_move_e)
-	{
-		auto p = e->m;
-		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
-		// 判断是否鼠标进入
-		auto k = wp->hittest(mps);
-		if (k) {
-			bool hoverold = wp->is_hover();
-			wp->_bst |= (int)BTN_STATE::STATE_HOVER;   hover = true;
-			if (!(wp->_bst & (int)BTN_STATE::STATE_ACTIVE))// 不是鼠标则独占
-				dv->ret = 1;
-			if (!hoverold)
-			{
-				// 鼠标进入
-				wp->etype = event_type_e::on_enter;
-				wp->mouse_pos = mps;
-				wp->call(1, (int)wp->etype);
-			}
-		}
-		else {
-			if (wp->is_hover())
-			{
-				wp->_bst &= ~(int)BTN_STATE::STATE_HOVER;
-				// 鼠标离开
-				wp->etype = event_type_e::on_leave;
-				wp->mouse_pos = mps;
-				wp->call(1, (int)wp->etype);
-			}
-		}
-		{
-			if (wp->is_hover())
-			{
-				wp->etype = event_type_e::on_move;
-				wp->mouse_pos = mps;
-				wp->call(1, (int)wp->etype);
-			}
-			if (wp->has_drag && wp->_bst & (int)BTN_STATE::STATE_ACTIVE) {
-				auto dps = mps - wp->curpos;
-				bool first = !wp->is_drag;
-				wp->is_drag = true;
-				if (first) {
-					wp->etype = event_type_e::on_dragstart;
-					wp->mouse_pos = mps;
-					wp->call(1, (int)wp->etype);
-				}
-				else
-				{
-					wp->etype = event_type_e::on_drag;
-					wp->mouse_pos = mps;
-					wp->call(1, (int)wp->etype);
-				}
-			}
-		}
-	}
-	return hover;
-}
-
-void widget_on_event(event_obj_t* wp, dev_event_t* dv, const glm::vec2& pos) {
-	if (!wp)return;
-	auto e = &dv->v;
-	auto t = dv->type;
-	switch (t)
-	{
-	case dev_event_type_e::mouse_move_e:
-		widget_on_move(wp, dv, pos);
-		break;
-	case dev_event_type_e::mouse_button_e:
-	{
-		auto p = e->b;
-		glm::ivec2 mps = { p->x,p->y }; mps -= pos;
-		void* cs = 0;
-		if (!cs && wp->is_hover()) {
-			if (p->down == 1)
-			{
-				dv->ret = 1;
-			}
-			if (p->button == 1) {
-				if (p->down == 1) {
-					wp->_bst |= (int)BTN_STATE::STATE_ACTIVE;
-					wp->curpos = mps - (glm::ivec2)wp->_pos;
-					wp->etype = event_type_e::on_down;
-					wp->mouse_pos = mps;
-					wp->call(1, (int)wp->etype);
-				}
-				else {
-					if (wp->_bst & (int)BTN_STATE::STATE_ACTIVE)
-					{
-						if (!wp->has_drag || !wp->is_drag)// 没有拖动时执行点击事件
-						{
-							wp->etype = event_type_e::on_up;
-							wp->mouse_pos = mps;
-							wp->call(1, (int)wp->etype);
-							event_type_e tc = event_type_e::on_click; //左键单击
-							if (p->clicks == 2) { tc = event_type_e::on_dblclick; }
-							else if (p->clicks == 3) { tc = event_type_e::on_tripleclick; }
-							wp->etype = tc;
-							wp->mouse_pos = mps;
-							wp->call(1, (int)wp->etype);
-						}
-					}
-					wp->_bst &= ~(int)BTN_STATE::STATE_ACTIVE;
-				}
-			}
-		}
-		if (p->down == 0) {
-			wp->_bst &= ~(int)BTN_STATE::STATE_ACTIVE;
-			wp->_bst |= (int)BTN_STATE::STATE_NOMAL;
-			if (wp->has_drag && wp->is_drag)
-			{
-				wp->etype = event_type_e::on_dragend;
-				wp->mouse_pos = mps;
-				wp->call(1, (int)wp->etype);
-			}
-			wp->is_drag = false;
-			wp->etype = event_type_e::mouse_up;
-			wp->mouse_pos = mps;
-			wp->call(1, (int)wp->etype);
-		}
-	}
-	break;
-	case dev_event_type_e::mouse_wheel_e:
-	{
-		auto p = e->w;
-		glm::vec2 mps = { p->x, p->y };
-		if (wp->is_hover() || wp->outer_scroll)
-		{
-			wp->etype = event_type_e::on_scroll;
-			wp->mouse_pos = mps;
-			wp->call(1, (int)wp->etype);
-			dv->ret = 1;
-		}
-	}
-	break;
-	default:
-		break;
-	}
-
-}
-
-bool on_gui_event(event_obj_t* pw, dev_event_t* dv, const glm::ivec2& ppos)
-{
-	bool r = false;
-	auto e = &dv->v;
-	auto t = dv->type;
-	pw->cde = dv;
-	pw->call(0, (int)dv->type);
-	widget_on_event(pw, dv, ppos);
-	return (dv->ret);
-}
-
-void gui_viewport::set_viewport(const glm::ivec4& rc)
-{
-	//_root._pos = { rc.x,rc.y };
-	//_root._size = { rc.z,rc.w };
-}
-
-void gui_viewport::clear()
-{
-	//_root.clear();
-}
-
-//void gui_viewport::add_div(div_cx0* c)
-//{
-//	_root.add(c);
-//}
-
-void gui_viewport::trigger(dev_event_t* e)
-{
-	//auto hr = _root.hit_test(io.MousePos);
-	//_root.dispatch_event(e);
-}
-
-widget_t::widget_t()
-{}
-
-widget_t::widget_t(widget_type t) :wtype(t)
-{}
-
-widget_t::~widget_t()
-{}
-
-widget_t* widget_t::hit_test(const glm::ivec2& mpos) {
-	return hittest(mpos) ? this : nullptr;
-}
-
-bool widget_t::dispatch_event(dev_event_t* e) {
-	return on_gui_event(this, e, {});
-}
-void widget_t::set_pos(const glm::ivec2& ps)
-{
-	_pos = ps; valid = true;
-}
-void widget_t::set_size(const glm::vec2& ss)
-{
-	_size = ss; valid = true;
-}
-glm::ivec2 widget_t::get_size()
-{
-	return _size;
-}
-bool widget_t::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	return false;
-}
-
-bool widget_t::update(float delta)
-{
-	return false;
-}
-
-glm::ivec2 widget_t::get_pos()
-{
-	glm::ivec2 ps = _pos;
-	if (parent) {
-		auto pss = parent->get_pos();
-		auto ss = parent->get_scroll_pos();
-		ss *= hscroll;
-		ps += ss;
-		ps += pss;
-	}
-	return ps;
-}
-glm::ivec2 widget_t::get_scroll_pos()
-{
-	glm::ivec2 ps = {};
-	if (parent) {
-		auto ss = parent->get_scroll_pos();
-		ss *= hscroll;
-		ps += ss;
-	}
-	return ps;
-}
-
-
-void widget_t::set_family(font_familys_t* family, int fontsize)
-{
-	if (family)
-		style.family = family;
-	if (style.fontsize == 0 && fontsize != 0)
-		style.fontsize = fontsize;
-}
-
-
-
-div_cx0::div_cx0() :widget_t(widget_type::WT_DIV)
-{}
-
-div_cx0::div_cx0(const glm::ivec4& rc)
-{
-	_pos = { rc.x,rc.y };
-	_size = { rc.z,rc.w };
-}
-
-div_cx0::~div_cx0()
-{}
-
-void div_cx0::clear()
-{
-	_v.clear();
-}
-
-void div_cx0::add(widget_t* c)
-{
-	if (c)
-		_v.push_back(c);
-}
-
-
-widget_t* div_cx0::hit_test(const glm::ivec2& mpos) {
-	if (!hittest(mpos))
-		return nullptr;
-	auto mps = mpos - _pos;
-	for (auto it = _v.rbegin(); it != _v.rend(); ++it) {
-		widget_t* child = *it;
-		if (child->hit_test(mps)) {
-			return child;
-		}
-	}
-	return this;
-}
-
-bool div_cx0::dispatch_event(dev_event_t* e) {
-	for (auto it = _v.rbegin(); it != _v.rend(); ++it) {
-		if ((*it)->dispatch_event(e))
-			return true;
-	}
-	return on_gui_event(this, e, {});
-}
-
-
-ui_builder_cx::ui_builder_cx()
-{}
-
-ui_builder_cx::~ui_builder_cx()
-{}
-
-
-#if 1
-// 默认按钮样式
-
-image_btn::image_btn() :widget_t(widget_type::WT_IMAGE_BTN)
-{
-
-}
-image_btn::~image_btn()
-{}
-void image_btn::set_size(const glm::vec2& ss)
-{
-	widget_t::set_size(ss);
-	if (multi == 0) {
-		auto p = &state_img[0];
-		p->rc = glm::ivec4(0, 0, ss);
-	}
-}
-void image_btn::set_state(BTN_STATE m, const glm::ivec2& rc)
-{
-	int width = st.width;
-	int n = 0;
-	if (_bst & (int)BTN_STATE::STATE_NOMAL) {
-		n++;
-	}
-	if (_bst & (int)BTN_STATE::STATE_HOVER) {
-		n++;
-	}
-	if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
-		n++;
-	}
-	if (_bst & (int)BTN_STATE::STATE_FOCUS) {
-		n++;
-	}
-	if (_bst & (int)BTN_STATE::STATE_DISABLE) {
-		n++;
-	}
-	if (n > 0)
-	{
-		width /= n;
-		glm::ivec4 rc2 = { 0,0,width,st.height };
-		if (rc.x > 0)
-			rc2.z = rc.x;
-		if (rc.y > 0)
-			rc2.w = rc.y;
-		if (_bst & (int)BTN_STATE::STATE_NOMAL) {
-			state_img[0].rc = rc2;
-		}
-		if (_bst & (int)BTN_STATE::STATE_HOVER) {
-			rc2.x += width;
-			state_img[1].rc = rc2;
-		}
-		if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
-			rc2.x += width;
-			state_img[2].rc = rc2;
-		}
-		if (_bst & (int)BTN_STATE::STATE_FOCUS) {
-			rc2.x += width;
-			state_img[3].rc = rc2;
-		}
-		if (_bst & (int)BTN_STATE::STATE_DISABLE) {
-			rc2.x += width;
-			state_img[4].rc = rc2;
-		}
-	}
-}
-void image_btn::set_state1(BTN_STATE m, const glm::ivec4& rc)
-{
-	if (_bst & (int)BTN_STATE::STATE_NOMAL) {
-		state_img[0].rc = rc;
-	}
-	if (_bst & (int)BTN_STATE::STATE_HOVER) {
-		state_img[1].rc = rc;
-	}
-	if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
-		state_img[2].rc = rc;
-	}
-	if (_bst & (int)BTN_STATE::STATE_FOCUS) {
-		state_img[3].rc = rc;
-	}
-	if (_bst & (int)BTN_STATE::STATE_DISABLE) {
-		state_img[4].rc = rc;
-	}
-}
-void image_btn::set_image(image_ptr_t* img)
-{
-	img_type = 0;
-	st = *img;
-	imgptr.img = &st;
-}
-void image_btn::set_vkimage(void* vkimage, int width, int height, int type)
-{
-	st = {};
-	st.width = width;
-	st.height = height;
-	st.type = type;
-	st.ptr = vkimage;
-	imgptr.img = &st;
-	img_type = 2;
-}
-void image_btn::set_surface(void* surf, int width, int height)
-{
-	st = {};
-	st.width = width;
-	st.height = height;
-	imgptr.surf = surf;
-	img_type = 1;
-}
-color_btn::color_btn() :widget_t(widget_type::WT_COLOR_BTN)
-{}
-color_btn::~color_btn()
-{}
-gradient_btn::gradient_btn() :widget_t(widget_type::WT_GRADIENT_BTN)
-{}
-gradient_btn::~gradient_btn()
-{}
-radio_tl::radio_tl() :widget_t(widget_type::WT_RADIO)
-{
-	style.align.x = 0;
-}
-checkbox_tl::checkbox_tl() :widget_t(widget_type::WT_CHECKBOX)
-{
-	style.align.x = 0;
-}
-checkbox_tl::~checkbox_tl()
-{}
-switch_tl::switch_tl() :widget_t(widget_type::WT_SWITCH)
-{}
-switch_tl::~switch_tl()
-{}
-progress_tl::progress_tl() :widget_t(widget_type::WT_PROGRESS)
-{}
-progress_tl::~progress_tl()
-{}
-slider_tl::slider_tl() :widget_t(widget_type::WT_SLIDER)
-{}
-slider_tl::~slider_tl()
-{}
-colorpick_tl::colorpick_tl() :widget_t(widget_type::WT_COLORPICK)
-{}
-colorpick_tl::~colorpick_tl()
-{}
-scroll_bar::scroll_bar() :widget_t(widget_type::WT_SCROLL_BAR)
-{}
-scroll_bar::~scroll_bar()
-{}
-
-
-bool image_btn::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	return false;
-}
-
-bool image_btn::update(float) {
-	show_idx = 0;
-	if (multi)
-	{
-		if (_bst & (int)BTN_STATE::STATE_HOVER) {
-			show_idx = 1;
-		}
-		if (_bst & (int)BTN_STATE::STATE_ACTIVE) {
-			show_idx = 2;
-		}
-		if (_bst & (int)BTN_STATE::STATE_FOCUS) {
-			show_idx = 3;
-		}
-		if (_bst & (int)BTN_STATE::STATE_DISABLE) {
-			show_idx = 4;
-		}
-	}
-	return false;
-}
-
-class btn_colorlist
-{
-public:
-	btn_colorlist();
-	~btn_colorlist();
-	btn_cols_t* get(size_t idx) {
-		return (idx < bcs.size()) ? (btn_cols_t*)bcs[idx].data() : nullptr;
-	}
-private:
-	std::vector<std::array<uint32_t, 8>> bcs = { { 0xFFffffff, 0xFF409eff, 0xFF409eff, 0xFF66b1ff, 0xFFe6e6e6, 0xFF0d84ff, 0xFF0d84ff ,0 },
-			{ 0xFFffffff, 0xFF67c23a, 0xFF67c23a, 0xFF85ce61, 0xFFe6e6e6, 0xFF529b2e, 0xFF529b2e ,0},
-			{ 0xFFffffff, 0xFF909399, 0xFF909399, 0xFFa6a9ad, 0xFFe6e6e6, 0xFF767980, 0xFF767980 ,0},
-			{ 0xFFffffff, 0xFFe6a23c, 0xFFe6a23c, 0xFFebb563, 0xFFe6e6e6, 0xFFd48a1b, 0xFFd48a1b ,0 },
-			{ 0xFFffffff, 0xFFf56c6c, 0xFFf56c6c, 0xFFf78989, 0xFFe6e6e6, 0xFFf23c3c, 0xFFf23c3c ,0 }
-	};
-};
-
-btn_colorlist::btn_colorlist()
-{
-	for (auto& it : bcs)
-	{
-		for (size_t i = 0; i < 8; i++)
-		{
-			auto c = (uint8_t*)&it[i];
-			std::swap(c[0], c[2]);
-		}
-	}
-}
-
-btn_colorlist::~btn_colorlist()
-{}
-void set_btn_color_idx(color_style* cs, int idx)
-{
-	static btn_colorlist clst;
-	auto ret = clst.get(idx);
-	if (ret && cs)
-	{
-		cs->pdc = *ret;
-	}
-}
-btn_cols_t* color_btn::set_btn_color_bgr(size_t idx)
-{
-	static btn_colorlist clst;
-	auto ret = clst.get(idx);
-	if (ret)
-	{
-		cs.pdc = *ret;
-	}
-	return ret;
-}
-#define UF_COLOR
-union u_col
-{
-	uint32_t uc;
-	unsigned char u[4];
-	struct urgba
-	{
-		unsigned char r, g, b, a;
-	}c;
-};
-#define FCV 255.0
-#define FCV1 256.0
-inline uint32_t set_alpha_xf(uint32_t c, double af)
-{
-	if (af < 0)af = 0;
-	//uint32_t a = af * FCV;
-	u_col* t = (u_col*)&c;
-	double a = t->c.a * af + 0.5;
-	if (a > 255)
-		t->c.a = 255;
-	else
-		t->c.a = a;
-	return c;
-}
-inline uint32_t set_alpha_xf2(uint32_t c, double af)
-{
-	if (af < 0)af = 0;
-	u_col* t = (u_col*)&c;
-	t->c.r *= af;
-	t->c.g *= af;
-	t->c.b *= af;
-	return c;
-}
-inline uint32_t set_alpha_x(uint32_t c, uint32_t a0)
-{
-	u_col* t = (u_col*)&c;
-	double af = a0 / FCV;
-	double a = t->c.a * af + 0.5;
-	if (a > 255)
-		t->c.a = 255;
-	else
-		t->c.a = a;
-	return c;
-}
-inline uint32_t set_alpha_f(uint32_t c, double af)
-{
-	if (af > 1)af = 1;
-	if (af < 0)af = 0;
-	uint32_t a = af * FCV + 0.5;
-	u_col* t = (u_col*)&c;
-	t->c.a = a;
-	return c;
-}
-
-inline glm::vec4 to_c4(uint32_t c)
-{
-	u_col* t = (u_col*)&c;
-	glm::vec4 fc;
-	float* f = &fc.x;
-	for (int i = 0; i < 4; i++)
-	{
-		*f++ = t->u[i] / FCV;
-	}
-	return  fc;
-}
-bool is_alpha(uint32_t c)
-{
-	return (c & 0xFF000000);
-}
-struct u84
-{
-	uint8_t r, g, b, a;
-};
-double get_alpha_f(uint32_t c)
-{
-	auto* t = (u84*)&c;
-	return  t->a / 255.0;
-}
-
-bool update_color_btn(color_style* p, float delta)
-{
-	//p->dtime += delta;
-	//auto dt = p->dtime;
-	//if (dt > 0.150) {
-	//	p->dtime = 0;
-	//}
-	if (p->_bst == p->_old_bst)return false;	// 状态不变时退出
-	p->_old_bst = p->_bst;
-	btn_cols_t* pdc = &p->pdc;
-	p->_disabled = (p->_bst & (int)BTN_STATE::STATE_DISABLE);
-	auto text_color = p->text.ptext_style ? p->text.ptext_style->color : 0;
-	if (p->_disabled)
-	{
-		p->hover = false;
-		p->dfill = pdc->background_color;
-		p->dcol = pdc->border_color;
-		if (p->effect == uTheme::dark)
-		{
-			p->dcol = 0;
-			p->dtext_color = (text_color) ? text_color : pdc->font_color;
-		}
-		if (p->effect == uTheme::light)
-		{
-			p->dcol = set_alpha_xf(p->dcol, p->light * 3);
-			p->dfill = set_alpha_xf(p->dfill, p->light);
-			p->dtext_color = (text_color) ? text_color : pdc->border_color;
-		}
-		if (p->effect == uTheme::plain)
-		{
-			p->dfill = 0;
-			p->dtext_color = (text_color) ? text_color : pdc->border_color;
-		}
-		p->dcol = set_alpha_x(p->dcol, p->disabled_alpha);
-		p->dfill = set_alpha_x(p->dfill, p->disabled_alpha);
-		p->dtext_color = set_alpha_x(p->dtext_color, p->disabled_alpha);
-	}
-	else
-	{
-		bool isdown = p->mPushed = (p->_bst & (int)BTN_STATE::STATE_ACTIVE);
-		p->hover = (p->_bst & (int)BTN_STATE::STATE_HOVER);
-		if (isdown)
-		{
-			p->dfill = pdc->active_background_color;
-			p->dcol = pdc->active_border_color;
-			if (p->effect == uTheme::plain)
-			{
-				p->dfill = set_alpha_xf(p->dcol, p->light);
-			}
-			else {
-				p->dtext_color = (text_color) ? text_color : pdc->active_font_color;
-			}
-			if (p->effect == uTheme::light)
-			{
-				p->dfill = set_alpha_f(p->dfill, p->light * 5);
-				p->dcol = set_alpha_f(p->dcol, p->light * 6);
-			}
-			if (p->effect == uTheme::dark)
-			{
-				p->dcol = 0;
-			}
-		}
-		else if (p->hover)
-		{
-			uint32_t ac = pdc->hover_color;
-			p->dfill = pdc->hover_color;
-			if (pdc->hover_border_color)
-				p->dcol = pdc->hover_border_color;
-
-			if (p->effect == uTheme::plain)
-			{
-				p->dcol = pdc->border_color;
-				p->dfill = set_alpha_xf(p->dcol, p->light);
-			}
-			if (p->effect == uTheme::light)
-			{
-				p->dfill = set_alpha_f(p->dfill, p->light * 5);
-				p->dtext_color = (text_color) ? text_color : pdc->font_color;
-			}
-		}
-		else {
-			p->dfill = pdc->background_color;
-			p->dcol = pdc->border_color;
-			if (p->effect == uTheme::dark)
-			{
-				p->dcol = 0;
-				p->dtext_color = (text_color) ? text_color : pdc->font_color;
-			}
-			if (p->effect == uTheme::light)
-			{
-				p->dcol = set_alpha_xf(p->dcol, p->light * 3);
-				p->dfill = set_alpha_xf(p->dfill, p->light);
-				p->dtext_color = (text_color) ? text_color : pdc->border_color;
-			}
-			if (p->effect == uTheme::plain)
-			{
-				p->dfill = 0;
-				p->dtext_color = (text_color) ? text_color : pdc->border_color;
-			}
-		}
-	}
-	return true;
-}
-
-
-const char* gradient_btn::c_str()
-{
-	return str.c_str();
-}
-
-void gradient_btn::init(glm::ivec4 rect, const std::string& text, uint32_t back_color, uint32_t text_color)
-{
-	auto p = &gs;
-	auto& info = *p;
-	_pos = { rect.x, rect.y };
-	_size = { rect.z, rect.w };
-	rounding = 4;
-	info.back_color = back_color;
-	style.color = text_color;
-	info.opacity = 1;
-	str = text.c_str();
-	info.borderLight = 0xff5c5c5c;
-	info.borderDark = 0xff1d1d1d;
-	return;
-}
-bool gradient_btn::update(float delta)
-{
-	auto p = &gs;
-	if (!p)return false;
-	if (_bst == _old_bst)return false;
-	_old_bst = _bst;
-	auto& info = *p;
-
-	// (sta & hz::BTN_STATE::STATE_FOCUS)
-	uint32_t gradTop = info.gradTop.x;// 0xff4a4a4a; 
-	uint32_t gradBot = info.gradBot.x;// 0xff3a3a3a;
-
-	info.mPushed = (_bst & (int)BTN_STATE::STATE_ACTIVE);
-	info.mMouseFocus = (_bst & (int)BTN_STATE::STATE_HOVER);
-	if (_bst & (int)BTN_STATE::STATE_DISABLE)
-		info.mEnabled = false;
-	if (info.mPushed) {
-		gradTop = info.gradTop.z;//0xff292929;
-		gradBot = info.gradBot.z;//0xff1d1d1d;
-	}
-	else if (info.mMouseFocus && info.mEnabled) {
-		gradTop = info.gradTop.y;// 0x80404040;
-		gradBot = info.gradBot.y;//0x80303030;
-	}
-	info._gradTop = gradTop;
-	info._gradBot = gradBot;
-	return true;
-}
-
-
-
-bool color_btn::update(float delta) {
-	cs.text.str = str.c_str();
-	cs.text.str_len = str.size();
-	cs.text.ptext_style = &style;
-	cs._bst = _bst;
-	cs.rounding = rounding;
-	return update_color_btn(&cs, delta);
-}
-
-#endif // 1
-
-
-#if 1
-radio_tl::~radio_tl()
-{
-	if (gr) {
-		gr->ct--;
-		if (gr->ct <= 0)
-			delete gr;
-	}
-	gr = 0;
-}
-
-void radio_tl::set_group(group_radio_t* p)
-{
-	if (p) {
-		if (gr)gr->ct--;
-		gr = p;
-		p->ct++;
-	}
-}
-
-void radio_tl::bind_ptr(bool* p)
-{}
-
-void radio_tl::set_value(const std::string& str, bool bv)
-{
-	radio_info_t k = {};
-	k.text = str;
-	k.value = bv; k.value1 = !bv;
-	v = k;
-	if (bv)
-	{
-		set_value();
-	}
-	else {
-		if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-	}
-}
-
-void radio_tl::set_value(bool bv)
-{
-	v.value = bv;
-	if (bv)
-	{
-		set_value();
-	}
-	else {
-		if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-	}
-}
-
-void radio_tl::set_value()
-{
-	v.value = true;
-	if (gr && this != gr->active)
-	{
-		if (gr->active)
-			gr->active->set_value(false);
-		gr->active = this;
-		if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-	}
-}
-
-bool radio_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	if (et == event_type_e::on_click)
-	{
-		if (v.value == v.value1)
-			set_value();
-	}
-	return false;
-}
-
-bool radio_tl::update(float delta)
-{
-	int ic = 0;
-	{
-		auto& it = v;
-		if (_size.x <= 0) {
-			_size.x = _style.radius * 2;
-		}
-		if (_size.y <= 0) {
-			_size.y = _style.radius * 2;
-		}
-		if (it.value != it.value1)
-		{
-			auto dt = fmod(delta, _style.duration);
-			if (_style.duration > 0) {
-				it.dt += delta;
-				if (it.dt >= _style.duration) {
-					it.value1 = it.value; it.dt = 0;
-					dt = 1.0;
-
-					_old_bst = _bst;
-				}
-				else
-				{
-					dt = it.dt / _style.duration;
-				}
-			}
-			else {
-				dt = 1.0;
-			}
-			float t = it.value ? glm::mix(_style.radius - _style.thickness, _style.thickness * 2.0f, dt) : glm::mix(_style.thickness * 2.0f, _style.radius - _style.thickness, dt);
-			it.swidth = t;
-			if (!it.value && it.dt == 0)it.swidth = 0;
-			ic++;
-		}
-	}
-	return ic > 0;
-}
-
-
-void checkbox_tl::bind_ptr(bool* p)
-{}
-
-void checkbox_tl::set_value(const std::string& str, bool bv)
-{
-	checkbox_info_t k = {};
-	k.text = str;
-	k.value = bv; k.value1 = !bv;
-	v = k;
-	if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-}
-
-void checkbox_tl::set_value(bool bv)
-{
-	v.value = bv;
-	if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-}
-
-void checkbox_tl::set_value()
-{
-	v.value1 = v.value;
-	v.value = !v.value;
-	if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-}
-
-bool checkbox_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	if (et == event_type_e::on_click)
-	{
-		if (v.value == v.value1)
-			set_value();
-	}
-	return false;
-}
-
-bool checkbox_tl::update(float delta)
-{
-	int ic = 0;
-
-	{
-		auto& it = v;
-		if (_size.x <= 0) {
-			_size.x = _style.square_sz;
-		}
-		if (_size.y <= 0) {
-			_size.y = _style.square_sz;
-		}
-		auto duration = it.duration > 0 ? it.duration : _style.duration;
-		if (it.value != it.value1)
-		{
-			auto dt = fmod(delta, duration);
-			if (duration > 0)
-			{
-				it.dt += delta;
-				if (it.dt >= duration) {
-					it.value1 = it.value; it.dt = 0;
-					dt = 1.0;
-					_old_bst = _bst;
-				}
-				else
-				{
-					dt = it.dt / duration;
-				}
-			}
-			else {
-				dt = 1.0;
-			}
-
-			float t = it.value ? glm::mix(0.0f, 1.0f, dt) : glm::mix(1.0f, 0.0f, dt);
-			it.new_alpha = t;
-			ic++;
-		}
-	}
-	return ic > 0;
-}
-
-
-void switch_tl::bind_ptr(bool* p)
-{
-	v.pv = p;
-}
-
-void switch_tl::set_value(bool b)
-{
-	v.value = b;
-	v.value1 = !b;
-	if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-}
-
-void switch_tl::set_value()
-{
-	v.value1 = v.value;
-	v.value = !v.value;
-	if (v.on_change_cb) { v.on_change_cb(this, v.value); }
-}
-
-bool switch_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	if (et == event_type_e::on_click)
-	{
-		if (v.value == v.value1)
-			set_value();
-	}
-	return false;
-}
-
-bool switch_tl::update(float delta)
-{
-	int ic = 0;
-	auto& it = v;
-	if (it.value != it.value1)
-	{
-		auto dt = fmod(delta, it.duration);
-		if (it.duration > 0) {
-			it.dt += delta;
-			if (it.dt >= it.duration) {
-				it.value1 = it.value; it.dt = 0;
-				dt = 1.0;
-				_old_bst = _bst;
-				if (v.pv) {
-					*v.pv = it.value;
-				}
-			}
-			else
-			{
-				dt = it.dt / it.duration;
-			}
-		}
-		else {
-			dt = 1.0;
-		}
-		dcol = it.value ? glm::mix(color.y, color.x, 1.0f) : glm::mix(color.x, color.y, 1.0f);
-		cpos = it.value ? glm::mix(0.0f, 1.0f, dt) : glm::mix(1.0f, 0.0f, dt);
-		ic++;
-	}
-	return ic > 0;
-}
-
-void progress_tl::set_value(double b)
-{
-	if (b < 0)b = 0;
-	if (b > 1)b = 1;
-	value = b;
-	if (format.size())
-	{
-		double k = get_v();
-		std::string vv;
-#ifdef PG_UTILITY
-		text = pg::to_string(k) + format;
-#else
-		text = std::to_string(k) + format;
-#endif // PG_UTILITY
-
-		//width = _size.x;
-		if (text.size() && !text_inside) {
-			//todo auto rk = ltx->get_text_rect(0, font_size, text.c_str(), -1);
-			//size.x = width + rk.x + rounding * 0.5;
-			if (parent)parent->uplayout = true;
-		}
-	}
-}
-
-void progress_tl::set_vr(const glm::ivec2& r)
-{
-	vr = r;
-}
-
-double progress_tl::get_v()
-{
-	return glm::mix(vr.x, vr.y, value);
-}
-
-bool progress_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	return false;
-}
-
-bool progress_tl::update(float delta)
-{
-	return false;
-}
-
-
-void slider_tl::bind_ptr(double* p)
-{}
-
-void slider_tl::set_value(double b)
-{
-	if (b < 0)b = 0;
-	if (b > 1)b = 1;
-	value = b;
-
-}
-
-void slider_tl::set_vr(const glm::ivec2& r)
-{
-	vr = r;
-}
-
-void slider_tl::set_cw(int cw)
-{
-	sl.x = cw;
-}
-
-double slider_tl::get_v()
-{
-	return glm::mix(vr.x, vr.y, value);
-}
-
-bool slider_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	glm::ivec2 poss = mps - _pos;
-	glm::ivec2 ss = _size;
-	if (et == event_type_e::on_down) {
-
-	}
-	if (et == event_type_e::on_click)
-	{
-		if (poss[vertical] >= 0)
-		{
-			double xf = (double)poss[vertical] / ss[vertical];
-			if (xf > 1)xf = 1;
-			if (xf < 0)xf = 0;
-			value = xf;
-		}
-	}
-	if (et == event_type_e::on_drag)
-	{
-		poss += curpos;
-		if (poss[vertical] >= 0)
-		{
-			double xf = (double)poss[vertical] / ss[vertical];
-			if (xf > 1)xf = 1;
-			if (xf < 0)xf = 0;
-			value = xf;
-		}
-	}
-	return false;
-}
-
-bool slider_tl::update(float delta)
-{
-	return false;
-}
-
-
-
-
-void colorpick_tl::init(uint32_t c, int w, int h, bool alpha)
-{
-	set_color2hsv(c);
-	width = w;
-	height = h;
-	//if (height < font_size)
-	//	height = ltx->get_lineheight(0, font_size);
-	h = height + step;
-	cpx = height * 2.5;
-	int minw = cpx + step * 2;
-	if (width < minw) {
-		width = minw + h;
-	}
-	_size.x = width;
-	int hn = 4;
-	if (alpha)hn++;
-	_size.y = h * hn;
-}
-
-uint32_t colorpick_tl::get_color()
-{
-	glm::vec4 hc = HSVtoRGB(hsv);
-	glm::u8vec4 c = { (int)(hc.x * 255), (int)(hc.y * 255), (int)(hc.z * 255), (int)(hc.w * 255) };
-	return *((uint32_t*)&c);
-}
-
-void colorpick_tl::set_color2hsv(uint32_t c)
-{
-	color.y = color.x;
-	color.x = c;
-	hsv = RGBtoHSV(c);
-}
-
-void colorpick_tl::set_hsv(const glm::vec3& c)
-{
-	hsv.x = c.x;
-	hsv.y = c.y;
-	hsv.z = c.z;
-	color.y = color.x;
-	color.x = get_color();
-}
-void colorpick_tl::set_hsv(const glm::vec4& c)
-{
-	hsv = c;
-	color.y = color.x;
-	color.x = get_color();
-}
-void colorpick_tl::set_posv(int poss_x)
-{
-	double cw0 = colorw - step, x = poss_x;
-	if (x < 0) { x = 0; }
-	double xf = glm::clamp((double)poss_x / cw0, 0.0, 1.0);
-	int x4 = alpha ? 4 : 3;
-	if (dx >= 0 && dx < x4)
-	{
-		hsv[dx] = xf;
-	}
-}
-bool colorpick_tl::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	glm::ivec2 poss = mps - _pos;
-	glm::ivec2 ss = _size;
-	poss.x -= cpx + step;
-	poss.y -= height + step;
-	double htp = height + step;
-	if (et == event_type_e::on_click && (poss.x > 0) && poss.y > 0)
-	{
-		set_posv(poss.x);
-	}
-	if (et == event_type_e::on_down) {
-		if (poss.y > 0 && poss.x > 0)
-			dx = poss.y / htp;
-		else
-			dx = -1;
-	}
-	if (poss.y < 0)
-		poss.y = 0;
-	if (et == event_type_e::on_drag)
-	{
-		auto oldps = poss;
-		poss += curpos;
-		set_posv(poss.x);
-	}
-	return false;
-}
-
-bool colorpick_tl::update(float delta)
-{
-	if (hsv != oldhsv || hsvstr.empty())
-	{
-		int* k = nullptr;
-		oldhsv = hsv;
-		int h = hsv.x * 360;
-		int s = hsv.y * 100;
-		int v = hsv.z * 100;
-		int a = hsv.w * 100;
-		std::string th = std::to_string(h) + (char*)u8"°";
-		std::string ts = std::to_string(s) + "%";
-		std::string tv = std::to_string(v) + "%";
-		std::string ta = std::to_string(a) + "%";
-
-		hsvstr = "H:" + th;
-		hsvstr += "\nS:" + ts;
-		hsvstr += "\nV:" + tv;
-		if (alpha)
-		{
-			hsvstr += "\nA:" + ta;
-		}
-		else { hsv.w = 1; }
-		glm::vec4 hc = HSVtoRGB(hsv);
-		char buf[256] = {};
-		glm::ivec4 c = { (int)(hc.x * 255), (int)(hc.y * 255), (int)(hc.z * 255), (int)(hc.w * 255) };
-		sprintf(buf, "#%02X%02X%02X%02X %d,%d,%d,%d", c.x, c.y, c.z, c.w, c.x, c.y, c.z, c.w);
-		colorstr = buf;
-		glm::ivec2 ss = _size;
-		colorw = ss.x - cpx - step * 2;
-		if (on_change_cb) {
-			on_change_cb(this, get_color());
-		}
-	}
-	return false;
-}
-
-
-colorpick_cx::colorpick_cx()
-{}
-
-colorpick_cx::~colorpick_cx()
-{}
-
-void colorpick_cx::init(uint32_t c, int w, int h)
-{
-	set_color2hsv(c);
-	width = w;
-	height = h;
-	//if (height < font_size)
-	//	height = ltx->get_lineheight(0, font_size);
-	h = height + step;
-	cpx = height * 2.5;
-	int minw = cpx + step * 2;
-	if (width < minw) {
-		width = minw + h;
-	}
-	_size.x = width;
-	int hn = 5;
-	_size.y = h * hn;
-}
-
-uint32_t colorpick_cx::get_color()
-{
-	glm::vec4 hc = HSVtoRGB(hsv);
-	glm::u8vec4 c = { (int)(hc.x * 255), (int)(hc.y * 255), (int)(hc.z * 255), (int)(hc.w * 255) };
-	return *((uint32_t*)&c);
-}
-
-void colorpick_cx::set_color2hsv(uint32_t c)
-{
-	color.y = color.x;
-	color.x = c;
-	hsv = RGBtoHSV(c);
-}
-
-void colorpick_cx::set_hsv(const glm::vec3& c)
-{
-	hsv.x = c.x;
-	hsv.y = c.y;
-	hsv.z = c.z;
-	color.y = color.x;
-	color.x = get_color();
-}
-void colorpick_cx::set_hsv(const glm::vec4& c)
-{
-	hsv = c;
-	color.y = color.x;
-	color.x = get_color();
-}
-void colorpick_cx::set_posv(const glm::ivec2& poss)
-{
-	double cw0 = colorw - step, x = poss.x;
-	if (x < 0) { x = 0; }
-	double xf = glm::clamp((double)poss.x / cw0, 0.0, 1.0);
-	int x4 = 4;// alpha ? 4 : 3;
-	if (dx >= 0 && dx < x4)
-	{
-		hsv[dx] = xf;
-	}
-}
-
-bool colorpick_cx::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	glm::ivec2 poss = mps - _pos;
-	glm::ivec2 ss = _size;
-	poss.x -= cpx + step;
-	poss.y -= height + step;
-	double htp = height + step;
-	if (poss.y < 0)poss.y = 0;
-	if (et == event_type_e::on_down) {
-		dx = poss.y / htp;
-	}
-	if (et == event_type_e::on_click)
-	{
-		set_posv(poss);
-	}
-	if (et == event_type_e::on_drag)
-	{
-		poss += curpos;
-		set_posv(poss);
-	}
-
-
-	return false;
-}
-
-bool colorpick_cx::update(float delta)
-{
-	if (hsv != oldhsv || hsvstr.empty())
-	{
-		int* k = nullptr;
-		oldhsv = hsv;
-		int h = hsv.x * 360;
-		int s = hsv.y * 100;
-		int v = hsv.z * 100;
-		int a = hsv.w * 100;
-		std::string th = std::to_string(h) + (char*)u8"°";
-		std::string ts = std::to_string(s) + "%";
-		std::string tv = std::to_string(v) + "%";
-		std::string ta = std::to_string(a) + "%";
-
-		hsvstr = "H:" + th;
-		hsvstr += "\nS:" + ts;
-		hsvstr += "\nV:" + tv;
-		hsvstr += "\nA:" + ta;
-		glm::vec4 hc = HSVtoRGB(hsv);
-		char buf[256] = {};
-		glm::ivec4 c = { (int)(hc.x * 255), (int)(hc.y * 255), (int)(hc.z * 255), (int)(hc.w * 255) };
-		sprintf(buf, "#%02X%02X%02X%02X %d,%d,%d,%d", c.x, c.y, c.z, c.w, c.x, c.y, c.z, c.w);
-		colorstr = buf;
-		glm::ivec2 ss = _size;
-		colorw = ss.x - cpx - step * 2;
-		if (on_change_cb) {
-			on_change_cb(this, get_color());
-		}
-	}
-	return false;
-}
-
-
-
-#if 1
-void scroll_bar::set_viewsize(int64_t vs, int64_t cs, int rcw)
-{
-	_view_size = vs;
-	_content_size = cs;
-	if (rcw > 0)
-		_rc_width = rcw;
-	valid = true;
-}
-
-bool scroll_bar::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto et = (event_type_e)type;
-	glm::ivec2 poss = mps - _pos;
-	glm::ivec2 ss = _size;
-	poss -= tps;
-	int px = _dir ? 0 : 1;
-	int tsm = thumb_size_m.x + tps[_dir] * 2.0;
-	auto pts = poss[_dir];
-	pts -= _offset;
-	switch (et)
-	{
-	case event_type_e::on_click:
-	{
-		if (!d_drag)
-		{
-			hover = true;
-			if (pts < 0) {
-				t_offset = 0;
-			}
-			if (pts > thumb_size_m.x) {
-				t_offset = thumb_size_m.x;
-			}
-			t_offset = thumb_size_m.x * 0.5;
-			set_posv(poss);
-			hover = false;
-		}
-	}
-	break;
-	case event_type_e::on_move:
-	{
-		auto pts = poss[_dir];
-		pts -= _offset;
-		if (pts < 0 || pts > thumb_size_m.x)
-		{
-			_tcc = _color.y;
-		}
-		else {
-			_tcc = _color.z;
-		}
-		scale_s = scale_s0.y;
-	}
-	break;
-	case event_type_e::mouse_up:
-		hover = false;
-		break;
-	case event_type_e::on_down:
-	{
-		d_drag = false;
-		t_offset = pts;
-		if (pts < 0 || pts > thumb_size_m.x)
-		{
-			hover = false;
-		}
-		else {
-			hover = true;
-		}
-	}
-	break;
-	case event_type_e::on_scroll:
-	{
-		if (thumb_size_m.z > 0 && ((_bst & (int)BTN_STATE::STATE_HOVER) || hover_sc && (parent && parent->is_hover())))
-		{
-			auto st = ss[_dir] - tsm;
-#if 0
-			auto pts = (-mps.y * _pos_width) + _offset;
-#else
-			int64_t pw = (-mps.y * _pos_width);
-			c_offset += pw;//内容偏移
-			int64_t mxst = st * scale_w;
-			c_offset = std::max((int64_t)0, std::min(c_offset, mxst));
-			pts = c_offset / scale_w;
-#endif
-			if (limit)
-			{
-				if (pts < 0)pts = 0;
-				if (pts > st)pts = st;
-			}
-			_offset = pts;// 滚动滑块偏移
-			return true;
-		}
-	}
-	break;
-	case event_type_e::on_drag:
-	{
-		poss += curpos;
-		if (hover)
-		{
-			set_posv(poss);
-			d_drag = true;
-		}
-	}
-	break;
-	default:
-		break;
-	}
-	return false;
-}
-
-double dcscroll(double cp, double isx, double scroll_increment_x, int& scrollx)
-{
-	double ret = .0;
-	if (cp < scrollx)
-	{
-		ret = floor(std::max(0.0, cp - scroll_increment_x));
-		scrollx = ret;
-	}
-	else if (cp - isx >= scrollx && isx > 0)
-	{
-		ret = floor(cp - isx + scroll_increment_x);
-		scrollx = ret;
-	}
-	return ret;
-}
-
-//template <typename T>
-//inline T clamp(T v, T mn, T mx) { return (v < mn) ? mn : (v > mx) ? mx : v; }
-// 输入：视图大小、内容大小、滚动宽度
-// 输出：x水平大小，y垂直大小，z为水平的滚动区域宽，w垂直滚动高
-glm::vec4 calcu_scrollbar_size(const glm::vec2 vps, const glm::vec2 content_width, const glm::vec2 scroll_width, const glm::ivec4& count)
-{
-	auto scw = scroll_width;
-	scw.x = scroll_width.x * count.x + count.z;
-	scw.y = scroll_width.y * count.y + count.w;
-	auto dif = vps - scw;
-	bool isx = (dif.x < content_width.x) && vps.x < content_width.x;
-	bool isy = (dif.y < content_width.y) && vps.y < content_width.y;
-	int inc = (isx ? 1 : 0) + (isy ? 1 : 0);
-	if (!isy)
-		scw.x -= count.z;
-	if (!isx)
-		scw.y -= count.w;
-	auto calc_cb = [](double vw, double cw, double scw, double sw)
-		{
-			double win_size_contents_v = cw,
-				win_size_avail_v = vw - scw,
-				scrollbar_size_v = win_size_avail_v;//scrollbar_size_v是实际大小
-			auto win_size_v = std::max(std::max(win_size_contents_v, win_size_avail_v), 1.0);
-			auto GrabMinSize = sw;			// std::clamp
-			auto grab_h_pixels = glm::clamp(scrollbar_size_v * (win_size_avail_v / win_size_v), GrabMinSize, scrollbar_size_v);
-			auto grab_h_norm = grab_h_pixels / scrollbar_size_v;
-			return glm::vec2{ grab_h_pixels, scrollbar_size_v };
-		};
-	auto x = calc_cb(vps.x, content_width.x, scw.x, scroll_width.x);
-	auto y = calc_cb(vps.y, content_width.y, scw.y, scroll_width.y);
-	if (!(x.x < x.y) || !isx)
-		x.x = 0;
-	if (!(y.x < y.y) || !isy)
-		y.x = 0;
-	glm::vec4 ret = { x.x, y.x, x.y, y.y };
-	return ret;
-}
-
-// 输入：视图大小、内容大小、滚动宽度 ,count
-// 输出：x水平大小，y为水平的滚动区域宽，z是否显示滚动条
-glm::vec3 calcu_scrollbar_size(int vps, int content_width, int scroll_width, int count)
-{
-	//计算去掉按钮时视图大小
-	auto scw = scroll_width;
-	scw = scroll_width * count;
-	auto dif = vps - scw;
-	bool isx = (dif < content_width) && vps < content_width;
-
-	auto calc_cb = [](double vw, double cw, double scw, double sw)
-		{
-			double win_size_contents_v = cw,
-				win_size_avail_v = vw - scw,
-				scrollbar_size_v = win_size_avail_v;
-			auto win_size_v = std::max(std::max(win_size_contents_v, win_size_avail_v), 1.0);
-			auto GrabMinSize = sw;
-			auto grab_h_pixels = std::clamp(scrollbar_size_v * (win_size_avail_v / win_size_v), GrabMinSize, scrollbar_size_v);
-			auto grab_h_norm = grab_h_pixels / scrollbar_size_v;
-			return glm::vec2{ grab_h_pixels, scrollbar_size_v };
-		};
-	auto x = calc_cb(vps, content_width, scw, scroll_width);
-	if (!(x.x < x.y) || !isx)
-		x.x = 0;
-	return glm::vec3(x.x, x.y, isx);
-}
-
-uint32_t get_reverse_color(uint32_t color) {
-	uint8_t* c = (uint8_t*)&color;
-	c[0] = 255 - c[0];
-	c[1] = 255 - c[1];
-	c[2] = 255 - c[2];
-	return color;
-}
-
-size_t char2pos(size_t ps, const char* str) {
-	return md::get_utf8_count(str, ps);
-}
-
-
-bool scroll_bar::update(float delta)
-{
-	// 箭头、滑块按钮初始大小一样
-	bool r = valid;
-	if (valid)
-	{
-		int vrc = _view_size - _rc_width;
-		auto vs = _view_size;
-		int px = _dir ? 0 : 1;
-		glm::ivec2 ss = _size;
-		auto pxs = (ss[px] - _rc_width) * 0.5;
-		auto ss1 = ss[_dir];
-		auto ss2 = _pos[_dir];
-		glm::ivec3 sbs = calcu_scrollbar_size(vs, _content_size, pxs, 2);
-		tps = { pxs,pxs };
-		sbs.x = ss1 - (_content_size - vs);
-
-		int tsm = tps[_dir] * 2.0;
-		if (sbs.z > 0) {
-			if (sbs.x < _rc_width)
-			{
-				sbs.x = _rc_width * 2;
-			}
-			// 滚动条宽度-滑块宽度-边框偏移
-			auto vci = ss1 - sbs.x - tsm;
-			scale_w = abs((double)(_content_size - (vs)) / vci);
-			//assert(!(scale_w < 1));
-			if (scale_w < 1)
-			{
-				scale_w = 1;
-			}
-		}
-		else {
-			_offset = 0; c_offset = scale_w * _offset;
-		}
-		thumb_size_m = sbs;
-		valid = false;
-	}
-	if (!(_bst & (int)BTN_STATE::STATE_HOVER)) {
-		if (!(_bst & (int)BTN_STATE::STATE_ACTIVE))
-		{
-			_tcc = _color.y; scale_s = scale_s0.x;
-		}
-	}
-	if ((_bst & (int)BTN_STATE::STATE_ACTIVE) && _color.w) {
-		_tcc = _color.w;
-	}
-	return r;
-}
-
-
-
-int64_t scroll_bar::get_offset()
-{
-	return scale_w * _offset;
-}
-int64_t scroll_bar::get_offset_ns()
-{
-	return c_offset;
-}
-
-int scroll_bar::get_range()
-{
-	glm::ivec2 ss = _size;
-	int tsm = thumb_size_m.x + tps[_dir] * 2.0;
-	auto st = ss[_dir] - tsm;
-	return st;
-}
-
-void scroll_bar::set_offset(int pts)
-{
-	glm::ivec2 ss = _size;
-	int tsm = thumb_size_m.x + tps[_dir] * 2.0;
-	auto st = ss[_dir] - tsm;
-	if (limit)
-	{
-		if (pts < 0)pts = 0;
-		if (pts > st)pts = st;
-	}
-	_offset = pts;
-	c_offset = scale_w * _offset;
-}
-void scroll_bar::set_offset_inc(int inc)
-{
-	set_offset(_offset + inc);
-}
-
-void scroll_bar::set_posv(const glm::ivec2& poss)
-{
-	if (!hover || thumb_size_m.z <= 0)return;
-	glm::ivec2 ss = _size;
-	int px = _dir ? 0 : 1;
-	int tsm = thumb_size_m.x + tps[_dir] * 2.0;
-	auto pts = poss[_dir];
-	pts -= t_offset;
-	int mx = ss[_dir] - tsm;
-	if (limit)
-	{
-		if (pts < 0)pts = 0;
-		if (pts > mx)pts = mx;
-	}
-	_offset = pts;
-	c_offset = scale_w * _offset;
-}
-#endif
-
-#if 1
-
-div_cx::div_cx()
-{
-	hscroll = {};
-}
-
-div_cx::~div_cx()
-{
-	//auto ac = (hz::usp_ac*)flex_ctx_ac(lctx);
-	//free_flex_ctx(lctx);
-	//if (ac)
-	//	delete ac;
-	//for (auto p : widgets)
-	//{
-	//	if (p && p->_autofree)
-	//		delete p;
-	//}
-}
-void div_cx::add_widget(widget_t* p)
-{
-	if (p)
-	{
-		p->set_family(style.family, style.fontsize);
-		auto par = dynamic_cast<div_cx*>(p->parent);
-		if (par) {
-			par->remove_widget(p);
-		}
-		p->parent = this;
-		auto it = std::find(widgets.begin(), widgets.end(), p);
-		if (it == widgets.end()) {
-			tadd.push_back(p);
-		}
-		uplayout = true;
-	}
-}
-void div_cx::remove_widget(widget_t* p)
-{
-	if (p)
-	{
-		tremove.push_back(p);
-		uplayout = true;
-	}
-}
-void div_cx::set_scroll(int width, int rcw, const glm::ivec2& pos_width, const glm::ivec2& vnpos, const glm::ivec2& hnpos)
-{
-	auto pss = _size;
-	{
-		auto cp = new_scroll_bar({ width,pss.y - width * 2 }, pss.y, pss.y, rcw, true, vnpos);
-		bind_scroll_bar(cp, true); // 绑定垂直滚动条
-		cp->_pos_width = pos_width.y > 0 ? pos_width.y : width * 2;//滚轮事件每次滚动量
-		cp->hover_sc = 1;		// 鼠标不在范围内也响应滚轮事件 
-		cp->hscroll = {};
-		cp->_absolute = true;
-		cp->rounding = std::max(2, (int)(width * 0.5));
-	}
-	{
-		auto cp = new_scroll_bar({ pss.x - width * 2,width }, pss.x, pss.x, rcw, false, hnpos);
-		bind_scroll_bar(cp, false); // 绑定水平滚动条
-		cp->_pos_width = pos_width.x > 0 ? pos_width.x : width;
-		cp->hscroll = {};
-		cp->_absolute = true;
-		cp->rounding = std::max(2, (int)(width * 0.5));
-	}
-}
-void div_cx::set_scroll_hide(bool is)
-{
-	if (horizontal)
-		horizontal->hideble = is;
-	if (vertical)
-		vertical->hideble = is;
-}
-void div_cx::set_scroll_pos(const glm::ivec2& ps, bool v)
-{
-	if (v)
-	{
-		if (vertical)
-			vertical->_pos = ps;
-	}
-	else
-	{
-		if (horizontal)
-			horizontal->_pos = ps;
-	}
-}
-void div_cx::set_scroll_size(const glm::ivec2& ps, bool v)
-{
-	if (v)
-	{
-		if (vertical)
-			vertical->_size = ps;
-	}
-	else
-	{
-		if (horizontal)
-			horizontal->_size = ps;
-	}
-}
-void div_cx::set_view(const glm::ivec2& view_size, const glm::ivec2& content_size)
-{
-	if (horizontal)
-		horizontal->set_viewsize(view_size.x, content_size.x, 0);
-	if (vertical)
-		vertical->set_viewsize(view_size.y, content_size.y, 0);
-}
-void div_cx::set_scroll_visible(const glm::ivec2& hv)
-{
-	if (horizontal)//水平滚动条
-	{
-		horizontal->visible = hv.x;
-	}
-	//垂直滚动条
-	if (vertical)
-	{
-		vertical->visible = hv.y;
-	}
-}
-glm::ivec2 div_cx::get_scroll_range()
-{
-	glm::ivec2 r = {};
-	if (horizontal)//水平滚动条
-	{
-		r.x = horizontal->get_range();
-	}
-	//垂直滚动条
-	if (vertical)
-	{
-		r.y = vertical->get_range();
-	}
-	return r;
-}
-void div_cx::set_scroll_pts(const glm::ivec2& pts, int t)
-{
-	//水平滚动条
-	if (horizontal)
-	{
-		if (t == 0)
-			horizontal->set_offset(pts.x);
-		else
-			horizontal->set_offset_inc(pts.x);
-
-	}
-	//垂直滚动条
-	if (vertical)
-	{
-		if (t == 0)
-			vertical->set_offset(pts.y);
-		else
-			vertical->set_offset_inc(pts.y);
-	}
-}
-void div_cx::sortdg()
-{
-	std::stable_sort(dragsp.begin(), dragsp.end(), [](const drag_v6* t1, const drag_v6* t2) { return t1->z < t2->z; });
-}
-void div_cx::bind_scroll_bar(scroll_bar* p, bool v)
-{
-	if (p)
-	{
-		if (v)
-		{
-			if (vertical)
-				delete vertical;
-			vertical = p;
-		}
-		else
-		{
-			if (horizontal)
-				delete horizontal;
-			horizontal = p;
-		}
-		remove_widget(p);
-	}
-}
-void div_cx::on_motion(const glm::vec2& pos)
-{
-	glm::ivec2 ps = pos;
-	if (ckinc > 0)
-	{
-		//if (draggable)
-		//	set_pos(ps - curpos);
-		//else
-		//	set_scroll_pts(ps - curpos, 1);
-
-		div_ev e = {};
-		e.p = this; e.down = 1; e.clicks = 0; e.mpos = ps;
-		e.drag = true;
-		if (on_click)
-		{
-			on_click(&e);	// 执行拖动事件
-		}
-		//for (auto& c : on_mouses)
-		//{
-		//	c(&e);
-		//}
-	}
-
-	//tv->on_motion(ps - tpos);
-	//update(0);
-}
-void div_cx::on_button(int idx, int down, const glm::vec2& pos, int clicks, int r)
-{
-	glm::ivec2 ps = pos;
-	if (idx == 1)
-	{
-		glm::vec4 trc = glm::vec4(0, 0, get_size());
-		auto k2 = check_box_cr1(ps, &trc, 1, sizeof(glm::vec4));
-
-		if (k2.x)
-		{
-			if (draggable && down == 1)
-			{
-				//todo form_move2end(form, this); // 移动窗口前面
-			}
-			if (!r)
-			{
-				if (down == 1 && ckinc == 0)
-				{
-					//curpos = ps - tpos;
-					ckinc++;
-				}
-				div_ev e = {};
-				e.p = this; e.down = down; e.clicks = clicks; e.mpos = ps;
-				if (on_click)
-				{
-					on_click(&e);	// 执行单击事件
-				}
-				//for (auto& c : on_mouses)
-				//{
-				//	c(&e);
-				//}
-			}
-			ckup = 1;
-		}
-		else {
-			ckup = 0;
-			//_hover = false;
-		}
-		if (down == 0)
-		{
-			if (ckinc)
-				ckup = 1;
-			ckinc = 0;
-		}
-	}
-	//tv->on_button(idx, down, ps - tpos, clicks);
-	//update(0);
-	//_draw_valid = true;
-}
-void div_cx::on_wheel(double x, double y)
-{
-	//update(0);
-}
-scroll_bar* div_cx::new_scroll_bar(const glm::ivec2& size, int vs, int cs, int rcw, bool v, const glm::ivec2& npos)
-{
-	auto p = new scroll_bar();
-	if (p)
-	{
-		add_widget(p);
-		p->_absolute = true;
-		p->_size = size;
-		auto ss = get_size();
-		glm::ivec2 dw = {};
-		if (!v)
-		{
-			if (p->_size.x < 0)
-				p->_size.x = ss.x - border.z * 2;
-			p->_pos.y = ss.y - border.y;
-			p->_pos.x = border.z;
-			dw.y = 1;
-			p->_dir = 0;
-		}
-		if (v)
-		{
-			if (p->_size.y < 0)
-				p->_size.y = ss.y - border.z * 2;
-			p->_pos.x = ss.x - (border.y);
-			p->_pos.y = border.z;
-			dw.x = 1;
-			p->_dir = 1;
-		}
-		if (p->_size.x < rcw) {
-			p->_size.x = rcw;
-		}
-		if (p->_size.y < rcw) {
-			p->_size.y = rcw;
-		}
-		dw *= p->_size;
-		p->_pos -= dw;
-		p->_pos -= npos;
-		p->set_viewsize(vs, cs, rcw);
-	}
-	return p;
-}
-scroll2_t div_cx::new_scroll2(const glm::ivec2& viewsize, int width, int rcw, const glm::ivec2& pos_width, const glm::ivec2& vnpos, const glm::ivec2& hnpos)
-{
-	scroll2_t r = {};
-	auto pss = viewsize;
-	{
-		auto cp = new_scroll_bar({ width,pss.y - width * 2 }, pss.y, pss.y, rcw, true, vnpos);
-		cp->_pos_width = pos_width.y > 0 ? pos_width.y : width * 2;//滚轮事件每次滚动量
-		cp->hover_sc = 1;	// 鼠标不在范围内也响应滚轮事件 
-		cp->hscroll = {};
-		cp->rounding = std::max(2, (int)(width * 0.5));
-		r.v = cp;
-	}
-	{
-		auto cp = new_scroll_bar({ pss.x - width * 2,width }, pss.x, pss.x, rcw, false, hnpos);
-		cp->_pos_width = pos_width.x > 0 ? pos_width.x : width;
-		cp->hscroll = {};
-		cp->rounding = std::max(2, (int)(width * 0.5));
-		r.h = cp;
-	}
-	return r;
-}
-#if 0
-void div_cx::on_event(uint32_t type, et_un_t* ep)
-{
-	auto e = &ep->v;
-	if (!visible)return;
-	auto t = (devent_type_e)type;
-	//glm::ivec2 vgpos = viewport;
-	int r1 = 0;
-	auto ppos = get_pos() + fpos;
-	auto sps = get_scroll_pos();
-	_hover_eq.w = type;
-	widget_t* hpw = 0;
-
-	if (t == devent_type_e::mouse_move_e)
-	{
-		auto p = e->m;
-		glm::ivec2 mps = { p->x,p->y };
-		glm::vec4 trc = glm::vec4(ppos, get_size());
-		if (!parent)
-		{
-			auto k2 = check_box_cr1(mps, &trc, 1, sizeof(glm::vec4));
-			if (k2.x) {
-				_bst |= (int)BTN_STATE::STATE_HOVER;
-				r1 = 1;
-				p->cursor = (int)cursor_st::cursor_arrow;
-				_hover = true;
-				if (_move_pos != mps)
-				{
-					_move_pos = mps;
-					_hover_eq.x = 0;
-				}
-				//printf("_hover\n");
-			}
-			else {
-				_move_pos = mps;
-				_hover_eq.z = 0;
-				_bst &= ~(int)BTN_STATE::STATE_HOVER;
-				if (ckinc == 0)
-					_hover = false;
-				//printf("on_leave\n");
-			}
-		}
-		if (horizontal)
-		{
-			widget_on_event(horizontal, type, ep, ppos);// 水平滚动条
-		}
-		if (vertical) {
-			widget_on_event(vertical, type, ep, ppos);// 垂直滚动条 
-		}
-		for (auto it = widgets.rbegin(); it != widgets.rend(); it++) {
-			auto pw = *it;
-			if (!pw || !pw->visible || pw->_disabled_events)continue;
-			auto vpos = sps * pw->hscroll;
-			on_wpe(pw, type, ep, ppos + vpos);
-		}
-		if (!parent)
-			on_wpe(this, type, ep, {});
-
-		event_wts.clear();
-		event_wts1.clear();
-		if (horizontal) {
-			horizontal->_bst& (int)BTN_STATE::STATE_HOVER ? event_wts.push_back(horizontal) : event_wts1.push_back(horizontal);//水平滚动条
-		}
-		if (vertical) {
-			vertical->_bst& (int)BTN_STATE::STATE_HOVER ? event_wts.push_back(vertical) : event_wts1.push_back(vertical);//垂直滚动条
-		}
-		for (auto it = widgets.rbegin(); it != widgets.rend(); it++) {
-			if ((*it)->_bst & (int)BTN_STATE::STATE_HOVER)
-				event_wts.push_back(*it);
-			else
-				event_wts1.push_back(*it);
-		}
-		if (this && !parent) {
-			if (this->_bst & (int)BTN_STATE::STATE_HOVER) {
-				event_wts.push_back(this);
-			}
-			else {
-				event_wts1.push_back(this);//本容器
-			}
-		}
-		auto length = event_wts.size();
-		{
-			// 生成鼠标离开消息
-			for (size_t i = 1; i < length; i++) {
-				auto pw = event_wts[i];
-				if (!pw || !pw->visible || pw->_disabled_events)continue;
-				auto vpos = sps * pw->hscroll;
-				auto p = e->m;
-				glm::ivec2 mps = { p->x,p->y };
-				mps -= ppos + vpos;
-				if (pw == this)mps -= ppos;
-				bool isd = pw->cmpos == mps;
-				pw->cmpos = mps;
-				pw->_bst &= ~(int)BTN_STATE::STATE_HOVER;
-				// 鼠标离开
-				pw->on_mevent((int)event_type_e::on_leave, mps, p);
-				if (pw->mevent_cb) {
-					pw->mevent_cb(pw, (int)event_type_e::on_leave, mps);
-				}
-			}
-		}
-
-	}
-	else
-	{
-		bool btn = !(t == devent_type_e::mouse_button_e && e->b->down == 0);// 弹起判断
-		int icc = 0;
-		auto length = event_wts.size();
-		for (size_t i = 0; i < length; i++)
-		{
-			auto pw = event_wts[i];
-			icc++;
-			if (!pw || !pw->visible || pw->_disabled_events)continue;
-			auto vpos = sps * pw->hscroll + ppos;
-			if (pw == this)
-				vpos = {};
-			on_wpe(pw, type, ep, vpos);
-			if (ep->ret && btn && pw != this) {
-				hpw = pw;
-				break;
-			}
-		}
-		if (!hpw)
-		{
-			auto ln = event_wts1.size();
-			for (size_t i = 0; i < ln; i++)
-			{
-				auto pw = event_wts1[i];
-				if (!pw || !pw->visible || pw->_disabled_events)continue;
-				auto vpos = sps * pw->hscroll + ppos;
-				if (pw == this)
-					vpos = {};
-				on_wpe(pw, type, ep, vpos);
-				if (ep->ret && btn) {
-					hpw = pw; break;
-				}
-			}
-		}
-	}
-	if (!ep->ret)
-		ep->ret = r1;
-	for (auto pt : widgets) {
-		if (pt)
-			pt->on_event(type, ep);
-	}
-	switch (t)
-	{
-	case devent_type_e::mouse_move_e:
-	{
-		auto length = event_wts.size();
-		auto p = e->m;
-		glm::ivec2 mps = { p->x,p->y };
-		mps -= ppos;
-		on_motion(mps);
-		_hover_eq.z = (length > 0) ? 1 : 0;// 悬停准备
-		if (ckinc > 0)
-		{
-			for (auto& it : drags)
-			{
-				if (it.ck > 0)
-				{
-					it.pos = mps - it.tp;	// 处理拖动坐标
-					it.cp1 = mps;
-				}
-			}
-		}
-		else {
-			for (auto& it : drags)
-			{
-				it.ck = 0;
-			}
-		}
-	}
-	break;
-	case devent_type_e::mouse_button_e:
-	{
-		auto p = e->b;
-		glm::ivec2 mps = { p->x,p->y };
-		mps -= ppos;
-		on_button(p->button, p->down, mps, p->clicks, ep->ret);
-
-		if (p->button == 1) {
-			if (p->down == 1) {
-				drag_v6* dp = 0;
-
-				for (auto vt = dragsp.rbegin(); vt != dragsp.rend(); vt++)
-				{
-					auto dp1 = *vt;
-					auto& it = *dp1;
-					it.z = 0;
-					if (it.size.x > 0 && it.size.y > 0)
-					{
-						if (dp)continue;
-						glm::vec4 trc = { it.pos + sps,it.size };
-						auto k2 = check_box_cr1(mps, &trc, 1, sizeof(glm::vec4));
-						if (k2.x)
-						{
-							it.tp = mps - it.pos;	// 记录当前拖动坐标
-							it.ck = 1;
-							it.cp1 = it.cp0 = mps;
-							it.z = 1;
-							dp = dp1;
-						}
-					}
-				}
-				if (!dp)
-				{
-					for (auto vt = dragsp.rbegin(); vt != dragsp.rend(); vt++)
-					{
-						auto dp1 = *vt;
-						auto& it = *dp1;
-						if (it.size.x == 0 || it.size.y == 0)
-						{
-							it.z = 0;
-							it.cp1 = it.cp0 = mps;
-							it.tp = mps - it.pos;	// 记录当前拖动坐标
-							it.ck = 1;
-						}
-					}
-				}
-				else
-				{
-					for (auto vt = dragsp.rbegin(); vt != dragsp.rend(); vt++)
-					{
-						auto dp1 = *vt;
-						auto& it = *dp1;
-						if (it.size.x == 0 && it.size.y == 0)
-						{
-							it.z = 0;
-							it.cp1 = it.cp0 = mps;
-						}
-					}
-					sortdg();
-				}
-			}
-		}
-
-		_hover_eq.z = 0;
-		//printf("ck:%d\t%p\n", ckinc, this);
-		if (ckup > 0)
-			ep->ret = 1;
-	}
-	break;
-	case devent_type_e::mouse_wheel_e:
-	{
-		auto p = e->w;
-		on_wheel(p->x, p->y);
-		if (_hover)
-		{
-			ep->ret = 1;		// 滚轮独占本事件
-		}
-	}
-	break;
-	case devent_type_e::keyboard_e:
-	{
-		//on_keyboard(ep);
-	}
-	break;
-	}
-	evupdate++;
-}
-#endif
-bool div_cx::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto t = (event_type_e)type;
-	bool ret = false;
-	auto p = (mouse_move_et*)e;
-	auto mpos = mps;
-	glm::ivec2 tpos = {};
-	tpos += thickness;
-	switch (t)
-	{
-	case event_type_e::on_move:
-	{
-	}break;
-	case event_type_e::on_leave:
-	{
-	}break;
-	case event_type_e::on_down:
-	{
-		mpos -= tpos + _pos;
-		if (draggable)
-			dindex = 1;
-		ret = true;
-		valid = true;
-	}break;
-	case event_type_e::on_drag:
-	{
-		if (draggable)
-		{
-			//printf("draggable %.1f %.1f\n", mps.x, mps.y);
-			set_pos(mps);
-		}
-		ret = true;
-	}break;
-	case event_type_e::mouse_up:
-	{
-		if (draggable)
-		{
-			dindex = 0;
-		}
-		valid = true;
-		ret = true;
-	}break;
-	};
-	return false;
-}
-bool vht(widget_t** widgets, size_t count, const glm::ivec2& p) {
-	bool r = false;
-	for (size_t i = 0; i < count; i++) {
-		auto pw = widgets[i];
-		if (!pw || !pw->visible || pw->_disabled_events)continue;
-		glm::vec2 mps = p;
-		mps -= pw->get_pos();
-		// 判断是否鼠标在控件上
-		glm::vec4 ppos = { 0,0,pw->_size };
-		auto k = check_box_cr1(mps, &ppos, 1, sizeof(glm::vec4));
-		if (k.x) { r = true; break; }
-	}
-	return r;
-}
-bool div_cx::hittest(const glm::ivec2& pos)
-{
-	bool r = false;
-	auto sps = get_scroll_pos();
-	glm::ivec2 ips = get_pos() + fpos;
-	auto ss = (glm::ivec2)_size;
-	glm::vec4 rc = { ips ,ips + ss };
-	if (rect_includes(rc, pos)) {
-		r = vht(widgets.data(), widgets.size(), pos);
-		if (!r) {
-			widget_t* pws[2] = { horizontal, vertical };
-			r = vht(pws, 2, pos);
-		}
-	}
-	return r;
-}
-
-bool div_cx::press_test()
-{
-	bool r = false;
-	auto sps = get_scroll_pos();
-	glm::ivec2 ips = get_pos(); auto ss = (glm::ivec2)_size;
-	glm::vec4 rc = { ips ,ips + ss };
-
-	if (ckinc > 0 || _bst & (int)BTN_STATE::STATE_ACTIVE) {
-		r = true;
-	}
-	else
-	{
-		// 按下鼠标时点中控件则捕获
-		for (auto it = widgets.rbegin(); it != widgets.rend(); it++) {
-			auto pw = (widget_t*)*it;
-			if (!pw || !pw->visible || pw->_disabled_events)continue;
-			if (pw->_bst & (int)BTN_STATE::STATE_ACTIVE) {
-				r = true;
-			}
-		}
-	}
-	return r;
-}
-
-size_t div_cx::add_dragpos(const glm::ivec2& pos, const glm::ivec2& size)
-{
-	auto ps = drags.size();
-	drag_v6 t = {};
-	t.pos = pos;
-	t.size = size;
-	t.z = 0;
-	drags.push_back(t);
-	update_drag = true;
-	return ps;
-}
-
-void div_cx::remove_dragpos(size_t idx)
-{
-	drags.erase(drags.begin() + idx); update_drag = true;
-}
-
-glm::ivec3 div_cx::get_dragpos(size_t idx)
-{
-	glm::ivec3 r = (idx < drags.size()) ? glm::ivec3(drags[idx].pos, drags[idx].z) : glm::ivec3();
-	r += glm::ivec3(get_scroll_pos(), 0);
-	return r;
-}
-
-drag_v6* div_cx::get_dragv6(size_t idx)
-{
-	return (idx < drags.size()) ? &drags[idx] : nullptr;
-}
-
-bool div_cx::update(float delta)
-{
-	int ic = 0;
-
-	if (tadd.size()) {
-		for (auto p : tadd)
-			widgets.push_back(p);
-		tadd.clear();
-	}
-	if (tremove.size())
-	{
-		auto& v = widgets;
-		auto ps = v.size();
-		for (auto p : tremove) {
-			v.erase(std::remove(v.begin(), v.end(), p), v.end());
-		}
-		tremove.clear();
-	}
-	if (update_drag)
-	{
-		dragsp.clear();
-		for (auto& it : drags) { dragsp.push_back(&it); }
-		sortdg();
-		update_drag = false; ic++;
-	}
-	if (delta > 0)
-	{
-		for (auto& it : widgets) {
-			ic += it->update(delta);
-			if (ic > 0)
-				ic = ic;
-		}
-	}
-	if (uplayout)
-	{
-		clayout(); ic++;
-	}
-	if (valid) {
-		sort_draw.clear();
-		sort_draw.reserve(widgets.size());
-		for (auto p : widgets) {
-			sort_draw.push_back(p);
-		}
-		std::stable_sort(sort_draw.begin(), sort_draw.end(), [](widget_t* p1, widget_t* p2) {return p1->dindex < p2->dindex; });
-		valid = false;
-		ic++;
-	}
-	if (dindex)ic++;
-	return ic > 0;
-}
-
-void div_cx::set_editing(const std::string& str, const glm::ivec2& cpos, int lineheight)
-{
-	editingstr = str;
-	editpos = cpos;
-	line_height = lineheight;
-}
-
-glm::vec2 get_margin_size(flex_data* c) {
-	glm::vec2 m = {};
-	if (c)
-	{
-		m.x = c->margin_left + c->margin_right;
-		m.y = c->margin_top + c->margin_bottom;
-	}
-	return m;
-}
-// 计算一行布局，range为当前行的控件起始索引和数量，tempfv为临时使用的数组
-glm::vec2 calc_line_layout(widget_t** p, const glm::ivec2& range, const glm::ivec2& box_size, flex_data* boxflex, flex_data* flex_child
-	, const glm::ivec2& pos, std::vector<node_dt>& tempfv, flex_run* ctx)
-{
-	int count = range.y;
-	tempfv.resize(count + 1);
-	auto cpos = pos;
-	node_dt* fnode = tempfv.data();
-	auto cp = fnode + 1;
-	*fnode = {};
-	flex_data tf[2] = {};
-	if (boxflex)
-	{
-		tf[0] = *boxflex;
-		fnode->size = box_size;
-		fnode->child = cp;
-		fnode->child_count = count;
-		fnode->line_count = 0;
-	}
-	glm::ivec2 margin_size = {};
-	glm::ivec2 margin_pos = {};
-	if (flex_child) {
-		tf[1] = *flex_child;
-		if (tf[0].wrap > flex_wrap::NO_WRAP)
-		{
-			margin_size = get_margin_size(flex_child);
-			margin_pos.x = flex_child->margin_left;
-			margin_pos.y = flex_child->margin_top;
-			cpos += margin_pos;
-			tf[1].margin_left = 0;
-			tf[1].margin_right = 0;
-			tf[1].margin_top = 0;
-			tf[1].margin_bottom = 0;
-		}
-	}
-	for (int i = 0; i < count; i++)
-	{
-		auto it = p[range.x + i];
-		cp[i] = {};
-		cp[i].index = 1;
-		cp[i].size = it->get_size() + margin_size;
-		cp[i].position = it->_absolute ? 1 : 0;
-	}
-	auto nrc = flex_run_layout(ctx, tf, 2, fnode, fnode->child_count + 1);
-	for (size_t y = 0; y < fnode->child_count; y++)
-	{
-		auto t0 = fnode->child + y;
-		auto& bt = p[range.x + y];
-		if (bt->_absolute)
-		{
-			continue;
-		}
-		glm::vec2 vps2 = t0->frame;
-		vps2 += cpos;
-		bt->set_pos(vps2);
-	}
-	return glm::vec2(nrc.z, nrc.w);
-}
-void div_cx::clayout()
-{
-	if (!uplayout)return;
-	uplayout = false;
-	valid = true;
-	widget_t** p = widgets.data();
-	glm::vec2 pos = {};
-	if (!lctx) {
-		lctx = new_flex_run(0);
-	}
-	if (lines.empty())
-	{
-		// 竖排
-		calc_line_layout(p, { 0,widgets.size() }, { _size.x,_size.y }, &flex, &flex_child, pos, tempfv, lctx);
-	}
-	else {
-		for (auto& it : lines)
-		{
-			auto cs = calc_line_layout(p, it, { _size.x,_size.y }, &flex, &flex_child, pos, tempfv, lctx);
-			pos.y += cs.y;
-		}
-	}
-	return;
-}
-
-
-
-#endif // 1
-
-
-
-
-#if 1
-
-// A cardinal direction
-enum GuiDir : int
-{
-	GuiDir_None = -1,
-	GuiDir_Left = 0,
-	GuiDir_Right = 1,
-	GuiDir_Up = 2,
-	GuiDir_Down = 3,
-	GuiDir_COUNT
-};
-
-#define STB_TEXTEDIT_CHARTYPE   char
-#define STB_TEXTEDIT_STRING     text_control
-
-// get the base type
-
-#ifndef STB_TEXTEDIT_UNDOSTATECOUNT
-#define STB_TEXTEDIT_UNDOSTATECOUNT   99
-#endif
-#ifndef STB_TEXTEDIT_UNDOCHARCOUNT
-#define STB_TEXTEDIT_UNDOCHARCOUNT   999
-#endif
-#ifndef STB_TEXTEDIT_CHARTYPE
-#define STB_TEXTEDIT_CHARTYPE        int
-#endif
-#ifndef STB_TEXTEDIT_POSITIONTYPE
-#define STB_TEXTEDIT_POSITIONTYPE    int
-#endif
-
-struct StbUndoRecord
-{
-	// private data
-	STB_TEXTEDIT_POSITIONTYPE  where;
-	STB_TEXTEDIT_POSITIONTYPE  insert_length;
-	STB_TEXTEDIT_POSITIONTYPE  delete_length;
-	int                        char_storage;
-};
-
-struct StbUndoState
-{
-	// private data
-	StbUndoRecord          undo_rec[STB_TEXTEDIT_UNDOSTATECOUNT];
-	STB_TEXTEDIT_CHARTYPE  undo_char[STB_TEXTEDIT_UNDOCHARCOUNT];
-	short undo_point, redo_point;
-	int undo_char_point, redo_char_point;
-};
-
-struct STB_TexteditState
-{
-	/////////////////////
-	//
-	// public data
-	//
-
-	int cursor;
-	// position of the text cursor within the string
-
-	int select_start;          // selection start point
-	int select_end;
-	// selection start and end point in characters; if equal, no selection.
-	// note that start may be less than or greater than end (e.g. when
-	// dragging the mouse, start is where the initial click was, and you
-	// can drag in either direction)
-
-	bool insert_mode;
-	// each textfield keeps its own insert mode state. to keep an app-wide
-	// insert mode, copy this value in/out of the app state
-
-	int row_count_per_page;
-	// page size in number of row.
-	// this value MUST be set to >0 for pageup or pagedown in multilines documents.
-
-	/////////////////////
-	//
-	// private data
-	//
-	bool cursor_at_end_of_line; // not implemented yet
-	bool initialized;
-	bool has_preferred_x;
-	bool single_line;
-	bool padding1, padding2, padding3;
-	float preferred_x; // this determines where the cursor up/down tries to seek to along x
-	StbUndoState undostate;
-};
-
-
-////////////////////////////////////////////////////////////////////////
-//
-//     StbTexteditRow
-//
-// Result of layout query, used by stb_textedit to determine where
-// the text in each row is.
-
-// result of layout query
-struct StbTexteditRow
-{
-	float x0, x1;             // starting x location, end x location (allows for align=right, etc)
-	float baseline_y_delta;  // position of baseline relative to previous row's baseline
-	float ymin, ymax;         // height of row above and below baseline
-	int num_chars;
-};
-
-// define our editor structure
-struct text_control
-{
-	STB_TexteditState state = {};
-	std::string str;
-	size_t curline = 0;				// 当前行号
-	size_t curline_idx = 0;			// 当前行号偏移
-	font_familys_t* family = 0;
-	int font_size = 16;
-	int c_ct = 0;
-	int c_d = 0;
-	int64_t ccursor8 = 0;	//当前光标字符
-	int64_t caret_old = {};		//保存输入光标
-	glm::ivec3 cursor_pos = {};
-	glm::ivec2 scroll_pos = {};				// 滚动坐标
-	glm::ivec2 _align_pos = {};				// 对齐坐标
-	glm::ivec2 _align_pos1 = {};			// 对齐坐标
-	glm::vec2 view = {};	// 区域
-
-	std::vector<glm::ivec2> lvs;// 行开始结束
-	std::vector<std::vector<int>> widths;// 字符偏移
-	std::vector<glm::ivec4> rangerc;
-	PathsD range_path;						// 圆角选区缓存
-	//path_v ptr_path;
-	float round_path = 0.28;				// 圆角比例
-	float _r_posy = -1;						// 选区偏移
-
-	int lineheight = 0;
-	int8_t LastMoveDirectionLR = 0;
-	bool is_scroll = true;
-};
-
-// define all the #defines needed 
-
-#define KEYDOWN_BIT                    0x80000000
-
-#define STB_TEXTEDIT_STRINGLEN(tc)     ((tc)->str.size())
-#define STB_TEXTEDIT_LAYOUTROW         stb_textedit_layoutrow
-#define STB_TEXTEDIT_GETWIDTH		   stb_textedit_getwidth
-#define STB_TEXTEDIT_KEYTOTEXT(key)    (((key) & KEYDOWN_BIT) ? 0 : (key))
-#define STB_TEXTEDIT_GETCHAR(tc,i)     ((tc)->str[i])
-#define STB_TEXTEDIT_NEWLINE           '\n'
-#define STB_TEXTEDIT_IS_SPACE(ch)      isspace(ch)
-#define STB_TEXTEDIT_DELETECHARS       delete_chars
-#define STB_TEXTEDIT_INSERTCHARS       insert_chars
-
-#define STB_TEXTEDIT_K_SHIFT           0x40000000
-#define STB_TEXTEDIT_K_CONTROL         0x20000000
-#define STB_TEXTEDIT_K_LEFT            (KEYDOWN_BIT | 1) // actually use VK_LEFT, SDLK_LEFT, etc
-#define STB_TEXTEDIT_K_RIGHT           (KEYDOWN_BIT | 2) // VK_RIGHT
-#define STB_TEXTEDIT_K_UP              (KEYDOWN_BIT | 3) // VK_UP
-#define STB_TEXTEDIT_K_DOWN            (KEYDOWN_BIT | 4) // VK_DOWN
-#define STB_TEXTEDIT_K_LINESTART       (KEYDOWN_BIT | 5) // VK_HOME
-#define STB_TEXTEDIT_K_LINEEND         (KEYDOWN_BIT | 6) // VK_END
-#define STB_TEXTEDIT_K_TEXTSTART       (STB_TEXTEDIT_K_LINESTART | STB_TEXTEDIT_K_CONTROL)
-#define STB_TEXTEDIT_K_TEXTEND         (STB_TEXTEDIT_K_LINEEND   | STB_TEXTEDIT_K_CONTROL)
-#define STB_TEXTEDIT_K_DELETE          (KEYDOWN_BIT | 7) // VK_DELETE
-#define STB_TEXTEDIT_K_BACKSPACE       (KEYDOWN_BIT | 8) // VK_BACKSPACE
-#define STB_TEXTEDIT_K_UNDO            (KEYDOWN_BIT | STB_TEXTEDIT_K_CONTROL | 'z')
-#define STB_TEXTEDIT_K_REDO            (KEYDOWN_BIT | STB_TEXTEDIT_K_CONTROL | 'y')
-#define STB_TEXTEDIT_K_INSERT          (KEYDOWN_BIT | 9) // VK_INSERT
-#define STB_TEXTEDIT_K_WORDLEFT        (STB_TEXTEDIT_K_LEFT  | STB_TEXTEDIT_K_CONTROL)
-#define STB_TEXTEDIT_K_WORDRIGHT       (STB_TEXTEDIT_K_RIGHT | STB_TEXTEDIT_K_CONTROL)
-#define STB_TEXTEDIT_K_PGUP            (KEYDOWN_BIT | 10) // VK_PGUP -- not implemented
-#define STB_TEXTEDIT_K_PGDOWN          (KEYDOWN_BIT | 11) // VK_PGDOWN -- not implemented
-
-#define STB_TEXTEDIT_GETWIDTH_NEWLINE -1
-
-#ifndef STB_TEXTEDIT_memmove
-#include <string.h>
-#define STB_TEXTEDIT_memmove memmove
-#endif
-
-#ifndef STB_TEXTEDIT_GETPREVCHARINDEX
-#define STB_TEXTEDIT_GETPREVCHARINDEX stb_textedit_getprevcharindex
-#endif
-#ifndef STB_TEXTEDIT_GETNEXTCHARINDEX
-#define STB_TEXTEDIT_GETNEXTCHARINDEX stb_textedit_getnextcharindex
-#endif
-
-
-float stb_textedit_getwidth(STB_TEXTEDIT_STRING* str, int n, int idx);
-
-
-// define the functions we need
-void stb_textedit_layoutrow1(StbTexteditRow* row, STB_TEXTEDIT_STRING* str, int start_i)
-{
-	int remaining_chars = str->str.size() - start_i;
-	row->num_chars = remaining_chars; // should do real word wrap here
-	row->x0 = 0;
-	row->ymin = 0;
-	auto r = row;
-	int i = start_i;
-	float row_width = 0.0f;
-	while (str->str[i] != '\n' && i < STB_TEXTEDIT_STRINGLEN(str)) {
-		row_width += STB_TEXTEDIT_GETWIDTH(str, start_i, i);
-		if (str->view.x > 0 && row_width > str->view.x) break; // 自动换行触发条件
-		i++;
-	}
-	r->x1 = row_width;
-	row->ymax = row->baseline_y_delta = str->lineheight;
-	r->num_chars = (i - start_i) + 1;
-
-}
-void stb_textedit_layoutrow(StbTexteditRow* row, STB_TEXTEDIT_STRING* str, int start_i) {
-	int remaining_chars = str->str.size() - start_i;
-	row->num_chars = remaining_chars;
-	row->x0 = 0;
-	row->ymin = 0;
-	auto r = row;
-	int i = start_i;
-	float row_width = 0.0f;
-	int len = STB_TEXTEDIT_STRINGLEN(str);
-
-	while (i < len) {
-		if (str->str[i] == '\n') break;  // 遇到换行符退出
-
-		float char_width = STB_TEXTEDIT_GETWIDTH(str, 0, i);
-		float next_width = row_width + char_width;
-
-		// 预判宽度是否超限
-		if (str->view.x > 0 && next_width > str->view.x) break;
-
-		row_width = next_width;
-		i++;
-	}
-
-	// 显式处理换行符 
-	if (i < len && str->str[i] == '\n') {
-		i++;
-	}
-
-	r->x1 = row_width;
-	row->ymax = row->baseline_y_delta = str->lineheight;
-	r->num_chars = i - start_i;  // 修正字符数计算 
-}
-
-int delete_chars(STB_TEXTEDIT_STRING* str, int pos, int num)
-{
-	str->str.erase(pos, num);
-	return num;
-}
-
-int insert_chars(STB_TEXTEDIT_STRING* str, int pos, const STB_TEXTEDIT_CHARTYPE* newtext, int num)
-{
-	str->str.insert(pos, newtext, num);
-	return num;
-}
-//float STB_TEXTEDIT_GETWIDTH(ImGuiInputTextState* obj, int line_start_idx, int char_idx)
-//{
-//	unsigned int c; ImTextCharFromUtf8(&c, obj->TextSrc + line_start_idx + char_idx, obj->TextSrc + obj->TextLen);
-//	if ((ImWchar)c == '\n') 
-//		return IMSTB_TEXTEDIT_GETWIDTH_NEWLINE;
-//	ImGuiContext& g = *obj->Ctx;
-//	return g.FontBaked->GetCharAdvance((ImWchar)c) * g.FontBakedScale;
-//}
-
-
+ 
 // todo font_get_char_extent
 glm::ivec4 font_get_char_extent(char32_t ch, unsigned char font_size, font_familys_t* fallbacks, font_family_t** oft)
 {
@@ -3614,2920 +78,3431 @@ int font_get_lineheight(font_familys_t* family, int fontsize, bool first) {
 	}
 	return h;
 }
-// 行开始位置，字符位置
-float stb_textedit_getwidth(STB_TEXTEDIT_STRING* str, int line_start_idx, int char_idx)
+
+void gui_viewport::set_viewport(const glm::ivec4& rc)
 {
-	if (str && str->family)
+	//_root._pos = { rc.x,rc.y };
+	//_root._size = { rc.z,rc.w };
+}
+
+void gui_viewport::clear()
+{
+	//_root.clear();
+}
+
+//void gui_viewport::add_div(div_cx0* c)
+//{
+//	_root.add(c);
+//}
+
+gui_viewport::~gui_viewport()
+{
+	if (ui)
 	{
-		const char* p = str->str.c_str();
-		uint32_t ch = 0;
-		auto nn = md::utf8_to_unicode(p + line_start_idx + char_idx, &ch);
-		if (ch == '\n') {
-			return STB_TEXTEDIT_GETWIDTH_NEWLINE;
-		}
-		if (ch)
-		{
-			auto rc = font_get_char_extent(ch, str->font_size, str->family, 0);
-			return rc.z;
-		}
+		vgui_destroy(ui);
+		ui = nullptr;
 	}
-	return 0;
 }
-// 返回上一个字符位置
-int stb_textedit_getprevcharindex(STB_TEXTEDIT_STRING* str, int idx) {
-	auto p = str->str.c_str();
-	auto p1 = md::get_utf8_prev(p + idx);
-	return (p1 - p);
-}
-// 返回下一个字符位置
-int stb_textedit_getnextcharindex(STB_TEXTEDIT_STRING* str, int idx) {
-	auto p = str->str.c_str() + idx;
-	auto p1 = md::utf8_next_char(p);
-	return (p1 - p) + idx;
-}
-/////////////////////////////////////////////////////////////////////////////
-//
-//      Mouse input handling
-//
 
-// traverse the layout to locate the nearest character to a display position
-static int stb_text_locate_coord(STB_TEXTEDIT_STRING* str, float x, float y, int* out_side_on_line)
+void gui_viewport::trigger(dev_event_t* e)
 {
-	StbTexteditRow r;
-	int n = STB_TEXTEDIT_STRINGLEN(str);
-	float base_y = 0, prev_x;
-	int i = 0, k;
-
-	r.x0 = r.x1 = 0;
-	r.ymin = r.ymax = 0;
-	r.num_chars = 0;
-	*out_side_on_line = 0;
-
-	// search rows to find one that straddles 'y'
-	while (i < n) {
-		STB_TEXTEDIT_LAYOUTROW(&r, str, i);
-		if (r.num_chars <= 0)
-			return n;
-
-		if (i == 0 && y < base_y + r.ymin)
-			return 0;
-
-		if (y < base_y + r.ymax)
-			break;
-
-		i += r.num_chars;
-		base_y += r.baseline_y_delta;
-	}
-
-	// below all text, return 'after' last character
-	if (i >= n)
+	if (!e) return;
+	if (!ui)
 	{
-		*out_side_on_line = 1;
-		return n;
-	}
-
-	// check if it's before the beginning of the line
-	if (x < r.x0)
-		return i;
-
-	// check if it's before the end of the line
-	if (x < r.x1) {
-		// search characters in row for one that straddles 'x'
-		prev_x = r.x0;
-		for (k = 0; k < r.num_chars; k = STB_TEXTEDIT_GETNEXTCHARINDEX(str, i + k) - i) {
-			float w = STB_TEXTEDIT_GETWIDTH(str, i, k);
-			if (x < prev_x + w) {
-				*out_side_on_line = (k == 0) ? 0 : 1;
-				if (x < prev_x + w / 2)
-					return k + i;
-				else
-					return STB_TEXTEDIT_GETNEXTCHARINDEX(str, i + k);
-			}
-			prev_x += w;
-		}
-		// shouldn't happen, but if it does, fall through to end-of-line case
-	}
-
-	// if the last character is a newline, return that. otherwise return 'after' the last character
-	*out_side_on_line = 1;
-	if (STB_TEXTEDIT_GETCHAR(str, i + r.num_chars - 1) == STB_TEXTEDIT_NEWLINE)
-		return i + r.num_chars - 1;
-	else
-		return i + r.num_chars;
-}
-
-// API click: on mouse down, move the cursor to the clicked location, and reset the selection
-static void stb_textedit_click(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, float x, float y)
-{
-	// In single-line mode, just always make y = 0. This lets the drag keep working if the mouse
-	// goes off the top or bottom of the text
-	int side_on_line;
-	if (state->single_line)
-	{
-		StbTexteditRow r;
-		STB_TEXTEDIT_LAYOUTROW(&r, str, 0);
-		y = r.ymin;
-	}
-
-	state->cursor = stb_text_locate_coord(str, x, y, &side_on_line);
-	state->select_start = state->cursor;
-	state->select_end = state->cursor;
-	state->has_preferred_x = 0;
-	str->LastMoveDirectionLR = (side_on_line ? GuiDir_Right : GuiDir_Left);
-}
-
-// API drag: on mouse drag, move the cursor and selection endpoint to the clicked location
-static void stb_textedit_drag(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, float x, float y)
-{
-	int p = 0;
-	int side_on_line;
-
-	// In single-line mode, just always make y = 0. This lets the drag keep working if the mouse
-	// goes off the top or bottom of the text
-	if (state->single_line)
-	{
-		StbTexteditRow r;
-		STB_TEXTEDIT_LAYOUTROW(&r, str, 0);
-		y = r.ymin;
-	}
-
-	if (state->select_start == state->select_end)
-		state->select_start = state->cursor;
-
-	p = stb_text_locate_coord(str, x, y, &side_on_line);
-	state->cursor = state->select_end = p;
-	str->LastMoveDirectionLR = (side_on_line ? GuiDir_Right : GuiDir_Left);
-}
-
-/////////////////////////////////////////////////////////////////////////////
-//
-//      Keyboard input handling
-//
-
-// forward declarations
-static void stb_text_undo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-static void stb_text_redo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-static void stb_text_makeundo_delete(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int length);
-static void stb_text_makeundo_insert(STB_TexteditState* state, int where, int length);
-static void stb_text_makeundo_replace(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int old_length, int new_length);
-
-typedef struct
-{
-	float x, y;    // position of n'th character
-	float height; // height of line
-	int first_char, length; // first char of row, and length
-	int prev_first;  // first char of previous row
-} StbFindState;
-
-// find the x/y location of a character, and remember info about the previous row in
-// case we get a move-up event (for page up, we'll have to rescan)
-static void stb_textedit_find_charpos(StbFindState* find, STB_TEXTEDIT_STRING* str, int n, int single_line)
-{
-	StbTexteditRow r;
-	int prev_start = 0;
-	int z = STB_TEXTEDIT_STRINGLEN(str);
-	int i = 0, first;
-
-	if (n == z && single_line) {
-		// special case if it's at the end (may not be needed?)
-		STB_TEXTEDIT_LAYOUTROW(&r, str, 0);
-		find->y = 0;
-		find->first_char = 0;
-		find->length = z;
-		find->height = r.ymax - r.ymin;
-		find->x = r.x1;
+		e->ret = 0;
 		return;
 	}
 
-	// search rows to find the one that straddles character n
-	find->y = 0;
+	int consumed = vgui_dispatch_dev_event(ui, e);
+	if (consumed) e->ret = 1;
 
-	for (;;) {
-		STB_TEXTEDIT_LAYOUTROW(&r, str, i);
-		if (n < i + r.num_chars)
-			break;
-		if (str->LastMoveDirectionLR == GuiDir_Right && str->state.cursor > 0 && str->state.cursor == i + r.num_chars && STB_TEXTEDIT_GETCHAR(str, i + r.num_chars - 1) != STB_TEXTEDIT_NEWLINE) // [DEAR IMGUI] Wrapping point handling
-			break;
-		if (i + r.num_chars == z && z > 0 && STB_TEXTEDIT_GETCHAR(str, z - 1) != STB_TEXTEDIT_NEWLINE)  // [DEAR IMGUI] special handling for last line
-			break;   // [DEAR IMGUI]
-		prev_start = i;
-		i += r.num_chars;
-		find->y += r.baseline_y_delta;
-		if (i == z) // [DEAR IMGUI]
+	io.WantCaptureMouse = vgui_context_wants_mouse(ui) != 0;
+	io.WantCaptureKey = vgui_context_wants_keyboard(ui) != 0;
+	io.WantTextInput = vgui_context_wants_text_input(ui) != 0;
+	vgui_context_get_text_input_rect(ui, &ime_rect.x, &ime_rect.y, &ime_rect.z, &ime_rect.w);
+
+	if (e->type == dev_event_type_e::mouse_move_e && e->v.m)
+		e->v.m->cursor = (cursor_st)vgui_context_get_cursor(ui);
+}
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+// C API implementation
+//
+// The public API (gui/vgui.h) is backed by an independent, retained-mode
+// widget tree.  The legacy widget classes above are kept for C++ users and for
+// the drawing helpers, but the C API has its own layout, event dispatch and
+// renderer.  This keeps the public surface small and makes the behaviour
+// predictable for C consumers.
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+
+struct vgui_widget
+{
+	vgui_context* ctx = nullptr;
+	vgui_widget* parent = nullptr;
+	std::vector<vgui_widget*> children;
+	vgui_widget_kind kind = VGUI_PANEL;
+
+	std::string text;
+	std::string placeholder;
+	std::string edit_text;
+	std::string ime_text;
+	std::string id;
+
+	void* user = nullptr;
+	vgui_event_fn event_fn = nullptr;
+	vgui_value_fn value_fn = nullptr;
+	vgui_text_fn text_fn = nullptr;
+
+	// layout ---------------------------------------------------------------
+	vgui_layout_kind layout = VGUI_LAYOUT_ABSOLUTE;
+	vgui_align align_items = VGUI_ALIGN_START;
+	vgui_align align_self = VGUI_ALIGN_AUTO;
+	vgui_justify justify = VGUI_JUSTIFY_START;
+	float x = 0, y = 0;
+	float req_w = 0, req_h = 0;
+	float min_w = 0, min_h = 0;
+	float max_w = 0, max_h = 0;
+	float margin[4] = { 0, 0, 0, 0 };	// left, top, right, bottom
+	float padding[4] = { 0, 0, 0, 0 };
+	float gap = 0;
+	float grow = 0;
+
+	int scrollable_x = 0, scrollable_y = 0;
+	float scroll_x = 0, scroll_y = 0;
+	float content_w = 0, content_h = 0;
+
+	float abs_x = 0, abs_y = 0, abs_w = 0, abs_h = 0;
+	float intrinsic_w = 0, intrinsic_h = 0;
+
+	// visual ---------------------------------------------------------------
+	vgui_color bg = 0;
+	vgui_color border = 0;
+	vgui_color text_color = 0;
+	vgui_color accent = 0;
+	vgui_color track = 0;
+	float font_size = 0;
+	float rounding = 0;
+	float border_width = 0;
+	float opacity = 1.0f;
+	float text_align_x = 0.5f;
+	float text_align_y = 0.5f;
+	int clip_children = 1;
+
+	// state ----------------------------------------------------------------
+	int visible = 1;
+	int enabled = 1;
+	int focusable = 0;
+	int hovered = 0;
+	int pressed = 0;
+	int focused = 0;
+	int pressed_button = 0;
+	float hover_anim = 0;
+	float press_anim = 0;
+	float check_anim = 0;
+	vgui_cursor cursor_type = VGUI_CURSOR_ARROW;
+
+	// values ---------------------------------------------------------------
+	float value = 0.0f;
+	float range_min = 0.0f;
+	float range_max = 1.0f;
+	float step = 0.0f;
+	int checked = 0;
+	int vertical = 0;
+
+	// edit -----------------------------------------------------------------
+	int edit_cursor = 0;
+	int edit_anchor = 0;
+	int ime_cursor = 0;
+	int ime_length = 0;
+	int multiline = 0;
+	int password = 0;
+	int readonly = 0;
+	char password_char = '*';
+	float edit_scroll_x = 0;
+	float edit_scroll_y = 0;
+	float caret_blink = 0;
+
+	bool destroy_pending = false;
+};
+
+struct vgui_context
+{
+	font_familys_t* font = nullptr;
+	float font_size = 16.0f;
+	int width = 0, height = 0;
+	vgui_theme theme = {};
+	vgui_widget* root = nullptr;
+
+	std::unordered_set<vgui_widget*> all_widgets;
+	std::unordered_set<vgui_widget*> alive;
+	std::vector<vgui_widget*> pending_delete;
+
+	// input state ----------------------------------------------------------
+	float mouse_x = 0, mouse_y = 0;
+	int mouse_down[8] = {};
+	int click_count[8] = {};
+	double click_time[8] = { -10, -10, -10, -10, -10, -10, -10, -10 };
+	vgui_widget* hot = nullptr;
+	vgui_widget* active = nullptr;
+	vgui_widget* press_target = nullptr;
+	int press_button = 0;
+	vgui_widget* focus = nullptr;
+	vgui_widget* slider_drag = nullptr;
+	double time = 0;
+
+	int want_mouse = 0;
+	int want_key = 0;
+	int want_text = 0;
+	vgui_cursor cursor = VGUI_CURSOR_ARROW;
+
+	bool layout_dirty = true;
+	bool in_input = false;
+};
+
+namespace {
+
+//----------------------------------------------------------------------------
+// small helpers
+//----------------------------------------------------------------------------
+
+static float vgui_clampf(float v, float lo, float hi)
+{
+	return v < lo ? lo : (v > hi ? hi : v);
+}
+
+static uint32_t vgui_mix_color(uint32_t a, uint32_t b, float t)
+{
+	t = vgui_clampf(t, 0.0f, 1.0f);
+	float aa = (float)((a >> 24) & 0xFF), ar = (float)((a >> 16) & 0xFF);
+	float ag = (float)((a >> 8) & 0xFF), ab = (float)(a & 0xFF);
+	float ba = (float)((b >> 24) & 0xFF), br = (float)((b >> 16) & 0xFF);
+	float bg = (float)((b >> 8) & 0xFF), bb = (float)(b & 0xFF);
+	uint32_t r = (uint32_t)(ar + (br - ar) * t + 0.5f);
+	uint32_t g = (uint32_t)(ag + (bg - ag) * t + 0.5f);
+	uint32_t bl = (uint32_t)(ab + (bb - ab) * t + 0.5f);
+	uint32_t al = (uint32_t)(aa + (ba - aa) * t + 0.5f);
+	return (al << 24) | (r << 16) | (g << 8) | bl;
+}
+
+static uint32_t vgui_alpha_color(uint32_t c, float alpha)
+{
+	uint32_t a = (c >> 24) & 0xFF;
+	a = (uint32_t)(a * vgui_clampf(alpha, 0.0f, 1.0f) + 0.5f);
+	return (c & 0x00FFFFFF) | (a << 24);
+}
+
+static bool vgui_point_in(const vgui_widget* w, float x, float y)
+{
+	return x >= w->abs_x && y >= w->abs_y && x < w->abs_x + w->abs_w && y < w->abs_y + w->abs_h;
+}
+
+static bool vgui_is_cont(unsigned char c)
+{
+	return (c & 0xC0) == 0x80;
+}
+
+static int vgui_u8_next(const std::string& s, int i)
+{
+	if (i < 0) return 0;
+	if (i >= (int)s.size()) return (int)s.size();
+	unsigned char c = (unsigned char)s[(size_t)i];
+	int n = 1;
+	if (c >= 0xF0) n = 4;
+	else if (c >= 0xE0) n = 3;
+	else if (c >= 0xC0) n = 2;
+	int r = i + n;
+	return r > (int)s.size() ? (int)s.size() : r;
+}
+
+static int vgui_u8_prev(const std::string& s, int i)
+{
+	if (i <= 0) return 0;
+	if (i > (int)s.size()) i = (int)s.size();
+	i--;
+	while (i > 0 && vgui_is_cont((unsigned char)s[(size_t)i])) i--;
+	return i;
+}
+
+static int vgui_u8_count(const std::string& s)
+{
+	int n = 0;
+	for (int i = 0; i < (int)s.size(); i = vgui_u8_next(s, i)) n++;
+	return n;
+}
+
+static uint32_t vgui_u8_decode(const char* text)
+{
+	if (!text || !*text) return 0;
+	const unsigned char* s = (const unsigned char*)text;
+	if (s[0] < 0x80) return s[0];
+	if ((s[0] & 0xE0) == 0xC0 && (s[1] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x1F) << 6) | (uint32_t)(s[1] & 0x3F);
+	if ((s[0] & 0xF0) == 0xE0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (uint32_t)(s[2] & 0x3F);
+	if ((s[0] & 0xF8) == 0xF0 && (s[1] & 0xC0) == 0x80 && (s[2] & 0xC0) == 0x80 && (s[3] & 0xC0) == 0x80)
+		return ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) |
+			((uint32_t)(s[2] & 0x3F) << 6) | (uint32_t)(s[3] & 0x3F);
+	return s[0];
+}
+
+static int vgui_u8_byte_at_col(const std::string& s, int col)
+{
+	int i = 0;
+	for (int n = 0; n < col && i < (int)s.size(); n++) i = vgui_u8_next(s, i);
+	return i;
+}
+
+static int vgui_u8_col_at_byte(const std::string& s, int byte_index)
+{
+	int i = 0, n = 0;
+	while (i < byte_index && i < (int)s.size())
+	{
+		i = vgui_u8_next(s, i);
+		n++;
+	}
+	return n;
+}
+
+static float vgui_font_size(vgui_context* ctx, vgui_widget* w)
+{
+	float fs = w && w->font_size > 0 ? w->font_size : (ctx ? ctx->font_size : 16.0f);
+	if (fs < 1) fs = 16.0f;
+	return fs;
+}
+
+static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
+{
+	float fs = vgui_font_size(ctx, w);
+	int lh = 0;
+	if (ctx && ctx->font)
+		lh = font_get_lineheight(ctx->font, (int)(fs + 0.5f), true);
+	if (lh <= 0)
+		lh = (int)(fs * 1.35f + 0.5f);
+	if (lh < 1) lh = 1;
+	return (float)lh;
+}
+
+// ovg anchors a text run on its baseline: vg_add_text_run leaves
+// baseline_y = text_st_t::pos.y (the ascender is computed but unused).  The UI
+// works in line boxes, so the renderer needs pos.y = box top + ascender.
+// Mirrors ovg's own ascent source, the primary family at the pixel size.
+static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
+{
+	float fs = vgui_font_size(ctx, w);
+	float a = 0;
+	if (ctx && ctx->font && ctx->font->count > 0 && ctx->font->familys[0] && ctx->font->familys[0]->font)
+		a = get_font_extents(ctx->font->familys[0]->font, (int)(fs + 0.5f), false).x;
+	if (a <= 0) a = fs * 0.8f;
+	return a;
+}
+
+// Real text measurement through HarfBuzz, mirroring ovg's shaping (font picked
+// by coverage, advances taken at the shaping scale) so layout, alignment and
+// the renderer agree.  Keeps the renderer text crisp and the auto-sized boxes
+// exact.
+static float vgui_measure_text_range(font_familys_t* ffs, int fontsize, const char* text, int len)
+{
+	if (!ffs || ffs->count < 1 || !text || len <= 0) return 0;
+	if (fontsize < 1) fontsize = 16;
+	float best = 0, cur = 0;
+	for (int i = 0; i < len;)
+	{
+		unsigned char c = (unsigned char)text[i];
+		if (c == '\n')
 		{
-			r.num_chars = 0; // [DEAR IMGUI]
-			break;   // [DEAR IMGUI]
+			best = std::max(best, cur);
+			cur = 0;
+			i++;
+			continue;
 		}
-	}
+		uint32_t cp = vgui_u8_decode(text + i);
+		int n = 1;
+		if (c >= 0xF0) n = 4;
+		else if (c >= 0xE0) n = 3;
+		else if (c >= 0xC0) n = 2;
+		i += n;
 
-	find->first_char = first = i;
-	find->length = r.num_chars;
-	find->height = r.ymax - r.ymin;
-	find->prev_first = prev_start;
-
-	// now scan to find xpos
-	find->x = r.x0;
-	for (i = 0; first + i < n; i = STB_TEXTEDIT_GETNEXTCHARINDEX(str, first + i) - first)
-		find->x += STB_TEXTEDIT_GETWIDTH(str, first, i);
-}
-
-#define STB_TEXT_HAS_SELECTION(s)   ((s)->select_start != (s)->select_end)
-
-// make the selection/cursor state valid if client altered the string
-static void stb_textedit_clamp(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	int n = STB_TEXTEDIT_STRINGLEN(str);
-	if (STB_TEXT_HAS_SELECTION(state)) {
-		if (state->select_start > n) state->select_start = n;
-		if (state->select_end > n) state->select_end = n;
-		// if clamping forced them to be equal, move the cursor to match
-		if (state->select_start == state->select_end)
-			state->cursor = state->select_start;
-	}
-	if (state->cursor > n) state->cursor = n;
-}
-
-// delete characters while updating undo
-static void stb_textedit_delete(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int len)
-{
-	stb_text_makeundo_delete(str, state, where, len);
-	STB_TEXTEDIT_DELETECHARS(str, where, len);
-	state->has_preferred_x = 0;
-}
-
-// delete the section
-static void stb_textedit_delete_selection(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	stb_textedit_clamp(str, state);
-	if (STB_TEXT_HAS_SELECTION(state)) {
-		if (state->select_start < state->select_end) {
-			stb_textedit_delete(str, state, state->select_start, state->select_end - state->select_start);
-			state->select_end = state->cursor = state->select_start;
-		}
-		else {
-			stb_textedit_delete(str, state, state->select_end, state->select_start - state->select_end);
-			state->select_start = state->cursor = state->select_end;
-		}
-		state->has_preferred_x = 0;
-	}
-}
-
-// canoncialize the selection so start <= end
-static void stb_textedit_sortselection(STB_TexteditState* state)
-{
-	if (state->select_end < state->select_start) {
-		int temp = state->select_end;
-		state->select_end = state->select_start;
-		state->select_start = temp;
-	}
-}
-
-// move cursor to first character of selection
-static void stb_textedit_move_to_first(STB_TexteditState* state)
-{
-	if (STB_TEXT_HAS_SELECTION(state)) {
-		stb_textedit_sortselection(state);
-		state->cursor = state->select_start;
-		state->select_end = state->select_start;
-		state->has_preferred_x = 0;
-	}
-}
-
-// move cursor to last character of selection
-static void stb_textedit_move_to_last(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	if (STB_TEXT_HAS_SELECTION(state)) {
-		stb_textedit_sortselection(state);
-		stb_textedit_clamp(str, state);
-		state->cursor = state->select_end;
-		state->select_start = state->select_end;
-		state->has_preferred_x = 0;
-	}
-}
-
-// [DEAR IMGUI] Extracted this function so we can more easily add support for word-wrapping.
-#ifndef STB_TEXTEDIT_MOVELINESTART
-static int stb_textedit_move_line_start(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int cursor)
-{
-	if (state->single_line)
-		return 0;
-	while (cursor > 0) {
-		int prev = STB_TEXTEDIT_GETPREVCHARINDEX(str, cursor);
-		if (STB_TEXTEDIT_GETCHAR(str, prev) == STB_TEXTEDIT_NEWLINE)
-			break;
-		cursor = prev;
-	}
-	return cursor;
-}
-#define STB_TEXTEDIT_MOVELINESTART stb_textedit_move_line_start
-#endif
-#ifndef STB_TEXTEDIT_MOVELINEEND
-static int stb_textedit_move_line_end(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int cursor)
-{
-	int n = STB_TEXTEDIT_STRINGLEN(str);
-	if (state->single_line)
-		return n;
-	while (cursor < n && STB_TEXTEDIT_GETCHAR(str, cursor) != STB_TEXTEDIT_NEWLINE)
-		cursor = STB_TEXTEDIT_GETNEXTCHARINDEX(str, cursor);
-	return cursor;
-}
-#define STB_TEXTEDIT_MOVELINEEND stb_textedit_move_line_end
-#endif
-
-#ifdef STB_TEXTEDIT_IS_SPACE
-static int is_word_boundary(STB_TEXTEDIT_STRING* str, int idx)
-{
-	return idx > 0 ? (STB_TEXTEDIT_IS_SPACE(STB_TEXTEDIT_GETCHAR(str, idx - 1)) && !STB_TEXTEDIT_IS_SPACE(STB_TEXTEDIT_GETCHAR(str, idx))) : 1;
-}
-
-#ifndef STB_TEXTEDIT_MOVEWORDLEFT
-static int stb_textedit_move_to_word_previous(STB_TEXTEDIT_STRING* str, int c)
-{
-	c = STB_TEXTEDIT_GETPREVCHARINDEX(str, c); // always move at least one character
-	while (c >= 0 && !is_word_boundary(str, c))
-		c = STB_TEXTEDIT_GETPREVCHARINDEX(str, c);
-
-	if (c < 0)
-		c = 0;
-
-	return c;
-}
-#define STB_TEXTEDIT_MOVEWORDLEFT stb_textedit_move_to_word_previous
-#endif
-
-#ifndef STB_TEXTEDIT_MOVEWORDRIGHT
-static int stb_textedit_move_to_word_next(STB_TEXTEDIT_STRING* str, int c)
-{
-	const int len = STB_TEXTEDIT_STRINGLEN(str);
-	c = STB_TEXTEDIT_GETNEXTCHARINDEX(str, c); // always move at least one character
-	while (c < len && !is_word_boundary(str, c))
-		c = STB_TEXTEDIT_GETNEXTCHARINDEX(str, c);
-
-	if (c > len)
-		c = len;
-
-	return c;
-}
-#define STB_TEXTEDIT_MOVEWORDRIGHT stb_textedit_move_to_word_next
-#endif
-
-#endif
-
-// update selection and cursor to match each other
-static void stb_textedit_prep_selection_at_cursor(STB_TexteditState* state)
-{
-	if (!STB_TEXT_HAS_SELECTION(state))
-		state->select_start = state->select_end = state->cursor;
-	else
-		state->cursor = state->select_end;
-}
-
-// API cut: delete selection
-static int stb_textedit_cut(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	if (STB_TEXT_HAS_SELECTION(state)) {
-		stb_textedit_delete_selection(str, state); // implicitly clamps
-		state->has_preferred_x = 0;
-		return 1;
-	}
-	return 0;
-}
-
-// API paste: replace existing selection with passed-in text
-static int stb_textedit_paste_internal(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_CHARTYPE* text, int len)
-{
-	// if there's a selection, the paste should delete it
-	stb_textedit_clamp(str, state);
-	stb_textedit_delete_selection(str, state);
-	// try to insert the characters
-	len = STB_TEXTEDIT_INSERTCHARS(str, state->cursor, text, len);
-	if (len) {
-		stb_text_makeundo_insert(state, state->cursor, len);
-		state->cursor += len;
-		state->has_preferred_x = 0;
-		return 1;
-	}
-	// note: paste failure will leave deleted selection, may be restored with an undo (see https://github.com/nothings/stb/issues/734 for details)
-	return 0;
-}
-
-#ifndef STB_TEXTEDIT_KEYTYPE
-#define STB_TEXTEDIT_KEYTYPE int
-#endif
-
-// API key: process text input
-// [DEAR IMGUI] Added stb_textedit_text(), extracted out and called by stb_textedit_key() for backward compatibility.
-static void stb_textedit_text(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, const STB_TEXTEDIT_CHARTYPE* text, int text_len)
-{
-	// can't add newline in single-line mode
-	if (text[0] == '\n' && state->single_line)
-		return;
-
-	if (state->insert_mode && !STB_TEXT_HAS_SELECTION(state) && state->cursor < STB_TEXTEDIT_STRINGLEN(str)) {
-		stb_text_makeundo_replace(str, state, state->cursor, 1, 1);
-		STB_TEXTEDIT_DELETECHARS(str, state->cursor, 1);
-		text_len = STB_TEXTEDIT_INSERTCHARS(str, state->cursor, text, text_len);
-		if (text_len) {
-			state->cursor += text_len;
-			state->has_preferred_x = 0;
-		}
-	}
-	else {
-		stb_textedit_delete_selection(str, state); // implicitly clamps
-		text_len = STB_TEXTEDIT_INSERTCHARS(str, state->cursor, text, text_len);
-		if (text_len) {
-			stb_text_makeundo_insert(state, state->cursor, text_len);
-			state->cursor += text_len;
-			state->has_preferred_x = 0;
-		}
-	}
-}
-
-// API key: process a keyboard input
-static void stb_textedit_key(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_KEYTYPE key)
-{
-retry:
-	switch (key) {
-	default: {
-#ifdef STB_TEXTEDIT_KEYTOTEXT
-		// This is not suitable for UTF-8 support.
-		int c = STB_TEXTEDIT_KEYTOTEXT(key);
-		if (c > 0) {
-			STB_TEXTEDIT_CHARTYPE ch = (STB_TEXTEDIT_CHARTYPE)c;
-			stb_textedit_text(str, state, &ch, 1);
-		}
-#endif
-		break;
-	}
-
-#ifdef STB_TEXTEDIT_K_INSERT
-	case STB_TEXTEDIT_K_INSERT:
-		state->insert_mode = !state->insert_mode;
-		break;
-#endif
-
-	case STB_TEXTEDIT_K_UNDO:
-		stb_text_undo(str, state);
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_REDO:
-		stb_text_redo(str, state);
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_LEFT:
-		// if currently there's a selection, move cursor to start of selection
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_first(state);
-		else
-			if (state->cursor > 0)
-				state->cursor = STB_TEXTEDIT_GETPREVCHARINDEX(str, state->cursor);
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_RIGHT:
-		// if currently there's a selection, move cursor to end of selection
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_last(str, state);
-		else
-			state->cursor = STB_TEXTEDIT_GETNEXTCHARINDEX(str, state->cursor);
-		stb_textedit_clamp(str, state);
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_LEFT | STB_TEXTEDIT_K_SHIFT:
-		stb_textedit_clamp(str, state);
-		stb_textedit_prep_selection_at_cursor(state);
-		// move selection left
-		if (state->select_end > 0)
-			state->select_end = STB_TEXTEDIT_GETPREVCHARINDEX(str, state->select_end);
-		state->cursor = state->select_end;
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_MOVEWORDLEFT
-	case STB_TEXTEDIT_K_WORDLEFT:
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_first(state);
-		else {
-			state->cursor = STB_TEXTEDIT_MOVEWORDLEFT(str, state->cursor);
-			stb_textedit_clamp(str, state);
-		}
-		break;
-
-	case STB_TEXTEDIT_K_WORDLEFT | STB_TEXTEDIT_K_SHIFT:
-		if (!STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_prep_selection_at_cursor(state);
-
-		state->cursor = STB_TEXTEDIT_MOVEWORDLEFT(str, state->cursor);
-		state->select_end = state->cursor;
-
-		stb_textedit_clamp(str, state);
-		break;
-#endif
-
-#ifdef STB_TEXTEDIT_MOVEWORDRIGHT
-	case STB_TEXTEDIT_K_WORDRIGHT:
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_last(str, state);
-		else {
-			state->cursor = STB_TEXTEDIT_MOVEWORDRIGHT(str, state->cursor);
-			stb_textedit_clamp(str, state);
-		}
-		break;
-
-	case STB_TEXTEDIT_K_WORDRIGHT | STB_TEXTEDIT_K_SHIFT:
-		if (!STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_prep_selection_at_cursor(state);
-
-		state->cursor = STB_TEXTEDIT_MOVEWORDRIGHT(str, state->cursor);
-		state->select_end = state->cursor;
-
-		stb_textedit_clamp(str, state);
-		break;
-#endif
-
-	case STB_TEXTEDIT_K_RIGHT | STB_TEXTEDIT_K_SHIFT:
-		stb_textedit_prep_selection_at_cursor(state);
-		// move selection right
-		state->select_end = STB_TEXTEDIT_GETNEXTCHARINDEX(str, state->select_end);
-		stb_textedit_clamp(str, state);
-		state->cursor = state->select_end;
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_DOWN:
-	case STB_TEXTEDIT_K_DOWN | STB_TEXTEDIT_K_SHIFT:
-	case STB_TEXTEDIT_K_PGDOWN:
-	case STB_TEXTEDIT_K_PGDOWN | STB_TEXTEDIT_K_SHIFT: {
-		StbFindState find;
-		StbTexteditRow row;
-		int i, j, sel = (key & STB_TEXTEDIT_K_SHIFT) != 0;
-		int is_page = (key & ~STB_TEXTEDIT_K_SHIFT) == STB_TEXTEDIT_K_PGDOWN;
-		int row_count = is_page ? state->row_count_per_page : 1;
-
-		if (!is_page && state->single_line) {
-			// on windows, up&down in single-line behave like left&right
-			key = STB_TEXTEDIT_K_RIGHT | (key & STB_TEXTEDIT_K_SHIFT);
-			goto retry;
-		}
-
-		if (sel)
-			stb_textedit_prep_selection_at_cursor(state);
-		else if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_last(str, state);
-
-		// compute current position of cursor point
-		stb_textedit_clamp(str, state);
-		stb_textedit_find_charpos(&find, str, state->cursor, state->single_line);
-
-		for (j = 0; j < row_count; ++j) {
-			float x, goal_x = state->has_preferred_x ? state->preferred_x : find.x;
-			int start = find.first_char + find.length;
-
-			if (find.length == 0)
+		// Same family selection as ovg: first family whose coverage has the
+		// codepoint, otherwise the primary family.
+		font_family_t* fam = ffs->familys[0];
+		for (int f = 0; f < ffs->count; f++)
+		{
+			font_family_t* cand = ffs->familys[f];
+			if (cand && cand->font && cand->coverage && hb_set_has(cand->coverage, cp))
+			{
+				fam = cand;
 				break;
-
-			// [DEAR IMGUI]
-			// going down while being on the last line shouldn't bring us to that line end
-			//if (STB_TEXTEDIT_GETCHAR(str, find.first_char + find.length - 1) != STB_TEXTEDIT_NEWLINE)
-			//   break;
-
-			// now find character position down a row
-			state->cursor = start;
-			stb_textedit_clamp(str, state);
-			STB_TEXTEDIT_LAYOUTROW(&row, str, state->cursor);
-			x = row.x0;
-			for (i = 0; i < row.num_chars; ) {
-				float dx = STB_TEXTEDIT_GETWIDTH(str, start, i);
-				int next = STB_TEXTEDIT_GETNEXTCHARINDEX(str, state->cursor);
-#ifdef STB_TEXTEDIT_GETWIDTH_NEWLINE
-				if (dx == STB_TEXTEDIT_GETWIDTH_NEWLINE)
-					break;
-#endif
-				x += dx;
-				if (x > goal_x)
-					break;
-				i += next - state->cursor;
-				state->cursor = next;
 			}
-			stb_textedit_clamp(str, state);
-
-			if (state->cursor == find.first_char + find.length)
-				str->LastMoveDirectionLR = GuiDir_Left;
-			state->has_preferred_x = 1;
-			state->preferred_x = goal_x;
-
-			if (sel)
-				state->select_end = state->cursor;
-
-			// go to next line
-			find.first_char = find.first_char + find.length;
-			find.length = row.num_chars;
 		}
+		if (!fam || !fam->font)
+		{
+			cur += fontsize * 0.5f;
+			continue;
+		}
+		hb_font_set_scale(fam->font, fontsize, fontsize);
+		hb_codepoint_t gid = 0;
+		hb_font_get_nominal_glyph(fam->font, cp, &gid);
+		cur += (float)hb_font_get_glyph_h_advance(fam->font, gid);
+	}
+	return std::max(best, cur);
+}
+
+static float vgui_text_width(vgui_widget* w, const std::string& text)
+{
+	vgui_context* ctx = w ? w->ctx : nullptr;
+	float fs = vgui_font_size(ctx, w);
+	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
+}
+
+static float vgui_text_width_n(vgui_widget* w, const char* text, int len)
+{
+	vgui_context* ctx = w ? w->ctx : nullptr;
+	float fs = vgui_font_size(ctx, w);
+	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text, len);
+}
+
+static int vgui_text_lines(const std::string& text)
+{
+	int n = 1;
+	for (char c : text) if (c == '\n') n++;
+	return n;
+}
+
+static void vgui_mark_dirty(vgui_widget* w)
+{
+	if (w && w->ctx)
+		w->ctx->layout_dirty = true;
+}
+
+//----------------------------------------------------------------------------
+// event callbacks
+//----------------------------------------------------------------------------
+
+static void vgui_emit(vgui_widget* w, vgui_event_type type, float lx = 0, float ly = 0,
+	int button = 0, int clicks = 0)
+{
+	if (!w || !w->event_fn || !w->ctx || !w->ctx->alive.count(w))
+		return;
+	vgui_event e = {};
+	e.type = (int)type;
+	e.x = lx;
+	e.y = ly;
+	e.button = button;
+	e.clicks = clicks;
+	w->event_fn(w, &e, w->user);
+}
+
+static void vgui_emit_full(vgui_widget* w, const vgui_event& e)
+{
+	if (!w || !w->event_fn || !w->ctx || !w->ctx->alive.count(w))
+		return;
+	w->event_fn(w, &e, w->user);
+}
+
+static float vgui_value_of(vgui_widget* w)
+{
+	if (!w) return 0;
+	switch (w->kind)
+	{
+	case VGUI_CHECKBOX:
+	case VGUI_RADIO:
+	case VGUI_SWITCH:
+		return w->checked ? 1.0f : 0.0f;
+	case VGUI_SLIDER:
+	case VGUI_PROGRESS:
+		return w->range_min + w->value * (w->range_max - w->range_min);
+	default:
+		return w->value;
+	}
+}
+
+static void vgui_notify_value(vgui_widget* w, vgui_event_type type = VGUI_EVENT_VALUE_CHANGED)
+{
+	if (!w || !w->ctx || !w->ctx->alive.count(w)) return;
+	float v = vgui_value_of(w);
+	if (w->value_fn)
+		w->value_fn(w, v, w->user);
+	if (w->event_fn)
+	{
+		vgui_event e = {};
+		e.type = (int)type;
+		vgui_emit_full(w, e);
+	}
+}
+
+static void vgui_notify_text(vgui_widget* w)
+{
+	if (!w || !w->ctx || !w->ctx->alive.count(w)) return;
+	if (w->text_fn)
+		w->text_fn(w, w->text.c_str(), w->user);
+}
+
+//----------------------------------------------------------------------------
+// widget construction / theme defaults
+//----------------------------------------------------------------------------
+
+static vgui_theme vgui_default_theme()
+{
+	vgui_theme t = {};
+	t.text = 0xFFE6E6E6;
+	t.panel_bg = 0xFF1E1E1E;
+	t.panel_border = 0xFF3C3C3C;
+	t.button_bg = 0xFF3A3A3A;
+	t.button_hover = 0xFF4A4A4A;
+	t.button_active = 0xFF2A2A2A;
+	t.button_border = 0xFF555555;
+	t.accent = 0xFF409EFF;
+	t.accent_hover = 0xFF66B1FF;
+	t.track = 0xFF303030;
+	t.edit_bg = 0xFF252525;
+	t.edit_selection = 0x80409EFF;
+	t.scrollbar = 0xFF555555;
+	t.disabled = 0xFF808080;
+	return t;
+}
+
+static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, const char* text)
+{
+	vgui_widget* w = new vgui_widget();
+	w->ctx = ctx;
+	w->kind = kind;
+	if (text) w->text = text;
+
+	const vgui_theme& th = ctx->theme;
+	w->text_color = th.text;
+	w->accent = th.accent;
+	w->track = th.track;
+
+	switch (kind)
+	{
+	case VGUI_PANEL:
+		w->bg = th.panel_bg;
+		w->border = th.panel_border;
+		w->border_width = 1;
+		w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 8;
+		w->clip_children = 1;
+		break;
+	case VGUI_LABEL:
+		w->padding[0] = w->padding[2] = 2;
+		w->text_align_x = 0.0f;
+		break;
+	case VGUI_BUTTON:
+		w->bg = th.button_bg;
+		w->border = th.button_border;
+		w->border_width = 1;
+		w->rounding = 4;
+		w->padding[0] = w->padding[2] = 12;
+		w->padding[1] = w->padding[3] = 6;
+		w->text_align_x = 0.5f;
+		w->focusable = 1;
+		w->cursor_type = VGUI_CURSOR_HAND;
+		break;
+	case VGUI_CHECKBOX:
+	case VGUI_RADIO:
+	case VGUI_SWITCH:
+		w->bg = 0;
+		w->text_align_x = 0.0f;
+		w->focusable = 1;
+		w->cursor_type = VGUI_CURSOR_HAND;
+		break;
+	case VGUI_SLIDER:
+		w->bg = 0;
+		w->req_w = 180;
+		w->req_h = 24;
+		w->focusable = 1;
+		w->cursor_type = VGUI_CURSOR_HAND;
+		break;
+	case VGUI_PROGRESS:
+		w->bg = 0;
+		w->req_w = 180;
+		w->req_h = 20;
+		w->text_align_x = 0.5f;
+		break;
+	case VGUI_EDIT:
+		w->bg = th.edit_bg;
+		w->border = th.button_border;
+		w->border_width = 1;
+		w->rounding = 3;
+		w->req_w = 160;
+		w->req_h = 30;
+		w->padding[0] = w->padding[2] = 6;
+		w->padding[1] = w->padding[3] = 4;
+		w->text_align_x = 0.0f;
+		w->focusable = 1;
+		w->cursor_type = VGUI_CURSOR_IBEAM;
+		break;
+	case VGUI_SEPARATOR:
+		w->bg = th.panel_border;
+		w->req_h = 1;
 		break;
 	}
 
-	case STB_TEXTEDIT_K_UP:
-	case STB_TEXTEDIT_K_UP | STB_TEXTEDIT_K_SHIFT:
-	case STB_TEXTEDIT_K_PGUP:
-	case STB_TEXTEDIT_K_PGUP | STB_TEXTEDIT_K_SHIFT: {
-		StbFindState find;
-		StbTexteditRow row;
-		int i, j, prev_scan, sel = (key & STB_TEXTEDIT_K_SHIFT) != 0;
-		int is_page = (key & ~STB_TEXTEDIT_K_SHIFT) == STB_TEXTEDIT_K_PGUP;
-		int row_count = is_page ? state->row_count_per_page : 1;
+	ctx->all_widgets.insert(w);
+	ctx->alive.insert(w);
+	ctx->layout_dirty = true;
+	return w;
+}
 
-		if (!is_page && state->single_line) {
-			// on windows, up&down become left&right
-			key = STB_TEXTEDIT_K_LEFT | (key & STB_TEXTEDIT_K_SHIFT);
-			goto retry;
+static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx);
+
+static float vgui_child_req_w(vgui_widget* c)
+{
+	float v = c->req_w > 0 ? c->req_w : c->intrinsic_w;
+	if (c->min_w > 0) v = std::max(v, c->min_w);
+	if (c->max_w > 0) v = std::min(v, c->max_w);
+	return std::max(v, 0.0f);
+}
+
+static float vgui_child_req_h(vgui_widget* c)
+{
+	float v = c->req_h > 0 ? c->req_h : c->intrinsic_h;
+	if (c->min_h > 0) v = std::max(v, c->min_h);
+	if (c->max_h > 0) v = std::min(v, c->max_h);
+	return std::max(v, 0.0f);
+}
+
+static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
+{
+	if (!w) return;
+	float lh = vgui_line_height(ctx, w);
+	float tw = vgui_text_width(w, w->text);
+	float pl = w->padding[0], pt = w->padding[1], pr = w->padding[2], pb = w->padding[3];
+
+	switch (w->kind)
+	{
+	case VGUI_PANEL:
+	{
+		float content_w = 0, content_h = 0;
+		float row_w = 0, row_h = 0, col_w = 0, col_h = 0;
+		int visible_count = 0;
+		for (vgui_widget* c : w->children)
+		{
+			if (!c->visible) continue;
+			vgui_measure_widget(c, ctx);
+			float cw = vgui_child_req_w(c) + c->margin[0] + c->margin[2];
+			float ch = vgui_child_req_h(c) + c->margin[1] + c->margin[3];
+			if (w->layout == VGUI_LAYOUT_ROW)
+			{
+				row_w += cw;
+				row_h = std::max(row_h, ch);
+			}
+			else if (w->layout == VGUI_LAYOUT_COLUMN)
+			{
+				col_w = std::max(col_w, cw);
+				col_h += ch;
+			}
+			else
+			{
+				content_w = std::max(content_w, c->x + cw);
+				content_h = std::max(content_h, c->y + ch);
+			}
+			visible_count++;
 		}
+		if (w->layout == VGUI_LAYOUT_ROW)
+		{
+			content_w = row_w + (visible_count > 1 ? w->gap * (visible_count - 1) : 0);
+			content_h = row_h;
+		}
+		else if (w->layout == VGUI_LAYOUT_COLUMN)
+		{
+			content_w = col_w;
+			content_h = col_h + (visible_count > 1 ? w->gap * (visible_count - 1) : 0);
+		}
+		w->intrinsic_w = content_w + pl + pr;
+		w->intrinsic_h = content_h + pt + pb;
+	}
+	break;
+	case VGUI_LABEL:
+		w->intrinsic_w = tw + pl + pr;
+		w->intrinsic_h = lh * vgui_text_lines(w->text) + pt + pb;
+		break;
+	case VGUI_BUTTON:
+		w->intrinsic_w = tw + pl + pr + 4;
+		w->intrinsic_h = std::max(lh + pt + pb, 28.0f);
+		break;
+	case VGUI_CHECKBOX:
+	case VGUI_RADIO:
+	{
+		float box = std::max(14.0f, std::min(18.0f, lh - 2));
+		float label = w->text.empty() ? 0 : (tw + 8);
+		w->intrinsic_w = box + label + pl + pr;
+		w->intrinsic_h = std::max(box, lh) + pt + pb;
+	}
+	break;
+	case VGUI_SWITCH:
+	{
+		float track = 36;
+		float label = w->text.empty() ? 0 : (tw + 8);
+		w->intrinsic_w = track + label + pl + pr;
+		w->intrinsic_h = std::max(20.0f, lh) + pt + pb;
+	}
+	break;
+	case VGUI_SLIDER:
+		w->intrinsic_w = w->req_w > 0 ? w->req_w : 180;
+		w->intrinsic_h = std::max(w->req_h, 24.0f);
+		break;
+	case VGUI_PROGRESS:
+		w->intrinsic_w = w->req_w > 0 ? w->req_w : 180;
+		w->intrinsic_h = std::max(w->req_h, 20.0f);
+		break;
+	case VGUI_EDIT:
+	{
+		float minw = w->text.empty() ? 160.0f : std::max(160.0f, tw + pl + pr + 12);
+		w->intrinsic_w = w->req_w > 0 ? w->req_w : minw;
+		float lines = w->multiline ? (float)std::max(3, vgui_text_lines(w->edit_text)) : 1.0f;
+		w->intrinsic_h = w->req_h > 0 ? w->req_h : (lh * lines + pt + pb);
+	}
+	break;
+	case VGUI_SEPARATOR:
+		w->intrinsic_w = w->req_w;
+		w->intrinsic_h = w->req_h > 0 ? w->req_h : 1;
+		break;
+	}
 
-		if (sel)
-			stb_textedit_prep_selection_at_cursor(state);
-		else if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_move_to_first(state);
+	if (w->min_w > 0) w->intrinsic_w = std::max(w->intrinsic_w, w->min_w);
+	if (w->min_h > 0) w->intrinsic_h = std::max(w->intrinsic_h, w->min_h);
+	if (w->max_w > 0) w->intrinsic_w = std::min(w->intrinsic_w, w->max_w);
+	if (w->max_h > 0) w->intrinsic_h = std::min(w->intrinsic_h, w->max_h);
+}
 
-		// compute current position of cursor point
-		stb_textedit_clamp(str, state);
-		stb_textedit_find_charpos(&find, str, state->cursor, state->single_line);
+static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y, float forced_w, float forced_h);
 
-		for (j = 0; j < row_count; ++j) {
-			float  x, goal_x = state->has_preferred_x ? state->preferred_x : find.x;
+struct vgui_placement
+{
+	vgui_widget* child;
+	float x, y, w, h;
+};
 
-			// can only go up if there's a previous row
-			if (find.prev_first == find.first_char)
+static void vgui_arrange_children(vgui_widget* w, vgui_context* ctx, float ix, float iy, float iw, float ih)
+{
+	std::vector<vgui_placement> placements;
+	placements.reserve(w->children.size());
+
+	float content_w = 0, content_h = 0;
+
+	if (w->layout == VGUI_LAYOUT_ABSOLUTE)
+	{
+		for (vgui_widget* c : w->children)
+		{
+			if (!c->visible) continue;
+			float cw = vgui_child_req_w(c);
+			float ch = vgui_child_req_h(c);
+			float px = ix + c->x + c->margin[0];
+			float py = iy + c->y + c->margin[1];
+			placements.push_back({ c, px, py, cw, ch });
+			content_w = std::max(content_w, c->x + c->margin[0] + cw + c->margin[2]);
+			content_h = std::max(content_h, c->y + c->margin[1] + ch + c->margin[3]);
+		}
+	}
+	else
+	{
+		std::vector<vgui_widget*> visible;
+		for (vgui_widget* c : w->children)
+			if (c->visible) visible.push_back(c);
+		int n = (int)visible.size();
+		bool row = (w->layout == VGUI_LAYOUT_ROW);
+		float inner_main = row ? iw : ih;
+		float inner_cross = row ? ih : iw;
+
+		float total_main = 0, max_cross = 0, grow_sum = 0;
+		for (vgui_widget* c : visible)
+		{
+			float cw = vgui_child_req_w(c);
+			float ch = vgui_child_req_h(c);
+			float main = row ? cw : ch;
+			float cross = row ? ch : cw;
+			total_main += main + (row ? c->margin[0] + c->margin[2] : c->margin[1] + c->margin[3]);
+			max_cross = std::max(max_cross, cross + (row ? c->margin[1] + c->margin[3] : c->margin[0] + c->margin[2]));
+			if (c->grow > 0) grow_sum += c->grow;
+		}
+		if (n > 1) total_main += w->gap * (n - 1);
+
+		float leftover = inner_main - total_main;
+		float start = 0, extra_gap = 0;
+		if (grow_sum <= 0 && n > 0)
+		{
+			switch (w->justify)
+			{
+			case VGUI_JUSTIFY_CENTER: start = leftover * 0.5f; break;
+			case VGUI_JUSTIFY_END: start = leftover; break;
+			case VGUI_JUSTIFY_SPACE_BETWEEN:
+				if (n > 1) extra_gap = leftover / (n - 1);
 				break;
-
-			// now find character position up a row
-			state->cursor = find.prev_first;
-			STB_TEXTEDIT_LAYOUTROW(&row, str, state->cursor);
-			x = row.x0;
-			for (i = 0; i < row.num_chars; ) {
-				float dx = STB_TEXTEDIT_GETWIDTH(str, find.prev_first, i);
-				int next = STB_TEXTEDIT_GETNEXTCHARINDEX(str, state->cursor);
-#ifdef STB_TEXTEDIT_GETWIDTH_NEWLINE
-				if (dx == STB_TEXTEDIT_GETWIDTH_NEWLINE)
-					break;
-#endif
-				x += dx;
-				if (x > goal_x)
-					break;
-				i += next - state->cursor;
-				state->cursor = next;
-			}
-			stb_textedit_clamp(str, state);
-
-			if (state->cursor == find.first_char)
-				str->LastMoveDirectionLR = GuiDir_Right;
-			else if (state->cursor == find.prev_first)
-				str->LastMoveDirectionLR = GuiDir_Left;
-			state->has_preferred_x = 1;
-			state->preferred_x = goal_x;
-
-			if (sel)
-				state->select_end = state->cursor;
-
-			// go to previous line
-			// (we need to scan previous line the hard way. maybe we could expose this as a new API function?)
-			prev_scan = find.prev_first > 0 ? find.prev_first - 1 : 0;
-			while (prev_scan > 0)
-			{
-				int prev = STB_TEXTEDIT_GETPREVCHARINDEX(str, prev_scan);
-				if (STB_TEXTEDIT_GETCHAR(str, prev) == STB_TEXTEDIT_NEWLINE)
-					break;
-				prev_scan = prev;
-			}
-			find.first_char = find.prev_first;
-			find.prev_first = STB_TEXTEDIT_MOVELINESTART(str, state, prev_scan);
-		}
-		break;
-	}
-
-	case STB_TEXTEDIT_K_DELETE:
-	case STB_TEXTEDIT_K_DELETE | STB_TEXTEDIT_K_SHIFT:
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_delete_selection(str, state);
-		else {
-			int n = STB_TEXTEDIT_STRINGLEN(str);
-			if (state->cursor < n)
-				stb_textedit_delete(str, state, state->cursor, STB_TEXTEDIT_GETNEXTCHARINDEX(str, state->cursor) - state->cursor);
-		}
-		state->has_preferred_x = 0;
-		break;
-
-	case STB_TEXTEDIT_K_BACKSPACE:
-	case STB_TEXTEDIT_K_BACKSPACE | STB_TEXTEDIT_K_SHIFT:
-		if (STB_TEXT_HAS_SELECTION(state))
-			stb_textedit_delete_selection(str, state);
-		else {
-			stb_textedit_clamp(str, state);
-			if (state->cursor > 0) {
-				int prev = STB_TEXTEDIT_GETPREVCHARINDEX(str, state->cursor);
-				stb_textedit_delete(str, state, prev, state->cursor - prev);
-				state->cursor = prev;
-			}
-		}
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_TEXTSTART2
-	case STB_TEXTEDIT_K_TEXTSTART2:
-#endif
-	case STB_TEXTEDIT_K_TEXTSTART:
-		state->cursor = state->select_start = state->select_end = 0;
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_TEXTEND2
-	case STB_TEXTEDIT_K_TEXTEND2:
-#endif
-	case STB_TEXTEDIT_K_TEXTEND:
-		state->cursor = STB_TEXTEDIT_STRINGLEN(str);
-		state->select_start = state->select_end = 0;
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_TEXTSTART2
-	case STB_TEXTEDIT_K_TEXTSTART2 | STB_TEXTEDIT_K_SHIFT:
-#endif
-	case STB_TEXTEDIT_K_TEXTSTART | STB_TEXTEDIT_K_SHIFT:
-		stb_textedit_prep_selection_at_cursor(state);
-		state->cursor = state->select_end = 0;
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_TEXTEND2
-	case STB_TEXTEDIT_K_TEXTEND2 | STB_TEXTEDIT_K_SHIFT:
-#endif
-	case STB_TEXTEDIT_K_TEXTEND | STB_TEXTEDIT_K_SHIFT:
-		stb_textedit_prep_selection_at_cursor(state);
-		state->cursor = state->select_end = STB_TEXTEDIT_STRINGLEN(str);
-		state->has_preferred_x = 0;
-		break;
-
-
-#ifdef STB_TEXTEDIT_K_LINESTART2
-	case STB_TEXTEDIT_K_LINESTART2:
-#endif
-	case STB_TEXTEDIT_K_LINESTART:
-		stb_textedit_clamp(str, state);
-		stb_textedit_move_to_first(state);
-		state->cursor = STB_TEXTEDIT_MOVELINESTART(str, state, state->cursor);
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_LINEEND2
-	case STB_TEXTEDIT_K_LINEEND2:
-#endif
-	case STB_TEXTEDIT_K_LINEEND: {
-		stb_textedit_clamp(str, state);
-		stb_textedit_move_to_last(str, state);
-		state->cursor = STB_TEXTEDIT_MOVELINEEND(str, state, state->cursor);
-		state->has_preferred_x = 0;
-		break;
-	}
-
-#ifdef STB_TEXTEDIT_K_LINESTART2
-	case STB_TEXTEDIT_K_LINESTART2 | STB_TEXTEDIT_K_SHIFT:
-#endif
-	case STB_TEXTEDIT_K_LINESTART | STB_TEXTEDIT_K_SHIFT:
-		stb_textedit_clamp(str, state);
-		stb_textedit_prep_selection_at_cursor(state);
-		state->cursor = STB_TEXTEDIT_MOVELINESTART(str, state, state->cursor);
-		state->select_end = state->cursor;
-		state->has_preferred_x = 0;
-		break;
-
-#ifdef STB_TEXTEDIT_K_LINEEND2
-	case STB_TEXTEDIT_K_LINEEND2 | STB_TEXTEDIT_K_SHIFT:
-#endif
-	case STB_TEXTEDIT_K_LINEEND | STB_TEXTEDIT_K_SHIFT: {
-		stb_textedit_clamp(str, state);
-		stb_textedit_prep_selection_at_cursor(state);
-		state->cursor = STB_TEXTEDIT_MOVELINEEND(str, state, state->cursor);
-		state->select_end = state->cursor;
-		state->has_preferred_x = 0;
-		break;
-	}
-	}
-}
-
-/////////////////////////////////////////////////////////////////////////////
-//
-//      Undo processing
-//
-// @OPTIMIZE: the undo/redo buffer should be circular
-
-static void stb_textedit_flush_redo(StbUndoState* state)
-{
-	state->redo_point = STB_TEXTEDIT_UNDOSTATECOUNT;
-	state->redo_char_point = STB_TEXTEDIT_UNDOCHARCOUNT;
-}
-
-// discard the oldest entry in the undo list
-static void stb_textedit_discard_undo(StbUndoState* state)
-{
-	if (state->undo_point > 0) {
-		// if the 0th undo state has characters, clean those up
-		if (state->undo_rec[0].char_storage >= 0) {
-			int n = state->undo_rec[0].insert_length, i;
-			// delete n characters from all other records
-			state->undo_char_point -= n;
-			STB_TEXTEDIT_memmove(state->undo_char, state->undo_char + n, (size_t)(state->undo_char_point * sizeof(STB_TEXTEDIT_CHARTYPE)));
-			for (i = 0; i < state->undo_point; ++i)
-				if (state->undo_rec[i].char_storage >= 0)
-					state->undo_rec[i].char_storage -= n; // @OPTIMIZE: get rid of char_storage and infer it
-		}
-		--state->undo_point;
-		STB_TEXTEDIT_memmove(state->undo_rec, state->undo_rec + 1, (size_t)(state->undo_point * sizeof(state->undo_rec[0])));
-	}
-}
-
-// discard the oldest entry in the redo list--it's bad if this
-// ever happens, but because undo & redo have to store the actual
-// characters in different cases, the redo character buffer can
-// fill up even though the undo buffer didn't
-static void stb_textedit_discard_redo(StbUndoState* state)
-{
-	int k = STB_TEXTEDIT_UNDOSTATECOUNT - 1;
-
-	if (state->redo_point <= k) {
-		// if the k'th undo state has characters, clean those up
-		if (state->undo_rec[k].char_storage >= 0) {
-			int n = state->undo_rec[k].insert_length, i;
-			// move the remaining redo character data to the end of the buffer
-			state->redo_char_point += n;
-			STB_TEXTEDIT_memmove(state->undo_char + state->redo_char_point, state->undo_char + state->redo_char_point - n, (size_t)((STB_TEXTEDIT_UNDOCHARCOUNT - state->redo_char_point) * sizeof(STB_TEXTEDIT_CHARTYPE)));
-			// adjust the position of all the other records to account for above memmove
-			for (i = state->redo_point; i < k; ++i)
-				if (state->undo_rec[i].char_storage >= 0)
-					state->undo_rec[i].char_storage += n;
-		}
-		// now move all the redo records towards the end of the buffer; the first one is at 'redo_point'
-		// [DEAR IMGUI]
-		size_t move_size = (size_t)((STB_TEXTEDIT_UNDOSTATECOUNT - state->redo_point - 1) * sizeof(state->undo_rec[0]));
-		const char* buf_begin = (char*)state->undo_rec; (void)buf_begin;
-		const char* buf_end = (char*)state->undo_rec + sizeof(state->undo_rec); (void)buf_end;
-		assert(((char*)(state->undo_rec + state->redo_point)) >= buf_begin);
-		assert(((char*)(state->undo_rec + state->redo_point + 1) + move_size) <= buf_end);
-		STB_TEXTEDIT_memmove(state->undo_rec + state->redo_point + 1, state->undo_rec + state->redo_point, move_size);
-
-		// now move redo_point to point to the new one
-		++state->redo_point;
-	}
-}
-
-static StbUndoRecord* stb_text_create_undo_record(StbUndoState* state, int numchars)
-{
-	// any time we create a new undo record, we discard redo
-	stb_textedit_flush_redo(state);
-
-	// if we have no free records, we have to make room, by sliding the
-	// existing records down
-	if (state->undo_point == STB_TEXTEDIT_UNDOSTATECOUNT)
-		stb_textedit_discard_undo(state);
-
-	// if the characters to store won't possibly fit in the buffer, we can't undo
-	if (numchars > STB_TEXTEDIT_UNDOCHARCOUNT) {
-		state->undo_point = 0;
-		state->undo_char_point = 0;
-		return NULL;
-	}
-
-	// if we don't have enough free characters in the buffer, we have to make room
-	while (state->undo_char_point + numchars > STB_TEXTEDIT_UNDOCHARCOUNT)
-		stb_textedit_discard_undo(state);
-
-	return &state->undo_rec[state->undo_point++];
-}
-
-static STB_TEXTEDIT_CHARTYPE* stb_text_createundo(StbUndoState* state, int pos, int insert_len, int delete_len)
-{
-	StbUndoRecord* r = stb_text_create_undo_record(state, insert_len);
-	if (r == NULL)
-		return NULL;
-
-	r->where = pos;
-	r->insert_length = (STB_TEXTEDIT_POSITIONTYPE)insert_len;
-	r->delete_length = (STB_TEXTEDIT_POSITIONTYPE)delete_len;
-
-	if (insert_len == 0) {
-		r->char_storage = -1;
-		return NULL;
-	}
-	else {
-		r->char_storage = state->undo_char_point;
-		state->undo_char_point += insert_len;
-		return &state->undo_char[r->char_storage];
-	}
-}
-
-static void stb_text_undo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	StbUndoState* s = &state->undostate;
-	StbUndoRecord u, * r;
-	if (s->undo_point == 0)
-		return;
-
-	// we need to do two things: apply the undo record, and create a redo record
-	u = s->undo_rec[s->undo_point - 1];
-	r = &s->undo_rec[s->redo_point - 1];
-	r->char_storage = -1;
-
-	r->insert_length = u.delete_length;
-	r->delete_length = u.insert_length;
-	r->where = u.where;
-
-	if (u.delete_length) {
-		// if the undo record says to delete characters, then the redo record will
-		// need to re-insert the characters that get deleted, so we need to store
-		// them.
-
-		// there are three cases:
-		//    there's enough room to store the characters
-		//    characters stored for *redoing* don't leave room for redo
-		//    characters stored for *undoing* don't leave room for redo
-		// if the last is true, we have to bail
-
-		if (s->undo_char_point + u.delete_length >= STB_TEXTEDIT_UNDOCHARCOUNT) {
-			// the undo records take up too much character space; there's no space to store the redo characters
-			r->insert_length = 0;
-		}
-		else {
-			int i;
-
-			// there's definitely room to store the characters eventually
-			while (s->undo_char_point + u.delete_length > s->redo_char_point) {
-				// should never happen:
-				if (s->redo_point == STB_TEXTEDIT_UNDOSTATECOUNT)
-					return;
-				// there's currently not enough room, so discard a redo record
-				stb_textedit_discard_redo(s);
-			}
-			r = &s->undo_rec[s->redo_point - 1];
-
-			r->char_storage = s->redo_char_point - u.delete_length;
-			s->redo_char_point = s->redo_char_point - u.delete_length;
-
-			// now save the characters
-			for (i = 0; i < u.delete_length; ++i)
-				s->undo_char[r->char_storage + i] = STB_TEXTEDIT_GETCHAR(str, u.where + i);
-		}
-
-		// now we can carry out the deletion
-		STB_TEXTEDIT_DELETECHARS(str, u.where, u.delete_length);
-	}
-
-	// check type of recorded action:
-	if (u.insert_length) {
-		// easy case: was a deletion, so we need to insert n characters
-		u.insert_length = STB_TEXTEDIT_INSERTCHARS(str, u.where, &s->undo_char[u.char_storage], u.insert_length);
-		s->undo_char_point -= u.insert_length;
-	}
-
-	state->cursor = u.where + u.insert_length;
-
-	s->undo_point--;
-	s->redo_point--;
-}
-
-static void stb_text_redo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state)
-{
-	StbUndoState* s = &state->undostate;
-	StbUndoRecord* u, r;
-	if (s->redo_point == STB_TEXTEDIT_UNDOSTATECOUNT)
-		return;
-
-	// we need to do two things: apply the redo record, and create an undo record
-	u = &s->undo_rec[s->undo_point];
-	r = s->undo_rec[s->redo_point];
-
-	// we KNOW there must be room for the undo record, because the redo record
-	// was derived from an undo record
-
-	u->delete_length = r.insert_length;
-	u->insert_length = r.delete_length;
-	u->where = r.where;
-	u->char_storage = -1;
-
-	if (r.delete_length) {
-		// the redo record requires us to delete characters, so the undo record
-		// needs to store the characters
-
-		if (s->undo_char_point + u->insert_length > s->redo_char_point) {
-			u->insert_length = 0;
-			u->delete_length = 0;
-		}
-		else {
-			int i;
-			u->char_storage = s->undo_char_point;
-			s->undo_char_point = s->undo_char_point + u->insert_length;
-
-			// now save the characters
-			for (i = 0; i < u->insert_length; ++i)
-				s->undo_char[u->char_storage + i] = STB_TEXTEDIT_GETCHAR(str, u->where + i);
-		}
-
-		STB_TEXTEDIT_DELETECHARS(str, r.where, r.delete_length);
-	}
-
-	if (r.insert_length) {
-		// easy case: need to insert n characters
-		r.insert_length = STB_TEXTEDIT_INSERTCHARS(str, r.where, &s->undo_char[r.char_storage], r.insert_length);
-		s->redo_char_point += r.insert_length;
-	}
-
-	state->cursor = r.where + r.insert_length;
-
-	s->undo_point++;
-	s->redo_point++;
-}
-
-static void stb_text_makeundo_insert(STB_TexteditState* state, int where, int length)
-{
-	stb_text_createundo(&state->undostate, where, 0, length);
-}
-
-static void stb_text_makeundo_delete(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int length)
-{
-	int i;
-	STB_TEXTEDIT_CHARTYPE* p = stb_text_createundo(&state->undostate, where, length, 0);
-	if (p) {
-		for (i = 0; i < length; ++i)
-			p[i] = STB_TEXTEDIT_GETCHAR(str, where + i);
-	}
-}
-
-static void stb_text_makeundo_replace(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int old_length, int new_length)
-{
-	int i;
-	STB_TEXTEDIT_CHARTYPE* p = stb_text_createundo(&state->undostate, where, old_length, new_length);
-	if (p) {
-		for (i = 0; i < old_length; ++i)
-			p[i] = STB_TEXTEDIT_GETCHAR(str, where + i);
-	}
-}
-
-// reset the state to default
-static void stb_textedit_clear_state(STB_TexteditState* state, int is_single_line)
-{
-	state->undostate.undo_point = 0;
-	state->undostate.undo_char_point = 0;
-	state->undostate.redo_point = STB_TEXTEDIT_UNDOSTATECOUNT;
-	state->undostate.redo_char_point = STB_TEXTEDIT_UNDOCHARCOUNT;
-	state->select_end = state->select_start = 0;
-	state->cursor = 0;
-	state->has_preferred_x = 0;
-	state->preferred_x = 0;
-	state->cursor_at_end_of_line = 0;
-	state->initialized = 1;
-	state->single_line = (bool)is_single_line;
-	state->insert_mode = 0;
-	state->row_count_per_page = 0;
-}
-
-// API initialize
-static void stb_textedit_initialize_state(STB_TexteditState* state, int is_single_line)
-{
-	stb_textedit_clear_state(state, is_single_line);
-}
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wcast-qual"
-#endif
-
-static int stb_textedit_paste(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_CHARTYPE const* ctext, int len)
-{
-	return stb_textedit_paste_internal(str, state, (STB_TEXTEDIT_CHARTYPE*)ctext, len);
-}
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
-
-
-
-
-
-// traverse the layout to locate the nearest character to a display position
-int stb_text_locate_coord(STB_TEXTEDIT_STRING* str, float x, float y, int* out_side_on_line);
-// API click: on mouse down, move the cursor to the clicked location, and reset the selection
-void stb_textedit_click(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, float x, float y);
-// API drag: on mouse drag, move the cursor and selection endpoint to the clicked location
-void stb_textedit_drag(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, float x, float y);
-// forward declarations
-void stb_text_undo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-void stb_text_redo(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-void stb_text_makeundo_delete(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int length);
-void stb_text_makeundo_insert(STB_TexteditState* state, int where, int length);
-void stb_text_makeundo_replace(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int old_length, int new_length);
-
-void stb_textedit_find_charpos(StbFindState* find, STB_TEXTEDIT_STRING* str, int n, int single_line);
-// make the selection/cursor state valid if client altered the string
-void stb_textedit_clamp(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-// delete characters while updating undo
-void stb_textedit_delete(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int where, int len);
-// delete the section
-void stb_textedit_delete_selection(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-// canoncialize the selection so start <= end
-void stb_textedit_sortselection(STB_TexteditState* state);
-// move cursor to first character of selection
-void stb_textedit_move_to_first(STB_TexteditState* state);
-// move cursor to last character of selection
-void stb_textedit_move_to_last(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-#ifndef STB_TEXTEDIT_MOVELINESTART
-int stb_textedit_move_line_start(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int cursor);
-#endif
-#ifndef STB_TEXTEDIT_MOVELINEEND
-int stb_textedit_move_line_end(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, int cursor);
-#endif
-int is_word_boundary(STB_TEXTEDIT_STRING* str, int idx);
-#ifndef STB_TEXTEDIT_MOVEWORDLEFT
-int stb_textedit_move_to_word_previous(STB_TEXTEDIT_STRING* str, int c);
-#endif
-#ifndef STB_TEXTEDIT_MOVEWORDRIGHT
-int stb_textedit_move_to_word_next(STB_TEXTEDIT_STRING* str, int c);
-#endif
-// update selection and cursor to match each other
-void stb_textedit_prep_selection_at_cursor(STB_TexteditState* state);
-// API cut: delete selection
-int stb_textedit_cut(STB_TEXTEDIT_STRING* str, STB_TexteditState* state);
-// API paste: replace existing selection with passed-in text
-int stb_textedit_paste_internal(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_CHARTYPE* text, int len);
-// API key: process text input
-void stb_textedit_text(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, const STB_TEXTEDIT_CHARTYPE* text, int text_len);
-// API key: process a keyboard input
-void stb_textedit_key(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_KEYTYPE key);
-void stb_textedit_flush_redo(StbUndoState* state);
-void stb_textedit_discard_undo(StbUndoState* state);
-void stb_textedit_discard_redo(StbUndoState* state);
-StbUndoRecord* stb_text_create_undo_record(StbUndoState* state, int numchars);
-STB_TEXTEDIT_CHARTYPE* stb_text_createundo(StbUndoState* state, int pos, int insert_len, int delete_len);
-// reset the state to default
-void stb_textedit_clear_state(STB_TexteditState* state, int is_single_line);
-// API initialize
-void stb_textedit_initialize_state(STB_TexteditState* state, int is_single_line);
-int stb_textedit_paste(STB_TEXTEDIT_STRING* str, STB_TexteditState* state, STB_TEXTEDIT_CHARTYPE const* ctext, int len);
-
-
-
-void testedit() {
-
-	stb_textedit_click(0, 0, 0, 0);
-	stb_textedit_drag(0, 0, 0, 0);
-	stb_textedit_cut(0, 0);
-	stb_textedit_key(0, 0, 0);
-	stb_textedit_initialize_state(0, 0);
-	stb_textedit_paste(0, 0, 0, 0);
-}
-
-#endif // 1
-
-edit_cx::edit_cx() :widget_t(widget_type::WT_EDIT)
-{
-	ctx = new text_control();
-	set_single(true);
-	//on_event_cb = [=](uint32_t type, et_un_t* e, const glm::vec2& pos)
-	//	{
-	//		on_event_e(type, e);
-	//	};
-}
-
-edit_cx::~edit_cx()
-{
-	if (ctx)delete ctx; ctx = nullptr;
-}
-
-void edit_cx::set_single(bool is)
-{
-	stb_textedit_initialize_state(&ctx->state, is);
-}
-
-void edit_cx::set_pwd(char ch)
-{
-	pwdch = ch;
-	//if (ch)
-	//	md::unicode_to_utf8(pwdch, ch);
-}
-
-void edit_cx::set_text(const void* str, int len)
-{
-	stb_textedit_delete(ctx, &ctx->state, 0, ctx->str.size());
-	stb_textedit_text(ctx, &ctx->state, (char*)str, len);
-	if (pwdch) {
-		stext.resize(ctx->str.size());
-		for (auto& it : stext) {
-			it = pwdch;
-		}
-	}
-	up_text = true;
-	up_cursor(true);
-}
-
-void edit_cx::add_text(const void* str, int len)
-{
-	stb_textedit_text(ctx, &ctx->state, (char*)str, len);
-	if (pwdch) {
-		stext.resize(ctx->str.size());
-		for (auto& it : stext) {
-			it = pwdch;
-		}
-	}
-	up_text = true;
-	up_cursor(true);
-}
-
-void edit_cx::set_size(const glm::ivec2& ss)
-{
-	widget_t::set_size(ss);
-}
-
-void edit_cx::set_pos(const glm::ivec2& pos)
-{
-	widget_t::set_pos(pos);
-}
-
-void edit_cx::set_align_pos(const glm::vec2& pos)
-{}
-
-void edit_cx::set_align(const glm::vec2& a)
-{}
-
-void edit_cx::set_cursor(const glm::ivec3& c)
-{
-	_cursor = c;
-}
-
-void edit_cx::set_color(const glm::ivec4& c)
-{
-	_color = c;
-}
-
-void edit_cx::set_family(font_familys_t* family, int fontsize)
-{
-	widget_t::set_family(family, fontsize);
-	ctx->family = family;
-	ctx->font_size = fontsize;
-}
-
-void edit_cx::set_show_input_cursor(bool ab)
-{
-	show_input_cursor = ab;
-}
-
-void edit_cx::set_autobr(bool ab)
-{}
-
-void edit_cx::set_round_path(float v)
-{}
-
-void edit_cx::remove_char(size_t idx, int count)
-{}
-
-bool edit_cx::remove_bounds()
-{
-	return false;
-}
-
-#if 0
-void edit_cx::on_event_e(uint32_t type, et_un_t* ep)
-{
-	auto e = ep->v;
-	auto t = (devent_type_e)type;
-	switch (t) {
-	case devent_type_e::text_input_e:
-	{
-		auto p = e.t;
-		auto ipos = input_pos();// 计算输入法坐标
-		p->x = ipos.x;
-		p->y = ipos.y + 3;
-		p->w = ipos.z;
-		p->h = ipos.w;
-		add_text(p->text, strlen(p->text));
-		wstr = md::u8_w(ctx->str.c_str(), ctx->str.size());
-	}break;
-	case devent_type_e::text_editing_e: {
-
-		if (!is_input)break;
-		auto& p = e.e;
-		bool setimepos = false;
-		if (ctx->caret_old != ctx->state.cursor)
-		{
-			ctx->caret_old = ctx->state.cursor;
-			setimepos = true;
-		}
-		std::string str;
-		if (p->text) {
-			str = p->text;
-		}
-		if (str.size())
-		{
-			setimepos = true;
-		}
-		if (setimepos)
-		{
-			auto ipos = input_pos();// 计算输入法坐标
-			p->x = ipos.x;
-			p->y = ipos.y;
-			p->w = ipos.z;
-			p->h = ipos.w;
-			//printf("text_editing_e:%s\t%d\n", str.c_str(), ipos.x);
-		}
-		//if (str.size())
-		editingstr = str;
-	}break;
-	case devent_type_e::keyboard_e:
-	{
-		on_keyboard(ep);
-	}break;
-	default:
-		break;
-	};
-
-}
-
-input_state_t* get_input_state_cx(void* ptr, int t)
-{
-	static input_state_t r = {};
-	if (t)
-	{
-		if (r.ptr)
-		{
-			auto p = (edit_cx*)r.ptr;
-			p->editingstr.clear();
-			p->is_input = false;
-			//p->dindex--;
-			//if (p->parent)
-			//	p->parent->valid = true;
-		}
-		r.ptr = ptr;
-	}
-	if (ptr && r.ptr)
-	{
-		auto p = (edit_cx*)r.ptr;
-		if (p) {
-			//p->dindex++;
-			//if (p->parent)
-			//	p->parent->valid = true;
-			*((glm::ivec4*)&r.x) = p->input_pos();
-			r.y += 3;
-		}
-		if (!r.cb)
-			r.cb = [](uint32_t type, et_un_t* e, void* ud) {
-			if (ud) {
-				((edit_cx*)ud)->on_event_e(type, e);
-			}
-			};
-	}
-	return &r;
-}
-#endif
-bool edit_cx::on_mevent(int type, const glm::ivec2& mps, void* e)
-{
-	auto t = (event_type_e)type;
-	bool ret = false;
-	auto p = (mouse_move_et*)e;
-
-	auto mpos = mps;
-	glm::ivec2 tpos = ctx->_align_pos - ctx->scroll_pos;
-	tpos += thickness;
-
-	switch (t)
-	{
-	case event_type_e::on_move:
-	{
-		p->cursor = cursor_st::cursor_ibeam;//设置输入光标
-	}break;
-	case event_type_e::on_leave:
-	{
-		p->cursor = cursor_st::cursor_arrow;//设置光标
-	}break;
-	case event_type_e::on_down:
-	{
-		mpos -= tpos + _pos;
-		_cmpos = mpos;
-		//if (form)
-		//{
-		//	form_set_input_ptr(form, get_input_state_cx(this, 1));
-		//	ctx->c_d = -1; is_input = true;
-		//}
-		//else {
-		//	ctx->c_d = 0; is_input = false;
-		//}
-		stb_textedit_click(ctx, &ctx->state, mpos.x, mpos.y);
-		ret = true;
-	}break;
-	case event_type_e::on_drag:
-	{
-		mpos += curpos; mpos -= tpos + _pos;
-		glm::ivec2 cm = mpos;
-		if (_cmpos != cm)
-			_cmpos = mpos;
-		stb_textedit_drag(ctx, &ctx->state, mpos.x, mpos.y);
-		ret = true;
-	}break;
-	case event_type_e::on_scroll:
-	{
-		ctx->scroll_pos.y -= mps.y * ctx->lineheight;
-		int lc = ctx->lvs.size();
-		lc--;
-		if (lc >= 0)
-			ctx->scroll_pos.y = glm::clamp(ctx->scroll_pos.y, 0, lc * ctx->lineheight);
-	}break;
-	default:
-		break;
-	};
-	if (ret) {
-		up_cursor(true);
-	}
-	return ret;
-}
-
-void edit_cx::on_keyboard(keyboard_et* ep)
-{
-	auto p = ep;
-	const bool is_osx = false;
-	// Control=1 Shift=2 Alt=4 8Cmd/Super/Windows
-	bool KeyShift = p->kmod == 2;
-	bool KeyAlt = p->kmod == 4;
-	bool KeyCtrl = p->kmod == 1;
-	bool KeySuper = p->kmod == 8;
-	const int k_mask = (KeyShift ? STB_TEXTEDIT_K_SHIFT : 0);
-	const bool is_wordmove_key_down = is_osx ? KeyAlt : KeyCtrl;                     // OS X style: Text editing cursor movement using Alt instead of Ctrl
-	const bool is_startend_key_down = is_osx && KeyCtrl && !KeySuper && !KeyAlt;  // OS X style: Line/Text Start and End using Cmd+Arrows instead of Home/End
-
-	int key = 0;
-
-
-	if (!p->down)
-	{
-		do {
-			if (!KeyCtrl)break;
-			switch (p->keycode) {
-			case SDLK_A:
-			{
-				ctx->state.select_end = ctx->str.size();
-				ctx->state.select_start = 0;
-			}
-			break;
-			case SDLK_X:
-			case SDLK_C:
-			{
-				std::string str;
-				stb_textedit_sortselection(&ctx->state);
-				str.assign(ctx->str.c_str() + ctx->state.select_start, ctx->state.select_end - ctx->state.select_start);
-				set_clipboard(str.c_str());
-				if (p->keycode == SDLK_X)
+			case VGUI_JUSTIFY_SPACE_AROUND:
+				if (n > 0)
 				{
-					stb_textedit_cut(ctx, &ctx->state);
-					up_text = true;
+					start = leftover / (n * 2.0f);
+					extra_gap = leftover / n;
 				}
-			}
-			break;
-			case SDLK_V:
-			{
-				auto str = get_clipboard();
-				stb_textedit_paste(ctx, &ctx->state, str.c_str(), str.size());
-				up_text = true;
-			}
-			break;
-			case SDLK_Y:
-				key = STB_TEXTEDIT_K_REDO;
-				up_text = true;
-				//is_redo = true;	//_storage_buf->redo();
 				break;
-			case SDLK_Z:
-				key = STB_TEXTEDIT_K_UNDO;
-				up_text = true;
-				//is_undo = true;	//_storage_buf->undo();
-				break;
+			default: break;
 			}
-		} while (0);
-	}
-	if (!key && (!p->down || editingstr.size()))
-	{
-		return;
-	}
-
-	bool isupcursor = false;
-	switch (p->keycode)
-	{
-	case SDLK_PRINTSCREEN:
-	{}
-	break;
-	case SDLK_SCROLLLOCK:
-	{}
-	break;
-	case SDLK_PAUSE:
-	{}
-	break;
-	case SDLK_TAB:
-	{
-		add_text("\t", 1);
-	}
-	break;
-	case SDLK_BACKSPACE:
-	{
-		key = STB_TEXTEDIT_K_BACKSPACE;
-		up_text = true;
-	}
-	break;
-	case SDLK_INSERT:
-	{
-		key = STB_TEXTEDIT_K_INSERT;
-		up_text = true;
-	}
-	break;
-	case SDLK_PAGEDOWN:
-	{
-		key = STB_TEXTEDIT_K_PGDOWN;
-	}
-	break;
-	case SDLK_PAGEUP:
-	{
-		key = STB_TEXTEDIT_K_PGUP;
-	}
-	break;
-	case SDLK_DELETE:
-	{
-		key = STB_TEXTEDIT_K_DELETE;
-	}
-	break;
-	case SDLK_HOME:
-	{
-		key = STB_TEXTEDIT_K_TEXTSTART;
-	}
-	break;
-	case SDLK_END:
-	{
-		key = STB_TEXTEDIT_K_TEXTEND;
-	}
-	break;
-	case SDLK_RIGHT:
-	{
-		key = STB_TEXTEDIT_K_RIGHT;
-	}
-	break;
-	case SDLK_LEFT:
-	{
-		key = STB_TEXTEDIT_K_LEFT;
-	}
-	break;
-	case SDLK_DOWN:
-	{
-		key = STB_TEXTEDIT_K_DOWN;
-	}
-	break;
-	case SDLK_UP:
-	{
-		key = STB_TEXTEDIT_K_UP;
-	}
-	break;
-	case SDLK_RETURN:
-	{
-		remove_bounds();
-		if (!ctx->state.single_line)
-		{
-			add_text("\n", 1);
 		}
-	}
-	break;
-	default:
-		break;
-	}
-	if (key)
-	{
-		/*STB_TEXTEDIT_K_SHIFT
-		 STB_TEXTEDIT_K_CONTROL
-		 STB_TEXTEDIT_K_LEFT
-		 STB_TEXTEDIT_K_RIGHT
-		 STB_TEXTEDIT_K_UP
-		 STB_TEXTEDIT_K_DOWN
-		 STB_TEXTEDIT_K_LINESTART
-		 STB_TEXTEDIT_K_LINEEND
-		 STB_TEXTEDIT_K_TEXTSTART
-		 STB_TEXTEDIT_K_TEXTEND
-		 STB_TEXTEDIT_K_DELETE
-		 STB_TEXTEDIT_K_BACKSPACE
-		 STB_TEXTEDIT_K_UNDO
-		 STB_TEXTEDIT_K_REDO
-		 STB_TEXTEDIT_K_INSERT
-		 STB_TEXTEDIT_K_WORDLEFT
-		  STB_TEXTEDIT_K_WORDRIGHT
-		  STB_TEXTEDIT_K_PGUP
-		  STB_TEXTEDIT_K_PGDOWN */
-		if (KeyCtrl)
-		{
-			key |= STB_TEXTEDIT_K_CONTROL;
-		}
-		if (KeyShift)
-		{
-			key |= STB_TEXTEDIT_K_SHIFT;
-		}
-		stb_textedit_key(ctx, &ctx->state, key);
-		up_cursor(true);
-	}
-}
 
-bool edit_cx::update(float delta)
-{
-	int ret = 0;
-	if (is_input) {
-		ctx->c_ct += delta * 1000.0 * ctx->c_d;
-		if (ctx->c_ct > _cursor.z)
+		float cursor = start;
+		for (vgui_widget* c : visible)
 		{
-			ctx->c_d = -1;
-			ctx->c_ct = _cursor.z;
-			valid = true;
-		}
-		if (ctx->c_ct < 0)
-		{
-			ctx->c_d = 1; ctx->c_ct = 0;
-			valid = true;
-		}
-	}
-	if (ctx->lineheight < 1)
-		ctx->lineheight = font_get_lineheight(style.family, style.fontsize, first_height);
-	if (ctx->font_size != style.fontsize) {
-		ctx->font_size = style.fontsize;
-	}
-	if (up_text)
-	{
-		if (ctx->state.single_line)
-		{
-			glm::vec2 ext = { 0,ctx->lineheight }, ext1 = { 0,style.fontsize }, ss = _size;
-			ss -= thickness * 2;
-			auto ps = glm::ceil((ss - ext) * style.align);
-			auto ps1 = glm::ceil((ss - ext1) * style.align);
-			ctx->_align_pos.y = ps.y;
-			ctx->_align_pos1.y = ps1.y;
-		}
-		up_text = false;
-		ctx->widths.clear();
-		valid = true;
-	}
-	if (valid) {
-		ret++; valid = false;
-	}
-	return ret > 0;
-}
+			float cw = vgui_child_req_w(c);
+			float ch = vgui_child_req_h(c);
+			float main = row ? cw : ch;
+			if (grow_sum > 0 && leftover > 0)
+				main += leftover * (c->grow / grow_sum);
 
-glm::ivec4 edit_cx::input_pos()
-{
-	glm::ivec2 cpos = ctx->cursor_pos;
-	auto pos = get_pos();
-	return { pos + cpos - ctx->scroll_pos + ctx->_align_pos
-		,2,  ctx->cursor_pos.z + 2 };
-}
+			vgui_align al = c->align_self != VGUI_ALIGN_AUTO ? c->align_self : w->align_items;
+			float cross_avail = inner_cross - (row ? c->margin[1] + c->margin[3] : c->margin[0] + c->margin[2]);
+			float cross = row ? ch : cw;
+			float cross_pos = 0;
+			if (al == VGUI_ALIGN_STRETCH && (row ? c->req_h <= 0 : c->req_w <= 0))
+				cross = cross_avail;
+			if (al == VGUI_ALIGN_CENTER) cross_pos = (cross_avail - cross) * 0.5f;
+			else if (al == VGUI_ALIGN_END) cross_pos = cross_avail - cross;
 
-int edit_cx::get_cursor_idx()
-{
-	return ctx->state.cursor;
-}
-
-std::string edit_cx::get_select_str()
-{
-	return std::string();
-}
-
-std::wstring edit_cx::get_select_wstr()
-{
-	return std::wstring();
-}
-
-glm::ivec2 edit_cx::get_bounds()
-{
-	glm::ivec2 v = { ctx->state.select_start, ctx->state.select_end };
-	if (v.x > v.y) { std::swap(v.x, v.y); }
-	return v;
-}
-glm::ivec3 edit_cx::get_line_length(int index)
-{
-	int x_pos = 0;
-	int lidx = 0;
-	int cu = -1;
-	int cx = 0;
-	auto sp = ctx->str.c_str();
-	for (size_t i = 0; i < ctx->lvs.size(); i++)
-	{
-		auto c = ctx->lvs[i];
-		if (index >= c.x && index < c.x + c.y + 1)//因为有换行+1
-		{
-			x_pos = index - c.x;
-			lidx = c.x;
-			cu = i;// 行号
-			break;
-		}
-	}
-	if (cu < 0 && ctx->lvs.size()) {
-		cu = ctx->lvs.size() - 1;
-		auto c = ctx->lvs[cu];
-		x_pos = index - c.x;
-		lidx = c.x;
-	}
-	glm::ivec3 ret = { lidx,cu, x_pos };
-	return ret;
-}
-// 获取范围的像素大小
-std::vector<glm::ivec4> edit_cx::get_bounds_px()
-{
-	float pwidth = style.fontsize * 0.5;// 补行尾宽度
-	auto pstr = ctx->str.c_str();
-	auto tsize = ctx->str.size();
-	if (up_text || ctx->widths.empty())
-	{
-		up_text = false;
-		ctx->widths.clear();
-		ctx->lvs.clear();
-		auto length = pwdch ? stext.size() : ctx->str.size();
-		auto p = pwdch ? stext.c_str() : ctx->str.c_str();
-		size_t f = 0, s = 0; size_t i = 0;
-		for (; i < length; i++)
-		{
-			if (p[i] == '\n')
+			float px, py, pw, ph;
+			if (row)
 			{
-				ctx->lvs.push_back({ f,i - f });
-				f = i + 1;
+				px = ix + cursor + c->margin[0];
+				py = iy + (row ? c->margin[1] : c->margin[0]) + cross_pos;
+				pw = main;
+				ph = cross;
+				cursor += main + c->margin[0] + c->margin[2] + w->gap + extra_gap;
 			}
+			else
+			{
+				px = ix + c->margin[0] + cross_pos;
+				py = iy + cursor + c->margin[1];
+				pw = cross;
+				ph = main;
+				cursor += main + c->margin[1] + c->margin[3] + w->gap + extra_gap;
+			}
+			placements.push_back({ c, px, py, pw, ph });
+			content_w = std::max(content_w, px - ix + pw + c->margin[2]);
+			content_h = std::max(content_h, py - iy + ph + c->margin[3]);
 		}
-		ctx->lvs.push_back({ f,i - f });
-		// todo font_get_text_posv(style.family, style.fontsize, pstr, tsize, ctx->widths);
-		//pwidth = font_get_text_rect1(style.family, style.fontsize, "1").x;
+		// Include the starting offset for centered / end aligned content.
+		content_w = std::max(content_w, (row ? start + total_main : max_cross));
+		content_h = std::max(content_h, (row ? max_cross : start + total_main));
 	}
-	std::vector<glm::ivec4> r;
-	std::vector<glm::ivec4> rs, rss;
-	auto v = get_bounds();
-	if (v.x == v.y) { ctx->rangerc = rss; return rs; }
-	if ((v.x >= tsize || v.y > tsize)) {
-		ctx->rangerc = rss; return rs;
-	}
-	auto v1 = get_line_length(v.x);
-	auto v2 = get_line_length(v.y);
-	auto line_no = ctx->lvs.size();
-	auto h = fix_line_height > 0 ? fix_line_height : font_get_lineheight(style.family, style.fontsize, first_height);
-	// 计算选中范围的每行的坐标宽高
-	if (v1 == v2) {}
-	else {
-		if (v1.y == v2.y)
-		{
-			auto ks = ctx->lvs[v1.y];
-			auto w1 = ctx->widths[v1.y];
-			auto xc = char2pos(v.x - ks.x, pstr + ks.x);
-			auto yc = char2pos(v.y - ks.x, pstr + ks.x);
-			int w = w1[xc];
-			int ww = w1[yc] - w;
-			rss.push_back({ w ,v1.y * h,ww,h });// 同一行时
-		}
-		else {
-			auto ks = ctx->lvs[v1.y];
-			auto w1 = ctx->widths[v1.y];
-			auto w = w1[char2pos(v.x - ks.x, pstr + ks.x)];
-			auto wd = *w1.rbegin() - w;
-			rss.push_back({ w,v1.y * h,wd + pwidth,h });// 第一行
-		}
-		for (int i = v1.y + 1; i < line_no && i < v2.y; i++)
-		{
-			auto ks = ctx->lvs[i];
-			auto w1 = ctx->widths[i];
-			rss.push_back({ 0,i * h,*w1.rbegin() + pwidth, h });// 中间全行
-		}
-		if (v1.y < v2.y)
-		{
-			auto ks = ctx->lvs[v2.y];
-			auto w1 = ctx->widths[v2.y];
-			rss.push_back({ 0,v2.y * h,w1[char2pos(v.y - ks.x ,pstr + ks.x)],h });//最后一行
-		}
-	}
-	if (roundselect)
+
+	w->content_w = std::max(0.0f, content_w);
+	w->content_h = std::max(0.0f, content_h);
+
+	float max_sx = std::max(0.0f, w->content_w - iw);
+	float max_sy = std::max(0.0f, w->content_h - ih);
+	if (w->scrollable_x) w->scroll_x = vgui_clampf(w->scroll_x, 0, max_sx);
+	else w->scroll_x = 0;
+	if (w->scrollable_y) w->scroll_y = vgui_clampf(w->scroll_y, 0, max_sy);
+	else w->scroll_y = 0;
+
+	for (const auto& p : placements)
 	{
-		PathsD subjects;
-		PathD a;
-		int py = ctx->_r_posy;
-		for (size_t i = 0; i < rss.size(); i++)
-		{
-			auto& it = rss[i];
-			if (it.z < 1)
-				it.z = pwidth;
-			a.push_back({ it.x,it.y + py });
-			a.push_back({ it.x + it.z,it.y + py });
-			a.push_back({ it.x + it.z,it.y + it.w + py });
-			a.push_back({ it.x,it.y + it.w + py });
-			subjects.push_back(a);
-			a.clear();
-		}
-		subjects = Union(subjects, FillRule::NonZero, 6);
-		//range_path = InflatePaths(subjects, 0.5, JoinType::Round, EndType::Polygon);
-		//auto sn = subjects.size();
-		//if (sn > 0)
-		//{
-		//	path_v& ptr = ctx->ptr_path;
-		//	ptr._data.clear();
-		//	for (size_t i = 0; i < sn; i++)
-		//	{
-		//		auto& it = subjects[i];
-		//		ptr.add_lines((glm::dvec2*)it.data(), it.size(), false);
-		//	}
-		//	ctx->range_path = gp::path_round(&ptr, -1, style.fontsize * ctx->round_path, 16, 0, 0);
-		//}
-		//else 
-		{ ctx->range_path.clear(); }
+		vgui_layout_widget(p.child, ctx, p.x - w->scroll_x, p.y - w->scroll_y, p.w, p.h);
 	}
-	ctx->rangerc = rss;
-	return r;
 }
 
-#if 0
-glm::ivec2 edit_cx::get_pixel_size(const char* str, int len)
+static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y, float forced_w, float forced_h)
 {
-	int w = 0, h = 0;
-	if (str && *str)
-	{
-		//auto rc = get_text_rect(style.family, style.fontsize, str, len, 0);
-		//w = rc.x; h = rc.y;
-	}
-	return glm::ivec2(w, h);
-}
-size_t edit_cx::get_xy_to_index(int x, int y, const char* str)
-{
-	auto pstr = ctx->str.c_str();
-	if (ctx->widths.empty())
-	{
-		//font_get_text_posv(style.family, style.fontsize, pstr, ctx->str.size(), ctx->widths);
-	}
-	if (ctx->widths.size() != ctx->lvs.size())
-		return -1;
-	x += ctx->scroll_pos.x - ctx->_align_pos.x;
-	y += ctx->scroll_pos.y - ctx->_align_pos.y;
-	int index = 0, trailing = 0;
-	if (x < 0)
-	{
-		x = 0;
-	}
-	if (y < 0)
-	{
-		y = 0;
-	}
-	glm::ivec2 lps = get_pixel_size(pstr, text.size());
-	if (y > lps.y)
-		y = lps.y - 1;
-	y /= ctx->lineheight;
-	if (y >= ctx->lvs.size())y = ctx->lvs.size() - 1;
-	auto ky = ctx->lvs[y];
-	auto& ws = ctx->widths[y];
-	int cw = 0;
-	for (size_t i = 0; i < ws.size(); i++)
-	{
-		if (x < ws[i]) {
-			index = i;  break;
-		}
-	}
-	if (x > *(ws.rbegin())) {
-		index = ws.size() - 1;
-	}
-	else if (index > 0) {
-		int tr = (ws[index] - ws[index - 1]) * 0.5;
-		int xx = x - ws[index - 1];
-		if (xx >= tr)
-		{
-			cw = ws[index];
-			index++;
-		}
-		else {
-			cw = ws[index - 1];
-		}
-		index--;
-	}
-	auto newx = md::utf8_char_pos(str + ky.x, index, -1);
-	newx -= (uint64_t)str;
-	index = (uint64_t)newx;
-	//curx = cw;
-	return (size_t)index;
-}
-#endif
-void edit_cx::up_caret()
-{
-	glm::ivec4 caret = {};
-	get_bounds_px();
-	auto v1 = get_line_length(ctx->state.cursor);
-	auto line_no = ctx->lvs.size();
-	auto h = fix_line_height > 0 ? fix_line_height : font_get_lineheight(style.family, style.fontsize, first_height);
-	// 计算选中范围的每行的坐标宽高 
-	if (line_no > 0 && ctx->widths.size() > v1.y)
-	{
-		auto ks = ctx->lvs[v1.y];
-		auto w1 = ctx->widths[v1.y];
-		{
-			auto pstr = ctx->str.c_str();
-			//caret.x = get_text_rect(style.family, style.fontsize, pstr + ks.x, std::min(ks.y, ctx->state.cursor - ks.x), 0).x;
-		}
-		//caret.x = w1[ctx->state.cursor - ks.x];
-		caret.y = h * v1.y;
-		//printf("cursor:\t%d\n", cursor_pos.x);
-	}
-	ctx->cursor_pos = caret; ctx->cursor_pos.z = h;
+	if (!w || !w->visible) return;
+	float ww = forced_w;
+	if (ww <= 0) ww = vgui_child_req_w(w);
+	float hh = forced_h;
+	if (hh <= 0) hh = vgui_child_req_h(w);
+	if (w->min_w > 0) ww = std::max(ww, w->min_w);
+	if (w->min_h > 0) hh = std::max(hh, w->min_h);
+	if (w->max_w > 0) ww = std::min(ww, w->max_w);
+	if (w->max_h > 0) hh = std::min(hh, w->max_h);
+	ww = std::max(ww, 0.0f);
+	hh = std::max(hh, 0.0f);
+
+	w->abs_x = x;
+	w->abs_y = y;
+	w->abs_w = ww;
+	w->abs_h = hh;
+
+	if (w->kind != VGUI_PANEL) return;
+
+	float ix = x + w->padding[0];
+	float iy = y + w->padding[1];
+	float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
+	float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
+	vgui_arrange_children(w, ctx, ix, iy, iw, ih);
 }
 
-void edit_cx::up_cursor(bool is)
+static void vgui_ensure_layout(vgui_context* ctx)
 {
-	if (is)
+	if (!ctx || !ctx->root) return;
+	if (!ctx->layout_dirty) return;
+	ctx->layout_dirty = false;
+	vgui_measure_widget(ctx->root, ctx);
+	float rw = ctx->width > 0 ? (float)ctx->width : std::max(ctx->root->intrinsic_w, 1.0f);
+	float rh = ctx->height > 0 ? (float)ctx->height : std::max(ctx->root->intrinsic_h, 1.0f);
+	vgui_layout_widget(ctx->root, ctx, 0, 0, rw, rh);
+}
+
+static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
+{
+	if (!w) return;
+	for (vgui_widget* c : w->children)
+		vgui_delete_rec(c, ctx);
+	ctx->alive.erase(w);
+	ctx->all_widgets.erase(w);
+	delete w;
+}
+
+static void vgui_flush_pending(vgui_context* ctx)
+{
+	if (!ctx || ctx->pending_delete.empty()) return;
+	std::vector<vgui_widget*> list;
+	list.swap(ctx->pending_delete);
+	for (vgui_widget* w : list)
 	{
-		up_caret();
-		glm::ivec2 cs = ctx->cursor_pos;
-		auto evs = get_size();		// 视图大小
-		auto h = ctx->cursor_pos.z;	// 行高
-		if (h < 1)h = 1;
-		evs.x -= ctx->_align_pos.x;
-		int ey = evs.y - ctx->cursor_pos.z;
-		//ey *= h;
-		glm::ivec2 pos = {};
-		if (ctx->is_scroll) {
-			dcscroll(cs.x, evs.x, 2, ctx->scroll_pos.x);
-			dcscroll(cs.y, ey, h, ctx->scroll_pos.y);
+		if (!w || !ctx->alive.count(w)) continue;
+		if (w->parent)
+		{
+			auto& v = w->parent->children;
+			v.erase(std::remove(v.begin(), v.end(), w), v.end());
+		}
+		if (ctx->root == w) ctx->root = nullptr;
+		if (ctx->hot == w) ctx->hot = nullptr;
+		if (ctx->active == w) ctx->active = nullptr;
+		if (ctx->press_target == w) ctx->press_target = nullptr;
+		if (ctx->focus == w) ctx->focus = nullptr;
+		if (ctx->slider_drag == w) ctx->slider_drag = nullptr;
+		vgui_delete_rec(w, ctx);
+	}
+	ctx->layout_dirty = true;
+}
+
+static void vgui_schedule_destroy(vgui_widget* w)
+{
+	if (!w || !w->ctx || w->destroy_pending) return;
+	vgui_context* ctx = w->ctx;
+	for (vgui_widget* p = w->parent; p; p = p->parent)
+		if (p->destroy_pending) return; // parent will delete the subtree
+	w->destroy_pending = true;
+	w->visible = 0;
+	if (ctx->hot == w) ctx->hot = nullptr;
+	if (ctx->active == w) ctx->active = nullptr;
+	if (ctx->press_target == w) ctx->press_target = nullptr;
+	if (ctx->focus == w) ctx->focus = nullptr;
+	if (ctx->slider_drag == w) ctx->slider_drag = nullptr;
+	ctx->pending_delete.push_back(w);
+	ctx->layout_dirty = true;
+}
+
+static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
+{
+	if (!w || !w->visible || !w->enabled || w->destroy_pending) return nullptr;
+	if (!vgui_point_in(w, x, y)) return nullptr;
+	for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
+	{
+		vgui_widget* r = vgui_hit_rec(*it, x, y);
+		if (r) return r;
+	}
+	return w;
+}
+
+static vgui_widget* vgui_hit_test_ctx(vgui_context* ctx, float x, float y)
+{
+	if (!ctx || !ctx->root) return nullptr;
+	vgui_ensure_layout(ctx);
+	return vgui_hit_rec(ctx->root, x, y);
+}
+
+static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w)
+{
+	if (!ctx) return;
+	if (ctx->focus == w) return;
+	if (ctx->focus && ctx->focus->ctx == ctx)
+	{
+		ctx->focus->focused = 0;
+		ctx->focus->caret_blink = 0;
+	}
+	ctx->focus = w;
+	if (w)
+	{
+		w->focused = 1;
+		w->caret_blink = 0;
+	}
+	ctx->want_key = (w != nullptr);
+	ctx->want_text = (w && w->kind == VGUI_EDIT && !w->readonly);
+}
+
+//----------------------------------------------------------------------------
+// text edit helpers
+//----------------------------------------------------------------------------
+
+static int vgui_edit_clamp_index(const std::string& s, int i)
+{
+	if (i < 0) return 0;
+	if (i > (int)s.size()) return (int)s.size();
+	while (i > 0 && i < (int)s.size() && vgui_is_cont((unsigned char)s[(size_t)i]))
+		i--;
+	return i;
+}
+
+static void vgui_edit_clamp(vgui_widget* w)
+{
+	w->edit_cursor = vgui_edit_clamp_index(w->edit_text, w->edit_cursor);
+	w->edit_anchor = vgui_edit_clamp_index(w->edit_text, w->edit_anchor);
+	if (w->edit_anchor > (int)w->edit_text.size()) w->edit_anchor = (int)w->edit_text.size();
+}
+
+static bool vgui_edit_has_sel(vgui_widget* w)
+{
+	return w && w->edit_cursor != w->edit_anchor;
+}
+
+static void vgui_edit_line_col(const std::string& s, int index, int& line, int& col)
+{
+	line = 0;
+	col = 0;
+	index = vgui_edit_clamp_index(s, index);
+	for (int i = 0; i < index;)
+	{
+		if (s[(size_t)i] == '\n')
+		{
+			line++;
+			col = 0;
+			i++;
 		}
 		else
 		{
-			ctx->scroll_pos = { .0, .0 };
-		}
-		if (!(cs.x < 0 || cs.y < 0))
-		{
-			pos.x += cs.x;
-			pos.y += cs.y;
+			col++;
+			i = vgui_u8_next(s, i);
 		}
 	}
 }
-#endif
 
-
-// todo draw ct
-
-
-void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size)
+static int vgui_edit_byte_from_line_col(const std::string& s, int line, int col)
 {
-	auto ns = size;	auto ss = size;	int thickness = t->thickness;	auto psv = pos;
-	auto view = glm::ivec4(psv, ns + thickness);
-	//rv->push_view(view, t); 
-	cb->save(vg);
-	cb->translate(vg, psv.x, psv.y);
-	if (t->dfill)
+	int cur_line = 0;
+	int i = 0;
+	while (i < (int)s.size() && cur_line < line)
 	{
-		if (t->circle)
-		{
-			glm::vec2 sp = {};
-			int r = lround(ss.y * 0.5);
-			sp += r;
-			cb->circle(vg, sp.x, sp.y, r);
-		}
-		else { cb->rounded_rectangle(vg, 0, 0, ss.x, ss.y, t->rounding); }
-		cb->set_source_color(vg, t->dfill);
-		cb->fill(vg);
+		if (s[(size_t)i] == '\n') cur_line++;
+		i = vgui_u8_next(s, i);
 	}
-	// 渲染标签
-	glm::vec2 ps = { thickness * 2, thickness * 2 };
-	if (t->mPushed) {
-		ps += t->pushedps;
-	}
-	ns -= thickness * 4;
-	float padding = thickness == 1 ? 0.5f : 0.0f;
-	glm::vec4 rc = { ps, ns };
-	if (t->dcol)
+	if (cur_line < line) return (int)s.size();
+	int n = 0;
+	while (i < (int)s.size() && s[(size_t)i] != '\n' && n < col)
 	{
-		if (t->circle)
+		i = vgui_u8_next(s, i);
+		n++;
+	}
+	return i;
+}
+
+// Byte range [begin, end) of a line (line 0 based, '\n' separated).
+static void vgui_edit_line_bytes(const std::string& s, int line, int& begin, int& end)
+{
+	int i = 0, cur = 0;
+	while (i < (int)s.size() && cur < line)
+	{
+		if (s[(size_t)i] == '\n') cur++;
+		i++;
+	}
+	if (cur < line)
+	{
+		begin = end = (int)s.size();
+		return;
+	}
+	begin = i;
+	while (i < (int)s.size() && s[(size_t)i] != '\n') i++;
+	end = i;
+}
+
+// Nearest byte boundary to a local x position inside [begin, end), using the
+// real text metrics so clicks and carets agree with the rendered glyphs.
+static int vgui_edit_byte_from_x(vgui_widget* w, int begin, int end, float lx)
+{
+	if (lx <= 0 || !w) return begin;
+	const std::string& s = w->edit_text;
+	int i = begin;
+	float prev = 0;
+	while (i < end)
+	{
+		int j = vgui_u8_next(s, i);
+		if (j > end) j = end;
+		float cur = prev + vgui_text_width_n(w, s.data() + i, j - i);
+		if (lx < (prev + cur) * 0.5f) return i;
+		prev = cur;
+		i = j;
+	}
+	return end;
+}
+
+static void vgui_edit_ensure_visible(vgui_widget* w)
+{
+	if (!w) return;
+	float lh = vgui_line_height(w->ctx, w);
+	float inner_w = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float inner_h = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	int line = 0, col = 0;
+	vgui_edit_line_col(w->edit_text, w->edit_cursor, line, col);
+	(void)col;
+	int lb = 0, le = 0;
+	vgui_edit_line_bytes(w->edit_text, line, lb, le);
+	int upto = std::min(std::max(w->edit_cursor, lb), le);
+	float cx = vgui_text_width_n(w, w->edit_text.data() + lb, upto - lb);
+	float cy = line * lh;
+	if (cx - w->edit_scroll_x > inner_w - 2) w->edit_scroll_x = cx - inner_w + 2;
+	if (cx - w->edit_scroll_x < 0) w->edit_scroll_x = cx;
+	if (w->multiline)
+	{
+		if (cy - w->edit_scroll_y > inner_h - lh) w->edit_scroll_y = cy - inner_h + lh;
+		if (cy - w->edit_scroll_y < 0) w->edit_scroll_y = cy;
+	}
+	else
+	{
+		w->edit_scroll_y = 0;
+	}
+	if (w->edit_scroll_x < 0) w->edit_scroll_x = 0;
+	if (w->edit_scroll_y < 0) w->edit_scroll_y = 0;
+}
+
+static void vgui_edit_sync_text(vgui_widget* w)
+{
+	w->text = w->edit_text;
+	vgui_mark_dirty(w);
+	vgui_edit_ensure_visible(w);
+}
+
+static void vgui_edit_erase_selection(vgui_widget* w)
+{
+	if (!vgui_edit_has_sel(w)) return;
+	int a = std::min(w->edit_cursor, w->edit_anchor);
+	int b = std::max(w->edit_cursor, w->edit_anchor);
+	a = vgui_edit_clamp_index(w->edit_text, a);
+	b = vgui_edit_clamp_index(w->edit_text, b);
+	if (b > a)
+		w->edit_text.erase((size_t)a, (size_t)(b - a));
+	w->edit_cursor = w->edit_anchor = a;
+}
+
+static void vgui_edit_insert(vgui_widget* w, const char* text)
+{
+	if (!w || !text || w->readonly) return;
+	vgui_edit_erase_selection(w);
+	w->ime_text.clear();
+	w->ime_cursor = w->ime_length = 0;
+	std::string ins(text);
+	int at = vgui_edit_clamp_index(w->edit_text, w->edit_cursor);
+	w->edit_text.insert((size_t)at, ins);
+	w->edit_cursor = w->edit_anchor = at + (int)ins.size();
+	vgui_edit_sync_text(w);
+	vgui_notify_text(w);
+}
+
+static int vgui_edit_word_prev(const std::string& s, int i)
+{
+	i = vgui_edit_clamp_index(s, i);
+	while (i > 0)
+	{
+		int p = vgui_u8_prev(s, i);
+		unsigned char c = (unsigned char)s[(size_t)p];
+		if (!(c == ' ' || c == '\t' || c == '\n')) break;
+		i = p;
+	}
+	while (i > 0)
+	{
+		int p = vgui_u8_prev(s, i);
+		unsigned char c = (unsigned char)s[(size_t)p];
+		if (c == ' ' || c == '\t' || c == '\n') break;
+		i = p;
+	}
+	return i;
+}
+
+static int vgui_edit_word_next(const std::string& s, int i)
+{
+	i = vgui_edit_clamp_index(s, i);
+	while (i < (int)s.size())
+	{
+		unsigned char c = (unsigned char)s[(size_t)i];
+		if (c == ' ' || c == '\t' || c == '\n') break;
+		i = vgui_u8_next(s, i);
+	}
+	while (i < (int)s.size())
+	{
+		unsigned char c = (unsigned char)s[(size_t)i];
+		if (!(c == ' ' || c == '\t' || c == '\n')) break;
+		i = vgui_u8_next(s, i);
+	}
+	return i;
+}
+
+static void vgui_edit_move(vgui_widget* w, int new_cursor, bool select)
+{
+	w->edit_cursor = vgui_edit_clamp_index(w->edit_text, new_cursor);
+	if (!select) w->edit_anchor = w->edit_cursor;
+	w->caret_blink = 0;
+	vgui_edit_ensure_visible(w);
+}
+
+static void vgui_activate_widget(vgui_widget* w, int clicks);
+
+static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
+{
+	if (!w || !down) return true;
+	bool shift = (mods & VGUI_MOD_SHIFT) != 0;
+	bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
+	int size = (int)w->edit_text.size();
+	int line = 0, col = 0;
+	vgui_edit_line_col(w->edit_text, w->edit_cursor, line, col);
+
+	if (ctrl && key == 'A')
+	{
+		w->edit_anchor = 0;
+		w->edit_cursor = size;
+		w->caret_blink = 0;
+		return true;
+	}
+	if (ctrl && (key == 'C' || key == 'X'))
+	{
+		if (vgui_edit_has_sel(w))
 		{
-			glm::vec2 sp = {};
-			int r = lround(ss.y * 0.5);
-			sp += r;
-			cb->circle(vg, sp.x, sp.y, r);
+			int a = std::min(w->edit_cursor, w->edit_anchor);
+			int b = std::max(w->edit_cursor, w->edit_anchor);
+			set_clipboard(w->edit_text.substr((size_t)a, (size_t)(b - a)).c_str());
+			if (key == 'X')
+			{
+				vgui_edit_erase_selection(w);
+				vgui_edit_sync_text(w);
+				vgui_notify_text(w);
+			}
 		}
-		else { cb->rounded_rectangle(vg, padding, padding, ss.x, ss.y, t->rounding); }
-		cb->set_line_width(vg, thickness);
-		cb->set_source_color(vg, t->dcol);
-		cb->stroke(vg);
+		return true;
 	}
-	text_st_t dt = {};
-	dt.text = (char*)t->text.str;
-	dt.text_len = t->text.str_len;
-	dt.pos = ps;
-	dt.size = ns;
-	cb->add_text(vg, &dt, t->text.ptext_style, nullptr);
-	cb->restore(vg);
-}
-
-void gradient_btn_init(gradient_style* p, uint32_t back_color, uint32_t text_color)
-{
-	auto& info = *p;
-	info.back_color = back_color;
-	if (p->text.ptext_style)
-		p->text.ptext_style->color = text_color;
-	info.opacity = 1;
-	info.borderLight = 0xff5c5c5c;
-	info.borderDark = 0xff1d1d1d;
-	return;
-}
-bool gradient_btn_update(gradient_style* p, float delta)
-{
-	if (!p)return false;
-	if (p->_bst == p->_old_bst)return false;
-	p->_old_bst = p->_bst;
-	auto& info = *p;
-
-	// (sta & hz::BTN_STATE::STATE_FOCUS)
-	uint32_t gradTop = info.gradTop.x;// 0xff4a4a4a; 
-	uint32_t gradBot = info.gradBot.x;// 0xff3a3a3a;
-
-	info.mPushed = (p->_bst & (int)BTN_STATE::STATE_ACTIVE);
-	info.mMouseFocus = (p->_bst & (int)BTN_STATE::STATE_HOVER);
-	if (p->_bst & (int)BTN_STATE::STATE_DISABLE)
-		info.mEnabled = false;
-	if (info.mPushed) {
-		gradTop = info.gradTop.z;//0xff292929;
-		gradBot = info.gradBot.z;//0xff1d1d1d;
+	if (ctrl && key == 'V')
+	{
+		if (!w->readonly)
+		{
+			std::string s = get_clipboard();
+			if (!s.empty())
+			{
+				vgui_edit_erase_selection(w);
+				int at = w->edit_cursor;
+				w->edit_text.insert((size_t)at, s);
+				w->edit_cursor = w->edit_anchor = at + (int)s.size();
+				vgui_edit_sync_text(w);
+				vgui_notify_text(w);
+			}
+		}
+		return true;
 	}
-	else if (info.mMouseFocus && info.mEnabled) {
-		gradTop = info.gradTop.y;// 0x80404040;
-		gradBot = info.gradBot.y;//0x80303030;
+
+	switch (key)
+	{
+	case VGUI_KEY_BACKSPACE:
+		if (!w->readonly)
+		{
+			if (vgui_edit_has_sel(w))
+			{
+				vgui_edit_erase_selection(w);
+			}
+			else if (w->edit_cursor > 0)
+			{
+				int p = ctrl ? vgui_edit_word_prev(w->edit_text, w->edit_cursor) : vgui_u8_prev(w->edit_text, w->edit_cursor);
+				w->edit_text.erase((size_t)p, (size_t)(w->edit_cursor - p));
+				w->edit_cursor = w->edit_anchor = p;
+			}
+			vgui_edit_sync_text(w);
+			vgui_notify_text(w);
+		}
+		return true;
+	case VGUI_KEY_DELETE:
+		if (!w->readonly)
+		{
+			if (vgui_edit_has_sel(w))
+			{
+				vgui_edit_erase_selection(w);
+			}
+			else if (w->edit_cursor < size)
+			{
+				int n = ctrl ? vgui_edit_word_next(w->edit_text, w->edit_cursor) : vgui_u8_next(w->edit_text, w->edit_cursor);
+				w->edit_text.erase((size_t)w->edit_cursor, (size_t)(n - w->edit_cursor));
+			}
+			vgui_edit_sync_text(w);
+			vgui_notify_text(w);
+		}
+		return true;
+	case VGUI_KEY_LEFT:
+		vgui_edit_move(w, ctrl ? vgui_edit_word_prev(w->edit_text, w->edit_cursor) : vgui_u8_prev(w->edit_text, w->edit_cursor), shift);
+		return true;
+	case VGUI_KEY_RIGHT:
+		vgui_edit_move(w, ctrl ? vgui_edit_word_next(w->edit_text, w->edit_cursor) : vgui_u8_next(w->edit_text, w->edit_cursor), shift);
+		return true;
+	case VGUI_KEY_HOME:
+		vgui_edit_move(w, ctrl ? 0 : vgui_edit_byte_from_line_col(w->edit_text, line, 0), shift);
+		return true;
+	case VGUI_KEY_END:
+		if (ctrl)
+		{
+			vgui_edit_move(w, size, shift);
+		}
+		else
+		{
+			int e = vgui_edit_byte_from_line_col(w->edit_text, line, 1 << 30);
+			while (e < size && w->edit_text[(size_t)e] != '\n') e++;
+			vgui_edit_move(w, e, shift);
+		}
+		return true;
+	case VGUI_KEY_UP:
+	case VGUI_KEY_DOWN:
+		if (w->multiline)
+		{
+			int target_line = line + (key == VGUI_KEY_UP ? -1 : 1);
+			if (target_line < 0) target_line = 0;
+			int max_line = vgui_text_lines(w->edit_text) - 1;
+			if (target_line > max_line) target_line = max_line;
+			vgui_edit_move(w, vgui_edit_byte_from_line_col(w->edit_text, target_line, col), shift);
+		}
+		else
+		{
+			vgui_edit_move(w, key == VGUI_KEY_UP ? 0 : size, shift);
+		}
+		return true;
+	case VGUI_KEY_PAGE_UP:
+		vgui_edit_move(w, 0, shift);
+		return true;
+	case VGUI_KEY_PAGE_DOWN:
+		vgui_edit_move(w, size, shift);
+		return true;
+	case VGUI_KEY_ENTER:
+		if (w->multiline && !w->readonly)
+		{
+			vgui_edit_insert(w, "\n");
+		}
+		else
+		{
+			vgui_event e = {};
+			e.type = VGUI_EVENT_SUBMIT;
+			e.key = VGUI_KEY_ENTER;
+			vgui_emit_full(w, e);
+		}
+		return true;
+	case VGUI_KEY_ESCAPE:
+		vgui_set_focus_internal(w->ctx, nullptr);
+		return true;
+	default:
+		break;
 	}
-	info._gradTop = gradTop;
-	info._gradBot = gradBot;
 	return true;
 }
-void paint_linear(ovg_ctx_cb* cb, rvg_t* vg, const glm::vec2& gsize, const glm::vec2& box, const glm::vec4& c, const glm::vec4& c1, int rounding)
-{
-	auto pat = cb->new_pattern_linear(vg, 0, 0, gsize.x, gsize.y);
-	if (pat) {
-		cb->pattern_add_color_stop(pat, 0, c.x, c.y, c.z, c.w);
-		cb->pattern_add_color_stop(pat, 1, c1.x, c1.y, c1.z, c1.w);
-		cb->set_source(vg, pat);
-		cb->rounded_rectangle(vg, 0, 0, box.x, box.y, rounding);
-		cb->fill(vg);
-	}
-}
 
-#define getrgba(a,b,sp) lerp(a.sp,b.sp,ratio)
+//----------------------------------------------------------------------------
+// values / activation
+//----------------------------------------------------------------------------
 
-glm::dvec4 mix_colors0(glm::vec4 a, glm::vec4 b, float ratio)
+static void vgui_radio_select(vgui_widget* w)
 {
-	auto lerp = [](double v0, double v1, double t) { return (1.0 - t) * v0 + t * v1; };
-	glm::dvec4 result = {};
-	result.x = getrgba(a, b, x);
-	result.y = getrgba(a, b, y);
-	result.z = getrgba(a, b, z);
-	result.w = getrgba(a, b, w);
-	return result;
-}
-vg_pattern_t* new_cubic_gradient(ovg_ctx_cb* cb, rvg_t* vg, glm::vec4 rect, glm::vec4 from, glm::vec4 to, glm::vec2 ctrl1, glm::vec2 ctrl2, glm::vec2 p0 = {}, glm::vec2 p1 = { 1,1 }, int steps = 8);
-vg_pattern_t* new_cubic_gradient(ovg_ctx_cb* cb, rvg_t* vg, glm::vec4 rect, glm::vec4 from, glm::vec4 to, glm::vec2 ctrl1, glm::vec2 ctrl2, glm::vec2 p0, glm::vec2 p1, int steps)
-{
-	// validate input points
-	for (auto&& pt : { p0, ctrl1, ctrl2, p1 }) {
-		if (pt.x < 0 || pt.x > 1 ||
-			pt.y < 0 || pt.y > 1) {
-			assert(0);
-			return 0;
-			//throw std::invalid_argument("Invalid points for cubic gradient; 0..1 coordinates expected.");
+	if (!w) return;
+	if (w->parent)
+	{
+		for (vgui_widget* s : w->parent->children)
+		{
+			if (s != w && s->kind == VGUI_RADIO && s->checked)
+			{
+				s->checked = 0;
+				vgui_notify_value(s);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+			}
 		}
 	}
-	if (steps < 2 || steps > 32) {
-		assert(0);
-		return 0;
-		//throw std::invalid_argument("Invalid number of steps for cubic gradient; 2 to 32 steps expected.");
-	}
-	if (rect.x > rect.z)
-	{
-		std::swap(rect.x, rect.z);
-	}
-	if (rect.y > rect.w)
-	{
-		std::swap(rect.y, rect.w);
-	}
-	vg_pattern_t* g = cb->new_pattern_linear(vg, rect.x, rect.y, rect.z, rect.w);
-	--steps;
-	for (int step = 0; step <= steps; ++step) {
-		auto t = 1.0 * step / steps;
-		auto s = 1.0 - t;
-		auto p0t = p0;
-		auto p1t = p1;
-		auto c1 = ctrl1;
-		auto c2 = ctrl2;
-		p0t *= (t * t * t);
-		c1 *= (3 * t * t * s);
-		c2 *= (3 * t * s * s);
-		p1t *= (s * s * s);
-		//auto p = (t * t * t) * p0 + (3 * t * t * s) * ctrl1 + (3 * t * s * s) * ctrl2 + (s * s * s) * p1;
-		auto p = p0t + c1 + c2 + p1t;
-		auto offset = p.x;
-		auto ratio = p.y;
-		auto color = mix_colors0(from, to, ratio);
-		cb->pattern_add_color_stop(g, offset, color.x, color.y, color.z, color.w);
-	}
-
-	return g;
+	bool changed = !w->checked;
+	w->checked = 1;
+	if (changed) vgui_notify_value(w);
 }
-void paint_shadow_v(ovg_ctx_cb* cb, rvg_t* vg, double size_x, double size_y, double width, double height, const glm::vec4& shadow, bool rev, float r)
+
+static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
 {
-	auto trans = shadow;
-	trans.w = 0;
-	auto gr = rev ?
-		new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), trans, shadow, glm::vec2(0.5, 0.0), glm::vec2(1.0, 0.5))
-		: new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), shadow, trans, glm::vec2(0, 0.5), glm::vec2(0.5, 1));
-	cb->rounded_rectangle(vg, 0, 0, width, height, r);
-	cb->set_source(vg, gr);
-	cb->fill(vg);
-}
-void paint_shadow_v(ovg_ctx_cb* cb, rvg_t* vg, double size_x, double size_y, double width, double height, const glm::vec4& shadow, const glm::vec4& color_to, bool rev, float r)
-{
-	auto gr = rev ?
-		new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), color_to, shadow, glm::vec2(0.5, 0.0), glm::vec2(1.0, 0.5))
-		: new_cubic_gradient(cb, vg, glm::vec4(0, 0, size_x, size_y), shadow, color_to, glm::vec2(0, 0.5), glm::vec2(0.5, 1));
-	cb->rounded_rectangle(vg, 0, 0, width, height, r);
-	cb->set_source(vg, gr);
-	cb->fill(vg);
-}
-
-void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size)
-{
-	auto psv = pos;// get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	float x = psv.x, y = psv.y, w = size.x, h = size.y;
-	int pushed = p->mPushed ? 0 : 1;
-	uint32_t gradTop = p->_gradTop;
-	uint32_t gradBot = p->_gradBot;
-	uint32_t borderDark = p->borderDark;
-	uint32_t borderLight = p->borderLight;
-	double oa = p->opacity;
-	auto ns = size;
-
-	auto bc = p->effect == uTheme::light ? p->back_color : set_alpha_xf2(p->back_color, get_alpha_f(p->back_color));
-	double rounding = p->rounding;
-	glm::vec2 ns1 = { w * 0.5, h * 0.5 };
-	auto nr = (int)std::min(ns1.x, ns1.y);
-	if (rounding > nr)
+	if (!w) return;
+	bool changed = false;
+	switch (w->kind)
 	{
-		rounding = nr;
-	}
-	auto thickness = p->thickness;
-	glm::vec2 tps = { 0.5,0.5 };	// thickness等于1时需要偏移0.5才能正常渲染线框
-	if (thickness > 1)tps *= 0.0;
-	cb->save(vg);
-	cb->translate(vg, x, y);
-	if (is_alpha(bc))
+	case VGUI_CHECKBOX:
+	case VGUI_SWITCH:
 	{
-		bc = set_alpha_f(bc, oa);
-		cb->rounded_rectangle(vg, thickness, thickness, w - thickness * 2, h - thickness * 2, rounding);
-		cb->set_source_color(vg, bc);
-		cb->fill(vg);
+		int c = v >= 0.5f ? 1 : 0;
+		changed = (w->checked != c);
+		w->checked = c;
 	}
-	if (p->mPushed) {
-		gradTop = set_alpha_f(gradTop, 0.8f);
-		gradBot = set_alpha_f(gradBot, 0.8f);
-	}
-	else {
-		double v = 1.0 - get_alpha_f(p->back_color);
-		auto gv = p->mEnabled ? v : v * .5f + .5f;
-		gradTop = set_alpha_xf(gradTop, gv);
-		gradBot = set_alpha_xf(gradBot, gv);
-	}
-	auto gt = to_c4(gradTop);
-	auto gt1 = to_c4(gradBot);
-	gradTop = set_alpha_xf(gradTop, oa);
-	gradBot = set_alpha_xf(gradBot, oa);
-	borderLight = set_alpha_xf(borderLight, oa);
-	borderDark = set_alpha_xf(borderDark, oa);
-	// 渐变
-	glm::vec4 r;
-	if (rounding > 0)
+	break;
+	case VGUI_RADIO:
 	{
-		r = { rounding, rounding, rounding, rounding };
-	}
-	glm::vec2 rct = { w - thickness, h - thickness * 2.0 };
-	glm::vec4 gtop = to_c4(gradTop);
-	glm::vec4 gbot = to_c4(gradBot);
-
-	//rv->save();
-	if (p->effect == uTheme::dark || p->mPushed)
-		cb->translate(vg, thickness, thickness);
-	// 垂直方向
-	if (p->cubic_gradient)
-		paint_shadow_v(cb, vg, 0, rct.y, rct.x, rct.y, gtop, gbot, 0, rounding);
-	else
-		paint_linear(cb, vg, glm::vec2(0, rct.y), { rct.x, rct.y }, gtop, gbot, rounding);
-	if (p->effect == uTheme::dark || p->mPushed)
-		cb->translate(vg, -thickness, -thickness);
-	//rv->restore();
-	// 渲染标签
-
-	glm::vec2 ps = { thickness * 2,thickness * 2 };
-	if (p->mPushed) {
-		ps += thickness;
-	}
-	ns -= thickness * 4;
-	glm::vec4 rc = { ps, ns };
-	// 边框
-	w -= 1;	h -= 1;
-	cb->set_line_width(vg, thickness);
-	cb->set_source_color(vg, borderLight);
-	cb->rounded_rectangle(vg, tps.x, tps.y + (p->mPushed ? 0.f : 1.0f), w, h - (p->mPushed ? 0.0f : 1.0f), rounding);
-	cb->stroke(vg);
-	cb->set_source_color(vg, borderDark);
-	cb->rounded_rectangle(vg, tps.x, tps.y, w, h, rounding);
-	cb->stroke(vg);
-	text_st_t dt = {};
-	dt.text = (char*)p->text.str;
-	dt.text_len = p->text.str_len;
-	dt.pos = { 0,thickness * .5 };
-	dt.size = size;
-	cb->add_text(vg, &dt, p->text.ptext_style, nullptr);
-	cb->restore(vg);
-}
-
-void image_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, image_btn_style* p, const glm::ivec2& pos, const glm::ivec2& size) {
-	cb->save(vg);
-	auto ss = size;
-	auto psv = pos;
-	auto view = glm::ivec4(psv, ss);
-	cb->translate(vg, psv.x, psv.y);
-	auto pimg = &p->state_img[p->show_idx];
-	ovg_image_r rimg = *pimg;
-	cb->add_image(vg, &rimg);
-	auto img = pimg->img;
-	if (img->valid)
-	{
-		vg_image_desc_t desc = {};
-		desc.width = img->width;
-		desc.height = img->height;
-		desc.format = VG_FORMAT_RGBA8;
-		desc.stride = desc.width * sizeof(int);
-		desc.pixels = p->imgdata;
-		desc.x = 0, desc.y = 0, desc.w = img->width, desc.h = img->height;		// 更新矩形区域
-		desc.is_copy = true;
-		img->valid = false;
-		cb->image_update(vg, img, &desc);
-	}
-	cb->restore(vg);
-}
-void draw_radio(ovg_ctx_cb* cb, rvg_t* vg, radio_info_t* p, radio_style_t* ps)
-{
-	cb->set_line_width(vg, ps->thickness);
-	if (ps->radius > 0) {
-		cb->circle(vg, p->pos.x, p->pos.y, ps->radius);
-		if (p->value || p->swidth > 0)
+		if (v >= 0.5f)
 		{
-			cb->set_source_color(vg, ps->col);
-			cb->fill(vg);
+			vgui_radio_select(w);
+			return;
+		}
+		changed = (w->checked != 0);
+		w->checked = 0;
+	}
+	break;
+	case VGUI_SLIDER:
+	case VGUI_PROGRESS:
+	{
+		float nv = vgui_clampf(v, 0.0f, 1.0f);
+		float span = w->range_max - w->range_min;
+		float nstep = span > 0 ? w->step / span : 0.0f;
+		if (nstep > 0)
+			nv = vgui_clampf(std::round(nv / nstep) * nstep, 0.0f, 1.0f);
+		changed = (std::fabs(w->value - nv) > 1e-6f);
+		w->value = nv;
+	}
+	break;
+	default:
+		changed = (std::fabs(w->value - v) > 1e-6f);
+		w->value = v;
+		break;
+	}
+	if (notify && changed)
+		vgui_notify_value(w);
+}
+
+static void vgui_activate_widget(vgui_widget* w, int clicks)
+{
+	if (!w || !w->enabled) return;
+	vgui_context* ctx = w->ctx;
+	switch (w->kind)
+	{
+	case VGUI_CHECKBOX:
+	case VGUI_SWITCH:
+		if (clicks <= 1)
+		{
+			w->checked = !w->checked;
+			vgui_notify_value(w);
+		}
+		break;
+	case VGUI_RADIO:
+		vgui_radio_select(w);
+		break;
+	default:
+		break;
+	}
+	(void)ctx;
+}
+
+static void vgui_update_slider_from_mouse(vgui_widget* w, float lx, float ly)
+{
+	if (!w) return;
+	float inner_w = std::max(1.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float inner_h = std::max(1.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	float t;
+	if (w->vertical)
+		t = 1.0f - (ly - w->padding[1]) / inner_h;
+	else
+		t = (lx - w->padding[0]) / inner_w;
+	vgui_set_value_internal(w, t, true);
+}
+
+static void vgui_focus_next_impl(vgui_context* ctx, bool reverse)
+{
+	if (!ctx || !ctx->root) return;
+	std::vector<vgui_widget*> list;
+	std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+	{
+		if (!w || !w->visible || !w->enabled) return;
+		if (w->focusable) list.push_back(w);
+		for (vgui_widget* c : w->children) collect(c);
+	};
+	collect(ctx->root);
+	if (list.empty())
+	{
+		vgui_set_focus_internal(ctx, nullptr);
+		return;
+	}
+	auto it = std::find(list.begin(), list.end(), ctx->focus);
+	int index = (it == list.end()) ? (reverse ? (int)list.size() - 1 : 0) : (int)(it - list.begin());
+	index += reverse ? -1 : 1;
+	if (index < 0) index = (int)list.size() - 1;
+	if (index >= (int)list.size()) index = 0;
+	vgui_set_focus_internal(ctx, list[(size_t)index]);
+}
+
+//----------------------------------------------------------------------------
+// input
+//----------------------------------------------------------------------------
+
+static void vgui_begin_input(vgui_context* ctx)
+{
+	vgui_flush_pending(ctx);
+	vgui_ensure_layout(ctx);
+	ctx->in_input = true;
+}
+
+static void vgui_end_input(vgui_context* ctx)
+{
+	ctx->in_input = false;
+	vgui_flush_pending(ctx);
+}
+
+static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
+{
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	ctx->mouse_x = x;
+	ctx->mouse_y = y;
+
+	vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+	if (ctx->hot != h)
+	{
+		vgui_widget* old = ctx->hot;
+		if (old && ctx->alive.count(old))
+		{
+			old->hovered = 0;
+			vgui_emit(old, VGUI_EVENT_LEAVE, x - old->abs_x, y - old->abs_y);
+		}
+		ctx->hot = h;
+		if (h && ctx->alive.count(h))
+		{
+			h->hovered = 1;
+			vgui_emit(h, VGUI_EVENT_ENTER, x - h->abs_x, y - h->abs_y);
+		}
+	}
+	if (h && ctx->alive.count(h))
+		vgui_emit(h, VGUI_EVENT_MOUSE_MOVE, x - h->abs_x, y - h->abs_y);
+
+	if (ctx->active && ctx->alive.count(ctx->active))
+	{
+		vgui_widget* a = ctx->active;
+		if (a->kind == VGUI_SLIDER)
+		{
+			vgui_update_slider_from_mouse(a, x - a->abs_x, y - a->abs_y);
+			if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
+		}
+		if (a != h)
+			vgui_emit(a, VGUI_EVENT_MOUSE_MOVE, x - a->abs_x, y - a->abs_y);
+		ctx->cursor = a->enabled ? a->cursor_type : VGUI_CURSOR_ARROW;
+	}
+	else
+	{
+		ctx->cursor = (h && h->enabled) ? h->cursor_type : VGUI_CURSOR_ARROW;
+	}
+
+	ctx->want_mouse = (h != nullptr) || (ctx->active != nullptr);
+	int ret = (h != nullptr || ctx->active != nullptr) ? 1 : 0;
+	vgui_end_input(ctx);
+	return ret;
+}
+
+static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y, int clicks)
+{
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	ctx->mouse_x = x;
+	ctx->mouse_y = y;
+	if (button >= 0 && button < 8) ctx->mouse_down[button] = 1;
+
+	// Track the click count here as well so callers that only forward raw
+	// mouse events still get click/double-click information.
+	double now = SDL_GetTicks() / 1000.0;
+	if (button >= 0 && button < 8)
+	{
+		if (clicks > 0)
+		{
+			ctx->click_count[button] = clicks;
+			ctx->click_time[button] = now;
 		}
 		else
 		{
-			cb->set_source_color(vg, ps->line_col);
-			cb->stroke(vg);
+			if (now - ctx->click_time[button] > 0.45) ctx->click_count[button] = 1;
+			else ctx->click_count[button]++;
+			ctx->click_time[button] = now;
+			clicks = ctx->click_count[button];
 		}
 	}
-	if (p->swidth > 0) {
-		cb->circle(vg, p->pos.x, p->pos.y, p->swidth);
-		cb->set_source_color(vg, ps->innc);
-		cb->fill(vg);
+	if (clicks <= 0) clicks = 1;
+
+	vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+	ctx->want_mouse = h != nullptr;
+	ctx->cursor = (h && h->enabled) ? h->cursor_type : VGUI_CURSOR_ARROW;
+
+	if (h && h->enabled)
+	{
+		if (h->kind == VGUI_EDIT || h->focusable)
+			vgui_set_focus_internal(ctx, h);
+		else
+			vgui_set_focus_internal(ctx, nullptr);
+
+		h->pressed = 1;
+		h->pressed_button = button;
+		ctx->active = h;
+		ctx->press_target = h;
+		ctx->press_button = button;
+
+		if (h->kind == VGUI_SLIDER)
+		{
+			ctx->slider_drag = h;
+			vgui_update_slider_from_mouse(h, x - h->abs_x, y - h->abs_y);
+			if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+		}
+		else if (h->kind == VGUI_EDIT)
+		{
+			float lx = x - h->abs_x - h->padding[0] + h->edit_scroll_x;
+			float ly = y - h->abs_y - h->padding[1] + h->edit_scroll_y;
+			int line = 0;
+			if (h->multiline)
+			{
+				float lh = vgui_line_height(ctx, h);
+				line = (int)(ly / std::max(1.0f, lh));
+			}
+			int max_line = vgui_text_lines(h->edit_text) - 1;
+			if (line < 0) line = 0;
+			if (line > max_line) line = max_line;
+			int lb = 0, le = 0;
+			vgui_edit_line_bytes(h->edit_text, line, lb, le);
+			int idx = vgui_edit_byte_from_x(h, lb, le, lx);
+			h->edit_cursor = h->edit_anchor = idx;
+			h->caret_blink = 0;
+			vgui_edit_ensure_visible(h);
+		}
+
+		vgui_event e = {};
+		e.type = VGUI_EVENT_MOUSE_DOWN;
+		e.x = x - h->abs_x;
+		e.y = y - h->abs_y;
+		e.button = button;
+		e.clicks = clicks;
+		vgui_emit_full(h, e);
 	}
+
+	int ret = (h != nullptr) ? 1 : 0;
+	vgui_end_input(ctx);
+	return ret;
 }
 
-
-// check打勾
-void drawCheckMark(ovg_ctx_cb* cb, rvg_t* vg, glm::vec2 pos, uint32_t col, float sz1, bool mixed)
+static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, int clicks)
 {
-	if (!col)
-		return;
-	float sz = sz1;
-	float thickness = std::max(sz / 5.0f, 1.0f);
-	sz -= thickness * 0.5f;
-	pos += glm::vec2(thickness * 0.25f, thickness * 0.25f);
-	float third = sz / 3.0f;
-	float bx = pos.x + third;
-	float td = sz - third * 0.5f;
-	float by = pos.y + td;
-	if (mixed)
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	ctx->mouse_x = x;
+	ctx->mouse_y = y;
+	if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
+
+	vgui_widget* target = ctx->press_target;
+	if (target && !ctx->alive.count(target)) target = nullptr;
+	if (button >= 0 && button < 8 && clicks <= 0) clicks = ctx->click_count[button];
+	if (target && target->ctx != ctx) target = nullptr;
+
+	int ret = target ? 1 : 0;
+	if (target)
 	{
-		td = thickness * 0.5f;
-		auto ps = glm::vec2(pos.x + td, by - third);
-		auto ps1 = ps;
-		ps1.x += sz1 - thickness;
-		cb->move_to(vg, ps.x, ps.y); cb->line_to(vg, ps1.x, ps1.y);
+		vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+		bool inside = (h == target || (h && h->parent == target));
+		float lx = x - target->abs_x;
+		float ly = y - target->abs_y;
+
+		// Clear press state before invoking user code so callbacks can
+		// safely inspect the widget.
+		target->pressed = 0;
+		ctx->press_target = nullptr;
+		ctx->active = nullptr;
+		ctx->slider_drag = nullptr;
+
+		vgui_event up = {};
+		up.type = VGUI_EVENT_MOUSE_UP;
+		up.x = lx;
+		up.y = ly;
+		up.button = button;
+		up.clicks = clicks;
+		vgui_emit_full(target, up);
+		if (!ctx->alive.count(target)) { vgui_end_input(ctx); return ret; }
+
+		if (inside && target->enabled)
+		{
+			vgui_event_type ct = VGUI_EVENT_CLICK;
+			if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
+			else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
+
+			vgui_event ce = {};
+			ce.type = (int)ct;
+			ce.x = lx;
+			ce.y = ly;
+			ce.button = button;
+			ce.clicks = clicks;
+			vgui_emit_full(target, ce);
+			if (!ctx->alive.count(target)) { vgui_end_input(ctx); return ret; }
+
+			vgui_activate_widget(target, clicks);
+		}
 	}
-	else {
-		glm::vec2 ps[3] = {};
-		ps[0] = glm::vec2(bx - third, by - third);
-		ps[1] = glm::vec2(bx, by);
-		ps[2] = glm::vec2(bx + third * 2.0f, by - third * 2.0f);
-		cb->move_to(vg, ps[0].x, ps[0].y);
-		cb->line_to(vg, ps[1].x, ps[1].y);
-		cb->line_to(vg, ps[2].x, ps[2].y);
+
+	ctx->want_mouse = ctx->hot != nullptr;
+	vgui_end_input(ctx);
+	return ret;
+}
+
+static vgui_widget* vgui_find_scroll_panel(vgui_widget* w, bool vertical)
+{
+	for (vgui_widget* p = w; p; p = p->parent)
+	{
+		if (p->kind == VGUI_PANEL)
+		{
+			if (vertical && p->scrollable_y && p->content_h > p->abs_h - p->padding[1] - p->padding[3])
+				return p;
+			if (!vertical && p->scrollable_x && p->content_w > p->abs_w - p->padding[0] - p->padding[2])
+				return p;
+		}
 	}
-	cb->set_source_color(vg, col);
-	cb->set_line_width(vg, thickness);
+	return nullptr;
+}
+
+static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
+{
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(ctx->root, ctx->mouse_x, ctx->mouse_y);
+	int consumed = 0;
+	if (wy != 0)
+	{
+		vgui_widget* p = vgui_find_scroll_panel(h, true);
+		if (p)
+		{
+			p->scroll_y -= wy * 40.0f;
+			ctx->layout_dirty = true;
+			vgui_ensure_layout(ctx);
+			consumed = 1;
+		}
+	}
+	if (wx != 0)
+	{
+		vgui_widget* p = vgui_find_scroll_panel(h, false);
+		if (p)
+		{
+			p->scroll_x -= wx * 40.0f;
+			ctx->layout_dirty = true;
+			vgui_ensure_layout(ctx);
+			consumed = 1;
+		}
+	}
+	if (h && ctx->alive.count(h))
+	{
+		vgui_event e = {};
+		e.type = VGUI_EVENT_MOUSE_WHEEL;
+		e.x = ctx->mouse_x - h->abs_x;
+		e.y = ctx->mouse_y - h->abs_y;
+		e.wheel_x = wx;
+		e.wheel_y = wy;
+		vgui_emit_full(h, e);
+	}
+	ctx->want_mouse = consumed || h != nullptr;
+	vgui_end_input(ctx);
+	return consumed;
+}
+
+static int vgui_key_impl(vgui_context* ctx, int key, int down, int mods)
+{
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	ctx->want_key = ctx->focus != nullptr;
+
+	if (down && key == VGUI_KEY_TAB)
+	{
+		vgui_focus_next_impl(ctx, (mods & VGUI_MOD_SHIFT) != 0);
+		vgui_end_input(ctx);
+		return 1;
+	}
+
+	vgui_widget* f = ctx->focus;
+	if (!f || !ctx->alive.count(f) || !f->enabled)
+	{
+		vgui_end_input(ctx);
+		return 0;
+	}
+
+	int handled = 0;
+	if (f->kind == VGUI_EDIT)
+	{
+		handled = vgui_edit_key(f, key, down, mods) ? 1 : 0;
+	}
+	else
+	{
+		if (down && (key == VGUI_KEY_ENTER || key == ' '))
+		{
+			vgui_activate_widget(f, 1);
+			handled = 1;
+		}
+		if (down && f->kind == VGUI_SLIDER && (key == VGUI_KEY_LEFT || key == VGUI_KEY_RIGHT || key == VGUI_KEY_UP || key == VGUI_KEY_DOWN))
+		{
+			float span = f->range_max - f->range_min;
+			if (span <= 0) span = 1.0f;
+			float delta = f->step > 0 ? f->step / span : 0.01f;
+			if (key == VGUI_KEY_LEFT || key == VGUI_KEY_DOWN) delta = -delta;
+			vgui_set_value_internal(f, f->value + delta, true);
+			handled = 1;
+		}
+	}
+
+	if (ctx->alive.count(f))
+	{
+		vgui_event e = {};
+		e.type = down ? VGUI_EVENT_KEY_DOWN : VGUI_EVENT_KEY_UP;
+		e.key = key;
+		e.mods = mods;
+		e.x = ctx->mouse_x - f->abs_x;
+		e.y = ctx->mouse_y - f->abs_y;
+		vgui_emit_full(f, e);
+	}
+
+	vgui_end_input(ctx);
+	return handled;
+}
+
+static int vgui_text_impl(vgui_context* ctx, const char* text)
+{
+	if (!ctx || !text) return 0;
+	vgui_begin_input(ctx);
+	vgui_widget* f = ctx->focus;
+	int ret = 0;
+	if (f && ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly)
+	{
+		vgui_edit_insert(f, text);
+		if (ctx->alive.count(f))
+		{
+			vgui_event e = {};
+			e.type = VGUI_EVENT_TEXT;
+			e.text = text;
+			e.codepoint = vgui_u8_decode(text);
+			e.x = ctx->mouse_x - f->abs_x;
+			e.y = ctx->mouse_y - f->abs_y;
+			vgui_emit_full(f, e);
+		}
+		ret = 1;
+	}
+	vgui_end_input(ctx);
+	return ret;
+}
+
+static int vgui_editing_impl(vgui_context* ctx, const char* text, int cursor, int length)
+{
+	if (!ctx) return 0;
+	vgui_begin_input(ctx);
+	vgui_widget* f = ctx->focus;
+	int ret = 0;
+	if (f && ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly)
+	{
+		// The ovg/SDL editing event describes the composition string and the
+		// selection inside it.  Keep the committed text untouched until the
+		// backend sends SDL_EVENT_TEXT_INPUT.
+		f->ime_text = text ? text : "";
+		f->ime_cursor = vgui_edit_clamp_index(f->ime_text, cursor);
+		f->ime_length = std::max(0, length);
+		if (f->ime_cursor + f->ime_length > (int)f->ime_text.size())
+			f->ime_length = std::max(0, (int)f->ime_text.size() - f->ime_cursor);
+		vgui_event e = {};
+		e.type = VGUI_EVENT_EDITING;
+		e.text = f->ime_text.c_str();
+		e.codepoint = (uint32_t)f->ime_cursor;
+		e.button = f->ime_length;
+		vgui_emit_full(f, e);
+		ret = 1;
+	}
+	vgui_end_input(ctx);
+	return ret;
+}
+
+//----------------------------------------------------------------------------
+// rendering
+//----------------------------------------------------------------------------
+
+static uint32_t vgui_widget_color(vgui_widget* w, uint32_t c)
+{
+	return vgui_alpha_color(c, w->opacity);
+}
+
+// The public vgui API packs colors as 0xAARRGGBB, while ovg stores/consumes
+// them with the red channel in the low byte (i.e. 0xAABBGGRR for a literal).
+// Swap the two outer channels when a color crosses into the renderer.
+static uint32_t vgui_ovg_color(uint32_t c)
+{
+	return (c & 0xFF00FF00u) | ((c & 0x00FF0000u) >> 16) | ((c & 0x000000FFu) << 16);
+}
+
+// The ovg state stack does not include the clip rectangle, so clipping has to
+// be tracked (and restored) here.  Clip rectangles are stored in the current
+// user coordinate space; applying them again after a pop is therefore correct
+// even when vgui is drawn under a transform.
+struct vgui_clip_state
+{
+	std::vector<glm::ivec4> stack;
+	glm::ivec4 external = {};
+	bool has_external = false;
+};
+
+static void vgui_clip_push(vgui_clip_state* clips, ovg_ctx_cb* cb, rvg_t* vg,
+	float x, float y, float w, float h)
+{
+	glm::ivec4 rc = {
+		(int)std::floor(x), (int)std::floor(y),
+		(int)std::ceil(std::max(0.0f, w)), (int)std::ceil(std::max(0.0f, h))
+	};
+	clips->stack.push_back(rc);
+	cb->clip_rect(vg, rc.x, rc.y, rc.z, rc.w);
+}
+
+static void vgui_clip_pop(vgui_clip_state* clips, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	if (clips->stack.empty()) return;
+	clips->stack.pop_back();
+	if (!clips->stack.empty())
+	{
+		const glm::ivec4& rc = clips->stack.back();
+		cb->clip_rect(vg, rc.x, rc.y, rc.z, rc.w);
+		return;
+	}
+
+	// A negative size is the renderer's "disable clipping" sentinel, which
+	// also restores the scissor rectangle to the full render target.
+	if (clips->has_external && cb->set_clip_rect)
+		cb->set_clip_rect(vg, &clips->external);
+	else
+		cb->clip_rect(vg, 0, 0, -1, -1);
+}
+
+static void vgui_fill_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, float r, uint32_t color)
+{
+	if (!cb || !vg || color == 0 || w <= 0 || h <= 0) return;
+	if (r > 0)
+	{
+		r = std::min(r, std::min(w, h) * 0.5f);
+		cb->rounded_rectangle(vg, x, y, w, h, r);
+	}
+	else
+	{
+		cb->rectangle(vg, x, y, w, h);
+	}
+	cb->set_source_color(vg, vgui_ovg_color(color));
+	cb->fill(vg);
+}
+
+static void vgui_stroke_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, float r, uint32_t color, float width)
+{
+	if (!cb || !vg || color == 0 || w <= 0 || h <= 0 || width <= 0) return;
+	if (r > 0)
+	{
+		r = std::min(r, std::min(w, h) * 0.5f);
+		cb->rounded_rectangle(vg, x, y, w, h, r);
+	}
+	else
+	{
+		cb->rectangle(vg, x, y, w, h);
+	}
+	cb->set_line_width(vg, width);
+	cb->set_source_color(vg, vgui_ovg_color(color));
 	cb->stroke(vg);
 }
-void vg_fillstroke(ovg_ctx_cb* cb, rvg_t* vg, uint32_t fill, uint32_t linecol, int thickness)
+
+static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+	const std::string& text, float x, float y, float width, float height,
+	uint32_t color, float ax = 0.0f, float ay = 0.5f)
 {
-	if (fill) {
-		cb->set_source_color(vg, fill);
-		cb->fill_preserve(vg);
+	if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
+	float lh = vgui_line_height(ctx, w);
+	float tw = vgui_text_width(w, text);
+	float th = lh * (float)vgui_text_lines(text);
+
+	// ovg only honours text_style_t::align when a text_box_rt is supplied, and
+	// that box also resets the renderer clip.  Align here instead, then draw at
+	// the resolved top-left corner, adding the ascender because text_st_t::pos.y
+	// is the baseline of the first line (vg_add_text_run: baseline_y = pos.y).
+	float px = x + (width - tw) * ax;
+	float py = y + (height - th) * ay + vgui_text_ascent(ctx, w);
+
+	text_style_t st = {};
+	st.family = ctx->font;
+	st.fontsize = vgui_font_size(ctx, w);
+	st.color = vgui_ovg_color(color);
+	st.align = { 0.0f, 0.0f };
+	st.min_subpixel = 1;
+
+	text_st_t t = {};
+	t.pos = { px, py };
+	t.size = { tw, th };
+	t.text = text.c_str();
+	t.text_len = (int)text.size();
+	cb->add_text(vg, &t, &st, nullptr);
+}
+
+static uint32_t vgui_text_color(vgui_widget* w)
+{
+	vgui_context* ctx = w->ctx;
+	uint32_t c = w->text_color ? w->text_color : ctx->theme.text;
+	if (!w->enabled) c = vgui_mix_color(c, ctx->theme.disabled, 0.65f);
+	return vgui_widget_color(w, c);
+}
+
+static void vgui_draw_focus(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	if (!w->focused) return;
+	vgui_context* ctx = w->ctx;
+	float r = w->rounding > 0 ? w->rounding : 4;
+	vgui_stroke_rect(cb, vg, w->abs_x - 1, w->abs_y - 1, w->abs_w + 2, w->abs_h + 2, r + 1,
+		vgui_widget_color(w, ctx->theme.accent), 1);
+}
+
+static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	uint32_t bg = w->bg ? w->bg : ctx->theme.button_bg;
+	uint32_t border = w->border ? w->border : ctx->theme.button_border;
+	if (!w->enabled)
+	{
+		bg = vgui_mix_color(bg, ctx->theme.disabled, 0.35f);
+		border = vgui_mix_color(border, ctx->theme.disabled, 0.35f);
 	}
-	if (linecol) {
-		cb->set_source_color(vg, linecol);
-		cb->set_line_width(vg, thickness);
+	else if (w->pressed)
+	{
+		bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(0.35f, w->press_anim));
+	}
+	else if (w->hovered || w->hover_anim > 0.01f)
+	{
+		bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(0.25f, w->hover_anim));
+	}
+	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+	if (w->border_width > 0)
+		vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+			vgui_widget_color(w, border), w->border_width);
+
+	float ty = w->abs_y + w->padding[1] + (w->pressed ? 1.0f : 0.0f);
+	float tx = w->abs_x + w->padding[0];
+	float tw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float th = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	vgui_draw_text(ctx, cb, vg, w, w->text, tx, ty, tw, th, vgui_text_color(w), w->text_align_x, w->text_align_y);
+	vgui_draw_focus(w, cb, vg);
+}
+
+static void vgui_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	if (w->bg)
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
+	if (w->border_width > 0 && w->border)
+		vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+			vgui_widget_color(w, w->border), w->border_width);
+	vgui_draw_text(ctx, cb, vg, w, w->text,
+		w->abs_x + w->padding[0], w->abs_y + w->padding[1],
+		std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]),
+		std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]),
+		vgui_text_color(w), w->text_align_x, w->text_align_y);
+}
+
+static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	float lh = vgui_line_height(ctx, w);
+	float box = std::max(14.0f, std::min(18.0f, lh - 2));
+	float bx = w->abs_x + w->padding[0];
+	float by = w->abs_y + (w->abs_h - box) * 0.5f;
+	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : ctx->theme.button_border) : ctx->theme.disabled;
+	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+
+	vgui_fill_rect(cb, vg, bx, by, box, box, 3, vgui_widget_color(w, ctx->theme.track));
+	if (w->check_anim > 0.01f)
+	{
+		uint32_t c = vgui_mix_color(ctx->theme.track, accent, w->check_anim);
+		vgui_fill_rect(cb, vg, bx, by, box, box, 3, vgui_widget_color(w, c));
+	}
+	vgui_stroke_rect(cb, vg, bx + 0.5f, by + 0.5f, box - 1, box - 1, 3, vgui_widget_color(w, border), 1);
+
+	if (w->check_anim > 0.05f)
+	{
+		float t = w->check_anim;
+		cb->set_line_width(vg, 2.0f);
+		cb->set_line_cap(vg, 1);
+		cb->set_line_join(vg, 1);
+		cb->move_to(vg, bx + box * 0.22f, by + box * 0.52f);
+		cb->line_to(vg, bx + box * 0.42f, by + box * 0.72f);
+		cb->line_to(vg, bx + box * 0.80f, by + box * 0.28f);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, vgui_alpha_color(0xFFFFFFFF, t))));
 		cb->stroke(vg);
 	}
-	else  if (fill) { cb->clear_path(vg); }
-}
-void draw_checkbox(ovg_ctx_cb* cb, rvg_t* vg, check_style_t* p, checkbox_info_t* pn)
-{
-	if (!p)return;
-	auto cc = p->check_col;
-	glm::ivec2 ps = pn->pos;
-	cb->rounded_rectangle(vg, ps.x, ps.y, p->square_sz, p->square_sz, p->rounding);
-	if (pn->value || pn->new_alpha > 0)
-		vg_fillstroke(cb, vg, p->fill, p->col, p->thickness);
-	else
-		vg_fillstroke(cb, vg, 0, p->line_col, p->thickness);
-	const float pad = std::max(1.0f, floor(p->square_sz / 6.0f));
-	if (pn->new_alpha > 0)
+
+	if (!w->text.empty())
 	{
-		cc = set_alpha_f(cc, pn->new_alpha);
-		drawCheckMark(cb, vg, (glm::vec2)ps + glm::vec2(pad, pad), cc, p->square_sz - pad * 2.0f, pn->mixed);
+		float tx = bx + box + 8;
+		vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+			w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
 	}
+	vgui_draw_focus(w, cb, vg);
 }
 
-void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& pos, const glm::ivec2& size0)
+static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
-	auto psv = pos;
-	cb->save(vg);
-	glm::ivec2 poss = psv;
-	auto h = p->height;
-	auto size = size0;
-	auto fc = h * p->cv * 0.5;
-	auto ss = h * p->wf;
-	if (size.x <= 0) {
-		size.x = ss;
-	}
-	if (size.y <= 0) {
-		size.y = h;
-	}
-	poss.x += (size.x - ss) * 0.5;
-	poss.y += (size.y - p->height) * 0.5;
-	cb->translate(vg, poss.x, poss.y);
-	cb->rounded_rectangle(vg, 0, 0, ss, h, h * 0.5);
-	cb->set_source_color(vg, p->dcol);
+	vgui_context* ctx = w->ctx;
+	float lh = vgui_line_height(ctx, w);
+	float d = std::max(14.0f, std::min(18.0f, lh - 2));
+	float cx = w->abs_x + w->padding[0] + d * 0.5f;
+	float cy = w->abs_y + w->abs_h * 0.5f;
+	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : ctx->theme.button_border) : ctx->theme.disabled;
+	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+
+	cb->circle(vg, cx, cy, d * 0.5f);
+	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.track)));
 	cb->fill(vg);
-	glm::vec2 cp = {};
+	cb->circle(vg, cx, cy, d * 0.5f);
+	cb->set_line_width(vg, 1);
+	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
+	cb->stroke(vg);
+	if (w->check_anim > 0.01f)
 	{
-		auto ps = h * 0.5;
-		cp.x += (ss - h) * p->cpos + h * 0.5;
-		cp.y += ps;
-		cb->circle(vg, cp.x, cp.y, fc);
-		cb->set_source_color(vg, p->color.z);
+		cb->circle(vg, cx, cy, d * 0.5f * 0.55f * w->check_anim);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, accent)));
 		cb->fill(vg);
 	}
-	cb->stroke(vg);
+
+	if (!w->text.empty())
+	{
+		float tx = cx + d * 0.5f + 8;
+		vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+			w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
+	}
+	vgui_draw_focus(w, cb, vg);
+}
+
+static void vgui_draw_switch(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	float lh = vgui_line_height(ctx, w);
+	float track_w = 36;
+	float track_h = std::max(18.0f, std::min(22.0f, lh - 2));
+	float x = w->abs_x + w->padding[0];
+	float y = w->abs_y + (w->abs_h - track_h) * 0.5f;
+	uint32_t on = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+	uint32_t off = w->enabled ? ctx->theme.track : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+	float t = w->check_anim;
+	uint32_t track = vgui_mix_color(off, on, t);
+	vgui_fill_rect(cb, vg, x, y, track_w, track_h, track_h * 0.5f, vgui_widget_color(w, track));
+
+	float radius = track_h * 0.5f - 2;
+	float kx = x + radius + 2 + t * (track_w - radius * 2 - 4);
+	float ky = y + track_h * 0.5f;
+	cb->circle(vg, kx, ky, radius);
+	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, 0xFFFFFFFF)));
+	cb->fill(vg);
+
+	if (!w->text.empty())
+	{
+		float tx = x + track_w + 8;
+		vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+			w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
+	}
+	vgui_draw_focus(w, cb, vg);
+}
+
+static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+	uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track) : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+	float t = vgui_clampf(w->value, 0.0f, 1.0f);
+	float knob = 7;
+	float inner_w = std::max(1.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float inner_h = std::max(1.0f, w->abs_h - w->padding[1] - w->padding[3]);
+
+	if (w->bg)
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+			vgui_widget_color(w, vgui_alpha_color(w->bg, 0.25f)));
+
+	if (!w->vertical)
+	{
+		float x = w->abs_x + w->padding[0];
+		float y = w->abs_y + w->abs_h * 0.5f - 2;
+		vgui_fill_rect(cb, vg, x, y, inner_w, 4, 2, vgui_widget_color(w, track));
+		vgui_fill_rect(cb, vg, x, y, inner_w * t, 4, 2, vgui_widget_color(w, accent));
+		float kx = x + inner_w * t;
+		cb->circle(vg, kx, y + 2, knob);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, w->focused ? ctx->theme.accent_hover : accent)));
+		cb->fill(vg);
+	}
+	else
+	{
+		float x = w->abs_x + w->abs_w * 0.5f - 2;
+		float y = w->abs_y + w->padding[1];
+		vgui_fill_rect(cb, vg, x, y, 4, inner_h, 2, vgui_widget_color(w, track));
+		float fill_h = inner_h * t;
+		vgui_fill_rect(cb, vg, x, y + inner_h - fill_h, 4, fill_h, 2, vgui_widget_color(w, accent));
+		float ky = y + inner_h - fill_h;
+		cb->circle(vg, x + 2, ky, knob);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, w->focused ? ctx->theme.accent_hover : accent)));
+		cb->fill(vg);
+	}
+	vgui_draw_focus(w, cb, vg);
+}
+
+static void vgui_draw_progress(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	vgui_context* ctx = w->ctx;
+	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+	uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track) : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+	float t = vgui_clampf(w->value, 0.0f, 1.0f);
+	float inner_w = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float inner_h = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	float x = w->abs_x + w->padding[0];
+	float y = w->abs_y + w->padding[1];
+
+	if (!w->vertical)
+	{
+		vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, track));
+		vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, accent));
+	}
+	else
+	{
+		vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, track));
+		float fh = inner_h * t;
+		vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, accent));
+	}
+
+	std::string label = w->text;
+	if (label.empty())
+	{
+		char buf[32] = {};
+		std::snprintf(buf, sizeof(buf), "%d%%", (int)std::lround(t * 100.0f));
+		label = buf;
+	}
+	vgui_draw_text(ctx, cb, vg, w, label, x, y, inner_w, inner_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+	vgui_draw_focus(w, cb, vg);
+}
+
+static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+{
+	vgui_context* ctx = w->ctx;
+	uint32_t bg = w->bg ? w->bg : ctx->theme.edit_bg;
+	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : (w->border ? w->border : ctx->theme.button_border)) : ctx->theme.disabled;
+	if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, 0.25f);
+
+	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+	if (w->border_width > 0)
+		vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+			vgui_widget_color(w, border), w->border_width);
+
+	float ix = w->abs_x + w->padding[0];
+	float iy = w->abs_y + w->padding[1];
+	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	if (iw <= 1 || ih <= 1) return;
+
+	float lh = vgui_line_height(ctx, w);
+	uint32_t color = vgui_text_color(w);
+
+	if (w->edit_text.empty() && w->ime_text.empty() && !w->placeholder.empty() && !w->focused)
+	{
+		vgui_draw_text(ctx, cb, vg, w, w->placeholder, ix, iy, iw, lh,
+			vgui_widget_color(w, ctx->theme.disabled), 0.0f, 0.5f);
+		return;
+	}
+
+	cb->save(vg);
+	vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
+
+	int sel_a = std::min(w->edit_cursor, w->edit_anchor);
+	int sel_b = std::max(w->edit_cursor, w->edit_anchor);
+
+	int line_start = 0;
+	int line_index = 0;
+	while (line_start <= (int)w->edit_text.size())
+	{
+		int line_end = line_start;
+		while (line_end < (int)w->edit_text.size() && w->edit_text[(size_t)line_end] != '\n') line_end++;
+		std::string line = w->edit_text.substr((size_t)line_start, (size_t)(line_end - line_start));
+		std::string shown = line;
+		if (w->password)
+		{
+			shown.clear();
+			for (int i = 0; i < (int)line.size(); i = vgui_u8_next(line, i))
+				shown.push_back(w->password_char);
+		}
+		float tx = ix - w->edit_scroll_x;
+		float ty = iy - w->edit_scroll_y + line_index * lh;
+
+		if (sel_b > sel_a && sel_a < line_end && sel_b > line_start)
+		{
+			int a = std::max(sel_a, line_start) - line_start;
+			int b = std::min(sel_b, line_end) - line_start;
+			int sa = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, a));
+			int sb = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, b));
+			float sx = tx + vgui_text_width_n(w, shown.data(), sa);
+			float sw = vgui_text_width_n(w, shown.data() + sa, sb - sa);
+			vgui_fill_rect(cb, vg, sx, ty, sw, lh, 0, vgui_widget_color(w, ctx->theme.edit_selection));
+		}
+
+		vgui_draw_text(ctx, cb, vg, w, shown, tx, ty, std::max(iw, 1.0f), lh, color, 0.0f, 0.5f);
+
+		int caret_byte = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, w->edit_cursor - line_start));
+
+		if (w->focused && w->edit_cursor >= line_start && w->edit_cursor <= line_end)
+		{
+			// Draw the caret only for the line containing the cursor.
+			float cx = tx + vgui_text_width_n(w, shown.data(), caret_byte);
+			bool blink = (std::fmod(w->caret_blink, 1.0f) < 0.55f);
+			if (blink)
+				vgui_fill_rect(cb, vg, cx, ty + 2, 1.5f, lh - 4, 0, color);
+		}
+
+		if (!w->ime_text.empty() && w->edit_cursor >= line_start && w->edit_cursor <= line_end)
+		{
+			float cx = tx + vgui_text_width_n(w, shown.data(), caret_byte);
+			vgui_draw_text(ctx, cb, vg, w, w->ime_text, cx, ty, iw, lh, ctx->theme.accent, 0.0f, 0.5f);
+			int ia = vgui_edit_clamp_index(w->ime_text, w->ime_cursor);
+			int ib = vgui_edit_clamp_index(w->ime_text, w->ime_cursor + w->ime_length);
+			if (ib < ia) std::swap(ia, ib);
+			float ux = cx + vgui_text_width_n(w, w->ime_text.data(), ia);
+			float uw = vgui_text_width_n(w, w->ime_text.data() + ia, ib - ia);
+			vgui_fill_rect(cb, vg, ux, ty + lh - 1, std::max(2.0f, uw), 1, 0, ctx->theme.accent);
+		}
+
+		if (line_end >= (int)w->edit_text.size()) break;
+		line_start = line_end + 1;
+		line_index++;
+		if (!w->multiline) break;
+	}
+
+	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
+	vgui_draw_focus(w, cb, vg);
 }
 
-#if 0
-
-
-
-void radio_tl::draw(rvg_cx* rv)
+static void vgui_draw_scrollbars(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
-	auto p = this;
-	if (rv && p) {
-#if 1
+	vgui_context* ctx = w->ctx;
+	float ix = w->abs_x + w->padding[0];
+	float iy = w->abs_y + w->padding[1];
+	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	if (w->scrollable_y && w->content_h > ih + 0.5f && ih > 20)
+	{
+		float track_x = w->abs_x + w->abs_w - 7;
+		float th = std::max(24.0f, ih * ih / w->content_h);
+		float max_scroll = w->content_h - ih;
+		float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
+		vgui_fill_rect(cb, vg, track_x, iy, 5, ih, 2.5f, vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.7f)));
+		vgui_fill_rect(cb, vg, track_x, ty, 5, th, 2.5f, vgui_widget_color(w, ctx->theme.scrollbar));
+	}
+	if (w->scrollable_x && w->content_w > iw + 0.5f && iw > 20)
+	{
+		float track_y = w->abs_y + w->abs_h - 7;
+		float tw = std::max(24.0f, iw * iw / w->content_w);
+		float max_scroll = w->content_w - iw;
+		float tx = ix + (max_scroll > 0 ? (w->scroll_x / max_scroll) * (iw - tw) : 0);
+		vgui_fill_rect(cb, vg, ix, track_y, iw, 5, 2.5f, vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.7f)));
+		vgui_fill_rect(cb, vg, tx, track_y, tw, 5, 2.5f, vgui_widget_color(w, ctx->theme.scrollbar));
+	}
+}
 
-		auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-		auto view = glm::ivec4(psv, get_size());
-		rv->push_view(view, this);
+static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+{
+	if (!w || !w->visible || w->abs_w <= 0 || w->abs_h <= 0) return;
+	vgui_context* ctx = w->ctx;
 
-		//rv->save();
-		rv->translate((glm::vec2)psv);
-		if (p->v.text.size()) {
-			text_st tx = {};
-			tx.pos = { _style.radius * 0.5 + _style.radius * 3,thickness * .5 };
-			tx.size = get_size();
-			tx.text = p->v.text.c_str(); tx.text_len = p->v.text.size();
-			rv->add_text(&tx, &style);
-		}
-		//rv->add_rect({ 0,0,get_size() }, 0);
-		//rv->set_color(0);
-		//rv->fill(); 
-		rv->translate(glm::vec2(p->v.text.empty() ? _size.x * 0.5 - _style.radius : _style.radius * 0.5, _size.y * 0.5 - _style.radius));//+ glm::vec2(0.5f, 0.5f)
-		int x = 0;
+	if (w->kind == VGUI_PANEL)
+	{
+		if (w->bg)
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
+		if (w->border_width > 0 && w->border)
+			vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+				vgui_widget_color(w, w->border), w->border_width);
+
+		cb->save(vg);
+		if (w->clip_children)
+			vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+		for (vgui_widget* c : w->children)
+			vgui_draw_widget(c, cb, vg, clips);
+		if (w->clip_children)
+			vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		vgui_draw_scrollbars(w, cb, vg);
+		vgui_draw_focus(w, cb, vg);
+		return;
+	}
+
+	switch (w->kind)
+	{
+	case VGUI_LABEL: vgui_draw_label(w, cb, vg); break;
+	case VGUI_BUTTON: vgui_draw_button(w, cb, vg); break;
+	case VGUI_CHECKBOX: vgui_draw_checkbox(w, cb, vg); break;
+	case VGUI_RADIO: vgui_draw_radio(w, cb, vg); break;
+	case VGUI_SWITCH: vgui_draw_switch(w, cb, vg); break;
+	case VGUI_SLIDER: vgui_draw_slider(w, cb, vg); break;
+	case VGUI_PROGRESS: vgui_draw_progress(w, cb, vg); break;
+	case VGUI_EDIT: vgui_draw_edit(w, cb, vg, clips); break;
+	case VGUI_SEPARATOR:
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, std::max(1.0f, w->abs_h), 0,
+			vgui_widget_color(w, w->bg ? w->bg : ctx->theme.panel_border));
+		break;
+	default: break;
+	}
+	(void)ctx;
+}
+
+static void vgui_update_impl(vgui_context* ctx, float dt)
+{
+	if (!ctx) return;
+	if (dt < 0) dt = 0;
+	ctx->time += dt;
+	vgui_flush_pending(ctx);
+	vgui_ensure_layout(ctx);
+
+	float k = 1.0f - std::exp(-std::max(0.0f, dt) * 18.0f);
+	for (vgui_widget* w : ctx->all_widgets)
+	{
+		if (!w || !ctx->alive.count(w) || w->destroy_pending) continue;
+		float hover_target = w->hovered ? 1.0f : 0.0f;
+		float press_target = w->pressed ? 1.0f : 0.0f;
+		w->hover_anim += (hover_target - w->hover_anim) * k;
+		w->press_anim += (press_target - w->press_anim) * k;
+		if (w->kind == VGUI_CHECKBOX || w->kind == VGUI_RADIO || w->kind == VGUI_SWITCH)
 		{
-			auto& it = v;
-			it.pos = {};
-			it.pos.x = x * _style.radius * 0.5;
-			it.pos += _style.radius;
-			draw_radios(rv, &it, &_style);
-			x++;
+			float ct = w->checked ? 1.0f : 0.0f;
+			w->check_anim += (ct - w->check_anim) * k;
 		}
-		//rv->restore();
-
-		rv->pop_view();
-#endif
+		if (w == ctx->focus && w->kind == VGUI_EDIT)
+			w->caret_blink += dt;
+		else
+			w->caret_blink = 0;
 	}
 }
 
-void checkbox_tl::draw(rvg_cx* rv)
+} // anonymous namespace
+
+//----------------------------------------------------------------------------
+// Public C API
+//----------------------------------------------------------------------------
+
+extern "C" {
+
+const char* vgui_version(void)
 {
-	auto p = this;
-	if (rv && p) {
-#if 1
+	return "0.2.0";
+}
 
-		auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-		auto view = glm::ivec4(psv, get_size());
-		rv->push_view(view, this);
+//----------------------------------------------------------------------------
+// context
+//----------------------------------------------------------------------------
 
-		rv->translate((glm::vec2)psv);
-		if (p->v.text.size()) {
-			text_st tx = {};
-			tx.pos = { _style.square_sz * 2,thickness * .5 };
-			tx.size = get_size();
-			tx.text = p->v.text.c_str(); tx.text_len = p->v.text.size();
-			rv->add_text(&tx, &style);
-		}
-		//rv->save();
-		glm::ivec2 poss = {};
-		poss.x += (_size.x - _style.square_sz) * 0.5;
-		if (p->v.text.size())
-			poss.x = (_style.square_sz) * 0.5;
-		poss.y += (_size.y - _style.square_sz) * 0.5;
-		rv->translate((glm::vec2)poss + glm::vec2(0.5f, 0.5f));
-		int x = 0;
+vgui_context* vgui_create(struct font_familys_t* font, float font_size)
+{
+	vgui_context* ctx = new vgui_context();
+	ctx->font = font;
+	ctx->font_size = (font_size > 0) ? font_size : 16.0f;
+	ctx->theme = vgui_default_theme();
+
+	ctx->root = vgui_new_widget(ctx, VGUI_PANEL, nullptr);
+	ctx->root->bg = 0;
+	ctx->root->border = 0;
+	ctx->root->border_width = 0;
+	ctx->root->padding[0] = ctx->root->padding[1] = 0;
+	ctx->root->padding[2] = ctx->root->padding[3] = 0;
+	ctx->root->layout = VGUI_LAYOUT_ABSOLUTE;
+	ctx->root->clip_children = 1;
+	ctx->layout_dirty = true;
+	return ctx;
+}
+
+void vgui_destroy(vgui_context* ctx)
+{
+	if (!ctx) return;
+
+	ctx->pending_delete.clear();
+	if (ctx->root && ctx->alive.count(ctx->root))
+		vgui_delete_rec(ctx->root, ctx);
+	ctx->root = nullptr;
+
+	// Delete widgets that were not attached to the root tree as well.
+	for (vgui_widget* w : ctx->all_widgets)
+	{
+		if (w && ctx->alive.count(w))
 		{
-			auto& it = v;
-			it.pos.x = x * p->_style.square_sz * 2.5;
-			draw_checkbox(rv, &p->_style, &it);
-			x++;
+			ctx->alive.erase(w);
+			delete w;
 		}
-		//rv->restore();
+	}
+	ctx->all_widgets.clear();
+	ctx->alive.clear();
+	delete ctx;
+}
 
-		rv->pop_view();
-#endif
+void vgui_context_set_size(vgui_context* ctx, int width, int height)
+{
+	if (!ctx) return;
+	ctx->width = std::max(0, width);
+	ctx->height = std::max(0, height);
+	ctx->layout_dirty = true;
+}
+
+void vgui_context_get_size(vgui_context* ctx, int* width, int* height)
+{
+	if (width) *width = ctx ? ctx->width : 0;
+	if (height) *height = ctx ? ctx->height : 0;
+}
+
+void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* font, float font_size)
+{
+	if (!ctx) return;
+	ctx->font = font;
+	if (font_size > 0) ctx->font_size = font_size;
+	ctx->layout_dirty = true;
+}
+
+void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme)
+{
+	if (!ctx || !theme) return;
+	vgui_theme old = ctx->theme;
+	ctx->theme = *theme;
+
+	// Widgets copy their defaults when they are created.  Move the colors that
+	// still match the old defaults over to the new theme so a theme switch is
+	// visible without rebuilding the tree.
+	for (vgui_widget* w : ctx->all_widgets)
+	{
+		if (!w || !ctx->alive.count(w)) continue;
+		if (w->text_color == old.text) w->text_color = theme->text;
+		if (w->accent == old.accent) w->accent = theme->accent;
+		if (w->track == old.track) w->track = theme->track;
+		if (w->bg == old.panel_bg) w->bg = theme->panel_bg;
+		else if (w->bg == old.button_bg) w->bg = theme->button_bg;
+		else if (w->bg == old.edit_bg) w->bg = theme->edit_bg;
+		if (w->border == old.panel_border) w->border = theme->panel_border;
+		else if (w->border == old.button_border) w->border = theme->button_border;
 	}
 }
-void progress_tl::draw(rvg_cx* rv)
+
+void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme)
 {
-	glm::ivec2 ss = _size;
-	ss.x = width;
-	ss.y = height;
-#if 1
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-	glm::vec2 npos = _size - (glm::vec2)ss;
-	npos *= 0.5;
-	//rv->save();
-	rv->translate(psv);
-	//rv->add_rect({ 0,0, _size.x, _size.y }, 0);
-	//rv->submit(0xff000000, 0, 0);
-	rv->translate(npos);
-	rv->add_rect({ 0.5,0.5, ss.x, ss.y }, rounding);
-	rv->submit(color.y, 0, 0);
-	double xx = ss.x * value;
-	int kx = 0;
-	int r = rounding;
-	if (xx > 0)
+	if (theme) *theme = ctx ? ctx->theme : vgui_theme();
+}
+
+vgui_widget* vgui_root(vgui_context* ctx)
+{
+	return ctx ? ctx->root : nullptr;
+}
+
+//----------------------------------------------------------------------------
+// widget tree
+//----------------------------------------------------------------------------
+
+vgui_widget* vgui_widget_create(vgui_context* ctx, vgui_widget_kind kind, const char* text)
+{
+	if (!ctx) return nullptr;
+	return vgui_new_widget(ctx, kind, text);
+}
+
+vgui_widget* vgui_widget_add(vgui_widget* parent, vgui_widget_kind kind, const char* text)
+{
+	if (!parent || !parent->ctx) return nullptr;
+	vgui_widget* w = vgui_new_widget(parent->ctx, kind, text);
+	vgui_widget_attach(parent, w);
+	return w;
+}
+
+void vgui_widget_attach(vgui_widget* parent, vgui_widget* child)
+{
+	if (!parent || !child || parent == child || !parent->ctx || child->ctx != parent->ctx)
+		return;
+	if (child == parent->ctx->root) return;	// the root has no parent
+
+	// Reject cycles.
+	for (vgui_widget* p = parent; p; p = p->parent)
+		if (p == child) return;
+
+	if (child->parent == parent) return;
+	if (child->destroy_pending) return;
+
+	if (child->parent)
 	{
-		//rv->save();
-		glm::ivec4 oclip = {};
-		if (xx < rounding * 2)
+		auto& old = child->parent->children;
+		old.erase(std::remove(old.begin(), old.end(), child), old.end());
+	}
+	child->parent = parent;
+	parent->children.push_back(child);
+	parent->ctx->layout_dirty = true;
+}
+
+void vgui_widget_remove(vgui_widget* widget)
+{
+	if (!widget || !widget->parent) return;
+	vgui_widget* parent = widget->parent;
+	auto& v = parent->children;
+	v.erase(std::remove(v.begin(), v.end(), widget), v.end());
+	widget->parent = nullptr;
+	if (widget->ctx) widget->ctx->layout_dirty = true;
+}
+
+void vgui_widget_destroy(vgui_widget* widget)
+{
+	if (!widget || !widget->ctx) return;
+	vgui_context* ctx = widget->ctx;
+	if (widget == ctx->root) return;	// owned by the context
+	vgui_schedule_destroy(widget);
+	if (!ctx->in_input)
+		vgui_flush_pending(ctx);
+}
+
+void vgui_widget_clear(vgui_widget* panel)
+{
+	if (!panel || !panel->ctx) return;
+	vgui_context* ctx = panel->ctx;
+	std::vector<vgui_widget*> children = panel->children;
+	for (vgui_widget* c : children)
+		vgui_schedule_destroy(c);
+	panel->children.clear();
+	ctx->layout_dirty = true;
+	if (!ctx->in_input)
+		vgui_flush_pending(ctx);
+}
+
+vgui_widget_kind vgui_widget_get_kind(vgui_widget* widget)
+{
+	return widget ? widget->kind : VGUI_PANEL;
+}
+
+vgui_context* vgui_widget_get_context(vgui_widget* widget)
+{
+	return widget ? widget->ctx : nullptr;
+}
+
+vgui_widget* vgui_widget_get_parent(vgui_widget* widget)
+{
+	return widget ? widget->parent : nullptr;
+}
+
+size_t vgui_widget_get_child_count(vgui_widget* widget)
+{
+	return widget ? widget->children.size() : 0;
+}
+
+vgui_widget* vgui_widget_get_child(vgui_widget* widget, size_t index)
+{
+	if (!widget || index >= widget->children.size()) return nullptr;
+	return widget->children[index];
+}
+
+//----------------------------------------------------------------------------
+// properties
+//----------------------------------------------------------------------------
+
+void vgui_widget_set_id(vgui_widget* widget, const char* id)
+{
+	if (widget) widget->id = id ? id : "";
+}
+
+const char* vgui_widget_get_id(vgui_widget* widget)
+{
+	return widget ? widget->id.c_str() : "";
+}
+
+void vgui_widget_set_visible(vgui_widget* widget, int visible)
+{
+	if (!widget) return;
+	visible = visible ? 1 : 0;
+	if (widget->visible == visible) return;
+	widget->visible = visible;
+	vgui_context* ctx = widget->ctx;
+	if (ctx)
+	{
+		if (!visible)
 		{
-			rv->add_rect({ 0,0, xx, ss.y }, r);
-			rv->clip();
-			oclip = rv->get_clip();
-			xx = r * 2;
-			kx = 1;
-		}
-		rv->add_rect({ 0.5,0.5, xx, ss.y }, r);
-		rv->submit(color.x, 0, 0);
-		if (oclip.z > 0)
-			rv->clip(oclip);
-		//rv->restore();
-	}
-	if (text.size()) {
-		glm::ivec2 rk = {};// ltx->get_text_rect(0, font_size, text.c_str(), -1);
-		if (text_inside) {
-			ss.x = xx;
-			ss.x -= r + thickness;
-		}
-		else {
-			ss.x = _size.x;
-		}
-		if (kx) {
-			ss.x += rk.x;
-		}
-		if (right_inside) {
-			ss.x = _size.x - r - thickness;
-		}
-		glm::vec2 ta = { 1,0.5 };
-		glm::vec4 rc = { 0, 0, _size };
-		//text_style_t st = {};
-		//st.font = 0;
-		//st.text_align = ta;
-		//st.font_size = font_size;
-		//st.text_color = text_color;
-		//draw_text(cr, ltx, text.c_str(), -1, rc, &st);
-
-		text_style st = style;
-		st.align = ta;
-		text_st tx = {};
-		tx.pos = { 0,thickness };
-		tx.size = ss;
-		tx.text = text.c_str(); tx.text_len = text.size();
-		rv->add_text(&tx, &st);
-	}
-	//rv->restore();
-
-	rv->pop_view();
-#endif
-}
-
-void slider_tl::draw(rvg_cx* rv)
-{
-#if 1
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-	//rv->save();
-	glm::ivec2 ss = _size;
-	rv->translate(psv);
-	glm::vec4 brc = {}, cliprc, crc;
-	int x = 0, y = 0;
-	double xx = (ss[vertical]) * value;
-	glm::vec2 spos = {};
-	int kx = 0;
-	int r = rounding;
-	auto x1 = xx;
-	if (xx < rounding * 2) {
-		x1 = r * 2;
-		kx = 1;
-	}
-	if (vertical)
-	{
-		x = (ss.x - wide) * 0.5;
-		brc = { 0.5 + x ,0.5 + y , wide, ss.y };
-		cliprc = { 0,0, wide, xx };
-		xx = glm::clamp((float)xx, (float)0, (float)ss.y);
-		spos = { ss.x * 0.5,xx };
-		crc = { 0.5 + x,0.5 + y, wide, x1 };
-		if (reverse_color) {
-			x1 -= rounding;
-			crc = { 0.5 + x,0.5 + y + x1 , wide, ss.y - x1 };
-		}
-	}
-	else {
-		y = (ss.y - wide) * 0.5;
-		brc = { 0.5 + x ,0.5 + y, ss.x , wide };
-		cliprc = { 0,0, xx, wide };
-		xx = glm::clamp((float)xx, (float)0, (float)ss.x);
-		spos = { xx ,ss.y * 0.5 };
-		crc = { 0.5 + x,0.5 + y, x1, wide };
-		if (reverse_color) {
-			x1 -= rounding;
-			crc = { 0.5 + x + x1 ,0.5 + y,ss.x - x1, wide };
-		}
-	}
-	rv->add_rect(brc, rounding);
-	rv->submit(color.y, 0, 0);
-	if (xx >= 0)
-	{
-		{
-			rv->add_rect(crc, r);
-			rv->submit(color.x, 0, 0);
-		}
-		if (sl.x > 0) {
-			rv->add_circle(spos, sl.x);
-			rv->submit(sl.y, color.x, thickness);
-		}
-	}
-	//rv->restore();
-
-	rv->pop_view();
-#endif
-}
-
-
-void colorpick_tl::draw(rvg_cx* rv)
-{
-#if 1
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-	glm::ivec2 ss = _size;
-	rv->translate(psv);
-	auto oldpos = rv->get_translate();
-	//rv->save();
-	//uint32_t col_hues[] = { 0xff0000ff,0xff00ffff,0xff00ff00,0xffffff00,0xffff0000,0xffff00ff,0xff0000ff };
-	const glm::vec4 col_hues[6 + 1] = { glm::vec4(1,0,0,1), glm::vec4(1,1,0,1), glm::vec4(0,1,0,1)
-		, glm::vec4(0,1,1,1), glm::vec4(0,0,1,1), glm::vec4(1,0,1,1), glm::vec4(1,0,0,1) };
-	int yh = height + step;
-	glm::vec2 tps = { cpx + step,yh };
-	glm::vec4 hc = HSVtoRGB(hsv);
-	{
-		glm::vec4 cc = {};
-		rv->grid_fill({ cpx, height }, { -1,0xffdfdfdf }, height * 0.5);// 填充格子
-		rv->add_rect({ 0,0,cpx, height }, 0);
-		rv->set_color(hc);
-		rv->fill();// 填充当前颜色
-	}
-	{
-		rv->translate(tps);
-		rv->linear_fill({ colorw,height }, col_hues, 7);	// H 
-		glm::ivec4 rcc = { (colorw - step) * hsv.x,-step * 0.5,step - 2, height + step };
-		glm::vec4 rcf = rcc;
-		rcf.x += 0.5; rcf.y += 0.5;
-		rv->add_rect(rcf, 0);
-		rv->submit(-1, bc_color, thickness);
-	}
-	tps.x = 0;
-	{
-		rv->translate(tps);
-		glm::vec4 cc[] = { {1,1,1,1}, hc };
-		rv->grid_fill({ colorw, height }, { -1,-1 }, height * 0.5);// 背景色
-		rv->linear_fill({ colorw, height }, cc, 2);	// S
-		glm::ivec4 rcc = { (colorw - step) * hsv.y,-step * 0.5,step - 2, height + step };
-		glm::vec4 rcf = rcc;
-		rcf.x += 0.5; rcf.y += 0.5;
-		rv->add_rect(rcf, 0);
-		rv->submit(-1, bc_color, thickness);
-	}
-	{
-		rv->translate(tps);
-		glm::vec4 cc[] = { {0,0,0,1}, hc };
-		rv->grid_fill({ colorw, height }, { -1,-1 }, height * 0.5);// 背景色
-		rv->linear_fill({ colorw, height }, cc, 2);	// V
-		glm::ivec4 rcc = { (colorw - step) * hsv.z,-step * 0.5,step - 2, height + step };
-		glm::vec4 rcf = rcc;
-		rcf.x += 0.5; rcf.y += 0.5;
-		rv->add_rect(rcf, 0);
-		rv->submit(-1, bc_color, thickness);
-	}
-	{
-		rv->translate(tps);
-		glm::vec4 cc[] = { {0,0,0,0}, {1,1,1,1} };
-		rv->grid_fill({ colorw, height }, { -1,0xffdfdfdf }, height * 0.5);//背景色
-		rv->linear_fill({ colorw, height }, cc, 2);	// A
-		glm::ivec4 rcc = { (colorw - step) * hsv.w,-step * 0.5,step - 2, height + step };
-		glm::vec4 rcf = rcc;
-		rcf.x += 0.5; rcf.y += 0.5;
-		rv->add_rect(rcf, 0);
-		rv->submit(-1, bc_color, thickness);
-	}
-	auto oldpos1 = rv->get_translate();
-	rv->translate(oldpos - oldpos1);
-	//rv->restore();
-	{
-		glm::ivec2 ss = _size;
-		glm::vec2 ta = { 0.0, 0.0 };
-		glm::vec4 rc = { step, height + step, ss };
-		rc.w -= rc.y;
-		text_style st = style;
-		st.align = ta;// text_align; 
-		st.lineheight = rc.y;//设置固定行高
-		rc.y += step;
-		text_st tx = {};
-		tx.pos = { 0,thickness };
-		tx.pos = { rc.x,rc.y };
-		tx.size = { rc.z,rc.w };
-		tx.text = hsvstr.c_str(); tx.text_len = hsvstr.size();
-		rv->add_text(&tx, &st);
-		rc.y = 0; rc.x += cpx;
-		rc.z = colorw;
-		rc.w = height; ta.y = 0.5;
-		st.lineheight = 0; // 使用默认行高
-		tx.pos = { rc.x,rc.y };
-		tx.size = { rc.z,rc.w };
-		tx.text = colorstr.c_str(); tx.text_len = colorstr.size();
-		rv->add_text(&tx, &st);
-	}
-
-	rv->pop_view();
-#endif
-}
-void scroll_bar::draw(rvg_cx* rv)
-{
-	glm::ivec2 ss = _size;
-	auto psv = _pos; //auto psv = get_ppos();
-	auto view = glm::ivec4(psv, get_size());
-	rv->push_view(view, this);
-	rv->translate(psv);
-	// 背景
-	if (!hideble || thumb_size_m.z) {
-		rv->add_rect({ 0,0,ss }, rounding);
-		rv->submit(_color.x, 0, 0);
-	}
-	// 滑块
-	double rw = _rc_width * scale_s;
-	glm::ivec4 trc = { 0,0,rw,rw };
-	int px = _dir ? 0 : 1;
-	auto pxs = ceil((ss[px] - rw) * 0.5);
-	trc.x += pxs;
-	trc.y += pxs;
-	trc[_dir] = tps[_dir] + _offset;
-	trc[2 + _dir] = thumb_size_m.x;
-	if (thumb_size_m.z)
-	{
-		rv->add_rect(trc, _rc_width * 0.5 * scale_s);
-		rv->submit(_tcc, 0, 0);
-	}
-	rv->pop_view();
-}
-void div_cx::draw(rvg_cx* rv)
-{
-	auto pos = get_pos();
-	auto sps = get_scroll_pos();	// 获取滚动量
-	auto ss = get_size();
-	if (border.w || border.x) {
-		rv->push_view(glm::ivec4(0, 0, ss), this);
-		rv->set_line_width(border.y);
-		//rv->translate(pos);
-		glm::vec2 rc = ss;
-		rc -= border.y;
-		rv->add_rect({ 0.5,0.5,rc }, border.z);
-		rv->fill_stroke(border.w, border.x);
-		if (text.size()) {
-			glm::ivec2 rk = {};
-			glm::vec2 ta = { 0.5,0.5 };
-			glm::vec4 rc = { 0, 0, _size };
-			text_style st = style;
-			st.align = ta;
-			text_st tx = {};
-			tx.pos = { 0,thickness };
-			tx.size = ss;
-			tx.text = text.c_str(); tx.text_len = text.size();
-			rv->add_text(&tx, &st);
-		}
-		rv->pop_view();
-	}
-
-	for (auto& it : sort_draw) {
-		auto dp = dynamic_cast<div_cx*>(it);
-		if (it->visible && !dp)
-		{
-			it->draw(rv);
-		}
-	}
-	draw_last(rv);
-}
-
-void edit_cx::draw(rvg_cx* rv)
-{
-	glm::ivec2 nposs = _pos;
-	glm::ivec2 ss = _size;
-	auto psv = get_scroll_pos(); psv += _pos; //auto psv = get_ppos();
-	auto vsize = get_size();
-	vsize += thickness * 2;
-	auto view = glm::ivec4(psv, vsize);
-	rv->push_view(view, this);
-	//rv->save();
-	rv->translate(psv);
-	rv->add_rect({ 0,0,ss.x ,ss.y }, rounding);
-	rv->set_color(_color.x);
-	rv->fill();
-	psv += thickness;
-	rv->translate({ thickness ,thickness });
-	auto tpos = ctx->_align_pos - ctx->scroll_pos;
-	auto tpos1 = ctx->_align_pos1 - ctx->scroll_pos;
-
-	glm::vec2 ext = { 0,ctx->lineheight }, ext1 = { 0,style.fontsize }, iss = _size;
-	iss -= thickness * 2;
-	auto ps = glm::ceil((iss - ext) * style.align);
-	auto ps1 = glm::ceil((iss - ext1) * style.align);
-	glm::ivec2 npos = {};
-	glm::ivec2 srcpos = {};
-	glm::ivec2 cpos = ctx->cursor_pos;
-	if (ctx->state.single_line)
-	{
-		npos.y += ps1.y;
-		srcpos.y += ps.y;
-	}
-	{
-		//rv->save();
-		// 裁剪区域渲染选中效果背景
-		rv->add_rect({ 0,0,ss.x - thickness * 2,ss.y - thickness * 2 }, 0);
-		rv->clip();
-		auto oclip = rv->get_clip();
-		tpos1 = tpos;
-		tpos1.y += ceil((ctx->lineheight - style.fontsize) * style.align.y);
-		auto v = get_bounds();
-		rv->translate({ 0,1 });
-		if (v.x != v.y && ctx->rangerc.size()) {
-			//rv->save();
-			rv->translate(tpos);
-			rv->set_color(_color.z);
-			if (roundselect)
+			auto hidden = [widget](vgui_widget* node)
 			{
-				if (ctx->range_path.size() && ctx->range_path[0].size() > 3) {
-					rv->add_polyline(&ctx->range_path, true);
-					rv->fill();
-				}
-			}
-			else {
-				for (auto& it : ctx->rangerc)
-				{
-					rv->add_rect(it, std::min(it.z, it.w) * 0.18);
-					rv->fill();
-				}
-			}
-			rv->translate(-tpos);
-			//rv->restore();
+				for (vgui_widget* p = node; p; p = p->parent)
+					if (p == widget) return true;
+				return false;
+			};
+			if (ctx->hot && hidden(ctx->hot)) { ctx->hot->hovered = 0; ctx->hot = nullptr; }
+			if (ctx->active && hidden(ctx->active)) { ctx->active->pressed = 0; ctx->active = nullptr; }
+			if (ctx->press_target && hidden(ctx->press_target)) ctx->press_target = nullptr;
+			if (ctx->slider_drag && hidden(ctx->slider_drag)) ctx->slider_drag = nullptr;
+			if (ctx->focus && hidden(ctx->focus)) vgui_set_focus_internal(ctx, nullptr);
 		}
-
-		// 渲染文本
-		glm::vec4 rc = { 0,0,  ss };
-		text_style st = style;
-		st.align = {};
-		text_st tx = {};
-		tx.pos = { tpos1 };
-		tx.size = ss;
-		auto ptxt = placeholder.c_str();
-		size_t plen = placeholder.size();
-		do {
-			if (pwdch)
-			{
-				if (stext.size() > 0)
-				{
-					ptxt = stext.c_str();
-					plen = stext.size(); break;
-				}
-			}
-			else {
-				if (ctx->str.size() > 0)
-				{
-					ptxt = ctx->str.c_str();
-					plen = ctx->str.size(); break;
-				}
-			}
-			st.color = set_alpha_x(style.color, 200);
-		} while (0);
-		tx.text = ptxt;
-		tx.text_len = plen;
-		if (*ptxt && plen > 0)
-			rv->add_text(&tx, &st);
-
-
-		cpos += tpos + psv;
-		bool ccd = (show_input_cursor && ctx->c_d == 1 && _cursor.x > 0 && ctx->cursor_pos.z > 0);
-		if (ccd && is_input)
-		{
-			auto rpos = cpos;
-			rpos -= rv->get_translate();
-			//rv->push_view({ rpos ,align_up(_cursor.x,4),align_up(ctx->cursor_pos.z,4) });
-			rv->set_color(_cursor.y);
-			rv->add_rect(glm::ivec4(rpos, _cursor.x, ctx->cursor_pos.z), 0);
-			rv->fill();
-			//rv->pop_view();
-		}
-		//rv->restore();
-		rv->clip(oclip);// 恢复裁剪区域
-	}
-	//rv->restore();
-	rv->pop_view();
-
-	// 编辑中的文本
-	if (is_input)
-	{
-		auto epos = glm::ivec2(cpos);
-		uint32_t editing_color = _color.w;
-		if (editingstr.size())
-		{
-			// 渲染文本 
-			text_style st = style;
-			st.align = {};
-			st.color = editing_color;
-			glm::ivec2 lps = get_text_rect(style.family, style.fontsize, editingstr.c_str(), editingstr.size(), 0);
-
-			if (lps.y < ctx->lineheight)
-				lps.y = ctx->lineheight;
-			glm::vec4 lss = { 0,  lps.y + 0.5, lps.x, lps.y + 0.5 };
-			glm::vec4 rc = { 1,1,lps.x + 2, lps.y + 2 };
-			auto clip0 = glm::ivec4(epos, rc.z, rc.w);
-
-			rv->push_view(clip0);
-			rv->translate({ clip0.x, clip0.y });
-			rv->set_color(get_reverse_color(editing_color));
-			rv->add_rect({ 0, 0, lps.x + 2, lps.y + 2 }, 0);
-			rv->fill();
-			rv->set_color(editing_color);
-			rv->add_line({ lss.x + 1, lss.y }, { lss.z, lss.w });
-			rv->set_line_width(1);
-			rv->stroke();
-			text_st tx = {};
-			tx.pos = { rc.x,rc.y };
-			tx.size = glm::ivec2(rc.z, rc.w);
-			tx.text = editingstr.c_str(); tx.text_len = editingstr.size();
-			rv->add_text(&tx, &st);
-			rv->pop_view();
-		}
+		ctx->layout_dirty = true;
 	}
 }
 
+int vgui_widget_get_visible(vgui_widget* widget)
+{
+	return widget ? widget->visible : 0;
+}
 
-#endif // 1
+void vgui_widget_set_enabled(vgui_widget* widget, int enabled)
+{
+	if (!widget) return;
+	enabled = enabled ? 1 : 0;
+	widget->enabled = enabled;
+	if (!enabled && widget->ctx)
+	{
+		vgui_context* ctx = widget->ctx;
+		auto disabled = [widget](vgui_widget* node)
+		{
+			for (vgui_widget* p = node; p; p = p->parent)
+				if (p == widget) return true;
+			return false;
+		};
+		if (ctx->active && disabled(ctx->active)) { ctx->active->pressed = 0; ctx->active = nullptr; }
+		if (ctx->press_target && disabled(ctx->press_target)) ctx->press_target = nullptr;
+		if (ctx->slider_drag && disabled(ctx->slider_drag)) ctx->slider_drag = nullptr;
+		if (ctx->focus && disabled(ctx->focus)) vgui_set_focus_internal(ctx, nullptr);
+	}
+}
+
+int vgui_widget_get_enabled(vgui_widget* widget)
+{
+	return widget ? widget->enabled : 0;
+}
+
+void vgui_widget_set_focusable(vgui_widget* widget, int focusable)
+{
+	if (widget) widget->focusable = focusable ? 1 : 0;
+}
+
+int vgui_widget_get_focusable(vgui_widget* widget)
+{
+	return widget ? widget->focusable : 0;
+}
+
+void vgui_widget_set_text(vgui_widget* widget, const char* text)
+{
+	if (!widget) return;
+	widget->text = text ? text : "";
+	if (widget->kind == VGUI_EDIT)
+	{
+		widget->edit_text = widget->text;
+		widget->edit_cursor = widget->edit_anchor = (int)widget->edit_text.size();
+		widget->ime_text.clear();
+		widget->ime_cursor = widget->ime_length = 0;
+	}
+	vgui_mark_dirty(widget);
+}
+
+const char* vgui_widget_get_text(vgui_widget* widget)
+{
+	if (!widget) return "";
+	return widget->kind == VGUI_EDIT ? widget->edit_text.c_str() : widget->text.c_str();
+}
+
+void vgui_widget_set_font_size(vgui_widget* widget, float size)
+{
+	if (!widget) return;
+	widget->font_size = size > 0 ? size : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color)
+{
+	if (widget) widget->text_color = color;
+}
+
+void vgui_widget_set_background(vgui_widget* widget, vgui_color color)
+{
+	if (widget) widget->bg = color;
+}
+
+void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width)
+{
+	if (!widget) return;
+	widget->border = color;
+	widget->border_width = width > 0 ? width : 0;
+}
+
+void vgui_widget_set_rounding(vgui_widget* widget, float radius)
+{
+	if (widget) widget->rounding = radius > 0 ? radius : 0;
+}
+
+void vgui_widget_set_text_align(vgui_widget* widget, float align_x, float align_y)
+{
+	if (!widget) return;
+	widget->text_align_x = vgui_clampf(align_x, 0.0f, 1.0f);
+	widget->text_align_y = vgui_clampf(align_y, 0.0f, 1.0f);
+}
+
+void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor)
+{
+	if (widget) widget->cursor_type = cursor;
+}
+
+void vgui_widget_set_opacity(vgui_widget* widget, float opacity)
+{
+	if (widget) widget->opacity = vgui_clampf(opacity, 0.0f, 1.0f);
+}
+
+void vgui_widget_set_layout(vgui_widget* widget, vgui_layout_kind layout)
+{
+	if (!widget) return;
+	widget->layout = layout;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_pos(vgui_widget* widget, float x, float y)
+{
+	if (!widget) return;
+	widget->x = x;
+	widget->y = y;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_size(vgui_widget* widget, float width, float height)
+{
+	if (!widget) return;
+	widget->req_w = width > 0 ? width : 0;
+	widget->req_h = height > 0 ? height : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_min_size(vgui_widget* widget, float width, float height)
+{
+	if (!widget) return;
+	widget->min_w = width > 0 ? width : 0;
+	widget->min_h = height > 0 ? height : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_max_size(vgui_widget* widget, float width, float height)
+{
+	if (!widget) return;
+	widget->max_w = width > 0 ? width : 0;
+	widget->max_h = height > 0 ? height : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_margin(vgui_widget* widget, float left, float top, float right, float bottom)
+{
+	if (!widget) return;
+	widget->margin[0] = left;
+	widget->margin[1] = top;
+	widget->margin[2] = right;
+	widget->margin[3] = bottom;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_padding(vgui_widget* widget, float left, float top, float right, float bottom)
+{
+	if (!widget) return;
+	widget->padding[0] = left;
+	widget->padding[1] = top;
+	widget->padding[2] = right;
+	widget->padding[3] = bottom;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_gap(vgui_widget* widget, float gap)
+{
+	if (!widget) return;
+	widget->gap = gap > 0 ? gap : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_align_items(vgui_widget* widget, vgui_align align)
+{
+	if (!widget) return;
+	widget->align_items = align;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_align_self(vgui_widget* widget, vgui_align align)
+{
+	if (!widget) return;
+	widget->align_self = align;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_justify(vgui_widget* widget, vgui_justify justify)
+{
+	if (!widget) return;
+	widget->justify = justify;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_set_grow(vgui_widget* widget, float grow)
+{
+	if (!widget) return;
+	widget->grow = grow > 0 ? grow : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_widget_get_rect(vgui_widget* widget, float* x, float* y, float* width, float* height)
+{
+	if (!widget || !widget->ctx)
+	{
+		if (x) *x = 0;
+		if (y) *y = 0;
+		if (width) *width = 0;
+		if (height) *height = 0;
+		return;
+	}
+	vgui_ensure_layout(widget->ctx);
+	if (!widget->parent && widget != widget->ctx->root)
+	{
+		vgui_measure_widget(widget, widget->ctx);
+		vgui_layout_widget(widget, widget->ctx, 0, 0,
+			std::max(widget->intrinsic_w, 1.0f), std::max(widget->intrinsic_h, 1.0f));
+	}
+	if (x) *x = widget->abs_x;
+	if (y) *y = widget->abs_y;
+	if (width) *width = widget->abs_w;
+	if (height) *height = widget->abs_h;
+}
+
+void vgui_widget_set_value(vgui_widget* widget, float value)
+{
+	if (!widget) return;
+	if (widget->kind == VGUI_RADIO)
+	{
+		if (value >= 0.5f)
+		{
+			// Selecting a radio unchecks its siblings without notifying them.
+			if (widget->parent)
+			{
+				for (vgui_widget* s : widget->parent->children)
+					if (s != widget && s->kind == VGUI_RADIO) s->checked = 0;
+			}
+			widget->checked = 1;
+		}
+		else
+		{
+			widget->checked = 0;
+		}
+		return;
+	}
+	if (widget->kind == VGUI_SLIDER || widget->kind == VGUI_PROGRESS)
+	{
+		float span = widget->range_max - widget->range_min;
+		float normalized = span != 0 ? (value - widget->range_min) / span : 0.0f;
+		vgui_set_value_internal(widget, normalized, false);
+		return;
+	}
+	vgui_set_value_internal(widget, value, false);
+}
+
+float vgui_widget_get_value(vgui_widget* widget)
+{
+	return widget ? vgui_value_of(widget) : 0.0f;
+}
+
+void vgui_widget_set_range(vgui_widget* widget, float min_value, float max_value)
+{
+	if (!widget) return;
+	if (min_value > max_value) std::swap(min_value, max_value);
+	widget->range_min = min_value;
+	widget->range_max = max_value;
+}
+
+void vgui_widget_set_step(vgui_widget* widget, float step)
+{
+	if (widget) widget->step = step > 0 ? step : 0;
+}
+
+void vgui_widget_set_checked(vgui_widget* widget, int checked)
+{
+	if (!widget) return;
+	checked = checked ? 1 : 0;
+	if (widget->kind == VGUI_RADIO)
+	{
+		vgui_widget_set_value(widget, checked ? 1.0f : 0.0f);
+		return;
+	}
+	widget->checked = checked;
+}
+
+int vgui_widget_get_checked(vgui_widget* widget)
+{
+	return widget ? widget->checked : 0;
+}
+
+void vgui_widget_set_vertical(vgui_widget* widget, int vertical)
+{
+	if (!widget) return;
+	widget->vertical = vertical ? 1 : 0;
+	vgui_mark_dirty(widget);
+}
+
+void vgui_panel_set_scrollable(vgui_widget* panel, int horizontal, int vertical)
+{
+	if (!panel) return;
+	panel->scrollable_x = horizontal ? 1 : 0;
+	panel->scrollable_y = vertical ? 1 : 0;
+	vgui_mark_dirty(panel);
+}
+
+void vgui_panel_set_scroll(vgui_widget* panel, float x, float y)
+{
+	if (!panel) return;
+	panel->scroll_x = x;
+	panel->scroll_y = y;
+	vgui_mark_dirty(panel);
+}
+
+void vgui_panel_scroll_by(vgui_widget* panel, float dx, float dy)
+{
+	if (!panel) return;
+	panel->scroll_x += dx;
+	panel->scroll_y += dy;
+	vgui_mark_dirty(panel);
+}
+
+void vgui_panel_get_scroll(vgui_widget* panel, float* x, float* y)
+{
+	if (panel && panel->ctx) vgui_ensure_layout(panel->ctx);
+	if (x) *x = panel ? panel->scroll_x : 0;
+	if (y) *y = panel ? panel->scroll_y : 0;
+}
+
+void vgui_panel_get_content_size(vgui_widget* panel, float* width, float* height)
+{
+	if (panel && panel->ctx) vgui_ensure_layout(panel->ctx);
+	if (width) *width = panel ? panel->content_w : 0;
+	if (height) *height = panel ? panel->content_h : 0;
+}
+
+void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user)
+{
+	if (!widget) return;
+	widget->event_fn = fn;
+	widget->user = user;
+}
+
+void vgui_widget_on_value(vgui_widget* widget, vgui_value_fn fn, void* user)
+{
+	if (!widget) return;
+	widget->value_fn = fn;
+	widget->user = user;
+}
+
+void vgui_widget_on_text(vgui_widget* widget, vgui_text_fn fn, void* user)
+{
+	if (!widget) return;
+	widget->text_fn = fn;
+	widget->user = user;
+}
+
+//----------------------------------------------------------------------------
+// text edit helpers
+//----------------------------------------------------------------------------
+
+void vgui_edit_set_text(vgui_widget* edit, const char* text)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->edit_text = text ? text : "";
+	edit->text = edit->edit_text;
+	edit->edit_cursor = edit->edit_anchor = (int)edit->edit_text.size();
+	edit->ime_text.clear();
+	edit->ime_cursor = edit->ime_length = 0;
+	edit->caret_blink = 0;
+	vgui_mark_dirty(edit);
+	vgui_edit_ensure_visible(edit);
+}
+
+const char* vgui_edit_get_text(vgui_widget* edit)
+{
+	if (!edit) return "";
+	return edit->kind == VGUI_EDIT ? edit->edit_text.c_str() : edit->text.c_str();
+}
+
+void vgui_edit_set_placeholder(vgui_widget* edit, const char* text)
+{
+	if (!edit) return;
+	edit->placeholder = text ? text : "";
+	vgui_mark_dirty(edit);
+}
+
+void vgui_edit_set_password(vgui_widget* edit, char mask)
+{
+	if (!edit) return;
+	edit->password = mask != 0;
+	edit->password_char = mask ? mask : '*';
+}
+
+void vgui_edit_set_multiline(vgui_widget* edit, int multiline)
+{
+	if (!edit) return;
+	edit->multiline = multiline ? 1 : 0;
+	vgui_mark_dirty(edit);
+}
+
+void vgui_edit_set_readonly(vgui_widget* edit, int readonly)
+{
+	if (!edit) return;
+	edit->readonly = readonly ? 1 : 0;
+	if (edit->readonly)
+	{
+		edit->ime_text.clear();
+		edit->ime_cursor = edit->ime_length = 0;
+	}
+	if (edit->ctx && edit->ctx->focus == edit)
+		edit->ctx->want_text = !edit->readonly;
+}
+
+void vgui_edit_set_cursor(vgui_widget* edit, int byte_index)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->edit_cursor = edit->edit_anchor = vgui_edit_clamp_index(edit->edit_text, byte_index);
+	edit->caret_blink = 0;
+	vgui_edit_ensure_visible(edit);
+}
+
+int vgui_edit_get_cursor(vgui_widget* edit)
+{
+	return edit ? vgui_edit_clamp_index(edit->edit_text, edit->edit_cursor) : 0;
+}
+
+void vgui_edit_select_all(vgui_widget* edit)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->edit_anchor = 0;
+	edit->edit_cursor = (int)edit->edit_text.size();
+	edit->caret_blink = 0;
+}
+
+void vgui_edit_select(vgui_widget* edit, int anchor, int cursor)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->edit_anchor = vgui_edit_clamp_index(edit->edit_text, anchor);
+	edit->edit_cursor = vgui_edit_clamp_index(edit->edit_text, cursor);
+	edit->caret_blink = 0;
+	vgui_edit_ensure_visible(edit);
+}
+
+void vgui_edit_clear_selection(vgui_widget* edit)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->edit_anchor = vgui_edit_clamp_index(edit->edit_text, edit->edit_cursor);
+}
+
+int vgui_edit_has_selection(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT && vgui_edit_has_sel(edit)) ? 1 : 0;
+}
+
+void vgui_edit_set_ime_text(vgui_widget* edit, const char* text, int cursor, int length)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->ime_text = text ? text : "";
+	edit->ime_cursor = vgui_edit_clamp_index(edit->ime_text, cursor);
+	edit->ime_length = std::max(0, length);
+	if (edit->ime_cursor + edit->ime_length > (int)edit->ime_text.size())
+		edit->ime_length = std::max(0, (int)edit->ime_text.size() - edit->ime_cursor);
+}
+
+//----------------------------------------------------------------------------
+// focus and input
+//----------------------------------------------------------------------------
+
+void vgui_set_focus(vgui_context* ctx, vgui_widget* widget)
+{
+	if (!ctx) return;
+	if (widget && (widget->ctx != ctx || !widget->visible || !widget->enabled))
+		return;
+	if (widget && widget->kind != VGUI_EDIT && !widget->focusable)
+		return;
+	vgui_set_focus_internal(ctx, widget);
+}
+
+vgui_widget* vgui_get_focus(vgui_context* ctx)
+{
+	return ctx ? ctx->focus : nullptr;
+}
+
+vgui_widget* vgui_hit_test(vgui_context* ctx, float x, float y)
+{
+	return vgui_hit_test_ctx(ctx, x, y);
+}
+
+vgui_cursor vgui_context_get_cursor(vgui_context* ctx)
+{
+	return ctx ? ctx->cursor : VGUI_CURSOR_ARROW;
+}
+
+int vgui_input_mouse_move(vgui_context* ctx, float x, float y)
+{
+	return vgui_mouse_move_impl(ctx, x, y);
+}
+
+int vgui_input_mouse_down(vgui_context* ctx, int button, float x, float y, int clicks)
+{
+	return vgui_mouse_down_impl(ctx, button, x, y, clicks);
+}
+
+int vgui_input_mouse_up(vgui_context* ctx, int button, float x, float y, int clicks)
+{
+	return vgui_mouse_up_impl(ctx, button, x, y, clicks);
+}
+
+int vgui_input_mouse_wheel(vgui_context* ctx, float wheel_x, float wheel_y)
+{
+	return vgui_mouse_wheel_impl(ctx, wheel_x, wheel_y);
+}
+
+int vgui_input_key(vgui_context* ctx, int key, int down, int mods)
+{
+	if (key >= 'a' && key <= 'z') key -= ('a' - 'A');
+	return vgui_key_impl(ctx, key, down, mods);
+}
+
+int vgui_input_text(vgui_context* ctx, const char* utf8)
+{
+	return vgui_text_impl(ctx, utf8);
+}
+
+int vgui_input_editing(vgui_context* ctx, const char* utf8, int cursor, int length)
+{
+	return vgui_editing_impl(ctx, utf8, cursor, length);
+}
+
+void vgui_input_clear(vgui_context* ctx)
+{
+	if (!ctx) return;
+	for (int i = 0; i < 8; i++)
+	{
+		ctx->mouse_down[i] = 0;
+		ctx->click_count[i] = 0;
+		ctx->click_time[i] = -10;
+	}
+	for (vgui_widget* w : ctx->all_widgets)
+	{
+		if (!w || !ctx->alive.count(w)) continue;
+		w->hovered = 0;
+		w->pressed = 0;
+	}
+	ctx->hot = nullptr;
+	ctx->active = nullptr;
+	ctx->press_target = nullptr;
+	ctx->slider_drag = nullptr;
+	ctx->cursor = VGUI_CURSOR_ARROW;
+	ctx->want_mouse = 0;
+	ctx->want_key = ctx->focus != nullptr;
+	ctx->want_text = (ctx->focus && ctx->focus->kind == VGUI_EDIT && !ctx->focus->readonly);
+	vgui_flush_pending(ctx);
+}
+
+void vgui_input_focus_next(vgui_context* ctx, int reverse)
+{
+	vgui_focus_next_impl(ctx, reverse != 0);
+}
+
+int vgui_context_wants_mouse(vgui_context* ctx)
+{
+	if (!ctx) return 0;
+	if (ctx->hot && ctx->alive.count(ctx->hot)) return 1;
+	if (ctx->active && ctx->alive.count(ctx->active)) return 1;
+	if (ctx->press_target && ctx->alive.count(ctx->press_target)) return 1;
+	return ctx->want_mouse ? 1 : 0;
+}
+
+int vgui_context_wants_keyboard(vgui_context* ctx)
+{
+	if (!ctx || !ctx->focus) return 0;
+	return ctx->alive.count(ctx->focus) && ctx->focus->enabled ? 1 : 0;
+}
+
+int vgui_context_wants_text_input(vgui_context* ctx)
+{
+	if (!ctx || !ctx->focus) return 0;
+	vgui_widget* f = ctx->focus;
+	return (ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly) ? 1 : 0;
+}
+
+int vgui_context_get_text_input_rect(vgui_context* ctx, int* x, int* y, int* width, int* height)
+{
+	if (x) *x = 0;
+	if (y) *y = 0;
+	if (width) *width = 0;
+	if (height) *height = 0;
+	if (!ctx || !ctx->focus || ctx->focus->kind != VGUI_EDIT) return 0;
+
+	vgui_widget* w = ctx->focus;
+	if (!ctx->alive.count(w) || !w->visible) return 0;
+	vgui_ensure_layout(ctx);
+
+	float lh = vgui_line_height(ctx, w);
+	int line = 0, col = 0;
+	vgui_edit_line_col(w->edit_text, w->edit_cursor, line, col);
+	(void)col;
+	int lb = 0, le = 0;
+	vgui_edit_line_bytes(w->edit_text, line, lb, le);
+	int upto = std::min(std::max(w->edit_cursor, lb), le);
+	float caret_x = vgui_text_width_n(w, w->edit_text.data() + lb, upto - lb);
+	float cell = 0;
+	if (!w->ime_text.empty())
+		cell = vgui_text_width_n(w, w->ime_text.data(), vgui_u8_next(w->ime_text, 0));
+	if (cell < 1) cell = vgui_font_size(ctx, w);
+	float rx = w->abs_x + w->padding[0] - w->edit_scroll_x + caret_x;
+	float ry = w->abs_y + w->padding[1] - w->edit_scroll_y + line * lh;
+	if (x) *x = (int)std::floor(rx);
+	if (y) *y = (int)std::floor(ry);
+	if (width) *width = (int)std::ceil(std::max(1.0f, cell));
+	if (height) *height = (int)std::ceil(lh);
+	return 1;
+}
+
+//----------------------------------------------------------------------------
+// frame
+//----------------------------------------------------------------------------
+
+void vgui_layout(vgui_context* ctx)
+{
+	if (!ctx) return;
+	vgui_flush_pending(ctx);
+	vgui_ensure_layout(ctx);
+}
+
+void vgui_update(vgui_context* ctx, float delta_time)
+{
+	vgui_update_impl(ctx, delta_time);
+}
+
+void vgui_draw(vgui_context* ctx, struct ovg_ctx_cb* cb, struct rvg_t* vg)
+{
+	if (!ctx || !cb || !vg || !ctx->root) return;
+	vgui_flush_pending(ctx);
+	vgui_ensure_layout(ctx);
+
+	vgui_clip_state clips;
+	clips.external = {};
+	if (cb->get_clip_rect)
+		cb->get_clip_rect(vg, &clips.external);
+	clips.has_external = clips.external.z > 0 && clips.external.w > 0;
+
+	vgui_draw_widget(ctx->root, cb, vg, &clips);
+
+	// The root may not clip its children; nested clipping still has to leave
+	// the renderer's scissor in a clean state for subsequent draw calls.
+	while (!clips.stack.empty())
+		vgui_clip_pop(&clips, cb, vg);
+}
+
+} // extern "C"
+
+//----------------------------------------------------------------------------
+// SDL3 backend bridge (C++ linkage, declared in vgui_internal.h)
+//----------------------------------------------------------------------------
+
+namespace {
+
+static int vgui_translate_sdl_key(int keycode)
+{
+	switch (keycode)
+	{
+	case SDLK_BACKSPACE: return VGUI_KEY_BACKSPACE;
+	case SDLK_TAB: return VGUI_KEY_TAB;
+	case SDLK_RETURN:
+	case SDLK_KP_ENTER: return VGUI_KEY_ENTER;
+	case SDLK_ESCAPE: return VGUI_KEY_ESCAPE;
+	case SDLK_DELETE: return VGUI_KEY_DELETE;
+	case SDLK_LEFT: return VGUI_KEY_LEFT;
+	case SDLK_RIGHT: return VGUI_KEY_RIGHT;
+	case SDLK_UP: return VGUI_KEY_UP;
+	case SDLK_DOWN: return VGUI_KEY_DOWN;
+	case SDLK_HOME: return VGUI_KEY_HOME;
+	case SDLK_END: return VGUI_KEY_END;
+	case SDLK_PAGEUP: return VGUI_KEY_PAGE_UP;
+	case SDLK_PAGEDOWN: return VGUI_KEY_PAGE_DOWN;
+	case SDLK_INSERT: return VGUI_KEY_INSERT;
+	default: break;
+	}
+
+	if (keycode >= SDLK_A && keycode <= SDLK_Z)
+		return 'A' + (keycode - SDLK_A);
+	if (keycode >= SDLK_0 && keycode <= SDLK_9)
+		return '0' + (keycode - SDLK_0);
+	if (keycode > 0 && keycode < 128)
+		return keycode;
+	return 0;
+}
+
+static int vgui_translate_kmod(int kmod)
+{
+	int mods = VGUI_MOD_NONE;
+	if (kmod & KM_SHIFT) mods |= VGUI_MOD_SHIFT;
+	if (kmod & KM_CTRL) mods |= VGUI_MOD_CTRL;
+	if (kmod & KM_ALT) mods |= VGUI_MOD_ALT;
+	if (kmod & KM_GUI) mods |= VGUI_MOD_GUI;
+	return mods;
+}
+
+static void vgui_ime_rect_to_event(vgui_context* ctx, int* x, int* y, int* w, int* h)
+{
+	vgui_context_get_text_input_rect(ctx, x, y, w, h);
+}
+
+} // anonymous namespace
+
+int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e)
+{
+	if (!ctx || !e) return 0;
+
+	int ret = 0;
+	switch (e->type)
+	{
+	case dev_event_type_e::mouse_move_e:
+	{
+		mouse_move_et* m = e->v.m;
+		if (!m) break;
+		ret = vgui_mouse_move_impl(ctx, (float)m->x, (float)m->y);
+		m->cursor = (cursor_st)vgui_context_get_cursor(ctx);
+		break;
+	}
+	case dev_event_type_e::mouse_button_e:
+	{
+		mouse_button_et* b = e->v.b;
+		if (!b) break;
+		if (b->down)
+			ret = vgui_mouse_down_impl(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
+		else
+			ret = vgui_mouse_up_impl(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
+		break;
+	}
+	case dev_event_type_e::mouse_wheel_e:
+	{
+		mouse_wheel_et* w = e->v.w;
+		if (!w) break;
+		ret = vgui_mouse_wheel_impl(ctx, (float)w->x, (float)w->y);
+		break;
+	}
+	case dev_event_type_e::keyboard_e:
+	{
+		keyboard_et* k = e->v.k;
+		if (!k) break;
+		int key = vgui_translate_sdl_key(k->keycode ? k->keycode : k->sym);
+		int mods = vgui_translate_kmod(k->kmod);
+		ret = vgui_key_impl(ctx, key, k->down ? 1 : 0, mods);
+		break;
+	}
+	case dev_event_type_e::text_input_e:
+	{
+		text_input_et* t = e->v.t;
+		if (!t) break;
+		ret = vgui_text_impl(ctx, t->text ? t->text : "");
+		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
+		break;
+	}
+	case dev_event_type_e::text_editing_e:
+	{
+		text_editing_et* t = e->v.e;
+		if (!t) break;
+		ret = vgui_editing_impl(ctx, t->text ? t->text : "", t->start, t->length);
+		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
+		break;
+	}
+	case dev_event_type_e::finger_e:
+	{
+		finger_et* f = e->v.f;
+		if (!f) break;
+		float fx = f->x, fy = f->y;
+		if (fx >= 0.0f && fx <= 1.0f && fy >= 0.0f && fy <= 1.0f)
+		{
+			fx *= (float)(ctx->width > 0 ? ctx->width : 1);
+			fy *= (float)(ctx->height > 0 ? ctx->height : 1);
+		}
+		if (f->t == 1)
+			ret = vgui_mouse_down_impl(ctx, 1, fx, fy, 1);
+		else if (f->t == 2)
+			ret = vgui_mouse_up_impl(ctx, 1, fx, fy, 1);
+		else
+			ret = vgui_mouse_move_impl(ctx, fx, fy);
+		break;
+	}
+	default:
+		break;
+	}
+
+	if (ret) e->ret = 1;
+	return ret;
+}
 

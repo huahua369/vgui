@@ -1,0 +1,452 @@
+#pragma once
+/*
+gui结构：
+	事件信息：*代码实现,event_obj_t管理事件注册、事件状态保存
+	布局信息：*节点布局、算法
+	渲染信息：*矢量图、位图、文本、裁剪等配置信息
+	动画信息：*时间线(数组),一个animation_t有多个通道，anim_ctx管理动画数据
+	绑定关系：动画、属性、事件之间的绑定关系
+
+
+*/
+/*
+ * Internal C++ interface.
+ *
+ * The public, C-callable API lives in vgui.h.  This header keeps the legacy
+ * C++ widget declarations that are still used by the implementation, the SDL3
+ * backend and the C++ sample.  It is not installed as part of the public API.
+ */
+#include <cstdint>
+#include <functional>
+#include <set>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <glm/glm.hpp>
+#include <ovg_c.h>
+
+
+#ifndef BIT_INC
+#define BIT_INC(x) (1<<x)
+#endif
+
+// 窗口设备事件
+enum class dev_event_type_e :uint32_t {
+	none = 0,
+	mouse_move_e,
+	mouse_button_e,
+	mouse_wheel_e,
+	keyboard_e,
+	text_editing_e,
+	text_input_e,
+	finger_e,
+	ole_drop_e,
+	max_det
+};
+// 控件事件类型
+enum class event_type_e :uint32_t {
+	none = 0,
+	mouse_move,		// 鼠标移动，
+	mouse_down,		// 鼠标按下
+	mouse_up,		// 鼠标弹起
+	mouse_wheel,	// 滚轮消息
+	// on需要拾取目标（*矩形、*圆形、自定义判断）才能触发，单击、双击、三击（指定毫秒内）
+	on_keypress,	// 按键，需要输入焦点
+	on_input,		// 输入法字符，需要输入焦点
+	on_editing,		// 输入法: 显示编辑的字符
+
+	on_click,		// 单击双击三击时鼠标在目标范围才能触发
+	on_dblclick,
+	on_tripleclick,
+	on_enter,		// 鼠标进入
+	on_leave,		// 鼠标离开
+	on_move,		// 鼠标在元素内移动
+	on_down,		// 鼠标在元素内按下
+	on_up,			// 鼠标弹起，触发条件：先down，鼠标位置不限
+	on_hover,		// 鼠标停留在目标区域n毫秒触发
+	on_scroll,		// 滚动条，目标范围内触发
+
+	on_drag,		// 元素被拖动时鼠标移动触发
+	on_dragstart,	// 当拖拽元素开始被拖拽的时候触发的事件，此事件作用在被拖曳元素上
+	on_dragend,		// 当拖拽完成后触发的事件，此事件作用在被拖曳元素上
+
+	on_dragenter,	// 当拖曳元素进入目标元素的时候触发的事件，此事件作用在目标元素上
+	on_dragleave,	// 当被鼠标拖动的对象离开其容器范围内时触发此事件，此事件作用在目标元素上
+	on_dragover,	// 拖拽元素在目标元素上移动的时候触发的事件，此事件作用在目标元素上
+	on_drop,		// 被拖拽的元素在目标元素上同时鼠标放开触发的事件，此事件作用在目标元素上
+
+	on_ole_dragover,// 接收OLE拖放在目标元素上移动的时
+	on_ole_drop,	// 接收OLE拖放
+
+	on_touch,		// 触控事件
+
+	et_max_num
+};
+#if 1
+
+enum class cursor_st :uint32_t
+{
+	cursor_null,
+	cursor_arrow,
+	cursor_ibeam,
+	cursor_wait,
+	cursor_no,
+	cursor_hand,
+};
+
+struct mouse_move_et
+{
+	int x, y;			// 鼠标移动坐标
+	int xrel, yrel;		// The relative motion in the XY direction 
+	uint8_t which;		// 鼠标实例 
+	cursor_st cursor;	// 切换鼠标光标用
+};
+struct mouse_button_et		// 鼠标弹起
+{
+	uint8_t which;
+	uint8_t button;       // The mouse button index 1左，3右，2中
+	uint8_t down;        // ::SDL_PRESSED or ::SDL_RELEASED 
+	uint8_t clicks;       // 1 for single-click, 2 for double-click, etc. 
+	int x, y;
+};
+struct mouse_wheel_et	// 滚轮消息
+{
+	int x, y;
+	uint8_t which;
+};
+#ifndef KM_CTRL
+#define KM_CTRL 1
+#define KM_SHIFT 2
+#define KM_ALT 4
+#define KM_GUI 8
+#endif
+struct keyboard_et
+{
+	uint16_t scancode;  // SDL physical key code - see ::SDL_Scancode for details 
+	uint16_t mod;       // current key modifiers 
+	int sym;            // SDL virtual key code - see ::SDL_Keycode for details 
+	int keycode;
+	int16_t kmod;		// Control=1 Shift=2 Alt=4 8Cmd/Super/Windows
+	int8_t down;       // ::SDL_PRESSED or ::SDL_RELEASED 
+	int8_t repeat;      // Non-zero if this is a key repeat 
+
+};
+struct text_editing_et
+{
+	char* text;// [32 * 8] ;  //The editing text
+	int start;		// The start cursor of selected editing text 
+	int length;		// The length of selected editing text 
+	int x, y, w, h;
+};
+struct text_input_et
+{
+	char* text;  // The input text 
+	int x, y, w, h;
+};
+// touch事件结构体
+struct finger_et {
+	int tid, touchId;
+	float x, y, pressure; // 坐标、压力
+	int t;	// FINGERDOWN=1 UP=2 MOTION=3 
+};
+// 接收ole拖动，结束数据count大于0
+struct ole_drop_et
+{
+	const char** str;
+	int count;			// 大于1一般是文件列表
+	int fmt = -1;		// 0文本，1文件
+	float x, y;			// 鼠标坐标
+
+	int* has;			// 是否接收, 0不接收，1接收
+
+};
+struct gui_io_state_t;
+
+struct dev_event_t
+{
+	union
+	{
+		struct mouse_move_et* m;
+		struct mouse_button_et* b;
+		struct mouse_wheel_et* w;
+		struct keyboard_et* k;
+		struct text_editing_et* e;
+		struct text_input_et* t;
+		struct finger_et* f;
+		struct ole_drop_et* d;
+	}v = {};
+	gui_io_state_t* io = 0;
+	dev_event_type_e type = dev_event_type_e::none;
+	uint8_t ret = 0;
+};
+
+#endif // 1
+
+// gui事件管理
+struct gui_io_mk_state {
+	bool KeysDown[512];
+	bool KeyCtrl : 1;
+	bool KeyShift : 1;
+	bool KeyAlt : 1;
+	bool KeySuper : 1;
+};
+struct gui_io_state_t
+{
+	gui_io_mk_state* mks;
+	glm::vec2 MouseDelta;
+	glm::vec2 MousePos;
+	glm::vec2 wheel;
+	glm::ivec4* ime_rect = 0;
+	bool MouseDown[8] = {};
+	float deltaTime = 0.0f;
+	int8_t clicks = 0;
+	bool WantCaptureMouse : 1 = false;
+	bool WantCaptureKey : 1 = false;
+	bool WantTextInput : 1 = false;
+};
+
+// 发起拖放文件
+void do_dragdrop_file(const char** fn, int count);
+// 发起拖放文本
+void do_dragdrop_str(const char* str, int count);
+
+struct font_family_t;
+struct ovg_ctx_cb;
+struct rvg_t;
+/*
+1.普通状态2，鼠标hover状态  3.active 点击状态  4.focus 取得焦点状态  4.disable禁用状态
+*/
+enum class BTN_STATE :uint8_t
+{
+	STATE_NOMAL = BIT_INC(0),
+	STATE_HOVER = BIT_INC(1),
+	STATE_ACTIVE = BIT_INC(2),
+	STATE_FOCUS = BIT_INC(3),
+	STATE_DISABLE = BIT_INC(4),
+};
+struct event_obj_t
+{
+public:
+	glm::ivec2 _pos = {};	// 控件坐标
+	glm::ivec2 _size = {};	// 控件大小 
+	glm::ivec2 hscroll = { 1,1 };	// x=1则受水平滚动条影响，y=1则受垂直滚动条影响 
+	glm::ivec2 curpos = {};	// 当前拖动鼠标坐标 
+	int _bst = 1;					// 鼠标状态
+	int _old_bst = 0;				// 鼠标状态  
+	std::unordered_map<int, std::vector<std::function<void()>>>* calls = 0;
+	dev_event_t* cde = 0;		// 临时指针
+	gui_io_state_t* io = 0;		// 鼠标键盘状态指针
+	event_type_e etype = {};	// on事件类型
+	glm::ivec2 mouse_pos = {};	// 处理后的鼠标坐标
+	glm::ivec2 cb_count = {};	// 事件处理函数计数
+	bool has_drag = false;			// 是否有拖动事件 
+	bool is_drag = false;			// 拖动状态
+	bool outer_scroll = false;		// 鼠标不在范围内也响应滚轮事件
+	bool _absolute = false;
+	bool _disabled_events = false;
+	bool visible = false;
+	bool valid = true;
+	bool uplayout = true;
+public:
+	event_obj_t();
+	virtual ~event_obj_t();
+	event_obj_t(const event_obj_t&) = delete;
+	event_obj_t& operator=(const event_obj_t&) = delete;
+	// event_type_e::none则监听所有
+	void add_event_dev(dev_event_type_e e, std::function<void(dev_event_t* dv)> cb);
+	void add_on_event(event_type_e e, std::function<void(event_type_e type, const glm::ivec2& mps)> cb);
+	void add_on_text(std::function<void(text_input_et* t)> cb);
+	void add_on_editing(std::function<void(text_editing_et* te)> cb);
+	void remove(dev_event_type_e e);// 清空
+	void remove(event_type_e e);
+	// 删除on_text和on_editing事件监听
+	void remove_on_text();
+	void call(int idx, int type);
+	bool hittest(const glm::ivec2& mpos)const;
+	std::vector<std::function<void()>>& get_cbs(int i, int etype);
+	bool is_hover();
+};
+
+enum class widget_type :uint8_t
+{
+	WT_WIDGET,
+	WT_DIV,
+	WT_EDIT,
+	WT_COLOR_BTN, WT_IMAGE_BTN, WT_GRADIENT_BTN,
+	WT_RADIO,
+	WT_CHECKBOX,
+	WT_SWITCH,
+	WT_PROGRESS,
+	WT_SLIDER,
+	WT_COLORPICK,
+	WT_SCROLL_BAR,
+};
+
+struct ovg_image_r;
+struct text_style_t;
+struct btn_cols_t {
+	uint32_t font_color = 0xFF222222;
+	uint32_t background_color = 0;
+	uint32_t border_color = 0;
+	uint32_t hover_color = 0;
+	uint32_t active_font_color = 0xFFe6e6e6;
+	uint32_t active_background_color = 0;
+	uint32_t active_border_color = 0;// 0xFF3c3c3c;
+	uint32_t hover_border_color = 0;
+};
+// todo tag 标签,用于标记和选择。0蓝，1青，2灰，3橙，4红
+enum class uType :uint8_t {
+	primary, success, info, warning, danger
+};
+// 填充颜色字白色，边框字颜色中间半透明，边框字颜色
+enum class uTheme :uint8_t {
+	dark, light, plain,
+};
+/*
+1.普通状态2，鼠标hover状态  3.active 点击状态  4.focus 取得焦点状态  4.disable禁用状态
+*/
+enum class BTN_STATE0 :uint8_t
+{
+	STATE_NOMAL = BIT_INC(0),
+	STATE_HOVER = BIT_INC(1),
+	STATE_ACTIVE = BIT_INC(2),
+	STATE_FOCUS = BIT_INC(3),
+	STATE_DISABLE = BIT_INC(4),
+};
+struct label_text_t {
+	text_style_t* ptext_style = 0;
+	const char* str = 0;
+	int str_len = 0;
+};
+struct image_btn_style {
+	std::string str;
+	ovg_image_r* state_img = 0;// [5] = {};
+	void* imgdata = 0;
+	int show_idx = 0;	// 参考BTN_STATE
+	int img_type = 0;	//  0 image_ptr_t, 1 VkvgSurface, 2 vkimage
+	int multi = 0;		// 多状态按钮，0=单状态，1=多状态
+};
+// 纯色按钮风格
+struct color_style {
+	btn_cols_t pdc = {};			// 颜色配置
+	uint32_t dfill = 0, dcol = 0;	// 渲染用
+	uint32_t dtext_color = 0;		// 渲染用
+	float light = 0.512;
+	glm::vec2 pushedps = {};
+	int rounding = 0;
+	int thickness = 1;
+	double dtime = 0.0;
+	label_text_t text = {};
+	int _bst = 1;					// 鼠标状态	
+	int _old_bst = 0;				// 鼠标状态
+	uTheme effect = uTheme::dark;
+	uint8_t disabled_alpha = 0x30;
+	bool circle = false;			// 圆形按钮
+	bool mPushed = false;
+	bool _disabled = false;
+	bool hover = false;
+};
+struct gradient_style
+{
+	uint32_t back_color = 0;
+	uint32_t text_color_shadow = 0x88111111;
+	double opacity = 1.0;
+	// x=默认，y=鼠标进入，z=按下
+	glm::uvec3 gradTop = { 0xff4a4a4a,0x80404040,0xff292929 }, gradBot = { 0xff3a3a3a,0x80303030,0xff1d1d1d };
+	// private
+	uint32_t _gradTop = 0;
+	uint32_t _gradBot = 0;
+	uint32_t borderLight = 0;
+	uint32_t borderDark = 0;
+	int rounding = 0;
+	int thickness = 1;
+	label_text_t text = {};
+	int _bst = 1;					// 鼠标状态	
+	int _old_bst = 0;				// 鼠标状态
+	uTheme effect = uTheme::light;	// dark
+	bool mPushed = false;
+	bool mChecked = false;
+	bool mMouseFocus = false;
+	bool mEnabled = true;
+	bool is_muilt = true;
+	bool cubic_gradient = true;
+};
+struct radio_style_t
+{
+	uint32_t col = 0xffFF9E40, innc = 0xffffffff, text_col = 0xff666666;
+	uint32_t line_col = 0xff4c4c4c;
+	float radius = 7;
+	float thickness = 1.0;
+	float duration = 0.28;	// 动画时间 
+};
+
+struct check_style_t {
+	uint32_t col = 0xffFF9E40;
+	uint32_t fill = 0xffff8020;
+	uint32_t check_col = 0xffffffff;
+	uint32_t line_col = 0xff4c4c4c;
+	uint32_t text_col = 0xff666666;
+	float rounding = 2;
+	float square_sz = 14;
+	float thickness = 1.0;
+	float duration = 0.28;	// 动画时间 
+};
+struct radio_info_t
+{
+	glm::vec2 pos = {};		// 坐标
+	std::string text;
+	std::function<void(void* p, bool v)> on_change_cb;
+	float swidth = 0.;
+	float dt = 0;			// 动画进度
+	bool* pv = 0;
+	bool value = 0;			// 选中值
+	bool value1 = 1;		// 选中值动画
+};
+struct checkbox_info_t
+{
+	glm::vec2 pos = {};		// 坐标
+	std::string text;
+	std::function<void(void* p, bool v)> on_change_cb;
+	float dt = 0;			// 动画进度
+	float duration = 0.28;	// 动画时间
+	float new_alpha = -1;	// 动画控制	
+	bool* pv = 0;
+	bool mixed = false;		// 混合状态，不满时用
+	bool value = 0;			// 选中值
+	bool value1 = 1;		// 选中值动画
+};
+struct switch_info_t
+{
+	glm::ivec3 color = { 0xffff9e40, 0xff4c4c4c,-1 }; // 开/关/圆点颜色 { 0xff66ce13, 0xff4949ff };
+	glm::ivec2 text_color = { 0xffff9e40, 0xff4c4c4c }; // 文本颜色;
+	uint32_t dcol = 0;	// 渲染的颜色 
+	float cpos = 0;		// 动画坐标
+	float cv = 0.7;		// 圆点大小 
+	float height = 20;
+	float wf = 2.1;		// 宽比例 
+	checkbox_info_t v = {};
+	bool inline_prompt = false;
+};
+
+void set_btn_color_idx(color_style* cs, int idx);
+bool update_color_btn(color_style* p, float delta);
+void gradient_btn_init(gradient_style* p, uint32_t back_color, uint32_t text_color);
+bool gradient_btn_update(gradient_style* p, float delta);
+
+struct ovg_ctx_cb;
+struct rvg_t;
+struct color_style;
+void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size);
+void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size);
+
+void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& pos, const glm::ivec2& size0);
+
+// ---------------------------------------------------------------------------
+// C API bridge used by the SDL3 backend.  Implemented in vgui.cpp.
+// ---------------------------------------------------------------------------
+struct vgui_context;
+// Dispatches a backend device event to the C UI tree and returns non-zero when
+// the UI consumed the event.
+int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e);
+

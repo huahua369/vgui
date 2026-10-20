@@ -312,7 +312,7 @@ int main()
 			}
 		} while (0);
 		int ams = rtc0.end();
-		SDL_Delay(32);
+		//SDL_Delay(32);
 		//fps.endFrame();
 		if (js > 0.5) {
 			js = 0.0;

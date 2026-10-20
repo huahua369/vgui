@@ -8,6 +8,7 @@ vgui sdl3
 #include <vector>
 #include <string>
 #include <ovg_c.h>
+#include <vgui_internal.h>
 #include <vgui.h>
 
 #include <ovg_renderer_sdl3.h>
@@ -67,10 +68,19 @@ struct PlatformMonitor
 
 struct gui_viewport {
 	gui_io_state_t io = {};
+	// Retained C API tree attached to this window.  The viewport owns the
+	// context and destroys it together with the window.
+	vgui_context* ui = nullptr;
+	// Rectangle used by the SDL IME.  io.ime_rect points here.
+	glm::ivec4 ime_rect = {};
 	std::string drop_text;
 	glm::ivec2 _last_pos = {};
 	//div_cx0 _root = {};
 public:
+	gui_viewport() = default;
+	gui_viewport(const gui_viewport&) = delete;
+	gui_viewport& operator=(const gui_viewport&) = delete;
+	~gui_viewport();
 	void set_viewport(const glm::ivec4& rc);
 	void clear();
 	//void add_div(div_cx0* c);

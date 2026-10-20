@@ -21,7 +21,6 @@ vgui sdl3实现
 #include <mutex>
 #include <array>
 #include <ovg_c.h>
-#include <vgui.h>
 #include "vgui_sdl3.h"
 #include <stb_image.h>
 
@@ -234,6 +233,8 @@ void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
 
 os_window::~os_window() {
 	free_vgfbo_sdl3(&fbo);
+	delete viewport;
+	viewport = nullptr;
 	window = 0;
 }
 void os_window::set_capture()
@@ -467,6 +468,9 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		win->window = window;
 		pce::set_property(window, "osw.ptr", win.get());
 		win->id = SDL_GetWindowID(window);
+		win->viewport = new gui_viewport();
+		win->viewport->io.mks = &_mouse_key;
+		win->viewport->io.ime_rect = &win->viewport->ime_rect;
 
 		SDL_ClaimWindowForGPUDevice(device, window);
 		p = win.get();
@@ -522,6 +526,9 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		p = win.get();
 		pce::set_property(window, "osw.ptr", p);
 		win->id = SDL_GetWindowID(window);
+		win->viewport = new gui_viewport();
+		win->viewport->io.mks = &_mouse_key;
+		win->viewport->io.ime_rect = &win->viewport->ime_rect;
 		if (iflags & ef_popup)
 			win->type = WindowType::PopupMenu;
 		if (iflags & ef_tooltip)
@@ -825,9 +832,8 @@ void app_mgr::process_event(const SDL_Event* e)
 		keyboard_et t = {};
 		et2key(e, &t);
 		dev.type = dev_event_type_e::keyboard_e;
-		auto kn = SDL_GetKeyName(t.keycode);
-		pwio->mks->KeysDown[*kn] = t.down;
-		pwio->mks->KeysDown[VK_SHIFT] = (t.kmod & KM_SHIFT);
+		pwio->mks->KeysDown[t.scancode & 511] = t.down != 0;
+		pwio->mks->KeysDown[SDL_SCANCODE_LSHIFT] = (t.kmod & KM_SHIFT) != 0;
 		pwio->mks->KeyShift = (t.kmod & KM_SHIFT);
 		pwio->mks->KeyAlt = (t.kmod & KM_ALT);
 		pwio->mks->KeyCtrl = (t.kmod & KM_CTRL);

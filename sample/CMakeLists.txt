@@ -8,15 +8,31 @@ set(SRC
     ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
 ) 
 
+# vgui C API 控件演示（独立目标，不影响原示例）
+set(SRC_DEMO
+    vgui_demo.cpp
+    ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
+)
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(vgui ${SRC})
 target_link_libraries(vgui PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_demo ${SRC_DEMO})
+target_link_libraries(vgui_demo PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_custom_command(
     TARGET vgui POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${CMAKE_SOURCE_DIR}/sample/res
         $<TARGET_FILE_DIR:vgui>/res
+)
+
+add_custom_command(
+    TARGET vgui_demo POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        ${CMAKE_SOURCE_DIR}/sample/res
+        $<TARGET_FILE_DIR:vgui_demo>/res
 )
   
