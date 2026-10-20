@@ -115,6 +115,8 @@ struct demo_state
 	vgui_widget* edit_readonly = nullptr;
 	vgui_widget* sel_rounding = nullptr;
 	vgui_widget* sel_rounding_readout = nullptr;
+	vgui_widget* focus_alpha = nullptr;
+	vgui_widget* focus_alpha_readout = nullptr;
 	int sel_color_index = 0;
 	vgui_widget* scroll_panel = nullptr;
 	vgui_widget* scroll_info = nullptr;
@@ -505,7 +507,19 @@ static void on_sel_rounding(vgui_widget* w, float v, void* user)
 	vgui_widget* list[4] = { st->edit_single, st->edit_password, st->edit_multi, st->edit_readonly };
 	for (int i = 0; i < 4; i++)
 		if (list[i]) vgui_edit_set_selection_rounding(list[i], v);
-	statusf(st, "选中高亮圆角: %.0f px（拖拽选择 / 双击选词 / 三击选行）", v);
+	statusf(st, "选中高亮圆角: %.0f px（0 为方角；拖拽选择 / 双击选词 / 三击选行）", v);
+}
+
+// 焦点环透明度（0% 时不渲染焦点）
+static void on_focus_alpha(vgui_widget* w, float v, void* user)
+{
+	(void)w;
+	demo_state* st = (demo_state*)user;
+	char buf[32] = {};
+	snprintf(buf, sizeof(buf), "%.0f%%", v * 100.0f);
+	if (st->focus_alpha_readout) vgui_widget_set_text(st->focus_alpha_readout, buf);
+	if (st->ui) vgui_context_set_focus_alpha(st->ui, v);
+	statusf(st, "焦点环透明度: %.0f%%（0%% 时不渲染焦点）", v * 100.0f);
 }
 
 // 动态增删
@@ -915,13 +929,13 @@ static void build_edits(demo_state* st, vgui_widget* root)
 	vgui_widget_set_id(st->edit_multi, "edit-multiline");
 	vgui_edit_set_multiline(st->edit_multi, 1);
 	vgui_edit_set_text(st->edit_multi,
-		"第一行：支持多行编辑，滚轮可上下滚动\n"
+		"第一行：支持多行编辑，滚轮或右侧滚动条可上下滚动\n"
 		"第二行：鼠标按住拖拽选中文本\n"
 		"第三行：双击选词，三击选整行\n"
 		"第四行：Ctrl+A 全选，Ctrl+C/X/V 复制/剪切/粘贴\n"
 		"第五行：Ctrl+Z 撤销，Ctrl+Y 重做\n"
 		"第六行：选中高亮圆角可调（见下方滑杆）\n"
-		"第七行：跨行选中时中间行保持方角\n"
+		"第七行：跨行选中时每个拐角都有圆角\n"
 		"第八行：最后一行");
 	vgui_widget_set_size(st->edit_multi, 0, 96);
 	vgui_widget_set_grow(st->edit_multi, 1);
@@ -950,6 +964,20 @@ static void build_edits(demo_state* st, vgui_widget* root)
 	vgui_widget_set_min_size(st->sel_rounding_readout, 56, 0);
 	vgui_widget_set_text_align(st->sel_rounding_readout, 1.0f, 0.5f);
 
+	// 焦点环透明度
+	vgui_widget* r5b = row(c, 10);
+	label(r5b, "焦点透明度:", 14, 0xFFB0B0B0);
+	st->focus_alpha = vgui_widget_add(r5b, VGUI_SLIDER, nullptr);
+	vgui_widget_set_id(st->focus_alpha, "edit-focus-alpha");
+	vgui_widget_set_range(st->focus_alpha, 0, 1);
+	vgui_widget_set_step(st->focus_alpha, 0.05f);
+	vgui_widget_set_grow(st->focus_alpha, 1);
+	vgui_widget_on_value(st->focus_alpha, on_focus_alpha, st);
+	vgui_widget_set_value(st->focus_alpha, 1);
+	st->focus_alpha_readout = label(r5b, "100%", 14, 0xFF7FB6FF);
+	vgui_widget_set_min_size(st->focus_alpha_readout, 56, 0);
+	vgui_widget_set_text_align(st->focus_alpha_readout, 1.0f, 0.5f);
+
 	// 编辑辅助：剪贴板 / 撤销重做 / 选中颜色
 	vgui_widget* r6 = row(c, 8);
 	button(r6, "全选", on_edit_select_all, st);
@@ -968,6 +996,7 @@ static void build_edits(demo_state* st, vgui_widget* root)
 
 	// 初始样式与滑杆/颜色状态保持一致
 	on_sel_rounding(st->sel_rounding, 3, st);
+	on_focus_alpha(st->focus_alpha, 1, st);
 	apply_edit_style(st);
 }
 
@@ -1122,6 +1151,13 @@ static void build_ui(demo_state* st)
 	vgui_widget_set_align_items(root, VGUI_ALIGN_STRETCH);
 	vgui_panel_set_scrollable(root, 0, 1);	// 窗口太小时整页可滚动
 	vgui_widget_set_id(root, "root");
+
+	// Give the root an opaque background so the window margins follow the
+	// theme too.  The color matches the current theme's panel color, so
+	// vgui_context_set_theme() updates it on every preset switch.
+	vgui_theme theme = {};
+	vgui_context_get_theme(ui, &theme);
+	vgui_widget_set_background(root, theme.panel_bg);
 
 	build_header(st, root);
 	build_buttons(st, root);

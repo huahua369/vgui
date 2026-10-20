@@ -177,6 +177,8 @@ struct vgui_widget
 	int scrollable_x = 0, scrollable_y = 0;
 	float scroll_x = 0, scroll_y = 0;
 	float content_w = 0, content_h = 0;
+	int scroll_drag_axis = 0;	// 面板滚动条拖动: 0 无 / 1 垂直 / 2 水平
+	float scroll_drag_grab = 0;
 
 	float abs_x = 0, abs_y = 0, abs_w = 0, abs_h = 0;
 	float intrinsic_w = 0, intrinsic_h = 0;
@@ -191,6 +193,7 @@ struct vgui_widget
 	float rounding = 0;
 	float border_width = 0;
 	float opacity = 1.0f;
+	float focus_alpha = -1.0f;	// < 0 -> use the context value; 0 hides the ring
 	float text_align_x = 0.5f;
 	float text_align_y = 0.5f;
 	int clip_children = 1;
@@ -228,6 +231,8 @@ struct vgui_widget
 	char password_char = '*';
 	float edit_scroll_x = 0;
 	float edit_scroll_y = 0;
+	int edit_scroll_drag = 0;	// 多行编辑框内容滚动条拖动中
+	float edit_scroll_grab = 0;
 	float caret_blink = 0;
 	vgui_color sel_color = 0;	// 0 -> theme.edit_selection
 	float sel_rounding = 2.0f;	// 选中高亮圆角半径
@@ -245,6 +250,7 @@ struct vgui_context
 	float font_size = 16.0f;
 	int width = 0, height = 0;
 	vgui_theme theme = {};
+	float focus_alpha = 1.0f;	// default focus-ring opacity
 	vgui_widget* root = nullptr;
 
 	std::unordered_set<vgui_widget*> all_widgets;
@@ -1883,6 +1889,183 @@ static void vgui_end_input(vgui_context* ctx)
 	vgui_flush_pending(ctx);
 }
 
+//----------------------------------------------------------------------------
+// scrollbar dragging (panel scrollbars and the multi-line edit content bar)
+//----------------------------------------------------------------------------
+
+struct vgui_scrollbar_info
+{
+	int axis = 0;			// 1 = panel vertical, 2 = panel horizontal, 3 = edit
+	float track = 0;		// vertical: x of the bar, horizontal: y of the bar
+	float start = 0;		// vertical: y, horizontal: x
+	float span = 0;			// track length
+	float thumb = 0;		// thumb start along the track
+	float thumb_len = 0;
+	float max_scroll = 0;
+	float scroll = 0;
+};
+
+// Computes the geometry of a visible scrollbar.  The values mirror the drawing
+// code so what the user grabs is exactly what is painted.
+static bool vgui_scrollbar_geom(vgui_widget* w, int axis, vgui_scrollbar_info* g)
+{
+	if (!w || !g) return false;
+	float ix = w->abs_x + w->padding[0];
+	float iy = w->abs_y + w->padding[1];
+	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	g->axis = axis;
+	if (axis == 1)
+	{
+		if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= 20.0f) return false;
+		g->track = w->abs_x + w->abs_w - 7.0f;
+		g->start = iy;
+		g->span = ih;
+		g->thumb_len = std::max(24.0f, ih * ih / w->content_h);
+		g->max_scroll = w->content_h - ih;
+		g->scroll = w->scroll_y;
+	}
+	else if (axis == 2)
+	{
+		if (!w->scrollable_x || w->content_w <= iw + 0.5f || iw <= 20.0f) return false;
+		g->track = w->abs_y + w->abs_h - 7.0f;
+		g->start = ix;
+		g->span = iw;
+		g->thumb_len = std::max(24.0f, iw * iw / w->content_w);
+		g->max_scroll = w->content_w - iw;
+		g->scroll = w->scroll_x;
+	}
+	else if (axis == 3)
+	{
+		if (!w->multiline || iw <= 1.0f || ih <= 1.0f) return false;
+		float lh = std::max(1.0f, vgui_line_height(w->ctx, w));
+		float ch = (float)vgui_text_lines(w->edit_text) * lh;
+		if (ch <= ih + 0.5f || ih <= 20.0f) return false;
+		g->track = w->abs_x + w->abs_w - 6.0f;
+		g->start = iy;
+		g->span = ih;
+		g->thumb_len = std::max(20.0f, ih * ih / ch);
+		g->max_scroll = std::max(0.0f, ch - ih);
+		g->scroll = w->edit_scroll_y;
+	}
+	else
+	{
+		return false;
+	}
+	float range = g->span - g->thumb_len;
+	float t = (g->max_scroll > 0.0f && range > 0.0f)
+		? vgui_clampf(g->scroll / g->max_scroll, 0.0f, 1.0f) : 0.0f;
+	g->thumb = g->start + t * range;
+	return true;
+}
+
+static void vgui_scrollbar_apply(vgui_widget* w, const vgui_scrollbar_info& g, float thumb_start)
+{
+	float range = g.span - g.thumb_len;
+	float t = range > 0.0f ? vgui_clampf((thumb_start - g.start) / range, 0.0f, 1.0f) : 0.0f;
+	float scroll = t * g.max_scroll;
+	if (g.axis == 3)
+	{
+		w->edit_scroll_y = scroll;
+		return;
+	}
+	if (g.axis == 1) w->scroll_y = scroll;
+	else w->scroll_x = scroll;
+	if (w->ctx)
+	{
+		w->ctx->layout_dirty = true;
+		vgui_ensure_layout(w->ctx);
+	}
+}
+
+// Returns the scrollbar under the pointer.  Walking up from the hit widget is
+// important: panel bars are painted on top of their children, so a click on
+// the bar must not reach the child below it.
+static bool vgui_scrollbar_hit(vgui_widget* from, float x, float y, vgui_widget** out, int* axis)
+{
+	if (!out || !axis) return false;
+	vgui_widget* found = nullptr;
+	int found_axis = 0;
+	for (vgui_widget* w = from; w; w = w->parent)
+	{
+		if (!w->visible || !w->enabled) continue;
+		vgui_scrollbar_info g;
+		if (w->kind == VGUI_EDIT && vgui_scrollbar_geom(w, 3, &g) &&
+			x >= w->abs_x + w->abs_w - 8.0f && x <= w->abs_x + w->abs_w &&
+			y >= g.start && y <= g.start + g.span)
+		{
+			found = w;
+			found_axis = 3;
+		}
+		if (w->kind == VGUI_PANEL)
+		{
+			// Keep walking after a hit: ancestor bars are painted on top of
+			// descendant bars where the two overlap, and the horizontal bar is
+			// painted after the vertical one.
+			if (vgui_scrollbar_geom(w, 1, &g) &&
+				x >= w->abs_x + w->abs_w - 8.0f && x <= w->abs_x + w->abs_w &&
+				y >= g.start && y <= g.start + g.span)
+			{
+				found = w;
+				found_axis = 1;
+			}
+			if (vgui_scrollbar_geom(w, 2, &g) &&
+				y >= w->abs_y + w->abs_h - 8.0f && y <= w->abs_y + w->abs_h &&
+				x >= g.start && x <= g.start + g.span)
+			{
+				found = w;
+				found_axis = 2;
+			}
+		}
+	}
+	if (!found) return false;
+	*out = found;
+	*axis = found_axis;
+	return true;
+}
+
+static void vgui_scrollbar_begin(vgui_context* ctx, vgui_widget* w, int axis, float x, float y)
+{
+	vgui_scrollbar_info g;
+	if (!ctx || !w || !vgui_scrollbar_geom(w, axis, &g)) return;
+	float pos = (axis == 2) ? x : y;
+	float grab = g.thumb_len * 0.5f;
+	if (pos >= g.thumb && pos <= g.thumb + g.thumb_len)
+	{
+		grab = pos - g.thumb;	// keep the grab point under the pointer
+	}
+	else
+	{
+		// Track click: jump so the thumb is centred on the pointer, then keep
+		// dragging from there.
+		vgui_scrollbar_apply(w, g, pos - grab);
+	}
+	if (axis == 3)
+	{
+		w->edit_scroll_drag = 1;
+		w->edit_scroll_grab = grab;
+		w->edit_drag = 0;
+	}
+	else
+	{
+		w->scroll_drag_axis = axis;
+		w->scroll_drag_grab = grab;
+	}
+	ctx->active = w;
+	ctx->want_mouse = 1;
+}
+
+static void vgui_scrollbar_drag_to(vgui_widget* w, float x, float y)
+{
+	if (!w) return;
+	int axis = (w->kind == VGUI_EDIT) ? 3 : w->scroll_drag_axis;
+	vgui_scrollbar_info g;
+	if (!vgui_scrollbar_geom(w, axis, &g)) return;
+	float pos = (axis == 2) ? x : y;
+	float grab = (axis == 3) ? w->edit_scroll_grab : w->scroll_drag_grab;
+	vgui_scrollbar_apply(w, g, pos - grab);
+}
+
 static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 {
 	if (!ctx) return 0;
@@ -1912,7 +2095,13 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	if (ctx->active && ctx->alive.count(ctx->active))
 	{
 		vgui_widget* a = ctx->active;
-		if (a->kind == VGUI_SLIDER)
+		if ((a->kind == VGUI_PANEL && a->scroll_drag_axis) ||
+			(a->kind == VGUI_EDIT && a->edit_scroll_drag))
+		{
+			vgui_scrollbar_drag_to(a, x, y);
+			if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
+		}
+		else if (a->kind == VGUI_SLIDER)
 		{
 			vgui_update_slider_from_mouse(a, x - a->abs_x, y - a->abs_y);
 			if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
@@ -1968,6 +2157,21 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
 	ctx->want_mouse = h != nullptr;
 	ctx->cursor = (h && h->enabled) ? h->cursor_type : VGUI_CURSOR_ARROW;
+
+	// Scrollbars are painted over the content, so they get the first chance at
+	// the click: they neither move focus nor forward the press to the widget
+	// underneath.
+	if (button == 1)
+	{
+		vgui_widget* sw = nullptr;
+		int axis = 0;
+		if (vgui_scrollbar_hit(h, x, y, &sw, &axis))
+		{
+			vgui_scrollbar_begin(ctx, sw, axis, x, y);
+			vgui_end_input(ctx);
+			return 1;
+		}
+	}
 
 	if (h && h->enabled)
 	{
@@ -2037,6 +2241,15 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 	if (button >= 0 && button < 8 && clicks <= 0) clicks = ctx->click_count[button];
 	if (target && target->ctx != ctx) target = nullptr;
 
+	// A scrollbar drag has no press target, so clear its state here: releasing
+	// the button anywhere always ends the drag.
+	if (ctx->active && ctx->alive.count(ctx->active))
+	{
+		ctx->active->scroll_drag_axis = 0;
+		ctx->active->edit_scroll_drag = 0;
+	}
+	ctx->active = nullptr;
+
 	int ret = target ? 1 : 0;
 	if (target)
 	{
@@ -2050,7 +2263,6 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		target->pressed = 0;
 		if (target->kind == VGUI_EDIT) target->edit_drag = 0;
 		ctx->press_target = nullptr;
-		ctx->active = nullptr;
 		ctx->slider_drag = nullptr;
 
 		vgui_event up = {};
@@ -2407,35 +2619,177 @@ static void vgui_stroke_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float 
 	cb->stroke(vg);
 }
 
-// Fills a rectangle whose four corners can be rounded independently.  The text
-// selection uses this so a multi-line highlight is rounded only where the
-// selection begins and ends (and stays square in between).
-static void vgui_fill_round_rect4(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
-	float rtl, float rtr, float rbr, float rbl, uint32_t color)
+// One horizontal selection run (one text line).  Multi-line selections are
+// filled as the union of these runs: adjacent runs that start or end at the
+// same x merge into one straight edge, while every exposed corner of the
+// resulting outline is rounded.  This keeps a shared left edge continuous and
+// rounds both the outer ends and every step where the line width changes.
+struct vgui_sel_band
 {
-	if (!cb || !vg || color == 0 || w <= 0 || h <= 0) return;
-	float m = std::min(w, h) * 0.5f;
-	rtl = vgui_clampf(rtl, 0.0f, m);
-	rtr = vgui_clampf(rtr, 0.0f, m);
-	rbr = vgui_clampf(rbr, 0.0f, m);
-	rbl = vgui_clampf(rbl, 0.0f, m);
-	if (rtl <= 0.0f && rtr <= 0.0f && rbr <= 0.0f && rbl <= 0.0f)
+	float x0;
+	float x1;
+	float y0;
+	float y1;
+};
+
+struct vgui_sel_vertex
+{
+	float x;
+	float y;
+};
+
+static bool vgui_sel_same_point(const vgui_sel_vertex& a, const vgui_sel_vertex& b)
+{
+	return std::fabs(a.x - b.x) < 0.0005f && std::fabs(a.y - b.y) < 0.0005f;
+}
+
+static void vgui_sel_add_vertex(std::vector<vgui_sel_vertex>& pts, float x, float y)
+{
+	vgui_sel_vertex p = { x, y };
+	if (!pts.empty() && vgui_sel_same_point(pts.back(), p)) return;
+	pts.push_back(p);
+}
+
+// Drop vertices that only continue a straight line; the fillet loop below must
+// only see real corners.  Reflex corners are intentionally kept.  The stack
+// keeps this linear even when Ctrl+A selects thousands of lines.
+static void vgui_sel_remove_collinear(std::vector<vgui_sel_vertex>& pts)
+{
+	if (pts.size() < 3) return;
+	std::vector<vgui_sel_vertex> out;
+	out.reserve(pts.size());
+	for (const vgui_sel_vertex& p : pts)
 	{
-		cb->rectangle(vg, x, y, w, h);
+		while (out.size() >= 2)
+		{
+			const vgui_sel_vertex& a = out[out.size() - 2];
+			const vgui_sel_vertex& b = out.back();
+			float abx = b.x - a.x, aby = b.y - a.y;
+			float bcx = p.x - b.x, bcy = p.y - b.y;
+			float cross = abx * bcy - aby * bcx;
+			float dot = abx * bcx + aby * bcy;
+			if (std::fabs(cross) < 0.0005f && dot >= 0.0f)
+				out.pop_back();
+			else
+				break;
+		}
+		out.push_back(p);
 	}
-	else
+	// The outline is closed, so the last vertex may also be collinear with the
+	// first two.  The first vertex itself is always a real corner here.
+	while (out.size() >= 3)
 	{
-		cb->move_to(vg, x + rtl, y);
-		cb->line_to(vg, x + w - rtr, y);
-		if (rtr > 0.0f) cb->quadratic_to(vg, x + w, y, x + w, y + rtr);
-		cb->line_to(vg, x + w, y + h - rbr);
-		if (rbr > 0.0f) cb->quadratic_to(vg, x + w, y + h, x + w - rbr, y + h);
-		cb->line_to(vg, x + rbl, y + h);
-		if (rbl > 0.0f) cb->quadratic_to(vg, x, y + h, x, y + h - rbl);
-		cb->line_to(vg, x, y + rtl);
-		if (rtl > 0.0f) cb->quadratic_to(vg, x, y, x + rtl, y);
+		const vgui_sel_vertex& a = out[out.size() - 2];
+		const vgui_sel_vertex& b = out.back();
+		const vgui_sel_vertex& c = out.front();
+		float abx = b.x - a.x, aby = b.y - a.y;
+		float bcx = c.x - b.x, bcy = c.y - b.y;
+		float cross = abx * bcy - aby * bcx;
+		float dot = abx * bcx + aby * bcy;
+		if (std::fabs(cross) < 0.0005f && dot >= 0.0f)
+			out.pop_back();
+		else
+			break;
+	}
+	pts.swap(out);
+}
+
+// Trace the outline of the union of the bands in clockwise order.  Bands are
+// expected to be consecutive text lines, so y0 of one band equals y1 of the
+// previous one; x0/x1 may move freely from line to line.
+static void vgui_sel_build_outline(const std::vector<vgui_sel_band>& bands,
+	std::vector<vgui_sel_vertex>& pts)
+{
+	pts.clear();
+	size_t n = bands.size();
+	if (n == 0) return;
+
+	vgui_sel_add_vertex(pts, bands[0].x0, bands[0].y0);
+	vgui_sel_add_vertex(pts, bands[0].x1, bands[0].y0);
+
+	// Right-hand profile, top to bottom.  Use the current band's bottom y for
+	// the step as well: the next band starts at that same boundary, and this
+	// avoids hairline zigzags from independent floating-point y values.
+	for (size_t i = 0; i < n; ++i)
+	{
+		vgui_sel_add_vertex(pts, bands[i].x1, bands[i].y1);
+		if (i + 1 < n)
+			vgui_sel_add_vertex(pts, bands[i + 1].x1, bands[i].y1);
+	}
+
+	vgui_sel_add_vertex(pts, bands[n - 1].x0, bands[n - 1].y1);
+
+	// Left-hand profile, bottom to top, using the current band's top y as the
+	// boundary with the previous band.
+	for (size_t i = n; i-- > 0;)
+	{
+		vgui_sel_add_vertex(pts, bands[i].x0, bands[i].y0);
+		if (i > 0)
+			vgui_sel_add_vertex(pts, bands[i - 1].x0, bands[i].y0);
+	}
+
+	if (pts.size() > 1 && vgui_sel_same_point(pts.front(), pts.back()))
+		pts.pop_back();
+	vgui_sel_remove_collinear(pts);
+}
+
+// Fill the union outline with a quadratic fillet at every corner.  Trimming
+// each corner by half of its shortest adjacent edge keeps neighbouring fillets
+// from overlapping, including on very short width changes.
+static void vgui_fill_selection(ovg_ctx_cb* cb, rvg_t* vg,
+	const std::vector<vgui_sel_band>& bands, float radius, uint32_t color)
+{
+	if (!cb || !vg || color == 0 || bands.empty()) return;
+
+	std::vector<vgui_sel_vertex> pts;
+	vgui_sel_build_outline(bands, pts);
+	if (pts.size() < 3) return;
+
+	size_t n = pts.size();
+	if (radius <= 0.0005f)
+	{
+		cb->move_to(vg, pts[0].x, pts[0].y);
+		for (size_t i = 1; i < n; ++i)
+			cb->line_to(vg, pts[i].x, pts[i].y);
 		cb->close_path(vg);
+		cb->set_source_color(vg, vgui_ovg_color(color));
+		cb->fill(vg);
+		return;
 	}
+
+	std::vector<vgui_sel_vertex> entry(n), exit(n);
+	std::vector<float> trims(n, 0.0f);
+	for (size_t i = 0; i < n; ++i)
+	{
+		const vgui_sel_vertex& prev = pts[(i + n - 1) % n];
+		const vgui_sel_vertex& cur = pts[i];
+		const vgui_sel_vertex& next = pts[(i + 1) % n];
+		float inx = cur.x - prev.x, iny = cur.y - prev.y;
+		float outx = next.x - cur.x, outy = next.y - cur.y;
+		float in_len = std::sqrt(inx * inx + iny * iny);
+		float out_len = std::sqrt(outx * outx + outy * outy);
+		if (in_len < 0.0001f || out_len < 0.0001f)
+		{
+			entry[i] = cur;
+			exit[i] = cur;
+			continue;
+		}
+		float d = std::min(radius, std::min(in_len, out_len) * 0.5f);
+		trims[i] = d;
+		entry[i] = { cur.x - inx / in_len * d, cur.y - iny / in_len * d };
+		exit[i] = { cur.x + outx / out_len * d, cur.y + outy / out_len * d };
+	}
+
+	cb->move_to(vg, entry[0].x, entry[0].y);
+	for (size_t i = 0; i < n; ++i)
+	{
+		if (i > 0) cb->line_to(vg, entry[i].x, entry[i].y);
+		if (trims[i] > 0.0001f)
+			cb->quadratic_to(vg, pts[i].x, pts[i].y, exit[i].x, exit[i].y);
+		else
+			cb->line_to(vg, pts[i].x, pts[i].y);
+	}
+	cb->close_path(vg);
 	cb->set_source_color(vg, vgui_ovg_color(color));
 	cb->fill(vg);
 }
@@ -2479,16 +2833,28 @@ static uint32_t vgui_text_color(vgui_widget* w)
 	return vgui_widget_color(w, c);
 }
 
+// Effective focus opacity: a widget override if set, otherwise the context
+// default.  Used by the focus ring and by focus-tinted widget colours.
+static float vgui_focus_alpha(const vgui_widget* w)
+{
+	if (!w) return 1.0f;
+	if (w->focus_alpha >= 0.0f) return w->focus_alpha;
+	return w->ctx ? w->ctx->focus_alpha : 1.0f;
+}
+
 static void vgui_draw_focus(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	if (!w->focused) return;
 	vgui_context* ctx = w->ctx;
 	if (w->abs_w < 4.0f || w->abs_h < 4.0f) return;
+	float alpha = vgui_focus_alpha(w);
+	if (alpha <= 0.001f) return;
 	// 焦点环画在控件内部（与边框重合）：父容器的裁剪矩形再也不可能把
 	// 焦点环的一部分裁掉，控件被部分滚动出可视区时仍能看到焦点。
 	float r = w->rounding > 0 ? w->rounding : 4;
+	uint32_t color = vgui_alpha_color(vgui_widget_color(w, ctx->theme.accent), alpha);
 	vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, r,
-		vgui_widget_color(w, ctx->theme.accent), 1);
+		color, 1);
 }
 
 static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
@@ -2544,7 +2910,10 @@ static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	float box = std::max(14.0f, std::min(18.0f, lh - 2));
 	float bx = w->abs_x + w->padding[0];
 	float by = w->abs_y + (w->abs_h - box) * 0.5f;
-	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : ctx->theme.button_border) : ctx->theme.disabled;
+	uint32_t border = w->enabled
+		? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
+			: ctx->theme.button_border)
+		: ctx->theme.disabled;
 	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 
 	vgui_fill_rect(cb, vg, bx, by, box, box, 3, vgui_widget_color(w, ctx->theme.track));
@@ -2584,7 +2953,10 @@ static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	float d = std::max(14.0f, std::min(18.0f, lh - 2));
 	float cx = w->abs_x + w->padding[0] + d * 0.5f;
 	float cy = w->abs_y + w->abs_h * 0.5f;
-	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : ctx->theme.button_border) : ctx->theme.disabled;
+	uint32_t border = w->enabled
+		? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
+			: ctx->theme.button_border)
+		: ctx->theme.disabled;
 	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 
 	cb->circle(vg, cx, cy, d * 0.5f);
@@ -2645,6 +3017,9 @@ static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	vgui_context* ctx = w->ctx;
 	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 	uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track) : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+	uint32_t knob_color = (w->focused && w->enabled)
+		? vgui_mix_color(accent, ctx->theme.accent_hover, vgui_focus_alpha(w))
+		: accent;
 	float t = vgui_clampf(w->value, 0.0f, 1.0f);
 	float knob = 7;
 	float inner_w = std::max(1.0f, w->abs_w - w->padding[0] - w->padding[2]);
@@ -2662,7 +3037,7 @@ static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, x, y, inner_w * t, 4, 2, vgui_widget_color(w, accent));
 		float kx = x + inner_w * t;
 		cb->circle(vg, kx, y + 2, knob);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, w->focused ? ctx->theme.accent_hover : accent)));
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 		cb->fill(vg);
 	}
 	else
@@ -2674,7 +3049,7 @@ static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, x, y + inner_h - fill_h, 4, fill_h, 2, vgui_widget_color(w, accent));
 		float ky = y + inner_h - fill_h;
 		cb->circle(vg, x + 2, ky, knob);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, w->focused ? ctx->theme.accent_hover : accent)));
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 		cb->fill(vg);
 	}
 	vgui_draw_focus(w, cb, vg);
@@ -2718,7 +3093,10 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 {
 	vgui_context* ctx = w->ctx;
 	uint32_t bg = w->bg ? w->bg : ctx->theme.edit_bg;
-	uint32_t border = w->enabled ? (w->focused ? ctx->theme.accent : (w->border ? w->border : ctx->theme.button_border)) : ctx->theme.disabled;
+	uint32_t base_border = w->border ? w->border : ctx->theme.button_border;
+	uint32_t border = w->enabled
+		? (w->focused ? vgui_mix_color(base_border, ctx->theme.accent, vgui_focus_alpha(w)) : base_border)
+		: ctx->theme.disabled;
 	if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, 0.25f);
 
 	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
@@ -2747,6 +3125,18 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 
 	int sel_a = std::min(w->edit_cursor, w->edit_anchor);
 	int sel_b = std::max(w->edit_cursor, w->edit_anchor);
+	float tx = ix - w->edit_scroll_x;
+
+	struct vgui_edit_draw_line
+	{
+		std::string shown;
+		int line_start = 0;
+		int line_end = 0;
+		int caret_byte = 0;
+		float ty = 0;
+	};
+	std::vector<vgui_edit_draw_line> draw_lines;
+	std::vector<vgui_sel_band> sel_bands;
 
 	int line_start = 0;
 	int line_index = 0;
@@ -2762,7 +3152,6 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			for (int i = 0; i < (int)line.size(); i = vgui_u8_next(line, i))
 				shown.push_back(w->password_char);
 		}
-		float tx = ix - w->edit_scroll_x;
 		float ty = iy - w->edit_scroll_y + line_index * lh;
 
 		if (sel_b > sel_a && sel_a < line_end && sel_b > line_start)
@@ -2776,44 +3165,61 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			// 选中换行符时补一小段尾巴，让跨行选中看起来是连续的
 			if (sel_b > line_end) sw += std::min(6.0f, lh * 0.3f);
 			if (sw < 1.0f) sw = 1.0f;
-			// 只在选区真正的开头/结尾处使用圆角，中间行保持方角
-			float rad = std::max(0.0f, w->sel_rounding);
-			float rl = (sel_a >= line_start) ? rad : 0.0f;
-			float rr = (sel_b <= line_end) ? rad : 0.0f;
-			uint32_t selc = w->sel_color ? w->sel_color : ctx->theme.edit_selection;
-			if (!w->focused) selc = vgui_alpha_color(selc, 0.6f);
-			vgui_fill_round_rect4(cb, vg, sx, ty, sw, lh, rl, rr, rr, rl, vgui_widget_color(w, selc));
+			vgui_sel_band band;
+			band.x0 = sx;
+			band.x1 = sx + sw;
+			band.y0 = ty;
+			band.y1 = ty + lh;
+			sel_bands.push_back(band);
 		}
 
-		vgui_draw_text(ctx, cb, vg, w, shown, tx, ty, std::max(iw, 1.0f), lh, color, 0.0f, 0.5f);
-
-		int caret_byte = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, w->edit_cursor - line_start));
-
-		if (w->focused && w->edit_cursor >= line_start && w->edit_cursor <= line_end)
-		{
-			// Draw the caret only for the line containing the cursor.
-			float cx = tx + vgui_text_width_n(w, shown.data(), caret_byte);
-			bool blink = (std::fmod(w->caret_blink, 1.0f) < 0.55f);
-			if (blink)
-				vgui_fill_rect(cb, vg, cx, ty + 2, 1.5f, lh - 4, 0, color);
-		}
-
-		if (!w->ime_text.empty() && w->edit_cursor >= line_start && w->edit_cursor <= line_end)
-		{
-			float cx = tx + vgui_text_width_n(w, shown.data(), caret_byte);
-			vgui_draw_text(ctx, cb, vg, w, w->ime_text, cx, ty, iw, lh, ctx->theme.accent, 0.0f, 0.5f);
-			int ia = vgui_edit_clamp_index(w->ime_text, w->ime_cursor);
-			int ib = vgui_edit_clamp_index(w->ime_text, w->ime_cursor + w->ime_length);
-			if (ib < ia) std::swap(ia, ib);
-			float ux = cx + vgui_text_width_n(w, w->ime_text.data(), ia);
-			float uw = vgui_text_width_n(w, w->ime_text.data() + ia, ib - ia);
-			vgui_fill_rect(cb, vg, ux, ty + lh - 1, std::max(2.0f, uw), 1, 0, ctx->theme.accent);
-		}
+		vgui_edit_draw_line dl;
+		dl.caret_byte = vgui_u8_byte_at_col(shown,
+			vgui_u8_col_at_byte(line, w->edit_cursor - line_start));
+		dl.shown = std::move(shown);
+		dl.line_start = line_start;
+		dl.line_end = line_end;
+		dl.ty = ty;
+		draw_lines.push_back(std::move(dl));
 
 		if (line_end >= (int)w->edit_text.size()) break;
 		line_start = line_end + 1;
 		line_index++;
 		if (!w->multiline) break;
+	}
+
+	// 先一次性填充整个选区的并集，再画文字，避免逐行重叠导致半透明色块叠深。
+	if (!sel_bands.empty())
+	{
+		uint32_t selc = w->sel_color ? w->sel_color : ctx->theme.edit_selection;
+		if (!w->focused) selc = vgui_alpha_color(selc, 0.6f);
+		vgui_fill_selection(cb, vg, sel_bands, w->sel_rounding, vgui_widget_color(w, selc));
+	}
+
+	for (const vgui_edit_draw_line& dl : draw_lines)
+	{
+		vgui_draw_text(ctx, cb, vg, w, dl.shown, tx, dl.ty, std::max(iw, 1.0f), lh, color, 0.0f, 0.5f);
+
+		if (w->focused && w->edit_cursor >= dl.line_start && w->edit_cursor <= dl.line_end)
+		{
+			// Draw the caret only for the line containing the cursor.
+			float cx = tx + vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
+			bool blink = (std::fmod(w->caret_blink, 1.0f) < 0.55f);
+			if (blink)
+				vgui_fill_rect(cb, vg, cx, dl.ty + 2, 1.5f, lh - 4, 0, color);
+		}
+
+		if (!w->ime_text.empty() && w->edit_cursor >= dl.line_start && w->edit_cursor <= dl.line_end)
+		{
+			float cx = tx + vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
+			vgui_draw_text(ctx, cb, vg, w, w->ime_text, cx, dl.ty, iw, lh, ctx->theme.accent, 0.0f, 0.5f);
+			int ia = vgui_edit_clamp_index(w->ime_text, w->ime_cursor);
+			int ib = vgui_edit_clamp_index(w->ime_text, w->ime_cursor + w->ime_length);
+			if (ib < ia) std::swap(ia, ib);
+			float ux = cx + vgui_text_width_n(w, w->ime_text.data(), ia);
+			float uw = vgui_text_width_n(w, w->ime_text.data() + ia, ib - ia);
+			vgui_fill_rect(cb, vg, ux, dl.ty + lh - 1, std::max(2.0f, uw), 1, 0, ctx->theme.accent);
+		}
 	}
 
 	vgui_clip_pop(clips, cb, vg);
@@ -2831,8 +3237,13 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			float bx = w->abs_x + w->abs_w - bar_w - 2.0f;
 			float th = std::max(20.0f, ih * ih / ch);
 			float by = iy + (max_scroll > 0.0f ? (w->edit_scroll_y / max_scroll) * (ih - th) : 0.0f);
+			// Keep the track opaque: compositing it with whatever happens to be
+			// behind the widget can make it exactly the same color as the thumb
+			// (e.g. the light theme's #DCDCDC track over a black root became
+			// #9A9A9A, the same value as its thumb), which makes the whole
+			// scrollbar look like one long thumb.
 			vgui_fill_rect(cb, vg, bx, iy, bar_w, ih, bar_w * 0.5f,
-				vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.6f)));
+				vgui_widget_color(w, ctx->theme.track));
 			vgui_fill_rect(cb, vg, bx, by, bar_w, th, bar_w * 0.5f,
 				vgui_widget_color(w, ctx->theme.scrollbar));
 		}
@@ -2854,7 +3265,7 @@ static void vgui_draw_scrollbars(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		float th = std::max(24.0f, ih * ih / w->content_h);
 		float max_scroll = w->content_h - ih;
 		float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
-		vgui_fill_rect(cb, vg, track_x, iy, 5, ih, 2.5f, vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.7f)));
+		vgui_fill_rect(cb, vg, track_x, iy, 5, ih, 2.5f, vgui_widget_color(w, ctx->theme.track));
 		vgui_fill_rect(cb, vg, track_x, ty, 5, th, 2.5f, vgui_widget_color(w, ctx->theme.scrollbar));
 	}
 	if (w->scrollable_x && w->content_w > iw + 0.5f && iw > 20)
@@ -2863,7 +3274,7 @@ static void vgui_draw_scrollbars(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		float tw = std::max(24.0f, iw * iw / w->content_w);
 		float max_scroll = w->content_w - iw;
 		float tx = ix + (max_scroll > 0 ? (w->scroll_x / max_scroll) * (iw - tw) : 0);
-		vgui_fill_rect(cb, vg, ix, track_y, iw, 5, 2.5f, vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.7f)));
+		vgui_fill_rect(cb, vg, ix, track_y, iw, 5, 2.5f, vgui_widget_color(w, ctx->theme.track));
 		vgui_fill_rect(cb, vg, tx, track_y, tw, 5, 2.5f, vgui_widget_color(w, ctx->theme.scrollbar));
 	}
 }
@@ -3048,6 +3459,18 @@ void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme)
 void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme)
 {
 	if (theme) *theme = ctx ? ctx->theme : vgui_theme();
+}
+
+void vgui_context_set_focus_alpha(vgui_context* ctx, float alpha)
+{
+	if (!ctx) return;
+	ctx->focus_alpha = vgui_clampf(alpha, 0.0f, 1.0f);
+	vgui_mark_dirty(ctx->root);
+}
+
+float vgui_context_get_focus_alpha(vgui_context* ctx)
+{
+	return ctx ? ctx->focus_alpha : 1.0f;
 }
 
 vgui_widget* vgui_root(vgui_context* ctx)
@@ -3301,6 +3724,20 @@ void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor)
 void vgui_widget_set_opacity(vgui_widget* widget, float opacity)
 {
 	if (widget) widget->opacity = vgui_clampf(opacity, 0.0f, 1.0f);
+}
+
+void vgui_widget_set_focus_alpha(vgui_widget* widget, float alpha)
+{
+	if (!widget) return;
+	widget->focus_alpha = alpha < 0.0f ? -1.0f : vgui_clampf(alpha, 0.0f, 1.0f);
+	vgui_mark_dirty(widget);
+}
+
+float vgui_widget_get_focus_alpha(vgui_widget* widget)
+{
+	if (!widget) return 0.0f;
+	if (widget->focus_alpha >= 0.0f) return widget->focus_alpha;
+	return widget->ctx ? widget->ctx->focus_alpha : 1.0f;
 }
 
 void vgui_widget_set_layout(vgui_widget* widget, vgui_layout_kind layout)
@@ -3800,6 +4237,9 @@ void vgui_input_clear(vgui_context* ctx)
 		if (!w || !ctx->alive.count(w)) continue;
 		w->hovered = 0;
 		w->pressed = 0;
+		w->edit_drag = 0;
+		w->scroll_drag_axis = 0;
+		w->edit_scroll_drag = 0;
 	}
 	ctx->hot = nullptr;
 	ctx->active = nullptr;

@@ -4,7 +4,8 @@
 //   * 鼠标拖拽选择、双击选词、三击选行
 //   * 复制/剪切/粘贴（含单行编辑框粘贴多行文本的净化）
 //   * 撤销/重做（含快捷键 Ctrl+Z / Ctrl+Y / Ctrl+Insert 等）
-//   * 多行编辑框滚轮滚动、只读编辑框限制
+//   * 多行编辑框滚轮滚动 / 内部滚动条拖动、只读编辑框限制
+//   * 面板滚动条拖动、焦点环透明度 API
 //
 // 运行方式：直接执行 vgui_edit_test.exe，全部 PASS 时返回 0。
 
@@ -321,6 +322,109 @@ int main()
 			"滚轮后：顶部行已滚动");
 		printf("        滚轮后顶部行 = \"%s\"\n", top.c_str());
 	}
+
+	//---- 多行编辑框滚动条拖动 ----
+	{
+		std::string lines;
+		for (int i = 0; i < 16; i++)
+		{
+			lines += "line";
+			lines += (char)('0' + i / 10);
+			lines += (char)('0' + i % 10);
+			if (i < 15) lines += "\n";
+		}
+		// 失焦状态下 set_text 会回到文本开头
+		vgui_set_focus(ui, ed1);
+		vgui_edit_set_text(ed, lines.c_str());
+		vgui_update(ui, 0.016f);
+		vgui_widget_get_rect(ed, &x, &y, &w, &h);
+		float top_y = y + 2.0f;
+		vgui_input_mouse_down(ui, 1, x0, top_y, 1);
+		vgui_input_mouse_up(ui, 1, x0, top_y, 1);
+		check(vgui_edit_get_cursor(ed) == 0, "编辑框滚动条：拖动前顶部为第 0 字符");
+
+		// 编辑框右侧内部滚动条：从上往下拖到底部
+		float bx = x + w - 4.0f;
+		vgui_input_mouse_down(ui, 1, bx, y + 10.0f, 1);
+		vgui_input_mouse_move(ui, bx, y + h - 10.0f);
+		vgui_input_mouse_up(ui, 1, bx, y + h - 10.0f, 1);
+
+		vgui_input_mouse_down(ui, 1, x0, top_y, 1);
+		vgui_input_mouse_up(ui, 1, x0, top_y, 1);
+		int cur = vgui_edit_get_cursor(ed);
+		check(cur > 0, "编辑框滚动条拖动后顶部行已滚动");
+		printf("        拖动后顶部光标 = %d\n", cur);
+	}
+
+	//---- 面板滚动条拖动 ----
+	{
+		vgui_context* ui2 = vgui_create(familys, 16.0f);
+		vgui_context_set_size(ui2, 400, 300);
+		vgui_widget* p = vgui_widget_add(vgui_root(ui2), VGUI_PANEL, nullptr);
+		vgui_widget_set_pos(p, 20, 20);
+		vgui_widget_set_size(p, 300, 160);
+		vgui_panel_set_scrollable(p, 1, 1);
+		vgui_widget* big = vgui_widget_add(p, VGUI_PANEL, nullptr);
+		vgui_widget_set_pos(big, 0, 0);
+		vgui_widget_set_size(big, 600, 600);
+		vgui_update(ui2, 0.016f);
+
+		float px = 0, py = 0, pw = 0, ph = 0, sx = 0, sy = 0;
+		vgui_widget_get_rect(p, &px, &py, &pw, &ph);
+		vgui_panel_get_scroll(p, &sx, &sy);
+		check(sx == 0 && sy == 0, "面板滚动条：初始 scroll = 0");
+
+		// 切换主题只影响颜色，不应改变内容尺寸（滚动条长度由内容尺寸决定）。
+		float cw0 = 0, ch0 = 0, cw1 = 0, ch1 = 0;
+		vgui_panel_get_content_size(p, &cw0, &ch0);
+		vgui_theme light = {};
+		vgui_context_get_theme(ui2, &light);
+		light.track = 0xFFDCDCDC;
+		light.scrollbar = 0xFF9A9A9A;
+		vgui_context_set_theme(ui2, &light);
+		vgui_update(ui2, 0.016f);
+		vgui_panel_get_content_size(p, &cw1, &ch1);
+		check(cw0 == cw1 && ch0 == ch1, "主题切换不改变滚动内容尺寸（长度计算独立于颜色）");
+
+		// 垂直：按住滑块向下拖到底
+		float bx = px + pw - 4.0f;
+		vgui_input_mouse_down(ui2, 1, bx, py + 10.0f, 1);
+		vgui_input_mouse_move(ui2, bx, py + ph - 10.0f);
+		vgui_input_mouse_up(ui2, 1, bx, py + ph - 10.0f, 1);
+		vgui_panel_get_scroll(p, &sx, &sy);
+		check(sy > 100.0f, "垂直滚动条拖动改变 scroll_y");
+
+		// 点击滑块外的轨道：直接跳转（不需要拖动）
+		vgui_panel_set_scroll(p, 0, 0);
+		vgui_update(ui2, 0.016f);
+		vgui_input_mouse_down(ui2, 1, bx, py + ph - 20.0f, 1);
+		vgui_input_mouse_up(ui2, 1, bx, py + ph - 20.0f, 1);
+		vgui_panel_get_scroll(p, &sx, &sy);
+		check(sy > 100.0f, "点击滚动条轨道跳转");
+
+		// 水平：按住滑块向右拖
+		vgui_panel_set_scroll(p, 0, 0);
+		vgui_update(ui2, 0.016f);
+		float by = py + ph - 4.0f;
+		vgui_input_mouse_down(ui2, 1, px + 20.0f, by, 1);
+		vgui_input_mouse_move(ui2, px + 260.0f, by);
+		vgui_input_mouse_up(ui2, 1, px + 260.0f, by, 1);
+		vgui_panel_get_scroll(p, &sx, &sy);
+		check(sx > 100.0f, "水平滚动条拖动改变 scroll_x");
+		printf("        拖动后 scroll = %.0f / %.0f\n", sx, sy);
+		vgui_destroy(ui2);
+	}
+
+	//---- 焦点透明度 API ----
+	vgui_context_set_focus_alpha(ui, 0.0f);
+	check(vgui_context_get_focus_alpha(ui) == 0.0f, "上下文焦点透明度 = 0（不渲染焦点）");
+	check(vgui_widget_get_focus_alpha(ed) == 0.0f, "控件继承上下文焦点透明度");
+	vgui_widget_set_focus_alpha(ed, 0.5f);
+	check(vgui_widget_get_focus_alpha(ed) == 0.5f, "控件焦点透明度覆盖生效");
+	vgui_widget_set_focus_alpha(ed, -1.0f);
+	check(vgui_widget_get_focus_alpha(ed) == 0.0f, "负值恢复继承");
+	vgui_context_set_focus_alpha(ui, 1.0f);
+	check(vgui_widget_get_focus_alpha(ed) == 1.0f, "上下文焦点透明度恢复 1");
 
 	//---- 选中样式 API ----
 	vgui_edit_set_selection_rounding(ed, 0.0f);

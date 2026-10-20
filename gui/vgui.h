@@ -209,6 +209,11 @@ VGUI_API void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* fo
 VGUI_API void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme);
 VGUI_API void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme);
 
+/* Focus-ring opacity (0..1) for widgets that do not override it.  0 disables
+ * focus rings entirely, which is convenient for screenshots or touch UIs. */
+VGUI_API void vgui_context_set_focus_alpha(vgui_context* ctx, float alpha);
+VGUI_API float vgui_context_get_focus_alpha(vgui_context* ctx);
+
 /* Root panel.  It is owned by the context; do not destroy it. */
 VGUI_API vgui_widget* vgui_root(vgui_context* ctx);
 
@@ -254,6 +259,12 @@ VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);
 VGUI_API void vgui_widget_set_text_align(vgui_widget* widget, float align_x, float align_y);
 VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);
+
+/* Focus-ring opacity for this widget (0..1, 0 hides the ring).  A negative
+ * value restores inheritance from the context default.  The getter returns
+ * the effective opacity, including the inherited value. */
+VGUI_API void vgui_widget_set_focus_alpha(vgui_widget* widget, float alpha);
+VGUI_API float vgui_widget_get_focus_alpha(vgui_widget* widget);
 
 /* Layout properties. */
 VGUI_API void vgui_widget_set_layout(vgui_widget* widget, vgui_layout_kind layout);
@@ -310,7 +321,9 @@ VGUI_API void vgui_edit_clear_selection(vgui_widget* edit);
 VGUI_API int vgui_edit_has_selection(vgui_widget* edit);
 VGUI_API void vgui_edit_set_ime_text(vgui_widget* edit, const char* text, int cursor, int length);
 
-/* Selection highlight style.  color 0 restores theme.edit_selection. */
+/* Selection highlight style.  color 0 restores theme.edit_selection.
+ * rounding is the corner radius in pixels; 0 removes the rounding entirely.
+ * It applies to every exposed corner of a single- or multi-line selection. */
 VGUI_API void vgui_edit_set_selection_color(vgui_widget* edit, vgui_color color);
 VGUI_API void vgui_edit_set_selection_rounding(vgui_widget* edit, float radius);
 
