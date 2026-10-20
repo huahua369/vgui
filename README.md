@@ -5,7 +5,7 @@ vgui 是一个基于 [OVG](https://github.com/huahua369/ovg) 矢量渲染器的�
 UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将矩形、圆角、文字、裁剪等矢量命令录制到 OVG，再交由 SDL3 GPU 后端提交渲染。`vgui` 自带的后端只实现 2D 所需的路径、渐变、文本图集、图片、矩形裁剪和 MSAA，并使用 SPIR-V（Vulkan）着色器；OVG 自带的完整渲染器仍保留在 `third_party/ovg` 供其示例使用。
 
 > 当前 API 版本（`vgui_version()`）：`0.2.0` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
-
+![项目截图](screenshot.png)
 ## 特性
 
 | 模块 | 能力 |
