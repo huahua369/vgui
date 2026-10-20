@@ -11,7 +11,7 @@ vgui sdl3
 #include <vgui_internal.h>
 #include <vgui.h>
 
-#include <ovg_renderer_sdl3.h>
+#include "vgui_renderer_sdl3.h"
 
 namespace hz {
 	// 获取监视器缩放比例,glm::ivec2*
@@ -22,9 +22,6 @@ namespace hz {
 	class drop_info_cx;
 	class drop_regs;
 }
-
-struct ovg_device_t;
-struct ovg_ctx_t;
 
 enum form_flags_e
 {
@@ -140,9 +137,9 @@ public:
 	SDL_Cursor* system_cursor[SDL_SYSTEM_CURSOR_COUNT] = {};
 	std::vector<PlatformMonitor> monitors;
 	os_window* main_window = 0;
-	ovg_device_t* vgdev = 0;		// vg渲染设备
+	vgpu_device_t* vgdev = 0;		// vg渲染设备
 	font_cache_cx* font_ctx = 0;
-	ovg_ctx_t* vgctx = 0;
+	vgpu_ctx_t* vgctx = 0;
 
 	SDL_GPUSampleCount samplecount = SDL_GPU_SAMPLECOUNT_1; // 默认samplecount
 	gui_io_mk_state _mouse_key = {};
@@ -239,8 +236,6 @@ private:
 	int cfps1 = 0;
 	std::string str;
 };
-struct ovg_ctx_t;
-struct vg_fbo_t;
 class draw_datas_cx
 {
 public:
@@ -253,7 +248,7 @@ public:
 	void clear();
 	void set(vg_fbo_t* fbo);
 	void add(rvg_t* p);
-	void render(ovg_ctx_t* ctx);
+	void render(vgpu_ctx_t* ctx);
 private:
 
 };

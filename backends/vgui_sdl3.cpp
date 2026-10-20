@@ -232,7 +232,7 @@ void collect_popups_recursive(os_window* node, std::vector<os_window*>& out) {
 
 
 os_window::~os_window() {
-	free_vgfbo_sdl3(&fbo);
+	vgpu_destroy_fbo(&fbo);
 	delete viewport;
 	viewport = nullptr;
 	window = 0;
@@ -411,7 +411,13 @@ bool app_mgr::init_gpu(bool is_vulkan)
 		return false;
 	}
 	assert(!vgdev);
-	vgdev = new_sdl3gpu_device(device);
+	vgdev = vgpu_create_device(device);
+	if (!vgdev) {
+		SDL_Log("Failed to create vgui SDL3 GPU renderer: %s", SDL_GetError());
+		SDL_DestroyGPUDevice(device);
+		device = nullptr;
+		return false;
+	}
 	return true;
 }
 SDL_GPUSampleCount get_gpusamplecount(SDL_GPUDevice* device, SDL_GPUTextureFormat color_fmt = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPUTextureFormat depth_fmt = SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT)
@@ -499,9 +505,9 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		}
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = new_ovgctx_sdl3(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
 		assert(vgctx);
-		p->fbo = new_vgfbo_sdl3(vgctx, w, h, window);
+		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 	}
 	return p;
 }
@@ -542,9 +548,9 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		windows_.push_back(std::move(win));
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = new_ovgctx_sdl3(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
 		assert(vgctx);
-		p->fbo = new_vgfbo_sdl3(vgctx, w, h, window);
+		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 	}
 	return p;
 }
@@ -581,8 +587,8 @@ void app_mgr::shutdown() {
 			SDL_DestroyWindow(w->window);
 	}
 	windows_.clear();
-	free_ovgctx_sdl3(vgctx); vgctx = 0;
-	free_sdl3gpu_device(vgdev); vgdev = 0;
+	vgpu_destroy_context(vgctx); vgctx = 0;
+	vgpu_destroy_device(vgdev); vgdev = 0;
 	if (device) {
 		SDL_DestroyGPUDevice(device);
 		device = nullptr;
@@ -1032,8 +1038,8 @@ void draw_datas_cx::add(rvg_t* p)
 		data.push_back(d);
 	}
 }
-void draw_datas_cx::render(ovg_ctx_t* ctx)
+void draw_datas_cx::render(vgpu_ctx_t* ctx)
 {
 	if (!ctx || !fbo || data.empty())return;
-	ovg_render_frame(ctx, data.data(), data.size());
+	vgpu_render_frame(ctx, data.data(), data.size());
 }

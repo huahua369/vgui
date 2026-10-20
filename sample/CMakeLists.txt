@@ -5,19 +5,16 @@ find_package(EnTT CONFIG REQUIRED)
 # ---- 源文件 ----
 set(SRC
     main.cpp 
-    ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
 ) 
 
 # vgui C API 控件演示（独立目标，不影响原示例）
 set(SRC_DEMO
     vgui_demo.cpp
-    ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
 )
 
 # 编辑框行为自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_EDIT_TEST
     vgui_edit_test.cpp
-    ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
 )
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})

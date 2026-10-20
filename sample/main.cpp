@@ -2,7 +2,7 @@
 //
 
 #include "ovg_main.h" 
-#include "ovg_renderer_sdl3.h"
+#include "vgui_renderer_sdl3.h"
 #include <Windows.h>
 #include <cmath>
 #include <unordered_map>
@@ -189,7 +189,7 @@ int main()
 		}
 		do {
 			if (!is_draw)break;
-			if (ovg_get_window_swapchain(wg->vgctx, fbo, 1, true))
+			if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
 			{
 				rtc.begin();
 				cb->clear(vg);

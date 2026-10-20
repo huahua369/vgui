@@ -1248,7 +1248,7 @@ int main()
 		if (wg->get_event() < 0)
 			running = false;
 
-		if (ovg_get_window_swapchain(wg->vgctx, fbo, 1, true))
+		if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
 		{
 			int cw = (int)fbo->display_size.x;
 			int ch = (int)fbo->display_size.y;

@@ -2,7 +2,7 @@
 
 vgui 是一个基于 [OVG](https://github.com/huahua369/ovg) 矢量渲染器的轻量级 **保留模式（retained-mode）GUI 库**。公共接口为纯 C（C99/C11），实现使用 C++23；内置控件树、Flexbox 风格布局、事件分发、主题系统和滚动面板，并通过 SDL3 后端完成窗口、输入与 GPU 渲染。
 
-UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将矩形、圆角、文字、裁剪等矢量命令录制到 OVG，再交由 SDL3 GPU 后端提交渲染。
+UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将矩形、圆角、文字、裁剪等矢量命令录制到 OVG，再交由 SDL3 GPU 后端提交渲染。`vgui` 自带的后端只实现 2D 所需的路径、渐变、文本图集、图片、矩形裁剪和 MSAA，并使用 SPIR-V（Vulkan）着色器；OVG 自带的完整渲染器仍保留在 `third_party/ovg` 供其示例使用。
 
 > 当前 API 版本（`vgui_version()`）：`0.2.0` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
 
@@ -150,7 +150,8 @@ gui/
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
 backends/
-  vgui_sdl3.*         SDL3 窗口、输入、IME 与 GPU 视口
+  vgui_sdl3.*          SDL3 窗口、输入、IME 与 GPU 视口
+  vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
   mapView.*           视图/地图相关后端组件
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）

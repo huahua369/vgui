@@ -8,6 +8,7 @@ set(OVGUI_SOURCES
     ../gui/vgui_legacy.cpp
     mapView.cpp
     vgui_sdl3.cpp
+    vgui_renderer_sdl3.cpp
 )
  
 
