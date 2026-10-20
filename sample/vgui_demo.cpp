@@ -17,7 +17,7 @@
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui.h>		// 公共 C API
-
+#include "ovg_main.h"
 //---------------------------------------------------------------------------
 // 主题预设
 //---------------------------------------------------------------------------
@@ -1238,10 +1238,14 @@ int main()
 	// ---- 主循环 ----
 	vg_fbo_t* fbo = &form->fbo;
 	FpsCounter fps;
+	runtime_cx rtc = {};
 	bool running = true;
 	float stat_timer = 0.0f;
 	int last_w = win_w, last_h = win_h;
 
+	int upms = 0;
+	int drawms = 0;
+	int submitms = 0;
 	while (running)
 	{
 		float delta = fps.tick();
@@ -1250,6 +1254,7 @@ int main()
 
 		if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
 		{
+			rtc.begin();
 			int cw = (int)fbo->display_size.x;
 			int ch = (int)fbo->display_size.y;
 			if (cw != last_w || ch != last_h)
@@ -1276,15 +1281,19 @@ int main()
 				snprintf(buf, sizeof(buf), "fps: %d", fps.get_fps());
 				vgui_widget_set_text(st.fps_label, buf);
 			}
-
+			upms = rtc.end();
+			rtc.begin();
 			cb->clear(vg);
 			cb->reset_clip(vg, 1);
 			vgui_draw(st.ui, cb, vg);
 
+			drawms = rtc.end();
+			rtc.begin();
 			draw_datas_cx drawable;
 			drawable.set(fbo);
 			drawable.add(vg);
 			drawable.render(wg->vgctx);
+			submitms = rtc.end();
 		}
 		//SDL_Delay(1);
 	}
