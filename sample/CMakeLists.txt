@@ -14,6 +14,12 @@ set(SRC_DEMO
     ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
 )
 
+# 编辑框行为自测（无需窗口/GPU，直接跑逻辑）
+set(SRC_EDIT_TEST
+    vgui_edit_test.cpp
+    ../third_party/ovg/ovg/ovg_renderer_sdl3.cpp
+)
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(vgui ${SRC})
@@ -21,6 +27,9 @@ target_link_libraries(vgui PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_demo ${SRC_DEMO})
 target_link_libraries(vgui_demo PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_edit_test ${SRC_EDIT_TEST})
+target_link_libraries(vgui_edit_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_custom_command(
     TARGET vgui POST_BUILD

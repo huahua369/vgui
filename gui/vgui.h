@@ -310,6 +310,21 @@ VGUI_API void vgui_edit_clear_selection(vgui_widget* edit);
 VGUI_API int vgui_edit_has_selection(vgui_widget* edit);
 VGUI_API void vgui_edit_set_ime_text(vgui_widget* edit, const char* text, int cursor, int length);
 
+/* Selection highlight style.  color 0 restores theme.edit_selection. */
+VGUI_API void vgui_edit_set_selection_color(vgui_widget* edit, vgui_color color);
+VGUI_API void vgui_edit_set_selection_rounding(vgui_widget* edit, float radius);
+
+/* Clipboard / history helpers; these are the operations behind the Ctrl+C,
+ * Ctrl+X, Ctrl+V, Ctrl+Z and Ctrl+Y shortcuts.  They return non-zero when the
+ * operation changed (or copied) something. */
+VGUI_API int vgui_edit_copy(vgui_widget* edit);
+VGUI_API int vgui_edit_cut(vgui_widget* edit);
+VGUI_API int vgui_edit_paste(vgui_widget* edit);
+VGUI_API int vgui_edit_undo(vgui_widget* edit);
+VGUI_API int vgui_edit_redo(vgui_widget* edit);
+VGUI_API int vgui_edit_can_undo(vgui_widget* edit);
+VGUI_API int vgui_edit_can_redo(vgui_widget* edit);
+
 /* ------------------------------------------------------------------------- */
 /* Focus and input                                                           */
 /* ------------------------------------------------------------------------- */

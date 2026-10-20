@@ -5,6 +5,7 @@ set(OVGUI_SOURCES
     ../gui/anim.cpp
     ../gui/win_core.cpp
     ../gui/vgui.cpp
+    ../gui/vgui_legacy.cpp
     mapView.cpp
     vgui_sdl3.cpp
 )

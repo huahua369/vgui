@@ -645,7 +645,11 @@ void et2key(const SDL_Event* e, keyboard_et* ekm)
 		ts = 0; ts1 = e->button.timestamp;
 	}
 	int f1 = SDLK_F1;
-	int ms = SDL_GetModState();
+	// Use the modifiers recorded in the event.  SDL_GetModState() reports the
+	// *current* keyboard state, which can already differ from the event when
+	// the window processes several queued key events in one frame (fast
+	// Ctrl+C/Ctrl+V taps would otherwise look like plain letters).
+	int ms = (int)e->key.mod;
 	static int kcs[] = { SDLK_END, SDLK_DOWN, SDLK_PAGEDOWN, SDLK_LEFT, 0, SDLK_RIGHT, SDLK_HOME, SDLK_UP, SDLK_PAGEUP, SDLK_INSERT, SDLK_DELETE };
 	if ((!(key<SDL_SCANCODE_KP_1 || key> SDL_SCANCODE_KP_PERIOD)) && !(ms & SDL_KMOD_NUM))
 	{
@@ -914,14 +918,6 @@ int app_mgr::get_event()
 	{
 		if (e.type == SDL_EVENT_QUIT) {
 			ts = -1; break;
-		}
-		if (e.type == SDL_EVENT_KEY_DOWN/* && e.key.repeat*/)
-		{
-			SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, 0);
-			ts = 2;
-		}
-		if (e.type == SDL_EVENT_KEY_UP) {
-			SDL_SetEventEnabled(SDL_EVENT_KEY_DOWN, 1);
 		}
 		switch (e.type)
 		{

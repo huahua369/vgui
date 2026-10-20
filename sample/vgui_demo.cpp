@@ -110,6 +110,12 @@ struct demo_state
 	vgui_widget* progress_auto = nullptr;
 	vgui_widget* progress_manual = nullptr;
 	vgui_widget* edit_single = nullptr;
+	vgui_widget* edit_password = nullptr;
+	vgui_widget* edit_multi = nullptr;
+	vgui_widget* edit_readonly = nullptr;
+	vgui_widget* sel_rounding = nullptr;
+	vgui_widget* sel_rounding_readout = nullptr;
+	int sel_color_index = 0;
 	vgui_widget* scroll_panel = nullptr;
 	vgui_widget* scroll_info = nullptr;
 	vgui_widget* bind_box = nullptr;
@@ -337,23 +343,33 @@ static void on_value(vgui_widget* w, float v, void* user)
 	statusf(st, "[%s] = %.2f", id_of(w), v);
 }
 
+// 更新单行编辑框的镜像标签（按 UTF-8 边界截断）
+static void sync_edit_mirror(demo_state* st)
+{
+	std::string s = "镜像: ";
+	s += vgui_edit_get_text(st->edit_single);
+	if (s.size() > 64)
+	{
+		size_t n = 64;
+		while (n > 0 && ((unsigned char)s[n] & 0xC0) == 0x80) n--;
+		s.resize(n);
+		s += "...";
+	}
+	vgui_widget_set_text(st->edit_mirror, s.c_str());
+}
+
 // 单行编辑框：镜像文本 + 回车提交
 static void on_edit_single_event(vgui_widget* w, const vgui_event* e, void* user)
 {
 	demo_state* st = (demo_state*)user;
 	if (e->type == VGUI_EVENT_TEXT)
 	{
-		std::string s = "镜像: ";
-		s += vgui_edit_get_text(st->edit_single);
-		if (s.size() > 64)
-		{
-			s.resize(64);
-			s += "...";
-		}
-		vgui_widget_set_text(st->edit_mirror, s.c_str());
+		sync_edit_mirror(st);
 		statusf(st, "[单行编辑框] 输入: %s", vgui_edit_get_text(st->edit_single));
 		return;
 	}
+	if (e->type == VGUI_EVENT_KEY_DOWN)
+		sync_edit_mirror(st);	// 剪贴板/撤销等快捷键也在这里生效
 	on_widget_event(w, e, user);
 }
 
@@ -388,6 +404,108 @@ static void on_edit_append(vgui_widget* w, const vgui_event* e, void* user)
 	vgui_edit_set_cursor(st->edit_single, (int)s.size());
 	vgui_widget_set_text(st->edit_mirror, ("镜像: " + s).c_str());
 	statusf(st, "编辑框: 追加文本，光标置于末尾 (cursor=%d)", vgui_edit_get_cursor(st->edit_single));
+}
+
+// 当前操作的编辑框：优先使用获得焦点的编辑框，否则用单行编辑框
+static vgui_widget* edit_target(demo_state* st)
+{
+	vgui_widget* f = vgui_get_focus(st->ui);
+	if (f && vgui_widget_get_kind(f) == VGUI_EDIT) return f;
+	return st->edit_single;
+}
+
+static void on_edit_copy(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_widget* t = edit_target(st);
+	int ok = vgui_edit_copy(t);
+	statusf(st, "复制: %s（目标: %s，选中=%d）", ok ? "成功" : "无选中文本", id_of(t), vgui_edit_has_selection(t));
+}
+
+static void on_edit_cut(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_widget* t = edit_target(st);
+	int ok = vgui_edit_cut(t);
+	statusf(st, "剪切: %s（目标: %s）", ok ? "成功" : "无选中文本", id_of(t));
+}
+
+static void on_edit_paste(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_widget* t = edit_target(st);
+	int ok = vgui_edit_paste(t);
+	statusf(st, "粘贴: %s（目标: %s，长度=%d）", ok ? "成功" : "剪贴板为空或只读",
+		id_of(t), (int)strlen(vgui_edit_get_text(t)));
+}
+
+static void on_edit_undo(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_widget* t = edit_target(st);
+	int ok = vgui_edit_undo(t);
+	statusf(st, "撤销: %s（目标: %s，剩余 %s）", ok ? "成功" : "没有可撤销的操作",
+		id_of(t), ok ? "可继续撤销" : "无");
+}
+
+static void on_edit_redo(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_widget* t = edit_target(st);
+	int ok = vgui_edit_redo(t);
+	statusf(st, "重做: %s（目标: %s）", ok ? "成功" : "没有可重做的操作", id_of(t));
+}
+
+// 循环切换选中高亮的颜色
+static const vgui_color edit_sel_colors[4] =
+{
+	0x80409EFF,	// 蓝
+	0x80B060FF,	// 紫
+	0x80FF8A3D,	// 橙
+	0x8055C86A	// 绿
+};
+static const char* edit_sel_color_names[4] = { "蓝", "紫", "橙", "绿" };
+
+static void apply_edit_style(demo_state* st)
+{
+	vgui_widget* list[4] = { st->edit_single, st->edit_password, st->edit_multi, st->edit_readonly };
+	vgui_color c = edit_sel_colors[st->sel_color_index & 3];
+	for (int i = 0; i < 4; i++)
+		if (list[i]) vgui_edit_set_selection_color(list[i], c);
+}
+
+static void on_edit_sel_color(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->sel_color_index = (st->sel_color_index + 1) & 3;
+	apply_edit_style(st);
+	statusf(st, "选中高亮颜色: %s", edit_sel_color_names[st->sel_color_index]);
+}
+
+// 选中圆角滑杆
+static void on_sel_rounding(vgui_widget* w, float v, void* user)
+{
+	(void)w;
+	demo_state* st = (demo_state*)user;
+	char buf[32] = {};
+	snprintf(buf, sizeof(buf), "%.0f px", v);
+	if (st->sel_rounding_readout) vgui_widget_set_text(st->sel_rounding_readout, buf);
+	vgui_widget* list[4] = { st->edit_single, st->edit_password, st->edit_multi, st->edit_readonly };
+	for (int i = 0; i < 4; i++)
+		if (list[i]) vgui_edit_set_selection_rounding(list[i], v);
+	statusf(st, "选中高亮圆角: %.0f px（拖拽选择 / 双击选词 / 三击选行）", v);
 }
 
 // 动态增删
@@ -778,47 +896,79 @@ static void build_edits(demo_state* st, vgui_widget* root)
 	st->edit_single = vgui_widget_add(r1, VGUI_EDIT, nullptr);
 	vgui_widget_set_id(st->edit_single, "edit-single");
 	vgui_edit_set_placeholder(st->edit_single, "请输入文本，回车可提交…");
-	vgui_edit_set_text(st->edit_single, "你好 vgui");
+	vgui_edit_set_text(st->edit_single, "你好 vgui，试试拖拽选中");
 	vgui_widget_set_grow(st->edit_single, 1);
 	vgui_widget_on_event(st->edit_single, on_edit_single_event, st);
 
 	vgui_widget* r2 = row(c, 10);
 	label(r2, "密码:", 14, 0xFFB0B0B0);
-	vgui_widget* pw = vgui_widget_add(r2, VGUI_EDIT, nullptr);
-	vgui_widget_set_id(pw, "edit-password");
-	vgui_edit_set_password(pw, '*');
-	vgui_edit_set_text(pw, "secret123");
-	vgui_widget_set_grow(pw, 1);
-	vgui_widget_on_event(pw, on_widget_event, st);
+	st->edit_password = vgui_widget_add(r2, VGUI_EDIT, nullptr);
+	vgui_widget_set_id(st->edit_password, "edit-password");
+	vgui_edit_set_password(st->edit_password, '*');
+	vgui_edit_set_text(st->edit_password, "secret123");
+	vgui_widget_set_grow(st->edit_password, 1);
+	vgui_widget_on_event(st->edit_password, on_widget_event, st);
 
 	vgui_widget* r3 = row(c, 10);
 	label(r3, "多行:", 14, 0xFFB0B0B0);
-	vgui_widget* ml = vgui_widget_add(r3, VGUI_EDIT, nullptr);
-	vgui_widget_set_id(ml, "edit-multiline");
-	vgui_edit_set_multiline(ml, 1);
-	vgui_edit_set_text(ml, "第一行\n第二行\n支持多行编辑（换行、上下左右键）");
-	vgui_widget_set_size(ml, 0, 76);
-	vgui_widget_set_grow(ml, 1);
-	vgui_widget_on_event(ml, on_widget_event, st);
+	st->edit_multi = vgui_widget_add(r3, VGUI_EDIT, nullptr);
+	vgui_widget_set_id(st->edit_multi, "edit-multiline");
+	vgui_edit_set_multiline(st->edit_multi, 1);
+	vgui_edit_set_text(st->edit_multi,
+		"第一行：支持多行编辑，滚轮可上下滚动\n"
+		"第二行：鼠标按住拖拽选中文本\n"
+		"第三行：双击选词，三击选整行\n"
+		"第四行：Ctrl+A 全选，Ctrl+C/X/V 复制/剪切/粘贴\n"
+		"第五行：Ctrl+Z 撤销，Ctrl+Y 重做\n"
+		"第六行：选中高亮圆角可调（见下方滑杆）\n"
+		"第七行：跨行选中时中间行保持方角\n"
+		"第八行：最后一行");
+	vgui_widget_set_size(st->edit_multi, 0, 96);
+	vgui_widget_set_grow(st->edit_multi, 1);
+	vgui_widget_on_event(st->edit_multi, on_widget_event, st);
 
 	vgui_widget* r4 = row(c, 10);
 	label(r4, "只读:", 14, 0xFFB0B0B0);
-	vgui_widget* ro = vgui_widget_add(r4, VGUI_EDIT, nullptr);
-	vgui_widget_set_id(ro, "edit-readonly");
-	vgui_edit_set_readonly(ro, 1);
-	vgui_edit_set_text(ro, "只读文本，不可编辑（readonly=1）");
-	vgui_widget_set_grow(ro, 1);
-	vgui_widget_on_event(ro, on_widget_event, st);
+	st->edit_readonly = vgui_widget_add(r4, VGUI_EDIT, nullptr);
+	vgui_widget_set_id(st->edit_readonly, "edit-readonly");
+	vgui_edit_set_readonly(st->edit_readonly, 1);
+	vgui_edit_set_text(st->edit_readonly, "只读文本，可选中/复制，不可编辑（readonly=1）");
+	vgui_widget_set_grow(st->edit_readonly, 1);
+	vgui_widget_on_event(st->edit_readonly, on_widget_event, st);
 
-	// 编辑辅助
-	vgui_widget* r5 = row(c, 8);
-	button(r5, "全选", on_edit_select_all, st);
-	button(r5, "清空", on_edit_clear, st);
-	button(r5, "追加文本", on_edit_append, st);
-	label(r5, "← vgui_edit_* 辅助函数", 12, 0xFF9A9A9A);
+	// 选中高亮圆角
+	vgui_widget* r5 = row(c, 10);
+	label(r5, "选中圆角:", 14, 0xFFB0B0B0);
+	st->sel_rounding = vgui_widget_add(r5, VGUI_SLIDER, nullptr);
+	vgui_widget_set_id(st->sel_rounding, "edit-sel-rounding");
+	vgui_widget_set_range(st->sel_rounding, 0, 10);
+	vgui_widget_set_step(st->sel_rounding, 1);
+	vgui_widget_set_grow(st->sel_rounding, 1);
+	vgui_widget_on_value(st->sel_rounding, on_sel_rounding, st);
+	vgui_widget_set_value(st->sel_rounding, 3);
+	st->sel_rounding_readout = label(r5, "3 px", 14, 0xFF7FB6FF);
+	vgui_widget_set_min_size(st->sel_rounding_readout, 56, 0);
+	vgui_widget_set_text_align(st->sel_rounding_readout, 1.0f, 0.5f);
 
-	st->edit_mirror = label(c, "镜像: 你好 vgui", 13, 0xFF9A9A9A);
+	// 编辑辅助：剪贴板 / 撤销重做 / 选中颜色
+	vgui_widget* r6 = row(c, 8);
+	button(r6, "全选", on_edit_select_all, st);
+	button(r6, "复制", on_edit_copy, st);
+	button(r6, "剪切", on_edit_cut, st);
+	button(r6, "粘贴", on_edit_paste, st);
+	button(r6, "撤销", on_edit_undo, st);
+	button(r6, "重做", on_edit_redo, st);
+	button(r6, "选中色", on_edit_sel_color, st);
+	button(r6, "清空", on_edit_clear, st);
+	button(r6, "追加文本", on_edit_append, st);
+	label(r6, "← 与 Ctrl+C/X/V/Z/Y 等价", 12, 0xFF9A9A9A);
+
+	st->edit_mirror = label(c, "镜像: 你好 vgui，试试拖拽选中", 13, 0xFF9A9A9A);
 	vgui_widget_set_id(st->edit_mirror, "edit-mirror");
+
+	// 初始样式与滑杆/颜色状态保持一致
+	on_sel_rounding(st->sel_rounding, 3, st);
+	apply_edit_style(st);
 }
 
 static void build_scroll(demo_state* st, vgui_widget* root)

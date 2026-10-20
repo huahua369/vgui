@@ -134,6 +134,14 @@ void gui_viewport::trigger(dev_event_t* e)
 // predictable for C consumers.
 //--------------------------------------------------------------------------------------------------------------------------------------------------
 
+// Undo/redo entry: text plus the selection that was active at the time.
+struct vgui_edit_snapshot
+{
+	std::string text;
+	int cursor = 0;
+	int anchor = 0;
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -211,6 +219,7 @@ struct vgui_widget
 	// edit -----------------------------------------------------------------
 	int edit_cursor = 0;
 	int edit_anchor = 0;
+	int edit_drag = 0;			// 鼠标拖选模式: 0 无 / 1 字符 / 2 词 / 3 行
 	int ime_cursor = 0;
 	int ime_length = 0;
 	int multiline = 0;
@@ -220,6 +229,12 @@ struct vgui_widget
 	float edit_scroll_x = 0;
 	float edit_scroll_y = 0;
 	float caret_blink = 0;
+	vgui_color sel_color = 0;	// 0 -> theme.edit_selection
+	float sel_rounding = 2.0f;	// 选中高亮圆角半径
+	std::vector<vgui_edit_snapshot> undo_stack;
+	std::vector<vgui_edit_snapshot> redo_stack;
+	double last_edit_push = -10.0;
+	int last_edit_push_kind = 0;
 
 	bool destroy_pending = false;
 };
@@ -1015,6 +1030,7 @@ static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w)
 	{
 		ctx->focus->focused = 0;
 		ctx->focus->caret_blink = 0;
+		ctx->focus->edit_drag = 0;
 	}
 	ctx->focus = w;
 	if (w)
@@ -1155,6 +1171,14 @@ static void vgui_edit_ensure_visible(vgui_widget* w)
 	{
 		w->edit_scroll_y = 0;
 	}
+	// Never keep more scroll than the current text actually needs.  Without
+	// this, undoing a large paste leaves the short restored text scrolled
+	// completely out of view (empty-looking edit box).
+	float line_w = vgui_text_width_n(w, w->edit_text.data() + lb, le - lb);
+	float max_sx = std::max(0.0f, line_w - inner_w + 2.0f);
+	float max_sy = w->multiline ? std::max(0.0f, (float)vgui_text_lines(w->edit_text) * lh - inner_h) : 0.0f;
+	if (w->edit_scroll_x > max_sx) w->edit_scroll_x = max_sx;
+	if (w->edit_scroll_y > max_sy) w->edit_scroll_y = max_sy;
 	if (w->edit_scroll_x < 0) w->edit_scroll_x = 0;
 	if (w->edit_scroll_y < 0) w->edit_scroll_y = 0;
 }
@@ -1164,6 +1188,164 @@ static void vgui_edit_sync_text(vgui_widget* w)
 	w->text = w->edit_text;
 	vgui_mark_dirty(w);
 	vgui_edit_ensure_visible(w);
+}
+
+//----------------------------------------------------------------------------
+// edit history / clipboard
+//----------------------------------------------------------------------------
+
+static void vgui_edit_erase_selection(vgui_widget* w);
+
+static void vgui_edit_history_reset(vgui_widget* w)
+{
+	if (!w) return;
+	w->undo_stack.clear();
+	w->redo_stack.clear();
+	w->last_edit_push = -10.0;
+	w->last_edit_push_kind = 0;
+}
+
+// Records the state before a modification.  kind 1 (typing / single character
+// edits) merges with the previous typing step so a burst of keystrokes is
+// undone in one go; anything else (kind 2) always starts a new undo step.
+static void vgui_edit_history_push(vgui_widget* w, int kind)
+{
+	if (!w) return;
+	double now = w->ctx ? w->ctx->time : 0.0;
+	if (kind == 1 && w->last_edit_push_kind == 1 && now - w->last_edit_push < 0.8)
+	{
+		w->last_edit_push = now;
+		return;
+	}
+	vgui_edit_snapshot s;
+	s.text = w->edit_text;
+	s.cursor = w->edit_cursor;
+	s.anchor = w->edit_anchor;
+	w->undo_stack.push_back(std::move(s));
+	if (w->undo_stack.size() > 256)
+		w->undo_stack.erase(w->undo_stack.begin());
+	w->redo_stack.clear();
+	w->last_edit_push = now;
+	w->last_edit_push_kind = kind;
+}
+
+static void vgui_edit_apply_snapshot(vgui_widget* w, const vgui_edit_snapshot& s)
+{
+	w->edit_text = s.text;
+	w->edit_cursor = vgui_edit_clamp_index(w->edit_text, s.cursor);
+	w->edit_anchor = vgui_edit_clamp_index(w->edit_text, s.anchor);
+	w->edit_drag = 0;
+	w->ime_text.clear();
+	w->ime_cursor = w->ime_length = 0;
+	w->caret_blink = 0;
+	vgui_edit_sync_text(w);
+	vgui_notify_text(w);
+}
+
+static bool vgui_edit_can_undo_impl(const vgui_widget* w)
+{
+	return w && !w->readonly && !w->undo_stack.empty();
+}
+
+static bool vgui_edit_can_redo_impl(const vgui_widget* w)
+{
+	return w && !w->readonly && !w->redo_stack.empty();
+}
+
+static int vgui_edit_copy_impl(vgui_widget* w)
+{
+	if (!w || !vgui_edit_has_sel(w)) return 0;
+	int a = std::min(w->edit_cursor, w->edit_anchor);
+	int b = std::max(w->edit_cursor, w->edit_anchor);
+	a = vgui_edit_clamp_index(w->edit_text, a);
+	b = vgui_edit_clamp_index(w->edit_text, b);
+	if (b <= a) return 0;
+	set_clipboard(w->edit_text.substr((size_t)a, (size_t)(b - a)).c_str());
+	return 1;
+}
+
+static int vgui_edit_cut_impl(vgui_widget* w)
+{
+	if (!w || w->readonly) return 0;
+	if (!vgui_edit_copy_impl(w)) return 0;
+	vgui_edit_history_push(w, 2);
+	vgui_edit_erase_selection(w);
+	vgui_edit_sync_text(w);
+	vgui_notify_text(w);
+	return 1;
+}
+
+// Single line editors keep the text on one line: line breaks pasted from the
+// clipboard become spaces.  CR is always dropped so Windows clipboard text
+// (CRLF) does not leave stray characters in the editor.
+static std::string vgui_edit_sanitize_paste(vgui_widget* w, const std::string& s)
+{
+	std::string out;
+	out.reserve(s.size());
+	for (char c : s)
+	{
+		if (c == '\r') continue;
+		if (!w->multiline && (c == '\n' || c == '\t'))
+		{
+			out.push_back(' ');
+			continue;
+		}
+		out.push_back(c);
+	}
+	return out;
+}
+
+static int vgui_edit_paste_impl(vgui_widget* w)
+{
+	if (!w || w->readonly) return 0;
+	std::string s = vgui_edit_sanitize_paste(w, get_clipboard());
+	if (s.empty()) return 0;
+	vgui_edit_history_push(w, 2);
+	vgui_edit_erase_selection(w);
+	int at = vgui_edit_clamp_index(w->edit_text, w->edit_cursor);
+	w->edit_text.insert((size_t)at, s);
+	w->edit_cursor = w->edit_anchor = at + (int)s.size();
+	vgui_edit_sync_text(w);
+	vgui_notify_text(w);
+	return 1;
+}
+
+static int vgui_edit_undo_impl(vgui_widget* w)
+{
+	if (!vgui_edit_can_undo_impl(w)) return 0;
+	vgui_edit_snapshot cur;
+	cur.text = w->edit_text;
+	cur.cursor = w->edit_cursor;
+	cur.anchor = w->edit_anchor;
+
+	vgui_edit_snapshot s = w->undo_stack.back();
+	w->undo_stack.pop_back();
+	w->redo_stack.push_back(std::move(cur));
+	if (w->redo_stack.size() > 256)
+		w->redo_stack.erase(w->redo_stack.begin());
+	w->last_edit_push = -10.0;
+	w->last_edit_push_kind = 0;
+	vgui_edit_apply_snapshot(w, s);
+	return 1;
+}
+
+static int vgui_edit_redo_impl(vgui_widget* w)
+{
+	if (!vgui_edit_can_redo_impl(w)) return 0;
+	vgui_edit_snapshot cur;
+	cur.text = w->edit_text;
+	cur.cursor = w->edit_cursor;
+	cur.anchor = w->edit_anchor;
+
+	vgui_edit_snapshot s = w->redo_stack.back();
+	w->redo_stack.pop_back();
+	w->undo_stack.push_back(std::move(cur));
+	if (w->undo_stack.size() > 256)
+		w->undo_stack.erase(w->undo_stack.begin());
+	w->last_edit_push = -10.0;
+	w->last_edit_push_kind = 0;
+	vgui_edit_apply_snapshot(w, s);
+	return 1;
 }
 
 static void vgui_edit_erase_selection(vgui_widget* w)
@@ -1181,6 +1363,7 @@ static void vgui_edit_erase_selection(vgui_widget* w)
 static void vgui_edit_insert(vgui_widget* w, const char* text)
 {
 	if (!w || !text || w->readonly) return;
+	vgui_edit_history_push(w, 1);
 	vgui_edit_erase_selection(w);
 	w->ime_text.clear();
 	w->ime_cursor = w->ime_length = 0;
@@ -1238,6 +1421,173 @@ static void vgui_edit_move(vgui_widget* w, int new_cursor, bool select)
 	vgui_edit_ensure_visible(w);
 }
 
+//----------------------------------------------------------------------------
+// mouse selection helpers (drag / double click / triple click)
+//----------------------------------------------------------------------------
+
+static bool vgui_edit_is_space(unsigned char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r';
+}
+
+// CJK characters are treated as words of their own so double clicking Chinese
+// text selects a single character instead of the whole sentence.
+static bool vgui_edit_is_cjk(unsigned int cp)
+{
+	return (cp >= 0x2E80 && cp <= 0xA4CF) || (cp >= 0xAC00 && cp <= 0xD7AF) ||
+		(cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0xFE30 && cp <= 0xFE4F) ||
+		(cp >= 0xFF00 && cp <= 0xFFEF);
+}
+
+static bool vgui_edit_is_word_byte(unsigned char c)
+{
+	return (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_' ||
+		c >= 0x80;	// 非 ASCII 由调用者另行判断
+}
+
+// Line under a local y coordinate (content space, already unscrolled by the
+// caller through edit_scroll_y).
+static int vgui_edit_line_at_y(vgui_widget* w, float y)
+{
+	float lh = std::max(1.0f, vgui_line_height(w->ctx, w));
+	float ly = y - w->abs_y - w->padding[1] + w->edit_scroll_y;
+	int line = w->multiline ? (int)std::floor(ly / lh) : 0;
+	int max_line = std::max(0, vgui_text_lines(w->edit_text) - 1);
+	if (line < 0) line = 0;
+	if (line > max_line) line = max_line;
+	return line;
+}
+
+// Byte index under a local (widget space) position.
+static int vgui_edit_index_at(vgui_widget* w, float x, float y)
+{
+	float lx = x - w->abs_x - w->padding[0] + w->edit_scroll_x;
+	int line = vgui_edit_line_at_y(w, y);
+	int lb = 0, le = 0;
+	vgui_edit_line_bytes(w->edit_text, line, lb, le);
+	return vgui_edit_byte_from_x(w, lb, le, lx);
+}
+
+// Word (or single CJK character / whitespace run) around a byte index.
+static void vgui_edit_word_range(vgui_widget* w, int idx, int& a, int& b)
+{
+	const std::string& s = w->edit_text;
+	int size = (int)s.size();
+	idx = vgui_edit_clamp_index(s, idx);
+	a = b = idx;
+
+	int ch_begin = idx;
+	int ch_end = idx;
+	if (ch_begin >= size)
+	{
+		if (ch_begin > 0) ch_begin = vgui_u8_prev(s, ch_begin);
+		ch_end = size;
+	}
+	else
+	{
+		ch_end = vgui_u8_next(s, ch_begin);
+	}
+	if (ch_begin >= size)
+	{
+		a = b = size;
+		return;
+	}
+
+	unsigned int cp = vgui_u8_decode(s.data() + ch_begin);
+	unsigned char c = (unsigned char)s[(size_t)ch_begin];
+	if (vgui_edit_is_cjk(cp))
+	{
+		a = ch_begin;
+		b = ch_end;
+		return;
+	}
+	if (!vgui_edit_is_word_byte(c))
+	{
+		// 空白或标点：连续同类字符算一段
+		a = ch_begin;
+		b = ch_end;
+		while (a > 0)
+		{
+			int p = vgui_u8_prev(s, a);
+			unsigned char pc = (unsigned char)s[(size_t)p];
+			if (vgui_edit_is_cjk(vgui_u8_decode(s.data() + p))) break;
+			if (vgui_edit_is_space(pc) != vgui_edit_is_space(c)) break;
+			if (vgui_edit_is_word_byte(pc)) break;
+			a = p;
+		}
+		while (b < size)
+		{
+			unsigned char nc = (unsigned char)s[(size_t)b];
+			if (vgui_edit_is_cjk(vgui_u8_decode(s.data() + b))) break;
+			if (vgui_edit_is_space(nc) != vgui_edit_is_space(c)) break;
+			if (vgui_edit_is_word_byte(nc)) break;
+			b = vgui_u8_next(s, b);
+		}
+		return;
+	}
+
+	a = ch_begin;
+	b = ch_end;
+	while (a > 0)
+	{
+		int p = vgui_u8_prev(s, a);
+		unsigned char pc = (unsigned char)s[(size_t)p];
+		if (vgui_edit_is_cjk(vgui_u8_decode(s.data() + p))) break;
+		if (!vgui_edit_is_word_byte(pc)) break;
+		a = p;
+	}
+	while (b < size)
+	{
+		unsigned char nc = (unsigned char)s[(size_t)b];
+		if (vgui_edit_is_cjk(vgui_u8_decode(s.data() + b))) break;
+		if (!vgui_edit_is_word_byte(nc)) break;
+		b = vgui_u8_next(s, b);
+	}
+}
+
+static void vgui_edit_select_word(vgui_widget* w, int idx)
+{
+	int a = 0, b = 0;
+	vgui_edit_word_range(w, idx, a, b);
+	w->edit_anchor = a;
+	w->edit_cursor = b;
+	w->caret_blink = 0;
+}
+
+static void vgui_edit_select_line(vgui_widget* w, int line)
+{
+	int lb = 0, le = 0;
+	vgui_edit_line_bytes(w->edit_text, line, lb, le);
+	w->edit_anchor = lb;
+	w->edit_cursor = (le < (int)w->edit_text.size() && w->edit_text[(size_t)le] == '\n') ? le + 1 : le;
+	w->caret_blink = 0;
+}
+
+// Extends the selection while the left button is held down.  The drag mode is
+// decided by the click count that started the drag.
+static void vgui_edit_drag_to(vgui_widget* w, float x, float y)
+{
+	int idx = vgui_edit_index_at(w, x, y);
+	int anchor = vgui_edit_clamp_index(w->edit_text, w->edit_anchor);
+	int cur = idx;
+	if (w->edit_drag == 2)
+	{
+		int a = 0, b = 0;
+		vgui_edit_word_range(w, idx, a, b);
+		cur = (idx >= anchor) ? b : a;
+	}
+	else if (w->edit_drag == 3)
+	{
+		int line = vgui_edit_line_at_y(w, y);
+		int lb = 0, le = 0;
+		vgui_edit_line_bytes(w->edit_text, line, lb, le);
+		cur = (idx >= anchor) ? le : lb;
+	}
+	w->edit_cursor = vgui_edit_clamp_index(w->edit_text, cur);
+	w->caret_blink = 0;
+	vgui_edit_ensure_visible(w);
+}
+
 static void vgui_activate_widget(vgui_widget* w, int clicks);
 
 static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
@@ -1254,39 +1604,32 @@ static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
 		w->edit_anchor = 0;
 		w->edit_cursor = size;
 		w->caret_blink = 0;
+		w->edit_drag = 0;
 		return true;
 	}
-	if (ctrl && (key == 'C' || key == 'X'))
+	// Windows 习惯：Ctrl+C/X/V 与 Ctrl+Insert / Shift+Delete / Shift+Insert 等价
+	bool copy_key = (ctrl && key == 'C') || (ctrl && key == VGUI_KEY_INSERT);
+	bool cut_key = (ctrl && key == 'X') || (shift && key == VGUI_KEY_DELETE);
+	bool paste_key = (ctrl && key == 'V') || (shift && key == VGUI_KEY_INSERT);
+	if (copy_key || cut_key || paste_key)
 	{
-		if (vgui_edit_has_sel(w))
-		{
-			int a = std::min(w->edit_cursor, w->edit_anchor);
-			int b = std::max(w->edit_cursor, w->edit_anchor);
-			set_clipboard(w->edit_text.substr((size_t)a, (size_t)(b - a)).c_str());
-			if (key == 'X')
-			{
-				vgui_edit_erase_selection(w);
-				vgui_edit_sync_text(w);
-				vgui_notify_text(w);
-			}
-		}
+		if (paste_key)
+			vgui_edit_paste_impl(w);
+		else if (cut_key)
+			vgui_edit_cut_impl(w);
+		else
+			vgui_edit_copy_impl(w);
 		return true;
 	}
-	if (ctrl && key == 'V')
+	if (ctrl && key == 'Z')
 	{
-		if (!w->readonly)
-		{
-			std::string s = get_clipboard();
-			if (!s.empty())
-			{
-				vgui_edit_erase_selection(w);
-				int at = w->edit_cursor;
-				w->edit_text.insert((size_t)at, s);
-				w->edit_cursor = w->edit_anchor = at + (int)s.size();
-				vgui_edit_sync_text(w);
-				vgui_notify_text(w);
-			}
-		}
+		if (shift) vgui_edit_redo_impl(w);
+		else vgui_edit_undo_impl(w);
+		return true;
+	}
+	if (ctrl && key == 'Y')
+	{
+		vgui_edit_redo_impl(w);
 		return true;
 	}
 
@@ -1297,10 +1640,12 @@ static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
 		{
 			if (vgui_edit_has_sel(w))
 			{
+				vgui_edit_history_push(w, 2);
 				vgui_edit_erase_selection(w);
 			}
 			else if (w->edit_cursor > 0)
 			{
+				vgui_edit_history_push(w, ctrl ? 2 : 1);
 				int p = ctrl ? vgui_edit_word_prev(w->edit_text, w->edit_cursor) : vgui_u8_prev(w->edit_text, w->edit_cursor);
 				w->edit_text.erase((size_t)p, (size_t)(w->edit_cursor - p));
 				w->edit_cursor = w->edit_anchor = p;
@@ -1314,10 +1659,12 @@ static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
 		{
 			if (vgui_edit_has_sel(w))
 			{
+				vgui_edit_history_push(w, 2);
 				vgui_edit_erase_selection(w);
 			}
 			else if (w->edit_cursor < size)
 			{
+				vgui_edit_history_push(w, ctrl ? 2 : 1);
 				int n = ctrl ? vgui_edit_word_next(w->edit_text, w->edit_cursor) : vgui_u8_next(w->edit_text, w->edit_cursor);
 				w->edit_text.erase((size_t)w->edit_cursor, (size_t)(n - w->edit_cursor));
 			}
@@ -1570,6 +1917,11 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 			vgui_update_slider_from_mouse(a, x - a->abs_x, y - a->abs_y);
 			if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
 		}
+		else if (a->kind == VGUI_EDIT && a->edit_drag && a->pressed_button == 1)
+		{
+			vgui_edit_drag_to(a, x, y);
+			if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
+		}
 		if (a != h)
 			vgui_emit(a, VGUI_EVENT_MOUSE_MOVE, x - a->abs_x, y - a->abs_y);
 		ctx->cursor = a->enabled ? a->cursor_type : VGUI_CURSOR_ARROW;
@@ -1638,22 +1990,23 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 		}
 		else if (h->kind == VGUI_EDIT)
 		{
-			float lx = x - h->abs_x - h->padding[0] + h->edit_scroll_x;
-			float ly = y - h->abs_y - h->padding[1] + h->edit_scroll_y;
-			int line = 0;
-			if (h->multiline)
+			int idx = vgui_edit_index_at(h, x, y);
+			if (clicks >= 3)
 			{
-				float lh = vgui_line_height(ctx, h);
-				line = (int)(ly / std::max(1.0f, lh));
+				vgui_edit_select_line(h, vgui_edit_line_at_y(h, y));
+				h->edit_drag = 3;
 			}
-			int max_line = vgui_text_lines(h->edit_text) - 1;
-			if (line < 0) line = 0;
-			if (line > max_line) line = max_line;
-			int lb = 0, le = 0;
-			vgui_edit_line_bytes(h->edit_text, line, lb, le);
-			int idx = vgui_edit_byte_from_x(h, lb, le, lx);
-			h->edit_cursor = h->edit_anchor = idx;
-			h->caret_blink = 0;
+			else if (clicks == 2)
+			{
+				vgui_edit_select_word(h, idx);
+				h->edit_drag = 2;
+			}
+			else
+			{
+				h->edit_cursor = h->edit_anchor = idx;
+				h->caret_blink = 0;
+				h->edit_drag = 1;
+			}
 			vgui_edit_ensure_visible(h);
 		}
 
@@ -1695,6 +2048,7 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		// Clear press state before invoking user code so callbacks can
 		// safely inspect the widget.
 		target->pressed = 0;
+		if (target->kind == VGUI_EDIT) target->edit_drag = 0;
 		ctx->press_target = nullptr;
 		ctx->active = nullptr;
 		ctx->slider_drag = nullptr;
@@ -1747,13 +2101,74 @@ static vgui_widget* vgui_find_scroll_panel(vgui_widget* w, bool vertical)
 	return nullptr;
 }
 
+static vgui_widget* vgui_find_edit(vgui_widget* w)
+{
+	for (vgui_widget* p = w; p; p = p->parent)
+		if (p->kind == VGUI_EDIT)
+			return p;
+	return nullptr;
+}
+
+// Wheel over an edit box scrolls its own text instead of the surrounding
+// panel.  Multi-line editors scroll vertically, single-line editors scroll
+// horizontally when the text is wider than the box.
+static bool vgui_edit_wheel(vgui_context* ctx, vgui_widget* e, float wx, float wy)
+{
+	if (!e || !e->enabled) return false;
+	float lh = std::max(1.0f, vgui_line_height(ctx, e));
+	float iw = std::max(1.0f, e->abs_w - e->padding[0] - e->padding[2]);
+	float ih = std::max(1.0f, e->abs_h - e->padding[1] - e->padding[3]);
+	bool scrolled = false;
+	if (wy != 0)
+	{
+		if (e->multiline)
+		{
+			float ch = (float)vgui_text_lines(e->edit_text) * lh;
+			if (ch > ih + 0.5f)
+			{
+				e->edit_scroll_y = vgui_clampf(e->edit_scroll_y - wy * lh * 3.0f, 0.0f, ch - ih);
+				scrolled = true;
+			}
+		}
+		else
+		{
+			int lb = 0, le = 0;
+			vgui_edit_line_bytes(e->edit_text, 0, lb, le);
+			float cw = vgui_text_width_n(e, e->edit_text.data() + lb, le - lb);
+			if (cw > iw + 0.5f)
+			{
+				e->edit_scroll_x = vgui_clampf(e->edit_scroll_x - wy * 40.0f, 0.0f, cw - iw + 2.0f);
+				scrolled = true;
+			}
+		}
+	}
+	if (wx != 0)
+	{
+		int line = 0, col = 0;
+		vgui_edit_line_col(e->edit_text, e->edit_cursor, line, col);
+		int lb = 0, le = 0;
+		vgui_edit_line_bytes(e->edit_text, line, lb, le);
+		float cw = vgui_text_width_n(e, e->edit_text.data() + lb, le - lb);
+		float max_scroll = std::max(0.0f, cw - iw + 2.0f);
+		if (max_scroll > 0.0f)
+		{
+			e->edit_scroll_x = vgui_clampf(e->edit_scroll_x - wx * 40.0f, 0.0f, max_scroll);
+			scrolled = true;
+		}
+	}
+	return scrolled;
+}
+
 static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 {
 	if (!ctx) return 0;
 	vgui_begin_input(ctx);
 	vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(ctx->root, ctx->mouse_x, ctx->mouse_y);
 	int consumed = 0;
-	if (wy != 0)
+	vgui_widget* edit = vgui_find_edit(h);
+	if (edit && (wx != 0 || wy != 0))
+		consumed = vgui_edit_wheel(ctx, edit, wx, wy) ? 1 : 0;
+	if (wy != 0 && !consumed)
 	{
 		vgui_widget* p = vgui_find_scroll_panel(h, true);
 		if (p)
@@ -1764,7 +2179,7 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 			consumed = 1;
 		}
 	}
-	if (wx != 0)
+	if (wx != 0 && !consumed)
 	{
 		vgui_widget* p = vgui_find_scroll_panel(h, false);
 		if (p)
@@ -1992,6 +2407,39 @@ static void vgui_stroke_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float 
 	cb->stroke(vg);
 }
 
+// Fills a rectangle whose four corners can be rounded independently.  The text
+// selection uses this so a multi-line highlight is rounded only where the
+// selection begins and ends (and stays square in between).
+static void vgui_fill_round_rect4(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+	float rtl, float rtr, float rbr, float rbl, uint32_t color)
+{
+	if (!cb || !vg || color == 0 || w <= 0 || h <= 0) return;
+	float m = std::min(w, h) * 0.5f;
+	rtl = vgui_clampf(rtl, 0.0f, m);
+	rtr = vgui_clampf(rtr, 0.0f, m);
+	rbr = vgui_clampf(rbr, 0.0f, m);
+	rbl = vgui_clampf(rbl, 0.0f, m);
+	if (rtl <= 0.0f && rtr <= 0.0f && rbr <= 0.0f && rbl <= 0.0f)
+	{
+		cb->rectangle(vg, x, y, w, h);
+	}
+	else
+	{
+		cb->move_to(vg, x + rtl, y);
+		cb->line_to(vg, x + w - rtr, y);
+		if (rtr > 0.0f) cb->quadratic_to(vg, x + w, y, x + w, y + rtr);
+		cb->line_to(vg, x + w, y + h - rbr);
+		if (rbr > 0.0f) cb->quadratic_to(vg, x + w, y + h, x + w - rbr, y + h);
+		cb->line_to(vg, x + rbl, y + h);
+		if (rbl > 0.0f) cb->quadratic_to(vg, x, y + h, x, y + h - rbl);
+		cb->line_to(vg, x, y + rtl);
+		if (rtl > 0.0f) cb->quadratic_to(vg, x, y, x + rtl, y);
+		cb->close_path(vg);
+	}
+	cb->set_source_color(vg, vgui_ovg_color(color));
+	cb->fill(vg);
+}
+
 static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
 	const std::string& text, float x, float y, float width, float height,
 	uint32_t color, float ax = 0.0f, float ay = 0.5f)
@@ -2035,8 +2483,11 @@ static void vgui_draw_focus(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	if (!w->focused) return;
 	vgui_context* ctx = w->ctx;
+	if (w->abs_w < 4.0f || w->abs_h < 4.0f) return;
+	// 焦点环画在控件内部（与边框重合）：父容器的裁剪矩形再也不可能把
+	// 焦点环的一部分裁掉，控件被部分滚动出可视区时仍能看到焦点。
 	float r = w->rounding > 0 ? w->rounding : 4;
-	vgui_stroke_rect(cb, vg, w->abs_x - 1, w->abs_y - 1, w->abs_w + 2, w->abs_h + 2, r + 1,
+	vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, r,
 		vgui_widget_color(w, ctx->theme.accent), 1);
 }
 
@@ -2322,7 +2773,16 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			int sb = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, b));
 			float sx = tx + vgui_text_width_n(w, shown.data(), sa);
 			float sw = vgui_text_width_n(w, shown.data() + sa, sb - sa);
-			vgui_fill_rect(cb, vg, sx, ty, sw, lh, 0, vgui_widget_color(w, ctx->theme.edit_selection));
+			// 选中换行符时补一小段尾巴，让跨行选中看起来是连续的
+			if (sel_b > line_end) sw += std::min(6.0f, lh * 0.3f);
+			if (sw < 1.0f) sw = 1.0f;
+			// 只在选区真正的开头/结尾处使用圆角，中间行保持方角
+			float rad = std::max(0.0f, w->sel_rounding);
+			float rl = (sel_a >= line_start) ? rad : 0.0f;
+			float rr = (sel_b <= line_end) ? rad : 0.0f;
+			uint32_t selc = w->sel_color ? w->sel_color : ctx->theme.edit_selection;
+			if (!w->focused) selc = vgui_alpha_color(selc, 0.6f);
+			vgui_fill_round_rect4(cb, vg, sx, ty, sw, lh, rl, rr, rr, rl, vgui_widget_color(w, selc));
 		}
 
 		vgui_draw_text(ctx, cb, vg, w, shown, tx, ty, std::max(iw, 1.0f), lh, color, 0.0f, 0.5f);
@@ -2358,6 +2818,26 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
+
+	// 多行编辑框的内容滚动条（覆盖在文本右侧，不占用布局宽度）
+	if (w->multiline)
+	{
+		float ch = (float)vgui_text_lines(w->edit_text) * lh;
+		float max_scroll = std::max(0.0f, ch - ih);
+		if (w->edit_scroll_y > max_scroll) w->edit_scroll_y = max_scroll;
+		if (ch > ih + 0.5f && ih > 20.0f)
+		{
+			float bar_w = 4.0f;
+			float bx = w->abs_x + w->abs_w - bar_w - 2.0f;
+			float th = std::max(20.0f, ih * ih / ch);
+			float by = iy + (max_scroll > 0.0f ? (w->edit_scroll_y / max_scroll) * (ih - th) : 0.0f);
+			vgui_fill_rect(cb, vg, bx, iy, bar_w, ih, bar_w * 0.5f,
+				vgui_widget_color(w, vgui_alpha_color(ctx->theme.track, 0.6f)));
+			vgui_fill_rect(cb, vg, bx, by, bar_w, th, bar_w * 0.5f,
+				vgui_widget_color(w, ctx->theme.scrollbar));
+		}
+	}
+
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -3085,8 +3565,20 @@ void vgui_edit_set_text(vgui_widget* edit, const char* text)
 	edit->ime_text.clear();
 	edit->ime_cursor = edit->ime_length = 0;
 	edit->caret_blink = 0;
+	edit->edit_drag = 0;
+	vgui_edit_history_reset(edit);
 	vgui_mark_dirty(edit);
-	vgui_edit_ensure_visible(edit);
+	if (edit->focused)
+	{
+		// 保持光标可见（例如“追加文本”后继续编辑）
+		vgui_edit_ensure_visible(edit);
+	}
+	else
+	{
+		// 程序化设置文本：未获得焦点时显示文本开头
+		edit->edit_scroll_x = 0;
+		edit->edit_scroll_y = 0;
+	}
 }
 
 const char* vgui_edit_get_text(vgui_widget* edit)
@@ -3178,6 +3670,55 @@ void vgui_edit_set_ime_text(vgui_widget* edit, const char* text, int cursor, int
 	edit->ime_length = std::max(0, length);
 	if (edit->ime_cursor + edit->ime_length > (int)edit->ime_text.size())
 		edit->ime_length = std::max(0, (int)edit->ime_text.size() - edit->ime_cursor);
+}
+
+void vgui_edit_set_selection_color(vgui_widget* edit, vgui_color color)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->sel_color = color;
+	vgui_mark_dirty(edit);
+}
+
+void vgui_edit_set_selection_rounding(vgui_widget* edit, float radius)
+{
+	if (!edit || edit->kind != VGUI_EDIT) return;
+	edit->sel_rounding = std::max(0.0f, radius);
+	vgui_mark_dirty(edit);
+}
+
+int vgui_edit_copy(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT) ? vgui_edit_copy_impl(edit) : 0;
+}
+
+int vgui_edit_cut(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT) ? vgui_edit_cut_impl(edit) : 0;
+}
+
+int vgui_edit_paste(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT) ? vgui_edit_paste_impl(edit) : 0;
+}
+
+int vgui_edit_undo(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT) ? vgui_edit_undo_impl(edit) : 0;
+}
+
+int vgui_edit_redo(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT) ? vgui_edit_redo_impl(edit) : 0;
+}
+
+int vgui_edit_can_undo(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT && vgui_edit_can_undo_impl(edit)) ? 1 : 0;
+}
+
+int vgui_edit_can_redo(vgui_widget* edit)
+{
+	return (edit && edit->kind == VGUI_EDIT && vgui_edit_can_redo_impl(edit)) ? 1 : 0;
 }
 
 //----------------------------------------------------------------------------
