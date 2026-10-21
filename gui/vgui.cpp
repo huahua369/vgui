@@ -3363,22 +3363,15 @@ namespace {
 		float tw = vgui_text_width(w, text);
 		float th = lh * (float)vgui_text_lines(text);
 
-		// ovg only honours text_style_t::align when a text_box_rt is supplied, and
-		// that box also resets the renderer clip.  Align here instead, then draw at
-		// the resolved top-left corner, adding the ascender because text_st_t::pos.y
-		// is the baseline of the first line (vg_add_text_run: baseline_y = pos.y).
-		float px = x + (width - tw) * ax;
-		float py = y + (height - th) * ay + vgui_text_ascent(ctx, w);
-
 		text_style_t st = {};
 		st.family = ctx->font;
 		st.fontsize = vgui_font_size(ctx, w);
 		st.color = vgui_ovg_color(color);
-		st.align = { 0.0f, 0.0f };
+		st.align = { ax, ay };
 		st.min_subpixel = ctx->style.text_min_subpixel;
 
 		text_st_t t = {};
-		t.pos = { px, py };
+		t.pos = { x, y + vgui_text_ascent(ctx, w) };
 		t.size = { tw, th };
 		t.text = text.c_str();
 		t.text_len = (int)text.size();
