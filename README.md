@@ -14,7 +14,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交 |
-| **主题与样式** | `vgui_theme` 颜色主题，运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
+| **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
@@ -116,6 +116,15 @@ void build_ui(vgui_context* ui)
 {
     vgui_context_set_size(ui, 800, 600);
 
+    /* 先取默认样式，只改需要调整的字段；未修改的字段保持当前外观。 */
+    vgui_style style;
+    vgui_style_default(&style);
+    style.button.rounding = 8.0f;
+    style.button.padding_x = 16.0f;
+    style.edit.scrollbar_width = 6.0f;
+    style.animation_speed = 12.0f;          /* 0 = 关闭悬停/勾选动画 */
+    vgui_context_set_style(ui, &style);
+
     vgui_widget* root = vgui_root(ui);
     vgui_widget_set_layout(root, VGUI_LAYOUT_COLUMN);
     vgui_widget_set_padding(root, 16, 16, 16, 16);
@@ -142,6 +151,8 @@ vgui_draw(ui, ovg_cb, rvg);
 ```
 
 字体、OVG 回调和 SDL3 窗口的初始化由后端/宿主程序负责，完整流程见 `sample/vgui_demo.cpp`。颜色格式统一为 `0xAARRGGBB`。
+
+`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 新增 `scrollbar_hover`、`checkmark`、`switch_thumb` 三个颜色字段；旧主题把这三个字段留为 0 时，分别回退到滚动条颜色和白色，不会破坏现有主题。
 
 ## 项目结构
 

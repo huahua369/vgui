@@ -296,6 +296,7 @@ struct vgui_context
 	float font_size = 16.0f;
 	int width = 0, height = 0;
 	vgui_theme theme = {};
+	vgui_style style = {};
 	float focus_alpha = 1.0f;	// default focus-ring opacity
 	vgui_widget* root = nullptr;
 
@@ -675,10 +676,11 @@ namespace {
 	static void vgui_edit_clamp_scroll(vgui_widget* w)
 	{
 		if (!w) return;
+		const vgui_style& st = w->ctx->style;
 		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
 		float lh = std::max(1.0f, vgui_line_height(w->ctx, w));
-		float max_sx = std::max(0.0f, vgui_edit_content_width(w) - iw + 2.0f);
+		float max_sx = std::max(0.0f, vgui_edit_content_width(w) - iw + st.edit.scrollbar_extra_scroll);
 		float max_sy = w->multiline
 			? std::max(0.0f, (float)vgui_text_lines(w->edit_text) * lh - ih)
 			: 0.0f;
@@ -688,13 +690,13 @@ namespace {
 
 	static bool vgui_edit_hbar_visible(vgui_widget* w, float iw)
 	{
-		return w && w->multiline && iw > 20.0f &&
+		return w && w->multiline && iw > w->ctx->style.edit.scrollbar_min_track &&
 			vgui_edit_content_width(w) > iw + 0.5f;
 	}
 
 	static bool vgui_edit_vbar_visible(vgui_widget* w, float ih)
 	{
-		if (!w || !w->multiline || ih <= 20.0f) return false;
+		if (!w || !w->multiline || ih <= w->ctx->style.edit.scrollbar_min_track) return false;
 		float lh = std::max(1.0f, vgui_line_height(w->ctx, w));
 		return (float)vgui_text_lines(w->edit_text) * lh > ih + 0.5f;
 	}
@@ -789,7 +791,232 @@ namespace {
 		t.edit_selection = 0x80409EFF;
 		t.scrollbar = 0xFF555555;
 		t.disabled = 0xFF808080;
+		t.scrollbar_hover = 0xFF727272;
+		t.checkmark = 0xFFFFFFFF;
+		t.switch_thumb = 0xFFFFFFFF;
 		return t;
+	}
+
+	static vgui_style vgui_default_style()
+	{
+		vgui_style s = {};
+		s.animation_speed = 18.0f;
+		s.text_min_subpixel = 1;
+		s.disabled_text_mix = 0.65f;
+
+		s.focus.min_size = 4.0f;
+		s.focus.rounding = 4.0f;
+		s.focus.inset = 0.5f;
+		s.focus.width = 1.0f;
+
+		s.panel.padding = 8.0f;
+		s.panel.border_width = 1.0f;
+		s.panel.rounding = 0.0f;
+		s.panel.scrollbar_width = 5.0f;
+		s.panel.scrollbar_inset = 2.0f;
+		s.panel.scrollbar_min_thumb = 24.0f;
+		s.panel.scrollbar_rounding = 2.5f;
+		s.panel.scrollbar_hit_padding = 1.0f;
+		s.panel.scrollbar_min_track = 20.0f;
+
+		s.label.padding_x = 2.0f;
+
+		s.button.padding_x = 12.0f;
+		s.button.padding_y = 6.0f;
+		s.button.rounding = 4.0f;
+		s.button.border_width = 1.0f;
+		s.button.min_height = 28.0f;
+		s.button.text_extra_width = 4.0f;
+		s.button.hover_mix_min = 0.25f;
+		s.button.press_mix_min = 0.35f;
+		s.button.press_offset = 1.0f;
+		s.button.disabled_mix = 0.35f;
+
+		s.choice.box_min = 14.0f;
+		s.choice.box_max = 18.0f;
+		s.choice.line_offset = 2.0f;
+		s.choice.gap = 8.0f;
+
+		s.checkbox.rounding = 3.0f;
+		s.checkbox.border_width = 1.0f;
+		s.checkbox.check_width = 2.0f;
+		s.checkbox.check_start_x = 0.22f;
+		s.checkbox.check_start_y = 0.52f;
+		s.checkbox.check_mid_x = 0.42f;
+		s.checkbox.check_mid_y = 0.72f;
+		s.checkbox.check_end_x = 0.80f;
+		s.checkbox.check_end_y = 0.28f;
+
+		s.radio.border_width = 1.0f;
+		s.radio.dot_scale = 0.55f;
+
+		s.switch_.width = 36.0f;
+		s.switch_.min_height = 18.0f;
+		s.switch_.max_height = 22.0f;
+		s.switch_.line_offset = 2.0f;
+		s.switch_.min_control_height = 20.0f;
+		s.switch_.thumb_inset = 2.0f;
+		s.switch_.gap = 8.0f;
+		s.switch_.disabled_mix = 0.5f;
+
+		s.slider.req_width = 180.0f;
+		s.slider.min_height = 24.0f;
+		s.slider.track_thickness = 4.0f;
+		s.slider.knob_radius = 7.0f;
+		s.slider.background_alpha = 0.25f;
+		s.slider.disabled_mix = 0.5f;
+
+		s.progress.req_width = 180.0f;
+		s.progress.min_height = 20.0f;
+		s.progress.rounding = 3.0f;
+		s.progress.disabled_mix = 0.5f;
+
+		s.edit.padding_x = 6.0f;
+		s.edit.padding_y = 4.0f;
+		s.edit.rounding = 3.0f;
+		s.edit.border_width = 1.0f;
+		s.edit.req_width = 160.0f;
+		s.edit.req_height = 30.0f;
+		s.edit.min_width = 160.0f;
+		s.edit.text_extra_width = 12.0f;
+		s.edit.multiline_min_lines = 3;
+		s.edit.selection_rounding = 2.0f;
+		s.edit.selection_unfocused_alpha = 0.6f;
+		s.edit.selection_tail_max_width = 6.0f;
+		s.edit.selection_tail_line_ratio = 0.3f;
+		s.edit.selection_min_width = 1.0f;
+		s.edit.caret_width = 1.0f;
+		s.edit.caret_blink_period = 1.0f;
+		s.edit.caret_blink_duty = 0.55f;
+		s.edit.disabled_bg_mix = 0.25f;
+		s.edit.ime_underline_width = 1.0f;
+		s.edit.ime_underline_min_width = 2.0f;
+		s.edit.scrollbar_width = 4.0f;
+		s.edit.scrollbar_inset = 2.0f;
+		s.edit.scrollbar_min_thumb = 20.0f;
+		s.edit.scrollbar_rounding = 2.0f;
+		s.edit.scrollbar_hit_padding = 2.0f;
+		s.edit.scrollbar_min_track = 20.0f;
+		s.edit.scrollbar_min_cross = 8.0f;
+		s.edit.scrollbar_extra_scroll = 2.0f;
+
+		s.separator.thickness = 1.0f;
+		return s;
+	}
+
+	static float vgui_nonneg(float v)
+	{
+		return v > 0.0f ? v : 0.0f;
+	}
+
+	static void vgui_sanitize_style(vgui_style* s)
+	{
+		if (!s) return;
+		s->animation_speed = vgui_nonneg(s->animation_speed);
+		if (s->text_min_subpixel < 0) s->text_min_subpixel = 0;
+		s->disabled_text_mix = vgui_clampf(s->disabled_text_mix, 0.0f, 1.0f);
+
+		s->focus.min_size = vgui_nonneg(s->focus.min_size);
+		s->focus.rounding = vgui_nonneg(s->focus.rounding);
+		s->focus.inset = vgui_nonneg(s->focus.inset);
+		s->focus.width = vgui_nonneg(s->focus.width);
+
+		s->panel.padding = vgui_nonneg(s->panel.padding);
+		s->panel.border_width = vgui_nonneg(s->panel.border_width);
+		s->panel.rounding = vgui_nonneg(s->panel.rounding);
+		s->panel.scrollbar_width = vgui_nonneg(s->panel.scrollbar_width);
+		s->panel.scrollbar_inset = vgui_nonneg(s->panel.scrollbar_inset);
+		s->panel.scrollbar_min_thumb = vgui_nonneg(s->panel.scrollbar_min_thumb);
+		s->panel.scrollbar_rounding = vgui_nonneg(s->panel.scrollbar_rounding);
+		s->panel.scrollbar_hit_padding = vgui_nonneg(s->panel.scrollbar_hit_padding);
+		s->panel.scrollbar_min_track = vgui_nonneg(s->panel.scrollbar_min_track);
+
+		s->label.padding_x = vgui_nonneg(s->label.padding_x);
+
+		s->button.padding_x = vgui_nonneg(s->button.padding_x);
+		s->button.padding_y = vgui_nonneg(s->button.padding_y);
+		s->button.rounding = vgui_nonneg(s->button.rounding);
+		s->button.border_width = vgui_nonneg(s->button.border_width);
+		s->button.min_height = vgui_nonneg(s->button.min_height);
+		s->button.text_extra_width = vgui_nonneg(s->button.text_extra_width);
+		s->button.hover_mix_min = vgui_clampf(s->button.hover_mix_min, 0.0f, 1.0f);
+		s->button.press_mix_min = vgui_clampf(s->button.press_mix_min, 0.0f, 1.0f);
+		s->button.press_offset = vgui_nonneg(s->button.press_offset);
+		s->button.disabled_mix = vgui_clampf(s->button.disabled_mix, 0.0f, 1.0f);
+
+		s->choice.box_min = vgui_nonneg(s->choice.box_min);
+		s->choice.box_max = vgui_nonneg(s->choice.box_max);
+		if (s->choice.box_max < s->choice.box_min)
+			std::swap(s->choice.box_max, s->choice.box_min);
+		s->choice.line_offset = vgui_nonneg(s->choice.line_offset);
+		s->choice.gap = vgui_nonneg(s->choice.gap);
+
+		s->checkbox.rounding = vgui_nonneg(s->checkbox.rounding);
+		s->checkbox.border_width = vgui_nonneg(s->checkbox.border_width);
+		s->checkbox.check_width = vgui_nonneg(s->checkbox.check_width);
+		s->checkbox.check_start_x = vgui_nonneg(s->checkbox.check_start_x);
+		s->checkbox.check_start_y = vgui_nonneg(s->checkbox.check_start_y);
+		s->checkbox.check_mid_x = vgui_nonneg(s->checkbox.check_mid_x);
+		s->checkbox.check_mid_y = vgui_nonneg(s->checkbox.check_mid_y);
+		s->checkbox.check_end_x = vgui_nonneg(s->checkbox.check_end_x);
+		s->checkbox.check_end_y = vgui_nonneg(s->checkbox.check_end_y);
+
+		s->radio.border_width = vgui_nonneg(s->radio.border_width);
+		s->radio.dot_scale = vgui_clampf(s->radio.dot_scale, 0.0f, 1.0f);
+
+		s->switch_.width = vgui_nonneg(s->switch_.width);
+		s->switch_.min_height = vgui_nonneg(s->switch_.min_height);
+		s->switch_.max_height = vgui_nonneg(s->switch_.max_height);
+		if (s->switch_.max_height < s->switch_.min_height)
+			std::swap(s->switch_.max_height, s->switch_.min_height);
+		s->switch_.line_offset = vgui_nonneg(s->switch_.line_offset);
+		s->switch_.min_control_height = vgui_nonneg(s->switch_.min_control_height);
+		s->switch_.thumb_inset = vgui_nonneg(s->switch_.thumb_inset);
+		s->switch_.gap = vgui_nonneg(s->switch_.gap);
+		s->switch_.disabled_mix = vgui_clampf(s->switch_.disabled_mix, 0.0f, 1.0f);
+
+		s->slider.req_width = vgui_nonneg(s->slider.req_width);
+		s->slider.min_height = vgui_nonneg(s->slider.min_height);
+		s->slider.track_thickness = vgui_nonneg(s->slider.track_thickness);
+		s->slider.knob_radius = vgui_nonneg(s->slider.knob_radius);
+		s->slider.background_alpha = vgui_clampf(s->slider.background_alpha, 0.0f, 1.0f);
+		s->slider.disabled_mix = vgui_clampf(s->slider.disabled_mix, 0.0f, 1.0f);
+
+		s->progress.req_width = vgui_nonneg(s->progress.req_width);
+		s->progress.min_height = vgui_nonneg(s->progress.min_height);
+		s->progress.rounding = vgui_nonneg(s->progress.rounding);
+		s->progress.disabled_mix = vgui_clampf(s->progress.disabled_mix, 0.0f, 1.0f);
+
+		s->edit.padding_x = vgui_nonneg(s->edit.padding_x);
+		s->edit.padding_y = vgui_nonneg(s->edit.padding_y);
+		s->edit.rounding = vgui_nonneg(s->edit.rounding);
+		s->edit.border_width = vgui_nonneg(s->edit.border_width);
+		s->edit.req_width = vgui_nonneg(s->edit.req_width);
+		s->edit.req_height = vgui_nonneg(s->edit.req_height);
+		s->edit.min_width = vgui_nonneg(s->edit.min_width);
+		s->edit.text_extra_width = vgui_nonneg(s->edit.text_extra_width);
+		s->edit.multiline_min_lines = std::max(1, s->edit.multiline_min_lines);
+		s->edit.selection_rounding = vgui_nonneg(s->edit.selection_rounding);
+		s->edit.selection_unfocused_alpha = vgui_clampf(s->edit.selection_unfocused_alpha, 0.0f, 1.0f);
+		s->edit.selection_tail_max_width = vgui_nonneg(s->edit.selection_tail_max_width);
+		s->edit.selection_tail_line_ratio = vgui_nonneg(s->edit.selection_tail_line_ratio);
+		s->edit.selection_min_width = vgui_nonneg(s->edit.selection_min_width);
+		s->edit.caret_width = vgui_nonneg(s->edit.caret_width);
+		s->edit.caret_blink_period = std::max(0.001f, s->edit.caret_blink_period);
+		s->edit.caret_blink_duty = vgui_clampf(s->edit.caret_blink_duty, 0.0f, 1.0f);
+		s->edit.disabled_bg_mix = vgui_clampf(s->edit.disabled_bg_mix, 0.0f, 1.0f);
+		s->edit.ime_underline_width = vgui_nonneg(s->edit.ime_underline_width);
+		s->edit.ime_underline_min_width = vgui_nonneg(s->edit.ime_underline_min_width);
+		s->edit.scrollbar_width = vgui_nonneg(s->edit.scrollbar_width);
+		s->edit.scrollbar_inset = vgui_nonneg(s->edit.scrollbar_inset);
+		s->edit.scrollbar_min_thumb = vgui_nonneg(s->edit.scrollbar_min_thumb);
+		s->edit.scrollbar_rounding = vgui_nonneg(s->edit.scrollbar_rounding);
+		s->edit.scrollbar_hit_padding = vgui_nonneg(s->edit.scrollbar_hit_padding);
+		s->edit.scrollbar_min_track = vgui_nonneg(s->edit.scrollbar_min_track);
+		s->edit.scrollbar_min_cross = vgui_nonneg(s->edit.scrollbar_min_cross);
+		s->edit.scrollbar_extra_scroll = vgui_nonneg(s->edit.scrollbar_extra_scroll);
+
+		s->separator.thickness = vgui_nonneg(s->separator.thickness);
 	}
 
 	static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, const char* text)
@@ -800,6 +1027,7 @@ namespace {
 		if (text) w->text = text;
 
 		const vgui_theme& th = ctx->theme;
+		const vgui_style& st = ctx->style;
 		w->text_color = th.text;
 		w->accent = th.accent;
 		w->track = th.track;
@@ -809,21 +1037,22 @@ namespace {
 		case VGUI_PANEL:
 			w->bg = th.panel_bg;
 			w->border = th.panel_border;
-			w->border_width = 1;
-			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 8;
+			w->border_width = st.panel.border_width;
+			w->rounding = st.panel.rounding;
+			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = st.panel.padding;
 			w->clip_children = 1;
 			break;
 		case VGUI_LABEL:
-			w->padding[0] = w->padding[2] = 2;
+			w->padding[0] = w->padding[2] = st.label.padding_x;
 			w->text_align_x = 0.0f;
 			break;
 		case VGUI_BUTTON:
 			w->bg = th.button_bg;
 			w->border = th.button_border;
-			w->border_width = 1;
-			w->rounding = 4;
-			w->padding[0] = w->padding[2] = 12;
-			w->padding[1] = w->padding[3] = 6;
+			w->border_width = st.button.border_width;
+			w->rounding = st.button.rounding;
+			w->padding[0] = w->padding[2] = st.button.padding_x;
+			w->padding[1] = w->padding[3] = st.button.padding_y;
 			w->text_align_x = 0.5f;
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_HAND;
@@ -838,33 +1067,35 @@ namespace {
 			break;
 		case VGUI_SLIDER:
 			w->bg = 0;
-			w->req_w = 180;
-			w->req_h = 24;
+			w->req_w = st.slider.req_width;
+			w->req_h = st.slider.min_height;
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_HAND;
 			break;
 		case VGUI_PROGRESS:
 			w->bg = 0;
-			w->req_w = 180;
-			w->req_h = 20;
+			w->req_w = st.progress.req_width;
+			w->req_h = st.progress.min_height;
 			w->text_align_x = 0.5f;
 			break;
 		case VGUI_EDIT:
 			w->bg = th.edit_bg;
 			w->border = th.button_border;
-			w->border_width = 1;
-			w->rounding = 3;
-			w->req_w = 160;
-			w->req_h = 30;
-			w->padding[0] = w->padding[2] = 6;
-			w->padding[1] = w->padding[3] = 4;
+			w->border_width = st.edit.border_width;
+			w->rounding = st.edit.rounding;
+			w->req_w = st.edit.req_width;
+			w->req_h = st.edit.req_height;
+			w->padding[0] = w->padding[2] = st.edit.padding_x;
+			w->padding[1] = w->padding[3] = st.edit.padding_y;
 			w->text_align_x = 0.0f;
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_IBEAM;
+			w->sel_rounding = st.edit.selection_rounding;
+			w->caret_width = st.edit.caret_width;
 			break;
 		case VGUI_SEPARATOR:
 			w->bg = th.panel_border;
-			w->req_h = 1;
+			w->req_h = st.separator.thickness;
 			break;
 		}
 
@@ -898,6 +1129,7 @@ namespace {
 		float lh = vgui_line_height(ctx, w);
 		float tw = vgui_text_width(w, w->text);
 		float pl = w->padding[0], pt = w->padding[1], pr = w->padding[2], pb = w->padding[3];
+		const vgui_style& st = ctx->style;
 
 		switch (w->kind)
 		{
@@ -948,45 +1180,48 @@ namespace {
 			w->intrinsic_h = lh * vgui_text_lines(w->text) + pt + pb;
 			break;
 		case VGUI_BUTTON:
-			w->intrinsic_w = tw + pl + pr + 4;
-			w->intrinsic_h = std::max(lh + pt + pb, 28.0f);
+			w->intrinsic_w = tw + pl + pr + st.button.text_extra_width;
+			w->intrinsic_h = std::max(lh + pt + pb, st.button.min_height);
 			break;
 		case VGUI_CHECKBOX:
 		case VGUI_RADIO:
 		{
-			float box = std::max(14.0f, std::min(18.0f, lh - 2));
-			float label = w->text.empty() ? 0 : (tw + 8);
+			float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
+			float label = w->text.empty() ? 0 : (tw + st.choice.gap);
 			w->intrinsic_w = box + label + pl + pr;
 			w->intrinsic_h = std::max(box, lh) + pt + pb;
 		}
 		break;
 		case VGUI_SWITCH:
 		{
-			float track = 36;
-			float label = w->text.empty() ? 0 : (tw + 8);
+			float track = st.switch_.width;
+			float label = w->text.empty() ? 0 : (tw + st.switch_.gap);
 			w->intrinsic_w = track + label + pl + pr;
-			w->intrinsic_h = std::max(20.0f, lh) + pt + pb;
+			w->intrinsic_h = std::max(st.switch_.min_control_height, lh) + pt + pb;
 		}
 		break;
 		case VGUI_SLIDER:
-			w->intrinsic_w = w->req_w > 0 ? w->req_w : 180;
-			w->intrinsic_h = std::max(w->req_h, 24.0f);
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : st.slider.req_width;
+			w->intrinsic_h = std::max(w->req_h, st.slider.min_height);
 			break;
 		case VGUI_PROGRESS:
-			w->intrinsic_w = w->req_w > 0 ? w->req_w : 180;
-			w->intrinsic_h = std::max(w->req_h, 20.0f);
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : st.progress.req_width;
+			w->intrinsic_h = std::max(w->req_h, st.progress.min_height);
 			break;
 		case VGUI_EDIT:
 		{
-			float minw = w->text.empty() ? 160.0f : std::max(160.0f, tw + pl + pr + 12);
+			float minw = w->text.empty() ? st.edit.min_width
+				: std::max(st.edit.min_width, tw + pl + pr + st.edit.text_extra_width);
 			w->intrinsic_w = w->req_w > 0 ? w->req_w : minw;
-			float lines = w->multiline ? (float)std::max(3, vgui_text_lines(w->edit_text)) : 1.0f;
+			float lines = w->multiline
+				? (float)std::max(st.edit.multiline_min_lines, vgui_text_lines(w->edit_text))
+				: 1.0f;
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : (lh * lines + pt + pb);
 		}
 		break;
 		case VGUI_SEPARATOR:
 			w->intrinsic_w = w->req_w;
-			w->intrinsic_h = w->req_h > 0 ? w->req_h : 1;
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.separator.thickness;
 			break;
 		}
 
@@ -2154,6 +2389,7 @@ namespace {
 	static bool vgui_scrollbar_geom(vgui_widget* w, int axis, vgui_scrollbar_info* g)
 	{
 		if (!w || !g) return false;
+		const vgui_style& st = w->ctx->style;
 		float ix = w->abs_x + w->padding[0];
 		float iy = w->abs_y + w->padding[1];
 		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
@@ -2161,21 +2397,21 @@ namespace {
 		g->axis = axis;
 		if (axis == 1)
 		{
-			if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= 20.0f) return false;
-			g->track = w->abs_x + w->abs_w - 7.0f;
+			if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= st.panel.scrollbar_min_track) return false;
+			g->track = w->abs_x + w->abs_w - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
 			g->start = iy;
 			g->span = ih;
-			g->thumb_len = std::max(24.0f, ih * ih / w->content_h);
+			g->thumb_len = std::min(ih, std::max(st.panel.scrollbar_min_thumb, ih * ih / w->content_h));
 			g->max_scroll = w->content_h - ih;
 			g->scroll = w->scroll_y;
 		}
 		else if (axis == 2)
 		{
-			if (!w->scrollable_x || w->content_w <= iw + 0.5f || iw <= 20.0f) return false;
-			g->track = w->abs_y + w->abs_h - 7.0f;
+			if (!w->scrollable_x || w->content_w <= iw + 0.5f || iw <= st.panel.scrollbar_min_track) return false;
+			g->track = w->abs_y + w->abs_h - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
 			g->start = ix;
 			g->span = iw;
-			g->thumb_len = std::max(24.0f, iw * iw / w->content_w);
+			g->thumb_len = std::min(iw, std::max(st.panel.scrollbar_min_thumb, iw * iw / w->content_w));
 			g->max_scroll = w->content_w - iw;
 			g->scroll = w->scroll_x;
 		}
@@ -2185,31 +2421,33 @@ namespace {
 			if (!vgui_edit_vbar_visible(w, ih)) return false;
 			float lh = std::max(1.0f, vgui_line_height(w->ctx, w));
 			float ch = (float)vgui_text_lines(w->edit_text) * lh;
+			float corner = st.edit.scrollbar_width + st.edit.scrollbar_inset;
 			float track_end = vgui_edit_hbar_visible(w, iw)
-				? w->abs_y + w->abs_h - 6.0f : iy + ih;
+				? w->abs_y + w->abs_h - corner : iy + ih;
 			float track_h = track_end - iy;
 			if (track_h <= 0.0f) return false;
-			g->track = w->abs_x + w->abs_w - 6.0f;
+			g->track = w->abs_x + w->abs_w - corner;
 			g->start = iy;
 			g->span = track_h;
-			g->thumb_len = std::min(track_h, std::max(20.0f, track_h * ih / ch));
+			g->thumb_len = std::min(track_h, std::max(st.edit.scrollbar_min_thumb, track_h * ih / ch));
 			g->max_scroll = std::max(0.0f, ch - ih);
 			g->scroll = w->edit_scroll_y;
 		}
 		else if (axis == 4)
 		{
-			if (!w->multiline || iw <= 1.0f || ih <= 8.0f) return false;
+			if (!w->multiline || iw <= 1.0f || ih <= st.edit.scrollbar_min_cross) return false;
 			if (!vgui_edit_hbar_visible(w, iw)) return false;
 			float cw = vgui_edit_content_width(w);
+			float corner = st.edit.scrollbar_width + st.edit.scrollbar_inset;
 			float track_end = vgui_edit_vbar_visible(w, ih)
-				? w->abs_x + w->abs_w - 6.0f : ix + iw;
+				? w->abs_x + w->abs_w - corner : ix + iw;
 			float track_w = track_end - ix;
 			if (track_w <= 0.0f) return false;
-			g->track = w->abs_y + w->abs_h - 6.0f;
+			g->track = w->abs_y + w->abs_h - corner;
 			g->start = ix;
 			g->span = track_w;
-			g->thumb_len = std::min(track_w, std::max(20.0f, track_w * iw / cw));
-			g->max_scroll = std::max(0.0f, cw - iw + 2.0f);
+			g->thumb_len = std::min(track_w, std::max(st.edit.scrollbar_min_thumb, track_w * iw / cw));
+			g->max_scroll = std::max(0.0f, cw - iw + st.edit.scrollbar_extra_scroll);
 			g->scroll = w->edit_scroll_x;
 		}
 		else
@@ -2259,8 +2497,11 @@ namespace {
 		{
 			if (!w->visible || !w->enabled) continue;
 			vgui_scrollbar_info g;
+			const vgui_style& st = w->ctx->style;
+			float edit_hit = st.edit.scrollbar_width + st.edit.scrollbar_inset + st.edit.scrollbar_hit_padding;
+			float panel_hit = st.panel.scrollbar_width + st.panel.scrollbar_inset + st.panel.scrollbar_hit_padding;
 			if (w->kind == VGUI_EDIT &&
-				x >= w->abs_x + w->abs_w - 8.0f && x <= w->abs_x + w->abs_w &&
+				x >= w->abs_x + w->abs_w - edit_hit && x <= w->abs_x + w->abs_w &&
 				y >= w->abs_y && y <= w->abs_y + w->abs_h &&
 				vgui_scrollbar_geom(w, 3, &g) &&
 				y >= g.start && y <= g.start + g.span)
@@ -2269,7 +2510,7 @@ namespace {
 				found_axis = 3;
 			}
 			if (w->kind == VGUI_EDIT &&
-				y >= w->abs_y + w->abs_h - 8.0f && y <= w->abs_y + w->abs_h &&
+				y >= w->abs_y + w->abs_h - edit_hit && y <= w->abs_y + w->abs_h &&
 				x >= w->abs_x && x <= w->abs_x + w->abs_w &&
 				vgui_scrollbar_geom(w, 4, &g) &&
 				x >= g.start && x <= g.start + g.span)
@@ -2282,7 +2523,7 @@ namespace {
 				// Keep walking after a hit: ancestor bars are painted on top of
 				// descendant bars where the two overlap, and the horizontal bar is
 				// painted after the vertical one.
-				if (x >= w->abs_x + w->abs_w - 8.0f && x <= w->abs_x + w->abs_w &&
+				if (x >= w->abs_x + w->abs_w - panel_hit && x <= w->abs_x + w->abs_w &&
 					y >= w->abs_y && y <= w->abs_y + w->abs_h &&
 					vgui_scrollbar_geom(w, 1, &g) &&
 					y >= g.start && y <= g.start + g.span)
@@ -2290,7 +2531,7 @@ namespace {
 					found = w;
 					found_axis = 1;
 				}
-				if (y >= w->abs_y + w->abs_h - 8.0f && y <= w->abs_y + w->abs_h &&
+				if (y >= w->abs_y + w->abs_h - panel_hit && y <= w->abs_y + w->abs_h &&
 					x >= w->abs_x && x <= w->abs_x + w->abs_w &&
 					vgui_scrollbar_geom(w, 2, &g) &&
 					x >= g.start && x <= g.start + g.span)
@@ -2659,7 +2900,8 @@ namespace {
 				float cw = vgui_edit_content_width(e);
 				if (cw > iw + 0.5f)
 				{
-					e->edit_scroll_x = vgui_clampf(e->edit_scroll_x - wy * 40.0f, 0.0f, cw - iw + 2.0f);
+					e->edit_scroll_x = vgui_clampf(e->edit_scroll_x - wy * 40.0f, 0.0f,
+						cw - iw + ctx->style.edit.scrollbar_extra_scroll);
 					scrolled = true;
 				}
 			}
@@ -2667,7 +2909,7 @@ namespace {
 		if (wx != 0)
 		{
 			float cw = vgui_edit_content_width(e);
-			float max_scroll = std::max(0.0f, cw - iw + 2.0f);
+			float max_scroll = std::max(0.0f, cw - iw + ctx->style.edit.scrollbar_extra_scroll);
 			if (max_scroll > 0.0f)
 			{
 				e->edit_scroll_x = vgui_clampf(e->edit_scroll_x - wx * 40.0f, 0.0f, max_scroll);
@@ -2845,13 +3087,13 @@ namespace {
 
 	// Scrollbar feedback: only the thumb changes, and only slightly, so the
 	// track stays quiet and the bar remains readable on both dark and light
-	// themes.  Mixing towards the text colour works with custom themes too.
+	// themes.  The hover colour is part of the theme.
 	static uint32_t vgui_scrollbar_thumb_color(vgui_widget* w, int axis)
 	{
 		vgui_context* ctx = w->ctx;
 		uint32_t c = ctx->theme.scrollbar;
-		if (vgui_scrollbar_hovered(ctx, w, axis))
-			c = vgui_mix_color(c, ctx->theme.text, 0.2f);
+		if (vgui_scrollbar_hovered(ctx, w, axis) && ctx->theme.scrollbar_hover)
+			c = ctx->theme.scrollbar_hover;
 		return vgui_widget_color(w, c);
 	}
 
@@ -3133,7 +3375,7 @@ namespace {
 		st.fontsize = vgui_font_size(ctx, w);
 		st.color = vgui_ovg_color(color);
 		st.align = { 0.0f, 0.0f };
-		st.min_subpixel = 1;
+		st.min_subpixel = ctx->style.text_min_subpixel;
 
 		text_st_t t = {};
 		t.pos = { px, py };
@@ -3147,7 +3389,7 @@ namespace {
 	{
 		vgui_context* ctx = w->ctx;
 		uint32_t c = w->text_color ? w->text_color : ctx->theme.text;
-		if (!w->enabled) c = vgui_mix_color(c, ctx->theme.disabled, 0.65f);
+		if (!w->enabled) c = vgui_mix_color(c, ctx->theme.disabled, ctx->style.disabled_text_mix);
 		return vgui_widget_color(w, c);
 	}
 
@@ -3164,41 +3406,49 @@ namespace {
 	{
 		if (!w->focused) return;
 		vgui_context* ctx = w->ctx;
-		if (w->abs_w < 4.0f || w->abs_h < 4.0f) return;
+		const vgui_focus_style& fs = ctx->style.focus;
+		if (w->abs_w < fs.min_size || w->abs_h < fs.min_size) return;
 		float alpha = vgui_focus_alpha(w);
 		if (alpha <= 0.001f) return;
 		// 焦点环画在控件内部（与边框重合）：父容器的裁剪矩形再也不可能把
 		// 焦点环的一部分裁掉，控件被部分滚动出可视区时仍能看到焦点。
-		float r = w->rounding > 0 ? w->rounding : 4;
+		float r = w->rounding > 0 ? w->rounding : fs.rounding;
 		uint32_t color = vgui_alpha_color(vgui_widget_color(w, ctx->theme.accent), alpha);
-		vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, r,
-			color, 1);
+		float d[] = { fs.width * 2.0f,fs.width * 2.0f };
+		cb->set_dash(vg, d, 2, 0);
+		vgui_stroke_rect(cb, vg, w->abs_x + fs.inset, w->abs_y + fs.inset,
+			w->abs_w - fs.inset * 2.0f, w->abs_h - fs.inset * 2.0f, r, color, fs.width);
 	}
 
 	static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_button_style& bs = ctx->style.button;
 		uint32_t bg = w->bg ? w->bg : ctx->theme.button_bg;
 		uint32_t border = w->border ? w->border : ctx->theme.button_border;
 		if (!w->enabled)
 		{
-			bg = vgui_mix_color(bg, ctx->theme.disabled, 0.35f);
-			border = vgui_mix_color(border, ctx->theme.disabled, 0.35f);
+			bg = vgui_mix_color(bg, ctx->theme.disabled, bs.disabled_mix);
+			border = vgui_mix_color(border, ctx->theme.disabled, bs.disabled_mix);
 		}
 		else if (w->pressed)
 		{
-			bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(0.35f, w->press_anim));
+			bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(bs.press_mix_min, w->press_anim));
 		}
 		else if (w->hovered || w->hover_anim > 0.01f)
 		{
-			bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(0.25f, w->hover_anim));
+			bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(bs.hover_mix_min, w->hover_anim));
 		}
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
 		if (w->border_width > 0)
-			vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
 				vgui_widget_color(w, border), w->border_width);
+		}
 
-		float ty = w->abs_y + w->padding[1] + (w->pressed ? 1.0f : 0.0f);
+		float ty = w->abs_y + w->padding[1] + (w->pressed ? bs.press_offset : 0.0f);
 		float tx = w->abs_x + w->padding[0];
 		float tw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float th = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
@@ -3212,8 +3462,12 @@ namespace {
 		if (w->bg)
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
 		if (w->border_width > 0 && w->border)
-			vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
 				vgui_widget_color(w, w->border), w->border_width);
+		}
 		vgui_draw_text(ctx, cb, vg, w, w->text,
 			w->abs_x + w->padding[0], w->abs_y + w->padding[1],
 			std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]),
@@ -3224,8 +3478,9 @@ namespace {
 	static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_style& st = ctx->style;
 		float lh = vgui_line_height(ctx, w);
-		float box = std::max(14.0f, std::min(18.0f, lh - 2));
+		float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
 		float bx = w->abs_x + w->padding[0];
 		float by = w->abs_y + (w->abs_h - box) * 0.5f;
 		uint32_t border = w->enabled
@@ -3234,32 +3489,39 @@ namespace {
 			: ctx->theme.disabled;
 		uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 
-		vgui_fill_rect(cb, vg, bx, by, box, box, 3, vgui_widget_color(w, ctx->theme.track));
+		vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, ctx->theme.track));
 		if (w->check_anim > 0.01f)
 		{
 			uint32_t c = vgui_mix_color(ctx->theme.track, accent, w->check_anim);
-			vgui_fill_rect(cb, vg, bx, by, box, box, 3, vgui_widget_color(w, c));
+			vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, c));
 		}
-		vgui_stroke_rect(cb, vg, bx + 0.5f, by + 0.5f, box - 1, box - 1, 3, vgui_widget_color(w, border), 1);
+		if (st.checkbox.border_width > 0)
+		{
+			float bi = st.checkbox.border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, bx + bi, by + bi, box - st.checkbox.border_width,
+				box - st.checkbox.border_width, st.checkbox.rounding, vgui_widget_color(w, border),
+				st.checkbox.border_width);
+		}
 
-		if (w->check_anim > 0.05f)
+		if (w->check_anim > 0.05f && st.checkbox.check_width > 0)
 		{
 			float t = w->check_anim;
-			cb->set_line_width(vg, 2.0f);
+			cb->set_line_width(vg, st.checkbox.check_width);
 			cb->set_line_cap(vg, 1);
 			cb->set_line_join(vg, 1);
-			cb->move_to(vg, bx + box * 0.22f, by + box * 0.52f);
-			cb->line_to(vg, bx + box * 0.42f, by + box * 0.72f);
-			cb->line_to(vg, bx + box * 0.80f, by + box * 0.28f);
-			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, vgui_alpha_color(0xFFFFFFFF, t))));
+			cb->move_to(vg, bx + box * st.checkbox.check_start_x, by + box * st.checkbox.check_start_y);
+			cb->line_to(vg, bx + box * st.checkbox.check_mid_x, by + box * st.checkbox.check_mid_y);
+			cb->line_to(vg, bx + box * st.checkbox.check_end_x, by + box * st.checkbox.check_end_y);
+			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w,
+				vgui_alpha_color(ctx->theme.checkmark, t))));
 			cb->stroke(vg);
 		}
 
 		if (!w->text.empty())
 		{
-			float tx = bx + box + 8;
+			float tx = bx + box + st.choice.gap;
 			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
+				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -3267,8 +3529,9 @@ namespace {
 	static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_style& st = ctx->style;
 		float lh = vgui_line_height(ctx, w);
-		float d = std::max(14.0f, std::min(18.0f, lh - 2));
+		float d = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
 		float cx = w->abs_x + w->padding[0] + d * 0.5f;
 		float cy = w->abs_y + w->abs_h * 0.5f;
 		uint32_t border = w->enabled
@@ -3280,22 +3543,25 @@ namespace {
 		cb->circle(vg, cx, cy, d * 0.5f);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.track)));
 		cb->fill(vg);
-		cb->circle(vg, cx, cy, d * 0.5f);
-		cb->set_line_width(vg, 1);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
-		cb->stroke(vg);
+		if (st.radio.border_width > 0)
+		{
+			cb->circle(vg, cx, cy, d * 0.5f);
+			cb->set_line_width(vg, st.radio.border_width);
+			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
+			cb->stroke(vg);
+		}
 		if (w->check_anim > 0.01f)
 		{
-			cb->circle(vg, cx, cy, d * 0.5f * 0.55f * w->check_anim);
+			cb->circle(vg, cx, cy, d * 0.5f * st.radio.dot_scale * w->check_anim);
 			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, accent)));
 			cb->fill(vg);
 		}
 
 		if (!w->text.empty())
 		{
-			float tx = cx + d * 0.5f + 8;
+			float tx = cx + d * 0.5f + st.choice.gap;
 			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
+				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -3303,29 +3569,32 @@ namespace {
 	static void vgui_draw_switch(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_switch_style& ss = ctx->style.switch_;
 		float lh = vgui_line_height(ctx, w);
-		float track_w = 36;
-		float track_h = std::max(18.0f, std::min(22.0f, lh - 2));
+		float track_w = ss.width;
+		float track_h = std::max(ss.min_height, std::min(ss.max_height, lh - ss.line_offset));
 		float x = w->abs_x + w->padding[0];
 		float y = w->abs_y + (w->abs_h - track_h) * 0.5f;
 		uint32_t on = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
-		uint32_t off = w->enabled ? ctx->theme.track : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+		uint32_t off = w->enabled ? ctx->theme.track
+			: vgui_mix_color(ctx->theme.track, ctx->theme.disabled, ss.disabled_mix);
 		float t = w->check_anim;
 		uint32_t track = vgui_mix_color(off, on, t);
 		vgui_fill_rect(cb, vg, x, y, track_w, track_h, track_h * 0.5f, vgui_widget_color(w, track));
 
-		float radius = track_h * 0.5f - 2;
-		float kx = x + radius + 2 + t * (track_w - radius * 2 - 4);
+		float radius = std::max(0.0f, track_h * 0.5f - ss.thumb_inset);
+		float travel = std::max(0.0f, track_w - radius * 2.0f - ss.thumb_inset * 2.0f);
+		float kx = x + radius + ss.thumb_inset + t * travel;
 		float ky = y + track_h * 0.5f;
 		cb->circle(vg, kx, ky, radius);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, 0xFFFFFFFF)));
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.switch_thumb)));
 		cb->fill(vg);
 
 		if (!w->text.empty())
 		{
-			float tx = x + track_w + 8;
+			float tx = x + track_w + ss.gap;
 			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), 0.0f, 0.5f);
+				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -3333,40 +3602,45 @@ namespace {
 	static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_slider_style& ss = ctx->style.slider;
 		uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
-		uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track) : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+		uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track)
+			: vgui_mix_color(ctx->theme.track, ctx->theme.disabled, ss.disabled_mix);
 		uint32_t knob_color = (w->focused && w->enabled)
 			? vgui_mix_color(accent, ctx->theme.accent_hover, vgui_focus_alpha(w))
 			: accent;
 		float t = vgui_clampf(w->value, 0.0f, 1.0f);
-		float knob = 7;
+		float knob = ss.knob_radius;
+		float thickness = ss.track_thickness;
+		float track_rounding = thickness * 0.5f;
 		float inner_w = std::max(1.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float inner_h = std::max(1.0f, w->abs_h - w->padding[1] - w->padding[3]);
 
 		if (w->bg)
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
-				vgui_widget_color(w, vgui_alpha_color(w->bg, 0.25f)));
+				vgui_widget_color(w, vgui_alpha_color(w->bg, ss.background_alpha)));
 
 		if (!w->vertical)
 		{
 			float x = w->abs_x + w->padding[0];
-			float y = w->abs_y + w->abs_h * 0.5f - 2;
-			vgui_fill_rect(cb, vg, x, y, inner_w, 4, 2, vgui_widget_color(w, track));
-			vgui_fill_rect(cb, vg, x, y, inner_w * t, 4, 2, vgui_widget_color(w, accent));
+			float y = w->abs_y + w->abs_h * 0.5f - thickness * 0.5f;
+			vgui_fill_rect(cb, vg, x, y, inner_w, thickness, track_rounding, vgui_widget_color(w, track));
+			vgui_fill_rect(cb, vg, x, y, inner_w * t, thickness, track_rounding, vgui_widget_color(w, accent));
 			float kx = x + inner_w * t;
-			cb->circle(vg, kx, y + 2, knob);
+			cb->circle(vg, kx, y + thickness * 0.5f, knob);
 			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 			cb->fill(vg);
 		}
 		else
 		{
-			float x = w->abs_x + w->abs_w * 0.5f - 2;
+			float x = w->abs_x + w->abs_w * 0.5f - thickness * 0.5f;
 			float y = w->abs_y + w->padding[1];
-			vgui_fill_rect(cb, vg, x, y, 4, inner_h, 2, vgui_widget_color(w, track));
+			vgui_fill_rect(cb, vg, x, y, thickness, inner_h, track_rounding, vgui_widget_color(w, track));
 			float fill_h = inner_h * t;
-			vgui_fill_rect(cb, vg, x, y + inner_h - fill_h, 4, fill_h, 2, vgui_widget_color(w, accent));
+			vgui_fill_rect(cb, vg, x, y + inner_h - fill_h, thickness, fill_h, track_rounding,
+				vgui_widget_color(w, accent));
 			float ky = y + inner_h - fill_h;
-			cb->circle(vg, x + 2, ky, knob);
+			cb->circle(vg, x + thickness * 0.5f, ky, knob);
 			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 			cb->fill(vg);
 		}
@@ -3376,24 +3650,27 @@ namespace {
 	static void vgui_draw_progress(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_progress_style& ps = ctx->style.progress;
 		uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
-		uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track) : vgui_mix_color(ctx->theme.track, ctx->theme.disabled, 0.5f);
+		uint32_t track = w->enabled ? (w->track ? w->track : ctx->theme.track)
+			: vgui_mix_color(ctx->theme.track, ctx->theme.disabled, ps.disabled_mix);
 		float t = vgui_clampf(w->value, 0.0f, 1.0f);
 		float inner_w = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float inner_h = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
 		float x = w->abs_x + w->padding[0];
 		float y = w->abs_y + w->padding[1];
+		float rounding = w->rounding > 0 ? w->rounding : ps.rounding;
 
 		if (!w->vertical)
 		{
-			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, track));
-			vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, accent));
+			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, vgui_widget_color(w, track));
+			vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, rounding, vgui_widget_color(w, accent));
 		}
 		else
 		{
-			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, track));
+			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, vgui_widget_color(w, track));
 			float fh = inner_h * t;
-			vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, w->rounding > 0 ? w->rounding : 3, vgui_widget_color(w, accent));
+			vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, rounding, vgui_widget_color(w, accent));
 		}
 
 		std::string label = w->text;
@@ -3410,17 +3687,22 @@ namespace {
 	static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_style& st = ctx->style;
 		uint32_t bg = w->bg ? w->bg : ctx->theme.edit_bg;
 		uint32_t base_border = w->border ? w->border : ctx->theme.button_border;
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(base_border, ctx->theme.accent, vgui_focus_alpha(w)) : base_border)
 			: ctx->theme.disabled;
-		if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, 0.25f);
+		if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, st.edit.disabled_bg_mix);
 
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
 		if (w->border_width > 0)
-			vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
 				vgui_widget_color(w, border), w->border_width);
+		}
 
 		float ix = w->abs_x + w->padding[0];
 		float iy = w->abs_y + w->padding[1];
@@ -3482,8 +3764,9 @@ namespace {
 				float sx = tx + vgui_text_width_n(w, shown.data(), sa);
 				float sw = vgui_text_width_n(w, shown.data() + sa, sb - sa);
 				// 选中换行符时补一小段尾巴，让跨行选中看起来是连续的
-				if (sel_b > line_end) sw += std::min(6.0f, lh * 0.3f);
-				if (sw < 1.0f) sw = 1.0f;
+				if (sel_b > line_end)
+					sw += std::min(st.edit.selection_tail_max_width, lh * st.edit.selection_tail_line_ratio);
+				if (sw < st.edit.selection_min_width) sw = st.edit.selection_min_width;
 				vgui_sel_band band;
 				band.x0 = sx;
 				band.x1 = sx + sw;
@@ -3511,7 +3794,8 @@ namespace {
 		if (!sel_bands.empty())
 		{
 			uint32_t selc = w->sel_color ? w->sel_color : ctx->theme.edit_selection;
-			if (!w->focused) selc = vgui_alpha_color(selc, 0.6f);
+			if (!w->focused)
+				selc = vgui_alpha_color(selc, st.edit.selection_unfocused_alpha);
 			vgui_fill_selection(cb, vg, sel_bands, w->sel_rounding, vgui_widget_color(w, selc));
 		}
 
@@ -3523,7 +3807,8 @@ namespace {
 			{
 				// Draw the caret only for the line containing the cursor.
 				float cx = tx + vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
-				bool blink = (std::fmod(w->caret_blink, 1.0f) < 0.55f);
+				bool blink = (std::fmod(w->caret_blink, st.edit.caret_blink_period) <
+					st.edit.caret_blink_period * st.edit.caret_blink_duty);
 				if (blink)
 					vgui_fill_rect(cb, vg, cx, dl.ty, w->caret_width, lh, 0, color);
 			}
@@ -3537,7 +3822,9 @@ namespace {
 				if (ib < ia) std::swap(ia, ib);
 				float ux = cx + vgui_text_width_n(w, w->ime_text.data(), ia);
 				float uw = vgui_text_width_n(w, w->ime_text.data() + ia, ib - ia);
-				vgui_fill_rect(cb, vg, ux, dl.ty + lh - 1, std::max(2.0f, uw), 1, 0, ctx->theme.accent);
+				vgui_fill_rect(cb, vg, ux, dl.ty + lh - st.edit.ime_underline_width,
+					std::max(st.edit.ime_underline_min_width, uw), st.edit.ime_underline_width, 0,
+					ctx->theme.accent);
 			}
 		}
 
@@ -3549,6 +3836,8 @@ namespace {
 		{
 			vgui_scrollbar_info g;
 			uint32_t track_color = vgui_widget_color(w, ctx->theme.track);
+			float bar_w = st.edit.scrollbar_width;
+			float bar_r = st.edit.scrollbar_rounding;
 			// Keep the track opaque: compositing it with whatever happens to be
 			// behind the widget can make it exactly the same color as the thumb
 			// (e.g. the light theme's #DCDCDC track over a black root became
@@ -3556,13 +3845,13 @@ namespace {
 			// scrollbar look like one long thumb.
 			if (vgui_scrollbar_geom(w, 3, &g))
 			{
-				vgui_fill_rect(cb, vg, g.track, g.start, 4.0f, g.span, 2.0f, track_color);
-				vgui_fill_rect(cb, vg, g.track, g.thumb, 4.0f, g.thumb_len, 2.0f, vgui_scrollbar_thumb_color(w, 3));
+				vgui_fill_rect(cb, vg, g.track, g.start, bar_w, g.span, bar_r, track_color);
+				vgui_fill_rect(cb, vg, g.track, g.thumb, bar_w, g.thumb_len, bar_r, vgui_scrollbar_thumb_color(w, 3));
 			}
 			if (vgui_scrollbar_geom(w, 4, &g))
 			{
-				vgui_fill_rect(cb, vg, g.start, g.track, g.span, 4.0f, 2.0f, track_color);
-				vgui_fill_rect(cb, vg, g.thumb, g.track, g.thumb_len, 4.0f, 2.0f, vgui_scrollbar_thumb_color(w, 4));
+				vgui_fill_rect(cb, vg, g.start, g.track, g.span, bar_w, bar_r, track_color);
+				vgui_fill_rect(cb, vg, g.thumb, g.track, g.thumb_len, bar_w, bar_r, vgui_scrollbar_thumb_color(w, 4));
 			}
 		}
 
@@ -3572,27 +3861,31 @@ namespace {
 	static void vgui_draw_scrollbars(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
+		const vgui_panel_style& ps = ctx->style.panel;
 		float ix = w->abs_x + w->padding[0];
 		float iy = w->abs_y + w->padding[1];
 		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
-		if (w->scrollable_y && w->content_h > ih + 0.5f && ih > 20)
+		float bar_w = ps.scrollbar_width;
+		float bar_r = ps.scrollbar_rounding;
+		float corner = bar_w + ps.scrollbar_inset;
+		if (w->scrollable_y && w->content_h > ih + 0.5f && ih > ps.scrollbar_min_track)
 		{
-			float track_x = w->abs_x + w->abs_w - 7;
-			float th = std::max(24.0f, ih * ih / w->content_h);
+			float track_x = w->abs_x + w->abs_w - corner;
+			float th = std::min(ih, std::max(ps.scrollbar_min_thumb, ih * ih / w->content_h));
 			float max_scroll = w->content_h - ih;
 			float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
-			vgui_fill_rect(cb, vg, track_x, iy, 5, ih, 2.5f, vgui_widget_color(w, ctx->theme.track));
-			vgui_fill_rect(cb, vg, track_x, ty, 5, th, 2.5f, vgui_scrollbar_thumb_color(w, 1));
+			vgui_fill_rect(cb, vg, track_x, iy, bar_w, ih, bar_r, vgui_widget_color(w, ctx->theme.track));
+			vgui_fill_rect(cb, vg, track_x, ty, bar_w, th, bar_r, vgui_scrollbar_thumb_color(w, 1));
 		}
-		if (w->scrollable_x && w->content_w > iw + 0.5f && iw > 20)
+		if (w->scrollable_x && w->content_w > iw + 0.5f && iw > ps.scrollbar_min_track)
 		{
-			float track_y = w->abs_y + w->abs_h - 7;
-			float tw = std::max(24.0f, iw * iw / w->content_w);
+			float track_y = w->abs_y + w->abs_h - corner;
+			float tw = std::min(iw, std::max(ps.scrollbar_min_thumb, iw * iw / w->content_w));
 			float max_scroll = w->content_w - iw;
 			float tx = ix + (max_scroll > 0 ? (w->scroll_x / max_scroll) * (iw - tw) : 0);
-			vgui_fill_rect(cb, vg, ix, track_y, iw, 5, 2.5f, vgui_widget_color(w, ctx->theme.track));
-			vgui_fill_rect(cb, vg, tx, track_y, tw, 5, 2.5f, vgui_scrollbar_thumb_color(w, 2));
+			vgui_fill_rect(cb, vg, ix, track_y, iw, bar_w, bar_r, vgui_widget_color(w, ctx->theme.track));
+			vgui_fill_rect(cb, vg, tx, track_y, tw, bar_w, bar_r, vgui_scrollbar_thumb_color(w, 2));
 		}
 	}
 
@@ -3606,8 +3899,12 @@ namespace {
 			if (w->bg)
 				vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
 			if (w->border_width > 0 && w->border)
-				vgui_stroke_rect(cb, vg, w->abs_x + 0.5f, w->abs_y + 0.5f, w->abs_w - 1, w->abs_h - 1, w->rounding,
+			{
+				float bi = w->border_width * 0.5f;
+				vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+					w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
 					vgui_widget_color(w, w->border), w->border_width);
+			}
 
 			cb->save(vg);
 			if (w->clip_children)
@@ -3633,7 +3930,8 @@ namespace {
 		case VGUI_PROGRESS: vgui_draw_progress(w, cb, vg); break;
 		case VGUI_EDIT: vgui_draw_edit(w, cb, vg, clips); break;
 		case VGUI_SEPARATOR:
-			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, std::max(1.0f, w->abs_h), 0,
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w,
+				std::max(ctx->style.separator.thickness, w->abs_h), 0,
 				vgui_widget_color(w, w->bg ? w->bg : ctx->theme.panel_border));
 			break;
 		default: break;
@@ -3649,7 +3947,12 @@ namespace {
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
 
-		float k = 1.0f - std::exp(-std::max(0.0f, dt) * 18.0f);
+		// speed 0 means "no tween": snap to the target state instead of freezing
+		// any animation that happened to be in flight when the style changed.
+		float speed = ctx->style.animation_speed;
+		float k = speed > 0.0f
+			? 1.0f - std::exp(-std::max(0.0f, dt) * speed)
+			: 1.0f;
 		for (vgui_widget* w : ctx->all_widgets)
 		{
 			if (!w || !ctx->alive.count(w) || w->destroy_pending) continue;
@@ -3692,11 +3995,13 @@ extern "C" {
 		ctx->font = font;
 		ctx->font_size = (font_size > 0) ? font_size : 16.0f;
 		ctx->theme = vgui_default_theme();
+		ctx->style = vgui_default_style();
 
 		ctx->root = vgui_new_widget(ctx, VGUI_PANEL, nullptr);
 		ctx->root->bg = 0;
 		ctx->root->border = 0;
 		ctx->root->border_width = 0;
+		ctx->root->rounding = 0;
 		ctx->root->padding[0] = ctx->root->padding[1] = 0;
 		ctx->root->padding[2] = ctx->root->padding[3] = 0;
 		ctx->root->layout = VGUI_LAYOUT_ABSOLUTE;
@@ -3757,7 +4062,16 @@ extern "C" {
 	{
 		if (!ctx || !theme) return;
 		vgui_theme old = ctx->theme;
-		ctx->theme = *theme;
+		vgui_theme next = *theme;
+		vgui_theme def = vgui_default_theme();
+		// Backwards compatibility for themes written before the three new
+		// colours existed.  An unset hover colour keeps the thumb unchanged;
+		// unset foreground colours fall back to the default (white).
+		if (!next.scrollbar_hover)
+			next.scrollbar_hover = next.scrollbar ? next.scrollbar : def.scrollbar_hover;
+		if (!next.checkmark) next.checkmark = def.checkmark;
+		if (!next.switch_thumb) next.switch_thumb = def.switch_thumb;
+		ctx->theme = next;
 
 		// Widgets copy their defaults when they are created.  Move the colors that
 		// still match the old defaults over to the new theme so a theme switch is
@@ -3765,20 +4079,96 @@ extern "C" {
 		for (vgui_widget* w : ctx->all_widgets)
 		{
 			if (!w || !ctx->alive.count(w)) continue;
-			if (w->text_color == old.text) w->text_color = theme->text;
-			if (w->accent == old.accent) w->accent = theme->accent;
-			if (w->track == old.track) w->track = theme->track;
-			if (w->bg == old.panel_bg) w->bg = theme->panel_bg;
-			else if (w->bg == old.button_bg) w->bg = theme->button_bg;
-			else if (w->bg == old.edit_bg) w->bg = theme->edit_bg;
-			if (w->border == old.panel_border) w->border = theme->panel_border;
-			else if (w->border == old.button_border) w->border = theme->button_border;
+			if (w->text_color == old.text) w->text_color = next.text;
+			if (w->accent == old.accent) w->accent = next.accent;
+			if (w->track == old.track) w->track = next.track;
+			if (w->bg == old.panel_bg) w->bg = next.panel_bg;
+			else if (w->bg == old.button_bg) w->bg = next.button_bg;
+			else if (w->bg == old.edit_bg) w->bg = next.edit_bg;
+			if (w->border == old.panel_border) w->border = next.panel_border;
+			else if (w->border == old.button_border) w->border = next.button_border;
 		}
 	}
 
 	void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme)
 	{
 		if (theme) *theme = ctx ? ctx->theme : vgui_theme();
+	}
+
+	void vgui_style_default(vgui_style* style)
+	{
+		if (style) *style = vgui_default_style();
+	}
+
+	void vgui_context_set_style(vgui_context* ctx, const vgui_style* style)
+	{
+		if (!ctx || !style) return;
+		vgui_style old = ctx->style;
+		vgui_style next = *style;
+		vgui_sanitize_style(&next);
+		ctx->style = next;
+
+		auto move = [](float& value, float old_value, float new_value)
+			{
+				if (value == old_value) value = new_value;
+			};
+		for (vgui_widget* w : ctx->all_widgets)
+		{
+			if (!w || !ctx->alive.count(w) || w == ctx->root) continue;
+			switch (w->kind)
+			{
+			case VGUI_PANEL:
+				if (w->padding[0] == old.panel.padding && w->padding[1] == old.panel.padding &&
+					w->padding[2] == old.panel.padding && w->padding[3] == old.panel.padding)
+					w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = next.panel.padding;
+				move(w->border_width, old.panel.border_width, next.panel.border_width);
+				move(w->rounding, old.panel.rounding, next.panel.rounding);
+				break;
+			case VGUI_LABEL:
+				move(w->padding[0], old.label.padding_x, next.label.padding_x);
+				move(w->padding[2], old.label.padding_x, next.label.padding_x);
+				break;
+			case VGUI_BUTTON:
+				move(w->padding[0], old.button.padding_x, next.button.padding_x);
+				move(w->padding[2], old.button.padding_x, next.button.padding_x);
+				move(w->padding[1], old.button.padding_y, next.button.padding_y);
+				move(w->padding[3], old.button.padding_y, next.button.padding_y);
+				move(w->border_width, old.button.border_width, next.button.border_width);
+				move(w->rounding, old.button.rounding, next.button.rounding);
+				break;
+			case VGUI_SLIDER:
+				move(w->req_w, old.slider.req_width, next.slider.req_width);
+				move(w->req_h, old.slider.min_height, next.slider.min_height);
+				break;
+			case VGUI_PROGRESS:
+				move(w->req_w, old.progress.req_width, next.progress.req_width);
+				move(w->req_h, old.progress.min_height, next.progress.min_height);
+				break;
+			case VGUI_EDIT:
+				move(w->padding[0], old.edit.padding_x, next.edit.padding_x);
+				move(w->padding[2], old.edit.padding_x, next.edit.padding_x);
+				move(w->padding[1], old.edit.padding_y, next.edit.padding_y);
+				move(w->padding[3], old.edit.padding_y, next.edit.padding_y);
+				move(w->border_width, old.edit.border_width, next.edit.border_width);
+				move(w->rounding, old.edit.rounding, next.edit.rounding);
+				move(w->req_w, old.edit.req_width, next.edit.req_width);
+				move(w->req_h, old.edit.req_height, next.edit.req_height);
+				move(w->sel_rounding, old.edit.selection_rounding, next.edit.selection_rounding);
+				move(w->caret_width, old.edit.caret_width, next.edit.caret_width);
+				break;
+			case VGUI_SEPARATOR:
+				move(w->req_h, old.separator.thickness, next.separator.thickness);
+				break;
+			default:
+				break;
+			}
+		}
+		ctx->layout_dirty = true;
+	}
+
+	void vgui_context_get_style(vgui_context* ctx, vgui_style* style)
+	{
+		if (style) *style = ctx ? ctx->style : vgui_default_style();
 	}
 
 	void vgui_context_set_focus_alpha(vgui_context* ctx, float alpha)

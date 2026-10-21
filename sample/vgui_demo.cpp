@@ -40,6 +40,9 @@ static vgui_theme theme_dark()
 	t.edit_selection = 0x80409EFF;
 	t.scrollbar = 0xFF555555;
 	t.disabled = 0xFF808080;
+	t.scrollbar_hover = 0xFF727272;
+	t.checkmark = 0xFFFFFFFF;
+	t.switch_thumb = 0xFFFFFFFF;
 	return t;
 }
 
@@ -61,6 +64,9 @@ static vgui_theme theme_light()
 	t.edit_selection = 0x802D7FF9;
 	t.scrollbar = 0xFF9A9A9A;
 	t.disabled = 0xFFAAAAAA;
+	t.scrollbar_hover = 0xFF858585;
+	t.checkmark = 0xFFFFFFFF;
+	t.switch_thumb = 0xFFFFFFFF;
 	return t;
 }
 
@@ -82,6 +88,9 @@ static vgui_theme theme_green()
 	t.edit_selection = 0x802E8B57;
 	t.scrollbar = 0xFF6FA57B;
 	t.disabled = 0xFF8FA894;
+	t.scrollbar_hover = 0xFF5F8E69;
+	t.checkmark = 0xFFFFFFFF;
+	t.switch_thumb = 0xFFFFFFFF;
 	return t;
 }
 

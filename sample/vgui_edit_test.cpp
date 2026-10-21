@@ -114,6 +114,7 @@ static void key(vgui_context* ui, int k, int mods = 0)
 
 int main()
 {
+	setvbuf(stdout, nullptr, _IONBF, 0);
 	auto* wg = new app_mgr();
 	font_familys_t* familys = new_font_family(wg->font_ctx, "Consolas,微软雅黑", 0);
 	vgui_context* ui = vgui_create(familys, 16.0f);
@@ -533,7 +534,121 @@ int main()
 	vgui_edit_select_all(pw);
 	check(vgui_edit_copy(pw) == 1, "密码框可选中复制");
 
+	//---- 样式 API / 主题新增颜色 ----
+	{
+		vgui_style def = {};
+		vgui_style_default(&def);
+		check(def.panel.padding == 8.0f && def.button.rounding == 4.0f &&
+			def.edit.scrollbar_width == 4.0f && def.edit.caret_width == 1.0f,
+			"vgui_style_default 填充当前默认值");
+
+		vgui_style before = {};
+		vgui_context_get_style(ui, &before);
+		check(before.panel.scrollbar_width == 5.0f && before.edit.scrollbar_width == 4.0f,
+			"vgui_context_get_style 返回上下文样式");
+
+		// 已存在的编辑框仍使用旧默认宽度时，改样式应迁移其请求尺寸。
+		vgui_widget* se = vgui_widget_add(vgui_root(ui), VGUI_EDIT, nullptr);
+		vgui_update(ui, 0.016f);
+		float sx0 = 0, sy0 = 0, sw0 = 0, sh0 = 0;
+		vgui_widget_get_rect(se, &sx0, &sy0, &sw0, &sh0);
+		check(sw0 == def.edit.req_width, "新建编辑框使用 style.edit.req_width");
+
+		vgui_style wide = before;
+		wide.edit.req_width = 233.0f;
+		wide.button.min_height = 41.0f;
+		vgui_context_set_style(ui, &wide);
+		vgui_update(ui, 0.016f);
+		float sx1 = 0, sy1 = 0, sw1 = 0, sh1 = 0;
+		vgui_widget_get_rect(se, &sx1, &sy1, &sw1, &sh1);
+		check(sw1 == 233.0f, "vgui_context_set_style 迁移已有控件的默认尺寸");
+
+		vgui_widget* sb = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "style");
+		vgui_update(ui, 0.016f);
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(sb, &bx, &by, &bw, &bh);
+		check(bh >= 41.0f, "按钮最小高度来自 style");
+
+		vgui_style got = {};
+		vgui_context_get_style(ui, &got);
+		check(got.button.min_height == 41.0f && got.edit.req_width == 233.0f,
+			"vgui_context_get_style 可读回修改");
+		vgui_context_set_style(ui, &def);
+		vgui_update(ui, 0.016f);
+
+		vgui_theme th = {};
+		vgui_context_get_theme(ui, &th);
+		check(th.scrollbar_hover != 0 && th.checkmark != 0 && th.switch_thumb != 0,
+			"默认主题包含滚动条悬停/勾选/开关颜色");
+		th.scrollbar_hover = 0;
+		th.checkmark = 0;
+		th.switch_thumb = 0;
+		vgui_theme fallback_scroll = th;
+		vgui_context_set_theme(ui, &th);
+		vgui_context_get_theme(ui, &th);
+		check(th.scrollbar_hover == fallback_scroll.scrollbar,
+			"旧主题缺少 scrollbar_hover 时回退到 scrollbar 色");
+		check(th.checkmark == 0xFFFFFFFFu && th.switch_thumb == 0xFFFFFFFFu,
+			"旧主题缺少勾选/开关颜色时回退到白色");
+	}
+
 	printf("\n%s（%d 个失败）\n", g_fail ? "存在失败项" : "全部通过", g_fail);
+
+	//---- dash state save/restore regression ----
+	// A saved state owns its dash array. Drawing a focused edit leaves a dash
+	// pattern on the context, and the edit's save/restore path must not free
+	// the source state's dash array (which used to double-free here).
+	{
+		ovg_ctx_cb* cb = new_ctx_cb();
+		rvg_t* vg = cb ? cb->new_rvg(cb->ac) : nullptr;
+		vgui_context* dui = vgui_create(familys, 16.0f);
+		vgui_widget* da = nullptr;
+		vgui_widget* db = nullptr;
+		if (dui)
+		{
+			vgui_context_set_size(dui, 280, 140);
+			vgui_widget_set_layout(vgui_root(dui), VGUI_LAYOUT_COLUMN);
+			da = vgui_widget_add(vgui_root(dui), VGUI_EDIT, nullptr);
+			db = vgui_widget_add(vgui_root(dui), VGUI_EDIT, nullptr);
+			vgui_edit_set_text(da, "alpha");
+			vgui_edit_set_text(db, "beta");
+			vgui_widget_set_size(da, 220, 30);
+			vgui_widget_set_size(db, 220, 30);
+			vgui_update(dui, 0.016f);
+		}
+		check(cb && vg && dui, "dash state: create rendering context");
+		if (cb && vg && dui)
+		{
+			float dashes[] = { 4.0f, 4.0f };
+			cb->set_dash(vg, dashes, 2, 0.0f);
+			for (int i = 0; i < 16; i++)
+			{
+				cb->save(vg);
+				cb->restore(vg);
+			}
+			printf("dash: save/restore ok\n");
+
+			for (int i = 0; i < 6; i++)
+			{
+				printf("dash: draw %d focus\n", i);
+				vgui_set_focus(dui, (i & 1) ? db : da);
+				vgui_update(dui, 0.016f);
+				printf("dash: draw %d render\n", i);
+				cb->clear(vg);
+				cb->reset_clip(vg, 1);
+				vgui_draw(dui, cb, vg);
+				printf("dash: draw %d done\n", i);
+			}
+			check(true, "dash state: repeated focus draw/save/restore");
+		}
+		printf("dash: destroy ui\n");
+		vgui_destroy(dui);
+		printf("dash: destroy rvg\n");
+		if (vg) cb->destroy_rvg(vg);
+		printf("dash: free cb\n");
+		if (cb) free_ctx_cb(cb);
+		printf("dash: cleanup done\n");
+	}
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

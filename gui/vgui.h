@@ -190,7 +190,163 @@ typedef struct vgui_theme {
 	vgui_color edit_selection;
 	vgui_color scrollbar;
 	vgui_color disabled;
+	/* New fields at the end keep positional initialisers source-compatible.
+	 * Passing zero to vgui_context_set_theme() selects a backwards-compatible
+	 * fallback: scrollbar_hover uses the scrollbar colour, while checkmark and
+	 * switch_thumb use white. */
+	vgui_color scrollbar_hover;	/* scrollbar thumb while hovered */
+	vgui_color checkmark;		/* checkbox check mark */
+	vgui_color switch_thumb;	/* switch knob */
 } vgui_theme;
+
+/* ------------------------------------------------------------------------- */
+/* Style                                                                     */
+/* ------------------------------------------------------------------------- */
+
+/* Geometry, opacity and animation parameters.  Colours live in vgui_theme.
+ * Every field has a visible default; call vgui_style_default() before changing
+ * individual fields, then pass the result to vgui_context_set_style().
+ * Values are clamped to sensible ranges, but a zero-sized control remains
+ * possible when explicitly requested. */
+typedef struct vgui_focus_style {
+	float min_size;		/* 4: smaller widgets do not draw a focus ring */
+	float rounding;		/* 4: fallback when the widget has no rounding */
+	float inset;		/* 0.5: ring inset from the widget bounds */
+	float width;		/* 1: ring stroke width */
+} vgui_focus_style;
+
+typedef struct vgui_panel_style {
+	float padding;			/* 8: default inner padding */
+	float border_width;		/* 1 */
+	float rounding;			/* 0 */
+	float scrollbar_width;		/* 5 */
+	float scrollbar_inset;		/* 2: gap to the panel edge */
+	float scrollbar_min_thumb;	/* 24 */
+	float scrollbar_rounding;	/* 2.5 */
+	float scrollbar_hit_padding;	/* 1: extra pointer slop beside the bar */
+	float scrollbar_min_track;	/* 20: hide shorter tracks */
+} vgui_panel_style;
+
+typedef struct vgui_label_style {
+	float padding_x;		/* 2 */
+} vgui_label_style;
+
+typedef struct vgui_button_style {
+	float padding_x;		/* 12 */
+	float padding_y;		/* 6 */
+	float rounding;			/* 4 */
+	float border_width;		/* 1 */
+	float min_height;		/* 28 */
+	float text_extra_width;		/* 4 */
+	float hover_mix_min;		/* 0.25: minimum hover mix */
+	float press_mix_min;		/* 0.35: minimum pressed mix */
+	float press_offset;		/* 1: text shift while pressed */
+	float disabled_mix;		/* 0.35: toward theme.disabled */
+} vgui_button_style;
+
+typedef struct vgui_choice_style {
+	float box_min;			/* 14: checkbox/radio square/circle */
+	float box_max;			/* 18 */
+	float line_offset;		/* 2: box = line_height - offset */
+	float gap;			/* 8: box-to-label gap */
+} vgui_choice_style;
+
+typedef struct vgui_checkbox_style {
+	float rounding;			/* 3 */
+	float border_width;		/* 1 */
+	float check_width;		/* 2 */
+	float check_start_x;		/* 0.22: check path, fraction of box size */
+	float check_start_y;		/* 0.52 */
+	float check_mid_x;		/* 0.42 */
+	float check_mid_y;		/* 0.72 */
+	float check_end_x;		/* 0.80 */
+	float check_end_y;		/* 0.28 */
+} vgui_checkbox_style;
+
+typedef struct vgui_radio_style {
+	float border_width;		/* 1 */
+	float dot_scale;		/* 0.55 of the outer radius */
+} vgui_radio_style;
+
+typedef struct vgui_switch_style {
+	float width;			/* 36 */
+	float min_height;		/* 18 */
+	float max_height;		/* 22 */
+	float line_offset;		/* 2: track = line_height - offset */
+	float min_control_height;	/* 20: intrinsic height floor */
+	float thumb_inset;		/* 2 */
+	float gap;			/* 8: track-to-label gap */
+	float disabled_mix;		/* 0.5: toward theme.disabled */
+} vgui_switch_style;
+
+typedef struct vgui_slider_style {
+	float req_width;		/* 180 */
+	float min_height;		/* 24 (also the default requested height) */
+	float track_thickness;		/* 4 */
+	float knob_radius;		/* 7 */
+	float background_alpha;		/* 0.25 when a background is set */
+	float disabled_mix;		/* 0.5: toward theme.disabled */
+} vgui_slider_style;
+
+typedef struct vgui_progress_style {
+	float req_width;		/* 180 */
+	float min_height;		/* 20 (also the default requested height) */
+	float rounding;			/* 3: fallback when the widget has no rounding */
+	float disabled_mix;		/* 0.5: toward theme.disabled */
+} vgui_progress_style;
+
+typedef struct vgui_edit_style {
+	float padding_x;		/* 6 */
+	float padding_y;		/* 4 */
+	float rounding;			/* 3 */
+	float border_width;		/* 1 */
+	float req_width;		/* 160 */
+	float req_height;		/* 30 */
+	float min_width;		/* 160 */
+	float text_extra_width;		/* 12 */
+	int multiline_min_lines;	/* 3 */
+	float selection_rounding;	/* 2 */
+	float selection_unfocused_alpha;/* 0.6 */
+	float selection_tail_max_width;	/* 6: tail after a selected newline */
+	float selection_tail_line_ratio;/* 0.3: tail width relative to line height */
+	float selection_min_width;	/* 1 */
+	float caret_width;		/* 1 */
+	float caret_blink_period;	/* 1 second */
+	float caret_blink_duty;		/* 0.55 */
+	float disabled_bg_mix;		/* 0.25: toward theme.disabled */
+	float ime_underline_width;	/* 1 */
+	float ime_underline_min_width;	/* 2 */
+	float scrollbar_width;		/* 4 */
+	float scrollbar_inset;		/* 2 */
+	float scrollbar_min_thumb;	/* 20 */
+	float scrollbar_rounding;	/* 2 */
+	float scrollbar_hit_padding;	/* 2 */
+	float scrollbar_min_track;	/* 20 */
+	float scrollbar_min_cross;	/* 8: hide the horizontal bar below this height */
+	float scrollbar_extra_scroll;	/* 2: lets the last glyph edge be reached */
+} vgui_edit_style;
+
+typedef struct vgui_separator_style {
+	float thickness;		/* 1 */
+} vgui_separator_style;
+
+typedef struct vgui_style {
+	float animation_speed;		/* 18: exponential hover/check animation rate */
+	int text_min_subpixel;		/* 1: text renderer subpixel mode */
+	float disabled_text_mix;	/* 0.65: toward theme.disabled */
+	vgui_focus_style focus;
+	vgui_panel_style panel;
+	vgui_label_style label;
+	vgui_button_style button;
+	vgui_choice_style choice;
+	vgui_checkbox_style checkbox;
+	vgui_radio_style radio;
+	vgui_switch_style switch_;
+	vgui_slider_style slider;
+	vgui_progress_style progress;
+	vgui_edit_style edit;
+	vgui_separator_style separator;
+} vgui_style;
 
 /* ------------------------------------------------------------------------- */
 /* Context                                                                   */
@@ -208,6 +364,14 @@ VGUI_API void vgui_context_get_size(vgui_context* ctx, int* width, int* height);
 VGUI_API void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* font, float font_size);
 VGUI_API void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme);
 VGUI_API void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme);
+
+/* Fills style with the built-in defaults.  Style changes are applied to the
+ * context immediately; widgets whose padding/rounding/requested sizes still
+ * equal the previous defaults are migrated as well, so an existing tree can be
+ * restyled without rebuilding it. */
+VGUI_API void vgui_style_default(vgui_style* style);
+VGUI_API void vgui_context_set_style(vgui_context* ctx, const vgui_style* style);
+VGUI_API void vgui_context_get_style(vgui_context* ctx, vgui_style* style);
 
 /* Focus-ring opacity (0..1) for widgets that do not override it.  0 disables
  * focus rings entirely, which is convenient for screenshots or touch UIs. */
