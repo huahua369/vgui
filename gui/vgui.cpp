@@ -15,6 +15,8 @@ gui实现
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <map>
+#include <string>
 #include <unordered_set>
 
 #include <mapView.h>
@@ -244,6 +246,45 @@ struct vgui_widget
 	bool destroy_pending = false;
 };
 
+// Text measurement caches.  Measuring used to call HarfBuzz for every
+// codepoint on every draw, even when neither the text nor the font had
+// changed.  The full-string cache handles the common static-label case; the
+// per-codepoint cache also helps edit boxes and other prefixes that change
+// one character at a time.
+struct vgui_text_measure_key
+{
+	const font_familys_t* font = nullptr;
+	int fontsize = 0;
+	std::string text;
+
+	bool operator<(const vgui_text_measure_key& o) const
+	{
+		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
+		if (fontsize != o.fontsize) return fontsize < o.fontsize;
+		return text < o.text;
+	}
+};
+
+struct vgui_glyph_advance_key
+{
+	const font_familys_t* font = nullptr;
+	int fontsize = 0;
+	uint32_t codepoint = 0;
+
+	bool operator<(const vgui_glyph_advance_key& o) const
+	{
+		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
+		if (fontsize != o.fontsize) return fontsize < o.fontsize;
+		return codepoint < o.codepoint;
+	}
+};
+
+struct vgui_font_metrics
+{
+	float line_height = -1.0f;
+	float ascent = -1.0f;
+};
+
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
@@ -252,6 +293,10 @@ struct vgui_context
 	vgui_theme theme = {};
 	float focus_alpha = 1.0f;	// default focus-ring opacity
 	vgui_widget* root = nullptr;
+
+	std::map<vgui_text_measure_key, float> text_width_cache;
+	std::map<vgui_glyph_advance_key, float> glyph_advance_cache;
+	std::map<std::pair<const font_familys_t*, int>, vgui_font_metrics> font_metrics_cache;
 
 	std::unordered_set<vgui_widget*> all_widgets;
 	std::unordered_set<vgui_widget*> alive;
@@ -393,12 +438,25 @@ static float vgui_font_size(vgui_context* ctx, vgui_widget* w)
 static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
 {
 	float fs = vgui_font_size(ctx, w);
+	int fontsize = (int)(fs + 0.5f);
+	if (fontsize < 1) fontsize = 1;
+
+	vgui_font_metrics* metrics = nullptr;
+	if (ctx && ctx->font)
+	{
+		metrics = &ctx->font_metrics_cache[std::make_pair(ctx->font, fontsize)];
+		if (metrics->line_height >= 0)
+			return metrics->line_height;
+	}
+
 	int lh = 0;
 	if (ctx && ctx->font)
-		lh = font_get_lineheight(ctx->font, (int)(fs + 0.5f), true);
+		lh = font_get_lineheight(ctx->font, fontsize, true);
 	if (lh <= 0)
 		lh = (int)(fs * 1.35f + 0.5f);
 	if (lh < 1) lh = 1;
+	if (metrics)
+		metrics->line_height = (float)lh;
 	return (float)lh;
 }
 
@@ -409,10 +467,23 @@ static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
 static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
 {
 	float fs = vgui_font_size(ctx, w);
+	int fontsize = (int)(fs + 0.5f);
+	if (fontsize < 1) fontsize = 1;
+
+	vgui_font_metrics* metrics = nullptr;
+	if (ctx && ctx->font)
+	{
+		metrics = &ctx->font_metrics_cache[std::make_pair(ctx->font, fontsize)];
+		if (metrics->ascent >= 0)
+			return metrics->ascent;
+	}
+
 	float a = 0;
 	if (ctx && ctx->font && ctx->font->count > 0 && ctx->font->familys[0] && ctx->font->familys[0]->font)
-		a = get_font_extents(ctx->font->familys[0]->font, (int)(fs + 0.5f), false).x;
+		a = get_font_extents(ctx->font->familys[0]->font, fontsize, false).x;
 	if (a <= 0) a = fs * 0.8f;
+	if (metrics)
+		metrics->ascent = a;
 	return a;
 }
 
@@ -420,10 +491,25 @@ static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
 // by coverage, advances taken at the shaping scale) so layout, alignment and
 // the renderer agree.  Keeps the renderer text crisp and the auto-sized boxes
 // exact.
-static float vgui_measure_text_range(font_familys_t* ffs, int fontsize, const char* text, int len)
+static float vgui_measure_text_range(vgui_context* ctx, font_familys_t* ffs, int fontsize, const char* text, int len)
 {
 	if (!ffs || ffs->count < 1 || !text || len <= 0) return 0;
 	if (fontsize < 1) fontsize = 16;
+
+	// Fast path for complete strings: most labels are measured on every draw
+	// with exactly the same font, size and contents.
+	vgui_text_measure_key text_key;
+	bool text_cached = ctx != nullptr;
+	if (text_cached)
+	{
+		text_key.font = ffs;
+		text_key.fontsize = fontsize;
+		text_key.text.assign(text, (size_t)len);
+		auto it = ctx->text_width_cache.find(text_key);
+		if (it != ctx->text_width_cache.end())
+			return it->second;
+	}
+
 	float best = 0, cur = 0;
 	for (int i = 0; i < len;)
 	{
@@ -442,43 +528,79 @@ static float vgui_measure_text_range(font_familys_t* ffs, int fontsize, const ch
 		else if (c >= 0xC0) n = 2;
 		i += n;
 
-		// Same family selection as ovg: first family whose coverage has the
-		// codepoint, otherwise the primary family.
-		font_family_t* fam = ffs->familys[0];
-		for (int f = 0; f < ffs->count; f++)
+		float advance = 0;
+		bool advance_cached = false;
+		vgui_glyph_advance_key glyph_key;
+		if (ctx)
 		{
-			font_family_t* cand = ffs->familys[f];
-			if (cand && cand->font && cand->coverage && hb_set_has(cand->coverage, cp))
+			glyph_key.font = ffs;
+			glyph_key.fontsize = fontsize;
+			glyph_key.codepoint = cp;
+			auto it = ctx->glyph_advance_cache.find(glyph_key);
+			if (it != ctx->glyph_advance_cache.end())
 			{
-				fam = cand;
-				break;
+				advance = it->second;
+				advance_cached = true;
 			}
 		}
-		if (!fam || !fam->font)
+
+		if (!advance_cached)
 		{
-			cur += fontsize * 0.5f;
-			continue;
+			// Same family selection as ovg: first family whose coverage has the
+			// codepoint, otherwise the primary family.
+			font_family_t* fam = ffs->familys[0];
+			for (int f = 0; f < ffs->count; f++)
+			{
+				font_family_t* cand = ffs->familys[f];
+				if (cand && cand->font && cand->coverage && hb_set_has(cand->coverage, cp))
+				{
+					fam = cand;
+					break;
+				}
+			}
+			if (!fam || !fam->font)
+			{
+				advance = fontsize * 0.5f;
+			}
+			else
+			{
+				hb_font_set_scale(fam->font, fontsize, fontsize);
+				hb_codepoint_t gid = 0;
+				hb_font_get_nominal_glyph(fam->font, cp, &gid);
+				advance = (float)hb_font_get_glyph_h_advance(fam->font, gid);
+			}
+			if (ctx)
+			{
+				if (ctx->glyph_advance_cache.size() >= 8192)
+					ctx->glyph_advance_cache.clear();
+				ctx->glyph_advance_cache.emplace(glyph_key, advance);
+			}
 		}
-		hb_font_set_scale(fam->font, fontsize, fontsize);
-		hb_codepoint_t gid = 0;
-		hb_font_get_nominal_glyph(fam->font, cp, &gid);
-		cur += (float)hb_font_get_glyph_h_advance(fam->font, gid);
+		cur += advance;
 	}
-	return std::max(best, cur);
+
+	float width = std::max(best, cur);
+	if (text_cached)
+	{
+		if (ctx->text_width_cache.size() >= 4096)
+			ctx->text_width_cache.clear();
+		ctx->text_width_cache.emplace(std::move(text_key), width);
+	}
+	return width;
 }
 
 static float vgui_text_width(vgui_widget* w, const std::string& text)
 {
 	vgui_context* ctx = w ? w->ctx : nullptr;
 	float fs = vgui_font_size(ctx, w);
-	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
+	return vgui_measure_text_range(ctx, ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
 }
 
 static float vgui_text_width_n(vgui_widget* w, const char* text, int len)
 {
 	vgui_context* ctx = w ? w->ctx : nullptr;
 	float fs = vgui_font_size(ctx, w);
-	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text, len);
+	return vgui_measure_text_range(ctx, ctx ? ctx->font : nullptr, (int)fs, text, len);
 }
 
 static int vgui_text_lines(const std::string& text)
@@ -3430,6 +3552,9 @@ void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* font, float
 	if (!ctx) return;
 	ctx->font = font;
 	if (font_size > 0) ctx->font_size = font_size;
+	ctx->text_width_cache.clear();
+	ctx->glyph_advance_cache.clear();
+	ctx->font_metrics_cache.clear();
 	ctx->layout_dirty = true;
 }
 
