@@ -17,6 +17,11 @@ set(SRC_EDIT_TEST
     vgui_edit_test.cpp
 )
 
+# UI 编辑器（文档 JSON + C++ 代码生成 + 实时预览）
+set(SRC_UI_EDITOR
+    ui_editor_main.cpp
+)
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(vgui ${SRC})
@@ -27,6 +32,9 @@ target_link_libraries(vgui_demo PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_edit_test ${SRC_EDIT_TEST})
 target_link_libraries(vgui_edit_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_editor ${SRC_UI_EDITOR})
+target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_custom_command(
     TARGET vgui POST_BUILD

@@ -1219,7 +1219,7 @@ int main()
 {
 	// ---- 后端初始化 ----
 	auto* wg = new app_mgr();
-	font_familys_t* familys = new_font_family(wg->font_ctx, "微软雅黑,Segoe UI,Segoe UI Emoji,Consolas", 0);
+	font_familys_t* familys = new_font_family(wg->font_ctx, "微软雅黑,Consolas,Segoe UI Emoji", 0);
 	auto* cb = new_ctx_cb();
 	rvg_t* vg = cb->new_rvg(cb->ac);
 
