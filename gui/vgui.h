@@ -327,6 +327,9 @@ VGUI_API void vgui_edit_set_ime_text(vgui_widget* edit, const char* text, int cu
 VGUI_API void vgui_edit_set_selection_color(vgui_widget* edit, vgui_color color);
 VGUI_API void vgui_edit_set_selection_rounding(vgui_widget* edit, float radius);
 
+/* Caret width in pixels.  Defaults to 1; 0 hides the caret. */
+VGUI_API void vgui_edit_set_caret_width(vgui_widget* edit, float width);
+
 /* Clipboard / history helpers; these are the operations behind the Ctrl+C,
  * Ctrl+X, Ctrl+V, Ctrl+Z and Ctrl+Y shortcuts.  They return non-zero when the
  * operation changed (or copied) something. */

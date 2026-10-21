@@ -345,8 +345,15 @@ int main()
 
 		// 编辑框右侧内部滚动条：从上往下拖到底部
 		float bx = x + w - 4.0f;
+		vgui_input_mouse_move(ui, bx, y + 10.0f);
+		check(vgui_context_get_cursor(ui) == VGUI_CURSOR_ARROW,
+			"编辑框滚动条悬停时鼠标为普通箭头");
 		vgui_input_mouse_down(ui, 1, bx, y + 10.0f, 1);
+		check(vgui_context_get_cursor(ui) == VGUI_CURSOR_ARROW,
+			"按下编辑框滚动条时鼠标保持普通箭头");
 		vgui_input_mouse_move(ui, bx, y + h - 10.0f);
+		check(vgui_context_get_cursor(ui) == VGUI_CURSOR_ARROW,
+			"拖动编辑框滚动条时鼠标保持普通箭头");
 		vgui_input_mouse_up(ui, 1, bx, y + h - 10.0f, 1);
 
 		vgui_input_mouse_down(ui, 1, x0, top_y, 1);
@@ -354,6 +361,88 @@ int main()
 		int cur = vgui_edit_get_cursor(ed);
 		check(cur > 0, "编辑框滚动条拖动后顶部行已滚动");
 		printf("        拖动后顶部光标 = %d\n", cur);
+
+		vgui_input_mouse_move(ui, x0, top_y);
+		check(vgui_context_get_cursor(ui) == VGUI_CURSOR_IBEAM,
+			"编辑框文本区域鼠标仍为 I 形");
+	}
+
+	//---- multi-line edit horizontal scrollbar ----
+	{
+		std::string lines;
+		std::string wide = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+		for (int i = 0; i < 16; i++)
+		{
+			lines += wide;
+			if (i < 15) lines += "\n";
+		}
+		vgui_set_focus(ui, ed1);
+		vgui_edit_set_text(ed, lines.c_str());
+		vgui_update(ui, 0.016f);
+		vgui_widget_get_rect(ed, &x, &y, &w, &h);
+		float x_left = x + 2.0f;
+		float top_y = y + 2.0f;
+		vgui_input_mouse_down(ui, 1, x_left, top_y, 1);
+		vgui_input_mouse_up(ui, 1, x_left, top_y, 1);
+		check(vgui_edit_get_cursor(ed) == 0, "horizontal scroll: initial cursor at 0");
+
+		float bar_y = y + h - 4.0f;
+		vgui_input_mouse_move(ui, x + 40.0f, bar_y);
+		check(vgui_context_get_cursor(ui) == VGUI_CURSOR_ARROW,
+			"horizontal scrollbar hover uses arrow cursor");
+		vgui_input_mouse_down(ui, 1, x + 40.0f, bar_y, 1);
+		vgui_input_mouse_move(ui, x + w - 30.0f, bar_y);
+		vgui_input_mouse_up(ui, 1, x + w - 30.0f, bar_y, 1);
+
+		vgui_input_mouse_down(ui, 1, x_left, top_y, 1);
+		vgui_input_mouse_up(ui, 1, x_left, top_y, 1);
+		int cur = vgui_edit_get_cursor(ed);
+		check(cur > 0, "horizontal scrollbar drag scrolls content");
+		printf("        horizontal drag cursor = %d\n", cur);
+	}
+
+	//---- grow edit must not widen its row for long text ----
+	{
+		vgui_context* ui3 = vgui_create(familys, 16.0f);
+		vgui_context_set_size(ui3, 500, 300);
+		vgui_widget_set_layout(vgui_root(ui3), VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(vgui_root(ui3), 10, 10, 10, 10);
+
+		vgui_widget* row3 = vgui_widget_add(vgui_root(ui3), VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(row3, VGUI_LAYOUT_ROW);
+		vgui_widget_set_size(row3, 400, 96);
+		vgui_widget_set_gap(row3, 8);
+		vgui_widget_add(row3, VGUI_LABEL, "Long:");
+
+		vgui_widget* wide = vgui_widget_add(row3, VGUI_EDIT, nullptr);
+		vgui_edit_set_multiline(wide, 1);
+		vgui_widget_set_size(wide, 0, 80);
+		vgui_widget_set_grow(wide, 1);
+		std::string long_line(300, 'a');
+		vgui_edit_set_text(wide, long_line.c_str());
+		vgui_update(ui3, 0.016f);
+
+		float rx = 0, ry = 0, rw = 0, rh = 0;
+		float ex = 0, ey = 0, ew = 0, eh = 0;
+		vgui_widget_get_rect(row3, &rx, &ry, &rw, &rh);
+		vgui_widget_get_rect(wide, &ex, &ey, &ew, &eh);
+		check(ew <= rw + 0.5f, "grow multiline edit shrinks to its row width");
+		check(ew > 0.0f, "grow multiline edit keeps a usable width");
+		printf("        row width = %.0f, edit width = %.0f\n", rw, ew);
+
+		// With the row width fixed, focusing and setting the long line must
+		// scroll horizontally instead of widening the edit.  A click near the
+		// left edge then maps to a non-zero byte.
+		vgui_set_focus(ui3, wide);
+		vgui_edit_set_text(wide, long_line.c_str());
+		vgui_update(ui3, 0.016f);
+		vgui_widget_get_rect(wide, &ex, &ey, &ew, &eh);
+		vgui_input_mouse_down(ui3, 1, ex + 2.0f, ey + 2.0f, 1);
+		vgui_input_mouse_up(ui3, 1, ex + 2.0f, ey + 2.0f, 1);
+		check(vgui_edit_get_cursor(wide) > 0,
+			"grow multiline edit scrolls instead of widening for long text");
+
+		vgui_destroy(ui3);
 	}
 
 	//---- 面板滚动条拖动 ----
@@ -431,7 +520,9 @@ int main()
 	vgui_edit_set_selection_rounding(ed, 12.0f);
 	vgui_edit_set_selection_color(ed, 0x80409EFFu);
 	vgui_edit_set_selection_color(ed, 0);
-	check(true, "选中圆角/颜色 API 可调用");
+	vgui_edit_set_caret_width(ed, 2.0f);
+	vgui_edit_set_caret_width(ed, 1.0f);
+	check(true, "选中圆角/颜色与光标宽度 API 可调用");
 	check(vgui_widget_get_kind(ed) == VGUI_EDIT, "vgui_widget_get_kind");
 
 	// 密码框（双击选词同样可用）

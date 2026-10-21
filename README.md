@@ -4,7 +4,7 @@ vgui 是一个基于 [OVG](https://github.com/huahua369/ovg) 矢量渲染器的�
 
 UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将矩形、圆角、文字、裁剪等矢量命令录制到 OVG，再交由 SDL3 GPU 后端提交渲染。`vgui` 自带的后端只实现 2D 所需的路径、渐变、文本图集、图片、矩形裁剪和 MSAA，并使用 SPIR-V（Vulkan）着色器；OVG 自带的完整渲染器仍保留在 `third_party/ovg` 供其示例使用。
 
-> 当前 API 版本（`vgui_version()`）：`0.2.0` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
+> 当前 API 版本（`vgui_version()`）：`0.2.2` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
 ![项目截图](screenshot.png)
 ## 特性
 
@@ -40,8 +40,9 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 - 鼠标拖拽选择、双击选词、三击选行；CJK 文本按词/字符边界处理。
 - 复制、剪切、粘贴、撤销、重做；支持 `Ctrl+A/C/X/V/Z/Y`（`Ctrl+Shift+Z` 也可重做），并兼容 `Ctrl+Insert`、`Shift+Insert`、`Shift+Delete`。
 - 键盘导航：方向键、Home/End、PageUp/PageDown、`Ctrl+左右` 按词移动、`Shift+方向键` 扩展选区。
-- 多行编辑框内容滚动与内部滚动条，支持滚轮和拖动。
+- 多行编辑框内容滚动与内部滚动条，支持滚轮和拖动；内容宽度超出时自动显示水平滚动条。
 - IME 组合文本显示、光标位置查询和输入框矩形上报。
+- 文本光标宽度可配置，默认 1 像素；`vgui_edit_set_caret_width(edit, 2.0f)` 可加宽，设为 0 可隐藏。
 - 选区高亮颜色与圆角可配置。多行选区按整体轮廓填充，共享边保持连续，所有外露拐角（包括行宽变化处的台阶/凹角）都会倒圆；`vgui_edit_set_selection_rounding(edit, 0)` 可关闭圆角。
 
 ### 交互与焦点
@@ -128,6 +129,7 @@ void build_ui(vgui_context* ui)
     vgui_widget* edit = vgui_widget_add(root, VGUI_EDIT, "");
     vgui_edit_set_multiline(edit, 1);
     vgui_edit_set_text(edit, "第一行\n第二行");
+    vgui_edit_set_caret_width(edit, 2.0f);       /* 默认 1 像素，0 = 隐藏 */
     vgui_edit_set_selection_rounding(edit, 4.0f); /* 0 = 方角，>0 = 圆角半径 */
 }
 ```

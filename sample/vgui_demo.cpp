@@ -741,7 +741,7 @@ static void build_header(demo_state* st, vgui_widget* root)
 	st->fps_label = label(right, "fps: -", 13, 0xFF9A9A9A);
 	vgui_widget_set_text_align(st->fps_label, 1.0f, 0.5f);
 	vgui_widget_set_min_size(st->fps_label, 140, 0);
-	vgui_widget_set_max_size(st->fps_label, 200, 0);
+	vgui_widget_set_max_size(st->fps_label, 300, 0);
 	separator(root);
 }
 
@@ -1278,7 +1278,7 @@ int main()
 			{
 				stat_timer = 0.0f;
 				char buf[64] = {};
-				snprintf(buf, sizeof(buf), "fps: %d", fps.get_fps());
+				snprintf(buf, sizeof(buf), "fps: %d\tupdate: %dms\tdraw: %dms\tsubmit: %dms", fps.get_fps(), upms, drawms, submitms);
 				vgui_widget_set_text(st.fps_label, buf);
 			}
 			upms = rtc.end();
