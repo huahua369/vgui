@@ -140,6 +140,13 @@ struct demo_state
 	const char* radio_names[3] = { "红", "绿", "蓝" };
 	vgui_color radio_colors[3] = { 0xFFE05252, 0xFF52C05A, 0xFF4A7FE0 };
 
+	// 列表 / 树 / 菜单
+	vgui_widget* list_demo = nullptr;
+	vgui_widget* tree_demo = nullptr;
+	vgui_widget* model_menu = nullptr;
+	int list_added = 0;
+	int tree_added = 0;
+
 	// 数值状态
 	int clicks = 0;
 	int added = 0;
@@ -166,6 +173,9 @@ static const char* kind_name(vgui_widget_kind k)
 	case VGUI_PROGRESS: return "progress";
 	case VGUI_EDIT: return "edit";
 	case VGUI_SEPARATOR: return "separator";
+	case VGUI_LIST: return "list";
+	case VGUI_TREE: return "tree";
+	case VGUI_MENU: return "menu";
 	}
 	return "widget";
 }
@@ -352,6 +362,95 @@ static void on_value(vgui_widget* w, float v, void* user)
 		}
 	}
 	statusf(st, "[%s] = %.2f", id_of(w), v);
+}
+
+// 列表 / 树选择
+static void on_list_select(vgui_widget* w, vgui_item_id item, int selected, void* user)
+{
+	if (!selected) return;
+	demo_state* st = (demo_state*)user;
+	statusf(st, "列表选择: %s (id=%llu)", vgui_list_get_item_text(w, item),
+		(unsigned long long)item);
+}
+
+static void on_tree_select(vgui_widget* w, vgui_item_id item, int selected, void* user)
+{
+	if (!selected) return;
+	demo_state* st = (demo_state*)user;
+	statusf(st, "树选择: %s (深度 %d)", vgui_tree_get_item_text(w, item),
+		vgui_tree_get_depth(w, item));
+}
+
+static void on_model_activate(vgui_widget* w, vgui_item_id item, void* user)
+{
+	demo_state* st = (demo_state*)user;
+	const char* text = "";
+	if (vgui_widget_get_kind(w) == VGUI_LIST)
+		text = vgui_list_get_item_text(w, item);
+	else if (vgui_widget_get_kind(w) == VGUI_TREE)
+		text = vgui_tree_get_item_text(w, item);
+	statusf(st, "[%s] 激活: %s", id_of(w), text);
+}
+
+static void on_list_add(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	char text[64];
+	snprintf(text, sizeof(text), "新增列表项 %d", ++st->list_added);
+	vgui_item_id id = vgui_list_add_item(st->list_demo, text, nullptr);
+	vgui_list_set_item_detail(st->list_demo, id, "动态添加");
+	vgui_list_scroll_to_item(st->list_demo, id, VGUI_SCROLL_ALIGN_BOTTOM);
+	statusf(st, "列表新增: %s", text);
+}
+
+static void on_list_clear(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_list_clear(st->list_demo);
+	statusf(st, "列表已清空");
+}
+
+static void on_tree_add(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	char text[64];
+	snprintf(text, sizeof(text), "新增节点 %d", ++st->tree_added);
+	vgui_item_id id = vgui_tree_add_node(st->tree_demo, 0, text, nullptr);
+	vgui_tree_scroll_to_node(st->tree_demo, id, VGUI_SCROLL_ALIGN_BOTTOM);
+	statusf(st, "树新增根节点: %s", text);
+}
+
+static void on_tree_expand_all(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_tree_expand_all(st->tree_demo);
+	statusf(st, "树: 已展开全部节点");
+}
+
+static void on_model_menu_click(vgui_widget* w, const vgui_event* e, void* user)
+{
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_menu_open_below(st->model_menu, w);
+	statusf(st, "菜单已打开：点击外部会关闭并消费该次点击");
+}
+
+static void on_model_menu_activate(vgui_widget* w, vgui_item_id item, void* user)
+{
+	demo_state* st = (demo_state*)user;
+	if (vgui_menu_get_item_checkable(w, item))
+		statusf(st, "菜单勾选: %s = %s", vgui_menu_get_item_text(w, item),
+			vgui_menu_get_item_checked(w, item) ? "开" : "关");
+	else
+		statusf(st, "菜单命令: %s", vgui_menu_get_item_text(w, item));
 }
 
 // 更新单行编辑框的镜像标签（按 UTF-8 边界截断）
@@ -1070,10 +1169,88 @@ static void build_dynamic(demo_state* st, vgui_widget* root)
 	st->bind_box = box;
 }
 
+static void build_models(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "列表 / 树 / 菜单 Model controls");
+
+	vgui_widget* r = row(c, 14);
+	vgui_widget_set_align_items(r, VGUI_ALIGN_START);
+
+	// ---- 列表 ----
+	vgui_widget* lc = col(r, 6);
+	vgui_widget_set_grow(lc, 1);
+	vgui_widget_set_align_items(lc, VGUI_ALIGN_STRETCH);
+	label(lc, "列表：稳定 item id，支持单选/多选与激活", 12, 0xFF9A9A9A);
+
+	st->list_demo = vgui_widget_add(lc, VGUI_LIST, nullptr);
+	vgui_widget_set_id(st->list_demo, "demo-list");
+	vgui_widget_set_size(st->list_demo, 0, 176);
+	vgui_list_on_select(st->list_demo, on_list_select, st);
+	vgui_list_on_activate(st->list_demo, on_model_activate, st);
+
+	const char* initial[] = { "项目设置", "资源管理器", "输出日志", "扩展管理器" };
+	for (int i = 0; i < 4; i++)
+	{
+		vgui_item_id id = vgui_list_add_item(st->list_demo, initial[i], nullptr);
+		vgui_list_set_item_detail(st->list_demo, id, i == 0 ? "双击可激活" : "稳定 item id");
+	}
+
+	vgui_widget* lr = row(lc, 8);
+	button(lr, "添加列表项", on_list_add, st);
+	button(lr, "清空列表", on_list_clear, st);
+
+	// ---- 树 ----
+	vgui_widget* tc = col(r, 6);
+	vgui_widget_set_grow(tc, 1);
+	vgui_widget_set_align_items(tc, VGUI_ALIGN_STRETCH);
+	label(tc, "树：展开/折叠、选择与键盘导航", 12, 0xFF9A9A9A);
+
+	st->tree_demo = vgui_widget_add(tc, VGUI_TREE, nullptr);
+	vgui_widget_set_id(st->tree_demo, "demo-tree");
+	vgui_widget_set_size(st->tree_demo, 0, 176);
+	vgui_tree_on_select(st->tree_demo, on_tree_select, st);
+	vgui_tree_on_activate(st->tree_demo, on_model_activate, st);
+
+	vgui_item_id root1 = vgui_tree_add_node(st->tree_demo, 0, "vgui", nullptr);
+	vgui_tree_add_node(st->tree_demo, root1, "gui", nullptr);
+	vgui_tree_add_node(st->tree_demo, root1, "sample", nullptr);
+	vgui_tree_add_node(st->tree_demo, root1, "README.md", nullptr);
+	vgui_tree_set_item_expanded(st->tree_demo, root1, 1);
+	vgui_item_id root2 = vgui_tree_add_node(st->tree_demo, 0, "third_party", nullptr);
+	vgui_tree_add_node(st->tree_demo, root2, "ovg", nullptr);
+	vgui_tree_add_node(st->tree_demo, root2, "glm", nullptr);
+
+	vgui_widget* tr = row(tc, 8);
+	button(tr, "添加根节点", on_tree_add, st);
+	button(tr, "展开全部", on_tree_expand_all, st);
+
+	// ---- 菜单 ----
+	label(tc, "菜单：上下文浮层，点击外部会被消费", 12, 0xFF9A9A9A);
+	vgui_widget* mr = row(tc, 8);
+	st->model_menu = vgui_widget_create(st->ui, VGUI_MENU, nullptr);
+	vgui_widget_set_id(st->model_menu, "demo-menu");
+	vgui_menu_on_activate(st->model_menu, on_model_menu_activate, st);
+	vgui_menu_add_check_item(st->model_menu, "自动保存", 1);
+	vgui_item_id open_item = vgui_menu_add_item(st->model_menu, "打开设置");
+	vgui_menu_set_item_shortcut(st->model_menu, open_item, "Ctrl+,");
+	vgui_menu_add_separator(st->model_menu);
+	vgui_item_id disabled_item = vgui_menu_add_item(st->model_menu, "不可用命令");
+	vgui_menu_set_item_enabled(st->model_menu, disabled_item, 0);
+	vgui_widget* submenu = nullptr;
+	vgui_menu_add_submenu(st->model_menu, "更多", &submenu);
+	if (submenu)
+	{
+		vgui_menu_on_activate(submenu, on_model_menu_activate, st);
+		vgui_menu_add_item(submenu, "关于 vgui");
+		vgui_menu_add_item(submenu, "检查更新");
+	}
+	button(mr, "打开菜单", on_model_menu_click, st);
+	label(mr, "Esc 关闭；悬停可展开子菜单", 12, 0xFF9A9A9A);
+}
+
 static void build_visibility(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "可见性与禁用 Visibility / Enabled");
-
 	vgui_widget* r1 = row(c, 18);
 	st->hide_toggle = vgui_widget_add(r1, VGUI_CHECKBOX, "显示附加面板");
 	vgui_widget_set_id(st->hide_toggle, "toggle-visible");
@@ -1174,6 +1351,7 @@ static void build_ui(demo_state* st)
 	build_sliders(st, root);
 	build_progress(st, root);
 	build_edits(st, root);
+	build_models(st, root);
 	build_scroll(st, root);
 	build_dynamic(st, root);
 	build_visibility(st, root);

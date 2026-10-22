@@ -41,6 +41,9 @@ namespace vgui_editor {
 		case VGUI_PROGRESS: return "progress";
 		case VGUI_EDIT: return "edit";
 		case VGUI_SEPARATOR: return "separator";
+		case VGUI_LIST: return "list";
+		case VGUI_TREE: return "tree";
+		case VGUI_MENU: return "menu";
 		}
 		return "panel";
 	}
@@ -49,7 +52,8 @@ namespace vgui_editor {
 	{
 		static const vgui_widget_kind kinds[] = {
 			VGUI_PANEL, VGUI_LABEL, VGUI_BUTTON, VGUI_CHECKBOX, VGUI_RADIO,
-			VGUI_SWITCH, VGUI_SLIDER, VGUI_PROGRESS, VGUI_EDIT, VGUI_SEPARATOR
+			VGUI_SWITCH, VGUI_SLIDER, VGUI_PROGRESS, VGUI_EDIT, VGUI_SEPARATOR,
+			VGUI_LIST, VGUI_TREE, VGUI_MENU
 		};
 		for (vgui_widget_kind k : kinds)
 		{
@@ -277,6 +281,76 @@ namespace vgui_editor {
 			n->w = 200.0f;
 			n->h = 1.0f;
 			break;
+		case VGUI_LIST:
+		{
+			n->w = 220.0f;
+			n->h = 180.0f;
+			n->bg = 0xFF252525;
+			n->border_color = 0xFF3C3F44;
+			n->border_width = 1.0f;
+			n->focusable = true;
+			for (int i = 1; i <= 3; ++i)
+			{
+				ui_model_item item;
+				item.text = "列表项 " + std::to_string(i);
+				item.detail = i == 1 ? "双击可激活" : "detail";
+				n->items.push_back(item);
+			}
+			break;
+		}
+		case VGUI_TREE:
+		{
+			n->w = 220.0f;
+			n->h = 200.0f;
+			n->bg = 0xFF252525;
+			n->border_color = 0xFF3C3F44;
+			n->border_width = 1.0f;
+			n->focusable = true;
+			ui_model_item root;
+			root.text = "根节点";
+			root.expanded = true;
+			root.depth = 0;
+			n->items.push_back(root);
+			ui_model_item child1;
+			child1.text = "子节点 1";
+			child1.depth = 1;
+			n->items.push_back(child1);
+			ui_model_item child2;
+			child2.text = "子节点 2";
+			child2.depth = 1;
+			n->items.push_back(child2);
+			break;
+		}
+		case VGUI_MENU:
+		{
+			n->w = 180.0f;
+			n->h = 80.0f;
+			n->bg = 0xFF2A2B2E;
+			n->border_color = 0xFF555555;
+			n->border_width = 1.0f;
+			n->visible = false;
+			ui_model_item open;
+			open.text = "打开设置";
+			open.shortcut = "Ctrl+,";
+			n->items.push_back(open);
+			ui_model_item check;
+			check.text = "自动保存";
+			check.checkable = true;
+			check.checked = true;
+			n->items.push_back(check);
+			ui_model_item sep;
+			sep.type = VGUI_MENU_ITEM_SEPARATOR;
+			n->items.push_back(sep);
+			ui_model_item more;
+			more.text = "更多";
+			more.type = VGUI_MENU_ITEM_SUBMENU;
+			n->items.push_back(more);
+			ui_model_item about;
+			about.text = "关于 vgui";
+			about.depth = 1;
+			n->items.push_back(about);
+			break;
+		}
 		}
 		return n;
 	}
@@ -343,6 +417,38 @@ namespace vgui_editor {
 
 	/* JSON --------------------------------------------------------------------- */
 
+	static const char* model_item_type_name(int type)
+	{
+		switch (type)
+		{
+		case VGUI_MENU_ITEM_SEPARATOR: return "separator";
+		case VGUI_MENU_ITEM_SUBMENU: return "submenu";
+		default: return "normal";
+		}
+	}
+
+	static int model_item_type_from_name(const std::string& name)
+	{
+		if (name == "separator") return VGUI_MENU_ITEM_SEPARATOR;
+		if (name == "submenu") return VGUI_MENU_ITEM_SUBMENU;
+		return VGUI_MENU_ITEM_NORMAL;
+	}
+
+	static json model_item_to_json(const ui_model_item& item)
+	{
+		json j;
+		j["text"] = item.text;
+		if (!item.detail.empty()) j["detail"] = item.detail;
+		if (!item.shortcut.empty()) j["shortcut"] = item.shortcut;
+		j["type"] = model_item_type_name(item.type);
+		if (item.depth != 0) j["depth"] = item.depth;
+		if (item.checkable) j["checkable"] = true;
+		if (item.checked) j["checked"] = true;
+		if (item.expanded) j["expanded"] = true;
+		if (!item.enabled) j["enabled"] = false;
+		return j;
+	}
+
 	static json node_to_json(const ui_node& n)
 	{
 		json j;
@@ -393,6 +499,10 @@ namespace vgui_editor {
 		j["multiline"] = n.multiline;
 		j["password"] = n.password;
 		j["readonly"] = n.readonly;
+
+		j["items"] = json::array();
+		for (const ui_model_item& item : n.items)
+			j["items"].push_back(model_item_to_json(item));
 
 		j["children"] = json::array();
 		for (const auto& child : n.children)
@@ -501,6 +611,27 @@ namespace vgui_editor {
 		n.multiline = json_bool(j, "multiline", n.multiline);
 		n.password = json_bool(j, "password", n.password);
 		n.readonly = json_bool(j, "readonly", n.readonly);
+
+		n.items.clear();
+		auto items_it = j.find("items");
+		if (items_it != j.end() && items_it->is_array())
+		{
+			for (const json& ij : *items_it)
+			{
+				if (!ij.is_object()) continue;
+				ui_model_item item;
+				item.text = json_string(ij, "text", item.text);
+				item.detail = json_string(ij, "detail", item.detail);
+				item.shortcut = json_string(ij, "shortcut", item.shortcut);
+				item.type = model_item_type_from_name(json_string(ij, "type", "normal"));
+				item.depth = std::max(0, json_int(ij, "depth", item.depth));
+				item.checkable = json_bool(ij, "checkable", item.checkable);
+				item.checked = json_bool(ij, "checked", item.checked);
+				item.expanded = json_bool(ij, "expanded", item.expanded);
+				item.enabled = json_bool(ij, "enabled", item.enabled);
+				n.items.push_back(item);
+			}
+		}
 
 		n.children.clear();
 		auto it = j.find("children");
@@ -640,6 +771,9 @@ namespace vgui_editor {
 		case VGUI_PROGRESS: return "VGUI_PROGRESS";
 		case VGUI_EDIT: return "VGUI_EDIT";
 		case VGUI_SEPARATOR: return "VGUI_SEPARATOR";
+		case VGUI_LIST: return "VGUI_LIST";
+		case VGUI_TREE: return "VGUI_TREE";
+		case VGUI_MENU: return "VGUI_MENU";
 		}
 		return "VGUI_PANEL";
 	}
@@ -674,6 +808,7 @@ namespace vgui_editor {
 			std::ostringstream out;
 			std::map<const ui_node*, std::string> names;
 			std::set<std::string> used;
+			int item_seq = 0;
 
 			std::string unique_name(const std::string& base)
 			{
@@ -707,6 +842,93 @@ namespace vgui_editor {
 				out << "    " << text << "\n";
 			}
 
+			void emit_model_items(const ui_node& n, const std::string& v)
+			{
+				if (n.items.empty()) return;
+
+				if (n.kind == VGUI_LIST)
+				{
+					for (const ui_model_item& item : n.items)
+					{
+						const std::string id = unique_name("item_" + std::to_string(++item_seq));
+						line("vgui_item_id " + id + " = vgui_list_add_item(" + v + ", \"" +
+							escape_c_string(item.text) + "\", nullptr);");
+						if (!item.detail.empty())
+							line("vgui_list_set_item_detail(" + v + ", " + id + ", \"" +
+								escape_c_string(item.detail) + "\");");
+						if (!item.enabled)
+							line("vgui_list_set_item_enabled(" + v + ", " + id + ", 0);");
+					}
+					return;
+				}
+
+				if (n.kind == VGUI_TREE)
+				{
+					std::vector<std::string> parents;
+					for (const ui_model_item& item : n.items)
+					{
+						int depth = std::max(0, item.depth);
+						if (depth > (int)parents.size()) depth = (int)parents.size();
+						const std::string parent = depth == 0 ? "0" : parents[(size_t)depth - 1];
+						const std::string id = unique_name("node_" + std::to_string(++item_seq));
+						line("vgui_item_id " + id + " = vgui_tree_add_node(" + v + ", " + parent + ", \"" +
+							escape_c_string(item.text) + "\", nullptr);");
+						parents.resize((size_t)depth + 1);
+						parents[(size_t)depth] = id;
+						if (item.expanded)
+							line("vgui_tree_set_item_expanded(" + v + ", " + id + ", 1);");
+						if (!item.enabled)
+							line("vgui_tree_set_item_enabled(" + v + ", " + id + ", 0);");
+					}
+					return;
+				}
+
+				if (n.kind == VGUI_MENU)
+				{
+					std::vector<std::string> parents;
+					for (const ui_model_item& item : n.items)
+					{
+						int depth = std::max(0, item.depth);
+						if (depth > (int)parents.size()) depth = (int)parents.size();
+						std::string parent = v;
+						if (depth > 0 && !parents[(size_t)depth - 1].empty())
+							parent = parents[(size_t)depth - 1];
+
+						if (item.type == VGUI_MENU_ITEM_SEPARATOR)
+						{
+							line("vgui_menu_add_separator(" + parent + ");");
+							continue;
+						}
+
+						const std::string id = unique_name("item_" + std::to_string(++item_seq));
+						if (item.type == VGUI_MENU_ITEM_SUBMENU)
+						{
+							const std::string sub = unique_name("submenu_" + std::to_string(item_seq));
+							line("vgui_widget* " + sub + " = nullptr;");
+							line("vgui_item_id " + id + " = vgui_menu_add_submenu(" + parent + ", \"" +
+								escape_c_string(item.text) + "\", &" + sub + ");");
+							if (!item.enabled)
+								line("vgui_menu_set_item_enabled(" + parent + ", " + id + ", 0);");
+							parents.resize((size_t)depth + 1);
+							parents[(size_t)depth] = sub;
+							continue;
+						}
+
+						if (item.checkable)
+							line("vgui_item_id " + id + " = vgui_menu_add_check_item(" + parent + ", \"" +
+								escape_c_string(item.text) + "\", " + (item.checked ? "1" : "0") + ");");
+						else
+							line("vgui_item_id " + id + " = vgui_menu_add_item(" + parent + ", \"" +
+								escape_c_string(item.text) + "\");");
+						if (!item.shortcut.empty())
+							line("vgui_menu_set_item_shortcut(" + parent + ", " + id + ", \"" +
+								escape_c_string(item.shortcut) + "\");");
+						if (!item.enabled)
+							line("vgui_menu_set_item_enabled(" + parent + ", " + id + ", 0);");
+					}
+				}
+			}
+
 			void emit_node(const ui_node& n, bool is_root)
 			{
 				const std::string v = names[&n];
@@ -723,8 +945,12 @@ namespace vgui_editor {
 						text_arg = "\"" + escape_c_string(n.text) + "\"";
 					else if (n.kind == VGUI_EDIT)
 						text_arg = "\"\"";
-					line("vgui_widget* " + v + " = vgui_widget_add(" + parent + ", " +
-						kind_enum_name(n.kind) + ", " + text_arg + ");");
+					/* Menus are context-level popups, never layout children. */
+					if (n.kind == VGUI_MENU)
+						line("vgui_widget* " + v + " = vgui_widget_create(ui, VGUI_MENU, " + text_arg + ");");
+					else
+						line("vgui_widget* " + v + " = vgui_widget_add(" + parent + ", " +
+							kind_enum_name(n.kind) + ", " + text_arg + ");");
 				}
 
 				if (!n.id.empty())
@@ -820,6 +1046,9 @@ namespace vgui_editor {
 					if (n.readonly)
 						line("vgui_edit_set_readonly(" + v + ", 1);");
 				}
+
+				/* list / tree / menu model records */
+				emit_model_items(n, v);
 
 				for (const auto& c : n.children)
 					emit_node(*c, false);
@@ -1217,10 +1446,12 @@ namespace vgui_editor {
 
 		static const vgui_widget_kind kinds[] = {
 			VGUI_PANEL, VGUI_LABEL, VGUI_BUTTON, VGUI_CHECKBOX, VGUI_RADIO,
-			VGUI_SWITCH, VGUI_SLIDER, VGUI_PROGRESS, VGUI_EDIT, VGUI_SEPARATOR
+			VGUI_SWITCH, VGUI_SLIDER, VGUI_PROGRESS, VGUI_EDIT, VGUI_SEPARATOR,
+			VGUI_LIST, VGUI_TREE
 		};
 		static const char* names[] = {
-			"面板", "标签", "按钮", "复选", "单选", "开关", "滑杆", "进度", "输入", "分隔"
+			"面板", "标签", "按钮", "复选", "单选", "开关", "滑杆", "进度", "输入", "分隔",
+			"列表", "树"
 		};
 		for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); ++i)
 		{
@@ -1404,12 +1635,74 @@ namespace vgui_editor {
 			if (n.kind == VGUI_SLIDER)
 				vgui_widget_set_vertical(w, n.vertical ? 1 : 0);
 		}
+
+		if (n.kind == VGUI_LIST)
+		{
+			vgui_list_clear(w);
+			for (const ui_model_item& item : n.items)
+			{
+				vgui_item_id id = vgui_list_add_item(w, item.text.c_str(), nullptr);
+				if (!item.detail.empty()) vgui_list_set_item_detail(w, id, item.detail.c_str());
+				if (!item.enabled) vgui_list_set_item_enabled(w, id, 0);
+			}
+		}
+		else if (n.kind == VGUI_TREE)
+		{
+			vgui_tree_clear(w);
+			std::vector<vgui_item_id> parents;
+			for (const ui_model_item& item : n.items)
+			{
+				int depth = std::max(0, item.depth);
+				if (depth > (int)parents.size()) depth = (int)parents.size();
+				vgui_item_id parent = depth == 0 ? 0 : parents[(size_t)depth - 1];
+				vgui_item_id id = vgui_tree_add_node(w, parent, item.text.c_str(), nullptr);
+				parents.resize((size_t)depth + 1);
+				parents[(size_t)depth] = id;
+				if (item.expanded) vgui_tree_set_item_expanded(w, id, 1);
+				if (!item.enabled) vgui_tree_set_item_enabled(w, id, 0);
+			}
+		}
+		else if (n.kind == VGUI_MENU)
+		{
+			vgui_menu_clear(w);
+			std::vector<vgui_widget*> parents;
+			for (const ui_model_item& item : n.items)
+			{
+				int depth = std::max(0, item.depth);
+				if (depth > (int)parents.size()) depth = (int)parents.size();
+				vgui_widget* parent = w;
+				if (depth > 0 && parents[(size_t)depth - 1])
+					parent = parents[(size_t)depth - 1];
+				if (item.type == VGUI_MENU_ITEM_SEPARATOR)
+				{
+					vgui_menu_add_separator(parent);
+					continue;
+				}
+				if (item.type == VGUI_MENU_ITEM_SUBMENU)
+				{
+					vgui_widget* submenu = nullptr;
+					vgui_item_id id = vgui_menu_add_submenu(parent, item.text.c_str(), &submenu);
+					if (!item.enabled) vgui_menu_set_item_enabled(parent, id, 0);
+					parents.resize((size_t)depth + 1);
+					parents[(size_t)depth] = submenu;
+					continue;
+				}
+				vgui_item_id id = item.checkable
+					? vgui_menu_add_check_item(parent, item.text.c_str(), item.checked ? 1 : 0)
+					: vgui_menu_add_item(parent, item.text.c_str());
+				if (!item.shortcut.empty()) vgui_menu_set_item_shortcut(parent, id, item.shortcut.c_str());
+				if (!item.enabled) vgui_menu_set_item_enabled(parent, id, 0);
+			}
+		}
 	}
 
 	vgui_widget* ui_editor::impl::build_preview_child(vgui_widget* parent, ui_node& n)
 	{
 		const char* text = is_text_kind(n.kind) ? n.text.c_str() : (n.kind == VGUI_EDIT ? "" : nullptr);
-		vgui_widget* w = vgui_widget_add(parent, n.kind, text);
+		/* Menus are context-level popups: do not attach them to the layout tree. */
+		vgui_widget* w = n.kind == VGUI_MENU
+			? vgui_widget_create(vgui_widget_get_context(parent), VGUI_MENU, text)
+			: vgui_widget_add(parent, n.kind, text);
 		if (!w) return nullptr;
 		by_node[&n] = w;
 		by_widget[w] = &n;
@@ -1423,6 +1716,14 @@ namespace vgui_editor {
 
 	void ui_editor::impl::rebuild_preview()
 	{
+		/* Context-level menus are not children of preview_root, so
+		 * vgui_widget_clear() cannot dispose of them.  Destroy them first. */
+		for (const auto& entry : by_node)
+		{
+			vgui_widget* w = entry.second;
+			if (w && vgui_widget_get_kind(w) == VGUI_MENU && !vgui_widget_get_parent(w))
+				vgui_widget_destroy(w);
+		}
 		by_node.clear();
 		by_widget.clear();
 		vgui_widget_clear(preview_root);
@@ -2002,7 +2303,7 @@ namespace vgui_editor {
 			try
 			{
 				int kind = std::stoi(cmd.substr(4));
-				if (kind >= VGUI_PANEL && kind <= VGUI_SEPARATOR)
+				if (kind >= VGUI_PANEL && kind <= VGUI_MENU)
 					add_node_of_kind((vgui_widget_kind)kind);
 			}
 			catch (...)

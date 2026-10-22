@@ -17,6 +17,11 @@ set(SRC_EDIT_TEST
     vgui_edit_test.cpp
 )
 
+# 列表/树/菜单模型自测（无需窗口/GPU，直接跑逻辑）
+set(SRC_MODEL_TEST
+    vgui_model_test.cpp
+)
+
 # UI 编辑器（文档 JSON + C++ 代码生成 + 实时预览）
 set(SRC_UI_EDITOR
     ui_editor_main.cpp
@@ -32,6 +37,9 @@ target_link_libraries(vgui_demo PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_edit_test ${SRC_EDIT_TEST})
 target_link_libraries(vgui_edit_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_model_test ${SRC_MODEL_TEST})
+target_link_libraries(vgui_model_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_editor ${SRC_UI_EDITOR})
 target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)

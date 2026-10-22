@@ -22,6 +22,21 @@ namespace vgui_editor {
 
 struct ui_node;
 
+/* One row in a list/tree model or one popup-menu record.  These are data
+ * records rather than child widgets, mirroring the C API model controls. */
+struct ui_model_item
+{
+	std::string text;
+	std::string detail;
+	std::string shortcut;
+	int type = 0;			/* vgui_menu_item_type; ignored by list/tree */
+	int depth = 0;			/* tree/menu nesting level, 0 = root */
+	bool checkable = false;
+	bool checked = false;
+	bool expanded = false;
+	bool enabled = true;
+};
+
 /* Default JSON/CPP locations live in the gui/ directory of the checkout. */
 std::string default_json_path();
 std::string default_cpp_path();
@@ -81,6 +96,9 @@ struct ui_node
 	bool multiline = false;
 	bool password = false;
 	bool readonly = false;
+
+	/* list / tree / menu model records (not child widgets) */
+	std::vector<ui_model_item> items;
 
 	ui_node* parent = nullptr;
 	std::vector<std::unique_ptr<ui_node>> children;

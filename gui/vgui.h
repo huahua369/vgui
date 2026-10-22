@@ -67,7 +67,10 @@ typedef enum vgui_widget_kind {
 	VGUI_SLIDER,
 	VGUI_PROGRESS,
 	VGUI_EDIT,
-	VGUI_SEPARATOR
+	VGUI_SEPARATOR,
+	VGUI_LIST,
+	VGUI_TREE,
+	VGUI_MENU
 } vgui_widget_kind;
 
 typedef enum vgui_layout_kind {
@@ -132,6 +135,30 @@ typedef enum vgui_mod {
 	VGUI_MOD_GUI = 8
 } vgui_mod;
 
+/* Stable identifier for a list/tree/menu model item.  Zero is never a valid
+ * item id.  Ids are unique within one widget and remain stable until the item
+ * is removed; they are not reused while the widget is alive. */
+typedef uint64_t vgui_item_id;
+
+typedef enum vgui_selection_mode {
+	VGUI_SELECTION_NONE = 0,
+	VGUI_SELECTION_SINGLE,
+	VGUI_SELECTION_MULTIPLE
+} vgui_selection_mode;
+
+typedef enum vgui_scroll_align {
+	VGUI_SCROLL_ALIGN_NEAREST = 0,	/* scroll only when the item is outside */
+	VGUI_SCROLL_ALIGN_TOP,		/* put the item at the top/left edge */
+	VGUI_SCROLL_ALIGN_CENTER,	/* centre the item */
+	VGUI_SCROLL_ALIGN_BOTTOM	/* put the item at the bottom/right edge */
+} vgui_scroll_align;
+
+typedef enum vgui_menu_item_type {
+	VGUI_MENU_ITEM_NORMAL = 0,
+	VGUI_MENU_ITEM_SEPARATOR,
+	VGUI_MENU_ITEM_SUBMENU
+} vgui_menu_item_type;
+
 /* ------------------------------------------------------------------------- */
 /* Events                                                                    */
 /* ------------------------------------------------------------------------- */
@@ -165,11 +192,19 @@ typedef struct vgui_event {
 	int mods;                 /* vgui_mod bit mask */
 	uint32_t codepoint;       /* unicode scalar for text events, else 0 */
 	const char* text;         /* utf-8 text for text/editing events */
+	/* Model-item context for lists, trees and menus.  item is 0 when the event
+	 * does not refer to an item.  index is the item's index in the model (or
+	 * the visible row index for a tree), and -1 when not applicable. */
+	vgui_item_id item;
+	int index;
 } vgui_event;
 
 typedef void (*vgui_event_fn)(vgui_widget* widget, const vgui_event* event, void* user);
 typedef void (*vgui_value_fn)(vgui_widget* widget, float value, void* user);
 typedef void (*vgui_text_fn)(vgui_widget* widget, const char* text, void* user);
+typedef void (*vgui_item_fn)(vgui_widget* widget, vgui_item_id item, void* user);
+typedef void (*vgui_item_select_fn)(vgui_widget* widget, vgui_item_id item, int selected, void* user);
+typedef void (*vgui_widget_fn)(vgui_widget* widget, void* user);
 
 /* ------------------------------------------------------------------------- */
 /* Theme                                                                     */
@@ -197,6 +232,19 @@ typedef struct vgui_theme {
 	vgui_color scrollbar_hover;	/* scrollbar thumb while hovered */
 	vgui_color checkmark;		/* checkbox check mark */
 	vgui_color switch_thumb;	/* switch knob */
+	/* Model controls.  Zero selects a backwards-compatible fallback as
+	 * documented in vgui_context_set_theme(). */
+	vgui_color list_bg;		/* fallback: panel_bg */
+	vgui_color list_border;		/* fallback: panel_border */
+	vgui_color row_text;		/* fallback: text */
+	vgui_color row_hover;		/* fallback: button_hover */
+	vgui_color row_selected;		/* fallback: semi-transparent accent */
+	vgui_color row_selected_text;	/* fallback: text */
+	vgui_color tree_guide;		/* fallback: semi-transparent panel_border */
+	vgui_color menu_bg;		/* fallback: panel_bg */
+	vgui_color menu_border;		/* fallback: button_border */
+	vgui_color menu_hover;		/* fallback: button_hover */
+	vgui_color menu_disabled_text;	/* fallback: disabled */
 } vgui_theme;
 
 /* ------------------------------------------------------------------------- */
@@ -330,6 +378,47 @@ typedef struct vgui_separator_style {
 	float thickness;		/* 1 */
 } vgui_separator_style;
 
+typedef struct vgui_list_style {
+	float row_height;	/* 0: line height + 10 */
+	float padding_x;		/* 4 */
+	float padding_y;		/* 4 */
+	float rounding;		/* 3: row highlight rounding */
+	float req_width;		/* 220 */
+	float req_height;		/* 180 */
+	float disabled_mix;		/* 0.6: toward theme.disabled */
+} vgui_list_style;
+
+typedef struct vgui_tree_style {
+	float row_height;	/* 0: line height + 10 */
+	float indent;		/* 18 */
+	float arrow_size;	/* 9 */
+	float arrow_gap;	/* 4 */
+	float padding_x;		/* 6 */
+	float padding_y;		/* 4 */
+	float rounding;		/* 3: row highlight rounding */
+	float req_width;		/* 220 */
+	float req_height;		/* 200 */
+	float guide_alpha;	/* 0.45 */
+	float disabled_mix;		/* 0.6: toward theme.disabled */
+} vgui_tree_style;
+
+typedef struct vgui_menu_style {
+	float item_height;	/* 28 */
+	float padding_x;		/* 4 */
+	float padding_y;		/* 4 */
+	float item_padding_x;	/* 8 */
+	float check_width;	/* 18: check column when any item is checkable */
+	float shortcut_gap;	/* 24 */
+	float submenu_arrow_width;/* 10 */
+	float separator_height;	/* 9 */
+	float rounding;		/* 4 */
+	float min_width;		/* 140 */
+	float max_width;		/* 360 */
+	float max_height;	/* 0: context height minus edge margin */
+	float submenu_delay;	/* 0.18 seconds */
+	float disabled_mix;		/* 0.55: toward theme.disabled */
+} vgui_menu_style;
+
 typedef struct vgui_style {
 	float animation_speed;		/* 18: exponential hover/check animation rate */
 	int text_min_subpixel;		/* 1: text renderer subpixel mode */
@@ -346,6 +435,9 @@ typedef struct vgui_style {
 	vgui_progress_style progress;
 	vgui_edit_style edit;
 	vgui_separator_style separator;
+	vgui_list_style list;
+	vgui_tree_style tree;
+	vgui_menu_style menu;
 } vgui_style;
 
 /* ------------------------------------------------------------------------- */
@@ -504,6 +596,133 @@ VGUI_API int vgui_edit_undo(vgui_widget* edit);
 VGUI_API int vgui_edit_redo(vgui_widget* edit);
 VGUI_API int vgui_edit_can_undo(vgui_widget* edit);
 VGUI_API int vgui_edit_can_redo(vgui_widget* edit);
+
+/* ------------------------------------------------------------------------- */
+/* List / tree model items                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* Lists and trees are data-model controls: their items are records with stable
+ * vgui_item_id values, not child widgets.  The first version supports selection
+ * only (no per-row checkboxes).  Returned ids are zero on failure. */
+
+VGUI_API vgui_item_id vgui_list_add_item(vgui_widget* list, const char* text, void* user);
+VGUI_API vgui_item_id vgui_list_insert_item(vgui_widget* list, int index, const char* text, void* user);
+VGUI_API int vgui_list_remove_item(vgui_widget* list, vgui_item_id item);
+VGUI_API void vgui_list_clear(vgui_widget* list);
+VGUI_API int vgui_list_get_count(vgui_widget* list);
+VGUI_API vgui_item_id vgui_list_get_item_at(vgui_widget* list, int index);
+
+VGUI_API void vgui_list_set_item_text(vgui_widget* list, vgui_item_id item, const char* text);
+VGUI_API const char* vgui_list_get_item_text(vgui_widget* list, vgui_item_id item);
+VGUI_API void vgui_list_set_item_detail(vgui_widget* list, vgui_item_id item, const char* detail);
+VGUI_API const char* vgui_list_get_item_detail(vgui_widget* list, vgui_item_id item);
+VGUI_API void vgui_list_set_item_enabled(vgui_widget* list, vgui_item_id item, int enabled);
+VGUI_API int vgui_list_get_item_enabled(vgui_widget* list, vgui_item_id item);
+VGUI_API void vgui_list_set_item_user(vgui_widget* list, vgui_item_id item, void* user);
+VGUI_API void* vgui_list_get_item_user(vgui_widget* list, vgui_item_id item);
+
+VGUI_API void vgui_list_set_selection_mode(vgui_widget* list, vgui_selection_mode mode);
+VGUI_API vgui_selection_mode vgui_list_get_selection_mode(vgui_widget* list);
+VGUI_API int vgui_list_select(vgui_widget* list, vgui_item_id item, int selected);
+VGUI_API void vgui_list_clear_selection(vgui_widget* list);
+VGUI_API int vgui_list_is_selected(vgui_widget* list, vgui_item_id item);
+VGUI_API int vgui_list_get_selected_count(vgui_widget* list);
+VGUI_API vgui_item_id vgui_list_get_selected(vgui_widget* list, int index);
+VGUI_API void vgui_list_set_cursor(vgui_widget* list, vgui_item_id item);
+VGUI_API vgui_item_id vgui_list_get_cursor(vgui_widget* list);
+VGUI_API void vgui_list_scroll_to_item(vgui_widget* list, vgui_item_id item, vgui_scroll_align align);
+VGUI_API void vgui_list_set_empty_text(vgui_widget* list, const char* text);
+VGUI_API void vgui_list_on_select(vgui_widget* list, vgui_item_select_fn fn, void* user);
+VGUI_API void vgui_list_on_activate(vgui_widget* list, vgui_item_fn fn, void* user);
+
+VGUI_API vgui_item_id vgui_tree_add_node(vgui_widget* tree, vgui_item_id parent, const char* text, void* user);
+VGUI_API int vgui_tree_remove_node(vgui_widget* tree, vgui_item_id node);
+VGUI_API void vgui_tree_clear(vgui_widget* tree);
+VGUI_API int vgui_tree_get_node_count(vgui_widget* tree);
+VGUI_API int vgui_tree_get_root_count(vgui_widget* tree);
+VGUI_API vgui_item_id vgui_tree_get_root(vgui_widget* tree, int index);
+VGUI_API int vgui_tree_get_child_count(vgui_widget* tree, vgui_item_id node);
+VGUI_API vgui_item_id vgui_tree_get_child(vgui_widget* tree, vgui_item_id node, int index);
+VGUI_API vgui_item_id vgui_tree_get_parent(vgui_widget* tree, vgui_item_id node);
+VGUI_API int vgui_tree_get_depth(vgui_widget* tree, vgui_item_id node);
+
+VGUI_API void vgui_tree_set_item_text(vgui_widget* tree, vgui_item_id node, const char* text);
+VGUI_API const char* vgui_tree_get_item_text(vgui_widget* tree, vgui_item_id node);
+VGUI_API void vgui_tree_set_item_enabled(vgui_widget* tree, vgui_item_id node, int enabled);
+VGUI_API int vgui_tree_get_item_enabled(vgui_widget* tree, vgui_item_id node);
+VGUI_API void vgui_tree_set_item_user(vgui_widget* tree, vgui_item_id node, void* user);
+VGUI_API void* vgui_tree_get_item_user(vgui_widget* tree, vgui_item_id node);
+
+VGUI_API void vgui_tree_set_item_expanded(vgui_widget* tree, vgui_item_id node, int expanded);
+VGUI_API int vgui_tree_get_item_expanded(vgui_widget* tree, vgui_item_id node);
+VGUI_API int vgui_tree_expand(vgui_widget* tree, vgui_item_id node);
+VGUI_API int vgui_tree_collapse(vgui_widget* tree, vgui_item_id node);
+VGUI_API int vgui_tree_toggle(vgui_widget* tree, vgui_item_id node);
+VGUI_API void vgui_tree_expand_all(vgui_widget* tree);
+VGUI_API void vgui_tree_collapse_all(vgui_widget* tree);
+VGUI_API void vgui_tree_expand_to(vgui_widget* tree, vgui_item_id node);
+
+VGUI_API void vgui_tree_set_selection_mode(vgui_widget* tree, vgui_selection_mode mode);
+VGUI_API vgui_selection_mode vgui_tree_get_selection_mode(vgui_widget* tree);
+VGUI_API int vgui_tree_select(vgui_widget* tree, vgui_item_id node, int selected);
+VGUI_API void vgui_tree_clear_selection(vgui_widget* tree);
+VGUI_API int vgui_tree_is_selected(vgui_widget* tree, vgui_item_id node);
+VGUI_API int vgui_tree_get_selected_count(vgui_widget* tree);
+VGUI_API vgui_item_id vgui_tree_get_selected(vgui_widget* tree, int index);
+VGUI_API void vgui_tree_set_cursor(vgui_widget* tree, vgui_item_id node);
+VGUI_API vgui_item_id vgui_tree_get_cursor(vgui_widget* tree);
+VGUI_API void vgui_tree_scroll_to_node(vgui_widget* tree, vgui_item_id node, vgui_scroll_align align);
+VGUI_API void vgui_tree_set_empty_text(vgui_widget* tree, const char* text);
+VGUI_API void vgui_tree_on_select(vgui_widget* tree, vgui_item_select_fn fn, void* user);
+VGUI_API void vgui_tree_on_activate(vgui_widget* tree, vgui_item_fn fn, void* user);
+
+/* ------------------------------------------------------------------------- */
+/* Menu                                                                      */
+/* ------------------------------------------------------------------------- */
+
+/* Menus are context-level popups.  They are not attached as layout children;
+ * one top-level menu chain can be open per context.  The context draws the menu
+ * above the widget tree and consumes outside presses while it is open. */
+
+VGUI_API vgui_item_id vgui_menu_add_item(vgui_widget* menu, const char* text);
+VGUI_API vgui_item_id vgui_menu_add_check_item(vgui_widget* menu, const char* text, int checked);
+VGUI_API vgui_item_id vgui_menu_add_separator(vgui_widget* menu);
+VGUI_API vgui_item_id vgui_menu_add_submenu(vgui_widget* menu, const char* text, vgui_widget** out_submenu);
+VGUI_API int vgui_menu_remove_item(vgui_widget* menu, vgui_item_id item);
+VGUI_API void vgui_menu_clear(vgui_widget* menu);
+VGUI_API int vgui_menu_get_count(vgui_widget* menu);
+VGUI_API vgui_item_id vgui_menu_get_item_at(vgui_widget* menu, int index);
+VGUI_API vgui_menu_item_type vgui_menu_get_item_type(vgui_widget* menu, vgui_item_id item);
+VGUI_API vgui_widget* vgui_menu_get_submenu(vgui_widget* menu, vgui_item_id item);
+
+VGUI_API void vgui_menu_set_item_text(vgui_widget* menu, vgui_item_id item, const char* text);
+VGUI_API const char* vgui_menu_get_item_text(vgui_widget* menu, vgui_item_id item);
+VGUI_API void vgui_menu_set_item_shortcut(vgui_widget* menu, vgui_item_id item, const char* shortcut);
+VGUI_API const char* vgui_menu_get_item_shortcut(vgui_widget* menu, vgui_item_id item);
+VGUI_API void vgui_menu_set_item_enabled(vgui_widget* menu, vgui_item_id item, int enabled);
+VGUI_API int vgui_menu_get_item_enabled(vgui_widget* menu, vgui_item_id item);
+VGUI_API void vgui_menu_set_item_checked(vgui_widget* menu, vgui_item_id item, int checked);
+VGUI_API int vgui_menu_get_item_checked(vgui_widget* menu, vgui_item_id item);
+VGUI_API int vgui_menu_set_item_checkable(vgui_widget* menu, vgui_item_id item, int checkable);
+VGUI_API int vgui_menu_get_item_checkable(vgui_widget* menu, vgui_item_id item);
+VGUI_API void vgui_menu_set_item_user(vgui_widget* menu, vgui_item_id item, void* user);
+VGUI_API void* vgui_menu_get_item_user(vgui_widget* menu, vgui_item_id item);
+
+VGUI_API void vgui_menu_open(vgui_widget* menu, float x, float y);
+VGUI_API void vgui_menu_open_below(vgui_widget* menu, vgui_widget* anchor);
+VGUI_API void vgui_menu_open_for(vgui_widget* menu, vgui_widget* anchor, float local_x, float local_y);
+VGUI_API void vgui_menu_close(vgui_widget* menu);
+VGUI_API int vgui_menu_is_open(vgui_widget* menu);
+VGUI_API vgui_widget* vgui_context_get_open_menu(vgui_context* ctx);
+VGUI_API void vgui_menu_set_width(vgui_widget* menu, float width);
+VGUI_API float vgui_menu_get_width(vgui_widget* menu);
+VGUI_API void vgui_menu_set_max_height(vgui_widget* menu, float height);
+VGUI_API float vgui_menu_get_max_height(vgui_widget* menu);
+VGUI_API void vgui_menu_set_close_on_activate(vgui_widget* menu, int close);
+VGUI_API int vgui_menu_get_close_on_activate(vgui_widget* menu);
+VGUI_API void vgui_menu_on_activate(vgui_widget* menu, vgui_item_fn fn, void* user);
+VGUI_API void vgui_menu_on_open(vgui_widget* menu, vgui_widget_fn fn, void* user);
+VGUI_API void vgui_menu_on_close(vgui_widget* menu, vgui_widget_fn fn, void* user);
 
 /* ------------------------------------------------------------------------- */
 /* Focus and input                                                           */

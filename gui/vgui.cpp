@@ -16,7 +16,9 @@ gui实现
 #include <cstdio>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <mapView.h>
@@ -144,6 +146,116 @@ struct vgui_edit_snapshot
 	int anchor = 0;
 };
 
+// Model records for list, tree and menu controls.  Keeping them out of the
+// widget child list is deliberate: layout, tab order and hit testing must not
+// see every row as an independent widget.
+struct vgui_list_item
+{
+	vgui_item_id id = 0;
+	std::string text;
+	std::string detail;
+	void* user = nullptr;
+	int enabled = 1;
+};
+
+struct vgui_list_state
+{
+	std::vector<vgui_list_item> items;
+	std::unordered_map<vgui_item_id, size_t> index;
+	std::vector<vgui_item_id> selected;
+	vgui_item_id cursor = 0;
+	vgui_item_id hover = 0;
+	vgui_item_id pressed = 0;
+	vgui_item_id range_anchor = 0;
+	vgui_item_id next_id = 1;
+	vgui_selection_mode selection_mode = VGUI_SELECTION_SINGLE;
+	std::string empty_text;
+	vgui_item_select_fn select_fn = nullptr;
+	void* select_user = nullptr;
+	vgui_item_fn activate_fn = nullptr;
+	void* activate_user = nullptr;
+};
+
+struct vgui_tree_node
+{
+	vgui_item_id id = 0;
+	vgui_item_id parent = 0;
+	std::vector<vgui_item_id> children;
+	std::string text;
+	void* user = nullptr;
+	int enabled = 1;
+	int expanded = 0;
+};
+
+struct vgui_tree_row
+{
+	vgui_item_id id = 0;
+	int depth = 0;
+};
+
+struct vgui_tree_state
+{
+	std::vector<vgui_tree_node> nodes;
+	std::unordered_map<vgui_item_id, size_t> index;
+	std::vector<vgui_item_id> roots;
+	std::vector<vgui_tree_row> rows;
+	bool rows_dirty = true;
+	std::vector<vgui_item_id> selected;
+	vgui_item_id cursor = 0;
+	vgui_item_id hover = 0;
+	vgui_item_id pressed = 0;
+	vgui_item_id range_anchor = 0;
+	vgui_item_id next_id = 1;
+	vgui_selection_mode selection_mode = VGUI_SELECTION_SINGLE;
+	std::string empty_text;
+	vgui_item_select_fn select_fn = nullptr;
+	void* select_user = nullptr;
+	vgui_item_fn activate_fn = nullptr;
+	void* activate_user = nullptr;
+};
+
+struct vgui_menu_item
+{
+	vgui_item_id id = 0;
+	vgui_menu_item_type type = VGUI_MENU_ITEM_NORMAL;
+	std::string text;
+	std::string shortcut;
+	void* user = nullptr;
+	int enabled = 1;
+	int checkable = 0;
+	int checked = 0;
+	vgui_widget* submenu = nullptr;
+};
+
+struct vgui_menu_state
+{
+	std::vector<vgui_menu_item> items;
+	std::unordered_map<vgui_item_id, size_t> index;
+	vgui_item_id next_id = 1;
+	vgui_item_id cursor = 0;
+	vgui_item_id hover = 0;
+	vgui_item_id pressed = 0;
+	vgui_item_id submenu_item = 0;
+	vgui_item_id pending_submenu_item = 0;
+	double pending_submenu_time = 0.0;
+	vgui_widget* submenu_open = nullptr;
+	vgui_widget* parent_menu = nullptr;
+	vgui_item_id parent_item = 0;
+	int open = 0;
+	float open_x = 0;
+	float open_y = 0;
+	int has_open_pos = 0;
+	float width = 0;	// 0 -> automatic
+	float max_height = 0;	// 0 -> context height minus edge margin
+	int close_on_activate = 1;
+	vgui_item_fn activate_fn = nullptr;
+	void* activate_user = nullptr;
+	vgui_widget_fn open_fn = nullptr;
+	void* open_user = nullptr;
+	vgui_widget_fn close_fn = nullptr;
+	void* close_user = nullptr;
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -195,7 +307,7 @@ struct vgui_widget
 	float rounding = 0;
 	float border_width = 0;
 	float opacity = 1.0f;
-	float focus_alpha = -1.0f;	// < 0 -> use the context value; 0 hides the ring
+	float focus_alpha = 0.0f;	// 负数则共用ctx的值 < 0 -> use the context value; 0 hides the ring
 	float text_align_x = 0.5f;
 	float text_align_y = 0.5f;
 	int clip_children = 1;
@@ -247,6 +359,11 @@ struct vgui_widget
 	std::vector<vgui_edit_snapshot> redo_stack;
 	double last_edit_push = -10.0;
 	int last_edit_push_kind = 0;
+
+	// model controls -------------------------------------------------------
+	std::unique_ptr<vgui_list_state> list;
+	std::unique_ptr<vgui_tree_state> tree;
+	std::unique_ptr<vgui_menu_state> menu;
 
 	bool destroy_pending = false;
 };
@@ -319,6 +436,10 @@ struct vgui_context
 	int press_button = 0;
 	vgui_widget* focus = nullptr;
 	vgui_widget* slider_drag = nullptr;
+	vgui_widget* open_menu = nullptr;
+	vgui_widget* menu_pressed = nullptr;
+	int menu_swallow_up = 0;
+	int mods = 0;
 	double time = 0;
 
 	int want_mouse = 0;
@@ -771,6 +892,282 @@ namespace {
 	}
 
 	//----------------------------------------------------------------------------
+	// item-model helpers
+	//----------------------------------------------------------------------------
+
+	static vgui_list_state* vgui_list_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_LIST && w->list) ? w->list.get() : nullptr;
+	}
+
+	static vgui_tree_state* vgui_tree_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_TREE && w->tree) ? w->tree.get() : nullptr;
+	}
+
+	static vgui_menu_state* vgui_menu_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_MENU && w->menu) ? w->menu.get() : nullptr;
+	}
+
+	static bool vgui_id_selected(const std::vector<vgui_item_id>& ids, vgui_item_id id)
+	{
+		return id != 0 && std::find(ids.begin(), ids.end(), id) != ids.end();
+	}
+
+	static vgui_list_item* vgui_list_item_find(vgui_widget* w, vgui_item_id id, size_t* out_index = nullptr)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || id == 0) return nullptr;
+		auto it = st->index.find(id);
+		if (it == st->index.end() || it->second >= st->items.size()) return nullptr;
+		if (out_index) *out_index = it->second;
+		return &st->items[it->second];
+	}
+
+	static vgui_list_item* vgui_list_item_at(vgui_widget* w, int index, vgui_item_id* out_id = nullptr)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || index < 0 || index >= (int)st->items.size()) return nullptr;
+		if (out_id) *out_id = st->items[(size_t)index].id;
+		return &st->items[(size_t)index];
+	}
+
+	static void vgui_list_rebuild_index(vgui_list_state* st)
+	{
+		if (!st) return;
+		st->index.clear();
+		for (size_t i = 0; i < st->items.size(); ++i)
+			st->index[st->items[i].id] = i;
+	}
+
+	static void vgui_list_notify_select(vgui_widget* w, vgui_item_id id, int selected)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || !w->ctx || !w->ctx->alive.count(w)) return;
+		size_t index = (size_t)-1;
+		vgui_list_item_find(w, id, &index);
+		if (st->select_fn)
+			st->select_fn(w, id, selected ? 1 : 0, st->select_user);
+		if (!w->ctx || !w->ctx->alive.count(w)) return;
+		vgui_event e = {};
+		e.type = VGUI_EVENT_VALUE_CHANGED;
+		e.item = id;
+		e.index = (index == (size_t)-1) ? -1 : (int)index;
+		vgui_emit_full(w, e);
+	}
+
+	static bool vgui_list_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || !vgui_list_item_find(w, id)) return false;
+		bool has = vgui_id_selected(st->selected, id);
+		if (selected == has) return false;
+		if (selected)
+		{
+			if (st->selection_mode == VGUI_SELECTION_NONE) return false;
+			if (st->selection_mode == VGUI_SELECTION_SINGLE)
+			{
+				std::vector<vgui_item_id> old = st->selected;
+				st->selected.clear();
+				if (notify)
+					for (vgui_item_id old_id : old)
+						vgui_list_notify_select(w, old_id, 0);
+				if (!w->ctx || !w->ctx->alive.count(w)) return true;
+				// A selection callback may have removed the target item or
+				// changed the selection state.  Re-check before mutating again.
+				st = vgui_list_of(w);
+				if (!st || !vgui_list_item_find(w, id)) return true;
+				if (st->selection_mode == VGUI_SELECTION_NONE) return true;
+				if (vgui_id_selected(st->selected, id)) return true;
+			}
+			st->selected.push_back(id);
+		}
+		else
+		{
+			st->selected.erase(std::remove(st->selected.begin(), st->selected.end(), id), st->selected.end());
+		}
+		if (notify) vgui_list_notify_select(w, id, selected ? 1 : 0);
+		return true;
+	}
+
+	static void vgui_list_clear_selection_internal(vgui_widget* w, bool notify)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return;
+		std::vector<vgui_item_id> old = st->selected;
+		st->selected.clear();
+		if (notify)
+			for (vgui_item_id id : old)
+			{
+				vgui_list_notify_select(w, id, 0);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+			}
+	}
+
+	static float vgui_list_row_height(vgui_widget* w)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || !w->ctx) return 1.0f;
+		float h = w->ctx->style.list.row_height;
+		if (h <= 0.0f) h = vgui_line_height(w->ctx, w) + 10.0f;
+		return std::max(1.0f, h);
+	}
+
+	static float vgui_tree_row_height(vgui_widget* w)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !w->ctx) return 1.0f;
+		float h = w->ctx->style.tree.row_height;
+		if (h <= 0.0f) h = vgui_line_height(w->ctx, w) + 10.0f;
+		return std::max(1.0f, h);
+	}
+
+	static vgui_tree_node* vgui_tree_node_find(vgui_widget* w, vgui_item_id id, size_t* out_index = nullptr)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || id == 0) return nullptr;
+		auto it = st->index.find(id);
+		if (it == st->index.end() || it->second >= st->nodes.size()) return nullptr;
+		if (out_index) *out_index = it->second;
+		return &st->nodes[it->second];
+	}
+
+	static vgui_tree_node* vgui_tree_node_at(vgui_widget* w, int index, vgui_item_id* out_id = nullptr)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || index < 0 || index >= (int)st->nodes.size()) return nullptr;
+		if (out_id) *out_id = st->nodes[(size_t)index].id;
+		return &st->nodes[(size_t)index];
+	}
+
+	static void vgui_tree_rebuild_index(vgui_tree_state* st)
+	{
+		if (!st) return;
+		st->index.clear();
+		for (size_t i = 0; i < st->nodes.size(); ++i)
+			st->index[st->nodes[i].id] = i;
+	}
+
+	static void vgui_tree_rebuild_rows_rec(vgui_tree_state* st, vgui_item_id id, int depth)
+	{
+		vgui_tree_node* n = nullptr;
+		auto it = st->index.find(id);
+		if (it != st->index.end() && it->second < st->nodes.size()) n = &st->nodes[it->second];
+		if (!n) return;
+		st->rows.push_back({ id, depth });
+		if (!n->expanded) return;
+		for (vgui_item_id c : n->children)
+			vgui_tree_rebuild_rows_rec(st, c, depth + 1);
+	}
+
+	static void vgui_tree_rebuild_rows(vgui_widget* w)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !st->rows_dirty) return;
+		st->rows.clear();
+		for (vgui_item_id id : st->roots)
+			vgui_tree_rebuild_rows_rec(st, id, 0);
+		st->rows_dirty = false;
+	}
+
+	static int vgui_tree_visible_index(vgui_widget* w, vgui_item_id id)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || id == 0) return -1;
+		vgui_tree_rebuild_rows(w);
+		for (size_t i = 0; i < st->rows.size(); ++i)
+			if (st->rows[i].id == id) return (int)i;
+		return -1;
+	}
+
+	static int vgui_tree_visible_count(vgui_widget* w)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return 0;
+		vgui_tree_rebuild_rows(w);
+		return (int)st->rows.size();
+	}
+
+	static void vgui_tree_notify_select(vgui_widget* w, vgui_item_id id, int selected)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !w->ctx || !w->ctx->alive.count(w)) return;
+		int index = vgui_tree_visible_index(w, id);
+		if (st->select_fn)
+			st->select_fn(w, id, selected ? 1 : 0, st->select_user);
+		if (!w->ctx || !w->ctx->alive.count(w)) return;
+		vgui_event e = {};
+		e.type = VGUI_EVENT_VALUE_CHANGED;
+		e.item = id;
+		e.index = index;
+		vgui_emit_full(w, e);
+	}
+
+	static bool vgui_tree_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !vgui_tree_node_find(w, id)) return false;
+		bool has = vgui_id_selected(st->selected, id);
+		if (selected == has) return false;
+		if (selected)
+		{
+			if (st->selection_mode == VGUI_SELECTION_NONE) return false;
+			if (st->selection_mode == VGUI_SELECTION_SINGLE)
+			{
+				std::vector<vgui_item_id> old = st->selected;
+				st->selected.clear();
+				if (notify)
+					for (vgui_item_id old_id : old)
+						vgui_tree_notify_select(w, old_id, 0);
+				if (!w->ctx || !w->ctx->alive.count(w)) return true;
+				// A selection callback may have removed the node or changed
+				// the selection state.  Re-check before mutating again.
+				st = vgui_tree_of(w);
+				if (!st || !vgui_tree_node_find(w, id)) return true;
+				if (st->selection_mode == VGUI_SELECTION_NONE) return true;
+				if (vgui_id_selected(st->selected, id)) return true;
+			}
+			st->selected.push_back(id);
+		}
+		else
+		{
+			st->selected.erase(std::remove(st->selected.begin(), st->selected.end(), id), st->selected.end());
+		}
+		if (notify) vgui_tree_notify_select(w, id, selected ? 1 : 0);
+		return true;
+	}
+
+	static void vgui_tree_clear_selection_internal(vgui_widget* w, bool notify)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return;
+		std::vector<vgui_item_id> old = st->selected;
+		st->selected.clear();
+		if (notify)
+			for (vgui_item_id id : old)
+			{
+				vgui_tree_notify_select(w, id, 0);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+			}
+	}
+
+	static void vgui_item_event(vgui_widget* w, vgui_event_type type, vgui_item_id item, int index,
+		float lx, float ly, int button = 0, int clicks = 0)
+	{
+		if (!w || !w->ctx || !w->ctx->alive.count(w)) return;
+		vgui_event e = {};
+		e.type = (int)type;
+		e.x = lx;
+		e.y = ly;
+		e.button = button;
+		e.clicks = clicks;
+		e.item = item;
+		e.index = index;
+		vgui_emit_full(w, e);
+	}
+
+	//----------------------------------------------------------------------------
 	// widget construction / theme defaults
 	//----------------------------------------------------------------------------
 
@@ -794,6 +1191,17 @@ namespace {
 		t.scrollbar_hover = 0xFF727272;
 		t.checkmark = 0xFFFFFFFF;
 		t.switch_thumb = 0xFFFFFFFF;
+		t.list_bg = t.panel_bg;
+		t.list_border = t.panel_border;
+		t.row_text = t.text;
+		t.row_hover = 0x554A4A4A;
+		t.row_selected = 0x55409EFF;
+		t.row_selected_text = t.text;
+		t.tree_guide = 0x553C3C3C;
+		t.menu_bg = 0xFF282828;
+		t.menu_border = 0xFF4A4A4A;
+		t.menu_hover = 0xFF3F3F3F;
+		t.menu_disabled_text = t.disabled;
 		return t;
 	}
 
@@ -901,6 +1309,41 @@ namespace {
 		s.edit.scrollbar_extra_scroll = 2.0f;
 
 		s.separator.thickness = 1.0f;
+
+		s.list.row_height = 0.0f;
+		s.list.padding_x = 4.0f;
+		s.list.padding_y = 4.0f;
+		s.list.rounding = 3.0f;
+		s.list.req_width = 220.0f;
+		s.list.req_height = 180.0f;
+		s.list.disabled_mix = 0.6f;
+
+		s.tree.row_height = 0.0f;
+		s.tree.indent = 18.0f;
+		s.tree.arrow_size = 9.0f;
+		s.tree.arrow_gap = 4.0f;
+		s.tree.padding_x = 6.0f;
+		s.tree.padding_y = 4.0f;
+		s.tree.rounding = 3.0f;
+		s.tree.req_width = 220.0f;
+		s.tree.req_height = 200.0f;
+		s.tree.guide_alpha = 0.45f;
+		s.tree.disabled_mix = 0.6f;
+
+		s.menu.item_height = 28.0f;
+		s.menu.padding_x = 4.0f;
+		s.menu.padding_y = 4.0f;
+		s.menu.item_padding_x = 8.0f;
+		s.menu.check_width = 18.0f;
+		s.menu.shortcut_gap = 24.0f;
+		s.menu.submenu_arrow_width = 10.0f;
+		s.menu.separator_height = 9.0f;
+		s.menu.rounding = 4.0f;
+		s.menu.min_width = 140.0f;
+		s.menu.max_width = 360.0f;
+		s.menu.max_height = 0.0f;
+		s.menu.submenu_delay = 0.18f;
+		s.menu.disabled_mix = 0.55f;
 		return s;
 	}
 
@@ -1017,6 +1460,70 @@ namespace {
 		s->edit.scrollbar_extra_scroll = vgui_nonneg(s->edit.scrollbar_extra_scroll);
 
 		s->separator.thickness = vgui_nonneg(s->separator.thickness);
+
+		s->list.row_height = vgui_nonneg(s->list.row_height);
+		s->list.padding_x = vgui_nonneg(s->list.padding_x);
+		s->list.padding_y = vgui_nonneg(s->list.padding_y);
+		s->list.rounding = vgui_nonneg(s->list.rounding);
+		s->list.req_width = vgui_nonneg(s->list.req_width);
+		s->list.req_height = vgui_nonneg(s->list.req_height);
+		s->list.disabled_mix = vgui_clampf(s->list.disabled_mix, 0.0f, 1.0f);
+
+		s->tree.row_height = vgui_nonneg(s->tree.row_height);
+		s->tree.indent = vgui_nonneg(s->tree.indent);
+		s->tree.arrow_size = vgui_nonneg(s->tree.arrow_size);
+		s->tree.arrow_gap = vgui_nonneg(s->tree.arrow_gap);
+		s->tree.padding_x = vgui_nonneg(s->tree.padding_x);
+		s->tree.padding_y = vgui_nonneg(s->tree.padding_y);
+		s->tree.rounding = vgui_nonneg(s->tree.rounding);
+		s->tree.req_width = vgui_nonneg(s->tree.req_width);
+		s->tree.req_height = vgui_nonneg(s->tree.req_height);
+		s->tree.guide_alpha = vgui_clampf(s->tree.guide_alpha, 0.0f, 1.0f);
+		s->tree.disabled_mix = vgui_clampf(s->tree.disabled_mix, 0.0f, 1.0f);
+
+		s->menu.item_height = vgui_nonneg(s->menu.item_height);
+		s->menu.padding_x = vgui_nonneg(s->menu.padding_x);
+		s->menu.padding_y = vgui_nonneg(s->menu.padding_y);
+		s->menu.item_padding_x = vgui_nonneg(s->menu.item_padding_x);
+		s->menu.check_width = vgui_nonneg(s->menu.check_width);
+		s->menu.shortcut_gap = vgui_nonneg(s->menu.shortcut_gap);
+		s->menu.submenu_arrow_width = vgui_nonneg(s->menu.submenu_arrow_width);
+		s->menu.separator_height = vgui_nonneg(s->menu.separator_height);
+		s->menu.rounding = vgui_nonneg(s->menu.rounding);
+		s->menu.min_width = vgui_nonneg(s->menu.min_width);
+		s->menu.max_width = vgui_nonneg(s->menu.max_width);
+		if (s->menu.max_width < s->menu.min_width)
+			std::swap(s->menu.max_width, s->menu.min_width);
+		s->menu.max_height = vgui_nonneg(s->menu.max_height);
+		s->menu.submenu_delay = vgui_nonneg(s->menu.submenu_delay);
+		s->menu.disabled_mix = vgui_clampf(s->menu.disabled_mix, 0.0f, 1.0f);
+
+		// Styles written before these controls existed have zeroed additions.
+		// Restore functional defaults while leaving explicitly supported zero
+		// values (automatic row height, automatic menu height) alone.
+		vgui_style def = vgui_default_style();
+		if (s->list.padding_x == 0) s->list.padding_x = def.list.padding_x;
+		if (s->list.padding_y == 0) s->list.padding_y = def.list.padding_y;
+		if (s->list.req_width == 0) s->list.req_width = def.list.req_width;
+		if (s->list.req_height == 0) s->list.req_height = def.list.req_height;
+		if (s->tree.indent == 0) s->tree.indent = def.tree.indent;
+		if (s->tree.arrow_size == 0) s->tree.arrow_size = def.tree.arrow_size;
+		if (s->tree.arrow_gap == 0) s->tree.arrow_gap = def.tree.arrow_gap;
+		if (s->tree.padding_x == 0) s->tree.padding_x = def.tree.padding_x;
+		if (s->tree.padding_y == 0) s->tree.padding_y = def.tree.padding_y;
+		if (s->tree.req_width == 0) s->tree.req_width = def.tree.req_width;
+		if (s->tree.req_height == 0) s->tree.req_height = def.tree.req_height;
+		if (s->menu.item_height == 0) s->menu.item_height = def.menu.item_height;
+		if (s->menu.padding_x == 0) s->menu.padding_x = def.menu.padding_x;
+		if (s->menu.padding_y == 0) s->menu.padding_y = def.menu.padding_y;
+		if (s->menu.item_padding_x == 0) s->menu.item_padding_x = def.menu.item_padding_x;
+		if (s->menu.check_width == 0) s->menu.check_width = def.menu.check_width;
+		if (s->menu.shortcut_gap == 0) s->menu.shortcut_gap = def.menu.shortcut_gap;
+		if (s->menu.submenu_arrow_width == 0) s->menu.submenu_arrow_width = def.menu.submenu_arrow_width;
+		if (s->menu.separator_height == 0) s->menu.separator_height = def.menu.separator_height;
+		if (s->menu.min_width == 0) s->menu.min_width = def.menu.min_width;
+		if (s->menu.max_width == 0) s->menu.max_width = def.menu.max_width;
+		if (s->menu.submenu_delay == 0) s->menu.submenu_delay = def.menu.submenu_delay;
 	}
 
 	static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, const char* text)
@@ -1097,6 +1604,47 @@ namespace {
 			w->bg = th.panel_border;
 			w->req_h = st.separator.thickness;
 			break;
+		case VGUI_LIST:
+			w->list = std::make_unique<vgui_list_state>();
+			w->bg = th.list_bg ? th.list_bg : th.panel_bg;
+			w->border = th.list_border ? th.list_border : th.panel_border;
+			w->border_width = 1.0f;
+			w->rounding = st.list.rounding;
+			w->req_w = st.list.req_width;
+			w->req_h = st.list.req_height;
+			w->padding[0] = w->padding[2] = st.list.padding_x;
+			w->padding[1] = w->padding[3] = st.list.padding_y;
+			w->text_align_x = 0.0f;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_HAND;
+			w->scrollable_y = 1;
+			break;
+		case VGUI_TREE:
+			w->tree = std::make_unique<vgui_tree_state>();
+			w->bg = th.list_bg ? th.list_bg : th.panel_bg;
+			w->border = th.list_border ? th.list_border : th.panel_border;
+			w->border_width = 1.0f;
+			w->rounding = st.tree.rounding;
+			w->req_w = st.tree.req_width;
+			w->req_h = st.tree.req_height;
+			w->padding[0] = w->padding[2] = st.tree.padding_x;
+			w->padding[1] = w->padding[3] = st.tree.padding_y;
+			w->text_align_x = 0.0f;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_HAND;
+			w->scrollable_y = 1;
+			break;
+		case VGUI_MENU:
+			w->menu = std::make_unique<vgui_menu_state>();
+			w->bg = th.menu_bg ? th.menu_bg : th.panel_bg;
+			w->border = th.menu_border ? th.menu_border : th.button_border;
+			w->border_width = 1.0f;
+			w->rounding = st.menu.rounding;
+			w->text_align_x = 0.0f;
+			w->cursor_type = VGUI_CURSOR_ARROW;
+			w->scrollable_y = 1;
+			w->visible = 0;
+			break;
 		}
 
 		ctx->all_widgets.insert(w);
@@ -1121,6 +1669,52 @@ namespace {
 		if (c->min_h > 0) v = std::max(v, c->min_h);
 		if (c->max_h > 0) v = std::min(v, c->max_h);
 		return std::max(v, 0.0f);
+	}
+
+	static float vgui_menu_item_height(vgui_widget* w, const vgui_menu_item& item)
+	{
+		const vgui_menu_style& ms = w->ctx->style.menu;
+		return item.type == VGUI_MENU_ITEM_SEPARATOR ? ms.separator_height : ms.item_height;
+	}
+
+	static bool vgui_menu_has_checkable(vgui_widget* w)
+	{
+		vgui_menu_state* st = vgui_menu_of(w);
+		if (!st) return false;
+		for (const vgui_menu_item& it : st->items)
+			if (it.type != VGUI_MENU_ITEM_SEPARATOR && it.checkable) return true;
+		return false;
+	}
+
+	static void vgui_menu_content_size(vgui_widget* w, float* out_w, float* out_h)
+	{
+		vgui_menu_state* st = vgui_menu_of(w);
+		const vgui_menu_style& ms = w->ctx->style.menu;
+		float width = ms.min_width;
+		float height = ms.padding_y * 2.0f;
+		bool any_check = vgui_menu_has_checkable(w);
+		if (st)
+		{
+			for (const vgui_menu_item& it : st->items)
+			{
+				height += vgui_menu_item_height(w, it);
+				if (it.type == VGUI_MENU_ITEM_SEPARATOR) continue;
+				float cw = ms.padding_x * 2.0f + ms.item_padding_x * 2.0f;
+				if (any_check) cw += ms.check_width;
+				cw += vgui_text_width(w, it.text);
+				if (!it.shortcut.empty())
+					cw += ms.shortcut_gap + vgui_text_width(w, it.shortcut);
+				if (it.type == VGUI_MENU_ITEM_SUBMENU)
+					cw += ms.submenu_arrow_width + ms.item_padding_x;
+				width = std::max(width, cw);
+			}
+		}
+		float maxw = ms.max_width > 0 ? ms.max_width : width;
+		if (st && st->width > 0) width = st->width;
+		else width = std::min(width, maxw);
+		width = std::max(width, ms.min_width);
+		if (out_w) *out_w = width;
+		if (out_h) *out_h = height;
 	}
 
 	static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
@@ -1223,6 +1817,63 @@ namespace {
 			w->intrinsic_w = w->req_w;
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.separator.thickness;
 			break;
+		case VGUI_LIST:
+		{
+			vgui_list_state* ls = vgui_list_of(w);
+			float row_h = vgui_list_row_height(w);
+			float content_w = 0;
+			if (ls)
+			{
+				for (const vgui_list_item& it : ls->items)
+				{
+					float iw = vgui_text_width(w, it.text);
+					if (!it.detail.empty())
+						iw += 16.0f + vgui_text_width(w, it.detail);
+					content_w = std::max(content_w, iw);
+				}
+			}
+			w->content_w = content_w;
+			w->content_h = ls ? (float)ls->items.size() * row_h : 0.0f;
+			float default_w = std::max(st.list.req_width, content_w + pl + pr + 12.0f);
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : default_w;
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.list.req_height;
+		}
+		break;
+		case VGUI_TREE:
+		{
+			vgui_tree_state* ts = vgui_tree_of(w);
+			float row_h = vgui_tree_row_height(w);
+			vgui_tree_rebuild_rows(w);
+			float content_w = 0;
+			if (ts)
+			{
+				float indent = st.tree.indent;
+				float arrow = st.tree.arrow_size + st.tree.arrow_gap;
+				for (const vgui_tree_row& row : ts->rows)
+				{
+					vgui_tree_node* n = vgui_tree_node_find(w, row.id);
+					if (!n) continue;
+					float iw = row.depth * indent + arrow + vgui_text_width(w, n->text);
+					content_w = std::max(content_w, iw);
+				}
+			}
+			w->content_w = content_w;
+			w->content_h = ts ? (float)ts->rows.size() * row_h : 0.0f;
+			float default_w = std::max(st.tree.req_width, content_w + pl + pr + 12.0f);
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : default_w;
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.tree.req_height;
+		}
+		break;
+		case VGUI_MENU:
+		{
+			float cw = 0, ch = 0;
+			vgui_menu_content_size(w, &cw, &ch);
+			w->content_w = cw;
+			w->content_h = ch;
+			w->intrinsic_w = cw;
+			w->intrinsic_h = ch;
+		}
+		break;
 		}
 
 		if (w->min_w > 0) w->intrinsic_w = std::max(w->intrinsic_w, w->min_w);
@@ -1420,6 +2071,22 @@ namespace {
 		w->abs_w = ww;
 		w->abs_h = hh;
 
+		if (w->kind == VGUI_LIST || w->kind == VGUI_TREE)
+		{
+			float ix = x + w->padding[0];
+			float iy = y + w->padding[1];
+			float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
+			float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
+			float max_sx = std::max(0.0f, w->content_w - iw);
+			float max_sy = std::max(0.0f, w->content_h - ih);
+			if (w->scrollable_x) w->scroll_x = vgui_clampf(w->scroll_x, 0.0f, max_sx);
+			else w->scroll_x = 0;
+			if (w->scrollable_y) w->scroll_y = vgui_clampf(w->scroll_y, 0.0f, max_sy);
+			else w->scroll_y = 0;
+			(void)ix; (void)iy;
+			return;
+		}
+
 		if (w->kind != VGUI_PANEL) return;
 
 		float ix = x + w->padding[0];
@@ -1427,6 +2094,79 @@ namespace {
 		float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
 		vgui_arrange_children(w, ctx, ix, iy, iw, ih);
+	}
+
+	static float vgui_menu_row_top(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return menu->abs_y;
+		const vgui_menu_style& ms = menu->ctx->style.menu;
+		float y = menu->abs_y + ms.padding_y - menu->scroll_y;
+		for (const vgui_menu_item& it : st->items)
+		{
+			if (it.id == item) return y;
+			y += vgui_menu_item_height(menu, it);
+		}
+		return menu->abs_y;
+	}
+
+	static void vgui_menu_update_layout(vgui_widget* menu, vgui_context* ctx)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !st->open) return;
+		vgui_measure_widget(menu, ctx);
+
+		float cw = 0, ch = 0;
+		vgui_menu_content_size(menu, &cw, &ch);
+		menu->content_w = cw;
+		menu->content_h = ch;
+		menu->intrinsic_w = cw;
+		menu->intrinsic_h = ch;
+
+		float margin = 8.0f;
+		float avail_h = ctx->height > 0 ? (float)ctx->height - margin * 2.0f : ch;
+		avail_h = std::max(0.0f, avail_h);
+		float max_h = st->max_height > 0 ? std::min(st->max_height, avail_h) : avail_h;
+		if (ctx->height <= 0 && st->max_height <= 0) max_h = ch;
+		float ah = std::max(0.0f, std::min(ch, max_h));
+		float avail_w = ctx->width > 0 ? (float)ctx->width - margin * 2.0f : cw;
+		avail_w = std::max(0.0f, avail_w);
+		float aw = cw;
+		if (ctx->width > 0) aw = std::max(1.0f, std::min(cw, avail_w));
+		menu->abs_w = aw;
+		menu->abs_h = ah;
+
+		float x = st->open_x;
+		float y = st->open_y;
+		if (st->parent_menu)
+		{
+			x = st->parent_menu->abs_x + st->parent_menu->abs_w - 2.0f;
+			y = vgui_menu_row_top(st->parent_menu, st->parent_item);
+			if (ctx->width > 0 && x + aw > (float)ctx->width - margin)
+				x = st->parent_menu->abs_x - aw + 2.0f;
+		}
+
+		if (ctx->width > 0)
+		{
+			x = std::min(x, (float)ctx->width - aw - margin);
+			x = std::max(x, margin);
+		}
+		if (ctx->height > 0)
+		{
+			y = std::min(y, (float)ctx->height - ah - margin);
+			y = std::max(y, margin);
+		}
+		menu->abs_x = x;
+		menu->abs_y = y;
+
+		float max_sy = std::max(0.0f, ch - ah);
+		menu->scroll_y = vgui_clampf(menu->scroll_y, 0.0f, max_sy);
+		menu->scrollable_y = 1;
+		menu->scrollable_x = 0;
+		menu->scroll_x = 0;
+
+		if (st->submenu_open && st->submenu_open->menu && st->submenu_open->menu->open)
+			vgui_menu_update_layout(st->submenu_open, ctx);
 	}
 
 	static void vgui_ensure_layout(vgui_context* ctx)
@@ -1438,13 +2178,38 @@ namespace {
 		float rw = ctx->width > 0 ? (float)ctx->width : std::max(ctx->root->intrinsic_w, 1.0f);
 		float rh = ctx->height > 0 ? (float)ctx->height : std::max(ctx->root->intrinsic_h, 1.0f);
 		vgui_layout_widget(ctx->root, ctx, 0, 0, rw, rh);
+		if (ctx->open_menu)
+			vgui_menu_update_layout(ctx->open_menu, ctx);
 	}
+
+	static void vgui_menu_close_internal(vgui_widget* menu);
 
 	static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
 	{
 		if (!w) return;
 		for (vgui_widget* c : w->children)
 			vgui_delete_rec(c, ctx);
+
+		// Menus own their submenu widgets, but submenus are not regular children:
+		// they are context popups and must be deleted explicitly.
+		if (w->kind == VGUI_MENU && w->menu)
+		{
+			vgui_menu_state* ms = w->menu.get();
+			if (ms->parent_menu && ms->parent_menu->menu)
+			{
+				vgui_menu_state* parent = ms->parent_menu->menu.get();
+				if (parent->submenu_open == w) parent->submenu_open = nullptr;
+				for (vgui_menu_item& pi : parent->items)
+					if (pi.submenu == w) pi.submenu = nullptr;
+			}
+			if (ctx->open_menu == w) ctx->open_menu = nullptr;
+			std::vector<vgui_widget*> subs;
+			for (const vgui_menu_item& item : ms->items)
+				if (item.submenu) subs.push_back(item.submenu);
+			for (vgui_widget* sub : subs)
+				if (sub && ctx->alive.count(sub)) vgui_delete_rec(sub, ctx);
+		}
+
 		ctx->alive.erase(w);
 		ctx->all_widgets.erase(w);
 		delete w;
@@ -1469,6 +2234,7 @@ namespace {
 			if (ctx->press_target == w) ctx->press_target = nullptr;
 			if (ctx->focus == w) ctx->focus = nullptr;
 			if (ctx->slider_drag == w) ctx->slider_drag = nullptr;
+			if (ctx->open_menu == w) ctx->open_menu = nullptr;
 			vgui_delete_rec(w, ctx);
 		}
 		ctx->layout_dirty = true;
@@ -1480,6 +2246,8 @@ namespace {
 		vgui_context* ctx = w->ctx;
 		for (vgui_widget* p = w->parent; p; p = p->parent)
 			if (p->destroy_pending) return; // parent will delete the subtree
+		if (w->kind == VGUI_MENU)
+			vgui_menu_close_internal(w);
 		w->destroy_pending = true;
 		w->visible = 0;
 		if (ctx->hot == w) ctx->hot = nullptr;
@@ -2518,7 +3286,8 @@ namespace {
 				found = w;
 				found_axis = 4;
 			}
-			if (w->kind == VGUI_PANEL)
+			if (w->kind == VGUI_PANEL || w->kind == VGUI_LIST ||
+				w->kind == VGUI_TREE || w->kind == VGUI_MENU)
 			{
 				// Keep walking after a hit: ancestor bars are painted on top of
 				// descendant bars where the two overlap, and the horizontal bar is
@@ -2611,12 +3380,1046 @@ namespace {
 		vgui_scrollbar_apply(w, g, pos - grab);
 	}
 
+	//----------------------------------------------------------------------------
+	// list / tree interaction
+	//----------------------------------------------------------------------------
+
+	static int vgui_list_index_at(vgui_widget* w, float x, float y)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return -1;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = w->abs_w - w->padding[0] - w->padding[2];
+		float ih = w->abs_h - w->padding[1] - w->padding[3];
+		if (x < ix || x >= ix + iw || y < iy || y >= iy + ih) return -1;
+		float local = y - iy + w->scroll_y;
+		if (local < 0) return -1;
+		int idx = (int)(local / vgui_list_row_height(w));
+		return (idx >= 0 && idx < (int)st->items.size()) ? idx : -1;
+	}
+
+	static int vgui_tree_row_at(vgui_widget* w, float x, float y)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return -1;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = w->abs_w - w->padding[0] - w->padding[2];
+		float ih = w->abs_h - w->padding[1] - w->padding[3];
+		if (x < ix || x >= ix + iw || y < iy || y >= iy + ih) return -1;
+		vgui_tree_rebuild_rows(w);
+		float local = y - iy + w->scroll_y;
+		if (local < 0) return -1;
+		int idx = (int)(local / vgui_tree_row_height(w));
+		return (idx >= 0 && idx < (int)st->rows.size()) ? idx : -1;
+	}
+
+	static bool vgui_tree_arrow_hit(vgui_widget* w, int row, float x)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || row < 0 || row >= (int)st->rows.size()) return false;
+		vgui_tree_node* n = vgui_tree_node_find(w, st->rows[(size_t)row].id);
+		if (!n || n->children.empty()) return false;
+		const vgui_tree_style& ts = w->ctx->style.tree;
+		float tx = w->abs_x + w->padding[0] + st->rows[(size_t)row].depth * ts.indent;
+		return x >= tx && x <= tx + ts.arrow_size + ts.arrow_gap;
+	}
+
+	static void vgui_list_ensure_visible(vgui_widget* w, vgui_item_id id, vgui_scroll_align align)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return;
+		auto it = st->index.find(id);
+		if (it == st->index.end()) return;
+		float row_h = vgui_list_row_height(w);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float top = (float)it->second * row_h;
+		float bottom = top + row_h;
+		float scroll = w->scroll_y;
+		switch (align)
+		{
+		case VGUI_SCROLL_ALIGN_TOP: scroll = top; break;
+		case VGUI_SCROLL_ALIGN_CENTER: scroll = top - (ih - row_h) * 0.5f; break;
+		case VGUI_SCROLL_ALIGN_BOTTOM: scroll = bottom - ih; break;
+		default:
+			if (top < scroll) scroll = top;
+			else if (bottom > scroll + ih) scroll = bottom - ih;
+			break;
+		}
+		scroll = vgui_clampf(scroll, 0.0f, std::max(0.0f, w->content_h - ih));
+		if (scroll != w->scroll_y)
+		{
+			w->scroll_y = scroll;
+			vgui_mark_dirty(w);
+			vgui_ensure_layout(w->ctx);
+		}
+	}
+
+	static void vgui_tree_ensure_visible(vgui_widget* w, vgui_item_id id, vgui_scroll_align align)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		int index = vgui_tree_visible_index(w, id);
+		if (!st || index < 0) return;
+		float row_h = vgui_tree_row_height(w);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float top = (float)index * row_h;
+		float bottom = top + row_h;
+		float scroll = w->scroll_y;
+		switch (align)
+		{
+		case VGUI_SCROLL_ALIGN_TOP: scroll = top; break;
+		case VGUI_SCROLL_ALIGN_CENTER: scroll = top - (ih - row_h) * 0.5f; break;
+		case VGUI_SCROLL_ALIGN_BOTTOM: scroll = bottom - ih; break;
+		default:
+			if (top < scroll) scroll = top;
+			else if (bottom > scroll + ih) scroll = bottom - ih;
+			break;
+		}
+		scroll = vgui_clampf(scroll, 0.0f, std::max(0.0f, w->content_h - ih));
+		if (scroll != w->scroll_y)
+		{
+			w->scroll_y = scroll;
+			vgui_mark_dirty(w);
+			vgui_ensure_layout(w->ctx);
+		}
+	}
+
+	static void vgui_list_apply_click(vgui_widget* w, vgui_item_id id, int mods)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || !vgui_list_item_find(w, id)) return;
+		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
+		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
+		st->cursor = id;
+		if (st->selection_mode == VGUI_SELECTION_NONE)
+		{
+			st->range_anchor = id;
+			return;
+		}
+		if (st->selection_mode == VGUI_SELECTION_SINGLE)
+		{
+			if (!vgui_id_selected(st->selected, id))
+			{
+				vgui_list_clear_selection_internal(w, true);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+				vgui_list_set_selected_internal(w, id, true, true);
+			}
+			st->range_anchor = id;
+			vgui_list_ensure_visible(w, id, VGUI_SCROLL_ALIGN_NEAREST);
+			return;
+		}
+
+		if (shift && st->range_anchor != 0)
+		{
+			if (!ctrl) vgui_list_clear_selection_internal(w, true);
+			if (!w->ctx || !w->ctx->alive.count(w)) return;
+			size_t ai = (size_t)-1, ti = (size_t)-1;
+			vgui_list_item_find(w, st->range_anchor, &ai);
+			vgui_list_item_find(w, id, &ti);
+			if (ai == (size_t)-1) ai = ti;
+			if (ti == (size_t)-1) return;
+			size_t lo = std::min(ai, ti), hi = std::max(ai, ti);
+			if (hi >= st->items.size()) hi = st->items.size() - 1;
+			std::vector<vgui_item_id> range;
+			for (size_t i = lo; i <= hi; ++i) range.push_back(st->items[i].id);
+			for (vgui_item_id rid : range)
+			{
+				st = vgui_list_of(w);
+				if (!st) return;
+				vgui_list_item* it = vgui_list_item_find(w, rid);
+				if (!it || !it->enabled) continue;
+				vgui_list_set_selected_internal(w, rid, true, true);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+			}
+		}
+		else if (ctrl)
+		{
+			bool sel = vgui_id_selected(st->selected, id);
+			vgui_list_set_selected_internal(w, id, !sel, true);
+			st->range_anchor = id;
+		}
+		else
+		{
+			vgui_list_clear_selection_internal(w, true);
+			if (!w->ctx || !w->ctx->alive.count(w)) return;
+			vgui_list_set_selected_internal(w, id, true, true);
+			st->range_anchor = id;
+		}
+		if (w->ctx && w->ctx->alive.count(w))
+			vgui_list_ensure_visible(w, id, VGUI_SCROLL_ALIGN_NEAREST);
+	}
+
+	static void vgui_tree_apply_click(vgui_widget* w, vgui_item_id id, int mods)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !vgui_tree_node_find(w, id)) return;
+		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
+		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
+		st->cursor = id;
+		if (st->selection_mode == VGUI_SELECTION_NONE)
+		{
+			st->range_anchor = id;
+			return;
+		}
+		if (st->selection_mode == VGUI_SELECTION_SINGLE)
+		{
+			if (!vgui_id_selected(st->selected, id))
+			{
+				vgui_tree_clear_selection_internal(w, true);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+				vgui_tree_set_selected_internal(w, id, true, true);
+			}
+			st->range_anchor = id;
+			return;
+		}
+
+		if (shift && st->range_anchor != 0)
+		{
+			if (!ctrl) vgui_tree_clear_selection_internal(w, true);
+			if (!w->ctx || !w->ctx->alive.count(w)) return;
+			int ai = vgui_tree_visible_index(w, st->range_anchor);
+			int ti = vgui_tree_visible_index(w, id);
+			if (ai < 0) ai = ti;
+			if (ti < 0) return;
+			vgui_tree_rebuild_rows(w);
+			int lo = std::min(ai, ti), hi = std::max(ai, ti);
+			if (hi >= (int)st->rows.size()) hi = (int)st->rows.size() - 1;
+			std::vector<vgui_item_id> range;
+			for (int i = lo; i <= hi; ++i) range.push_back(st->rows[(size_t)i].id);
+			for (vgui_item_id rid : range)
+			{
+				st = vgui_tree_of(w);
+				if (!st) return;
+				vgui_tree_node* n = vgui_tree_node_find(w, rid);
+				if (!n || !n->enabled) continue;
+				vgui_tree_set_selected_internal(w, rid, true, true);
+				if (!w->ctx || !w->ctx->alive.count(w)) return;
+			}
+		}
+		else if (ctrl)
+		{
+			bool sel = vgui_id_selected(st->selected, id);
+			vgui_tree_set_selected_internal(w, id, !sel, true);
+			st->range_anchor = id;
+		}
+		else
+		{
+			vgui_tree_clear_selection_internal(w, true);
+			if (!w->ctx || !w->ctx->alive.count(w)) return;
+			vgui_tree_set_selected_internal(w, id, true, true);
+			st->range_anchor = id;
+		}
+	}
+
+	static void vgui_list_activate(vgui_widget* w, vgui_item_id id)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || !vgui_list_item_find(w, id)) return;
+		size_t index = (size_t)-1;
+		vgui_list_item_find(w, id, &index);
+		if (st->activate_fn)
+			st->activate_fn(w, id, st->activate_user);
+		if (w->ctx && w->ctx->alive.count(w))
+			vgui_item_event(w, VGUI_EVENT_SUBMIT, id, (int)index, 0, 0);
+	}
+
+	static void vgui_tree_activate(vgui_widget* w, vgui_item_id id)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || !vgui_tree_node_find(w, id)) return;
+		int index = vgui_tree_visible_index(w, id);
+		if (st->activate_fn)
+			st->activate_fn(w, id, st->activate_user);
+		if (w->ctx && w->ctx->alive.count(w))
+			vgui_item_event(w, VGUI_EVENT_SUBMIT, id, index, 0, 0);
+	}
+
+	static int vgui_list_next_index(vgui_widget* w, int from, int delta)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || st->items.empty()) return -1;
+		int n = (int)st->items.size();
+		if (from < 0) from = delta > 0 ? -1 : n;
+		for (int step = 0; step < n; ++step)
+		{
+			from += delta;
+			if (from < 0) from = 0;
+			if (from >= n) from = n - 1;
+			if (st->items[(size_t)from].enabled) return from;
+			if ((delta > 0 && from >= n - 1) || (delta < 0 && from <= 0)) break;
+		}
+		return -1;
+	}
+
+	static int vgui_tree_next_index(vgui_widget* w, int from, int delta)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return -1;
+		vgui_tree_rebuild_rows(w);
+		int n = (int)st->rows.size();
+		if (n == 0) return -1;
+		if (from < 0) from = delta > 0 ? -1 : n;
+		for (int step = 0; step < n; ++step)
+		{
+			from += delta;
+			if (from < 0) from = 0;
+			if (from >= n) from = n - 1;
+			vgui_tree_node* nnode = vgui_tree_node_find(w, st->rows[(size_t)from].id);
+			if (nnode && nnode->enabled) return from;
+			if ((delta > 0 && from >= n - 1) || (delta < 0 && from <= 0)) break;
+		}
+		return -1;
+	}
+
+	static bool vgui_list_key(vgui_widget* w, int key, int down, int mods)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return false;
+		if (!down) return true;
+		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
+		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
+		int n = (int)st->items.size();
+		int idx = -1;
+		vgui_item_id cid = st->cursor;
+		size_t ci = (size_t)-1;
+		if (vgui_list_item_find(w, cid, &ci)) idx = (int)ci;
+
+		if (ctrl && key == 'A')
+		{
+			if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
+			{
+				std::vector<vgui_item_id> ids;
+				for (const vgui_list_item& it : st->items)
+					if (it.enabled) ids.push_back(it.id);
+				for (vgui_item_id id : ids)
+				{
+					vgui_list_set_selected_internal(w, id, true, true);
+					if (!w->ctx || !w->ctx->alive.count(w)) return true;
+					st = vgui_list_of(w);
+					if (!st) return true;
+				}
+			}
+			return true;
+		}
+
+		if (key == VGUI_KEY_UP || key == VGUI_KEY_DOWN || key == VGUI_KEY_HOME ||
+			key == VGUI_KEY_END || key == VGUI_KEY_PAGE_UP || key == VGUI_KEY_PAGE_DOWN)
+		{
+			int ni = idx;
+			if (key == VGUI_KEY_HOME) ni = vgui_list_next_index(w, -1, 1);
+			else if (key == VGUI_KEY_END) ni = vgui_list_next_index(w, n, -1);
+			else
+			{
+				int delta = (key == VGUI_KEY_UP || key == VGUI_KEY_PAGE_UP) ? -1 : 1;
+				int steps = 1;
+				if (key == VGUI_KEY_PAGE_UP || key == VGUI_KEY_PAGE_DOWN)
+				{
+					float ih = std::max(1.0f, w->abs_h - w->padding[1] - w->padding[3]);
+					steps = std::max(1, (int)(ih / vgui_list_row_height(w)));
+				}
+				for (int i = 0; i < steps && ni >= 0; ++i)
+					ni = vgui_list_next_index(w, ni, delta);
+				if (ni < 0 && idx >= 0) ni = idx;
+			}
+			if (ni >= 0 && ni < n)
+			{
+				vgui_item_id nid = st->items[(size_t)ni].id;
+				st->cursor = nid;
+				if (st->selection_mode == VGUI_SELECTION_SINGLE)
+					vgui_list_apply_click(w, nid, mods);
+				else if (st->selection_mode == VGUI_SELECTION_MULTIPLE && shift)
+				{
+					if (st->range_anchor == 0) st->range_anchor = nid;
+					vgui_list_apply_click(w, nid, VGUI_MOD_SHIFT | (ctrl ? VGUI_MOD_CTRL : 0));
+				}
+				if (w->ctx && w->ctx->alive.count(w))
+					vgui_list_ensure_visible(w, nid, VGUI_SCROLL_ALIGN_NEAREST);
+			}
+			return true;
+		}
+		if (key == ' ')
+		{
+			if (idx >= 0)
+			{
+				vgui_item_id id = st->items[(size_t)idx].id;
+				if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
+					vgui_list_set_selected_internal(w, id, !vgui_id_selected(st->selected, id), true);
+				else
+					vgui_list_apply_click(w, id, mods);
+				if (w->ctx && w->ctx->alive.count(w))
+					vgui_list_ensure_visible(w, id, VGUI_SCROLL_ALIGN_NEAREST);
+			}
+			return true;
+		}
+		if (key == VGUI_KEY_ENTER)
+		{
+			if (idx >= 0) vgui_list_activate(w, st->items[(size_t)idx].id);
+			return true;
+		}
+		return false;
+	}
+
+	static bool vgui_tree_key(vgui_widget* w, int key, int down, int mods)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return false;
+		if (!down) return true;
+		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
+		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
+		vgui_tree_rebuild_rows(w);
+		int n = (int)st->rows.size();
+		int idx = vgui_tree_visible_index(w, st->cursor);
+
+		if (ctrl && key == 'A')
+		{
+			if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
+			{
+				std::vector<vgui_item_id> ids;
+				for (const vgui_tree_row& row : st->rows) ids.push_back(row.id);
+				for (vgui_item_id id : ids)
+				{
+					vgui_tree_node* node = vgui_tree_node_find(w, id);
+					if (!node || !node->enabled) continue;
+					vgui_tree_set_selected_internal(w, id, true, true);
+					if (!w->ctx || !w->ctx->alive.count(w)) return true;
+					st = vgui_tree_of(w);
+					if (!st) return true;
+				}
+			}
+			return true;
+		}
+
+		if (key == VGUI_KEY_UP || key == VGUI_KEY_DOWN || key == VGUI_KEY_HOME ||
+			key == VGUI_KEY_END || key == VGUI_KEY_PAGE_UP || key == VGUI_KEY_PAGE_DOWN)
+		{
+			int ni = idx;
+			if (key == VGUI_KEY_HOME) ni = vgui_tree_next_index(w, -1, 1);
+			else if (key == VGUI_KEY_END) ni = vgui_tree_next_index(w, n, -1);
+			else
+			{
+				int delta = (key == VGUI_KEY_UP || key == VGUI_KEY_PAGE_UP) ? -1 : 1;
+				int steps = 1;
+				if (key == VGUI_KEY_PAGE_UP || key == VGUI_KEY_PAGE_DOWN)
+				{
+					float ih = std::max(1.0f, w->abs_h - w->padding[1] - w->padding[3]);
+					steps = std::max(1, (int)(ih / vgui_tree_row_height(w)));
+				}
+				for (int i = 0; i < steps && ni >= 0; ++i)
+					ni = vgui_tree_next_index(w, ni, delta);
+				if (ni < 0 && idx >= 0) ni = idx;
+			}
+			if (ni >= 0 && ni < n)
+			{
+				vgui_item_id nid = st->rows[(size_t)ni].id;
+				st->cursor = nid;
+				if (st->selection_mode == VGUI_SELECTION_SINGLE)
+					vgui_tree_apply_click(w, nid, mods);
+				else if (st->selection_mode == VGUI_SELECTION_MULTIPLE && shift)
+				{
+					if (st->range_anchor == 0) st->range_anchor = nid;
+					vgui_tree_apply_click(w, nid, VGUI_MOD_SHIFT | (ctrl ? VGUI_MOD_CTRL : 0));
+				}
+				if (w->ctx && w->ctx->alive.count(w))
+					vgui_tree_ensure_visible(w, nid, VGUI_SCROLL_ALIGN_NEAREST);
+			}
+			return true;
+		}
+
+		if (idx >= 0 && idx < n)
+		{
+			vgui_item_id id = st->rows[(size_t)idx].id;
+			vgui_tree_node* node = vgui_tree_node_find(w, id);
+			if (key == VGUI_KEY_LEFT)
+			{
+				if (node && node->expanded)
+				{
+					node->expanded = 0;
+					st->rows_dirty = true;
+					vgui_mark_dirty(w);
+				}
+				else if (node && node->parent)
+				{
+					st->cursor = node->parent;
+					vgui_tree_expand_to(w, node->parent);
+					if (st->selection_mode == VGUI_SELECTION_SINGLE)
+						vgui_tree_apply_click(w, node->parent, mods);
+					vgui_tree_ensure_visible(w, node->parent, VGUI_SCROLL_ALIGN_NEAREST);
+				}
+				return true;
+			}
+			if (key == VGUI_KEY_RIGHT)
+			{
+				if (node && !node->children.empty())
+				{
+					if (!node->expanded)
+					{
+						node->expanded = 1;
+						st->rows_dirty = true;
+						vgui_mark_dirty(w);
+					}
+					else
+					{
+						int ni = vgui_tree_next_index(w, idx, 1);
+						if (ni >= 0 && ni < (int)st->rows.size())
+						{
+							st->cursor = st->rows[(size_t)ni].id;
+							if (st->selection_mode == VGUI_SELECTION_SINGLE)
+								vgui_tree_apply_click(w, st->cursor, mods);
+							vgui_tree_ensure_visible(w, st->cursor, VGUI_SCROLL_ALIGN_NEAREST);
+						}
+					}
+				}
+				return true;
+			}
+			if (key == ' ')
+			{
+				if (node && !node->children.empty())
+				{
+					node->expanded = !node->expanded;
+					st->rows_dirty = true;
+					vgui_mark_dirty(w);
+				}
+				else if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
+					vgui_tree_set_selected_internal(w, id, !vgui_id_selected(st->selected, id), true);
+				else
+					vgui_tree_apply_click(w, id, mods);
+				return true;
+			}
+			if (key == VGUI_KEY_ENTER)
+			{
+				vgui_tree_activate(w, id);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	//----------------------------------------------------------------------------
+	// menu popup helpers
+	//----------------------------------------------------------------------------
+
+	static void vgui_menu_close_internal(vgui_widget* menu)
+	{
+		if (!menu || menu->kind != VGUI_MENU || !menu->menu) return;
+		vgui_context* ctx = menu->ctx;
+		vgui_menu_state* st = menu->menu.get();
+		vgui_widget* sub = st->submenu_open;
+		bool was_open = st->open != 0;
+		st->submenu_open = nullptr;
+		st->submenu_item = 0;
+		st->pending_submenu_item = 0;
+		if (sub && ctx && ctx->alive.count(sub))
+			vgui_menu_close_internal(sub);
+		if (!ctx || !ctx->alive.count(menu)) return;
+		st = menu->menu.get();
+		if (!st) return;
+		if (st->parent_menu && st->parent_menu->menu)
+		{
+			vgui_menu_state* parent = st->parent_menu->menu.get();
+			if (parent->submenu_open == menu) parent->submenu_open = nullptr;
+			if (parent->submenu_item == st->parent_item) parent->submenu_item = 0;
+		}
+		if (ctx->open_menu == menu) ctx->open_menu = nullptr;
+		if (ctx->menu_pressed == menu) ctx->menu_pressed = nullptr;
+		menu->visible = 0;
+		menu->pressed = 0;
+		st->open = 0;
+		st->cursor = 0;
+		st->hover = 0;
+		st->pressed = 0;
+		if (was_open && st->close_fn)
+			st->close_fn(menu, st->close_user);
+	}
+
+	static void vgui_menu_close_all(vgui_context* ctx)
+	{
+		if (!ctx || !ctx->open_menu) return;
+		vgui_widget* menu = ctx->open_menu;
+		ctx->open_menu = nullptr;
+		if (ctx->alive.count(menu))
+			vgui_menu_close_internal(menu);
+	}
+
+	static vgui_item_id vgui_menu_first_selectable(vgui_widget* menu, bool reverse)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		if (reverse)
+		{
+			for (int i = (int)st->items.size() - 1; i >= 0; --i)
+				if (st->items[(size_t)i].enabled && st->items[(size_t)i].type != VGUI_MENU_ITEM_SEPARATOR)
+					return st->items[(size_t)i].id;
+		}
+		else
+		{
+			for (const vgui_menu_item& it : st->items)
+				if (it.enabled && it.type != VGUI_MENU_ITEM_SEPARATOR)
+					return it.id;
+		}
+		return 0;
+	}
+
+	static void vgui_menu_open_submenu(vgui_widget* parent, vgui_item_id item_id)
+	{
+		vgui_menu_state* ps = vgui_menu_of(parent);
+		if (!ps || !parent->ctx) return;
+		auto it = ps->index.find(item_id);
+		if (it == ps->index.end() || it->second >= ps->items.size()) return;
+		vgui_menu_item& item = ps->items[it->second];
+		if (item.type != VGUI_MENU_ITEM_SUBMENU || !item.submenu || !item.enabled) return;
+		if (ps->submenu_open == item.submenu && item.submenu->menu && item.submenu->menu->open) return;
+		vgui_context* ctx = parent->ctx;
+		if (ps->submenu_open && ps->submenu_open != item.submenu)
+			vgui_menu_close_internal(ps->submenu_open);
+		if (!ctx || !ctx->alive.count(parent) || parent->destroy_pending) return;
+		ps = vgui_menu_of(parent);
+		if (!ps) return;
+		it = ps->index.find(item_id);
+		if (it == ps->index.end()) return;
+		vgui_widget* sub = ps->items[it->second].submenu;
+		if (!sub || sub->kind != VGUI_MENU || !sub->menu || sub->destroy_pending) return;
+		ps->submenu_item = item_id;
+		ps->submenu_open = sub;
+		ps->pending_submenu_item = 0;
+		vgui_menu_state* ss = sub->menu.get();
+		if (ss->parent_menu && ss->parent_menu != parent && ss->parent_menu->menu)
+		{
+			vgui_menu_state* old = ss->parent_menu->menu.get();
+			if (old->submenu_open == sub) old->submenu_open = nullptr;
+		}
+		ss->parent_menu = parent;
+		ss->parent_item = item_id;
+		ss->open = 1;
+		ss->has_open_pos = 0;
+		ss->open_x = 0;
+		ss->open_y = 0;
+		sub->scroll_y = 0;
+		ss->cursor = vgui_menu_first_selectable(sub, false);
+		ss->hover = 0;
+		ss->pressed = 0;
+		sub->visible = 1;
+		if (ss->open_fn) ss->open_fn(sub, ss->open_user);
+		if (!ctx->alive.count(sub)) return;
+		ctx->layout_dirty = true;
+		if (ctx->open_menu && ctx->alive.count(parent))
+			vgui_menu_update_layout(ctx->open_menu, ctx);
+	}
+
+	static void vgui_menu_close_submenu(vgui_widget* parent)
+	{
+		vgui_menu_state* ps = vgui_menu_of(parent);
+		if (!ps || !ps->submenu_open) return;
+		vgui_widget* sub = ps->submenu_open;
+		ps->submenu_open = nullptr;
+		ps->submenu_item = 0;
+		ps->pending_submenu_item = 0;
+		if (parent->ctx && parent->ctx->alive.count(sub))
+			vgui_menu_close_internal(sub);
+	}
+
+	static void vgui_menu_show(vgui_widget* menu, float x, float y)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !menu->ctx || menu->destroy_pending) return;
+		vgui_context* ctx = menu->ctx;
+		if (ctx->open_menu && ctx->open_menu != menu)
+			vgui_menu_close_all(ctx);
+		if (!ctx->alive.count(menu)) return;
+		st = vgui_menu_of(menu);
+		if (!st) return;
+		if (st->submenu_open) vgui_menu_close_submenu(menu);
+		if (!ctx->alive.count(menu)) return;
+		st = vgui_menu_of(menu);
+		if (!st) return;
+		if (st->parent_menu && st->parent_menu->menu)
+		{
+			vgui_menu_state* parent = st->parent_menu->menu.get();
+			if (parent->submenu_open == menu) parent->submenu_open = nullptr;
+		}
+		st->parent_menu = nullptr;
+		st->parent_item = 0;
+		st->open = 1;
+		st->has_open_pos = 1;
+		st->open_x = x;
+		st->open_y = y;
+		menu->scroll_y = 0;
+		st->cursor = vgui_menu_first_selectable(menu, false);
+		st->hover = 0;
+		st->pressed = 0;
+		st->pending_submenu_item = 0;
+		menu->visible = 1;
+		menu->pressed = 0;
+		ctx->open_menu = menu;
+		if (st->open_fn) st->open_fn(menu, st->open_user);
+		if (!ctx->alive.count(menu)) return;
+		ctx->layout_dirty = true;
+		vgui_ensure_layout(ctx);
+	}
+
+	static void vgui_menu_show_below(vgui_widget* menu, vgui_widget* anchor)
+	{
+		if (!menu || !anchor || menu->ctx != anchor->ctx) return;
+		vgui_context* ctx = menu->ctx;
+		vgui_ensure_layout(ctx);
+		float cw = 0, ch = 0;
+		vgui_measure_widget(menu, ctx);
+		vgui_menu_content_size(menu, &cw, &ch);
+		float x = anchor->abs_x;
+		float y = anchor->abs_y + anchor->abs_h;
+		if (ctx->height > 0 && y + ch > (float)ctx->height - 8.0f &&
+			anchor->abs_y - ch >= 8.0f)
+			y = anchor->abs_y - ch;
+		vgui_menu_show(menu, x, y);
+	}
+
+	static void vgui_menu_show_for(vgui_widget* menu, vgui_widget* anchor, float local_x, float local_y)
+	{
+		if (!menu || !anchor || menu->ctx != anchor->ctx) return;
+		vgui_context* ctx = menu->ctx;
+		vgui_ensure_layout(ctx);
+		float cw = 0, ch = 0;
+		vgui_measure_widget(menu, ctx);
+		vgui_menu_content_size(menu, &cw, &ch);
+		float x = anchor->abs_x + local_x;
+		float y = anchor->abs_y + local_y;
+		if (ctx->width > 0 && x + cw > (float)ctx->width - 8.0f)
+			x = (float)ctx->width - cw - 8.0f;
+		if (ctx->height > 0 && y + ch > (float)ctx->height - 8.0f)
+			y = (float)ctx->height - ch - 8.0f;
+		vgui_menu_show(menu, x, y);
+	}
+
+	static vgui_widget* vgui_menu_hit_rec(vgui_widget* menu, float x, float y)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !st->open || !menu->visible) return nullptr;
+		if (st->submenu_open && st->submenu_open->menu && st->submenu_open->menu->open)
+		{
+			vgui_widget* r = vgui_menu_hit_rec(st->submenu_open, x, y);
+			if (r) return r;
+		}
+		if (vgui_point_in(menu, x, y)) return menu;
+		return nullptr;
+	}
+
+	static vgui_widget* vgui_menu_deepest(vgui_widget* menu)
+	{
+		vgui_widget* cur = menu;
+		while (cur && cur->menu && cur->menu->submenu_open &&
+			cur->menu->submenu_open->menu && cur->menu->submenu_open->menu->open)
+			cur = cur->menu->submenu_open;
+		return cur;
+	}
+
+	static int vgui_menu_index_at(vgui_widget* menu, float y)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return -1;
+		const vgui_menu_style& ms = menu->ctx->style.menu;
+		float top = menu->abs_y + ms.padding_y - menu->scroll_y;
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			float h = vgui_menu_item_height(menu, st->items[i]);
+			if (y >= top && y < top + h) return (int)i;
+			top += h;
+		}
+		return -1;
+	}
+
+	static vgui_item_id vgui_menu_item_at(vgui_widget* menu, float x, float y, int* out_index = nullptr)
+	{
+		if (!menu || !vgui_point_in(menu, x, y)) return 0;
+		int idx = vgui_menu_index_at(menu, y);
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || idx < 0 || idx >= (int)st->items.size()) return 0;
+		if (out_index) *out_index = idx;
+		return st->items[(size_t)idx].id;
+	}
+
+	static void vgui_menu_set_hover(vgui_widget* menu, vgui_item_id id)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		if (st->hover == id) return;
+		st->hover = id;
+		vgui_item_id pending = 0;
+		if (id)
+		{
+			vgui_menu_item* it = nullptr;
+			auto p = st->index.find(id);
+			if (p != st->index.end() && p->second < st->items.size()) it = &st->items[p->second];
+			if (it && it->type == VGUI_MENU_ITEM_SUBMENU && it->enabled && it->submenu)
+			{
+				pending = id;
+			}
+			else if (st->submenu_open)
+			{
+				vgui_menu_close_submenu(menu);
+			}
+		}
+		if (pending != st->pending_submenu_item)
+		{
+			st->pending_submenu_item = pending;
+			st->pending_submenu_time = menu->ctx ? menu->ctx->time : 0.0;
+		}
+	}
+
+	static void vgui_menu_mouse_move(vgui_context* ctx, float x, float y)
+	{
+		if (!ctx || !ctx->open_menu) return;
+		vgui_widget* hit = vgui_menu_hit_rec(ctx->open_menu, x, y);
+		if (!hit) return;
+		int idx = -1;
+		vgui_item_id id = vgui_menu_item_at(hit, x, y, &idx);
+		if (id)
+		{
+			vgui_menu_state* st = vgui_menu_of(hit);
+			if (st && st->items[(size_t)idx].type == VGUI_MENU_ITEM_SEPARATOR)
+				id = 0;
+		}
+		vgui_menu_set_hover(hit, id);
+	}
+
+	static void vgui_menu_mouse_down(vgui_context* ctx, int button, float x, float y)
+	{
+		if (!ctx || !ctx->open_menu || button != 1) return;
+		vgui_widget* hit = vgui_menu_hit_rec(ctx->open_menu, x, y);
+		if (!hit)
+		{
+			vgui_menu_close_all(ctx);
+			ctx->menu_swallow_up = 1;
+			return;
+		}
+		ctx->menu_swallow_up = 0;
+		vgui_widget* sw = nullptr;
+		int axis = 0;
+		if (vgui_scrollbar_hit(hit, x, y, &sw, &axis) && sw == hit)
+		{
+			vgui_scrollbar_begin(ctx, sw, axis, x, y);
+			return;
+		}
+		int idx = -1;
+		vgui_item_id id = vgui_menu_item_at(hit, x, y, &idx);
+		vgui_menu_state* st = vgui_menu_of(hit);
+		if (!st || !id) return;
+		const vgui_menu_item& item = st->items[(size_t)idx];
+		if (!item.enabled || item.type == VGUI_MENU_ITEM_SEPARATOR) return;
+		st->cursor = id;
+		st->hover = id;
+		if (item.type == VGUI_MENU_ITEM_SUBMENU)
+		{
+			vgui_menu_open_submenu(hit, id);
+			return;
+		}
+		st->pressed = id;
+		hit->pressed = 1;
+		hit->pressed_button = button;
+		ctx->menu_pressed = hit;
+	}
+
+	static void vgui_menu_activate_item(vgui_widget* menu, vgui_item_id id)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !menu->ctx) return;
+		auto p = st->index.find(id);
+		if (p == st->index.end() || p->second >= st->items.size()) return;
+		vgui_menu_item& item = st->items[p->second];
+		if (!item.enabled || item.type == VGUI_MENU_ITEM_SEPARATOR) return;
+		if (item.type == VGUI_MENU_ITEM_SUBMENU)
+		{
+			vgui_menu_open_submenu(menu, id);
+			return;
+		}
+		if (item.checkable) item.checked = !item.checked;
+		vgui_context* ctx = menu->ctx;
+		int index = (int)p->second;
+		if (st->activate_fn)
+			st->activate_fn(menu, id, st->activate_user);
+		if (ctx->alive.count(menu))
+			vgui_item_event(menu, VGUI_EVENT_CLICK, id, index, 0, 0);
+		if (!ctx->alive.count(menu)) return;
+		if (st->close_on_activate)
+			vgui_menu_close_all(ctx);
+	}
+
+	static void vgui_menu_mouse_up(vgui_context* ctx, int button, float x, float y)
+	{
+		if (!ctx || button != 1) return;
+		if (!ctx->open_menu)
+		{
+			ctx->menu_pressed = nullptr;
+			return;
+		}
+		vgui_widget* pressed_menu = ctx->menu_pressed;
+		vgui_item_id pressed_id = 0;
+		if (pressed_menu && ctx->alive.count(pressed_menu) && pressed_menu->menu)
+		{
+			pressed_id = pressed_menu->menu->pressed;
+			pressed_menu->menu->pressed = 0;
+			pressed_menu->pressed = 0;
+		}
+		ctx->menu_pressed = nullptr;
+		if (!pressed_menu || !pressed_id || !ctx->alive.count(pressed_menu)) return;
+		vgui_widget* hit = vgui_menu_hit_rec(ctx->open_menu, x, y);
+		int idx = -1;
+		vgui_item_id id = hit ? vgui_menu_item_at(hit, x, y, &idx) : 0;
+		if (hit == pressed_menu && id == pressed_id)
+			vgui_menu_activate_item(pressed_menu, id);
+	}
+
+	static bool vgui_menu_move_cursor(vgui_widget* menu, int delta)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || st->items.empty()) return false;
+		int n = (int)st->items.size();
+		int cur = -1;
+		auto p = st->index.find(st->cursor);
+		if (p != st->index.end()) cur = (int)p->second;
+		for (int step = 0; step < n; ++step)
+		{
+			cur += delta;
+			if (cur < 0) cur = n - 1;
+			if (cur >= n) cur = 0;
+			const vgui_menu_item& it = st->items[(size_t)cur];
+			if (it.enabled && it.type != VGUI_MENU_ITEM_SEPARATOR)
+			{
+				st->cursor = it.id;
+				st->hover = it.id;
+				if (st->submenu_open && st->submenu_item != it.id)
+					vgui_menu_close_submenu(menu);
+				return true;
+			}
+		}
+		return false;
+	}
+
+	static bool vgui_menu_key(vgui_context* ctx, int key, int down)
+	{
+		if (!ctx || !ctx->open_menu) return false;
+		if (!down) return true;
+		vgui_widget* menu = vgui_menu_deepest(ctx->open_menu);
+		if (!menu) return true;
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return true;
+		vgui_menu_item* cur = nullptr;
+		auto p = st->index.find(st->cursor);
+		if (p != st->index.end() && p->second < st->items.size()) cur = &st->items[p->second];
+		if (!cur)
+		{
+			st->cursor = vgui_menu_first_selectable(menu, key == VGUI_KEY_UP || key == VGUI_KEY_END);
+			p = st->index.find(st->cursor);
+			if (p != st->index.end() && p->second < st->items.size()) cur = &st->items[p->second];
+		}
+
+		switch (key)
+		{
+		case VGUI_KEY_UP:
+			vgui_menu_move_cursor(menu, -1);
+			return true;
+		case VGUI_KEY_DOWN:
+			vgui_menu_move_cursor(menu, 1);
+			return true;
+		case VGUI_KEY_HOME:
+		{
+			for (const vgui_menu_item& it : st->items)
+				if (it.enabled && it.type != VGUI_MENU_ITEM_SEPARATOR)
+				{
+					st->cursor = it.id;
+					st->hover = it.id;
+					break;
+				}
+			return true;
+		}
+		case VGUI_KEY_END:
+		{
+			for (int i = (int)st->items.size() - 1; i >= 0; --i)
+				if (st->items[(size_t)i].enabled && st->items[(size_t)i].type != VGUI_MENU_ITEM_SEPARATOR)
+				{
+					st->cursor = st->items[(size_t)i].id;
+					st->hover = st->cursor;
+					break;
+				}
+			return true;
+		}
+		case VGUI_KEY_RIGHT:
+			if (cur && cur->type == VGUI_MENU_ITEM_SUBMENU)
+				vgui_menu_open_submenu(menu, cur->id);
+			return true;
+		case VGUI_KEY_LEFT:
+			if (st->submenu_open)
+			{
+				vgui_menu_close_submenu(menu);
+			}
+			else if (st->parent_menu)
+			{
+				vgui_widget* parent = st->parent_menu;
+				vgui_item_id parent_item = st->parent_item;
+				vgui_menu_close_internal(menu);
+				if (ctx->alive.count(parent) && parent->menu)
+				{
+					parent->menu->cursor = parent_item;
+					parent->menu->hover = parent_item;
+				}
+			}
+			return true;
+		case VGUI_KEY_ESCAPE:
+			if (st->submenu_open)
+				vgui_menu_close_submenu(menu);
+			else if (st->parent_menu)
+				vgui_menu_close_internal(menu);
+			else
+				vgui_menu_close_all(ctx);
+			return true;
+		case VGUI_KEY_ENTER:
+		case ' ':
+			if (cur) vgui_menu_activate_item(menu, cur->id);
+			return true;
+		case VGUI_KEY_TAB:
+			vgui_menu_close_all(ctx);
+			return true;
+		default:
+			return true;
+		}
+	}
+
 	static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
 		ctx->mouse_x = x;
 		ctx->mouse_y = y;
+
+		if (ctx->open_menu)
+		{
+			if (ctx->hot && ctx->alive.count(ctx->hot))
+			{
+				ctx->hot->hovered = 0;
+				vgui_emit(ctx->hot, VGUI_EVENT_LEAVE, x - ctx->hot->abs_x, y - ctx->hot->abs_y);
+				ctx->hot = nullptr;
+			}
+			if (ctx->active && ctx->alive.count(ctx->active) && ctx->active->scroll_drag_axis)
+			{
+				vgui_widget* drag = ctx->active;
+				vgui_scrollbar_drag_to(drag, x, y);
+				if (ctx->alive.count(drag) && drag->ctx)
+					vgui_menu_update_layout(drag, drag->ctx);
+			}
+			vgui_menu_mouse_move(ctx, x, y);
+			vgui_widget* mh = vgui_menu_hit_rec(ctx->open_menu, x, y);
+			vgui_widget* sw = nullptr;
+			int sa = 0;
+			bool bar = mh && vgui_scrollbar_hit(mh, x, y, &sw, &sa);
+			int idx = -1;
+			vgui_item_id item = mh ? vgui_menu_item_at(mh, x, y, &idx) : 0;
+			ctx->cursor = (!bar && item && mh->menu && idx >= 0 &&
+				mh->menu->items[(size_t)idx].enabled &&
+				mh->menu->items[(size_t)idx].type != VGUI_MENU_ITEM_SEPARATOR)
+				? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
 		vgui_widget* scrollbar_widget = nullptr;
@@ -2638,13 +4441,37 @@ namespace {
 			}
 		}
 		if (h && ctx->alive.count(h))
-			vgui_emit(h, VGUI_EVENT_MOUSE_MOVE, x - h->abs_x, y - h->abs_y);
+		{
+			if (h->kind == VGUI_LIST)
+			{
+				int idx = vgui_list_index_at(h, x, y);
+				vgui_item_id item = 0;
+				vgui_list_item* it = vgui_list_item_at(h, idx, &item);
+				if (h->list) h->list->hover = it ? item : 0;
+				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, idx, x - h->abs_x, y - h->abs_y);
+			}
+			else if (h->kind == VGUI_TREE)
+			{
+				int row = vgui_tree_row_at(h, x, y);
+				vgui_item_id item = 0;
+				if (h->tree && row >= 0)
+				{
+					vgui_tree_rebuild_rows(h);
+					if (row < (int)h->tree->rows.size()) item = h->tree->rows[(size_t)row].id;
+				}
+				if (h->tree) h->tree->hover = item;
+				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, row, x - h->abs_x, y - h->abs_y);
+			}
+			else
+			{
+				vgui_emit(h, VGUI_EVENT_MOUSE_MOVE, x - h->abs_x, y - h->abs_y);
+			}
+		}
 
 		if (ctx->active && ctx->alive.count(ctx->active))
 		{
 			vgui_widget* a = ctx->active;
-			if ((a->kind == VGUI_PANEL && a->scroll_drag_axis) ||
-				(a->kind == VGUI_EDIT && a->edit_scroll_drag))
+			if (a->scroll_drag_axis || (a->kind == VGUI_EDIT && a->edit_scroll_drag))
 			{
 				vgui_scrollbar_drag_to(a, x, y);
 				if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
@@ -2661,8 +4488,7 @@ namespace {
 			}
 			if (a != h)
 				vgui_emit(a, VGUI_EVENT_MOUSE_MOVE, x - a->abs_x, y - a->abs_y);
-			bool dragging_bar = (a->kind == VGUI_PANEL && a->scroll_drag_axis) ||
-				(a->kind == VGUI_EDIT && a->edit_scroll_drag);
+			bool dragging_bar = a->scroll_drag_axis || (a->kind == VGUI_EDIT && a->edit_scroll_drag);
 			if (dragging_bar || over_scrollbar)
 				ctx->cursor = VGUI_CURSOR_ARROW;
 			else
@@ -2708,6 +4534,15 @@ namespace {
 		}
 		if (clicks <= 0) clicks = 1;
 
+		if (ctx->open_menu)
+		{
+			vgui_menu_mouse_down(ctx, button, x, y);
+			ctx->want_mouse = 1;
+			ctx->cursor = VGUI_CURSOR_ARROW;
+			vgui_end_input(ctx);
+			return 1;
+		}
+
 		vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
 		vgui_widget* sw = nullptr;
 		int axis = 0;
@@ -2722,6 +4557,60 @@ namespace {
 		if (button == 1 && over_scrollbar)
 		{
 			vgui_scrollbar_begin(ctx, sw, axis, x, y);
+			vgui_end_input(ctx);
+			return 1;
+		}
+
+		if (h && h->enabled && (h->kind == VGUI_LIST || h->kind == VGUI_TREE))
+		{
+			vgui_set_focus_internal(ctx, h);
+			h->pressed = 1;
+			h->pressed_button = button;
+			ctx->active = h;
+			ctx->press_target = h;
+			ctx->press_button = button;
+
+			int index = -1;
+			vgui_item_id item = 0;
+			bool arrow = false;
+			if (h->kind == VGUI_LIST)
+			{
+				index = vgui_list_index_at(h, x, y);
+				vgui_list_item_at(h, index, &item);
+				if (h->list) h->list->pressed = (button == 1) ? item : 0;
+				if (button == 1 && item) vgui_list_apply_click(h, item, ctx->mods);
+				if (h->list) h->list->hover = item;
+			}
+			else
+			{
+				index = vgui_tree_row_at(h, x, y);
+				vgui_tree_rebuild_rows(h);
+				if (h->tree && index >= 0 && index < (int)h->tree->rows.size())
+					item = h->tree->rows[(size_t)index].id;
+				arrow = item && vgui_tree_arrow_hit(h, index, x);
+				if (arrow)
+				{
+					vgui_tree_node* node = vgui_tree_node_find(h, item);
+					if (node && !node->children.empty())
+					{
+						node->expanded = !node->expanded;
+						h->tree->rows_dirty = true;
+						vgui_mark_dirty(h);
+						if (h->ctx) vgui_ensure_layout(h->ctx);
+					}
+					h->tree->pressed = 0;
+				}
+				else
+				{
+					if (h->tree) h->tree->pressed = (button == 1) ? item : 0;
+					if (button == 1 && item) vgui_tree_apply_click(h, item, ctx->mods);
+				}
+				if (h->tree) h->tree->hover = item;
+			}
+			vgui_item_event(h, VGUI_EVENT_MOUSE_DOWN, item, index,
+				x - h->abs_x, y - h->abs_y, button, clicks);
+			(void)arrow;
+			ctx->want_mouse = 1;
 			vgui_end_input(ctx);
 			return 1;
 		}
@@ -2789,6 +4678,26 @@ namespace {
 		ctx->mouse_y = y;
 		if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
 
+		if (ctx->menu_swallow_up)
+		{
+			ctx->menu_swallow_up = 0;
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
+		if (ctx->open_menu)
+		{
+			if (ctx->active && ctx->alive.count(ctx->active) && ctx->active->scroll_drag_axis)
+			{
+				ctx->active->scroll_drag_axis = 0;
+				ctx->active = nullptr;
+			}
+			vgui_menu_mouse_up(ctx, button, x, y);
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
+
 		vgui_widget* target = ctx->press_target;
 		if (target && !ctx->alive.count(target)) target = nullptr;
 		if (button >= 0 && button < 8 && clicks <= 0) clicks = ctx->click_count[button];
@@ -2802,6 +4711,56 @@ namespace {
 			ctx->active->edit_scroll_drag = 0;
 		}
 		ctx->active = nullptr;
+
+		if (target && (target->kind == VGUI_LIST || target->kind == VGUI_TREE))
+		{
+			float lx = x - target->abs_x;
+			float ly = y - target->abs_y;
+			int index = -1;
+			vgui_item_id item = 0;
+			vgui_item_id pressed_id = 0;
+			if (target->kind == VGUI_LIST)
+			{
+				index = vgui_list_index_at(target, x, y);
+				vgui_list_item_at(target, index, &item);
+				if (target->list)
+				{
+					pressed_id = target->list->pressed;
+					target->list->pressed = 0;
+				}
+			}
+			else
+			{
+				index = vgui_tree_row_at(target, x, y);
+				vgui_tree_rebuild_rows(target);
+				if (target->tree && index >= 0 && index < (int)target->tree->rows.size())
+					item = target->tree->rows[(size_t)index].id;
+				if (target->tree)
+				{
+					pressed_id = target->tree->pressed;
+					target->tree->pressed = 0;
+				}
+			}
+			target->pressed = 0;
+			ctx->press_target = nullptr;
+			ctx->slider_drag = nullptr;
+			vgui_item_event(target, VGUI_EVENT_MOUSE_UP, item, index, lx, ly, button, clicks);
+			if (ctx->alive.count(target) && pressed_id != 0 && item == pressed_id && target->enabled)
+			{
+				vgui_event_type ct = VGUI_EVENT_CLICK;
+				if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
+				else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
+				vgui_item_event(target, ct, item, index, lx, ly, button, clicks);
+				if (ctx->alive.count(target) && clicks >= 2)
+				{
+					if (target->kind == VGUI_LIST) vgui_list_activate(target, item);
+					else vgui_tree_activate(target, item);
+				}
+			}
+			ctx->want_mouse = ctx->hot != nullptr;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		int ret = target ? 1 : 0;
 		if (target)
@@ -2855,7 +4814,7 @@ namespace {
 	{
 		for (vgui_widget* p = w; p; p = p->parent)
 		{
-			if (p->kind == VGUI_PANEL)
+			if (p->kind == VGUI_PANEL || p->kind == VGUI_LIST || p->kind == VGUI_TREE)
 			{
 				if (vertical && p->scrollable_y && p->content_h > p->abs_h - p->padding[1] - p->padding[3])
 					return p;
@@ -2923,6 +4882,25 @@ namespace {
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
+		if (ctx->open_menu)
+		{
+			vgui_widget* m = vgui_menu_hit_rec(ctx->open_menu, ctx->mouse_x, ctx->mouse_y);
+			if (!m) m = vgui_menu_deepest(ctx->open_menu);
+			if (m && m->menu)
+			{
+				float ih = std::max(0.0f, m->abs_h);
+				float max_sy = std::max(0.0f, m->content_h - ih);
+				if (wy != 0 && max_sy > 0.0f)
+				{
+					m->scroll_y = vgui_clampf(m->scroll_y - wy * 40.0f, 0.0f, max_sy);
+					ctx->layout_dirty = true;
+					vgui_ensure_layout(ctx);
+				}
+			}
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 		vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(ctx->root, ctx->mouse_x, ctx->mouse_y);
 		int consumed = 0;
 		vgui_widget* edit = vgui_find_edit(h);
@@ -2969,7 +4947,17 @@ namespace {
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
-		ctx->want_key = ctx->focus != nullptr;
+		ctx->mods = mods;
+		ctx->want_key = ctx->focus != nullptr || ctx->open_menu != nullptr;
+
+		if (ctx->open_menu)
+		{
+			vgui_menu_key(ctx, key, down);
+			ctx->want_key = 1;
+			ctx->want_text = 0;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		if (down && key == VGUI_KEY_TAB)
 		{
@@ -2989,6 +4977,16 @@ namespace {
 		if (f->kind == VGUI_EDIT)
 		{
 			handled = vgui_edit_key(f, key, down, mods) ? 1 : 0;
+		}
+		else if (f->kind == VGUI_LIST)
+		{
+			handled = vgui_list_key(f, key, down, mods) ? 1 : 0;
+			if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
+		}
+		else if (f->kind == VGUI_TREE)
+		{
+			handled = vgui_tree_key(f, key, down, mods) ? 1 : 0;
+			if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
 		}
 		else
 		{
@@ -3390,7 +5388,7 @@ namespace {
 	// default.  Used by the focus ring and by focus-tinted widget colours.
 	static float vgui_focus_alpha(const vgui_widget* w)
 	{
-		if (!w) return 1.0f;
+		if (!w) return 0.0f;
 		if (w->focus_alpha >= 0.0f) return w->focus_alpha;
 		return w->ctx ? w->ctx->focus_alpha : 1.0f;
 	}
@@ -3882,6 +5880,291 @@ namespace {
 		}
 	}
 
+	static void vgui_draw_text_clipped(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+		const std::string& text, float x, float y, float width, float height,
+		uint32_t color, float ax, float ay, vgui_clip_state* clips)
+	{
+		if (width <= 0.0f || color == 0) return;
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, x, y, width, height);
+		vgui_draw_text(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay);
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+	}
+
+	static uint32_t vgui_row_text_color(vgui_widget* w, bool selected, bool enabled)
+	{
+		vgui_context* ctx = w->ctx;
+		uint32_t c = selected
+			? (ctx->theme.row_selected_text ? ctx->theme.row_selected_text : ctx->theme.text)
+			: (ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text);
+		if (!enabled)
+			c = vgui_mix_color(c, ctx->theme.disabled,
+				w->kind == VGUI_TREE ? ctx->style.tree.disabled_mix : ctx->style.list.disabled_mix);
+		return vgui_widget_color(w, c);
+	}
+
+	static void vgui_draw_model_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		vgui_context* ctx = w->ctx;
+		uint32_t bg = w->bg ? w->bg : (ctx->theme.list_bg ? ctx->theme.list_bg : ctx->theme.panel_bg);
+		uint32_t border = w->border ? w->border
+			: (ctx->theme.list_border ? ctx->theme.list_border : ctx->theme.panel_border);
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+			vgui_widget_color(w, bg));
+		if (w->border_width > 0)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				vgui_widget_color(w, border), w->border_width);
+		}
+	}
+
+	static void vgui_draw_list(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return;
+		const vgui_list_style& ls = ctx->style.list;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float row_h = vgui_list_row_height(w);
+
+		vgui_draw_model_frame(w, cb, vg);
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			const vgui_list_item& item = st->items[i];
+			float y = iy - w->scroll_y + (float)i * row_h;
+			if (y + row_h <= iy || y >= iy + ih) continue;
+			bool selected = vgui_id_selected(st->selected, item.id);
+			if (selected)
+				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ls.rounding,
+					vgui_widget_color(w, ctx->theme.row_selected ? ctx->theme.row_selected : 0x55409EFF));
+			else if (item.enabled && st->hover == item.id)
+				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ls.rounding,
+					vgui_widget_color(w, ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A));
+
+			uint32_t color = vgui_row_text_color(w, selected, item.enabled != 0);
+			float detail_w = item.detail.empty() ? 0.0f : vgui_text_width(w, item.detail);
+			float text_w = iw - 12.0f - (detail_w > 0 ? detail_w + 16.0f : 0.0f);
+			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, ix + 6.0f, y,
+				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
+			if (!item.detail.empty())
+			{
+				uint32_t dc = color;
+				if (selected) dc = vgui_alpha_color(dc, 0.75f);
+				vgui_draw_text(ctx, cb, vg, w, item.detail,
+					ix + iw - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
+			}
+		}
+		if (st->items.empty() && !st->empty_text.empty())
+			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
+				vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
+				0.5f, 0.5f);
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		vgui_draw_scrollbars(w, cb, vg);
+		vgui_draw_focus(w, cb, vg);
+	}
+
+	static void vgui_draw_tree_arrow(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		float cx, float cy, float size, bool expanded, uint32_t color)
+	{
+		float h = size * 0.5f;
+		if (expanded)
+		{
+			cb->move_to(vg, cx - h, cy - h * 0.45f);
+			cb->line_to(vg, cx + h, cy - h * 0.45f);
+			cb->line_to(vg, cx, cy + h * 0.55f);
+		}
+		else
+		{
+			cb->move_to(vg, cx - h * 0.55f, cy - h);
+			cb->line_to(vg, cx + h * 0.55f, cy);
+			cb->line_to(vg, cx - h * 0.55f, cy + h);
+		}
+		cb->close_path(vg);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, color)));
+		cb->fill(vg);
+	}
+
+	static void vgui_draw_tree(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return;
+		vgui_tree_rebuild_rows(w);
+		const vgui_tree_style& ts = ctx->style.tree;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float row_h = vgui_tree_row_height(w);
+		uint32_t guide = vgui_alpha_color(
+			ctx->theme.tree_guide ? ctx->theme.tree_guide : ctx->theme.panel_border,
+			ts.guide_alpha);
+
+		vgui_draw_model_frame(w, cb, vg);
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
+		for (size_t i = 0; i < st->rows.size(); ++i)
+		{
+			const vgui_tree_row& row = st->rows[i];
+			vgui_tree_node* node = vgui_tree_node_find(w, row.id);
+			if (!node) continue;
+			float y = iy - w->scroll_y + (float)i * row_h;
+			if (y + row_h <= iy || y >= iy + ih) continue;
+			bool selected = vgui_id_selected(st->selected, node->id);
+			if (selected)
+				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ts.rounding,
+					vgui_widget_color(w, ctx->theme.row_selected ? ctx->theme.row_selected : 0x55409EFF));
+			else if (node->enabled && st->hover == node->id)
+				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ts.rounding,
+					vgui_widget_color(w, ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A));
+
+			for (int depth = 0; depth < row.depth; ++depth)
+			{
+				float gx = ix + (float)depth * ts.indent + ts.arrow_size * 0.5f;
+				vgui_fill_rect(cb, vg, gx, y + 4.0f, 1.0f,
+					std::max(0.0f, row_h - 8.0f), 0, vgui_widget_color(w, guide));
+			}
+
+			float tx = ix + (float)row.depth * ts.indent;
+			float text_x = tx + ts.arrow_size + ts.arrow_gap;
+			uint32_t color = vgui_row_text_color(w, selected, node->enabled != 0);
+			if (!node->children.empty())
+				vgui_draw_tree_arrow(w, cb, vg, tx + ts.arrow_size * 0.5f,
+					y + row_h * 0.5f, ts.arrow_size, node->expanded != 0, color);
+			float text_w = iw - (text_x - ix) - 4.0f;
+			vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
+				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
+		}
+		if (st->rows.empty() && !st->empty_text.empty())
+			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
+				vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
+				0.5f, 0.5f);
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		vgui_draw_scrollbars(w, cb, vg);
+		vgui_draw_focus(w, cb, vg);
+	}
+
+	static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_menu_state* st = vgui_menu_of(w);
+		if (!st || !st->open) return;
+		const vgui_menu_style& ms = ctx->style.menu;
+		bool any_check = vgui_menu_has_checkable(w);
+		uint32_t bg = w->bg ? w->bg : (ctx->theme.menu_bg ? ctx->theme.menu_bg : ctx->theme.panel_bg);
+		uint32_t border = w->border ? w->border
+			: (ctx->theme.menu_border ? ctx->theme.menu_border : ctx->theme.button_border);
+		uint32_t text = ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text;
+		uint32_t disabled = ctx->theme.menu_disabled_text ? ctx->theme.menu_disabled_text : ctx->theme.disabled;
+		uint32_t hover = ctx->theme.menu_hover ? ctx->theme.menu_hover : ctx->theme.button_hover;
+
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+			vgui_widget_color(w, bg));
+		if (w->border_width > 0)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				vgui_widget_color(w, border), w->border_width);
+		}
+
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+		float y = w->abs_y + ms.padding_y - w->scroll_y;
+		float row_x = w->abs_x + ms.padding_x;
+		float row_w = std::max(0.0f, w->abs_w - ms.padding_x * 2.0f);
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			vgui_menu_item& item = st->items[i];
+			float h = vgui_menu_item_height(w, item);
+			if (y + h <= w->abs_y || y >= w->abs_y + w->abs_h)
+			{
+				y += h;
+				continue;
+			}
+			if (item.type == VGUI_MENU_ITEM_SEPARATOR)
+			{
+				vgui_fill_rect(cb, vg, row_x + ms.item_padding_x, y + h * 0.5f,
+					std::max(0.0f, row_w - ms.item_padding_x * 2.0f), 1.0f, 0,
+					vgui_widget_color(w, border));
+				y += h;
+				continue;
+			}
+			bool active = item.enabled && (st->hover == item.id || st->cursor == item.id);
+			if (active)
+				vgui_fill_rect(cb, vg, row_x, y, row_w, h, std::max(0.0f, w->rounding - 1.0f),
+					vgui_widget_color(w, hover));
+
+			uint32_t color = item.enabled ? text : disabled;
+			if (!item.enabled && item.enabled == 0)
+				color = vgui_mix_color(text, disabled, ms.disabled_mix);
+			float text_x = row_x + ms.item_padding_x + (any_check ? ms.check_width : 0.0f);
+			float right = w->abs_x + w->abs_w - ms.padding_x - ms.item_padding_x;
+			float shortcut_x = right;
+			if (item.type == VGUI_MENU_ITEM_SUBMENU)
+				shortcut_x -= ms.submenu_arrow_width + ms.item_padding_x;
+
+			if (any_check && item.checkable && item.checked)
+			{
+				float check = std::max(0.0f, std::min(10.0f, ms.check_width - 4.0f));
+				float cx = row_x + ms.item_padding_x + ms.check_width * 0.5f;
+				float cy = y + h * 0.5f;
+				float d = check * 0.5f;
+				cb->set_line_width(vg, 2.0f);
+				cb->set_line_cap(vg, 1);
+				cb->move_to(vg, cx - d * 0.8f, cy);
+				cb->line_to(vg, cx - d * 0.15f, cy + d * 0.65f);
+				cb->line_to(vg, cx + d * 0.8f, cy - d * 0.7f);
+				cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w,
+					item.enabled ? (ctx->theme.checkmark ? ctx->theme.checkmark : 0xFFFFFFFF) : disabled)));
+				cb->stroke(vg);
+			}
+
+			float text_end = shortcut_x;
+			if (!item.shortcut.empty()) text_end -= ms.shortcut_gap;
+			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, text_x, y,
+				std::max(0.0f, text_end - text_x), h, color, 0.0f, 0.5f, clips);
+			if (!item.shortcut.empty())
+			{
+				float sw = vgui_text_width(w, item.shortcut);
+				uint32_t sc = item.enabled ? vgui_alpha_color(text, 0.65f)
+					: vgui_mix_color(text, disabled, ms.disabled_mix);
+				vgui_draw_text(ctx, cb, vg, w, item.shortcut, shortcut_x - sw, y,
+					sw, h, vgui_widget_color(w, sc), 0.0f, 0.5f);
+			}
+			if (item.type == VGUI_MENU_ITEM_SUBMENU)
+			{
+				uint32_t ac = item.enabled ? color : disabled;
+				vgui_draw_tree_arrow(w, cb, vg,
+					right - ms.submenu_arrow_width * 0.35f, y + h * 0.5f,
+					ms.submenu_arrow_width * 0.7f, false, ac);
+			}
+			y += h;
+		}
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		vgui_draw_scrollbars(w, cb, vg);
+	}
+
+	static void vgui_draw_menu_chain(vgui_widget* menu, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !st->open) return;
+		vgui_draw_menu(menu, cb, vg, clips);
+		if (st->submenu_open && st->submenu_open->menu && st->submenu_open->menu->open)
+			vgui_draw_menu_chain(st->submenu_open, cb, vg, clips);
+	}
+
 	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		if (!w || !w->visible || w->abs_w <= 0 || w->abs_h <= 0) return;
@@ -3927,9 +6210,29 @@ namespace {
 				std::max(ctx->style.separator.thickness, w->abs_h), 0,
 				vgui_widget_color(w, w->bg ? w->bg : ctx->theme.panel_border));
 			break;
+		case VGUI_LIST: vgui_draw_list(w, cb, vg, clips); break;
+		case VGUI_TREE: vgui_draw_tree(w, cb, vg, clips); break;
+		case VGUI_MENU: vgui_draw_menu(w, cb, vg, clips); break;
 		default: break;
 		}
 		(void)ctx;
+	}
+
+	static void vgui_menu_tick(vgui_widget* menu, vgui_context* ctx)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !st->open) return;
+		if (st->pending_submenu_item && ctx->time - st->pending_submenu_time >= ctx->style.menu.submenu_delay)
+		{
+			vgui_item_id item = st->pending_submenu_item;
+			st->pending_submenu_item = 0;
+			vgui_menu_open_submenu(menu, item);
+			if (!ctx->alive.count(menu)) return;
+			st = vgui_menu_of(menu);
+			if (!st) return;
+		}
+		if (st->submenu_open && st->submenu_open->menu && st->submenu_open->menu->open)
+			vgui_menu_tick(st->submenu_open, ctx);
 	}
 
 	static void vgui_update_impl(vgui_context* ctx, float dt)
@@ -3939,6 +6242,7 @@ namespace {
 		ctx->time += dt;
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
+		if (ctx->open_menu) vgui_menu_tick(ctx->open_menu, ctx);
 
 		// speed 0 means "no tween": snap to the target state instead of freezing
 		// any animation that happened to be in flight when the style changed.
@@ -3975,7 +6279,7 @@ extern "C" {
 
 	const char* vgui_version(void)
 	{
-		return "0.2.2";
+		return "0.3.0";
 	}
 
 	//----------------------------------------------------------------------------
@@ -4012,8 +6316,10 @@ extern "C" {
 			vgui_delete_rec(ctx->root, ctx);
 		ctx->root = nullptr;
 
-		// Delete widgets that were not attached to the root tree as well.
-		for (vgui_widget* w : ctx->all_widgets)
+		// Delete widgets that were not attached to the root tree as well.  Take a
+		// snapshot: deleting a popup menu can also delete its owned submenus.
+		std::vector<vgui_widget*> remaining(ctx->all_widgets.begin(), ctx->all_widgets.end());
+		for (vgui_widget* w : remaining)
 		{
 			if (w && ctx->alive.count(w))
 			{
@@ -4064,6 +6370,22 @@ extern "C" {
 			next.scrollbar_hover = next.scrollbar ? next.scrollbar : def.scrollbar_hover;
 		if (!next.checkmark) next.checkmark = def.checkmark;
 		if (!next.switch_thumb) next.switch_thumb = def.switch_thumb;
+
+		// Model-control colours were appended to vgui_theme.  Old theme structs
+		// therefore arrive with these fields zeroed; derive sensible values from
+		// the core palette instead of rendering transparent text.
+		if (!next.list_bg) next.list_bg = next.panel_bg ? next.panel_bg : def.list_bg;
+		if (!next.list_border) next.list_border = next.panel_border ? next.panel_border : def.list_border;
+		if (!next.row_text) next.row_text = next.text ? next.text : def.row_text;
+		if (!next.row_hover) next.row_hover = next.button_hover ? next.button_hover : def.row_hover;
+		if (!next.row_selected) next.row_selected = def.row_selected;
+		if (!next.row_selected_text) next.row_selected_text = next.text ? next.text : def.row_selected_text;
+		if (!next.tree_guide)
+			next.tree_guide = vgui_alpha_color(next.panel_border ? next.panel_border : def.tree_guide, 0.45f);
+		if (!next.menu_bg) next.menu_bg = next.panel_bg ? next.panel_bg : def.menu_bg;
+		if (!next.menu_border) next.menu_border = next.button_border ? next.button_border : def.menu_border;
+		if (!next.menu_hover) next.menu_hover = next.button_hover ? next.button_hover : def.menu_hover;
+		if (!next.menu_disabled_text) next.menu_disabled_text = next.disabled ? next.disabled : def.menu_disabled_text;
 		ctx->theme = next;
 
 		// Widgets copy their defaults when they are created.  Move the colors that
@@ -4072,14 +6394,28 @@ extern "C" {
 		for (vgui_widget* w : ctx->all_widgets)
 		{
 			if (!w || !ctx->alive.count(w)) continue;
+			uint32_t old_bg = w->bg;
+			uint32_t old_border = w->border;
 			if (w->text_color == old.text) w->text_color = next.text;
 			if (w->accent == old.accent) w->accent = next.accent;
 			if (w->track == old.track) w->track = next.track;
-			if (w->bg == old.panel_bg) w->bg = next.panel_bg;
-			else if (w->bg == old.button_bg) w->bg = next.button_bg;
-			else if (w->bg == old.edit_bg) w->bg = next.edit_bg;
-			if (w->border == old.panel_border) w->border = next.panel_border;
-			else if (w->border == old.button_border) w->border = next.button_border;
+			if (w->kind == VGUI_LIST || w->kind == VGUI_TREE)
+			{
+				if (old_bg == old.list_bg || old_bg == old.panel_bg) w->bg = next.list_bg;
+				if (old_border == old.list_border || old_border == old.panel_border) w->border = next.list_border;
+				continue;
+			}
+			if (w->kind == VGUI_MENU)
+			{
+				if (old_bg == old.menu_bg || old_bg == old.panel_bg) w->bg = next.menu_bg;
+				if (old_border == old.menu_border || old_border == old.button_border) w->border = next.menu_border;
+				continue;
+			}
+			if (old_bg == old.panel_bg) w->bg = next.panel_bg;
+			else if (old_bg == old.button_bg) w->bg = next.button_bg;
+			else if (old_bg == old.edit_bg) w->bg = next.edit_bg;
+			if (old_border == old.panel_border) w->border = next.panel_border;
+			else if (old_border == old.button_border) w->border = next.button_border;
 		}
 	}
 
@@ -4152,6 +6488,27 @@ extern "C" {
 			case VGUI_SEPARATOR:
 				move(w->req_h, old.separator.thickness, next.separator.thickness);
 				break;
+			case VGUI_LIST:
+				move(w->padding[0], old.list.padding_x, next.list.padding_x);
+				move(w->padding[2], old.list.padding_x, next.list.padding_x);
+				move(w->padding[1], old.list.padding_y, next.list.padding_y);
+				move(w->padding[3], old.list.padding_y, next.list.padding_y);
+				move(w->rounding, old.list.rounding, next.list.rounding);
+				move(w->req_w, old.list.req_width, next.list.req_width);
+				move(w->req_h, old.list.req_height, next.list.req_height);
+				break;
+			case VGUI_TREE:
+				move(w->padding[0], old.tree.padding_x, next.tree.padding_x);
+				move(w->padding[2], old.tree.padding_x, next.tree.padding_x);
+				move(w->padding[1], old.tree.padding_y, next.tree.padding_y);
+				move(w->padding[3], old.tree.padding_y, next.tree.padding_y);
+				move(w->rounding, old.tree.rounding, next.tree.rounding);
+				move(w->req_w, old.tree.req_width, next.tree.req_width);
+				move(w->req_h, old.tree.req_height, next.tree.req_height);
+				break;
+			case VGUI_MENU:
+				move(w->rounding, old.menu.rounding, next.menu.rounding);
+				break;
 			default:
 				break;
 			}
@@ -4204,6 +6561,7 @@ extern "C" {
 		if (!parent || !child || parent == child || !parent->ctx || child->ctx != parent->ctx)
 			return;
 		if (child == parent->ctx->root) return;	// the root has no parent
+		if (child->kind == VGUI_MENU) return;	// popups are context-level, not layout children
 
 		// Reject cycles.
 		for (vgui_widget* p = parent; p; p = p->parent)
@@ -4246,6 +6604,27 @@ extern "C" {
 	{
 		if (!panel || !panel->ctx) return;
 		vgui_context* ctx = panel->ctx;
+		if (panel->kind == VGUI_LIST)
+		{
+			vgui_list_clear(panel);
+			ctx->layout_dirty = true;
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return;
+		}
+		if (panel->kind == VGUI_TREE)
+		{
+			vgui_tree_clear(panel);
+			ctx->layout_dirty = true;
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return;
+		}
+		if (panel->kind == VGUI_MENU)
+		{
+			vgui_menu_clear(panel);
+			ctx->layout_dirty = true;
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return;
+		}
 		std::vector<vgui_widget*> children = panel->children;
 		for (vgui_widget* c : children)
 			vgui_schedule_destroy(c);
@@ -4300,6 +6679,11 @@ extern "C" {
 		if (!widget) return;
 		visible = visible ? 1 : 0;
 		if (widget->visible == visible) return;
+		if (!visible && widget->kind == VGUI_MENU)
+		{
+			vgui_menu_close_internal(widget);
+			if (!widget->ctx || !widget->ctx->alive.count(widget)) return;
+		}
 		widget->visible = visible;
 		vgui_context* ctx = widget->ctx;
 		if (ctx)
@@ -4551,9 +6935,14 @@ extern "C" {
 		vgui_ensure_layout(widget->ctx);
 		if (!widget->parent && widget != widget->ctx->root)
 		{
-			vgui_measure_widget(widget, widget->ctx);
-			vgui_layout_widget(widget, widget->ctx, 0, 0,
-				std::max(widget->intrinsic_w, 1.0f), std::max(widget->intrinsic_h, 1.0f));
+			// Open menus are context popups: their geometry is maintained by
+			// the menu layout pass, not by the regular widget-tree layout.
+			if (widget->kind != VGUI_MENU || !widget->menu || !widget->menu->open)
+			{
+				vgui_measure_widget(widget, widget->ctx);
+				vgui_layout_widget(widget, widget->ctx, 0, 0,
+					std::max(widget->intrinsic_w, 1.0f), std::max(widget->intrinsic_h, 1.0f));
+			}
 		}
 		if (x) *x = widget->abs_x;
 		if (y) *y = widget->abs_y;
@@ -4876,6 +7265,989 @@ extern "C" {
 	}
 
 	//----------------------------------------------------------------------------
+	// list model
+	//----------------------------------------------------------------------------
+
+	static vgui_item_id vgui_next_item_id(vgui_item_id& next)
+	{
+		if (next == 0) next = 1;
+		vgui_item_id id = next++;
+		if (next == 0) next = 1;
+		return id;
+	}
+
+	vgui_item_id vgui_list_add_item(vgui_widget* list, const char* text, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return 0;
+		vgui_list_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		if (text) item.text = text;
+		item.user = user;
+		st->items.push_back(std::move(item));
+		vgui_list_rebuild_index(st);
+		vgui_mark_dirty(list);
+		return st->items.back().id;
+	}
+
+	vgui_item_id vgui_list_insert_item(vgui_widget* list, int index, const char* text, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return 0;
+		if (index < 0) index = 0;
+		if (index > (int)st->items.size()) index = (int)st->items.size();
+		vgui_list_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		if (text) item.text = text;
+		item.user = user;
+		st->items.insert(st->items.begin() + index, std::move(item));
+		vgui_list_rebuild_index(st);
+		vgui_mark_dirty(list);
+		return st->items[(size_t)index].id;
+	}
+
+	int vgui_list_remove_item(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		size_t index = (size_t)-1;
+		if (!st || !vgui_list_item_find(list, item, &index)) return 0;
+		if (vgui_id_selected(st->selected, item))
+		{
+			st->selected.erase(std::remove(st->selected.begin(), st->selected.end(), item), st->selected.end());
+			vgui_list_notify_select(list, item, 0);
+			if (!list->ctx || !list->ctx->alive.count(list)) return 1;
+			// The callback may have removed this item (or cleared the model);
+			// refresh the index instead of using the stale pre-callback one.
+			st = vgui_list_of(list);
+			if (!st || !vgui_list_item_find(list, item, &index)) return 1;
+		}
+		st->items.erase(st->items.begin() + (ptrdiff_t)index);
+		if (st->cursor == item) st->cursor = 0;
+		if (st->hover == item) st->hover = 0;
+		if (st->pressed == item) st->pressed = 0;
+		if (st->range_anchor == item) st->range_anchor = 0;
+		vgui_list_rebuild_index(st);
+		vgui_mark_dirty(list);
+		return 1;
+	}
+
+	void vgui_list_clear(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		vgui_list_clear_selection_internal(list, true);
+		if (!list->ctx || !list->ctx->alive.count(list)) return;
+		st = vgui_list_of(list);
+		if (!st) return;
+		st->items.clear();
+		st->index.clear();
+		st->selected.clear();
+		st->cursor = 0;
+		st->hover = 0;
+		st->pressed = 0;
+		st->range_anchor = 0;
+		vgui_mark_dirty(list);
+	}
+
+	int vgui_list_get_count(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st ? (int)st->items.size() : 0;
+	}
+
+	vgui_item_id vgui_list_get_item_at(vgui_widget* list, int index)
+	{
+		vgui_item_id id = 0;
+		vgui_list_item_at(list, index, &id);
+		return id;
+	}
+
+	void vgui_list_set_item_text(vgui_widget* list, vgui_item_id item, const char* text)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it) return;
+		it->text = text ? text : "";
+		vgui_mark_dirty(list);
+	}
+
+	const char* vgui_list_get_item_text(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->text.c_str() : "";
+	}
+
+	void vgui_list_set_item_detail(vgui_widget* list, vgui_item_id item, const char* detail)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it) return;
+		it->detail = detail ? detail : "";
+		vgui_mark_dirty(list);
+	}
+
+	const char* vgui_list_get_item_detail(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->detail.c_str() : "";
+	}
+
+	void vgui_list_set_item_enabled(vgui_widget* list, vgui_item_id item, int enabled)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it) return;
+		it->enabled = enabled ? 1 : 0;
+		vgui_mark_dirty(list);
+	}
+
+	int vgui_list_get_item_enabled(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->enabled : 0;
+	}
+
+	void vgui_list_set_item_user(vgui_widget* list, vgui_item_id item, void* user)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (it) it->user = user;
+	}
+
+	void* vgui_list_get_item_user(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->user : nullptr;
+	}
+
+	void vgui_list_set_selection_mode(vgui_widget* list, vgui_selection_mode mode)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		if (mode != VGUI_SELECTION_NONE && mode != VGUI_SELECTION_SINGLE && mode != VGUI_SELECTION_MULTIPLE)
+			mode = VGUI_SELECTION_SINGLE;
+		st->selection_mode = mode;
+		if (mode == VGUI_SELECTION_NONE)
+			vgui_list_clear_selection_internal(list, true);
+		else if (mode == VGUI_SELECTION_SINGLE && st->selected.size() > 1)
+		{
+			std::vector<vgui_item_id> old = st->selected;
+			st->selected.clear();
+			vgui_item_id keep = old.front();
+			st->selected.push_back(keep);
+			for (size_t i = 1; i < old.size(); ++i)
+			{
+				vgui_list_notify_select(list, old[i], 0);
+				if (!list->ctx || !list->ctx->alive.count(list)) return;
+			}
+		}
+	}
+
+	vgui_selection_mode vgui_list_get_selection_mode(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st ? st->selection_mode : VGUI_SELECTION_NONE;
+	}
+
+	int vgui_list_select(vgui_widget* list, vgui_item_id item, int selected)
+	{
+		return vgui_list_set_selected_internal(list, item, selected != 0, true) ? 1 : 0;
+	}
+
+	void vgui_list_clear_selection(vgui_widget* list)
+	{
+		vgui_list_clear_selection_internal(list, true);
+	}
+
+	int vgui_list_is_selected(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st && vgui_id_selected(st->selected, item) ? 1 : 0;
+	}
+
+	int vgui_list_get_selected_count(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st ? (int)st->selected.size() : 0;
+	}
+
+	vgui_item_id vgui_list_get_selected(vgui_widget* list, int index)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || index < 0 || index >= (int)st->selected.size()) return 0;
+		return st->selected[(size_t)index];
+	}
+
+	void vgui_list_set_cursor(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->cursor = vgui_list_item_find(list, item) ? item : 0;
+		vgui_mark_dirty(list);
+	}
+
+	vgui_item_id vgui_list_get_cursor(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st ? st->cursor : 0;
+	}
+
+	void vgui_list_scroll_to_item(vgui_widget* list, vgui_item_id item, vgui_scroll_align align)
+	{
+		if (list) vgui_ensure_layout(list->ctx);
+		vgui_list_ensure_visible(list, item, align);
+	}
+
+	void vgui_list_set_empty_text(vgui_widget* list, const char* text)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->empty_text = text ? text : "";
+		vgui_mark_dirty(list);
+	}
+
+	void vgui_list_on_select(vgui_widget* list, vgui_item_select_fn fn, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->select_fn = fn;
+		st->select_user = user;
+	}
+
+	void vgui_list_on_activate(vgui_widget* list, vgui_item_fn fn, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->activate_fn = fn;
+		st->activate_user = user;
+	}
+
+	//----------------------------------------------------------------------------
+	// tree model
+	//----------------------------------------------------------------------------
+
+	vgui_item_id vgui_tree_add_node(vgui_widget* tree, vgui_item_id parent, const char* text, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return 0;
+		if (parent != 0 && !vgui_tree_node_find(tree, parent)) return 0;
+		vgui_tree_node node;
+		node.id = vgui_next_item_id(st->next_id);
+		node.parent = parent;
+		if (text) node.text = text;
+		node.user = user;
+		st->nodes.push_back(std::move(node));
+		vgui_tree_rebuild_index(st);
+		vgui_item_id id = st->nodes.back().id;
+		if (parent == 0)
+			st->roots.push_back(id);
+		else
+		{
+			vgui_tree_node* p = vgui_tree_node_find(tree, parent);
+			if (p) p->children.push_back(id);
+		}
+		st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+		return id;
+	}
+
+	int vgui_tree_remove_node(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || !vgui_tree_node_find(tree, node)) return 0;
+		std::unordered_set<vgui_item_id> doomed;
+		std::vector<vgui_item_id> stack;
+		stack.push_back(node);
+		while (!stack.empty())
+		{
+			vgui_item_id id = stack.back();
+			stack.pop_back();
+			if (id == 0 || doomed.count(id)) continue;
+			vgui_tree_node* n = vgui_tree_node_find(tree, id);
+			if (!n) continue;
+			doomed.insert(id);
+			for (vgui_item_id c : n->children) stack.push_back(c);
+		}
+		for (vgui_item_id id : doomed)
+			if (vgui_id_selected(st->selected, id))
+			{
+				st->selected.erase(std::remove(st->selected.begin(), st->selected.end(), id), st->selected.end());
+				vgui_tree_notify_select(tree, id, 0);
+				if (!tree->ctx || !tree->ctx->alive.count(tree)) return 1;
+				st = vgui_tree_of(tree);
+				if (!st) return 1;
+			}
+		for (vgui_tree_node& n : st->nodes)
+			n.children.erase(std::remove_if(n.children.begin(), n.children.end(),
+				[&](vgui_item_id id) { return doomed.count(id) != 0; }), n.children.end());
+		st->nodes.erase(std::remove_if(st->nodes.begin(), st->nodes.end(),
+			[&](const vgui_tree_node& n) { return doomed.count(n.id) != 0; }), st->nodes.end());
+		vgui_tree_rebuild_index(st);
+		st->roots.clear();
+		for (const vgui_tree_node& n : st->nodes)
+			if (n.parent == 0) st->roots.push_back(n.id);
+		if (doomed.count(st->cursor)) st->cursor = 0;
+		if (doomed.count(st->hover)) st->hover = 0;
+		if (doomed.count(st->pressed)) st->pressed = 0;
+		if (doomed.count(st->range_anchor)) st->range_anchor = 0;
+		st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+		return 1;
+	}
+
+	void vgui_tree_clear(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		vgui_tree_clear_selection_internal(tree, true);
+		if (!tree->ctx || !tree->ctx->alive.count(tree)) return;
+		st = vgui_tree_of(tree);
+		if (!st) return;
+		st->nodes.clear();
+		st->roots.clear();
+		st->index.clear();
+		st->rows.clear();
+		st->rows_dirty = true;
+		st->selected.clear();
+		st->cursor = 0;
+		st->hover = 0;
+		st->pressed = 0;
+		st->range_anchor = 0;
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_get_node_count(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st ? (int)st->nodes.size() : 0;
+	}
+
+	int vgui_tree_get_root_count(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st ? (int)st->roots.size() : 0;
+	}
+
+	vgui_item_id vgui_tree_get_root(vgui_widget* tree, int index)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || index < 0 || index >= (int)st->roots.size()) return 0;
+		return st->roots[(size_t)index];
+	}
+
+	int vgui_tree_get_child_count(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? (int)n->children.size() : 0;
+	}
+
+	vgui_item_id vgui_tree_get_child(vgui_widget* tree, vgui_item_id node, int index)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || index < 0 || index >= (int)n->children.size()) return 0;
+		return n->children[(size_t)index];
+	}
+
+	vgui_item_id vgui_tree_get_parent(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->parent : 0;
+	}
+
+	int vgui_tree_get_depth(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		int depth = 0;
+		while (n && n->parent)
+		{
+			depth++;
+			n = vgui_tree_node_find(tree, n->parent);
+		}
+		return depth;
+	}
+
+	void vgui_tree_set_item_text(vgui_widget* tree, vgui_item_id node, const char* text)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n) return;
+		n->text = text ? text : "";
+		vgui_mark_dirty(tree);
+	}
+
+	const char* vgui_tree_get_item_text(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->text.c_str() : "";
+	}
+
+	void vgui_tree_set_item_enabled(vgui_widget* tree, vgui_item_id node, int enabled)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n) return;
+		n->enabled = enabled ? 1 : 0;
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_get_item_enabled(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->enabled : 0;
+	}
+
+	void vgui_tree_set_item_user(vgui_widget* tree, vgui_item_id node, void* user)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (n) n->user = user;
+	}
+
+	void* vgui_tree_get_item_user(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->user : nullptr;
+	}
+
+	void vgui_tree_set_item_expanded(vgui_widget* tree, vgui_item_id node, int expanded)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n) return;
+		int e = expanded ? 1 : 0;
+		if (n->expanded == e) return;
+		n->expanded = e;
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st) st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_get_item_expanded(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->expanded : 0;
+	}
+
+	int vgui_tree_expand(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || n->expanded || n->children.empty()) return 0;
+		vgui_tree_set_item_expanded(tree, node, 1);
+		return 1;
+	}
+
+	int vgui_tree_collapse(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || !n->expanded || n->children.empty()) return 0;
+		vgui_tree_set_item_expanded(tree, node, 0);
+		return 1;
+	}
+
+	int vgui_tree_toggle(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || n->children.empty()) return 0;
+		vgui_tree_set_item_expanded(tree, node, !n->expanded);
+		return 1;
+	}
+
+	void vgui_tree_expand_all(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		for (vgui_tree_node& n : st->nodes)
+			if (!n.children.empty()) n.expanded = 1;
+		st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_collapse_all(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		for (vgui_tree_node& n : st->nodes) n.expanded = 0;
+		st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_expand_to(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || !vgui_tree_node_find(tree, node)) return;
+		vgui_item_id p = vgui_tree_get_parent(tree, node);
+		while (p)
+		{
+			vgui_tree_node* n = vgui_tree_node_find(tree, p);
+			if (!n) break;
+			n->expanded = 1;
+			p = n->parent;
+		}
+		st->rows_dirty = true;
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_set_selection_mode(vgui_widget* tree, vgui_selection_mode mode)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		if (mode != VGUI_SELECTION_NONE && mode != VGUI_SELECTION_SINGLE && mode != VGUI_SELECTION_MULTIPLE)
+			mode = VGUI_SELECTION_SINGLE;
+		st->selection_mode = mode;
+		if (mode == VGUI_SELECTION_NONE)
+			vgui_tree_clear_selection_internal(tree, true);
+		else if (mode == VGUI_SELECTION_SINGLE && st->selected.size() > 1)
+		{
+			std::vector<vgui_item_id> old = st->selected;
+			st->selected.clear();
+			st->selected.push_back(old.front());
+			for (size_t i = 1; i < old.size(); ++i)
+			{
+				vgui_tree_notify_select(tree, old[i], 0);
+				if (!tree->ctx || !tree->ctx->alive.count(tree)) return;
+			}
+		}
+	}
+
+	vgui_selection_mode vgui_tree_get_selection_mode(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st ? st->selection_mode : VGUI_SELECTION_NONE;
+	}
+
+	int vgui_tree_select(vgui_widget* tree, vgui_item_id node, int selected)
+	{
+		return vgui_tree_set_selected_internal(tree, node, selected != 0, true) ? 1 : 0;
+	}
+
+	void vgui_tree_clear_selection(vgui_widget* tree)
+	{
+		vgui_tree_clear_selection_internal(tree, true);
+	}
+
+	int vgui_tree_is_selected(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st && vgui_id_selected(st->selected, node) ? 1 : 0;
+	}
+
+	int vgui_tree_get_selected_count(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st ? (int)st->selected.size() : 0;
+	}
+
+	vgui_item_id vgui_tree_get_selected(vgui_widget* tree, int index)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || index < 0 || index >= (int)st->selected.size()) return 0;
+		return st->selected[(size_t)index];
+	}
+
+	void vgui_tree_set_cursor(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->cursor = vgui_tree_node_find(tree, node) ? node : 0;
+		vgui_mark_dirty(tree);
+	}
+
+	vgui_item_id vgui_tree_get_cursor(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st ? st->cursor : 0;
+	}
+
+	void vgui_tree_scroll_to_node(vgui_widget* tree, vgui_item_id node, vgui_scroll_align align)
+	{
+		if (tree) vgui_ensure_layout(tree->ctx);
+		vgui_tree_expand_to(tree, node);
+		vgui_tree_ensure_visible(tree, node, align);
+	}
+
+	void vgui_tree_set_empty_text(vgui_widget* tree, const char* text)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->empty_text = text ? text : "";
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_on_select(vgui_widget* tree, vgui_item_select_fn fn, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->select_fn = fn;
+		st->select_user = user;
+	}
+
+	void vgui_tree_on_activate(vgui_widget* tree, vgui_item_fn fn, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->activate_fn = fn;
+		st->activate_user = user;
+	}
+
+	//----------------------------------------------------------------------------
+	// menu model and popup lifecycle
+	//----------------------------------------------------------------------------
+
+	vgui_item_id vgui_menu_add_item(vgui_widget* menu, const char* text)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		vgui_menu_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		if (text) item.text = text;
+		st->items.push_back(std::move(item));
+		vgui_menu_state* s = vgui_menu_of(menu);
+		s->index[s->items.back().id] = s->items.size() - 1;
+		vgui_mark_dirty(menu);
+		return s->items.back().id;
+	}
+
+	vgui_item_id vgui_menu_add_check_item(vgui_widget* menu, const char* text, int checked)
+	{
+		vgui_item_id id = vgui_menu_add_item(menu, text);
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (st && id)
+		{
+			auto it = st->index.find(id);
+			if (it != st->index.end())
+			{
+				st->items[it->second].checkable = 1;
+				st->items[it->second].checked = checked ? 1 : 0;
+			}
+		}
+		return id;
+	}
+
+	vgui_item_id vgui_menu_add_separator(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		vgui_menu_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		item.type = VGUI_MENU_ITEM_SEPARATOR;
+		st->items.push_back(std::move(item));
+		vgui_menu_state* s = vgui_menu_of(menu);
+		s->index[s->items.back().id] = s->items.size() - 1;
+		vgui_mark_dirty(menu);
+		return s->items.back().id;
+	}
+
+	vgui_item_id vgui_menu_add_submenu(vgui_widget* menu, const char* text, vgui_widget** out_submenu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !menu->ctx) return 0;
+		vgui_widget* sub = vgui_widget_create(menu->ctx, VGUI_MENU, nullptr);
+		if (!sub) return 0;
+		vgui_menu_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		item.type = VGUI_MENU_ITEM_SUBMENU;
+		if (text) item.text = text;
+		item.submenu = sub;
+		st->items.push_back(std::move(item));
+		vgui_menu_state* s = vgui_menu_of(menu);
+		vgui_item_id id = s->items.back().id;
+		s->index[id] = s->items.size() - 1;
+		if (sub->menu)
+		{
+			sub->menu->parent_menu = menu;
+			sub->menu->parent_item = id;
+		}
+		if (out_submenu) *out_submenu = sub;
+		vgui_mark_dirty(menu);
+		return id;
+	}
+
+	int vgui_menu_remove_item(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return 0;
+		vgui_context* ctx = menu->ctx;
+		vgui_widget* sub = st->items[it->second].submenu;
+		if (sub)
+		{
+			if (st->submenu_open == sub) vgui_menu_close_submenu(menu);
+			if (ctx && ctx->alive.count(sub)) vgui_schedule_destroy(sub);
+			if (!ctx || !ctx->alive.count(menu) || menu->destroy_pending) return 1;
+			st = vgui_menu_of(menu);
+			if (!st) return 1;
+			it = st->index.find(item);
+			if (it == st->index.end()) return 1;
+		}
+		st->items.erase(st->items.begin() + (ptrdiff_t)it->second);
+		st->index.clear();
+		for (size_t i = 0; i < st->items.size(); ++i) st->index[st->items[i].id] = i;
+		if (st->cursor == item) st->cursor = 0;
+		if (st->hover == item) st->hover = 0;
+		if (st->pressed == item) st->pressed = 0;
+		vgui_mark_dirty(menu);
+		if (ctx && !ctx->in_input) vgui_flush_pending(ctx);
+		return 1;
+	}
+
+	void vgui_menu_clear(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		vgui_context* ctx = menu->ctx;
+		vgui_menu_close_submenu(menu);
+		if (!ctx || !ctx->alive.count(menu) || menu->destroy_pending) return;
+		st = vgui_menu_of(menu);
+		if (!st) return;
+		for (vgui_menu_item& it : st->items)
+			if (it.submenu && ctx->alive.count(it.submenu))
+				vgui_schedule_destroy(it.submenu);
+		st->items.clear();
+		st->index.clear();
+		st->cursor = 0;
+		st->hover = 0;
+		st->pressed = 0;
+		st->submenu_open = nullptr;
+		st->submenu_item = 0;
+		vgui_mark_dirty(menu);
+		if (ctx && !ctx->in_input) vgui_flush_pending(ctx);
+	}
+
+	int vgui_menu_get_count(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st ? (int)st->items.size() : 0;
+	}
+
+	vgui_item_id vgui_menu_get_item_at(vgui_widget* menu, int index)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || index < 0 || index >= (int)st->items.size()) return 0;
+		return st->items[(size_t)index].id;
+	}
+
+	vgui_menu_item_type vgui_menu_get_item_type(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return VGUI_MENU_ITEM_NORMAL;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].type : VGUI_MENU_ITEM_NORMAL;
+	}
+
+	vgui_widget* vgui_menu_get_submenu(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return nullptr;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].submenu : nullptr;
+	}
+
+	void vgui_menu_set_item_text(vgui_widget* menu, vgui_item_id item, const char* text)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end()) return;
+		st->items[it->second].text = text ? text : "";
+		vgui_mark_dirty(menu);
+	}
+
+	const char* vgui_menu_get_item_text(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return "";
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].text.c_str() : "";
+	}
+
+	void vgui_menu_set_item_shortcut(vgui_widget* menu, vgui_item_id item, const char* shortcut)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end()) return;
+		st->items[it->second].shortcut = shortcut ? shortcut : "";
+		vgui_mark_dirty(menu);
+	}
+
+	const char* vgui_menu_get_item_shortcut(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return "";
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].shortcut.c_str() : "";
+	}
+
+	void vgui_menu_set_item_enabled(vgui_widget* menu, vgui_item_id item, int enabled)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end()) return;
+		st->items[it->second].enabled = enabled ? 1 : 0;
+		vgui_mark_dirty(menu);
+	}
+
+	int vgui_menu_get_item_enabled(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].enabled : 0;
+	}
+
+	void vgui_menu_set_item_checked(vgui_widget* menu, vgui_item_id item, int checked)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end()) return;
+		st->items[it->second].checked = checked ? 1 : 0;
+		vgui_mark_dirty(menu);
+	}
+
+	int vgui_menu_get_item_checked(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].checked : 0;
+	}
+
+	int vgui_menu_set_item_checkable(vgui_widget* menu, vgui_item_id item, int checkable)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		if (it == st->index.end()) return 0;
+		st->items[it->second].checkable = checkable ? 1 : 0;
+		if (!checkable) st->items[it->second].checked = 0;
+		vgui_mark_dirty(menu);
+		return 1;
+	}
+
+	int vgui_menu_get_item_checkable(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].checkable : 0;
+	}
+
+	void vgui_menu_set_item_user(vgui_widget* menu, vgui_item_id item, void* user)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it != st->index.end()) st->items[it->second].user = user;
+	}
+
+	void* vgui_menu_get_item_user(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return nullptr;
+		auto it = st->index.find(item);
+		return it != st->index.end() ? st->items[it->second].user : nullptr;
+	}
+
+	void vgui_menu_open(vgui_widget* menu, float x, float y)
+	{
+		vgui_menu_show(menu, x, y);
+	}
+
+	void vgui_menu_open_below(vgui_widget* menu, vgui_widget* anchor)
+	{
+		vgui_menu_show_below(menu, anchor);
+	}
+
+	void vgui_menu_open_for(vgui_widget* menu, vgui_widget* anchor, float local_x, float local_y)
+	{
+		vgui_menu_show_for(menu, anchor, local_x, local_y);
+	}
+
+	void vgui_menu_close(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		if (st->parent_menu)
+		{
+			vgui_menu_close_internal(menu);
+			return;
+		}
+		vgui_menu_close_all(menu->ctx);
+	}
+
+	int vgui_menu_is_open(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st && st->open ? 1 : 0;
+	}
+
+	vgui_widget* vgui_context_get_open_menu(vgui_context* ctx)
+	{
+		return ctx ? ctx->open_menu : nullptr;
+	}
+
+	void vgui_menu_set_width(vgui_widget* menu, float width)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		st->width = std::max(0.0f, width);
+		vgui_mark_dirty(menu);
+		if (menu->ctx && menu->ctx->open_menu) vgui_ensure_layout(menu->ctx);
+	}
+
+	float vgui_menu_get_width(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st ? st->width : 0.0f;
+	}
+
+	void vgui_menu_set_max_height(vgui_widget* menu, float height)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		st->max_height = std::max(0.0f, height);
+		vgui_mark_dirty(menu);
+		if (menu->ctx && menu->ctx->open_menu) vgui_ensure_layout(menu->ctx);
+	}
+
+	float vgui_menu_get_max_height(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st ? st->max_height : 0.0f;
+	}
+
+	void vgui_menu_set_close_on_activate(vgui_widget* menu, int close)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (st) st->close_on_activate = close ? 1 : 0;
+	}
+
+	int vgui_menu_get_close_on_activate(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st ? st->close_on_activate : 0;
+	}
+
+	void vgui_menu_on_activate(vgui_widget* menu, vgui_item_fn fn, void* user)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		st->activate_fn = fn;
+		st->activate_user = user;
+	}
+
+	void vgui_menu_on_open(vgui_widget* menu, vgui_widget_fn fn, void* user)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		st->open_fn = fn;
+		st->open_user = user;
+	}
+
+	void vgui_menu_on_close(vgui_widget* menu, vgui_widget_fn fn, void* user)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		st->close_fn = fn;
+		st->close_user = user;
+	}
+
+	//----------------------------------------------------------------------------
 	// focus and input
 	//----------------------------------------------------------------------------
 
@@ -4886,6 +8258,7 @@ extern "C" {
 			return;
 		if (widget && widget->kind != VGUI_EDIT && !widget->focusable)
 			return;
+		if (ctx->open_menu) vgui_menu_close_all(ctx);
 		vgui_set_focus_internal(ctx, widget);
 	}
 
@@ -4943,6 +8316,7 @@ extern "C" {
 	void vgui_input_clear(vgui_context* ctx)
 	{
 		if (!ctx) return;
+		vgui_menu_close_all(ctx);
 		for (int i = 0; i < 8; i++)
 		{
 			ctx->mouse_down[i] = 0;
@@ -4957,11 +8331,30 @@ extern "C" {
 			w->edit_drag = 0;
 			w->scroll_drag_axis = 0;
 			w->edit_scroll_drag = 0;
+			if (w->list)
+			{
+				w->list->hover = 0;
+				w->list->pressed = 0;
+			}
+			if (w->tree)
+			{
+				w->tree->hover = 0;
+				w->tree->pressed = 0;
+			}
+			if (w->menu)
+			{
+				w->menu->hover = 0;
+				w->menu->pressed = 0;
+				w->menu->pending_submenu_item = 0;
+			}
 		}
 		ctx->hot = nullptr;
 		ctx->active = nullptr;
 		ctx->press_target = nullptr;
 		ctx->slider_drag = nullptr;
+		ctx->menu_pressed = nullptr;
+		ctx->menu_swallow_up = 0;
+		ctx->mods = 0;
 		ctx->cursor = VGUI_CURSOR_ARROW;
 		ctx->want_mouse = 0;
 		ctx->want_key = ctx->focus != nullptr;
@@ -4977,6 +8370,8 @@ extern "C" {
 	int vgui_context_wants_mouse(vgui_context* ctx)
 	{
 		if (!ctx) return 0;
+		if (ctx->open_menu) return 1;
+		if (ctx->menu_swallow_up) return 1;
 		if (ctx->hot && ctx->alive.count(ctx->hot)) return 1;
 		if (ctx->active && ctx->alive.count(ctx->active)) return 1;
 		if (ctx->press_target && ctx->alive.count(ctx->press_target)) return 1;
@@ -4985,13 +8380,15 @@ extern "C" {
 
 	int vgui_context_wants_keyboard(vgui_context* ctx)
 	{
-		if (!ctx || !ctx->focus) return 0;
+		if (!ctx) return 0;
+		if (ctx->open_menu) return 1;
+		if (!ctx->focus) return 0;
 		return ctx->alive.count(ctx->focus) && ctx->focus->enabled ? 1 : 0;
 	}
 
 	int vgui_context_wants_text_input(vgui_context* ctx)
 	{
-		if (!ctx || !ctx->focus) return 0;
+		if (!ctx || ctx->open_menu || !ctx->focus) return 0;
 		vgui_widget* f = ctx->focus;
 		return (ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly) ? 1 : 0;
 	}
@@ -5063,6 +8460,16 @@ extern "C" {
 		// the renderer's scissor in a clean state for subsequent draw calls.
 		while (!clips.stack.empty())
 			vgui_clip_pop(&clips, cb, vg);
+
+		// Menus float above the whole tree.  They are not layout children, so
+		// they are drawn after the root has finished (and after restoring its
+		// clipping state).
+		if (ctx->open_menu)
+		{
+			vgui_draw_menu_chain(ctx->open_menu, cb, vg, &clips);
+			while (!clips.stack.empty())
+				vgui_clip_pop(&clips, cb, vg);
+		}
 	}
 
 } // extern "C"

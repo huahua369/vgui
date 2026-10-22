@@ -4,16 +4,16 @@ vgui 是一个基于 [OVG](https://github.com/huahua369/ovg) 矢量渲染器的�
 
 UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将矩形、圆角、文字、裁剪等矢量命令录制到 OVG，再交由 SDL3 GPU 后端提交渲染。`vgui` 自带的后端只实现 2D 所需的路径、渐变、文本图集、图片、矩形裁剪和 MSAA，并使用 SPIR-V（Vulkan）着色器；OVG 自带的完整渲染器仍保留在 `third_party/ovg` 供其示例使用。
 
-> 当前 API 版本（`vgui_version()`）：`0.2.2` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
+> 当前 API 版本（`vgui_version()`）：`0.3.0` · 许可证：MIT · 示例主要在 Windows + MSVC + SDL3 环境下验证。
 ![项目截图](screenshot.png)
 ## 特性
 
 | 模块 | 能力 |
 |---|---|
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
-| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator |
+| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
-| **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交 |
+| **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
@@ -33,6 +33,9 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | `VGUI_PROGRESS` | 范围与当前值显示，可用于静态或动画进度 |
 | `VGUI_EDIT` | 单行/多行文本编辑，详见下文 |
 | `VGUI_SEPARATOR` | 分隔线 |
+| `VGUI_LIST` | 数据模型列表；稳定 `vgui_item_id`、单选/多选、键盘导航、滚轮与滚动条 |
+| `VGUI_TREE` | 数据模型树；展开/折叠、层级选择、键盘导航、可见行扁平化 |
+| `VGUI_MENU` | 上下文菜单浮层；复选项、子菜单、快捷键文本、禁用项；打开时消费外部点击 |
 
 ### 文本编辑框
 
@@ -44,6 +47,45 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 - IME 组合文本显示、光标位置查询和输入框矩形上报。
 - 文本光标宽度可配置，默认 1 像素；`vgui_edit_set_caret_width(edit, 2.0f)` 可加宽，设为 0 可隐藏。
 - 选区高亮颜色与圆角可配置。多行选区按整体轮廓填充，共享边保持连续，所有外露拐角（包括行宽变化处的台阶/凹角）都会倒圆；`vgui_edit_set_selection_rounding(edit, 0)` 可关闭圆角。
+
+### 列表、树与菜单
+
+列表和树是**数据模型控件**：每一行是带稳定 `vgui_item_id` 的记录，而不是子控件；第一版只支持选择，不提供逐行复选框。两者复用面板的裁剪、滚动条和滚轮逻辑，并支持单选/多选、键盘导航、空状态文本和程序化滚动。
+
+```c
+vgui_widget* list = vgui_widget_add(root, VGUI_LIST, NULL);
+vgui_item_id item = vgui_list_add_item(list, "打开文件", NULL);
+vgui_list_set_item_detail(list, item, "Ctrl+O");
+vgui_list_set_selection_mode(list, VGUI_SELECTION_SINGLE);
+vgui_list_on_select(list, on_list_select, NULL);
+vgui_list_on_activate(list, on_list_activate, NULL); /* 双击/回车 */
+
+vgui_widget* tree = vgui_widget_add(root, VGUI_TREE, NULL);
+vgui_item_id dir = vgui_tree_add_node(tree, 0, "src", NULL);
+vgui_tree_add_node(tree, dir, "main.cpp", NULL);
+vgui_tree_set_item_expanded(tree, dir, 1);
+```
+
+选择回调签名为 `vgui_item_select_fn(widget, item, selected, user)`；激活回调为 `vgui_item_fn(widget, item, user)`。普通事件中的 `vgui_event.item` 和 `vgui_event.index` 也会填入对应的模型项与索引。
+
+菜单是上下文级浮层，不挂到布局子控件中；一个 `vgui_context` 同时只保留一条打开的菜单链。菜单项同样是模型记录，支持普通项、复选项、分隔线、禁用项和子菜单。点击菜单外部会关闭菜单并消费该次鼠标按下/抬起，不会穿透到下面的控件。
+
+```c
+vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, NULL);
+vgui_menu_add_check_item(menu, "自动保存", 1);
+vgui_item_id open = vgui_menu_add_item(menu, "打开设置");
+vgui_menu_set_item_shortcut(menu, open, "Ctrl+,");
+vgui_menu_add_separator(menu);
+
+vgui_widget* more = NULL;
+vgui_menu_add_submenu(menu, "更多", &more);
+vgui_menu_add_item(more, "关于 vgui");
+
+vgui_menu_on_activate(menu, on_menu_activate, NULL);
+vgui_menu_open_below(menu, button);
+```
+
+打开菜单时 `vgui_context_wants_mouse()` / `vgui_context_wants_keyboard()` 返回 1，`vgui_context_wants_text_input()` 返回 0；Esc 关闭当前子菜单，重复按 Esc 关闭整条链。当前版本不绘制菜单图标。
 
 ### 交互与焦点
 
@@ -90,10 +132,11 @@ Debug 输出目录为 `out/bin/x64d/`：
 ```text
 out/bin/x64d/vgui_demo.exe        # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe   # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
+out/bin/x64d/vgui_model_test.exe  # 列表、树、菜单模型与输入行为自测
 out/bin/x64d/vgui.exe             # OVG 场景示例
 ```
 
-`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能。
+`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能。
 
 ## 最小示例
 
@@ -152,7 +195,7 @@ vgui_draw(ui, ovg_cb, rvg);
 
 字体、OVG 回调和 SDL3 窗口的初始化由后端/宿主程序负责，完整流程见 `sample/vgui_demo.cpp`。颜色格式统一为 `0xAARRGGBB`。
 
-`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 新增 `scrollbar_hover`、`checkmark`、`switch_thumb` 三个颜色字段；旧主题把这三个字段留为 0 时，分别回退到滚动条颜色和白色，不会破坏现有主题。
+`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、列表、树、菜单、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 新增 `scrollbar_hover`、`checkmark`、`switch_thumb` 三个颜色字段，以及列表/树/菜单使用的 `list_bg`、`row_text`、`row_hover`、`row_selected`、`menu_bg`、`menu_hover` 等字段；旧主题把这些字段留为 0 时会自动回退到面板/文字/按钮色，不会破坏现有主题。列表/树的自动行高和菜单的自动最大高度也可以通过样式字段设为 0 来保持自动计算。
 
 ## 项目结构
 
@@ -171,6 +214,7 @@ third_party/
 sample/
   vgui_demo.cpp       全部控件的交互演示
   vgui_edit_test.cpp  编辑框、滚动、主题、焦点自测
+  vgui_model_test.cpp 列表、树、菜单模型自测
   main.cpp            OVG 场景示例
 ```
 
@@ -180,9 +224,10 @@ sample/
 
 ```bash
 out/bin/x64d/vgui_edit_test.exe
+out/bin/x64d/vgui_model_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单以及外部点击消费。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 
