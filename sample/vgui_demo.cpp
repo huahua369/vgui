@@ -879,6 +879,7 @@ static void build_buttons(demo_state* st, vgui_widget* root)
 	vgui_widget* jl = label(r2, "justify=SPACE_BETWEEN + grow：", 14, 0xFFB0B0B0);
 	vgui_widget_set_grow(jl, 1);
 	button(r2, "靠右按钮", on_widget_event, st);
+	button(r2, "right button", on_widget_event, st);
 
 	// 绝对定位面板：子控件通过 set_pos 摆放
 	vgui_widget* r3 = row(c, 8);
@@ -889,8 +890,9 @@ static void build_buttons(demo_state* st, vgui_widget* root)
 	vgui_widget_set_padding(abs_panel, 6, 6, 6, 6);
 	vgui_widget* a1 = button(abs_panel, "绝对定位 (10, 8)", on_widget_event, st);
 	vgui_widget_set_pos(a1, 10, 8);
-	vgui_widget* a2 = button(abs_panel, "绝对定位 (190, 30)", on_widget_event, st);
+	vgui_widget* a2 = button(abs_panel, "abs ge (190, 30)", on_widget_event, st);
 	vgui_widget_set_pos(a2, 190, 30);
+	vgui_widget_set_font_size(a2, 13);
 	label(r3, "← VGUI_LAYOUT_ABSOLUTE + set_pos", 12, 0xFF9A9A9A);
 }
 
