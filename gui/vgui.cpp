@@ -5779,7 +5779,7 @@ namespace {
 	{
 		if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
 		float lh = vgui_line_height(ctx, w);
-		float tw = vgui_text_width(w, text);
+		float tw = std::max(width, vgui_text_width(w, text));
 		int count = vgui_text_lines(text);
 		float th = std::max(height, lh);
 		if (count > 1)
@@ -6593,6 +6593,7 @@ namespace {
 		float iy = w->abs_y + w->padding[1];
 		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+
 		float row_h = vgui_tree_row_height(w);
 		uint32_t guide = vgui_alpha_color(
 			ctx->theme.tree_guide ? ctx->theme.tree_guide : ctx->theme.panel_border,
@@ -6607,7 +6608,8 @@ namespace {
 			vgui_tree_node* node = vgui_tree_node_find(w, row.id);
 			if (!node) continue;
 			float y = iy - w->scroll_y + (float)i * row_h;
-			if (y + row_h <= iy || y >= iy + ih) continue;
+			if (y + row_h <= iy || y >= iy + ih)
+				continue;
 			bool selected = vgui_id_selected(st->selected, node->id);
 			if (selected)
 				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ts.rounding,
@@ -6623,7 +6625,7 @@ namespace {
 					std::max(0.0f, row_h - 8.0f), 0, vgui_widget_color(w, guide));
 			}
 
-			float tx = ix + (float)row.depth * ts.indent;
+			float tx = ix + ts.arrow_gap + (float)row.depth * ts.indent;
 			float text_x = tx + ts.arrow_size + ts.arrow_gap;
 			uint32_t color = vgui_row_text_color(w, selected, node->enabled != 0);
 			if (!node->children.empty())
@@ -6757,6 +6759,9 @@ namespace {
 	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		if (!w || !w->visible || w->abs_w <= 0 || w->abs_h <= 0) return;
+		// 区域外直接不渲染
+		if (w->abs_x + w->abs_w < 0 || w->abs_y + w->abs_h < 0 || (vg->width > 0 && w->abs_x > vg->width) || (vg->height > 0 && w->abs_y > vg->height))
+			return;
 		vgui_context* ctx = w->ctx;
 
 		if (w->kind == VGUI_PANEL)

@@ -1410,7 +1410,7 @@ int main()
 	}
 
 	const int win_w = 1080, win_h = 860;
-	os_window* form = wg->create("vgui C API 控件演示", win_w, win_h, 0, true);
+	os_window* form = wg->create("vgui C API 控件演示", win_w, win_h, 0, 0);
 	if (!form)
 	{
 		fprintf(stderr, "创建窗口失败\n");
