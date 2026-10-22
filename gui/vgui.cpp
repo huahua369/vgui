@@ -5520,6 +5520,15 @@ namespace {
 		bool has_external = false;
 	};
 
+	static glm::ivec4 vgui_clip_intersect(const glm::ivec4& a, const glm::ivec4& b)
+	{
+		int x0 = std::max(a.x, b.x);
+		int y0 = std::max(a.y, b.y);
+		int x1 = std::min(a.x + a.z, b.x + b.z);
+		int y1 = std::min(a.y + a.w, b.y + b.w);
+		return { x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0) };
+	}
+
 	static void vgui_clip_push(vgui_clip_state* clips, ovg_ctx_cb* cb, rvg_t* vg,
 		float x, float y, float w, float h)
 	{
@@ -5527,6 +5536,12 @@ namespace {
 			(int)std::floor(x), (int)std::floor(y),
 			(int)std::ceil(std::max(0.0f, w)), (int)std::ceil(std::max(0.0f, h))
 		};
+		// Nested clips must be intersected with the parent.  Some callers (list
+		// rows, tree rows, edit text) push a clip that can be scrolled partially
+		// outside the widget; replacing the parent would let those pixels escape
+		// the widget viewport.
+		if (!clips->stack.empty())
+			rc = vgui_clip_intersect(clips->stack.back(), rc);
 		clips->stack.push_back(rc);
 		cb->clip_rect(vg, rc.x, rc.y, rc.z, rc.w);
 	}
