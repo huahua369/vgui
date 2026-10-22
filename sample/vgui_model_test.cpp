@@ -406,6 +406,189 @@ static void test_menu(vgui_context* ui, const vgui_style& style)
 	vgui_widget_destroy(menu);
 }
 
+static void test_texture_image(vgui_context* ui)
+{
+	uint32_t pixels[4] = { 0xFFFFFFFFu, 0xFF00FF00u, 0xFFFF0000u, 0xFF0000FFu };
+	vgui_texture_desc desc = {};
+	desc.width = 2;
+	desc.height = 2;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels;
+	vgui_texture* tex = vgui_texture_create(ui, &desc);
+	check(tex != nullptr, "texture: create");
+	check(vgui_texture_get_width(tex) == 2 && vgui_texture_get_height(tex) == 2,
+		"texture: size");
+
+	uint8_t bgra[2 * 16] = {};
+	vgui_texture_desc update = {};
+	update.width = 3;
+	update.height = 2;
+	update.stride = 16;
+	update.format = VGUI_TEXTURE_FORMAT_BGRA8;
+	update.pixels = bgra;
+	check(vgui_texture_update(tex, &update) == 1, "texture: update with stride");
+	check(vgui_texture_get_width(tex) == 3 && vgui_texture_get_height(tex) == 2,
+		"texture: updated size");
+
+	vgui_texture_desc empty = {};
+	empty.width = 4;
+	empty.height = 1;
+	empty.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	vgui_texture* empty_tex = vgui_texture_create(ui, &empty);
+	check(empty_tex != nullptr && vgui_texture_get_width(empty_tex) == 4,
+		"texture: empty data is valid");
+
+	vgui_texture_desc bad = {};
+	bad.width = 0;
+	bad.height = 1;
+	bad.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	check(vgui_texture_create(ui, &bad) == nullptr, "texture: rejects zero width");
+	bad.width = 1;
+	bad.format = (vgui_texture_format)99;
+	check(vgui_texture_create(ui, &bad) == nullptr, "texture: rejects bad format");
+
+	vgui_widget* image = vgui_widget_add(vgui_root(ui), VGUI_IMAGE, nullptr);
+	check(image && vgui_widget_get_kind(image) == VGUI_IMAGE, "image: create kind");
+	vgui_widget_set_size(image, 120.0f, 80.0f);
+	vgui_image_set_texture(image, tex);
+	vgui_image_set_source(image, 0, 0, 2, 2);
+	vgui_image_set_fit(image, VGUI_IMAGE_FIT_CONTAIN);
+	vgui_image_set_tint(image, 0xFF80C0FFu);
+	vgui_image_set_flip(image, 1, 1);
+	vgui_image_set_pixel_snap(image, 1);
+
+	float x = 0, y = 0, w = 0, h = 0;
+	vgui_widget_get_rect(image, &x, &y, &w, &h);
+	check(near(w, 120.0f) && near(h, 80.0f), "image: requested size");
+
+	// With an explicit size cleared, a textured image adopts its source size.
+	vgui_widget_set_size(image, 0.0f, 0.0f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(image, &x, &y, &w, &h);
+	check(near(w, 2.0f) && near(h, 2.0f), "image: auto size uses source dimensions");
+
+	// A texture update that changes dimensions must dirty layout for auto-size
+	// images even without touching the widget.
+	vgui_image_set_source(image, 0, 0, 0, 0);
+	uint8_t larger[4 * 3 * 4] = {};
+	vgui_texture_desc larger_desc = {};
+	larger_desc.width = 4;
+	larger_desc.height = 3;
+	larger_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	larger_desc.pixels = larger;
+	check(vgui_texture_update(tex, &larger_desc) == 1, "texture: grow update");
+	vgui_layout(ui);
+	vgui_widget_get_rect(image, &x, &y, &w, &h);
+	check(near(w, 4.0f) && near(h, 3.0f), "image: auto size follows texture updates");
+
+	// The image retains the texture.  Destroying the caller's reference must
+	// not invalidate the widget binding.
+	vgui_texture_destroy(tex);
+	vgui_image_set_texture(image, nullptr);
+	vgui_texture_destroy(empty_tex);
+	vgui_widget_destroy(image);
+}
+
+static vgui_widget* add_wrap_child(vgui_widget* panel, const char* id,
+	float x, float y, float w, float h)
+{
+	vgui_widget* child = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_id(child, id);
+	vgui_widget_set_pos(child, x, y);
+	vgui_widget_set_size(child, w, h);
+	return child;
+}
+
+static void test_wrap(vgui_context* ui)
+{
+	vgui_widget* panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(panel, VGUI_LAYOUT_WRAP);
+	vgui_widget_set_padding(panel, 0, 0, 0, 0);
+	vgui_widget_set_gap(panel, 10.0f);
+	vgui_widget_set_size(panel, 100.0f, 100.0f);
+	vgui_widget_set_align_items(panel, VGUI_ALIGN_START);
+	vgui_widget_set_align_content(panel, VGUI_ALIGN_CONTENT_START);
+
+	vgui_widget* a = add_wrap_child(panel, "wrap-a", 0, 0, 30, 20);
+	vgui_widget* b = add_wrap_child(panel, "wrap-b", 0, 0, 30, 20);
+	vgui_widget* c = add_wrap_child(panel, "wrap-c", 0, 0, 30, 20);
+	vgui_widget* d = add_wrap_child(panel, "wrap-d", 0, 0, 30, 20);
+
+	vgui_layout(ui);
+	float ax = 0, ay = 0, bx = 0, by = 0, cx = 0, cy = 0, dx = 0, dy = 0;
+	vgui_widget_get_rect(a, &ax, &ay, nullptr, nullptr);
+	vgui_widget_get_rect(b, &bx, &by, nullptr, nullptr);
+	vgui_widget_get_rect(c, &cx, &cy, nullptr, nullptr);
+	vgui_widget_get_rect(d, &dx, &dy, nullptr, nullptr);
+	check(near(ax, 0) && near(ay, 0) && near(bx, 40) && near(by, 0),
+		"wrap: first line positions");
+	check(near(cx, 0) && near(cy, 30) && near(dx, 40) && near(dy, 30),
+		"wrap: second line positions");
+
+	// Three 25px items plus two 10px gaps fit exactly in 95px, so they must
+	// stay on one line even though the trailing-gap approximation is used.
+	vgui_widget* exact = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(exact, VGUI_LAYOUT_WRAP);
+	vgui_widget_set_padding(exact, 0, 0, 0, 0);
+	vgui_widget_set_gap(exact, 10.0f);
+	vgui_widget_set_size(exact, 100.0f, 40.0f);
+	vgui_widget* e1 = add_wrap_child(exact, "wrap-e1", 0, 0, 25, 20);
+	vgui_widget* e2 = add_wrap_child(exact, "wrap-e2", 0, 0, 25, 20);
+	vgui_widget* e3 = add_wrap_child(exact, "wrap-e3", 0, 0, 25, 20);
+	vgui_layout(ui);
+	float e1x = 0, e1y = 0, e2x = 0, e2y = 0, e3x = 0, e3y = 0;
+	vgui_widget_get_rect(e1, &e1x, &e1y, nullptr, nullptr);
+	vgui_widget_get_rect(e2, &e2x, &e2y, nullptr, nullptr);
+	vgui_widget_get_rect(e3, &e3x, &e3y, nullptr, nullptr);
+	check(near(e1x, 0) && near(e2x, 35) && near(e3x, 70) &&
+		near(e1y, 0) && near(e2y, 0) && near(e3y, 0),
+		"wrap: gap-aware line breaking");
+	vgui_widget_destroy(exact);
+
+	// Center the single line horizontally and vertically.
+	vgui_widget_set_size(panel, 120.0f, 100.0f);
+	vgui_widget_set_justify(panel, VGUI_JUSTIFY_CENTER);
+	vgui_widget_set_align_content(panel, VGUI_ALIGN_CONTENT_CENTER);
+	vgui_widget_set_align_items(panel, VGUI_ALIGN_CENTER);
+	vgui_widget_set_visible(c, 0);
+	vgui_widget_set_visible(d, 0);
+	vgui_layout(ui);
+	vgui_widget_get_rect(a, &ax, &ay, nullptr, nullptr);
+	vgui_widget_get_rect(b, &bx, &by, nullptr, nullptr);
+	check(near(ax, 25) && near(bx, 65) && near(ay, 40) && near(by, 40),
+		"wrap: center justify and align-content");
+
+	// Grow consumes the remaining line width.
+	vgui_widget_set_justify(panel, VGUI_JUSTIFY_START);
+	vgui_widget_set_visible(a, 1);
+	vgui_widget_set_visible(b, 1);
+	vgui_widget_set_visible(c, 0);
+	vgui_widget_set_visible(d, 0);
+	vgui_widget_set_gap(panel, 10.0f);
+	vgui_widget_set_grow(a, 1.0f);
+	vgui_layout(ui);
+	float aw = 0, bw = 0;
+	vgui_widget_get_rect(a, nullptr, nullptr, &aw, nullptr);
+	vgui_widget_get_rect(b, nullptr, nullptr, &bw, nullptr);
+	check(near(aw, 80.0f) && near(bw, 30.0f), "wrap: grow distributes free width");
+
+	// align-content stretch grows the line, and auto-height children with
+	// align-items stretch fill the stretched line.
+	vgui_widget_set_grow(a, 0.0f);
+	vgui_widget_set_size(a, 30.0f, 0.0f);
+	vgui_widget_set_size(b, 30.0f, 0.0f);
+	vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_align_content(panel, VGUI_ALIGN_CONTENT_STRETCH);
+	vgui_layout(ui);
+	float ah = 0, bh = 0;
+	vgui_widget_get_rect(a, nullptr, nullptr, nullptr, &ah);
+	vgui_widget_get_rect(b, nullptr, nullptr, nullptr, &bh);
+	check(near(ah, 100.0f) && near(bh, 100.0f),
+		"wrap: align-content stretch stretches auto-height children");
+
+	vgui_widget_destroy(panel);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -429,6 +612,8 @@ int main()
 	test_list(ui, style);
 	test_tree(ui, style);
 	test_menu(ui, style);
+	test_texture_image(ui);
+	test_wrap(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

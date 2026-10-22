@@ -70,13 +70,15 @@ typedef enum vgui_widget_kind {
 	VGUI_SEPARATOR,
 	VGUI_LIST,
 	VGUI_TREE,
-	VGUI_MENU
+	VGUI_MENU,
+	VGUI_IMAGE
 } vgui_widget_kind;
 
 typedef enum vgui_layout_kind {
 	VGUI_LAYOUT_ABSOLUTE = 0,
 	VGUI_LAYOUT_ROW,
-	VGUI_LAYOUT_COLUMN
+	VGUI_LAYOUT_COLUMN,
+	VGUI_LAYOUT_WRAP
 } vgui_layout_kind;
 
 typedef enum vgui_align {
@@ -94,6 +96,56 @@ typedef enum vgui_justify {
 	VGUI_JUSTIFY_SPACE_BETWEEN,
 	VGUI_JUSTIFY_SPACE_AROUND
 } vgui_justify;
+
+/* Multi-line distribution for VGUI_LAYOUT_WRAP.  It is ignored by the other
+ * layout kinds. */
+typedef enum vgui_align_content {
+	VGUI_ALIGN_CONTENT_START = 0,
+	VGUI_ALIGN_CONTENT_CENTER,
+	VGUI_ALIGN_CONTENT_END,
+	VGUI_ALIGN_CONTENT_SPACE_BETWEEN,
+	VGUI_ALIGN_CONTENT_SPACE_AROUND,
+	VGUI_ALIGN_CONTENT_SPACE_EVENLY,
+	VGUI_ALIGN_CONTENT_STRETCH
+} vgui_align_content;
+
+typedef enum vgui_image_fit {
+	VGUI_IMAGE_FIT_STRETCH = 0,
+	VGUI_IMAGE_FIT_CONTAIN,
+	VGUI_IMAGE_FIT_COVER,
+	VGUI_IMAGE_FIT_NONE
+} vgui_image_fit;
+
+typedef enum vgui_texture_format {
+	VGUI_TEXTURE_FORMAT_RGBA8 = 0,
+	VGUI_TEXTURE_FORMAT_BGRA8,
+	VGUI_TEXTURE_FORMAT_RGBA8_SRGB,
+	VGUI_TEXTURE_FORMAT_BGRA8_SRGB
+} vgui_texture_format;
+
+typedef enum vgui_texture_filter {
+	VGUI_TEXTURE_FILTER_NEAREST = 0,
+	VGUI_TEXTURE_FILTER_LINEAR
+} vgui_texture_filter;
+
+typedef enum vgui_texture_wrap {
+	VGUI_TEXTURE_WRAP_CLAMP = 0,
+	VGUI_TEXTURE_WRAP_REPEAT,
+	VGUI_TEXTURE_WRAP_MIRROR
+} vgui_texture_wrap;
+
+/* Opaque GPU/CPU image resource owned by a vgui context.  CPU pixels are
+ * copied by vgui_texture_create/update; the caller may release its buffer
+ * immediately.  The first draw uploads the pixels lazily. */
+typedef struct vgui_texture vgui_texture;
+
+typedef struct vgui_texture_desc {
+	int width;
+	int height;
+	int stride;			/* bytes per row; 0 = width * bytes-per-pixel */
+	vgui_texture_format format;
+	const void* pixels;		/* CPU pixels; may be NULL for an empty texture */
+} vgui_texture_desc;
 
 /* Mouse cursor shapes.  The numeric values intentionally match the legacy
  * cursor_st enum in the SDL3 backend. */
@@ -419,6 +471,14 @@ typedef struct vgui_menu_style {
 	float disabled_mix;		/* 0.55: toward theme.disabled */
 } vgui_menu_style;
 
+typedef struct vgui_image_style {
+	float req_width;		/* 240: preferred size when no texture is set */
+	float req_height;		/* 160 */
+	float border_width;		/* 1 */
+	float rounding;		/* 0 */
+	float disabled_mix;		/* 0.6: toward theme.disabled */
+} vgui_image_style;
+
 typedef struct vgui_style {
 	float animation_speed;		/* 18: exponential hover/check animation rate */
 	int text_min_subpixel;		/* 1: text renderer subpixel mode */
@@ -438,6 +498,7 @@ typedef struct vgui_style {
 	vgui_list_style list;
 	vgui_tree_style tree;
 	vgui_menu_style menu;
+	vgui_image_style image;
 } vgui_style;
 
 /* ------------------------------------------------------------------------- */
@@ -469,6 +530,19 @@ VGUI_API void vgui_context_get_style(vgui_context* ctx, vgui_style* style);
  * focus rings entirely, which is convenient for screenshots or touch UIs. */
 VGUI_API void vgui_context_set_focus_alpha(vgui_context* ctx, float alpha);
 VGUI_API float vgui_context_get_focus_alpha(vgui_context* ctx);
+
+/* ------------------------------------------------------------------------- */
+/* Textures                                                                  */
+/* ------------------------------------------------------------------------- */
+
+/* CPU texture.  pixels are copied; pass NULL to create an empty texture that
+ * can be filled later with vgui_texture_update().  The GPU upload is lazy: the
+ * first image draw uploads the pixels, and static textures are uploaded once. */
+VGUI_API vgui_texture* vgui_texture_create(vgui_context* ctx, const vgui_texture_desc* desc);
+VGUI_API int vgui_texture_update(vgui_texture* texture, const vgui_texture_desc* desc);
+VGUI_API void vgui_texture_destroy(vgui_texture* texture);
+VGUI_API int vgui_texture_get_width(const vgui_texture* texture);
+VGUI_API int vgui_texture_get_height(const vgui_texture* texture);
 
 /* Root panel.  It is owned by the context; do not destroy it. */
 VGUI_API vgui_widget* vgui_root(vgui_context* ctx);
@@ -516,6 +590,15 @@ VGUI_API void vgui_widget_set_text_align(vgui_widget* widget, float align_x, flo
 VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);
 
+/* Image control.  set_texture(NULL) clears the binding.  source width/height
+ * <= 0 select the full texture.  flip is applied by the draw path. */
+VGUI_API void vgui_image_set_texture(vgui_widget* widget, vgui_texture* texture);
+VGUI_API void vgui_image_set_source(vgui_widget* widget, int x, int y, int width, int height);
+VGUI_API void vgui_image_set_fit(vgui_widget* widget, vgui_image_fit fit);
+VGUI_API void vgui_image_set_tint(vgui_widget* widget, vgui_color color);
+VGUI_API void vgui_image_set_flip(vgui_widget* widget, int flip_x, int flip_y);
+VGUI_API void vgui_image_set_pixel_snap(vgui_widget* widget, int enabled);
+
 /* Focus-ring opacity for this widget (0..1, 0 hides the ring).  A negative
  * value restores inheritance from the context default.  The getter returns
  * the effective opacity, including the inherited value. */
@@ -534,6 +617,8 @@ VGUI_API void vgui_widget_set_gap(vgui_widget* widget, float gap);
 VGUI_API void vgui_widget_set_align_items(vgui_widget* widget, vgui_align align);
 VGUI_API void vgui_widget_set_align_self(vgui_widget* widget, vgui_align align);
 VGUI_API void vgui_widget_set_justify(vgui_widget* widget, vgui_justify justify);
+VGUI_API void vgui_widget_set_align_content(vgui_widget* widget, vgui_align_content align);
+VGUI_API vgui_align_content vgui_widget_get_align_content(vgui_widget* widget);
 VGUI_API void vgui_widget_set_grow(vgui_widget* widget, float grow);
 
 VGUI_API void vgui_widget_get_rect(vgui_widget* widget, float* x, float* y, float* width, float* height);

@@ -27,6 +27,17 @@ set(SRC_UI_EDITOR
     ui_editor_main.cpp
 )
 
+# Phase 0: 3D FBO -> native texture -> VGUI_IMAGE
+set(SRC_PHASE0
+    vgui_phase0.cpp
+    phase0_renderer.cpp
+)
+
+# C API 头文件/链接冒烟测试（以 C 编译）
+set(SRC_C_API_TEST
+    vgui_c_api_test.c
+)
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 # ---- 可执行文件 ----
 add_executable(vgui ${SRC})
@@ -43,6 +54,13 @@ target_link_libraries(vgui_model_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZL
 
 add_executable(vgui_editor ${SRC_UI_EDITOR})
 target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_phase0 ${SRC_PHASE0})
+target_link_libraries(vgui_phase0 PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_c_api_test ${SRC_C_API_TEST})
+target_link_libraries(vgui_c_api_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+set_target_properties(vgui_c_api_test PROPERTIES LINKER_LANGUAGE CXX)
 
 add_custom_command(
     TARGET vgui POST_BUILD

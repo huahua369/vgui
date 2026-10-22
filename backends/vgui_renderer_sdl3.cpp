@@ -49,6 +49,9 @@ struct vgpu_texture_t {
 	int width = 0;
 	int height = 0;
 	uint32_t id = 0;
+	// External textures are borrowed from the application; the renderer must
+	// never release them.
+	bool owns_texture = true;
 };
 
 namespace {
@@ -353,7 +356,7 @@ void destroy_texture(vgpu_texture_t* texture)
 		return;
 	if (texture->sampler)
 		SDL_ReleaseGPUSampler(texture->device, texture->sampler);
-	if (texture->texture)
+	if (texture->texture && texture->owns_texture)
 		SDL_ReleaseGPUTexture(texture->device, texture->texture);
 	delete texture;
 }
@@ -1363,6 +1366,47 @@ void vgpu_destroy_fbo(vg_fbo_t* fbo)
 	}
 	fbo->swapchain = nullptr;
 	fbo->cmd = nullptr;
+}
+
+uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
+	int width, int height, SDL_GPUTextureFormat format)
+{
+	if (!ctx || !ctx->device || !texture || width <= 0 || height <= 0 ||
+		format == SDL_GPU_TEXTUREFORMAT_INVALID)
+		return 0;
+
+	auto* native = new vgpu_texture_t();
+	native->texture = texture;
+	native->device = ctx->device->gpu_device;
+	native->format = format;
+	native->width = width;
+	native->height = height;
+	native->owns_texture = false;
+	native->sampler = create_sampler(ctx->device->gpu_device);
+	if (!native->sampler) {
+		delete native;
+		return 0;
+	}
+
+	uint32_t id = ctx->next_image_id++;
+	if (id == 0)
+		id = ctx->next_image_id++;
+	native->id = id;
+	ctx->textures[id] = native;
+	return id;
+}
+
+void vgpu_unregister_native_texture(vgpu_ctx_t* ctx, uint32_t id)
+{
+	if (!ctx || id == 0)
+		return;
+	auto it = ctx->textures.find(id);
+	if (it == ctx->textures.end())
+		return;
+	vgpu_texture_t* texture = it->second;
+	ctx->textures.erase(it);
+	if (texture)
+		ctx->pending_destroy.push_back(texture);
 }
 
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height)

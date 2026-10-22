@@ -252,3 +252,14 @@ public:
 private:
 
 };
+
+//----------------------------------------------------------------------------
+// 原生 GPU 纹理桥
+//----------------------------------------------------------------------------
+// 把应用自己创建的 SDL_GPUTexture（例如 3D 离屏 FBO 的颜色附件）绑定到
+// vgui_texture。纹理必须具有 SDL_GPU_TEXTUREUSAGE_SAMPLER 用途；vgui 只借用
+// 它，不会释放。更新时传入新的 SDL_GPUTexture 指针（FBO 重建后使用）。
+vgui_texture* vgui_sdl3_texture_create_native(vgui_context* ui, vgpu_ctx_t* gpu_ctx,
+	SDL_GPUTexture* native_texture, int width, int height, vgui_texture_format format);
+int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
+	SDL_GPUTexture* native_texture, int width, int height, vgui_texture_format format);

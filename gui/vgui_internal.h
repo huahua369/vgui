@@ -25,6 +25,7 @@ gui结构：
 
 #include <glm/glm.hpp>
 #include <ovg_c.h>
+#include <vgui.h>
 
 
 #ifndef BIT_INC
@@ -446,6 +447,46 @@ void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& 
 // C API bridge used by the SDL3 backend.  Implemented in vgui.cpp.
 // ---------------------------------------------------------------------------
 struct vgui_context;
+
+// Internal texture object.  The public API only exposes the opaque
+// vgui_texture pointer.  CPU textures keep a copy of the pixels and are
+// uploaded on first draw; native textures are borrowed GPU handles owned by
+// the application/backend.
+struct vgui_texture
+{
+	vgui_context* ctx = nullptr;
+	vg_image_t image = {};
+
+	std::vector<uint8_t> pixels;
+	int width = 0;
+	int height = 0;
+	int stride = 0;
+	vgui_texture_format format = VGUI_TEXTURE_FORMAT_RGBA8;
+
+	int refs = 1;
+	bool cpu = true;
+	bool dirty = true;
+	uint64_t upload_frame = ~0ull;
+
+	// Native path (SDL3 backend fills these through vgui_texture_bind_native).
+	void* native_ctx = nullptr;
+	void* native_texture = nullptr;
+	void (*release_native)(vgui_texture*) = nullptr;
+};
+
+void vgui_texture_retain(vgui_texture* texture);
+void vgui_texture_release(vgui_texture* texture);
+// Marks the owning context for re-layout after a texture size change.
+void vgui_texture_mark_layout_dirty(vgui_texture* texture);
+
+// Backend helpers.  create_native_internal allocates a cpu=false texture and
+// registers it with the context; bind_native attaches the borrowed GPU handle
+// and the release callback that unregisters it.
+vgui_texture* vgui_texture_create_native_internal(
+	vgui_context* ctx, int width, int height, vgui_texture_format format);
+void vgui_texture_bind_native(vgui_texture* texture, uint32_t image_id,
+	void* native_ctx, void* native_texture, void (*release_native)(vgui_texture*));
+
 // Dispatches a backend device event to the C UI tree and returns non-zero when
 // the UI consumed the event.
 int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e);

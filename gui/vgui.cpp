@@ -256,6 +256,26 @@ struct vgui_menu_state
 	void* close_user = nullptr;
 };
 
+struct vgui_image_state
+{
+	vgui_texture* texture = nullptr;
+	int src_x = 0;
+	int src_y = 0;
+	int src_w = 0;
+	int src_h = 0;
+	vgui_image_fit fit = VGUI_IMAGE_FIT_STRETCH;
+	vgui_color tint = 0xFFFFFFFFu;
+	int flip_x = 0;
+	int flip_y = 0;
+	int pixel_snap = 0;
+
+	~vgui_image_state()
+	{
+		if (texture)
+			vgui_texture_release(texture);
+	}
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -279,6 +299,7 @@ struct vgui_widget
 	vgui_align align_items = VGUI_ALIGN_START;
 	vgui_align align_self = VGUI_ALIGN_AUTO;
 	vgui_justify justify = VGUI_JUSTIFY_START;
+	vgui_align_content align_content = VGUI_ALIGN_CONTENT_START;
 	float x = 0, y = 0;
 	float req_w = 0, req_h = 0;
 	float min_w = 0, min_h = 0;
@@ -365,6 +386,9 @@ struct vgui_widget
 	std::unique_ptr<vgui_tree_state> tree;
 	std::unique_ptr<vgui_menu_state> menu;
 
+	// image ----------------------------------------------------------------
+	std::unique_ptr<vgui_image_state> image;
+
 	bool destroy_pending = false;
 };
 
@@ -425,6 +449,12 @@ struct vgui_context
 	std::unordered_set<vgui_widget*> alive;
 	std::vector<vgui_widget*> pending_delete;
 
+	std::unordered_set<vgui_texture*> textures;
+	std::vector<vgui_texture*> pending_texture_destroy;
+	std::vector<vgui_texture*> retired_textures;
+	uint64_t frame_index = 0;
+	flex_run* flex = nullptr;
+
 	// input state ----------------------------------------------------------
 	float mouse_x = 0, mouse_y = 0;
 	int mouse_down[8] = {};
@@ -481,6 +511,80 @@ namespace {
 		uint32_t a = (c >> 24) & 0xFF;
 		a = (uint32_t)(a * vgui_clampf(alpha, 0.0f, 1.0f) + 0.5f);
 		return (c & 0x00FFFFFF) | (a << 24);
+	}
+
+	static int vgui_texture_bpp(vgui_texture_format format)
+	{
+		switch (format)
+		{
+		case VGUI_TEXTURE_FORMAT_RGBA8:
+		case VGUI_TEXTURE_FORMAT_BGRA8:
+		case VGUI_TEXTURE_FORMAT_RGBA8_SRGB:
+		case VGUI_TEXTURE_FORMAT_BGRA8_SRGB:
+			return 4;
+		default:
+			return 0;
+		}
+	}
+
+	static bool vgui_texture_desc_valid(const vgui_texture_desc* desc)
+	{
+		if (!desc || desc->width <= 0 || desc->height <= 0)
+			return false;
+		const int bpp = vgui_texture_bpp(desc->format);
+		if (bpp <= 0)
+			return false;
+		const int stride = desc->stride > 0 ? desc->stride : desc->width * bpp;
+		return stride >= desc->width * bpp;
+	}
+
+	static vg_format_t vgui_ovg_texture_format(vgui_texture_format format)
+	{
+		switch (format)
+		{
+		case VGUI_TEXTURE_FORMAT_BGRA8:      return VG_FORMAT_BGRA8;
+		case VGUI_TEXTURE_FORMAT_RGBA8_SRGB: return VG_FORMAT_RGBA8_SRGB;
+		case VGUI_TEXTURE_FORMAT_BGRA8_SRGB: return VG_FORMAT_BGRA8_SRGB;
+		case VGUI_TEXTURE_FORMAT_RGBA8:
+		default:                             return VG_FORMAT_RGBA8;
+		}
+	}
+
+	// Pack the caller's pixels into a tightly packed RGBA/BGRA buffer.  Keeping
+	// a canonical stride means the upload path does not have to remember the
+	// caller's row layout.
+	static bool vgui_texture_store_desc(vgui_texture* texture, const vgui_texture_desc* desc)
+	{
+		if (!texture || !vgui_texture_desc_valid(desc))
+			return false;
+		const int bpp = vgui_texture_bpp(desc->format);
+		const size_t tight_stride = (size_t)desc->width * (size_t)bpp;
+		const size_t total = tight_stride * (size_t)desc->height;
+		if (total == 0)
+			return false;
+
+		std::vector<uint8_t> pixels;
+		if (desc->pixels)
+		{
+			const size_t src_stride = desc->stride > 0 ? (size_t)desc->stride : tight_stride;
+			pixels.resize(total);
+			const uint8_t* src = static_cast<const uint8_t*>(desc->pixels);
+			for (int y = 0; y < desc->height; ++y)
+				std::memcpy(pixels.data() + (size_t)y * tight_stride,
+					src + (size_t)y * src_stride, tight_stride);
+		}
+
+		texture->width = desc->width;
+		texture->height = desc->height;
+		texture->stride = (int)tight_stride;
+		texture->format = desc->format;
+		texture->pixels.swap(pixels);
+		texture->image.width = desc->width;
+		texture->image.height = desc->height;
+		texture->image.valid = false;
+		texture->dirty = !texture->pixels.empty();
+		texture->upload_frame = ~0ull;
+		return true;
 	}
 
 	static bool vgui_point_in(const vgui_widget* w, float x, float y)
@@ -1344,6 +1448,12 @@ namespace {
 		s.menu.max_height = 0.0f;
 		s.menu.submenu_delay = 0.18f;
 		s.menu.disabled_mix = 0.55f;
+
+		s.image.req_width = 240.0f;
+		s.image.req_height = 160.0f;
+		s.image.border_width = 1.0f;
+		s.image.rounding = 0.0f;
+		s.image.disabled_mix = 0.6f;
 		return s;
 	}
 
@@ -1498,6 +1608,12 @@ namespace {
 		s->menu.submenu_delay = vgui_nonneg(s->menu.submenu_delay);
 		s->menu.disabled_mix = vgui_clampf(s->menu.disabled_mix, 0.0f, 1.0f);
 
+		s->image.req_width = vgui_nonneg(s->image.req_width);
+		s->image.req_height = vgui_nonneg(s->image.req_height);
+		s->image.border_width = vgui_nonneg(s->image.border_width);
+		s->image.rounding = vgui_nonneg(s->image.rounding);
+		s->image.disabled_mix = vgui_clampf(s->image.disabled_mix, 0.0f, 1.0f);
+
 		// Styles written before these controls existed have zeroed additions.
 		// Restore functional defaults while leaving explicitly supported zero
 		// values (automatic row height, automatic menu height) alone.
@@ -1524,6 +1640,10 @@ namespace {
 		if (s->menu.min_width == 0) s->menu.min_width = def.menu.min_width;
 		if (s->menu.max_width == 0) s->menu.max_width = def.menu.max_width;
 		if (s->menu.submenu_delay == 0) s->menu.submenu_delay = def.menu.submenu_delay;
+		if (s->image.req_width == 0) s->image.req_width = def.image.req_width;
+		if (s->image.req_height == 0) s->image.req_height = def.image.req_height;
+		if (s->image.border_width == 0) s->image.border_width = def.image.border_width;
+		if (s->image.disabled_mix == 0) s->image.disabled_mix = def.image.disabled_mix;
 	}
 
 	static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, const char* text)
@@ -1645,6 +1765,19 @@ namespace {
 			w->scrollable_y = 1;
 			w->visible = 0;
 			break;
+		case VGUI_IMAGE:
+			w->image = std::make_unique<vgui_image_state>();
+			w->bg = 0;
+			w->border = th.panel_border;
+			w->border_width = st.image.border_width;
+			w->rounding = st.image.rounding;
+			// Auto-size: texture/source size when a texture is set, otherwise
+			// the style's preferred size.
+			w->req_w = 0.0f;
+			w->req_h = 0.0f;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_ARROW;
+			break;
 		}
 
 		ctx->all_widgets.insert(w);
@@ -1717,6 +1850,245 @@ namespace {
 		if (out_h) *out_h = height;
 	}
 
+	static void vgui_image_source_size(vgui_widget* w, int* out_w, int* out_h)
+	{
+		int sw = 0, sh = 0;
+		if (w && w->image)
+		{
+			vgui_texture* tex = w->image->texture;
+			if (tex)
+			{
+				sw = w->image->src_w > 0 ? w->image->src_w : tex->width;
+				sh = w->image->src_h > 0 ? w->image->src_h : tex->height;
+			}
+		}
+		if (sw <= 0 || sh <= 0)
+		{
+			sw = w && w->ctx ? (int)w->ctx->style.image.req_width : 0;
+			sh = w && w->ctx ? (int)w->ctx->style.image.req_height : 0;
+		}
+		if (out_w) *out_w = std::max(sw, 0);
+		if (out_h) *out_h = std::max(sh, 0);
+	}
+
+	struct vgui_wrap_entry
+	{
+		vgui_widget* child;
+		float x, y, w, h;
+	};
+
+	struct vgui_wrap_line
+	{
+		size_t begin;
+		size_t end;
+		float height;
+	};
+
+	// Compute a single-level wrapping layout.  OVG decides where lines break
+	// (including grow), then vgui applies the final gap, per-line justify and
+	// multi-line align-content.  Coordinates are relative to the content box.
+	static void vgui_wrap_compute(vgui_widget* w, vgui_context* ctx, float avail_w,
+		float avail_h, std::vector<vgui_wrap_entry>& out, float* out_w, float* out_h)
+	{
+		out.clear();
+		if (out_w) *out_w = 0;
+		if (out_h) *out_h = 0;
+		if (!w || !ctx) return;
+
+		std::vector<vgui_widget*> visible;
+		visible.reserve(w->children.size());
+		for (vgui_widget* c : w->children)
+		{
+			if (!c || !c->visible) continue;
+			visible.push_back(c);
+			out.push_back({ c, 0, 0, std::max(0.0f, vgui_child_req_w(c)),
+				std::max(0.0f, vgui_child_req_h(c)) });
+		}
+		const size_t count = visible.size();
+		if (count == 0)
+			return;
+
+		const float inner_w = std::max(avail_w, 1.0f);
+		const float inner_h = std::max(avail_h, 0.0f);
+		const float gap = std::max(0.0f, w->gap);
+		if (!ctx->flex)
+			ctx->flex = new_flex_run(nullptr);
+
+		std::vector<node_dt> nodes(count + 1);
+		std::vector<flex_data> styles(count + 1);
+		nodes[0].size = { inner_w, inner_h };
+		nodes[0].index = 0;
+		nodes[0].child = nodes.data() + 1;
+		nodes[0].child_count = count;
+		styles[0].width = inner_w;
+		styles[0].height = inner_h;
+		styles[0].direction = flex_direction::ROW;
+		styles[0].wrap = flex_wrap::WRAP;
+		styles[0].justify_content = flex_align::ALIGN_START;
+		styles[0].align_items = flex_align::ALIGN_START;
+		styles[0].align_content = flex_align::ALIGN_START;
+
+		for (size_t i = 0; i < count; ++i)
+		{
+			vgui_widget* c = visible[i];
+			vgui_wrap_entry& e = out[i];
+			nodes[i + 1].size = { e.w, e.h };
+			nodes[i + 1].index = i + 1;
+			nodes[i + 1].position = 0;
+			styles[i + 1].width = e.w;
+			styles[i + 1].height = e.h;
+			styles[i + 1].margin_left = std::max(0.0f, c->margin[0]);
+			styles[i + 1].margin_right = std::max(0.0f, c->margin[2]) + gap;
+			styles[i + 1].basis = -1.0f;
+			styles[i + 1].grow = std::max(0.0f, c->grow);
+			styles[i + 1].shrink = 0.0f;
+		}
+
+		if (ctx->flex && nodes[0].child)
+			flex_run_layout(ctx->flex, styles.data(), styles.size(), nodes.data(), nodes.size());
+
+		// OVG positions every child of one line at the same cross-axis start
+		// (align_items is START), so frame.y identifies the line.
+		std::vector<vgui_wrap_line> lines;
+		float current_line_y = 0.0f;
+		for (size_t i = 0; i < count; ++i)
+		{
+			const float y = nodes[i + 1].frame.y;
+			const float ww = std::max(0.0f, nodes[i + 1].frame.z);
+			const float hh = std::max(0.0f, nodes[i + 1].frame.w);
+			if (i == 0 || std::fabs(y - current_line_y) > 0.01f)
+			{
+				lines.push_back({ i, i, 0.0f });
+				current_line_y = y;
+			}
+			vgui_wrap_entry& e = out[i];
+			if (ww > 0.0f) e.w = ww;
+			if (hh > 0.0f) e.h = hh;
+			lines.back().end = i + 1;
+			lines.back().height = std::max(lines.back().height,
+				e.h + std::max(0.0f, visible[i]->margin[1]) +
+				std::max(0.0f, visible[i]->margin[3]));
+		}
+
+		// Per-line grow: distribute the remaining main-axis space.
+		for (const vgui_wrap_line& line : lines)
+		{
+			float used = 0.0f, grow_sum = 0.0f;
+			for (size_t i = line.begin; i < line.end; ++i)
+			{
+				vgui_widget* c = visible[i];
+				used += out[i].w + std::max(0.0f, c->margin[0]) + std::max(0.0f, c->margin[2]);
+				grow_sum += std::max(0.0f, c->grow);
+			}
+			if (line.end > line.begin + 1)
+				used += gap * (float)(line.end - line.begin - 1);
+			float extra = inner_w - used;
+			if (extra > 0.0f && grow_sum > 0.0f)
+			{
+				for (size_t i = line.begin; i < line.end; ++i)
+				{
+					float g = std::max(0.0f, visible[i]->grow);
+					if (g > 0.0f) out[i].w += extra * (g / grow_sum);
+				}
+			}
+		}
+
+		float total_h = 0.0f;
+		for (size_t i = 0; i < lines.size(); ++i)
+		{
+			total_h += lines[i].height;
+			if (i + 1 < lines.size()) total_h += gap;
+		}
+		float free_h = std::max(0.0f, inner_h - total_h);
+		float content_start = 0.0f;
+		float line_spacing = gap;
+		switch (w->align_content)
+		{
+		case VGUI_ALIGN_CONTENT_CENTER:
+			content_start = free_h * 0.5f;
+			break;
+		case VGUI_ALIGN_CONTENT_END:
+			content_start = free_h;
+			break;
+		case VGUI_ALIGN_CONTENT_SPACE_BETWEEN:
+			if (lines.size() > 1) line_spacing += free_h / (float)(lines.size() - 1);
+			break;
+		case VGUI_ALIGN_CONTENT_SPACE_AROUND:
+			content_start = free_h / (float)lines.size() * 0.5f;
+			line_spacing += free_h / (float)lines.size();
+			break;
+		case VGUI_ALIGN_CONTENT_SPACE_EVENLY:
+			content_start = free_h / (float)(lines.size() + 1);
+			line_spacing += free_h / (float)(lines.size() + 1);
+			break;
+		case VGUI_ALIGN_CONTENT_STRETCH:
+			if (free_h > 0.0f)
+			{
+				const float add = free_h / (float)lines.size();
+				for (vgui_wrap_line& line : lines) line.height += add;
+			}
+			break;
+		default:
+			break;
+		}
+
+		float line_y = content_start;
+		float max_right = 0.0f;
+		for (const vgui_wrap_line& line : lines)
+		{
+			const size_t n = line.end - line.begin;
+			float used = 0.0f;
+			for (size_t i = line.begin; i < line.end; ++i)
+			{
+				vgui_widget* c = visible[i];
+				used += out[i].w + std::max(0.0f, c->margin[0]) + std::max(0.0f, c->margin[2]);
+			}
+			if (n > 1) used += gap * (float)(n - 1);
+			float free_x = std::max(0.0f, inner_w - used);
+			float start = 0.0f, extra_gap = 0.0f;
+			switch (w->justify)
+			{
+			case VGUI_JUSTIFY_CENTER: start = free_x * 0.5f; break;
+			case VGUI_JUSTIFY_END: start = free_x; break;
+			case VGUI_JUSTIFY_SPACE_BETWEEN:
+				if (n > 1) extra_gap = free_x / (float)(n - 1);
+				break;
+			case VGUI_JUSTIFY_SPACE_AROUND:
+				start = free_x / (float)n * 0.5f;
+				extra_gap = free_x / (float)n;
+				break;
+			default: break;
+			}
+
+			float cursor = start;
+			for (size_t i = line.begin; i < line.end; ++i)
+			{
+				vgui_widget* c = visible[i];
+				vgui_wrap_entry& e = out[i];
+				const float ml = std::max(0.0f, c->margin[0]);
+				const float mt = std::max(0.0f, c->margin[1]);
+				const float mr = std::max(0.0f, c->margin[2]);
+				const float mb = std::max(0.0f, c->margin[3]);
+				vgui_align al = c->align_self != VGUI_ALIGN_AUTO ? c->align_self : w->align_items;
+				float cross_avail = std::max(0.0f, line.height - mt - mb);
+				if (al == VGUI_ALIGN_STRETCH && c->req_h <= 0.0f)
+					e.h = cross_avail;
+				float cross_pos = 0.0f;
+				if (al == VGUI_ALIGN_CENTER) cross_pos = (cross_avail - e.h) * 0.5f;
+				else if (al == VGUI_ALIGN_END) cross_pos = cross_avail - e.h;
+
+				e.x = cursor + ml;
+				e.y = line_y + mt + std::max(0.0f, cross_pos);
+				max_right = std::max(max_right, e.x + e.w + mr);
+				cursor += ml + e.w + mr + gap + extra_gap;
+			}
+			line_y += line.height + line_spacing;
+		}
+
+		if (out_w) *out_w = std::max(max_right, inner_w);
+		if (out_h) *out_h = std::max(0.0f, line_y - line_spacing);
+	}
+
 	static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	{
 		if (!w) return;
@@ -1731,6 +2103,7 @@ namespace {
 		{
 			float content_w = 0, content_h = 0;
 			float row_w = 0, row_h = 0, col_w = 0, col_h = 0;
+			float wrap_w = 0;
 			int visible_count = 0;
 			for (vgui_widget* c : w->children)
 			{
@@ -1748,6 +2121,10 @@ namespace {
 					col_w = std::max(col_w, cw);
 					col_h += ch;
 				}
+				else if (w->layout == VGUI_LAYOUT_WRAP)
+				{
+					wrap_w = std::max(wrap_w, cw);
+				}
 				else
 				{
 					content_w = std::max(content_w, c->x + cw);
@@ -1764,6 +2141,15 @@ namespace {
 			{
 				content_w = col_w;
 				content_h = col_h + (visible_count > 1 ? w->gap * (visible_count - 1) : 0);
+			}
+			else if (w->layout == VGUI_LAYOUT_WRAP)
+			{
+				float avail = w->req_w > 0 ? std::max(0.0f, w->req_w - pl - pr) : wrap_w;
+				std::vector<vgui_wrap_entry> entries;
+				float measured_w = 0.0f, measured_h = 0.0f;
+				vgui_wrap_compute(w, ctx, avail, 0.0f, entries, &measured_w, &measured_h);
+				content_w = w->req_w > 0 ? avail : measured_w;
+				content_h = measured_h;
 			}
 			w->intrinsic_w = content_w + pl + pr;
 			w->intrinsic_h = content_h + pt + pb;
@@ -1874,6 +2260,16 @@ namespace {
 			w->intrinsic_h = ch;
 		}
 		break;
+		case VGUI_IMAGE:
+		{
+			int sw = 0, sh = 0;
+			vgui_image_source_size(w, &sw, &sh);
+			w->content_w = (float)sw;
+			w->content_h = (float)sh;
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : (float)sw;
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : (float)sh;
+		}
+		break;
 		}
 
 		if (w->min_w > 0) w->intrinsic_w = std::max(w->intrinsic_w, w->min_w);
@@ -1910,6 +2306,16 @@ namespace {
 				content_w = std::max(content_w, c->x + c->margin[0] + cw + c->margin[2]);
 				content_h = std::max(content_h, c->y + c->margin[1] + ch + c->margin[3]);
 			}
+		}
+		else if (w->layout == VGUI_LAYOUT_WRAP)
+		{
+			std::vector<vgui_wrap_entry> entries;
+			float cw = 0.0f, ch = 0.0f;
+			vgui_wrap_compute(w, ctx, iw, ih, entries, &cw, &ch);
+			for (const vgui_wrap_entry& e : entries)
+				placements.push_back({ e.child, ix + e.x, iy + e.y, e.w, e.h });
+			content_w = std::max(content_w, cw);
+			content_h = std::max(content_h, ch);
 		}
 		else
 		{
@@ -5359,8 +5765,10 @@ namespace {
 		if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
 		float lh = vgui_line_height(ctx, w);
 		float tw = vgui_text_width(w, text);
-		float th = lh * (float)vgui_text_lines(text);
-
+		int count = vgui_text_lines(text);
+		float th = std::max(height, lh);
+		if (count > 1)
+			th = lh * (float)count;
 		text_style_t st = {};
 		st.family = ctx->font;
 		st.fontsize = vgui_font_size(ctx, w);
@@ -5892,6 +6300,170 @@ namespace {
 		cb->restore(vg);
 	}
 
+	static void vgui_texture_ensure_upload(vgui_context* ctx, vgui_texture* texture,
+		ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		if (!ctx || !texture || !texture->cpu || !texture->dirty ||
+			texture->width <= 0 || texture->height <= 0 ||
+			texture->pixels.empty() || !cb || !vg || !cb->image_update)
+			return;
+		if (texture->upload_frame == ctx->frame_index)
+			return;
+
+		vg_image_desc_t desc = {};
+		desc.img = &texture->image;
+		desc.width = (uint32_t)texture->width;
+		desc.height = (uint32_t)texture->height;
+		desc.format = (uint32_t)vgui_ovg_texture_format(texture->format);
+		desc.stride = (uint32_t)texture->stride;
+		desc.pixels = texture->pixels.data();
+		desc.x = 0;
+		desc.y = 0;
+		desc.w = desc.width;
+		desc.h = desc.height;
+		desc.is_copy = true;
+		cb->image_update(vg, &texture->image, &desc);
+
+		texture->upload_frame = ctx->frame_index;
+		texture->dirty = false;
+		texture->image.valid = false;
+	}
+
+	static void vgui_draw_image(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_image_state* image = w->image.get();
+		if (!image) return;
+		const vgui_image_style& is = ctx->style.image;
+
+		if (w->bg)
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+				w->rounding, vgui_widget_color(w, w->bg));
+
+		uint32_t tint = image->tint;
+		if (!w->enabled)
+			tint = vgui_mix_color(tint, ctx->theme.disabled, is.disabled_mix);
+		tint = vgui_widget_color(w, tint);
+
+		vgui_texture* texture = image->texture;
+		if (texture)
+			vgui_texture_ensure_upload(ctx, texture, cb, vg);
+
+		float dst_x = w->abs_x;
+		float dst_y = w->abs_y;
+		float dst_w = w->abs_w;
+		float dst_h = w->abs_h;
+
+		if (texture && texture->image.id != 0 && texture->width > 0 && texture->height > 0 &&
+			dst_w > 0.0f && dst_h > 0.0f)
+		{
+			const int tex_w = texture->width;
+			const int tex_h = texture->height;
+			int sx = std::min(std::max(image->src_x, 0), tex_w - 1);
+			int sy = std::min(std::max(image->src_y, 0), tex_h - 1);
+			int sw = image->src_w > 0 ? std::min(image->src_w, tex_w - sx) : tex_w - sx;
+			int sh = image->src_h > 0 ? std::min(image->src_h, tex_h - sy) : tex_h - sy;
+			sw = std::max(sw, 1);
+			sh = std::max(sh, 1);
+
+			if (image->fit == VGUI_IMAGE_FIT_COVER && sw > 0 && sh > 0)
+			{
+				// Crop the source to the destination aspect ratio so the image
+				// fills the viewport without being stretched.
+				const float dst_aspect = dst_w / dst_h;
+				const float src_aspect = (float)sw / (float)sh;
+				if (src_aspect > dst_aspect)
+				{
+					int nw = std::max(1, (int)std::lround((float)sh * dst_aspect));
+					sx += (sw - nw) / 2;
+					sw = nw;
+				}
+				else if (src_aspect < dst_aspect)
+				{
+					int nh = std::max(1, (int)std::lround((float)sw / dst_aspect));
+					sy += (sh - nh) / 2;
+					sh = nh;
+				}
+			}
+
+			if (image->fit == VGUI_IMAGE_FIT_CONTAIN || image->fit == VGUI_IMAGE_FIT_NONE)
+			{
+				const float scale = image->fit == VGUI_IMAGE_FIT_NONE
+					? 1.0f
+					: std::min(dst_w / (float)sw, dst_h / (float)sh);
+				const float fit_w = (float)sw * scale;
+				const float fit_h = (float)sh * scale;
+				dst_x += (dst_w - fit_w) * 0.5f;
+				dst_y += (dst_h - fit_h) * 0.5f;
+				dst_w = fit_w;
+				dst_h = fit_h;
+			}
+
+			if (image->pixel_snap)
+			{
+				dst_x = std::round(dst_x);
+				dst_y = std::round(dst_y);
+				dst_w = std::round(dst_w);
+				dst_h = std::round(dst_h);
+			}
+			if (dst_w >= 1.0f && dst_h >= 1.0f)
+			{
+				cb->save(vg);
+				vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+				if (image->flip_x || image->flip_y)
+				{
+					gem_info_t info = {};
+					info.blendMode = (int8_t)blendMode_e::normal;
+					info.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+					info.frontFace = 0;
+					info.cullMode = 0;
+					info.shader = ST_NONE;
+					const glm::mat4 mat = glm::ortho(0.0f, (float)vg->width,
+						0.0f, (float)vg->height, -1.0f, 1.0f);
+					cb->set_geom_state(vg, &info, &mat);
+
+					float u0 = (float)sx / (float)tex_w;
+					float v0 = (float)sy / (float)tex_h;
+					float u1 = (float)(sx + sw) / (float)tex_w;
+					float v1 = (float)(sy + sh) / (float)tex_h;
+					if (image->flip_x) std::swap(u0, u1);
+					if (image->flip_y) std::swap(v0, v1);
+
+					const float x0 = dst_x, y0 = dst_y;
+					const float x1 = dst_x + dst_w, y1 = dst_y + dst_h;
+					const float xy[8] = { x0, y0, x1, y0, x1, y1, x0, y1 };
+					const float uv[8] = { u0, v0, u1, v0, u1, v1, u0, v1 };
+					const uint32_t colors[4] = { tint, tint, tint, tint };
+					const uint32_t indices[6] = { 0, 1, 2, 0, 2, 3 };
+					cb->add_geometry(vg, &texture->image,
+						xy, 2 * sizeof(float), colors, sizeof(uint32_t),
+						uv, 2 * sizeof(float), 4, indices, 6, sizeof(uint32_t), 1);
+				}
+				else
+				{
+					ovg_image_r r = {};
+					r.img = &texture->image;
+					r.rc = { sx, sy, sw, sh };
+					r.dst = { (int)std::lround(dst_x), (int)std::lround(dst_y),
+						(int)std::lround(dst_w), (int)std::lround(dst_h) };
+					r.color = tint;
+					cb->add_image(vg, &r);
+				}
+				vgui_clip_pop(clips, cb, vg);
+				cb->restore(vg);
+			}
+		}
+
+		if (w->border_width > 0 && w->border)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width,
+				w->rounding, vgui_widget_color(w, w->border), w->border_width);
+		}
+		vgui_draw_focus(w, cb, vg);
+	}
+
 	static uint32_t vgui_row_text_color(vgui_widget* w, bool selected, bool enabled)
 	{
 		vgui_context* ctx = w->ctx;
@@ -6213,6 +6785,7 @@ namespace {
 		case VGUI_LIST: vgui_draw_list(w, cb, vg, clips); break;
 		case VGUI_TREE: vgui_draw_tree(w, cb, vg, clips); break;
 		case VGUI_MENU: vgui_draw_menu(w, cb, vg, clips); break;
+		case VGUI_IMAGE: vgui_draw_image(w, cb, vg, clips); break;
 		default: break;
 		}
 		(void)ctx;
@@ -6266,6 +6839,36 @@ namespace {
 				w->caret_blink += dt;
 			else
 				w->caret_blink = 0;
+		}
+	}
+
+	static void vgui_process_texture_retire(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		if (!ctx) return;
+
+		// These textures were handed to image_destroy on the previous draw.
+		// The renderer has consumed their descriptors by now.
+		for (vgui_texture* texture : ctx->retired_textures)
+			delete texture;
+		ctx->retired_textures.clear();
+
+		if (ctx->pending_texture_destroy.empty())
+			return;
+
+		std::vector<vgui_texture*> pending;
+		pending.swap(ctx->pending_texture_destroy);
+		for (vgui_texture* texture : pending)
+		{
+			if (!texture) continue;
+			if (texture->image.id != 0 && cb && vg && cb->image_destroy)
+			{
+				cb->image_destroy(vg, &texture->image);
+				ctx->retired_textures.push_back(texture);
+			}
+			else
+			{
+				delete texture;
+			}
 		}
 	}
 
@@ -6329,6 +6932,33 @@ extern "C" {
 		}
 		ctx->all_widgets.clear();
 		ctx->alive.clear();
+
+		// Release textures that were never attached to an image or whose
+		// GPU-destroy descriptor was still queued.  Widget deletion above has
+		// already released the image references.
+		std::unordered_set<vgui_texture*> textures = ctx->textures;
+		for (vgui_texture* texture : ctx->pending_texture_destroy)
+			if (texture) textures.insert(texture);
+		for (vgui_texture* texture : ctx->retired_textures)
+			if (texture) textures.insert(texture);
+		for (vgui_texture* texture : textures)
+		{
+			if (!texture) continue;
+			if (texture->release_native)
+			{
+				texture->release_native(texture);
+				texture->release_native = nullptr;
+			}
+			delete texture;
+		}
+		ctx->textures.clear();
+		ctx->pending_texture_destroy.clear();
+		ctx->retired_textures.clear();
+		if (ctx->flex)
+		{
+			free_flex_run(ctx->flex);
+			ctx->flex = nullptr;
+		}
 		delete ctx;
 	}
 
@@ -6509,6 +7139,12 @@ extern "C" {
 			case VGUI_MENU:
 				move(w->rounding, old.menu.rounding, next.menu.rounding);
 				break;
+			case VGUI_IMAGE:
+				move(w->border_width, old.image.border_width, next.image.border_width);
+				move(w->rounding, old.image.rounding, next.image.rounding);
+				move(w->req_w, old.image.req_width, next.image.req_width);
+				move(w->req_h, old.image.req_height, next.image.req_height);
+				break;
 			default:
 				break;
 			}
@@ -6531,6 +7167,48 @@ extern "C" {
 	float vgui_context_get_focus_alpha(vgui_context* ctx)
 	{
 		return ctx ? ctx->focus_alpha : 1.0f;
+	}
+
+	//----------------------------------------------------------------------------
+	// textures
+	//----------------------------------------------------------------------------
+
+	vgui_texture* vgui_texture_create(vgui_context* ctx, const vgui_texture_desc* desc)
+	{
+		if (!ctx || !vgui_texture_desc_valid(desc))
+			return nullptr;
+		vgui_texture* texture = new vgui_texture();
+		texture->ctx = ctx;
+		if (!vgui_texture_store_desc(texture, desc))
+		{
+			delete texture;
+			return nullptr;
+		}
+		ctx->textures.insert(texture);
+		return texture;
+	}
+
+	int vgui_texture_update(vgui_texture* texture, const vgui_texture_desc* desc)
+	{
+		if (!texture || !texture->cpu || !vgui_texture_store_desc(texture, desc))
+			return 0;
+		vgui_texture_mark_layout_dirty(texture);
+		return 1;
+	}
+
+	void vgui_texture_destroy(vgui_texture* texture)
+	{
+		vgui_texture_release(texture);
+	}
+
+	int vgui_texture_get_width(const vgui_texture* texture)
+	{
+		return texture ? texture->width : 0;
+	}
+
+	int vgui_texture_get_height(const vgui_texture* texture)
+	{
+		return texture ? texture->height : 0;
 	}
 
 	vgui_widget* vgui_root(vgui_context* ctx)
@@ -6814,6 +7492,60 @@ extern "C" {
 		if (widget) widget->opacity = vgui_clampf(opacity, 0.0f, 1.0f);
 	}
 
+	void vgui_image_set_texture(vgui_widget* widget, vgui_texture* texture)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image)
+			return;
+		if (widget->image->texture == texture)
+			return;
+		if (texture)
+			vgui_texture_retain(texture);
+		vgui_texture* old = widget->image->texture;
+		widget->image->texture = texture;
+		if (old)
+			vgui_texture_release(old);
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_source(vgui_widget* widget, int x, int y, int width, int height)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->src_x = std::max(0, x);
+		widget->image->src_y = std::max(0, y);
+		widget->image->src_w = std::max(0, width);
+		widget->image->src_h = std::max(0, height);
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_fit(vgui_widget* widget, vgui_image_fit fit)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->fit = fit;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_tint(vgui_widget* widget, vgui_color color)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->tint = color;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_flip(vgui_widget* widget, int flip_x, int flip_y)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->flip_x = flip_x != 0;
+		widget->image->flip_y = flip_y != 0;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_pixel_snap(vgui_widget* widget, int enabled)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->pixel_snap = enabled != 0;
+		vgui_mark_dirty(widget);
+	}
+
 	void vgui_widget_set_focus_alpha(vgui_widget* widget, float alpha)
 	{
 		if (!widget) return;
@@ -6913,6 +7645,18 @@ extern "C" {
 		if (!widget) return;
 		widget->justify = justify;
 		vgui_mark_dirty(widget);
+	}
+
+	void vgui_widget_set_align_content(vgui_widget* widget, vgui_align_content align)
+	{
+		if (!widget) return;
+		widget->align_content = align;
+		vgui_mark_dirty(widget);
+	}
+
+	vgui_align_content vgui_widget_get_align_content(vgui_widget* widget)
+	{
+		return widget ? widget->align_content : VGUI_ALIGN_CONTENT_START;
 	}
 
 	void vgui_widget_set_grow(vgui_widget* widget, float grow)
@@ -8447,6 +9191,7 @@ extern "C" {
 		if (!ctx || !cb || !vg || !ctx->root) return;
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
+		vgui_process_texture_retire(ctx, cb, vg);
 
 		vgui_clip_state clips;
 		clips.external = {};
@@ -8470,9 +9215,84 @@ extern "C" {
 			while (!clips.stack.empty())
 				vgui_clip_pop(&clips, cb, vg);
 		}
+
+		++ctx->frame_index;
 	}
 
 } // extern "C"
+
+//----------------------------------------------------------------------------
+// Texture lifetime (C++ linkage, declared in vgui_internal.h)
+//----------------------------------------------------------------------------
+
+void vgui_texture_retain(vgui_texture* texture)
+{
+	if (texture) ++texture->refs;
+}
+
+void vgui_texture_mark_layout_dirty(vgui_texture* texture)
+{
+	if (texture && texture->ctx)
+		texture->ctx->layout_dirty = true;
+}
+
+void vgui_texture_release(vgui_texture* texture)
+{
+	if (!texture) return;
+	if (--texture->refs > 0) return;
+
+	vgui_context* ctx = texture->ctx;
+	if (ctx) ctx->textures.erase(texture);
+
+	if (texture->release_native)
+	{
+		texture->release_native(texture);
+		texture->release_native = nullptr;
+		delete texture;
+		return;
+	}
+
+	// CPU textures may already have a GPU handle.  Keep the object and its
+	// vg_image_t alive until the next draw can enqueue image_destroy; the
+	// renderer consumes that descriptor after vgui_draw() returns.
+	if (ctx && texture->image.id != 0)
+	{
+		ctx->pending_texture_destroy.push_back(texture);
+		return;
+	}
+	delete texture;
+}
+
+vgui_texture* vgui_texture_create_native_internal(
+	vgui_context* ctx, int width, int height, vgui_texture_format format)
+{
+	if (!ctx || width <= 0 || height <= 0 || vgui_texture_bpp(format) <= 0)
+		return nullptr;
+	vgui_texture* texture = new vgui_texture();
+	texture->ctx = ctx;
+	texture->cpu = false;
+	texture->dirty = false;
+	texture->width = width;
+	texture->height = height;
+	texture->stride = width * vgui_texture_bpp(format);
+	texture->format = format;
+	texture->image.width = width;
+	texture->image.height = height;
+	texture->image.valid = false;
+	ctx->textures.insert(texture);
+	return texture;
+}
+
+void vgui_texture_bind_native(vgui_texture* texture, uint32_t image_id,
+	void* native_ctx, void* native_texture, void (*release_native)(vgui_texture*))
+{
+	if (!texture || texture->cpu) return;
+	texture->image.id = image_id;
+	texture->image.valid = false;
+	texture->native_ctx = native_ctx;
+	texture->native_texture = native_texture;
+	texture->release_native = release_native;
+}
 
 //----------------------------------------------------------------------------
 // SDL3 backend bridge (C++ linkage, declared in vgui_internal.h)

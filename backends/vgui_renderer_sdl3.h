@@ -63,6 +63,13 @@ void vgpu_destroy_fbo(vg_fbo_t* fbo);
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height);
 int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
 
+// 注册外部创建、由调用方持有的 GPU 纹理。返回的 id 可直接用于
+// vg_image_t::id 和 ovg_image_r。vgui 只借用 SDL_GPUTexture，从不释放它；
+// 采样器由后端创建并在注销时释放。纹理必须带 SDL_GPU_TEXTUREUSAGE_SAMPLER。
+uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
+	int width, int height, SDL_GPUTextureFormat format);
+void vgpu_unregister_native_texture(vgpu_ctx_t* ctx, uint32_t id);
+
 // 提交一帧。data 中的 fbo 必须已经通过 vgpu_acquire_swapchain 或由本函数
 // 自动获取交换链；函数返回后命令缓冲已经提交。
 void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count);
