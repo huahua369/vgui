@@ -5776,11 +5776,11 @@ namespace {
 		st.min_subpixel = ctx->style.text_min_subpixel;
 		text_box_rt box = {};
 		box.text_align = { ax, ay };
-		box.rc = { x,y,tw,th };
+		box.rc = { x,y,tw, height };
 		box.baseline = vgui_text_ascent(ctx, w);
 		text_st_t t = {};
 		t.pos = { x, y };
-		t.size = { tw, th };
+		t.size = { tw, height };
 		t.text = text.c_str();
 		t.text_len = (int)text.size();
 		cb->add_text(vg, &t, &st, &box);
