@@ -5773,15 +5773,17 @@ namespace {
 		st.family = ctx->font;
 		st.fontsize = vgui_font_size(ctx, w);
 		st.color = vgui_ovg_color(color);
-		st.align = { ax, ay };
 		st.min_subpixel = ctx->style.text_min_subpixel;
-
+		text_box_rt box = {};
+		box.text_align = { ax, ay };
+		box.rc = { x,y,tw,th };
+		box.baseline = vgui_text_ascent(ctx, w);
 		text_st_t t = {};
-		t.pos = { x, y + vgui_text_ascent(ctx, w) };
+		t.pos = { x, y };
 		t.size = { tw, th };
 		t.text = text.c_str();
 		t.text_len = (int)text.size();
-		cb->add_text(vg, &t, &st, nullptr);
+		cb->add_text(vg, &t, &st, &box);
 	}
 
 	static uint32_t vgui_text_color(vgui_widget* w)
