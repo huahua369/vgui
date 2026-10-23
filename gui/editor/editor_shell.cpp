@@ -104,21 +104,61 @@ namespace vgui_editor_kit {
 		vgui_widget_set_text_color(status_, kStatusText);
 		vgui_widget_set_text_align(status_, 1.0f, 0.5f);
 
-		vgui_widget* body = vgui_widget_add(root_, VGUI_PANEL, nullptr);
-		vgui_widget_set_grow(body, 1.0f);
-		vgui_widget_set_layout(body, VGUI_LAYOUT_ROW);
-		vgui_widget_set_gap(body, 4);
-		vgui_widget_set_align_items(body, VGUI_ALIGN_STRETCH);
+		body_splitter_ = vgui_widget_add(root_, VGUI_SPLITTER, nullptr);
+		vgui_widget_set_grow(body_splitter_, 1.0f);
+		vgui_widget_set_align_self(body_splitter_, VGUI_ALIGN_STRETCH);
+		vgui_splitter_set_vertical(body_splitter_, 1);
+		vgui_splitter_set_ratio(body_splitter_, 0.75f);
+		vgui_splitter_set_sash_size(body_splitter_, 4.0f);
 
-		vgui_widget* left_body = make_section(body, "OUTLINER", 230, 0, 0);
-		vgui_widget* center_body = make_section(body, "VIEWPORT", 0, 0, 1);
-		vgui_widget* right_body = make_section(body, "PROPERTIES", 300, 0, 0);
-		vgui_widget* bottom_body = make_section(root_, "ASSETS", 0, 180, 0);
+		vgui_widget* main = vgui_widget_add(body_splitter_, VGUI_PANEL, nullptr);
+		vgui_widget_set_min_size(main, 0, 200);
+		vgui_widget_set_layout(main, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(main, 0, 0, 0, 0);
+		vgui_widget_set_gap(main, 0);
+		vgui_widget_set_background(main, kRootBg);
+
+		workspace_splitter_ = vgui_widget_add(main, VGUI_SPLITTER, nullptr);
+		vgui_widget_set_grow(workspace_splitter_, 1.0f);
+		vgui_splitter_set_vertical(workspace_splitter_, 0);
+		vgui_splitter_set_ratio(workspace_splitter_, 0.2f);
+		vgui_splitter_set_sash_size(workspace_splitter_, 4.0f);
+
+		vgui_widget* left_body = make_section(workspace_splitter_, "OUTLINER", 230, 0, 0);
+		vgui_widget* center_splitter = vgui_widget_add(workspace_splitter_, VGUI_SPLITTER, nullptr);
+		vgui_widget_set_min_size(center_splitter, 400, 0);
+		vgui_splitter_set_vertical(center_splitter, 0);
+		vgui_splitter_set_ratio(center_splitter, 0.7f);
+		vgui_splitter_set_sash_size(center_splitter, 4.0f);
+		vgui_widget* center_body = make_section(center_splitter, "VIEWPORT", 0, 0, 1);
+		vgui_widget* right_body = make_section(center_splitter, "PROPERTIES", 300, 0, 0);
+
+		vgui_widget* bottom_body = make_section(body_splitter_, "PANELS", 0, 180, 0);
+		vgui_widget* bottom_section = vgui_widget_get_parent(bottom_body);
+		vgui_widget_set_min_size(bottom_section, 0, 120);
+
+		bottom_tabs_ = vgui_widget_add(bottom_body, VGUI_TABVIEW, nullptr);
+		vgui_widget_set_grow(bottom_tabs_, 1.0f);
+		vgui_widget_set_min_size(bottom_tabs_, 0, 80);
+		vgui_tab_set_tab_height(bottom_tabs_, 26.0f);
+
+		vgui_widget* assets_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(assets_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(assets_page, 6, 6, 6, 6);
+		assets_.build(assets_page);
+		vgui_tab_add(bottom_tabs_, "ASSETS", assets_page);
+
+		vgui_widget* console_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(console_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(console_page, 8, 8, 8, 8);
+		vgui_widget* console_text = vgui_widget_add(console_page, VGUI_LABEL, "No messages.");
+		vgui_widget_set_font_size(console_text, 12);
+		vgui_widget_set_text_color(console_text, kMutedText);
+		vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
 
 		scene_.build(context_, left_body);
 		viewport_.build(center_body);
 		properties_.build(right_body);
-		assets_.build(bottom_body);
 	}
 
 	bool editor_shell::built() const noexcept
@@ -129,6 +169,21 @@ namespace vgui_editor_kit {
 	vgui_widget* editor_shell::widget() const noexcept
 	{
 		return root_;
+	}
+
+	vgui_widget* editor_shell::body_splitter() const noexcept
+	{
+		return body_splitter_;
+	}
+
+	vgui_widget* editor_shell::workspace_splitter() const noexcept
+	{
+		return workspace_splitter_;
+	}
+
+	vgui_widget* editor_shell::bottom_tabs() const noexcept
+	{
+		return bottom_tabs_;
 	}
 
 	outliner_view& editor_shell::scene() noexcept

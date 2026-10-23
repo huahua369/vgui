@@ -11,7 +11,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | 模块 | 能力 |
 |---|---|
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
-| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu |
+| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、Splitter、TabView |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -36,6 +36,8 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | `VGUI_LIST` | 数据模型列表；稳定 `vgui_item_id`、单选/多选、键盘导航、滚轮与滚动条 |
 | `VGUI_TREE` | 数据模型树；展开/折叠、层级选择、键盘导航、可见行扁平化 |
 | `VGUI_MENU` | 上下文菜单浮层；复选项、子菜单、快捷键文本、禁用项；打开时消费外部点击 |
+| `VGUI_SPLITTER` | 双子面板分栏；水平/垂直、嵌套、比例、sash、最小尺寸、拖动改变比例、双击复位 |
+| `VGUI_TABVIEW` | 标签页容器；关闭回调、未保存标记、禁用页、拖拽重排、滚轮溢出、键盘切换/关闭 |
 
 ### 文本编辑框
 
@@ -86,6 +88,26 @@ vgui_menu_open_below(menu, button);
 ```
 
 打开菜单时 `vgui_context_wants_mouse()` / `vgui_context_wants_keyboard()` 返回 1，`vgui_context_wants_text_input()` 返回 0；Esc 关闭当前子菜单，重复按 Esc 关闭整条链。当前版本不绘制菜单图标。
+
+### Splitter 与 TabView
+
+`VGUI_SPLITTER` 是双子面板容器：`vertical=0` 左右分栏，`vertical=1` 上下分栏。`ratio` 表示第一个可见子面板在主轴上所占比例，拖动 sash 修改比例，双击 sash 复位；子面板的 `min_w` / `min_h` 会约束最终尺寸。`vgui_widget_on_value()` 可监听拖动后的比例变化。
+
+```c
+vgui_widget* splitter = vgui_widget_add(root, VGUI_SPLITTER, NULL);
+vgui_splitter_set_vertical(splitter, 0);
+vgui_splitter_set_ratio(splitter, 0.25f);
+vgui_widget_add(splitter, VGUI_PANEL, NULL);
+vgui_widget_add(splitter, VGUI_PANEL, NULL);
+
+vgui_widget* tabs = vgui_widget_add(root, VGUI_TABVIEW, NULL);
+vgui_widget* page = vgui_widget_create(ui, VGUI_PANEL, NULL);
+vgui_item_id doc = vgui_tab_add(tabs, "Scene", page);
+vgui_tab_set_unsaved(tabs, doc, 1);
+vgui_tab_on_close(tabs, on_tab_close, NULL);
+```
+
+TabView 负责页面可见性和生命周期：`vgui_tab_add()` 接管页面，移除标签会销毁页面。设置 `vgui_tab_on_close()` 后由宿主决定是否调用 `vgui_tab_remove()`（便于未保存确认）；未设置回调时可直接关闭。标签支持禁用、未保存标记、关闭按钮、鼠标拖拽重排、滚轮横向溢出和键盘切换/关闭（`Ctrl+W`），右键会发送带 `item` 的鼠标事件供宿主打开菜单。
 
 ### 交互与焦点
 
@@ -203,7 +225,7 @@ vgui_draw(ui, ovg_cb, rvg);
 ```text
 gui/
   vgui.h              公共纯 C API
-  vgui.cpp            控件树、布局、事件与绘制实现
+  vgui.cpp            控件树、布局、事件与绘制实现（含 Splitter/TabView）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
   editor/             vgui_editor_kit 编辑器组件层（MVP 骨架）
@@ -238,7 +260,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单以及外部点击消费。`vgui_editor_kit_test` 覆盖 editor kit 的固定分栏 Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界以及命令栈的 undo/redo/事务/回滚。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界以及命令栈的 undo/redo/事务/回滚。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

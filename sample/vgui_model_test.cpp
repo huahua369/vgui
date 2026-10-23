@@ -94,6 +94,60 @@ static void click_at(vgui_context* ui, float x, float y, int clicks = 1)
 	vgui_input_mouse_up(ui, 1, x, y, clicks);
 }
 
+struct value_cb
+{
+	int changes = 0;
+	float last = 0.0f;
+};
+
+static void on_value_changed(vgui_widget*, float value, void* user)
+{
+	value_cb* s = (value_cb*)user;
+	s->changes++;
+	s->last = value;
+}
+
+struct tab_cb
+{
+	int selects = 0;
+	int closes = 0;
+	vgui_item_id last_select = 0;
+	vgui_item_id last_close = 0;
+	int remove_on_close = 1;
+};
+
+static void on_tab_select(vgui_widget*, vgui_item_id item, void* user)
+{
+	tab_cb* s = (tab_cb*)user;
+	s->selects++;
+	s->last_select = item;
+}
+
+static void on_tab_close(vgui_widget* tabs, vgui_item_id item, void* user)
+{
+	tab_cb* s = (tab_cb*)user;
+	s->closes++;
+	s->last_close = item;
+	if (s->remove_on_close)
+		vgui_tab_remove(tabs, item);
+}
+
+struct tab_event_cb
+{
+	int right_downs = 0;
+	vgui_item_id item = 0;
+};
+
+static void on_tab_event(vgui_widget*, const vgui_event* event, void* user)
+{
+	tab_event_cb* s = (tab_event_cb*)user;
+	if (event && event->type == VGUI_EVENT_MOUSE_DOWN && event->button == 3)
+	{
+		s->right_downs++;
+		s->item = event->item;
+	}
+}
+
 static void test_list(vgui_context* ui, const vgui_style& style)
 {
 	vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
@@ -589,6 +643,234 @@ static void test_wrap(vgui_context* ui)
 	vgui_widget_destroy(panel);
 }
 
+static void test_splitter(vgui_context* ui)
+{
+	vgui_widget* splitter = vgui_widget_add(vgui_root(ui), VGUI_SPLITTER, nullptr);
+	vgui_widget_set_pos(splitter, 20.0f, 20.0f);
+	vgui_widget_set_size(splitter, 400.0f, 300.0f);
+	vgui_splitter_set_sash_size(splitter, 4.0f);
+	vgui_splitter_set_ratio(splitter, 0.25f);
+
+	vgui_widget* left = vgui_widget_add(splitter, VGUI_PANEL, nullptr);
+	vgui_widget* right = vgui_widget_add(splitter, VGUI_PANEL, nullptr);
+	value_cb cb;
+	vgui_widget_on_value(splitter, on_value_changed, &cb);
+
+	vgui_layout(ui);
+	float lx = 0, ly = 0, lw = 0, lh = 0;
+	float rx = 0, ry = 0, rw = 0, rh = 0;
+	vgui_widget_get_rect(left, &lx, &ly, &lw, &lh);
+	vgui_widget_get_rect(right, &rx, &ry, &rw, &rh);
+	check(near(lw, 99.0f) && near(lh, 300.0f), "splitter: horizontal ratio");
+	check(near(rx, lx + lw + 4.0f) && near(rw, 297.0f), "splitter: sash separates panes");
+
+	vgui_widget_set_min_size(left, 150.0f, 0.0f);
+	vgui_splitter_set_ratio(splitter, 0.1f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, nullptr, nullptr, &lw, nullptr);
+	check(near(lw, 150.0f), "splitter: minimum width clamps ratio");
+
+	vgui_widget_set_min_size(left, 0.0f, 0.0f);
+	vgui_splitter_set_ratio(splitter, 0.0f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, nullptr, nullptr, &lw, nullptr);
+	vgui_widget_get_rect(right, nullptr, nullptr, &rw, nullptr);
+	check(near(lw, 0.0f) && near(rw, 396.0f), "splitter: zero ratio collapses first pane");
+
+	vgui_splitter_set_ratio(splitter, 1.0f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, nullptr, nullptr, &lw, nullptr);
+	vgui_widget_get_rect(right, nullptr, nullptr, &rw, nullptr);
+	check(near(lw, 396.0f) && near(rw, 0.0f), "splitter: full ratio collapses second pane");
+
+	vgui_splitter_set_ratio(splitter, 0.25f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, &lx, &ly, &lw, &lh);
+
+	float sash_x = lx + lw;
+	vgui_input_mouse_move(ui, sash_x + 2.0f, ly + 20.0f);
+	vgui_input_mouse_down(ui, 1, sash_x + 2.0f, ly + 20.0f, 1);
+	vgui_input_mouse_move(ui, sash_x + 102.0f, ly + 20.0f);
+	vgui_input_mouse_up(ui, 1, sash_x + 102.0f, ly + 20.0f, 1);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, &lx, &ly, &lw, &lh);
+	check(lw > 180.0f, "splitter: dragging sash resizes panes");
+	check(cb.changes >= 1 && cb.last > 0.4f, "splitter: drag notifies value callback");
+
+	float new_sash = lx + lw;
+	click_at(ui, new_sash + 2.0f, ly + 20.0f, 2);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, nullptr, nullptr, &lw, nullptr);
+	check(near(lw, 198.0f) && near(vgui_splitter_get_ratio(splitter), 0.5f),
+		"splitter: double-click resets ratio");
+
+	vgui_splitter_set_vertical(splitter, 1);
+	vgui_splitter_set_ratio(splitter, 0.5f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, &lx, &ly, &lw, &lh);
+	vgui_widget_get_rect(right, &rx, &ry, &rw, &rh);
+	check(near(lh, 148.0f) && near(rh, 148.0f), "splitter: vertical ratio");
+	check(near(ry, ly + lh + 4.0f), "splitter: vertical sash separates panes");
+
+	vgui_widget_set_min_size(left, 0.0f, 120.0f);
+	vgui_splitter_set_ratio(splitter, 0.1f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(left, nullptr, nullptr, nullptr, &lh);
+	check(near(lh, 120.0f), "splitter: minimum height clamps ratio");
+
+	vgui_widget_destroy(splitter);
+
+	// Nested splitters are ordinary children and keep their own sash/ratio.
+	vgui_widget* outer = vgui_widget_add(vgui_root(ui), VGUI_SPLITTER, nullptr);
+	vgui_widget_set_pos(outer, 450.0f, 20.0f);
+	vgui_widget_set_size(outer, 300.0f, 300.0f);
+	vgui_splitter_set_sash_size(outer, 4.0f);
+	vgui_splitter_set_ratio(outer, 0.5f);
+	vgui_widget* inner = vgui_widget_add(outer, VGUI_SPLITTER, nullptr);
+	vgui_splitter_set_sash_size(inner, 4.0f);
+	vgui_splitter_set_ratio(inner, 0.5f);
+	vgui_widget* inner_left = vgui_widget_add(inner, VGUI_PANEL, nullptr);
+	vgui_widget* inner_right = vgui_widget_add(inner, VGUI_PANEL, nullptr);
+	vgui_widget_add(outer, VGUI_PANEL, nullptr);
+	vgui_layout(ui);
+
+	float ix = 0, iy = 0, iw = 0, ih = 0;
+	float ilw = 0, irw = 0;
+	vgui_widget_get_rect(inner, &ix, &iy, &iw, &ih);
+	vgui_widget_get_rect(inner_left, nullptr, nullptr, &ilw, nullptr);
+	vgui_widget_get_rect(inner_right, nullptr, nullptr, &irw, nullptr);
+	check(near(iw, 148.0f) && near(ih, 300.0f), "splitter: nested pane size");
+	check(near(ilw, 72.0f) && near(irw, 72.0f), "splitter: nested ratio and sash");
+
+	vgui_widget_destroy(outer);
+}
+
+static void test_tabview(vgui_context* ui)
+{
+	vgui_widget* tabs = vgui_widget_add(vgui_root(ui), VGUI_TABVIEW, nullptr);
+	vgui_widget_set_pos(tabs, 20.0f, 360.0f);
+	vgui_widget_set_size(tabs, 340.0f, 220.0f);
+	vgui_tab_set_tab_height(tabs, 28.0f);
+
+	tab_cb cb;
+	tab_event_cb ecb;
+	vgui_tab_on_select(tabs, on_tab_select, &cb);
+	vgui_tab_on_close(tabs, on_tab_close, &cb);
+	vgui_widget_on_event(tabs, on_tab_event, &ecb);
+
+	vgui_widget* pa = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pb = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pc = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_item_id ida = vgui_tab_add(tabs, "Alpha", pa);
+	vgui_item_id idb = vgui_tab_add(tabs, "Beta", pb);
+	vgui_item_id idc = vgui_tab_add(tabs, "Gamma", pc);
+	check(ida && idb && idc && ida != idb && idb != idc, "tab: add assigns unique ids");
+	check(vgui_tab_get_count(tabs) == 3, "tab: count after add");
+	check(vgui_tab_get_at(tabs, 1) == idb && vgui_tab_get_index(tabs, idc) == 2,
+		"tab: stable order and index");
+	check(std::string(vgui_tab_get_title(tabs, idb)) == "Beta", "tab: title");
+	check(vgui_tab_get_active(tabs) == ida, "tab: first tab is active");
+	check(vgui_widget_get_parent(pa) == tabs, "tab: page is attached");
+	check(vgui_widget_get_visible(pa) == 1 && vgui_widget_get_visible(pb) == 0,
+		"tab: only active page is visible");
+
+	vgui_layout(ui);
+	float px = 0, py = 0, pw = 0, ph = 0;
+	vgui_widget_get_rect(pa, &px, &py, &pw, &ph);
+	check(pw > 0.0f && ph > 0.0f, "tab: active page is laid out");
+
+	float ax = 0, ay = 0, aw = 0, ah = 0;
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	float cx = 0, cy = 0, cw = 0, ch = 0;
+	check(vgui_tab_get_rect(tabs, ida, &ax, &ay, &aw, &ah) &&
+		vgui_tab_get_rect(tabs, idb, &bx, &by, &bw, &bh) &&
+		vgui_tab_get_rect(tabs, idc, &cx, &cy, &cw, &ch),
+		"tab: get-rect returns tab geometry");
+
+	vgui_input_mouse_move(ui, ax + aw * 0.5f, ay + ah * 0.5f);
+	vgui_input_mouse_down(ui, 3, ax + aw * 0.5f, ay + ah * 0.5f, 1);
+	vgui_input_mouse_up(ui, 3, ax + aw * 0.5f, ay + ah * 0.5f, 1);
+	check(ecb.right_downs == 1 && ecb.item == ida,
+		"tab: right-click emits item event for host menu");
+
+	check(vgui_tab_set_active(tabs, idb) == 1, "tab: set active");
+	check(cb.selects == 1 && cb.last_select == idb, "tab: select callback");
+	vgui_layout(ui);
+	check(vgui_widget_get_visible(pa) == 0 && vgui_widget_get_visible(pb) == 1,
+		"tab: switching hides old page");
+
+	click_at(ui, ax + aw * 0.5f, ay + ah * 0.5f);
+	check(vgui_tab_get_active(tabs) == ida && cb.selects == 2,
+		"tab: mouse click changes active tab");
+
+	vgui_tab_set_enabled(tabs, idb, 0);
+	click_at(ui, bx + bw * 0.5f, by + bh * 0.5f);
+	check(vgui_tab_get_active(tabs) == ida && cb.selects == 2,
+		"tab: disabled tab cannot be activated");
+	vgui_tab_set_enabled(tabs, idb, 1);
+
+	vgui_tab_set_unsaved(tabs, idb, 1);
+	check(vgui_tab_get_unsaved(tabs, idb) == 1, "tab: unsaved marker");
+	vgui_tab_set_closeable(tabs, idb, 0);
+	vgui_layout(ui);
+	vgui_tab_get_rect(tabs, idb, &bx, &by, &bw, &bh);
+	click_at(ui, bx + bw - 14.0f, by + bh * 0.5f);
+	check(vgui_tab_get_active(tabs) == idb && cb.closes == 0,
+		"tab: non-closeable tab has no close hit");
+	vgui_tab_set_closeable(tabs, idb, 1);
+
+	vgui_layout(ui);
+	vgui_tab_get_rect(tabs, idc, &cx, &cy, &cw, &ch);
+	click_at(ui, cx + cw - 14.0f, cy + ch * 0.5f);
+	check(cb.closes == 1 && cb.last_close == idc, "tab: close callback");
+	check(vgui_tab_get_count(tabs) == 2 && vgui_tab_get_page(tabs, idc) == nullptr,
+		"tab: close removes page");
+
+	vgui_set_focus(ui, tabs);
+	int handled = vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_RIGHT, 0, 0);
+	check(handled == 1 && vgui_tab_get_active(tabs) == ida,
+		"tab: keyboard right wraps to next tab");
+	vgui_input_key(ui, VGUI_KEY_LEFT, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_LEFT, 0, 0);
+	check(vgui_tab_get_active(tabs) == idb, "tab: keyboard left selects previous tab");
+
+	// Drag the first tab over the second to reorder.  The click selects it,
+	// while the move past the midpoint commits the new order.
+	vgui_layout(ui);
+	vgui_tab_get_rect(tabs, ida, &ax, &ay, &aw, &ah);
+	vgui_tab_get_rect(tabs, idb, &bx, &by, &bw, &bh);
+	vgui_input_mouse_move(ui, ax + aw * 0.5f, ay + ah * 0.5f);
+	vgui_input_mouse_down(ui, 1, ax + aw * 0.5f, ay + ah * 0.5f, 1);
+	vgui_input_mouse_move(ui, bx + bw * 0.75f, by + bh * 0.5f);
+	vgui_input_mouse_up(ui, 1, bx + bw * 0.75f, by + bh * 0.5f, 1);
+	check(vgui_tab_get_at(tabs, 0) == idb && vgui_tab_get_at(tabs, 1) == ida,
+		"tab: dragging reorders tabs");
+
+	// Add enough tabs to overflow and scroll the strip with the wheel.
+	vgui_tab_add(tabs, "Delta", vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_tab_add(tabs, "Epsilon", vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_item_id idf = vgui_tab_add(tabs, "Zeta", vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_layout(ui);
+	float fx0 = 0, fy0 = 0, fw0 = 0, fh0 = 0;
+	vgui_tab_get_rect(tabs, idf, &fx0, &fy0, &fw0, &fh0);
+	float tab_x = 0, tab_y = 0, tab_w = 0, tab_h = 0;
+	vgui_widget_get_rect(tabs, &tab_x, &tab_y, &tab_w, &tab_h);
+	vgui_input_mouse_move(ui, tab_x + 10.0f, tab_y + 5.0f);
+	vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+	vgui_layout(ui);
+	float fx1 = 0, fy1 = 0, fw1 = 0, fh1 = 0;
+	vgui_tab_get_rect(tabs, idf, &fx1, &fy1, &fw1, &fh1);
+	check(fx1 < fx0 - 1.0f, "tab: wheel scrolls overflowing tab strip");
+
+	handled = vgui_input_key(ui, 'W', 1, VGUI_MOD_CTRL);
+	vgui_input_key(ui, 'W', 0, VGUI_MOD_CTRL);
+	check(handled == 1 && cb.closes == 2, "tab: ctrl+w closes active tab");
+	check(vgui_tab_get_count(tabs) == 4, "tab: close keeps remaining tabs");
+
+	vgui_widget_destroy(tabs);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -614,6 +896,8 @@ int main()
 	test_menu(ui, style);
 	test_texture_image(ui);
 	test_wrap(ui);
+	test_splitter(ui);
+	test_tabview(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

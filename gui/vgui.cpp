@@ -239,6 +239,51 @@ struct vgui_menu_state
 	void* close_user = nullptr;
 };
 
+struct vgui_splitter_state
+{
+	float sash_size = 4.0f;
+	float default_ratio = 0.5f;
+	float sash_x = 0.0f;
+	float sash_y = 0.0f;
+	float sash_w = 0.0f;
+	float sash_h = 0.0f;
+	int dragging = 0;
+	int changed = 0;
+};
+
+struct vgui_tab_item
+{
+	vgui_item_id id = 0;
+	std::string title;
+	vgui_widget* page = nullptr;
+	int enabled = 1;
+	int closeable = 1;
+	int unsaved = 0;
+};
+
+struct vgui_tab_state
+{
+	std::vector<vgui_tab_item> tabs;
+	std::unordered_map<vgui_item_id, size_t> index;
+	vgui_item_id next_id = 1;
+	vgui_item_id active = 0;
+	vgui_item_id hover = 0;
+	vgui_item_id pressed = 0;
+	vgui_item_id close_hover = 0;
+	vgui_item_id close_pressed = 0;
+	vgui_item_id drag_item = 0;
+	float drag_start_x = 0.0f;
+	int drag_active = 0;
+	float tab_height = 30.0f;
+	float tab_padding = 12.0f;
+	float tab_gap = 2.0f;
+	float close_size = 16.0f;
+	vgui_item_fn select_fn = nullptr;
+	void* select_user = nullptr;
+	vgui_item_fn close_fn = nullptr;
+	void* close_user = nullptr;
+};
+
 struct vgui_image_state
 {
 	vgui_texture* texture = nullptr;
@@ -368,6 +413,10 @@ struct vgui_widget
 	std::unique_ptr<vgui_list_state> list;
 	std::unique_ptr<vgui_tree_state> tree;
 	std::unique_ptr<vgui_menu_state> menu;
+
+	// container controls ---------------------------------------------------
+	std::unique_ptr<vgui_splitter_state> splitter;
+	std::unique_ptr<vgui_tab_state> tabs;
 
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
@@ -1031,6 +1080,148 @@ namespace {
 	static vgui_menu_state* vgui_menu_of(vgui_widget* w)
 	{
 		return (w && w->kind == VGUI_MENU && w->menu) ? w->menu.get() : nullptr;
+	}
+
+	static vgui_splitter_state* vgui_splitter_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_SPLITTER && w->splitter) ? w->splitter.get() : nullptr;
+	}
+
+	static vgui_tab_state* vgui_tabs_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_TABVIEW && w->tabs) ? w->tabs.get() : nullptr;
+	}
+
+	static vgui_tab_item* vgui_tab_find(vgui_widget* w, vgui_item_id item)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st || item == 0) return nullptr;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->tabs.size()) return nullptr;
+		return &st->tabs[it->second];
+	}
+
+	static int vgui_tab_find_index(vgui_widget* w, vgui_item_id item)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st || item == 0) return -1;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->tabs.size()) return -1;
+		return (int)it->second;
+	}
+
+	static float vgui_tab_item_width(vgui_widget* w, const vgui_tab_item& tab)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return 0.0f;
+		float width = vgui_text_width(w, tab.title) + st->tab_padding * 2.0f;
+		if (tab.unsaved) width += 10.0f;
+		if (tab.closeable) width += st->close_size + 8.0f;
+		return std::max(64.0f, width);
+	}
+
+	static float vgui_tab_bar_width(vgui_widget* w)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st || st->tabs.empty()) return 0.0f;
+		float width = st->tab_gap * (float)(st->tabs.size() - 1);
+		for (const vgui_tab_item& tab : st->tabs)
+			width += vgui_tab_item_width(w, tab);
+		return width;
+	}
+
+	static bool vgui_tab_bar_hit(vgui_widget* w, float x, float y)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return false;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float th = std::min(st->tab_height, ih);
+		return x >= ix && x <= ix + iw && y >= iy && y <= iy + th;
+	}
+
+	static bool vgui_tab_rect(vgui_widget* w, int index, float* x, float* y, float* width, float* height)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st || index < 0 || index >= (int)st->tabs.size()) return false;
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float th = std::min(st->tab_height, ih);
+		float tx = ix - w->scroll_x;
+		for (int i = 0; i < index; ++i)
+			tx += vgui_tab_item_width(w, st->tabs[(size_t)i]) + st->tab_gap;
+		if (x) *x = tx;
+		if (y) *y = iy;
+		if (width) *width = vgui_tab_item_width(w, st->tabs[(size_t)index]);
+		if (height) *height = th;
+		return true;
+	}
+
+	static bool vgui_tab_close_rect(vgui_widget* w, int index, float* x, float* y, float* width, float* height)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st || index < 0 || index >= (int)st->tabs.size()) return false;
+		if (!st->tabs[(size_t)index].closeable) return false;
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		if (!vgui_tab_rect(w, index, &tx, &ty, &tw, &th)) return false;
+		float size = std::min(st->close_size, th);
+		if (x) *x = tx + tw - size - st->tab_padding * 0.5f;
+		if (y) *y = ty + (th - size) * 0.5f;
+		if (width) *width = size;
+		if (height) *height = size;
+		return true;
+	}
+
+	static int vgui_tab_index_at(vgui_widget* w, float x, float y, bool* over_close)
+	{
+		if (over_close) *over_close = false;
+		if (!vgui_tab_bar_hit(w, x, y)) return -1;
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return -1;
+		for (int i = 0; i < (int)st->tabs.size(); ++i)
+		{
+			float tx = 0, ty = 0, tw = 0, th = 0;
+			if (!vgui_tab_rect(w, i, &tx, &ty, &tw, &th)) continue;
+			if (x < tx || x >= tx + tw || y < ty || y >= ty + th) continue;
+			float cx = 0, cy = 0, cw = 0, ch = 0;
+			if (vgui_tab_close_rect(w, i, &cx, &cy, &cw, &ch) &&
+				x >= cx && x < cx + cw && y >= cy && y < cy + ch)
+			{
+				if (over_close) *over_close = true;
+			}
+			return i;
+		}
+		return -1;
+	}
+
+	static int vgui_tab_drop_index(vgui_widget* w, float x)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return 0;
+		for (int i = 0; i < (int)st->tabs.size(); ++i)
+		{
+			float tx = 0, ty = 0, tw = 0, th = 0;
+			if (!vgui_tab_rect(w, i, &tx, &ty, &tw, &th)) continue;
+			if (x < tx + tw * 0.5f) return i;
+		}
+		return (int)st->tabs.size();
+	}
+
+	static bool vgui_splitter_sash_hit(vgui_widget* w, float x, float y)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(w);
+		if (!st || st->sash_w <= 0.0f || st->sash_h <= 0.0f) return false;
+		const float slop = 2.0f;
+		return x >= st->sash_x - slop && x <= st->sash_x + st->sash_w + slop &&
+			y >= st->sash_y - slop && y <= st->sash_y + st->sash_h + slop;
+	}
+
+	static vgui_cursor vgui_splitter_cursor(vgui_widget* w)
+	{
+		return (w && w->vertical) ? VGUI_CURSOR_SIZE_V : VGUI_CURSOR_SIZE_H;
 	}
 
 	static bool vgui_id_selected(const std::vector<vgui_item_id>& ids, vgui_item_id id)
@@ -1799,6 +1990,29 @@ namespace {
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_ARROW;
 			break;
+		case VGUI_SPLITTER:
+			w->splitter = std::make_unique<vgui_splitter_state>();
+			w->bg = 0;
+			w->border = th.panel_border;
+			w->border_width = 0;
+			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 0.0f;
+			w->value = 0.5f;
+			w->range_min = 0.0f;
+			w->range_max = 1.0f;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_SIZE_H;
+			w->clip_children = 1;
+			break;
+		case VGUI_TABVIEW:
+			w->tabs = std::make_unique<vgui_tab_state>();
+			w->bg = th.panel_bg;
+			w->border = th.panel_border;
+			w->border_width = 1.0f;
+			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 0.0f;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_ARROW;
+			w->clip_children = 1;
+			break;
 		case VGUI_CUSTOM:
 			w->bg = th.panel_bg;
 			w->border = th.panel_border;
@@ -2327,6 +2541,48 @@ namespace {
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : (float)sh;
 		}
 		break;
+		case VGUI_SPLITTER:
+		{
+			vgui_splitter_state* st = vgui_splitter_of(w);
+			float main_size = 0.0f, cross_size = 0.0f;
+			int count = 0;
+			for (vgui_widget* c : w->children)
+			{
+				if (!c->visible) continue;
+				vgui_measure_widget(c, ctx);
+				float cw = vgui_child_req_w(c);
+				float ch = vgui_child_req_h(c);
+				main_size += w->vertical ? ch : cw;
+				cross_size = std::max(cross_size, w->vertical ? cw : ch);
+				count++;
+			}
+			if (count > 1 && st) main_size += st->sash_size;
+			w->intrinsic_w = (w->vertical ? cross_size : main_size) + pl + pr;
+			w->intrinsic_h = (w->vertical ? main_size : cross_size) + pt + pb;
+		}
+		break;
+		case VGUI_TABVIEW:
+		{
+			vgui_tab_state* st = vgui_tabs_of(w);
+			float content_w = 0.0f, content_h = 0.0f;
+			if (st)
+			{
+				for (const vgui_tab_item& tab : st->tabs)
+				{
+					if (!tab.page) continue;
+					vgui_measure_widget(tab.page, ctx);
+					content_w = std::max(content_w, vgui_child_req_w(tab.page));
+					content_h = std::max(content_h, vgui_child_req_h(tab.page));
+				}
+			}
+			float tab_w = vgui_tab_bar_width(w);
+			float tab_h = st ? st->tab_height : 0.0f;
+			w->content_w = std::max(content_w, tab_w);
+			w->content_h = content_h + tab_h;
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : (std::max(content_w, tab_w) + pl + pr);
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : (content_h + tab_h + pt + pb);
+		}
+		break;
 		case VGUI_CUSTOM:
 			if (w->custom_size)
 			{
@@ -2524,6 +2780,193 @@ namespace {
 		}
 	}
 
+	static void vgui_layout_pane(vgui_widget* child, vgui_context* ctx,
+		float x, float y, float ww, float hh)
+	{
+		// A forced zero size means "collapsed", not "use the intrinsic size"
+		// (vgui_layout_widget() treats non-positive force values as auto).
+		if (!child) return;
+		if (ww > 0.0f && hh > 0.0f)
+		{
+			vgui_layout_widget(child, ctx, x, y, ww, hh);
+			return;
+		}
+		child->abs_x = x;
+		child->abs_y = y;
+		child->abs_w = std::max(0.0f, ww);
+		child->abs_h = std::max(0.0f, hh);
+	}
+
+	static void vgui_layout_splitter(vgui_widget* w, vgui_context* ctx, float x, float y, float ww, float hh)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(w);
+		if (!st) return;
+		float ix = x + w->padding[0];
+		float iy = y + w->padding[1];
+		float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
+		w->content_w = iw;
+		w->content_h = ih;
+
+		std::vector<vgui_widget*> visible;
+		for (vgui_widget* c : w->children)
+			if (c->visible) visible.push_back(c);
+		st->sash_x = st->sash_y = st->sash_w = st->sash_h = 0.0f;
+		if (visible.empty()) return;
+		if (visible.size() == 1)
+		{
+			vgui_layout_pane(visible[0], ctx, ix, iy, iw, ih);
+			return;
+		}
+
+		vgui_widget* first = visible[0];
+		vgui_widget* second = visible[1];
+		bool vertical = w->vertical != 0;
+		float main = vertical ? ih : iw;
+		float sash = std::max(0.0f, st->sash_size);
+		if (sash > main) sash = main;
+		float avail = std::max(0.0f, main - sash);
+
+		float min0 = vertical ? first->min_h : first->min_w;
+		float min1 = vertical ? second->min_h : second->min_w;
+		min0 = vgui_clampf(min0, 0.0f, avail);
+		min1 = vgui_clampf(min1, 0.0f, avail);
+		if (min0 + min1 > avail && min0 + min1 > 0.0f)
+		{
+			float scale = avail / (min0 + min1);
+			min0 *= scale;
+			min1 *= scale;
+		}
+
+		float ratio = vgui_clampf(w->value, 0.0f, 1.0f);
+		float first_size = avail * ratio;
+		float lo = min0;
+		float hi = std::max(lo, avail - min1);
+		first_size = vgui_clampf(first_size, lo, hi);
+		float second_size = std::max(0.0f, avail - first_size);
+
+		if (vertical)
+		{
+			vgui_layout_pane(first, ctx, ix, iy, iw, first_size);
+			vgui_layout_pane(second, ctx, ix, iy + first_size + sash, iw, second_size);
+			st->sash_x = ix;
+			st->sash_y = iy + first_size;
+			st->sash_w = iw;
+			st->sash_h = sash;
+		}
+		else
+		{
+			vgui_layout_pane(first, ctx, ix, iy, first_size, ih);
+			vgui_layout_pane(second, ctx, ix + first_size + sash, iy, second_size, ih);
+			st->sash_x = ix + first_size;
+			st->sash_y = iy;
+			st->sash_w = sash;
+			st->sash_h = ih;
+		}
+	}
+
+	static void vgui_tab_update_pages(vgui_widget* w)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return;
+		vgui_tab_item* active = vgui_tab_find(w, st->active);
+		vgui_widget* active_page = active ? active->page : nullptr;
+		for (vgui_widget* c : w->children)
+			c->visible = (c == active_page) ? 1 : 0;
+		if (w->ctx) w->ctx->layout_dirty = true;
+	}
+
+	static void vgui_tab_ensure_visible(vgui_widget* w, vgui_item_id item)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		int index = vgui_tab_find_index(w, item);
+		if (!st || index < 0 || w->abs_w <= 0.0f) return;
+		float ix = w->abs_x + w->padding[0];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		if (!vgui_tab_rect(w, index, &tx, &ty, &tw, &th)) return;
+		float max_scroll = std::max(0.0f, vgui_tab_bar_width(w) - iw);
+		if (tx < ix)
+			w->scroll_x = vgui_clampf(w->scroll_x - (ix - tx), 0.0f, max_scroll);
+		else if (tx + tw > ix + iw)
+			w->scroll_x = vgui_clampf(w->scroll_x + (tx + tw - (ix + iw)), 0.0f, max_scroll);
+		if (w->ctx) w->ctx->layout_dirty = true;
+	}
+
+	static bool vgui_tab_set_active_internal(vgui_widget* w, vgui_item_id item, bool notify)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return false;
+		vgui_tab_item* tab = vgui_tab_find(w, item);
+		if (!tab) return false;
+		bool changed = (st->active != item);
+		st->active = item;
+		vgui_tab_update_pages(w);
+		vgui_tab_ensure_visible(w, item);
+		if (w->ctx) w->ctx->layout_dirty = true;
+		if (notify && changed && st->select_fn)
+			st->select_fn(w, item, st->select_user);
+		return true;
+	}
+
+	static bool vgui_tab_move_internal(vgui_widget* w, vgui_item_id item, int index)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		int current = vgui_tab_find_index(w, item);
+		if (!st || current < 0) return false;
+		int target = index;
+		if (target < 0) target = 0;
+		if (target >= (int)st->tabs.size()) target = (int)st->tabs.size() - 1;
+		if (target == current) return true;
+		vgui_tab_item moved = st->tabs[(size_t)current];
+		st->tabs.erase(st->tabs.begin() + current);
+		st->tabs.insert(st->tabs.begin() + target, moved);
+		st->index.clear();
+		for (size_t i = 0; i < st->tabs.size(); ++i)
+			st->index[st->tabs[i].id] = i;
+		if (w->ctx) w->ctx->layout_dirty = true;
+		return true;
+	}
+
+	static void vgui_tab_request_close(vgui_widget* w, vgui_item_id item)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		vgui_tab_item* tab = vgui_tab_find(w, item);
+		if (!st || !tab || !tab->closeable) return;
+		if (st->close_fn)
+		{
+			st->close_fn(w, item, st->close_user);
+			return;
+		}
+		vgui_tab_remove(w, item);
+	}
+
+	static void vgui_layout_tabview(vgui_widget* w, vgui_context* ctx, float x, float y, float ww, float hh)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return;
+		float ix = x + w->padding[0];
+		float iy = y + w->padding[1];
+		float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
+		float tab_h = std::min(st->tab_height, ih);
+		float content_h = std::max(0.0f, ih - tab_h);
+		float tab_w = vgui_tab_bar_width(w);
+		float max_scroll = std::max(0.0f, tab_w - iw);
+		w->scroll_x = vgui_clampf(w->scroll_x, 0.0f, max_scroll);
+		w->content_w = std::max(tab_w, iw);
+		w->content_h = content_h + tab_h;
+
+		vgui_tab_item* active = vgui_tab_find(w, st->active);
+		vgui_widget* active_page = active ? active->page : nullptr;
+		for (vgui_widget* c : w->children)
+		{
+			c->visible = (c == active_page) ? 1 : 0;
+			if (c->visible)
+				vgui_layout_pane(c, ctx, ix, iy + tab_h, iw, content_h);
+		}
+	}
+
 	static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y, float forced_w, float forced_h)
 	{
 		if (!w || !w->visible) return;
@@ -2556,6 +2999,17 @@ namespace {
 			if (w->scrollable_y) w->scroll_y = vgui_clampf(w->scroll_y, 0.0f, max_sy);
 			else w->scroll_y = 0;
 			(void)ix; (void)iy;
+			return;
+		}
+
+		if (w->kind == VGUI_SPLITTER)
+		{
+			vgui_layout_splitter(w, ctx, x, y, ww, hh);
+			return;
+		}
+		if (w->kind == VGUI_TABVIEW)
+		{
+			vgui_layout_tabview(w, ctx, x, y, ww, hh);
 			return;
 		}
 
@@ -2739,6 +3193,10 @@ namespace {
 	{
 		if (!w || !w->visible || !w->enabled || w->destroy_pending) return nullptr;
 		if (!vgui_point_in(w, x, y)) return nullptr;
+		if (w->kind == VGUI_SPLITTER && vgui_splitter_sash_hit(w, x, y))
+			return w;
+		if (w->kind == VGUI_TABVIEW && vgui_tab_bar_hit(w, x, y))
+			return w;
 		for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
 		{
 			vgui_widget* r = vgui_hit_rec(*it, x, y);
@@ -4859,6 +5317,121 @@ namespace {
 		}
 	}
 
+	static void vgui_splitter_drag_to(vgui_widget* w, float x, float y)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(w);
+		if (!st || !st->dragging) return;
+		bool vertical = w->vertical != 0;
+		float main = vertical ? (w->abs_h - w->padding[1] - w->padding[3])
+			: (w->abs_w - w->padding[0] - w->padding[2]);
+		main = std::max(0.0f, main);
+		float sash = vgui_clampf(st->sash_size, 0.0f, main);
+		float avail = std::max(0.0f, main - sash);
+		vgui_widget* first_child = nullptr;
+		vgui_widget* second_child = nullptr;
+		for (vgui_widget* c : w->children)
+		{
+			if (!c->visible) continue;
+			if (!first_child) first_child = c;
+			else { second_child = c; break; }
+		}
+		if (!first_child || !second_child) return;
+		float min0 = vertical ? first_child->min_h : first_child->min_w;
+		float min1 = vertical ? second_child->min_h : second_child->min_w;
+		min0 = vgui_clampf(min0, 0.0f, avail);
+		min1 = vgui_clampf(min1, 0.0f, avail);
+		if (min0 + min1 > avail && min0 + min1 > 0.0f)
+		{
+			float scale = avail / (min0 + min1);
+			min0 *= scale;
+			min1 *= scale;
+		}
+		float pos = vertical ? (y - w->abs_y - w->padding[1])
+			: (x - w->abs_x - w->padding[0]);
+		float first = pos - sash * 0.5f;
+		float lo = min0;
+		float hi = std::max(lo, avail - min1);
+		first = vgui_clampf(first, lo, hi);
+		float ratio = avail > 0.0f ? first / avail : 0.5f;
+		if (std::fabs(ratio - w->value) > 0.0001f)
+		{
+			w->value = ratio;
+			st->changed = 1;
+			if (w->ctx)
+			{
+				w->ctx->layout_dirty = true;
+				vgui_ensure_layout(w->ctx);
+			}
+		}
+	}
+
+	static bool vgui_tab_key(vgui_widget* w, int key, int down, int mods)
+	{
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!st) return false;
+		if (!down) return false;
+		int current = vgui_tab_find_index(w, st->active);
+		int count = (int)st->tabs.size();
+
+		if ((mods & VGUI_MOD_CTRL) && (key == 'W' || key == VGUI_KEY_DELETE))
+		{
+			if (current >= 0 && st->tabs[(size_t)current].closeable)
+				vgui_tab_request_close(w, st->active);
+			return true;
+		}
+		if ((mods & VGUI_MOD_CTRL) && key == VGUI_KEY_TAB)
+		{
+			if (count > 0)
+			{
+				int step = (mods & VGUI_MOD_SHIFT) ? -1 : 1;
+				int start = current < 0 ? 0 : current;
+				for (int i = 1; i <= count; ++i)
+				{
+					int next = (start + step * i) % count;
+					if (next < 0) next += count;
+					if (st->tabs[(size_t)next].enabled)
+					{
+						vgui_tab_set_active_internal(w, st->tabs[(size_t)next].id, true);
+						return true;
+					}
+				}
+			}
+			return true;
+		}
+		if (key == VGUI_KEY_HOME || key == VGUI_KEY_END ||
+			key == VGUI_KEY_LEFT || key == VGUI_KEY_RIGHT ||
+			key == VGUI_KEY_UP || key == VGUI_KEY_DOWN)
+		{
+			if (count <= 0) return true;
+			int target = -1;
+			if (key == VGUI_KEY_HOME)
+			{
+				for (int i = 0; i < count; ++i)
+					if (st->tabs[(size_t)i].enabled) { target = i; break; }
+			}
+			else if (key == VGUI_KEY_END)
+			{
+				for (int i = count - 1; i >= 0; --i)
+					if (st->tabs[(size_t)i].enabled) { target = i; break; }
+			}
+			else
+			{
+				int step = (key == VGUI_KEY_LEFT || key == VGUI_KEY_UP) ? -1 : 1;
+				int start = current < 0 ? 0 : current;
+				for (int i = 1; i <= count; ++i)
+				{
+					int next = (start + step * i) % count;
+					if (next < 0) next += count;
+					if (st->tabs[(size_t)next].enabled) { target = next; break; }
+				}
+			}
+			if (target >= 0)
+				vgui_tab_set_active_internal(w, st->tabs[(size_t)target].id, true);
+			return true;
+		}
+		return false;
+	}
+
 	static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	{
 		if (!ctx) return 0;
@@ -4907,6 +5480,11 @@ namespace {
 			if (old && ctx->alive.count(old))
 			{
 				old->hovered = 0;
+				if (old->kind == VGUI_TABVIEW && old->tabs)
+				{
+					old->tabs->hover = 0;
+					old->tabs->close_hover = 0;
+				}
 				vgui_emit(old, VGUI_EVENT_LEAVE, x - old->abs_x, y - old->abs_y);
 			}
 			ctx->hot = h;
@@ -4938,6 +5516,19 @@ namespace {
 				if (h->tree) h->tree->hover = item;
 				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, row, x - h->abs_x, y - h->abs_y);
 			}
+			else if (h->kind == VGUI_TABVIEW)
+			{
+				bool over_close = false;
+				int index = vgui_tab_index_at(h, x, y, &over_close);
+				vgui_tab_state* ts = vgui_tabs_of(h);
+				vgui_item_id item = (ts && index >= 0) ? ts->tabs[(size_t)index].id : 0;
+				if (ts)
+				{
+					ts->hover = item;
+					ts->close_hover = over_close ? item : 0;
+				}
+				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, index, x - h->abs_x, y - h->abs_y);
+			}
 			else
 			{
 				vgui_emit(h, VGUI_EVENT_MOUSE_MOVE, x - h->abs_x, y - h->abs_y);
@@ -4947,7 +5538,13 @@ namespace {
 		if (ctx->active && ctx->alive.count(ctx->active))
 		{
 			vgui_widget* a = ctx->active;
-			if (a->scroll_drag_axis || (a->kind == VGUI_EDIT && a->edit_scroll_drag))
+			bool splitter_dragging = (a->kind == VGUI_SPLITTER && a->splitter && a->splitter->dragging);
+			if (splitter_dragging)
+			{
+				vgui_splitter_drag_to(a, x, y);
+				if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
+			}
+			else if (a->scroll_drag_axis || (a->kind == VGUI_EDIT && a->edit_scroll_drag))
 			{
 				vgui_scrollbar_drag_to(a, x, y);
 				if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
@@ -4962,18 +5559,42 @@ namespace {
 				vgui_edit_drag_to(a, x, y);
 				if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
 			}
-			if (a != h)
+			else if (a->kind == VGUI_TABVIEW && a->tabs && a->tabs->drag_item)
+			{
+				vgui_tab_state* ts = a->tabs.get();
+				if (std::fabs(x - ts->drag_start_x) > 4.0f)
+					ts->drag_active = 1;
+				if (ts->drag_active)
+				{
+					int current = vgui_tab_find_index(a, ts->drag_item);
+					int drop = vgui_tab_drop_index(a, x);
+					if (drop > current) drop--;
+					if (current >= 0 && drop >= 0 && drop != current)
+						vgui_tab_move_internal(a, ts->drag_item, drop);
+				}
+			}
+			if (a != h && ctx->alive.count(a))
 				vgui_emit(a, VGUI_EVENT_MOUSE_MOVE, x - a->abs_x, y - a->abs_y);
 			bool dragging_bar = a->scroll_drag_axis || (a->kind == VGUI_EDIT && a->edit_scroll_drag);
 			if (dragging_bar || over_scrollbar)
 				ctx->cursor = VGUI_CURSOR_ARROW;
+			else if (splitter_dragging || a->kind == VGUI_SPLITTER)
+				ctx->cursor = vgui_splitter_cursor(a);
+			else if (a->kind == VGUI_TABVIEW && vgui_tab_bar_hit(a, x, y))
+				ctx->cursor = VGUI_CURSOR_HAND;
 			else
 				ctx->cursor = a->enabled ? a->cursor_type : VGUI_CURSOR_ARROW;
 		}
 		else
 		{
-			ctx->cursor = (over_scrollbar || !h || !h->enabled)
-				? VGUI_CURSOR_ARROW : h->cursor_type;
+			if (over_scrollbar || !h || !h->enabled)
+				ctx->cursor = VGUI_CURSOR_ARROW;
+			else if (h->kind == VGUI_SPLITTER)
+				ctx->cursor = vgui_splitter_cursor(h);
+			else if (h->kind == VGUI_TABVIEW && vgui_tab_bar_hit(h, x, y))
+				ctx->cursor = VGUI_CURSOR_HAND;
+			else
+				ctx->cursor = h->cursor_type;
 		}
 
 		ctx->want_mouse = (h != nullptr) || (ctx->active != nullptr);
@@ -5033,6 +5654,78 @@ namespace {
 		if (button == 1 && over_scrollbar)
 		{
 			vgui_scrollbar_begin(ctx, sw, axis, x, y);
+			vgui_end_input(ctx);
+			return 1;
+		}
+
+		if (h && h->enabled && h->kind == VGUI_SPLITTER)
+		{
+			vgui_splitter_state* st = vgui_splitter_of(h);
+			vgui_set_focus_internal(ctx, h);
+			h->pressed = 1;
+			h->pressed_button = button;
+			ctx->active = h;
+			ctx->press_target = h;
+			ctx->press_button = button;
+			if (st)
+			{
+				if (button == 1 && clicks >= 2)
+				{
+					h->value = st->default_ratio;
+					st->dragging = 0;
+					st->changed = 1;
+					ctx->layout_dirty = true;
+					vgui_ensure_layout(ctx);
+				}
+				else
+				{
+					st->dragging = (button == 1) ? 1 : 0;
+					st->changed = 0;
+				}
+			}
+			vgui_emit(h, VGUI_EVENT_MOUSE_DOWN, x - h->abs_x, y - h->abs_y, button, clicks);
+			ctx->want_mouse = 1;
+			ctx->cursor = vgui_splitter_cursor(h);
+			vgui_end_input(ctx);
+			return 1;
+		}
+
+		if (h && h->enabled && h->kind == VGUI_TABVIEW)
+		{
+			vgui_tab_state* st = vgui_tabs_of(h);
+			vgui_set_focus_internal(ctx, h);
+			h->pressed = 1;
+			h->pressed_button = button;
+			ctx->active = h;
+			ctx->press_target = h;
+			ctx->press_button = button;
+			bool over_close = false;
+			int index = vgui_tab_index_at(h, x, y, &over_close);
+			vgui_item_id item = (st && index >= 0) ? st->tabs[(size_t)index].id : 0;
+			if (st && item && item != 0)
+			{
+				vgui_tab_item* tab = &st->tabs[(size_t)index];
+				if (button == 1 && tab->enabled)
+				{
+					if (over_close)
+					{
+						st->close_pressed = item;
+					}
+					else
+					{
+						st->pressed = item;
+						st->drag_item = item;
+						st->drag_start_x = x;
+						st->drag_active = 0;
+						vgui_tab_set_active_internal(h, item, true);
+						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+					}
+				}
+				vgui_item_event(h, VGUI_EVENT_MOUSE_DOWN, item, index,
+					x - h->abs_x, y - h->abs_y, button, clicks);
+			}
+			ctx->want_mouse = 1;
+			ctx->cursor = vgui_tab_bar_hit(h, x, y) ? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
 			vgui_end_input(ctx);
 			return 1;
 		}
@@ -5188,6 +5881,47 @@ namespace {
 		}
 		ctx->active = nullptr;
 
+		if (target && target->kind == VGUI_TABVIEW)
+		{
+			vgui_tab_state* st = vgui_tabs_of(target);
+			bool over_close = false;
+			int index = vgui_tab_index_at(target, x, y, &over_close);
+			vgui_item_id item = (st && index >= 0) ? st->tabs[(size_t)index].id : 0;
+			vgui_item_id pressed_item = st ? st->pressed : 0;
+			vgui_item_id close_item = st ? st->close_pressed : 0;
+			int dragged = st ? st->drag_active : 0;
+			float lx = x - target->abs_x;
+			float ly = y - target->abs_y;
+			target->pressed = 0;
+			ctx->press_target = nullptr;
+			ctx->slider_drag = nullptr;
+			if (st)
+			{
+				st->pressed = 0;
+				st->drag_item = 0;
+				st->drag_active = 0;
+				st->close_pressed = 0;
+			}
+			vgui_item_event(target, VGUI_EVENT_MOUSE_UP, item, index, lx, ly, button, clicks);
+			if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
+
+			if (close_item && item == close_item && over_close)
+			{
+				vgui_tab_request_close(target, close_item);
+				if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
+			}
+			else if (!dragged && item && item == pressed_item && target->enabled)
+			{
+				vgui_event_type ct = VGUI_EVENT_CLICK;
+				if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
+				else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
+				vgui_item_event(target, ct, item, index, lx, ly, button, clicks);
+			}
+			ctx->want_mouse = ctx->hot != nullptr;
+			vgui_end_input(ctx);
+			return 1;
+		}
+
 		if (target && (target->kind == VGUI_LIST || target->kind == VGUI_TREE))
 		{
 			float lx = x - target->abs_x;
@@ -5245,11 +5979,18 @@ namespace {
 			bool inside = (h == target || (h && h->parent == target));
 			float lx = x - target->abs_x;
 			float ly = y - target->abs_y;
+			bool splitter_changed = false;
 
 			// Clear press state before invoking user code so callbacks can
 			// safely inspect the widget.
 			target->pressed = 0;
 			if (target->kind == VGUI_EDIT) target->edit_drag = 0;
+			if (target->kind == VGUI_SPLITTER && target->splitter)
+			{
+				splitter_changed = target->splitter->changed != 0;
+				target->splitter->changed = 0;
+				target->splitter->dragging = 0;
+			}
 			ctx->press_target = nullptr;
 			ctx->slider_drag = nullptr;
 
@@ -5278,6 +6019,12 @@ namespace {
 				if (!ctx->alive.count(target)) { vgui_end_input(ctx); return ret; }
 
 				vgui_activate_widget(target, clicks);
+				if (splitter_changed && ctx->alive.count(target))
+					vgui_notify_value(target);
+			}
+			else if (splitter_changed && ctx->alive.count(target))
+			{
+				vgui_notify_value(target);
 			}
 		}
 
@@ -5382,6 +6129,22 @@ namespace {
 		vgui_widget* edit = vgui_find_edit(h);
 		if (edit && (wx != 0 || wy != 0))
 			consumed = vgui_edit_wheel(ctx, edit, wx, wy) ? 1 : 0;
+		if ((wx != 0 || wy != 0) && !consumed)
+		{
+			for (vgui_widget* p = h; p; p = p->parent)
+			{
+				if (p->kind != VGUI_TABVIEW || !vgui_tab_bar_hit(p, ctx->mouse_x, ctx->mouse_y))
+					continue;
+				float iw = std::max(0.0f, p->abs_w - p->padding[0] - p->padding[2]);
+				float max_scroll = std::max(0.0f, vgui_tab_bar_width(p) - iw);
+				float delta = wx != 0.0f ? wx : wy;
+				p->scroll_x = vgui_clampf(p->scroll_x - delta * 40.0f, 0.0f, max_scroll);
+				ctx->layout_dirty = true;
+				vgui_ensure_layout(ctx);
+				consumed = 1;
+				break;
+			}
+		}
 		if (wy != 0 && !consumed)
 		{
 			vgui_widget* p = vgui_find_scroll_panel(h, true);
@@ -5435,7 +6198,7 @@ namespace {
 			return 1;
 		}
 
-		if (down && key == VGUI_KEY_TAB)
+		if (down && key == VGUI_KEY_TAB && (mods & VGUI_MOD_CTRL) == 0)
 		{
 			vgui_focus_next_impl(ctx, (mods & VGUI_MOD_SHIFT) != 0);
 			vgui_end_input(ctx);
@@ -5462,6 +6225,11 @@ namespace {
 		else if (f->kind == VGUI_TREE)
 		{
 			handled = vgui_tree_key(f, key, down, mods) ? 1 : 0;
+			if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
+		}
+		else if (f->kind == VGUI_TABVIEW)
+		{
+			handled = vgui_tab_key(f, key, down, mods) ? 1 : 0;
 			if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
 		}
 		else
@@ -7142,6 +7910,162 @@ namespace {
 			vgui_draw_menu_chain(st->submenu_open, cb, vg, clips);
 	}
 
+	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips);
+
+	static void vgui_draw_splitter(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		if (!ctx) return;
+		if (w->bg)
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+				vgui_widget_color(w, w->bg));
+		if (w->border_width > 0 && w->border)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				vgui_widget_color(w, w->border), w->border_width);
+		}
+
+		cb->save(vg);
+		if (w->clip_children)
+			vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+		for (vgui_widget* c : w->children)
+			vgui_draw_widget(c, cb, vg, clips);
+		if (w->clip_children)
+			vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+
+		vgui_splitter_state* st = vgui_splitter_of(w);
+		if (st && st->sash_w > 0.0f && st->sash_h > 0.0f)
+		{
+			bool hot = w->hovered || w->pressed;
+			uint32_t color = hot ? ctx->theme.accent
+				: (w->border ? w->border : ctx->theme.panel_border);
+			vgui_fill_rect(cb, vg, st->sash_x, st->sash_y, st->sash_w, st->sash_h, 0.0f,
+				vgui_widget_color(w, color));
+
+			uint32_t grip = ctx->theme.checkmark ? ctx->theme.checkmark : ctx->theme.text;
+			grip = vgui_widget_color(w, vgui_alpha_color(grip, hot ? 0.85f : 0.45f));
+			if (st->sash_w >= 4.0f && st->sash_h >= 12.0f)
+			{
+				float cx = st->sash_x + st->sash_w * 0.5f;
+				float cy = st->sash_y + st->sash_h * 0.5f;
+				for (int i = -1; i <= 1; ++i)
+					vgui_fill_rect(cb, vg, cx - 1.0f, cy + i * 6.0f - 1.0f, 2.0f, 2.0f, 1.0f, grip);
+			}
+			else if (st->sash_w >= 12.0f && st->sash_h >= 4.0f)
+			{
+				float cx = st->sash_x + st->sash_w * 0.5f;
+				float cy = st->sash_y + st->sash_h * 0.5f;
+				for (int i = -1; i <= 1; ++i)
+					vgui_fill_rect(cb, vg, cx + i * 6.0f - 1.0f, cy - 1.0f, 2.0f, 2.0f, 1.0f, grip);
+			}
+		}
+		vgui_draw_focus(w, cb, vg);
+	}
+
+	static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_tab_state* st = vgui_tabs_of(w);
+		if (!ctx || !st) return;
+
+		if (w->bg)
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+				vgui_widget_color(w, w->bg));
+		if (w->border_width > 0 && w->border)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				vgui_widget_color(w, w->border), w->border_width);
+		}
+
+		float ix = w->abs_x + w->padding[0];
+		float iy = w->abs_y + w->padding[1];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		float tab_h = std::min(st->tab_height, ih);
+		float content_h = std::max(0.0f, ih - tab_h);
+
+		cb->save(vg);
+		if (content_h > 0.0f)
+		{
+			vgui_clip_push(clips, cb, vg, ix, iy + tab_h, iw, content_h);
+			for (vgui_widget* c : w->children)
+				vgui_draw_widget(c, cb, vg, clips);
+			vgui_clip_pop(clips, cb, vg);
+		}
+		cb->restore(vg);
+
+		uint32_t bar_bg = ctx->theme.button_bg ? ctx->theme.button_bg : ctx->theme.panel_bg;
+		uint32_t border = w->border ? w->border : ctx->theme.panel_border;
+		vgui_fill_rect(cb, vg, ix, iy, iw, tab_h, 0.0f, vgui_widget_color(w, bar_bg));
+		vgui_fill_rect(cb, vg, ix, iy + std::max(0.0f, tab_h - 1.0f), iw, 1.0f, 0.0f,
+			vgui_widget_color(w, border));
+
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, ix, iy, iw, tab_h);
+		for (int i = 0; i < (int)st->tabs.size(); ++i)
+		{
+			const vgui_tab_item& tab = st->tabs[(size_t)i];
+			float tx = 0, ty = 0, tw = 0, th = 0;
+			if (!vgui_tab_rect(w, i, &tx, &ty, &tw, &th)) continue;
+			if (tx + tw < ix || tx > ix + iw) continue;
+
+			bool active = tab.id == st->active;
+			bool hover = tab.id == st->hover;
+			bool pressed = tab.id == st->pressed;
+			bool disabled = !tab.enabled || !w->enabled;
+			uint32_t bg = active ? (w->bg ? w->bg : ctx->theme.panel_bg)
+				: pressed ? ctx->theme.button_active
+				: hover ? ctx->theme.button_hover : ctx->theme.button_bg;
+			if (disabled) bg = vgui_mix_color(bg, ctx->theme.disabled, 0.35f);
+			vgui_fill_rect(cb, vg, tx + 1.0f, ty + 2.0f, std::max(0.0f, tw - 2.0f),
+				std::max(0.0f, th - 3.0f), 3.0f, vgui_widget_color(w, bg));
+
+			if (active)
+				vgui_fill_rect(cb, vg, tx + 1.0f, ty + th - 2.0f, std::max(0.0f, tw - 2.0f), 2.0f,
+					0.0f, vgui_widget_color(w, ctx->theme.accent));
+
+			if (tab.unsaved)
+				vgui_fill_rect(cb, vg, tx + st->tab_padding * 0.5f, ty + th * 0.5f - 2.0f,
+					4.0f, 4.0f, 2.0f,
+					vgui_widget_color(w, disabled ? ctx->theme.disabled : ctx->theme.accent));
+
+			float text_x = tx + st->tab_padding;
+			if (tab.unsaved) text_x += 10.0f;
+			float close_space = tab.closeable ? (st->close_size + 8.0f) : 0.0f;
+			float text_w = std::max(0.0f, tx + tw - st->tab_padding * 0.5f - close_space - text_x);
+			uint32_t text_color = disabled ? ctx->theme.disabled
+				: (active ? ctx->theme.text : (ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text));
+			vgui_draw_text_clipped(ctx, cb, vg, w, tab.title, text_x, ty,
+				text_w, th, vgui_widget_color(w, text_color), 0.0f, 0.5f, clips);
+
+			float cx = 0, cy = 0, cw = 0, ch = 0;
+			if (vgui_tab_close_rect(w, i, &cx, &cy, &cw, &ch))
+			{
+				bool close_hot = st->close_hover == tab.id || st->close_pressed == tab.id;
+				uint32_t close_color = disabled ? ctx->theme.disabled
+					: close_hot ? ctx->theme.accent_hover : ctx->theme.row_text;
+				if (close_color == 0) close_color = ctx->theme.text;
+				cb->set_line_width(vg, 1.4f);
+				cb->set_line_cap(vg, 1);
+				float inset = std::max(2.0f, cw * 0.28f);
+				cb->move_to(vg, cx + inset, cy + inset);
+				cb->line_to(vg, cx + cw - inset, cy + ch - inset);
+				cb->move_to(vg, cx + cw - inset, cy + inset);
+				cb->line_to(vg, cx + inset, cy + ch - inset);
+				cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, close_color)));
+				cb->stroke(vg);
+			}
+		}
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		vgui_draw_focus(w, cb, vg);
+	}
+
 	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		if (!w || !w->visible || w->abs_w <= 0 || w->abs_h <= 0) return;
@@ -7149,6 +8073,17 @@ namespace {
 		if (w->abs_x + w->abs_w < 0 || w->abs_y + w->abs_h < 0 || (vg->width > 0 && w->abs_x > vg->width) || (vg->height > 0 && w->abs_y > vg->height))
 			return;
 		vgui_context* ctx = w->ctx;
+
+		if (w->kind == VGUI_SPLITTER)
+		{
+			vgui_draw_splitter(w, cb, vg, clips);
+			return;
+		}
+		if (w->kind == VGUI_TABVIEW)
+		{
+			vgui_draw_tabview(w, cb, vg, clips);
+			return;
+		}
 
 		if (w->kind == VGUI_PANEL)
 		{
@@ -7757,6 +8692,13 @@ extern "C" {
 			if (!ctx->in_input) vgui_flush_pending(ctx);
 			return;
 		}
+		if (panel->kind == VGUI_TABVIEW)
+		{
+			vgui_tab_clear(panel);
+			ctx->layout_dirty = true;
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return;
+		}
 		std::vector<vgui_widget*> children = panel->children;
 		for (vgui_widget* c : children)
 			vgui_schedule_destroy(c);
@@ -8326,6 +9268,302 @@ extern "C" {
 		if (panel && panel->ctx) vgui_ensure_layout(panel->ctx);
 		if (width) *width = panel ? panel->content_w : 0;
 		if (height) *height = panel ? panel->content_h : 0;
+	}
+
+	//----------------------------------------------------------------------------
+	// splitter
+	//----------------------------------------------------------------------------
+
+	void vgui_splitter_set_vertical(vgui_widget* splitter, int vertical)
+	{
+		if (!splitter || splitter->kind != VGUI_SPLITTER) return;
+		splitter->vertical = vertical ? 1 : 0;
+		vgui_mark_dirty(splitter);
+	}
+
+	int vgui_splitter_get_vertical(vgui_widget* splitter)
+	{
+		return (splitter && splitter->kind == VGUI_SPLITTER) ? splitter->vertical : 0;
+	}
+
+	void vgui_splitter_set_ratio(vgui_widget* splitter, float ratio)
+	{
+		if (!splitter || splitter->kind != VGUI_SPLITTER) return;
+		splitter->value = vgui_clampf(ratio, 0.0f, 1.0f);
+		vgui_mark_dirty(splitter);
+	}
+
+	float vgui_splitter_get_ratio(vgui_widget* splitter)
+	{
+		if (!splitter || splitter->kind != VGUI_SPLITTER) return 0.0f;
+		return vgui_clampf(splitter->value, 0.0f, 1.0f);
+	}
+
+	void vgui_splitter_set_sash_size(vgui_widget* splitter, float size)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(splitter);
+		if (!st) return;
+		st->sash_size = std::max(0.0f, size);
+		vgui_mark_dirty(splitter);
+	}
+
+	float vgui_splitter_get_sash_size(vgui_widget* splitter)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(splitter);
+		return st ? st->sash_size : 0.0f;
+	}
+
+	void vgui_splitter_reset(vgui_widget* splitter)
+	{
+		vgui_splitter_state* st = vgui_splitter_of(splitter);
+		if (!st) return;
+		splitter->value = st->default_ratio;
+		st->dragging = 0;
+		st->changed = 0;
+		vgui_mark_dirty(splitter);
+	}
+
+	//----------------------------------------------------------------------------
+	// tab view
+	//----------------------------------------------------------------------------
+
+	vgui_item_id vgui_tab_add(vgui_widget* tabs, const char* title, vgui_widget* page)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st) return 0;
+		vgui_item_id id = 0;
+		do
+		{
+			id = st->next_id++;
+			if (st->next_id == 0) st->next_id = 1;
+		} while (id == 0 || st->index.find(id) != st->index.end());
+
+		if (page)
+		{
+			if (page->ctx != tabs->ctx || page == tabs || page == tabs->ctx->root ||
+				page->kind == VGUI_MENU || page->destroy_pending)
+				page = nullptr;
+			else
+			{
+				for (vgui_widget* p = tabs; p; p = p->parent)
+				{
+					if (p != page) continue;
+					page = nullptr;
+					break;
+				}
+			}
+		}
+		vgui_tab_item item;
+		item.id = id;
+		item.title = title ? title : "";
+		item.page = page;
+		st->index[id] = st->tabs.size();
+		st->tabs.push_back(item);
+
+		if (page)
+		{
+			vgui_widget_attach(tabs, page);
+			page->visible = 0;
+		}
+		if (st->active == 0)
+			vgui_tab_set_active_internal(tabs, id, false);
+		else
+			vgui_tab_update_pages(tabs);
+		if (tabs->ctx) tabs->ctx->layout_dirty = true;
+		return id;
+	}
+
+	int vgui_tab_remove(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		int index = vgui_tab_find_index(tabs, item);
+		if (!st || index < 0) return 0;
+		vgui_widget* page = st->tabs[(size_t)index].page;
+		bool was_active = (st->active == item);
+		vgui_item_id old_active = st->active;
+		st->tabs.erase(st->tabs.begin() + index);
+		st->index.clear();
+		for (size_t i = 0; i < st->tabs.size(); ++i)
+			st->index[st->tabs[i].id] = i;
+		if (was_active)
+		{
+			if (index < (int)st->tabs.size())
+				st->active = st->tabs[(size_t)index].id;
+			else if (!st->tabs.empty())
+				st->active = st->tabs.back().id;
+			else
+				st->active = 0;
+		}
+		vgui_tab_update_pages(tabs);
+		if (page && page->ctx == tabs->ctx)
+			vgui_widget_destroy(page);
+		if (tabs->ctx)
+		{
+			tabs->ctx->layout_dirty = true;
+			if (st->active != old_active && st->active != 0 && st->select_fn &&
+				tabs->ctx->alive.count(tabs))
+				st->select_fn(tabs, st->active, st->select_user);
+		}
+		return 1;
+	}
+
+	void vgui_tab_clear(vgui_widget* tabs)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st) return;
+		std::vector<vgui_widget*> pages;
+		for (const vgui_tab_item& tab : st->tabs)
+			if (tab.page) pages.push_back(tab.page);
+		st->tabs.clear();
+		st->index.clear();
+		st->active = 0;
+		st->hover = st->pressed = st->close_hover = st->close_pressed = 0;
+		st->drag_item = 0;
+		st->drag_active = 0;
+		vgui_tab_update_pages(tabs);
+		for (vgui_widget* page : pages)
+			if (page && page->ctx == tabs->ctx) vgui_widget_destroy(page);
+		if (tabs->ctx) tabs->ctx->layout_dirty = true;
+	}
+
+	int vgui_tab_get_count(vgui_widget* tabs)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		return st ? (int)st->tabs.size() : 0;
+	}
+
+	vgui_item_id vgui_tab_get_at(vgui_widget* tabs, int index)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st || index < 0 || index >= (int)st->tabs.size()) return 0;
+		return st->tabs[(size_t)index].id;
+	}
+
+	int vgui_tab_get_index(vgui_widget* tabs, vgui_item_id item)
+	{
+		return vgui_tab_find_index(tabs, item);
+	}
+
+	vgui_item_id vgui_tab_get_active(vgui_widget* tabs)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		return st ? st->active : 0;
+	}
+
+	int vgui_tab_set_active(vgui_widget* tabs, vgui_item_id item)
+	{
+		return vgui_tab_set_active_internal(tabs, item, true) ? 1 : 0;
+	}
+
+	vgui_widget* vgui_tab_get_page(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		return tab ? tab->page : nullptr;
+	}
+
+	const char* vgui_tab_get_title(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		return tab ? tab->title.c_str() : "";
+	}
+
+	void vgui_tab_set_title(vgui_widget* tabs, vgui_item_id item, const char* title)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		if (!tab) return;
+		tab->title = title ? title : "";
+		vgui_mark_dirty(tabs);
+	}
+
+	int vgui_tab_get_enabled(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		return tab ? tab->enabled : 0;
+	}
+
+	void vgui_tab_set_enabled(vgui_widget* tabs, vgui_item_id item, int enabled)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		if (!tab) return;
+		tab->enabled = enabled ? 1 : 0;
+		vgui_mark_dirty(tabs);
+	}
+
+	int vgui_tab_get_closeable(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		return tab ? tab->closeable : 0;
+	}
+
+	void vgui_tab_set_closeable(vgui_widget* tabs, vgui_item_id item, int closeable)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		if (!tab) return;
+		tab->closeable = closeable ? 1 : 0;
+		vgui_mark_dirty(tabs);
+	}
+
+	int vgui_tab_get_unsaved(vgui_widget* tabs, vgui_item_id item)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		return tab ? tab->unsaved : 0;
+	}
+
+	void vgui_tab_set_unsaved(vgui_widget* tabs, vgui_item_id item, int unsaved)
+	{
+		vgui_tab_item* tab = vgui_tab_find(tabs, item);
+		if (!tab) return;
+		tab->unsaved = unsaved ? 1 : 0;
+		vgui_mark_dirty(tabs);
+	}
+
+	int vgui_tab_move(vgui_widget* tabs, vgui_item_id item, int index)
+	{
+		if (!vgui_tab_move_internal(tabs, item, index)) return 0;
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (st && st->active != 0)
+			vgui_tab_ensure_visible(tabs, st->active);
+		if (tabs->ctx) tabs->ctx->layout_dirty = true;
+		return 1;
+	}
+
+	int vgui_tab_get_rect(vgui_widget* tabs, vgui_item_id item,
+		float* x, float* y, float* width, float* height)
+	{
+		if (tabs && tabs->ctx) vgui_ensure_layout(tabs->ctx);
+		int index = vgui_tab_find_index(tabs, item);
+		if (index < 0) return 0;
+		return vgui_tab_rect(tabs, index, x, y, width, height) ? 1 : 0;
+	}
+
+	void vgui_tab_set_tab_height(vgui_widget* tabs, float height)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st) return;
+		st->tab_height = std::max(1.0f, height);
+		vgui_mark_dirty(tabs);
+	}
+
+	float vgui_tab_get_tab_height(vgui_widget* tabs)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		return st ? st->tab_height : 0.0f;
+	}
+
+	void vgui_tab_on_select(vgui_widget* tabs, vgui_item_fn fn, void* user)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st) return;
+		st->select_fn = fn;
+		st->select_user = user;
+	}
+
+	void vgui_tab_on_close(vgui_widget* tabs, vgui_item_fn fn, void* user)
+	{
+		vgui_tab_state* st = vgui_tabs_of(tabs);
+		if (!st) return;
+		st->close_fn = fn;
+		st->close_user = user;
 	}
 
 	void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user)
@@ -9613,6 +10851,20 @@ extern "C" {
 				w->menu->hover = 0;
 				w->menu->pressed = 0;
 				w->menu->pending_submenu_item = 0;
+			}
+			if (w->splitter)
+			{
+				w->splitter->dragging = 0;
+				w->splitter->changed = 0;
+			}
+			if (w->tabs)
+			{
+				w->tabs->hover = 0;
+				w->tabs->pressed = 0;
+				w->tabs->close_hover = 0;
+				w->tabs->close_pressed = 0;
+				w->tabs->drag_item = 0;
+				w->tabs->drag_active = 0;
 			}
 		}
 		ctx->hot = nullptr;

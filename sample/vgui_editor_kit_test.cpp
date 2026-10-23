@@ -127,6 +127,27 @@ int main()
 		if (w <= 0.0f || h <= 0.0f)
 			return fail("shell layout size");
 
+		if (!shell.body_splitter() || !shell.workspace_splitter() || !shell.bottom_tabs())
+			return fail("shell layout handles");
+		if (vgui_widget_get_kind(shell.body_splitter()) != VGUI_SPLITTER ||
+			vgui_widget_get_kind(shell.workspace_splitter()) != VGUI_SPLITTER)
+			return fail("shell splitter kinds");
+		if (!vgui_splitter_get_vertical(shell.body_splitter()) ||
+			vgui_splitter_get_vertical(shell.workspace_splitter()))
+			return fail("shell splitter orientation");
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
+			return fail("shell bottom tab count");
+		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
+		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
+		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE")
+			return fail("shell bottom tab titles");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
+			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
+			return fail("shell console tab activation");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab restore");
+
 		vgui_item_id scene_root = shell.scene().add_node("Scene");
 		vgui_item_id cube = shell.scene().add_node("Cube", scene_root, 42);
 		if (scene_root == 0 || cube == 0)

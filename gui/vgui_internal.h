@@ -94,6 +94,8 @@ enum class cursor_st :uint32_t
 	cursor_wait,
 	cursor_no,
 	cursor_hand,
+	cursor_size_h,
+	cursor_size_v,
 };
 
 struct mouse_move_et

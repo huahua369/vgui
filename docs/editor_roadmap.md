@@ -160,15 +160,17 @@
 
 依赖：F01、F02、F03；Dock 依赖 Splitter/Tab。
 
-- [ ] **S01 Splitter**（P0，S）
+- [x] **S01 Splitter**（P0，S）
   - 水平/垂直、嵌套、最小尺寸、拖动改变比例、双击复位。
   - 拖动光标、悬停反馈、布局持久化。
   - 验收：三栏布局可拖动、不会把子面板压到最小尺寸以下；窗口 resize 后比例稳定。
+  - 已实现：核心 `VGUI_SPLITTER` 控件、公共 API、无窗口测试和 `editor_shell` 嵌套分栏。布局持久化由 F05 覆盖。
 
-- [ ] **S02 TabView**（P0，M）
+- [x] **S02 TabView**（P0，M）
   - 多标签页、关闭按钮、未保存标记、禁用页。
   - 拖动重排、溢出滚动、右键菜单、键盘切换/关闭。
   - 验收：多文档打开/关闭/重排正确；关闭未保存页能触发确认；标签溢出可滚动。
+  - 已实现：核心 `VGUI_TABVIEW`、关闭回调、未保存标记、禁用页、拖拽重排、滚轮溢出、键盘切换/关闭；右键通过带 item 的鼠标事件交给宿主菜单。
 
 - [ ] **S03 MenuBar + 命令/快捷键**（P0，M）
   - 顶层菜单、悬停切换、子菜单、分隔线、复选/禁用项。
@@ -523,15 +525,16 @@ MVP 验收场景：
 - `gui/editor/` 独立静态库目标 `vgui_editor_kit`，依赖 `libvgui`，不向核心反向渗透 (F01)。
 - `command_stack`：execute / undo / redo、事务、提交、回滚 (F02 部分)。
 - `editor_context`：当前选择、选择监听、命令栈持有者。
-- `editor_shell`：固定分栏 MVP 外壳，包含 Outliner、Viewport、PropertyGrid、AssetBrowser 四个区域。
+- 核心 `VGUI_SPLITTER` 与 `VGUI_TABVIEW`：比例/最小尺寸/嵌套、拖动与双击复位；标签关闭/禁用/未保存/重排/溢出/键盘，均有公共 API 和无窗口测试 (S01/S02)。
+- `editor_shell`：外层纵向 Splitter + 工作区嵌套横向 Splitter，底部 TabView 组织 ASSETS / CONSOLE；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
 - `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Shell 布局和组件边界。
-- 现有 `vgui_model_test`、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Splitter/TabView 外壳和组件边界。
+- 现有 `vgui_model_test`（159 项）、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 
-1. 用 Splitter/TabView 替换 `editor_shell` 的固定分栏，并加入布局持久化。
+1. 实现 F05 布局持久化，保存/恢复 Splitter 比例、Tab 顺序和当前页。
 2. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
 3. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
 4. 接入 AssetBrowser 缩略图、搜索和拖入场景。

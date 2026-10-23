@@ -72,7 +72,9 @@ extern "C" {
 		VGUI_TREE,
 		VGUI_MENU,
 		VGUI_IMAGE,
-		VGUI_CUSTOM
+		VGUI_CUSTOM,
+		VGUI_SPLITTER,
+		VGUI_TABVIEW
 	} vgui_widget_kind;
 
 	typedef enum vgui_layout_kind {
@@ -156,7 +158,9 @@ extern "C" {
 		VGUI_CURSOR_IBEAM,
 		VGUI_CURSOR_WAIT,
 		VGUI_CURSOR_NO,
-		VGUI_CURSOR_HAND
+		VGUI_CURSOR_HAND,
+		VGUI_CURSOR_SIZE_H,	/* horizontal resize (left/right) */
+		VGUI_CURSOR_SIZE_V	/* vertical resize (up/down) */
 	} vgui_cursor;
 
 	/* Portable key codes passed to vgui_input_key()/vgui_widget_on_event().
@@ -727,6 +731,49 @@ extern "C" {
 	VGUI_API void vgui_panel_scroll_by(vgui_widget* panel, float dx, float dy);
 	VGUI_API void vgui_panel_get_scroll(vgui_widget* panel, float* x, float* y);
 	VGUI_API void vgui_panel_get_content_size(vgui_widget* panel, float* width, float* height);
+
+	/* Splitter: a two-pane container.  vertical=0 lays the first visible child
+	 * on the left and the second on the right; vertical=1 lays them out top and
+	 * bottom.  ratio is the fraction of the main axis assigned to the first
+	 * visible child (0..1).  Dragging the sash changes the ratio; double-clicking
+	 * it resets to the default.  Child min_w/min_h are respected. */
+	VGUI_API void vgui_splitter_set_vertical(vgui_widget* splitter, int vertical);
+	VGUI_API int vgui_splitter_get_vertical(vgui_widget* splitter);
+	VGUI_API void vgui_splitter_set_ratio(vgui_widget* splitter, float ratio);
+	VGUI_API float vgui_splitter_get_ratio(vgui_widget* splitter);
+	VGUI_API void vgui_splitter_set_sash_size(vgui_widget* splitter, float size);
+	VGUI_API float vgui_splitter_get_sash_size(vgui_widget* splitter);
+	VGUI_API void vgui_splitter_reset(vgui_widget* splitter);
+
+	/* TabView: a page container with a tab strip.  vgui_tab_add() attaches and
+	 * transfers ownership of page to the tab view.  The tab view controls the
+	 * page's visibility; removing a tab destroys its page.  A close callback can
+	 * veto or defer removal; without a callback closeable tabs close immediately.
+	 * vgui_tab_get_rect() returns absolute window coordinates. */
+	VGUI_API vgui_item_id vgui_tab_add(vgui_widget* tabs, const char* title, vgui_widget* page);
+	VGUI_API int vgui_tab_remove(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API void vgui_tab_clear(vgui_widget* tabs);
+	VGUI_API int vgui_tab_get_count(vgui_widget* tabs);
+	VGUI_API vgui_item_id vgui_tab_get_at(vgui_widget* tabs, int index);
+	VGUI_API int vgui_tab_get_index(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API vgui_item_id vgui_tab_get_active(vgui_widget* tabs);
+	VGUI_API int vgui_tab_set_active(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API vgui_widget* vgui_tab_get_page(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API const char* vgui_tab_get_title(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API void vgui_tab_set_title(vgui_widget* tabs, vgui_item_id item, const char* title);
+	VGUI_API int vgui_tab_get_enabled(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API void vgui_tab_set_enabled(vgui_widget* tabs, vgui_item_id item, int enabled);
+	VGUI_API int vgui_tab_get_closeable(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API void vgui_tab_set_closeable(vgui_widget* tabs, vgui_item_id item, int closeable);
+	VGUI_API int vgui_tab_get_unsaved(vgui_widget* tabs, vgui_item_id item);
+	VGUI_API void vgui_tab_set_unsaved(vgui_widget* tabs, vgui_item_id item, int unsaved);
+	VGUI_API int vgui_tab_move(vgui_widget* tabs, vgui_item_id item, int index);
+	VGUI_API int vgui_tab_get_rect(vgui_widget* tabs, vgui_item_id item,
+		float* x, float* y, float* width, float* height);
+	VGUI_API void vgui_tab_set_tab_height(vgui_widget* tabs, float height);
+	VGUI_API float vgui_tab_get_tab_height(vgui_widget* tabs);
+	VGUI_API void vgui_tab_on_select(vgui_widget* tabs, vgui_item_fn fn, void* user);
+	VGUI_API void vgui_tab_on_close(vgui_widget* tabs, vgui_item_fn fn, void* user);
 
 	/* Callbacks. */
 	VGUI_API void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user);

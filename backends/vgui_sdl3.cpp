@@ -978,6 +978,12 @@ void app_mgr::set_defcursor(cursor_st t)
 	case cursor_st::cursor_hand:
 		set_syscursor(SDL_SYSTEM_CURSOR_POINTER);
 		break;
+	case cursor_st::cursor_size_h:
+		set_syscursor(SDL_SYSTEM_CURSOR_EW_RESIZE);
+		break;
+	case cursor_st::cursor_size_v:
+		set_syscursor(SDL_SYSTEM_CURSOR_NS_RESIZE);
+		break;
 	default:
 		break;
 	}

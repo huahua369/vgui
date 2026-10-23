@@ -1,10 +1,10 @@
 #pragma once
 /*
- * editor_shell.h - fixed-pane MVP shell for vgui_editor_kit.
+ * editor_shell.h - MVP shell for vgui_editor_kit.
  *
- * This is the starting point for the first development batch.  It uses the
- * existing vgui layout primitives as a temporary stand-in for Splitter/TabView
- * and should keep the component boundaries stable when those controls arrive.
+ * The shell is assembled from core Splitter and TabView controls: an outer
+ * vertical splitter separates the workspace from the bottom panel, and nested
+ * horizontal splitters form the Outliner / Viewport / Properties columns.
  */
 #include <string>
 
@@ -27,6 +27,12 @@ namespace vgui_editor_kit {
 		bool built() const noexcept;
 		vgui_widget* widget() const noexcept;
 
+		/* Layout handles are exposed for host-side layout persistence and for
+		 * tests; components below remain the preferred editing API. */
+		vgui_widget* body_splitter() const noexcept;
+		vgui_widget* workspace_splitter() const noexcept;
+		vgui_widget* bottom_tabs() const noexcept;
+
 		outliner_view& scene() noexcept;
 		property_grid& properties() noexcept;
 		asset_browser& assets() noexcept;
@@ -41,6 +47,9 @@ namespace vgui_editor_kit {
 		editor_context& context_;
 		vgui_widget* root_ = nullptr;
 		vgui_widget* status_ = nullptr;
+		vgui_widget* body_splitter_ = nullptr;
+		vgui_widget* workspace_splitter_ = nullptr;
+		vgui_widget* bottom_tabs_ = nullptr;
 
 		outliner_view scene_;
 		property_grid properties_;
