@@ -236,6 +236,224 @@ static void test_list(vgui_context* ui, const vgui_style& style)
 	check(std::string(vgui_list_get_item_text(list, a)).empty(), "list: cleared id is invalid");
 }
 
+/* ---------------------------- virtual row source ------------------------- */
+
+struct virtual_rows
+{
+	int count = 0;
+};
+
+static int vrows_count(void* user)
+{
+	return ((virtual_rows*)user)->count;
+}
+
+static int vrows_info(void* user, int index, const char** text, const char** detail,
+	void** item_user)
+{
+	(void)user;
+	static char buf[32];
+	std::snprintf(buf, sizeof(buf), "row %d", index);
+	if (text) *text = buf;
+	if (detail) *detail = nullptr;
+	if (item_user) *item_user = nullptr;
+	return 1;
+}
+
+static vgui_item_id vrows_id(void* user, int index)
+{
+	(void)user;
+	return (vgui_item_id)(index + 1);
+}
+
+static int vrows_index(void* user, vgui_item_id item)
+{
+	(void)user;
+	return item >= 1 ? (int)item - 1 : -1;
+}
+
+static void test_list_virtual(vgui_context* ui)
+{
+	vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+	vgui_widget_set_id(list, "virtual-list");
+	vgui_widget_set_pos(list, 10.0f, 260.0f);
+	vgui_widget_set_size(list, 240.0f, 200.0f);
+
+	virtual_rows rows;
+	rows.count = 1000000;
+
+	vgui_row_source src = {};
+	src.row_count = vrows_count;
+	src.row_info = vrows_info;
+	src.row_id = vrows_id;
+	src.row_id_index = vrows_index;
+	src.user = &rows;
+	vgui_list_set_row_source(list, &src);
+
+	check(vgui_list_is_virtual(list) == 1, "virtual: is_virtual reports attached source");
+	check(vgui_list_get_count(list) == 1000000, "virtual: count comes from the source");
+	check(vgui_list_get_item_at(list, 123) == 124, "virtual: item_at uses row_id");
+	check(std::string(vgui_list_get_item_text(list, 124)) == "row 123",
+		"virtual: item text comes from row_info");
+	check(vgui_list_get_item_at(list, -1) == 0, "virtual: negative index rejected");
+	check(vgui_list_get_item_at(list, 1000000) == 0, "virtual: out-of-range index rejected");
+
+	check(vgui_list_add_item(list, "x", nullptr) == 0, "virtual: add_item is a no-op");
+	check(vgui_list_get_count(list) == 1000000, "virtual: count unchanged after add");
+	vgui_list_set_item_text(list, 124, "changed");
+	check(std::string(vgui_list_get_item_text(list, 124)) == "row 123",
+		"virtual: set_item_text is a no-op");
+	vgui_list_clear(list);
+	check(vgui_list_get_count(list) == 1000000, "virtual: clear is a no-op");
+
+	// Layout must derive the scrollable height from the source count.
+	vgui_update(ui, 0.016f);
+	float cw = 0.0f, ch = 0.0f;
+	vgui_panel_get_content_size(list, &cw, &ch);
+	(void)cw;
+	check(ch >= 1000000.0f, "virtual: content height covers every row");
+
+	// Selection and cursor stay id-based in virtual mode.
+	vgui_list_select(list, 500, 1);
+	check(vgui_list_is_selected(list, 500), "virtual: selection by id");
+	check(vgui_list_get_selected_count(list) == 1, "virtual: single selection count");
+
+	// Detaching returns the control to the materialized model.
+	vgui_list_set_row_source(list, nullptr);
+	check(vgui_list_is_virtual(list) == 0, "virtual: detach clears virtual mode");
+	check(vgui_list_get_count(list) == 0, "virtual: empty after detach");
+	check(vgui_list_get_item_at(list, 0) == 0, "virtual: detached list has no rows");
+}
+
+/* Tree virtual mode: rows are the flattened visible rows, the host owns
+ * expansion state and calls vgui_tree_source_changed() after it changes. */
+
+struct virtual_tree_rows
+{
+	int expanded = 0;
+};
+
+static int vtrows_count(void* user)
+{
+	return ((virtual_tree_rows*)user)->expanded ? 5 : 1;
+}
+
+static int vtrows_info(void* user, int index, const char** text, const char** detail,
+	void** item_user)
+{
+	(void)user;
+	static char buf[32];
+	if (index == 0)
+		std::snprintf(buf, sizeof(buf), "root");
+	else
+		std::snprintf(buf, sizeof(buf), "child %d", index);
+	if (text) *text = buf;
+	if (detail) *detail = nullptr;
+	if (item_user) *item_user = nullptr;
+	return 1;
+}
+
+static vgui_item_id vtrows_id(void* user, int index)
+{
+	(void)user;
+	return (vgui_item_id)(100 + index);
+}
+
+static int vtrows_index(void* user, vgui_item_id item)
+{
+	(void)user;
+	return item >= 100 ? (int)item - 100 : -1;
+}
+
+static int vtrows_depth(void* user, int index)
+{
+	(void)user;
+	return index == 0 ? 0 : 1;
+}
+
+static int vtrows_has_children(void* user, int index)
+{
+	(void)user;
+	return index == 0 ? 1 : 0;
+}
+
+static int vtrows_expanded(void* user, int index)
+{
+	return (index == 0 && ((virtual_tree_rows*)user)->expanded) ? 1 : 0;
+}
+
+static void vtrows_toggle(void* user, int index)
+{
+	if (index == 0) ((virtual_tree_rows*)user)->expanded ^= 1;
+}
+
+static void test_tree_virtual(vgui_context* ui)
+{
+	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_id(tree, "virtual-tree");
+	vgui_widget_set_pos(tree, 300.0f, 260.0f);
+	vgui_widget_set_size(tree, 240.0f, 200.0f);
+
+	virtual_tree_rows rows;
+
+	vgui_row_source src = {};
+	src.row_count = vtrows_count;
+	src.row_info = vtrows_info;
+	src.row_id = vtrows_id;
+	src.row_id_index = vtrows_index;
+	src.row_depth = vtrows_depth;
+	src.row_has_children = vtrows_has_children;
+	src.row_expanded = vtrows_expanded;
+	src.row_toggle = vtrows_toggle;
+	src.user = &rows;
+	vgui_tree_set_row_source(tree, &src);
+
+	check(vgui_tree_is_virtual(tree) == 1, "tree virtual: is_virtual reports attached source");
+	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: count is the visible row count");
+	check(vgui_tree_get_item_enabled(tree, 100) == 1, "tree virtual: row enabled from source");
+	check(std::string(vgui_tree_get_item_text(tree, 100)) == "root",
+		"tree virtual: text comes from row_info");
+	check(vgui_tree_get_depth(tree, 101) == 1, "tree virtual: depth query is safe");
+	check(vgui_tree_get_depth(tree, 100) == 0, "tree virtual: root depth");
+	check(vgui_tree_get_item_expanded(tree, 100) == 0, "tree virtual: collapsed by default");
+
+	// Mutation APIs are no-ops while a source is attached.
+	check(vgui_tree_add_node(tree, 0, "x", nullptr) == 0, "tree virtual: add_node is a no-op");
+	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: count unchanged after add");
+	check(vgui_tree_toggle(tree, 100) == 0, "tree virtual: toggle is a no-op");
+	vgui_tree_expand_all(tree);
+	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: expand_all is a no-op");
+	vgui_tree_clear(tree);
+	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: clear is a no-op");
+
+	// The core toggles expansion through row_toggle; the host updates its data
+	// and calls source_changed, after which the visible row set grows.
+	vgui_update(ui, 0.016f);
+	rows.expanded = 1;
+	vgui_tree_source_changed(tree);
+	vgui_update(ui, 0.016f);
+	check(vgui_tree_get_node_count(tree) == 5, "tree virtual: source_changed refreshes row count");
+	check(vgui_tree_get_depth(tree, 101) == 1, "tree virtual: child depth from row_depth");
+
+	float cw = 0.0f, ch = 0.0f;
+	vgui_panel_get_content_size(tree, &cw, &ch);
+	(void)cw;
+	check(ch >= 5.0f, "tree virtual: content height covers visible rows");
+
+	// Selection stays id-based.
+	vgui_tree_select(tree, 102, 1);
+	check(vgui_tree_is_selected(tree, 102), "tree virtual: selection by id");
+
+	// Hierarchy queries require the materialized model.
+	check(vgui_tree_get_root_count(tree) == 0, "tree virtual: hierarchy queries are empty");
+	check(vgui_tree_get_parent(tree, 101) == 0, "tree virtual: parent is unknown");
+
+	// Detaching returns to the materialized model.
+	vgui_tree_set_row_source(tree, nullptr);
+	check(vgui_tree_is_virtual(tree) == 0, "tree virtual: detach clears virtual mode");
+	check(vgui_tree_get_node_count(tree) == 0, "tree virtual: empty after detach");
+}
+
 static void test_tree(vgui_context* ui, const vgui_style& style)
 {
 	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
@@ -898,6 +1116,8 @@ int main()
 	test_wrap(ui);
 	test_splitter(ui);
 	test_tabview(ui);
+	test_list_virtual(ui);
+	test_tree_virtual(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

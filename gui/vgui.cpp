@@ -164,6 +164,11 @@ struct vgui_list_state
 	float content_w = 0.0f;
 	const font_familys_t* content_w_font = nullptr;
 	float content_w_font_size = 0.0f;
+
+	// 可选虚拟数据源：设置后行数据由回调提供，items 不再被使用。
+	vgui_row_source source = {};
+	bool virtual_mode = false;
+	vgui_list_item scratch_item;	// 虚拟模式下按需materialize的一行
 };
 
 struct vgui_tree_node
@@ -212,6 +217,11 @@ struct vgui_tree_state
 	float content_w_font_size = 0.0f;
 	float content_w_indent = 0.0f;
 	float content_w_arrow = 0.0f;
+
+	// 可选虚拟数据源：行是"可见行投影"，展开状态由应用维护。
+	vgui_row_source source = {};
+	bool virtual_mode = false;
+	vgui_tree_node scratch_node;	// 虚拟模式下按需materialize的一行
 };
 
 struct vgui_menu_item
@@ -1246,10 +1256,83 @@ namespace {
 		return id != 0 && std::find(ids.begin(), ids.end(), id) != ids.end();
 	}
 
+	// ---- 虚拟数据源访问层 ----------------------------------------------------
+	// 列表在虚拟模式下不再持有行数据：行数、行 id、id->行号都走回调。
+	// 未设置数据源时这些函数等价于原来的 vector 访问。
+	static int vgui_list_row_count(vgui_widget* w, vgui_list_state* st)
+	{
+		(void)w;
+		if (!st) return 0;
+		if (st->virtual_mode && st->source.row_count)
+			return std::max(0, st->source.row_count(st->source.user));
+		return (int)st->items.size();
+	}
+
+	static vgui_item_id vgui_list_row_id(vgui_widget* w, vgui_list_state* st, int index)
+	{
+		(void)w;
+		if (!st || index < 0) return 0;
+		if (st->virtual_mode && st->source.row_id)
+			return st->source.row_id(st->source.user, index);
+		return index < (int)st->items.size() ? st->items[(size_t)index].id : 0;
+	}
+
+	static int vgui_list_row_index(vgui_widget* w, vgui_list_state* st, vgui_item_id id)
+	{
+		if (!st || id == 0) return -1;
+		if (st->virtual_mode)
+		{
+			if (st->source.row_id_index)
+				return st->source.row_id_index(st->source.user, id);
+			int n = vgui_list_row_count(w, st);
+			for (int i = 0; i < n; ++i)
+				if (vgui_list_row_id(w, st, i) == id) return i;
+			return -1;
+		}
+		auto it = st->index.find(id);
+		return it == st->index.end() ? -1 : (int)it->second;
+	}
+
+	// 虚拟模式下把第 index 行materialize到 scratch_item；全量模式直接返回内部引用。
+	static vgui_list_item* vgui_list_row_materialize(vgui_widget* w, vgui_list_state* st, int index)
+	{
+		if (!st || index < 0) return nullptr;
+		if (!st->virtual_mode)
+			return index < (int)st->items.size() ? &st->items[(size_t)index] : nullptr;
+		if (!st->source.row_info) return nullptr;
+		const char* text = nullptr;
+		const char* detail = nullptr;
+		void* item_user = nullptr;
+		if (!st->source.row_info(st->source.user, index, &text, &detail, &item_user))
+			return nullptr;
+		st->scratch_item.id = vgui_list_row_id(w, st, index);
+		st->scratch_item.text = text ? text : "";
+		st->scratch_item.detail = detail ? detail : "";
+		st->scratch_item.user = item_user;
+		st->scratch_item.enabled = st->source.row_enabled
+			? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
+		return &st->scratch_item;
+	}
+
+	static bool vgui_list_row_enabled(vgui_widget* w, vgui_list_state* st, int index)
+	{
+		if (st && st->virtual_mode)
+			return st->source.row_enabled ? st->source.row_enabled(st->source.user, index) != 0 : true;
+		if (!st || index < 0 || index >= (int)st->items.size()) return false;
+		return st->items[(size_t)index].enabled != 0;
+	}
+
 	static vgui_list_item* vgui_list_item_find(vgui_widget* w, vgui_item_id id, size_t* out_index = nullptr)
 	{
 		vgui_list_state* st = vgui_list_of(w);
 		if (!st || id == 0) return nullptr;
+		if (st->virtual_mode)
+		{
+			int index = vgui_list_row_index(w, st, id);
+			if (index < 0) return nullptr;
+			if (out_index) *out_index = (size_t)index;
+			return vgui_list_row_materialize(w, st, index);
+		}
 		auto it = st->index.find(id);
 		if (it == st->index.end() || it->second >= st->items.size()) return nullptr;
 		if (out_index) *out_index = it->second;
@@ -1259,7 +1342,14 @@ namespace {
 	static vgui_list_item* vgui_list_item_at(vgui_widget* w, int index, vgui_item_id* out_id = nullptr)
 	{
 		vgui_list_state* st = vgui_list_of(w);
-		if (!st || index < 0 || index >= (int)st->items.size()) return nullptr;
+		if (!st || index < 0) return nullptr;
+		if (st->virtual_mode)
+		{
+			if (index >= vgui_list_row_count(w, st)) return nullptr;
+			if (out_id) *out_id = vgui_list_row_id(w, st, index);
+			return vgui_list_row_materialize(w, st, index);
+		}
+		if (index >= (int)st->items.size()) return nullptr;
 		if (out_id) *out_id = st->items[(size_t)index].id;
 		return &st->items[(size_t)index];
 	}
@@ -1355,10 +1445,45 @@ namespace {
 		return std::max(1.0f, h);
 	}
 
+	// 树节点查找。虚拟模式下节点不存在于内存中，改为按行materialize到
+	// scratch_node，供绘制和只读 getter 使用。
 	static vgui_tree_node* vgui_tree_node_find(vgui_widget* w, vgui_item_id id, size_t* out_index = nullptr)
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st || id == 0) return nullptr;
+		if (st->virtual_mode)
+		{
+			int index = -1;
+			if (st->source.row_id_index)
+				index = st->source.row_id_index(st->source.user, id);
+			else
+			{
+				int n = st->source.row_count ? std::max(0, st->source.row_count(st->source.user)) : 0;
+				for (int i = 0; i < n; ++i)
+					if (st->source.row_id && st->source.row_id(st->source.user, i) == id)
+					{
+						index = i;
+						break;
+					}
+			}
+			if (index < 0 || !st->source.row_info) return nullptr;
+			const char* text = nullptr;
+			const char* detail = nullptr;
+			void* item_user = nullptr;
+			if (!st->source.row_info(st->source.user, index, &text, &detail, &item_user))
+				return nullptr;
+			st->scratch_node.id = id;
+			st->scratch_node.parent = 0;
+			st->scratch_node.children.clear();
+			st->scratch_node.text = text ? text : "";
+			st->scratch_node.user = item_user;
+			st->scratch_node.enabled = st->source.row_enabled
+				? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
+			st->scratch_node.expanded = st->source.row_expanded
+				? (st->source.row_expanded(st->source.user, index) ? 1 : 0) : 0;
+			if (out_index) *out_index = (size_t)index;
+			return &st->scratch_node;
+		}
 		auto it = st->index.find(id);
 		if (it == st->index.end() || it->second >= st->nodes.size()) return nullptr;
 		if (out_index) *out_index = it->second;
@@ -1398,6 +1523,12 @@ namespace {
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st || !st->rows_dirty) return;
+		// 虚拟模式下行就是索引空间本身，不做任何扁平化。
+		if (st->virtual_mode)
+		{
+			st->rows_dirty = false;
+			return;
+		}
 		st->rows.clear();
 		st->row_index.clear();
 		for (vgui_item_id id : st->roots)
@@ -1407,10 +1538,78 @@ namespace {
 		st->content_w_valid = false;
 	}
 
+	// ---- 树行访问层 ----------------------------------------------------------
+	// 非虚拟模式下行数据来自 rows（可见行投影）；虚拟模式下直接查回调。
+	static int vgui_tree_row_count(vgui_widget* w, vgui_tree_state* st)
+	{
+		if (!st) return 0;
+		if (st->virtual_mode)
+			return st->source.row_count ? std::max(0, st->source.row_count(st->source.user)) : 0;
+		vgui_tree_rebuild_rows(w);
+		return (int)st->rows.size();
+	}
+
+	static vgui_item_id vgui_tree_row_id_at(vgui_widget* w, vgui_tree_state* st, int index)
+	{
+		if (!st || index < 0) return 0;
+		if (st->virtual_mode)
+			return st->source.row_id ? st->source.row_id(st->source.user, index) : 0;
+		vgui_tree_rebuild_rows(w);
+		return index < (int)st->rows.size() ? st->rows[(size_t)index].id : 0;
+	}
+
+	static int vgui_tree_row_depth_at(vgui_widget* w, vgui_tree_state* st, int index)
+	{
+		if (!st || index < 0) return 0;
+		if (st->virtual_mode)
+			return st->source.row_depth ? std::max(0, st->source.row_depth(st->source.user, index)) : 0;
+		vgui_tree_rebuild_rows(w);
+		return index < (int)st->rows.size() ? st->rows[(size_t)index].depth : 0;
+	}
+
+	static bool vgui_tree_row_has_children(vgui_widget* w, vgui_tree_state* st, int index)
+	{
+		if (!st || index < 0) return false;
+		if (st->virtual_mode)
+			return st->source.row_has_children
+				? st->source.row_has_children(st->source.user, index) != 0 : false;
+		vgui_tree_node* n = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, index));
+		return n && !n->children.empty();
+	}
+
+	static bool vgui_tree_row_expanded(vgui_widget* w, vgui_tree_state* st, int index)
+	{
+		if (!st || index < 0) return false;
+		if (st->virtual_mode)
+			return st->source.row_expanded
+				? st->source.row_expanded(st->source.user, index) != 0 : false;
+		vgui_tree_node* n = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, index));
+		return n && n->expanded != 0;
+	}
+
+	static bool vgui_tree_row_enabled_at(vgui_widget* w, vgui_tree_state* st, int index)
+	{
+		if (!st || index < 0) return false;
+		if (st->virtual_mode)
+			return st->source.row_enabled
+				? st->source.row_enabled(st->source.user, index) != 0 : true;
+		vgui_tree_node* n = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, index));
+		return n && n->enabled != 0;
+	}
+
 	static int vgui_tree_visible_index(vgui_widget* w, vgui_item_id id)
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st || id == 0) return -1;
+		if (st->virtual_mode)
+		{
+			if (st->source.row_id_index)
+				return st->source.row_id_index(st->source.user, id);
+			int n = vgui_tree_row_count(w, st);
+			for (int i = 0; i < n; ++i)
+				if (vgui_tree_row_id_at(w, st, i) == id) return i;
+			return -1;
+		}
 		vgui_tree_rebuild_rows(w);
 		auto it = st->row_index.find(id);
 		return it == st->row_index.end() ? -1 : it->second;
@@ -1420,8 +1619,7 @@ namespace {
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st) return 0;
-		vgui_tree_rebuild_rows(w);
-		return (int)st->rows.size();
+		return vgui_tree_row_count(w, st);
 	}
 
 	static void vgui_tree_notify_select(vgui_widget* w, vgui_item_id id, int selected)
@@ -2359,6 +2557,13 @@ namespace {
 	static float vgui_list_content_width(vgui_widget* w, vgui_list_state* st)
 	{
 		if (!w || !st) return 0.0f;
+		// 虚拟模式无法全量扫描：由数据源提供最宽行，缺省回退到主题宽度。
+		if (st->virtual_mode)
+		{
+			if (st->source.row_max_width)
+				return std::max(0.0f, st->source.row_max_width(st->source.user));
+			return w->ctx ? w->ctx->style.list.req_width : 0.0f;
+		}
 		const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
 		float fs = vgui_font_size(w->ctx, w);
 		if (st->content_w_valid && st->content_w_font == font && st->content_w_font_size == fs)
@@ -2384,6 +2589,13 @@ namespace {
 	static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 	{
 		if (!w || !st) return 0.0f;
+		// 虚拟模式无法全量扫描：由数据源提供最宽行，缺省回退到主题宽度。
+		if (st->virtual_mode)
+		{
+			if (st->source.row_max_width)
+				return std::max(0.0f, st->source.row_max_width(st->source.user));
+			return w->ctx ? w->ctx->style.tree.req_width : 0.0f;
+		}
 		vgui_tree_rebuild_rows(w);
 		const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
 		float fs = vgui_font_size(w->ctx, w);
@@ -2564,7 +2776,7 @@ namespace {
 			if (ls && (w->req_w <= 0.0f || w->scrollable_x))
 				content_w = vgui_list_content_width(w, ls);
 			w->content_w = content_w;
-			w->content_h = ls ? (float)ls->items.size() * row_h : 0.0f;
+			w->content_h = (float)vgui_list_row_count(w, ls) * row_h;
 			float default_w = std::max(st.list.req_width, content_w + pl + pr + 12.0f);
 			w->intrinsic_w = w->req_w > 0 ? w->req_w : default_w;
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.list.req_height;
@@ -2580,7 +2792,7 @@ namespace {
 			if (ts && (w->req_w <= 0.0f || w->scrollable_x))
 				content_w = vgui_tree_content_width(w, ts);
 			w->content_w = content_w;
-			w->content_h = ts ? (float)ts->rows.size() * row_h : 0.0f;
+			w->content_h = (float)vgui_tree_row_count(w, ts) * row_h;
 			float default_w = std::max(st.tree.req_width, content_w + pl + pr + 12.0f);
 			w->intrinsic_w = w->req_w > 0 ? w->req_w : default_w;
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : st.tree.req_height;
@@ -4395,7 +4607,7 @@ namespace {
 		float local = y - iy + w->scroll_y;
 		if (local < 0) return -1;
 		int idx = (int)(local / vgui_list_row_height(w));
-		return (idx >= 0 && idx < (int)st->items.size()) ? idx : -1;
+		return (idx >= 0 && idx < vgui_list_row_count(w, st)) ? idx : -1;
 	}
 
 	static int vgui_tree_row_at(vgui_widget* w, float x, float y)
@@ -4407,21 +4619,19 @@ namespace {
 		float iw = w->abs_w - w->padding[0] - w->padding[2];
 		float ih = w->abs_h - w->padding[1] - w->padding[3];
 		if (x < ix || x >= ix + iw || y < iy || y >= iy + ih) return -1;
-		vgui_tree_rebuild_rows(w);
 		float local = y - iy + w->scroll_y;
 		if (local < 0) return -1;
 		int idx = (int)(local / vgui_tree_row_height(w));
-		return (idx >= 0 && idx < (int)st->rows.size()) ? idx : -1;
+		return (idx >= 0 && idx < vgui_tree_row_count(w, st)) ? idx : -1;
 	}
 
 	static bool vgui_tree_arrow_hit(vgui_widget* w, int row, float x)
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
-		if (!st || row < 0 || row >= (int)st->rows.size()) return false;
-		vgui_tree_node* n = vgui_tree_node_find(w, st->rows[(size_t)row].id);
-		if (!n || n->children.empty()) return false;
+		if (!st || row < 0 || row >= vgui_tree_row_count(w, st)) return false;
+		if (!vgui_tree_row_has_children(w, st, row)) return false;
 		const vgui_tree_style& ts = w->ctx->style.tree;
-		float tx = w->abs_x + w->padding[0] + st->rows[(size_t)row].depth * ts.indent;
+		float tx = w->abs_x + w->padding[0] + (float)vgui_tree_row_depth_at(w, st, row) * ts.indent;
 		return x >= tx && x <= tx + ts.arrow_size + ts.arrow_gap;
 	}
 
@@ -4429,11 +4639,11 @@ namespace {
 	{
 		vgui_list_state* st = vgui_list_of(w);
 		if (!st) return;
-		auto it = st->index.find(id);
-		if (it == st->index.end()) return;
+		int row_index = vgui_list_row_index(w, st, id);
+		if (row_index < 0) return;
 		float row_h = vgui_list_row_height(w);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
-		float top = (float)it->second * row_h;
+		float top = (float)row_index * row_h;
 		float bottom = top + row_h;
 		float scroll = w->scroll_y;
 		switch (align)
@@ -4519,9 +4729,11 @@ namespace {
 			if (ai == (size_t)-1) ai = ti;
 			if (ti == (size_t)-1) return;
 			size_t lo = std::min(ai, ti), hi = std::max(ai, ti);
-			if (hi >= st->items.size()) hi = st->items.size() - 1;
+			int count = vgui_list_row_count(w, st);
+			if (count <= 0) return;
+			if (hi >= (size_t)count) hi = (size_t)count - 1;
 			std::vector<vgui_item_id> range;
-			for (size_t i = lo; i <= hi; ++i) range.push_back(st->items[i].id);
+			for (size_t i = lo; i <= hi; ++i) range.push_back(vgui_list_row_id(w, st, (int)i));
 			for (vgui_item_id rid : range)
 			{
 				st = vgui_list_of(w);
@@ -4583,9 +4795,11 @@ namespace {
 			if (ti < 0) return;
 			vgui_tree_rebuild_rows(w);
 			int lo = std::min(ai, ti), hi = std::max(ai, ti);
-			if (hi >= (int)st->rows.size()) hi = (int)st->rows.size() - 1;
+			int count = vgui_tree_row_count(w, st);
+			if (count <= 0) return;
+			if (hi >= count) hi = count - 1;
 			std::vector<vgui_item_id> range;
-			for (int i = lo; i <= hi; ++i) range.push_back(st->rows[(size_t)i].id);
+			for (int i = lo; i <= hi; ++i) range.push_back(vgui_tree_row_id_at(w, st, i));
 			for (vgui_item_id rid : range)
 			{
 				st = vgui_tree_of(w);
@@ -4637,26 +4851,54 @@ namespace {
 	static int vgui_list_next_index(vgui_widget* w, int from, int delta)
 	{
 		vgui_list_state* st = vgui_list_of(w);
-		if (!st || st->items.empty()) return -1;
-		int n = (int)st->items.size();
+		if (!st) return -1;
+		int n = vgui_list_row_count(w, st);
+		if (n <= 0) return -1;
 		if (from < 0) from = delta > 0 ? -1 : n;
 		for (int step = 0; step < n; ++step)
 		{
 			from += delta;
 			if (from < 0) from = 0;
 			if (from >= n) from = n - 1;
-			if (st->items[(size_t)from].enabled) return from;
+			if (vgui_list_row_enabled(w, st, from)) return from;
 			if ((delta > 0 && from >= n - 1) || (delta < 0 && from <= 0)) break;
 		}
 		return -1;
+	}
+
+	// 切换某可见行的展开状态。虚拟模式交给宿主的 row_toggle，实体模式直接改节点。
+	static bool vgui_tree_toggle_row(vgui_widget* w, int row)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || row < 0 || row >= vgui_tree_row_count(w, st)) return false;
+		if (st->virtual_mode)
+		{
+			if (!st->source.row_toggle) return false;
+			st->source.row_toggle(st->source.user, row);
+			// 宿主可能已在回调里刷新过；这里兜底一次，保证行数和最宽行失效。
+			st = vgui_tree_of(w);
+			if (st)
+			{
+				st->rows_dirty = true;
+				st->content_w_valid = false;
+			}
+			vgui_mark_dirty(w);
+			return true;
+		}
+		vgui_tree_node* n = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, row));
+		if (!n || n->children.empty()) return false;
+		n->expanded = n->expanded ? 0 : 1;
+		st->rows_dirty = true;
+		st->content_w_valid = false;
+		vgui_mark_dirty(w);
+		return true;
 	}
 
 	static int vgui_tree_next_index(vgui_widget* w, int from, int delta)
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st) return -1;
-		vgui_tree_rebuild_rows(w);
-		int n = (int)st->rows.size();
+		int n = vgui_tree_row_count(w, st);
 		if (n == 0) return -1;
 		if (from < 0) from = delta > 0 ? -1 : n;
 		for (int step = 0; step < n; ++step)
@@ -4664,8 +4906,7 @@ namespace {
 			from += delta;
 			if (from < 0) from = 0;
 			if (from >= n) from = n - 1;
-			vgui_tree_node* nnode = vgui_tree_node_find(w, st->rows[(size_t)from].id);
-			if (nnode && nnode->enabled) return from;
+			if (vgui_tree_row_enabled_at(w, st, from)) return from;
 			if ((delta > 0 && from >= n - 1) || (delta < 0 && from <= 0)) break;
 		}
 		return -1;
@@ -4678,7 +4919,7 @@ namespace {
 		if (!down) return true;
 		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
 		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
-		int n = (int)st->items.size();
+		int n = vgui_list_row_count(w, st);
 		int idx = -1;
 		vgui_item_id cid = st->cursor;
 		size_t ci = (size_t)-1;
@@ -4693,9 +4934,13 @@ namespace {
 				 * 大列表上退化成 O(N²)。 */
 				std::unordered_set<vgui_item_id> have(st->selected.begin(), st->selected.end());
 				std::vector<vgui_item_id> ids;
-				ids.reserve(st->items.size());
-				for (const vgui_list_item& it : st->items)
-					if (it.enabled && !have.count(it.id)) ids.push_back(it.id);
+				ids.reserve((size_t)n);
+				for (int i = 0; i < n; ++i)
+				{
+					if (!vgui_list_row_enabled(w, st, i)) continue;
+					vgui_item_id rid = vgui_list_row_id(w, st, i);
+					if (rid != 0 && !have.count(rid)) ids.push_back(rid);
+				}
 				for (vgui_item_id id : ids)
 				{
 					st = vgui_list_of(w);
@@ -4730,7 +4975,7 @@ namespace {
 			}
 			if (ni >= 0 && ni < n)
 			{
-				vgui_item_id nid = st->items[(size_t)ni].id;
+				vgui_item_id nid = vgui_list_row_id(w, st, ni);
 				st->cursor = nid;
 				if (st->selection_mode == VGUI_SELECTION_SINGLE)
 					vgui_list_apply_click(w, nid, mods);
@@ -4748,7 +4993,7 @@ namespace {
 		{
 			if (idx >= 0)
 			{
-				vgui_item_id id = st->items[(size_t)idx].id;
+				vgui_item_id id = vgui_list_row_id(w, st, idx);
 				if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
 					vgui_list_set_selected_internal(w, id, !vgui_id_selected(st->selected, id), true);
 				else
@@ -4760,7 +5005,7 @@ namespace {
 		}
 		if (key == VGUI_KEY_ENTER)
 		{
-			if (idx >= 0) vgui_list_activate(w, st->items[(size_t)idx].id);
+			if (idx >= 0) vgui_list_activate(w, vgui_list_row_id(w, st, idx));
 			return true;
 		}
 		return false;
@@ -4773,8 +5018,7 @@ namespace {
 		if (!down) return true;
 		bool shift = (mods & VGUI_MOD_SHIFT) != 0;
 		bool ctrl = (mods & VGUI_MOD_CTRL) != 0;
-		vgui_tree_rebuild_rows(w);
-		int n = (int)st->rows.size();
+		int n = vgui_tree_row_count(w, st);
 		int idx = vgui_tree_visible_index(w, st->cursor);
 
 		if (ctrl && key == 'A')
@@ -4785,13 +5029,13 @@ namespace {
 				 * set_selected 里对 selected / rows 的线性扫描。 */
 				std::unordered_set<vgui_item_id> have(st->selected.begin(), st->selected.end());
 				std::vector<vgui_item_id> ids;
-				ids.reserve(st->rows.size());
-				for (const vgui_tree_row& row : st->rows)
+				ids.reserve((size_t)n);
+				for (int i = 0; i < n; ++i)
 				{
-					if (have.count(row.id)) continue;
-					vgui_tree_node* node = vgui_tree_node_find(w, row.id);
-					if (!node || !node->enabled) continue;
-					ids.push_back(row.id);
+					vgui_item_id rid = vgui_tree_row_id_at(w, st, i);
+					if (rid == 0 || have.count(rid)) continue;
+					if (!vgui_tree_row_enabled_at(w, st, i)) continue;
+					ids.push_back(rid);
 				}
 				for (vgui_item_id id : ids)
 				{
@@ -4827,7 +5071,7 @@ namespace {
 			}
 			if (ni >= 0 && ni < n)
 			{
-				vgui_item_id nid = st->rows[(size_t)ni].id;
+				vgui_item_id nid = vgui_tree_row_id_at(w, st, ni);
 				st->cursor = nid;
 				if (st->selection_mode == VGUI_SELECTION_SINGLE)
 					vgui_tree_apply_click(w, nid, mods);
@@ -4844,17 +5088,15 @@ namespace {
 
 		if (idx >= 0 && idx < n)
 		{
-			vgui_item_id id = st->rows[(size_t)idx].id;
+			vgui_item_id id = vgui_tree_row_id_at(w, st, idx);
 			vgui_tree_node* node = vgui_tree_node_find(w, id);
 			if (key == VGUI_KEY_LEFT)
 			{
-				if (node && node->expanded)
+				if (vgui_tree_row_expanded(w, st, idx))
 				{
-					node->expanded = 0;
-					st->rows_dirty = true;
-					vgui_mark_dirty(w);
+					vgui_tree_toggle_row(w, idx);
 				}
-				else if (node && node->parent)
+				else if (!st->virtual_mode && node && node->parent)
 				{
 					st->cursor = node->parent;
 					vgui_tree_expand_to(w, node->parent);
@@ -4866,20 +5108,18 @@ namespace {
 			}
 			if (key == VGUI_KEY_RIGHT)
 			{
-				if (node && !node->children.empty())
+				if (vgui_tree_row_has_children(w, st, idx))
 				{
-					if (!node->expanded)
+					if (!vgui_tree_row_expanded(w, st, idx))
 					{
-						node->expanded = 1;
-						st->rows_dirty = true;
-						vgui_mark_dirty(w);
+						vgui_tree_toggle_row(w, idx);
 					}
 					else
 					{
 						int ni = vgui_tree_next_index(w, idx, 1);
-						if (ni >= 0 && ni < (int)st->rows.size())
+						if (ni >= 0 && ni < n)
 						{
-							st->cursor = st->rows[(size_t)ni].id;
+							st->cursor = vgui_tree_row_id_at(w, st, ni);
 							if (st->selection_mode == VGUI_SELECTION_SINGLE)
 								vgui_tree_apply_click(w, st->cursor, mods);
 							vgui_tree_ensure_visible(w, st->cursor, VGUI_SCROLL_ALIGN_NEAREST);
@@ -4890,11 +5130,9 @@ namespace {
 			}
 			if (key == ' ')
 			{
-				if (node && !node->children.empty())
+				if (vgui_tree_row_has_children(w, st, idx))
 				{
-					node->expanded = !node->expanded;
-					st->rows_dirty = true;
-					vgui_mark_dirty(w);
+					vgui_tree_toggle_row(w, idx);
 				}
 				else if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
 					vgui_tree_set_selected_internal(w, id, !vgui_id_selected(st->selected, id), true);
@@ -5591,10 +5829,7 @@ namespace {
 				int row = vgui_tree_row_at(h, x, y);
 				vgui_item_id item = 0;
 				if (h->tree && row >= 0)
-				{
-					vgui_tree_rebuild_rows(h);
-					if (row < (int)h->tree->rows.size()) item = h->tree->rows[(size_t)row].id;
-				}
+					item = vgui_tree_row_id_at(h, h->tree.get(), row);
 				if (h->tree) h->tree->hover = item;
 				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, row, x - h->abs_x, y - h->abs_y);
 			}
@@ -5835,20 +6070,13 @@ namespace {
 			else
 			{
 				index = vgui_tree_row_at(h, x, y);
-				vgui_tree_rebuild_rows(h);
-				if (h->tree && index >= 0 && index < (int)h->tree->rows.size())
-					item = h->tree->rows[(size_t)index].id;
+				if (h->tree && index >= 0)
+					item = vgui_tree_row_id_at(h, h->tree.get(), index);
 				arrow = item && vgui_tree_arrow_hit(h, index, x);
 				if (arrow)
 				{
-					vgui_tree_node* node = vgui_tree_node_find(h, item);
-					if (node && !node->children.empty())
-					{
-						node->expanded = !node->expanded;
-						h->tree->rows_dirty = true;
-						vgui_mark_dirty(h);
-						if (h->ctx) vgui_ensure_layout(h->ctx);
-					}
+					vgui_tree_toggle_row(h, index);
+					if (h->ctx) vgui_ensure_layout(h->ctx);
 					h->tree->pressed = 0;
 				}
 				else
@@ -6024,9 +6252,8 @@ namespace {
 			else
 			{
 				index = vgui_tree_row_at(target, x, y);
-				vgui_tree_rebuild_rows(target);
-				if (target->tree && index >= 0 && index < (int)target->tree->rows.size())
-					item = target->tree->rows[(size_t)index].id;
+				if (target->tree && index >= 0)
+					item = vgui_tree_row_id_at(target, target->tree.get(), index);
 				if (target->tree)
 				{
 					pressed_id = target->tree->pressed;
@@ -7785,10 +8012,13 @@ namespace {
 		vgui_draw_model_frame(w, cb, vg);
 		cb->save(vg);
 		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
-		vgui_row_window win = vgui_row_window_of(w, (int)st->items.size(), ih, row_h);
+		const int row_count = vgui_list_row_count(w, st);
+		vgui_row_window win = vgui_row_window_of(w, row_count, ih, row_h);
 		for (int i = win.first; i < win.last; ++i)
 		{
-			const vgui_list_item& item = st->items[(size_t)i];
+			vgui_list_item* row = vgui_list_row_materialize(w, st, i);
+			if (!row) continue;
+			const vgui_list_item& item = *row;
 			float y = iy - w->scroll_y + (float)i * row_h;
 			if (y + row_h <= iy || y >= iy + ih) continue;
 			bool selected = vgui_id_selected(st->selected, item.id);
@@ -7812,7 +8042,7 @@ namespace {
 					ix + iw - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
 			}
 		}
-		if (st->items.empty() && !st->empty_text.empty())
+		if (row_count == 0 && !st->empty_text.empty())
 			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
 				vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
 				0.5f, 0.5f);
@@ -7863,12 +8093,14 @@ namespace {
 		vgui_draw_model_frame(w, cb, vg);
 		cb->save(vg);
 		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
-		vgui_row_window win = vgui_row_window_of(w, (int)st->rows.size(), ih, row_h);
+		const int row_count = vgui_tree_row_count(w, st);
+		vgui_row_window win = vgui_row_window_of(w, row_count, ih, row_h);
 		for (int i = win.first; i < win.last; ++i)
 		{
-			const vgui_tree_row& row = st->rows[(size_t)i];
-			vgui_tree_node* node = vgui_tree_node_find(w, row.id);
+			vgui_item_id row_id = vgui_tree_row_id_at(w, st, i);
+			vgui_tree_node* node = vgui_tree_node_find(w, row_id);
 			if (!node) continue;
+			int row_depth = vgui_tree_row_depth_at(w, st, i);
 			float y = iy - w->scroll_y + (float)i * row_h;
 			if (y + row_h <= iy || y >= iy + ih)
 				continue;
@@ -7880,24 +8112,25 @@ namespace {
 				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ts.rounding,
 					vgui_widget_color(w, ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A));
 
-			for (int depth = 0; depth < row.depth; ++depth)
+			for (int depth = 0; depth < row_depth; ++depth)
 			{
 				float gx = ix + (float)depth * ts.indent + ts.arrow_size * 0.5f;
 				vgui_fill_rect(cb, vg, gx, y + 4.0f, 1.0f,
 					std::max(0.0f, row_h - 8.0f), 0, vgui_widget_color(w, guide));
 			}
 
-			float tx = ix + ts.arrow_gap + (float)row.depth * ts.indent;
+			float tx = ix + ts.arrow_gap + (float)row_depth * ts.indent;
 			float text_x = tx + ts.arrow_size + ts.arrow_gap;
 			uint32_t color = vgui_row_text_color(w, selected, node->enabled != 0);
-			if (!node->children.empty())
+			if (st->virtual_mode ? vgui_tree_row_has_children(w, st, i) : !node->children.empty())
 				vgui_draw_tree_arrow(w, cb, vg, tx + ts.arrow_size * 0.5f,
-					y + row_h * 0.5f, ts.arrow_size, node->expanded != 0, color);
+					y + row_h * 0.5f, ts.arrow_size,
+					st->virtual_mode ? vgui_tree_row_expanded(w, st, i) : node->expanded != 0, color);
 			float text_w = iw - (text_x - ix) - 4.0f;
 			vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
 				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
 		}
-		if (st->rows.empty() && !st->empty_text.empty())
+		if (row_count == 0 && !st->empty_text.empty())
 			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
 				vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
 				0.5f, 0.5f);
@@ -9881,6 +10114,52 @@ extern "C" {
 	// list model
 	//----------------------------------------------------------------------------
 
+	// 虚拟数据源：可选。设置后行数据由应用提供，列表只查询可见范围。
+	void vgui_list_set_row_source(vgui_widget* list, const vgui_row_source* source)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		const bool was_virtual = st->virtual_mode;
+		if (source && source->row_count && source->row_info && source->row_id)
+		{
+			st->source = *source;
+			st->virtual_mode = true;
+			st->items.clear();
+			st->index.clear();
+		}
+		else
+		{
+			st->source = {};
+			st->virtual_mode = false;
+		}
+		// 数据源变化后行数、最宽行和选择都可能失效。
+		st->content_w_valid = false;
+		if (was_virtual != st->virtual_mode)
+		{
+			st->selected.clear();
+			st->cursor = 0;
+			st->hover = 0;
+			st->pressed = 0;
+			st->range_anchor = 0;
+			st->scratch_item = vgui_list_item();
+		}
+		vgui_mark_dirty(list);
+	}
+
+	int vgui_list_is_virtual(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		return st && st->virtual_mode ? 1 : 0;
+	}
+
+	void vgui_list_source_changed(vgui_widget* list)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->content_w_valid = false;
+		vgui_mark_dirty(list);
+	}
+
 	static vgui_item_id vgui_next_item_id(vgui_item_id& next)
 	{
 		if (next == 0) next = 1;
@@ -9892,7 +10171,7 @@ extern "C" {
 	vgui_item_id vgui_list_add_item(vgui_widget* list, const char* text, void* user)
 	{
 		vgui_list_state* st = vgui_list_of(list);
-		if (!st) return 0;
+		if (!st || st->virtual_mode) return 0;
 		vgui_list_item item;
 		item.id = vgui_next_item_id(st->next_id);
 		if (text) item.text = text;
@@ -9908,7 +10187,7 @@ extern "C" {
 	vgui_item_id vgui_list_insert_item(vgui_widget* list, int index, const char* text, void* user)
 	{
 		vgui_list_state* st = vgui_list_of(list);
-		if (!st) return 0;
+		if (!st || st->virtual_mode) return 0;
 		if (index < 0) index = 0;
 		if (index > (int)st->items.size()) index = (int)st->items.size();
 		vgui_list_item item;
@@ -9926,7 +10205,7 @@ extern "C" {
 	{
 		vgui_list_state* st = vgui_list_of(list);
 		size_t index = (size_t)-1;
-		if (!st || !vgui_list_item_find(list, item, &index)) return 0;
+		if (!st || st->virtual_mode || !vgui_list_item_find(list, item, &index)) return 0;
 		if (vgui_id_selected(st->selected, item))
 		{
 			st->selected.erase(std::remove(st->selected.begin(), st->selected.end(), item), st->selected.end());
@@ -9952,7 +10231,7 @@ extern "C" {
 	void vgui_list_clear(vgui_widget* list)
 	{
 		vgui_list_state* st = vgui_list_of(list);
-		if (!st) return;
+		if (!st || st->virtual_mode) return;
 		vgui_list_clear_selection_internal(list, true);
 		if (!list->ctx || !list->ctx->alive.count(list)) return;
 		st = vgui_list_of(list);
@@ -9971,7 +10250,7 @@ extern "C" {
 	int vgui_list_get_count(vgui_widget* list)
 	{
 		vgui_list_state* st = vgui_list_of(list);
-		return st ? (int)st->items.size() : 0;
+		return vgui_list_row_count(list, st);
 	}
 
 	vgui_item_id vgui_list_get_item_at(vgui_widget* list, int index)
@@ -9983,11 +10262,12 @@ extern "C" {
 
 	void vgui_list_set_item_text(vgui_widget* list, vgui_item_id item, const char* text)
 	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (!it) return;
 		it->text = text ? text : "";
-		vgui_list_state* st = vgui_list_of(list);
-		if (st) st->content_w_valid = false;
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 	}
 
@@ -9999,11 +10279,12 @@ extern "C" {
 
 	void vgui_list_set_item_detail(vgui_widget* list, vgui_item_id item, const char* detail)
 	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (!it) return;
 		it->detail = detail ? detail : "";
-		vgui_list_state* st = vgui_list_of(list);
-		if (st) st->content_w_valid = false;
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 	}
 
@@ -10015,6 +10296,8 @@ extern "C" {
 
 	void vgui_list_set_item_enabled(vgui_widget* list, vgui_item_id item, int enabled)
 	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (!it) return;
 		it->enabled = enabled ? 1 : 0;
@@ -10029,6 +10312,8 @@ extern "C" {
 
 	void vgui_list_set_item_user(vgui_widget* list, vgui_item_id item, void* user)
 	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (it) it->user = user;
 	}
@@ -10145,10 +10430,62 @@ extern "C" {
 	// tree model
 	//----------------------------------------------------------------------------
 
+	// 虚拟数据源：树的行是"可见行投影"，展开状态由应用维护。
+	void vgui_tree_set_row_source(vgui_widget* tree, const vgui_row_source* source)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		const bool was_virtual = st->virtual_mode;
+		if (source && source->row_count && source->row_info && source->row_id)
+		{
+			st->source = *source;
+			st->virtual_mode = true;
+			st->nodes.clear();
+			st->roots.clear();
+			st->index.clear();
+			st->rows.clear();
+			st->row_index.clear();
+		}
+		else
+		{
+			st->source = {};
+			st->virtual_mode = false;
+			st->rows.clear();
+			st->row_index.clear();
+		}
+		st->rows_dirty = true;
+		st->content_w_valid = false;
+		if (was_virtual != st->virtual_mode)
+		{
+			st->selected.clear();
+			st->cursor = 0;
+			st->hover = 0;
+			st->pressed = 0;
+			st->range_anchor = 0;
+			st->scratch_node = vgui_tree_node();
+		}
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_is_virtual(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		return st && st->virtual_mode ? 1 : 0;
+	}
+
+	void vgui_tree_source_changed(vgui_widget* tree)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->rows_dirty = true;
+		st->content_w_valid = false;
+		vgui_mark_dirty(tree);
+	}
+
 	vgui_item_id vgui_tree_add_node(vgui_widget* tree, vgui_item_id parent, const char* text, void* user)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st) return 0;
+		if (!st || st->virtual_mode) return 0;
 		if (parent != 0 && !vgui_tree_node_find(tree, parent)) return 0;
 		vgui_tree_node node;
 		vgui_item_id id = vgui_next_item_id(st->next_id);
@@ -10174,7 +10511,7 @@ extern "C" {
 	int vgui_tree_remove_node(vgui_widget* tree, vgui_item_id node)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st || !vgui_tree_node_find(tree, node)) return 0;
+		if (!st || st->virtual_mode || !vgui_tree_node_find(tree, node)) return 0;
 		std::unordered_set<vgui_item_id> doomed;
 		std::vector<vgui_item_id> stack;
 		stack.push_back(node);
@@ -10218,7 +10555,7 @@ extern "C" {
 	void vgui_tree_clear(vgui_widget* tree)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st) return;
+		if (!st || st->virtual_mode) return;
 		vgui_tree_clear_selection_internal(tree, true);
 		if (!tree->ctx || !tree->ctx->alive.count(tree)) return;
 		st = vgui_tree_of(tree);
@@ -10240,30 +10577,38 @@ extern "C" {
 	int vgui_tree_get_node_count(vgui_widget* tree)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		return st ? (int)st->nodes.size() : 0;
+		if (!st) return 0;
+		// 虚拟模式下行数即可见行数，节点计数没有独立含义。
+		if (st->virtual_mode) return vgui_tree_row_count(tree, st);
+		return (int)st->nodes.size();
 	}
 
 	int vgui_tree_get_root_count(vgui_widget* tree)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		return st ? (int)st->roots.size() : 0;
+		if (!st || st->virtual_mode) return 0;	// 虚拟模式无层级信息
+		return (int)st->roots.size();
 	}
 
 	vgui_item_id vgui_tree_get_root(vgui_widget* tree, int index)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st || index < 0 || index >= (int)st->roots.size()) return 0;
+		if (!st || st->virtual_mode || index < 0 || index >= (int)st->roots.size()) return 0;
 		return st->roots[(size_t)index];
 	}
 
 	int vgui_tree_get_child_count(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st && st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		return n ? (int)n->children.size() : 0;
 	}
 
 	vgui_item_id vgui_tree_get_child(vgui_widget* tree, vgui_item_id node, int index)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st && st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n || index < 0 || index >= (int)n->children.size()) return 0;
 		return n->children[(size_t)index];
@@ -10271,12 +10616,20 @@ extern "C" {
 
 	vgui_item_id vgui_tree_get_parent(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st && st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		return n ? n->parent : 0;
 	}
 
 	int vgui_tree_get_depth(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st && st->virtual_mode)
+		{
+			int index = vgui_tree_visible_index(tree, node);
+			return index < 0 ? 0 : vgui_tree_row_depth_at(tree, st, index);
+		}
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		int depth = 0;
 		while (n && n->parent)
@@ -10289,10 +10642,11 @@ extern "C" {
 
 	void vgui_tree_set_item_text(vgui_widget* tree, vgui_item_id node, const char* text)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n) return;
 		n->text = text ? text : "";
-		vgui_tree_state* st = vgui_tree_of(tree);
 		if (st) st->content_w_valid = false;
 		vgui_mark_dirty(tree);
 	}
@@ -10305,6 +10659,8 @@ extern "C" {
 
 	void vgui_tree_set_item_enabled(vgui_widget* tree, vgui_item_id node, int enabled)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n) return;
 		n->enabled = enabled ? 1 : 0;
@@ -10319,6 +10675,8 @@ extern "C" {
 
 	void vgui_tree_set_item_user(vgui_widget* tree, vgui_item_id node, void* user)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (n) n->user = user;
 	}
@@ -10331,13 +10689,14 @@ extern "C" {
 
 	void vgui_tree_set_item_expanded(vgui_widget* tree, vgui_item_id node, int expanded)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;	// 虚拟模式下展开状态归宿主所有
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n) return;
 		int e = expanded ? 1 : 0;
 		if (n->expanded == e) return;
 		n->expanded = e;
-		vgui_tree_state* st = vgui_tree_of(tree);
-		if (st) st->rows_dirty = true;
+		st->rows_dirty = true;
 		vgui_mark_dirty(tree);
 	}
 
@@ -10349,6 +10708,8 @@ extern "C" {
 
 	int vgui_tree_expand(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n || n->expanded || n->children.empty()) return 0;
 		vgui_tree_set_item_expanded(tree, node, 1);
@@ -10357,6 +10718,8 @@ extern "C" {
 
 	int vgui_tree_collapse(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n || !n->expanded || n->children.empty()) return 0;
 		vgui_tree_set_item_expanded(tree, node, 0);
@@ -10365,6 +10728,8 @@ extern "C" {
 
 	int vgui_tree_toggle(vgui_widget* tree, vgui_item_id node)
 	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return 0;
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n || n->children.empty()) return 0;
 		vgui_tree_set_item_expanded(tree, node, !n->expanded);
@@ -10374,7 +10739,7 @@ extern "C" {
 	void vgui_tree_expand_all(vgui_widget* tree)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st) return;
+		if (!st || st->virtual_mode) return;
 		for (vgui_tree_node& n : st->nodes)
 			if (!n.children.empty()) n.expanded = 1;
 		st->rows_dirty = true;
@@ -10384,7 +10749,7 @@ extern "C" {
 	void vgui_tree_collapse_all(vgui_widget* tree)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st) return;
+		if (!st || st->virtual_mode) return;
 		for (vgui_tree_node& n : st->nodes) n.expanded = 0;
 		st->rows_dirty = true;
 		vgui_mark_dirty(tree);
@@ -10393,7 +10758,7 @@ extern "C" {
 	void vgui_tree_expand_to(vgui_widget* tree, vgui_item_id node)
 	{
 		vgui_tree_state* st = vgui_tree_of(tree);
-		if (!st || !vgui_tree_node_find(tree, node)) return;
+		if (!st || st->virtual_mode || !vgui_tree_node_find(tree, node)) return;
 		vgui_item_id p = vgui_tree_get_parent(tree, node);
 		while (p)
 		{

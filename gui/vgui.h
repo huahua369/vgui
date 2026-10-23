@@ -898,6 +898,69 @@ extern "C" {
 	VGUI_API void vgui_tree_on_activate(vgui_widget* tree, vgui_item_fn fn, void* user);
 
 	/* ------------------------------------------------------------------------- */
+	/* Optional virtual row source                                               */
+	/* ------------------------------------------------------------------------- */
+
+	/* A row source turns a list into a read-only virtual view over rows owned by
+	 * the application.  While a source is attached the control stores no rows:
+	 * layout, drawing, hit testing and keyboard navigation only query the
+	 * visible index range through these callbacks, so row count is unbounded.
+	 *
+	 * Contract:
+	 *   - All callbacks run on the UI thread, inside layout / draw / input
+	 *     handling.  They must be fast and must not mutate the widget.
+	 *   - row_info() fills text / detail / item_user and returns non-zero for a
+	 *     valid row.  The returned pointers only have to stay valid until the
+	 *     next callback.
+	 *   - row_id_index() may return -1 when the id is unknown; when the callback
+	 *     is NULL the core falls back to a linear scan over row_id().
+	 *   - row_enabled / row_max_width are optional.  Without row_max_width the
+	 *     control skips the widest-row measurement and falls back to the style
+	 *     width, which avoids a full scan of the data source.
+	 *
+	 * While a source is attached the model mutation APIs (add / insert / remove /
+	 * clear / set_item_text / set_item_detail / set_item_enabled / set_item_user)
+	 * are no-ops, and get_count / get_item_* are answered from the callbacks.
+	 * Call vgui_list_source_changed() after the backing data changes.
+	 *
+	 * Trees use the same struct with a different row meaning: a row is one
+	 * *visible* row of the flattened tree, in display order, and the application
+	 * owns the expansion state.
+	 *   - row_depth(index)        indentation level; required for trees, 0 for lists.
+	 *   - row_has_children(index) draws the expand arrow; optional, default false.
+	 *   - row_expanded(index)     arrow direction; optional, default collapsed.
+	 *   - row_toggle(index)       called when the user clicks the arrow (or uses
+	 *                             Space / Left / Right); optional.  The callback
+	 *                             must update its own expansion state and call
+	 *                             vgui_tree_source_changed().
+	 *   - row_info's detail is ignored by trees.
+	 * Tree mutation APIs (add_node / remove_node / clear / set_item_expanded /
+	 * expand* / collapse*) are no-ops while a source is attached. */
+	typedef struct vgui_row_source
+	{
+		int (*row_count)(void* user);
+		int (*row_info)(void* user, int index, const char** text, const char** detail,
+			void** item_user);
+		vgui_item_id (*row_id)(void* user, int index);
+		int (*row_id_index)(void* user, vgui_item_id item);
+		int (*row_enabled)(void* user, int index);
+		float (*row_max_width)(void* user);
+		int (*row_depth)(void* user, int index);
+		int (*row_has_children)(void* user, int index);
+		int (*row_expanded)(void* user, int index);
+		void (*row_toggle)(void* user, int index);
+		void* user;
+	} vgui_row_source;
+
+	VGUI_API void vgui_list_set_row_source(vgui_widget* list, const vgui_row_source* source);
+	VGUI_API int vgui_list_is_virtual(vgui_widget* list);
+	VGUI_API void vgui_list_source_changed(vgui_widget* list);
+
+	VGUI_API void vgui_tree_set_row_source(vgui_widget* tree, const vgui_row_source* source);
+	VGUI_API int vgui_tree_is_virtual(vgui_widget* tree);
+	VGUI_API void vgui_tree_source_changed(vgui_widget* tree);
+
+	/* ------------------------------------------------------------------------- */
 	/* Menu                                                                      */
 	/* ------------------------------------------------------------------------- */
 
