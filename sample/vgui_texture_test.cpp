@@ -149,7 +149,10 @@ int main()
 	vgui_widget* crop = add_image(ui, native, 32, 0, 16, 32);
 	vgui_image_set_source(crop, 1, 0, 1, 2);
 	vgui_widget* tinted = add_image(ui, native, 48, 0, 32, 32);
-	vgui_image_set_tint(tinted, red);
+	// vgui_color is public 0xAARRGGBB; the draw path converts it to OVG's
+	// channel order.  The texture pixels use memory RGBA order, so `red` below
+	// is the texture's red texel, not the same literal as the public tint.
+	vgui_image_set_tint(tinted, 0xFFFF0000u);
 	vgui_widget* flip_h = add_image(ui, native, 0, 32, 32, 32);
 	vgui_image_set_flip(flip_h, 1, 0);
 	vgui_widget* flip_v = add_image(ui, native, 0, 64, 32, 32);

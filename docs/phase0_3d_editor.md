@@ -87,6 +87,8 @@ vgui_image_set_flip(image, 1, 0);
 vgui_image_set_pixel_snap(image, 1);
 ```
 
+`sample/vgui_demo.cpp` 的“图片 VGUI_IMAGE”卡片用 CPU 纹理演示了上述接口，并可通过按钮切换 flip / tint / source / fit。
+
 fit 语义：
 
 - `STRETCH`：填满控件。

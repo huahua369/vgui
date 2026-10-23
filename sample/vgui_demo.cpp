@@ -2,7 +2,7 @@
 //
 // 演示 gui/vgui.h 公开的纯 C API（注意：本文件除窗口/渲染后端外，
 // 全部通过 C 接口操作 UI，没有任何 C++ 控件类参与）：
-//   面板 / 标签 / 按钮 / 复选框 / 单选 / 开关 / 滑杆 / 进度条 / 编辑框 / 分隔线
+//   面板 / 标签 / 按钮 / 复选框 / 单选 / 开关 / 滑杆 / 进度条 / 图片 / 编辑框 / 分隔线
 // 以及：行列布局、对齐、间距、grow、justify、滚动面板、主题切换、焦点、
 //       文本编辑辅助、动态增删控件、可见性与禁用状态。
 //
@@ -13,6 +13,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
@@ -128,6 +129,16 @@ struct demo_state
 	vgui_widget* sel_rounding_readout = nullptr;
 	vgui_widget* focus_alpha = nullptr;
 	vgui_widget* focus_alpha_readout = nullptr;
+
+	// 图片控件
+	vgui_widget* image_demo = nullptr;
+	vgui_widget* image_info = nullptr;
+	int image_flip_x = 0;
+	int image_flip_y = 0;
+	int image_tint = 0;
+	int image_source = 0;
+	int image_fit = 0;
+
 	int sel_color_index = 0;
 	vgui_widget* scroll_panel = nullptr;
 	vgui_widget* scroll_info = nullptr;
@@ -174,6 +185,7 @@ static const char* kind_name(vgui_widget_kind k)
 	case VGUI_SLIDER: return "slider";
 	case VGUI_PROGRESS: return "progress";
 	case VGUI_EDIT: return "edit";
+	case VGUI_IMAGE: return "image";
 	case VGUI_SEPARATOR: return "separator";
 	case VGUI_LIST: return "list";
 	case VGUI_TREE: return "tree";
@@ -767,6 +779,95 @@ static void on_progress_dec(vgui_widget* w, const vgui_event* e, void* user)
 	statusf(st, "手动进度 -> %.0f", vgui_widget_get_value(st->progress_manual));
 }
 
+//---------------------------------------------------------------------------
+// 图片控件
+//---------------------------------------------------------------------------
+
+static constexpr int kDemoImageW = 96;
+static constexpr int kDemoImageH = 48;
+
+// 生成 RGBA8 内存字节序的颜色（低字节 = R）。
+static uint32_t demo_rgba(uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+{
+	return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | ((uint32_t)a << 24);
+}
+
+static const char* image_fit_name(int fit)
+{
+	static const char* names[] = { "stretch", "contain", "cover", "none" };
+	return names[fit & 3];
+}
+
+static void update_image_info(demo_state* st)
+{
+	if (!st->image_info) return;
+	char buf[192] = {};
+	snprintf(buf, sizeof(buf), "source: %s   fit: %s   flip: %d,%d   tint: %s",
+		st->image_source ? "上半 96x24" : "全图 96x48",
+		image_fit_name(st->image_fit),
+		st->image_flip_x, st->image_flip_y,
+		st->image_tint ? "开" : "关");
+	vgui_widget_set_text(st->image_info, buf);
+}
+
+static void on_image_flip_x(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_flip_x ^= 1;
+	vgui_image_set_flip(st->image_demo, st->image_flip_x, st->image_flip_y);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_flip(%d, %d)", st->image_flip_x, st->image_flip_y);
+}
+
+static void on_image_flip_y(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_flip_y ^= 1;
+	vgui_image_set_flip(st->image_demo, st->image_flip_x, st->image_flip_y);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_flip(%d, %d)", st->image_flip_x, st->image_flip_y);
+}
+
+static void on_image_tint(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_tint ^= 1;
+	// 公共 vgui 颜色是 0xAARRGGBB；图片绘制路径会转换成 OVG 的通道顺序。
+	vgui_image_set_tint(st->image_demo, st->image_tint ? 0xFF66CCFFu : 0xFFFFFFFFu);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_tint(%s)", st->image_tint ? "0xFF66CCFF" : "0xFFFFFFFF");
+}
+
+static void on_image_source(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_source ^= 1;
+	vgui_image_set_source(st->image_demo, 0, 0, kDemoImageW,
+		st->image_source ? kDemoImageH / 2 : kDemoImageH);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_source(0, 0, %d, %d)", kDemoImageW,
+		st->image_source ? kDemoImageH / 2 : kDemoImageH);
+}
+
+static void on_image_fit(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_fit = (st->image_fit + 1) & 3;
+	vgui_image_set_fit(st->image_demo, (vgui_image_fit)st->image_fit);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_fit(%s)", image_fit_name(st->image_fit));
+}
+
 // 焦点
 static void on_focus_next(vgui_widget* w, const vgui_event* e, void* user)
 {
@@ -1010,6 +1111,73 @@ static void build_progress(demo_state* st, vgui_widget* root)
 	vgui_widget_set_range(st->progress_manual, 0, 100);
 	vgui_widget_set_grow(st->progress_manual, 1);
 	vgui_widget_set_value(st->progress_manual, 40);
+}
+
+static void build_images(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "图片 VGUI_IMAGE");
+
+	// 96x48 RGBA8：四象限 + 白边 + 左上角暗块，翻转/裁剪/着色都容易观察。
+	std::vector<uint32_t> pixels((size_t)kDemoImageW * kDemoImageH);
+	const uint32_t red = demo_rgba(235, 80, 80);
+	const uint32_t green = demo_rgba(80, 200, 90);
+	const uint32_t blue = demo_rgba(70, 120, 220);
+	const uint32_t yellow = demo_rgba(230, 200, 70);
+	const uint32_t white = demo_rgba(255, 255, 255);
+	const uint32_t dark = demo_rgba(30, 30, 30);
+	for (int y = 0; y < kDemoImageH; ++y)
+	{
+		for (int x = 0; x < kDemoImageW; ++x)
+		{
+			uint32_t color = (x < kDemoImageW / 2)
+				? (y < kDemoImageH / 2 ? red : blue)
+				: (y < kDemoImageH / 2 ? green : yellow);
+			if (x < 2 || y < 2 || x >= kDemoImageW - 2 || y >= kDemoImageH - 2)
+				color = white;
+			if (x < 10 && y < 10)
+				color = dark;
+			pixels[(size_t)y * kDemoImageW + x] = color;
+		}
+	}
+
+	vgui_texture_desc desc = {};
+	desc.width = kDemoImageW;
+	desc.height = kDemoImageH;
+	desc.stride = kDemoImageW * 4;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels.data();
+	vgui_texture* texture = vgui_texture_create(st->ui, &desc);
+	if (!texture)
+	{
+		label(c, "纹理创建失败", 14, 0xFFE05252);
+		return;
+	}
+
+	vgui_widget* r = row(c, 14);
+	st->image_demo = vgui_widget_add(r, VGUI_IMAGE, nullptr);
+	vgui_widget_set_id(st->image_demo, "image-demo");
+	vgui_widget_set_size(st->image_demo, 192, 128);
+	vgui_widget_set_border(st->image_demo, 0xFF555555, 1);
+	vgui_image_set_texture(st->image_demo, texture);
+	vgui_image_set_fit(st->image_demo, VGUI_IMAGE_FIT_STRETCH);
+	vgui_image_set_pixel_snap(st->image_demo, 1);
+
+	vgui_widget* info = col(r, 4);
+	vgui_widget_set_grow(info, 1);
+	label(info, "CPU 纹理 96x48；四象限 + 白边 + 左上角暗块。", 14, 0xFFB0B0B0);
+	st->image_info = label(info, "", 12, 0xFF9A9A9A);
+	label(info, "按钮演示 set_flip / set_tint / set_source / set_fit。", 12, 0xFF9A9A9A);
+	update_image_info(st);
+
+	vgui_widget* actions = row(c, 8);
+	button(actions, "水平翻转", on_image_flip_x, st);
+	button(actions, "垂直翻转", on_image_flip_y, st);
+	button(actions, "tint 着色", on_image_tint, st);
+	button(actions, "源裁剪", on_image_source, st);
+	button(actions, "fit 切换", on_image_fit, st);
+
+	// 图片控件会 retain；调用方可以立即释放创建引用。
+	vgui_texture_destroy(texture);
 }
 
 static void build_edits(demo_state* st, vgui_widget* root)
@@ -1351,6 +1519,7 @@ static void build_ui(demo_state* st)
 
 	build_header(st, root);
 	build_buttons(st, root);
+	build_images(st, root);
 	build_toggles(st, root);
 	build_sliders(st, root);
 	build_progress(st, root);

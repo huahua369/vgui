@@ -6396,7 +6396,9 @@ namespace {
 		uint32_t tint = image->tint;
 		if (!w->enabled)
 			tint = vgui_mix_color(tint, ctx->theme.disabled, is.disabled_mix);
-		tint = vgui_widget_color(w, tint);
+		// image->tint uses the public 0xAARRGGBB order; the image draw paths
+		// (add_image, add_texture, add_geometry) all expect OVG's channel order.
+		tint = vgui_ovg_color(vgui_widget_color(w, tint));
 
 		vgui_texture* texture = image->texture;
 		if (texture)
