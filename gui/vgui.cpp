@@ -157,6 +157,13 @@ struct vgui_list_state
 	void* select_user = nullptr;
 	vgui_item_fn activate_fn = nullptr;
 	void* activate_user = nullptr;
+
+	// 最宽行宽度缓存：content_w 逐条测量在万行列表上是每次布局 O(N)，
+	// 文本或字体不变时直接复用。模型变更点负责把 valid 置 false。
+	bool content_w_valid = false;
+	float content_w = 0.0f;
+	const font_familys_t* content_w_font = nullptr;
+	float content_w_font_size = 0.0f;
 };
 
 struct vgui_tree_node
@@ -197,6 +204,14 @@ struct vgui_tree_state
 	void* select_user = nullptr;
 	vgui_item_fn activate_fn = nullptr;
 	void* activate_user = nullptr;
+
+	// 最宽可见行宽度缓存。可见行集合变化（展开/折叠/增删）和文本变更都会失效。
+	bool content_w_valid = false;
+	float content_w = 0.0f;
+	const font_familys_t* content_w_font = nullptr;
+	float content_w_font_size = 0.0f;
+	float content_w_indent = 0.0f;
+	float content_w_arrow = 0.0f;
 };
 
 struct vgui_menu_item
@@ -1388,6 +1403,8 @@ namespace {
 		for (vgui_item_id id : st->roots)
 			vgui_tree_rebuild_rows_rec(st, id, 0);
 		st->rows_dirty = false;
+		// 可见行集合变了，最宽行宽度需要重算。
+		st->content_w_valid = false;
 	}
 
 	static int vgui_tree_visible_index(vgui_widget* w, vgui_item_id id)
@@ -2336,6 +2353,64 @@ namespace {
 		if (out_h) *out_h = std::max(0.0f, line_y - line_spacing);
 	}
 
+	// 列表最宽行宽度（带缓存）。content_w 只在自动宽度或横向滚动时才被
+	// 消费，但逐条测量在万行列表上是每次布局 O(N)：文本和字体不变时复用
+	// 上次结果，只有模型变更点负责把 content_w_valid 置 false。
+	static float vgui_list_content_width(vgui_widget* w, vgui_list_state* st)
+	{
+		if (!w || !st) return 0.0f;
+		const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
+		float fs = vgui_font_size(w->ctx, w);
+		if (st->content_w_valid && st->content_w_font == font && st->content_w_font_size == fs)
+			return st->content_w;
+
+		float cw = 0.0f;
+		for (const vgui_list_item& it : st->items)
+		{
+			float iw = vgui_text_width(w, it.text);
+			if (!it.detail.empty())
+				iw += 16.0f + vgui_text_width(w, it.detail);
+			cw = std::max(cw, iw);
+		}
+		st->content_w = cw;
+		st->content_w_font = font;
+		st->content_w_font_size = fs;
+		st->content_w_valid = true;
+		return cw;
+	}
+
+	// 树最宽可见行宽度（带缓存）。可见行集合由 rows_dirty 失效，缩进和
+	// 箭头尺寸来自主题，一并作为缓存键。
+	static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
+	{
+		if (!w || !st) return 0.0f;
+		vgui_tree_rebuild_rows(w);
+		const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
+		float fs = vgui_font_size(w->ctx, w);
+		float indent = w->ctx ? w->ctx->style.tree.indent : 0.0f;
+		float arrow = w->ctx ? w->ctx->style.tree.arrow_size + w->ctx->style.tree.arrow_gap : 0.0f;
+		if (st->content_w_valid && st->content_w_font == font &&
+			st->content_w_font_size == fs && st->content_w_indent == indent &&
+			st->content_w_arrow == arrow)
+			return st->content_w;
+
+		float cw = 0.0f;
+		for (const vgui_tree_row& row : st->rows)
+		{
+			vgui_tree_node* n = vgui_tree_node_find(w, row.id);
+			if (!n) continue;
+			float iw = row.depth * indent + arrow + vgui_text_width(w, n->text);
+			cw = std::max(cw, iw);
+		}
+		st->content_w = cw;
+		st->content_w_font = font;
+		st->content_w_font_size = fs;
+		st->content_w_indent = indent;
+		st->content_w_arrow = arrow;
+		st->content_w_valid = true;
+		return cw;
+	}
+
 	static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	{
 		if (!w) return;
@@ -2487,15 +2562,7 @@ namespace {
 			 * 保持 0，vgui_panel_get_content_size 也随之返回 0。 */
 			float content_w = 0;
 			if (ls && (w->req_w <= 0.0f || w->scrollable_x))
-			{
-				for (const vgui_list_item& it : ls->items)
-				{
-					float iw = vgui_text_width(w, it.text);
-					if (!it.detail.empty())
-						iw += 16.0f + vgui_text_width(w, it.detail);
-					content_w = std::max(content_w, iw);
-				}
-			}
+				content_w = vgui_list_content_width(w, ls);
 			w->content_w = content_w;
 			w->content_h = ls ? (float)ls->items.size() * row_h : 0.0f;
 			float default_w = std::max(st.list.req_width, content_w + pl + pr + 12.0f);
@@ -2511,17 +2578,7 @@ namespace {
 			/* 同 VGUI_LIST：没有自动宽度需求且未开横向滚动时跳过全行文本测量。 */
 			float content_w = 0;
 			if (ts && (w->req_w <= 0.0f || w->scrollable_x))
-			{
-				float indent = st.tree.indent;
-				float arrow = st.tree.arrow_size + st.tree.arrow_gap;
-				for (const vgui_tree_row& row : ts->rows)
-				{
-					vgui_tree_node* n = vgui_tree_node_find(w, row.id);
-					if (!n) continue;
-					float iw = row.depth * indent + arrow + vgui_text_width(w, n->text);
-					content_w = std::max(content_w, iw);
-				}
-			}
+				content_w = vgui_tree_content_width(w, ts);
 			w->content_w = content_w;
 			w->content_h = ts ? (float)ts->rows.size() * row_h : 0.0f;
 			float default_w = std::max(st.tree.req_width, content_w + pl + pr + 12.0f);
@@ -9843,6 +9900,7 @@ extern "C" {
 		st->items.push_back(std::move(item));
 		vgui_item_id id = st->items.back().id;
 		st->index[id] = st->items.size() - 1;
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 		return id;
 	}
@@ -9859,6 +9917,7 @@ extern "C" {
 		item.user = user;
 		st->items.insert(st->items.begin() + index, std::move(item));
 		vgui_list_update_index_from(st, (size_t)index);
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 		return st->items[(size_t)index].id;
 	}
@@ -9885,6 +9944,7 @@ extern "C" {
 		if (st->range_anchor == item) st->range_anchor = 0;
 		st->index.erase(item);
 		vgui_list_update_index_from(st, index);
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 		return 1;
 	}
@@ -9904,6 +9964,7 @@ extern "C" {
 		st->hover = 0;
 		st->pressed = 0;
 		st->range_anchor = 0;
+		st->content_w_valid = false;
 		vgui_mark_dirty(list);
 	}
 
@@ -9925,6 +9986,8 @@ extern "C" {
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (!it) return;
 		it->text = text ? text : "";
+		vgui_list_state* st = vgui_list_of(list);
+		if (st) st->content_w_valid = false;
 		vgui_mark_dirty(list);
 	}
 
@@ -9939,6 +10002,8 @@ extern "C" {
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		if (!it) return;
 		it->detail = detail ? detail : "";
+		vgui_list_state* st = vgui_list_of(list);
+		if (st) st->content_w_valid = false;
 		vgui_mark_dirty(list);
 	}
 
@@ -10227,6 +10292,8 @@ extern "C" {
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n) return;
 		n->text = text ? text : "";
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (st) st->content_w_valid = false;
 		vgui_mark_dirty(tree);
 	}
 

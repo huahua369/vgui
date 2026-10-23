@@ -1532,6 +1532,13 @@ static void build_models(demo_state* st, vgui_widget* root)
 		vgui_item_id id = vgui_list_add_item(st->list_demo, initial[i], nullptr);
 		vgui_list_set_item_detail(st->list_demo, id, i == 0 ? "双击可激活" : "稳定 item id");
 	}
+	std::string str;
+	for (int i = 0; i < 1000; i++)
+	{
+		str = "内容cgly"+std::to_string(i);
+		vgui_item_id id = vgui_list_add_item(st->list_demo, str.c_str(), nullptr);
+		vgui_list_set_item_detail(st->list_demo, id, "稳定 item id");
+	}
 
 	vgui_widget* lr = row(lc, 8);
 	button(lr, "添加列表项", on_list_add, st);
