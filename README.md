@@ -216,9 +216,16 @@ sample/
   vgui_edit_test.cpp  编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp 列表、树、菜单模型自测
   main.cpp            OVG 场景示例
+docs/
+  phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
+  editor_roadmap.md   游戏编辑器组件路线图
 ```
 
 公共 API 和控件相关说明集中在 `gui/vgui.h`；内部 C++ 声明在 `gui/vgui_internal.h`。
+
+## 路线图
+
+游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)。
 
 ## 测试
 

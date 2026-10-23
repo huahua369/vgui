@@ -184,6 +184,8 @@ out\bin\x64d\vgui_c_api_test.exe
 
 ## 后续阶段接口预留
 
+游戏编辑器方向的组件拆解、优先级和验收标准见 [`editor_roadmap.md`](editor_roadmap.md)。
+
 - 多视口可以复用同一套 `VGUI_IMAGE` + native texture，只需为每个视口维护独立 FBO。
 - 场景编辑器属性面板、dock、tab 等继续使用现有控件体系；本阶段没有引入新的 UI 容器。
 - 纹理过滤/寻址枚举已加入公共头文件供后续扩展，当前 image 绘制固定使用后端采样器。
