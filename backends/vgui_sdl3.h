@@ -78,9 +78,6 @@ public:
 	gui_viewport(const gui_viewport&) = delete;
 	gui_viewport& operator=(const gui_viewport&) = delete;
 	~gui_viewport();
-	void set_viewport(const glm::ivec4& rc);
-	void clear();
-	//void add_div(div_cx0* c);
 	void trigger(dev_event_t* e);
 };
 

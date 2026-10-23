@@ -82,23 +82,6 @@ int font_get_lineheight(font_familys_t* family, int fontsize, bool first) {
 	}
 	return h;
 }
-
-void gui_viewport::set_viewport(const glm::ivec4& rc)
-{
-	//_root._pos = { rc.x,rc.y };
-	//_root._size = { rc.z,rc.w };
-}
-
-void gui_viewport::clear()
-{
-	//_root.clear();
-}
-
-//void gui_viewport::add_div(div_cx0* c)
-//{
-//	_root.add(c);
-//}
-
 gui_viewport::~gui_viewport()
 {
 	if (ui)
@@ -388,6 +371,14 @@ struct vgui_widget
 
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
+
+	// button icon (VGUI_BUTTON) --------------------------------------------
+	vgui_texture* icon_tex = nullptr;
+	int icon_w = 0;
+	int icon_h = 0;
+	vgui_button_icon_pos icon_pos = VGUI_BUTTON_ICON_LEFT;
+	float icon_gap = -1.0f;   // <0 表示使用 style.button.icon_gap
+	uint32_t icon_tint = 0;    // 0 表示不染色（用纹理原色）
 
 	// custom (VGUI_CUSTOM) -------------------------------------------------
 	vgui_custom_draw_fn custom_draw = nullptr;
@@ -1362,6 +1353,7 @@ namespace {
 		s.button.press_mix_min = 0.35f;
 		s.button.press_offset = 1.0f;
 		s.button.disabled_mix = 0.35f;
+		s.button.icon_gap = 6.0f;
 
 		s.choice.box_min = 14.0f;
 		s.choice.box_max = 18.0f;
@@ -1515,6 +1507,7 @@ namespace {
 		s->button.press_mix_min = vgui_clampf(s->button.press_mix_min, 0.0f, 1.0f);
 		s->button.press_offset = vgui_nonneg(s->button.press_offset);
 		s->button.disabled_mix = vgui_clampf(s->button.disabled_mix, 0.0f, 1.0f);
+		s->button.icon_gap = vgui_nonneg(s->button.icon_gap);
 
 		s->choice.box_min = vgui_nonneg(s->choice.box_min);
 		s->choice.box_max = vgui_nonneg(s->choice.box_max);
@@ -2187,9 +2180,37 @@ namespace {
 			w->intrinsic_h = lh * vgui_text_lines(w->text) + pt + pb;
 			break;
 		case VGUI_BUTTON:
-			w->intrinsic_w = tw + pl + pr + st.button.text_extra_width;
-			w->intrinsic_h = std::max(lh + pt + pb, st.button.min_height);
-			break;
+		{
+			float iw = 0, ih = 0;
+			float gap = w->icon_gap > 0 ? w->icon_gap : st.button.icon_gap;
+			bool horiz = (w->icon_pos == VGUI_BUTTON_ICON_LEFT || w->icon_pos == VGUI_BUTTON_ICON_RIGHT);
+			if (w->icon_tex && w->icon_tex->width > 0)
+			{
+				iw = w->icon_w > 0 ? w->icon_w : (float)w->icon_tex->width;
+				ih = w->icon_h > 0 ? w->icon_h : (float)w->icon_tex->height;
+			}
+			bool has_icon = iw > 0 && ih > 0;
+			bool has_text = !w->text.empty();
+			float extra = st.button.text_extra_width;
+			if (has_icon)
+			{
+				if (horiz)
+					w->intrinsic_w = pl + pr + std::max(tw + extra + (has_text ? gap : 0), 0.0f) + iw;
+				else
+					w->intrinsic_w = pl + pr + std::max(tw + extra, iw);
+
+				if (horiz)
+					w->intrinsic_h = std::max(std::max(lh, ih) + pt + pb, st.button.min_height);
+				else
+					w->intrinsic_h = pt + pb + ih + (has_text ? gap : 0) + std::max(lh, 0.0f);
+			}
+			else
+			{
+				w->intrinsic_w = tw + pl + pr + extra;
+				w->intrinsic_h = std::max(lh + pt + pb, st.button.min_height);
+			}
+		}
+		break;
 		case VGUI_CHECKBOX:
 		case VGUI_RADIO:
 		{
@@ -2654,6 +2675,10 @@ namespace {
 
 		ctx->alive.erase(w);
 		ctx->all_widgets.erase(w);
+
+		// button icon texture — release ref before delete
+		if (w->icon_tex) { vgui_texture_release(w->icon_tex); w->icon_tex = nullptr; }
+
 		delete w;
 	}
 
@@ -5872,6 +5897,9 @@ namespace {
 			w->abs_w - fs.inset * 2.0f, w->abs_h - fs.inset * 2.0f, r, color, fs.width);
 	}
 
+	// Forward — declared later at vgui_draw_image. Used by VGUI_BUTTON icon draw.
+	static void vgui_texture_ensure_upload(vgui_context* ctx, vgui_texture* texture, ovg_ctx_cb* cb, rvg_t* vg);
+
 	static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
@@ -5900,11 +5928,151 @@ namespace {
 				vgui_widget_color(w, border), w->border_width);
 		}
 
-		float ty = w->abs_y + w->padding[1] + (w->pressed ? bs.press_offset : 0.0f);
-		float tx = w->abs_x + w->padding[0];
-		float tw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-		float th = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
-		vgui_draw_text(ctx, cb, vg, w, w->text, tx, ty, tw, th, vgui_text_color(w), w->text_align_x, w->text_align_y);
+		// content area (inside padding)
+		float ty0 = w->abs_y + w->padding[1] + (w->pressed ? bs.press_offset : 0.0f);
+		float tx0 = w->abs_x + w->padding[0];
+		float cw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float ch = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+
+		// --- icon + text layout ---
+		vgui_texture* tex = w->icon_tex;
+		int icon_w = w->icon_w > 0 ? w->icon_w : (tex ? tex->width : 0);
+		int icon_h = w->icon_h > 0 ? w->icon_h : (tex ? tex->height : 0);
+		const bool has_icon = tex && tex->width > 0 && tex->height > 0 && icon_w > 0 && icon_h > 0;
+		const bool has_text = !w->text.empty();
+		const float gap = w->icon_gap > 0 ? w->icon_gap : bs.icon_gap;
+
+		if (has_icon || has_text)
+		{
+			float iw = has_icon ? (float)icon_w : 0;
+			float ih = has_icon ? (float)icon_h : 0;
+			float tw = has_text ? vgui_text_width(w, w->text) : 0;
+			float th = has_text ? vgui_line_height(ctx, w) : 0;
+
+			bool horiz = (w->icon_pos == VGUI_BUTTON_ICON_LEFT || w->icon_pos == VGUI_BUTTON_ICON_RIGHT);
+			float total_w = horiz ? (iw + (has_icon && has_text ? gap : 0) + tw) : std::max(iw, tw);
+			float total_h = horiz ? std::max(ih, th) : (ih + (has_icon && has_text ? gap : 0) + th);
+
+			// 整体在 content area 内按 text_align 对齐
+			float x_start = tx0 + (cw - total_w) * w->text_align_x;
+			float y_start = ty0 + (ch - total_h) * w->text_align_y;
+
+			float ix = 0, iy = 0, tx = 0, ty = 0;
+			bool draw_icon = false, draw_text = false;
+
+			if (horiz)
+			{
+				if (has_icon)
+				{
+					ix = x_start;
+					iy = y_start + (total_h - ih) * 0.5f;
+					draw_icon = true;
+				}
+				if (has_text)
+				{
+					if (w->icon_pos == VGUI_BUTTON_ICON_RIGHT)
+						tx = x_start;   // text 先
+					else
+						tx = x_start + iw + (has_icon ? gap : 0);
+					ty = y_start + (total_h - th) * 0.5f;
+					draw_text = true;
+				}
+				if (has_icon && has_text && w->icon_pos == VGUI_BUTTON_ICON_RIGHT)
+				{
+					ix = tx + tw + gap;
+					draw_icon = true;
+				}
+			}
+			else  // VGUI_BUTTON_ICON_TOP / BOTTOM
+			{
+				if (has_icon)
+				{
+					ix = x_start + (total_w - iw) * 0.5f;
+					iy = y_start;
+					draw_icon = true;
+				}
+				if (has_text)
+				{
+					if (w->icon_pos == VGUI_BUTTON_ICON_BOTTOM)
+						ty = y_start;
+					else
+						ty = y_start + ih + (has_icon ? gap : 0);
+					tx = x_start + (total_w - tw) * 0.5f;
+					draw_text = true;
+				}
+				if (has_icon && has_text && w->icon_pos == VGUI_BUTTON_ICON_BOTTOM)
+				{
+					iy = ty + th + gap;
+					draw_icon = true;
+				}
+			}
+
+			// 画 icon
+			if (draw_icon)
+			{
+				vgui_texture_ensure_upload(ctx, tex, cb, vg);
+
+				uint32_t tint = w->icon_tint;
+				if (!w->enabled)
+				{
+					uint32_t base = tint ? tint : 0xFFFFFFFF;
+					tint = vgui_mix_color(base, ctx->theme.disabled, bs.disabled_mix);
+				}
+				tint = vgui_ovg_color(tint ? tint : 0xFFFFFFFF);
+
+				if (tex->native.image.id != 0 && cb->add_texture)
+				{
+					ovg_texture_r r = {};
+					r.tex = &tex->native;
+					r.rc = { 0, 0, tex->width, tex->height };
+					r.dst = { (int)std::lround(ix), (int)std::lround(iy),
+						(int)std::lround(iw), (int)std::lround(ih) };
+					r.color = tint;
+					cb->add_texture(vg, &r);
+				}
+				else if (tex->cpu)
+				{
+					// CPU 纹理暂时不支持直接在按钮上画 — 用户需先上传到 GPU 或使用 native 纹理。
+					// 这里留空避免 crash；下次可以像 vgui_draw_image 那样走 geometry 路径。
+				}
+			}
+
+			// 画 text — 用 tx/ty 作为 text 起点坐标，atx/aty 传给 draw_text
+			// 作为 text 可用区域左上角（draw_text 内部会按 text_align 在这个矩形内对齐）。
+			if (draw_text)
+			{
+				float atx, aty, atw, ath;
+				if (horiz)
+				{
+					atw = std::max(0.0f, has_icon ? cw - iw - gap : cw);
+					ath = ch;
+					if (w->icon_pos == VGUI_BUTTON_ICON_LEFT && has_icon)
+						atx = tx0 + iw + gap;
+					else
+						atx = tx0;
+					aty = ty;
+				}
+				else  // VGUI_BUTTON_ICON_TOP / BOTTOM
+				{
+					atw = cw;
+					ath = std::max(0.0f, has_icon ? ch - ih - gap : ch);
+					atx = tx0;
+					if (w->icon_pos == VGUI_BUTTON_ICON_TOP && has_icon)
+						aty = ty + ih + gap;
+					else
+						aty = ty;
+				}
+				vgui_draw_text(ctx, cb, vg, w, w->text, atx, aty, atw, ath,
+					vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
+		}
+		else
+		{
+			// 纯文字按钮 — 保持原行为（padding 内 + text_align）
+			vgui_draw_text(ctx, cb, vg, w, w->text, tx0, ty0, cw, ch,
+				vgui_text_color(w), w->text_align_x, w->text_align_y);
+		}
+
 		vgui_draw_focus(w, cb, vg);
 	}
 
@@ -7664,6 +7832,44 @@ extern "C" {
 	{
 		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
 		widget->image->pixel_snap = enabled != 0;
+		vgui_mark_dirty(widget);
+	}
+
+	// -------------------------------------------------------------------------
+	// Button icon API
+	// -------------------------------------------------------------------------
+
+	void vgui_button_set_icon(vgui_widget* widget, vgui_texture* tex,
+		int icon_w, int icon_h, vgui_button_icon_pos pos)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		if (widget->icon_tex == tex && widget->icon_w == icon_w &&
+			widget->icon_h == icon_h && widget->icon_pos == pos)
+			return;
+		if (tex) vgui_texture_retain(tex);
+		vgui_texture* old = widget->icon_tex;
+		widget->icon_tex = tex;
+		if (old) vgui_texture_release(old);
+		widget->icon_w = icon_w;
+		widget->icon_h = icon_h;
+		widget->icon_pos = pos;
+		if (widget->ctx) widget->ctx->layout_dirty = true;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_button_set_icon_gap(vgui_widget* widget, float gap)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		if (widget->icon_gap == gap) return;
+		widget->icon_gap = gap;
+		if (widget->ctx) widget->ctx->layout_dirty = true;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_button_set_icon_tint(vgui_widget* widget, vgui_color tint)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		widget->icon_tint = tint;   // 0 = no tint (using raw texture)
 		vgui_mark_dirty(widget);
 	}
 
