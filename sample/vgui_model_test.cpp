@@ -330,12 +330,16 @@ static void test_list_virtual(vgui_context* ui)
 
 struct virtual_tree_rows
 {
-	int expanded = 0;
+	int expanded = 0;		// 宿主控制的展开状态
+	int disabled_index = -1;	// 该行返回 enabled=0
+	int toggles = 0;		// row_toggle 被调用的次数
 };
+
+constexpr int kVirtualTreeChildRows = 50;
 
 static int vtrows_count(void* user)
 {
-	return ((virtual_tree_rows*)user)->expanded ? 5 : 1;
+	return ((virtual_tree_rows*)user)->expanded ? kVirtualTreeChildRows : 1;
 }
 
 static int vtrows_info(void* user, int index, const char** text, const char** detail,
@@ -384,10 +388,24 @@ static int vtrows_expanded(void* user, int index)
 
 static void vtrows_toggle(void* user, int index)
 {
-	if (index == 0) ((virtual_tree_rows*)user)->expanded ^= 1;
+	virtual_tree_rows* rows = (virtual_tree_rows*)user;
+	if (index != 0) return;
+	rows->toggles++;
+	rows->expanded ^= 1;
 }
 
-static void test_tree_virtual(vgui_context* ui)
+static int vtrows_enabled(void* user, int index)
+{
+	return index == ((virtual_tree_rows*)user)->disabled_index ? 0 : 1;
+}
+
+static float vtrows_max_width(void* user)
+{
+	(void)user;
+	return 333.0f;
+}
+
+static void test_tree_virtual(vgui_context* ui, const vgui_style& style)
 {
 	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
 	vgui_widget_set_id(tree, "virtual-tree");
@@ -405,9 +423,11 @@ static void test_tree_virtual(vgui_context* ui)
 	src.row_has_children = vtrows_has_children;
 	src.row_expanded = vtrows_expanded;
 	src.row_toggle = vtrows_toggle;
+	src.row_enabled = vtrows_enabled;
 	src.user = &rows;
 	vgui_tree_set_row_source(tree, &src);
 
+	// ---- 只读查询 ------------------------------------------------------
 	check(vgui_tree_is_virtual(tree) == 1, "tree virtual: is_virtual reports attached source");
 	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: count is the visible row count");
 	check(vgui_tree_get_item_enabled(tree, 100) == 1, "tree virtual: row enabled from source");
@@ -417,41 +437,225 @@ static void test_tree_virtual(vgui_context* ui)
 	check(vgui_tree_get_depth(tree, 100) == 0, "tree virtual: root depth");
 	check(vgui_tree_get_item_expanded(tree, 100) == 0, "tree virtual: collapsed by default");
 
-	// Mutation APIs are no-ops while a source is attached.
+	// ---- 虚拟模式下模型修改接口无效 ------------------------------------
 	check(vgui_tree_add_node(tree, 0, "x", nullptr) == 0, "tree virtual: add_node is a no-op");
 	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: count unchanged after add");
-	check(vgui_tree_toggle(tree, 100) == 0, "tree virtual: toggle is a no-op");
+	check(vgui_tree_toggle(tree, 100) == 0, "tree virtual: model toggle is a no-op");
 	vgui_tree_expand_all(tree);
 	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: expand_all is a no-op");
+	vgui_tree_set_item_expanded(tree, 100, 1);
+	check(vgui_tree_get_item_expanded(tree, 100) == 0,
+		"tree virtual: set_item_expanded is a no-op");
 	vgui_tree_clear(tree);
 	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: clear is a no-op");
 
-	// The core toggles expansion through row_toggle; the host updates its data
-	// and calls source_changed, after which the visible row set grows.
+	// ---- 命中测试、箭头展开与选择 ---------------------------------------
 	vgui_update(ui, 0.016f);
+	float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+	vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+	(void)tw; (void)th;
+	float row_h = style.tree.row_height;
+	check(row_h > 0.0f, "tree virtual: test style has fixed row height");
+	float row0_y = ty + style.tree.padding_y + row_h * 0.5f;
+	float arrow_x = tx + style.tree.padding_x + style.tree.arrow_size * 0.5f;
+
+	cb_state sels;
+	vgui_tree_on_select(tree, on_select, &sels);
+
+	click_at(ui, arrow_x, row0_y);
+	check(rows.toggles == 1, "tree virtual: arrow click calls row_toggle");
+	check(rows.expanded == 1, "tree virtual: host expansion state flipped");
+	check(vgui_tree_get_selected_count(tree) == 0, "tree virtual: arrow click does not select");
+	vgui_update(ui, 0.016f);
+	check(vgui_tree_get_node_count(tree) == kVirtualTreeChildRows,
+		"tree virtual: visible rows grow after expand");
+
+	float row1_y = row0_y + row_h;
+	click_at(ui, tx + 40.0f, row1_y);
+	check(vgui_tree_get_cursor(tree) == 101, "tree virtual: click sets cursor to row id");
+	check(vgui_tree_is_selected(tree, 101), "tree virtual: click selects row id");
+	check(sels.last_select == 101, "tree virtual: select callback gets the row id");
+
+	// ---- 键盘导航 ------------------------------------------------------
+	vgui_set_focus(ui, tree);
+	vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+	check(vgui_tree_get_cursor(tree) == 100, "tree virtual: HOME moves cursor to first row");
+
+	vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+	check(vgui_tree_get_cursor(tree) == 101, "tree virtual: DOWN moves to next row");
+
+	vgui_input_key(ui, VGUI_KEY_END, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_END, 0, 0);
+	check(vgui_tree_get_cursor(tree) == 100 + kVirtualTreeChildRows - 1,
+		"tree virtual: END moves cursor to last row");
+
+	// 禁用行必须被键盘导航跳过。
+	rows.disabled_index = 2;
+	vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+	vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+	vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+	check(vgui_tree_get_cursor(tree) == 103, "tree virtual: keyboard skips disabled rows");
+
+	// ---- Ctrl+A 全选 ---------------------------------------------------
+	vgui_tree_set_selection_mode(tree, VGUI_SELECTION_MULTIPLE);
+	vgui_tree_clear_selection(tree);
+	vgui_input_key(ui, 'A', 1, VGUI_MOD_CTRL);
+	vgui_input_key(ui, 'A', 0, VGUI_MOD_CTRL);
+	check(vgui_tree_get_selected_count(tree) == kVirtualTreeChildRows - 1,
+		"tree virtual: ctrl+A selects every enabled visible row");
+
+	// ---- 空格展开/折叠 ------------------------------------------------
+	vgui_tree_set_selection_mode(tree, VGUI_SELECTION_SINGLE);
+	vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+	vgui_input_key(ui, ' ', 1, 0);
+	vgui_input_key(ui, ' ', 0, 0);
+	check(rows.toggles == 2, "tree virtual: space calls row_toggle");
+	check(rows.expanded == 0, "tree virtual: space collapses host state");
+	vgui_update(ui, 0.016f);
+	check(vgui_tree_get_node_count(tree) == 1, "tree virtual: collapsed row count");
+
+	// ---- 内容尺寸与滚动 -----------------------------------------------
+	rows.disabled_index = -1;
 	rows.expanded = 1;
 	vgui_tree_source_changed(tree);
 	vgui_update(ui, 0.016f);
-	check(vgui_tree_get_node_count(tree) == 5, "tree virtual: source_changed refreshes row count");
-	check(vgui_tree_get_depth(tree, 101) == 1, "tree virtual: child depth from row_depth");
-
 	float cw = 0.0f, ch = 0.0f;
 	vgui_panel_get_content_size(tree, &cw, &ch);
 	(void)cw;
-	check(ch >= 5.0f, "tree virtual: content height covers visible rows");
+	check(ch >= (float)kVirtualTreeChildRows, "tree virtual: content height covers visible rows");
 
-	// Selection stays id-based.
-	vgui_tree_select(tree, 102, 1);
-	check(vgui_tree_is_selected(tree, 102), "tree virtual: selection by id");
+	vgui_tree_scroll_to_node(tree, 100 + kVirtualTreeChildRows - 1, VGUI_SCROLL_ALIGN_BOTTOM);
+	float sx = 0.0f, sy = 0.0f;
+	vgui_panel_get_scroll(tree, &sx, &sy);
+	check(sy > 0.0f, "tree virtual: scroll to last row scrolls the view");
 
-	// Hierarchy queries require the materialized model.
+	// ---- 层级查询在虚拟模式下为空 ---------------------------------------
 	check(vgui_tree_get_root_count(tree) == 0, "tree virtual: hierarchy queries are empty");
 	check(vgui_tree_get_parent(tree, 101) == 0, "tree virtual: parent is unknown");
+	check(vgui_tree_get_child_count(tree, 100) == 0, "tree virtual: child count is empty");
 
-	// Detaching returns to the materialized model.
+	// ---- 最宽行回调与缺省回退 -------------------------------------------
+	vgui_widget* plain = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(plain, 560.0f, 260.0f);
+	vgui_widget_set_size(plain, 0.0f, 200.0f);	// 自动宽度才会计算 content_w
+	vgui_tree_set_row_source(plain, &src);
+	vgui_update(ui, 0.016f);
+	float pcw = 0.0f, pch = 0.0f;
+	vgui_panel_get_content_size(plain, &pcw, &pch);
+	(void)pch;
+	check(pcw >= style.tree.req_width - 1.0f,
+		"tree virtual: content width falls back to the style width");
+
+	vgui_widget* wide = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(wide, 760.0f, 260.0f);
+	vgui_widget_set_size(wide, 0.0f, 200.0f);
+	vgui_row_source wsrc = src;
+	wsrc.row_max_width = vtrows_max_width;
+	vgui_tree_set_row_source(wide, &wsrc);
+	vgui_update(ui, 0.016f);
+	float wcw = 0.0f, wch = 0.0f;
+	vgui_panel_get_content_size(wide, &wcw, &wch);
+	(void)wch;
+	check(wcw > 330.0f, "tree virtual: row_max_width feeds the content width");
+
+	vgui_tree_set_row_source(wide, nullptr);
+	vgui_tree_set_row_source(plain, nullptr);
+
+	// ---- 解除数据源 ----------------------------------------------------
 	vgui_tree_set_row_source(tree, nullptr);
 	check(vgui_tree_is_virtual(tree) == 0, "tree virtual: detach clears virtual mode");
 	check(vgui_tree_get_node_count(tree) == 0, "tree virtual: empty after detach");
+	check(vgui_tree_get_selected_count(tree) == 0, "tree virtual: detach clears selection");
+}
+
+static void test_tree_virtual_edges(vgui_context* ui, const vgui_style& style)
+{
+	// ---- 空数据源 ------------------------------------------------------
+	vgui_widget* empty = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(empty, 300.0f, 480.0f);
+	vgui_widget_set_size(empty, 240.0f, 120.0f);
+	vgui_tree_set_empty_text(empty, "empty");
+
+	vgui_row_source esrc = {};
+	esrc.row_count = [](void*) -> int { return 0; };
+	esrc.row_info = [](void*, int, const char**, const char**, void**) -> int { return 0; };
+	esrc.row_id = [](void*, int) -> vgui_item_id { return 0; };
+	vgui_tree_set_row_source(empty, &esrc);
+
+	check(vgui_tree_is_virtual(empty) == 1, "tree virtual edge: empty source is virtual");
+	check(vgui_tree_get_node_count(empty) == 0, "tree virtual edge: empty source has no rows");
+	check(std::string(vgui_tree_get_item_text(empty, 1)).empty(),
+		"tree virtual edge: unknown id returns empty text");
+	vgui_update(ui, 0.016f);
+	float eh = 0.0f, ecw = 0.0f;
+	vgui_panel_get_content_size(empty, &ecw, &eh);
+	(void)ecw;
+	check(eh <= 0.0f, "tree virtual edge: empty source has no content height");
+	vgui_tree_set_row_source(empty, nullptr);
+
+	// ---- 没有 row_toggle 时的箭头点击 ----------------------------------
+	vgui_widget* noToggle = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(noToggle, 560.0f, 480.0f);
+	vgui_widget_set_size(noToggle, 240.0f, 120.0f);
+
+	virtual_tree_rows rows;
+	vgui_row_source nsrc = {};
+	nsrc.row_count = vtrows_count;
+	nsrc.row_info = vtrows_info;
+	nsrc.row_id = vtrows_id;
+	nsrc.row_id_index = vtrows_index;
+	nsrc.row_depth = vtrows_depth;
+	nsrc.row_has_children = vtrows_has_children;
+	nsrc.row_expanded = vtrows_expanded;
+	nsrc.user = &rows;	// 故意不设置 row_toggle
+	vgui_tree_set_row_source(noToggle, &nsrc);
+
+	vgui_update(ui, 0.016f);
+	float nx = 0.0f, ny = 0.0f, nw = 0.0f, nh = 0.0f;
+	vgui_widget_get_rect(noToggle, &nx, &ny, &nw, &nh);
+	(void)nw; (void)nh;
+	float nrow_y = ny + style.tree.padding_y + style.tree.row_height * 0.5f;
+	float narrow_x = nx + style.tree.padding_x + style.tree.arrow_size * 0.5f;
+	click_at(ui, narrow_x, nrow_y);
+	check(rows.toggles == 0 && rows.expanded == 0,
+		"tree virtual edge: arrow click without row_toggle is a no-op");
+	check(vgui_tree_get_node_count(noToggle) == 1,
+		"tree virtual edge: row count unchanged without row_toggle");
+	vgui_tree_set_row_source(noToggle, nullptr);
+
+	// ---- 解除后重新挂载 -------------------------------------------------
+	virtual_tree_rows rows2;
+	vgui_widget* recycle = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(recycle, 800.0f, 480.0f);
+	vgui_widget_set_size(recycle, 240.0f, 120.0f);
+
+	vgui_row_source rsrc = {};
+	rsrc.row_count = vtrows_count;
+	rsrc.row_info = vtrows_info;
+	rsrc.row_id = vtrows_id;
+	rsrc.row_id_index = vtrows_index;
+	rsrc.row_depth = vtrows_depth;
+	rsrc.row_has_children = vtrows_has_children;
+	rsrc.row_expanded = vtrows_expanded;
+	rsrc.row_toggle = vtrows_toggle;
+	rsrc.user = &rows2;
+
+	vgui_tree_set_row_source(recycle, &rsrc);
+	vgui_tree_select(recycle, 100, 1);
+	vgui_tree_set_row_source(recycle, nullptr);
+	check(vgui_tree_get_selected_count(recycle) == 0, "tree virtual edge: detach drops selection");
+
+	vgui_tree_set_row_source(recycle, &rsrc);
+	check(vgui_tree_is_virtual(recycle) == 1, "tree virtual edge: re-attach restores virtual mode");
+	check(vgui_tree_get_node_count(recycle) == 1, "tree virtual edge: re-attach restores row count");
+	check(vgui_tree_get_selected_count(recycle) == 0, "tree virtual edge: re-attach starts clean");
+	vgui_tree_set_row_source(recycle, nullptr);
 }
 
 static void test_tree(vgui_context* ui, const vgui_style& style)
@@ -1117,7 +1321,8 @@ int main()
 	test_splitter(ui);
 	test_tabview(ui);
 	test_list_virtual(ui);
-	test_tree_virtual(ui);
+	test_tree_virtual(ui, style);
+	test_tree_virtual_edges(ui, style);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
