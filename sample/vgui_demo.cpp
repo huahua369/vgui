@@ -67,6 +67,7 @@ static vgui_theme theme_light()
 	t.scrollbar_hover = 0xFF858585;
 	t.checkmark = 0xFFFFFFFF;
 	t.switch_thumb = 0xFFFFFFFF;
+	t.row_hover = 0x25aaaaaa;
 	return t;
 }
 
@@ -91,6 +92,7 @@ static vgui_theme theme_green()
 	t.scrollbar_hover = 0xFF5F8E69;
 	t.checkmark = 0xFFFFFFFF;
 	t.switch_thumb = 0xFFFFFFFF;
+	t.row_hover = 0x25aaaaaa;
 	return t;
 }
 

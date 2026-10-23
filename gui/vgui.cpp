@@ -389,6 +389,16 @@ struct vgui_widget
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
 
+	// custom (VGUI_CUSTOM) -------------------------------------------------
+	vgui_custom_draw_fn custom_draw = nullptr;
+	void* custom_draw_user = nullptr;
+	vgui_custom_size_fn custom_size = nullptr;
+	void* custom_size_user = nullptr;
+	vgui_custom_event_fn custom_event = nullptr;
+	void* custom_event_user = nullptr;
+	float custom_dt = 0;
+	int custom_clip_content = 1;	// 1=裁剪到控件边界（默认），0=允许超出（发光/阴影/拖影等）
+
 	bool destroy_pending = false;
 };
 
@@ -939,7 +949,7 @@ namespace {
 	static void vgui_emit(vgui_widget* w, vgui_event_type type, float lx = 0, float ly = 0,
 		int button = 0, int clicks = 0)
 	{
-		if (!w || !w->event_fn || !w->ctx || !w->ctx->alive.count(w))
+		if (!w || !w->ctx || !w->ctx->alive.count(w))
 			return;
 		vgui_event e = {};
 		e.type = (int)type;
@@ -947,14 +957,23 @@ namespace {
 		e.y = ly;
 		e.button = button;
 		e.clicks = clicks;
-		w->event_fn(w, &e, w->user);
+		// VGUI_CUSTOM 自定义事件回调：先调，返回 1 则不再转发到内建 event_fn
+		if (w->kind == VGUI_CUSTOM && w->custom_event)
+			if (w->custom_event(w, &e, w->custom_event_user))
+				return;
+		if (w->event_fn)
+			w->event_fn(w, &e, w->user);
 	}
 
 	static void vgui_emit_full(vgui_widget* w, const vgui_event& e)
 	{
-		if (!w || !w->event_fn || !w->ctx || !w->ctx->alive.count(w))
+		if (!w || !w->ctx || !w->ctx->alive.count(w))
 			return;
-		w->event_fn(w, &e, w->user);
+		if (w->kind == VGUI_CUSTOM && w->custom_event)
+			if (w->custom_event(w, &e, w->custom_event_user))
+				return;
+		if (w->event_fn)
+			w->event_fn(w, &e, w->user);
 	}
 
 	static float vgui_value_of(vgui_widget* w)
@@ -1778,6 +1797,14 @@ namespace {
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_ARROW;
 			break;
+		case VGUI_CUSTOM:
+			w->bg = th.panel_bg;
+			w->border = th.panel_border;
+			w->border_width = 1;
+			w->rounding = 0;
+			w->focusable = 1;
+			w->cursor_type = VGUI_CURSOR_ARROW;
+			break;
 		}
 
 		ctx->all_widgets.insert(w);
@@ -2270,6 +2297,15 @@ namespace {
 			w->intrinsic_h = w->req_h > 0 ? w->req_h : (float)sh;
 		}
 		break;
+		case VGUI_CUSTOM:
+			if (w->custom_size)
+			{
+				float cw = 0, ch = 0;
+				w->custom_size(w, &cw, &ch, w->custom_size_user);
+				w->intrinsic_w = w->req_w > 0 ? w->req_w : cw;
+				w->intrinsic_h = w->req_h > 0 ? w->req_h : ch;
+			}
+			break;
 		}
 
 		if (w->min_w > 0) w->intrinsic_w = std::max(w->intrinsic_w, w->min_w);
@@ -6808,6 +6844,39 @@ namespace {
 		case VGUI_TREE: vgui_draw_tree(w, cb, vg, clips); break;
 		case VGUI_MENU: vgui_draw_menu(w, cb, vg, clips); break;
 		case VGUI_IMAGE: vgui_draw_image(w, cb, vg, clips); break;
+		case VGUI_CUSTOM:
+		{
+			// 1) 复用内建背景/边框/圆角 —— 用户省掉重复写
+			if (w->bg)
+				vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+					vgui_widget_color(w, w->bg));
+			if (w->border_width > 0 && w->border)
+			{
+				float bi = w->border_width * 0.5f;
+				vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+					w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+					vgui_widget_color(w, w->border), w->border_width);
+			}
+			// 焦点环画在自定义内容之下（先画焦点环，再画用户内容）
+			vgui_draw_focus(w, cb, vg);
+
+			// 2) save + 可选 clip —— custom_clip_content=0 时允许超出控件边界
+			cb->save(vg);
+			if (w->custom_clip_content)
+				vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+
+			// 3) 用户回调：直接拿到 ovg_ctx_cb* 和 rvg_t*
+			if (w->custom_draw)
+				w->custom_draw(w, cb, vg,
+					w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+					w->custom_dt, w->custom_draw_user);
+
+			// 4) 还原（clip 和 save 必须成对）
+			if (w->custom_clip_content)
+				vgui_clip_pop(clips, cb, vg);
+			cb->restore(vg);
+			break;
+		}
 		default: break;
 		}
 		(void)ctx;
@@ -6861,6 +6930,8 @@ namespace {
 				w->caret_blink += dt;
 			else
 				w->caret_blink = 0;
+			if (w->kind == VGUI_CUSTOM)
+				w->custom_dt = dt;
 		}
 	}
 
@@ -9239,6 +9310,39 @@ extern "C" {
 		}
 
 		++ctx->frame_index;
+	}
+
+	// -------------------------------------------------------------------------
+	// VGUI_CUSTOM widget public API
+	// -------------------------------------------------------------------------
+
+	void vgui_custom_set_draw(vgui_widget* widget, vgui_custom_draw_fn draw, void* user)
+	{
+		if (!widget) return;
+		widget->custom_draw = draw;
+		widget->custom_draw_user = user;
+	}
+
+	void vgui_custom_set_size(vgui_widget* widget, vgui_custom_size_fn size, void* user)
+	{
+		if (!widget) return;
+		widget->custom_size = size;
+		widget->custom_size_user = user;
+		if (widget->ctx)
+			widget->ctx->layout_dirty = true;
+	}
+
+	void vgui_custom_set_event(vgui_widget* widget, vgui_custom_event_fn event, void* user)
+	{
+		if (!widget) return;
+		widget->custom_event = event;
+		widget->custom_event_user = user;
+	}
+
+	void vgui_custom_set_clip_content(vgui_widget* widget, int clip)
+	{
+		if (!widget) return;
+		widget->custom_clip_content = clip ? 1 : 0;
 	}
 
 } // extern "C"

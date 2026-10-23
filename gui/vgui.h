@@ -71,7 +71,8 @@ typedef enum vgui_widget_kind {
 	VGUI_LIST,
 	VGUI_TREE,
 	VGUI_MENU,
-	VGUI_IMAGE
+	VGUI_IMAGE,
+	VGUI_CUSTOM
 } vgui_widget_kind;
 
 typedef enum vgui_layout_kind {
@@ -257,6 +258,41 @@ typedef void (*vgui_text_fn)(vgui_widget* widget, const char* text, void* user);
 typedef void (*vgui_item_fn)(vgui_widget* widget, vgui_item_id item, void* user);
 typedef void (*vgui_item_select_fn)(vgui_widget* widget, vgui_item_id item, int selected, void* user);
 typedef void (*vgui_widget_fn)(vgui_widget* widget, void* user);
+
+/* ------------------------------------------------------------------------- */
+/* Custom-draw widget (VGUI_CUSTOM)                                          */
+/* ------------------------------------------------------------------------- */
+
+/*
+ * VGUI_CUSTOM 控件直接暴露 ovg_ctx_cb* / rvg_t* 给用户回调，允许任意
+ * OVG 矢量、图案、几何命令。draw 回调每帧在 vgui_draw() 里被调用；
+ * abs_x/y/w/h 是布局后算好的绝对坐标，delta_time 是自上一帧以来的秒数。
+ * 用户可以在回调里调用 ovg 的 save/restore/fill/stroke/clip/new_pattern
+ * 等全部接口。pattern 需要自己 destroy。
+ */
+typedef void (*vgui_custom_draw_fn)(vgui_widget* widget,
+                                    struct ovg_ctx_cb* cb, struct rvg_t* vg,
+                                    float abs_x, float abs_y,
+                                    float abs_w, float abs_h,
+                                    float delta_time,
+                                    void* user);
+
+/*
+ * 尺寸查询：填充 intrinsic_w/h（0=走常规 flex 规则）。
+ */
+typedef void (*vgui_custom_size_fn)(vgui_widget* widget,
+                                    float* out_intrinsic_w,
+                                    float* out_intrinsic_h,
+                                    void* user);
+
+/*
+ * 事件回调：返回 1 表示事件已消费（不再向父/兄弟分发）。
+ * 如果只需要命中测试过滤，在回调里判断坐标即可，hit test 本身
+ * 仍按 abs_x/abs_y/abs_w/abs_h 的矩形进行。
+ */
+typedef int (*vgui_custom_event_fn)(vgui_widget* widget,
+                                    const vgui_event* event,
+                                    void* user);
 
 /* ------------------------------------------------------------------------- */
 /* Theme                                                                     */
@@ -832,6 +868,19 @@ VGUI_API int vgui_context_wants_mouse(vgui_context* ctx);
 VGUI_API int vgui_context_wants_keyboard(vgui_context* ctx);
 VGUI_API int vgui_context_wants_text_input(vgui_context* ctx);
 VGUI_API int vgui_context_get_text_input_rect(vgui_context* ctx, int* x, int* y, int* width, int* height);
+
+/* ------------------------------------------------------------------------- */
+/* Custom widget                                                             */
+/* ------------------------------------------------------------------------- */
+
+VGUI_API void vgui_custom_set_draw(vgui_widget* widget,
+                                   vgui_custom_draw_fn draw, void* user);
+VGUI_API void vgui_custom_set_size(vgui_widget* widget,
+                                   vgui_custom_size_fn size, void* user);
+VGUI_API void vgui_custom_set_event(vgui_widget* widget,
+                                    vgui_custom_event_fn event, void* user);
+/* 1=裁剪到控件边界（默认），0=允许超出（发光/阴影等效果）。 */
+VGUI_API void vgui_custom_set_clip_content(vgui_widget* widget, int clip);
 
 /* ------------------------------------------------------------------------- */
 /* Frame                                                                     */
