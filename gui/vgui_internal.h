@@ -430,19 +430,6 @@ struct switch_info_t
 	bool inline_prompt = false;
 };
 
-void set_btn_color_idx(color_style* cs, int idx);
-bool update_color_btn(color_style* p, float delta);
-void gradient_btn_init(gradient_style* p, uint32_t back_color, uint32_t text_color);
-bool gradient_btn_update(gradient_style* p, float delta);
-
-struct ovg_ctx_cb;
-struct rvg_t;
-struct color_style;
-void draw_color_btn(ovg_ctx_cb* cb, rvg_t* vg, color_style* t, const glm::ivec2& pos, const glm::ivec2& size);
-void gradient_btn_draw(ovg_ctx_cb* cb, rvg_t* vg, gradient_style* p, const glm::ivec2& pos, const glm::ivec2& size);
-
-void switch_draw(ovg_ctx_cb* cb, rvg_t* vg, switch_info_t* p, const glm::ivec2& pos, const glm::ivec2& size0);
-
 // ---------------------------------------------------------------------------
 // C API bridge used by the SDL3 backend.  Implemented in vgui.cpp.
 // ---------------------------------------------------------------------------

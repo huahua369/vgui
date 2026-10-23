@@ -661,6 +661,33 @@ extern "C" {
 	/* tint 用 0 恢复默认（不染色）；disabled 态会自动混入 disabled_mix。 */
 	VGUI_API void vgui_button_set_icon_tint(vgui_widget* widget, vgui_color tint);
 
+	/* ------------------------------------------------------------------------- */
+	/* Button style                                                              */
+	/* ------------------------------------------------------------------------- */
+
+	typedef enum vgui_button_style_kind {
+		VGUI_BUTTON_STYLE_SOLID = 0,	/* 默认：纯色填充 + 纯色边框，主题色驱动 */
+		VGUI_BUTTON_STYLE_GRADIENT	/* 渐变填充 + 双层高光/阴影边框（legacy 风格） */
+	} vgui_button_style_kind;
+
+	/* 设置按钮风格。kind 默认 SOLID，与现有行为一致。*/
+	VGUI_API void vgui_button_set_style(vgui_widget* widget, vgui_button_style_kind kind);
+	VGUI_API vgui_button_style_kind vgui_button_get_style(vgui_widget* widget);
+
+	/*
+	 * 为 GRADIENT 风格设置三组独立的渐变起止色（均为 0xAARRGGBB 格式）：
+	 *   grad_top_default / grad_bot_default — 默认态
+	 *   grad_top_hover   / grad_bot_hover   — 鼠标悬停态
+	 *   grad_top_active  / grad_bot_active  — 按下态
+	 *   border_light / border_dark          — 双层高光/阴影边框颜色
+	 * 不调用则使用内置默认渐变（深灰系）。
+	 */
+	VGUI_API void vgui_button_set_gradient(vgui_widget* widget,
+		vgui_color grad_top_default, vgui_color grad_bot_default,
+		vgui_color grad_top_hover, vgui_color grad_bot_hover,
+		vgui_color grad_top_active, vgui_color grad_bot_active,
+		vgui_color border_light, vgui_color border_dark);
+
 	/* Focus-ring opacity for this widget (0..1, 0 hides the ring).  A negative
 	 * value restores inheritance from the context default.  The getter returns
 	 * the effective opacity, including the inherited value. */

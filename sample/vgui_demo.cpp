@@ -999,6 +999,162 @@ static void build_buttons(demo_state* st, vgui_widget* root)
 	label(r3, "← VGUI_LAYOUT_ABSOLUTE + set_pos", 12, 0xFF9A9A9A);
 }
 
+//---------------------------------------------------------------------------
+// 按钮风格（纯色主题色 / 纯色自定义配色 / 渐变按钮）
+//---------------------------------------------------------------------------
+
+// 纯色按钮主题预设（沿用 vgui_legacy palette：蓝 / 绿 / 灰 / 橙 / 红）
+struct solid_preset { vgui_color bg; vgui_color hover; vgui_color active; vgui_color border; const char* name; };
+static const solid_preset kSolidPresets[] =
+{
+	{ 0xFF409EFF, 0xFF66B1FF, 0xFF0D84FF, 0xFF409EFF, "蓝" },
+	{ 0xFF67C23A, 0xFF85CE61, 0xFF529B2E, 0xFF67C23A, "绿" },
+	{ 0xFF909399, 0xFFA6A9AD, 0xFF767980, 0xFF909399, "灰" },
+	{ 0xFFE6A23C, 0xFFEBB563, 0xFFD48A1B, 0xFFE6A23C, "橙" },
+	{ 0xFFF56C6C, 0xFFF78989, 0xFFF23C3C, 0xFFF56C6C, "红" },
+};
+static constexpr int kSolidPresetCount = (int)(sizeof(kSolidPresets) / sizeof(kSolidPresets[0]));
+
+// 渐变按钮预设
+struct gradient_preset { const char* name; const vgui_color colors[9]; /* topD, botD, topH, botH, topA, botA, borderL, borderD, text */ };
+static const gradient_preset kGradientPresets[] =
+{
+	/* 默认深灰（与 vgui_legacy gradient_style 默认值一致） */
+	{ "默认深灰", {
+		0xFF4A4A4A, 0xFF3A3A3A,       /* default top/bot */
+		0x80404040, 0x80303030,       /* hover top/bot   */
+		0xFF292929, 0xFF1D1D1D,       /* active top/bot  */
+		0xFF5C5C5C, 0xFF1D1D1D,       /* borderLight / borderDark */
+		0xFFFFFFFF } },               /* text color */
+	/* 蓝色渐变 */
+	{ "科技蓝", {
+		0xFF4A8FE7, 0xFF2D6FD9,
+		0xFF6AA8F2, 0xFF3E82E0,
+		0xFF1E4FB0, 0xFF163D99,
+		0xFF7DB8FF, 0xFF0D2E66,
+		0xFFFFFFFF } },
+	/* 橙红渐变 */
+	{ "夕阳红", {
+		0xFFF59E0B, 0xFFDC2626,
+		0xFFFBBF24, 0xFFEF4444,
+		0xFFB45309, 0xFF991B1B,
+		0xFFFFE28A, 0xFF450A0A,
+		0xFFFFFFFF } },
+	/* 翠绿渐变 */
+	{ "森林绿", {
+		0xFF22C55E, 0xFF16A34A,
+		0xFF4ADE80, 0xFF22C55E,
+		0xFF0F7A2E, 0xFF065F22,
+		0xFF86EFAC, 0xFF052E16,
+		0xFFFFFFFF } },
+};
+static constexpr int kGradientPresetCount = (int)(sizeof(kGradientPresets) / sizeof(kGradientPresets[0]));
+
+static void build_button_styles(demo_state* st, vgui_widget* root)
+{
+	(void)st;
+	vgui_widget* c = card(root, "按钮风格 SOLID / GRADIENT");
+
+	// ========== 纯色按钮：5 套预设主题色 ==========
+	label(c, "纯色按钮 SOLID（主题色 + 自定义配色）:", 14, 0xFFB0B0B0);
+	vgui_widget* r1 = row(c, 8);
+	for (int i = 0; i < kSolidPresetCount; i++)
+	{
+		const auto& p = kSolidPresets[i];
+		char txt[32] = {};
+		snprintf(txt, sizeof(txt), "%s主题", p.name);
+		vgui_widget* b = vgui_widget_add(r1, VGUI_BUTTON, txt);
+		vgui_widget_set_id(b, txt);
+		vgui_widget_set_background(b, p.bg);
+		vgui_widget_set_border(b, p.border, 1);
+		vgui_widget_set_text_color(b, 0xFFFFFFFF);
+		vgui_widget_set_rounding(b, 6);
+		vgui_widget_on_event(b, on_widget_event, st);
+	}
+
+	// ghost（plain）按钮：透明填充 + 纯边框
+	vgui_widget* ghost = button(r1, "ghost 透明", on_widget_event, st);
+	vgui_widget_set_background(ghost, 0);
+	vgui_widget_set_border(ghost, 0xFF409EFF, 1);
+	vgui_widget_set_text_color(ghost, 0xFF409EFF);
+
+	// 边框样式按钮对比
+	vgui_widget* r2 = row(c, 8);
+	label(r2, "边框样式:", 14, 0xFFB0B0B0);
+	vgui_widget* thin = button(r2, "border_width=1", on_widget_event, st);
+	vgui_widget_set_border(thin, 0xFF409EFF, 1);
+	vgui_widget_set_background(thin, 0);
+	vgui_widget_set_text_color(thin, 0xFF409EFF);
+	vgui_widget* thick = button(r2, "border_width=3", on_widget_event, st);
+	vgui_widget_set_border(thick, 0xFF409EFF, 3);
+	vgui_widget_set_background(thick, 0);
+	vgui_widget_set_text_color(thick, 0xFF409EFF);
+	vgui_widget* rounded = button(r2, "rounding=12", on_widget_event, st);
+	vgui_widget_set_rounding(rounded, 12);
+	vgui_widget_set_background(rounded, 0xFF409EFF);
+	vgui_widget_set_text_color(rounded, 0xFFFFFFFF);
+	vgui_widget* pill = button(r2, "rounding=20", on_widget_event, st);
+	vgui_widget_set_rounding(pill, 20);
+	vgui_widget_set_background(pill, 0xFF67C23A);
+	vgui_widget_set_text_color(pill, 0xFFFFFFFF);
+	vgui_widget* disabled_solid = button(r2, "禁用", on_widget_event, st);
+	vgui_widget_set_enabled(disabled_solid, 0);
+	vgui_widget_set_background(disabled_solid, 0xFF409EFF);
+
+	// ========== 渐变按钮：4 套预设 ==========
+	separator(c);
+	label(c, "渐变按钮 GRADIENT（独立三组渐变色 + 双层高光/阴影边框）:", 14, 0xFFB0B0B0);
+
+	vgui_widget* r3 = row(c, 10);
+	for (int i = 0; i < kGradientPresetCount; i++)
+	{
+		const auto& p = kGradientPresets[i];
+		vgui_widget* b = vgui_widget_add(r3, VGUI_BUTTON, p.name);
+		vgui_widget_set_id(b, p.name);
+		vgui_button_set_style(b, VGUI_BUTTON_STYLE_GRADIENT);
+		vgui_button_set_gradient(b,
+			p.colors[0], p.colors[1],      /* default top/bot */
+			p.colors[2], p.colors[3],      /* hover top/bot */
+			p.colors[4], p.colors[5],      /* active top/bot */
+			p.colors[6], p.colors[7]);     /* borderLight / borderDark */
+		vgui_widget_set_text_color(b, p.colors[8]);
+		vgui_widget_set_border(b, 0, 0);    /* GRADIENT 边框由内部双层高光阴影绘制，禁用 widget 默认纯色边框 */
+		vgui_widget_on_event(b, on_widget_event, st);
+	}
+
+	// 渐变按钮：disabled 对比 + 圆角 + 大 padding
+	vgui_widget* r4 = row(c, 10);
+	vgui_widget* gd = vgui_widget_add(r4, VGUI_BUTTON, "禁用态");
+	vgui_button_set_style(gd, VGUI_BUTTON_STYLE_GRADIENT);
+	vgui_button_set_gradient(gd,
+		0xFF4A4A4A, 0xFF3A3A3A, 0x80404040, 0x80303030, 0xFF292929, 0xFF1D1D1D,
+		0xFF5C5C5C, 0xFF1D1D1D);
+	vgui_widget_set_enabled(gd, 0);
+	vgui_widget_set_text_color(gd, 0xFFFFFFFF);
+	vgui_widget_set_border(gd, 0, 0);
+
+	vgui_widget* gr = vgui_widget_add(r4, VGUI_BUTTON, "大圆角 14");
+	vgui_button_set_style(gr, VGUI_BUTTON_STYLE_GRADIENT);
+	vgui_button_set_gradient(gr,
+		0xFF4A8FE7, 0xFF2D6FD9, 0xFF6AA8F2, 0xFF3E82E0, 0xFF1E4FB0, 0xFF163D99,
+		0xFF7DB8FF, 0xFF0D2E66);
+	vgui_widget_set_rounding(gr, 14);
+	vgui_widget_set_text_color(gr, 0xFFFFFFFF);
+	vgui_widget_set_border(gr, 0, 0);
+
+	vgui_widget* gp = vgui_widget_add(r4, VGUI_BUTTON, "pill 胶囊");
+	vgui_button_set_style(gp, VGUI_BUTTON_STYLE_GRADIENT);
+	vgui_button_set_gradient(gp,
+		0xFF22C55E, 0xFF16A34A, 0xFF4ADE80, 0xFF22C55E, 0xFF0F7A2E, 0xFF065F22,
+		0xFF86EFAC, 0xFF052E16);
+	vgui_widget_set_rounding(gp, 20);
+	vgui_widget_set_text_color(gp, 0xFFFFFFFF);
+	vgui_widget_set_border(gp, 0, 0);
+
+	vgui_widget* info = label(r4, "← 悬停/按下/禁用，观察渐变色和边框高光阴影变化", 12, 0xFF9A9A9A);
+	vgui_widget_set_grow(info, 1);
+}
+
 static void build_toggles(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "选择控件 Checkbox / Radio / Switch");
@@ -1529,6 +1685,7 @@ static void build_ui(demo_state* st)
 
 	build_header(st, root);
 	build_buttons(st, root);
+	build_button_styles(st, root);
 	build_images(st, root);
 	build_toggles(st, root);
 	build_sliders(st, root);

@@ -380,6 +380,15 @@ struct vgui_widget
 	float icon_gap = -1.0f;   // <0 表示使用 style.button.icon_gap
 	uint32_t icon_tint = 0;    // 0 表示不染色（用纹理原色）
 
+	// button gradient (VGUI_BUTTON, GRADIENT style) ------------------------
+	vgui_button_style_kind btn_style_kind = VGUI_BUTTON_STYLE_SOLID;
+	// 三组起止色（default / hover / active），0xAARRGGBB 存储
+	vgui_color grad_top[3] = { 0xFF4a4a4a, 0x80404040, 0xFF292929 };
+	vgui_color grad_bot[3] = { 0xFF3a3a3a, 0x80303030, 0xFF1d1d1d };
+	vgui_color gradient_border_light = 0xFF5c5c5c;
+	vgui_color gradient_border_dark = 0xFF1d1d1d;
+	float gradient_opacity = 1.0f;
+
 	// custom (VGUI_CUSTOM) -------------------------------------------------
 	vgui_custom_draw_fn custom_draw = nullptr;
 	void* custom_draw_user = nullptr;
@@ -5900,32 +5909,188 @@ namespace {
 	// Forward — declared later at vgui_draw_image. Used by VGUI_BUTTON icon draw.
 	static void vgui_texture_ensure_upload(vgui_context* ctx, vgui_texture* texture, ovg_ctx_cb* cb, rvg_t* vg);
 
+	// -------------------------------------------------------------------
+	// Gradient button helpers (ported from vgui_legacy.cpp)
+	// -------------------------------------------------------------------
+
+	// 把 0xAARRGGBB 拆成 RGBA float[4]（0..1）。
+	static glm::vec4 vgui_color_to_rgba_f(vgui_color c)
+	{
+		uint8_t r = (c >> 16) & 0xFF;
+		uint8_t g = (c >> 8) & 0xFF;
+		uint8_t b = c & 0xFF;
+		uint8_t a = (c >> 24) & 0xFF;
+		return { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
+	}
+
+	// 把 0xAARRGGBB 的 alpha 按比例乘一遍，返回新颜色（保留 RGB 分量的乘性缩放语义）。
+	static uint32_t vgui_set_alpha_xf(uint32_t c, double af)
+	{
+		if (af < 0) af = 0;
+		uint8_t a = (c >> 24) & 0xFF;
+		double na = a * af + 0.5;
+		if (na > 255) na = 255;
+		a = (uint8_t)na;
+		return (c & 0x00FFFFFFu) | ((uint32_t)a << 24);
+	}
+
+	// 直接写 alpha 通道（0..1）。
+	static uint32_t vgui_set_alpha_f(uint32_t c, double af)
+	{
+		if (af > 1) af = 1;
+		if (af < 0) af = 0;
+		uint8_t a = (uint8_t)(af * 255.0 + 0.5);
+		return (c & 0x00FFFFFFu) | ((uint32_t)a << 24);
+	}
+
+	static double vgui_get_alpha_f(vgui_color c)
+	{
+		return ((c >> 24) & 0xFF) / 255.0;
+	}
+
+	// 构造垂直线性渐变 pattern 并对给定矩形填充。
+	static void vgui_paint_linear_rect(ovg_ctx_cb* cb, rvg_t* vg,
+		float x, float y, float w, float h, float rounding,
+		vgui_color top, vgui_color bot)
+	{
+		vg_pattern_t* pat = cb->new_pattern_linear(vg, x, y, x, y + h);
+		if (!pat) return;
+		auto tc = vgui_color_to_rgba_f(top);
+		auto bc = vgui_color_to_rgba_f(bot);
+		cb->pattern_add_color_stop(pat, 0.0f, tc.x, tc.y, tc.z, tc.w);
+		cb->pattern_add_color_stop(pat, 1.0f, bc.x, bc.y, bc.z, bc.w);
+		cb->set_source(vg, pat);
+		cb->rounded_rectangle(vg, x, y, w, h, rounding);	// rounding=0 即为直角，且避免 backend 未实现 rectangle 时 crash
+		cb->fill(vg);
+		// pattern 由 ovg 内部管理生命周期，未暴露 destroy 接口
+	}
+
+	static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		float thickness, float rounding)
+	{
+		vgui_context* ctx = w->ctx;
+
+		// 选状态对应的 gradTop/gradBot
+		int state_idx; // 0=default, 1=hover, 2=active
+		if (w->pressed) state_idx = 2;
+		else if (w->hovered || w->hover_anim > 0.01f) state_idx = 1;
+		else state_idx = 0;
+
+		uint32_t gradTop = w->grad_top[state_idx];
+		uint32_t gradBot = w->grad_bot[state_idx];
+		uint32_t borderLight = w->gradient_border_light;
+		uint32_t borderDark = w->gradient_border_dark;
+		double oa = w->gradient_opacity;
+
+		// 禁用态：整体向 disabled 色混合，相当于降低 opacity
+		if (!w->enabled)
+		{
+			float disabled_mix = ctx->style.button.disabled_mix;
+			gradTop = vgui_mix_color(gradTop, ctx->theme.disabled, disabled_mix);
+			gradBot = vgui_mix_color(gradBot, ctx->theme.disabled, disabled_mix);
+			borderLight = vgui_mix_color(borderLight, ctx->theme.disabled, disabled_mix);
+			borderDark = vgui_mix_color(borderDark, ctx->theme.disabled, disabled_mix);
+		}
+
+		// 按下态：整体内移 thickness + 渐变透明度略微降低
+		bool pushed = w->pressed;
+		if (pushed)
+		{
+			gradTop = vgui_set_alpha_f(gradTop, 0.8);
+			gradBot = vgui_set_alpha_f(gradBot, 0.8);
+		}
+
+		// 应用全局 opacity
+		gradTop = vgui_set_alpha_xf(gradTop, oa);
+		gradBot = vgui_set_alpha_xf(gradBot, oa);
+		borderLight = vgui_set_alpha_xf(borderLight, oa);
+		borderDark = vgui_set_alpha_xf(borderDark, oa);
+
+		float x = w->abs_x, y = w->abs_y, ww = w->abs_w, hh = w->abs_h;
+
+		// 按下态视觉凹陷：背景整体下移 press_offset，与 text/icon 的按下偏移量对齐
+		float translate_y = pushed ? ctx->style.button.press_offset : 0.0f;
+
+		cb->save(vg);
+		cb->translate(vg, 0.0f, translate_y);
+
+		// 1) 可选的底色（legacy light 风格用）：沿用 bg 字段
+		if (w->bg && vgui_get_alpha_f(w->bg) > 0.001)
+		{
+			float t2 = thickness > 1 ? thickness : 0.0f;
+			cb->set_source_color(vg, vgui_ovg_color(w->bg));
+			cb->rounded_rectangle(vg, x + t2, y + t2, ww - t2 * 2, hh - t2 * 2, rounding);
+			cb->fill(vg);
+		}
+
+		// 2) 渐变填充（内缩 thickness）
+		float pad = thickness > 1 ? thickness : 0.0f;
+		if (pad > 0)
+			cb->translate(vg, pad, pad);
+		vgui_paint_linear_rect(cb, vg,
+			x, y, ww - pad * 2, hh - pad * 2, rounding,
+			gradTop, gradBot);
+		if (pad > 0)
+			cb->translate(vg, -pad, -pad);
+
+		// 3) 双层边框（高光在上、阴影在下）
+		float line_w = thickness > 0 ? thickness : 1.0f;
+		float half = line_w * 0.5f;
+		cb->set_line_width(vg, line_w);
+
+		// 上沿高光（不画底部）
+		cb->set_source_color(vg, vgui_ovg_color(borderLight));
+		if (pushed)
+			cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w, rounding);
+		else
+			cb->rounded_rectangle(vg, x + half, y + half + 1.0f, ww - line_w, hh - line_w - 1.0f, rounding);
+		cb->stroke(vg);
+
+		// 下沿阴影（完整轮廓）
+		cb->set_source_color(vg, vgui_ovg_color(borderDark));
+		cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w, rounding);
+		cb->stroke(vg);
+
+		cb->restore(vg);
+	}
+
 	static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
 		const vgui_button_style& bs = ctx->style.button;
-		uint32_t bg = w->bg ? w->bg : ctx->theme.button_bg;
-		uint32_t border = w->border ? w->border : ctx->theme.button_border;
-		if (!w->enabled)
+
+		if (w->btn_style_kind == VGUI_BUTTON_STYLE_GRADIENT)
 		{
-			bg = vgui_mix_color(bg, ctx->theme.disabled, bs.disabled_mix);
-			border = vgui_mix_color(border, ctx->theme.disabled, bs.disabled_mix);
+			float thickness = w->border_width > 0 ? w->border_width : 1.0f;
+			float rounding = w->rounding > 0 ? w->rounding : bs.rounding;
+			vgui_draw_button_gradient(w, cb, vg, thickness, rounding);
+			// 渐变按钮：不叠加纯色 fill + stroke，直接跳过进入 icon/text 绘制
 		}
-		else if (w->pressed)
+		else
 		{
-			bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(bs.press_mix_min, w->press_anim));
-		}
-		else if (w->hovered || w->hover_anim > 0.01f)
-		{
-			bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(bs.hover_mix_min, w->hover_anim));
-		}
-		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
-		if (w->border_width > 0)
-		{
-			float bi = w->border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-				vgui_widget_color(w, border), w->border_width);
+			uint32_t bg = w->bg ? w->bg : ctx->theme.button_bg;
+			uint32_t border = w->border ? w->border : ctx->theme.button_border;
+			if (!w->enabled)
+			{
+				bg = vgui_mix_color(bg, ctx->theme.disabled, bs.disabled_mix);
+				border = vgui_mix_color(border, ctx->theme.disabled, bs.disabled_mix);
+			}
+			else if (w->pressed)
+			{
+				bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(bs.press_mix_min, w->press_anim));
+			}
+			else if (w->hovered || w->hover_anim > 0.01f)
+			{
+				bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(bs.hover_mix_min, w->hover_anim));
+			}
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+			if (w->border_width > 0)
+			{
+				float bi = w->border_width * 0.5f;
+				vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+					w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+					vgui_widget_color(w, border), w->border_width);
+			}
 		}
 
 		// content area (inside padding)
@@ -7870,6 +8035,37 @@ extern "C" {
 	{
 		if (!widget || widget->kind != VGUI_BUTTON) return;
 		widget->icon_tint = tint;   // 0 = no tint (using raw texture)
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_button_set_style(vgui_widget* widget, vgui_button_style_kind kind)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		widget->btn_style_kind = kind;
+		vgui_mark_dirty(widget);
+	}
+
+	vgui_button_style_kind vgui_button_get_style(vgui_widget* widget)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return VGUI_BUTTON_STYLE_SOLID;
+		return widget->btn_style_kind;
+	}
+
+	void vgui_button_set_gradient(vgui_widget* widget,
+		vgui_color grad_top_default, vgui_color grad_bot_default,
+		vgui_color grad_top_hover, vgui_color grad_bot_hover,
+		vgui_color grad_top_active, vgui_color grad_bot_active,
+		vgui_color border_light, vgui_color border_dark)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		widget->grad_top[0] = grad_top_default;
+		widget->grad_top[1] = grad_top_hover;
+		widget->grad_top[2] = grad_top_active;
+		widget->grad_bot[0] = grad_bot_default;
+		widget->grad_bot[1] = grad_bot_hover;
+		widget->grad_bot[2] = grad_bot_active;
+		widget->gradient_border_light = border_light;
+		widget->gradient_border_dark = border_dark;
 		vgui_mark_dirty(widget);
 	}
 

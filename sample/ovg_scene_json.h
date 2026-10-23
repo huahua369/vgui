@@ -1046,7 +1046,6 @@ namespace ovg {
 			style.family = nullptr;
 			style.fontsize = t.fontsize;
 			style.lineheight = t.lineheight;
-			style.align = t.align;
 			style.shadow_pos = t.shadow_offset;
 			style.stroke = t.stroke_width;
 			style.color = t.color;
