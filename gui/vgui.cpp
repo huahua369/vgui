@@ -182,6 +182,8 @@ struct vgui_tree_state
 	std::unordered_map<vgui_item_id, size_t> index;
 	std::vector<vgui_item_id> roots;
 	std::vector<vgui_tree_row> rows;
+	// 反向可见行号缓存：与 rows 同步重建，避免每次查询都线性扫描 rows。
+	std::unordered_map<vgui_item_id, int> row_index;
 	bool rows_dirty = true;
 	std::vector<vgui_item_id> selected;
 	vgui_item_id cursor = 0;
@@ -1247,11 +1249,12 @@ namespace {
 		return &st->items[(size_t)index];
 	}
 
-	static void vgui_list_rebuild_index(vgui_list_state* st)
+	// 只在 from 之后重新登记位置。追加是 O(1)，插入/删除只需修正被移动的尾部。
+	static void vgui_list_update_index_from(vgui_list_state* st, size_t from)
 	{
 		if (!st) return;
-		st->index.clear();
-		for (size_t i = 0; i < st->items.size(); ++i)
+		if (from > st->items.size()) from = st->items.size();
+		for (size_t i = from; i < st->items.size(); ++i)
 			st->index[st->items[i].id] = i;
 	}
 
@@ -1369,6 +1372,7 @@ namespace {
 		auto it = st->index.find(id);
 		if (it != st->index.end() && it->second < st->nodes.size()) n = &st->nodes[it->second];
 		if (!n) return;
+		st->row_index[id] = (int)st->rows.size();
 		st->rows.push_back({ id, depth });
 		if (!n->expanded) return;
 		for (vgui_item_id c : n->children)
@@ -1380,6 +1384,7 @@ namespace {
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st || !st->rows_dirty) return;
 		st->rows.clear();
+		st->row_index.clear();
 		for (vgui_item_id id : st->roots)
 			vgui_tree_rebuild_rows_rec(st, id, 0);
 		st->rows_dirty = false;
@@ -1390,9 +1395,8 @@ namespace {
 		vgui_tree_state* st = vgui_tree_of(w);
 		if (!st || id == 0) return -1;
 		vgui_tree_rebuild_rows(w);
-		for (size_t i = 0; i < st->rows.size(); ++i)
-			if (st->rows[i].id == id) return (int)i;
-		return -1;
+		auto it = st->row_index.find(id);
+		return it == st->row_index.end() ? -1 : it->second;
 	}
 
 	static int vgui_tree_visible_count(vgui_widget* w)
@@ -2478,8 +2482,11 @@ namespace {
 		{
 			vgui_list_state* ls = vgui_list_of(w);
 			float row_h = vgui_list_row_height(w);
+			/* content_w 只在自动宽度（req_w==0）或启用横向滚动时才会被消费：
+			 * 逐条测量文本宽度在大列表上是每帧 O(N)。其余情况下 content_w
+			 * 保持 0，vgui_panel_get_content_size 也随之返回 0。 */
 			float content_w = 0;
-			if (ls)
+			if (ls && (w->req_w <= 0.0f || w->scrollable_x))
 			{
 				for (const vgui_list_item& it : ls->items)
 				{
@@ -2501,8 +2508,9 @@ namespace {
 			vgui_tree_state* ts = vgui_tree_of(w);
 			float row_h = vgui_tree_row_height(w);
 			vgui_tree_rebuild_rows(w);
+			/* 同 VGUI_LIST：没有自动宽度需求且未开横向滚动时跳过全行文本测量。 */
 			float content_w = 0;
-			if (ts)
+			if (ts && (w->req_w <= 0.0f || w->scrollable_x))
 			{
 				float indent = st.tree.indent;
 				float arrow = st.tree.arrow_size + st.tree.arrow_gap;
@@ -4623,15 +4631,22 @@ namespace {
 		{
 			if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
 			{
+				/* 批量全选：先把候选 id 收集好，再用哈希集合去重，最后逐条
+				 * 通知。原来的逐条 set_selected 每次都线性扫描 selected，
+				 * 大列表上退化成 O(N²)。 */
+				std::unordered_set<vgui_item_id> have(st->selected.begin(), st->selected.end());
 				std::vector<vgui_item_id> ids;
+				ids.reserve(st->items.size());
 				for (const vgui_list_item& it : st->items)
-					if (it.enabled) ids.push_back(it.id);
+					if (it.enabled && !have.count(it.id)) ids.push_back(it.id);
 				for (vgui_item_id id : ids)
 				{
-					vgui_list_set_selected_internal(w, id, true, true);
-					if (!w->ctx || !w->ctx->alive.count(w)) return true;
 					st = vgui_list_of(w);
 					if (!st) return true;
+					if (!vgui_list_item_find(w, id)) continue;
+					st->selected.push_back(id);
+					vgui_list_notify_select(w, id, 1);
+					if (!w->ctx || !w->ctx->alive.count(w)) return true;
 				}
 			}
 			return true;
@@ -4709,16 +4724,26 @@ namespace {
 		{
 			if (st->selection_mode == VGUI_SELECTION_MULTIPLE)
 			{
+				/* 批量全选：候选行只收集一次并用哈希集合去重，避免逐条
+				 * set_selected 里对 selected / rows 的线性扫描。 */
+				std::unordered_set<vgui_item_id> have(st->selected.begin(), st->selected.end());
 				std::vector<vgui_item_id> ids;
-				for (const vgui_tree_row& row : st->rows) ids.push_back(row.id);
+				ids.reserve(st->rows.size());
+				for (const vgui_tree_row& row : st->rows)
+				{
+					if (have.count(row.id)) continue;
+					vgui_tree_node* node = vgui_tree_node_find(w, row.id);
+					if (!node || !node->enabled) continue;
+					ids.push_back(row.id);
+				}
 				for (vgui_item_id id : ids)
 				{
-					vgui_tree_node* node = vgui_tree_node_find(w, id);
-					if (!node || !node->enabled) continue;
-					vgui_tree_set_selected_internal(w, id, true, true);
-					if (!w->ctx || !w->ctx->alive.count(w)) return true;
 					st = vgui_tree_of(w);
 					if (!st) return true;
+					if (!vgui_tree_node_find(w, id)) continue;
+					st->selected.push_back(id);
+					vgui_tree_notify_select(w, id, 1);
+					if (!w->ctx || !w->ctx->alive.count(w)) return true;
 				}
 			}
 			return true;
@@ -7664,6 +7689,30 @@ namespace {
 		}
 	}
 
+	// 由滚动位置与固定行高直接求出需要绘制的行区间，避免每帧遍历全部
+	// 列表/树数据。列表和树都是等高行，所以首行与末行可以直接算出来。
+	struct vgui_row_window
+	{
+		int first = 0;
+		int last = 0;
+	};
+
+	static vgui_row_window vgui_row_window_of(vgui_widget* w, int count, float ih, float row_h)
+	{
+		vgui_row_window win;
+		if (count <= 0 || ih <= 0.0f || row_h <= 0.0f) return win;
+		float scroll = std::max(0.0f, w->scroll_y);
+		/* 上下各多算一行做安全边界，浮点误差不会让首尾行被裁掉。 */
+		int first = (int)std::floor(scroll / row_h) - 1;
+		if (first < 0) first = 0;
+		int last = (int)std::ceil((scroll + ih) / row_h) + 1;
+		if (last > count) last = count;
+		if (last < first) last = first;
+		win.first = first;
+		win.last = last;
+		return win;
+	}
+
 	static void vgui_draw_list(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		vgui_context* ctx = w->ctx;
@@ -7679,9 +7728,10 @@ namespace {
 		vgui_draw_model_frame(w, cb, vg);
 		cb->save(vg);
 		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
-		for (size_t i = 0; i < st->items.size(); ++i)
+		vgui_row_window win = vgui_row_window_of(w, (int)st->items.size(), ih, row_h);
+		for (int i = win.first; i < win.last; ++i)
 		{
-			const vgui_list_item& item = st->items[i];
+			const vgui_list_item& item = st->items[(size_t)i];
 			float y = iy - w->scroll_y + (float)i * row_h;
 			if (y + row_h <= iy || y >= iy + ih) continue;
 			bool selected = vgui_id_selected(st->selected, item.id);
@@ -7756,9 +7806,10 @@ namespace {
 		vgui_draw_model_frame(w, cb, vg);
 		cb->save(vg);
 		vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
-		for (size_t i = 0; i < st->rows.size(); ++i)
+		vgui_row_window win = vgui_row_window_of(w, (int)st->rows.size(), ih, row_h);
+		for (int i = win.first; i < win.last; ++i)
 		{
-			const vgui_tree_row& row = st->rows[i];
+			const vgui_tree_row& row = st->rows[(size_t)i];
 			vgui_tree_node* node = vgui_tree_node_find(w, row.id);
 			if (!node) continue;
 			float y = iy - w->scroll_y + (float)i * row_h;
@@ -9790,9 +9841,10 @@ extern "C" {
 		if (text) item.text = text;
 		item.user = user;
 		st->items.push_back(std::move(item));
-		vgui_list_rebuild_index(st);
+		vgui_item_id id = st->items.back().id;
+		st->index[id] = st->items.size() - 1;
 		vgui_mark_dirty(list);
-		return st->items.back().id;
+		return id;
 	}
 
 	vgui_item_id vgui_list_insert_item(vgui_widget* list, int index, const char* text, void* user)
@@ -9806,7 +9858,7 @@ extern "C" {
 		if (text) item.text = text;
 		item.user = user;
 		st->items.insert(st->items.begin() + index, std::move(item));
-		vgui_list_rebuild_index(st);
+		vgui_list_update_index_from(st, (size_t)index);
 		vgui_mark_dirty(list);
 		return st->items[(size_t)index].id;
 	}
@@ -9831,7 +9883,8 @@ extern "C" {
 		if (st->hover == item) st->hover = 0;
 		if (st->pressed == item) st->pressed = 0;
 		if (st->range_anchor == item) st->range_anchor = 0;
-		vgui_list_rebuild_index(st);
+		st->index.erase(item);
+		vgui_list_update_index_from(st, index);
 		vgui_mark_dirty(list);
 		return 1;
 	}
@@ -10033,13 +10086,14 @@ extern "C" {
 		if (!st) return 0;
 		if (parent != 0 && !vgui_tree_node_find(tree, parent)) return 0;
 		vgui_tree_node node;
-		node.id = vgui_next_item_id(st->next_id);
+		vgui_item_id id = vgui_next_item_id(st->next_id);
+		node.id = id;
 		node.parent = parent;
 		if (text) node.text = text;
 		node.user = user;
 		st->nodes.push_back(std::move(node));
-		vgui_tree_rebuild_index(st);
-		vgui_item_id id = st->nodes.back().id;
+		// 追加只影响新节点自身的位置，无需重建整张 id->index 表。
+		st->index[id] = st->nodes.size() - 1;
 		if (parent == 0)
 			st->roots.push_back(id);
 		else
@@ -10108,6 +10162,7 @@ extern "C" {
 		st->roots.clear();
 		st->index.clear();
 		st->rows.clear();
+		st->row_index.clear();
 		st->rows_dirty = true;
 		st->selected.clear();
 		st->cursor = 0;
