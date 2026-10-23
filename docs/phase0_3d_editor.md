@@ -129,35 +129,50 @@ vgui_sdl3_texture_update_native(tex, wg->vgctx,
     VGUI_TEXTURE_FORMAT_RGBA8);
 ```
 
-所有权规则：
+所有权与采样规则：
 
 - vgui **只借用** `SDL_GPUTexture`，不会调用 `SDL_ReleaseGPUTexture`。
-- 采样器由 SDL3 后端创建并在注销时释放。
+- 默认采样器为 **linear + clamp**；CPU 图片仍使用 nearest，保持原采样行为。
 - 纹理必须带 `SDL_GPU_TEXTUREUSAGE_SAMPLER`；作为 3D 颜色附件时还要有 `SDL_GPU_TEXTUREUSAGE_COLOR_TARGET`。
-- FBO 重建时先 `SDL_WaitForGPUIdle`，再释放旧颜色纹理并注册新纹理。旧 wrapper 会进入渲染器的延迟销毁队列，只释放采样器。
+- FBO 重建时先 `SDL_WaitForGPUIdle`，再释放旧颜色纹理并更新句柄。vgui 在下一帧绘制开始时才注销旧的 native wrapper；旧 wrapper 进入渲染器延迟销毁队列，只释放采样器。
 - 纹理格式当前支持 RGBA8/BGRA8 及 sRGB 变体，映射到对应的 `SDL_GPUTextureFormat`。
 - 若 `vgpu_ctx_t` 先于 `vgui_destroy` 销毁，native 注销会访问失效上下文；应用必须保证先销毁 UI，再销毁渲染上下文。
 
-底层注册函数在 `backends/vgui_renderer_sdl3.h`：
+底层接口在 `backends/vgui_renderer_sdl3.h`，与 OVG 的 `ovg_texture_*_native` 同形：
 
 ```c
-uint32_t vgpu_register_native_texture(vgpu_ctx_t*, SDL_GPUTexture*,
-    int width, int height, SDL_GPUTextureFormat);
-void vgpu_unregister_native_texture(vgpu_ctx_t*, uint32_t id);
+bool vgpu_texture_init_native(vgpu_ctx_t*, ovg_texture_t*,
+    SDL_GPUTexture*, int width, int height, SDL_GPUTextureFormat);
+bool vgpu_texture_update_native(vgpu_ctx_t*, ovg_texture_t*,
+    SDL_GPUTexture*, int width, int height, SDL_GPUTextureFormat);
+void vgpu_texture_fini_native(vgpu_ctx_t*, ovg_texture_t*);
 ```
 
-返回的 id 写入 `vg_image_t::id`，`add_image` 通过该 id 查找纹理。native wrapper 的 `owns_texture = false`，渲染器销毁上下文时也不会释放应用纹理。
+`vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip 和当前 clip 都由 OVG 统一处理。九宫格、旋转、任意矩阵目前只通过 OVG 的 `add_texture` 暴露；`VGUI_IMAGE` 只映射其已有的 source/tint/flip 属性。
 
-## 兼容性\n\n- 新增控件类型、布局类型、枚举和 `vgui_style` 字段都追加在现有枚举/结构末尾；已有枚举值和已有字段偏移不变。\n- 没有修改任何现有函数签名或参数顺序。\n- `vgui_style` 结构尺寸会因新增 `image` 字段而变化，使用方需要按新头文件重新编译；这是源码兼容，不承诺跨版本二进制兼容。\n- `vgui_version()` 仍为 `0.3.0`，本阶段没有改动现有列表、树、菜单、选择或上下文菜单行为。\n\n## 示例与测试
+## 兼容性
+
+- 新增控件类型、布局类型、枚举和 `vgui_style` 字段都追加在现有枚举/结构末尾；已有枚举值和已有字段偏移不变。
+- 没有修改任何现有函数签名或参数顺序。
+- `vgui_style` 结构尺寸会因新增 `image` 字段而变化，使用方需要按新头文件重新编译；这是源码兼容，不承诺跨版本二进制兼容。
+- `vgui_version()` 仍为 `0.3.0`，本阶段没有改动现有列表、树、菜单、选择或上下文菜单行为。
+
+## 示例与测试
 
 构建后运行：
 
 ```powershell
 out\bin\x64d\vgui_phase0.exe
 out\bin\x64d\vgui_phase0.exe --smoke
+out\bin\x64d\ovg_texture_test.exe
+out\bin\x64d\vgui_texture_test.exe
 out\bin\x64d\vgui_model_test.exe
 out\bin\x64d\vgui_c_api_test.exe
 ```
+
+`ovg_texture_test` 用离屏 FBO + `SDL_DownloadFromGPUTexture` 读回，覆盖 `add_texture` 的方向、源裁剪、tint、水平/垂直 flip、九宫格、旋转、`mat3x2`、当前 clip、原地 update 和 fini。
+
+`vgui_texture_test` 覆盖 `vgui_sdl3_texture_create_native` → `VGUI_IMAGE` → 源裁剪/tint/flip → `vgui_sdl3_texture_update_native` → 释放的完整路径。
 
 `vgui_model_test` 覆盖：纹理创建/更新/stride/非法参数、图片控件、纹理引用生命周期、wrap 换行位置、justify、align-content 和 grow。
 
@@ -170,4 +185,4 @@ out\bin\x64d\vgui_c_api_test.exe
 - 多视口可以复用同一套 `VGUI_IMAGE` + native texture，只需为每个视口维护独立 FBO。
 - 场景编辑器属性面板、dock、tab 等继续使用现有控件体系；本阶段没有引入新的 UI 容器。
 - 纹理过滤/寻址枚举已加入公共头文件供后续扩展，当前 image 绘制固定使用后端采样器。
-- 若后续 OVG 原生支持 `add_texture`，可以移除 SDL3 临时桥，但 `vgui_texture` 的所有权和图像控件 API 不需要改变。
+- 原生纹理已通过 OVG `add_texture` 接入；后续可把九宫格、旋转和任意矩阵暴露为 `VGUI_IMAGE` 的样式属性。

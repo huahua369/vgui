@@ -6463,8 +6463,23 @@ namespace {
 			{
 				cb->save(vg);
 				vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
-				if (image->flip_x || image->flip_y)
+				const bool native = !texture->cpu && texture->native.image.id != 0;
+				if (native && cb->add_texture)
 				{
+					ovg_texture_r r = {};
+					r.tex = &texture->native;
+					r.rc = { sx, sy, sw, sh };
+					r.dst = { (int)std::lround(dst_x), (int)std::lround(dst_y),
+						(int)std::lround(dst_w), (int)std::lround(dst_h) };
+					r.color = tint;
+					r.flip = (int8_t)((image->flip_x ? FLIP_HORIZONTAL : 0) |
+						(image->flip_y ? FLIP_VERTICAL : 0));
+					cb->add_texture(vg, &r);
+				}
+				else if (image->flip_x || image->flip_y)
+				{
+					// CPU textures keep the geometry path because add_texture only
+					// accepts backend-owned ovg_texture_t handles.
 					gem_info_t info = {};
 					info.blendMode = (int8_t)blendMode_e::normal;
 					info.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
@@ -6495,7 +6510,7 @@ namespace {
 				else
 				{
 					ovg_image_r r = {};
-					r.img = &texture->image;
+					r.img = native ? &texture->native.image : &texture->image;
 					r.rc = { sx, sy, sw, sh };
 					r.dst = { (int)std::lround(dst_x), (int)std::lround(dst_y),
 						(int)std::lround(dst_w), (int)std::lround(dst_h) };
@@ -6953,6 +6968,17 @@ namespace {
 		for (vgui_texture* texture : pending)
 		{
 			if (!texture) continue;
+			// Native textures keep their handle alive until this point, so the
+			// previous frame's draw data can still read vg_image_t::id.  Release
+			// the backend wrapper now and delete the vgui_texture; the backend
+			// defers sampler/texture destruction until the GPU is idle.
+			if (texture->release_native)
+			{
+				texture->release_native(texture);
+				texture->release_native = nullptr;
+				delete texture;
+				continue;
+			}
 			if (texture->image.id != 0 && cb && vg && cb->image_destroy)
 			{
 				cb->image_destroy(vg, &texture->image);
@@ -9372,9 +9398,19 @@ void vgui_texture_release(vgui_texture* texture)
 
 	if (texture->release_native)
 	{
-		texture->release_native(texture);
-		texture->release_native = nullptr;
-		delete texture;
+		// The current frame may still reference native.image in recorded draw
+		// data.  Defer the backend release and deletion to the next vgui_draw(),
+		// after the renderer has consumed that data.
+		if (ctx)
+		{
+			ctx->pending_texture_destroy.push_back(texture);
+		}
+		else
+		{
+			texture->release_native(texture);
+			texture->release_native = nullptr;
+			delete texture;
+		}
 		return;
 	}
 
@@ -9409,11 +9445,13 @@ vgui_texture* vgui_texture_create_native_internal(
 	return texture;
 }
 
-void vgui_texture_bind_native(vgui_texture* texture, uint32_t image_id,
+void vgui_texture_bind_native(vgui_texture* texture, const ovg_texture_t* native,
 	void* native_ctx, void* native_texture, void (*release_native)(vgui_texture*))
 {
-	if (!texture || texture->cpu) return;
-	texture->image.id = image_id;
+	if (!texture || texture->cpu || !native) return;
+	texture->native = *native;
+	// image 仅用于通用检查/宽度读取；原生绘制使用 &texture->native。
+	texture->image = native->image;
 	texture->image.valid = false;
 	texture->native_ctx = native_ctx;
 	texture->native_texture = native_texture;

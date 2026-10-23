@@ -469,6 +469,9 @@ struct vgui_texture
 	uint64_t upload_frame = ~0ull;
 
 	// Native path (SDL3 backend fills these through vgui_texture_bind_native).
+	// native 是值类型句柄，嵌在堆上的 vgui_texture 内，地址在 draw data
+	// 消费完之前保持稳定。
+	ovg_texture_t native = {};
 	void* native_ctx = nullptr;
 	void* native_texture = nullptr;
 	void (*release_native)(vgui_texture*) = nullptr;
@@ -484,7 +487,7 @@ void vgui_texture_mark_layout_dirty(vgui_texture* texture);
 // and the release callback that unregisters it.
 vgui_texture* vgui_texture_create_native_internal(
 	vgui_context* ctx, int width, int height, vgui_texture_format format);
-void vgui_texture_bind_native(vgui_texture* texture, uint32_t image_id,
+void vgui_texture_bind_native(vgui_texture* texture, const ovg_texture_t* native,
 	void* native_ctx, void* native_texture, void (*release_native)(vgui_texture*));
 
 // Dispatches a backend device event to the C UI tree and returns non-zero when

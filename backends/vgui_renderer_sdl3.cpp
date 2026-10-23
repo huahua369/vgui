@@ -309,6 +309,21 @@ SDL_GPUSampler* create_sampler(SDL_GPUDevice* device)
 	return SDL_CreateGPUSampler(device, &info);
 }
 
+// 原生纹理默认采样器：linear + clamp。CPU 纹理保持 nearest，避免改变
+// 现有 UI 图集的采样行为。
+SDL_GPUSampler* create_sampler_linear(SDL_GPUDevice* device)
+{
+	SDL_GPUSamplerCreateInfo info = {};
+	info.min_filter = SDL_GPU_FILTER_LINEAR;
+	info.mag_filter = SDL_GPU_FILTER_LINEAR;
+	info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_LINEAR;
+	info.address_mode_u = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+	info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+	info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+	info.max_anisotropy = 1.0f;
+	return SDL_CreateGPUSampler(device, &info);
+}
+
 vgpu_texture_t* create_texture(vgpu_device_t* device, int width, int height,
 	SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage,
 	SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1)
@@ -1352,6 +1367,14 @@ vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* win
 	return fbo;
 }
 
+SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo)
+{
+	if (!fbo) return nullptr;
+	if (fbo->swapchain) return fbo->swapchain;
+	if (fbo->color_tex) return fbo->color_tex->texture;
+	return nullptr;
+}
+
 void vgpu_destroy_fbo(vg_fbo_t* fbo)
 {
 	if (!fbo)
@@ -1368,12 +1391,14 @@ void vgpu_destroy_fbo(vg_fbo_t* fbo)
 	fbo->cmd = nullptr;
 }
 
-uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
-	int width, int height, SDL_GPUTextureFormat format)
+bool vgpu_texture_init_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, SDL_GPUTextureFormat format)
 {
-	if (!ctx || !ctx->device || !texture || width <= 0 || height <= 0 ||
+	if (!ctx || !ctx->device || !tex || !texture || width <= 0 || height <= 0 ||
 		format == SDL_GPU_TEXTUREFORMAT_INVALID)
-		return 0;
+		return false;
+	if (tex->image.id != 0)
+		return false;
 
 	auto* native = new vgpu_texture_t();
 	native->texture = texture;
@@ -1382,10 +1407,10 @@ uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
 	native->width = width;
 	native->height = height;
 	native->owns_texture = false;
-	native->sampler = create_sampler(ctx->device->gpu_device);
+	native->sampler = create_sampler_linear(ctx->device->gpu_device);
 	if (!native->sampler) {
 		delete native;
-		return 0;
+		return false;
 	}
 
 	uint32_t id = ctx->next_image_id++;
@@ -1393,20 +1418,51 @@ uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
 		id = ctx->next_image_id++;
 	native->id = id;
 	ctx->textures[id] = native;
-	return id;
+
+	tex->image.id = id;
+	tex->image.width = width;
+	tex->image.height = height;
+	tex->image.valid = false;
+	tex->image.copy_status = false;
+	return true;
 }
 
-void vgpu_unregister_native_texture(vgpu_ctx_t* ctx, uint32_t id)
+bool vgpu_texture_update_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, SDL_GPUTextureFormat format)
 {
-	if (!ctx || id == 0)
+	if (!ctx || !tex || tex->image.id == 0 || !texture || width <= 0 || height <= 0 ||
+		format == SDL_GPU_TEXTUREFORMAT_INVALID)
+		return false;
+	auto it = ctx->textures.find(tex->image.id);
+	if (it == ctx->textures.end() || !it->second || it->second->owns_texture)
+		return false;
+
+	vgpu_texture_t* native = it->second;
+	native->texture = texture;
+	native->format = format;
+	native->width = width;
+	native->height = height;
+	tex->image.width = width;
+	tex->image.height = height;
+	tex->image.valid = false;
+	return true;
+}
+
+void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex)
+{
+	if (!ctx || !tex || tex->image.id == 0)
 		return;
-	auto it = ctx->textures.find(id);
-	if (it == ctx->textures.end())
-		return;
-	vgpu_texture_t* texture = it->second;
-	ctx->textures.erase(it);
-	if (texture)
-		ctx->pending_destroy.push_back(texture);
+	auto it = ctx->textures.find(tex->image.id);
+	if (it != ctx->textures.end() && it->second && !it->second->owns_texture)
+	{
+		vgpu_texture_t* native = it->second;
+		ctx->textures.erase(it);
+		ctx->pending_destroy.push_back(native);
+	}
+	tex->image.id = 0;
+	tex->image.width = 0;
+	tex->image.height = 0;
+	tex->image.valid = false;
 }
 
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height)

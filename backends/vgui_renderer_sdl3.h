@@ -63,12 +63,21 @@ void vgpu_destroy_fbo(vg_fbo_t* fbo);
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height);
 int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
 
-// 注册外部创建、由调用方持有的 GPU 纹理。返回的 id 可直接用于
-// vg_image_t::id 和 ovg_image_r。vgui 只借用 SDL_GPUTexture，从不释放它；
-// 采样器由后端创建并在注销时释放。纹理必须带 SDL_GPU_TEXTUREUSAGE_SAMPLER。
-uint32_t vgpu_register_native_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* texture,
-	int width, int height, SDL_GPUTextureFormat format);
-void vgpu_unregister_native_texture(vgpu_ctx_t* ctx, uint32_t id);
+// 获取 FBO 颜色纹理：窗口 FBO 返回 swapchain，离屏 FBO 返回 color_tex。
+// 主要用于离屏测试的 SDL_DownloadFromGPUTexture 读回。
+SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo);
+
+// 原生纹理句柄：采样调用方已有的 SDL_GPUTexture。vgui 只借用纹理，从不
+// 释放它；默认采样器为 linear + clamp。纹理必须带
+// SDL_GPU_TEXTUREUSAGE_SAMPLER。
+bool vgpu_texture_init_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, SDL_GPUTextureFormat format);
+// 原地替换纹理指针/尺寸，保持 image.id 不变；旧纹理由调用方在
+// vgpu_wait_idle 之后释放。
+bool vgpu_texture_update_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
+	SDL_GPUTexture* texture, int width, int height, SDL_GPUTextureFormat format);
+// 从后端移除并延迟释放采样器；不会释放借用的 SDL_GPUTexture。
+void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex);
 
 // 提交一帧。data 中的 fbo 必须已经通过 vgpu_acquire_swapchain 或由本函数
 // 自动获取交换链；函数返回后命令缓冲已经提交。

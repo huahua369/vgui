@@ -1064,8 +1064,8 @@ static void vgui_sdl3_release_native(vgui_texture* texture)
 {
 	if (!texture) return;
 	auto* gpu_ctx = static_cast<vgpu_ctx_t*>(texture->native_ctx);
-	if (gpu_ctx && texture->image.id)
-		vgpu_unregister_native_texture(gpu_ctx, texture->image.id);
+	if (gpu_ctx)
+		vgpu_texture_fini_native(gpu_ctx, &texture->native);
 	texture->image.id = 0;
 	texture->native_ctx = nullptr;
 	texture->native_texture = nullptr;
@@ -1083,16 +1083,17 @@ vgui_texture* vgui_sdl3_texture_create_native(vgui_context* ui, vgpu_ctx_t* gpu_
 	vgui_texture* texture = vgui_texture_create_native_internal(ui, width, height, format);
 	if (!texture)
 		return nullptr;
-	const uint32_t id = vgpu_register_native_texture(gpu_ctx, native_texture,
-		width, height, sdl_format);
-	if (!id)
+
+	ovg_texture_t native = {};
+	if (!vgpu_texture_init_native(gpu_ctx, &native, native_texture,
+		width, height, sdl_format))
 	{
 		vgui_texture_destroy(texture);
 		return nullptr;
 	}
 
 	texture->stride = width * 4;
-	vgui_texture_bind_native(texture, id, gpu_ctx, native_texture, vgui_sdl3_release_native);
+	vgui_texture_bind_native(texture, &native, gpu_ctx, native_texture, vgui_sdl3_release_native);
 	return texture;
 }
 
@@ -1104,24 +1105,36 @@ int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
 	const SDL_GPUTextureFormat sdl_format = vgui_sdl3_texture_format(format);
 	if (sdl_format == SDL_GPU_TEXTUREFORMAT_INVALID)
 		return 0;
-
-	const uint32_t new_id = vgpu_register_native_texture(gpu_ctx, native_texture,
-		width, height, sdl_format);
-	if (!new_id)
+	if (texture->native_ctx && texture->native_ctx != gpu_ctx)
 		return 0;
 
-	vgpu_ctx_t* old_ctx = static_cast<vgpu_ctx_t*>(texture->native_ctx);
-	const uint32_t old_id = texture->image.id;
-	texture->width = width;
-	texture->height = height;
-	texture->stride = width * 4;
-	texture->format = format;
-	texture->image.width = width;
-	texture->image.height = height;
-	texture->image.valid = false;
+	if (texture->native.image.id == 0)
+	{
+		ovg_texture_t native = {};
+		if (!vgpu_texture_init_native(gpu_ctx, &native, native_texture,
+			width, height, sdl_format))
+			return 0;
+		texture->width = width;
+		texture->height = height;
+		texture->stride = width * 4;
+		texture->format = format;
+		vgui_texture_bind_native(texture, &native, gpu_ctx, native_texture,
+			vgui_sdl3_release_native);
+	}
+	else
+	{
+		if (!vgpu_texture_update_native(gpu_ctx, &texture->native, native_texture,
+			width, height, sdl_format))
+			return 0;
+		texture->width = width;
+		texture->height = height;
+		texture->stride = width * 4;
+		texture->format = format;
+		texture->image = texture->native.image;
+		texture->image.valid = false;
+		texture->native_texture = native_texture;
+	}
+
 	vgui_texture_mark_layout_dirty(texture);
-	vgui_texture_bind_native(texture, new_id, gpu_ctx, native_texture, vgui_sdl3_release_native);
-	if (old_ctx && old_id)
-		vgpu_unregister_native_texture(old_ctx, old_id);
 	return 1;
 }

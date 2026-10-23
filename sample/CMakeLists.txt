@@ -33,6 +33,16 @@ set(SRC_PHASE0
     phase0_renderer.cpp
 )
 
+# OVG 原生纹理离屏读回测试（方向/裁剪/tint/flip/九宫格/旋转/矩阵/clip/update/fini）
+set(SRC_OVG_TEXTURE_TEST
+    ovg_texture_test.cpp
+)
+
+# vgui 原生纹理离屏读回测试（create/crop/tint/flip/update/release）
+set(SRC_VGUI_TEXTURE_TEST
+    vgui_texture_test.cpp
+)
+
 # C API 头文件/链接冒烟测试（以 C 编译）
 set(SRC_C_API_TEST
     vgui_c_api_test.c
@@ -57,6 +67,12 @@ target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_phase0 ${SRC_PHASE0})
 target_link_libraries(vgui_phase0 PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(ovg_texture_test ${SRC_OVG_TEXTURE_TEST})
+target_link_libraries(ovg_texture_test PRIVATE libovg SDL3::SDL3 glm::glm-header-only)
+
+add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
+target_link_libraries(vgui_texture_test PRIVATE libovg libvgui SDL3::SDL3 glm::glm-header-only)
 
 add_executable(vgui_c_api_test ${SRC_C_API_TEST})
 target_link_libraries(vgui_c_api_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
