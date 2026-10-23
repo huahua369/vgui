@@ -1,7 +1,9 @@
 # vgui 游戏编辑器组件路线图
 
-> 状态：规划中  
-> 适用版本：vgui 0.3.x  
+> 状态：MVP 骨架开发中
+>
+> 适用版本：vgui 0.3.x
+>
 > 相关文档：[Phase 0：3D 场景编辑器基础](phase0_3d_editor.md)
 
 ## 1. 目标与边界
@@ -86,9 +88,10 @@
 | 路径 | 内容 |
 |---|---|
 | `gui/vgui.h`、`gui/vgui.cpp`、`gui/vgui_internal.h` | 核心控件、布局、输入、拖放、虚拟模型、命令基础设施 |
-| `gui/editor/`（新增） | editor kit 源码与 CMake 目标 |
+| `gui/editor/` | `vgui_editor_kit` 源码与独立 CMake 目标（已建立骨架） |
 | `backends/vgui_sdl3.*` | DPI、OS 文件 drop、原生弹窗、视口输入桥接 |
-| `sample/vgui_game_editor.cpp`（新增） | 游戏编辑器 dogfood 示例 |
+| `sample/vgui_editor_kit_test.cpp` | editor kit 无窗口自测（已建立） |
+| `sample/vgui_game_editor.cpp`（计划） | 游戏编辑器 dogfood 示例 |
 | `sample/*_test.*` | 模型、C API、像素/截图回归测试 |
 | `docs/` | 路线图、Phase 文档和 API 说明 |
 
@@ -120,17 +123,19 @@
 
 目标：先补齐所有编辑器组件都会复用的基础能力，尤其是命令、拖放和虚拟数据模型。
 
-- [ ] **F01 建立 `vgui_editor_kit` 目标**（P0，S）
+- [x] **F01 建立 `vgui_editor_kit` 目标**（P0，S）
   - 新增独立的库目标和目录，不把编辑器组件混入 `vgui_core`。
   - 明确依赖方向：`editor kit -> core`，禁止反向依赖。
   - `vgui_core` 新增内容仍保持纯 C API。
   - 验收：空 editor kit 能独立构建并被示例链接；核心测试目标不受影响。
+  - 已实现：`gui/editor/` + `vgui_editor_kit` 静态库 + `sample/vgui_editor_kit_test.cpp`。
 
-- [ ] **F02 命令/撤销栈**（P0，M）
+- [ ] **F02 命令/撤销栈**（P0，M）（进行中）
   - `execute / undo / redo`、事务开始/提交/回滚、命令合并。
   - 命令状态可查询，供菜单、工具栏、快捷键更新 enabled/checked。
   - 属性修改、树重排、资产重命名等操作共享同一事务接口。
   - 验收：至少覆盖属性修改、树节点移动、资产重命名三类命令；嵌套事务和合并结果正确；失败命令不污染撤销栈。
+  - 已实现：命令栈、事务/回滚、undo/redo 计数；PropertyGrid 行修改自测。待接入树/资产操作与命令合并。
 
 - [ ] **F03 拖放框架**（P0，M）
   - 拖拽源、drop target、载荷类型（文本、文件、自定义 ID/指针）。
@@ -510,3 +515,24 @@ MVP 验收场景：
 - 新增条目时沿用 F/S/P/O/A/V/T/E 前缀，并标注 P0/P1/P2 与 S/M/L。
 - 调整优先级或批次时，同步更新“关键依赖关系”和“开发批次”，避免文档与实现脱节。
 - 每个里程碑结束时，在 `vgui_game_editor` 示例中补一条可操作路径，确保组件不是“只在测试里存在”。
+
+## 11. 当前骨架进度
+
+已完成：
+
+- `gui/editor/` 独立静态库目标 `vgui_editor_kit`，依赖 `libvgui`，不向核心反向渗透 (F01)。
+- `command_stack`：execute / undo / redo、事务、提交、回滚 (F02 部分)。
+- `editor_context`：当前选择、选择监听、命令栈持有者。
+- `editor_shell`：固定分栏 MVP 外壳，包含 Outliner、Viewport、PropertyGrid、AssetBrowser 四个区域。
+- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
+- `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Shell 布局和组件边界。
+- 现有 `vgui_model_test`、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
+
+下一步优先项：
+
+1. 用 Splitter/TabView 替换 `editor_shell` 的固定分栏，并加入布局持久化。
+2. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
+3. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
+4. 接入 AssetBrowser 缩略图、搜索和拖入场景。
+5. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo。

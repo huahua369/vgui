@@ -54,4 +54,5 @@ pkg_check_modules(Clipper2Z REQUIRED IMPORTED_TARGET Clipper2Z)
 # 包含子项目。
 add_subdirectory ("third_party/ovg")
 add_subdirectory ("backends")
+add_subdirectory ("gui/editor")
 add_subdirectory ("sample")

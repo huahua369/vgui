@@ -130,10 +130,11 @@ cmake --build out/build/x64-debug
 Debug 输出目录为 `out/bin/x64d/`：
 
 ```text
-out/bin/x64d/vgui_demo.exe        # 全部控件的交互演示
-out/bin/x64d/vgui_edit_test.exe   # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
-out/bin/x64d/vgui_model_test.exe  # 列表、树、菜单模型与输入行为自测
-out/bin/x64d/vgui.exe             # OVG 场景示例
+out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
+out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
+out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单模型与输入行为自测
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架与命令栈自测
+out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 
 `vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能。
@@ -205,6 +206,7 @@ gui/
   vgui.cpp            控件树、布局、事件与绘制实现
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
+  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架）
 backends/
   vgui_sdl3.*          SDL3 窗口、输入、IME 与 GPU 视口
   vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
@@ -212,10 +214,11 @@ backends/
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）
 sample/
-  vgui_demo.cpp       全部控件的交互演示
-  vgui_edit_test.cpp  编辑框、滚动、主题、焦点自测
-  vgui_model_test.cpp 列表、树、菜单模型自测
-  main.cpp            OVG 场景示例
+  vgui_demo.cpp             全部控件的交互演示
+  vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
+  vgui_model_test.cpp       列表、树、菜单模型自测
+  vgui_editor_kit_test.cpp  editor kit 骨架与命令栈自测
+  main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
   editor_roadmap.md   游戏编辑器组件路线图
@@ -232,9 +235,10 @@ docs/
 ```bash
 out/bin/x64d/vgui_edit_test.exe
 out/bin/x64d/vgui_model_test.exe
+out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单以及外部点击消费。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单以及外部点击消费。`vgui_editor_kit_test` 覆盖 editor kit 的固定分栏 Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界以及命令栈的 undo/redo/事务/回滚。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

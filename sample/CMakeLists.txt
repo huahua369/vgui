@@ -22,6 +22,11 @@ set(SRC_UI_EDITOR
     ui_editor_main.cpp
 )
 
+# vgui_editor_kit MVP 骨架自测（无需窗口/GPU）
+set(SRC_EDITOR_KIT_TEST
+    vgui_editor_kit_test.cpp
+)
+
 # Phase 0: 3D FBO -> native texture -> VGUI_IMAGE
 set(SRC_PHASE0
     vgui_phase0.cpp
@@ -57,6 +62,9 @@ target_link_libraries(vgui_model_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZL
 
 add_executable(vgui_editor ${SRC_UI_EDITOR})
 target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
+target_link_libraries(vgui_editor_kit_test PRIVATE vgui_editor_kit libovg EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_phase0 ${SRC_PHASE0})
 target_link_libraries(vgui_phase0 PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
