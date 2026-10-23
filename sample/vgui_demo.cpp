@@ -1117,7 +1117,7 @@ static void build_images(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "图片 VGUI_IMAGE");
 
-	// 96x48 RGBA8：四象限 + 白边 + 左上角暗块，翻转/裁剪/着色都容易观察。
+	// 96x48 RGBA8：四象限 + 白边 + 左上角箭头，翻转/裁剪/着色都容易观察。
 	std::vector<uint32_t> pixels((size_t)kDemoImageW * kDemoImageH);
 	const uint32_t red = demo_rgba(235, 80, 80);
 	const uint32_t green = demo_rgba(80, 200, 90);
@@ -1134,10 +1134,20 @@ static void build_images(demo_state* st, vgui_widget* root)
 				: (y < kDemoImageH / 2 ? green : yellow);
 			if (x < 2 || y < 2 || x >= kDemoImageW - 2 || y >= kDemoImageH - 2)
 				color = white;
-			if (x < 10 && y < 10)
-				color = dark;
 			pixels[(size_t)y * kDemoImageW + x] = color;
 		}
+	}
+
+	// 左上角向右的箭头：水平翻转后方向反转，垂直翻转后位置变化。
+	const int arrow_cy = kDemoImageH / 4;
+	for (int y = arrow_cy - 2; y <= arrow_cy + 1; ++y)
+		for (int x = 8; x < 21; ++x)
+			pixels[(size_t)y * kDemoImageW + x] = dark;
+	for (int i = 0; i < 9; ++i)
+	{
+		int half = 7 - (i * 7) / 8;
+		for (int y = arrow_cy - half; y <= arrow_cy + half; ++y)
+			pixels[(size_t)y * kDemoImageW + 21 + i] = dark;
 	}
 
 	vgui_texture_desc desc = {};
@@ -1164,7 +1174,7 @@ static void build_images(demo_state* st, vgui_widget* root)
 
 	vgui_widget* info = col(r, 4);
 	vgui_widget_set_grow(info, 1);
-	label(info, "CPU 纹理 96x48；四象限 + 白边 + 左上角暗块。", 14, 0xFFB0B0B0);
+	label(info, "CPU 纹理 96x48；四象限 + 白边 + 左上角箭头。", 14, 0xFFB0B0B0);
 	st->image_info = label(info, "", 12, 0xFF9A9A9A);
 	label(info, "按钮演示 set_flip / set_tint / set_source / set_fit。", 12, 0xFF9A9A9A);
 	update_image_info(st);
@@ -1581,7 +1591,7 @@ int main()
 	}
 
 	const int win_w = 1080, win_h = 860;
-	os_window* form = wg->create("vgui C API 控件演示", win_w, win_h, 0, 0);
+	os_window* form = wg->create("vgui C API 控件演示", win_w, win_h, 0, true);
 	if (!form)
 	{
 		fprintf(stderr, "创建窗口失败\n");
