@@ -1191,7 +1191,7 @@ namespace vgui_editor {
 		vgui_widget* status_label = nullptr;
 		vgui_widget* json_path_edit = nullptr;
 		vgui_widget* cpp_path_edit = nullptr;
-		vgui_widget* hierarchy_body = nullptr;
+		vgui_widget* hierarchy_tree = nullptr;
 		vgui_widget* props_body = nullptr;
 		vgui_widget* canvas = nullptr;
 		vgui_widget* preview_root = nullptr;
@@ -1200,6 +1200,7 @@ namespace vgui_editor {
 
 		std::unordered_map<ui_node*, vgui_widget*> by_node;
 		std::unordered_map<vgui_widget*, ui_node*> by_widget;
+		std::unordered_map<ui_node*, vgui_item_id> tree_items;
 
 		struct binding
 		{
@@ -1208,8 +1209,9 @@ namespace vgui_editor {
 			int prop = 0;
 			int aux = 0;
 		};
-		std::vector<std::unique_ptr<binding>> row_bindings;
 		std::vector<std::unique_ptr<binding>> prop_bindings;
+
+		bool selecting_from_tree = false;
 
 		bool dragging = false;
 		ui_node* drag_node = nullptr;
@@ -1336,17 +1338,18 @@ namespace vgui_editor {
 		}
 	}
 
-	static void on_row_event(vgui_widget* w, const vgui_event* e, void* user)
+	static void on_tree_select(vgui_widget* w, vgui_item_id item, int selected, void* user)
 	{
 		(void)w;
-		auto* b = static_cast<ui_editor::impl::binding*>(user);
-		if (!e) return;
-		if (e->type == VGUI_EVENT_CLICK || e->type == VGUI_EVENT_MOUSE_DOWN)
-		{
-			ui_editor::impl* ed = b->ed;
-			ui_node* n = b->node;
-			if (ed) ed->select(n);
-		}
+		if (!selected || !user) return;
+		auto* ed = static_cast<ui_editor::impl*>(user);
+		if (!ed->hierarchy_tree) return;
+		void* ptr = vgui_tree_get_item_user(ed->hierarchy_tree, item);
+		auto* node = static_cast<ui_node*>(ptr);
+		if (!node) return;
+		ed->selecting_from_tree = true;
+		ed->select(node);
+		ed->selecting_from_tree = false;
 	}
 
 	static void on_prop_text(vgui_widget* w, const char* text, void* user)
@@ -1484,14 +1487,12 @@ namespace vgui_editor {
 		vgui_widget_set_font_size(hierarchy_title, 14.0f);
 		vgui_widget_set_text_color(hierarchy_title, 0xFFAEB4BC);
 
-		hierarchy_body = vgui_widget_add(hierarchy, VGUI_PANEL, nullptr);
-		vgui_widget_set_grow(hierarchy_body, 1.0f);
-		vgui_widget_set_layout(hierarchy_body, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_align_items(hierarchy_body, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_background(hierarchy_body, 0);
-		vgui_widget_set_padding(hierarchy_body, 0, 0, 0, 0);
-		vgui_widget_set_gap(hierarchy_body, 2);
-		vgui_panel_set_scrollable(hierarchy_body, 0, 1);
+		hierarchy_tree = vgui_widget_add(hierarchy, VGUI_TREE, nullptr);
+		vgui_widget_set_grow(hierarchy_tree, 1.0f);
+		vgui_widget_set_min_size(hierarchy_tree, 0, 80);
+		vgui_widget_set_background(hierarchy_tree, 0);
+		vgui_tree_set_selection_mode(hierarchy_tree, VGUI_SELECTION_SINGLE);
+		vgui_tree_on_select(hierarchy_tree, on_tree_select, this);
 
 		/* canvas ------------------------------------------------------------- */
 		canvas = vgui_widget_add(main, VGUI_PANEL, nullptr);
@@ -1809,39 +1810,32 @@ namespace vgui_editor {
 
 	void ui_editor::impl::rebuild_hierarchy()
 	{
-		if (!hierarchy_body) return;
-		vgui_widget_clear(hierarchy_body);
-		row_bindings.clear();
+		if (!hierarchy_tree) return;
+		vgui_tree_clear(hierarchy_tree);
+		tree_items.clear();
 
-		std::vector<std::pair<ui_node*, int>> stack;
-		stack.push_back({ &doc().root, 0 });
-		while (!stack.empty())
+		std::function<void(ui_node*, vgui_item_id)> recurse = [&](ui_node* n, vgui_item_id parent_id)
+			{
+				std::string label = node_label(*n);
+				vgui_item_id id = vgui_tree_add_node(hierarchy_tree, parent_id, label.c_str(), n);
+				tree_items[n] = id;
+				for (auto& child : n->children)
+					recurse(child.get(), id);
+			};
+
+		for (auto& child : doc().root.children)
+			recurse(child.get(), 0);
+
+		vgui_tree_expand_all(hierarchy_tree);
+
+		if (selected)
 		{
-			auto [n, depth] = stack.back();
-			stack.pop_back();
-
-			auto b = std::make_unique<binding>();
-			b->ed = this;
-			b->node = n;
-			binding* raw = b.get();
-			row_bindings.push_back(std::move(b));
-
-			std::string label = node_label(*n);
-
-			vgui_widget* row = vgui_widget_add(hierarchy_body, VGUI_BUTTON, label.c_str());
-			vgui_widget_set_size(row, 0.0f, 26.0f);
-			vgui_widget_set_font_size(row, 13.0f);
-			/* 用 padding 做层级缩进：前导空格在文本排版里几乎不可见。 */
-			vgui_widget_set_padding(row, 8.0f + (float)depth * 18.0f, 2.0f, 8.0f, 2.0f);
-			vgui_widget_set_align_items(row, VGUI_ALIGN_START);
-			vgui_widget_set_text_align(row, 0.0f, 0.5f);
-			if (n == selected)
-				vgui_widget_set_background(row, 0xFF2F5E9E);
-			vgui_widget_on_event(row, on_row_event, raw);
-
-			/* Push children reversed so the first child is processed first. */
-			for (auto it = n->children.rbegin(); it != n->children.rend(); ++it)
-				stack.push_back({ it->get(), depth + 1 });
+			auto it = tree_items.find(selected);
+			if (it != tree_items.end())
+			{
+				vgui_tree_select(hierarchy_tree, it->second, 1);
+				vgui_tree_scroll_to_node(hierarchy_tree, it->second, VGUI_SCROLL_ALIGN_CENTER);
+			}
 		}
 	}
 
@@ -2362,7 +2356,28 @@ namespace vgui_editor {
 		selected = node;
 		dragging = false;
 		drag_node = nullptr;
-		rebuild_hierarchy();
+
+		if (!selecting_from_tree)
+		{
+			/* Programmatic selection (from canvas, etc.) — sync tree selection
+			 * without rebuilding. If the node isn't in the tree (e.g. the
+			 * document root), clear any existing selection. */
+			if (hierarchy_tree)
+			{
+				vgui_tree_clear_selection(hierarchy_tree);
+				if (node && node != &doc().root)
+				{
+					auto it = tree_items.find(node);
+					if (it != tree_items.end())
+					{
+						vgui_tree_select(hierarchy_tree, it->second, 1);
+						vgui_tree_expand_to(hierarchy_tree, it->second);
+						vgui_tree_scroll_to_node(hierarchy_tree, it->second, VGUI_SCROLL_ALIGN_CENTER);
+					}
+				}
+			}
+		}
+
 		rebuild_properties();
 		frame_x = frame_y = frame_w = frame_h = -1;
 		if (node)
