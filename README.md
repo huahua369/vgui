@@ -109,6 +109,22 @@ vgui_tab_on_close(tabs, on_tab_close, NULL);
 
 TabView 负责页面可见性和生命周期：`vgui_tab_add()` 接管页面，移除标签会销毁页面。设置 `vgui_tab_on_close()` 后由宿主决定是否调用 `vgui_tab_remove()`（便于未保存确认）；未设置回调时可直接关闭。标签支持禁用、未保存标记、关闭按钮、鼠标拖拽重排、滚轮横向溢出和键盘切换/关闭（`Ctrl+W`），右键会发送带 `item` 的鼠标事件供宿主打开菜单。
 
+### 编辑器布局持久化
+
+`vgui_editor_kit::editor_shell` 把当前外壳布局记录为带版本号的 JSON：三个 Splitter 比例、Outliner/Viewport/Properties/Bottom 可见性，以及底部 Tab 顺序和当前页。布局文件与场景文档分离，可在退出时保存、启动时恢复；文件损坏或版本不匹配时回退到 `build()` 后的默认布局。
+
+```cpp
+vgui_editor_kit::editor_context context(ui);
+vgui_editor_kit::editor_shell shell(context);
+shell.build();
+
+shell.load_layout("user/editor_layout.json");  // 失败时自动恢复默认布局
+// ... 用户调整面板 ...
+shell.save_layout("user/editor_layout.json");
+```
+
+也可以使用 `capture_layout()` / `apply_layout()` 在内存中交换布局，或调用 `reset_layout()` 恢复默认布局。
+
 ### 交互与焦点
 
 - Tab / Shift+Tab 切换焦点，鼠标点击自动聚焦，可设置 `focusable`。
@@ -155,7 +171,7 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单模型与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架与命令栈自测
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、命令栈与布局持久化自测
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 
@@ -228,7 +244,7 @@ gui/
   vgui.cpp            控件树、布局、事件与绘制实现（含 Splitter/TabView）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
-  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架）
+  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含布局持久化）
 backends/
   vgui_sdl3.*          SDL3 窗口、输入、IME 与 GPU 视口
   vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
@@ -239,7 +255,7 @@ sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单模型自测
-  vgui_editor_kit_test.cpp  editor kit 骨架与命令栈自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、命令栈与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
@@ -260,7 +276,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界以及命令栈的 undo/redo/事务/回滚。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

@@ -8,6 +8,7 @@
 #include "asset_browser.h"
 #include "command_stack.h"
 #include "editor_context.h"
+#include "editor_layout.h"
 #include "editor_shell.h"
 #include "editor_types.h"
 #include "outliner_view.h"

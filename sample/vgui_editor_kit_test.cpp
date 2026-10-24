@@ -8,7 +8,10 @@
 // keeps it runnable in CI while still exercising widget construction, layout
 // and model callbacks.
 
+#include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <vector>
@@ -88,6 +91,164 @@ namespace {
 		return 0;
 	}
 
+	bool near(float a, float b)
+	{
+		return std::fabs(a - b) <= 0.0005f;
+	}
+
+	bool write_text(const std::filesystem::path& path, const char* text)
+	{
+		std::ofstream file(path, std::ios::binary | std::ios::trunc);
+		if (!file)
+			return false;
+		file << text;
+		return file.good();
+	}
+
+	int test_layout_persistence()
+	{
+		using namespace vgui_editor_kit;
+
+		std::error_code ec;
+		std::filesystem::path directory = std::filesystem::temp_directory_path(ec);
+		if (ec)
+			directory = std::filesystem::current_path(ec);
+		if (ec)
+			return fail("layout temporary directory");
+
+		const std::filesystem::path layout_path =
+			directory / "vgui_editor_kit_layout.json";
+		const std::filesystem::path bad_path =
+			directory / "vgui_editor_kit_layout_bad.json";
+		std::filesystem::remove(layout_path, ec);
+		std::filesystem::remove(bad_path, ec);
+
+		{
+			vgui_context* ui = vgui_create(nullptr, 16.0f);
+			if (!ui)
+				return fail("layout source context");
+			{
+				editor_context context(ui);
+				editor_shell shell(context);
+				shell.build();
+				if (!shell.built() || !shell.center_splitter())
+					return fail("layout shell build");
+
+				editor_layout initial = shell.capture_layout();
+				if (initial.version != editor_layout::current_version ||
+					!near(initial.body_ratio, 0.75f) ||
+					!near(initial.workspace_ratio, 0.20f) ||
+					!near(initial.center_ratio, 0.70f) ||
+					!initial.outliner_visible || !initial.viewport_visible ||
+					!initial.properties_visible || !initial.bottom_visible ||
+					initial.bottom_tab_order.size() != 2 ||
+					initial.bottom_tab_order[0] != "ASSETS" ||
+					initial.bottom_tab_order[1] != "CONSOLE" ||
+					initial.bottom_active_tab != "ASSETS")
+					return fail("layout default capture");
+
+				vgui_splitter_set_ratio(shell.body_splitter(), 0.62f);
+				vgui_splitter_set_ratio(shell.workspace_splitter(), 0.31f);
+				vgui_splitter_set_ratio(shell.center_splitter(), 0.55f);
+				shell.set_panel_visible(editor_panel::properties, false);
+				shell.set_panel_visible(editor_panel::bottom, false);
+
+				vgui_item_id console = vgui_tab_get_at(shell.bottom_tabs(), 1);
+				if (!console || !vgui_tab_move(shell.bottom_tabs(), console, 0) ||
+					!vgui_tab_set_active(shell.bottom_tabs(), console))
+					return fail("layout tab setup");
+
+				std::string error;
+				if (!shell.save_layout(layout_path.string(), &error))
+					return fail("layout save");
+
+				editor_layout saved = shell.capture_layout();
+				if (!near(saved.body_ratio, 0.62f) ||
+					!near(saved.workspace_ratio, 0.31f) ||
+					!near(saved.center_ratio, 0.55f) ||
+					!saved.outliner_visible || !saved.viewport_visible ||
+					saved.properties_visible || saved.bottom_visible ||
+					saved.bottom_tab_order.size() != 2 ||
+					saved.bottom_tab_order[0] != "CONSOLE" ||
+					saved.bottom_active_tab != "CONSOLE")
+					return fail("layout capture after edit");
+
+				editor_layout parsed;
+				if (!editor_layout_from_json(editor_layout_to_json(saved), parsed, &error) ||
+					!near(parsed.body_ratio, 0.62f) ||
+					!near(parsed.workspace_ratio, 0.31f) ||
+					!near(parsed.center_ratio, 0.55f) ||
+					parsed.bottom_tab_order != saved.bottom_tab_order ||
+					parsed.bottom_active_tab != saved.bottom_active_tab)
+					return fail("layout json round trip");
+			}
+			vgui_destroy(ui);
+		}
+
+		{
+			vgui_context* ui = vgui_create(nullptr, 16.0f);
+			if (!ui)
+				return fail("layout restored context");
+			{
+				editor_context context(ui);
+				editor_shell shell(context);
+				shell.build();
+				if (!shell.built())
+					return fail("layout restored shell build");
+
+				std::string error;
+				if (!shell.load_layout(layout_path.string(), &error))
+					return fail("layout load");
+				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.62f) ||
+					!near(vgui_splitter_get_ratio(shell.workspace_splitter()), 0.31f) ||
+					!near(vgui_splitter_get_ratio(shell.center_splitter()), 0.55f))
+					return fail("layout restored ratios");
+				if (!shell.panel_visible(editor_panel::outliner) ||
+					!shell.panel_visible(editor_panel::viewport) ||
+					shell.panel_visible(editor_panel::properties) ||
+					shell.panel_visible(editor_panel::bottom))
+					return fail("layout restored visibility");
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
+					return fail("layout restored tab count");
+				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
+				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
+				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), first)) != "CONSOLE" ||
+					std::string(vgui_tab_get_title(shell.bottom_tabs(), active)) != "CONSOLE")
+					return fail("layout restored tab order and active page");
+
+				if (!write_text(bad_path, "{ this is not layout json"))
+					return fail("layout write malformed file");
+				if (shell.load_layout(bad_path.string(), &error))
+					return fail("layout malformed file accepted");
+				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.75f) ||
+					!near(vgui_splitter_get_ratio(shell.workspace_splitter()), 0.20f) ||
+					!near(vgui_splitter_get_ratio(shell.center_splitter()), 0.70f) ||
+					!shell.panel_visible(editor_panel::outliner) ||
+					!shell.panel_visible(editor_panel::viewport) ||
+					!shell.panel_visible(editor_panel::properties) ||
+					!shell.panel_visible(editor_panel::bottom))
+					return fail("layout malformed fallback");
+				vgui_item_id fallback_first = vgui_tab_get_at(shell.bottom_tabs(), 0);
+				vgui_item_id fallback_active = vgui_tab_get_active(shell.bottom_tabs());
+				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), fallback_first)) != "ASSETS" ||
+					std::string(vgui_tab_get_title(shell.bottom_tabs(), fallback_active)) != "ASSETS")
+					return fail("layout malformed tab fallback");
+
+				if (!write_text(bad_path, "{\"version\": 999}"))
+					return fail("layout write version file");
+				if (shell.load_layout(bad_path.string(), &error))
+					return fail("layout version mismatch accepted");
+				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.75f))
+					return fail("layout version fallback");
+			}
+			vgui_destroy(ui);
+		}
+
+		std::filesystem::remove(layout_path, ec);
+		std::filesystem::remove(bad_path, ec);
+		return 0;
+	}
+
 } // namespace
 
 int main()
@@ -95,6 +256,8 @@ int main()
 	using namespace vgui_editor_kit;
 
 	if (int rc = test_command_stack())
+		return rc;
+	if (int rc = test_layout_persistence())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
