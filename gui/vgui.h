@@ -307,6 +307,154 @@ extern "C" {
 		void* user);
 
 	/* ------------------------------------------------------------------------- */
+	/* Tooltip                                                                   */
+	/* ------------------------------------------------------------------------- */
+
+	/* Tooltips are context-level overlays: they are not child widgets and do not
+	 * take part in layout or hit testing.  A widget supplies static text, or a
+	 * provider callback for text that depends on runtime state.  Lists and trees
+	 * can additionally assign a tooltip to each row/node. */
+	typedef enum vgui_tooltip_anchor {
+		VGUI_TOOLTIP_ANCHOR_POINTER = 0,	/* follow the mouse with an offset */
+		VGUI_TOOLTIP_ANCHOR_WIDGET		/* below the widget, centred; flips above */
+	} vgui_tooltip_anchor;
+
+	/* Returns the tooltip text for a widget, or NULL/"" when it has none.  The
+	 * returned pointer only has to stay valid until the next callback. */
+	typedef const char* (*vgui_tooltip_text_fn)(vgui_widget* widget, void* user);
+
+	/* ------------------------------------------------------------------------- */
+	/* Modal, dialog and toast                                                   */
+	/* ------------------------------------------------------------------------- */
+
+	/* A modal owns a context-level stage that covers the whole window.  The
+	 * supplied panel is detached from its old parent and centred inside that
+	 * stage.  While the modal is open hit testing, keyboard focus, Tab cycling
+	 * and wheel input are restricted to the stage, so the background cannot be
+	 * interacted with.  One modal can be open per context.
+	 *
+	 * close_on_escape defaults to 1, close_on_backdrop to 0, dim_background to
+	 * 1 and destroy_on_close to 0 (the caller keeps ownership of the panel).
+	 * A negative margin/backdrop_alpha selects the value from
+	 * style.modal.  The optional close callback runs after the modal has been
+	 * deactivated and the panel detached, but before destroy_on_close destroys
+	 * it, so the panel is still valid for inspection. */
+	typedef enum vgui_modal_result {
+		VGUI_MODAL_RESULT_NONE = 0,
+		VGUI_MODAL_RESULT_CANCEL = 1,
+		VGUI_MODAL_RESULT_CONFIRM = 2
+	} vgui_modal_result;
+
+	typedef void (*vgui_modal_close_fn)(vgui_context* ctx, vgui_widget* panel,
+		int result, void* user);
+
+	typedef struct vgui_modal_options {
+		int close_on_escape;
+		int close_on_backdrop;
+		int dim_background;
+		int destroy_on_close;
+		int escape_result;
+		int backdrop_result;
+		float margin;			/* <0 -> style.modal.margin */
+		float backdrop_alpha;		/* <0 -> style.modal.backdrop_alpha */
+		vgui_modal_close_fn on_close;
+		void* user;
+	} vgui_modal_options;
+
+	VGUI_API void vgui_modal_options_default(vgui_modal_options* options);
+
+	/* Shows panel as the context modal.  Returns 0 when the context already has
+	 * an open modal or panel is invalid/owned by another context. */
+	VGUI_API int vgui_modal_show(vgui_context* ctx, vgui_widget* panel, const vgui_modal_options* options);
+	/* result is passed to the close callback; use vgui_modal_result values or
+	 * an application-defined integer.  Esc/backdrop use the configured results.
+	 * Calling close while no modal is active is a no-op. */
+	VGUI_API void vgui_modal_close(vgui_context* ctx, int result);
+	VGUI_API int vgui_modal_active(vgui_context* ctx);
+	/* Active panel, or NULL when no modal is open. */
+	VGUI_API vgui_widget* vgui_modal_panel(vgui_context* ctx);
+	/* Result of the most recently closed modal; reset when a modal opens. */
+	VGUI_API int vgui_modal_result(vgui_context* ctx);
+
+	/* Convenience dialogs.  They build a modal panel, manage its lifetime and
+	 * report the result through on_result.  Confirm/alert focus the default
+	 * button, prompt focuses the edit box.  Enter confirms (including from the
+	 * prompt edit box), Esc cancels, and clicking the backdrop does not close
+	 * the dialog. */
+	typedef enum vgui_dialog_kind {
+		VGUI_DIALOG_ALERT = 0,		/* message + OK */
+		VGUI_DIALOG_CONFIRM,		/* message + Cancel/OK */
+		VGUI_DIALOG_PROMPT		/* message + edit + Cancel/OK */
+	} vgui_dialog_kind;
+
+	/* text is the current prompt value ("" for alert/confirm) and is only valid
+	 * for the duration of the callback. */
+	typedef void (*vgui_dialog_close_fn)(vgui_context* ctx, int result,
+		const char* text, void* user);
+
+	typedef struct vgui_dialog_desc {
+		vgui_dialog_kind kind;
+		const char* title;
+		const char* message;
+		const char* confirm_text;	/* NULL/"" -> "OK" */
+		const char* cancel_text;	/* NULL/"" -> "Cancel" */
+		const char* placeholder;	/* prompt only */
+		const char* initial_text;	/* prompt only */
+		int danger;			/* confirm button uses the danger colour */
+		float width;			/* 0 -> style.modal.dialog_width */
+		vgui_dialog_close_fn on_result;
+		void* user;
+	} vgui_dialog_desc;
+
+	VGUI_API void vgui_dialog_desc_default(vgui_dialog_desc* desc);
+	/* Returns the dialog panel, or NULL when another modal is already open and
+	 * the dialog could not be shown. */
+	VGUI_API vgui_widget* vgui_dialog_show(vgui_context* ctx, const vgui_dialog_desc* desc);
+	/* Prompt edit box while a prompt dialog is open, otherwise NULL. */
+	VGUI_API vgui_widget* vgui_dialog_input(vgui_context* ctx);
+
+	VGUI_API vgui_widget* vgui_dialog_alert(vgui_context* ctx, const char* title, const char* message, vgui_dialog_close_fn on_result, void* user);
+	VGUI_API vgui_widget* vgui_dialog_confirm(vgui_context* ctx, const char* title, const char* message, int danger, vgui_dialog_close_fn on_result, void* user);
+	VGUI_API vgui_widget* vgui_dialog_prompt(vgui_context* ctx, const char* title, const char* message, const char* initial_text, vgui_dialog_close_fn on_result, void* user);
+
+	/* Lightweight notifications.  Toasts are context overlays: they do not take
+	 * part in layout or hit testing and expire automatically in vgui_update().
+	 * duration < 0 uses style.toast.duration; 0 keeps the toast until dismissed.
+	 * The visible count is capped by style.toast.max_visible. */
+	typedef uint64_t vgui_toast_id;
+
+	typedef enum vgui_toast_position {
+		VGUI_TOAST_TOP_RIGHT = 0,
+		VGUI_TOAST_TOP_LEFT,
+		VGUI_TOAST_TOP_CENTER,
+		VGUI_TOAST_BOTTOM_RIGHT,
+		VGUI_TOAST_BOTTOM_LEFT,
+		VGUI_TOAST_BOTTOM_CENTER
+	} vgui_toast_position;
+
+	typedef enum vgui_toast_level {
+		VGUI_TOAST_INFO = 0,
+		VGUI_TOAST_SUCCESS,
+		VGUI_TOAST_WARNING,
+		VGUI_TOAST_ERROR
+	} vgui_toast_level;
+
+	typedef struct vgui_toast_options {
+		vgui_toast_position position;
+		vgui_toast_level level;
+		float duration;			/* <0 -> style.toast.duration, 0 = sticky */
+	} vgui_toast_options;
+
+	VGUI_API void vgui_toast_options_default(vgui_toast_options* options);
+	VGUI_API vgui_toast_id vgui_toast_show(vgui_context* ctx, const char* text, const vgui_toast_options* options);
+	VGUI_API int vgui_toast_dismiss(vgui_context* ctx, vgui_toast_id toast);
+	VGUI_API void vgui_toast_clear(vgui_context* ctx);
+	VGUI_API int vgui_toast_count(vgui_context* ctx);
+	/* Current screen rectangle of a toast.  Returns 0 for unknown ids or when
+	 * the toast is beyond style.toast.max_visible.  Any output may be NULL. */
+	VGUI_API int vgui_toast_get_rect(vgui_context* ctx, vgui_toast_id toast, float* x, float* y, float* width, float* height);
+
+	/* ------------------------------------------------------------------------- */
 	/* Theme                                                                     */
 	/* ------------------------------------------------------------------------- */
 
@@ -345,6 +493,23 @@ extern "C" {
 		vgui_color menu_border;		/* fallback: button_border */
 		vgui_color menu_hover;		/* fallback: button_hover */
 		vgui_color menu_disabled_text;	/* fallback: disabled */
+		vgui_color tooltip_bg;		/* fallback: menu_bg */
+		vgui_color tooltip_border;	/* fallback: menu_border */
+		vgui_color tooltip_text;	/* fallback: text */
+		/* Modal, dialog and toast colours.  A zero value selects a
+		 * backwards-compatible fallback as documented in
+		 * vgui_context_set_theme(). */
+		vgui_color modal_backdrop;	/* fallback: opaque black (alpha is scaled by style) */
+		vgui_color modal_bg;		/* fallback: panel_bg */
+		vgui_color modal_border;	/* fallback: button_border */
+		vgui_color modal_danger;	/* fallback: red danger tone */
+		vgui_color toast_bg;		/* fallback: menu_bg */
+		vgui_color toast_border;	/* fallback: menu_border */
+		vgui_color toast_text;		/* fallback: text */
+		vgui_color toast_info;		/* fallback: accent */
+		vgui_color toast_success;	/* fallback: green success tone */
+		vgui_color toast_warning;	/* fallback: amber warning tone */
+		vgui_color toast_error;		/* fallback: modal_danger */
 	} vgui_theme;
 
 	/* ------------------------------------------------------------------------- */
@@ -540,6 +705,48 @@ extern "C" {
 		float disabled_mix;	/* 0.55: toward theme.disabled */
 	} vgui_menubar_style;
 
+	typedef struct vgui_tooltip_style {
+		float delay;			/* 0.5: seconds of hover before showing */
+		float pointer_offset_x;	/* 14: pointer-anchored tooltip offset */
+		float pointer_offset_y;	/* 20 */
+		float widget_gap;		/* 6: gap to a widget-anchored tooltip */
+		float padding_x;		/* 8 */
+		float padding_y;		/* 5 */
+		float rounding;			/* 4 */
+		float border_width;		/* 1 */
+		float max_width;		/* 320: text wraps beyond this */
+		float margin;			/* 4: minimum distance from context edges */
+		float line_gap;			/* 1: extra space between wrapped lines */
+	} vgui_tooltip_style;
+
+	typedef struct vgui_modal_style {
+		float margin;			/* 48: minimum distance between the panel and context edges */
+		float dialog_width;		/* 360: default width of convenience dialogs */
+		float min_width;		/* 220: dialogs shrink below dialog_width only to this */
+		float max_height;		/* 0: context height minus margin * 2 */
+		float padding;			/* 16 */
+		float rounding;			/* 6 */
+		float border_width;		/* 1 */
+		float backdrop_alpha;		/* 0.45: dim strength; 0 hides the backdrop */
+		float title_gap;		/* 6: title-to-message gap */
+		float message_gap;		/* 10: message-to-content gap */
+		float button_gap;		/* 8: gap between dialog buttons */
+		float button_top_gap;		/* 8: extra gap above the button row */
+	} vgui_modal_style;
+
+	typedef struct vgui_toast_style {
+		float duration;			/* 3: seconds; 0 keeps a toast until dismissed */
+		float max_width;		/* 360: text wraps beyond this */
+		float padding_x;		/* 12 */
+		float padding_y;		/* 8 */
+		float rounding;			/* 6 */
+		float border_width;		/* 1 */
+		float margin;			/* 12: distance from context edges */
+		float gap;			/* 8: gap between stacked toasts */
+		float line_gap;			/* 1: extra space between wrapped lines */
+		int max_visible;		/* 3: older toasts wait until a slot frees up */
+	} vgui_toast_style;
+
 	typedef struct vgui_image_style {
 		float req_width;		/* 240: preferred size when no texture is set */
 		float req_height;		/* 160 */
@@ -569,6 +776,10 @@ extern "C" {
 		vgui_menu_style menu;
 		vgui_menubar_style menubar;
 		vgui_image_style image;
+		/* Appended at the end to keep positional initialisers working. */
+		vgui_tooltip_style tooltip;
+		vgui_modal_style modal;
+		vgui_toast_style toast;
 	} vgui_style;
 
 	/* ------------------------------------------------------------------------- */
@@ -660,8 +871,40 @@ extern "C" {
 	VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 	VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);
 
-	/* Image control.  set_texture(NULL) clears the binding.  source width/height
-	 * <= 0 select the full texture.  flip is applied by the draw path. */
+	/* Tooltip properties.  set_tooltip() stores static text; a provider, when
+	 * set, takes precedence and may return different text each time.  A negative
+	 * delay inherits style.tooltip.delay; zero shows immediately.  Disabled
+	 * widgets keep their tooltip by default; clear when_disabled to suppress it. */
+	VGUI_API void vgui_widget_set_tooltip(vgui_widget* widget, const char* text);
+	VGUI_API const char* vgui_widget_get_tooltip(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_tooltip_provider(vgui_widget* widget, vgui_tooltip_text_fn fn, void* user);
+	VGUI_API void vgui_widget_set_tooltip_delay(vgui_widget* widget, float seconds);
+	VGUI_API float vgui_widget_get_tooltip_delay(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_tooltip_enabled(vgui_widget* widget, int enabled);
+	VGUI_API int vgui_widget_get_tooltip_enabled(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_tooltip_when_disabled(vgui_widget* widget, int enabled);
+	VGUI_API int vgui_widget_get_tooltip_when_disabled(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_tooltip_anchor(vgui_widget* widget, vgui_tooltip_anchor anchor);
+	VGUI_API vgui_tooltip_anchor vgui_widget_get_tooltip_anchor(vgui_widget* widget);
+
+	/* The running tooltip is owned by the context because it floats above the
+	 * tree.  hide_tooltip() also cancels the pending hover, so it will not
+	 * reappear until the pointer moves to another target. */
+	VGUI_API void vgui_context_set_tooltip_enabled(vgui_context* ctx, int enabled);
+	VGUI_API int vgui_context_get_tooltip_enabled(vgui_context* ctx);
+	VGUI_API void vgui_context_hide_tooltip(vgui_context* ctx);
+	VGUI_API int vgui_context_tooltip_visible(vgui_context* ctx);
+	VGUI_API const char* vgui_context_tooltip_text(vgui_context* ctx);
+	VGUI_API vgui_widget* vgui_context_tooltip_owner(vgui_context* ctx);
+	/* Returns non-zero while a tooltip is visible and writes its current screen
+	 * rectangle.  Any output pointer may be NULL. */
+	VGUI_API int vgui_context_tooltip_rect(vgui_context* ctx, float* x, float* y, float* width, float* height);
+
+	/* ------------------------------------------------------------------------- */
+	/* Image control                                                             */
+	/* ------------------------------------------------------------------------- */
+	/* set_texture(NULL) clears the binding.  source width/height <= 0 select the
+	 * full texture.  flip is applied by the draw path. */
 	VGUI_API void vgui_image_set_texture(vgui_widget* widget, vgui_texture* texture);
 	VGUI_API void vgui_image_set_source(vgui_widget* widget, int x, int y, int width, int height);
 	VGUI_API void vgui_image_set_fit(vgui_widget* widget, vgui_image_fit fit);
@@ -706,11 +949,7 @@ extern "C" {
 	 *   border_light / border_dark          — 双层高光/阴影边框颜色
 	 * 不调用则使用内置默认渐变（深灰系）。
 	 */
-	VGUI_API void vgui_button_set_gradient(vgui_widget* widget,
-		vgui_color grad_top_default, vgui_color grad_bot_default,
-		vgui_color grad_top_hover, vgui_color grad_bot_hover,
-		vgui_color grad_top_active, vgui_color grad_bot_active,
-		vgui_color border_light, vgui_color border_dark);
+	VGUI_API void vgui_button_set_gradient(vgui_widget* widget, vgui_color grad_top_default, vgui_color grad_bot_default, vgui_color grad_top_hover, vgui_color grad_bot_hover, vgui_color grad_top_active, vgui_color grad_bot_active, vgui_color border_light, vgui_color border_dark);
 
 	/* Focus-ring opacity for this widget (0..1, 0 hides the ring).  A negative
 	 * value restores inheritance from the context default.  The getter returns
@@ -788,8 +1027,7 @@ extern "C" {
 	VGUI_API int vgui_tab_get_unsaved(vgui_widget* tabs, vgui_item_id item);
 	VGUI_API void vgui_tab_set_unsaved(vgui_widget* tabs, vgui_item_id item, int unsaved);
 	VGUI_API int vgui_tab_move(vgui_widget* tabs, vgui_item_id item, int index);
-	VGUI_API int vgui_tab_get_rect(vgui_widget* tabs, vgui_item_id item,
-		float* x, float* y, float* width, float* height);
+	VGUI_API int vgui_tab_get_rect(vgui_widget* tabs, vgui_item_id item, float* x, float* y, float* width, float* height);
 	VGUI_API void vgui_tab_set_tab_height(vgui_widget* tabs, float height);
 	VGUI_API float vgui_tab_get_tab_height(vgui_widget* tabs);
 	VGUI_API void vgui_tab_on_select(vgui_widget* tabs, vgui_item_fn fn, void* user);
@@ -970,6 +1208,9 @@ extern "C" {
 		int (*row_expanded)(void* user, int index);
 		void (*row_toggle)(void* user, int index);
 		void* user;
+		/* Optional row tooltip.  Return NULL/"" for no tooltip.  The returned
+		 * pointer only has to stay valid until the next callback. */
+		const char* (*row_tooltip)(void* user, int index);
 	} vgui_row_source;
 
 	VGUI_API void vgui_list_set_row_source(vgui_widget* list, const vgui_row_source* source);
@@ -1055,11 +1296,23 @@ extern "C" {
 
 	/* Item rect in absolute window coordinates.  The bar must have been laid
 	 * out at least once (call vgui_layout() or vgui_update() first). */
-	VGUI_API int vgui_menubar_get_item_rect(vgui_widget* menubar, vgui_item_id item,
-		float* x, float* y, float* width, float* height);
+	VGUI_API int vgui_menubar_get_item_rect(vgui_widget* menubar, vgui_item_id item, float* x, float* y, float* width, float* height);
 	/* Title hit test using local coordinates; returns 0 when the point is not
 	 * over an item. */
 	VGUI_API vgui_item_id vgui_menubar_item_at(vgui_widget* menubar, float local_x, float local_y);
+
+	/* Per-row tooltip.  Like other model setters these are no-ops while a
+	 * virtual row source is attached; source rows use row_tooltip instead. */
+	VGUI_API void vgui_list_set_item_tooltip(vgui_widget* list, vgui_item_id item, const char* tooltip);
+	VGUI_API const char* vgui_list_get_item_tooltip(vgui_widget* list, vgui_item_id item);
+	VGUI_API void vgui_tree_set_item_tooltip(vgui_widget* tree, vgui_item_id node, const char* tooltip);
+	VGUI_API const char* vgui_tree_get_item_tooltip(vgui_widget* tree, vgui_item_id node);
+
+	/* Row hit testing in widget-local coordinates.  Returns 0 when the point is
+	 * outside the content area, over padding, or past the last row. */
+	VGUI_API vgui_item_id vgui_list_item_at_point(vgui_widget* list, float local_x, float local_y);
+	VGUI_API vgui_item_id vgui_tree_item_at_point(vgui_widget* tree, float local_x, float local_y);
+
 	VGUI_API vgui_item_id vgui_menubar_get_active(vgui_widget* menubar);
 	VGUI_API int vgui_menubar_open_item(vgui_widget* menubar, vgui_item_id item);
 	VGUI_API void vgui_menubar_close(vgui_widget* menubar);
@@ -1076,8 +1329,7 @@ extern "C" {
 	/* Register a context-level shortcut filter.  Returns a non-zero token that
 	 * can be passed to vgui_context_remove_key_handler().  Handlers run in
 	 * reverse registration order (the most recently added handler wins). */
-	VGUI_API int vgui_context_add_key_handler(vgui_context* ctx,
-		vgui_key_handler_fn fn, void* user);
+	VGUI_API int vgui_context_add_key_handler(vgui_context* ctx, vgui_key_handler_fn fn, void* user);
 	VGUI_API void vgui_context_remove_key_handler(vgui_context* ctx, int token);
 
 	VGUI_API int vgui_input_mouse_move(vgui_context* ctx, float x, float y);
@@ -1099,12 +1351,9 @@ extern "C" {
 	/* Custom widget                                                             */
 	/* ------------------------------------------------------------------------- */
 
-	VGUI_API void vgui_custom_set_draw(vgui_widget* widget,
-		vgui_custom_draw_fn draw, void* user);
-	VGUI_API void vgui_custom_set_size(vgui_widget* widget,
-		vgui_custom_size_fn size, void* user);
-	VGUI_API void vgui_custom_set_event(vgui_widget* widget,
-		vgui_custom_event_fn event, void* user);
+	VGUI_API void vgui_custom_set_draw(vgui_widget* widget, vgui_custom_draw_fn draw, void* user);
+	VGUI_API void vgui_custom_set_size(vgui_widget* widget, vgui_custom_size_fn size, void* user);
+	VGUI_API void vgui_custom_set_event(vgui_widget* widget, vgui_custom_event_fn event, void* user);
 	/* 1=裁剪到控件边界（默认），0=允许超出（发光/阴影等效果）。 */
 	VGUI_API void vgui_custom_set_clip_content(vgui_widget* widget, int clip);
 

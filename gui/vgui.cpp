@@ -137,6 +137,7 @@ struct vgui_list_item
 	vgui_item_id id = 0;
 	std::string text;
 	std::string detail;
+	std::string tooltip;
 	void* user = nullptr;
 	int enabled = 1;
 };
@@ -177,6 +178,7 @@ struct vgui_tree_node
 	vgui_item_id parent = 0;
 	std::vector<vgui_item_id> children;
 	std::string text;
+	std::string tooltip;
 	void* user = nullptr;
 	int enabled = 1;
 	int expanded = 0;
@@ -423,6 +425,15 @@ struct vgui_widget
 	float check_anim = 0;
 	vgui_cursor cursor_type = VGUI_CURSOR_ARROW;
 
+	// tooltip --------------------------------------------------------------
+	std::string tooltip;
+	vgui_tooltip_text_fn tooltip_text_fn = nullptr;
+	void* tooltip_user = nullptr;
+	float tooltip_delay = -1.0f;	// <0 -> context style default
+	int tooltip_enabled = 1;
+	int tooltip_when_disabled = 1;
+	vgui_tooltip_anchor tooltip_anchor = VGUI_TOOLTIP_ANCHOR_POINTER;
+
 	// values ---------------------------------------------------------------
 	float value = 0.0f;
 	float range_min = 0.0f;
@@ -540,6 +551,53 @@ struct vgui_font_metrics
 	float ascent = -1.0f;
 };
 
+struct vgui_tooltip_state
+{
+	vgui_widget* candidate = nullptr;	// hover target being timed
+	vgui_item_id candidate_item = 0;
+	vgui_widget* owner = nullptr;		// visible tooltip owner
+	vgui_item_id owner_item = 0;
+	float hover_time = 0.0f;
+	int visible = 0;
+	int suppressed = 0;			// cleared on the next pointer move
+	std::string text;
+	std::vector<std::string> lines;
+	float x = 0, y = 0, w = 0, h = 0;
+};
+
+struct vgui_toast_record
+{
+	vgui_toast_id id = 0;
+	std::string text;
+	std::vector<std::string> lines;
+	vgui_toast_options options = {};
+	float time_left = 0.0f;
+	int sticky = 0;
+	float x = 0, y = 0, w = 0, h = 0;
+};
+
+struct vgui_dialog_state
+{
+	vgui_widget* panel = nullptr;
+	vgui_widget* input = nullptr;
+	vgui_widget* confirm_button = nullptr;
+	vgui_widget* cancel_button = nullptr;
+	vgui_dialog_close_fn on_result = nullptr;
+	void* user = nullptr;
+	int kind = VGUI_DIALOG_ALERT;
+};
+
+struct vgui_modal_state
+{
+	int active = 0;
+	int swallow_up = 0;
+	int result = VGUI_MODAL_RESULT_NONE;
+	vgui_widget* stage = nullptr;
+	vgui_widget* panel = nullptr;
+	vgui_widget* restore_focus = nullptr;
+	vgui_modal_options options = {};
+};
+
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
@@ -586,6 +644,14 @@ struct vgui_context
 	int want_text = 0;
 	vgui_cursor cursor = VGUI_CURSOR_ARROW;
 
+	vgui_tooltip_state tooltip;
+	int tooltip_enabled = 1;
+
+	vgui_modal_state modal;
+	vgui_dialog_state dialog;
+	std::vector<vgui_toast_record> toasts;
+	vgui_toast_id next_toast_id = 1;
+
 	// context-level shortcut filters --------------------------------------
 	struct key_handler_entry
 	{
@@ -609,6 +675,92 @@ namespace {
 	static float vgui_clampf(float v, float lo, float hi)
 	{
 		return v < lo ? lo : (v > hi ? hi : v);
+	}
+
+	// Tooltip lifetime helpers.  The visible overlay lives on the context, so
+	// every code path that destroys a widget or otherwise interrupts a hover
+	// must be able to drop the references here.
+	static void vgui_tooltip_hide(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		vgui_tooltip_state& t = ctx->tooltip;
+		t.visible = 0;
+		t.owner = nullptr;
+		t.owner_item = 0;
+		t.text.clear();
+		t.lines.clear();
+		t.x = t.y = t.w = t.h = 0.0f;
+	}
+
+	static void vgui_tooltip_clear_candidate(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		vgui_tooltip_hide(ctx);
+		ctx->tooltip.candidate = nullptr;
+		ctx->tooltip.candidate_item = 0;
+		ctx->tooltip.hover_time = 0.0f;
+		ctx->tooltip.suppressed = 0;
+	}
+
+	static void vgui_tooltip_suppress(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		vgui_tooltip_hide(ctx);
+		ctx->tooltip.hover_time = 0.0f;
+		ctx->tooltip.suppressed = 1;
+	}
+
+	static void vgui_tooltip_forget_widget(vgui_context* ctx, vgui_widget* w)
+	{
+		if (!ctx || !w) return;
+		vgui_tooltip_state& t = ctx->tooltip;
+		if (t.candidate == w)
+		{
+			t.candidate = nullptr;
+			t.candidate_item = 0;
+			t.hover_time = 0.0f;
+		}
+		if (t.owner == w)
+			vgui_tooltip_hide(ctx);
+	}
+
+	// Input and focus run against the modal stage while a modal is open.  The
+	// background tree stays intact but cannot be reached by hit testing or Tab.
+	static vgui_widget* vgui_active_root(vgui_context* ctx)
+	{
+		if (!ctx) return nullptr;
+		if (ctx->modal.active && ctx->modal.stage)
+			return ctx->modal.stage;
+		return ctx->root;
+	}
+
+	static bool vgui_is_within(vgui_widget* ancestor, vgui_widget* widget)
+	{
+		if (!ancestor || !widget) return false;
+		for (vgui_widget* p = widget; p; p = p->parent)
+			if (p == ancestor) return true;
+		return false;
+	}
+
+	static vgui_widget* vgui_first_focusable(vgui_widget* root)
+	{
+		if (!root) return nullptr;
+		if (root->visible && root->enabled && !root->destroy_pending && root->focusable)
+			return root;
+		for (vgui_widget* c : root->children)
+		{
+			vgui_widget* found = vgui_first_focusable(c);
+			if (found) return found;
+		}
+		return nullptr;
+	}
+
+	static bool vgui_any_mouse_down(vgui_context* ctx)
+	{
+		if (!ctx) return false;
+		for (int i = 0; i < 8; ++i)
+			if (ctx->mouse_down[i]) return true;
+		return false;
 	}
 
 	static uint32_t vgui_mix_color(uint32_t a, uint32_t b, float t)
@@ -951,6 +1103,82 @@ namespace {
 		vgui_context* ctx = w ? w->ctx : nullptr;
 		float fs = vgui_font_size(ctx, w);
 		return vgui_measure_text_range(ctx, ctx ? ctx->font : nullptr, (int)fs, text, len);
+	}
+
+	// Greedy word wrapping used by dialogs and toasts.  Existing newlines are
+	// preserved, runs of spaces at a break are dropped, and a single glyph
+	// wider than max_width still occupies its own line instead of looping.
+	static std::vector<std::string> vgui_wrap_text(vgui_context* ctx, vgui_widget* owner,
+		const std::string& text, float max_width)
+	{
+		std::vector<std::string> lines;
+		auto push_paragraph = [&](const std::string& para)
+			{
+				if (para.empty())
+				{
+					lines.emplace_back();
+					return;
+				}
+				if (!ctx || max_width <= 0.0f)
+				{
+					lines.push_back(para);
+					return;
+				}
+				auto measure = [&](const char* data, int len)
+					{
+						return vgui_measure_text_range(ctx, ctx->font,
+							(int)vgui_font_size(ctx, owner), data, len);
+					};
+				size_t start = 0;
+				while (start < para.size())
+				{
+					size_t i = start, fit = start, last_space = std::string::npos;
+					while (i < para.size())
+					{
+						size_t next = (size_t)vgui_u8_next(para, (int)i);
+						if (fit > start &&
+							measure(para.data() + start, (int)(next - start)) > max_width)
+							break;
+						fit = next;
+						if (para[i] == ' ' || para[i] == '\t')
+							last_space = next;
+						i = next;
+					}
+					if (fit >= para.size())
+					{
+						lines.push_back(para.substr(start));
+						break;
+					}
+					size_t cut = fit;
+					if (last_space != std::string::npos && last_space > start)
+						cut = last_space;
+					if (cut <= start)
+						cut = fit;
+					size_t end = cut;
+					while (end > start && (para[end - 1] == ' ' || para[end - 1] == '\t'))
+						end--;
+					lines.push_back(para.substr(start, end - start));
+					start = cut;
+					while (start < para.size() && (para[start] == ' ' || para[start] == '\t'))
+						start++;
+				}
+			};
+
+		size_t start = 0;
+		for (;;)
+		{
+			size_t nl = text.find('\n', start);
+			if (nl == std::string::npos)
+			{
+				push_paragraph(text.substr(start));
+				break;
+			}
+			push_paragraph(text.substr(start, nl - start));
+			start = nl + 1;
+		}
+		if (lines.empty())
+			lines.emplace_back();
+		return lines;
 	}
 
 	// Widest rendered line of an edit box.  vgui_text_width already has a
@@ -1399,6 +1627,9 @@ namespace {
 		st->scratch_item.id = vgui_list_row_id(w, st, index);
 		st->scratch_item.text = text ? text : "";
 		st->scratch_item.detail = detail ? detail : "";
+		const char* tip = st->source.row_tooltip
+			? st->source.row_tooltip(st->source.user, index) : nullptr;
+		st->scratch_item.tooltip = tip ? tip : "";
 		st->scratch_item.user = item_user;
 		st->scratch_item.enabled = st->source.row_enabled
 			? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
@@ -1567,6 +1798,9 @@ namespace {
 			st->scratch_node.parent = 0;
 			st->scratch_node.children.clear();
 			st->scratch_node.text = text ? text : "";
+			const char* tip = st->source.row_tooltip
+				? st->source.row_tooltip(st->source.user, index) : nullptr;
+			st->scratch_node.tooltip = tip ? tip : "";
 			st->scratch_node.user = item_user;
 			st->scratch_node.enabled = st->source.row_enabled
 				? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
@@ -1826,6 +2060,20 @@ namespace {
 		t.menu_border = 0xFF4A4A4A;
 		t.menu_hover = 0xFF3F3F3F;
 		t.menu_disabled_text = t.disabled;
+		t.tooltip_bg = 0xFF303030;
+		t.tooltip_border = 0xFF5A5A5A;
+		t.tooltip_text = t.text;
+		t.modal_backdrop = 0xFF000000;
+		t.modal_bg = t.panel_bg;
+		t.modal_border = t.button_border;
+		t.modal_danger = 0xFFD9544D;
+		t.toast_bg = t.menu_bg;
+		t.toast_border = t.menu_border;
+		t.toast_text = t.text;
+		t.toast_info = t.accent;
+		t.toast_success = 0xFF4CAF50;
+		t.toast_warning = 0xFFE6A23C;
+		t.toast_error = t.modal_danger;
 		return t;
 	}
 
@@ -1978,6 +2226,42 @@ namespace {
 		s.menubar.rounding = 3.0f;
 		s.menubar.req_height = 28.0f;
 		s.menubar.disabled_mix = 0.55f;
+
+		s.tooltip.delay = 0.5f;
+		s.tooltip.pointer_offset_x = 14.0f;
+		s.tooltip.pointer_offset_y = 20.0f;
+		s.tooltip.widget_gap = 6.0f;
+		s.tooltip.padding_x = 8.0f;
+		s.tooltip.padding_y = 5.0f;
+		s.tooltip.rounding = 4.0f;
+		s.tooltip.border_width = 1.0f;
+		s.tooltip.max_width = 320.0f;
+		s.tooltip.margin = 4.0f;
+		s.tooltip.line_gap = 1.0f;
+
+		s.modal.margin = 48.0f;
+		s.modal.dialog_width = 360.0f;
+		s.modal.min_width = 220.0f;
+		s.modal.max_height = 0.0f;
+		s.modal.padding = 16.0f;
+		s.modal.rounding = 6.0f;
+		s.modal.border_width = 1.0f;
+		s.modal.backdrop_alpha = 0.45f;
+		s.modal.title_gap = 6.0f;
+		s.modal.message_gap = 10.0f;
+		s.modal.button_gap = 8.0f;
+		s.modal.button_top_gap = 8.0f;
+
+		s.toast.duration = 3.0f;
+		s.toast.max_width = 360.0f;
+		s.toast.padding_x = 12.0f;
+		s.toast.padding_y = 8.0f;
+		s.toast.rounding = 6.0f;
+		s.toast.border_width = 1.0f;
+		s.toast.margin = 12.0f;
+		s.toast.gap = 8.0f;
+		s.toast.line_gap = 1.0f;
+		s.toast.max_visible = 3;
 
 		s.image.req_width = 240.0f;
 		s.image.req_height = 160.0f;
@@ -2148,6 +2432,42 @@ namespace {
 		s->menubar.req_height = vgui_nonneg(s->menubar.req_height);
 		s->menubar.disabled_mix = vgui_clampf(s->menubar.disabled_mix, 0.0f, 1.0f);
 
+		s->tooltip.delay = vgui_nonneg(s->tooltip.delay);
+		s->tooltip.pointer_offset_x = vgui_nonneg(s->tooltip.pointer_offset_x);
+		s->tooltip.pointer_offset_y = vgui_nonneg(s->tooltip.pointer_offset_y);
+		s->tooltip.widget_gap = vgui_nonneg(s->tooltip.widget_gap);
+		s->tooltip.padding_x = vgui_nonneg(s->tooltip.padding_x);
+		s->tooltip.padding_y = vgui_nonneg(s->tooltip.padding_y);
+		s->tooltip.rounding = vgui_nonneg(s->tooltip.rounding);
+		s->tooltip.border_width = vgui_nonneg(s->tooltip.border_width);
+		s->tooltip.max_width = vgui_nonneg(s->tooltip.max_width);
+		s->tooltip.margin = vgui_nonneg(s->tooltip.margin);
+		s->tooltip.line_gap = vgui_nonneg(s->tooltip.line_gap);
+
+		s->modal.margin = vgui_nonneg(s->modal.margin);
+		s->modal.dialog_width = vgui_nonneg(s->modal.dialog_width);
+		s->modal.min_width = vgui_nonneg(s->modal.min_width);
+		s->modal.max_height = vgui_nonneg(s->modal.max_height);
+		s->modal.padding = vgui_nonneg(s->modal.padding);
+		s->modal.rounding = vgui_nonneg(s->modal.rounding);
+		s->modal.border_width = vgui_nonneg(s->modal.border_width);
+		s->modal.backdrop_alpha = vgui_clampf(s->modal.backdrop_alpha, 0.0f, 1.0f);
+		s->modal.title_gap = vgui_nonneg(s->modal.title_gap);
+		s->modal.message_gap = vgui_nonneg(s->modal.message_gap);
+		s->modal.button_gap = vgui_nonneg(s->modal.button_gap);
+		s->modal.button_top_gap = vgui_nonneg(s->modal.button_top_gap);
+
+		s->toast.duration = vgui_nonneg(s->toast.duration);
+		s->toast.max_width = vgui_nonneg(s->toast.max_width);
+		s->toast.padding_x = vgui_nonneg(s->toast.padding_x);
+		s->toast.padding_y = vgui_nonneg(s->toast.padding_y);
+		s->toast.rounding = vgui_nonneg(s->toast.rounding);
+		s->toast.border_width = vgui_nonneg(s->toast.border_width);
+		s->toast.margin = vgui_nonneg(s->toast.margin);
+		s->toast.gap = vgui_nonneg(s->toast.gap);
+		s->toast.line_gap = vgui_nonneg(s->toast.line_gap);
+		if (s->toast.max_visible < 0) s->toast.max_visible = 0;
+
 		s->image.req_width = vgui_nonneg(s->image.req_width);
 		s->image.req_height = vgui_nonneg(s->image.req_height);
 		s->image.border_width = vgui_nonneg(s->image.border_width);
@@ -2184,6 +2504,32 @@ namespace {
 		if (s->menubar.padding_y == 0) s->menubar.padding_y = def.menubar.padding_y;
 		if (s->menubar.item_padding_x == 0) s->menubar.item_padding_x = def.menubar.item_padding_x;
 		if (s->menubar.req_height == 0) s->menubar.req_height = def.menubar.req_height;
+		// A style written before tooltips existed arrives with this sub-struct
+		// completely zeroed.  Restore the defaults as a block so an intentional
+		// zero delay (show immediately) is not mistaken for a missing field.
+		if (s->tooltip.delay == 0 && s->tooltip.pointer_offset_x == 0 &&
+			s->tooltip.pointer_offset_y == 0 && s->tooltip.widget_gap == 0 &&
+			s->tooltip.padding_x == 0 && s->tooltip.padding_y == 0 &&
+			s->tooltip.rounding == 0 && s->tooltip.border_width == 0 &&
+			s->tooltip.max_width == 0 && s->tooltip.margin == 0 &&
+			s->tooltip.line_gap == 0)
+			s->tooltip = def.tooltip;
+		// The modal and toast sub-structs were appended after tooltips; an
+		// older style arrives with both completely zeroed.
+		if (s->modal.margin == 0 && s->modal.dialog_width == 0 &&
+			s->modal.min_width == 0 && s->modal.max_height == 0 &&
+			s->modal.padding == 0 && s->modal.rounding == 0 &&
+			s->modal.border_width == 0 && s->modal.backdrop_alpha == 0 &&
+			s->modal.title_gap == 0 && s->modal.message_gap == 0 &&
+			s->modal.button_gap == 0 && s->modal.button_top_gap == 0)
+			s->modal = def.modal;
+		if (s->toast.duration == 0 && s->toast.max_width == 0 &&
+			s->toast.padding_x == 0 && s->toast.padding_y == 0 &&
+			s->toast.rounding == 0 && s->toast.border_width == 0 &&
+			s->toast.margin == 0 && s->toast.gap == 0 &&
+			s->toast.line_gap == 0 && s->toast.max_visible == 0)
+			s->toast = def.toast;
+		if (s->toast.max_visible < 1) s->toast.max_visible = 1;
 		if (s->image.req_width == 0) s->image.req_width = def.image.req_width;
 		if (s->image.req_height == 0) s->image.req_height = def.image.req_height;
 		if (s->image.border_width == 0) s->image.border_width = def.image.border_width;
@@ -3518,6 +3864,120 @@ namespace {
 			vgui_menu_update_layout(st->submenu_open, ctx);
 	}
 
+	static float vgui_overlay_width(vgui_context* ctx)
+	{
+		if (!ctx) return 1.0f;
+		if (ctx->width > 0) return (float)ctx->width;
+		return std::max(ctx->root ? ctx->root->intrinsic_w : 1.0f, 1.0f);
+	}
+
+	static float vgui_overlay_height(vgui_context* ctx)
+	{
+		if (!ctx) return 1.0f;
+		if (ctx->height > 0) return (float)ctx->height;
+		return std::max(ctx->root ? ctx->root->intrinsic_h : 1.0f, 1.0f);
+	}
+
+	static void vgui_modal_layout(vgui_context* ctx)
+	{
+		if (!ctx || !ctx->modal.active || !ctx->modal.stage || !ctx->modal.panel)
+			return;
+		vgui_widget* stage = ctx->modal.stage;
+		vgui_widget* panel = ctx->modal.panel;
+		float cw = vgui_overlay_width(ctx);
+		float ch = vgui_overlay_height(ctx);
+		stage->abs_x = 0.0f;
+		stage->abs_y = 0.0f;
+		stage->abs_w = cw;
+		stage->abs_h = ch;
+		stage->content_w = cw;
+		stage->content_h = ch;
+
+		vgui_measure_widget(panel, ctx);
+		const vgui_modal_style& ms = ctx->style.modal;
+		float margin = ctx->modal.options.margin >= 0.0f
+			? ctx->modal.options.margin : ms.margin;
+		float avail_w = std::max(0.0f, cw - margin * 2.0f);
+		float avail_h = std::max(0.0f, ch - margin * 2.0f);
+		if (ms.max_height > 0.0f)
+			avail_h = std::min(avail_h, ms.max_height);
+		float pw = panel->req_w > 0.0f ? panel->req_w : panel->intrinsic_w;
+		float ph = panel->req_h > 0.0f ? panel->req_h : panel->intrinsic_h;
+		if (panel->min_w > 0.0f) pw = std::max(pw, panel->min_w);
+		if (panel->min_h > 0.0f) ph = std::max(ph, panel->min_h);
+		if (panel->max_w > 0.0f) pw = std::min(pw, panel->max_w);
+		if (panel->max_h > 0.0f) ph = std::min(ph, panel->max_h);
+		if (avail_w > 0.0f) pw = std::min(pw, avail_w);
+		if (avail_h > 0.0f) ph = std::min(ph, avail_h);
+		pw = std::max(0.0f, pw);
+		ph = std::max(0.0f, ph);
+		float px = std::floor((cw - pw) * 0.5f);
+		float py = std::floor((ch - ph) * 0.5f);
+		vgui_layout_widget(panel, ctx, px, py, pw, ph);
+	}
+
+	static void vgui_toast_layout(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		const vgui_toast_style& ts = ctx->style.toast;
+		float cw = vgui_overlay_width(ctx);
+		float ch = vgui_overlay_height(ctx);
+		float line_h = vgui_line_height(ctx, ctx->root);
+		float line_gap = std::max(0.0f, ts.line_gap);
+		float pad_x = std::max(0.0f, ts.padding_x);
+		float pad_y = std::max(0.0f, ts.padding_y);
+		float max_text_w = std::max(0.0f, ts.max_width - pad_x * 2.0f);
+		float margin = std::max(0.0f, ts.margin);
+		float gap = std::max(0.0f, ts.gap);
+		int max_visible = std::max(1, ts.max_visible);
+
+		float top_y[3] = { margin, margin, margin };
+		float bottom_y[3] = { ch - margin, ch - margin, ch - margin };
+		for (size_t i = 0; i < ctx->toasts.size(); ++i)
+		{
+			vgui_toast_record& t = ctx->toasts[i];
+			if ((int)i >= max_visible)
+			{
+				t.x = t.y = t.w = t.h = 0.0f;
+				continue;
+			}
+			t.lines = vgui_wrap_text(ctx, ctx->root, t.text, max_text_w);
+			float text_w = 0.0f;
+			for (const std::string& line : t.lines)
+				text_w = std::max(text_w, vgui_text_width(ctx->root, line));
+			float w = std::min(ts.max_width, text_w + pad_x * 2.0f);
+			float h = (float)t.lines.size() * line_h
+				+ (float)std::max(0, (int)t.lines.size() - 1) * line_gap
+				+ pad_y * 2.0f;
+			w = std::max(1.0f, w);
+			h = std::max(1.0f, h);
+
+			int pos = (int)t.options.position;
+			if (pos < 0 || pos > (int)VGUI_TOAST_BOTTOM_CENTER)
+				pos = VGUI_TOAST_TOP_RIGHT;
+			int row = pos / 3;
+			int col = pos % 3;
+			float x = margin;
+			if (col == 0) x = cw - margin - w;
+			else if (col == 2) x = (cw - w) * 0.5f;
+			float y;
+			if (row == 0)
+			{
+				y = top_y[col];
+				top_y[col] += h + gap;
+			}
+			else
+			{
+				y = bottom_y[col] - h;
+				bottom_y[col] -= h + gap;
+			}
+			t.x = std::max(0.0f, x);
+			t.y = y;
+			t.w = w;
+			t.h = h;
+		}
+	}
+
 	static void vgui_ensure_layout(vgui_context* ctx)
 	{
 		if (!ctx || !ctx->root) return;
@@ -3529,13 +3989,51 @@ namespace {
 		vgui_layout_widget(ctx->root, ctx, 0, 0, rw, rh);
 		if (ctx->open_menu)
 			vgui_menu_update_layout(ctx->open_menu, ctx);
+		vgui_modal_layout(ctx);
+		vgui_toast_layout(ctx);
 	}
 
 	static void vgui_menu_close_internal(vgui_widget* menu);
+	static void vgui_modal_close_internal(vgui_context* ctx, int result);
+	static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w);
+
+	static void vgui_dialog_forget_widget(vgui_context* ctx, vgui_widget* w)
+	{
+		if (!ctx || !w) return;
+		vgui_dialog_state& d = ctx->dialog;
+		if (d.panel == w)
+		{
+			d.panel = nullptr;
+			d.input = nullptr;
+			d.confirm_button = nullptr;
+			d.cancel_button = nullptr;
+			d.on_result = nullptr;
+			d.user = nullptr;
+			return;
+		}
+		if (d.input == w) d.input = nullptr;
+		if (d.confirm_button == w) d.confirm_button = nullptr;
+		if (d.cancel_button == w) d.cancel_button = nullptr;
+	}
 
 	static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
 	{
 		if (!w) return;
+		if (ctx)
+		{
+			vgui_tooltip_forget_widget(ctx, w);
+			vgui_dialog_forget_widget(ctx, w);
+			if (ctx->modal.panel == w)
+			{
+				ctx->modal.active = 0;
+				ctx->modal.panel = nullptr;
+			}
+			if (ctx->modal.stage == w)
+			{
+				ctx->modal.active = 0;
+				ctx->modal.stage = nullptr;
+			}
+		}
 		for (vgui_widget* c : w->children)
 			vgui_delete_rec(c, ctx);
 
@@ -3648,10 +4146,14 @@ namespace {
 		vgui_context* ctx = w->ctx;
 		for (vgui_widget* p = w->parent; p; p = p->parent)
 			if (p->destroy_pending) return; // parent will delete the subtree
+		if (ctx->modal.active && ctx->modal.panel == w)
+			vgui_modal_close_internal(ctx, VGUI_MODAL_RESULT_CANCEL);
 		if (w->kind == VGUI_MENU)
 			vgui_menu_close_internal(w);
 		w->destroy_pending = true;
 		w->visible = 0;
+		vgui_tooltip_forget_widget(ctx, w);
+		vgui_dialog_forget_widget(ctx, w);
 		if (ctx->hot == w) ctx->hot = nullptr;
 		if (ctx->active == w) ctx->active = nullptr;
 		if (ctx->press_target == w) ctx->press_target = nullptr;
@@ -3659,6 +4161,84 @@ namespace {
 		if (ctx->slider_drag == w) ctx->slider_drag = nullptr;
 		ctx->pending_delete.push_back(w);
 		ctx->layout_dirty = true;
+	}
+
+	// Deactivates the modal, detaches its panel and reports the result.  The
+	// callback still sees a valid panel; destroy_on_close is applied afterwards.
+	static void vgui_modal_close_internal(vgui_context* ctx, int result)
+	{
+		if (!ctx || !ctx->modal.active) return;
+		vgui_widget* panel = ctx->modal.panel;
+		vgui_widget* stage = ctx->modal.stage;
+		vgui_widget* restore = ctx->modal.restore_focus;
+		vgui_modal_options options = ctx->modal.options;
+		bool panel_alive = panel && ctx->alive.count(panel);
+		bool stage_alive = stage && ctx->alive.count(stage);
+		bool dialog_matched = panel_alive && ctx->dialog.panel == panel;
+		bool destroy_panel = panel_alive && (options.destroy_on_close || dialog_matched);
+
+		vgui_dialog_state dialog = {};
+		std::string input_text;
+		if (dialog_matched)
+		{
+			dialog = ctx->dialog;
+			if (dialog.input && ctx->alive.count(dialog.input))
+				input_text = dialog.input->edit_text;
+			ctx->dialog = vgui_dialog_state();
+		}
+
+		ctx->modal.active = 0;
+		ctx->modal.stage = nullptr;
+		ctx->modal.panel = nullptr;
+		ctx->modal.restore_focus = nullptr;
+		ctx->modal.result = result;
+		ctx->modal.options = vgui_modal_options();
+
+		if (panel_alive)
+			vgui_widget_remove(panel);
+		ctx->hot = nullptr;
+		ctx->active = nullptr;
+		ctx->press_target = nullptr;
+		ctx->slider_drag = nullptr;
+		vgui_tooltip_clear_candidate(ctx);
+
+		// Never restore focus into a panel that is about to be destroyed.
+		if (restore && (!ctx->alive.count(restore) || !restore->visible ||
+			!restore->enabled || restore->destroy_pending ||
+			(destroy_panel && vgui_is_within(panel, restore))))
+			restore = nullptr;
+		vgui_set_focus_internal(ctx, restore);
+
+		if (options.on_close)
+			options.on_close(ctx, panel_alive ? panel : nullptr, result, options.user);
+		if (dialog_matched && dialog.on_result)
+			dialog.on_result(ctx, result, input_text.c_str(), dialog.user);
+
+		// A callback may have opened another modal (possibly reusing the panel),
+		// so only destroy the objects that still belong to this closing modal.
+		if (stage_alive && ctx->alive.count(stage))
+			vgui_schedule_destroy(stage);
+		if (destroy_panel && panel_alive && ctx->alive.count(panel) &&
+			ctx->modal.panel != panel)
+			vgui_schedule_destroy(panel);
+
+		// Focus may still sit on one of the widgets that were just scheduled for
+		// deletion (panel controls, or a background element of the stage).
+		if (ctx->focus && ctx->focus->ctx == ctx &&
+			((destroy_panel && vgui_is_within(panel, ctx->focus)) ||
+				vgui_is_within(stage, ctx->focus)))
+			vgui_set_focus_internal(ctx, nullptr);
+		ctx->layout_dirty = true;
+	}
+
+	static void vgui_dialog_button_event(vgui_widget* widget, const vgui_event* event,
+		void* user)
+	{
+		(void)user;
+		if (!widget || !event || event->type != VGUI_EVENT_CLICK) return;
+		vgui_context* ctx = widget->ctx;
+		if (!ctx || !ctx->modal.active) return;
+		vgui_modal_close_internal(ctx, (int)widget->value);
 	}
 
 	static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
@@ -3679,9 +4259,449 @@ namespace {
 
 	static vgui_widget* vgui_hit_test_ctx(vgui_context* ctx, float x, float y)
 	{
-		if (!ctx || !ctx->root) return nullptr;
+		vgui_widget* root = vgui_active_root(ctx);
+		if (!ctx || !root) return nullptr;
 		vgui_ensure_layout(ctx);
-		return vgui_hit_rec(ctx->root, x, y);
+		return vgui_hit_rec(root, x, y);
+	}
+
+	//----------------------------------------------------------------------------
+	// tooltip
+	//----------------------------------------------------------------------------
+
+	// Defined with the list/tree interaction helpers below; declared here so the
+	// tooltip resolver can reuse the same row hit-testing rules.
+	static int vgui_list_index_at(vgui_widget* w, float x, float y);
+	static int vgui_tree_row_at(vgui_widget* w, float x, float y);
+
+	static std::string vgui_tooltip_widget_text(vgui_widget* w)
+	{
+		if (!w || !w->tooltip_enabled) return {};
+		if (w->tooltip_text_fn)
+		{
+			const char* text = w->tooltip_text_fn(w, w->tooltip_user);
+			if (text && *text) return std::string(text);
+		}
+		return w->tooltip;
+	}
+
+	static std::string vgui_tooltip_item_text(vgui_widget* w, vgui_item_id item)
+	{
+		if (!w || !item || !w->tooltip_enabled) return {};
+		if (w->kind == VGUI_LIST)
+		{
+			vgui_list_item* it = vgui_list_item_find(w, item);
+			if (it) return it->tooltip;
+		}
+		else if (w->kind == VGUI_TREE)
+		{
+			vgui_tree_node* node = vgui_tree_node_find(w, item);
+			if (node) return node->tooltip;
+		}
+		return {};
+	}
+
+	static std::string vgui_tooltip_owner_text(vgui_widget* owner, vgui_item_id item)
+	{
+		std::string text;
+		if (item) text = vgui_tooltip_item_text(owner, item);
+		if (text.empty()) text = vgui_tooltip_widget_text(owner);
+		return text;
+	}
+
+	static bool vgui_tooltip_effective_enabled(vgui_widget* w)
+	{
+		for (vgui_widget* p = w; p; p = p->parent)
+			if (!p->enabled) return false;
+		return true;
+	}
+
+	static bool vgui_tooltip_visible_chain(vgui_widget* w)
+	{
+		for (vgui_widget* p = w; p; p = p->parent)
+			if (!p->visible || p->destroy_pending) return false;
+		return w && w->ctx && w->ctx->alive.count(w);
+	}
+
+	// Unlike the normal hit test this ignores the enabled flag: disabled widgets
+	// still receive tooltips unless their own when_disabled policy says no.
+	static vgui_widget* vgui_tooltip_hit_rec(vgui_widget* w, float x, float y)
+	{
+		if (!w || !w->visible || w->destroy_pending) return nullptr;
+		if (!vgui_point_in(w, x, y)) return nullptr;
+		for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
+		{
+			vgui_widget* r = vgui_tooltip_hit_rec(*it, x, y);
+			if (r) return r;
+		}
+		return w;
+	}
+
+	// Deepest widget with usable tooltip text wins.  When a child has no text
+	// the search continues with its ancestors, so a tooltip attached to a row or
+	// toolbar button also covers its labels and icons.
+	static vgui_widget* vgui_tooltip_resolve_at(vgui_context* ctx, vgui_widget* hit,
+		float x, float y, vgui_item_id* out_item, std::string* out_text)
+	{
+		if (!ctx || !hit) return nullptr;
+		for (vgui_widget* node = hit; node && node->ctx == ctx; node = node->parent)
+		{
+			if (!node->visible || node->destroy_pending || !node->tooltip_enabled)
+				continue;
+
+			vgui_item_id item = 0;
+			std::string text;
+			if (node == hit && (node->kind == VGUI_LIST || node->kind == VGUI_TREE))
+			{
+				int index = node->kind == VGUI_LIST
+					? vgui_list_index_at(node, x, y)
+					: vgui_tree_row_at(node, x, y);
+				if (index >= 0)
+				{
+					vgui_item_id id = node->kind == VGUI_LIST
+						? vgui_list_row_id(node, node->list.get(), index)
+						: vgui_tree_row_id_at(node, node->tree.get(), index);
+					if (id)
+					{
+						text = vgui_tooltip_item_text(node, id);
+						if (!text.empty()) item = id;
+					}
+				}
+			}
+			if (text.empty())
+				text = vgui_tooltip_widget_text(node);
+			if (text.empty())
+				continue;
+			if (!vgui_tooltip_effective_enabled(node) && !node->tooltip_when_disabled)
+				continue;
+
+			if (out_item) *out_item = item;
+			if (out_text) *out_text = std::move(text);
+			return node;
+		}
+		return nullptr;
+	}
+
+	static void vgui_tooltip_wrap_paragraph(vgui_widget* owner, const std::string& para,
+		float max_w, std::vector<std::string>& out)
+	{
+		if (max_w <= 0.0f || vgui_text_width(owner, para) <= max_w)
+		{
+			out.push_back(para);
+			return;
+		}
+
+		const int len = (int)para.size();
+		int line_start = 0;
+		int break_pos = -1;
+		int i = 0;
+		bool pushed = false;
+		while (i < len)
+		{
+			int j = vgui_u8_next(para, i);
+			if (j <= i) j = i + 1;
+			float width = vgui_text_width_n(owner, para.data() + line_start, j - line_start);
+			if (width > max_w && j > line_start)
+			{
+				int cut = break_pos > line_start ? break_pos : i;
+				if (cut <= line_start) cut = j;	// a single glyph wider than the box
+				size_t end = (size_t)cut;
+				while (end > (size_t)line_start &&
+					(para[end - 1] == ' ' || para[end - 1] == '\t' || para[end - 1] == '\r'))
+					--end;
+				if (end > (size_t)line_start || cut == j)
+				{
+					out.push_back(para.substr((size_t)line_start, end - (size_t)line_start));
+					pushed = true;
+				}
+				if (break_pos > line_start)
+				{
+					line_start = break_pos;
+					while (line_start < len &&
+						(para[(size_t)line_start] == ' ' || para[(size_t)line_start] == '\t'))
+						++line_start;
+				}
+				else
+				{
+					line_start = cut;
+				}
+				break_pos = -1;
+				i = line_start;
+				continue;
+			}
+			if (para[(size_t)i] == ' ' || para[(size_t)i] == '\t')
+				break_pos = j;
+			i = j;
+		}
+
+		if (line_start < len)
+		{
+			size_t end = (size_t)len;
+			while (end > (size_t)line_start &&
+				(para[end - 1] == ' ' || para[end - 1] == '\t' || para[end - 1] == '\r'))
+				--end;
+			out.push_back(para.substr((size_t)line_start, end - (size_t)line_start));
+		}
+		else if (!pushed)
+		{
+			out.push_back(std::string());
+		}
+	}
+
+	static void vgui_tooltip_wrap_text(vgui_widget* owner, const std::string& text,
+		float max_w, std::vector<std::string>& out)
+	{
+		out.clear();
+		size_t start = 0;
+		for (;;)
+		{
+			size_t end = text.find('\n', start);
+			std::string para = text.substr(start,
+				end == std::string::npos ? std::string::npos : end - start);
+			if (!para.empty() && para.back() == '\r')
+				para.pop_back();
+			if (para.empty())
+				out.push_back(std::string());
+			else
+				vgui_tooltip_wrap_paragraph(owner, para, max_w, out);
+			if (end == std::string::npos) break;
+			start = end + 1;
+		}
+	}
+
+	static bool vgui_tooltip_item_rect(vgui_widget* w, vgui_item_id item,
+		float* x, float* y, float* width, float* height)
+	{
+		if (!w || !item || !x || !y || !width || !height) return false;
+		if (w->kind == VGUI_LIST && w->list)
+		{
+			int index = vgui_list_row_index(w, w->list.get(), item);
+			if (index < 0) return false;
+			float row_h = vgui_list_row_height(w);
+			*x = w->abs_x + w->padding[0];
+			*y = w->abs_y + w->padding[1] + (float)index * row_h - w->scroll_y;
+			*width = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+			*height = row_h;
+			return true;
+		}
+		if (w->kind == VGUI_TREE && w->tree)
+		{
+			int index = vgui_tree_visible_index(w, item);
+			if (index < 0) return false;
+			float row_h = vgui_tree_row_height(w);
+			*x = w->abs_x + w->padding[0];
+			*y = w->abs_y + w->padding[1] + (float)index * row_h - w->scroll_y;
+			*width = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+			*height = row_h;
+			return true;
+		}
+		return false;
+	}
+
+	static void vgui_tooltip_measure(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		vgui_tooltip_state& t = ctx->tooltip;
+		if (!t.visible || !t.owner || t.text.empty() ||
+			!ctx->alive.count(t.owner) || !t.owner->visible)
+		{
+			t.w = t.h = 0.0f;
+			return;
+		}
+
+		const vgui_tooltip_style& ts = ctx->style.tooltip;
+		float pad_x = std::max(0.0f, ts.padding_x);
+		float pad_y = std::max(0.0f, ts.padding_y);
+		float margin = std::max(0.0f, ts.margin);
+		float max_w = ts.max_width > 0.0f ? ts.max_width : 320.0f;
+		if (ctx->width > 0)
+			max_w = std::min(max_w, std::max(16.0f, (float)ctx->width - margin * 2.0f));
+		float inner_max = std::max(1.0f, max_w - pad_x * 2.0f);
+
+		vgui_tooltip_wrap_text(t.owner, t.text, inner_max, t.lines);
+		if (t.lines.empty())
+			t.lines.push_back(std::string());
+
+		float line_h = vgui_line_height(ctx, t.owner);
+		float gap = std::max(0.0f, ts.line_gap);
+		float text_w = 0.0f;
+		for (const std::string& line : t.lines)
+			text_w = std::max(text_w, vgui_text_width(t.owner, line));
+
+		float w = std::min(inner_max, text_w) + pad_x * 2.0f;
+		float h = (float)t.lines.size() * line_h +
+			(float)(t.lines.size() > 1 ? t.lines.size() - 1 : 0) * gap + pad_y * 2.0f;
+		w = std::max(1.0f, w);
+		h = std::max(1.0f, h);
+
+		float x = 0.0f, y = 0.0f;
+		if (t.owner->tooltip_anchor == VGUI_TOOLTIP_ANCHOR_WIDGET)
+		{
+			float ax = t.owner->abs_x, ay = t.owner->abs_y;
+			float aw = t.owner->abs_w, ah = t.owner->abs_h;
+			vgui_tooltip_item_rect(t.owner, t.owner_item, &ax, &ay, &aw, &ah);
+			float anchor_gap = std::max(0.0f, ts.widget_gap);
+			x = ax + (aw - w) * 0.5f;
+			y = ay + ah + anchor_gap;
+			if (ctx->height > 0 && y + h > (float)ctx->height - margin)
+			{
+				float above = ay - anchor_gap - h;
+				if (above >= margin)
+					y = above;
+			}
+		}
+		else
+		{
+			x = ctx->mouse_x + ts.pointer_offset_x;
+			y = ctx->mouse_y + ts.pointer_offset_y;
+			if (ctx->width > 0 && x + w > (float)ctx->width - margin)
+				x = ctx->mouse_x - ts.pointer_offset_x - w;
+			if (ctx->height > 0 && y + h > (float)ctx->height - margin)
+				y = ctx->mouse_y - ts.pointer_offset_y - h;
+		}
+
+		if (ctx->width > 0)
+		{
+			float hi = std::max(margin, (float)ctx->width - w - margin);
+			x = vgui_clampf(x, margin, hi);
+		}
+		if (ctx->height > 0)
+		{
+			float hi = std::max(margin, (float)ctx->height - h - margin);
+			y = vgui_clampf(y, margin, hi);
+		}
+
+		t.x = x;
+		t.y = y;
+		t.w = w;
+		t.h = h;
+	}
+
+	static void vgui_tooltip_on_mouse_move(vgui_context* ctx, float x, float y)
+	{
+		if (!ctx) return;
+		vgui_tooltip_state& t = ctx->tooltip;
+		t.suppressed = 0;
+		if (!ctx->tooltip_enabled || ctx->open_menu || vgui_any_mouse_down(ctx))
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+
+		vgui_ensure_layout(ctx);
+		vgui_widget* hit = vgui_tooltip_hit_rec(vgui_active_root(ctx), x, y);
+		vgui_item_id item = 0;
+		std::string text;
+		vgui_widget* owner = vgui_tooltip_resolve_at(ctx, hit, x, y, &item, &text);
+		if (!owner)
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+
+		if (t.candidate != owner || t.candidate_item != item)
+		{
+			vgui_tooltip_hide(ctx);
+			t.candidate = owner;
+			t.candidate_item = item;
+			t.hover_time = 0.0f;
+			return;
+		}
+
+		if (t.visible)
+		{
+			if (text != t.text)
+			{
+				t.text = std::move(text);
+				vgui_tooltip_measure(ctx);
+			}
+			else
+			{
+				// Pointer-anchored tooltips follow the cursor between updates.
+				vgui_tooltip_measure(ctx);
+			}
+		}
+	}
+
+	static void vgui_tooltip_update(vgui_context* ctx, float dt)
+	{
+		if (!ctx) return;
+		vgui_tooltip_state& t = ctx->tooltip;
+		if (!ctx->tooltip_enabled || ctx->open_menu)
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+		if (!t.candidate || !ctx->alive.count(t.candidate) || !vgui_tooltip_visible_chain(t.candidate))
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+		if (t.suppressed)
+		{
+			vgui_tooltip_hide(ctx);
+			return;
+		}
+		if (vgui_any_mouse_down(ctx))
+		{
+			vgui_tooltip_suppress(ctx);
+			return;
+		}
+		if (!t.candidate->tooltip_enabled)
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+		if (!vgui_tooltip_effective_enabled(t.candidate) && !t.candidate->tooltip_when_disabled)
+		{
+			vgui_tooltip_clear_candidate(ctx);
+			return;
+		}
+
+		if (t.visible)
+		{
+			if (t.owner != t.candidate || t.owner_item != t.candidate_item ||
+				t.text.empty() || !vgui_tooltip_visible_chain(t.owner))
+				vgui_tooltip_hide(ctx);
+			return;
+		}
+
+		if (t.hover_time == 0.0f)
+		{
+			std::string text = vgui_tooltip_owner_text(t.candidate, t.candidate_item);
+			if (text.empty())
+				return;
+			t.text = std::move(text);
+		}
+
+		float delay = t.candidate->tooltip_delay >= 0.0f
+			? t.candidate->tooltip_delay : ctx->style.tooltip.delay;
+		t.hover_time += std::max(0.0f, dt);
+		if (t.hover_time < delay)
+			return;
+
+		t.owner = t.candidate;
+		t.owner_item = t.candidate_item;
+		t.visible = 1;
+		vgui_tooltip_measure(ctx);
+	}
+
+	// Re-reads the text of the visible tooltip after a model / property change.
+	static void vgui_tooltip_refresh(vgui_context* ctx, vgui_widget* owner, vgui_item_id item)
+	{
+		if (!ctx || ctx->tooltip.owner != owner || ctx->tooltip.owner_item != item)
+			return;
+		ctx->tooltip.text = vgui_tooltip_owner_text(owner, item);
+		if (ctx->tooltip.text.empty())
+			vgui_tooltip_hide(ctx);
+		else
+			vgui_tooltip_measure(ctx);
+	}
+
+	static bool vgui_tooltip_is_visible(vgui_context* ctx)
+	{
+		return ctx && ctx->tooltip.visible && ctx->tooltip.owner &&
+			vgui_tooltip_visible_chain(ctx->tooltip.owner);
 	}
 
 	static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w)
@@ -4502,7 +5522,8 @@ namespace {
 
 	static void vgui_focus_next_impl(vgui_context* ctx, bool reverse)
 	{
-		if (!ctx || !ctx->root) return;
+		vgui_widget* root = vgui_active_root(ctx);
+		if (!ctx || !root) return;
 		std::vector<vgui_widget*> list;
 		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
 			{
@@ -4510,7 +5531,7 @@ namespace {
 				if (w->focusable) list.push_back(w);
 				for (vgui_widget* c : w->children) collect(c);
 			};
-		collect(ctx->root);
+		collect(root);
 		if (list.empty())
 		{
 			vgui_set_focus_internal(ctx, nullptr);
@@ -5478,6 +6499,7 @@ namespace {
 		vgui_menu_state* st = vgui_menu_of(menu);
 		if (!st || !menu->ctx || menu->destroy_pending) return;
 		vgui_context* ctx = menu->ctx;
+		vgui_tooltip_clear_candidate(ctx);
 		if (ctx->open_menu && ctx->open_menu != menu)
 			vgui_menu_close_all(ctx);
 		if (!ctx->alive.count(menu)) return;
@@ -6080,7 +7102,7 @@ namespace {
 			return 1;
 		}
 
-		vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+		vgui_widget* h = vgui_hit_rec(vgui_active_root(ctx), x, y);
 		vgui_widget* scrollbar_widget = nullptr;
 		int scrollbar_axis = 0;
 		bool over_scrollbar = vgui_scrollbar_hit(h, x, y, &scrollbar_widget, &scrollbar_axis);
@@ -6214,6 +7236,7 @@ namespace {
 
 		ctx->want_mouse = (h != nullptr) || (ctx->active != nullptr);
 		int ret = (h != nullptr || ctx->active != nullptr) ? 1 : 0;
+		vgui_tooltip_on_mouse_move(ctx, x, y);
 		vgui_end_input(ctx);
 		return ret;
 	}
@@ -6225,6 +7248,25 @@ namespace {
 		ctx->mouse_x = x;
 		ctx->mouse_y = y;
 		if (button >= 0 && button < 8) ctx->mouse_down[button] = 1;
+		vgui_tooltip_suppress(ctx);
+
+		if (ctx->modal.active && ctx->modal.stage)
+		{
+			vgui_widget* mh = vgui_hit_rec(ctx->modal.stage, x, y);
+			if (!mh || mh == ctx->modal.stage)
+			{
+				ctx->want_mouse = 1;
+				ctx->cursor = VGUI_CURSOR_ARROW;
+				ctx->modal.swallow_up = 1;
+				if (button == 1 && ctx->modal.options.close_on_backdrop)
+				{
+					vgui_modal_close_internal(ctx, ctx->modal.options.backdrop_result);
+					ctx->modal.swallow_up = 1;
+				}
+				vgui_end_input(ctx);
+				return 1;
+			}
+		}
 
 		// Track the click count here as well so callers that only forward raw
 		// mouse events still get click/double-click information.
@@ -6273,7 +7315,7 @@ namespace {
 			return 1;
 		}
 
-		vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+		vgui_widget* h = vgui_hit_rec(vgui_active_root(ctx), x, y);
 		vgui_widget* sw = nullptr;
 		int axis = 0;
 		bool over_scrollbar = vgui_scrollbar_hit(h, x, y, &sw, &axis);
@@ -6495,6 +7537,21 @@ namespace {
 		ctx->mouse_x = x;
 		ctx->mouse_y = y;
 		if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
+		vgui_tooltip_suppress(ctx);
+
+		if (ctx->modal.swallow_up)
+		{
+			ctx->modal.swallow_up = 0;
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
+		if (ctx->modal.active && !ctx->press_target)
+		{
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		if (ctx->menu_swallow_up)
 		{
@@ -6623,7 +7680,7 @@ namespace {
 		int ret = target ? 1 : 0;
 		if (target)
 		{
-			vgui_widget* h = vgui_hit_rec(ctx->root, x, y);
+			vgui_widget* h = vgui_hit_rec(vgui_active_root(ctx), x, y);
 			bool inside = (h == target || (h && h->parent == target));
 			float lx = x - target->abs_x;
 			float ly = y - target->abs_y;
@@ -6753,6 +7810,7 @@ namespace {
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
+		vgui_tooltip_suppress(ctx);
 		if (ctx->open_menu)
 		{
 			vgui_widget* m = vgui_menu_hit_rec(ctx->open_menu, ctx->mouse_x, ctx->mouse_y);
@@ -6772,7 +7830,7 @@ namespace {
 			vgui_end_input(ctx);
 			return 1;
 		}
-		vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(ctx->root, ctx->mouse_x, ctx->mouse_y);
+		vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(vgui_active_root(ctx), ctx->mouse_x, ctx->mouse_y);
 		int consumed = 0;
 		vgui_widget* edit = vgui_find_edit(h);
 		if (edit && (wx != 0 || wy != 0))
@@ -6850,9 +7908,25 @@ namespace {
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
+		vgui_tooltip_suppress(ctx);
 		ctx->mods = mods;
 		ctx->want_key = ctx->focus != nullptr || ctx->open_menu != nullptr ||
-			!ctx->key_handlers.empty();
+			!ctx->key_handlers.empty() || ctx->modal.active;
+
+		if (ctx->modal.active && down && key == VGUI_KEY_ESCAPE)
+		{
+			if (ctx->modal.options.close_on_escape)
+				vgui_modal_close_internal(ctx, ctx->modal.options.escape_result);
+			vgui_end_input(ctx);
+			return 1;
+		}
+		if (ctx->modal.active && down && key == VGUI_KEY_ENTER &&
+			ctx->dialog.panel && ctx->dialog.panel == ctx->modal.panel)
+		{
+			vgui_modal_close_internal(ctx, VGUI_MODAL_RESULT_CONFIRM);
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		if (ctx->open_menu)
 		{
@@ -6897,7 +7971,7 @@ namespace {
 		vgui_widget* f = ctx->focus;
 		if (!f || !ctx->alive.count(f) || !f->enabled)
 		{
-			int handled = vgui_dispatch_key_handlers(ctx, key, down, mods);
+			int handled = ctx->modal.active ? 1 : vgui_dispatch_key_handlers(ctx, key, down, mods);
 			vgui_end_input(ctx);
 			return handled;
 		}
@@ -6952,7 +8026,12 @@ namespace {
 		}
 
 		if (!handled)
-			handled = vgui_dispatch_key_handlers(ctx, key, down, mods);
+		{
+			if (ctx->modal.active)
+				handled = 1;
+			else
+				handled = vgui_dispatch_key_handlers(ctx, key, down, mods);
+		}
 
 		vgui_end_input(ctx);
 		return handled;
@@ -8687,7 +9766,135 @@ namespace {
 			vgui_draw_menu_chain(st->submenu_open, cb, vg, clips);
 	}
 
+	static void vgui_draw_tooltip(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		if (!vgui_tooltip_is_visible(ctx)) return;
+		vgui_tooltip_measure(ctx);
+		if (!vgui_tooltip_is_visible(ctx) || ctx->tooltip.w <= 0.0f)
+			return;
+
+		const vgui_tooltip_state& t = ctx->tooltip;
+		const vgui_tooltip_style& ts = ctx->style.tooltip;
+		vgui_color bg = ctx->theme.tooltip_bg
+			? ctx->theme.tooltip_bg : ctx->theme.panel_bg;
+		vgui_color border = ctx->theme.tooltip_border
+			? ctx->theme.tooltip_border : ctx->theme.button_border;
+		vgui_color text = ctx->theme.tooltip_text
+			? ctx->theme.tooltip_text : ctx->theme.text;
+		if (!bg) bg = 0xFF303030;
+		if (!text) text = 0xFFFFFFFF;
+
+		cb->save(vg);
+		vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, ts.rounding, bg);
+		if (ts.border_width > 0.0f && border)
+		{
+			float bi = ts.border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, t.x + bi, t.y + bi,
+				t.w - ts.border_width, t.h - ts.border_width,
+				ts.rounding, border, ts.border_width);
+		}
+
+		float pad_x = std::max(0.0f, ts.padding_x);
+		float pad_y = std::max(0.0f, ts.padding_y);
+		float line_h = vgui_line_height(ctx, t.owner);
+		float gap = std::max(0.0f, ts.line_gap);
+		float tx = t.x + pad_x;
+		float ty = t.y + pad_y;
+		float tw = std::max(1.0f, t.w - pad_x * 2.0f);
+		for (const std::string& line : t.lines)
+		{
+			vgui_draw_text(ctx, cb, vg, t.owner, line, tx, ty, tw, line_h,
+				text, 0.0f, 0.5f);
+			ty += line_h + gap;
+		}
+		cb->restore(vg);
+	}
+
 	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips);
+
+	static void vgui_draw_modal(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_clip_state* clips)
+	{
+		if (!ctx || !ctx->modal.active || !ctx->modal.stage || !ctx->modal.panel)
+			return;
+		const vgui_modal_style& ms = ctx->style.modal;
+		float alpha = ctx->modal.options.backdrop_alpha >= 0.0f
+			? ctx->modal.options.backdrop_alpha : ms.backdrop_alpha;
+		if (ctx->modal.options.dim_background && alpha > 0.0f)
+		{
+			uint32_t color = vgui_alpha_color(ctx->theme.modal_backdrop, alpha);
+			vgui_fill_rect(cb, vg, 0.0f, 0.0f,
+				vgui_overlay_width(ctx), vgui_overlay_height(ctx), 0.0f, color);
+		}
+		vgui_draw_widget(ctx->modal.stage, cb, vg, clips);
+		while (!clips->stack.empty())
+			vgui_clip_pop(clips, cb, vg);
+	}
+
+	static uint32_t vgui_toast_level_color(vgui_context* ctx, int level)
+	{
+		if (!ctx) return 0xFFFFFFFF;
+		switch (level)
+		{
+		case VGUI_TOAST_SUCCESS:
+			return ctx->theme.toast_success ? ctx->theme.toast_success : 0xFF4CAF50;
+		case VGUI_TOAST_WARNING:
+			return ctx->theme.toast_warning ? ctx->theme.toast_warning : 0xFFE6A23C;
+		case VGUI_TOAST_ERROR:
+			return ctx->theme.toast_error ? ctx->theme.toast_error
+				: (ctx->theme.modal_danger ? ctx->theme.modal_danger : 0xFFD9544D);
+		case VGUI_TOAST_INFO:
+		default:
+			return ctx->theme.toast_info ? ctx->theme.toast_info
+				: (ctx->theme.accent ? ctx->theme.accent : 0xFF409EFF);
+		}
+	}
+
+	static void vgui_draw_toasts(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		if (!ctx || ctx->toasts.empty()) return;
+		const vgui_toast_style& ts = ctx->style.toast;
+		uint32_t bg = ctx->theme.toast_bg ? ctx->theme.toast_bg : ctx->theme.panel_bg;
+		uint32_t border = ctx->theme.toast_border
+			? ctx->theme.toast_border : ctx->theme.panel_border;
+		uint32_t text = ctx->theme.toast_text ? ctx->theme.toast_text : ctx->theme.text;
+		float pad_x = std::max(0.0f, ts.padding_x);
+		float pad_y = std::max(0.0f, ts.padding_y);
+		float line_h = vgui_line_height(ctx, ctx->root);
+		float line_gap = std::max(0.0f, ts.line_gap);
+		float rounding = std::max(0.0f, ts.rounding);
+		int max_visible = std::max(1, ts.max_visible);
+
+		for (size_t i = 0; i < ctx->toasts.size() && (int)i < max_visible; ++i)
+		{
+			const vgui_toast_record& t = ctx->toasts[i];
+			if (t.w <= 0.0f || t.h <= 0.0f) continue;
+			vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, rounding, bg);
+			if (ts.border_width > 0.0f && border)
+			{
+				float bi = ts.border_width * 0.5f;
+				vgui_stroke_rect(cb, vg, t.x + bi, t.y + bi,
+					t.w - ts.border_width, t.h - ts.border_width, rounding,
+					border, ts.border_width);
+			}
+
+			float accent_w = 3.0f;
+			uint32_t accent = vgui_toast_level_color(ctx, (int)t.options.level);
+			vgui_fill_rect(cb, vg, t.x + 2.0f, t.y + 2.0f, accent_w,
+				std::max(0.0f, t.h - 4.0f), std::min(1.5f, accent_w * 0.5f),
+				accent);
+
+			float tx = t.x + pad_x + accent_w + 6.0f;
+			float tw = std::max(1.0f, t.w - (tx - t.x) - pad_x);
+			float ty = t.y + pad_y;
+			for (const std::string& line : t.lines)
+			{
+				vgui_draw_text(ctx, cb, vg, ctx->root, line, tx, ty, tw, line_h,
+					text, 0.0f, 0.5f);
+				ty += line_h + line_gap;
+			}
+		}
+	}
 
 	static void vgui_draw_splitter(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
@@ -8970,6 +10177,23 @@ namespace {
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
 		if (ctx->open_menu) vgui_menu_tick(ctx->open_menu, ctx);
+		vgui_tooltip_update(ctx, dt);
+
+		for (size_t i = 0; i < ctx->toasts.size();)
+		{
+			vgui_toast_record& toast = ctx->toasts[i];
+			if (!toast.sticky)
+			{
+				toast.time_left -= dt;
+				if (toast.time_left <= 0.0f)
+				{
+					ctx->toasts.erase(ctx->toasts.begin() + (std::ptrdiff_t)i);
+					ctx->layout_dirty = true;
+					continue;
+				}
+			}
+			++i;
+		}
 
 		// speed 0 means "no tween": snap to the target state instead of freezing
 		// any animation that happened to be in flight when the style changed.
@@ -9082,6 +10306,12 @@ extern "C" {
 		if (!ctx) return;
 
 		ctx->pending_delete.clear();
+		ctx->modal.active = 0;
+		ctx->modal.stage = nullptr;
+		ctx->modal.panel = nullptr;
+		ctx->modal.restore_focus = nullptr;
+		ctx->dialog = vgui_dialog_state();
+		ctx->toasts.clear();
 		if (ctx->root && ctx->alive.count(ctx->root))
 			vgui_delete_rec(ctx->root, ctx);
 		ctx->root = nullptr;
@@ -9183,6 +10413,22 @@ extern "C" {
 		if (!next.menu_border) next.menu_border = next.button_border ? next.button_border : def.menu_border;
 		if (!next.menu_hover) next.menu_hover = next.button_hover ? next.button_hover : def.menu_hover;
 		if (!next.menu_disabled_text) next.menu_disabled_text = next.disabled ? next.disabled : def.menu_disabled_text;
+		if (!next.tooltip_bg) next.tooltip_bg = next.menu_bg ? next.menu_bg : def.tooltip_bg;
+		if (!next.tooltip_border) next.tooltip_border = next.menu_border ? next.menu_border : def.tooltip_border;
+		if (!next.tooltip_text) next.tooltip_text = next.text ? next.text : def.tooltip_text;
+		// Modal and toast colours were appended after tooltips.  Derive their
+		// fallbacks from the existing palette so old themes keep working.
+		if (!next.modal_backdrop) next.modal_backdrop = def.modal_backdrop;
+		if (!next.modal_bg) next.modal_bg = next.panel_bg ? next.panel_bg : def.modal_bg;
+		if (!next.modal_border) next.modal_border = next.button_border ? next.button_border : def.modal_border;
+		if (!next.modal_danger) next.modal_danger = def.modal_danger;
+		if (!next.toast_bg) next.toast_bg = next.menu_bg ? next.menu_bg : def.toast_bg;
+		if (!next.toast_border) next.toast_border = next.menu_border ? next.menu_border : def.toast_border;
+		if (!next.toast_text) next.toast_text = next.text ? next.text : def.toast_text;
+		if (!next.toast_info) next.toast_info = next.accent ? next.accent : def.toast_info;
+		if (!next.toast_success) next.toast_success = def.toast_success;
+		if (!next.toast_warning) next.toast_warning = def.toast_warning;
+		if (!next.toast_error) next.toast_error = next.modal_danger ? next.modal_danger : def.toast_error;
 		ctx->theme = next;
 
 		// Widgets copy their defaults when they are created.  Move the colors that
@@ -9674,6 +10920,556 @@ extern "C" {
 	void vgui_widget_set_opacity(vgui_widget* widget, float opacity)
 	{
 		if (widget) widget->opacity = vgui_clampf(opacity, 0.0f, 1.0f);
+	}
+
+	void vgui_widget_set_tooltip(vgui_widget* widget, const char* text)
+	{
+		if (!widget) return;
+		widget->tooltip = text ? text : "";
+		vgui_context* ctx = widget->ctx;
+		if (ctx && ctx->tooltip.owner == widget)
+		{
+			ctx->tooltip.text = vgui_tooltip_owner_text(widget, ctx->tooltip.owner_item);
+			if (ctx->tooltip.text.empty())
+				vgui_tooltip_hide(ctx);
+			else
+				vgui_tooltip_measure(ctx);
+		}
+	}
+
+	const char* vgui_widget_get_tooltip(vgui_widget* widget)
+	{
+		return widget ? widget->tooltip.c_str() : "";
+	}
+
+	void vgui_widget_set_tooltip_provider(vgui_widget* widget,
+		vgui_tooltip_text_fn fn, void* user)
+	{
+		if (!widget) return;
+		widget->tooltip_text_fn = fn;
+		widget->tooltip_user = user;
+		vgui_context* ctx = widget->ctx;
+		if (ctx && ctx->tooltip.owner == widget)
+		{
+			ctx->tooltip.text = vgui_tooltip_owner_text(widget, ctx->tooltip.owner_item);
+			if (ctx->tooltip.text.empty())
+				vgui_tooltip_hide(ctx);
+			else
+				vgui_tooltip_measure(ctx);
+		}
+	}
+
+	void vgui_widget_set_tooltip_delay(vgui_widget* widget, float seconds)
+	{
+		if (widget) widget->tooltip_delay = seconds < 0.0f ? -1.0f : seconds;
+	}
+
+	float vgui_widget_get_tooltip_delay(vgui_widget* widget)
+	{
+		return widget ? widget->tooltip_delay : -1.0f;
+	}
+
+	void vgui_widget_set_tooltip_enabled(vgui_widget* widget, int enabled)
+	{
+		if (!widget) return;
+		widget->tooltip_enabled = enabled ? 1 : 0;
+		vgui_context* ctx = widget->ctx;
+		if (ctx && !enabled &&
+			(ctx->tooltip.candidate == widget || ctx->tooltip.owner == widget))
+			vgui_tooltip_clear_candidate(ctx);
+	}
+
+	int vgui_widget_get_tooltip_enabled(vgui_widget* widget)
+	{
+		return widget ? widget->tooltip_enabled : 0;
+	}
+
+	void vgui_widget_set_tooltip_when_disabled(vgui_widget* widget, int enabled)
+	{
+		if (widget) widget->tooltip_when_disabled = enabled ? 1 : 0;
+	}
+
+	int vgui_widget_get_tooltip_when_disabled(vgui_widget* widget)
+	{
+		return widget ? widget->tooltip_when_disabled : 0;
+	}
+
+	void vgui_widget_set_tooltip_anchor(vgui_widget* widget, vgui_tooltip_anchor anchor)
+	{
+		if (!widget) return;
+		widget->tooltip_anchor = anchor == VGUI_TOOLTIP_ANCHOR_WIDGET
+			? VGUI_TOOLTIP_ANCHOR_WIDGET : VGUI_TOOLTIP_ANCHOR_POINTER;
+		vgui_context* ctx = widget->ctx;
+		if (ctx && ctx->tooltip.owner == widget)
+			vgui_tooltip_measure(ctx);
+	}
+
+	vgui_tooltip_anchor vgui_widget_get_tooltip_anchor(vgui_widget* widget)
+	{
+		return widget ? widget->tooltip_anchor : VGUI_TOOLTIP_ANCHOR_POINTER;
+	}
+
+	void vgui_context_set_tooltip_enabled(vgui_context* ctx, int enabled)
+	{
+		if (!ctx) return;
+		ctx->tooltip_enabled = enabled ? 1 : 0;
+		if (!enabled) vgui_tooltip_clear_candidate(ctx);
+	}
+
+	int vgui_context_get_tooltip_enabled(vgui_context* ctx)
+	{
+		return ctx ? ctx->tooltip_enabled : 0;
+	}
+
+	void vgui_context_hide_tooltip(vgui_context* ctx)
+	{
+		if (ctx) vgui_tooltip_clear_candidate(ctx);
+	}
+
+	int vgui_context_tooltip_visible(vgui_context* ctx)
+	{
+		if (!ctx || !ctx->tooltip.visible || !ctx->tooltip.owner) return 0;
+		if (!vgui_tooltip_visible_chain(ctx->tooltip.owner)) return 0;
+		return 1;
+	}
+
+	const char* vgui_context_tooltip_text(vgui_context* ctx)
+	{
+		return vgui_context_tooltip_visible(ctx) ? ctx->tooltip.text.c_str() : "";
+	}
+
+	vgui_widget* vgui_context_tooltip_owner(vgui_context* ctx)
+	{
+		return vgui_context_tooltip_visible(ctx) ? ctx->tooltip.owner : nullptr;
+	}
+
+	int vgui_context_tooltip_rect(vgui_context* ctx,
+		float* x, float* y, float* width, float* height)
+	{
+		if (!vgui_context_tooltip_visible(ctx)) return 0;
+		vgui_tooltip_measure(ctx);
+		if (!ctx->tooltip.visible) return 0;
+		if (x) *x = ctx->tooltip.x;
+		if (y) *y = ctx->tooltip.y;
+		if (width) *width = ctx->tooltip.w;
+		if (height) *height = ctx->tooltip.h;
+		return 1;
+	}
+
+	//----------------------------------------------------------------------------
+	// modal, dialog and toast
+	//----------------------------------------------------------------------------
+
+	void vgui_modal_options_default(vgui_modal_options* options)
+	{
+		if (!options) return;
+		vgui_modal_options o = {};
+		o.close_on_escape = 1;
+		o.close_on_backdrop = 0;
+		o.dim_background = 1;
+		o.destroy_on_close = 0;
+		o.escape_result = VGUI_MODAL_RESULT_CANCEL;
+		o.backdrop_result = VGUI_MODAL_RESULT_CANCEL;
+		o.margin = -1.0f;
+		o.backdrop_alpha = -1.0f;
+		o.on_close = nullptr;
+		o.user = nullptr;
+		*options = o;
+	}
+
+	int vgui_modal_show(vgui_context* ctx, vgui_widget* panel,
+		const vgui_modal_options* options)
+	{
+		if (!ctx || !panel || panel->ctx != ctx || panel == ctx->root ||
+			panel->kind == VGUI_MENU || panel->destroy_pending ||
+			!ctx->alive.count(panel) || ctx->modal.active)
+			return 0;
+
+		vgui_modal_options opts;
+		vgui_modal_options_default(&opts);
+		if (options) opts = *options;
+		if (opts.margin < 0.0f) opts.margin = -1.0f;
+		if (opts.backdrop_alpha < 0.0f) opts.backdrop_alpha = -1.0f;
+		else opts.backdrop_alpha = vgui_clampf(opts.backdrop_alpha, 0.0f, 1.0f);
+
+		if (ctx->open_menu) vgui_menu_close_all(ctx);
+		if (!ctx->alive.count(panel) || panel->destroy_pending) return 0;
+
+		vgui_widget* restore = ctx->focus;
+		if (restore && (!ctx->alive.count(restore) || restore->destroy_pending))
+			restore = nullptr;
+		vgui_widget* keep_focus = (restore && vgui_is_within(panel, restore))
+			? restore : nullptr;
+
+		// Input state belongs to the background tree; drop it before the modal
+		// takes over so a pending press cannot activate a hidden control.
+		if (ctx->hot && ctx->alive.count(ctx->hot)) ctx->hot->hovered = 0;
+		if (ctx->active && ctx->alive.count(ctx->active)) ctx->active->pressed = 0;
+		if (ctx->press_target && ctx->alive.count(ctx->press_target))
+			ctx->press_target->pressed = 0;
+		ctx->hot = nullptr;
+		ctx->active = nullptr;
+		ctx->press_target = nullptr;
+		ctx->slider_drag = nullptr;
+		vgui_tooltip_clear_candidate(ctx);
+
+		vgui_widget* stage = vgui_new_widget(ctx, VGUI_PANEL, nullptr);
+		if (!stage) return 0;
+		stage->bg = 0;
+		stage->border = 0;
+		stage->border_width = 0;
+		stage->rounding = 0;
+		stage->padding[0] = stage->padding[1] = 0.0f;
+		stage->padding[2] = stage->padding[3] = 0.0f;
+		stage->layout = VGUI_LAYOUT_ABSOLUTE;
+		stage->clip_children = 1;
+		stage->visible = 1;
+		stage->focusable = 0;
+
+		vgui_widget_remove(panel);
+		vgui_widget_attach(stage, panel);
+		if (panel->parent != stage)
+		{
+			vgui_schedule_destroy(stage);
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return 0;
+		}
+
+		ctx->modal.active = 1;
+		ctx->modal.swallow_up = 0;
+		ctx->modal.result = VGUI_MODAL_RESULT_NONE;
+		ctx->modal.stage = stage;
+		ctx->modal.panel = panel;
+		ctx->modal.restore_focus = restore;
+		ctx->modal.options = opts;
+		ctx->layout_dirty = true;
+
+		vgui_widget* first = keep_focus ? keep_focus : vgui_first_focusable(panel);
+		vgui_set_focus_internal(ctx, first);
+		return 1;
+	}
+
+	void vgui_modal_close(vgui_context* ctx, int result)
+	{
+		vgui_modal_close_internal(ctx, result);
+	}
+
+	int vgui_modal_active(vgui_context* ctx)
+	{
+		return ctx && ctx->modal.active ? 1 : 0;
+	}
+
+	vgui_widget* vgui_modal_panel(vgui_context* ctx)
+	{
+		return ctx && ctx->modal.active ? ctx->modal.panel : nullptr;
+	}
+
+	int vgui_modal_result(vgui_context* ctx)
+	{
+		return ctx ? ctx->modal.result : VGUI_MODAL_RESULT_NONE;
+	}
+
+	void vgui_dialog_desc_default(vgui_dialog_desc* desc)
+	{
+		if (!desc) return;
+		vgui_dialog_desc d = {};
+		d.kind = VGUI_DIALOG_ALERT;
+		d.danger = 0;
+		d.width = 0.0f;
+		*desc = d;
+	}
+
+	vgui_widget* vgui_dialog_show(vgui_context* ctx, const vgui_dialog_desc* desc)
+	{
+		if (!ctx || !desc) return nullptr;
+		if (ctx->modal.active) return nullptr;
+
+		const vgui_modal_style& ms = ctx->style.modal;
+		float width = desc->width > 0.0f ? desc->width : ms.dialog_width;
+		width = std::max(width, ms.min_width);
+		float margin = std::max(0.0f, ms.margin);
+		float avail_w = vgui_overlay_width(ctx) - margin * 2.0f;
+		if (avail_w > 0.0f) width = std::min(width, avail_w);
+		width = std::max(1.0f, width);
+		float pad = std::max(0.0f, ms.padding);
+		float content_w = std::max(1.0f, width - pad * 2.0f);
+
+		vgui_widget* panel = vgui_widget_create(ctx, VGUI_PANEL, nullptr);
+		if (!panel) return nullptr;
+		panel->bg = ctx->theme.modal_bg;
+		panel->border = ctx->theme.modal_border;
+		panel->border_width = std::max(0.0f, ms.border_width);
+		panel->rounding = std::max(0.0f, ms.rounding);
+		panel->padding[0] = panel->padding[1] = pad;
+		panel->padding[2] = panel->padding[3] = pad;
+		panel->req_w = width;
+		panel->req_h = 0.0f;
+		panel->layout = VGUI_LAYOUT_COLUMN;
+		panel->align_items = VGUI_ALIGN_STRETCH;
+		panel->gap = 0.0f;
+
+		auto add_label = [&](const char* text) -> vgui_widget*
+			{
+				if (!text || !*text) return nullptr;
+				std::vector<std::string> lines = vgui_wrap_text(ctx, panel, text, content_w);
+				std::string joined;
+				for (size_t i = 0; i < lines.size(); ++i)
+				{
+					if (i) joined += '\n';
+					joined += lines[i];
+				}
+				vgui_widget* label = vgui_widget_add(panel, VGUI_LABEL, joined.c_str());
+				if (!label) return nullptr;
+				label->padding[0] = label->padding[1] = 0.0f;
+				label->padding[2] = label->padding[3] = 0.0f;
+				label->text_align_x = 0.0f;
+				label->text_align_y = 0.5f;
+				return label;
+			};
+
+		vgui_widget* title = add_label(desc->title);
+		if (title)
+			title->margin[3] = std::max(0.0f, ms.title_gap);
+		vgui_widget* message = add_label(desc->message);
+		bool has_body = desc->kind == VGUI_DIALOG_PROMPT;
+		if (message)
+			message->margin[3] = (has_body || desc->kind != VGUI_DIALOG_ALERT)
+				? std::max(0.0f, ms.message_gap) : 0.0f;
+
+		vgui_widget* input = nullptr;
+		if (desc->kind == VGUI_DIALOG_PROMPT)
+		{
+			input = vgui_widget_add(panel, VGUI_EDIT, nullptr);
+			if (input)
+			{
+				input->req_w = 0.0f;
+				vgui_edit_set_placeholder(input, desc->placeholder ? desc->placeholder : "");
+				vgui_edit_set_text(input, desc->initial_text ? desc->initial_text : "");
+				input->margin[3] = 0.0f;
+			}
+		}
+
+		vgui_widget* row = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+		if (row)
+		{
+			row->bg = 0;
+			row->border = 0;
+			row->border_width = 0;
+			row->rounding = 0;
+			row->padding[0] = row->padding[1] = 0.0f;
+			row->padding[2] = row->padding[3] = 0.0f;
+			row->layout = VGUI_LAYOUT_ROW;
+			row->justify = VGUI_JUSTIFY_END;
+			row->gap = std::max(0.0f, ms.button_gap);
+			row->margin[1] = std::max(0.0f, ms.button_top_gap);
+			row->req_w = 0.0f;
+		}
+
+		vgui_widget* cancel_button = nullptr;
+		vgui_widget* confirm_button = nullptr;
+		if (row)
+		{
+			const char* confirm_text = (desc->confirm_text && *desc->confirm_text)
+				? desc->confirm_text : "OK";
+			if (desc->kind != VGUI_DIALOG_ALERT)
+			{
+				const char* cancel_text = (desc->cancel_text && *desc->cancel_text)
+					? desc->cancel_text : "Cancel";
+				cancel_button = vgui_widget_add(row, VGUI_BUTTON, cancel_text);
+				if (cancel_button)
+				{
+					cancel_button->min_w = 72.0f;
+					cancel_button->value = (float)VGUI_MODAL_RESULT_CANCEL;
+					vgui_widget_on_event(cancel_button, vgui_dialog_button_event, nullptr);
+				}
+			}
+			confirm_button = vgui_widget_add(row, VGUI_BUTTON, confirm_text);
+			if (confirm_button)
+			{
+				confirm_button->min_w = 72.0f;
+				confirm_button->value = (float)VGUI_MODAL_RESULT_CONFIRM;
+				vgui_widget_on_event(confirm_button, vgui_dialog_button_event, nullptr);
+				if (desc->danger)
+				{
+					confirm_button->bg = ctx->theme.modal_danger;
+					confirm_button->border = vgui_mix_color(
+						ctx->theme.modal_danger, 0xFF000000, 0.35f);
+					confirm_button->text_color = 0xFFFFFFFF;
+				}
+			}
+		}
+
+		vgui_modal_options mo;
+		vgui_modal_options_default(&mo);
+		mo.destroy_on_close = 1;
+		mo.close_on_backdrop = 0;
+		mo.escape_result = VGUI_MODAL_RESULT_CANCEL;
+		mo.backdrop_result = VGUI_MODAL_RESULT_CANCEL;
+		if (!vgui_modal_show(ctx, panel, &mo))
+		{
+			vgui_widget_destroy(panel);
+			return nullptr;
+		}
+
+		ctx->dialog.panel = panel;
+		ctx->dialog.input = input;
+		ctx->dialog.confirm_button = confirm_button;
+		ctx->dialog.cancel_button = cancel_button;
+		ctx->dialog.on_result = desc->on_result;
+		ctx->dialog.user = desc->user;
+		ctx->dialog.kind = (int)desc->kind;
+
+		if (input)
+		{
+			vgui_set_focus_internal(ctx, input);
+			input->edit_anchor = 0;
+			input->edit_cursor = (int)input->edit_text.size();
+			input->caret_blink = 0.0f;
+		}
+		else if (confirm_button)
+		{
+			vgui_set_focus_internal(ctx, confirm_button);
+		}
+		return panel;
+	}
+
+	vgui_widget* vgui_dialog_input(vgui_context* ctx)
+	{
+		if (!ctx || !ctx->modal.active || ctx->dialog.panel != ctx->modal.panel)
+			return nullptr;
+		return ctx->dialog.input;
+	}
+
+	vgui_widget* vgui_dialog_alert(vgui_context* ctx, const char* title,
+		const char* message, vgui_dialog_close_fn on_result, void* user)
+	{
+		vgui_dialog_desc desc;
+		vgui_dialog_desc_default(&desc);
+		desc.kind = VGUI_DIALOG_ALERT;
+		desc.title = title;
+		desc.message = message;
+		desc.on_result = on_result;
+		desc.user = user;
+		return vgui_dialog_show(ctx, &desc);
+	}
+
+	vgui_widget* vgui_dialog_confirm(vgui_context* ctx, const char* title,
+		const char* message, int danger, vgui_dialog_close_fn on_result, void* user)
+	{
+		vgui_dialog_desc desc;
+		vgui_dialog_desc_default(&desc);
+		desc.kind = VGUI_DIALOG_CONFIRM;
+		desc.title = title;
+		desc.message = message;
+		desc.danger = danger;
+		desc.on_result = on_result;
+		desc.user = user;
+		return vgui_dialog_show(ctx, &desc);
+	}
+
+	vgui_widget* vgui_dialog_prompt(vgui_context* ctx, const char* title,
+		const char* message, const char* initial_text,
+		vgui_dialog_close_fn on_result, void* user)
+	{
+		vgui_dialog_desc desc;
+		vgui_dialog_desc_default(&desc);
+		desc.kind = VGUI_DIALOG_PROMPT;
+		desc.title = title;
+		desc.message = message;
+		desc.initial_text = initial_text;
+		desc.on_result = on_result;
+		desc.user = user;
+		return vgui_dialog_show(ctx, &desc);
+	}
+
+	void vgui_toast_options_default(vgui_toast_options* options)
+	{
+		if (!options) return;
+		vgui_toast_options o = {};
+		o.position = VGUI_TOAST_TOP_RIGHT;
+		o.level = VGUI_TOAST_INFO;
+		o.duration = -1.0f;
+		*options = o;
+	}
+
+	vgui_toast_id vgui_toast_show(vgui_context* ctx, const char* text,
+		const vgui_toast_options* options)
+	{
+		if (!ctx || !text || !*text) return 0;
+		vgui_toast_options opts;
+		vgui_toast_options_default(&opts);
+		if (options) opts = *options;
+		if (opts.position < VGUI_TOAST_TOP_RIGHT ||
+			opts.position > VGUI_TOAST_BOTTOM_CENTER)
+			opts.position = VGUI_TOAST_TOP_RIGHT;
+		if (opts.level < VGUI_TOAST_INFO || opts.level > VGUI_TOAST_ERROR)
+			opts.level = VGUI_TOAST_INFO;
+
+		float duration = opts.duration;
+		if (duration < 0.0f) duration = ctx->style.toast.duration;
+		duration = std::max(0.0f, duration);
+
+		vgui_toast_record rec;
+		rec.id = ctx->next_toast_id++;
+		if (rec.id == 0) rec.id = ctx->next_toast_id++;
+		rec.text = text;
+		rec.options = opts;
+		rec.options.duration = duration;
+		rec.sticky = duration <= 0.0f ? 1 : 0;
+		rec.time_left = duration;
+		vgui_toast_id id = rec.id;
+		ctx->toasts.push_back(std::move(rec));
+		ctx->layout_dirty = true;
+		return id;
+	}
+
+	int vgui_toast_dismiss(vgui_context* ctx, vgui_toast_id toast)
+	{
+		if (!ctx || toast == 0) return 0;
+		for (size_t i = 0; i < ctx->toasts.size(); ++i)
+		{
+			if (ctx->toasts[i].id != toast) continue;
+			ctx->toasts.erase(ctx->toasts.begin() + (std::ptrdiff_t)i);
+			ctx->layout_dirty = true;
+			return 1;
+		}
+		return 0;
+	}
+
+	void vgui_toast_clear(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		if (!ctx->toasts.empty())
+		{
+			ctx->toasts.clear();
+			ctx->layout_dirty = true;
+		}
+	}
+
+	int vgui_toast_count(vgui_context* ctx)
+	{
+		return ctx ? (int)ctx->toasts.size() : 0;
+	}
+
+	int vgui_toast_get_rect(vgui_context* ctx, vgui_toast_id toast,
+		float* x, float* y, float* width, float* height)
+	{
+		if (!ctx || toast == 0) return 0;
+		vgui_toast_layout(ctx);
+		int max_visible = std::max(1, ctx->style.toast.max_visible);
+		for (size_t i = 0; i < ctx->toasts.size(); ++i)
+		{
+			if (ctx->toasts[i].id != toast) continue;
+			if ((int)i >= max_visible) return 0;
+			const vgui_toast_record& t = ctx->toasts[i];
+			if (t.w <= 0.0f || t.h <= 0.0f) return 0;
+			if (x) *x = t.x;
+			if (y) *y = t.y;
+			if (width) *width = t.w;
+			if (height) *height = t.h;
+			return 1;
+		}
+		return 0;
 	}
 
 	void vgui_image_set_texture(vgui_widget* widget, vgui_texture* texture)
@@ -10707,6 +12503,16 @@ extern "C" {
 		return id;
 	}
 
+	vgui_item_id vgui_list_item_at_point(vgui_widget* list, float local_x, float local_y)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return 0;
+		vgui_ensure_layout(list->ctx);
+		int index = vgui_list_index_at(list, list->abs_x + local_x, list->abs_y + local_y);
+		if (index < 0) return 0;
+		return vgui_list_row_id(list, st, index);
+	}
+
 	void vgui_list_set_item_text(vgui_widget* list, vgui_item_id item, const char* text)
 	{
 		vgui_list_state* st = vgui_list_of(list);
@@ -10739,6 +12545,22 @@ extern "C" {
 	{
 		vgui_list_item* it = vgui_list_item_find(list, item);
 		return it ? it->detail.c_str() : "";
+	}
+
+	void vgui_list_set_item_tooltip(vgui_widget* list, vgui_item_id item, const char* tooltip)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it) return;
+		it->tooltip = tooltip ? tooltip : "";
+		if (list->ctx) vgui_tooltip_refresh(list->ctx, list, item);
+	}
+
+	const char* vgui_list_get_item_tooltip(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->tooltip.c_str() : "";
 	}
 
 	void vgui_list_set_item_enabled(vgui_widget* list, vgui_item_id item, int enabled)
@@ -11102,6 +12924,32 @@ extern "C" {
 	{
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		return n ? n->text.c_str() : "";
+	}
+
+	void vgui_tree_set_item_tooltip(vgui_widget* tree, vgui_item_id node, const char* tooltip)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n) return;
+		n->tooltip = tooltip ? tooltip : "";
+		if (tree->ctx) vgui_tooltip_refresh(tree->ctx, tree, node);
+	}
+
+	const char* vgui_tree_get_item_tooltip(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->tooltip.c_str() : "";
+	}
+
+	vgui_item_id vgui_tree_item_at_point(vgui_widget* tree, float local_x, float local_y)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return 0;
+		vgui_ensure_layout(tree->ctx);
+		int index = vgui_tree_row_at(tree, tree->abs_x + local_x, tree->abs_y + local_y);
+		if (index < 0) return 0;
+		return vgui_tree_row_id_at(tree, st, index);
 	}
 
 	void vgui_tree_set_item_enabled(vgui_widget* tree, vgui_item_id node, int enabled)
@@ -11889,6 +13737,9 @@ extern "C" {
 			return;
 		if (widget && widget->kind != VGUI_EDIT && !widget->focusable)
 			return;
+		if (widget && ctx->modal.active &&
+			!vgui_is_within(ctx->modal.stage, widget))
+			return;
 		if (ctx->open_menu) vgui_menu_close_all(ctx);
 		vgui_set_focus_internal(ctx, widget);
 	}
@@ -11948,6 +13799,7 @@ extern "C" {
 	{
 		if (!ctx) return;
 		vgui_menu_close_all(ctx);
+		vgui_tooltip_clear_candidate(ctx);
 		for (int i = 0; i < 8; i++)
 		{
 			ctx->mouse_down[i] = 0;
@@ -12139,6 +13991,18 @@ extern "C" {
 			while (!clips.stack.empty())
 				vgui_clip_pop(&clips, cb, vg);
 		}
+
+		// The modal stage sits above the background tree and menus but below
+		// tooltips and notifications.
+		vgui_draw_modal(ctx, cb, vg, &clips);
+
+		// Tooltips sit above menus as well; they never overlap an open menu
+		// because opening one clears the hover state.
+		vgui_draw_tooltip(ctx, cb, vg);
+
+		// Toasts are the last overlay so a notification stays readable even
+		// while a modal is open.
+		vgui_draw_toasts(ctx, cb, vg);
 
 		++ctx->frame_index;
 	}

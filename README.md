@@ -12,6 +12,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 |---|---|
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView |
+| **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -103,6 +104,45 @@ vgui_menubar_add_menu(bar, "文件", file);
 
 应用级快捷键通过 `vgui_context_add_key_handler()` 注册：处理器在焦点控件和打开菜单之后按注册逆序调用，返回非零表示已消费。editor kit 在此基础上提供 `command_registry`（字符串命令 ID、`Ctrl+S` / `Delete` 形式的快捷键、enabled/checked 谓词、菜单与工具栏状态同步）；`editor_shell` 默认建立 File/Edit/View/Help 菜单，宿主可用相同 ID 覆盖默认动作。
 
+### Tooltip
+
+Tooltip 是 context 级覆盖层，不参与布局和命中测试。控件可设置静态文本或动态 provider；默认延迟出现并跟随鼠标，也可锚定到控件下方，空间不足时自动翻转到上方。列表/树支持逐行 tooltip。
+
+```c
+vgui_widget_set_tooltip(button, "保存当前文档");
+vgui_widget_set_tooltip_provider(status, status_tooltip, app);
+vgui_widget_set_tooltip_delay(button, 0.4f);
+vgui_widget_set_tooltip_anchor(button, VGUI_TOOLTIP_ANCHOR_WIDGET);
+vgui_list_set_item_tooltip(list, item, "双击打开");
+```
+
+`vgui_widget_set_tooltip_enabled()` 可整体关闭某个控件的 tooltip，`vgui_widget_set_tooltip_when_disabled()` 控制禁用态是否显示。运行中的 tooltip 可通过 `vgui_context_tooltip_visible/text/owner/rect()` 查询，`vgui_context_hide_tooltip()` 立即隐藏；打开菜单/模态、滚动或销毁 owner 时也会自动隐藏。
+
+### Modal、Dialog 与 Toast
+
+`vgui_modal_show()` 把任意 panel 提升为 context 级模态：创建全窗口 stage、居中 panel，并把命中测试、焦点、Tab 循环和滚轮限制在模态内。`vgui_modal_options` 控制 Esc/背景点击关闭、遮罩透明度、是否销毁 panel 和关闭回调；关闭后焦点恢复到打开前的控件。
+
+```c
+vgui_modal_options options;
+vgui_modal_options_default(&options);
+options.on_close = on_modal_closed;
+vgui_modal_show(ui, panel, &options);
+```
+
+常用对话框可直接调用 `vgui_dialog_alert()`、`vgui_dialog_confirm()` 和 `vgui_dialog_prompt()`。它们自动管理 panel 生命周期，确认/取消通过 `vgui_dialog_close_fn` 返回，prompt 还会返回输入文本；Enter 确认、Esc 取消，危险确认使用主题的危险色。`vgui_dialog_input()` 可在 prompt 打开时取得编辑框。
+
+Toast 是另一类 context 覆盖层，不参与布局或命中测试：
+
+```c
+vgui_toast_options toast;
+vgui_toast_options_default(&toast);
+toast.position = VGUI_TOAST_BOTTOM_RIGHT;
+toast.level = VGUI_TOAST_SUCCESS;
+vgui_toast_id id = vgui_toast_show(ui, "已保存", &toast);
+```
+
+`duration < 0` 使用 `style.toast.duration`，`0` 表示常驻；`vgui_update()` 负责倒计时。`vgui_toast_dismiss()`、`vgui_toast_clear()`、`vgui_toast_count()` 和 `vgui_toast_get_rect()` 用于管理或查询通知。
+
 ### Splitter 与 TabView
 
 `VGUI_SPLITTER` 是双子面板容器：`vertical=0` 左右分栏，`vertical=1` 上下分栏。`ratio` 表示第一个可见子面板在主轴上所占比例，拖动 sash 修改比例，双击 sash 复位；子面板的 `min_w` / `min_h` 会约束最终尺寸。`vgui_widget_on_value()` 可监听拖动后的比例变化。
@@ -184,7 +224,7 @@ Debug 输出目录为 `out/bin/x64d/`：
 ```text
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
-out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单模型与输入行为自测
+out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
 out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、命令栈与布局持久化自测
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
@@ -248,14 +288,14 @@ vgui_draw(ui, ovg_cb, rvg);
 
 字体、OVG 回调和 SDL3 窗口的初始化由后端/宿主程序负责，完整流程见 `sample/vgui_demo.cpp`。颜色格式统一为 `0xAARRGGBB`。
 
-`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、列表、树、菜单、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 新增 `scrollbar_hover`、`checkmark`、`switch_thumb` 三个颜色字段，以及列表/树/菜单使用的 `list_bg`、`row_text`、`row_hover`、`row_selected`、`menu_bg`、`menu_hover` 等字段；旧主题把这些字段留为 0 时会自动回退到面板/文字/按钮色，不会破坏现有主题。列表/树的自动行高和菜单的自动最大高度也可以通过样式字段设为 0 来保持自动计算。
+`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、列表、树、菜单、工具栏、Tooltip、模态、Toast、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 除基础调色板外还包含列表/树/菜单、Tooltip 以及模态/Toast 使用的颜色字段（`modal_backdrop`、`modal_bg`、`modal_border`、`modal_danger`、`toast_bg`、`toast_border`、`toast_text`、`toast_info`、`toast_success`、`toast_warning`、`toast_error` 等）；旧主题把这些字段留为 0 时会自动回退到面板/文字/菜单/强调色，不会破坏现有主题。列表/树的自动行高和菜单的自动最大高度也可以通过样式字段设为 0 来保持自动计算。
 
 ## 项目结构
 
 ```text
 gui/
   vgui.h              公共纯 C API
-  vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView）
+  vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
   editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含菜单/命令与布局持久化）
@@ -268,7 +308,7 @@ third_party/
 sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
-  vgui_model_test.cpp       列表、树、菜单、MenuBar 与按键处理器自测
+  vgui_model_test.cpp       列表、树、菜单、MenuBar、Tooltip、Modal/Dialog/Toast 与按键处理器自测
   vgui_editor_kit_test.cpp  editor kit 骨架、命令栈、菜单/快捷键与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
@@ -290,7 +330,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

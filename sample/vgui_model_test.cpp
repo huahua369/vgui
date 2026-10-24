@@ -87,6 +87,11 @@ static void on_button_click(vgui_widget*, const vgui_event*, void* user)
 	(*(int*)user)++;
 }
 
+static void on_button_click_only(vgui_widget*, const vgui_event* event, void* user)
+{
+	if (event && event->type == VGUI_EVENT_CLICK) (*(int*)user)++;
+}
+
 static void click_at(vgui_context* ui, float x, float y, int clicks = 1)
 {
 	vgui_input_mouse_move(ui, x, y);
@@ -1483,6 +1488,851 @@ static void test_tabview(vgui_context* ui)
 	vgui_widget_destroy(tabs);
 }
 
+/* ------------------------------- tooltip --------------------------------- */
+
+struct tooltip_virtual_rows
+{
+	int count = 4;
+};
+
+static int tip_rows_count(void* user)
+{
+	return ((tooltip_virtual_rows*)user)->count;
+}
+
+static int tip_rows_info(void* user, int index, const char** text, const char** detail,
+	void** item_user)
+{
+	(void)user;
+	static char buf[32];
+	std::snprintf(buf, sizeof(buf), "row %d", index);
+	if (text) *text = buf;
+	if (detail) *detail = nullptr;
+	if (item_user) *item_user = nullptr;
+	return 1;
+}
+
+static vgui_item_id tip_rows_id(void* user, int index)
+{
+	(void)user;
+	return (vgui_item_id)(index + 1);
+}
+
+static int tip_rows_index(void* user, vgui_item_id item)
+{
+	(void)user;
+	return item >= 1 ? (int)item - 1 : -1;
+}
+
+static const char* tip_rows_tooltip(void* user, int index)
+{
+	(void)user;
+	static char buf[40];
+	std::snprintf(buf, sizeof(buf), "virtual row help %d", index);
+	return buf;
+}
+
+static int g_tooltip_provider_calls = 0;
+
+static const char* tooltip_provider(vgui_widget*, void* user)
+{
+	g_tooltip_provider_calls++;
+	return (const char*)user;
+}
+
+static void test_tooltip(vgui_context* ui, const vgui_style& base)
+{
+	vgui_style style = base;
+	style.tooltip.delay = 0.2f;
+	vgui_context_set_style(ui, &style);
+
+	vgui_widget* tip = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "Tip");
+	vgui_widget_set_pos(tip, 560.0f, 600.0f);
+	vgui_widget_set_size(tip, 120.0f, 30.0f);
+	vgui_widget_set_tooltip(tip, "Static help");
+	check(std::string(vgui_widget_get_tooltip(tip)) == "Static help",
+		"tooltip: static text stored");
+
+	vgui_layout(ui);
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(tip, &tx, &ty, &tw, &th);
+	(void)tw;
+	(void)th;
+
+	// Delay: hovering does not show immediately, update() starts the timer.
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.1f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: hidden before the hover delay elapses");
+	vgui_update(ui, 0.15f);
+	check(vgui_context_tooltip_visible(ui) == 1,
+		"tooltip: appears after the hover delay");
+	check(std::string(vgui_context_tooltip_text(ui)) == "Static help",
+		"tooltip: reports its text");
+	check(vgui_context_tooltip_owner(ui) == tip,
+		"tooltip: reports its owner widget");
+
+	float rx = 0, ry = 0, rw = 0, rh = 0;
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: rect is available while visible");
+	check(near(rx, tx + 30.0f + style.tooltip.pointer_offset_x) &&
+		near(ry, ty + 15.0f + style.tooltip.pointer_offset_y),
+		"tooltip: pointer anchor uses the configured offset");
+	check(rw > 0.0f && rh > 0.0f, "tooltip: measured rect is non-empty");
+
+	// Leaving the widget hides the overlay immediately.
+	vgui_input_mouse_move(ui, 10.0f, 690.0f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: moving away hides immediately");
+
+	// Provider callbacks take precedence over the static text.
+	g_tooltip_provider_calls = 0;
+	vgui_widget_set_tooltip_provider(tip, tooltip_provider, (void*)"Dynamic help");
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) &&
+		std::string(vgui_context_tooltip_text(ui)) == "Dynamic help",
+		"tooltip: provider text is used");
+	check(g_tooltip_provider_calls > 0, "tooltip: provider is invoked");
+	vgui_widget_set_tooltip_provider(tip, nullptr, nullptr);
+
+	// Keyboard input dismisses the overlay but pointer movement re-arms it.
+	vgui_input_key(ui, 'A', 1, 0);
+	vgui_input_key(ui, 'A', 0, 0);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: key input hides the overlay");
+	vgui_input_mouse_move(ui, tx + 40.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 1,
+		"tooltip: pointer movement re-arms after input");
+
+	// Explicit hide cancels the hover until the pointer moves again.
+	vgui_context_hide_tooltip(ui);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: explicit hide");
+	vgui_update(ui, 0.3f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: explicit hide is not undone by update");
+
+	// Disabled widgets show tooltips by default, and can opt out.
+	vgui_widget_set_enabled(tip, 0);
+	vgui_input_mouse_move(ui, 10.0f, 690.0f);
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 1,
+		"tooltip: disabled widget shows help by default");
+	vgui_widget_set_tooltip_when_disabled(tip, 0);
+	vgui_context_hide_tooltip(ui);
+	vgui_input_mouse_move(ui, 10.0f, 690.0f);
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: disabled widget can suppress help");
+	vgui_widget_set_enabled(tip, 1);
+	vgui_widget_set_tooltip_when_disabled(tip, 1);
+
+	// Widget anchor: centred below the control.
+	vgui_widget_set_tooltip_anchor(tip, VGUI_TOOLTIP_ANCHOR_WIDGET);
+	vgui_input_mouse_move(ui, 10.0f, 690.0f);
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: widget anchor visible");
+	check(ry >= ty + th + style.tooltip.widget_gap - 0.1f,
+		"tooltip: widget anchor sits below the control");
+	check(near(rx, tx + (120.0f - rw) * 0.5f),
+		"tooltip: widget anchor is horizontally centred");
+
+	// A control near the bottom edge flips the tooltip above itself.
+	vgui_widget* low = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "Low");
+	vgui_widget_set_pos(low, 560.0f, 655.0f);
+	vgui_widget_set_size(low, 120.0f, 26.0f);
+	vgui_widget_set_tooltip(low, "Low help");
+	vgui_widget_set_tooltip_anchor(low, VGUI_TOOLTIP_ANCHOR_WIDGET);
+	vgui_layout(ui);
+	float lx = 0, ly = 0, lw = 0, lh = 0;
+	vgui_widget_get_rect(low, &lx, &ly, &lw, &lh);
+	vgui_input_mouse_move(ui, lx + 40.0f, ly + 13.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: edge anchor visible");
+	check(ry + rh <= 700.0f - style.tooltip.margin + 0.01f,
+		"tooltip: edge anchor stays inside the context");
+	check(ry < ly, "tooltip: edge anchor flips above the control");
+
+	// Pointer anchor clamps at the right/bottom context edge.
+	vgui_widget_set_tooltip(vgui_root(ui), "Edge help");
+	vgui_input_mouse_move(ui, 895.0f, 695.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: edge pointer tooltip visible");
+	check(rx >= style.tooltip.margin - 0.01f &&
+		ry >= style.tooltip.margin - 0.01f &&
+		rx + rw <= 900.0f - style.tooltip.margin + 0.01f &&
+		ry + rh <= 700.0f - style.tooltip.margin + 0.01f,
+		"tooltip: pointer tooltip is clamped inside the context");
+	vgui_widget_set_tooltip(vgui_root(ui), nullptr);
+
+	// Newlines produce multiple lines and a taller box.
+	vgui_widget_set_tooltip_anchor(tip, VGUI_TOOLTIP_ANCHOR_POINTER);
+	vgui_widget_set_tooltip(tip, "single line");
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: single-line tooltip visible");
+	float single_h = rh;
+	vgui_widget_set_tooltip(tip, "first line\nsecond line");
+	check(vgui_context_tooltip_rect(ui, &rx, &ry, &rw, &rh) == 1,
+		"tooltip: multiline tooltip visible");
+	check(rh > single_h + style.tooltip.padding_y,
+		"tooltip: newline increases the measured height");
+
+	// Per-item list tooltips and local row hit testing.
+	vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+	vgui_widget_set_pos(list, 560.0f, 300.0f);
+	vgui_widget_set_size(list, 220.0f, 120.0f);
+	vgui_item_id item0 = vgui_list_add_item(list, "One", nullptr);
+	vgui_item_id item1 = vgui_list_add_item(list, "Two", nullptr);
+	vgui_list_set_item_tooltip(list, item1, "Item help");
+	check(std::string(vgui_list_get_item_tooltip(list, item1)) == "Item help",
+		"tooltip: list item tooltip stored");
+	vgui_layout(ui);
+	float lx0 = 0, ly0 = 0, lw0 = 0, lh0 = 0;
+	vgui_widget_get_rect(list, &lx0, &ly0, &lw0, &lh0);
+	(void)lw0;
+	(void)lh0;
+	float row_h = style.list.row_height;
+	float y_item1 = style.list.padding_y + row_h * 1.5f;
+	check(vgui_list_item_at_point(list, 30.0f, y_item1) == item1,
+		"tooltip: list item_at_point resolves a row");
+	check(vgui_list_item_at_point(list, 30.0f, style.list.padding_y * 0.5f) == 0,
+		"tooltip: list item_at_point rejects padding");
+	vgui_input_mouse_move(ui, lx0 + 30.0f, ly0 + y_item1);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) &&
+		std::string(vgui_context_tooltip_text(ui)) == "Item help" &&
+		vgui_context_tooltip_owner(ui) == list,
+		"tooltip: list row tooltip is used");
+	vgui_input_mouse_move(ui, lx0 + 30.0f, ly0 + style.list.padding_y + row_h * 0.5f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: rows without tooltip stay quiet");
+	(void)item0;
+
+	// Virtual rows provide tooltips through row_tooltip.
+	tooltip_virtual_rows rows;
+	vgui_row_source src = {};
+	src.row_count = tip_rows_count;
+	src.row_info = tip_rows_info;
+	src.row_id = tip_rows_id;
+	src.row_id_index = tip_rows_index;
+	src.row_tooltip = tip_rows_tooltip;
+	src.user = &rows;
+	vgui_widget* vlist = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+	vgui_widget_set_pos(vlist, 10.0f, 510.0f);
+	vgui_widget_set_size(vlist, 240.0f, 96.0f);
+	vgui_list_set_row_source(vlist, &src);
+	vgui_layout(ui);
+	float vx = 0, vy = 0, vw = 0, vh = 0;
+	vgui_widget_get_rect(vlist, &vx, &vy, &vw, &vh);
+	(void)vw;
+	(void)vh;
+	float vy1 = style.list.padding_y + row_h * 1.5f;
+	check(vgui_list_item_at_point(vlist, 20.0f, vy1) == 2,
+		"tooltip: virtual item_at_point returns the row id");
+	vgui_input_mouse_move(ui, vx + 20.0f, vy + vy1);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) &&
+		std::string(vgui_context_tooltip_text(ui)) == "virtual row help 1",
+		"tooltip: virtual row_tooltip is used");
+
+	// Tree nodes reuse the same mechanism.
+	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_pos(tree, 600.0f, 20.0f);
+	vgui_widget_set_size(tree, 240.0f, 120.0f);
+	vgui_item_id root = vgui_tree_add_node(tree, 0, "Root", nullptr);
+	vgui_item_id child = vgui_tree_add_node(tree, root, "Child", nullptr);
+	vgui_tree_set_item_tooltip(tree, child, "Node help");
+	check(std::string(vgui_tree_get_item_tooltip(tree, child)) == "Node help",
+		"tooltip: tree node tooltip stored");
+	vgui_tree_expand(tree, root);
+	vgui_layout(ui);
+	float qx = 0, qy = 0, qw = 0, qh = 0;
+	vgui_widget_get_rect(tree, &qx, &qy, &qw, &qh);
+	(void)qw;
+	(void)qh;
+	float node_y = style.tree.padding_y + style.tree.row_height * 1.5f;
+	check(vgui_tree_item_at_point(tree, 30.0f, node_y) == child,
+		"tooltip: tree item_at_point resolves a visible row");
+	vgui_input_mouse_move(ui, qx + 30.0f, qy + node_y);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) &&
+		std::string(vgui_context_tooltip_text(ui)) == "Node help" &&
+		vgui_context_tooltip_owner(ui) == tree,
+		"tooltip: tree node tooltip is used");
+
+	// Destroying the owner drops the overlay and its references.
+	vgui_widget* doomed = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "Doomed");
+	vgui_widget_set_pos(doomed, 800.0f, 600.0f);
+	vgui_widget_set_size(doomed, 80.0f, 24.0f);
+	vgui_widget_set_tooltip(doomed, "Gone soon");
+	vgui_layout(ui);
+	float dx = 0, dy = 0, dw = 0, dh = 0;
+	vgui_widget_get_rect(doomed, &dx, &dy, &dw, &dh);
+	(void)dw;
+	(void)dh;
+	vgui_input_mouse_move(ui, dx + 20.0f, dy + 12.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 1,
+		"tooltip: doomed owner tooltip visible");
+	vgui_widget_destroy(doomed);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: destroying the owner hides the overlay");
+
+	// The context switch disables all overlay behaviour.
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 1,
+		"tooltip: visible before disabling the context");
+	vgui_context_set_tooltip_enabled(ui, 0);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: context switch hides immediately");
+	vgui_input_mouse_move(ui, 10.0f, 690.0f);
+	vgui_input_mouse_move(ui, tx + 30.0f, ty + 15.0f);
+	vgui_update(ui, 0.25f);
+	check(vgui_context_tooltip_visible(ui) == 0,
+		"tooltip: context switch prevents new tooltips");
+	vgui_context_set_tooltip_enabled(ui, 1);
+}
+
+struct modal_cb
+{
+	int closes = 0;
+	int result = -1;
+	vgui_widget* panel = nullptr;
+	int active_at_close = -1;
+	int panel_rect_valid = 0;
+};
+
+static void on_modal_close(vgui_context* ctx, vgui_widget* panel, int result,
+	void* user)
+{
+	modal_cb* s = (modal_cb*)user;
+	s->closes++;
+	s->result = result;
+	s->panel = panel;
+	s->active_at_close = vgui_modal_active(ctx);
+	if (panel)
+	{
+		float x = 0, y = 0, w = 0, h = 0;
+		vgui_widget_get_rect(panel, &x, &y, &w, &h);
+		s->panel_rect_valid = (w > 0.0f && h > 0.0f);
+	}
+}
+
+static void test_modal(vgui_context* ui)
+{
+	vgui_modal_close(ui, 0);
+	vgui_set_focus(ui, nullptr);
+	vgui_toast_clear(ui);
+	vgui_update(ui, 0.016f);
+
+	int bg_clicks = 0;
+	vgui_widget* bg = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "Background");
+	vgui_widget_set_id(bg, "modal-bg");
+	vgui_widget_set_pos(bg, 20.0f, 20.0f);
+	vgui_widget_set_size(bg, 140.0f, 32.0f);
+	vgui_widget_on_event(bg, on_button_click, &bg_clicks);
+	vgui_layout(ui);
+	vgui_set_focus(ui, bg);
+	check(vgui_get_focus(ui) == bg, "modal: background focus before show");
+
+	check(vgui_modal_show(ui, nullptr, nullptr) == 0, "modal: rejects null panel");
+	check(vgui_modal_show(ui, vgui_root(ui), nullptr) == 0, "modal: rejects the root");
+
+	int ok_clicks = 0;
+	vgui_widget* panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_id(panel, "modal-panel");
+	vgui_widget_set_size(panel, 320.0f, 180.0f);
+	vgui_widget_set_background(panel, 0xFF202020);
+	vgui_widget* ok = vgui_widget_add(panel, VGUI_BUTTON, "OK");
+	vgui_widget_set_pos(ok, 20.0f, 20.0f);
+	vgui_widget_set_size(ok, 90.0f, 30.0f);
+	vgui_widget_on_event(ok, on_button_click_only, &ok_clicks);
+	vgui_widget* other = vgui_widget_add(panel, VGUI_BUTTON, "Other");
+	vgui_widget_set_pos(other, 20.0f, 70.0f);
+	vgui_widget_set_size(other, 90.0f, 30.0f);
+
+	vgui_modal_options opts;
+	vgui_modal_options_default(&opts);
+	check(opts.close_on_escape == 1 && opts.close_on_backdrop == 0 &&
+		opts.dim_background == 1 && opts.destroy_on_close == 0 &&
+		opts.margin < 0.0f && opts.backdrop_alpha < 0.0f,
+		"modal: option defaults");
+
+	modal_cb mc;
+	opts.on_close = on_modal_close;
+	opts.user = &mc;
+	check(vgui_modal_show(ui, panel, &opts) == 1, "modal: show");
+	check(vgui_modal_active(ui) == 1, "modal: active after show");
+	check(vgui_modal_panel(ui) == panel, "modal: panel accessor");
+	check(vgui_modal_result(ui) == VGUI_MODAL_RESULT_NONE,
+		"modal: result reset on show");
+	check(vgui_get_focus(ui) == ok, "modal: first focusable receives focus");
+	check(vgui_modal_show(ui, panel, nullptr) == 0,
+		"modal: rejects a second modal");
+
+	vgui_layout(ui);
+	float px = 0, py = 0, pw = 0, ph = 0;
+	vgui_widget_get_rect(panel, &px, &py, &pw, &ph);
+	check(near(pw, 320.0f) && near(ph, 180.0f),
+		"modal: panel keeps its requested size");
+	check(near(px, (900.0f - 320.0f) * 0.5f) &&
+		near(py, (700.0f - 180.0f) * 0.5f),
+		"modal: panel is centred in the context");
+
+	// The background tree is inert while the modal is open.
+	click_at(ui, 90.0f, 36.0f);
+	check(bg_clicks == 0, "modal: background click is blocked");
+	check(vgui_get_focus(ui) == ok, "modal: background click cannot move focus");
+	check(vgui_modal_active(ui) == 1,
+		"modal: backdrop click does not close by default");
+
+	vgui_set_focus(ui, bg);
+	check(vgui_get_focus(ui) == ok,
+		"modal: public focus rejects background widgets");
+
+	// Tab cannot escape the modal panel.
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, 0);
+	check(vgui_get_focus(ui) == other, "modal: Tab moves to the next control");
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, 0);
+	check(vgui_get_focus(ui) == ok, "modal: Tab wraps inside the modal");
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, VGUI_MOD_SHIFT);
+	check(vgui_get_focus(ui) == other, "modal: Shift+Tab reverses inside the modal");
+
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	vgui_widget_get_rect(ok, &bx, &by, &bw, &bh);
+	click_at(ui, bx + bw * 0.5f, by + bh * 0.5f);
+	check(ok_clicks == 1, "modal: modal control receives clicks");
+	check(vgui_modal_active(ui) == 1, "modal: control click keeps the modal open");
+
+	// Context key handlers are background input and stay bypassed.
+	key_filter_state ks = {};
+	int token = vgui_context_add_key_handler(ui, on_key_filter_a, &ks);
+	vgui_input_key(ui, 'A', 1, 0);
+	vgui_input_key(ui, 'A', 0, 0);
+	check(ks.downs == 0 && ks.ups == 0, "modal: background key handlers are blocked");
+	vgui_context_remove_key_handler(ui, token);
+
+	check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1, "modal: Esc is consumed");
+	check(vgui_modal_active(ui) == 0, "modal: Esc closes");
+	check(vgui_modal_result(ui) == VGUI_MODAL_RESULT_CANCEL, "modal: Esc result");
+	check(mc.closes == 1 && mc.result == VGUI_MODAL_RESULT_CANCEL,
+		"modal: close callback result");
+	check(mc.panel == panel && mc.active_at_close == 0,
+		"modal: callback sees a detached panel after deactivation");
+	check(mc.panel_rect_valid == 1, "modal: callback panel is still valid");
+	check(vgui_get_focus(ui) == bg, "modal: focus restored after close");
+	vgui_update(ui, 0.016f);
+	vgui_widget_destroy(panel);
+
+	// Backdrop closing, a custom result and disabled Esc.
+	vgui_widget* panel2 = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(panel2, 200.0f, 100.0f);
+	vgui_widget* one = vgui_widget_add(panel2, VGUI_BUTTON, "One");
+	vgui_widget_set_size(one, 80.0f, 28.0f);
+	modal_cb mc2;
+	vgui_modal_options o2;
+	vgui_modal_options_default(&o2);
+	o2.close_on_escape = 0;
+	o2.close_on_backdrop = 1;
+	o2.backdrop_result = 7;
+	o2.on_close = on_modal_close;
+	o2.user = &mc2;
+	check(vgui_modal_show(ui, panel2, &o2) == 1, "modal: second modal show");
+	check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1,
+		"modal: Esc is consumed when closing is disabled");
+	check(vgui_modal_active(ui) == 1,
+		"modal: close_on_escape=0 keeps the modal open");
+	click_at(ui, 5.0f, 5.0f);
+	check(vgui_modal_active(ui) == 0, "modal: backdrop click closes when enabled");
+	check(vgui_modal_result(ui) == 7 && mc2.result == 7, "modal: backdrop result");
+	check(vgui_get_focus(ui) == bg, "modal: focus restored after backdrop close");
+	vgui_update(ui, 0.016f);
+	vgui_widget_destroy(panel2);
+
+	// destroy_on_close keeps focus out of the panel and removes it afterwards.
+	vgui_widget* panel3 = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(panel3, 200.0f, 100.0f);
+	vgui_widget* bye = vgui_widget_add(panel3, VGUI_BUTTON, "Bye");
+	vgui_widget_set_size(bye, 80.0f, 28.0f);
+	modal_cb mc3;
+	vgui_modal_options o3;
+	vgui_modal_options_default(&o3);
+	o3.destroy_on_close = 1;
+	o3.on_close = on_modal_close;
+	o3.user = &mc3;
+	check(vgui_modal_show(ui, panel3, &o3) == 1, "modal: destroy-on-close show");
+	vgui_modal_close(ui, VGUI_MODAL_RESULT_CONFIRM);
+	check(vgui_modal_active(ui) == 0, "modal: explicit close");
+	check(vgui_modal_result(ui) == VGUI_MODAL_RESULT_CONFIRM,
+		"modal: explicit close result");
+	check(mc3.closes == 1 && mc3.result == VGUI_MODAL_RESULT_CONFIRM,
+		"modal: explicit close callback");
+	check(vgui_get_focus(ui) == bg,
+		"modal: focus restored after destroy-on-close");
+	vgui_update(ui, 0.016f);
+	check(vgui_modal_panel(ui) == nullptr, "modal: panel accessor empty after close");
+
+	int before = vgui_modal_result(ui);
+	vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
+	check(vgui_modal_result(ui) == before,
+		"modal: closing without a modal is a no-op");
+
+	vgui_widget_destroy(bg);
+	vgui_set_focus(ui, nullptr);
+	vgui_update(ui, 0.016f);
+}
+
+struct dialog_cb
+{
+	int closes = 0;
+	int result = -1;
+	std::string text;
+	int active_at_close = -1;
+};
+
+static void on_dialog_result(vgui_context* ctx, int result, const char* text,
+	void* user)
+{
+	dialog_cb* s = (dialog_cb*)user;
+	s->closes++;
+	s->result = result;
+	s->text = text ? text : "";
+	s->active_at_close = vgui_modal_active(ctx);
+}
+
+static vgui_widget* dialog_button_row(vgui_widget* panel)
+{
+	if (!panel) return nullptr;
+	size_t count = vgui_widget_get_child_count(panel);
+	if (count == 0) return nullptr;
+	return vgui_widget_get_child(panel, count - 1);
+}
+
+static void click_widget(vgui_context* ui, vgui_widget* widget)
+{
+	if (!ui || !widget) return;
+	float x = 0, y = 0, w = 0, h = 0;
+	vgui_widget_get_rect(widget, &x, &y, &w, &h);
+	click_at(ui, x + w * 0.5f, y + h * 0.5f);
+}
+
+static void test_dialog(vgui_context* ui)
+{
+	vgui_modal_close(ui, 0);
+	vgui_set_focus(ui, nullptr);
+	vgui_update(ui, 0.016f);
+
+	vgui_dialog_desc desc;
+	vgui_dialog_desc_default(&desc);
+	check(desc.kind == VGUI_DIALOG_ALERT && desc.danger == 0 &&
+		near(desc.width, 0.0f), "dialog: desc defaults");
+
+	// Alert: one button, Enter/click confirms, Esc cancels.
+	dialog_cb dc;
+	vgui_widget* alert = vgui_dialog_alert(ui, "Alert", "Something happened",
+		on_dialog_result, &dc);
+	check(alert != nullptr && vgui_modal_active(ui) == 1, "dialog: alert opens");
+	check(vgui_dialog_input(ui) == nullptr, "dialog: alert has no input");
+	vgui_widget* focus = vgui_get_focus(ui);
+	check(focus && vgui_widget_get_kind(focus) == VGUI_BUTTON,
+		"dialog: alert focuses a button");
+	check(std::string(vgui_widget_get_text(focus)) == "OK",
+		"dialog: alert confirm text");
+	check(vgui_dialog_alert(ui, "Again", "Nested", nullptr, nullptr) == nullptr,
+		"dialog: rejects a second dialog");
+
+	vgui_layout(ui);
+	vgui_widget* row = dialog_button_row(alert);
+	check(row != nullptr && vgui_widget_get_child_count(row) == 1,
+		"dialog: alert has one button");
+	vgui_widget* confirm = vgui_widget_get_child(row, 0);
+	click_widget(ui, confirm);
+	check(vgui_modal_active(ui) == 0, "dialog: alert confirm closes");
+	check(dc.closes == 1 && dc.result == VGUI_MODAL_RESULT_CONFIRM,
+		"dialog: alert confirm result");
+	check(dc.text.empty(), "dialog: alert result text is empty");
+	check(dc.active_at_close == 0, "dialog: result callback runs after deactivation");
+	vgui_update(ui, 0.016f);
+
+	dc = dialog_cb();
+	vgui_widget* alert2 = vgui_dialog_alert(ui, "Alert", "Esc closes",
+		on_dialog_result, &dc);
+	check(alert2 != nullptr, "dialog: alert reopen");
+	check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1,
+		"dialog: Esc is consumed");
+	check(vgui_modal_active(ui) == 0 && dc.result == VGUI_MODAL_RESULT_CANCEL,
+		"dialog: Esc cancels");
+	check(dc.closes == 1 && dc.text.empty(), "dialog: Esc callback text");
+	vgui_update(ui, 0.016f);
+
+	// Confirm: Cancel and OK, Enter confirms the default button.
+	dc = dialog_cb();
+	vgui_widget* confirm_panel = vgui_dialog_confirm(ui, "Delete",
+		"Are you sure?", 1, on_dialog_result, &dc);
+	check(confirm_panel != nullptr && vgui_modal_active(ui) == 1,
+		"dialog: confirm opens");
+	focus = vgui_get_focus(ui);
+	check(focus && vgui_widget_get_kind(focus) == VGUI_BUTTON &&
+		std::string(vgui_widget_get_text(focus)) == "OK",
+		"dialog: confirm focuses OK");
+	vgui_layout(ui);
+	row = dialog_button_row(confirm_panel);
+	check(row != nullptr && vgui_widget_get_child_count(row) == 2,
+		"dialog: confirm has cancel and OK");
+	vgui_widget* cancel = vgui_widget_get_child(row, 0);
+	check(std::string(vgui_widget_get_text(cancel)) == "Cancel",
+		"dialog: cancel text");
+	click_widget(ui, cancel);
+	check(vgui_modal_active(ui) == 0 && dc.result == VGUI_MODAL_RESULT_CANCEL,
+		"dialog: cancel button result");
+	check(dc.text.empty(), "dialog: confirm callback text is empty");
+	vgui_update(ui, 0.016f);
+
+	dc = dialog_cb();
+	vgui_widget* confirm2 = vgui_dialog_confirm(ui, "Go", "Continue?", 0,
+		on_dialog_result, &dc);
+	check(confirm2 != nullptr, "dialog: confirm reopen");
+	check(vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0) == 1,
+		"dialog: Enter is consumed");
+	check(vgui_modal_active(ui) == 0 && dc.result == VGUI_MODAL_RESULT_CONFIRM,
+		"dialog: Enter confirms");
+	vgui_update(ui, 0.016f);
+
+	// Prompt: edit accessor, initial text, typing and the result string.
+	dc = dialog_cb();
+	vgui_widget* prompt = vgui_dialog_prompt(ui, "Name", "Enter a name",
+		"Bob", on_dialog_result, &dc);
+	check(prompt != nullptr && vgui_modal_active(ui) == 1, "dialog: prompt opens");
+	vgui_widget* input = vgui_dialog_input(ui);
+	check(input && vgui_widget_get_kind(input) == VGUI_EDIT,
+		"dialog: prompt input accessor");
+	check(std::string(vgui_edit_get_text(input)) == "Bob",
+		"dialog: prompt initial text");
+	check(vgui_get_focus(ui) == input, "dialog: prompt focuses the edit box");
+	vgui_edit_set_text(input, "Alice");
+	check(vgui_input_text(ui, "X") == 1, "dialog: prompt accepts typed text");
+	check(std::string(vgui_edit_get_text(input)) == "AliceX",
+		"dialog: prompt stores typed text");
+	check(vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0) == 1,
+		"dialog: prompt Enter is consumed");
+	check(vgui_modal_active(ui) == 0, "dialog: prompt Enter closes");
+	check(dc.closes == 1 && dc.result == VGUI_MODAL_RESULT_CONFIRM &&
+		dc.text == "AliceX", "dialog: prompt result text");
+	check(vgui_dialog_input(ui) == nullptr,
+		"dialog: input accessor is empty after close");
+	vgui_update(ui, 0.016f);
+
+	dc = dialog_cb();
+	prompt = vgui_dialog_prompt(ui, "Name", "Cancel keeps text", "Bob",
+		on_dialog_result, &dc);
+	input = vgui_dialog_input(ui);
+	vgui_edit_set_text(input, "Carol");
+	vgui_layout(ui);
+	row = dialog_button_row(prompt);
+	cancel = vgui_widget_get_child(row, 0);
+	click_widget(ui, cancel);
+	check(vgui_modal_active(ui) == 0 && dc.result == VGUI_MODAL_RESULT_CANCEL,
+		"dialog: prompt cancel result");
+	check(dc.text == "Carol", "dialog: prompt cancel reports the text");
+	vgui_update(ui, 0.016f);
+
+	// A small requested width is clamped to the style minimum.
+	vgui_dialog_desc narrow;
+	vgui_dialog_desc_default(&narrow);
+	narrow.kind = VGUI_DIALOG_ALERT;
+	narrow.title = "Narrow";
+	narrow.message = "Body";
+	narrow.width = 40.0f;
+	vgui_widget* narrow_panel = vgui_dialog_show(ui, &narrow);
+	check(narrow_panel != nullptr, "dialog: custom width opens");
+	vgui_layout(ui);
+	float nx = 0, ny = 0, nw = 0, nh = 0;
+	vgui_widget_get_rect(narrow_panel, &nx, &ny, &nw, &nh);
+	check(nw >= 219.0f, "dialog: width clamps to the style minimum");
+	vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
+	vgui_update(ui, 0.016f);
+
+	vgui_set_focus(ui, nullptr);
+}
+
+static void test_toast(vgui_context* ui, const vgui_style& base)
+{
+	vgui_toast_clear(ui);
+	vgui_modal_close(ui, 0);
+	vgui_update(ui, 0.016f);
+
+	vgui_toast_options def;
+	vgui_toast_options_default(&def);
+	check(def.position == VGUI_TOAST_TOP_RIGHT &&
+		def.level == VGUI_TOAST_INFO && def.duration < 0.0f,
+		"toast: option defaults");
+
+	vgui_style style = base;
+	style.toast.duration = 0.5f;
+	style.toast.max_visible = 2;
+	style.toast.margin = 10.0f;
+	style.toast.gap = 6.0f;
+	style.toast.max_width = 300.0f;
+	vgui_context_set_style(ui, &style);
+
+	check(vgui_toast_show(ui, nullptr, nullptr) == 0,
+		"toast: rejects null text");
+	check(vgui_toast_show(ui, "", nullptr) == 0, "toast: rejects empty text");
+	check(vgui_toast_count(nullptr) == 0, "toast: null context count");
+	check(vgui_toast_get_rect(nullptr, 1, nullptr, nullptr, nullptr, nullptr) == 0,
+		"toast: null context rect");
+
+	vgui_toast_id first = vgui_toast_show(ui, "Saved", nullptr);
+	check(first != 0, "toast: show returns an id");
+	check(vgui_toast_count(ui) == 1, "toast: count after show");
+
+	float x = 0, y = 0, w = 0, h = 0;
+	check(vgui_toast_get_rect(ui, first, &x, &y, &w, &h) == 1,
+		"toast: rect available");
+	check(w > 0.0f && h > 0.0f, "toast: rect is non-empty");
+	check(near(x + w, 900.0f - 10.0f) && near(y, 10.0f),
+		"toast: top-right placement");
+
+	vgui_toast_options sticky_opts;
+	vgui_toast_options_default(&sticky_opts);
+	sticky_opts.duration = 0.0f;
+	sticky_opts.position = VGUI_TOAST_BOTTOM_LEFT;
+	sticky_opts.level = VGUI_TOAST_SUCCESS;
+	vgui_toast_id sticky = vgui_toast_show(ui, "Sticky", &sticky_opts);
+	check(sticky != 0 && vgui_toast_count(ui) == 2, "toast: sticky toast added");
+	float sx = 0, sy = 0, sw = 0, sh = 0;
+	check(vgui_toast_get_rect(ui, sticky, &sx, &sy, &sw, &sh) == 1,
+		"toast: sticky rect available");
+	check(near(sx, 10.0f) && near(sy + sh, 700.0f - 10.0f),
+		"toast: bottom-left placement");
+
+	vgui_update(ui, 0.2f);
+	check(vgui_toast_count(ui) == 2, "toast: not expired before duration");
+	vgui_update(ui, 0.4f);
+	check(vgui_toast_count(ui) == 1, "toast: expires after duration");
+	check(vgui_toast_get_rect(ui, first, nullptr, nullptr, nullptr, nullptr) == 0,
+		"toast: expired id has no rect");
+	check(vgui_toast_get_rect(ui, sticky, nullptr, nullptr, nullptr, nullptr) == 1,
+		"toast: sticky toast survives updates");
+	vgui_update(ui, 10.0f);
+	check(vgui_toast_count(ui) == 1, "toast: duration 0 never expires");
+	check(vgui_toast_dismiss(ui, sticky) == 1, "toast: dismiss");
+	check(vgui_toast_count(ui) == 0, "toast: count after dismiss");
+	check(vgui_toast_dismiss(ui, sticky) == 0, "toast: dismiss unknown id");
+
+	// Every corner and centre anchor.
+	vgui_toast_options o;
+	vgui_toast_options_default(&o);
+	o.duration = 0.0f;
+	o.position = VGUI_TOAST_TOP_LEFT;
+	vgui_toast_id tl = vgui_toast_show(ui, "TL", &o);
+	vgui_toast_get_rect(ui, tl, &x, &y, &w, &h);
+	check(near(x, 10.0f) && near(y, 10.0f), "toast: top-left placement");
+	vgui_toast_clear(ui);
+
+	o.position = VGUI_TOAST_TOP_CENTER;
+	vgui_toast_id tc = vgui_toast_show(ui, "TC", &o);
+	vgui_toast_get_rect(ui, tc, &x, &y, &w, &h);
+	check(near(x, (900.0f - w) * 0.5f) && near(y, 10.0f),
+		"toast: top-center placement");
+	vgui_toast_clear(ui);
+
+	o.position = VGUI_TOAST_BOTTOM_RIGHT;
+	vgui_toast_id br = vgui_toast_show(ui, "BR", &o);
+	vgui_toast_get_rect(ui, br, &x, &y, &w, &h);
+	check(near(x + w, 900.0f - 10.0f) && near(y + h, 700.0f - 10.0f),
+		"toast: bottom-right placement");
+	vgui_toast_clear(ui);
+
+	o.position = VGUI_TOAST_BOTTOM_CENTER;
+	vgui_toast_id bc = vgui_toast_show(ui, "BC", &o);
+	vgui_toast_get_rect(ui, bc, &x, &y, &w, &h);
+	check(near(x, (900.0f - w) * 0.5f) && near(y + h, 700.0f - 10.0f),
+		"toast: bottom-center placement");
+	vgui_toast_clear(ui);
+
+	// Same-corner toasts stack with the configured gap.
+	o.position = VGUI_TOAST_TOP_RIGHT;
+	vgui_toast_id t1 = vgui_toast_show(ui, "One", &o);
+	vgui_toast_id t2 = vgui_toast_show(ui, "Two", &o);
+	float x1 = 0, y1 = 0, w1 = 0, h1 = 0, x2 = 0, y2 = 0;
+	vgui_toast_get_rect(ui, t1, &x1, &y1, &w1, &h1);
+	vgui_toast_get_rect(ui, t2, &x2, &y2, nullptr, nullptr);
+	check(near(x2, x1) && near(y2, y1 + h1 + 6.0f), "toast: stack with gap");
+	vgui_toast_clear(ui);
+
+	// max_visible hides extra toasts but they still age out.
+	o.duration = 0.5f;
+	vgui_toast_id m1 = vgui_toast_show(ui, "M1", &o);
+	vgui_toast_id m2 = vgui_toast_show(ui, "M2", &o);
+	vgui_toast_id m3 = vgui_toast_show(ui, "M3", &o);
+	check(m1 && m2 && m3 && vgui_toast_count(ui) == 3,
+		"toast: hidden toasts remain in the model");
+	check(vgui_toast_get_rect(ui, m1, nullptr, nullptr, nullptr, nullptr) == 1 &&
+		vgui_toast_get_rect(ui, m2, nullptr, nullptr, nullptr, nullptr) == 1,
+		"toast: visible slots");
+	check(vgui_toast_get_rect(ui, m3, nullptr, nullptr, nullptr, nullptr) == 0,
+		"toast: max_visible hides extra toasts");
+	vgui_update(ui, 0.6f);
+	check(vgui_toast_count(ui) == 0, "toast: hidden toasts still expire");
+	vgui_toast_clear(ui);
+
+	// A legacy theme with zeroed toast colours falls back to the palette.
+	vgui_theme saved_theme;
+	vgui_context_get_theme(ui, &saved_theme);
+	vgui_theme old = {};
+	old.text = 0xFFEEEEEE;
+	old.panel_bg = 0xFF202020;
+	old.button_border = 0xFF555555;
+	old.menu_bg = 0xFF282828;
+	old.menu_border = 0xFF4A4A4A;
+	old.accent = 0xFF409EFF;
+	old.modal_danger = 0xFFD9544D;
+	vgui_context_set_theme(ui, &old);
+	vgui_theme got;
+	vgui_context_get_theme(ui, &got);
+	check(got.toast_bg == old.menu_bg, "toast: theme fallback background");
+	check(got.toast_border == old.menu_border, "toast: theme fallback border");
+	check(got.toast_text == old.text, "toast: theme fallback text");
+	check(got.toast_info == old.accent, "toast: theme fallback info colour");
+	check(got.toast_success != 0 && got.toast_warning != 0 &&
+		got.toast_error == old.modal_danger,
+		"toast: theme fallback level colours");
+	vgui_toast_id themed = vgui_toast_show(ui, "Themed", nullptr);
+	check(vgui_toast_get_rect(ui, themed, &x, &y, &w, &h) == 1 && w > 0.0f,
+		"toast: layout works with a legacy theme");
+	vgui_toast_clear(ui);
+	vgui_context_set_theme(ui, &saved_theme);
+
+	// A style from before the overlay controls existed restores both blocks.
+	vgui_style zeroed = base;
+	zeroed.modal = {};
+	zeroed.toast = {};
+	vgui_context_set_style(ui, &zeroed);
+	vgui_style got_style;
+	vgui_context_get_style(ui, &got_style);
+	check(near(got_style.modal.dialog_width, 360.0f) &&
+		near(got_style.modal.backdrop_alpha, 0.45f),
+		"toast: zeroed modal style restores defaults");
+	check(near(got_style.toast.duration, 3.0f) &&
+		got_style.toast.max_visible == 3,
+		"toast: zeroed toast style restores defaults");
+	vgui_context_set_style(ui, &base);
+	vgui_toast_clear(ui);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -1515,6 +2365,10 @@ int main()
 	test_list_virtual(ui);
 	test_tree_virtual(ui, style);
 	test_tree_virtual_edges(ui, style);
+	test_tooltip(ui, style);
+	test_modal(ui);
+	test_dialog(ui);
+	test_toast(ui, style);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
