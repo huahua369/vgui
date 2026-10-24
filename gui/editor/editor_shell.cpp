@@ -326,6 +326,7 @@ namespace vgui_editor_kit {
 
 		properties_panel_ = make_dock_page(dock_);
 		properties_.build(properties_panel_);
+		properties_.set_command_stack(&context_.commands());
 		desc.id = "properties";
 		desc.title = "PROPERTIES";
 		desc.panel = properties_panel_;

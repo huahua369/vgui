@@ -75,6 +75,19 @@ namespace vgui_editor_kit {
 		redo_.clear();
 	}
 
+	void command_stack::push(std::unique_ptr<command> command)
+	{
+		if (!command)
+			return;
+		if (!transactions_.empty())
+		{
+			transactions_.back()->add(std::move(command));
+			return;
+		}
+		undo_.push_back(std::move(command));
+		redo_.clear();
+	}
+
 	bool command_stack::undo()
 	{
 		if (undo_.empty())

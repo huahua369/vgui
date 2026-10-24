@@ -68,6 +68,11 @@ namespace vgui_editor_kit {
 		/* Executes and records a command.  Commands must not throw. */
 		void execute(std::unique_ptr<command> command);
 
+		/* Records a command whose effect has already been applied.  Useful for
+		 * property editors that update their model before creating the undo
+		 * record.  Inside a transaction the command joins the current group. */
+		void push(std::unique_ptr<command> command);
+
 		bool undo();
 		bool redo();
 		void clear();

@@ -15673,6 +15673,11 @@ extern "C" {
 		return ctx ? ctx->cursor : VGUI_CURSOR_ARROW;
 	}
 
+	int vgui_context_get_mods(vgui_context* ctx)
+	{
+		return ctx ? ctx->mods : 0;
+	}
+
 	int vgui_input_mouse_move(vgui_context* ctx, float x, float y)
 	{
 		return vgui_mouse_move_impl(ctx, x, y);

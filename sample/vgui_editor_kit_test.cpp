@@ -27,6 +27,24 @@ namespace {
 		return 1;
 	}
 
+	vgui_widget* find_widget(vgui_widget* root, const char* id, int kind)
+	{
+		if (!root)
+			return nullptr;
+		const char* current = vgui_widget_get_id(root);
+		if (current && std::string(current) == id &&
+			(int)vgui_widget_get_kind(root) == kind)
+			return root;
+		const std::size_t count = vgui_widget_get_child_count(root);
+		for (std::size_t i = 0; i < count; ++i)
+		{
+			if (vgui_widget* found = find_widget(vgui_widget_get_child(root, i),
+				id, kind))
+				return found;
+		}
+		return nullptr;
+	}
+
 	class test_row_model final : public vgui_editor_kit::row_model
 	{
 	public:
@@ -87,6 +105,41 @@ namespace {
 		stack.rollback_transaction();
 		if (value != 3)
 			return fail("transaction rollback");
+
+		stack.clear();
+		int pushed = 0;
+		stack.push(std::make_unique<function_command>(
+			"push applied value",
+			[&pushed]() { pushed = 2; },
+			[&pushed]() { pushed = 1; }));
+		if (pushed != 0 || !stack.can_undo() || stack.undo_count() != 1)
+			return fail("command push must not execute");
+		if (!stack.undo() || pushed != 1 || !stack.can_redo())
+			return fail("command push undo");
+		if (!stack.redo() || pushed != 2)
+			return fail("command push redo");
+
+		stack.clear();
+		stack.begin_transaction("push transaction");
+		stack.push(std::make_unique<function_command>(
+			"pushed child",
+			[&pushed]() { pushed = 3; },
+			[&pushed]() { pushed = 2; }));
+		if (!stack.commit_transaction() || stack.undo_count() != 1)
+			return fail("command push transaction");
+		if (!stack.undo() || pushed != 2)
+			return fail("command push transaction undo");
+
+		stack.clear();
+		pushed = 6;
+		stack.begin_transaction("push rollback");
+		stack.push(std::make_unique<function_command>(
+			"pushed rollback",
+			[&pushed]() { pushed = 6; },
+			[&pushed]() { pushed = 5; }));
+		stack.rollback_transaction();
+		if (pushed != 5 || stack.can_undo())
+			return fail("command push transaction rollback");
 
 		return 0;
 	}
@@ -547,6 +600,455 @@ namespace {
 		return 0;
 	}
 
+	int test_selection_subscriptions()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("selection subscription context");
+
+		{
+			editor_context context(ui);
+			int first = 0;
+			int second = 0;
+			const auto first_id = context.add_selection_listener(
+				[&first](object_id) { ++first; });
+			const auto second_id = context.add_selection_listener(
+				[&second](object_id) { ++second; });
+			if (!first_id || !second_id || first_id == second_id)
+				return fail("selection listener tokens");
+
+			context.set_selection(1);
+			if (first != 1 || second != 1)
+				return fail("selection listeners notified");
+			if (!context.remove_selection_listener(first_id))
+				return fail("selection listener removal");
+			context.set_selection(2);
+			if (first != 1 || second != 2)
+				return fail("removed selection listener stays quiet");
+			if (context.remove_selection_listener(first_id))
+				return fail("selection listener double removal");
+			if (!context.remove_selection_listener(second_id))
+				return fail("selection listener final removal");
+
+			int self_calls = 0;
+			editor_context::selection_listener_id self_id = 0;
+			self_id = context.add_selection_listener([&](object_id) {
+				++self_calls;
+				context.remove_selection_listener(self_id);
+			});
+			context.set_selection(3);
+			context.set_selection(4);
+			if (self_calls != 1)
+				return fail("selection listener self removal");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_property_grid()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property grid context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			property_grid grid;
+			command_stack commands;
+			grid.build(vgui_root(ui));
+			grid.set_command_stack(&commands);
+
+			property_desc name;
+			name.id = "name";
+			name.label = "Name";
+			name.type = property_type::text;
+			name.value = "Cube";
+			name.category = "General";
+			name.tooltip = "Object name";
+			if (!grid.add_property(name))
+				return fail("add text property");
+
+			property_desc count;
+			count.id = "count";
+			count.label = "Count";
+			count.type = property_type::integer;
+			count.value = "5";
+			count.category = "Transform";
+			count.tooltip = "Integer count";
+			count.has_range = true;
+			count.min_value = 0.0;
+			count.max_value = 10.0;
+			count.has_default = true;
+			count.default_value = "5";
+			if (!grid.add_property(count))
+				return fail("add integer property");
+
+			property_desc scale;
+			scale.id = "scale";
+			scale.label = "Scale";
+			scale.type = property_type::number;
+			scale.value = "0.5";
+			scale.category = "Transform";
+			scale.has_range = true;
+			scale.min_value = -1.0;
+			scale.max_value = 1.0;
+			scale.step = 0.1;
+			scale.has_default = true;
+			scale.default_value = "0.5";
+			if (!grid.add_property(scale))
+				return fail("add number property");
+
+			property_desc visible;
+			visible.id = "visible";
+			visible.label = "Visible";
+			visible.type = property_type::boolean;
+			visible.value = "false";
+			visible.category = "General";
+			if (!grid.add_property(visible))
+				return fail("add boolean property");
+
+			property_desc mode;
+			mode.id = "mode";
+			mode.label = "Mode";
+			mode.type = property_type::enumeration;
+			mode.value = "medium";
+			mode.category = "Rendering";
+			mode.choices = { "Low", "Medium", "High" };
+			mode.choice_values = { "low", "medium", "high" };
+			mode.choice_enabled = { 1, 0, 1 };
+			mode.has_default = true;
+			mode.default_value = "medium";
+			if (!grid.add_property(mode))
+				return fail("add enum property");
+
+			property_desc tint;
+			tint.id = "tint";
+			tint.label = "Tint";
+			tint.type = property_type::color;
+			tint.value = "#FF0000";
+			tint.category = "Rendering";
+			if (!grid.add_property(tint))
+				return fail("add color property");
+
+			property_desc locked;
+			locked.id = "locked";
+			locked.label = "Locked";
+			locked.type = property_type::text;
+			locked.value = "yes";
+			locked.category = "General";
+			locked.read_only = true;
+			if (!grid.add_property(locked))
+				return fail("add read-only property");
+
+			int bound_value = 3;
+			property_desc bound;
+			bound.id = "bound";
+			bound.label = "Bound";
+			bound.type = property_type::integer;
+			bound.value = "3";
+			bound.category = "General";
+			bound.get_value = [&bound_value]() { return std::to_string(bound_value); };
+			bound.set_value = [&bound_value](const std::string& value) {
+				bound_value = std::stoi(value);
+			};
+			if (!grid.add_property(bound))
+				return fail("add bound property");
+
+			if (grid.row_count() != 8 || grid.visible_row_count() != 8)
+				return fail("property row count");
+			if (grid.property_value("count") != "5" ||
+				grid.property_value("tint") != "#FF0000")
+				return fail("property initial values");
+			if (std::string(vgui_widget_get_tooltip(grid.property_editor("name"))) !=
+				"Object name")
+				return fail("property tooltip");
+			if (!grid.property_editor("visible") ||
+				!grid.property_editor("mode") ||
+				!grid.property_editor("tint"))
+				return fail("typed property editors");
+
+			std::string last_id;
+			std::string last_value;
+			int change_count = 0;
+			grid.set_change_listener([&](const std::string& id,
+				const std::string& value) {
+				++change_count;
+				last_id = id;
+				last_value = value;
+			});
+
+			const std::size_t undo_start = commands.undo_count();
+			if (!grid.commit_property_value("count", "12") ||
+				grid.property_value("count") != "10")
+				return fail("integer clamping");
+			if (commands.undo_count() != undo_start + 1 ||
+				change_count == 0 || last_id != "count" || last_value != "10")
+				return fail("property command record");
+			if (!grid.property_error("count").empty())
+				return fail("property clamp error state");
+
+			if (grid.commit_property_value("count", "abc"))
+				return fail("invalid integer accepted");
+			if (grid.property_value("count") != "10" ||
+				grid.property_error("count").empty())
+				return fail("invalid integer error");
+
+			if (!grid.commit_property_value("count", "3") ||
+				!grid.property_error("count").empty())
+				return fail("integer error recovery");
+			const std::size_t undo_before_display = commands.undo_count();
+			if (!grid.set_property_value("count", "4") ||
+				commands.undo_count() != undo_before_display)
+				return fail("display-only property update");
+			if (!grid.commit_property_value("count", "7") ||
+				commands.undo_count() != undo_before_display + 1)
+				return fail("integer command record");
+			if (!commands.undo() || grid.property_value("count") != "4")
+				return fail("property command undo");
+			if (!commands.redo() || grid.property_value("count") != "7")
+				return fail("property command redo");
+			if (!grid.reset_property("count") ||
+				grid.property_value("count") != "5")
+				return fail("property reset");
+			if (!commands.undo() || grid.property_value("count") != "7")
+				return fail("property reset undo");
+			if (!commands.redo() || grid.property_value("count") != "5")
+				return fail("property reset redo");
+
+			vgui_widget* count_editor = grid.property_editor("count");
+			if (!count_editor)
+				return fail("count editor");
+			vgui_edit_set_text(count_editor, "abc");
+			vgui_set_focus(ui, count_editor);
+			const std::size_t undo_before_text = commands.undo_count();
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (std::string(vgui_edit_get_text(count_editor)) != "abc" ||
+				grid.property_value("count") != "5" ||
+				grid.property_error("count").empty() ||
+				commands.undo_count() != undo_before_text)
+				return fail("invalid editor text preserved");
+
+			vgui_edit_set_text(count_editor, "6");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (grid.property_value("count") != "6" ||
+				!grid.property_error("count").empty() ||
+				commands.undo_count() != undo_before_text + 1)
+				return fail("editor submit commits");
+			if (!commands.undo() || grid.property_value("count") != "5")
+				return fail("editor submit undo");
+
+			if (!grid.commit_property_value("scale", "2") ||
+				grid.property_value("scale") != "1")
+				return fail("number upper clamp");
+			if (!grid.commit_property_value("scale", "-3") ||
+				grid.property_value("scale") != "-1")
+				return fail("number lower clamp");
+			if (!grid.commit_property_value("scale", "0.25") ||
+				grid.property_value("scale") != "0.25")
+				return fail("number input");
+
+			if (!grid.commit_property_value("visible", "yes") ||
+				grid.property_value("visible") != "true" ||
+				vgui_widget_get_checked(grid.property_editor("visible")) != 1)
+				return fail("boolean commit");
+			if (!grid.commit_property_value("visible", "off") ||
+				grid.property_value("visible") != "false" ||
+				vgui_widget_get_checked(grid.property_editor("visible")) != 0)
+				return fail("boolean false commit");
+
+			if (!grid.commit_property_value("mode", "High") ||
+				grid.property_value("mode") != "high" ||
+				std::string(vgui_widget_get_text(grid.property_editor("mode"))) !=
+					"High")
+				return fail("enum label commit");
+			if (grid.commit_property_value("mode", "Medium"))
+				return fail("disabled enum choice accepted");
+			if (!grid.commit_property_value("mode", "Low") ||
+				grid.property_value("mode") != "low")
+				return fail("enum recovery");
+
+			if (!grid.commit_property_value("tint", "ff0000") ||
+				grid.property_value("tint") != "#FF0000")
+				return fail("color hex commit");
+			if (!grid.commit_property_value("tint", "#00ff0080") ||
+				grid.property_value("tint") != "#00FF0080")
+				return fail("color alpha commit");
+			if (grid.commit_property_value("tint", "#GG0000") ||
+				grid.property_error("tint").empty())
+				return fail("invalid color error");
+
+			if (grid.commit_property_value("locked", "no"))
+				return fail("read-only property commit");
+			if (grid.property_error("locked").empty())
+				return fail("read-only property error");
+			if (!grid.set_property_read_only("locked", false) ||
+				grid.property_read_only("locked"))
+				return fail("property read-only toggle");
+			if (!grid.commit_property_value("locked", "no") ||
+				grid.property_value("locked") != "no")
+				return fail("property editable after toggle");
+
+			grid.set_read_only(true);
+			if (!grid.property_read_only("name"))
+				return fail("global read-only state");
+			if (grid.commit_property_value("name", "Box"))
+				return fail("global read-only commit");
+			grid.set_read_only(false);
+			if (grid.property_read_only("name") ||
+				!grid.commit_property_value("name", "Box") ||
+				grid.property_value("name") != "Box")
+				return fail("global read-only recovery");
+
+			bound_value = 9;
+			grid.refresh();
+			if (grid.property_value("bound") != "9")
+				return fail("descriptor getter refresh");
+			if (!grid.commit_property_value("bound", "4") || bound_value != 4)
+				return fail("descriptor setter commit");
+			if (!commands.undo() || bound_value != 9)
+				return fail("descriptor setter undo");
+			if (!commands.redo() || bound_value != 4)
+				return fail("descriptor setter redo");
+
+			std::string source_name = "Sphere";
+			grid.set_value_source([&source_name](const std::string& id,
+				std::string& out) {
+				if (id != "name")
+					return false;
+				out = source_name;
+				return true;
+			});
+			grid.refresh();
+			if (grid.property_value("name") != "Sphere")
+				return fail("value source refresh");
+			source_name = "Cylinder";
+			grid.refresh();
+			if (grid.property_value("name") != "Cylinder")
+				return fail("value source update");
+			grid.set_value_source({});
+
+			grid.set_filter("count");
+			if (grid.visible_row_count() != 1 ||
+				!grid.property_visible("count") ||
+				grid.property_visible("name"))
+				return fail("property filter");
+			grid.set_filter("");
+			if (grid.visible_row_count() != 8)
+				return fail("property filter clear");
+
+			if (!grid.set_category_collapsed("Transform", true) ||
+				!grid.category_collapsed("Transform") ||
+				grid.property_visible("count") ||
+				grid.visible_row_count() != 6)
+				return fail("category collapse");
+			if (!grid.set_category_collapsed("Transform", false) ||
+				grid.category_collapsed("Transform") ||
+				!grid.property_visible("count"))
+				return fail("category expand");
+
+			vgui_layout(ui);
+			float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+			vgui_widget_get_rect(grid.widget(), &x, &y, &w, &h);
+			if (w <= 0.0f || h <= 0.0f)
+				return fail("property grid layout size");
+
+			grid.set_filter("count");
+			grid.set_category_collapsed("Transform", true);
+			grid.clear();
+			if (grid.row_count() != 0 || grid.visible_row_count() != 0)
+				return fail("property grid clear");
+			if (!grid.category_collapsed("Transform"))
+				return fail("category state survives clear");
+			property_desc count_again = count;
+			if (!grid.add_property(count_again) ||
+				grid.visible_row_count() != 0)
+				return fail("filter state survives clear");
+			grid.set_category_collapsed("Transform", false);
+			if (grid.visible_row_count() != 1 ||
+				!grid.property_visible("count"))
+				return fail("filtered row after rebuild");
+			grid.set_filter("");
+
+			grid.clear();
+			property_desc token;
+			token.id = "token";
+			token.label = "Token";
+			token.type = property_type::integer;
+			token.value = "1";
+			if (!grid.add_property(token) ||
+				!grid.commit_property_value("token", "2") ||
+				grid.property_value("token") != "2")
+				return fail("stale command setup");
+			grid.clear();
+			if (!grid.add_property(token) ||
+				grid.property_value("token") != "1")
+				return fail("stale command rebuild");
+			if (!commands.undo())
+				return fail("stale command undo");
+			if (grid.property_value("token") != "1")
+				return fail("stale command touched new row");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_selection_binding()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("selection binding context");
+
+		{
+			editor_context context(ui);
+			property_grid grid;
+			grid.build(vgui_root(ui));
+
+			int bind_calls = 0;
+			grid.bind_selection(context, [&bind_calls](property_grid& target,
+				object_id id) {
+				++bind_calls;
+				target.clear();
+				if (id == 1)
+					target.add_row("Name", "One");
+				else if (id == 2)
+				{
+					target.add_row("Name", "Two");
+					target.add_row("Kind", "Mesh");
+				}
+			});
+			if (bind_calls != 1 || grid.row_count() != 0)
+				return fail("selection binding initial callback");
+
+			context.set_selection(1);
+			if (bind_calls != 2 || grid.row_count() != 1 ||
+				grid.row_value(0) != "One")
+				return fail("selection binding first object");
+
+			context.set_selection(2);
+			if (bind_calls != 3 || grid.row_count() != 2 ||
+				grid.row_value(0) != "Two" || grid.row_value(1) != "Mesh")
+				return fail("selection binding second object");
+
+			grid.unbind_selection();
+			context.set_selection(3);
+			if (bind_calls != 3 || grid.row_count() != 2)
+				return fail("selection binding unsubscribe");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 } // namespace
 
 int main()
@@ -558,6 +1060,12 @@ int main()
 	if (int rc = test_layout_persistence())
 		return rc;
 	if (int rc = test_commands_and_menus())
+		return rc;
+	if (int rc = test_selection_subscriptions())
+		return rc;
+	if (int rc = test_property_grid())
+		return rc;
+	if (int rc = test_selection_binding())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
@@ -648,6 +1156,29 @@ int main()
 			return fail("property command undo");
 		if (!context.commands().redo() || shell.properties().row_value(0) != "Box")
 			return fail("property command redo");
+
+		if (shell.properties().command_stack_ptr() != &context.commands())
+			return fail("shell property grid command stack");
+		property_desc health;
+		health.id = "shell.health";
+		health.label = "Health";
+		health.type = property_type::integer;
+		health.value = "10";
+		health.category = "Gameplay";
+		if (!shell.properties().add_property(health))
+			return fail("shell typed property add");
+		const std::size_t shell_undo = context.commands().undo_count();
+		if (!shell.properties().commit_property_value("shell.health", "25") ||
+			shell.properties().property_value("shell.health") != "25")
+			return fail("shell typed property commit");
+		if (context.commands().undo_count() != shell_undo + 1)
+			return fail("shell typed property command record");
+		if (!context.commands().undo() ||
+			shell.properties().property_value("shell.health") != "10")
+			return fail("shell typed property undo");
+		if (!context.commands().redo() ||
+			shell.properties().property_value("shell.health") != "25")
+			return fail("shell typed property redo");
 
 		vgui_item_id mesh = shell.assets().add_item("Cube.mesh", "Mesh");
 		if (mesh == 0)

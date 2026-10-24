@@ -39,6 +39,12 @@ int main(void)
 
 	vgui_widget* root = vgui_root(ui);
 	check(root != NULL, "C API: root");
+	check(vgui_context_get_mods(ui) == 0, "C API: default modifier state");
+	vgui_input_key(ui, 'A', 1, VGUI_MOD_SHIFT | VGUI_MOD_ALT);
+	check(vgui_context_get_mods(ui) == (VGUI_MOD_SHIFT | VGUI_MOD_ALT),
+		"C API: modifier state");
+	vgui_input_key(ui, 'A', 0, 0);
+	check(vgui_context_get_mods(ui) == 0, "C API: modifier state cleared");
 
 	unsigned int pixels[4] = { 0xFFFFFFFFu, 0xFF00FF00u, 0xFFFF0000u, 0xFF0000FFu };
 	vgui_texture_desc desc;

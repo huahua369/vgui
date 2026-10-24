@@ -6,6 +6,7 @@
  * command stack and the current object selection without depending on a scene
  * or asset database implementation.
  */
+#include <cstddef>
 #include <functional>
 #include <vector>
 
@@ -19,6 +20,7 @@ namespace vgui_editor_kit {
 	{
 	public:
 		using selection_listener = std::function<void(object_id)>;
+		using selection_listener_id = std::size_t;
 
 		explicit editor_context(vgui_context* ui);
 
@@ -35,15 +37,25 @@ namespace vgui_editor_kit {
 		void set_selection(object_id id);
 		void clear_selection();
 
-		void add_selection_listener(selection_listener listener);
+		/* Returns a non-zero token.  Pass it to remove_selection_listener()
+		 * when the listening component is destroyed or rebound. */
+		selection_listener_id add_selection_listener(selection_listener listener);
+		bool remove_selection_listener(selection_listener_id id);
 
 	private:
+		struct listener_entry
+		{
+			selection_listener_id id = 0;
+			selection_listener fn;
+		};
+
 		void notify_selection();
 
 		vgui_context* ui_ = nullptr;
 		command_stack commands_;
 		object_id selection_ = invalid_object;
-		std::vector<selection_listener> selection_listeners_;
+		std::vector<listener_entry> selection_listeners_;
+		selection_listener_id next_selection_listener_ = 1;
 	};
 
 } /* namespace vgui_editor_kit */

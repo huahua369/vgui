@@ -1447,6 +1447,10 @@ extern "C" {
 	VGUI_API vgui_widget* vgui_hit_test(vgui_context* ctx, float x, float y);
 	VGUI_API vgui_cursor vgui_context_get_cursor(vgui_context* ctx);
 
+	/* Current modifier state (vgui_mod bit mask).  Useful for mouse-driven
+	 * controls that need Shift/Alt fine-tuning. */
+	VGUI_API int vgui_context_get_mods(vgui_context* ctx);
+
 	/* Register a context-level shortcut filter.  Returns a non-zero token that
 	 * can be passed to vgui_context_remove_key_handler().  Handlers run in
 	 * reverse registration order (the most recently added handler wins). */
