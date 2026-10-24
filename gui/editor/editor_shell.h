@@ -2,9 +2,11 @@
 /*
  * editor_shell.h - MVP shell for vgui_editor_kit.
  *
- * The shell is assembled from core Splitter and TabView controls: an outer
- * vertical splitter separates the workspace from the bottom panel, and nested
- * horizontal splitters form the Outliner / Viewport / Properties columns.
+ * The shell is assembled from a core Dock: Outliner, Viewport, Properties and
+ * the bottom panel are dock panels with stable ids, so hosts and users can
+ * move them between the left/right/bottom/centre zones, merge them into tab
+ * groups, float them and restore the arrangement after a restart.  The bottom
+ * panel keeps its ASSETS / CONSOLE TabView.
  */
 #include <memory>
 #include <string>
@@ -53,20 +55,29 @@ namespace vgui_editor_kit {
 		bool run_command(const char* id);
 		void refresh_commands();
 
-		/* Layout handles are exposed for host-side layout persistence and for
-		 * tests; components below remain the preferred editing API. */
+		/* The shell's Dock.  Panel ids are "outliner", "viewport",
+		 * "properties" and "bottom".  Use the vgui_dock_* API to rearrange,
+		 * float or query them. */
+		vgui_widget* dock() const noexcept;
+
+		/* Legacy Splitter handles.  The shell now uses a Dock, so these return
+		 * nullptr; they remain for source compatibility.  Use dock() instead. */
 		vgui_widget* body_splitter() const noexcept;
 		vgui_widget* workspace_splitter() const noexcept;
 		vgui_widget* center_splitter() const noexcept;
+
+		/* The ASSETS / CONSOLE TabView inside the bottom dock panel. */
 		vgui_widget* bottom_tabs() const noexcept;
 
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
 
-		/* Layout persistence.  capture_layout() records the current splitter
-		 * ratios, panel visibility and bottom-tab order; apply_layout() restores
-		 * it.  Loading a damaged or version-mismatched file falls back to the
-		 * layout captured immediately after build(). */
+		/* Layout persistence.  capture_layout() records the Dock zone sizes,
+		 * panel order/open state/active tabs/floating rectangles, panel
+		 * visibility and bottom-tab order; apply_layout() restores it.  Loading
+		 * a damaged or version-mismatched file falls back to the layout
+		 * captured immediately after build().  Version-1 splitter layouts are
+		 * still accepted and mapped onto the Dock. */
 		editor_layout capture_layout() const;
 		bool apply_layout(const editor_layout& layout, std::string* error = nullptr);
 		bool save_layout(const std::string& path, std::string* error = nullptr) const;
@@ -92,6 +103,7 @@ namespace vgui_editor_kit {
 		static void on_redo(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user);
 		static void on_menu_open(vgui_widget* menu, void* user);
+		static void on_dock_change(vgui_widget* dock, vgui_item_id item, void* user);
 		static int on_key(vgui_context* ctx, int key, int down, int mods, void* user);
 
 		void register_default_commands();
@@ -99,7 +111,14 @@ namespace vgui_editor_kit {
 		void bind_menu_command(vgui_widget* menu, vgui_item_id item, const char* command);
 		vgui_item_id add_menu_command(vgui_widget* menu, const char* command, bool checkable);
 
-		vgui_widget* panel_widget(editor_panel panel) const noexcept;
+		vgui_item_id panel_item(editor_panel panel) const noexcept;
+
+		void capture_bottom_tabs(editor_layout& layout) const;
+		void capture_dock_state(editor_layout& layout) const;
+		void apply_bottom_tabs(const editor_layout& layout);
+		void apply_dock_sizes(const editor_layout& layout);
+		void apply_legacy_ratios(const editor_layout& layout);
+		void apply_dock_panels(const editor_layout& layout);
 
 		editor_context& context_;
 		command_registry commands_;
@@ -110,14 +129,17 @@ namespace vgui_editor_kit {
 		int key_handler_token_ = 0;
 		vgui_widget* root_ = nullptr;
 		vgui_widget* status_ = nullptr;
-		vgui_widget* body_splitter_ = nullptr;
-		vgui_widget* workspace_splitter_ = nullptr;
-		vgui_widget* center_splitter_ = nullptr;
+		vgui_widget* dock_ = nullptr;
+		vgui_item_id outliner_item_ = 0;
+		vgui_item_id viewport_item_ = 0;
+		vgui_item_id properties_item_ = 0;
+		vgui_item_id bottom_item_ = 0;
 		vgui_widget* bottom_tabs_ = nullptr;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
 		vgui_widget* bottom_panel_ = nullptr;
+		bool applying_layout_ = false;
 		editor_layout default_layout_;
 
 		outliner_view scene_;

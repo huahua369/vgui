@@ -45,7 +45,7 @@
 
 | 领域 | 当前能力 | 对编辑器的影响 |
 |---|---|---|
-| 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；布局可保存/恢复 | 核心 Dock 已提供，editor_shell 尚未切换到 Dock；浮动/停靠状态尚未持久化 |
+| 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
 | 属性编辑 | 只有 Checkbox、Slider、Edit 等基础控件 | 没有 PropertyGrid、数字拖拽、Combo、Vector、Color、资源引用 |
 | 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源 | 没有行图标、自定义行、行内按钮、拖放重排 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
@@ -151,11 +151,11 @@
   - 验收：大列表滚动时只查询可见范围；插入/删除/更新不会丢失选择；现有 list/tree 全量模型 API 保持兼容。
   - 已实现：列表/树行源回调、可见范围查询、稳定行 ID、选择/键盘/滚动虚拟化。待补行图标、自定义行绘制和行内命中区域。
 
-- [ ] **F05 编辑器布局持久化**（P0，S/M）（进行中）
+- [x] **F05 编辑器布局持久化**（P0，S/M）
   - 保存/恢复 Splitter 尺寸、Tab 顺序、面板可见性和 Dock 状态。
   - 布局 JSON 与业务文档分离，避免打开场景时覆盖用户布局。
   - 验收：保存后重启恢复一致；布局损坏或版本不匹配时回退到默认布局。
-  - 已实现：`editor_layout` 带版本 JSON（Splitter 比例、Outliner/Viewport/Properties/Bottom 可见性、底部 Tab 顺序与当前页），`editor_shell` 捕获/应用/保存/加载/重置布局；损坏或版本不匹配回退到 `build()` 后的默认布局。核心 `VGUI_DOCK` 已提供可查询/重建的停靠区、标签顺序、打开状态与浮动矩形，editor_layout 的 Dock 字段接入待后续完成。
+  - 已实现：`editor_layout` 版本 2 JSON 保存 Dock 区域尺寸、每个区域的标签顺序、打开状态、活动页和浮动矩形，并保留面板可见性、底部 Tab 顺序与当前页；`editor_shell` 捕获/应用/保存/加载/重置布局。版本 1 文件仍可加载，其 Splitter 比例会映射到 Dock 区域尺寸；损坏或版本不支持时回退到 `build()` 后的默认布局。
 
 ### M1 编辑器外壳（S）
 
@@ -167,7 +167,7 @@
   - 水平/垂直、嵌套、最小尺寸、拖动改变比例、双击复位。
   - 拖动光标、悬停反馈、布局持久化。
   - 验收：三栏布局可拖动、不会把子面板压到最小尺寸以下；窗口 resize 后比例稳定。
-  - 已实现：核心 `VGUI_SPLITTER` 控件、公共 API、无窗口测试和 `editor_shell` 嵌套分栏。布局持久化由 F05 覆盖。
+  - 已实现：核心 `VGUI_SPLITTER` 控件、公共 API 和无窗口测试；`editor_shell` 已改用 Dock，Splitter 仍可用于其他宿主布局。布局持久化由 F05 覆盖。
 
 - [x] **S02 TabView**（P0，M）
   - 多标签页、关闭按钮、未保存标记、禁用页。
@@ -197,7 +197,7 @@
   - 停靠区域、面板拖动、标签组、浮动窗口、关闭/恢复。
   - 与布局持久化、Tab、Splitter 协同。
   - 验收：面板可在左右/底部停靠、合并为标签组、浮出再停靠；重启后布局恢复。
-  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。editor_shell 接入和 editor_layout 的 Dock 持久化字段留待后续。
+  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。
 
 - [ ] **S07 工具栏辅助组件**（P1，S/M）
   - IconButton、ToggleButton、SegmentedControl。
@@ -453,7 +453,7 @@
 
 首批不做，避免范围失控：
 
-- Dock/浮动面板
+- Dock/浮动面板（已提前完成，见 S06）
 - Table/DataGrid
 - Console/Log
 - 旋转/缩放 Gizmo
@@ -473,7 +473,7 @@ MVP 验收场景：
 
 ### 7.2 第二批：完整编辑器
 
-- S06 Dock / 浮动面板（核心已完成，待接入 editor_shell）
+- S06 Dock / 浮动面板（核心与 editor_shell 接入均已完成）
 - S07 工具栏辅助组件
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient
@@ -538,16 +538,17 @@ MVP 验收场景：
 - 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
 - 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
-- `editor_shell`：外层纵向 Splitter + 工作区嵌套横向 Splitter，底部 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
+- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
+- `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
 - `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Splitter/TabView 外壳、菜单/快捷键和组件边界。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界和布局持久化。
 - 现有 `vgui_model_test`（534 项）、`vgui_c_api_test`（8 项）、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 
-1. 把 `editor_shell` 的外壳切换到 `VGUI_DOCK`，并将停靠区/标签顺序/浮动矩形写入 `editor_layout`。
-2. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
-3. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
-4. 接入 AssetBrowser 缩略图、搜索和拖入场景。
-5. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo。
+1. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
+2. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
+3. 接入 AssetBrowser 缩略图、搜索和拖入场景。
+4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo。
+5. 增加工具栏/状态栏辅助组件与 Dock 标签上下文菜单。

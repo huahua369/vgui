@@ -16,35 +16,19 @@ namespace vgui_editor_kit {
 		constexpr vgui_color kMutedText = 0xFF7F8B9C;
 		constexpr vgui_color kStatusText = 0xFF9CC7A4;
 
-		vgui_widget* make_section(vgui_widget* parent, const char* title,
-			float width, float height, float grow)
+		vgui_widget* make_dock_page(vgui_widget* dock)
 		{
-			vgui_widget* section = vgui_widget_add(parent, VGUI_PANEL, nullptr);
-			vgui_widget_set_size(section, width, height);
-			vgui_widget_set_grow(section, grow);
-			vgui_widget_set_align_self(section, VGUI_ALIGN_STRETCH);
-			vgui_widget_set_layout(section, VGUI_LAYOUT_COLUMN);
-			vgui_widget_set_padding(section, 0, 0, 0, 0);
-			vgui_widget_set_gap(section, 0);
-			vgui_widget_set_background(section, kSectionBg);
-			vgui_widget_set_border(section, kBorder, 1);
-			if (width > 0.0f)
-				vgui_widget_set_min_size(section, width, 0);
+			vgui_widget* page = vgui_widget_add(dock, VGUI_PANEL, nullptr);
+			vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(page, 0, 0, 0, 0);
+			vgui_widget_set_gap(page, 0);
+			vgui_widget_set_background(page, kSectionBg);
+			return page;
+		}
 
-			vgui_widget* heading = vgui_widget_add(section, VGUI_LABEL, title);
-			vgui_widget_set_size(heading, 0, 24);
-			vgui_widget_set_align_self(heading, VGUI_ALIGN_STRETCH);
-			vgui_widget_set_font_size(heading, 11);
-			vgui_widget_set_text_color(heading, kMutedText);
-			vgui_widget_set_text_align(heading, 0.0f, 0.5f);
-			vgui_widget_set_padding(heading, 8, 0, 8, 0);
-
-			vgui_widget* body = vgui_widget_add(section, VGUI_PANEL, nullptr);
-			vgui_widget_set_grow(body, 1.0f);
-			vgui_widget_set_layout(body, VGUI_LAYOUT_COLUMN);
-			vgui_widget_set_padding(body, 6, 6, 6, 6);
-			vgui_widget_set_gap(body, 4);
-			return body;
+		float finite_or(float value, float fallback)
+		{
+			return std::isfinite(value) ? value : fallback;
 		}
 	}
 
@@ -312,44 +296,44 @@ namespace vgui_editor_kit {
 		vgui_widget_set_text_color(status_, kStatusText);
 		vgui_widget_set_text_align(status_, 1.0f, 0.5f);
 
-		body_splitter_ = vgui_widget_add(root_, VGUI_SPLITTER, nullptr);
-		vgui_widget_set_grow(body_splitter_, 1.0f);
-		vgui_widget_set_align_self(body_splitter_, VGUI_ALIGN_STRETCH);
-		vgui_splitter_set_vertical(body_splitter_, 1);
-		vgui_splitter_set_ratio(body_splitter_, 0.75f);
-		vgui_splitter_set_sash_size(body_splitter_, 4.0f);
+		dock_ = vgui_widget_add(root_, VGUI_DOCK, nullptr);
+		vgui_widget_set_grow(dock_, 1.0f);
+		vgui_widget_set_align_self(dock_, VGUI_ALIGN_STRETCH);
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_LEFT, 230.0f);
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_RIGHT, 300.0f);
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_BOTTOM, 180.0f);
 
-		vgui_widget* main = vgui_widget_add(body_splitter_, VGUI_PANEL, nullptr);
-		vgui_widget_set_min_size(main, 0, 200);
-		vgui_widget_set_layout(main, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_padding(main, 0, 0, 0, 0);
-		vgui_widget_set_gap(main, 0);
-		vgui_widget_set_background(main, kRootBg);
+		vgui_dock_panel_desc desc;
+		vgui_dock_panel_desc_default(&desc);
+		desc.closeable = 1;
 
-		workspace_splitter_ = vgui_widget_add(main, VGUI_SPLITTER, nullptr);
-		vgui_widget_set_grow(workspace_splitter_, 1.0f);
-		vgui_splitter_set_vertical(workspace_splitter_, 0);
-		vgui_splitter_set_ratio(workspace_splitter_, 0.2f);
-		vgui_splitter_set_sash_size(workspace_splitter_, 4.0f);
+		outliner_panel_ = make_dock_page(dock_);
+		vgui_widget_set_padding(outliner_panel_, 4, 4, 4, 4);
+		scene_.build(context_, outliner_panel_);
+		desc.id = "outliner";
+		desc.title = "OUTLINER";
+		desc.panel = outliner_panel_;
+		desc.zone = VGUI_DOCK_LEFT;
+		outliner_item_ = vgui_dock_add(dock_, &desc);
 
-		vgui_widget* left_body = make_section(workspace_splitter_, "OUTLINER", 230, 0, 0);
-		outliner_panel_ = vgui_widget_get_parent(left_body);
+		viewport_panel_ = make_dock_page(dock_);
+		viewport_.build(viewport_panel_);
+		desc.id = "viewport";
+		desc.title = "VIEWPORT";
+		desc.panel = viewport_panel_;
+		desc.zone = VGUI_DOCK_CENTER;
+		viewport_item_ = vgui_dock_add(dock_, &desc);
 
-		center_splitter_ = vgui_widget_add(workspace_splitter_, VGUI_SPLITTER, nullptr);
-		vgui_widget_set_min_size(center_splitter_, 400, 0);
-		vgui_splitter_set_vertical(center_splitter_, 0);
-		vgui_splitter_set_ratio(center_splitter_, 0.7f);
-		vgui_splitter_set_sash_size(center_splitter_, 4.0f);
-		vgui_widget* center_body = make_section(center_splitter_, "VIEWPORT", 0, 0, 1);
-		viewport_panel_ = vgui_widget_get_parent(center_body);
-		vgui_widget* right_body = make_section(center_splitter_, "PROPERTIES", 300, 0, 0);
-		properties_panel_ = vgui_widget_get_parent(right_body);
+		properties_panel_ = make_dock_page(dock_);
+		properties_.build(properties_panel_);
+		desc.id = "properties";
+		desc.title = "PROPERTIES";
+		desc.panel = properties_panel_;
+		desc.zone = VGUI_DOCK_RIGHT;
+		properties_item_ = vgui_dock_add(dock_, &desc);
 
-		vgui_widget* bottom_body = make_section(body_splitter_, "PANELS", 0, 180, 0);
-		bottom_panel_ = vgui_widget_get_parent(bottom_body);
-		vgui_widget_set_min_size(bottom_panel_, 0, 120);
-
-		bottom_tabs_ = vgui_widget_add(bottom_body, VGUI_TABVIEW, nullptr);
+		bottom_panel_ = make_dock_page(dock_);
+		bottom_tabs_ = vgui_widget_add(bottom_panel_, VGUI_TABVIEW, nullptr);
 		vgui_widget_set_grow(bottom_tabs_, 1.0f);
 		vgui_widget_set_min_size(bottom_tabs_, 0, 80);
 		vgui_tab_set_tab_height(bottom_tabs_, 26.0f);
@@ -370,14 +354,17 @@ namespace vgui_editor_kit {
 		vgui_item_id console_tab = vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
 		vgui_tab_set_closeable(bottom_tabs_, console_tab, 0);
 
-		scene_.build(context_, left_body);
-		viewport_.build(center_body);
-		properties_.build(right_body);
+		desc.id = "bottom";
+		desc.title = "PANELS";
+		desc.panel = bottom_panel_;
+		desc.zone = VGUI_DOCK_BOTTOM;
+		bottom_item_ = vgui_dock_add(dock_, &desc);
 
 		build_menus();
 		if (context_.ui())
 			key_handler_token_ = vgui_context_add_key_handler(context_.ui(),
 				&editor_shell::on_key, this);
+		vgui_dock_on_change(dock_, &editor_shell::on_dock_change, this);
 		refresh_commands();
 
 		default_layout_ = capture_layout();
@@ -393,19 +380,24 @@ namespace vgui_editor_kit {
 		return root_;
 	}
 
+	vgui_widget* editor_shell::dock() const noexcept
+	{
+		return dock_;
+	}
+
 	vgui_widget* editor_shell::body_splitter() const noexcept
 	{
-		return body_splitter_;
+		return nullptr;
 	}
 
 	vgui_widget* editor_shell::workspace_splitter() const noexcept
 	{
-		return workspace_splitter_;
+		return nullptr;
 	}
 
 	vgui_widget* editor_shell::center_splitter() const noexcept
 	{
-		return center_splitter_;
+		return nullptr;
 	}
 
 	vgui_widget* editor_shell::bottom_tabs() const noexcept
@@ -413,31 +405,121 @@ namespace vgui_editor_kit {
 		return bottom_tabs_;
 	}
 
-	vgui_widget* editor_shell::panel_widget(editor_panel panel) const noexcept
+	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept
 	{
 		switch (panel)
 		{
-		case editor_panel::outliner: return outliner_panel_;
-		case editor_panel::viewport: return viewport_panel_;
-		case editor_panel::properties: return properties_panel_;
-		case editor_panel::bottom: return bottom_panel_;
+		case editor_panel::outliner: return outliner_item_;
+		case editor_panel::viewport: return viewport_item_;
+		case editor_panel::properties: return properties_item_;
+		case editor_panel::bottom: return bottom_item_;
 		}
-		return nullptr;
+		return 0;
 	}
 
 	void editor_shell::set_panel_visible(editor_panel panel, bool visible)
 	{
-		vgui_widget* widget = panel_widget(panel);
-		if (!widget)
+		if (!dock_)
 			return;
-		vgui_widget_set_visible(widget, visible ? 1 : 0);
+		vgui_item_id item = panel_item(panel);
+		if (!item)
+			return;
+		const bool open = vgui_dock_is_open(dock_, item) != 0;
+		if (open == visible)
+		{
+			refresh_commands();
+			return;
+		}
+		if (visible)
+			vgui_dock_restore(dock_, item);
+		else
+			vgui_dock_close(dock_, item);
 		refresh_commands();
 	}
 
 	bool editor_shell::panel_visible(editor_panel panel) const
 	{
-		vgui_widget* widget = panel_widget(panel);
-		return widget ? vgui_widget_get_visible(widget) != 0 : false;
+		if (!dock_)
+			return false;
+		vgui_item_id item = panel_item(panel);
+		return item != 0 && vgui_dock_is_open(dock_, item) != 0;
+	}
+
+	void editor_shell::capture_bottom_tabs(editor_layout& layout) const
+	{
+		if (!bottom_tabs_)
+			return;
+		int count = vgui_tab_get_count(bottom_tabs_);
+		for (int i = 0; i < count; ++i)
+		{
+			vgui_item_id item = vgui_tab_get_at(bottom_tabs_, i);
+			layout.bottom_tab_order.emplace_back(vgui_tab_get_title(bottom_tabs_, item));
+		}
+		vgui_item_id active = vgui_tab_get_active(bottom_tabs_);
+		if (active)
+			layout.bottom_active_tab = vgui_tab_get_title(bottom_tabs_, active);
+	}
+
+	void editor_shell::capture_dock_state(editor_layout& layout) const
+	{
+		if (!dock_)
+			return;
+
+		layout.dock_left_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_LEFT);
+		layout.dock_right_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_RIGHT);
+		layout.dock_bottom_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_BOTTOM);
+		layout.dock_panels.clear();
+		layout.dock_active = {};
+
+		static const vgui_dock_zone zones[4] = {
+			VGUI_DOCK_LEFT,
+			VGUI_DOCK_RIGHT,
+			VGUI_DOCK_BOTTOM,
+			VGUI_DOCK_CENTER
+		};
+		for (int z = 0; z < 4; ++z)
+		{
+			const int count = vgui_dock_get_zone_count(dock_, zones[z]);
+			for (int i = 0; i < count; ++i)
+			{
+				vgui_item_id item = vgui_dock_get_zone_at(dock_, zones[z], i);
+				const char* id = item ? vgui_dock_get_id(dock_, item) : nullptr;
+				if (!id || !*id)
+					continue;
+				editor_dock_panel_layout panel;
+				panel.id = id;
+				panel.zone = vgui_dock_get_zone(dock_, item);
+				panel.open = vgui_dock_is_open(dock_, item) != 0;
+				layout.dock_panels.push_back(std::move(panel));
+			}
+			vgui_item_id active = vgui_dock_get_active(dock_, zones[z]);
+			const char* active_id = active ? vgui_dock_get_id(dock_, active) : nullptr;
+			if (active_id && *active_id)
+				layout.dock_active[(size_t)z] = active_id;
+		}
+
+		const int floating = vgui_dock_get_zone_count(dock_, VGUI_DOCK_FLOATING);
+		for (int i = 0; i < floating; ++i)
+		{
+			vgui_item_id item = vgui_dock_get_zone_at(dock_, VGUI_DOCK_FLOATING, i);
+			const char* id = item ? vgui_dock_get_id(dock_, item) : nullptr;
+			if (!id || !*id)
+				continue;
+			editor_dock_panel_layout panel;
+			panel.id = id;
+			panel.zone = VGUI_DOCK_FLOATING;
+			panel.open = vgui_dock_is_open(dock_, item) != 0;
+			float x = 0.0f, y = 0.0f, width = 0.0f, height = 0.0f;
+			if (vgui_dock_get_floating_rect(dock_, item, &x, &y, &width, &height))
+			{
+				panel.has_floating_rect = width > 0.0f && height > 0.0f;
+				panel.x = x;
+				panel.y = y;
+				panel.width = width;
+				panel.height = height;
+			}
+			layout.dock_panels.push_back(std::move(panel));
+		}
 	}
 
 	editor_layout editor_shell::capture_layout() const
@@ -446,27 +528,176 @@ namespace vgui_editor_kit {
 		if (!built())
 			return layout;
 
-		layout.body_ratio = vgui_splitter_get_ratio(body_splitter_);
-		layout.workspace_ratio = vgui_splitter_get_ratio(workspace_splitter_);
-		layout.center_ratio = vgui_splitter_get_ratio(center_splitter_);
+		capture_dock_state(layout);
 		layout.outliner_visible = panel_visible(editor_panel::outliner);
 		layout.viewport_visible = panel_visible(editor_panel::viewport);
 		layout.properties_visible = panel_visible(editor_panel::properties);
 		layout.bottom_visible = panel_visible(editor_panel::bottom);
+		capture_bottom_tabs(layout);
 
-		if (bottom_tabs_)
+		/* Keep the legacy splitter ratios meaningful for hosts that read them
+		 * directly.  They are derived from the Dock zone sizes. */
+		float dx = 0.0f, dy = 0.0f, dw = 0.0f, dh = 0.0f;
+		vgui_widget_get_rect(dock_, &dx, &dy, &dw, &dh);
+		(void)dx;
+		(void)dy;
+		if (dw > 0.0f)
 		{
-			int count = vgui_tab_get_count(bottom_tabs_);
+			const float left = std::max(0.0f, layout.dock_left_size);
+			const float right = std::max(0.0f, layout.dock_right_size);
+			const float center = std::max(0.0f, dw - left - right);
+			layout.workspace_ratio = std::clamp(left / dw, 0.0f, 1.0f);
+			if (center + right > 0.0f)
+				layout.center_ratio = std::clamp(center / (center + right), 0.0f, 1.0f);
+		}
+		if (dh > 0.0f)
+		{
+			const float bottom = std::max(0.0f, layout.dock_bottom_size);
+			layout.body_ratio = std::clamp((dh - bottom) / dh, 0.0f, 1.0f);
+		}
+		return layout;
+	}
+
+	void editor_shell::apply_bottom_tabs(const editor_layout& layout)
+	{
+		if (!bottom_tabs_)
+			return;
+
+		int count = vgui_tab_get_count(bottom_tabs_);
+		std::vector<vgui_item_id> items((size_t)count, 0);
+		std::vector<char> used((size_t)count, 0);
+		for (int i = 0; i < count; ++i)
+			items[(size_t)i] = vgui_tab_get_at(bottom_tabs_, i);
+
+		std::vector<vgui_item_id> desired;
+		desired.reserve((size_t)count);
+		for (const std::string& title : layout.bottom_tab_order)
+		{
+			for (int i = 0; i < count; ++i)
+			{
+				if (used[(size_t)i]) continue;
+				if (title != vgui_tab_get_title(bottom_tabs_, items[(size_t)i])) continue;
+				desired.push_back(items[(size_t)i]);
+				used[(size_t)i] = 1;
+				break;
+			}
+		}
+		for (size_t i = 0; i < desired.size(); ++i)
+			vgui_tab_move(bottom_tabs_, desired[i], (int)i);
+
+		if (!layout.bottom_active_tab.empty())
+		{
+			count = vgui_tab_get_count(bottom_tabs_);
 			for (int i = 0; i < count; ++i)
 			{
 				vgui_item_id item = vgui_tab_get_at(bottom_tabs_, i);
-				layout.bottom_tab_order.emplace_back(vgui_tab_get_title(bottom_tabs_, item));
+				if (layout.bottom_active_tab != vgui_tab_get_title(bottom_tabs_, item))
+					continue;
+				vgui_tab_set_active(bottom_tabs_, item);
+				break;
 			}
-			vgui_item_id active = vgui_tab_get_active(bottom_tabs_);
-			if (active)
-				layout.bottom_active_tab = vgui_tab_get_title(bottom_tabs_, active);
 		}
-		return layout;
+	}
+
+	void editor_shell::apply_dock_sizes(const editor_layout& layout)
+	{
+		if (!dock_)
+			return;
+		auto size = [this](float value, float fallback) {
+			if (std::isfinite(value) && value >= 0.0f)
+				return value;
+			return fallback;
+		};
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_LEFT,
+			size(layout.dock_left_size, default_layout_.dock_left_size));
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_RIGHT,
+			size(layout.dock_right_size, default_layout_.dock_right_size));
+		vgui_dock_set_zone_size(dock_, VGUI_DOCK_BOTTOM,
+			size(layout.dock_bottom_size, default_layout_.dock_bottom_size));
+	}
+
+	void editor_shell::apply_legacy_ratios(const editor_layout& layout)
+	{
+		if (!dock_)
+			return;
+
+		float dx = 0.0f, dy = 0.0f, dw = 0.0f, dh = 0.0f;
+		vgui_widget_get_rect(dock_, &dx, &dy, &dw, &dh);
+		(void)dx;
+		(void)dy;
+		if ((dw <= 0.0f || dh <= 0.0f) && context_.ui())
+		{
+			int cw = 0, ch = 0;
+			vgui_context_get_size(context_.ui(), &cw, &ch);
+			if (dw <= 0.0f) dw = (float)cw;
+			if (dh <= 0.0f) dh = (float)ch;
+		}
+
+		if (dw > 0.0f)
+		{
+			const float left = std::clamp(layout.workspace_ratio, 0.05f, 0.60f) * dw;
+			const float right = (1.0f - std::clamp(layout.center_ratio, 0.10f, 0.90f))
+				* std::max(0.0f, dw - left);
+			vgui_dock_set_zone_size(dock_, VGUI_DOCK_LEFT, left);
+			vgui_dock_set_zone_size(dock_, VGUI_DOCK_RIGHT, right);
+		}
+		if (dh > 0.0f)
+		{
+			const float bottom = (1.0f - std::clamp(layout.body_ratio, 0.20f, 0.90f)) * dh;
+			vgui_dock_set_zone_size(dock_, VGUI_DOCK_BOTTOM, bottom);
+		}
+	}
+
+	void editor_shell::apply_dock_panels(const editor_layout& layout)
+	{
+		if (!dock_)
+			return;
+
+		int next_index[4] = { 0, 0, 0, 0 };
+		for (const editor_dock_panel_layout& panel : layout.dock_panels)
+		{
+			if (panel.id.empty() || panel.zone == VGUI_DOCK_FLOATING)
+				continue;
+			const int zone = (int)panel.zone;
+			if (zone < 0 || zone >= 4)
+				continue;
+			vgui_item_id item = vgui_dock_find(dock_, panel.id.c_str());
+			if (!item)
+				continue;
+			if (!vgui_dock_set_zone(dock_, item, panel.zone, next_index[zone]))
+				continue;
+			++next_index[zone];
+			if (!panel.open)
+				vgui_dock_close(dock_, item);
+		}
+
+		for (const editor_dock_panel_layout& panel : layout.dock_panels)
+		{
+			if (panel.id.empty() || panel.zone != VGUI_DOCK_FLOATING)
+				continue;
+			vgui_item_id item = vgui_dock_find(dock_, panel.id.c_str());
+			if (!item)
+				continue;
+			const float x = panel.has_floating_rect ? finite_or(panel.x, 0.0f) : 0.0f;
+			const float y = panel.has_floating_rect ? finite_or(panel.y, 0.0f) : 0.0f;
+			const float width = panel.has_floating_rect ? finite_or(panel.width, 0.0f) : 0.0f;
+			const float height = panel.has_floating_rect ? finite_or(panel.height, 0.0f) : 0.0f;
+			if (!vgui_dock_float(dock_, item, x, y, width, height))
+				continue;
+			if (!panel.open)
+				vgui_dock_close(dock_, item);
+		}
+
+		for (int z = 0; z < 4; ++z)
+		{
+			const std::string& id = layout.dock_active[(size_t)z];
+			if (id.empty())
+				continue;
+			vgui_item_id item = vgui_dock_find(dock_, id.c_str());
+			if (!item || !vgui_dock_is_open(dock_, item))
+				continue;
+			vgui_dock_activate(dock_, item);
+		}
 	}
 
 	bool editor_shell::apply_layout(const editor_layout& layout, std::string* error)
@@ -476,65 +707,39 @@ namespace vgui_editor_kit {
 			if (error) *error = "editor shell is not built";
 			return false;
 		}
-		if (layout.version != editor_layout::current_version)
+		if (layout.version < 1 || layout.version > editor_layout::current_version)
 		{
 			if (error) *error = "unsupported layout version";
 			return false;
 		}
 
-		auto ratio = [](float value, float fallback) {
-			return std::isfinite(value) ? std::clamp(value, 0.0f, 1.0f) : fallback;
-		};
-		vgui_splitter_set_ratio(body_splitter_,
-			ratio(layout.body_ratio, default_layout_.body_ratio));
-		vgui_splitter_set_ratio(workspace_splitter_,
-			ratio(layout.workspace_ratio, default_layout_.workspace_ratio));
-		vgui_splitter_set_ratio(center_splitter_,
-			ratio(layout.center_ratio, default_layout_.center_ratio));
+		const bool was_applying = applying_layout_;
+		applying_layout_ = true;
 
+		if (context_.ui())
+			vgui_layout(context_.ui());
+
+		const bool has_dock_sizes = layout.dock_left_size >= 0.0f
+			|| layout.dock_right_size >= 0.0f
+			|| layout.dock_bottom_size >= 0.0f;
+		if (has_dock_sizes || layout.version >= 2)
+			apply_dock_sizes(layout);
+		else
+			apply_legacy_ratios(layout);
+
+		/* Legacy visibility acts as a fallback for panels that are not present
+		 * in the version-2 dock list.  The dock list then overrides it. */
 		set_panel_visible(editor_panel::outliner, layout.outliner_visible);
 		set_panel_visible(editor_panel::viewport, layout.viewport_visible);
 		set_panel_visible(editor_panel::properties, layout.properties_visible);
 		set_panel_visible(editor_panel::bottom, layout.bottom_visible);
 
-		if (bottom_tabs_)
-		{
-			int count = vgui_tab_get_count(bottom_tabs_);
-			std::vector<vgui_item_id> items((size_t)count, 0);
-			std::vector<char> used((size_t)count, 0);
-			for (int i = 0; i < count; ++i)
-				items[(size_t)i] = vgui_tab_get_at(bottom_tabs_, i);
+		if (!layout.dock_panels.empty())
+			apply_dock_panels(layout);
+		apply_bottom_tabs(layout);
 
-			std::vector<vgui_item_id> desired;
-			desired.reserve((size_t)count);
-			for (const std::string& title : layout.bottom_tab_order)
-			{
-				for (int i = 0; i < count; ++i)
-				{
-					if (used[(size_t)i]) continue;
-					if (title != vgui_tab_get_title(bottom_tabs_, items[(size_t)i])) continue;
-					desired.push_back(items[(size_t)i]);
-					used[(size_t)i] = 1;
-					break;
-				}
-			}
-			for (size_t i = 0; i < desired.size(); ++i)
-				vgui_tab_move(bottom_tabs_, desired[i], (int)i);
-
-			if (!layout.bottom_active_tab.empty())
-			{
-				count = vgui_tab_get_count(bottom_tabs_);
-				for (int i = 0; i < count; ++i)
-				{
-					vgui_item_id item = vgui_tab_get_at(bottom_tabs_, i);
-					if (layout.bottom_active_tab != vgui_tab_get_title(bottom_tabs_, item))
-						continue;
-					vgui_tab_set_active(bottom_tabs_, item);
-					break;
-				}
-			}
-		}
-
+		applying_layout_ = was_applying;
+		refresh_commands();
 		if (context_.ui())
 			vgui_layout(context_.ui());
 		return true;
@@ -649,6 +854,15 @@ namespace vgui_editor_kit {
 		(void)menu;
 		auto* self = static_cast<editor_shell*>(user);
 		if (self)
+			self->refresh_commands();
+	}
+
+	void editor_shell::on_dock_change(vgui_widget* dock, vgui_item_id item, void* user)
+	{
+		(void)dock;
+		(void)item;
+		auto* self = static_cast<editor_shell*>(user);
+		if (self && !self->applying_layout_)
 			self->refresh_commands();
 	}
 

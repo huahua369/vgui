@@ -91,9 +91,9 @@ namespace {
 		return 0;
 	}
 
-	bool near(float a, float b)
+	bool near_px(float a, float b)
 	{
-		return std::fabs(a - b) <= 0.0005f;
+		return std::fabs(a - b) <= 0.5f;
 	}
 
 	bool write_text(const std::filesystem::path& path, const char* text)
@@ -127,18 +127,22 @@ namespace {
 			vgui_context* ui = vgui_create(nullptr, 16.0f);
 			if (!ui)
 				return fail("layout source context");
+			vgui_context_set_size(ui, 1280, 800);
 			{
 				editor_context context(ui);
 				editor_shell shell(context);
 				shell.build();
-				if (!shell.built() || !shell.center_splitter())
-					return fail("layout shell build");
+				vgui_widget* dock = shell.dock();
+				if (!shell.built() || !dock ||
+					vgui_widget_get_kind(dock) != VGUI_DOCK)
+					return fail("layout shell dock build");
 
 				editor_layout initial = shell.capture_layout();
 				if (initial.version != editor_layout::current_version ||
-					!near(initial.body_ratio, 0.75f) ||
-					!near(initial.workspace_ratio, 0.20f) ||
-					!near(initial.center_ratio, 0.70f) ||
+					!near_px(initial.dock_left_size, 230.0f) ||
+					!near_px(initial.dock_right_size, 300.0f) ||
+					!near_px(initial.dock_bottom_size, 180.0f) ||
+					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
 					initial.bottom_tab_order.size() != 2 ||
@@ -147,11 +151,25 @@ namespace {
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
 
-				vgui_splitter_set_ratio(shell.body_splitter(), 0.62f);
-				vgui_splitter_set_ratio(shell.workspace_splitter(), 0.31f);
-				vgui_splitter_set_ratio(shell.center_splitter(), 0.55f);
-				shell.set_panel_visible(editor_panel::properties, false);
-				shell.set_panel_visible(editor_panel::bottom, false);
+				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
+				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
+				vgui_item_id properties = vgui_dock_find(dock, "properties");
+				vgui_item_id bottom = vgui_dock_find(dock, "bottom");
+				if (!outliner || !viewport || !properties || !bottom)
+					return fail("layout dock panel ids");
+
+				vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 260.0f);
+				vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 340.0f);
+				vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 150.0f);
+
+				// Merge Properties into the Outliner tab group, float the bottom
+				// panel and close the viewport.
+				if (!vgui_dock_set_zone(dock, properties, VGUI_DOCK_LEFT, 1))
+					return fail("layout dock merge properties");
+				if (!vgui_dock_float(dock, bottom, 120.0f, 90.0f, 420.0f, 260.0f))
+					return fail("layout dock float bottom");
+				if (!vgui_dock_close(dock, viewport))
+					return fail("layout dock close viewport");
 
 				vgui_item_id console = vgui_tab_get_at(shell.bottom_tabs(), 1);
 				if (!console || !vgui_tab_move(shell.bottom_tabs(), console, 0) ||
@@ -163,21 +181,49 @@ namespace {
 					return fail("layout save");
 
 				editor_layout saved = shell.capture_layout();
-				if (!near(saved.body_ratio, 0.62f) ||
-					!near(saved.workspace_ratio, 0.31f) ||
-					!near(saved.center_ratio, 0.55f) ||
-					!saved.outliner_visible || !saved.viewport_visible ||
-					saved.properties_visible || saved.bottom_visible ||
+				if (!near_px(saved.dock_left_size, 260.0f) ||
+					!near_px(saved.dock_right_size, 340.0f) ||
+					!near_px(saved.dock_bottom_size, 150.0f) ||
+					saved.dock_panels.size() != 4 ||
+					!saved.outliner_visible || saved.viewport_visible ||
+					!saved.properties_visible || !saved.bottom_visible ||
 					saved.bottom_tab_order.size() != 2 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
 
+				auto find_panel = [&saved](const char* id)
+					-> const editor_dock_panel_layout* {
+					for (const editor_dock_panel_layout& panel : saved.dock_panels)
+						if (panel.id == id)
+							return &panel;
+					return nullptr;
+				};
+				const editor_dock_panel_layout* outliner_state = find_panel("outliner");
+				const editor_dock_panel_layout* viewport_state = find_panel("viewport");
+				const editor_dock_panel_layout* properties_state = find_panel("properties");
+				const editor_dock_panel_layout* bottom_state = find_panel("bottom");
+				if (!outliner_state || !viewport_state || !properties_state ||
+					!bottom_state)
+					return fail("layout captured panel states");
+				if (outliner_state->zone != VGUI_DOCK_LEFT || !outliner_state->open ||
+					properties_state->zone != VGUI_DOCK_LEFT || !properties_state->open ||
+					viewport_state->zone != VGUI_DOCK_CENTER || viewport_state->open ||
+					bottom_state->zone != VGUI_DOCK_FLOATING || !bottom_state->open ||
+					!bottom_state->has_floating_rect ||
+					!near_px(bottom_state->width, 420.0f) ||
+					!near_px(bottom_state->height, 260.0f))
+					return fail("layout captured dock state");
+				if (saved.dock_active[VGUI_DOCK_LEFT] != "properties")
+					return fail("layout captured active tab");
+
 				editor_layout parsed;
 				if (!editor_layout_from_json(editor_layout_to_json(saved), parsed, &error) ||
-					!near(parsed.body_ratio, 0.62f) ||
-					!near(parsed.workspace_ratio, 0.31f) ||
-					!near(parsed.center_ratio, 0.55f) ||
+					!near_px(parsed.dock_left_size, 260.0f) ||
+					!near_px(parsed.dock_right_size, 340.0f) ||
+					!near_px(parsed.dock_bottom_size, 150.0f) ||
+					parsed.dock_panels.size() != saved.dock_panels.size() ||
+					parsed.dock_active != saved.dock_active ||
 					parsed.bottom_tab_order != saved.bottom_tab_order ||
 					parsed.bottom_active_tab != saved.bottom_active_tab)
 					return fail("layout json round trip");
@@ -189,24 +235,53 @@ namespace {
 			vgui_context* ui = vgui_create(nullptr, 16.0f);
 			if (!ui)
 				return fail("layout restored context");
+			vgui_context_set_size(ui, 1280, 800);
 			{
 				editor_context context(ui);
 				editor_shell shell(context);
 				shell.build();
-				if (!shell.built())
+				vgui_widget* dock = shell.dock();
+				if (!shell.built() || !dock)
 					return fail("layout restored shell build");
 
 				std::string error;
 				if (!shell.load_layout(layout_path.string(), &error))
 					return fail("layout load");
-				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.62f) ||
-					!near(vgui_splitter_get_ratio(shell.workspace_splitter()), 0.31f) ||
-					!near(vgui_splitter_get_ratio(shell.center_splitter()), 0.55f))
-					return fail("layout restored ratios");
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 340.0f) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 150.0f))
+					return fail("layout restored dock sizes");
+
+				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
+				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
+				vgui_item_id properties = vgui_dock_find(dock, "properties");
+				vgui_item_id bottom = vgui_dock_find(dock, "bottom");
+				if (!outliner || !viewport || !properties || !bottom)
+					return fail("layout restored dock ids");
+				if (vgui_dock_get_zone(dock, outliner) != VGUI_DOCK_LEFT ||
+					vgui_dock_get_zone(dock, properties) != VGUI_DOCK_LEFT ||
+					vgui_dock_get_zone(dock, viewport) != VGUI_DOCK_CENTER ||
+					vgui_dock_get_zone(dock, bottom) != VGUI_DOCK_FLOATING ||
+					!vgui_dock_is_open(dock, outliner) ||
+					vgui_dock_is_open(dock, viewport) ||
+					!vgui_dock_is_open(dock, properties) ||
+					!vgui_dock_is_open(dock, bottom))
+					return fail("layout restored dock state");
+				if (vgui_dock_get_active(dock, VGUI_DOCK_LEFT) != properties)
+					return fail("layout restored active tab");
+				if (vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) != 2 ||
+					vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 0) != outliner ||
+					vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 1) != properties)
+					return fail("layout restored tab order");
+				float fx = 0, fy = 0, fw = 0, fh = 0;
+				if (!vgui_dock_get_floating_rect(dock, bottom, &fx, &fy, &fw, &fh) ||
+					!near_px(fx, 120.0f) || !near_px(fy, 90.0f) ||
+					!near_px(fw, 420.0f) || !near_px(fh, 260.0f))
+					return fail("layout restored floating rect");
 				if (!shell.panel_visible(editor_panel::outliner) ||
-					!shell.panel_visible(editor_panel::viewport) ||
-					shell.panel_visible(editor_panel::properties) ||
-					shell.panel_visible(editor_panel::bottom))
+					shell.panel_visible(editor_panel::viewport) ||
+					!shell.panel_visible(editor_panel::properties) ||
+					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
 				if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
 					return fail("layout restored tab count");
@@ -220,13 +295,15 @@ namespace {
 					return fail("layout write malformed file");
 				if (shell.load_layout(bad_path.string(), &error))
 					return fail("layout malformed file accepted");
-				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.75f) ||
-					!near(vgui_splitter_get_ratio(shell.workspace_splitter()), 0.20f) ||
-					!near(vgui_splitter_get_ratio(shell.center_splitter()), 0.70f) ||
-					!shell.panel_visible(editor_panel::outliner) ||
-					!shell.panel_visible(editor_panel::viewport) ||
-					!shell.panel_visible(editor_panel::properties) ||
-					!shell.panel_visible(editor_panel::bottom))
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 230.0f) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 300.0f) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 180.0f) ||
+					vgui_dock_get_zone(dock, properties) != VGUI_DOCK_RIGHT ||
+					vgui_dock_get_zone(dock, bottom) != VGUI_DOCK_BOTTOM ||
+					!vgui_dock_is_open(dock, outliner) ||
+					!vgui_dock_is_open(dock, viewport) ||
+					!vgui_dock_is_open(dock, properties) ||
+					!vgui_dock_is_open(dock, bottom))
 					return fail("layout malformed fallback");
 				vgui_item_id fallback_first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id fallback_active = vgui_tab_get_active(shell.bottom_tabs());
@@ -238,8 +315,35 @@ namespace {
 					return fail("layout write version file");
 				if (shell.load_layout(bad_path.string(), &error))
 					return fail("layout version mismatch accepted");
-				if (!near(vgui_splitter_get_ratio(shell.body_splitter()), 0.75f))
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 230.0f))
 					return fail("layout version fallback");
+
+				// Version-1 files still map their splitter ratios onto the Dock.
+				if (!write_text(bad_path,
+					"{\"version\": 1,"
+					"\"splitters\": {\"body\": 0.60, \"workspace\": 0.30, \"center\": 0.50},"
+					"\"panels\": {\"outliner\": true, \"viewport\": true,"
+					"\"properties\": false, \"bottom\": true},"
+					"\"bottom_tabs\": {\"order\": [\"CONSOLE\", \"ASSETS\"],"
+					"\"active\": \"CONSOLE\"}}"))
+					return fail("layout write legacy file");
+				if (!shell.load_layout(bad_path.string(), &error))
+					return fail("layout legacy load");
+				float dw = 0, dh = 0;
+				vgui_widget_get_rect(dock, nullptr, nullptr, &dw, &dh);
+				const float expected_left = 0.30f * dw;
+				const float expected_right = 0.50f * (dw - expected_left);
+				const float expected_bottom = 0.40f * dh;
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), expected_left) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), expected_right) ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), expected_bottom) ||
+					vgui_dock_is_open(dock, properties))
+					return fail("layout legacy mapping");
+				vgui_item_id legacy_first = vgui_tab_get_at(shell.bottom_tabs(), 0);
+				vgui_item_id legacy_active = vgui_tab_get_active(shell.bottom_tabs());
+				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), legacy_first)) != "CONSOLE" ||
+					std::string(vgui_tab_get_title(shell.bottom_tabs(), legacy_active)) != "CONSOLE")
+					return fail("layout legacy bottom tabs");
 			}
 			vgui_destroy(ui);
 		}
@@ -486,14 +590,25 @@ int main()
 		if (w <= 0.0f || h <= 0.0f)
 			return fail("shell layout size");
 
-		if (!shell.body_splitter() || !shell.workspace_splitter() || !shell.bottom_tabs())
-			return fail("shell layout handles");
-		if (vgui_widget_get_kind(shell.body_splitter()) != VGUI_SPLITTER ||
-			vgui_widget_get_kind(shell.workspace_splitter()) != VGUI_SPLITTER)
-			return fail("shell splitter kinds");
-		if (!vgui_splitter_get_vertical(shell.body_splitter()) ||
-			vgui_splitter_get_vertical(shell.workspace_splitter()))
-			return fail("shell splitter orientation");
+		vgui_widget* dock = shell.dock();
+		if (!dock || vgui_widget_get_kind(dock) != VGUI_DOCK)
+			return fail("shell dock");
+		if (vgui_dock_get_count(dock) != 4)
+			return fail("shell dock panel count");
+		vgui_item_id outliner_panel = vgui_dock_find(dock, "outliner");
+		vgui_item_id viewport_panel = vgui_dock_find(dock, "viewport");
+		vgui_item_id properties_panel = vgui_dock_find(dock, "properties");
+		vgui_item_id bottom_panel = vgui_dock_find(dock, "bottom");
+		if (!outliner_panel || !viewport_panel || !properties_panel || !bottom_panel)
+			return fail("shell dock panel ids");
+		if (vgui_dock_get_zone(dock, outliner_panel) != VGUI_DOCK_LEFT ||
+			vgui_dock_get_zone(dock, viewport_panel) != VGUI_DOCK_CENTER ||
+			vgui_dock_get_zone(dock, properties_panel) != VGUI_DOCK_RIGHT ||
+			vgui_dock_get_zone(dock, bottom_panel) != VGUI_DOCK_BOTTOM)
+			return fail("shell dock zones");
+		if (shell.body_splitter() || shell.workspace_splitter() ||
+			shell.center_splitter())
+			return fail("shell legacy splitter handles");
 		if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);

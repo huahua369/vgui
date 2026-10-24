@@ -4,21 +4,48 @@
  *
  * Layout is deliberately separate from scene/document data: the host can
  * store it next to user preferences and restoring a scene never overwrites the
- * user's panel arrangement.  The JSON format carries a version so older files
- * can be rejected cleanly in favour of the built-in default layout.
+ * user's panel arrangement.  The JSON format carries a version so incompatible
+ * files can be rejected cleanly in favour of the built-in default layout.
+ *
+ * Version 1 stored splitter ratios, panel visibility and bottom-tab order.
+ * Version 2 adds the Dock state (zone sizes, per-zone order, active tabs,
+ * open state and floating rectangles).  Version-1 files are still accepted
+ * and mapped onto the Dock so existing user layouts keep working.
  */
+#include <array>
 #include <string>
 #include <vector>
 
+#include "vgui.h"
+
 namespace vgui_editor_kit {
+
+	struct editor_dock_panel_layout
+	{
+		/* Stable string id passed to vgui_dock_panel_desc::id. */
+		std::string id;
+		vgui_dock_zone zone = VGUI_DOCK_CENTER;
+		bool open = true;
+
+		/* Floating rectangle.  Coordinates are absolute pixels; the rectangle
+		 * is only used when zone is VGUI_DOCK_FLOATING and has_floating_rect
+		 * is true.  Otherwise the dock style defaults apply. */
+		bool has_floating_rect = false;
+		float x = 0.0f;
+		float y = 0.0f;
+		float width = 0.0f;
+		float height = 0.0f;
+	};
 
 	struct editor_layout
 	{
-		static constexpr int current_version = 1;
+		static constexpr int current_version = 2;
 
 		int version = current_version;
 
-		/* Ratios of the three shell splitters.  They are stored as fractions
+		/* Legacy splitter ratios.  Version-2 captures still write them for
+		 * hosts that read the fields directly, while version-1 files use them
+		 * to derive the initial Dock zone sizes.  They are stored as fractions
 		 * of the main axis and clamped to 0..1 during restore. */
 		float body_ratio = 0.75f;
 		float workspace_ratio = 0.20f;
@@ -33,6 +60,23 @@ namespace vgui_editor_kit {
 		 * bottom tabs.  Unknown titles are ignored during restore. */
 		std::vector<std::string> bottom_tab_order;
 		std::string bottom_active_tab;
+
+		/* Dock state (version 2).  A negative zone size means "use the style
+		 * default"; captured layouts always store concrete pixel sizes. */
+		float dock_left_size = -1.0f;
+		float dock_right_size = -1.0f;
+		float dock_bottom_size = -1.0f;
+
+		/* Panels are stored in restore order: zones first (left, right,
+		 * bottom, centre), then floating frames from bottom to top.  The order
+		 * inside each zone is the tab order, and closed panels are included so
+		 * reopening them restores their position. */
+		std::vector<editor_dock_panel_layout> dock_panels;
+
+		/* Active panel ids for the four dock zones, indexed by
+		 * vgui_dock_zone (left, right, bottom, centre).  Empty entries mean no
+		 * active panel or a collapsed zone. */
+		std::array<std::string, 4> dock_active{};
 	};
 
 	std::string editor_layout_to_json(const editor_layout& layout);
