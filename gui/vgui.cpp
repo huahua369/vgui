@@ -264,6 +264,28 @@ struct vgui_menu_state
 	void* open_user = nullptr;
 	vgui_widget_fn close_fn = nullptr;
 	void* close_user = nullptr;
+	/* Set when this popup belongs to a VGUI_MENUBAR item.  The bar uses these to
+	 * clear its active title when the popup closes. */
+	vgui_widget* owner_menubar = nullptr;
+	vgui_item_id owner_item = 0;
+};
+
+struct vgui_menubar_item
+{
+	vgui_item_id id = 0;
+	std::string text;
+	vgui_widget* menu = nullptr;
+	int enabled = 1;
+};
+
+struct vgui_menubar_state
+{
+	std::vector<vgui_menubar_item> items;
+	std::unordered_map<vgui_item_id, size_t> index;
+	vgui_item_id next_id = 1;
+	vgui_item_id hover = 0;
+	vgui_item_id pressed = 0;
+	vgui_item_id active = 0;
 };
 
 struct vgui_splitter_state
@@ -440,6 +462,7 @@ struct vgui_widget
 	std::unique_ptr<vgui_list_state> list;
 	std::unique_ptr<vgui_tree_state> tree;
 	std::unique_ptr<vgui_menu_state> menu;
+	std::unique_ptr<vgui_menubar_state> menubar;
 
 	// container controls ---------------------------------------------------
 	std::unique_ptr<vgui_splitter_state> splitter;
@@ -562,6 +585,16 @@ struct vgui_context
 	int want_key = 0;
 	int want_text = 0;
 	vgui_cursor cursor = VGUI_CURSOR_ARROW;
+
+	// context-level shortcut filters --------------------------------------
+	struct key_handler_entry
+	{
+		int token = 0;
+		vgui_key_handler_fn fn = nullptr;
+		void* user = nullptr;
+	};
+	std::vector<key_handler_entry> key_handlers;
+	int next_key_handler = 1;
 
 	bool layout_dirty = true;
 	bool in_input = false;
@@ -1117,6 +1150,64 @@ namespace {
 	static vgui_tab_state* vgui_tabs_of(vgui_widget* w)
 	{
 		return (w && w->kind == VGUI_TABVIEW && w->tabs) ? w->tabs.get() : nullptr;
+	}
+
+	static vgui_menubar_state* vgui_menubar_of(vgui_widget* w)
+	{
+		return (w && w->kind == VGUI_MENUBAR && w->menubar) ? w->menubar.get() : nullptr;
+	}
+
+	static vgui_menubar_item* vgui_menubar_find(vgui_widget* w, vgui_item_id item)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(w);
+		if (!st || item == 0) return nullptr;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return nullptr;
+		return &st->items[it->second];
+	}
+
+	static float vgui_menubar_item_width(vgui_widget* bar, const vgui_menubar_item& item)
+	{
+		const vgui_menubar_style& ms = bar->ctx->style.menubar;
+		return vgui_text_width(bar, item.text) + ms.item_padding_x * 2.0f;
+	}
+
+	static void vgui_menubar_item_rect_at(vgui_widget* bar, size_t index,
+		float* out_x, float* out_y, float* out_w, float* out_h)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(bar);
+		const vgui_menubar_style& ms = bar->ctx->style.menubar;
+		float inner_y = bar->abs_y + ms.padding_y;
+		float inner_h = std::max(0.0f, bar->abs_h - ms.padding_y * 2.0f);
+		float item_h = ms.item_height > 0 ? std::min(ms.item_height, inner_h) : inner_h;
+		if (item_h < inner_h) inner_y += (inner_h - item_h) * 0.5f;
+
+		float px = bar->abs_x + ms.padding_x;
+		float iw = 0.0f;
+		if (st && index < st->items.size())
+		{
+			for (size_t i = 0; i < index; ++i)
+				px += vgui_menubar_item_width(bar, st->items[i]) + ms.gap;
+			iw = vgui_menubar_item_width(bar, st->items[index]);
+		}
+		if (out_x) *out_x = px;
+		if (out_y) *out_y = inner_y;
+		if (out_w) *out_w = iw;
+		if (out_h) *out_h = item_h;
+	}
+
+	static float vgui_menubar_content_width(vgui_widget* bar)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(bar);
+		if (!st) return 0.0f;
+		const vgui_menubar_style& ms = bar->ctx->style.menubar;
+		float w = 0.0f;
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			if (i > 0) w += ms.gap;
+			w += vgui_menubar_item_width(bar, st->items[i]);
+		}
+		return w;
 	}
 
 	static vgui_tab_item* vgui_tab_find(vgui_widget* w, vgui_item_id item)
@@ -1879,6 +1970,15 @@ namespace {
 		s.menu.submenu_delay = 0.18f;
 		s.menu.disabled_mix = 0.55f;
 
+		s.menubar.item_height = 0.0f;
+		s.menubar.padding_x = 4.0f;
+		s.menubar.padding_y = 2.0f;
+		s.menubar.item_padding_x = 10.0f;
+		s.menubar.gap = 2.0f;
+		s.menubar.rounding = 3.0f;
+		s.menubar.req_height = 28.0f;
+		s.menubar.disabled_mix = 0.55f;
+
 		s.image.req_width = 240.0f;
 		s.image.req_height = 160.0f;
 		s.image.border_width = 1.0f;
@@ -2039,6 +2139,15 @@ namespace {
 		s->menu.submenu_delay = vgui_nonneg(s->menu.submenu_delay);
 		s->menu.disabled_mix = vgui_clampf(s->menu.disabled_mix, 0.0f, 1.0f);
 
+		s->menubar.item_height = vgui_nonneg(s->menubar.item_height);
+		s->menubar.padding_x = vgui_nonneg(s->menubar.padding_x);
+		s->menubar.padding_y = vgui_nonneg(s->menubar.padding_y);
+		s->menubar.item_padding_x = vgui_nonneg(s->menubar.item_padding_x);
+		s->menubar.gap = vgui_nonneg(s->menubar.gap);
+		s->menubar.rounding = vgui_nonneg(s->menubar.rounding);
+		s->menubar.req_height = vgui_nonneg(s->menubar.req_height);
+		s->menubar.disabled_mix = vgui_clampf(s->menubar.disabled_mix, 0.0f, 1.0f);
+
 		s->image.req_width = vgui_nonneg(s->image.req_width);
 		s->image.req_height = vgui_nonneg(s->image.req_height);
 		s->image.border_width = vgui_nonneg(s->image.border_width);
@@ -2071,6 +2180,10 @@ namespace {
 		if (s->menu.min_width == 0) s->menu.min_width = def.menu.min_width;
 		if (s->menu.max_width == 0) s->menu.max_width = def.menu.max_width;
 		if (s->menu.submenu_delay == 0) s->menu.submenu_delay = def.menu.submenu_delay;
+		if (s->menubar.padding_x == 0) s->menubar.padding_x = def.menubar.padding_x;
+		if (s->menubar.padding_y == 0) s->menubar.padding_y = def.menubar.padding_y;
+		if (s->menubar.item_padding_x == 0) s->menubar.item_padding_x = def.menubar.item_padding_x;
+		if (s->menubar.req_height == 0) s->menubar.req_height = def.menubar.req_height;
 		if (s->image.req_width == 0) s->image.req_width = def.image.req_width;
 		if (s->image.req_height == 0) s->image.req_height = def.image.req_height;
 		if (s->image.border_width == 0) s->image.border_width = def.image.border_width;
@@ -2230,6 +2343,18 @@ namespace {
 			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 0.0f;
 			w->focusable = 1;
 			w->cursor_type = VGUI_CURSOR_ARROW;
+			w->clip_children = 1;
+			break;
+		case VGUI_MENUBAR:
+			w->menubar = std::make_unique<vgui_menubar_state>();
+			w->bg = 0;
+			w->border = 0;
+			w->border_width = 0.0f;
+			w->rounding = st.menubar.rounding;
+			w->padding[0] = w->padding[1] = w->padding[2] = w->padding[3] = 0.0f;
+			w->req_h = st.menubar.req_height;
+			w->focusable = 0;
+			w->cursor_type = VGUI_CURSOR_HAND;
 			w->clip_children = 1;
 			break;
 		case VGUI_CUSTOM:
@@ -2808,6 +2933,18 @@ namespace {
 			w->intrinsic_h = ch;
 		}
 		break;
+		case VGUI_MENUBAR:
+		{
+			const vgui_menubar_style& ms = ctx->style.menubar;
+			float lh = vgui_line_height(ctx, w);
+			float content_w = vgui_menubar_content_width(w);
+			float content_h = ms.item_height > 0 ? ms.item_height : lh + ms.padding_y * 2.0f;
+			w->content_w = content_w + ms.padding_x * 2.0f;
+			w->content_h = content_h + ms.padding_y * 2.0f;
+			w->intrinsic_w = w->req_w > 0 ? w->req_w : w->content_w;
+			w->intrinsic_h = w->req_h > 0 ? w->req_h : w->content_h;
+		}
+		break;
 		case VGUI_IMAGE:
 		{
 			int sw = 0, sh = 0;
@@ -3289,6 +3426,15 @@ namespace {
 			vgui_layout_tabview(w, ctx, x, y, ww, hh);
 			return;
 		}
+		if (w->kind == VGUI_MENUBAR)
+		{
+			// The bar paints its titles itself; only the outer rect is needed.
+			w->abs_x = x;
+			w->abs_y = y;
+			w->abs_w = ww;
+			w->abs_h = hh;
+			return;
+		}
 
 		if (w->kind != VGUI_PANEL) return;
 
@@ -3405,12 +3551,61 @@ namespace {
 				for (vgui_menu_item& pi : parent->items)
 					if (pi.submenu == w) pi.submenu = nullptr;
 			}
+			// Destroying a menu that is still attached to a menu bar detaches it
+			// from the bar so the bar never keeps a dangling item.
+			if (ms->owner_menubar && ctx->alive.count(ms->owner_menubar))
+			{
+				vgui_menubar_state* bs = vgui_menubar_of(ms->owner_menubar);
+				if (bs)
+				{
+					auto bi = bs->index.find(ms->owner_item);
+					if (bi != bs->index.end() && bi->second < bs->items.size() &&
+						bs->items[bi->second].menu == w)
+					{
+						vgui_item_id removed = bs->items[bi->second].id;
+						bs->items.erase(bs->items.begin() + (std::ptrdiff_t)bi->second);
+						bs->index.clear();
+						for (size_t i = 0; i < bs->items.size(); ++i)
+							bs->index[bs->items[i].id] = i;
+						if (bs->active == removed) bs->active = 0;
+						if (bs->hover == removed) bs->hover = 0;
+						if (bs->pressed == removed) bs->pressed = 0;
+					}
+				}
+			}
+			ms->owner_menubar = nullptr;
+			ms->owner_item = 0;
 			if (ctx->open_menu == w) ctx->open_menu = nullptr;
 			std::vector<vgui_widget*> subs;
 			for (const vgui_menu_item& item : ms->items)
 				if (item.submenu) subs.push_back(item.submenu);
 			for (vgui_widget* sub : subs)
 				if (sub && ctx->alive.count(sub)) vgui_delete_rec(sub, ctx);
+		}
+
+		// A menu bar owns its popup menus (they are not layout children).
+		if (w->kind == VGUI_MENUBAR && w->menubar)
+		{
+			vgui_menubar_state* bs = w->menubar.get();
+			std::vector<vgui_widget*> menus;
+			for (vgui_menubar_item& item : bs->items)
+			{
+				if (item.menu && ctx->alive.count(item.menu))
+					menus.push_back(item.menu);
+				if (item.menu && item.menu->menu)
+				{
+					item.menu->menu->owner_menubar = nullptr;
+					item.menu->menu->owner_item = 0;
+				}
+				item.menu = nullptr;
+			}
+			bs->items.clear();
+			bs->index.clear();
+			bs->active = 0;
+			bs->hover = 0;
+			bs->pressed = 0;
+			for (vgui_widget* menu : menus)
+				if (ctx->alive.count(menu)) vgui_delete_rec(menu, ctx);
 		}
 
 		ctx->alive.erase(w);
@@ -5182,6 +5377,12 @@ namespace {
 		st->cursor = 0;
 		st->hover = 0;
 		st->pressed = 0;
+		if (st->owner_menubar && st->owner_item && ctx->alive.count(st->owner_menubar) &&
+			st->owner_menubar->kind == VGUI_MENUBAR && st->owner_menubar->menubar)
+		{
+			vgui_menubar_state* bs = st->owner_menubar->menubar.get();
+			if (bs->active == st->owner_item) bs->active = 0;
+		}
 		if (was_open && st->close_fn)
 			st->close_fn(menu, st->close_user);
 	}
@@ -5342,6 +5543,75 @@ namespace {
 		if (ctx->height > 0 && y + ch > (float)ctx->height - 8.0f)
 			y = (float)ctx->height - ch - 8.0f;
 		vgui_menu_show(menu, x, y);
+	}
+
+	static vgui_widget* vgui_menu_owner_menubar(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st || !st->owner_menubar) return nullptr;
+		vgui_widget* bar = st->owner_menubar;
+		if (!bar->ctx || !bar->ctx->alive.count(bar) || bar->kind != VGUI_MENUBAR) return nullptr;
+		return bar;
+	}
+
+	static vgui_item_id vgui_menubar_item_at_point(vgui_widget* bar, float x, float y)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(bar);
+		if (!st || !bar) return 0;
+		if (x < bar->abs_x || y < bar->abs_y ||
+			x >= bar->abs_x + bar->abs_w || y >= bar->abs_y + bar->abs_h)
+			return 0;
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			float ix = 0, iy = 0, iw = 0, ih = 0;
+			vgui_menubar_item_rect_at(bar, i, &ix, &iy, &iw, &ih);
+			if (x >= ix && x < ix + iw && y >= iy && y < iy + ih)
+				return st->items[i].id;
+		}
+		return 0;
+	}
+
+	static vgui_item_id vgui_menubar_step(vgui_widget* bar, int delta)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(bar);
+		if (!st || st->items.empty()) return 0;
+		int count = (int)st->items.size();
+		int start = -1;
+		for (int i = 0; i < count; ++i)
+			if (st->items[(size_t)i].id == st->active) { start = i; break; }
+		if (start < 0)
+			start = delta >= 0 ? -1 : 0;
+		for (int step = 1; step <= count; ++step)
+		{
+			int next = start + delta * step;
+			next %= count;
+			if (next < 0) next += count;
+			if (st->items[(size_t)next].enabled && st->items[(size_t)next].menu)
+				return st->items[(size_t)next].id;
+		}
+		return 0;
+	}
+
+	static void vgui_menubar_show(vgui_widget* bar, vgui_item_id item)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(bar);
+		if (!st || !bar->ctx) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return;
+		vgui_menubar_item& entry = st->items[it->second];
+		if (!entry.enabled || !entry.menu) return;
+		vgui_widget* menu = entry.menu;
+		size_t index = it->second;
+		float x = 0, y = 0, w = 0, h = 0;
+		vgui_menubar_item_rect_at(bar, index, &x, &y, &w, &h);
+		vgui_menu_show(menu, x, y + h);
+		vgui_context* ctx = bar->ctx;
+		if (!ctx || !ctx->alive.count(bar) || !ctx->alive.count(menu)) return;
+		st = vgui_menubar_of(bar);
+		vgui_menu_state* ms = vgui_menu_of(menu);
+		if (!st || !ms || !ms->open) return;
+		st->active = item;
+		st->hover = item;
 	}
 
 	static vgui_widget* vgui_menu_hit_rec(vgui_widget* menu, float x, float y)
@@ -5774,17 +6044,37 @@ namespace {
 				if (ctx->alive.count(drag) && drag->ctx)
 					vgui_menu_update_layout(drag, drag->ctx);
 			}
+			// A menubar keeps its menu chain open while the pointer travels over
+			// its titles: hover another title to switch menus.
+			vgui_widget* owner_bar = vgui_menu_owner_menubar(ctx->open_menu);
+			if (owner_bar)
+			{
+				vgui_menubar_state* bs = vgui_menubar_of(owner_bar);
+				vgui_item_id over = vgui_menubar_item_at_point(owner_bar, x, y);
+				if (bs)
+				{
+					bs->hover = over;
+					if (over && over != bs->active)
+					{
+						vgui_menubar_item* bi = vgui_menubar_find(owner_bar, over);
+						if (bi && bi->enabled && bi->menu)
+							vgui_menubar_show(owner_bar, over);
+					}
+				}
+			}
 			vgui_menu_mouse_move(ctx, x, y);
 			vgui_widget* mh = vgui_menu_hit_rec(ctx->open_menu, x, y);
 			vgui_widget* sw = nullptr;
 			int sa = 0;
-			bool bar = mh && vgui_scrollbar_hit(mh, x, y, &sw, &sa);
+			bool over_bar_scroll = mh && vgui_scrollbar_hit(mh, x, y, &sw, &sa);
 			int idx = -1;
 			vgui_item_id item = mh ? vgui_menu_item_at(mh, x, y, &idx) : 0;
-			ctx->cursor = (!bar && item && mh->menu && idx >= 0 &&
+			ctx->cursor = (!over_bar_scroll && item && mh->menu && idx >= 0 &&
 				mh->menu->items[(size_t)idx].enabled &&
 				mh->menu->items[(size_t)idx].type != VGUI_MENU_ITEM_SEPARATOR)
 				? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
+			if (owner_bar && vgui_menubar_item_at_point(owner_bar, x, y))
+				ctx->cursor = VGUI_CURSOR_HAND;
 			ctx->want_mouse = 1;
 			vgui_end_input(ctx);
 			return 1;
@@ -5845,6 +6135,11 @@ namespace {
 					ts->close_hover = over_close ? item : 0;
 				}
 				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, index, x - h->abs_x, y - h->abs_y);
+			}
+			else if (h->kind == VGUI_MENUBAR)
+			{
+				vgui_menubar_state* bs = vgui_menubar_of(h);
+				if (bs) bs->hover = vgui_menubar_item_at_point(h, x, y);
 			}
 			else
 			{
@@ -5910,6 +6205,9 @@ namespace {
 				ctx->cursor = vgui_splitter_cursor(h);
 			else if (h->kind == VGUI_TABVIEW && vgui_tab_bar_hit(h, x, y))
 				ctx->cursor = VGUI_CURSOR_HAND;
+			else if (h->kind == VGUI_MENUBAR)
+				ctx->cursor = vgui_menubar_item_at_point(h, x, y)
+					? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
 			else
 				ctx->cursor = h->cursor_type;
 		}
@@ -5950,6 +6248,24 @@ namespace {
 
 		if (ctx->open_menu)
 		{
+			vgui_widget* owner_bar = vgui_menu_owner_menubar(ctx->open_menu);
+			if (owner_bar && button == 1)
+			{
+				vgui_menubar_state* bs = vgui_menubar_of(owner_bar);
+				vgui_item_id over = vgui_menubar_item_at_point(owner_bar, x, y);
+				if (bs && over)
+				{
+					if (bs->active == over)
+						vgui_menu_close_all(ctx);
+					else
+						vgui_menubar_show(owner_bar, over);
+					ctx->menu_swallow_up = 1;
+					ctx->want_mouse = 1;
+					ctx->cursor = VGUI_CURSOR_HAND;
+					vgui_end_input(ctx);
+					return 1;
+				}
+			}
 			vgui_menu_mouse_down(ctx, button, x, y);
 			ctx->want_mouse = 1;
 			ctx->cursor = VGUI_CURSOR_ARROW;
@@ -5964,6 +6280,29 @@ namespace {
 		ctx->want_mouse = h != nullptr;
 		ctx->cursor = (over_scrollbar || !h || !h->enabled)
 			? VGUI_CURSOR_ARROW : h->cursor_type;
+
+		if (h && h->enabled && h->kind == VGUI_MENUBAR && button == 1)
+		{
+			vgui_menubar_state* bs = vgui_menubar_of(h);
+			vgui_item_id item = vgui_menubar_item_at_point(h, x, y);
+			if (bs)
+			{
+				bs->pressed = item;
+				if (item && bs->active == item)
+				{
+					vgui_menu_close_all(ctx);
+					ctx->menu_swallow_up = 1;
+				}
+				else if (item)
+				{
+					vgui_menubar_show(h, item);
+				}
+			}
+			ctx->want_mouse = 1;
+			ctx->cursor = item ? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		// Scrollbars are painted over the content, so they get the first chance at
 		// the click: they neither move focus nor forward the press to the widget
@@ -6491,15 +6830,56 @@ namespace {
 		return consumed;
 	}
 
+	static int vgui_dispatch_key_handlers(vgui_context* ctx, int key, int down, int mods)
+	{
+		if (!ctx || ctx->key_handlers.empty()) return 0;
+		std::vector<vgui_context::key_handler_entry> handlers = ctx->key_handlers;
+		for (auto it = handlers.rbegin(); it != handlers.rend(); ++it)
+		{
+			if (!it->fn) continue;
+			bool present = false;
+			for (const auto& entry : ctx->key_handlers)
+				if (entry.token == it->token) { present = true; break; }
+			if (!present) continue;
+			if (it->fn(ctx, key, down, mods, it->user)) return 1;
+		}
+		return 0;
+	}
+
 	static int vgui_key_impl(vgui_context* ctx, int key, int down, int mods)
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
 		ctx->mods = mods;
-		ctx->want_key = ctx->focus != nullptr || ctx->open_menu != nullptr;
+		ctx->want_key = ctx->focus != nullptr || ctx->open_menu != nullptr ||
+			!ctx->key_handlers.empty();
 
 		if (ctx->open_menu)
 		{
+			// Left/right at the top level of a menubar switches between titles.
+			// A right press on a submenu entry still opens that submenu.
+			vgui_menu_state* mst = ctx->open_menu->menu.get();
+			if (down && mst && mst->owner_menubar && !mst->submenu_open &&
+				(key == VGUI_KEY_LEFT || key == VGUI_KEY_RIGHT))
+			{
+				bool submenu_cursor = false;
+				auto p = mst->index.find(mst->cursor);
+				if (p != mst->index.end() && p->second < mst->items.size())
+				{
+					const vgui_menu_item& cur = mst->items[p->second];
+					submenu_cursor = cur.enabled && cur.type == VGUI_MENU_ITEM_SUBMENU;
+				}
+				if (key == VGUI_KEY_LEFT || !submenu_cursor)
+				{
+					vgui_widget* bar = mst->owner_menubar;
+					vgui_item_id next = vgui_menubar_step(bar, key == VGUI_KEY_RIGHT ? 1 : -1);
+					if (next) vgui_menubar_show(bar, next);
+					ctx->want_key = 1;
+					ctx->want_text = 0;
+					vgui_end_input(ctx);
+					return 1;
+				}
+			}
 			vgui_menu_key(ctx, key, down);
 			ctx->want_key = 1;
 			ctx->want_text = 0;
@@ -6517,8 +6897,9 @@ namespace {
 		vgui_widget* f = ctx->focus;
 		if (!f || !ctx->alive.count(f) || !f->enabled)
 		{
+			int handled = vgui_dispatch_key_handlers(ctx, key, down, mods);
 			vgui_end_input(ctx);
-			return 0;
+			return handled;
 		}
 
 		int handled = 0;
@@ -6569,6 +6950,9 @@ namespace {
 			e.y = ctx->mouse_y - f->abs_y;
 			vgui_emit_full(f, e);
 		}
+
+		if (!handled)
+			handled = vgui_dispatch_key_handlers(ctx, key, down, mods);
 
 		vgui_end_input(ctx);
 		return handled;
@@ -8140,6 +8524,58 @@ namespace {
 		vgui_draw_focus(w, cb, vg);
 	}
 
+	static void vgui_draw_menubar(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_menubar_state* st = vgui_menubar_of(w);
+		if (!st || !ctx) return;
+		const vgui_menubar_style& ms = ctx->style.menubar;
+		uint32_t bg = w->bg;
+		uint32_t border = w->border ? w->border : ctx->theme.panel_border;
+		uint32_t hover = ctx->theme.menu_hover ? ctx->theme.menu_hover : ctx->theme.button_hover;
+		uint32_t text = ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text;
+		if (w->text_color) text = w->text_color;
+
+		if (bg)
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+				vgui_widget_color(w, bg));
+		if (w->border_width > 0 && border)
+		{
+			float bi = w->border_width * 0.5f;
+			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
+				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				vgui_widget_color(w, border), w->border_width);
+		}
+
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+		for (size_t i = 0; i < st->items.size(); ++i)
+		{
+			const vgui_menubar_item& item = st->items[i];
+			float ix = 0, iy = 0, iw = 0, ih = 0;
+			vgui_menubar_item_rect_at(w, i, &ix, &iy, &iw, &ih);
+			if (iw <= 0.0f || ih <= 0.0f) continue;
+			bool active = st->active == item.id;
+			bool hot = item.enabled && st->hover == item.id;
+			if (active || hot)
+			{
+				uint32_t fill = hover;
+				if (active)
+					fill = vgui_mix_color(hover, ctx->theme.accent, 0.35f);
+				vgui_fill_rect(cb, vg, ix, iy, iw, ih, ms.rounding,
+					vgui_widget_color(w, fill));
+			}
+			uint32_t color = item.enabled ? text
+				: vgui_mix_color(text, ctx->theme.disabled, ms.disabled_mix);
+			vgui_draw_text(ctx, cb, vg, w, item.text,
+				ix + ms.item_padding_x, iy,
+				std::max(0.0f, iw - ms.item_padding_x * 2.0f), ih,
+				vgui_widget_color(w, color), 0.0f, 0.5f);
+		}
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+	}
+
 	static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		vgui_context* ctx = w->ctx;
@@ -8469,6 +8905,7 @@ namespace {
 		case VGUI_LIST: vgui_draw_list(w, cb, vg, clips); break;
 		case VGUI_TREE: vgui_draw_tree(w, cb, vg, clips); break;
 		case VGUI_MENU: vgui_draw_menu(w, cb, vg, clips); break;
+		case VGUI_MENUBAR: vgui_draw_menubar(w, cb, vg, clips); break;
 		case VGUI_IMAGE: vgui_draw_image(w, cb, vg, clips); break;
 		case VGUI_CUSTOM:
 		{
@@ -8869,6 +9306,9 @@ extern "C" {
 			case VGUI_MENU:
 				move(w->rounding, old.menu.rounding, next.menu.rounding);
 				break;
+			case VGUI_MENUBAR:
+				move(w->rounding, old.menubar.rounding, next.menubar.rounding);
+				break;
 			case VGUI_IMAGE:
 				move(w->border_width, old.image.border_width, next.image.border_width);
 				move(w->rounding, old.image.rounding, next.image.rounding);
@@ -9036,6 +9476,13 @@ extern "C" {
 		if (panel->kind == VGUI_TABVIEW)
 		{
 			vgui_tab_clear(panel);
+			ctx->layout_dirty = true;
+			if (!ctx->in_input) vgui_flush_pending(ctx);
+			return;
+		}
+		if (panel->kind == VGUI_MENUBAR)
+		{
+			vgui_menubar_clear(panel);
 			ctx->layout_dirty = true;
 			if (!ctx->in_input) vgui_flush_pending(ctx);
 			return;
@@ -11240,6 +11687,198 @@ extern "C" {
 	}
 
 	//----------------------------------------------------------------------------
+	// menu bar
+	//----------------------------------------------------------------------------
+
+	vgui_item_id vgui_menubar_add_item(vgui_widget* menubar, const char* title)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st || !menubar->ctx) return 0;
+		vgui_widget* menu = vgui_new_widget(menubar->ctx, VGUI_MENU, nullptr);
+		if (!menu) return 0;
+		vgui_item_id id = vgui_menubar_add_menu(menubar, title, menu);
+		if (!id)
+			vgui_widget_destroy(menu);
+		return id;
+	}
+
+	vgui_item_id vgui_menubar_add_menu(vgui_widget* menubar, const char* title, vgui_widget* menu)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st || !menu || menu->kind != VGUI_MENU || !menu->menu ||
+			menu->ctx != menubar->ctx || menu->destroy_pending)
+			return 0;
+		vgui_menu_state* ms = menu->menu.get();
+		if (ms->owner_menubar || ms->parent_menu) return 0;
+		if (ms->open && menubar->ctx)
+			vgui_menu_close_all(menubar->ctx);
+
+		vgui_menubar_item item;
+		item.id = vgui_next_item_id(st->next_id);
+		if (title) item.text = title;
+		item.menu = menu;
+		st->items.push_back(std::move(item));
+		st->index[st->items.back().id] = st->items.size() - 1;
+		ms->owner_menubar = menubar;
+		ms->owner_item = st->items.back().id;
+		vgui_mark_dirty(menubar);
+		return st->items.back().id;
+	}
+
+	int vgui_menubar_remove_item(vgui_widget* menubar, vgui_item_id item)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st) return 0;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return 0;
+
+		vgui_context* ctx = menubar->ctx;
+		vgui_widget* menu = st->items[it->second].menu;
+		if (menu)
+		{
+			if (menu->menu)
+			{
+				menu->menu->owner_menubar = nullptr;
+				menu->menu->owner_item = 0;
+			}
+			if (ctx && ctx->open_menu == menu)
+				vgui_menu_close_all(ctx);
+			if (ctx && ctx->alive.count(menu))
+				vgui_schedule_destroy(menu);
+		}
+		st->items.erase(st->items.begin() + (std::ptrdiff_t)it->second);
+		st->index.clear();
+		for (size_t i = 0; i < st->items.size(); ++i)
+			st->index[st->items[i].id] = i;
+		if (st->active == item) st->active = 0;
+		if (st->hover == item) st->hover = 0;
+		if (st->pressed == item) st->pressed = 0;
+		vgui_mark_dirty(menubar);
+		if (ctx && !ctx->in_input) vgui_flush_pending(ctx);
+		return 1;
+	}
+
+	void vgui_menubar_clear(vgui_widget* menubar)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st) return;
+		while (!st->items.empty())
+		{
+			if (!vgui_menubar_remove_item(menubar, st->items.back().id))
+				break;
+			st = vgui_menubar_of(menubar);
+			if (!st) return;
+		}
+	}
+
+	int vgui_menubar_get_count(vgui_widget* menubar)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		return st ? (int)st->items.size() : 0;
+	}
+
+	vgui_item_id vgui_menubar_get_item_at(vgui_widget* menubar, int index)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st || index < 0 || index >= (int)st->items.size()) return 0;
+		return st->items[(size_t)index].id;
+	}
+
+	const char* vgui_menubar_get_item_text(vgui_widget* menubar, vgui_item_id item)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		return it ? it->text.c_str() : "";
+	}
+
+	void vgui_menubar_set_item_text(vgui_widget* menubar, vgui_item_id item, const char* text)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		if (!it) return;
+		it->text = text ? text : "";
+		vgui_mark_dirty(menubar);
+	}
+
+	int vgui_menubar_get_item_enabled(vgui_widget* menubar, vgui_item_id item)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		return it ? it->enabled : 0;
+	}
+
+	void vgui_menubar_set_item_enabled(vgui_widget* menubar, vgui_item_id item, int enabled)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		if (!it) return;
+		it->enabled = enabled ? 1 : 0;
+		if (!it->enabled && it->menu && it->menu->menu && it->menu->menu->open)
+			vgui_menu_close_all(menubar->ctx);
+		vgui_mark_dirty(menubar);
+	}
+
+	vgui_widget* vgui_menubar_get_menu(vgui_widget* menubar, vgui_item_id item)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		return it ? it->menu : nullptr;
+	}
+
+	int vgui_menubar_get_item_rect(vgui_widget* menubar, vgui_item_id item,
+		float* x, float* y, float* width, float* height)
+	{
+		if (x) *x = 0.0f;
+		if (y) *y = 0.0f;
+		if (width) *width = 0.0f;
+		if (height) *height = 0.0f;
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st || !menubar->ctx) return 0;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return 0;
+		vgui_ensure_layout(menubar->ctx);
+		vgui_menubar_item_rect_at(menubar, it->second, x, y, width, height);
+		return 1;
+	}
+
+	vgui_item_id vgui_menubar_item_at(vgui_widget* menubar, float local_x, float local_y)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st || !menubar->ctx) return 0;
+		vgui_ensure_layout(menubar->ctx);
+		return vgui_menubar_item_at_point(menubar,
+			menubar->abs_x + local_x, menubar->abs_y + local_y);
+	}
+
+	vgui_item_id vgui_menubar_get_active(vgui_widget* menubar)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		return st ? st->active : 0;
+	}
+
+	int vgui_menubar_open_item(vgui_widget* menubar, vgui_item_id item)
+	{
+		vgui_menubar_item* it = vgui_menubar_find(menubar, item);
+		if (!it || !it->enabled || !it->menu) return 0;
+		vgui_menubar_show(menubar, item);
+		vgui_menu_state* ms = vgui_menu_of(it->menu);
+		return ms && ms->open ? 1 : 0;
+	}
+
+	void vgui_menubar_close(vgui_widget* menubar)
+	{
+		vgui_menubar_state* st = vgui_menubar_of(menubar);
+		if (!st) return;
+		if (menubar->ctx && menubar->ctx->open_menu)
+		{
+			vgui_widget* owner = vgui_menu_owner_menubar(menubar->ctx->open_menu);
+			if (owner == menubar)
+				vgui_menu_close_all(menubar->ctx);
+		}
+		st = vgui_menubar_of(menubar);
+		if (!st) return;
+		st->active = 0;
+		st->hover = 0;
+		st->pressed = 0;
+		vgui_mark_dirty(menubar);
+	}
+
+	//----------------------------------------------------------------------------
 	// focus and input
 	//----------------------------------------------------------------------------
 
@@ -11373,6 +12012,28 @@ extern "C" {
 		vgui_focus_next_impl(ctx, reverse != 0);
 	}
 
+	int vgui_context_add_key_handler(vgui_context* ctx, vgui_key_handler_fn fn, void* user)
+	{
+		if (!ctx || !fn) return 0;
+		vgui_context::key_handler_entry entry;
+		entry.token = ctx->next_key_handler++;
+		entry.fn = fn;
+		entry.user = user;
+		ctx->key_handlers.push_back(entry);
+		return entry.token;
+	}
+
+	void vgui_context_remove_key_handler(vgui_context* ctx, int token)
+	{
+		if (!ctx || token <= 0) return;
+		ctx->key_handlers.erase(
+			std::remove_if(ctx->key_handlers.begin(), ctx->key_handlers.end(),
+				[token](const vgui_context::key_handler_entry& entry) {
+					return entry.token == token;
+				}),
+			ctx->key_handlers.end());
+	}
+
 	int vgui_context_wants_mouse(vgui_context* ctx)
 	{
 		if (!ctx) return 0;
@@ -11388,6 +12049,7 @@ extern "C" {
 	{
 		if (!ctx) return 0;
 		if (ctx->open_menu) return 1;
+		if (!ctx->key_handlers.empty()) return 1;
 		if (!ctx->focus) return 0;
 		return ctx->alive.count(ctx->focus) && ctx->focus->enabled ? 1 : 0;
 	}

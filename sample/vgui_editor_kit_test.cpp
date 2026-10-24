@@ -249,6 +249,200 @@ namespace {
 		return 0;
 	}
 
+	int test_commands_and_menus()
+	{
+		using namespace vgui_editor_kit;
+
+		command_shortcut parsed = command_shortcut::parse("Ctrl+Shift+S");
+		if (!parsed.valid() || parsed.key != 'S' ||
+			parsed.mods != (VGUI_MOD_CTRL | VGUI_MOD_SHIFT) ||
+			parsed.to_string() != "Ctrl+Shift+S")
+			return fail("shortcut parse and format");
+		if (!parsed.matches('s', VGUI_MOD_CTRL | VGUI_MOD_SHIFT))
+			return fail("shortcut matches letter case");
+		if (parsed.matches('S', VGUI_MOD_CTRL))
+			return fail("shortcut requires exact modifiers");
+		if (command_shortcut::parse("").valid() ||
+			command_shortcut::parse("Ctrl+").valid() ||
+			command_shortcut::parse("Bogus").valid())
+			return fail("invalid shortcut rejected");
+		if (!command_shortcut::parse("delete").matches(VGUI_KEY_DELETE, 0) ||
+			command_shortcut::parse("Ctrl+Z").to_string() != "Ctrl+Z")
+			return fail("shortcut key names");
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("commands context");
+		vgui_context_set_size(ui, 1280, 800);
+
+		{
+			editor_context context(ui);
+			editor_shell shell(context);
+			shell.build();
+			if (!shell.built() || !shell.menubar())
+				return fail("commands shell build");
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			vgui_widget* bar = shell.menubar();
+			if (vgui_widget_get_kind(bar) != VGUI_MENUBAR ||
+				vgui_menubar_get_count(bar) != 4)
+				return fail("menu bar built");
+			const char* titles[] = { "File", "Edit", "View", "Help" };
+			for (int i = 0; i < 4; ++i)
+			{
+				vgui_item_id item = vgui_menubar_get_item_at(bar, i);
+				if (!item || std::string(vgui_menubar_get_item_text(bar, item)) != titles[i])
+					return fail("menu bar titles");
+			}
+
+			const command_entry* save = shell.commands().find("file.save");
+			if (!save || save->shortcut.to_string() != "Ctrl+S" ||
+				!shell.commands().has("edit.undo") ||
+				!shell.commands().has("view.outliner") ||
+				!shell.commands().has("help.about"))
+				return fail("default commands registered");
+
+			// Hosts replace the action; the shortcut survives.
+			int saves = 0;
+			shell.commands().add("file.save", "Save", [&saves]() { saves++; });
+			if (vgui_input_key(ui, 'S', 1, VGUI_MOD_CTRL) != 1 || saves != 1)
+				return fail("shortcut invokes command");
+			vgui_input_key(ui, 'S', 0, VGUI_MOD_CTRL);
+			if (vgui_input_key(ui, 'S', 1, 0) != 0 || saves != 1)
+				return fail("shortcut needs modifiers");
+
+			int value = 0;
+			context.commands().execute(std::make_unique<function_command>(
+				"set value",
+				[&value]() { value = 1; },
+				[&value]() { value = 0; }));
+			shell.refresh_commands();
+			if (!shell.commands().is_enabled("edit.undo"))
+				return fail("undo enabled after command");
+			if (vgui_input_key(ui, 'Z', 1, VGUI_MOD_CTRL) != 1 || value != 0)
+				return fail("undo shortcut");
+			vgui_input_key(ui, 'Z', 0, VGUI_MOD_CTRL);
+			if (!shell.commands().is_enabled("edit.redo"))
+				return fail("redo enabled after undo");
+			if (vgui_input_key(ui, 'Y', 1, VGUI_MOD_CTRL) != 1 || value != 1)
+				return fail("redo shortcut");
+			vgui_input_key(ui, 'Y', 0, VGUI_MOD_CTRL);
+
+			// Delete is enabled only while something is selected.
+			context.clear_selection();
+			shell.refresh_commands();
+			if (shell.commands().is_enabled("edit.delete"))
+				return fail("delete disabled without selection");
+			context.set_selection(9);
+			shell.refresh_commands();
+			if (!shell.commands().is_enabled("edit.delete"))
+				return fail("delete enabled with selection");
+			if (vgui_input_key(ui, VGUI_KEY_DELETE, 1, 0) != 1 ||
+				context.selection() != invalid_object)
+				return fail("delete shortcut clears selection");
+			vgui_input_key(ui, VGUI_KEY_DELETE, 0, 0);
+
+			// View toggles are checkable and menu activation changes the panel.
+			vgui_item_id view_id = vgui_menubar_get_item_at(bar, 2);
+			vgui_widget* view_menu = vgui_menubar_get_menu(bar, view_id);
+			vgui_item_id outliner_item = view_menu ? vgui_menu_get_item_at(view_menu, 0) : 0;
+			if (!view_menu || !outliner_item ||
+				vgui_menu_get_item_checked(view_menu, outliner_item) != 1)
+				return fail("view menu checkable item");
+
+			float vx = 0, vy = 0, vw = 0, vh = 0;
+			if (!vgui_menubar_get_item_rect(bar, view_id, &vx, &vy, &vw, &vh))
+				return fail("view title rect");
+			vgui_input_mouse_move(ui, vx + vw * 0.5f, vy + vh * 0.5f);
+			vgui_input_mouse_down(ui, 1, vx + vw * 0.5f, vy + vh * 0.5f, 1);
+			vgui_input_mouse_up(ui, 1, vx + vw * 0.5f, vy + vh * 0.5f, 1);
+			if (!vgui_menu_is_open(view_menu) ||
+				vgui_menubar_get_active(bar) != view_id)
+				return fail("view menu opens from title");
+
+			vgui_style style;
+			vgui_context_get_style(ui, &style);
+			float mx = 0, my = 0, mw = 0, mh = 0;
+			vgui_widget_get_rect(view_menu, &mx, &my, &mw, &mh);
+			float row_y = my + style.menu.padding_y + style.menu.item_height * 0.5f;
+			vgui_input_mouse_move(ui, mx + 20.0f, row_y);
+			vgui_input_mouse_down(ui, 1, mx + 20.0f, row_y, 1);
+			vgui_input_mouse_up(ui, 1, mx + 20.0f, row_y, 1);
+			if (vgui_menu_is_open(view_menu))
+				return fail("view menu closes after activation");
+			if (shell.panel_visible(editor_panel::outliner))
+				return fail("view menu hides outliner");
+			if (vgui_menu_get_item_checked(view_menu, outliner_item) != 0 ||
+				shell.commands().is_checked("view.outliner"))
+				return fail("view menu checked state follows panel");
+			if (vgui_menubar_get_active(bar) != 0)
+				return fail("view activation clears active title");
+
+			// Reopen and restore through the menu.
+			if (!vgui_menubar_open_item(bar, view_id))
+				return fail("view menu reopens");
+			if (vgui_menu_get_item_checked(view_menu, outliner_item) != 0)
+				return fail("reopened menu refreshes check state");
+			vgui_input_mouse_move(ui, mx + 20.0f, row_y);
+			vgui_input_mouse_down(ui, 1, mx + 20.0f, row_y, 1);
+			vgui_input_mouse_up(ui, 1, mx + 20.0f, row_y, 1);
+			if (!shell.panel_visible(editor_panel::outliner) ||
+				vgui_menu_get_item_checked(view_menu, outliner_item) != 1)
+				return fail("view menu restores outliner");
+
+			// Edit menu picks up enabled state when it opens and after commands.
+			vgui_item_id edit_id = vgui_menubar_get_item_at(bar, 1);
+			vgui_widget* edit_menu = vgui_menubar_get_menu(bar, edit_id);
+			vgui_item_id undo_item = edit_menu ? vgui_menu_get_item_at(edit_menu, 0) : 0;
+			vgui_item_id redo_item = edit_menu ? vgui_menu_get_item_at(edit_menu, 1) : 0;
+			if (!edit_menu || !undo_item || !redo_item)
+				return fail("edit menu items");
+			if (!context.commands().can_undo())
+				return fail("undo record before edit menu");
+			// State changes made without refresh_commands() are picked up when
+			// the menu opens.
+			context.set_selection(17);
+			if (!vgui_menubar_open_item(bar, edit_id))
+				return fail("edit menu opens");
+			if (vgui_menu_get_item_enabled(edit_menu, undo_item) != 1)
+				return fail("edit menu undo enabled");
+			vgui_item_id delete_item = vgui_menu_get_item_at(edit_menu, 3);
+			if (!delete_item || vgui_menu_get_item_enabled(edit_menu, delete_item) != 1)
+				return fail("edit menu open refreshes state");
+
+			vgui_widget_get_rect(edit_menu, &mx, &my, &mw, &mh);
+			float undo_y = my + style.menu.padding_y + style.menu.item_height * 0.5f;
+			vgui_input_mouse_move(ui, mx + 20.0f, undo_y);
+			vgui_input_mouse_down(ui, 1, mx + 20.0f, undo_y, 1);
+			vgui_input_mouse_up(ui, 1, mx + 20.0f, undo_y, 1);
+			if (value != 0 || vgui_menu_is_open(edit_menu))
+				return fail("edit menu runs undo");
+			if (vgui_menu_get_item_enabled(edit_menu, undo_item) != 0 ||
+				vgui_menu_get_item_enabled(edit_menu, redo_item) != 1)
+				return fail("edit menu enabled state refreshed");
+
+			// Redo through the menu.
+			if (!vgui_menubar_open_item(bar, edit_id))
+				return fail("edit menu reopens");
+			vgui_widget_get_rect(edit_menu, &mx, &my, &mw, &mh);
+			float redo_y = my + style.menu.padding_y + style.menu.item_height * 1.5f;
+			vgui_input_mouse_move(ui, mx + 20.0f, redo_y);
+			vgui_input_mouse_down(ui, 1, mx + 20.0f, redo_y, 1);
+			vgui_input_mouse_up(ui, 1, mx + 20.0f, redo_y, 1);
+			if (value != 1 || context.commands().can_redo())
+				return fail("edit menu runs redo");
+
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+			(void)mw;
+			(void)mh;
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 } // namespace
 
 int main()
@@ -258,6 +452,8 @@ int main()
 	if (int rc = test_command_stack())
 		return rc;
 	if (int rc = test_layout_persistence())
+		return rc;
+	if (int rc = test_commands_and_menus())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

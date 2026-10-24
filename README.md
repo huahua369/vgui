@@ -11,7 +11,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | 模块 | 能力 |
 |---|---|
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
-| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、Splitter、TabView |
+| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -36,6 +36,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | `VGUI_LIST` | 数据模型列表；稳定 `vgui_item_id`、单选/多选、键盘导航、滚轮与滚动条 |
 | `VGUI_TREE` | 数据模型树；展开/折叠、层级选择、键盘导航、可见行扁平化 |
 | `VGUI_MENU` | 上下文菜单浮层；复选项、子菜单、快捷键文本、禁用项；打开时消费外部点击 |
+| `VGUI_MENUBAR` | 菜单标题条；点击/悬停/方向键切换菜单，管理所属弹层的生命周期 |
 | `VGUI_SPLITTER` | 双子面板分栏；水平/垂直、嵌套、比例、sash、最小尺寸、拖动改变比例、双击复位 |
 | `VGUI_TABVIEW` | 标签页容器；关闭回调、未保存标记、禁用页、拖拽重排、滚轮溢出、键盘切换/关闭 |
 
@@ -88,6 +89,19 @@ vgui_menu_open_below(menu, button);
 ```
 
 打开菜单时 `vgui_context_wants_mouse()` / `vgui_context_wants_keyboard()` 返回 1，`vgui_context_wants_text_input()` 返回 0；Esc 关闭当前子菜单，重复按 Esc 关闭整条链。当前版本不绘制菜单图标。
+
+### MenuBar 与命令/快捷键
+
+`VGUI_MENUBAR` 是布局内的菜单标题条，每个标题拥有一个 `VGUI_MENU` 弹层。点击标题打开菜单；菜单打开时悬停其他标题会直接切换，左右方向键也可切换。`vgui_menubar_add_menu()` 把已有菜单交给 bar 管理，删除标题或销毁 bar 会一并销毁弹层。
+
+```c
+vgui_widget* bar = vgui_widget_add(root, VGUI_MENUBAR, NULL);
+vgui_widget* file = vgui_widget_create(ui, VGUI_MENU, NULL);
+vgui_menu_add_item(file, "保存");
+vgui_menubar_add_menu(bar, "文件", file);
+```
+
+应用级快捷键通过 `vgui_context_add_key_handler()` 注册：处理器在焦点控件和打开菜单之后按注册逆序调用，返回非零表示已消费。editor kit 在此基础上提供 `command_registry`（字符串命令 ID、`Ctrl+S` / `Delete` 形式的快捷键、enabled/checked 谓词、菜单与工具栏状态同步）；`editor_shell` 默认建立 File/Edit/View/Help 菜单，宿主可用相同 ID 覆盖默认动作。
 
 ### Splitter 与 TabView
 
@@ -241,10 +255,10 @@ vgui_draw(ui, ovg_cb, rvg);
 ```text
 gui/
   vgui.h              公共纯 C API
-  vgui.cpp            控件树、布局、事件与绘制实现（含 Splitter/TabView）
+  vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
-  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含布局持久化）
+  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含菜单/命令与布局持久化）
 backends/
   vgui_sdl3.*          SDL3 窗口、输入、IME 与 GPU 视口
   vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
@@ -254,8 +268,8 @@ third_party/
 sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
-  vgui_model_test.cpp       列表、树、菜单模型自测
-  vgui_editor_kit_test.cpp  editor kit 骨架、命令栈与布局持久化自测
+  vgui_model_test.cpp       列表、树、菜单、MenuBar 与按键处理器自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、命令栈、菜单/快捷键与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
@@ -276,7 +290,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

@@ -175,10 +175,11 @@
   - 验收：多文档打开/关闭/重排正确；关闭未保存页能触发确认；标签溢出可滚动。
   - 已实现：核心 `VGUI_TABVIEW`、关闭回调、未保存标记、禁用页、拖拽重排、滚轮溢出、键盘切换/关闭；右键通过带 item 的鼠标事件交给宿主菜单。
 
-- [ ] **S03 MenuBar + 命令/快捷键**（P0，M）
+- [x] **S03 MenuBar + 命令/快捷键**（P0，M）
   - 顶层菜单、悬停切换、子菜单、分隔线、复选/禁用项。
   - 命令 ID、快捷键注册与分发、菜单/工具栏状态同步。
   - 验收：`Ctrl+S`、`Ctrl+Z` 等快捷键实际执行命令；菜单项 enabled 状态随选择变化；子菜单键盘可操作。
+  - 已实现：核心 `VGUI_MENUBAR`（点击/悬停/方向键切换、弹层生命周期、样式与命中测试）和 context 级按键过滤器；editor kit `command_registry` 提供字符串命令 ID、快捷键解析/分发、enabled/checked 谓词，`editor_shell` 建立 File/Edit/View/Help 菜单并同步工具栏与菜单状态。子菜单键盘操作沿用核心 `VGUI_MENU`。
 
 - [ ] **S04 Tooltip**（P0，S）
   - 延迟显示、跟随/锚定定位、边界避让、多行文本。
@@ -527,17 +528,19 @@ MVP 验收场景：
 
 - `gui/editor/` 独立静态库目标 `vgui_editor_kit`，依赖 `libvgui`，不向核心反向渗透 (F01)。
 - `command_stack`：execute / undo / redo、事务、提交、回滚 (F02 部分)。
+- `command_registry`：字符串命令 ID、快捷键解析/分发、enabled/checked 谓词，菜单与工具栏共用同一命令状态 (S03)。
 - `editor_context`：当前选择、选择监听、命令栈持有者。
 - 核心 `VGUI_SPLITTER` 与 `VGUI_TABVIEW`：比例/最小尺寸/嵌套、拖动与双击复位；标签关闭/禁用/未保存/重排/溢出/键盘，均有公共 API 和无窗口测试 (S01/S02)。
-- `editor_shell`：外层纵向 Splitter + 工作区嵌套横向 Splitter，底部 TabView 组织 ASSETS / CONSOLE；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
+- 核心 `VGUI_MENUBAR` 与 context 级按键过滤器：标题条、悬停/方向键切换、弹层生命周期，快捷键在焦点与菜单之后分发 (S03)。
+- `editor_shell`：外层纵向 Splitter + 工作区嵌套横向 Splitter，底部 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
 - `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Splitter/TabView 外壳和组件边界。
-- 现有 `vgui_model_test`（159 项）、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Splitter/TabView 外壳、菜单/快捷键和组件边界。
+- 现有 `vgui_model_test`（286 项）、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 
-1. 实现 F05 布局持久化，保存/恢复 Splitter 比例、Tab 顺序和当前页。
+1. 实现 S04 Tooltip；F05 的 Dock 状态在 S06 提供停靠基础后接入。
 2. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
 3. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
 4. 接入 AssetBrowser 缩略图、搜索和拖入场景。

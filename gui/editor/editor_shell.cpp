@@ -51,6 +51,205 @@ namespace vgui_editor_kit {
 	editor_shell::editor_shell(editor_context& context)
 		: context_(context)
 	{
+		register_default_commands();
+	}
+
+	editor_shell::~editor_shell()
+	{
+		if (key_handler_token_ && context_.ui())
+			vgui_context_remove_key_handler(context_.ui(), key_handler_token_);
+		key_handler_token_ = 0;
+	}
+
+	void editor_shell::register_default_commands()
+	{
+		auto shortcut = [](const char* text) {
+			return command_shortcut::parse(text);
+		};
+
+		commands_.add("file.save", "Save", [this]() {
+			set_status("saved");
+		}).shortcut = shortcut("Ctrl+S");
+
+		commands_.add("file.exit", "Exit", [this]() {
+			set_status("exit requested");
+		});
+
+		commands_.add("edit.undo", "Undo", [this]() {
+			set_status(context_.commands().undo() ? "undo" : "nothing to undo");
+		}).shortcut = shortcut("Ctrl+Z");
+		commands_.set_enabled("edit.undo", [this]() {
+			return context_.commands().can_undo();
+		});
+
+		commands_.add("edit.redo", "Redo", [this]() {
+			set_status(context_.commands().redo() ? "redo" : "nothing to redo");
+		}).shortcut = shortcut("Ctrl+Y");
+		commands_.set_enabled("edit.redo", [this]() {
+			return context_.commands().can_redo();
+		});
+
+		commands_.add("edit.delete", "Delete", [this]() {
+			context_.clear_selection();
+			set_status("delete selection");
+		}).shortcut = shortcut("Delete");
+		commands_.set_enabled("edit.delete", [this]() {
+			return context_.selection() != invalid_object;
+		});
+
+		auto add_panel_toggle = [this](const char* id, const char* title,
+			editor_panel panel)
+		{
+			commands_.add(id, title, [this, panel]() {
+				set_panel_visible(panel, !panel_visible(panel));
+			});
+			commands_.set_checked(id, [this, panel]() {
+				return panel_visible(panel);
+			});
+		};
+		add_panel_toggle("view.outliner", "Outliner", editor_panel::outliner);
+		add_panel_toggle("view.viewport", "Viewport", editor_panel::viewport);
+		add_panel_toggle("view.properties", "Properties", editor_panel::properties);
+		add_panel_toggle("view.bottom", "Bottom Panel", editor_panel::bottom);
+
+		commands_.add("view.reset_layout", "Reset Layout", [this]() {
+			reset_layout();
+			set_status("layout reset");
+		});
+
+		commands_.add("help.about", "About vgui_editor_kit", [this]() {
+			set_status("vgui_editor_kit");
+		});
+	}
+
+	vgui_widget* editor_shell::menubar() const noexcept
+	{
+		return menubar_;
+	}
+
+	command_registry& editor_shell::commands() noexcept
+	{
+		return commands_;
+	}
+
+	const command_registry& editor_shell::commands() const noexcept
+	{
+		return commands_;
+	}
+
+	bool editor_shell::run_command(const char* id)
+	{
+		bool ran = commands_.invoke(id);
+		refresh_commands();
+		return ran;
+	}
+
+	void editor_shell::refresh_commands()
+	{
+		if (undo_button_)
+			vgui_widget_set_enabled(undo_button_, commands_.is_enabled("edit.undo") ? 1 : 0);
+		if (redo_button_)
+			vgui_widget_set_enabled(redo_button_, commands_.is_enabled("edit.redo") ? 1 : 0);
+
+		for (const std::unique_ptr<menu_binding>& binding : menu_bindings_)
+		{
+			if (!binding || !binding->menu || !binding->item)
+				continue;
+			vgui_menu_set_item_enabled(binding->menu, binding->item,
+				commands_.is_enabled(binding->command.c_str()) ? 1 : 0);
+			vgui_menu_set_item_checked(binding->menu, binding->item,
+				commands_.is_checked(binding->command.c_str()) ? 1 : 0);
+		}
+	}
+
+	void editor_shell::bind_menu_command(vgui_widget* menu, vgui_item_id item,
+		const char* command)
+	{
+		if (!menu || !item || !command || !*command)
+			return;
+		auto binding = std::make_unique<menu_binding>();
+		binding->menu = menu;
+		binding->item = item;
+		binding->command = command;
+		vgui_menu_set_item_user(menu, item, binding.get());
+		menu_bindings_.push_back(std::move(binding));
+	}
+
+	vgui_item_id editor_shell::add_menu_command(vgui_widget* menu, const char* command,
+		bool checkable)
+	{
+		const command_entry* entry = commands_.find(command);
+		if (!menu || !entry)
+			return 0;
+
+		vgui_item_id item = checkable
+			? vgui_menu_add_check_item(menu, entry->title.c_str(),
+				commands_.is_checked(command) ? 1 : 0)
+			: vgui_menu_add_item(menu, entry->title.c_str());
+		if (!item)
+			return 0;
+
+		std::string shortcut = entry->shortcut.to_string();
+		if (!shortcut.empty())
+			vgui_menu_set_item_shortcut(menu, item, shortcut.c_str());
+		bind_menu_command(menu, item, command);
+		return item;
+	}
+
+	void editor_shell::build_menus()
+	{
+		if (!menubar_ || !context_.ui())
+			return;
+		menu_bindings_.clear();
+
+		auto wire_menu = [this](vgui_widget* menu) {
+			vgui_menu_on_activate(menu, &editor_shell::on_menu_activate, this);
+			vgui_menu_on_open(menu, &editor_shell::on_menu_open, this);
+		};
+
+		vgui_widget* file_menu = vgui_widget_create(context_.ui(), VGUI_MENU, nullptr);
+		if (file_menu)
+		{
+			wire_menu(file_menu);
+			add_menu_command(file_menu, "file.save", false);
+			vgui_menu_add_separator(file_menu);
+			add_menu_command(file_menu, "file.exit", false);
+			vgui_menubar_add_menu(menubar_, "File", file_menu);
+		}
+
+		vgui_widget* edit_menu = vgui_widget_create(context_.ui(), VGUI_MENU, nullptr);
+		if (edit_menu)
+		{
+			wire_menu(edit_menu);
+			add_menu_command(edit_menu, "edit.undo", false);
+			add_menu_command(edit_menu, "edit.redo", false);
+			vgui_menu_add_separator(edit_menu);
+			add_menu_command(edit_menu, "edit.delete", false);
+			vgui_menubar_add_menu(menubar_, "Edit", edit_menu);
+		}
+
+		vgui_widget* view_menu = vgui_widget_create(context_.ui(), VGUI_MENU, nullptr);
+		if (view_menu)
+		{
+			wire_menu(view_menu);
+			add_menu_command(view_menu, "view.outliner", true);
+			add_menu_command(view_menu, "view.viewport", true);
+			add_menu_command(view_menu, "view.properties", true);
+			add_menu_command(view_menu, "view.bottom", true);
+			vgui_menu_add_separator(view_menu);
+			add_menu_command(view_menu, "view.reset_layout", false);
+			vgui_menubar_add_menu(menubar_, "View", view_menu);
+		}
+
+		vgui_widget* help_menu = vgui_widget_create(context_.ui(), VGUI_MENU, nullptr);
+		if (help_menu)
+		{
+			wire_menu(help_menu);
+			add_menu_command(help_menu, "help.about", false);
+			vgui_menubar_add_menu(menubar_, "Help", help_menu);
+		}
+
+		refresh_commands();
 	}
 
 	void editor_shell::build()
@@ -74,6 +273,12 @@ namespace vgui_editor_kit {
 		vgui_widget_set_gap(root_, 4);
 		vgui_widget_set_background(root_, kRootBg);
 
+		menubar_ = vgui_widget_add(root_, VGUI_MENUBAR, nullptr);
+		vgui_widget_set_size(menubar_, 0, 26);
+		vgui_widget_set_align_self(menubar_, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_background(menubar_, kHeaderBg);
+		vgui_widget_set_border(menubar_, kBorder, 1);
+
 		vgui_widget* header = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_size(header, 0, 34);
 		vgui_widget_set_align_self(header, VGUI_ALIGN_STRETCH);
@@ -91,15 +296,15 @@ namespace vgui_editor_kit {
 		vgui_widget_set_text_color(title, kTitleText);
 		vgui_widget_set_text_align(title, 0.0f, 0.5f);
 
-		vgui_widget* undo = vgui_widget_add(header, VGUI_BUTTON, "Undo");
-		vgui_widget_set_size(undo, 58, 24);
-		vgui_widget_set_font_size(undo, 12);
-		vgui_widget_on_event(undo, &editor_shell::on_undo, this);
+		undo_button_ = vgui_widget_add(header, VGUI_BUTTON, "Undo");
+		vgui_widget_set_size(undo_button_, 58, 24);
+		vgui_widget_set_font_size(undo_button_, 12);
+		vgui_widget_on_event(undo_button_, &editor_shell::on_undo, this);
 
-		vgui_widget* redo = vgui_widget_add(header, VGUI_BUTTON, "Redo");
-		vgui_widget_set_size(redo, 58, 24);
-		vgui_widget_set_font_size(redo, 12);
-		vgui_widget_on_event(redo, &editor_shell::on_redo, this);
+		redo_button_ = vgui_widget_add(header, VGUI_BUTTON, "Redo");
+		vgui_widget_set_size(redo_button_, 58, 24);
+		vgui_widget_set_font_size(redo_button_, 12);
+		vgui_widget_on_event(redo_button_, &editor_shell::on_redo, this);
 
 		status_ = vgui_widget_add(header, VGUI_LABEL, "ready");
 		vgui_widget_set_size(status_, 220, 24);
@@ -169,6 +374,12 @@ namespace vgui_editor_kit {
 		viewport_.build(center_body);
 		properties_.build(right_body);
 
+		build_menus();
+		if (context_.ui())
+			key_handler_token_ = vgui_context_add_key_handler(context_.ui(),
+				&editor_shell::on_key, this);
+		refresh_commands();
+
 		default_layout_ = capture_layout();
 	}
 
@@ -220,6 +431,7 @@ namespace vgui_editor_kit {
 		if (!widget)
 			return;
 		vgui_widget_set_visible(widget, visible ? 1 : 0);
+		refresh_commands();
 	}
 
 	bool editor_shell::panel_visible(editor_panel panel) const
@@ -404,7 +616,8 @@ namespace vgui_editor_kit {
 		if (event && event->type == VGUI_EVENT_CLICK)
 		{
 			auto* self = static_cast<editor_shell*>(user);
-			self->set_status(self->context_.commands().undo() ? "undo" : "nothing to undo");
+			if (!self->run_command("edit.undo"))
+				self->set_status("nothing to undo");
 		}
 	}
 
@@ -414,8 +627,41 @@ namespace vgui_editor_kit {
 		if (event && event->type == VGUI_EVENT_CLICK)
 		{
 			auto* self = static_cast<editor_shell*>(user);
-			self->set_status(self->context_.commands().redo() ? "redo" : "nothing to redo");
+			if (!self->run_command("edit.redo"))
+				self->set_status("nothing to redo");
 		}
+	}
+
+	void editor_shell::on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user)
+	{
+		auto* self = static_cast<editor_shell*>(user);
+		if (!self || !menu || !item)
+			return;
+		auto* binding = static_cast<menu_binding*>(vgui_menu_get_item_user(menu, item));
+		if (!binding || binding->command.empty())
+			return;
+		self->commands_.invoke(binding->command.c_str());
+		self->refresh_commands();
+	}
+
+	void editor_shell::on_menu_open(vgui_widget* menu, void* user)
+	{
+		(void)menu;
+		auto* self = static_cast<editor_shell*>(user);
+		if (self)
+			self->refresh_commands();
+	}
+
+	int editor_shell::on_key(vgui_context* ctx, int key, int down, int mods, void* user)
+	{
+		(void)ctx;
+		if (!user || !down)
+			return 0;
+		auto* self = static_cast<editor_shell*>(user);
+		if (!self->commands_.handle_key(key, down, mods))
+			return 0;
+		self->refresh_commands();
+		return 1;
 	}
 
 } /* namespace vgui_editor_kit */

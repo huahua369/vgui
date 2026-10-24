@@ -1,5 +1,6 @@
 set(VGUI_EDITOR_KIT_SOURCES
     asset_browser.cpp
+    command_registry.cpp
     command_stack.cpp
     editor_context.cpp
     editor_layout.cpp

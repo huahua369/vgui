@@ -74,7 +74,8 @@ extern "C" {
 		VGUI_IMAGE,
 		VGUI_CUSTOM,
 		VGUI_SPLITTER,
-		VGUI_TABVIEW
+		VGUI_TABVIEW,
+		VGUI_MENUBAR
 	} vgui_widget_kind;
 
 	typedef enum vgui_layout_kind {
@@ -262,6 +263,13 @@ extern "C" {
 	typedef void (*vgui_item_fn)(vgui_widget* widget, vgui_item_id item, void* user);
 	typedef void (*vgui_item_select_fn)(vgui_widget* widget, vgui_item_id item, int selected, void* user);
 	typedef void (*vgui_widget_fn)(vgui_widget* widget, void* user);
+
+	/* Context-level key filter, used for application shortcuts.  Handlers run
+	 * after the focused widget and the open menu have had a chance to consume
+	 * the key, in reverse registration order.  Returning non-zero marks the key
+	 * as handled.  Handlers are called for both key-down and key-up events. */
+	typedef int (*vgui_key_handler_fn)(vgui_context* ctx, int key, int down,
+		int mods, void* user);
 
 	/* ------------------------------------------------------------------------- */
 	/* Custom-draw widget (VGUI_CUSTOM)                                          */
@@ -521,6 +529,17 @@ extern "C" {
 		float disabled_mix;		/* 0.55: toward theme.disabled */
 	} vgui_menu_style;
 
+	typedef struct vgui_menubar_style {
+		float item_height;	/* 0: fill the bar's inner height */
+		float padding_x;		/* 4 */
+		float padding_y;		/* 2 */
+		float item_padding_x;	/* 10 */
+		float gap;			/* 2 */
+		float rounding;		/* 3 */
+		float req_height;	/* 28: preferred bar height */
+		float disabled_mix;	/* 0.55: toward theme.disabled */
+	} vgui_menubar_style;
+
 	typedef struct vgui_image_style {
 		float req_width;		/* 240: preferred size when no texture is set */
 		float req_height;		/* 160 */
@@ -548,6 +567,7 @@ extern "C" {
 		vgui_list_style list;
 		vgui_tree_style tree;
 		vgui_menu_style menu;
+		vgui_menubar_style menubar;
 		vgui_image_style image;
 	} vgui_style;
 
@@ -1009,6 +1029,42 @@ extern "C" {
 	VGUI_API void vgui_menu_on_close(vgui_widget* menu, vgui_widget_fn fn, void* user);
 
 	/* ------------------------------------------------------------------------- */
+	/* MenuBar                                                                   */
+	/* ------------------------------------------------------------------------- */
+
+	/* MenuBar is a regular layout child: a horizontal strip of clickable titles.
+	 * Each title owns one popup menu (VGUI_MENU).  Adding a menu transfers its
+	 * ownership to the bar, so removing an item or destroying the bar destroys
+	 * the associated popup.  Clicking a title opens its menu below the title;
+	 * hovering another title while a menu is open switches menus (as do the left
+	 * and right arrow keys).  The bar keeps no focus; the popup menu owns input
+	 * while it is open. */
+
+	VGUI_API vgui_item_id vgui_menubar_add_item(vgui_widget* menubar, const char* title);
+	VGUI_API vgui_item_id vgui_menubar_add_menu(vgui_widget* menubar, const char* title, vgui_widget* menu);
+	VGUI_API int vgui_menubar_remove_item(vgui_widget* menubar, vgui_item_id item);
+	VGUI_API void vgui_menubar_clear(vgui_widget* menubar);
+	VGUI_API int vgui_menubar_get_count(vgui_widget* menubar);
+	VGUI_API vgui_item_id vgui_menubar_get_item_at(vgui_widget* menubar, int index);
+
+	VGUI_API const char* vgui_menubar_get_item_text(vgui_widget* menubar, vgui_item_id item);
+	VGUI_API void vgui_menubar_set_item_text(vgui_widget* menubar, vgui_item_id item, const char* text);
+	VGUI_API int vgui_menubar_get_item_enabled(vgui_widget* menubar, vgui_item_id item);
+	VGUI_API void vgui_menubar_set_item_enabled(vgui_widget* menubar, vgui_item_id item, int enabled);
+	VGUI_API vgui_widget* vgui_menubar_get_menu(vgui_widget* menubar, vgui_item_id item);
+
+	/* Item rect in absolute window coordinates.  The bar must have been laid
+	 * out at least once (call vgui_layout() or vgui_update() first). */
+	VGUI_API int vgui_menubar_get_item_rect(vgui_widget* menubar, vgui_item_id item,
+		float* x, float* y, float* width, float* height);
+	/* Title hit test using local coordinates; returns 0 when the point is not
+	 * over an item. */
+	VGUI_API vgui_item_id vgui_menubar_item_at(vgui_widget* menubar, float local_x, float local_y);
+	VGUI_API vgui_item_id vgui_menubar_get_active(vgui_widget* menubar);
+	VGUI_API int vgui_menubar_open_item(vgui_widget* menubar, vgui_item_id item);
+	VGUI_API void vgui_menubar_close(vgui_widget* menubar);
+
+	/* ------------------------------------------------------------------------- */
 	/* Focus and input                                                           */
 	/* ------------------------------------------------------------------------- */
 
@@ -1016,6 +1072,13 @@ extern "C" {
 	VGUI_API vgui_widget* vgui_get_focus(vgui_context* ctx);
 	VGUI_API vgui_widget* vgui_hit_test(vgui_context* ctx, float x, float y);
 	VGUI_API vgui_cursor vgui_context_get_cursor(vgui_context* ctx);
+
+	/* Register a context-level shortcut filter.  Returns a non-zero token that
+	 * can be passed to vgui_context_remove_key_handler().  Handlers run in
+	 * reverse registration order (the most recently added handler wins). */
+	VGUI_API int vgui_context_add_key_handler(vgui_context* ctx,
+		vgui_key_handler_fn fn, void* user);
+	VGUI_API void vgui_context_remove_key_handler(vgui_context* ctx, int token);
 
 	VGUI_API int vgui_input_mouse_move(vgui_context* ctx, float x, float y);
 	VGUI_API int vgui_input_mouse_down(vgui_context* ctx, int button, float x, float y, int clicks);

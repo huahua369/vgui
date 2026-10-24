@@ -882,6 +882,196 @@ static void test_menu(vgui_context* ui, const vgui_style& style)
 	vgui_widget_destroy(menu);
 }
 
+static void test_menubar(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* bar = vgui_widget_add(vgui_root(ui), VGUI_MENUBAR, nullptr);
+	vgui_widget_set_pos(bar, 20.0f, 20.0f);
+	vgui_widget_set_size(bar, 360.0f, 30.0f);
+	check(vgui_widget_get_kind(bar) == VGUI_MENUBAR, "menubar: kind");
+	check(vgui_menubar_get_count(bar) == 0, "menubar: starts empty");
+
+	vgui_widget* file_menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_item_id save = vgui_menu_add_item(file_menu, "Save");
+	vgui_widget* edit_menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_item_id undo = vgui_menu_add_item(edit_menu, "Undo");
+	cb_state cb;
+	vgui_menu_on_activate(file_menu, on_activate, &cb);
+	vgui_menu_on_activate(edit_menu, on_activate, &cb);
+
+	vgui_item_id file = vgui_menubar_add_menu(bar, "File", file_menu);
+	vgui_item_id edit = vgui_menubar_add_menu(bar, "Edit", edit_menu);
+	check(file && edit && file != edit, "menubar: add menus");
+	check(vgui_menubar_get_count(bar) == 2, "menubar: item count");
+	check(vgui_menubar_get_item_at(bar, 0) == file, "menubar: item at index");
+	check(std::string(vgui_menubar_get_item_text(bar, file)) == "File", "menubar: title");
+	check(vgui_menubar_get_menu(bar, file) == file_menu, "menubar: menu handle");
+	check(vgui_widget_get_parent(file_menu) == nullptr, "menubar: popup stays detached");
+	check(vgui_widget_get_parent(bar) == vgui_root(ui), "menubar: layout child");
+
+	vgui_layout(ui);
+	float fx = 0, fy = 0, fw = 0, fh = 0;
+	check(vgui_menubar_get_item_rect(bar, file, &fx, &fy, &fw, &fh) == 1,
+		"menubar: item rect");
+	check(fw > 0.0f && fh > 0.0f && fx >= 20.0f && fy >= 20.0f,
+		"menubar: item rect is absolute");
+	check(vgui_menubar_item_at(bar, fx - 20.0f + fw * 0.5f, fy - 20.0f + fh * 0.5f) == file,
+		"menubar: local hit test");
+	check(vgui_menubar_item_at(bar, -10.0f, -10.0f) == 0, "menubar: outside hit test");
+
+	// Clicking a title opens its popup below the bar.
+	click_at(ui, fx + fw * 0.5f, fy + fh * 0.5f);
+	check(vgui_menu_is_open(file_menu) == 1, "menubar: click opens menu");
+	check(vgui_menubar_get_active(bar) == file, "menubar: click sets active title");
+	check(vgui_context_get_open_menu(ui) == file_menu, "menubar: popup is the open menu");
+
+	// Hovering another title switches menus without a click.
+	float ex = 0, ey = 0, ew = 0, eh = 0;
+	check(vgui_menubar_get_item_rect(bar, edit, &ex, &ey, &ew, &eh) == 1,
+		"menubar: edit rect");
+	vgui_input_mouse_move(ui, ex + ew * 0.5f, ey + eh * 0.5f);
+	check(vgui_menu_is_open(edit_menu) == 1, "menubar: hover switches menu");
+	check(vgui_menu_is_open(file_menu) == 0, "menubar: previous menu closes on hover");
+	check(vgui_menubar_get_active(bar) == edit, "menubar: hover sets active title");
+
+	// Clicking the active title toggles the menu closed.
+	click_at(ui, ex + ew * 0.5f, ey + eh * 0.5f);
+	check(vgui_menu_is_open(edit_menu) == 0, "menubar: click closes active menu");
+	check(vgui_menubar_get_active(bar) == 0, "menubar: closed menu clears active");
+
+	// Arrow keys walk the titles while a menu is open.
+	check(vgui_menubar_open_item(bar, edit) == 1, "menubar: open item");
+	check(vgui_menubar_get_active(bar) == edit, "menubar: open item sets active");
+	int handled = vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_RIGHT, 0, 0);
+	check(handled == 1 && vgui_menu_is_open(file_menu), "menubar: right switches title");
+	check(vgui_menubar_get_active(bar) == file, "menubar: right active title");
+	vgui_input_key(ui, VGUI_KEY_LEFT, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_LEFT, 0, 0);
+	check(vgui_menu_is_open(edit_menu), "menubar: left switches title");
+	check(vgui_menubar_get_active(bar) == edit, "menubar: left active title");
+
+	// Activating a menu item closes the chain and clears the active title.
+	float mx = 0, my = 0, mw = 0, mh = 0;
+	vgui_widget_get_rect(edit_menu, &mx, &my, &mw, &mh);
+	click_at(ui, mx + 20.0f, my + style.menu.padding_y + style.menu.item_height * 0.5f);
+	check(cb.activates == 1 && cb.last_activate == undo, "menubar: menu item activates");
+	check(vgui_menubar_get_active(bar) == 0, "menubar: activation clears active");
+	check(vgui_context_get_open_menu(ui) == nullptr, "menubar: activation closes popup");
+	(void)save;
+	(void)mw;
+	(void)mh;
+
+	// Escape closes and clears the active title.
+	check(vgui_menubar_open_item(bar, file) == 1, "menubar: reopen item");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	check(vgui_menu_is_open(file_menu) == 0, "menubar: escape closes");
+	check(vgui_menubar_get_active(bar) == 0, "menubar: escape clears active");
+
+	// Disabled titles cannot open.
+	vgui_menubar_set_item_enabled(bar, edit, 0);
+	check(vgui_menubar_get_item_enabled(bar, edit) == 0, "menubar: disable item");
+	check(vgui_menubar_open_item(bar, edit) == 0, "menubar: disabled item does not open");
+	vgui_menubar_set_item_enabled(bar, edit, 1);
+
+	// An item created without a menu still owns an empty popup.
+	vgui_item_id auto_item = vgui_menubar_add_item(bar, "Auto");
+	check(auto_item != 0 && vgui_menubar_get_menu(bar, auto_item) != nullptr,
+		"menubar: add item creates a menu");
+	check(vgui_menubar_remove_item(bar, auto_item) == 1, "menubar: remove item");
+	check(vgui_menubar_get_count(bar) == 2, "menubar: remove updates count");
+
+	// A popup can only belong to one bar item at a time.
+	vgui_widget* temp_menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_menu_add_item(temp_menu, "Temp Item");
+	vgui_item_id temp = vgui_menubar_add_menu(bar, "Temp", temp_menu);
+	check(temp != 0 && vgui_menubar_get_count(bar) == 3, "menubar: add explicit menu");
+	check(vgui_menubar_add_menu(bar, "Temp2", temp_menu) == 0,
+		"menubar: popup cannot be attached twice");
+
+	// Destroying an attached popup removes its title and clears the active state.
+	check(vgui_menubar_open_item(bar, temp) == 1, "menubar: open temp menu");
+	vgui_widget_destroy(temp_menu);
+	vgui_update(ui, 0.016f);
+	check(vgui_menubar_get_count(bar) == 2, "menubar: destroyed popup detaches title");
+	check(vgui_menubar_get_active(bar) == 0, "menubar: destroyed popup clears active");
+
+	check(vgui_menubar_remove_item(bar, file) == 1, "menubar: remove file menu");
+	check(vgui_menubar_get_count(bar) == 1, "menubar: remove file count");
+	check(vgui_menubar_get_menu(bar, file) == nullptr, "menubar: removed menu handle is gone");
+
+	vgui_menubar_clear(bar);
+	check(vgui_menubar_get_count(bar) == 0, "menubar: clear removes items");
+	vgui_widget_destroy(bar);
+}
+
+struct key_filter_state
+{
+	int downs = 0;
+	int ups = 0;
+	int order[4] = {};
+	int order_count = 0;
+	int last_key = 0;
+};
+
+static int on_key_filter_a(vgui_context*, int key, int down, int, void* user)
+{
+	key_filter_state* st = (key_filter_state*)user;
+	st->order[st->order_count++] = 1;
+	if (down) st->downs++;
+	else st->ups++;
+	st->last_key = key;
+	return 0;
+}
+
+static int on_key_filter_b(vgui_context*, int key, int down, int, void* user)
+{
+	key_filter_state* st = (key_filter_state*)user;
+	st->order[st->order_count++] = 2;
+	if (down) st->downs++;
+	else st->ups++;
+	st->last_key = key;
+	return 1;
+}
+
+static void test_key_handlers(vgui_context* ui)
+{
+	vgui_set_focus(ui, nullptr);
+	check(vgui_context_wants_keyboard(ui) == 0, "key handler: no handler, no focus");
+
+	key_filter_state st;
+	int token_a = vgui_context_add_key_handler(ui, on_key_filter_a, &st);
+	check(token_a > 0, "key handler: register");
+	check(vgui_context_wants_keyboard(ui) == 1, "key handler: requests keyboard");
+
+	int handled = vgui_input_key(ui, 'J', 1, 0);
+	vgui_input_key(ui, 'J', 0, 0);
+	check(handled == 0, "key handler: unconsumed key passes through");
+	check(st.downs == 1 && st.ups == 1, "key handler: sees down and up");
+	check(st.last_key == 'J', "key handler: receives key code");
+
+	int token_b = vgui_context_add_key_handler(ui, on_key_filter_b, &st);
+	check(token_b > 0 && token_b != token_a, "key handler: second token");
+	st.order_count = 0;
+	handled = vgui_input_key(ui, 'K', 1, VGUI_MOD_CTRL);
+	vgui_input_key(ui, 'K', 0, VGUI_MOD_CTRL);
+	check(handled == 1, "key handler: last registered consumes");
+	check(st.order_count >= 1 && st.order[0] == 2, "key handler: reverse registration order");
+
+	vgui_context_remove_key_handler(ui, token_b);
+	st.order_count = 0;
+	handled = vgui_input_key(ui, 'K', 1, VGUI_MOD_CTRL);
+	vgui_input_key(ui, 'K', 0, VGUI_MOD_CTRL);
+	check(handled == 0 && st.order_count >= 1 && st.order[0] == 1,
+		"key handler: removal restores previous handler");
+
+	vgui_context_remove_key_handler(ui, token_a);
+	vgui_context_remove_key_handler(ui, token_a);
+	check(vgui_context_wants_keyboard(ui) == 0, "key handler: removal drops keyboard request");
+	handled = vgui_input_key(ui, 'J', 1, 0);
+	check(handled == 0, "key handler: no handlers after removal");
+}
+
 static void test_texture_image(vgui_context* ui)
 {
 	uint32_t pixels[4] = { 0xFFFFFFFFu, 0xFF00FF00u, 0xFFFF0000u, 0xFF0000FFu };
@@ -1316,6 +1506,8 @@ int main()
 	test_list(ui, style);
 	test_tree(ui, style);
 	test_menu(ui, style);
+	test_menubar(ui, style);
+	test_key_handlers(ui);
 	test_texture_image(ui);
 	test_wrap(ui);
 	test_splitter(ui);
