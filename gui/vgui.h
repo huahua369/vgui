@@ -75,7 +75,8 @@ extern "C" {
 		VGUI_CUSTOM,
 		VGUI_SPLITTER,
 		VGUI_TABVIEW,
-		VGUI_MENUBAR
+		VGUI_MENUBAR,
+		VGUI_DOCK
 	} vgui_widget_kind;
 
 	typedef enum vgui_layout_kind {
@@ -510,6 +511,16 @@ extern "C" {
 		vgui_color toast_success;	/* fallback: green success tone */
 		vgui_color toast_warning;	/* fallback: amber warning tone */
 		vgui_color toast_error;		/* fallback: modal_danger */
+		/* Dock colours.  Zero selects a backwards-compatible fallback as
+		 * documented in vgui_context_set_theme(). */
+		vgui_color dock_bg;		/* fallback: panel_bg */
+		vgui_color dock_border;		/* fallback: panel_border */
+		vgui_color dock_tab_bg;		/* fallback: button_bg */
+		vgui_color dock_tab_active;	/* fallback: panel_bg */
+		vgui_color dock_tab_text;	/* fallback: text */
+		vgui_color dock_floating_bg;	/* fallback: menu_bg */
+		vgui_color dock_floating_border;	/* fallback: menu_border */
+		vgui_color dock_floating_title;	/* fallback: button_bg */
 	} vgui_theme;
 
 	/* ------------------------------------------------------------------------- */
@@ -747,6 +758,28 @@ extern "C" {
 		int max_visible;		/* 3: older toasts wait until a slot frees up */
 	} vgui_toast_style;
 
+	typedef struct vgui_dock_style {
+		float left_width;		/* 200: width of the left dock zone */
+		float right_width;		/* 220: width of the right dock zone */
+		float bottom_height;		/* 180: height of the bottom dock zone */
+		float gap;			/* 4: gap between dock zones */
+		float tab_height;		/* 30 */
+		float tab_padding;		/* 10: horizontal text padding inside a tab */
+		float tab_gap;			/* 2 */
+		float tab_min_width;		/* 64 */
+		float tab_max_width;		/* 180 */
+		float close_size;		/* 14: tab/frame close glyph box */
+		float floating_title_height;	/* 28 */
+		float floating_width;		/* 360: default floating frame width */
+		float floating_height;		/* 260: default floating frame height */
+		float floating_min_width;	/* 200 */
+		float floating_min_height;	/* 120 */
+		float floating_rounding;	/* 6 */
+		float floating_border_width;	/* 1 */
+		float shadow;			/* 6: floating frame shadow offset */
+		float drag_threshold;		/* 4: pointer distance before a tab drag starts */
+	} vgui_dock_style;
+
 	typedef struct vgui_image_style {
 		float req_width;		/* 240: preferred size when no texture is set */
 		float req_height;		/* 160 */
@@ -780,6 +813,7 @@ extern "C" {
 		vgui_tooltip_style tooltip;
 		vgui_modal_style modal;
 		vgui_toast_style toast;
+		vgui_dock_style dock;
 	} vgui_style;
 
 	/* ------------------------------------------------------------------------- */
@@ -1032,6 +1066,93 @@ extern "C" {
 	VGUI_API float vgui_tab_get_tab_height(vgui_widget* tabs);
 	VGUI_API void vgui_tab_on_select(vgui_widget* tabs, vgui_item_fn fn, void* user);
 	VGUI_API void vgui_tab_on_close(vgui_widget* tabs, vgui_item_fn fn, void* user);
+
+	/* Dock: a four-zone panel container with tab groups and floating frames.
+	 *
+	 * The left, right and bottom zones collapse when they have no open panels.
+	 * The centre zone fills the remaining space.  Panels in the same zone form a
+	 * tab group; only the active panel is laid out and visible.  A panel can be
+	 * moved between zones, reordered, floated as a draggable frame inside the
+	 * dock, and restored after being closed.  The dock owns added pages: remove
+	 * and clear destroy them, detach transfers ownership back to the caller.
+	 * Floating frames are confined to the dock rectangle. */
+	typedef enum vgui_dock_zone {
+		VGUI_DOCK_LEFT = 0,
+		VGUI_DOCK_RIGHT,
+		VGUI_DOCK_BOTTOM,
+		VGUI_DOCK_CENTER,
+		VGUI_DOCK_FLOATING
+	} vgui_dock_zone;
+
+	typedef struct vgui_dock_panel_desc {
+		const char* id;		/* optional stable string id, may be NULL */
+		const char* title;		/* tab/frame title */
+		vgui_widget* panel;		/* page transferred to the dock */
+		vgui_dock_zone zone;		/* target zone; default centre */
+		int index;			/* -1 appends to the zone */
+		int closeable;			/* default 1 */
+		int open;			/* default 1; 0 starts closed */
+		float x, y;			/* floating position; 0,0 centres */
+		float width, height;		/* floating size; <=0 uses the style */
+	} vgui_dock_panel_desc;
+
+	VGUI_API void vgui_dock_panel_desc_default(vgui_dock_panel_desc* desc);
+
+	VGUI_API vgui_item_id vgui_dock_add(vgui_widget* dock, const vgui_dock_panel_desc* desc);
+	/* Destroys the panel and its page. */
+	VGUI_API int vgui_dock_remove(vgui_widget* dock, vgui_item_id panel);
+	/* Removes the panel without destroying its page and returns the page. */
+	VGUI_API vgui_widget* vgui_dock_detach(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_clear(vgui_widget* dock);
+	VGUI_API int vgui_dock_get_count(vgui_widget* dock);
+	VGUI_API vgui_item_id vgui_dock_get_at(vgui_widget* dock, int index);
+	VGUI_API vgui_item_id vgui_dock_find(vgui_widget* dock, const char* id);
+	VGUI_API vgui_widget* vgui_dock_get_panel(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API const char* vgui_dock_get_id(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API const char* vgui_dock_get_title(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_set_title(vgui_widget* dock, vgui_item_id panel, const char* title);
+	VGUI_API int vgui_dock_get_closeable(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_set_closeable(vgui_widget* dock, vgui_item_id panel, int closeable);
+
+	/* Zone queries and persistence helpers.  Zone order includes closed panels
+	 * so a saved order can be restored before reopening them. */
+	VGUI_API int vgui_dock_get_zone_count(vgui_widget* dock, vgui_dock_zone zone);
+	VGUI_API vgui_item_id vgui_dock_get_zone_at(vgui_widget* dock, vgui_dock_zone zone, int index);
+	VGUI_API vgui_dock_zone vgui_dock_get_zone(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API int vgui_dock_get_index(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API int vgui_dock_set_zone(vgui_widget* dock, vgui_item_id panel, vgui_dock_zone zone, int index);
+	VGUI_API vgui_item_id vgui_dock_get_active(vgui_widget* dock, vgui_dock_zone zone);
+	VGUI_API int vgui_dock_activate(vgui_widget* dock, vgui_item_id panel);
+
+	/* Floating frames.  width/height <= 0 use the style defaults.  A floating
+	 * panel is always open; set_floating_rect() also raises it. */
+	VGUI_API int vgui_dock_float(vgui_widget* dock, vgui_item_id panel, float x, float y, float width, float height);
+	VGUI_API int vgui_dock_is_floating(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API int vgui_dock_get_floating_rect(vgui_widget* dock, vgui_item_id panel, float* x, float* y, float* width, float* height);
+	VGUI_API int vgui_dock_set_floating_rect(vgui_widget* dock, vgui_item_id panel, float x, float y, float width, float height);
+
+	/* Closing hides a panel and keeps its zone/order for restore.  close()
+	 * returns 0 when the panel is already closed.  restore() reopens it and
+	 * activates or raises it. */
+	VGUI_API int vgui_dock_close(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API int vgui_dock_restore(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API int vgui_dock_is_open(vgui_widget* dock, vgui_item_id panel);
+
+	/* Zone size in pixels (left/right width, bottom height).  A negative size
+	 * restores the style default.  The centre zone ignores the value. */
+	VGUI_API void vgui_dock_set_zone_size(vgui_widget* dock, vgui_dock_zone zone, float size);
+	VGUI_API float vgui_dock_get_zone_size(vgui_widget* dock, vgui_dock_zone zone);
+	/* Absolute rectangles after layout.  Zone rects are zero when collapsed.
+	 * The tab rect of a floating panel is its title bar. */
+	VGUI_API int vgui_dock_get_zone_rect(vgui_widget* dock, vgui_dock_zone zone, float* x, float* y, float* width, float* height);
+	VGUI_API int vgui_dock_get_tab_rect(vgui_widget* dock, vgui_item_id panel, float* x, float* y, float* width, float* height);
+
+	/* on_close runs after the panel has been hidden; the panel remains valid.
+	 * on_activate runs when a tab becomes active or a floating frame is raised.
+	 * on_change runs after any add/remove/move/float/close/restore/size change. */
+	VGUI_API void vgui_dock_on_close(vgui_widget* dock, vgui_item_fn fn, void* user);
+	VGUI_API void vgui_dock_on_activate(vgui_widget* dock, vgui_item_fn fn, void* user);
+	VGUI_API void vgui_dock_on_change(vgui_widget* dock, vgui_item_fn fn, void* user);
 
 	/* Callbacks. */
 	VGUI_API void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user);
