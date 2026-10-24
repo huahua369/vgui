@@ -140,6 +140,11 @@ struct vgui_list_item
 	std::string tooltip;
 	void* user = nullptr;
 	int enabled = 1;
+	// F04 行扩展：行图标、文字颜色覆盖（0 = 主题色）、行尾内联按钮。
+	vgui_texture* icon = nullptr;
+	uint32_t text_color = 0;
+	int button_count = 0;
+	std::vector<vgui_texture*> button_icons;
 };
 
 struct vgui_list_state
@@ -158,6 +163,9 @@ struct vgui_list_state
 	void* select_user = nullptr;
 	vgui_item_fn activate_fn = nullptr;
 	void* activate_user = nullptr;
+	vgui_item_button_fn button_fn = nullptr;
+	void* button_user = nullptr;
+	int hover_button = -1;	// hover 行上悬停的内联按钮序号
 
 	// 最宽行宽度缓存：content_w 逐条测量在万行列表上是每次布局 O(N)，
 	// 文本或字体不变时直接复用。模型变更点负责把 valid 置 false。
@@ -170,6 +178,14 @@ struct vgui_list_state
 	vgui_row_source source = {};
 	bool virtual_mode = false;
 	vgui_list_item scratch_item;	// 虚拟模式下按需materialize的一行
+
+	// F03 行拖拽：按下记录，移动超过阈值后发起通用拖拽。
+	vgui_row_drag_fn row_drag_fn = nullptr;
+	void* row_drag_user = nullptr;
+	vgui_item_id drag_press_item = 0;
+	int drag_press_index = -1;
+	float drag_press_x = 0.0f, drag_press_y = 0.0f;
+	int drag_pending = 0;
 };
 
 struct vgui_tree_node
@@ -182,6 +198,11 @@ struct vgui_tree_node
 	void* user = nullptr;
 	int enabled = 1;
 	int expanded = 0;
+	// F04 行扩展，与 vgui_list_item 一致。
+	vgui_texture* icon = nullptr;
+	uint32_t text_color = 0;
+	int button_count = 0;
+	std::vector<vgui_texture*> button_icons;
 };
 
 struct vgui_tree_row
@@ -211,6 +232,9 @@ struct vgui_tree_state
 	void* select_user = nullptr;
 	vgui_item_fn activate_fn = nullptr;
 	void* activate_user = nullptr;
+	vgui_item_button_fn button_fn = nullptr;
+	void* button_user = nullptr;
+	int hover_button = -1;
 
 	// 最宽可见行宽度缓存。可见行集合变化（展开/折叠/增删）和文本变更都会失效。
 	bool content_w_valid = false;
@@ -224,6 +248,14 @@ struct vgui_tree_state
 	vgui_row_source source = {};
 	bool virtual_mode = false;
 	vgui_tree_node scratch_node;	// 虚拟模式下按需materialize的一行
+
+	// F03 行拖拽，与 vgui_list_state 相同。
+	vgui_row_drag_fn row_drag_fn = nullptr;
+	void* row_drag_user = nullptr;
+	vgui_item_id drag_press_item = 0;
+	int drag_press_index = -1;
+	float drag_press_x = 0.0f, drag_press_y = 0.0f;
+	int drag_pending = 0;
 };
 
 struct vgui_menu_item
@@ -492,6 +524,9 @@ struct vgui_widget
 	int tooltip_when_disabled = 1;
 	vgui_tooltip_anchor tooltip_anchor = VGUI_TOOLTIP_ANCHOR_POINTER;
 
+	// F03 drop target ------------------------------------------------------
+	const vgui_drop_target* drop_target = nullptr;
+
 	// values ---------------------------------------------------------------
 	float value = 0.0f;
 	float range_min = 0.0f;
@@ -709,6 +744,17 @@ struct vgui_context
 	int want_key = 0;
 	int want_text = 0;
 	vgui_cursor cursor = VGUI_CURSOR_ARROW;
+
+	// F03 drag & drop -------------------------------------------------------
+	vgui_drag_kind drag_kind = VGUI_DRAG_NONE;	// != NONE 时拖拽进行中
+	std::string drag_text;						// 载荷字符串的持有副本
+	std::vector<std::string> drag_files;
+	std::vector<const char*> drag_file_ptrs;
+	vgui_drag_payload drag_payload = {};
+	vgui_widget* drag_source = nullptr;
+	vgui_widget* drop_hover = nullptr;			// 当前悬停的 drop target 控件
+	int drop_accepted = 0;
+	vgui_drop_hint drop_hint = {};
 
 	vgui_tooltip_state tooltip;
 	int tooltip_enabled = 1;
@@ -2374,6 +2420,26 @@ namespace {
 		st->scratch_item.user = item_user;
 		st->scratch_item.enabled = st->source.row_enabled
 			? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
+		st->scratch_item.icon = nullptr;
+		if (st->source.row_icon)
+			st->source.row_icon(st->source.user, index, &st->scratch_item.icon);
+		st->scratch_item.text_color = st->source.row_text_color
+			? st->source.row_text_color(st->source.user, index) : 0;
+		st->scratch_item.button_count = 0;
+		st->scratch_item.button_icons.clear();
+		if (st->source.row_buttons)
+		{
+			const int count = std::min(VGUI_MAX_ROW_BUTTONS,
+				std::max(0, st->source.row_buttons(st->source.user, index)));
+			for (int b = 0; b < count; ++b)
+			{
+				vgui_texture* tex = nullptr;
+				if (st->source.row_button_icon)
+					st->source.row_button_icon(st->source.user, index, b, &tex);
+				st->scratch_item.button_icons.push_back(tex);
+			}
+			st->scratch_item.button_count = count;
+		}
 		return &st->scratch_item;
 	}
 
@@ -2547,6 +2613,26 @@ namespace {
 				? (st->source.row_enabled(st->source.user, index) ? 1 : 0) : 1;
 			st->scratch_node.expanded = st->source.row_expanded
 				? (st->source.row_expanded(st->source.user, index) ? 1 : 0) : 0;
+			st->scratch_node.icon = nullptr;
+			if (st->source.row_icon)
+				st->source.row_icon(st->source.user, index, &st->scratch_node.icon);
+			st->scratch_node.text_color = st->source.row_text_color
+				? st->source.row_text_color(st->source.user, index) : 0;
+			st->scratch_node.button_count = 0;
+			st->scratch_node.button_icons.clear();
+			if (st->source.row_buttons)
+			{
+				const int count = std::min(VGUI_MAX_ROW_BUTTONS,
+					std::max(0, st->source.row_buttons(st->source.user, index)));
+				for (int b = 0; b < count; ++b)
+				{
+					vgui_texture* tex = nullptr;
+					if (st->source.row_button_icon)
+						st->source.row_button_icon(st->source.user, index, b, &tex);
+					st->scratch_node.button_icons.push_back(tex);
+				}
+				st->scratch_node.button_count = count;
+			}
 			if (out_index) *out_index = (size_t)index;
 			return &st->scratch_node;
 		}
@@ -6954,6 +7040,89 @@ namespace {
 		return x >= tx && x <= tx + ts.arrow_size + ts.arrow_gap;
 	}
 
+	// F04 行内按钮几何：按钮贴行尾（RTL 时贴行首），纵向居中，固定边距。
+	// 可见垂直滚动条会占用行尾的命中区（scrollbar_hit 优先于行点击），
+	// 按钮整体向内避让，避免永远点不到。
+	static float vgui_row_button_size(vgui_widget* w, float row_h)
+	{
+		(void)w;
+		return std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+	}
+
+	static float vgui_row_scrollbar_reserve(vgui_widget* w)
+	{
+		const vgui_style& st = w->ctx->style;
+		const float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+		if (w->scrollable_y && w->content_h > ih + 0.5f &&
+			ih > st.panel.scrollbar_min_track)
+			return st.panel.scrollbar_width + st.panel.scrollbar_inset +
+				st.panel.scrollbar_hit_padding + 2.0f;
+		return 0.0f;
+	}
+
+	static void vgui_row_button_rect(vgui_widget* w, float ix, float iw,
+		float row_y, float row_h, int button, int total,
+		float* out_x, float* out_size)
+	{
+		const float size = vgui_row_button_size(w, row_h);
+		const float gap = 4.0f;
+		const float margin = 4.0f;
+		const float bar = vgui_row_scrollbar_reserve(w);
+		float bx;
+		if (vgui_is_rtl(w->ctx))
+			bx = ix + bar + margin + (float)button * (size + gap);
+		else
+			bx = ix + iw - bar - margin - size - (float)(total - 1 - button) * (size + gap);
+		*out_x = bx;
+		*out_size = size;
+	}
+
+	static int vgui_row_buttons_hit_at(vgui_widget* w, float ix, float iw,
+		float row_y, float row_h, int total, float x, float y)
+	{
+		if (total <= 0) return -1;
+		const float size = vgui_row_button_size(w, row_h);
+		const float cy = row_y + (row_h - size) * 0.5f;
+		if (y < cy || y >= cy + size) return -1;
+		for (int b = 0; b < total; ++b)
+		{
+			float bx = 0, bs = 0;
+			vgui_row_button_rect(w, ix, iw, row_y, row_h, b, total, &bx, &bs);
+			if (x >= bx && x < bx + bs) return b;
+		}
+		return -1;
+	}
+
+	static int vgui_list_button_hit(vgui_widget* w, int index, float x, float y)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || index < 0) return -1;
+		vgui_list_item* item = vgui_list_item_at(w, index, nullptr);
+		if (!item || item->button_count <= 0) return -1;
+		const float ix = w->abs_x + w->padding[0];
+		const float iy = w->abs_y + w->padding[1];
+		const float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		const float row_h = vgui_list_row_height(w);
+		const float row_y = iy - w->scroll_y + (float)index * row_h;
+		return vgui_row_buttons_hit_at(w, ix, iw, row_y, row_h,
+			item->button_count, x, y);
+	}
+
+	static int vgui_tree_button_hit(vgui_widget* w, int row, float x, float y)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || row < 0) return -1;
+		vgui_tree_node* node = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, row));
+		if (!node || node->button_count <= 0) return -1;
+		const float ix = w->abs_x + w->padding[0];
+		const float iy = w->abs_y + w->padding[1];
+		const float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		const float row_h = vgui_tree_row_height(w);
+		const float row_y = iy - w->scroll_y + (float)row * row_h;
+		return vgui_row_buttons_hit_at(w, ix, iw, row_y, row_h,
+			node->button_count, x, y);
+	}
+
 	static void vgui_list_ensure_visible(vgui_widget* w, vgui_item_id id, vgui_scroll_align align)
 	{
 		vgui_list_state* st = vgui_list_of(w);
@@ -8147,12 +8316,156 @@ namespace {
 		return false;
 	}
 
+	//----------------------------------------------------------------------------
+	// F03 generic drag & drop
+	//----------------------------------------------------------------------------
+
+	// 开始拖拽：拷贝载荷字符串（files 逐个深拷贝），挂到 context 上。
+	static void vgui_drag_setup_payload(vgui_context* ctx, const vgui_drag_payload* payload)
+	{
+		ctx->drag_text = payload->text ? payload->text : "";
+		ctx->drag_files.clear();
+		ctx->drag_file_ptrs.clear();
+		if (payload->kind == VGUI_DRAG_FILES && payload->files && payload->file_count > 0)
+		{
+			for (int i = 0; i < payload->file_count; ++i)
+			{
+				if (payload->files[i])
+					ctx->drag_files.push_back(payload->files[i]);
+			}
+			ctx->drag_file_ptrs.reserve(ctx->drag_files.size());
+			for (const std::string& f : ctx->drag_files)
+				ctx->drag_file_ptrs.push_back(f.c_str());
+		}
+		ctx->drag_payload = *payload;
+		ctx->drag_payload.text = ctx->drag_text.c_str();
+		ctx->drag_payload.files = ctx->drag_file_ptrs.empty() ? nullptr : ctx->drag_file_ptrs.data();
+		ctx->drag_payload.file_count = (int)ctx->drag_file_ptrs.size();
+	}
+
+	// 结束拖拽并清理全部状态。
+	static void vgui_drag_end(vgui_context* ctx)
+	{
+		ctx->drag_kind = VGUI_DRAG_NONE;
+		ctx->drag_payload = {};
+		ctx->drag_text.clear();
+		ctx->drag_files.clear();
+		ctx->drag_file_ptrs.clear();
+		ctx->drag_source = nullptr;
+		ctx->drop_hover = nullptr;
+		ctx->drop_accepted = 0;
+		ctx->drop_hint = {};
+	}
+
+	// 命中点向上找第一个注册了 drop target 的控件（target 可以是祖先容器）。
+	static vgui_widget* vgui_drop_target_at(vgui_context* ctx, float x, float y)
+	{
+		vgui_widget* hit = vgui_hit_rec(vgui_active_root(ctx), x, y);
+		for (vgui_widget* w = hit; w; w = w->parent)
+		{
+			if (!ctx->alive.count(w)) return nullptr;
+			if (w->drop_target)
+				return w;
+		}
+		return nullptr;
+	}
+
+	// 拖拽中的 mouse move 路由：更新悬停 target、接受状态与提示矩形。
+	static void vgui_drag_route_move(vgui_context* ctx, float x, float y)
+	{
+		vgui_widget* target = vgui_drop_target_at(ctx, x, y);
+		if (target != ctx->drop_hover)
+		{
+			ctx->drop_hover = target;
+			ctx->drop_accepted = 0;
+			ctx->drop_hint = {};
+			if (target && target->drop_target && target->drop_target->can_accept)
+				ctx->drop_accepted = target->drop_target->can_accept(
+					target->drop_target->user, &ctx->drag_payload) ? 1 : 0;
+		}
+		if (ctx->drop_accepted && target && target->drop_target && target->drop_target->hover)
+		{
+			vgui_drop_hint hint = {};
+			target->drop_target->hover(target->drop_target->user, &ctx->drag_payload,
+				x, y, &hint);
+			ctx->drop_hint = hint;
+		}
+		else
+		{
+			ctx->drop_hint = {};
+		}
+		ctx->cursor = ctx->drop_accepted ? VGUI_CURSOR_HAND : VGUI_CURSOR_NO;
+		vgui_tooltip_suppress(ctx);
+	}
+
+	// 释放：把载荷交给当前悬停且接受的 target，然后结束拖拽。
+	static void vgui_drag_route_drop(vgui_context* ctx, float x, float y)
+	{
+		vgui_widget* target = ctx->drop_hover;
+		if (target && !ctx->alive.count(target)) target = nullptr;
+		bool handled = false;
+		if (target && ctx->drop_accepted && target->drop_target && target->drop_target->drop)
+			handled = target->drop_target->drop(target->drop_target->user,
+				&ctx->drag_payload, x, y) != 0;
+		(void)handled;
+		vgui_drag_end(ctx);
+	}
+
+	// 行拖拽发起：按下记录的行在移动超过阈值后开始通用拖拽。
+	static void vgui_row_drag_try_begin(vgui_widget* w, float x, float y)
+	{
+		vgui_context* ctx = w->ctx;
+		if (!ctx || ctx->drag_kind != VGUI_DRAG_NONE) return;
+		vgui_drag_payload payload = {};
+		vgui_item_id item = 0;
+		int index = -1;
+		if (w->kind == VGUI_LIST && w->list && w->list->drag_pending)
+		{
+			item = w->list->drag_press_item;
+			index = w->list->drag_press_index;
+			if (!w->list->row_drag_fn ||
+				!w->list->row_drag_fn(w->list->row_drag_user, item, index, &payload))
+				return;
+		}
+		else if (w->kind == VGUI_TREE && w->tree && w->tree->drag_pending)
+		{
+			item = w->tree->drag_press_item;
+			index = w->tree->drag_press_index;
+			if (!w->tree->row_drag_fn ||
+				!w->tree->row_drag_fn(w->tree->row_drag_user, item, index, &payload))
+				return;
+		}
+		else
+		{
+			return;
+		}
+		if (vgui_begin_drag(ctx, w, &payload))
+		{
+			// 拖拽发起后取消按流行程，释放时不再触发行点击。
+			w->pressed = 0;
+			if (w->list) w->list->pressed = 0;
+			if (w->tree) w->tree->pressed = 0;
+			ctx->active = nullptr;
+			ctx->press_target = nullptr;
+			vgui_drag_route_move(ctx, x, y);
+		}
+	}
+
 	static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	{
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
 		ctx->mouse_x = x;
 		ctx->mouse_y = y;
+
+		// F03: 拖拽进行中时接管移动事件，悬停/tooltip/菜单语义全部抑制。
+		if (ctx->drag_kind != VGUI_DRAG_NONE)
+		{
+			vgui_drag_route_move(ctx, x, y);
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		if (ctx->open_menu)
 		{
@@ -8241,7 +8554,12 @@ namespace {
 				int idx = vgui_list_index_at(h, x, y);
 				vgui_item_id item = 0;
 				vgui_list_item* it = vgui_list_item_at(h, idx, &item);
-				if (h->list) h->list->hover = it ? item : 0;
+				if (h->list)
+				{
+					h->list->hover = it ? item : 0;
+					h->list->hover_button = (it && idx >= 0)
+						? vgui_list_button_hit(h, idx, x, y) : -1;
+				}
 				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, idx, x - h->abs_x, y - h->abs_y);
 			}
 			else if (h->kind == VGUI_TREE)
@@ -8250,7 +8568,12 @@ namespace {
 				vgui_item_id item = 0;
 				if (h->tree && row >= 0)
 					item = vgui_tree_row_id_at(h, h->tree.get(), row);
-				if (h->tree) h->tree->hover = item;
+				if (h->tree)
+				{
+					h->tree->hover = item;
+					h->tree->hover_button = (item && row >= 0)
+						? vgui_tree_button_hit(h, row, x, y) : -1;
+				}
 				vgui_item_event(h, VGUI_EVENT_MOUSE_MOVE, item, row, x - h->abs_x, y - h->abs_y);
 			}
 			else if (h->kind == VGUI_TABVIEW)
@@ -8308,7 +8631,7 @@ namespace {
 			else if (a->kind == VGUI_TABVIEW && a->tabs && a->tabs->drag_item)
 			{
 				vgui_tab_state* ts = a->tabs.get();
-				if (std::fabs(x - ts->drag_start_x) > 4.0f)
+				if (std::fabs(x - ts->drag_start_x) > ctx->style.dock.drag_threshold)
 					ts->drag_active = 1;
 				if (ts->drag_active)
 				{
@@ -8381,6 +8704,26 @@ namespace {
 						vgui_dock_clamp_rect(a, panel, x - ds->drag_offset_x,
 							y - ds->drag_offset_y, panel->fw, panel->fh, false);
 						vgui_mark_dirty(a);
+					}
+				}
+			}
+			else if ((a->kind == VGUI_LIST || a->kind == VGUI_TREE) && a->pressed_button == 1)
+			{
+				// F03 行拖拽：移动超过阈值且行有 drag 源时发起通用拖拽。
+				const bool pending =
+					(a->kind == VGUI_LIST && a->list && a->list->drag_pending) ||
+					(a->kind == VGUI_TREE && a->tree && a->tree->drag_pending);
+				if (pending)
+				{
+					const float px = a->kind == VGUI_LIST
+						? a->list->drag_press_x : a->tree->drag_press_x;
+					const float py = a->kind == VGUI_LIST
+						? a->list->drag_press_y : a->tree->drag_press_y;
+					const float threshold = ctx->style.dock.drag_threshold;
+					if (std::fabs(x - px) > threshold || std::fabs(y - py) > threshold)
+					{
+						vgui_row_drag_try_begin(a, x, y);
+						if (!ctx->alive.count(a)) { vgui_end_input(ctx); return 1; }
 					}
 				}
 			}
@@ -8705,29 +9048,82 @@ namespace {
 			{
 				index = vgui_list_index_at(h, x, y);
 				vgui_list_item_at(h, index, &item);
-				if (h->list) h->list->pressed = (button == 1) ? item : 0;
-				if (button == 1 && item) vgui_list_apply_click(h, item, ctx->mods);
-				if (h->list) h->list->hover = item;
-			}
+				const int button_hit = (button == 1 && item)
+					? vgui_list_button_hit(h, index, x, y) : -1;
+				if (h->list) h->list->pressed = (button == 1 && button_hit < 0) ? item : 0;
+				if (button == 1 && item && button_hit < 0)
+					vgui_list_apply_click(h, item, ctx->mods);
+				if (button == 1 && item && button_hit >= 0)
+				{
+					if (h->list && h->list->button_fn)
+					{
+						h->list->button_fn(h, item, button_hit, h->list->button_user);
+						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+					}
+					if (h->list && h->list->virtual_mode && h->list->source.row_button_click)
+					{
+						h->list->source.row_button_click(h->list->source.user, index, button_hit);
+						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+					}
+					if (h->list) h->list->hover_button = button_hit;
+				}
+					if (h->list) h->list->hover = item;
+					// F03 行拖拽：记录按下位置，移动超过阈值时发起。
+					if (h->list)
+					{
+						h->list->drag_pending = (button == 1 && item && h->list->row_drag_fn) ? 1 : 0;
+						h->list->drag_press_item = item;
+						h->list->drag_press_index = index;
+						h->list->drag_press_x = x;
+						h->list->drag_press_y = y;
+					}
+				}
 			else
 			{
 				index = vgui_tree_row_at(h, x, y);
 				if (h->tree && index >= 0)
 					item = vgui_tree_row_id_at(h, h->tree.get(), index);
 				arrow = item && vgui_tree_arrow_hit(h, index, x);
+				const int button_hit = (button == 1 && item && !arrow)
+					? vgui_tree_button_hit(h, index, x, y) : -1;
 				if (arrow)
 				{
 					vgui_tree_toggle_row(h, index);
 					if (h->ctx) vgui_ensure_layout(h->ctx);
 					h->tree->pressed = 0;
 				}
+				else if (button_hit >= 0)
+				{
+					h->tree->pressed = 0;
+					if (h->tree->button_fn)
+					{
+						h->tree->button_fn(h, item, button_hit, h->tree->button_user);
+						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+					}
+					if (h->tree->virtual_mode && h->tree->source.row_button_click)
+					{
+						h->tree->source.row_button_click(h->tree->source.user, index, button_hit);
+						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+					}
+					h->tree->hover_button = button_hit;
+				}
 				else
 				{
 					if (h->tree) h->tree->pressed = (button == 1) ? item : 0;
 					if (button == 1 && item) vgui_tree_apply_click(h, item, ctx->mods);
 				}
-				if (h->tree) h->tree->hover = item;
-			}
+					if (h->tree) h->tree->hover = item;
+					// F03 行拖拽：箭头/行内按钮上的按下不发起拖拽。
+					if (h->tree)
+					{
+						h->tree->drag_pending = (button == 1 && item && !arrow && button_hit < 0 &&
+							h->tree->row_drag_fn) ? 1 : 0;
+						h->tree->drag_press_item = item;
+						h->tree->drag_press_index = index;
+						h->tree->drag_press_x = x;
+						h->tree->drag_press_y = y;
+					}
+				}
 			vgui_item_event(h, VGUI_EVENT_MOUSE_DOWN, item, index,
 				x - h->abs_x, y - h->abs_y, button, clicks);
 			(void)arrow;
@@ -8799,6 +9195,18 @@ namespace {
 		ctx->mouse_y = y;
 		if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
 		vgui_tooltip_suppress(ctx);
+
+		// F03: 拖拽中的释放不再走任何控件点击路径，直接交付 drop。
+		if (ctx->drag_kind != VGUI_DRAG_NONE)
+		{
+			ctx->press_target = nullptr;
+			ctx->active = nullptr;
+			if (button == 1)
+				vgui_drag_route_drop(ctx, x, y);
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 
 		if (ctx->modal.swallow_up)
 		{
@@ -10882,6 +11290,63 @@ namespace {
 		return vgui_widget_color(w, c);
 	}
 
+	// F04 行文字颜色覆盖：0 = 用主题色；禁用行保持 disabled 混合。
+	static uint32_t vgui_row_text_color_of(vgui_widget* w, uint32_t override_color,
+		bool selected, bool enabled)
+	{
+		if (!override_color)
+			return vgui_row_text_color(w, selected, enabled);
+		vgui_context* ctx = w->ctx;
+		if (!enabled)
+			override_color = vgui_mix_color(override_color, ctx->theme.disabled,
+				w->kind == VGUI_TREE ? ctx->style.tree.disabled_mix : ctx->style.list.disabled_mix);
+		return vgui_widget_color(w, override_color);
+	}
+
+	static void vgui_draw_row_texture(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_texture* tex, float x, float y, float size, uint32_t tint, bool enabled)
+	{
+		vgui_context* ctx = w->ctx;
+		if (!ctx || !tex || size <= 0.0f) return;
+		vgui_texture_ensure_upload(ctx, tex, cb, vg);
+		if (tex->native.image.id == 0 || !cb->add_texture) return;
+		uint32_t color = tint ? tint : 0xFFFFFFFF;
+		if (!enabled)
+			color = vgui_mix_color(color, ctx->theme.disabled, 0.5f);
+		ovg_texture_r r = {};
+		r.tex = &tex->native;
+		r.rc = { 0, 0, tex->width, tex->height };
+		r.dst = { (int)std::lround(x), (int)std::lround(y),
+			(int)std::lround(size), (int)std::lround(size) };
+		r.color = vgui_ovg_color(color);
+		cb->add_texture(vg, &r);
+	}
+
+	// F04 行尾内联按钮绘制。hover 行 id 与按钮序号由调用方从控件状态取出。
+	static void vgui_draw_row_buttons(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		float ix, float iw, float row_y, float row_h, vgui_item_id row_id,
+		vgui_item_id hover_row_id, int hover_button, int button_count,
+		const std::vector<vgui_texture*>& icons, uint32_t text_color)
+	{
+		vgui_context* ctx = w->ctx;
+		if (!ctx || button_count <= 0) return;
+		for (int b = 0; b < button_count; ++b)
+		{
+			float bx = 0, bs = 0;
+			vgui_row_button_rect(w, ix, iw, row_y, row_h, b, button_count, &bx, &bs);
+			const float by = row_y + (row_h - bs) * 0.5f;
+			const bool hot = row_id != 0 && row_id == hover_row_id && b == hover_button;
+			uint32_t bg = hot
+				? (ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A)
+				: (ctx->theme.panel_border ? ctx->theme.panel_border : 0xFF2E3440);
+			vgui_fill_rect(cb, vg, bx, by, bs, bs, 3.0f, vgui_widget_color(w, bg));
+			vgui_texture* tex = b < (int)icons.size() ? icons[(size_t)b] : nullptr;
+			if (tex)
+				vgui_draw_row_texture(w, cb, vg, tex, bx + bs * 0.2f, by + bs * 0.2f,
+					bs * 0.6f, text_color, true);
+		}
+	}
+
 	static void vgui_draw_model_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	{
 		vgui_context* ctx = w->ctx;
@@ -10955,23 +11420,64 @@ namespace {
 				vgui_fill_rect(cb, vg, ix, y, iw, row_h, ls.rounding,
 					vgui_widget_color(w, ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A));
 
-			uint32_t color = vgui_row_text_color(w, selected, item.enabled != 0);
+			const bool rtl = vgui_is_rtl(ctx);
+			uint32_t color = vgui_row_text_color_of(w, item.text_color, selected, item.enabled != 0);
+
+			// F04 自定义行绘制：替换标准内容绘制；选中/悬停底色与按钮仍由控件管理。
+			if (st->virtual_mode && st->source.row_draw)
+			{
+				st->source.row_draw(st->source.user, i, cb, vg, ix, y, iw, row_h);
+				vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, item.id,
+					st->hover, st->hover_button, item.button_count,
+					item.button_icons, color);
+				continue;
+			}
+
+			// 行尾按钮占用的宽度，文本与 detail 需避让。
+			float buttons_w = 0.0f;
+			if (item.button_count > 0)
+			{
+				const float bsize = vgui_row_button_size(w, row_h);
+				buttons_w = 4.0f + (float)item.button_count * bsize
+					+ (float)(item.button_count - 1) * 4.0f;
+			}
+
 			float detail_w = item.detail.empty() ? 0.0f : vgui_text_width(w, item.detail);
-			float text_w = iw - 12.0f - (detail_w > 0 ? detail_w + 16.0f : 0.0f);
-			float text_x = vgui_is_rtl(ctx) && detail_w > 0 ? ix + 6.0f + detail_w + 16.0f : ix + 6.0f;
+			float text_w = iw - 12.0f - buttons_w - (detail_w > 0 ? detail_w + 16.0f : 0.0f);
+			float text_x = rtl ? ix + 6.0f + buttons_w + (detail_w > 0 ? detail_w + 16.0f : 0.0f)
+				: ix + 6.0f;
+			if (item.icon)
+			{
+				const float isize = std::max(8.0f, std::min(18.0f, row_h - 10.0f));
+				const float icy = y + (row_h - isize) * 0.5f;
+				if (rtl)
+				{
+					vgui_draw_row_texture(w, cb, vg, item.icon,
+						text_x + std::max(0.0f, text_w) - isize, icy, isize, 0, item.enabled != 0);
+					text_w -= isize + 4.0f;
+				}
+				else
+				{
+					vgui_draw_row_texture(w, cb, vg, item.icon, text_x, icy, isize, 0, item.enabled != 0);
+					text_x += isize + 4.0f;
+					text_w -= isize + 4.0f;
+				}
+			}
 			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, text_x, y,
 				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
 			if (!item.detail.empty())
 			{
 				uint32_t dc = color;
 				if (selected) dc = vgui_alpha_color(dc, 0.75f);
-				if (vgui_is_rtl(ctx))
-					vgui_draw_text_raw(ctx, cb, vg, w, item.detail, ix + 6.0f, y,
+				if (rtl)
+					vgui_draw_text_raw(ctx, cb, vg, w, item.detail, ix + 6.0f + buttons_w, y,
 						detail_w, row_h, dc, 0.0f, 0.5f);
 				else
 					vgui_draw_text(ctx, cb, vg, w, item.detail,
-						ix + iw - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
+						ix + iw - buttons_w - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
 			}
+			vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, item.id,
+				st->hover, st->hover_button, item.button_count, item.button_icons, color);
 		}
 		if (row_count == 0 && !st->empty_text.empty())
 			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
@@ -11058,16 +11564,55 @@ namespace {
 				? ix + iw - ts.arrow_gap - (float)row_depth * ts.indent - ts.arrow_size
 				: ix + ts.arrow_gap + (float)row_depth * ts.indent;
 			float text_x = rtl ? ix + 4.0f : tx + ts.arrow_size + ts.arrow_gap;
-			uint32_t color = vgui_row_text_color(w, selected, node->enabled != 0);
+			uint32_t color = vgui_row_text_color_of(w, node->text_color, selected, node->enabled != 0);
 			if (st->virtual_mode ? vgui_tree_row_has_children(w, st, i) : !node->children.empty())
 				vgui_draw_tree_arrow(w, cb, vg, tx + ts.arrow_size * 0.5f,
 					y + row_h * 0.5f, ts.arrow_size,
 					st->virtual_mode ? vgui_tree_row_expanded(w, st, i) : node->expanded != 0, color, rtl);
-			float text_w = rtl
-				? std::max(0.0f, tx - ts.arrow_gap - text_x)
-				: iw - (text_x - ix) - 4.0f;
-			vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
-				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
+
+			// F04 行尾按钮占用的宽度，文本区避让（RTL 时按钮贴行首）。
+			float buttons_w = 0.0f;
+			if (node->button_count > 0)
+			{
+				const float bsize = vgui_row_button_size(w, row_h);
+				buttons_w = 4.0f + (float)node->button_count * bsize
+					+ (float)(node->button_count - 1) * 4.0f;
+			}
+			if (rtl)
+				text_x += buttons_w;
+
+			// F04 自定义行绘制：替换文本绘制；引导线/箭头与按钮仍由控件管理。
+			if (st->virtual_mode && st->source.row_draw)
+			{
+				st->source.row_draw(st->source.user, i, cb, vg, ix, y, iw, row_h);
+			}
+			else
+			{
+				float text_w = rtl
+					? std::max(0.0f, tx - ts.arrow_gap - text_x)
+					: std::max(0.0f, iw - (text_x - ix) - 4.0f - buttons_w);
+				if (node->icon)
+				{
+					const float isize = std::max(8.0f, std::min(18.0f, row_h - 10.0f));
+					const float icy = y + (row_h - isize) * 0.5f;
+					if (rtl)
+					{
+						vgui_draw_row_texture(w, cb, vg, node->icon,
+							text_x + text_w - isize, icy, isize, 0, node->enabled != 0);
+						text_w -= isize + 4.0f;
+					}
+					else
+					{
+						vgui_draw_row_texture(w, cb, vg, node->icon, text_x, icy, isize, 0, node->enabled != 0);
+						text_x += isize + 4.0f;
+						text_w -= isize + 4.0f;
+					}
+				}
+				vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
+					std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
+			}
+			vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, node->id,
+				st->hover, st->hover_button, node->button_count, node->button_icons, color);
 		}
 		if (row_count == 0 && !st->empty_text.empty())
 			vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
@@ -11265,6 +11810,59 @@ namespace {
 		vgui_draw_menu(menu, cb, vg, clips);
 		if (st->submenu_open && st->submenu_open->menu && st->submenu_open->menu->open)
 			vgui_draw_menu_chain(st->submenu_open, cb, vg, clips);
+	}
+
+	// F03 拖放覆盖层：插入指示与拖影，画在控件树之上、tooltip 之下。
+	static void vgui_draw_drag(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
+	{
+		if (!ctx || ctx->drag_kind == VGUI_DRAG_NONE) return;
+
+		// 提示矩形（接受方通过 hover 回调给出）。
+		if (ctx->drop_accepted && ctx->drop_hint.kind != VGUI_DROP_HINT_NONE)
+		{
+			const vgui_drop_hint& hint = ctx->drop_hint;
+			uint32_t accent = ctx->theme.accent;
+			if (hint.kind == VGUI_DROP_HINT_RECT)
+			{
+				vgui_fill_rect(cb, vg, hint.x, hint.y, hint.w, hint.h, 0.0f,
+					vgui_alpha_color(accent, 0.12f));
+				vgui_stroke_rect(cb, vg, hint.x + 0.5f, hint.y + 0.5f,
+					std::max(0.0f, hint.w - 1.0f), std::max(0.0f, hint.h - 1.0f), 0.0f,
+					vgui_alpha_color(accent, 0.85f), 1.0f);
+			}
+			else if (hint.kind == VGUI_DROP_HINT_LINE)
+			{
+				vgui_fill_rect(cb, vg, hint.x, hint.y,
+					std::max(2.0f, hint.w), std::max(2.0f, hint.h), 0.0f, accent);
+			}
+		}
+
+		// 拖影：指针旁的小标签，样式与 Dock 的浮动标题条一致。
+		vgui_widget* anchor = ctx->drop_hover ? ctx->drop_hover : ctx->root;
+		std::string label = ctx->drag_text;
+		if (label.empty() && ctx->drag_payload.kind == VGUI_DRAG_FILES &&
+			!ctx->drag_files.empty())
+		{
+			label = ctx->drag_files.front();
+			const size_t slash = label.find_last_of("/\\");
+			if (slash != std::string::npos)
+				label = label.substr(slash + 1);
+			if (ctx->drag_files.size() > 1)
+				label += " (+" + std::to_string(ctx->drag_files.size() - 1) + ")";
+		}
+		if (label.empty())
+			label = ctx->drag_payload.kind == VGUI_DRAG_FILES ? "files" : "item";
+		float gw = vgui_clampf(vgui_text_width(anchor, label) + 16.0f, 40.0f, 320.0f);
+		float gh = 20.0f;
+		float gx = ctx->mouse_x + 12.0f;
+		float gy = ctx->mouse_y + 12.0f;
+		if (gx + gw > (float)ctx->width) gx = ctx->mouse_x - gw - 6.0f;
+		if (gy + gh > (float)ctx->height) gy = ctx->mouse_y - gh - 6.0f;
+		vgui_fill_rect(cb, vg, gx, gy, gw, gh, 3.0f, 0xC0202020);
+		vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f, gw - 1.0f, gh - 1.0f, 3.0f,
+			ctx->theme.accent, 1.0f);
+		vgui_draw_text(ctx, cb, vg, anchor, label, gx + 8.0f, gy, gw - 16.0f, gh,
+			ctx->theme.text, 0.0f, 0.5f);
 	}
 
 	static void vgui_draw_tooltip(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
@@ -14690,6 +15288,17 @@ extern "C" {
 		vgui_mark_dirty(list);
 	}
 
+	// F04 细粒度失效：可见行数与顺序未变（只是内容变了），不重建行投影。
+	void vgui_list_source_rows_changed(vgui_widget* list, int first, int count)
+	{
+		(void)first;
+		(void)count;
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || !st->virtual_mode) return;
+		st->content_w_valid = false;
+		vgui_mark_dirty(list);
+	}
+
 	static vgui_item_id vgui_next_item_id(vgui_item_id& next)
 	{
 		if (next == 0) next = 1;
@@ -14880,6 +15489,88 @@ extern "C" {
 		return it ? it->user : nullptr;
 	}
 
+	// ---- F04 行扩展（icon / text color / inline buttons） ---------------------
+	// 全量模式写入 item 字段；虚拟模式下 setter 是 no-op（数据由行源提供），
+	// getter 经 materialize 读取回调结果。
+
+	void vgui_list_set_item_icon(vgui_widget* list, vgui_item_id item, vgui_texture* icon)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it || it->icon == icon) return;
+		it->icon = icon;
+		vgui_mark_dirty(list);
+	}
+
+	vgui_texture* vgui_list_get_item_icon(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->icon : nullptr;
+	}
+
+	void vgui_list_set_item_text_color(vgui_widget* list, vgui_item_id item, vgui_color color)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it || it->text_color == color) return;
+		it->text_color = color;
+		vgui_mark_dirty(list);
+	}
+
+	vgui_color vgui_list_get_item_text_color(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->text_color : 0;
+	}
+
+	void vgui_list_set_item_buttons(vgui_widget* list, vgui_item_id item, int count)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it) return;
+		count = std::min(VGUI_MAX_ROW_BUTTONS, std::max(0, count));
+		if (it->button_count == count) return;
+		it->button_count = count;
+		it->button_icons.assign((size_t)count, nullptr);
+		vgui_mark_dirty(list);
+	}
+
+	int vgui_list_get_item_buttons(vgui_widget* list, vgui_item_id item)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		return it ? it->button_count : 0;
+	}
+
+	void vgui_list_set_item_button_icon(vgui_widget* list, vgui_item_id item, int button, vgui_texture* icon)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st || st->virtual_mode) return;
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it || button < 0 || button >= it->button_count) return;
+		if ((int)it->button_icons.size() <= button)
+			it->button_icons.resize((size_t)button + 1, nullptr);
+		it->button_icons[(size_t)button] = icon;
+		vgui_mark_dirty(list);
+	}
+
+	vgui_texture* vgui_list_get_item_button_icon(vgui_widget* list, vgui_item_id item, int button)
+	{
+		vgui_list_item* it = vgui_list_item_find(list, item);
+		if (!it || button < 0) return nullptr;
+		return button < (int)it->button_icons.size() ? it->button_icons[(size_t)button] : nullptr;
+	}
+
+	void vgui_list_on_item_button(vgui_widget* list, vgui_item_button_fn fn, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->button_fn = fn;
+		st->button_user = user;
+	}
+
 	void vgui_list_set_selection_mode(vgui_widget* list, vgui_selection_mode mode)
 	{
 		vgui_list_state* st = vgui_list_of(list);
@@ -15036,6 +15727,112 @@ extern "C" {
 		st->rows_dirty = true;
 		st->content_w_valid = false;
 		vgui_mark_dirty(tree);
+	}
+
+	// F04 细粒度失效：不置 rows_dirty，避免整棵可见行投影重建。
+	void vgui_tree_source_rows_changed(vgui_widget* tree, int first, int count)
+	{
+		(void)first;
+		(void)count;
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || !st->virtual_mode) return;
+		st->content_w_valid = false;
+		vgui_mark_dirty(tree);
+	}
+
+	// ---- F03 通用拖放 ---------------------------------------------------------
+
+	int vgui_begin_drag(vgui_context* ctx, vgui_widget* source, const vgui_drag_payload* payload)
+	{
+		if (!ctx || !payload || payload->kind == VGUI_DRAG_NONE)
+			return 0;
+		if (ctx->drag_kind != VGUI_DRAG_NONE)
+			return 0;
+		ctx->drag_kind = payload->kind;
+		vgui_drag_setup_payload(ctx, payload);
+		ctx->drag_source = source;
+		ctx->drop_hover = nullptr;
+		ctx->drop_accepted = 0;
+		ctx->drop_hint = {};
+		ctx->cursor = VGUI_CURSOR_NO;
+		vgui_tooltip_suppress(ctx);
+		return 1;
+	}
+
+	void vgui_cancel_drag(vgui_context* ctx)
+	{
+		if (!ctx || ctx->drag_kind == VGUI_DRAG_NONE) return;
+		vgui_drag_end(ctx);
+		ctx->cursor = VGUI_CURSOR_ARROW;
+	}
+
+	int vgui_drag_active(vgui_context* ctx)
+	{
+		return ctx && ctx->drag_kind != VGUI_DRAG_NONE ? 1 : 0;
+	}
+
+	vgui_widget* vgui_drag_hover_target(vgui_context* ctx)
+	{
+		return ctx && ctx->drop_accepted ? ctx->drop_hover : nullptr;
+	}
+
+	void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target)
+	{
+		if (widget)
+			widget->drop_target = target;
+	}
+
+	void vgui_list_set_row_drag(vgui_widget* list, vgui_row_drag_fn fn, void* user)
+	{
+		vgui_list_state* st = vgui_list_of(list);
+		if (!st) return;
+		st->row_drag_fn = fn;
+		st->row_drag_user = user;
+		if (!fn)
+			st->drag_pending = 0;
+	}
+
+	void vgui_tree_set_row_drag(vgui_widget* tree, vgui_row_drag_fn fn, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->row_drag_fn = fn;
+		st->row_drag_user = user;
+		if (!fn)
+			st->drag_pending = 0;
+	}
+
+	int vgui_input_drop_files(vgui_context* ctx, const char* const* files,
+		int count, float x, float y)
+	{
+		if (!ctx || !files || count <= 0) return 0;
+		if (ctx->drag_kind != VGUI_DRAG_NONE) return 0;
+
+		vgui_drag_payload payload = {};
+		payload.kind = VGUI_DRAG_FILES;
+		payload.files = files;
+		payload.file_count = count;
+		ctx->drag_kind = VGUI_DRAG_FILES;
+		vgui_drag_setup_payload(ctx, &payload);
+
+		// 一次性 hover + drop：命中点向上找 target，接受则直接交付。
+		vgui_widget* target = vgui_drop_target_at(ctx, x, y);
+		bool accepted = false;
+		if (target && target->drop_target && target->drop_target->can_accept)
+			accepted = target->drop_target->can_accept(target->drop_target->user,
+				&ctx->drag_payload) != 0;
+		if (accepted && target->drop_target->hover)
+		{
+			vgui_drop_hint hint = {};
+			target->drop_target->hover(target->drop_target->user, &ctx->drag_payload,
+				x, y, &hint);
+		}
+		bool handled = false;
+		if (accepted && target->drop_target->drop)
+			handled = target->drop_target->drop(target->drop_target->user,
+				&ctx->drag_payload, x, y) != 0;
+		vgui_drag_end(ctx);
+		return handled ? 1 : 0;
 	}
 
 	vgui_item_id vgui_tree_add_node(vgui_widget* tree, vgui_item_id parent, const char* text, void* user)
@@ -15267,6 +16064,86 @@ extern "C" {
 	{
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		return n ? n->user : nullptr;
+	}
+
+	// ---- F04 行扩展（icon / text color / inline buttons），与 list 同约定 ----
+
+	void vgui_tree_set_item_icon(vgui_widget* tree, vgui_item_id node, vgui_texture* icon)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || n->icon == icon) return;
+		n->icon = icon;
+		vgui_mark_dirty(tree);
+	}
+
+	vgui_texture* vgui_tree_get_item_icon(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->icon : nullptr;
+	}
+
+	void vgui_tree_set_item_text_color(vgui_widget* tree, vgui_item_id node, vgui_color color)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || n->text_color == color) return;
+		n->text_color = color;
+		vgui_mark_dirty(tree);
+	}
+
+	vgui_color vgui_tree_get_item_text_color(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->text_color : 0;
+	}
+
+	void vgui_tree_set_item_buttons(vgui_widget* tree, vgui_item_id node, int count)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n) return;
+		count = std::min(VGUI_MAX_ROW_BUTTONS, std::max(0, count));
+		if (n->button_count == count) return;
+		n->button_count = count;
+		n->button_icons.assign((size_t)count, nullptr);
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_get_item_buttons(vgui_widget* tree, vgui_item_id node)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		return n ? n->button_count : 0;
+	}
+
+	void vgui_tree_set_item_button_icon(vgui_widget* tree, vgui_item_id node, int button, vgui_texture* icon)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || st->virtual_mode) return;
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || button < 0 || button >= n->button_count) return;
+		if ((int)n->button_icons.size() <= button)
+			n->button_icons.resize((size_t)button + 1, nullptr);
+		n->button_icons[(size_t)button] = icon;
+		vgui_mark_dirty(tree);
+	}
+
+	vgui_texture* vgui_tree_get_item_button_icon(vgui_widget* tree, vgui_item_id node, int button)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(tree, node);
+		if (!n || button < 0) return nullptr;
+		return button < (int)n->button_icons.size() ? n->button_icons[(size_t)button] : nullptr;
+	}
+
+	void vgui_tree_on_item_button(vgui_widget* tree, vgui_item_button_fn fn, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->button_fn = fn;
+		st->button_user = user;
 	}
 
 	void vgui_tree_set_item_expanded(vgui_widget* tree, vgui_item_id node, int expanded)
@@ -16302,6 +17179,9 @@ extern "C" {
 		// tooltips and notifications.
 		vgui_draw_modal(ctx, cb, vg, &clips);
 
+		// F03 drag ghost and drop hints float above the modal stage.
+		vgui_draw_drag(ctx, cb, vg);
+
 		// Tooltips sit above menus as well; they never overlap an open menu
 		// because opening one clears the hover state.
 		vgui_draw_tooltip(ctx, cb, vg);
@@ -16560,6 +17440,14 @@ int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e)
 			ret = vgui_mouse_up_impl(ctx, 1, fx, fy, 1);
 		else
 			ret = vgui_mouse_move_impl(ctx, fx, fy);
+		break;
+	}
+	case dev_event_type_e::ole_drop_e:
+	{
+		// F03: OS 文件拖入桥接到通用拖放路由（fmt==1 文件列表）。
+		ole_drop_et* d = e->v.d;
+		if (!d || d->fmt != 1 || !d->str || d->count <= 0) break;
+		ret = vgui_input_drop_files(ctx, d->str, d->count, d->x, d->y);
 		break;
 	}
 	default:

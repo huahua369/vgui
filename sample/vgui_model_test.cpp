@@ -663,6 +663,422 @@ static void test_tree_virtual_edges(vgui_context* ui, const vgui_style& style)
 	vgui_tree_set_row_source(recycle, nullptr);
 }
 
+/* F04 row extensions: per-row icons, text color overrides and trailing inline
+ * buttons in both the full model and the virtual row source modes.  Inline
+ * buttons must never change the row selection. */
+
+struct row_button_state
+{
+	int clicks = 0;
+	vgui_item_id last_item = 0;
+	int last_button = -1;
+	int source_clicks = 0;
+	int last_source_row = -1;
+	vgui_texture* icon0 = nullptr;
+	vgui_texture* icon1 = nullptr;
+	virtual_rows rows;				// 复用 test_list_virtual 的数据源
+	virtual_tree_rows tree_rows;	// 复用 test_tree_virtual 的数据源
+};
+
+static void on_row_button(vgui_widget*, vgui_item_id item, int button, void* user)
+{
+	row_button_state* s = (row_button_state*)user;
+	s->clicks++;
+	s->last_item = item;
+	s->last_button = button;
+}
+
+static void on_source_row_button(void* user, int index, int button)
+{
+	row_button_state* s = (row_button_state*)user;
+	s->source_clicks++;
+	s->last_source_row = index;
+	s->last_button = button;
+}
+
+/* 数据源回调包装：把 user 从 row_button_state 偏移到内嵌的数据结构。 */
+static int rext_count(void* user)
+{
+	return vrows_count(&((row_button_state*)user)->rows);
+}
+
+static int rext_info(void* user, int index, const char** text, const char** detail,
+	void** item_user)
+{
+	return vrows_info(&((row_button_state*)user)->rows, index, text, detail, item_user);
+}
+
+static vgui_item_id rext_id(void* user, int index)
+{
+	return vrows_id(&((row_button_state*)user)->rows, index);
+}
+
+static int rext_index(void* user, vgui_item_id item)
+{
+	return vrows_index(&((row_button_state*)user)->rows, item);
+}
+
+static int rext_tree_count(void* user)
+{
+	return vtrows_count(&((row_button_state*)user)->tree_rows);
+}
+
+static int rext_tree_info(void* user, int index, const char** text, const char** detail,
+	void** item_user)
+{
+	return vtrows_info(&((row_button_state*)user)->tree_rows, index, text, detail, item_user);
+}
+
+static vgui_item_id rext_tree_id(void* user, int index)
+{
+	return vtrows_id(&((row_button_state*)user)->tree_rows, index);
+}
+
+static int rext_tree_index(void* user, vgui_item_id item)
+{
+	return vtrows_index(&((row_button_state*)user)->tree_rows, item);
+}
+
+static int rext_tree_depth(void* user, int index)
+{
+	return vtrows_depth(&((row_button_state*)user)->tree_rows, index);
+}
+
+static int rext_tree_has_children(void* user, int index)
+{
+	return vtrows_has_children(&((row_button_state*)user)->tree_rows, index);
+}
+
+static int rext_tree_expanded(void* user, int index)
+{
+	return vtrows_expanded(&((row_button_state*)user)->tree_rows, index);
+}
+
+static void rext_tree_toggle(void* user, int index)
+{
+	vtrows_toggle(&((row_button_state*)user)->tree_rows, index);
+}
+
+static int rext_icon(void* user, int index, vgui_texture** out_texture)
+{
+	row_button_state* s = (row_button_state*)user;
+	if (out_texture) *out_texture = (index % 2 == 0) ? s->icon0 : s->icon1;
+	return 1;
+}
+
+static vgui_color rext_text_color(void* user, int index)
+{
+	(void)user;
+	return (index == 1) ? 0xFF00FF00u : 0;
+}
+
+static int rext_buttons(void* user, int index)
+{
+	(void)user;
+	return (index == 1) ? 2 : 0;
+}
+
+static int rext_button_icon(void* user, int index, int button, vgui_texture** out_texture)
+{
+	(void)index;
+	row_button_state* s = (row_button_state*)user;
+	if (out_texture) *out_texture = (button == 0) ? s->icon0 : s->icon1;
+	return 1;
+}
+
+static void test_list_row_extensions(vgui_context* ui, const vgui_style& style)
+{
+	uint32_t pixels[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+	vgui_texture_desc desc = {};
+	desc.width = 2;
+	desc.height = 2;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels;
+	vgui_texture* tex = vgui_texture_create(ui, &desc);
+	check(tex != nullptr, "row ext: texture created");
+
+	/* Full model mode. */
+	{
+		vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+		vgui_widget_set_id(list, "row-ext-list");
+		vgui_widget_set_pos(list, 10.0f, 10.0f);
+		vgui_widget_set_size(list, 240.0f, 200.0f);
+
+		cb_state cb;
+		vgui_list_on_select(list, on_select, &cb);
+		row_button_state bs;
+		bs.icon0 = tex;
+		bs.icon1 = tex;
+		vgui_list_on_item_button(list, on_row_button, &bs);
+
+		vgui_item_id a = vgui_list_add_item(list, "Alpha", nullptr);
+		vgui_item_id b = vgui_list_add_item(list, "Beta", nullptr);
+		vgui_item_id c = vgui_list_add_item(list, "Gamma", nullptr);
+
+		vgui_list_set_item_icon(list, a, tex);
+		vgui_list_set_item_text_color(list, b, 0xFF00FF00u);
+		vgui_list_set_item_buttons(list, a, 2);
+		vgui_list_set_item_button_icon(list, a, 0, tex);
+		check(vgui_list_get_item_icon(list, a) == tex, "list row ext: icon setter/getter");
+		check(vgui_list_get_item_text_color(list, b) == 0xFF00FF00u,
+			"list row ext: text color setter/getter");
+		check(vgui_list_get_item_text_color(list, c) == 0,
+			"list row ext: default text color is zero");
+		check(vgui_list_get_item_buttons(list, a) == 2, "list row ext: button count");
+		check(vgui_list_get_item_button_icon(list, a, 0) == tex,
+			"list row ext: button icon");
+		check(vgui_list_get_item_button_icon(list, a, 1) == nullptr,
+			"list row ext: unset button icon is null");
+		vgui_list_set_item_buttons(list, a, 99);
+		check(vgui_list_get_item_buttons(list, a) == VGUI_MAX_ROW_BUTTONS,
+			"list row ext: button count clamped");
+		vgui_list_set_item_buttons(list, a, 2);
+
+		// Insert/remove must not lose an id-based selection.
+		vgui_list_select(list, b, 1);
+		vgui_item_id inserted = vgui_list_insert_item(list, 0, "Head", nullptr);
+		check(vgui_list_is_selected(list, b), "list row ext: insert keeps selection");
+		vgui_list_remove_item(list, inserted);
+		check(vgui_list_is_selected(list, b), "list row ext: remove keeps selection");
+
+		// Click positions: trailing buttons sit at the right edge of the content
+		// box (inside the widget's right padding).  Item a is back at row 0
+		// after the insert/remove round-trip, and the list has no visible
+		// scrollbar here, so no bar reserve shifts the buttons.
+		vgui_update(ui, 0.016f);
+		float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+		vgui_widget_get_rect(list, &lx, &ly, &lw, &lh);
+		(void)lh;
+		const float row_h = style.list.row_height;
+		const float row0_y = ly + style.list.padding_y + row_h * 0.5f;
+		const float bsize = std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+		const float content_right = lx + lw - style.list.padding_x;
+		const float btn0_x = content_right - 4.0f - bsize - (bsize + 4.0f);
+		const float btn1_x = content_right - 4.0f - bsize;
+
+		click_at(ui, btn0_x, row0_y);
+		check(bs.clicks == 1 && bs.last_item == a && bs.last_button == 0,
+			"list row ext: first button click fires callback");
+		check(vgui_list_is_selected(list, a) == 0,
+			"list row ext: button click does not select");
+
+		click_at(ui, btn1_x, row0_y);
+		check(bs.clicks == 2 && bs.last_button == 1, "list row ext: second button click");
+
+		click_at(ui, btn0_x + bsize + 2.0f, row0_y);	// gap between buttons
+		check(bs.clicks == 2, "list row ext: gap between buttons is inert");
+		check(vgui_list_is_selected(list, a),
+			"list row ext: gap click behaves as a row click");
+
+		const int selects_before_text = cb.selects;
+		vgui_list_clear_selection(list);
+		click_at(ui, lx + 30.0f, row0_y);
+		check(cb.selects == selects_before_text + 1 && vgui_list_is_selected(list, a),
+			"list row ext: text area still selects");
+		check(bs.clicks == 2, "list row ext: text area not a button");
+	}
+
+	/* Virtual mode: the same extensions come from the row source callbacks. */
+	{
+		vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+		vgui_widget_set_id(list, "row-ext-vlist");
+		vgui_widget_set_pos(list, 400.0f, 10.0f);
+		vgui_widget_set_size(list, 240.0f, 200.0f);
+
+		row_button_state bs;
+		bs.icon0 = tex;
+		bs.icon1 = tex;
+		bs.rows.count = 1000000;
+		cb_state cb;
+		vgui_list_on_select(list, on_select, &cb);
+
+		vgui_row_source src = {};
+		src.row_count = rext_count;
+		src.row_info = rext_info;
+		src.row_id = rext_id;
+		src.row_id_index = rext_index;
+		src.row_icon = rext_icon;
+		src.row_text_color = rext_text_color;
+		src.row_buttons = rext_buttons;
+		src.row_button_icon = rext_button_icon;
+		src.row_button_click = on_source_row_button;
+		src.user = &bs;
+		vgui_list_set_row_source(list, &src);
+
+		check(vgui_list_get_item_icon(list, 2) == tex,
+			"list row ext: virtual icon from row_icon");
+		check(vgui_list_get_item_text_color(list, 1) == 0,
+			"list row ext: virtual text color defaults to zero");
+		check(vgui_list_get_item_text_color(list, 2) == 0xFF00FF00u,
+			"list row ext: virtual text color override (row 1)");
+		check(vgui_list_get_item_buttons(list, 2) == 2,
+			"list row ext: virtual button count (row 1)");
+		check(vgui_list_get_item_buttons(list, 1) == 0,
+			"list row ext: virtual button count default");
+		check(vgui_list_get_item_button_icon(list, 2, 1) == tex,
+			"list row ext: virtual button icon");
+		vgui_list_set_item_buttons(list, 2, 3);
+		check(vgui_list_get_item_buttons(list, 2) == 2,
+			"list row ext: virtual setters are no-ops");
+
+		// Hover must only materialize the hovered row, not walk the source.
+		vgui_update(ui, 0.016f);
+		float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+		vgui_widget_get_rect(list, &lx, &ly, &lw, &lh);
+		(void)lh;
+		const float row_h = style.list.row_height;
+		const float row1_y = ly + style.list.padding_y + row_h + row_h * 0.5f;
+		const float bsize = std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+		// 长列表有可见滚动条，按钮向内避让 bar 命中区。
+		const float bar = style.panel.scrollbar_width + style.panel.scrollbar_inset
+			+ style.panel.scrollbar_hit_padding + 2.0f;
+		const float content_right = lx + lw - style.list.padding_x;
+		const float btn0_x = content_right - bar - 4.0f - bsize - (bsize + 4.0f);
+		click_at(ui, btn0_x, row1_y);
+		check(bs.source_clicks == 1 && bs.last_source_row == 1 && bs.last_button == 0,
+			"list row ext: virtual row_button_click fires");
+		check(vgui_list_get_selected_count(list) == 0,
+			"list row ext: virtual button click does not select");
+
+		// Fine-grained invalidation is safe and keeps the virtual contract.
+		vgui_list_source_rows_changed(list, 1, 1);
+		check(vgui_list_is_virtual(list) == 1, "list row ext: rows_changed keeps virtual mode");
+		check(vgui_list_get_count(list) == 1000000, "list row ext: rows_changed keeps count");
+		vgui_list_source_rows_changed(list, -5, 0);	// 边界参数不允许破坏状态
+		check(vgui_list_get_count(list) == 1000000, "list row ext: rows_changed tolerates odd range");
+	}
+}
+
+static void test_tree_row_extensions(vgui_context* ui, const vgui_style& style)
+{
+	uint32_t pixels[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+	vgui_texture_desc desc = {};
+	desc.width = 2;
+	desc.height = 2;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels;
+	vgui_texture* tex = vgui_texture_create(ui, &desc);
+	check(tex != nullptr, "tree row ext: texture created");
+
+	/* Full model mode. */
+	{
+		vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+		vgui_widget_set_id(tree, "row-ext-tree");
+		vgui_widget_set_pos(tree, 10.0f, 260.0f);
+		vgui_widget_set_size(tree, 240.0f, 200.0f);
+
+		cb_state cb;
+		vgui_tree_on_select(tree, on_select, &cb);
+		row_button_state bs;
+		bs.icon0 = tex;
+		bs.icon1 = tex;
+		vgui_tree_on_item_button(tree, on_row_button, &bs);
+
+		vgui_item_id root = vgui_tree_add_node(tree, 0, "Root", nullptr);
+		vgui_item_id child = vgui_tree_add_node(tree, root, "Child", nullptr);
+		check(root && child, "tree row ext: nodes added");
+
+		vgui_tree_set_item_icon(tree, root, tex);
+		vgui_tree_set_item_text_color(tree, child, 0xFFFF8040u);
+		vgui_tree_set_item_buttons(tree, root, 2);
+		vgui_tree_set_item_button_icon(tree, root, 0, tex);
+		check(vgui_tree_get_item_icon(tree, root) == tex, "tree row ext: icon setter/getter");
+		check(vgui_tree_get_item_text_color(tree, child) == 0xFFFF8040u,
+			"tree row ext: text color setter/getter");
+		check(vgui_tree_get_item_buttons(tree, root) == 2, "tree row ext: button count");
+		check(vgui_tree_get_item_button_icon(tree, root, 0) == tex,
+			"tree row ext: button icon");
+
+		vgui_update(ui, 0.016f);
+		float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+		vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+		(void)th;
+		const float row_h = style.tree.row_height;
+		const float row0_y = ty + style.tree.padding_y + row_h * 0.5f;
+		const float bsize = std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+		const float content_right = tx + tw - style.tree.padding_x;
+		const float btn1_x = content_right - 4.0f - bsize;
+
+		// Buttons must not toggle expansion either.
+		vgui_tree_set_item_expanded(tree, root, 0);
+		click_at(ui, btn1_x, row0_y);
+		check(bs.clicks == 1 && bs.last_item == root && bs.last_button == 1,
+			"tree row ext: button click fires callback");
+		check(vgui_tree_is_selected(tree, root) == 0,
+			"tree row ext: button click does not select");
+		check(vgui_tree_get_item_expanded(tree, root) == 0,
+			"tree row ext: button click does not toggle");
+
+		click_at(ui, tx + 30.0f, row0_y);
+		check(cb.selects == 1 && vgui_tree_is_selected(tree, root),
+			"tree row ext: text area still selects");
+	}
+
+	/* Virtual mode. */
+	{
+		vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+		vgui_widget_set_id(tree, "row-ext-vtree");
+		vgui_widget_set_pos(tree, 400.0f, 260.0f);
+		vgui_widget_set_size(tree, 240.0f, 200.0f);
+
+		row_button_state bs;
+		bs.icon0 = tex;
+		bs.icon1 = tex;
+		bs.tree_rows.expanded = 1;
+		cb_state cb;
+		vgui_tree_on_select(tree, on_select, &cb);
+
+		vgui_row_source src = {};
+		src.row_count = rext_tree_count;
+		src.row_info = rext_tree_info;
+		src.row_id = rext_tree_id;
+		src.row_id_index = rext_tree_index;
+		src.row_depth = rext_tree_depth;
+		src.row_has_children = rext_tree_has_children;
+		src.row_expanded = rext_tree_expanded;
+		src.row_toggle = rext_tree_toggle;
+		src.row_icon = rext_icon;
+		src.row_text_color = rext_text_color;
+		src.row_buttons = rext_buttons;
+		src.row_button_icon = rext_button_icon;
+		src.row_button_click = on_source_row_button;
+		src.user = &bs;
+		vgui_tree_set_row_source(tree, &src);
+
+		check(vgui_tree_get_item_icon(tree, 100) == tex,
+			"tree row ext: virtual icon from row_icon");
+		check(vgui_tree_get_item_text_color(tree, 101) == 0xFF00FF00u,
+			"tree row ext: virtual text color (row 1)");
+		check(vgui_tree_get_item_buttons(tree, 101) == 2,
+			"tree row ext: virtual button count (row 1)");
+		check(vgui_tree_get_item_buttons(tree, 100) == 0,
+			"tree row ext: virtual button count default");
+
+		vgui_update(ui, 0.016f);
+		float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+		vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+		(void)th;
+		const float row_h = style.tree.row_height;
+		const float row1_y = ty + style.tree.padding_y + row_h + row_h * 0.5f;
+		const float bsize = std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+		// 51 行超出视口，滚动条可见，按钮向内避让。
+		const float bar = style.panel.scrollbar_width + style.panel.scrollbar_inset
+			+ style.panel.scrollbar_hit_padding + 2.0f;
+		const float content_right = tx + tw - style.tree.padding_x;
+		const float btn0_x = content_right - bar - 4.0f - bsize - (bsize + 4.0f);
+		click_at(ui, btn0_x, row1_y);
+		check(bs.source_clicks >= 1 && bs.last_button == 0,
+			"tree row ext: virtual row_button_click fires");
+		check(vgui_tree_get_selected_count(tree) == 0,
+			"tree row ext: virtual button click does not select");
+
+		vgui_tree_source_rows_changed(tree, 1, 1);
+		check(vgui_tree_is_virtual(tree) == 1, "tree row ext: rows_changed keeps virtual mode");
+		check(vgui_tree_get_node_count(tree) == kVirtualTreeChildRows,
+			"tree row ext: rows_changed keeps row count");
+	}
+}
+
 static void test_tree(vgui_context* ui, const vgui_style& style)
 {
 	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
@@ -2855,6 +3271,174 @@ static void test_dock(vgui_context* ui, const vgui_style& base)
 	vgui_context_set_style(ui, &base);
 }
 
+/* F03 generic drag & drop: row drag sources, drop target routing, accept /
+ * reject feedback and the OS file drop bridge. */
+
+struct drag_state
+{
+	int accepts = 0;
+	int hovers = 0;
+	int drops = 0;
+	int drag_calls = 0;
+	bool reject = false;
+	std::string last_text;
+	std::vector<std::string> last_files;
+	vgui_drop_hint last_hint = {};
+};
+
+static int dd_can_accept(void* user, const vgui_drag_payload* payload)
+{
+	drag_state* s = (drag_state*)user;
+	if (s->reject || !payload) return 0;
+	if (payload->kind == VGUI_DRAG_TEXT || payload->kind == VGUI_DRAG_FILES)
+	{
+		s->accepts++;
+		return 1;
+	}
+	return 0;
+}
+
+static void dd_hover(void* user, const vgui_drag_payload* payload, float x, float y,
+	vgui_drop_hint* hint)
+{
+	(void)payload;
+	(void)x;
+	drag_state* s = (drag_state*)user;
+	s->hovers++;
+	if (hint)
+	{
+		hint->kind = VGUI_DROP_HINT_LINE;
+		hint->x = 0.0f;
+		hint->y = y;
+		hint->w = 100.0f;
+		hint->h = 2.0f;
+		s->last_hint = *hint;
+	}
+}
+
+static int dd_drop(void* user, const vgui_drag_payload* payload, float x, float y)
+{
+	(void)x;
+	(void)y;
+	drag_state* s = (drag_state*)user;
+	s->drops++;
+	if (payload)
+	{
+		s->last_text = payload->text ? payload->text : "";
+		s->last_files.clear();
+		for (int i = 0; i < payload->file_count; ++i)
+		{
+			if (payload->files && payload->files[i])
+				s->last_files.push_back(payload->files[i]);
+		}
+	}
+	return 1;
+}
+
+static int dd_row_drag(void* user, vgui_item_id item, int index, vgui_drag_payload* out)
+{
+	(void)item;
+	(void)index;
+	static const char* kDraggedText = "dragged row";
+	((drag_state*)user)->drag_calls++;
+	if (out)
+	{
+		out->kind = VGUI_DRAG_TEXT;
+		out->text = kDraggedText;
+	}
+	return 1;
+}
+
+static void test_drag_drop(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* list = vgui_widget_add(vgui_root(ui), VGUI_LIST, nullptr);
+	vgui_widget_set_id(list, "drag-list");
+	vgui_widget_set_pos(list, 10.0f, 10.0f);
+	vgui_widget_set_size(list, 200.0f, 150.0f);
+	vgui_list_add_item(list, "one", nullptr);
+	vgui_list_add_item(list, "two", nullptr);
+	vgui_list_add_item(list, "three", nullptr);
+
+	drag_state ds;
+	vgui_list_set_row_drag(list, dd_row_drag, &ds);
+
+	vgui_widget* zone = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_id(zone, "drop-zone");
+	vgui_widget_set_pos(zone, 400.0f, 10.0f);
+	vgui_widget_set_size(zone, 200.0f, 150.0f);
+
+	vgui_drop_target target = {};
+	target.can_accept = dd_can_accept;
+	target.hover = dd_hover;
+	target.drop = dd_drop;
+	target.user = &ds;
+	vgui_widget_set_drop_target(zone, &target);
+
+	vgui_update(ui, 0.016f);
+	float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+	vgui_widget_get_rect(list, &lx, &ly, &lw, &lh);
+	(void)lw;
+	(void)lh;
+	float zx = 0.0f, zy = 0.0f, zw = 0.0f, zh = 0.0f;
+	vgui_widget_get_rect(zone, &zx, &zy, &zw, &zh);
+	const float row0_y = ly + style.list.padding_y + style.list.row_height * 0.5f;
+	const float zone_cx = zx + zw * 0.5f;
+	const float zone_cy = zy + zh * 0.5f;
+
+	// Sub-threshold moves do not start a drag.
+	vgui_input_mouse_move(ui, lx + 30.0f, row0_y);
+	vgui_input_mouse_down(ui, 1, lx + 30.0f, row0_y, 1);
+	vgui_input_mouse_move(ui, lx + 32.0f, row0_y + 2.0f);
+	check(vgui_drag_active(ui) == 0 && ds.drag_calls == 0,
+		"drag: threshold suppresses tiny moves");
+
+	// Crossing the threshold starts the drag and routes the hover.
+	vgui_input_mouse_move(ui, zone_cx, zone_cy);
+	check(vgui_drag_active(ui) == 1 && ds.drag_calls == 1,
+		"drag: row drag starts past the threshold");
+	check(vgui_drag_hover_target(ui) == zone, "drag: hover target resolves");
+	check(ds.accepts == 1 && ds.hovers >= 1, "drag: accept + hover callbacks");
+	check(ds.last_hint.kind == VGUI_DROP_HINT_LINE, "drag: hover hint recorded");
+
+	// Release delivers the payload and ends the drag.
+	vgui_input_mouse_up(ui, 1, zone_cx, zone_cy, 1);
+	check(ds.drops == 1 && ds.last_text == "dragged row",
+		"drag: drop delivers the payload");
+	check(vgui_drag_active(ui) == 0, "drag: release ends the drag");
+
+	// A rejected payload never reaches drop.
+	ds.reject = true;
+	vgui_input_mouse_move(ui, lx + 30.0f, row0_y);
+	vgui_input_mouse_down(ui, 1, lx + 30.0f, row0_y, 1);
+	vgui_input_mouse_move(ui, zone_cx, zone_cy);
+	check(vgui_drag_active(ui) == 1 && vgui_drag_hover_target(ui) == nullptr,
+		"drag: rejected payload has no hover target");
+	vgui_input_mouse_up(ui, 1, zone_cx, zone_cy, 1);
+	check(ds.drops == 1, "drag: rejected drop is not delivered");
+
+	// begin/cancel via the C API.
+	vgui_drag_payload payload = {};
+	payload.kind = VGUI_DRAG_TEXT;
+	payload.text = "manual";
+	check(vgui_begin_drag(ui, list, &payload) == 1, "drag: begin_drag starts");
+	check(vgui_drag_active(ui) == 1, "drag: manual drag is active");
+	vgui_cancel_drag(ui);
+	check(vgui_drag_active(ui) == 0, "drag: cancel ends the drag");
+	payload.kind = VGUI_DRAG_NONE;
+	check(vgui_begin_drag(ui, list, &payload) == 0, "drag: none payload rejected");
+
+	// OS file drop bridge: one-shot hover + drop over the zone.
+	ds.reject = false;
+	const char* files[] = { "assets/texture.png", "assets/model.glb" };
+	check(vgui_input_drop_files(ui, files, 2, zone_cx, zone_cy) == 1,
+		"drag: file drop accepted");
+	check(ds.last_files.size() == 2 && ds.last_files[1] == "assets/model.glb",
+		"drag: file payload carried through");
+	check(vgui_input_drop_files(ui, files, 2, 100.0f, 600.0f) == 0,
+		"drag: file drop outside any target is refused");
+	check(vgui_drag_active(ui) == 0, "drag: file drop leaves no drag state");
+}
+
 static void test_i18n_rtl(vgui_context* ui)
 {
 	// ---- string table + text-key bindings ----
@@ -3020,6 +3604,9 @@ int main()
 	test_list_virtual(ui);
 	test_tree_virtual(ui, style);
 	test_tree_virtual_edges(ui, style);
+	test_list_row_extensions(ui, style);
+	test_tree_row_extensions(ui, style);
+	test_drag_drop(ui, style);
 	test_tooltip(ui, style);
 	test_modal(ui);
 	test_dialog(ui);

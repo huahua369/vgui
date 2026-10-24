@@ -3,7 +3,7 @@
  * command_stack.h - editor-wide undo/redo foundation.
  *
  * Concrete commands are supplied by the host application.  The editor kit only
- * owns execution order, transactions and the undo/redo stacks.
+ * owns execution order, transactions, merging and the undo/redo stacks.
  */
 #include <cstddef>
 #include <functional>
@@ -18,8 +18,16 @@ namespace vgui_editor_kit {
 	public:
 		virtual ~command() = default;
 		virtual const char* name() const noexcept = 0;
-		virtual void execute() = 0;
+		/* Applies the command.  A false return means the command failed and was
+		 * not applied; execute() then refuses to record it. */
+		virtual bool execute() = 0;
 		virtual void undo() = 0;
+		/* Tries to absorb next, whose effect has already been applied, so that
+		 * consecutive operations (drags, repeated edits) collapse into a single
+		 * undo record.  Returns true when absorbed; the stack then discards
+		 * next.  Merging only happens between top-level stack entries and is
+		 * suppressed until the next record after undo/redo/transactions. */
+		virtual bool merge_with(command& next) { (void)next; return false; }
 	};
 
 	/* Convenience command for callbacks.  The caller is responsible for keeping
@@ -32,7 +40,7 @@ namespace vgui_editor_kit {
 		function_command(std::string name, callback execute, callback undo);
 
 		const char* name() const noexcept override;
-		void execute() override;
+		bool execute() override;
 		void undo() override;
 
 	private:
@@ -47,7 +55,9 @@ namespace vgui_editor_kit {
 		explicit command_group(std::string name);
 
 		const char* name() const noexcept override;
-		void execute() override;
+		/* Runs children in order and stops at the first failure so the stack
+		 * refuses to record a partially applied group. */
+		bool execute() override;
 		void undo() override;
 
 		void add(std::unique_ptr<command> child);
@@ -65,8 +75,10 @@ namespace vgui_editor_kit {
 		command_stack(const command_stack&) = delete;
 		command_stack& operator=(const command_stack&) = delete;
 
-		/* Executes and records a command.  Commands must not throw. */
-		void execute(std::unique_ptr<command> command);
+		/* Executes a command and records it on success.  A failed command
+		 * (execute() == false) leaves the undo/redo stacks untouched and the
+		 * call returns false. */
+		bool execute(std::unique_ptr<command> command);
 
 		/* Records a command whose effect has already been applied.  Useful for
 		 * property editors that update their model before creating the undo
@@ -91,9 +103,14 @@ namespace vgui_editor_kit {
 		bool in_transaction() const noexcept;
 
 	private:
+		void record(std::unique_ptr<command> command);
+		void try_merge(std::unique_ptr<command>& command);
+
 		std::vector<std::unique_ptr<command>> undo_;
 		std::vector<std::unique_ptr<command>> redo_;
 		std::vector<std::unique_ptr<command_group>> transactions_;
+		/* True while a fresh top-level record may absorb the next command. */
+		bool can_merge_ = false;
 	};
 
 } /* namespace vgui_editor_kit */

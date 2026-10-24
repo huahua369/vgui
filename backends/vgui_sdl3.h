@@ -71,6 +71,9 @@ struct gui_viewport {
 	// Rectangle used by the SDL IME.  io.ime_rect points here.
 	glm::ivec4 ime_rect = {};
 	std::string drop_text;
+	// F03: 当前 OS 拖入批次的文件路径（DROP_FILE 聚合，COMPLETE 交付）。
+	std::vector<std::string> drop_files;
+	std::vector<const char*> drop_file_ptrs;
 	glm::ivec2 _last_pos = {};
 	//div_cx0 _root = {};
 public:

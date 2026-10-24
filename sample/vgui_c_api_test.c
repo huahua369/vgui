@@ -84,6 +84,38 @@ int main(void)
 	vgui_widget_get_rect(image, &x, &y, &w, &h);
 	check(w == 120.0f && h == 80.0f, "C API: layout rect");
 
+	/* F04 row extensions through the plain C API. */
+	{
+		vgui_widget* list = vgui_widget_add(root, VGUI_LIST, NULL);
+		vgui_widget* tree = vgui_widget_add(root, VGUI_TREE, NULL);
+		check(list != NULL && tree != NULL, "C API: row ext widgets");
+
+		vgui_item_id li = vgui_list_add_item(list, "row", NULL);
+		vgui_item_id ti = vgui_tree_add_node(tree, 0, "node", NULL);
+		check(li != 0 && ti != 0, "C API: row ext items");
+
+		vgui_list_set_item_icon(list, li, texture);
+		check(vgui_list_get_item_icon(list, li) == texture, "C API: list item icon");
+		vgui_list_set_item_text_color(list, li, 0xFF00FF00u);
+		check(vgui_list_get_item_text_color(list, li) == 0xFF00FF00u,
+			"C API: list item text color");
+		vgui_list_set_item_buttons(list, li, 2);
+		check(vgui_list_get_item_buttons(list, li) == 2, "C API: list item buttons");
+		vgui_list_set_item_button_icon(list, li, 1, texture);
+		check(vgui_list_get_item_button_icon(list, li, 1) == texture,
+			"C API: list item button icon");
+		vgui_list_on_item_button(list, NULL, NULL);
+
+		vgui_tree_set_item_icon(tree, ti, texture);
+		check(vgui_tree_get_item_icon(tree, ti) == texture, "C API: tree item icon");
+		vgui_tree_set_item_text_color(tree, ti, 0xFF8040FFu);
+		check(vgui_tree_get_item_text_color(tree, ti) == 0xFF8040FFu,
+			"C API: tree item text color");
+		vgui_tree_set_item_buttons(tree, ti, 1);
+		check(vgui_tree_get_item_buttons(tree, ti) == 1, "C API: tree item buttons");
+		vgui_tree_on_item_button(tree, NULL, NULL);
+	}
+
 	/* The image keeps the texture alive after the caller drops its handle. */
 	vgui_texture_destroy(texture);
 	vgui_image_set_texture(image, NULL);

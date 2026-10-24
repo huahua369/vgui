@@ -272,6 +272,9 @@ extern "C" {
 	typedef void (*vgui_text_fn)(vgui_widget* widget, const char* text, void* user);
 	typedef void (*vgui_item_fn)(vgui_widget* widget, vgui_item_id item, void* user);
 	typedef void (*vgui_item_select_fn)(vgui_widget* widget, vgui_item_id item, int selected, void* user);
+	/* Inline row button click (list/tree row extensions).  button is the
+	 * zero-based index of the pressed button within the row. */
+	typedef void (*vgui_item_button_fn)(vgui_widget* widget, vgui_item_id item, int button, void* user);
 	typedef void (*vgui_widget_fn)(vgui_widget* widget, void* user);
 
 	/* Context-level key filter, used for application shortcuts.  Handlers run
@@ -1252,6 +1255,20 @@ extern "C" {
 	VGUI_API void vgui_list_set_item_user(vgui_widget* list, vgui_item_id item, void* user);
 	VGUI_API void* vgui_list_get_item_user(vgui_widget* list, vgui_item_id item);
 
+	/* Row extensions: per-row icon, text color override and trailing inline
+	 * buttons.  In virtual mode these are read from the row source callbacks
+	 * instead and the setters are no-ops.  Button presses are delivered through
+	 * vgui_list_on_item_button and never change the selection. */
+	VGUI_API void vgui_list_set_item_icon(vgui_widget* list, vgui_item_id item, vgui_texture* icon);
+	VGUI_API vgui_texture* vgui_list_get_item_icon(vgui_widget* list, vgui_item_id item);
+	VGUI_API void vgui_list_set_item_text_color(vgui_widget* list, vgui_item_id item, vgui_color color);
+	VGUI_API vgui_color vgui_list_get_item_text_color(vgui_widget* list, vgui_item_id item);
+	VGUI_API void vgui_list_set_item_buttons(vgui_widget* list, vgui_item_id item, int count);
+	VGUI_API int vgui_list_get_item_buttons(vgui_widget* list, vgui_item_id item);
+	VGUI_API void vgui_list_set_item_button_icon(vgui_widget* list, vgui_item_id item, int button, vgui_texture* icon);
+	VGUI_API vgui_texture* vgui_list_get_item_button_icon(vgui_widget* list, vgui_item_id item, int button);
+	VGUI_API void vgui_list_on_item_button(vgui_widget* list, vgui_item_button_fn fn, void* user);
+
 	VGUI_API void vgui_list_set_selection_mode(vgui_widget* list, vgui_selection_mode mode);
 	VGUI_API vgui_selection_mode vgui_list_get_selection_mode(vgui_widget* list);
 	VGUI_API int vgui_list_select(vgui_widget* list, vgui_item_id item, int selected);
@@ -1283,6 +1300,17 @@ extern "C" {
 	VGUI_API int vgui_tree_get_item_enabled(vgui_widget* tree, vgui_item_id node);
 	VGUI_API void vgui_tree_set_item_user(vgui_widget* tree, vgui_item_id node, void* user);
 	VGUI_API void* vgui_tree_get_item_user(vgui_widget* tree, vgui_item_id node);
+
+	/* Tree row extensions, mirroring the list APIs above. */
+	VGUI_API void vgui_tree_set_item_icon(vgui_widget* tree, vgui_item_id node, vgui_texture* icon);
+	VGUI_API vgui_texture* vgui_tree_get_item_icon(vgui_widget* tree, vgui_item_id node);
+	VGUI_API void vgui_tree_set_item_text_color(vgui_widget* tree, vgui_item_id node, vgui_color color);
+	VGUI_API vgui_color vgui_tree_get_item_text_color(vgui_widget* tree, vgui_item_id node);
+	VGUI_API void vgui_tree_set_item_buttons(vgui_widget* tree, vgui_item_id node, int count);
+	VGUI_API int vgui_tree_get_item_buttons(vgui_widget* tree, vgui_item_id node);
+	VGUI_API void vgui_tree_set_item_button_icon(vgui_widget* tree, vgui_item_id node, int button, vgui_texture* icon);
+	VGUI_API vgui_texture* vgui_tree_get_item_button_icon(vgui_widget* tree, vgui_item_id node, int button);
+	VGUI_API void vgui_tree_on_item_button(vgui_widget* tree, vgui_item_button_fn fn, void* user);
 
 	VGUI_API void vgui_tree_set_item_expanded(vgui_widget* tree, vgui_item_id node, int expanded);
 	VGUI_API int vgui_tree_get_item_expanded(vgui_widget* tree, vgui_item_id node);
@@ -1346,6 +1374,11 @@ extern "C" {
 	 *   - row_info's detail is ignored by trees.
 	 * Tree mutation APIs (add_node / remove_node / clear / set_item_expanded /
 	 * expand* / collapse*) are no-ops while a source is attached. */
+
+	/* Upper bound for trailing inline buttons per row (row source callbacks and
+	 * the full-model item APIs share this limit). */
+	#define VGUI_MAX_ROW_BUTTONS 4
+
 	typedef struct vgui_row_source
 	{
 		int (*row_count)(void* user);
@@ -1363,15 +1396,125 @@ extern "C" {
 		/* Optional row tooltip.  Return NULL/"" for no tooltip.  The returned
 		 * pointer only has to stay valid until the next callback. */
 		const char* (*row_tooltip)(void* user, int index);
+		/* Optional row icon (F04 row extensions).  Return 0 for no icon;
+		 * *out_texture is borrowed for the duration of the callback only. */
+		int (*row_icon)(void* user, int index, vgui_texture** out_texture);
+		/* Optional row text color override; return 0 to use the theme color. */
+		vgui_color (*row_text_color)(void* user, int index);
+		/* Trailing inline buttons (visibility / lock style).  Buttons never
+		 * change the row selection.  At most VGUI_MAX_ROW_BUTTONS per row. */
+		int (*row_buttons)(void* user, int index);
+		int (*row_button_icon)(void* user, int index, int button, vgui_texture** out_texture);
+		void (*row_button_click)(void* user, int index, int button);
+		/* Optional per-row custom paint.  When set, it replaces the standard
+		 * text/detail/icon painting of the row (lists) or the text painting
+		 * after guides/arrows (trees).  Selection/hover backgrounds and the
+		 * inline buttons are still painted by the control, and scrolling and
+		 * clipping still apply.  x/y/w/h are the absolute row bounds. */
+		void (*row_draw)(void* user, int index, struct ovg_ctx_cb* cb,
+			struct rvg_t* vg, float x, float y, float w, float h);
 	} vgui_row_source;
 
 	VGUI_API void vgui_list_set_row_source(vgui_widget* list, const vgui_row_source* source);
 	VGUI_API int vgui_list_is_virtual(vgui_widget* list);
 	VGUI_API void vgui_list_source_changed(vgui_widget* list);
+	/* Fine-grained invalidation: the *content* of existing visible rows
+	 * changed, but rows were not inserted or removed.  Cheaper than
+	 * source_changed because the tree keeps its flattened row projection.
+	 * Structural changes must still use vgui_list_source_changed(). */
+	VGUI_API void vgui_list_source_rows_changed(vgui_widget* list, int first, int count);
 
 	VGUI_API void vgui_tree_set_row_source(vgui_widget* tree, const vgui_row_source* source);
 	VGUI_API int vgui_tree_is_virtual(vgui_widget* tree);
 	VGUI_API void vgui_tree_source_changed(vgui_widget* tree);
+	/* Tree counterpart of vgui_list_source_rows_changed(). */
+	VGUI_API void vgui_tree_source_rows_changed(vgui_widget* tree, int first, int count);
+
+	/* ------------------------------------------------------------------------- */
+	/* Drag and drop                                                              */
+	/* ------------------------------------------------------------------------- */
+
+	/* A generic, cross-panel drag & drop layer (F03).  A drag carries a payload
+	 * from a source widget to whichever widget under the pointer registers a
+	 * drop target; the same routing serves row drags from lists/trees and OS
+	 * file drops bridged through vgui_input_drop_files(). */
+
+	typedef enum vgui_drag_kind
+	{
+		VGUI_DRAG_NONE = 0,
+		VGUI_DRAG_TEXT,
+		VGUI_DRAG_FILES,
+		VGUI_DRAG_CUSTOM
+	} vgui_drag_kind;
+
+	/* Payload carried by a drag.  begin_drag() copies the strings, so the
+	 * caller may release its buffers right after the call.  id/data are
+	 * borrowed: the drag owner must keep them valid until the drop. */
+	typedef struct vgui_drag_payload
+	{
+		vgui_drag_kind kind;
+		const char* text;			/* VGUI_DRAG_TEXT: text; VGUI_DRAG_CUSTOM: label */
+		const char* const* files;	/* VGUI_DRAG_FILES: file paths */
+		int file_count;
+		vgui_item_id id;			/* stable row / object id */
+		const void* data;			/* custom pointer */
+	} vgui_drag_payload;
+
+	typedef enum vgui_drop_hint_kind
+	{
+		VGUI_DROP_HINT_NONE = 0,
+		VGUI_DROP_HINT_LINE,		/* insertion line (x, y, w, h) */
+		VGUI_DROP_HINT_RECT			/* target highlight (x, y, w, h) */
+	} vgui_drop_hint_kind;
+
+	typedef struct vgui_drop_hint
+	{
+		vgui_drop_hint_kind kind;
+		float x, y, w, h;
+	} vgui_drop_hint;
+
+	/* Drop target attached to a widget.  While a drag is in flight the core
+	 * hit-tests the widget under the pointer (walking up through ancestors) and
+	 * routes through these callbacks on the UI thread. */
+	typedef struct vgui_drop_target
+	{
+		/* Return non-zero to accept the payload while it hovers. */
+		int (*can_accept)(void* user, const vgui_drag_payload* payload);
+		/* Optional: called every frame while an accepted payload hovers.  Fill
+		 * hint (absolute coordinates) to draw an insertion indicator. */
+		void (*hover)(void* user, const vgui_drag_payload* payload,
+			float x, float y, vgui_drop_hint* hint);
+		/* Called once when the button is released over the target.  Return
+		 * non-zero when the drop was handled. */
+		int (*drop)(void* user, const vgui_drag_payload* payload, float x, float y);
+		void* user;
+	} vgui_drop_target;
+
+	/* Row drag source: when set, pressing a row and moving past the dock drag
+	 * threshold starts a generic drag carrying this callback's payload.
+	 * Borrowed pointers must stay valid until the next call. */
+	typedef int (*vgui_row_drag_fn)(void* user, vgui_item_id item, int index,
+		vgui_drag_payload* out_payload);
+
+	/* Starts a drag from source with a copy of *payload.  Returns non-zero on
+	 * success; only one drag can be in flight per context. */
+	VGUI_API int vgui_begin_drag(vgui_context* ctx, vgui_widget* source,
+		const vgui_drag_payload* payload);
+	VGUI_API void vgui_cancel_drag(vgui_context* ctx);
+	VGUI_API int vgui_drag_active(vgui_context* ctx);
+	/* The widget whose drop target is currently hovered, or NULL. */
+	VGUI_API vgui_widget* vgui_drag_hover_target(vgui_context* ctx);
+	VGUI_API void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target);
+
+	VGUI_API void vgui_list_set_row_drag(vgui_widget* list, vgui_row_drag_fn fn, void* user);
+	VGUI_API void vgui_tree_set_row_drag(vgui_widget* tree, vgui_row_drag_fn fn, void* user);
+
+	/* OS file drop bridge: offers a files payload to the drop targets under
+	 * (x, y) in one shot (hover + drop).  Returns non-zero when a target
+	 * accepted the drop. */
+	VGUI_API int vgui_input_drop_files(vgui_context* ctx, const char* const* files,
+		int count, float x, float y);
+
 
 	/* ------------------------------------------------------------------------- */
 	/* Menu                                                                      */

@@ -326,7 +326,8 @@ app_mgr::app_mgr()
 	f |= SDL_INIT_HAPTIC;
 #endif
 	int kr = SDL_Init(f);
-	SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, false);
+	// F03: 文件 drop 事件接到 vgui 的通用拖放路由；文本 drop 仍然关闭。
+	SDL_SetEventEnabled(SDL_EVENT_DROP_FILE, true);
 	SDL_SetEventEnabled(SDL_EVENT_DROP_TEXT, false);
 	// Enable native IME.
 	SDL_SetHintWithPriority(SDL_HINT_MOUSE_FOCUS_CLICKTHROUGH, "1", SDL_HINT_OVERRIDE);
@@ -855,6 +856,7 @@ void app_mgr::process_event(const SDL_Event* e)
 	break;
 	case SDL_EVENT_DROP_BEGIN:
 		viewport->drop_text.clear();
+		viewport->drop_files.clear();
 		break;
 	case SDL_EVENT_DROP_POSITION:
 	{
@@ -887,6 +889,22 @@ void app_mgr::process_event(const SDL_Event* e)
 			t.x += window_x;
 			t.y += window_y;
 		}
+		// F03: 文件列表走通用拖放路由（fmt==1）。
+		if (!viewport->drop_files.empty())
+		{
+			viewport->drop_file_ptrs.clear();
+			viewport->drop_file_ptrs.reserve(viewport->drop_files.size());
+			for (const std::string& f : viewport->drop_files)
+				viewport->drop_file_ptrs.push_back(f.c_str());
+			t.str = viewport->drop_file_ptrs.data();
+			t.count = (int)viewport->drop_file_ptrs.size();
+			t.fmt = 1;
+			dev.v.d = &t;
+			viewport->trigger(&dev);
+			viewport->drop_files.clear();
+			viewport->drop_file_ptrs.clear();
+			break;
+		}
 		if (viewport->drop_text.size()) {
 			if ('\n' == *viewport->drop_text.rbegin())
 				viewport->drop_text.pop_back();
@@ -907,9 +925,10 @@ void app_mgr::process_event(const SDL_Event* e)
 	break;
 	case SDL_EVENT_DROP_FILE:
 	{
+		// F03: 聚合本批次文件路径，COMPLETE 时一次性交付。
 		if (e->drop.data)
 		{
-			viewport->drop_text += (char*)e->drop.data;	viewport->drop_text.push_back('\n');
+			viewport->drop_files.push_back((char*)e->drop.data);
 		}
 	}
 	break;

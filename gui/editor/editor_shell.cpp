@@ -368,6 +368,18 @@ namespace vgui_editor_kit {
 		vgui_dock_on_change(dock_, &editor_shell::on_dock_change, this);
 		refresh_commands();
 
+		// F03: 三条拖放路径的默认接线——Outliner 行拖拽重排（走命令栈）、
+		// 资产行拖拽、资产拖到属性栏 / 视口的状态反馈。
+		scene_.enable_drag_drop();
+		assets_.enable_row_drag();
+		viewport_.set_drop_listener([this](const drag_payload& payload, float, float) {
+			if (!payload.id.empty())
+				set_status("drop " + payload.id);
+		});
+		properties_.set_asset_drop_handler([this](const std::string& asset) {
+			set_status("assign " + asset);
+		});
+
 		default_layout_ = capture_layout();
 	}
 

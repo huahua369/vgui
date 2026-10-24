@@ -143,6 +143,12 @@ namespace vgui_editor_kit {
 		void set_command_stack(command_stack* stack);
 		command_stack* command_stack_ptr() const noexcept;
 
+		/* F03: attaches a drop target to the grid that accepts asset payloads
+		 * and hands the asset id (drag_payload::id) to the handler.  The full
+		 * asset/object reference row type is a later MVP step (P06). */
+		using asset_drop_handler = std::function<void(const std::string& asset)>;
+		void set_asset_drop_handler(asset_drop_handler handler);
+
 		void set_change_listener(change_listener listener);
 		void set_value_source(value_source source);
 		void refresh();
@@ -247,6 +253,9 @@ namespace vgui_editor_kit {
 		editor_context* selection_context_ = nullptr;
 		std::size_t selection_token_ = 0;
 		selection_bind_fn selection_bind_;
+
+		asset_drop_handler asset_drop_;
+		std::unique_ptr<drop_target> drop_target_;	// F03 资产赋值 drop target
 	};
 
 } /* namespace vgui_editor_kit */

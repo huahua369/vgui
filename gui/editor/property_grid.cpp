@@ -1,5 +1,6 @@
 #include "property_grid.h"
 
+#include "drag_bridge.h"
 #include "editor_context.h"
 
 #include <algorithm>
@@ -31,6 +32,61 @@ namespace vgui_editor_kit {
 			bool ok = false;
 			std::string value;
 			std::string error;
+		};
+
+		/* Undo record for one property row.  Consecutive commits on the same row
+		 * merge into a single record so drags and repeated edits undo at once. */
+		class property_command final : public command
+		{
+		public:
+			using apply_fn = std::function<void(std::uint64_t, const std::string&)>;
+
+			property_command(std::string name, std::uint64_t token,
+				std::string old_value, std::string new_value, apply_fn apply)
+				: name_(std::move(name)), token_(token),
+				old_value_(std::move(old_value)), new_value_(std::move(new_value)),
+				apply_(std::move(apply))
+			{
+			}
+
+			const char* name() const noexcept override
+			{
+				return name_.c_str();
+			}
+
+			bool execute() override
+			{
+				if (apply_)
+					apply_(token_, new_value_);
+				return true;
+			}
+
+			void undo() override
+			{
+				if (apply_)
+					apply_(token_, old_value_);
+			}
+
+			bool merge_with(command& next) override
+			{
+				auto* other = dynamic_cast<property_command*>(&next);
+				if (!other || other->token_ != token_)
+					return false;
+				/* Only merge an unbroken chain: next must replace exactly the
+				 * value this record last applied.  A display-only update in
+				 * between leaves the histories disconnected. */
+				if (other->old_value_ != new_value_)
+					return false;
+				new_value_ = std::move(other->new_value_);
+				return true;
+			}
+
+		private:
+			std::string name_;
+			std::uint64_t token_;
+			std::string old_value_;
+			std::string new_value_;
+			apply_fn apply_;
 		};
 
 		std::string trim_copy(std::string text)
@@ -570,8 +626,12 @@ namespace vgui_editor_kit {
 		ids.reserve(rows_.size());
 		for (const row& item : rows_)
 			ids.push_back(item.desc.id);
+		if (command_stack_)
+			command_stack_->begin_transaction("Reset all properties");
 		for (const std::string& id : ids)
 			reset_property(id);
+		if (command_stack_)
+			command_stack_->commit_transaction();
 	}
 
 	std::string property_grid::property_error(const std::string& id) const
@@ -668,6 +728,47 @@ namespace vgui_editor_kit {
 	command_stack* property_grid::command_stack_ptr() const noexcept
 	{
 		return command_stack_;
+	}
+
+	void property_grid::set_asset_drop_handler(asset_drop_handler handler)
+	{
+		asset_drop_ = std::move(handler);
+		if (!panel_)
+			return;
+		if (!asset_drop_)
+		{
+			set_editor_drop_target(panel_, nullptr);
+			drop_target_.reset();
+			return;
+		}
+		if (!drop_target_)
+		{
+			class asset_drop_target final : public drop_target
+			{
+			public:
+				explicit asset_drop_target(property_grid* owner) : owner_(owner) {}
+
+				bool can_accept(const drag_payload& payload) const override
+				{
+					return payload.kind == drag_payload_kind::asset;
+				}
+
+				bool drop(const drag_payload& payload, float x, float y) override
+				{
+					(void)x;
+					(void)y;
+					if (!owner_ || payload.id.empty())
+						return false;
+					owner_->asset_drop_(payload.id);
+					return true;
+				}
+
+			private:
+				property_grid* owner_;
+			};
+			drop_target_ = std::make_unique<asset_drop_target>(this);
+		}
+		set_editor_drop_target(panel_, drop_target_.get());
 	}
 
 	void property_grid::set_change_listener(change_listener listener)
@@ -1148,16 +1249,14 @@ namespace vgui_editor_kit {
 		if (command_stack_)
 		{
 			std::weak_ptr<int> alive = alive_token_;
-			command_stack_->push(std::make_unique<function_command>(
-				std::move(command_name),
-				[this, alive, token, new_value]() {
+			property_command::apply_fn apply =
+				[this, alive](std::uint64_t token, const std::string& value) {
 					if (!alive.expired())
-						apply_recorded_value(token, new_value);
-				},
-				[this, alive, token, old_value]() {
-					if (!alive.expired())
-						apply_recorded_value(token, old_value);
-				}));
+						apply_recorded_value(token, value);
+				};
+			command_stack_->push(std::make_unique<property_command>(
+				std::move(command_name), token, old_value, new_value,
+				std::move(apply)));
 		}
 		return true;
 	}

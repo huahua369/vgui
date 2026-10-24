@@ -8,10 +8,12 @@
 // keeps it runnable in CI while still exercising widget construction, layout
 // and model callbacks.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -59,6 +61,50 @@ namespace {
 		{
 			return index < rows.size() ? rows[index] : vgui_editor_kit::row_info();
 		}
+	};
+
+	/* Mergeable test command: moves *value from from_ to to_ and absorbs the
+	 * next step when the chain is unbroken. */
+	class step_command final : public vgui_editor_kit::command
+	{
+	public:
+		step_command(int* value, int from, int to, bool* fail_flag = nullptr)
+			: value_(value), from_(from), to_(to), fail_(fail_flag)
+		{
+		}
+
+		const char* name() const noexcept override
+		{
+			return "step";
+		}
+
+		bool execute() override
+		{
+			if (fail_ && *fail_)
+				return false;
+			*value_ = to_;
+			return true;
+		}
+
+		void undo() override
+		{
+			*value_ = from_;
+		}
+
+		bool merge_with(vgui_editor_kit::command& next) override
+		{
+			auto* other = dynamic_cast<step_command*>(&next);
+			if (!other || other->from_ != to_)
+				return false;
+			to_ = other->to_;
+			return true;
+		}
+
+	private:
+		int* value_;
+		int from_;
+		int to_;
+		bool* fail_;
 	};
 
 	int test_command_stack()
@@ -141,6 +187,76 @@ namespace {
 		if (pushed != 5 || stack.can_undo())
 			return fail("command push transaction rollback");
 
+		return 0;
+	}
+
+	int test_command_merge_and_failures()
+	{
+		using namespace vgui_editor_kit;
+
+		int value = 0;
+		command_stack stack;
+
+		/* Consecutive mergeable steps collapse into one undo record. */
+		stack.execute(std::make_unique<step_command>(&value, 0, 1));
+		stack.execute(std::make_unique<step_command>(&value, 1, 2));
+		stack.execute(std::make_unique<step_command>(&value, 2, 3));
+		if (value != 3 || stack.undo_count() != 1)
+			return fail("command merge single record");
+		if (!stack.undo() || value != 0)
+			return fail("command merge undo restores start");
+		if (!stack.redo() || value != 3)
+			return fail("command merge redo");
+
+		/* Undo breaks the merge chain: after redo, the next command records
+		 * separately instead of folding into the redone record. */
+		if (!stack.undo() || value != 0)
+			return fail("command merge undo again");
+		if (!stack.redo() || value != 3)
+			return fail("command merge redo chain");
+		stack.execute(std::make_unique<step_command>(&value, 3, 7));
+		if (value != 7 || stack.undo_count() != 2)
+			return fail("command merge reset after undo");
+		if (!stack.undo() || value != 3)
+			return fail("command post-merge undo");
+		if (!stack.undo() || value != 0)
+			return fail("command merged undo chain");
+
+		stack.clear();
+
+		/* A failed execute() leaves both stacks untouched. */
+		bool fail_flag = true;
+		stack.execute(std::make_unique<step_command>(&value, 0, 1));
+		if (!stack.undo() || value != 0 || !stack.can_redo())
+			return fail("command failure prelude");
+		const std::size_t undo_before_fail = stack.undo_count();
+		const std::size_t redo_before_fail = stack.redo_count();
+		if (stack.execute(std::make_unique<step_command>(&value, 0, 9, &fail_flag)))
+			return fail("failed command reports failure");
+		if (value != 0 || stack.undo_count() != undo_before_fail ||
+			stack.redo_count() != redo_before_fail)
+			return fail("failed command keeps stacks");
+
+		stack.clear();
+
+		/* Nested transactions collapse into a single top-level record. */
+		stack.begin_transaction("outer");
+		stack.execute(std::make_unique<step_command>(&value, 0, 1));
+		stack.begin_transaction("inner");
+		stack.execute(std::make_unique<step_command>(&value, 1, 2));
+		if (!stack.commit_transaction())
+			return fail("inner transaction commit");
+		stack.execute(std::make_unique<step_command>(&value, 2, 3));
+		if (!stack.commit_transaction())
+			return fail("outer transaction commit");
+		if (value != 3 || stack.undo_count() != 1)
+			return fail("nested transaction single record");
+		if (!stack.undo() || value != 0)
+			return fail("nested transaction undo");
+		if (!stack.redo() || value != 3)
+			return fail("nested transaction redo");
+
+		stack.clear();
 		return 0;
 	}
 
@@ -1051,11 +1167,232 @@ namespace {
 
 } // namespace
 
+	int test_scene_asset_commands()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("scene asset commands context");
+		vgui_context_set_size(ui, 900, 700);
+		vgui_style test_style;
+		vgui_style_default(&test_style);
+		test_style.list.row_height = 24.0f;
+		test_style.tree.row_height = 24.0f;
+		vgui_context_set_style(ui, &test_style);
+
+		editor_context context(ui);
+		command_stack commands;
+
+		/* Outliner move_node: host model, undo/redo, cycle rejection. */
+		{
+			outliner_view scene;
+			scene.build(context, vgui_root(ui));
+			scene.set_command_stack(&commands);
+
+			std::map<object_id, object_id> parent_of;
+			std::map<object_id, std::vector<object_id>> children;
+			std::vector<object_id> roots;
+			std::map<object_id, vgui_item_id> item_ids;
+			auto set_parent = [&](object_id node, object_id parent) {
+				object_id& old = parent_of[node];
+				auto& siblings = old == invalid_object ? roots : children[old];
+				siblings.erase(std::remove(siblings.begin(), siblings.end(), node),
+					siblings.end());
+				old = parent;
+				auto& target = parent == invalid_object ? roots : children[parent];
+				target.push_back(node);
+			};
+
+			auto rebuild = [&](std::vector<object_id>& nodes, vgui_item_id parent_item,
+				auto&& self) -> void {
+				for (object_id node : nodes)
+				{
+					vgui_item_id item = scene.add_node(
+						("node " + std::to_string(node)).c_str(), parent_item, node);
+					if (item != 0)
+					{
+						item_ids[node] = item;
+						self(children[node], item, self);
+					}
+				}
+			};
+
+			outliner_view::move_handler handler =
+				[&](object_id node, object_id parent, std::size_t index) -> bool {
+				/* Reject moves into the node's own subtree. */
+				object_id walk = parent;
+				while (walk != invalid_object)
+				{
+					if (walk == node)
+						return false;
+					walk = parent_of[walk];
+				}
+				set_parent(node, parent);
+				auto& siblings =
+					parent == invalid_object ? roots : children[parent];
+				if (index < siblings.size() && siblings[index] != node)
+				{
+					for (std::size_t i = siblings.size() - 1; i > index; --i)
+						std::swap(siblings[i], siblings[i - 1]);
+				}
+				/* Mirror the move into the tree widget. */
+				scene.clear();
+				rebuild(roots, 0, rebuild);
+				return true;
+			};
+			scene.set_move_handler(handler);
+
+			set_parent(1, invalid_object);
+			set_parent(2, 1);
+			set_parent(3, 1);
+			set_parent(4, 2);
+			rebuild(roots, 0, rebuild);
+
+			/* F03: 通过通用拖放重排——行 node 3 拖到行 node 4 上，move_node
+			 * 进命令栈，undo 恢复。可见行序：1, 2, 4, 3。 */
+			scene.enable_drag_drop();
+			vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+			vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+			scene.expand(item_ids[1]);
+			scene.expand(item_ids[2]);
+			vgui_update(ui, 0.016f);
+			{
+				float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+				vgui_widget_get_rect(scene.widget(), &tx, &ty, &tw, &th);
+				(void)tw;
+				(void)th;
+				const float row_h = test_style.tree.row_height;
+				const float pad_y = test_style.tree.padding_y;
+				const float drag_y = ty + pad_y + row_h * 3.0f + row_h * 0.5f;
+				const float drop_y = ty + pad_y + row_h * 2.0f + row_h * 0.5f;
+				const std::size_t undo_before_drag = commands.undo_count();
+				vgui_input_mouse_move(ui, tx + 30.0f, drag_y);
+				vgui_input_mouse_down(ui, 1, tx + 30.0f, drag_y, 1);
+				vgui_input_mouse_move(ui, tx + 30.0f, drop_y);
+				if (!vgui_drag_active(ui))
+					return fail("outliner drag begins");
+				vgui_input_mouse_up(ui, 1, tx + 30.0f, drop_y, 1);
+				if (parent_of[3] != 2 || children[2].size() != 2 ||
+					children[2][0] != 3 ||
+					commands.undo_count() != undo_before_drag + 1)
+					return fail("outliner drag drop reorders");
+				if (!commands.undo() || parent_of[3] != 1)
+					return fail("outliner drag drop undo");
+			}
+
+			const std::size_t undo_base = commands.undo_count();
+			if (!scene.move_node(3, 2, 0) || parent_of[3] != 2 ||
+				commands.undo_count() != undo_base + 1)
+				return fail("outliner move records command");
+			if (!commands.undo() || parent_of[3] != 1)
+				return fail("outliner move undo");
+			if (!commands.redo() || parent_of[3] != 2)
+				return fail("outliner move redo");
+
+			if (!scene.move_node(3, 2, 0) || commands.undo_count() != undo_base + 1)
+				return fail("outliner no-op move");
+
+			const std::size_t undo_before_reject = commands.undo_count();
+			if (scene.move_node(1, 2, 0))
+				return fail("outliner cycle move rejected");
+			if (commands.undo_count() != undo_before_reject)
+				return fail("outliner rejected move recorded");
+
+			if (!scene.move_node(3, invalid_object, 0) || parent_of[3] != invalid_object)
+				return fail("outliner move to root");
+			if (!commands.undo() || parent_of[3] != 2)
+				return fail("outliner move to root undo");
+		}
+
+		/* Asset rename: handler rejection and undo/redo. */
+		{
+			asset_browser assets;
+			assets.build(vgui_root(ui));
+			assets.set_command_stack(&commands);
+
+			std::map<vgui_item_id, std::string> names;
+			assets.set_rename_handler(
+				[&](vgui_item_id item, const std::string& name) -> bool {
+					if (name.empty())
+						return false;
+					names[item] = name;
+					return true;
+				});
+
+			const vgui_item_id asset = assets.add_item("Cube.mesh", "Mesh");
+			if (asset == 0)
+				return fail("asset rename item");
+			names[asset] = "Cube.mesh";
+
+			const std::size_t undo_before_rename = commands.undo_count();
+			if (!assets.rename_item(asset, "Sphere.mesh") ||
+				names[asset] != "Sphere.mesh" ||
+				std::string(vgui_list_get_item_text(assets.widget(), asset)) !=
+					"Sphere.mesh" ||
+				commands.undo_count() != undo_before_rename + 1)
+				return fail("asset rename records command");
+			if (!commands.undo() || names[asset] != "Cube.mesh" ||
+				std::string(vgui_list_get_item_text(assets.widget(), asset)) !=
+					"Cube.mesh")
+				return fail("asset rename undo");
+			if (!commands.redo() || names[asset] != "Sphere.mesh")
+				return fail("asset rename redo");
+
+			if (assets.rename_item(asset, "") ||
+				commands.undo_count() != undo_before_rename + 1 ||
+				names[asset] != "Sphere.mesh")
+				return fail("asset rejected rename recorded");
+		}
+
+		/* Property grid: consecutive commits on one row merge into one record;
+		 * a display-only update in between breaks the merge chain. */
+		{
+			property_grid grid;
+			grid.build(vgui_root(ui));
+			grid.set_command_stack(&commands);
+
+			property_desc hp;
+			hp.id = "hp";
+			hp.label = "HP";
+			hp.type = property_type::integer;
+			hp.value = "1";
+			hp.category = "General";
+			if (!grid.add_property(hp))
+				return fail("merge property add");
+
+			const std::size_t undo_before = commands.undo_count();
+			if (!grid.commit_property_value("hp", "2") ||
+				!grid.commit_property_value("hp", "3"))
+				return fail("merge property commits");
+			if (grid.property_value("hp") != "3" ||
+				commands.undo_count() != undo_before + 1)
+				return fail("property merge single record");
+			if (!commands.undo() || grid.property_value("hp") != "1")
+				return fail("property merge undo to start");
+
+			if (!grid.commit_property_value("hp", "5"))
+				return fail("merge restart commit");
+			if (!grid.set_property_value("hp", "6"))
+				return fail("display-only update");
+			if (!grid.commit_property_value("hp", "7") ||
+				commands.undo_count() != undo_before + 2)
+				return fail("display-only update breaks merge");
+			if (!commands.undo() || grid.property_value("hp") != "6")
+				return fail("separated record undo");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 int main()
 {
 	using namespace vgui_editor_kit;
 
 	if (int rc = test_command_stack())
+		return rc;
+	if (int rc = test_command_merge_and_failures())
 		return rc;
 	if (int rc = test_layout_persistence())
 		return rc;
@@ -1067,12 +1404,19 @@ int main()
 		return rc;
 	if (int rc = test_selection_binding())
 		return rc;
+	if (int rc = test_scene_asset_commands())
+		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
 	if (!ui)
 		return fail("vgui_create failed");
 
 	vgui_context_set_size(ui, 1280, 800);
+	vgui_style shell_style;
+	vgui_style_default(&shell_style);
+	shell_style.list.row_height = 24.0f;
+	shell_style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &shell_style);
 
 	{
 		editor_context context(ui);
@@ -1196,6 +1540,65 @@ int main()
 		payload.id = "Cube.mesh";
 		if (payload.empty() || payload.kind != drag_payload_kind::asset)
 			return fail("drag payload");
+
+		/* F03: kit payload 与核心载荷往返；资产行拖到视口 / 属性栏。 */
+		{
+			vgui_drag_payload core_payload = {};
+			core_payload.kind = VGUI_DRAG_CUSTOM;
+			core_payload.text = "42";
+			core_payload.data = reinterpret_cast<const void*>(
+				static_cast<std::uintptr_t>(drag_payload_kind::scene_object));
+			const drag_payload back = to_editor_payload(core_payload);
+			if (back.kind != drag_payload_kind::scene_object || back.id != "42")
+				return fail("payload round trip");
+
+			const char* file_list[] = { "assets/a.png" };
+			core_payload.kind = VGUI_DRAG_FILES;
+			core_payload.text = nullptr;
+			core_payload.files = file_list;
+			core_payload.file_count = 1;
+			const drag_payload file_back = to_editor_payload(core_payload);
+			if (file_back.kind != drag_payload_kind::files ||
+				file_back.files.size() != 1 || file_back.files[0] != "assets/a.png")
+				return fail("file payload round trip");
+		}
+
+		{
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+			float arx = 0, ary = 0, arw = 0, arh = 0;
+			vgui_widget_get_rect(shell.assets().widget(), &arx, &ary, &arw, &arh);
+			float vpx = 0, vpy = 0, vpw = 0, vph = 0;
+			vgui_widget_get_rect(shell.viewport().widget(), &vpx, &vpy, &vpw, &vph);
+			float ppx = 0, ppy = 0, ppw = 0, pph = 0;
+			vgui_widget_get_rect(shell.properties().widget(), &ppx, &ppy, &ppw, &pph);
+			const float arow_y = ary + shell_style.list.padding_y +
+				shell_style.list.row_height * 0.5f;
+			const float viewport_cx = vpx + vpw * 0.5f;
+			const float viewport_cy = vpy + vph * 0.5f;
+
+			vgui_input_mouse_move(ui, arx + 30.0f, arow_y);
+			vgui_input_mouse_down(ui, 1, arx + 30.0f, arow_y, 1);
+			vgui_input_mouse_move(ui, viewport_cx, viewport_cy);
+			if (!vgui_drag_active(ui))
+				return fail("asset drag begins");
+			vgui_input_mouse_up(ui, 1, viewport_cx, viewport_cy, 1);
+			if (shell.viewport().last_drop().kind != drag_payload_kind::asset ||
+				shell.viewport().last_drop().id != "Cube.mesh")
+				return fail("asset drop reaches viewport");
+
+			std::string assigned;
+			shell.properties().set_asset_drop_handler(
+				[&assigned](const std::string& asset) { assigned = asset; });
+			vgui_input_mouse_move(ui, arx + 30.0f, arow_y);
+			vgui_input_mouse_down(ui, 1, arx + 30.0f, arow_y, 1);
+			vgui_input_mouse_move(ui, ppx + ppw * 0.5f, ppy + pph * 0.5f);
+			if (!vgui_drag_active(ui))
+				return fail("asset drag to properties begins");
+			vgui_input_mouse_up(ui, 1, ppx + ppw * 0.5f, ppy + pph * 0.5f, 1);
+			if (assigned != "Cube.mesh")
+				return fail("asset drop reaches property grid");
+		}
 
 		test_row_model model;
 		model.rows.push_back({ 1, "A", "first", true });

@@ -50,11 +50,11 @@
 |---|---|---|
 | 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
 | 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定 | 没有行虚拟化、Vector、资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
-| 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源 | 没有行图标、自定义行、行内按钮、拖放重排 |
+| 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04） | 行内重命名、拖放重排等编辑器语义仍在 O02/O03 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
-| 拖放 | 后端有零散的 OS 文件 drop 能力 | 公共 API 没有统一载荷、drop target、插入指示和拖影 |
-| 撤销 | 编辑器级命令栈、事务/回滚、已应用命令 push；PropertyGrid 修改已接入 | 树/资产操作尚未接入，命令合并与连续拖拽聚合未完成 |
+| 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03） | Outliner 重排的插入线精度、多选拖动与循环检测在 O03；资产引用行在 P06 |
+| 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/资产重命名已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo/资产操作尚未接入 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
 | 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
@@ -134,25 +134,26 @@
   - 验收：空 editor kit 能独立构建并被示例链接；核心测试目标不受影响。
   - 已实现：`gui/editor/` + `vgui_editor_kit` 静态库 + `sample/vgui_editor_kit_test.cpp`。
 
-- [ ] **F02 命令/撤销栈**（P0，M）（进行中）
+- [x] **F02 命令/撤销栈**（P0，M）
   - `execute / undo / redo`、事务开始/提交/回滚、命令合并。
   - 命令状态可查询，供菜单、工具栏、快捷键更新 enabled/checked。
   - 属性修改、树重排、资产重命名等操作共享同一事务接口。
   - 验收：至少覆盖属性修改、树节点移动、资产重命名三类命令；嵌套事务和合并结果正确；失败命令不污染撤销栈。
-  - 已实现：命令栈、事务/回滚、undo/redo 计数、`push()` 记录已应用命令；PropertyGrid 的提交和重置已接入并可撤销/重做。待接入树/资产操作与命令合并。
+  - 已实现：命令栈 `execute/undo/redo`（`execute` 返回 bool，失败命令不入栈、不清 redo）、事务 begin/commit/rollback（支持嵌套，内层组并入外层）、命令合并 `command::merge_with`（栈顶吸收连续命令，undo/redo/事务后合并链重置）；PropertyGrid 提交/重置走可合并的 `property_command`（同一行连续提交合并为一条，display-only 更新会断开合并链），`reset_all()` 包进事务；`outliner_view::move_node` 与 `asset_browser::rename_item` 经宿主回调接入命令栈，拒绝的移动/重命名不入栈。`vgui_editor_kit_test` 覆盖合并、合并链重置、嵌套事务、失败不入栈及三类命令的撤销/重做。
 
-- [ ] **F03 拖放框架**（P0，M）
+- [x] **F03 拖放框架**（P0，M）
   - 拖拽源、drop target、载荷类型（文本、文件、自定义 ID/指针）。
   - 拖动阈值、拖影、光标反馈、接受/拒绝状态、插入位置指示。
   - 支持跨面板拖放，并接入 SDL3 的 OS 文件 drop。
   - 验收：Outliner 内重排、资产拖到属性栏、资产拖到视口三条路径共用同一套 API。
+  - 已实现：核心 C API `vgui_drag_payload`（text/files/custom，字符串由 begin_drag 深拷贝）、`vgui_begin_drag/cancel_drag/drag_active`、`vgui_widget_set_drop_target`（can_accept/hover/drop 回调 + 插入指示 hint）、`vgui_list/tree_set_row_drag` 行拖拽源（超过 `dock.drag_threshold` 发起）、`vgui_input_drop_files` 文件桥；拖拽期间悬停/tooltip/点击抑制，光标接受=Hand/拒绝=No，拖影复用 Dock 浮块样式，drop 路由命中测试自底向上找祖先 target。SDL3 后端重新启用 `SDL_EVENT_DROP_FILE`，聚合文件批次经 `ole_drop_e(fmt=1)` 桥接到 `vgui_input_drop_files`（DROP_TEXT 仍关闭）。editor kit `drag_bridge` 互转 kit/core 载荷并适配 drop_target；三条验收路径接线：`outliner_view::enable_drag_drop`（行拖出 scene_object、拖入重排走 `move_node` 命令栈可撤销）、`asset_browser::enable_row_drag`、`property_grid::set_asset_drop_handler`、`viewport_view::set_drop_listener`（记录 last_drop）。`vgui_model_test` 新增 17 项（现 615 项）覆盖阈值/路由/拒绝/文件桥；`vgui_editor_kit_test` 覆盖载荷往返、Outliner 拖放重排（可撤销）、资产拖到视口与属性栏；`vgui_demo` 新增"拖放"演示卡片（行拖拽 + drop zone + OS 文件拖入）。TabView 拖动阈值由硬编码 4.0 接入 style。多选拖放/循环父子检测归 O03，完整资产引用行归 P06，视口创建对象归 V06。
 
-- [ ] **F04 虚拟数据模型与自定义行**（P0，M）
+- [x] **F04 虚拟数据模型与自定义行**（P0，M）
   - 数据源回调：行数、按索引取行、稳定 ID、增量失效/刷新。
   - 列表/树/表格只请求可见行，不再要求一次性提交全量数据。
   - 行内图标、文字颜色、自定义绘制、局部命中区域。
   - 验收：大列表滚动时只查询可见范围；插入/删除/更新不会丢失选择；现有 list/tree 全量模型 API 保持兼容。
-  - 已实现：列表/树行源回调、可见范围查询、稳定行 ID、选择/键盘/滚动虚拟化。待补行图标、自定义行绘制和行内命中区域。
+  - 已实现：列表/树行源回调、可见范围查询、稳定行 ID、选择/键盘/滚动虚拟化（此前完成）。本步补齐行扩展：`vgui_row_source` 新增 `row_icon`/`row_text_color`/`row_buttons`/`row_button_icon`/`row_button_click`/`row_draw` 回调；全量模型同步提供 `vgui_list/tree_set_item_icon/text_color/buttons/button_icon` 与 `on_item_button`（按钮命中不改选中、不触发展开）；行按钮几何自动避让可见滚动条命中区；`vgui_list/tree_source_rows_changed` 细粒度失效（不重建树的行投影）。`vgui_model_test` 新增 47 项（现 598 项）覆盖图标/颜色/按钮回调、命中、虚拟与全量模式及插入/删除保留选择；`vgui_c_api_test` 新增 9 项（现 20 项）。`row_draw` 自定义绘制仅虚拟模式提供（列表替换整行内容、树替换文本绘制，引导线/箭头/按钮仍由控件管理）。验收文本中的"表格"归 T01（Table/DataGrid 复用同一行源机制）。
 
 - [x] **F05 编辑器布局持久化**（P0，S/M）
   - 保存/恢复 Splitter 尺寸、Tab 顺序、面板可见性和 Dock 状态。
@@ -539,7 +540,10 @@ MVP 验收场景：
 已完成：
 
 - `gui/editor/` 独立静态库目标 `vgui_editor_kit`，依赖 `libvgui`，不向核心反向渗透 (F01)。
-- `command_stack`：execute / undo / redo、事务、提交、回滚 (F02 部分)。
+- `command_stack`：execute / undo / redo、事务（支持嵌套）、提交、回滚、命令合并 `merge_with` 与失败命令协议 (F02)。
+- `property_grid`：提交/重置命令可合并（同一行连续提交合一）、`reset_all()` 包事务；`outliner_view::move_node`、`asset_browser::rename_item` 接入命令栈 (F02)。
+- `drag_bridge` + 核心拖放：载荷/拖拽源/drop target/路由/拖影/插入指示，行拖拽与 SDL3 文件拖入；Outliner 重排、资产拖到属性栏/视口三条路径共用同一套 API (F03)。
+- 核心 list/tree 行扩展：`vgui_row_source` 的 icon/text color/inline buttons/自定义绘制回调与全量模型 setter，行按钮命中不改选中，细粒度失效 `source_rows_changed` (F04)。
 - `command_registry`：字符串命令 ID、快捷键解析/分发、enabled/checked 谓词，菜单与工具栏共用同一命令状态 (S03)。
 - `editor_context`：当前选择、选择监听、命令栈持有者。
 - 核心 `VGUI_SPLITTER` 与 `VGUI_TABVIEW`：比例/最小尺寸/嵌套、拖动与双击复位；标签关闭/禁用/未保存/重排/溢出/键盘，均有公共 API 和无窗口测试 (S01/S02)。
@@ -549,16 +553,15 @@ MVP 验收场景：
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
 - `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
-- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
-- `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界和布局持久化。
+- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现；行扩展与拖放已接入）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放与布局持久化。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（551 项）、`vgui_c_api_test`（8 项）、`vgui_texture_test` 基线保持通过。
+- 现有 `vgui_model_test`（615 项）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 
-1. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
-2. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
-3. 接入 AssetBrowser 缩略图、搜索和拖入场景。
-4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo。
-5. 增加工具栏/状态栏辅助组件与 Dock 标签上下文菜单。
+1. PropertyGrid 的资产/对象引用行（P06）与颜色 HSV 取色器（P05），Vector 多字段行（P04）。
+2. Outliner 行图标 / 可见性锁定按钮（O01，F04 行扩展已就绪）、行内重命名（O02）与拖放重排打磨（O03，F03 已就绪）。
+3. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
+4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
+5. 工具栏/状态栏辅助组件（S07）与 PropertyGrid 行虚拟化（P01 收尾）。

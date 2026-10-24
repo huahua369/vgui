@@ -14,10 +14,11 @@ namespace vgui_editor_kit {
 		return name_.c_str();
 	}
 
-	void function_command::execute()
+	bool function_command::execute()
 	{
 		if (execute_)
 			execute_();
+		return true;
 	}
 
 	void function_command::undo()
@@ -36,10 +37,14 @@ namespace vgui_editor_kit {
 		return name_.c_str();
 	}
 
-	void command_group::execute()
+	bool command_group::execute()
 	{
 		for (auto& child : children_)
-			child->execute();
+		{
+			if (!child->execute())
+				return false;
+		}
+		return true;
 	}
 
 	void command_group::undo()
@@ -59,12 +64,8 @@ namespace vgui_editor_kit {
 		return children_.empty();
 	}
 
-	void command_stack::execute(std::unique_ptr<command> command)
+	void command_stack::record(std::unique_ptr<command> command)
 	{
-		if (!command)
-			return;
-
-		command->execute();
 		if (!transactions_.empty())
 		{
 			transactions_.back()->add(std::move(command));
@@ -73,19 +74,38 @@ namespace vgui_editor_kit {
 
 		undo_.push_back(std::move(command));
 		redo_.clear();
+		can_merge_ = true;
+	}
+
+	void command_stack::try_merge(std::unique_ptr<command>& command)
+	{
+		if (!can_merge_ || !transactions_.empty() || undo_.empty())
+			return;
+		if (undo_.back()->merge_with(*command))
+			command.reset();
+	}
+
+	bool command_stack::execute(std::unique_ptr<command> command)
+	{
+		if (!command)
+			return false;
+		if (!command->execute())
+			return false;
+
+		try_merge(command);
+		if (command)
+			record(std::move(command));
+		return true;
 	}
 
 	void command_stack::push(std::unique_ptr<command> command)
 	{
 		if (!command)
 			return;
-		if (!transactions_.empty())
-		{
-			transactions_.back()->add(std::move(command));
-			return;
-		}
-		undo_.push_back(std::move(command));
-		redo_.clear();
+
+		try_merge(command);
+		if (command)
+			record(std::move(command));
 	}
 
 	bool command_stack::undo()
@@ -97,6 +117,7 @@ namespace vgui_editor_kit {
 		undo_.pop_back();
 		command->undo();
 		redo_.push_back(std::move(command));
+		can_merge_ = false;
 		return true;
 	}
 
@@ -109,6 +130,7 @@ namespace vgui_editor_kit {
 		redo_.pop_back();
 		command->execute();
 		undo_.push_back(std::move(command));
+		can_merge_ = false;
 		return true;
 	}
 
@@ -117,6 +139,7 @@ namespace vgui_editor_kit {
 		undo_.clear();
 		redo_.clear();
 		transactions_.clear();
+		can_merge_ = false;
 	}
 
 	bool command_stack::can_undo() const noexcept
@@ -152,6 +175,7 @@ namespace vgui_editor_kit {
 	void command_stack::begin_transaction(std::string name)
 	{
 		transactions_.push_back(std::make_unique<command_group>(std::move(name)));
+		can_merge_ = false;
 	}
 
 	bool command_stack::commit_transaction()
@@ -164,6 +188,7 @@ namespace vgui_editor_kit {
 		if (!group || group->empty())
 			return false;
 
+		can_merge_ = false;
 		if (!transactions_.empty())
 		{
 			transactions_.back()->add(std::move(group));
@@ -182,6 +207,7 @@ namespace vgui_editor_kit {
 
 		auto group = std::move(transactions_.back());
 		transactions_.pop_back();
+		can_merge_ = false;
 		if (group)
 			group->undo();
 	}

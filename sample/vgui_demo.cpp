@@ -115,6 +115,10 @@ struct demo_state
 	vgui_widget* slider_c_readout = nullptr;
 	vgui_widget* slider_v_readout = nullptr;
 
+	// F03 拖放演示
+	vgui_widget* drop_zone = nullptr;
+	vgui_widget* drop_info = nullptr;
+
 	// 回调中需要访问的控件
 	vgui_widget* slider_h = nullptr;
 	vgui_widget* slider_c = nullptr;
@@ -1849,6 +1853,111 @@ static vgui_item_id add_demo_tab(demo_state* st, const char* title,
 	return id;
 }
 
+//---------------------------------------------------------------------------
+// F03 通用拖放演示：列表行拖拽 + drop zone + OS 文件拖入
+//---------------------------------------------------------------------------
+
+static int dd_demo_can_accept(void* user, const vgui_drag_payload* payload)
+{
+	(void)user;
+	return payload && (payload->kind == VGUI_DRAG_TEXT ||
+		payload->kind == VGUI_DRAG_FILES) ? 1 : 0;
+}
+
+static void dd_demo_hover(void* user, const vgui_drag_payload* payload,
+	float x, float y, vgui_drop_hint* hint)
+{
+	(void)payload;
+	(void)x;
+	(void)y;
+	demo_state* st = (demo_state*)user;
+	if (!hint || !st->drop_zone)
+		return;
+	float zx = 0, zy = 0, zw = 0, zh = 0;
+	vgui_widget_get_rect(st->drop_zone, &zx, &zy, &zw, &zh);
+	hint->kind = VGUI_DROP_HINT_RECT;
+	hint->x = zx;
+	hint->y = zy;
+	hint->w = zw;
+	hint->h = zh;
+}
+
+static int dd_demo_drop(void* user, const vgui_drag_payload* payload, float x, float y)
+{
+	(void)x;
+	(void)y;
+	demo_state* st = (demo_state*)user;
+	if (!st->drop_info || !payload)
+		return 0;
+	if (payload->kind == VGUI_DRAG_TEXT && payload->text)
+	{
+		vgui_widget_set_text(st->drop_info, payload->text);
+		return 1;
+	}
+	if (payload->kind == VGUI_DRAG_FILES && payload->files)
+	{
+		std::string text = "文件: ";
+		for (int i = 0; i < payload->file_count; ++i)
+		{
+			if (i) text += ", ";
+			text += payload->files[i] ? payload->files[i] : "?";
+		}
+		vgui_widget_set_text(st->drop_info, text.c_str());
+		return 1;
+	}
+	return 0;
+}
+
+static int dd_demo_row_drag(void* user, vgui_item_id item, int index,
+	vgui_drag_payload* out)
+{
+	(void)index;
+	vgui_widget* list = (vgui_widget*)user;
+	const char* text = vgui_list_get_item_text(list, item);
+	if (!text || !*text)
+		return 0;
+	if (out)
+	{
+		out->kind = VGUI_DRAG_TEXT;
+		out->text = text;
+	}
+	return 1;
+}
+
+static void build_drag_drop(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "拖放 Drag & Drop");
+	label(c, "把列表行拖到右侧虚框，或从资源管理器拖文件进窗口:", 12, 0xFF9A9A9A);
+
+	vgui_widget* r = row(c, 10);
+	vgui_widget_set_align_items(r, VGUI_ALIGN_STRETCH);
+
+	vgui_widget* list = vgui_widget_add(r, VGUI_LIST, nullptr);
+	vgui_widget_set_id(list, "drag-source-list");
+	vgui_widget_set_size(list, 220, 120);
+	vgui_list_add_item(list, "拖我 Drag me", nullptr);
+	vgui_list_add_item(list, "材质 Material", nullptr);
+	vgui_list_add_item(list, "纹理 Texture", nullptr);
+	vgui_list_set_row_drag(list, dd_demo_row_drag, list);
+
+	vgui_widget* zone = vgui_widget_add(r, VGUI_PANEL, nullptr);
+	vgui_widget_set_id(zone, "drop-zone-demo");
+	vgui_widget_set_grow(zone, 1.0f);
+	vgui_widget_set_min_size(zone, 220, 120);
+	vgui_widget_set_layout(zone, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(zone, 10, 10, 10, 10);
+	vgui_widget_set_align_items(zone, VGUI_ALIGN_CENTER);
+	st->drop_zone = zone;
+	st->drop_info = label(zone, "拖放到这里 / drop here", 13, 0xFF9A9A9A);
+
+	vgui_drop_target target = {};
+	target.can_accept = dd_demo_can_accept;
+	target.hover = dd_demo_hover;
+	target.drop = dd_demo_drop;
+	target.user = st;
+	vgui_widget_set_drop_target(zone, &target);
+}
+
 static void build_tabs_splitter(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "TabView / Splitter 分栏与标签页");
@@ -2110,6 +2219,7 @@ static void build_ui(demo_state* st)
 	build_progress(st, root);
 	build_edits(st, root);
 	build_models(st, root);
+	build_drag_drop(st, root);
 	build_tabs_splitter(st, root);
 	build_scroll(st, root);
 	build_dynamic(st, root);
