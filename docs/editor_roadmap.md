@@ -45,7 +45,7 @@
 
 | 领域 | 当前能力 | 对编辑器的影响 |
 |---|---|---|
-| 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Modal/Dialog/Toast；布局可保存/恢复 | 没有 Dock/浮动窗口；浮动/停靠状态尚未持久化 |
+| 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；布局可保存/恢复 | 核心 Dock 已提供，editor_shell 尚未切换到 Dock；浮动/停靠状态尚未持久化 |
 | 属性编辑 | 只有 Checkbox、Slider、Edit 等基础控件 | 没有 PropertyGrid、数字拖拽、Combo、Vector、Color、资源引用 |
 | 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源 | 没有行图标、自定义行、行内按钮、拖放重排 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
@@ -155,7 +155,7 @@
   - 保存/恢复 Splitter 尺寸、Tab 顺序、面板可见性和 Dock 状态。
   - 布局 JSON 与业务文档分离，避免打开场景时覆盖用户布局。
   - 验收：保存后重启恢复一致；布局损坏或版本不匹配时回退到默认布局。
-  - 已实现：`editor_layout` 带版本 JSON（Splitter 比例、Outliner/Viewport/Properties/Bottom 可见性、底部 Tab 顺序与当前页），`editor_shell` 捕获/应用/保存/加载/重置布局；损坏或版本不匹配回退到 `build()` 后的默认布局。Dock 状态待 S06 提供基础后接入。
+  - 已实现：`editor_layout` 带版本 JSON（Splitter 比例、Outliner/Viewport/Properties/Bottom 可见性、底部 Tab 顺序与当前页），`editor_shell` 捕获/应用/保存/加载/重置布局；损坏或版本不匹配回退到 `build()` 后的默认布局。核心 `VGUI_DOCK` 已提供可查询/重建的停靠区、标签顺序、打开状态与浮动矩形，editor_layout 的 Dock 字段接入待后续完成。
 
 ### M1 编辑器外壳（S）
 
@@ -193,10 +193,11 @@
   - 验收：模态打开时背景不可交互；Tab 不逃出模态；Esc/确认/取消行为一致。
   - 已实现：context 级模态 stage（遮罩、居中面板、焦点陷阱、背景鼠标/滚轮/键盘隔离、Esc/背景点击策略、关闭回调与焦点恢复）；`vgui_dialog_alert/confirm/prompt` 提供默认/危险按钮、输入框与结果回调；context 级 toast 支持六种位置、四种级别、自动过期/常驻、最大可见数和样式/主题回退。
 
-- [ ] **S06 Dock / 浮动面板**（P1，L）
+- [x] **S06 Dock / 浮动面板**（P1，L）
   - 停靠区域、面板拖动、标签组、浮动窗口、关闭/恢复。
   - 与布局持久化、Tab、Splitter 协同。
   - 验收：面板可在左右/底部停靠、合并为标签组、浮出再停靠；重启后布局恢复。
+  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。editor_shell 接入和 editor_layout 的 Dock 持久化字段留待后续。
 
 - [ ] **S07 工具栏辅助组件**（P1，S/M）
   - IconButton、ToggleButton、SegmentedControl。
@@ -472,7 +473,7 @@ MVP 验收场景：
 
 ### 7.2 第二批：完整编辑器
 
-- S06 Dock / 浮动面板
+- S06 Dock / 浮动面板（核心已完成，待接入 editor_shell）
 - S07 工具栏辅助组件
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient
@@ -534,15 +535,18 @@ MVP 验收场景：
 - `editor_context`：当前选择、选择监听、命令栈持有者。
 - 核心 `VGUI_SPLITTER` 与 `VGUI_TABVIEW`：比例/最小尺寸/嵌套、拖动与双击复位；标签关闭/禁用/未保存/重排/溢出/键盘，均有公共 API 和无窗口测试 (S01/S02)。
 - 核心 `VGUI_MENUBAR` 与 context 级按键过滤器：标题条、悬停/方向键切换、弹层生命周期，快捷键在焦点与菜单之后分发 (S03)。
+- 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
+- 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
+- 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
 - `editor_shell`：外层纵向 Splitter + 工作区嵌套横向 Splitter，底部 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
 - `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
 - `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Splitter/TabView 外壳、菜单/快捷键和组件边界。
-- 现有 `vgui_model_test`（286 项）、`vgui_c_api_test`、`vgui_texture_test` 基线保持通过。
+- 现有 `vgui_model_test`（534 项）、`vgui_c_api_test`（8 项）、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 
-1. 实现 S04 Tooltip；F05 的 Dock 状态在 S06 提供停靠基础后接入。
+1. 把 `editor_shell` 的外壳切换到 `VGUI_DOCK`，并将停靠区/标签顺序/浮动矩形写入 `editor_layout`。
 2. 把 PropertyGrid 接到 EditorContext 选择，增加数字/Combo/Color 等类型化编辑器。
 3. 为 Outliner 增加行图标、可见性/锁定、拖放重排。
 4. 接入 AssetBrowser 缩略图、搜索和拖入场景。

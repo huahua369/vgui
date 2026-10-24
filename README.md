@@ -11,7 +11,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | 模块 | 能力 |
 |---|---|
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
-| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView |
+| **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
@@ -40,6 +40,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | `VGUI_MENUBAR` | 菜单标题条；点击/悬停/方向键切换菜单，管理所属弹层的生命周期 |
 | `VGUI_SPLITTER` | 双子面板分栏；水平/垂直、嵌套、比例、sash、最小尺寸、拖动改变比例、双击复位 |
 | `VGUI_TABVIEW` | 标签页容器；关闭回调、未保存标记、禁用页、拖拽重排、滚轮溢出、键盘切换/关闭 |
+| `VGUI_DOCK` | 左右/底部/中央停靠区与浮动框架；标签组合并、拖动重排/跨区移动/浮出再停靠、关闭/恢复、区域尺寸、布局状态查询 |
 
 ### 文本编辑框
 
@@ -162,6 +163,31 @@ vgui_tab_on_close(tabs, on_tab_close, NULL);
 ```
 
 TabView 负责页面可见性和生命周期：`vgui_tab_add()` 接管页面，移除标签会销毁页面。设置 `vgui_tab_on_close()` 后由宿主决定是否调用 `vgui_tab_remove()`（便于未保存确认）；未设置回调时可直接关闭。标签支持禁用、未保存标记、关闭按钮、鼠标拖拽重排、滚轮横向溢出和键盘切换/关闭（`Ctrl+W`），右键会发送带 `item` 的鼠标事件供宿主打开菜单。
+
+### Dock 与浮动面板
+
+`VGUI_DOCK` 把面板组织为四个停靠区（左、右、底部、中央）和若干浮动框架。每个停靠区是一个标签组，只布局当前活动页；区域没有打开的面板时自动折叠，中央区占据剩余空间。`vgui_dock_add()` 接管页面所有权，`vgui_dock_remove()` / `vgui_dock_clear()` 销毁页面，`vgui_dock_detach()` 则把页面交还给调用方。
+
+```c
+vgui_widget* dock = vgui_widget_add(root, VGUI_DOCK, NULL);
+
+vgui_dock_panel_desc desc;
+vgui_dock_panel_desc_default(&desc);
+desc.id = "outliner";              /* 可选稳定字符串 id，便于保存/恢复 */
+desc.title = "Outliner";
+desc.panel = vgui_widget_create(ui, VGUI_PANEL, NULL);
+desc.zone = VGUI_DOCK_LEFT;
+vgui_item_id panel = vgui_dock_add(dock, &desc);
+
+vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 260.0f);
+vgui_dock_float(dock, panel, 120.0f, 120.0f, 360.0f, 260.0f);
+vgui_dock_on_close(dock, on_dock_close, app);
+```
+
+- 拖动标签可重排或移到其他区域；拖出停靠区会变成浮动框架，拖到区域标签条则重新停靠。拖动浮动框架标题可移动窗口，拖到标签条可停靠。
+- `vgui_dock_close()` 只隐藏面板并保留区域/顺序，`vgui_dock_restore()` 重新打开并激活；关闭按钮可通过 `vgui_dock_set_closeable()` 控制。
+- `vgui_dock_get_zone()/get_index()/is_open()/get_floating_rect()` 可读取布局状态，配合字符串 id 与 `vgui_dock_panel_desc` 重建即可恢复布局；区域尺寸通过 `vgui_dock_set_zone_size()` 保存/恢复。
+- 标签条溢出时可用滚轮横向滚动；样式字段位于 `vgui_style.dock`，颜色位于 `vgui_theme.dock_*`，零值会回退到面板/按钮/菜单调色板。
 
 ### 编辑器布局持久化
 
@@ -288,14 +314,14 @@ vgui_draw(ui, ovg_cb, rvg);
 
 字体、OVG 回调和 SDL3 窗口的初始化由后端/宿主程序负责，完整流程见 `sample/vgui_demo.cpp`。颜色格式统一为 `0xAARRGGBB`。
 
-`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、列表、树、菜单、工具栏、Tooltip、模态、Toast、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 除基础调色板外还包含列表/树/菜单、Tooltip 以及模态/Toast 使用的颜色字段（`modal_backdrop`、`modal_bg`、`modal_border`、`modal_danger`、`toast_bg`、`toast_border`、`toast_text`、`toast_info`、`toast_success`、`toast_warning`、`toast_error` 等）；旧主题把这些字段留为 0 时会自动回退到面板/文字/菜单/强调色，不会破坏现有主题。列表/树的自动行高和菜单的自动最大高度也可以通过样式字段设为 0 来保持自动计算。
+`vgui_style` 覆盖面板、标签、按钮、复选框、单选、开关、滑杆、进度条、编辑框、列表、树、菜单、工具栏、Tooltip、模态、Toast、Dock、焦点环、滚动条和动画参数；`vgui_context_set_style()` 会同步迁移仍在使用旧默认值的已有控件，控件级显式设置保持不变。`vgui_theme` 除基础调色板外还包含列表/树/菜单、Tooltip、模态/Toast 以及 Dock 使用的颜色字段（`modal_backdrop`、`modal_bg`、`modal_border`、`modal_danger`、`toast_bg`、`toast_border`、`toast_text`、`toast_info`、`toast_success`、`toast_warning`、`toast_error`、`dock_bg`、`dock_border`、`dock_tab_bg`、`dock_tab_active`、`dock_tab_text`、`dock_floating_bg`、`dock_floating_border`、`dock_floating_title` 等）；旧主题把这些字段留为 0 时会自动回退到面板/文字/菜单/强调色，不会破坏现有主题。列表/树的自动行高和菜单的自动最大高度也可以通过样式字段设为 0 来保持自动计算。
 
 ## 项目结构
 
 ```text
 gui/
   vgui.h              公共纯 C API
-  vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Tooltip/Modal/Toast）
+  vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Dock/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
   vgui_legacy.cpp     旧版 C++ 接口适配
   editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含菜单/命令与布局持久化）
@@ -308,7 +334,7 @@ third_party/
 sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
-  vgui_model_test.cpp       列表、树、菜单、MenuBar、Tooltip、Modal/Dialog/Toast 与按键处理器自测
+  vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast 与按键处理器自测
   vgui_editor_kit_test.cpp  editor kit 骨架、命令栈、菜单/快捷键与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
@@ -330,7 +356,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。`vgui_editor_kit_test` 覆盖 editor kit 的嵌套 Splitter + TabView Shell、EditorContext 选择、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复、Tab 顺序与当前页、损坏和版本不匹配回退。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

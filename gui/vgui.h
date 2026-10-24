@@ -340,11 +340,11 @@ extern "C" {
 	 * style.modal.  The optional close callback runs after the modal has been
 	 * deactivated and the panel detached, but before destroy_on_close destroys
 	 * it, so the panel is still valid for inspection. */
-	typedef enum vgui_modal_result {
+	typedef enum vgui_modal_result_kind {
 		VGUI_MODAL_RESULT_NONE = 0,
 		VGUI_MODAL_RESULT_CANCEL = 1,
 		VGUI_MODAL_RESULT_CONFIRM = 2
-	} vgui_modal_result;
+	} vgui_modal_result_kind;
 
 	typedef void (*vgui_modal_close_fn)(vgui_context* ctx, vgui_widget* panel,
 		int result, void* user);
@@ -367,7 +367,7 @@ extern "C" {
 	/* Shows panel as the context modal.  Returns 0 when the context already has
 	 * an open modal or panel is invalid/owned by another context. */
 	VGUI_API int vgui_modal_show(vgui_context* ctx, vgui_widget* panel, const vgui_modal_options* options);
-	/* result is passed to the close callback; use vgui_modal_result values or
+	/* result is passed to the close callback; use VGUI_MODAL_RESULT_* values or
 	 * an application-defined integer.  Esc/backdrop use the configured results.
 	 * Calling close while no modal is active is a no-op. */
 	VGUI_API void vgui_modal_close(vgui_context* ctx, int result);

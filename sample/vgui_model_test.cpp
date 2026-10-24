@@ -2333,6 +2333,528 @@ static void test_toast(vgui_context* ui, const vgui_style& base)
 	vgui_toast_clear(ui);
 }
 
+/* --------------------------------- dock ---------------------------------- */
+
+struct dock_cb
+{
+	int activates = 0;
+	int closes = 0;
+	int changes = 0;
+	vgui_item_id last_activate = 0;
+	vgui_item_id last_close = 0;
+};
+
+static void on_dock_activate(vgui_widget*, vgui_item_id item, void* user)
+{
+	dock_cb* cb = (dock_cb*)user;
+	cb->activates++;
+	cb->last_activate = item;
+}
+
+static void on_dock_close(vgui_widget*, vgui_item_id item, void* user)
+{
+	dock_cb* cb = (dock_cb*)user;
+	cb->closes++;
+	cb->last_close = item;
+}
+
+static void on_dock_change(vgui_widget*, vgui_item_id, void* user)
+{
+	((dock_cb*)user)->changes++;
+}
+
+static void test_dock(vgui_context* ui, const vgui_style& base)
+{
+	vgui_style style = base;
+	style.dock.left_width = 140.0f;
+	style.dock.right_width = 140.0f;
+	style.dock.bottom_height = 120.0f;
+	style.dock.gap = 4.0f;
+	style.dock.tab_height = 24.0f;
+	style.dock.tab_padding = 8.0f;
+	style.dock.tab_gap = 2.0f;
+	style.dock.tab_min_width = 40.0f;
+	style.dock.tab_max_width = 90.0f;
+	style.dock.close_size = 12.0f;
+	style.dock.floating_title_height = 24.0f;
+	style.dock.floating_width = 240.0f;
+	style.dock.floating_height = 160.0f;
+	style.dock.floating_min_width = 120.0f;
+	style.dock.floating_min_height = 80.0f;
+	style.dock.floating_rounding = 4.0f;
+	style.dock.floating_border_width = 1.0f;
+	style.dock.shadow = 4.0f;
+	style.dock.drag_threshold = 4.0f;
+	vgui_context_set_style(ui, &style);
+
+	vgui_widget* dock = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(dock, 20.0f, 20.0f);
+	vgui_widget_set_size(dock, 600.0f, 420.0f);
+
+	vgui_dock_panel_desc desc;
+	vgui_dock_panel_desc_default(&desc);
+	check(desc.zone == VGUI_DOCK_CENTER && desc.index == -1 && desc.closeable == 1 &&
+		desc.open == 1 && !desc.id && !desc.panel, "dock: descriptor defaults");
+
+	vgui_widget* pa = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pb = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pr = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pc = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget* pm = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	auto add = [&](const char* id, const char* title, vgui_dock_zone zone, vgui_widget* page)
+		{
+			vgui_dock_panel_desc d;
+			vgui_dock_panel_desc_default(&d);
+			d.id = id;
+			d.title = title;
+			d.zone = zone;
+			d.panel = page;
+			return vgui_dock_add(dock, &d);
+		};
+	vgui_item_id ia = add("a", "A", VGUI_DOCK_LEFT, pa);
+	vgui_item_id ib = add("b", "B", VGUI_DOCK_LEFT, pb);
+	vgui_item_id ir = add("r", "R", VGUI_DOCK_RIGHT, pr);
+	vgui_item_id icons = add("c", "C", VGUI_DOCK_BOTTOM, pc);
+	vgui_item_id im = add("m", "M", VGUI_DOCK_CENTER, pm);
+	check(ia && ib && ir && icons && im && ia != ib && ib != ir && ir != icons &&
+		icons != im, "dock: add assigns unique ids");
+	check(vgui_dock_get_count(dock) == 5, "dock: count after add");
+	check(vgui_dock_get_at(dock, 0) == ia && vgui_dock_get_at(dock, 4) == im,
+		"dock: stable add order");
+	check(vgui_dock_find(dock, "b") == ib, "dock: find by string id");
+	check(std::string(vgui_dock_get_id(dock, ib)) == "b", "dock: string id query");
+	check(std::string(vgui_dock_get_title(dock, ib)) == "B", "dock: title query");
+	check(vgui_dock_get_panel(dock, ib) == pb, "dock: page query");
+	check(vgui_widget_get_parent(pa) == dock, "dock: page is attached");
+	check(vgui_dock_get_zone(dock, ia) == VGUI_DOCK_LEFT &&
+		vgui_dock_get_zone(dock, ir) == VGUI_DOCK_RIGHT &&
+		vgui_dock_get_zone(dock, icons) == VGUI_DOCK_BOTTOM &&
+		vgui_dock_get_zone(dock, im) == VGUI_DOCK_CENTER,
+		"dock: zone queries");
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 2 &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 0) == ia &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 1) == ib,
+		"dock: zone order");
+	check(vgui_dock_get_index(dock, ia) == 0 && vgui_dock_get_index(dock, ib) == 1,
+		"dock: index query");
+	check(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ib &&
+		vgui_dock_get_active(dock, VGUI_DOCK_RIGHT) == ir &&
+		vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) == icons &&
+		vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == im,
+		"dock: last added panel is active");
+
+	vgui_dock_panel_desc dup;
+	vgui_dock_panel_desc_default(&dup);
+	dup.panel = pa;
+	check(vgui_dock_add(dock, &dup) == 0, "dock: duplicate page rejected");
+	vgui_widget* temp = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	dup.panel = temp;
+	dup.id = "a";
+	check(vgui_dock_add(dock, &dup) == 0, "dock: duplicate string id rejected");
+	vgui_widget_destroy(temp);
+
+	vgui_layout(ui);
+	float x = 0, y = 0, w = 0, h = 0;
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_LEFT, &x, &y, &w, &h) &&
+		near(x, 20.0f) && near(y, 20.0f) && near(w, 140.0f) && near(h, 420.0f),
+		"dock: left zone geometry");
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_RIGHT, &x, &y, &w, &h) &&
+		near(x, 480.0f) && near(y, 20.0f) && near(w, 140.0f) && near(h, 420.0f),
+		"dock: right zone geometry");
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &x, &y, &w, &h) &&
+		near(x, 164.0f) && near(y, 20.0f) && near(w, 312.0f) && near(h, 296.0f),
+		"dock: centre zone geometry");
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_BOTTOM, &x, &y, &w, &h) &&
+		near(x, 164.0f) && near(y, 320.0f) && near(w, 312.0f) && near(h, 120.0f),
+		"dock: bottom zone geometry");
+	check(vgui_widget_get_visible(pa) == 0 && vgui_widget_get_visible(pb) == 1,
+		"dock: only active left page is visible");
+	check(vgui_widget_get_visible(pr) == 1 && vgui_widget_get_visible(pc) == 1 &&
+		vgui_widget_get_visible(pm) == 1, "dock: active pages in other zones are visible");
+	vgui_widget_get_rect(pb, &x, &y, &w, &h);
+	check(near(x, 20.0f) && near(y, 44.0f) && near(w, 140.0f) && near(h, 396.0f),
+		"dock: active page fills zone content");
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	check(vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th) && tw > 0.0f &&
+		near(th, 24.0f), "dock: tab geometry");
+
+	vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 160.0f);
+	check(near(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 160.0f),
+		"dock: zone size override");
+	vgui_layout(ui);
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_LEFT, &x, &y, &w, &h) && near(w, 160.0f),
+		"dock: overridden zone geometry");
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &x, &y, &w, &h) &&
+		near(x, 184.0f) && near(w, 292.0f), "dock: centre follows zone size");
+	vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, -1.0f);
+	check(near(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 140.0f),
+		"dock: negative zone size restores default");
+	vgui_layout(ui);
+
+	dock_cb cb;
+	vgui_dock_on_activate(dock, on_dock_activate, &cb);
+	vgui_dock_on_close(dock, on_dock_close, &cb);
+	vgui_dock_on_change(dock, on_dock_change, &cb);
+
+	check(vgui_dock_activate(dock, ia) == 1 &&
+		vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ia, "dock: activate selects panel");
+	check(cb.activates == 1 && cb.last_activate == ia, "dock: activate callback");
+	vgui_layout(ui);
+	check(vgui_widget_get_visible(pa) == 1 && vgui_widget_get_visible(pb) == 0,
+		"dock: activation switches visible page");
+
+	vgui_layout(ui);
+	check(vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th), "dock: tab rect for click");
+	click_at(ui, tx + tw * 0.5f, ty + th * 0.5f);
+	check(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ib && cb.activates == 2,
+		"dock: clicking a tab activates it");
+
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	click_at(ui, tx + tw - 10.0f, ty + th * 0.5f);
+	check(vgui_dock_is_open(dock, ib) == 0 && cb.closes == 1 && cb.last_close == ib,
+		"dock: tab close glyph closes panel");
+	check(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ia,
+		"dock: closing activates another zone panel");
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 2 &&
+		vgui_dock_get_index(dock, ib) == 1, "dock: closed panel stays in zone order");
+	check(vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th) == 0,
+		"dock: closed panel has no tab rect");
+	vgui_layout(ui);
+	check(vgui_widget_get_visible(pb) == 0, "dock: closed panel stays hidden");
+
+	check(vgui_dock_restore(dock, ib) == 1 && vgui_dock_is_open(dock, ib) == 1 &&
+		vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ib, "dock: restore reopens panel");
+	check(cb.activates == 3, "dock: restore emits activate callback");
+	vgui_layout(ui);
+	check(vgui_widget_get_visible(pb) == 1, "dock: restored panel is visible");
+
+	vgui_dock_set_title(dock, ib, "Bee");
+	check(std::string(vgui_dock_get_title(dock, ib)) == "Bee", "dock: set title");
+	vgui_dock_set_title(dock, ib, "B");
+
+	vgui_dock_set_closeable(dock, ib, 0);
+	check(vgui_dock_get_closeable(dock, ib) == 0, "dock: clear closeable");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	int closes_before = cb.closes;
+	click_at(ui, tx + tw - 10.0f, ty + th * 0.5f);
+	check(vgui_dock_is_open(dock, ib) == 1 && cb.closes == closes_before,
+		"dock: non-closeable tab ignores close glyph");
+	vgui_dock_set_closeable(dock, ib, 1);
+
+	check(vgui_dock_close(dock, ib) == 1 && vgui_dock_is_open(dock, ib) == 0 &&
+		cb.closes == closes_before + 1, "dock: API close");
+	check(vgui_dock_restore(dock, ib) == 1 && vgui_dock_is_open(dock, ib) == 1,
+		"dock: API restore");
+
+	int activates_before = cb.activates;
+	check(vgui_dock_set_zone(dock, ia, VGUI_DOCK_RIGHT, 0) == 1,
+		"dock: move panel to another zone");
+	check(vgui_dock_get_zone(dock, ia) == VGUI_DOCK_RIGHT &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 1 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_RIGHT) == 2,
+		"dock: zone counts after move");
+	check(vgui_dock_get_zone_at(dock, VGUI_DOCK_RIGHT, 0) == ia &&
+		vgui_dock_get_active(dock, VGUI_DOCK_RIGHT) == ia,
+		"dock: moved panel takes requested index and becomes active");
+	check(cb.activates == activates_before + 1, "dock: move emits activate callback");
+	check(vgui_dock_set_zone(dock, ia, VGUI_DOCK_LEFT, 1) == 1 &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 0) == ib &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 1) == ia &&
+		vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ia,
+		"dock: move back to requested index");
+
+	vgui_layout(ui);
+	float ax = 0, ay = 0, aw = 0, ah = 0;
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	vgui_dock_get_tab_rect(dock, ia, &ax, &ay, &aw, &ah);
+	vgui_dock_get_tab_rect(dock, ib, &bx, &by, &bw, &bh);
+	vgui_input_mouse_move(ui, ax + aw * 0.5f, ay + ah * 0.5f);
+	vgui_input_mouse_down(ui, 1, ax + aw * 0.5f, ay + ah * 0.5f, 1);
+	vgui_input_mouse_move(ui, bx + bw * 0.25f, by + bh * 0.5f);
+	vgui_input_mouse_up(ui, 1, bx + bw * 0.25f, by + bh * 0.5f, 1);
+	check(vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 0) == ia &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 1) == ib,
+		"dock: dragging a tab reorders within its zone");
+
+	activates_before = cb.activates;
+	check(vgui_dock_float(dock, ir, 100.0f, 100.0f, 240.0f, 160.0f) == 1,
+		"dock: float panel");
+	check(vgui_dock_is_floating(dock, ir) == 1 &&
+		vgui_dock_get_zone(dock, ir) == VGUI_DOCK_FLOATING &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_RIGHT) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_FLOATING) == 1,
+		"dock: floating panel leaves its zone");
+	check(cb.activates == activates_before + 1, "dock: float emits activate callback");
+	float fx = 0, fy = 0, fw = 0, fh = 0;
+	check(vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh) &&
+		near(fx, 100.0f) && near(fy, 100.0f) && near(fw, 240.0f) && near(fh, 160.0f),
+		"dock: floating rect");
+	vgui_layout(ui);
+	vgui_widget_get_rect(pr, &x, &y, &w, &h);
+	check(near(x, 100.0f) && near(y, 124.0f) && near(w, 240.0f) && near(h, 136.0f),
+		"dock: floating page content rect");
+
+	vgui_dock_set_floating_rect(dock, ir, -100.0f, -100.0f, 240.0f, 160.0f);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	check(near(fx, 20.0f) && near(fy, 20.0f), "dock: floating rect is clamped to dock");
+	vgui_dock_set_floating_rect(dock, ir, 100.0f, 100.0f, 240.0f, 160.0f);
+
+	check(vgui_dock_float(dock, icons, 0.0f, 0.0f, 0.0f, 0.0f) == 1,
+		"dock: float with default size");
+	vgui_dock_get_floating_rect(dock, icons, &fx, &fy, &fw, &fh);
+	check(near(fx, 200.0f) && near(fy, 150.0f) && near(fw, 240.0f) && near(fh, 160.0f),
+		"dock: origin centres default floating frame");
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_BOTTOM) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_FLOATING) == 2,
+		"dock: multiple floating panels");
+
+	vgui_dock_activate(dock, ir);
+	check(vgui_dock_get_zone_at(dock, VGUI_DOCK_FLOATING, 1) == ir &&
+		vgui_dock_get_active(dock, VGUI_DOCK_FLOATING) == ir,
+		"dock: activating floating panel raises it");
+
+	// Restoring a closed frame that is not topmost must raise it again.
+	vgui_dock_activate(dock, icons);
+	check(vgui_dock_get_zone_at(dock, VGUI_DOCK_FLOATING, 1) == icons,
+		"dock: activating the other floating panel raises it");
+	vgui_dock_activate(dock, ir);
+	check(vgui_dock_close(dock, icons) == 1 && vgui_dock_is_open(dock, icons) == 0,
+		"dock: close lower floating panel");
+	check(vgui_dock_restore(dock, icons) == 1 &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_FLOATING, 1) == icons &&
+		vgui_dock_get_active(dock, VGUI_DOCK_FLOATING) == icons,
+		"dock: restoring a floating panel raises it");
+	vgui_dock_activate(dock, ir);
+
+	vgui_layout(ui);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	closes_before = cb.closes;
+	click_at(ui, fx + fw - 10.0f, fy + 12.0f);
+	check(vgui_dock_is_open(dock, ir) == 0 && cb.closes == closes_before + 1,
+		"dock: floating close glyph closes panel");
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_FLOATING) == 2 &&
+		vgui_dock_get_tab_rect(dock, ir, &tx, &ty, &tw, &th) == 0,
+		"dock: closed floating panel stays in float order");
+	check(vgui_dock_restore(dock, ir) == 1 && vgui_dock_is_open(dock, ir) == 1 &&
+		vgui_dock_get_active(dock, VGUI_DOCK_FLOATING) == ir,
+		"dock: restore floating panel");
+
+	vgui_layout(ui);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	vgui_input_mouse_move(ui, fx + 30.0f, fy + 10.0f);
+	vgui_input_mouse_down(ui, 1, fx + 30.0f, fy + 10.0f, 1);
+	vgui_input_mouse_move(ui, fx + 60.0f, fy + 40.0f);
+	vgui_input_mouse_up(ui, 1, fx + 60.0f, fy + 40.0f, 1);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	check(near(fx, 130.0f) && near(fy, 130.0f),
+		"dock: dragging the floating title moves the frame");
+
+	vgui_layout(ui);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	vgui_input_mouse_move(ui, fx + 30.0f, fy + 10.0f);
+	vgui_input_mouse_down(ui, 1, fx + 30.0f, fy + 10.0f, 1);
+	vgui_input_mouse_move(ui, 155.0f, 32.0f);
+	vgui_input_mouse_up(ui, 1, 155.0f, 32.0f, 1);
+	check(vgui_dock_is_floating(dock, ir) == 0 &&
+		vgui_dock_get_zone(dock, ir) == VGUI_DOCK_LEFT &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 3,
+		"dock: dragging a frame to a tab bar redocks it");
+	check(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == ir &&
+		vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 2) == ir,
+		"dock: redocked panel is active at the drop index");
+
+	// Persistence round trip: zone order and floating geometry are public state.
+	float saved_fx = 0, saved_fy = 0, saved_fw = 0, saved_fh = 0;
+	vgui_dock_get_floating_rect(dock, icons, &saved_fx, &saved_fy, &saved_fw, &saved_fh);
+	int saved_index = vgui_dock_get_index(dock, ir);
+	vgui_widget* dock2 = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(dock2, 20.0f, 20.0f);
+	vgui_widget_set_size(dock2, 600.0f, 420.0f);
+	auto add2 = [&](const char* id, const char* title, vgui_dock_zone zone, vgui_widget* page)
+		{
+			vgui_dock_panel_desc d;
+			vgui_dock_panel_desc_default(&d);
+			d.id = id;
+			d.title = title;
+			d.zone = zone;
+			d.panel = page;
+			return vgui_dock_add(dock2, &d);
+		};
+	vgui_item_id jb = add2("b", "B", VGUI_DOCK_LEFT, vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_item_id ja = add2("a", "A", VGUI_DOCK_LEFT, vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_item_id jr = add2("r", "R", VGUI_DOCK_LEFT, vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_dock_panel_desc fd;
+	vgui_dock_panel_desc_default(&fd);
+	fd.id = "c";
+	fd.title = "C";
+	fd.panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	fd.zone = VGUI_DOCK_FLOATING;
+	fd.x = saved_fx;
+	fd.y = saved_fy;
+	fd.width = saved_fw;
+	fd.height = saved_fh;
+	vgui_item_id jc = vgui_dock_add(dock2, &fd);
+	check(jb && ja && jr && jc, "dock: recreated panels get ids");
+	check(vgui_dock_get_zone_count(dock2, VGUI_DOCK_LEFT) == 3 &&
+		vgui_dock_get_zone_at(dock2, VGUI_DOCK_LEFT, 2) == jr &&
+		vgui_dock_get_index(dock2, jr) == saved_index,
+		"dock: persistence restores zone order");
+	check(vgui_dock_get_floating_rect(dock2, jc, &x, &y, &w, &h) &&
+		near(x, saved_fx) && near(y, saved_fy) && near(w, saved_fw) && near(h, saved_fh),
+		"dock: persistence restores floating rect");
+	vgui_dock_clear(dock2);
+	vgui_widget_destroy(dock2);
+
+	// Collapse every side zone, then drop tabs near the dock edges.  Only
+	// collapsed zones use positional inference.
+	vgui_dock_float(dock, ia, 0.0f, 0.0f, 0.0f, 0.0f);
+	vgui_dock_float(dock, ir, 300.0f, 160.0f, 0.0f, 0.0f);
+	vgui_dock_set_zone(dock, ib, VGUI_DOCK_CENTER, 0);
+	vgui_layout(ui);
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_LEFT, &x, &y, &w, &h) == 0 &&
+		vgui_dock_get_zone_rect(dock, VGUI_DOCK_RIGHT, &x, &y, &w, &h) == 0 &&
+		vgui_dock_get_zone_rect(dock, VGUI_DOCK_BOTTOM, &x, &y, &w, &h) == 0,
+		"dock: empty side zones collapse");
+
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	vgui_input_mouse_move(ui, tx + tw * 0.5f, ty + th * 0.5f);
+	vgui_input_mouse_down(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	vgui_input_mouse_move(ui, 30.0f, 200.0f);
+	vgui_input_mouse_up(ui, 1, 30.0f, 200.0f, 1);
+	check(vgui_dock_get_zone(dock, ib) == VGUI_DOCK_LEFT &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 1,
+		"dock: drop infers a collapsed left zone");
+
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	vgui_input_mouse_move(ui, tx + tw * 0.5f, ty + th * 0.5f);
+	vgui_input_mouse_down(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	vgui_input_mouse_move(ui, 610.0f, 200.0f);
+	vgui_input_mouse_up(ui, 1, 610.0f, 200.0f, 1);
+	check(vgui_dock_get_zone(dock, ib) == VGUI_DOCK_RIGHT &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_RIGHT) == 1,
+		"dock: drop infers a collapsed right zone");
+
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	vgui_input_mouse_move(ui, tx + tw * 0.5f, ty + th * 0.5f);
+	vgui_input_mouse_down(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	vgui_input_mouse_move(ui, 300.0f, 410.0f);
+	vgui_input_mouse_up(ui, 1, 300.0f, 410.0f, 1);
+	check(vgui_dock_get_zone(dock, ib) == VGUI_DOCK_BOTTOM &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_BOTTOM) == 1,
+		"dock: drop infers a collapsed bottom zone");
+
+	// Wide tabs overflow the centre strip.  Wheel scrolling must survive the
+	// next layout instead of snapping the active tab back into view.
+	vgui_style wide = style;
+	wide.dock.tab_min_width = 100.0f;
+	wide.dock.tab_max_width = 100.0f;
+	vgui_context_set_style(ui, &wide);
+	vgui_item_id wheel_last = 0;
+	for (int i = 0; i < 7; ++i)
+	{
+		char title[8];
+		char sid[8];
+		std::snprintf(title, sizeof(title), "T%d", i + 1);
+		std::snprintf(sid, sizeof(sid), "t%d", i + 1);
+		vgui_widget* page = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+		vgui_dock_panel_desc d;
+		vgui_dock_panel_desc_default(&d);
+		d.id = sid;
+		d.title = title;
+		d.panel = page;
+		d.zone = VGUI_DOCK_CENTER;
+		vgui_item_id added = vgui_dock_add(dock, &d);
+		if (i == 6) wheel_last = added;
+	}
+	check(wheel_last != 0 && vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER) == 8,
+		"dock: centre tabs overflow");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, wheel_last, &tx, &ty, &tw, &th);
+	float before_wheel_x = tx;
+	vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &x, &y, &w, &h);
+	vgui_input_mouse_move(ui, x + 10.0f, y + 12.0f);
+	vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, wheel_last, &tx, &ty, &tw, &th);
+	check(tx > before_wheel_x + 1.0f, "dock: wheel scrolls the tab strip");
+	float wheel_x = tx;
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, wheel_last, &tx, &ty, &tw, &th);
+	check(near(tx, wheel_x), "dock: wheel scroll is not reset by layout");
+
+	int count_before = vgui_dock_get_count(dock);
+	vgui_widget* detached = vgui_dock_detach(dock, im);
+	check(detached == pm && vgui_dock_get_count(dock) == count_before - 1,
+		"dock: detach removes panel");
+	check(vgui_widget_get_parent(pm) == nullptr && vgui_widget_get_visible(pm) == 1 &&
+		vgui_dock_get_panel(dock, im) == nullptr && vgui_dock_find(dock, "m") == 0,
+		"dock: detach returns page ownership");
+	vgui_widget_destroy(pm);
+
+	count_before = vgui_dock_get_count(dock);
+	vgui_item_id first_center = vgui_dock_get_zone_at(dock, VGUI_DOCK_CENTER, 0);
+	check(vgui_dock_remove(dock, first_center) == 1 &&
+		vgui_dock_get_count(dock) == count_before - 1 &&
+		vgui_dock_get_panel(dock, first_center) == nullptr,
+		"dock: remove destroys panel");
+
+	vgui_dock_clear(dock);
+	check(vgui_dock_get_count(dock) == 0, "dock: clear removes all panels");
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_LEFT) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_RIGHT) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_BOTTOM) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER) == 0 &&
+		vgui_dock_get_zone_count(dock, VGUI_DOCK_FLOATING) == 0,
+		"dock: clear resets zone orders");
+	vgui_widget_destroy(dock);
+
+	// A style block from before the dock existed restores every default.
+	vgui_style zeroed = wide;
+	zeroed.dock = {};
+	vgui_context_set_style(ui, &zeroed);
+	vgui_style got_style;
+	vgui_context_get_style(ui, &got_style);
+	check(near(got_style.dock.left_width, 200.0f) &&
+		near(got_style.dock.right_width, 220.0f) &&
+		near(got_style.dock.bottom_height, 180.0f) &&
+		near(got_style.dock.tab_height, 30.0f) &&
+		near(got_style.dock.floating_width, 360.0f) &&
+		near(got_style.dock.floating_height, 260.0f) &&
+		near(got_style.dock.drag_threshold, 4.0f),
+		"dock: zeroed style restores defaults");
+
+	// A legacy theme with zeroed dock colours falls back to the palette.
+	vgui_theme saved_theme;
+	vgui_context_get_theme(ui, &saved_theme);
+	vgui_theme old = {};
+	old.text = 0xFFEEEEEE;
+	old.panel_bg = 0xFF202020;
+	old.panel_border = 0xFF555555;
+	old.button_bg = 0xFF303030;
+	old.button_border = 0xFF555555;
+	old.menu_bg = 0xFF282828;
+	old.menu_border = 0xFF4A4A4A;
+	vgui_context_set_theme(ui, &old);
+	vgui_theme got_theme;
+	vgui_context_get_theme(ui, &got_theme);
+	check(got_theme.dock_bg == old.panel_bg &&
+		got_theme.dock_border == old.panel_border &&
+		got_theme.dock_tab_bg == old.button_bg &&
+		got_theme.dock_tab_active == old.panel_bg &&
+		got_theme.dock_tab_text == old.text &&
+		got_theme.dock_floating_bg == old.menu_bg &&
+		got_theme.dock_floating_border == old.menu_border &&
+		got_theme.dock_floating_title == old.button_bg,
+		"dock: legacy theme fallback colours");
+	vgui_context_set_theme(ui, &saved_theme);
+	vgui_context_set_style(ui, &base);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -2369,6 +2891,7 @@ int main()
 	test_modal(ui);
 	test_dialog(ui);
 	test_toast(ui, style);
+	test_dock(ui, style);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

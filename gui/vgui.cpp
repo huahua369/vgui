@@ -2125,7 +2125,11 @@ namespace {
 		vgui_dock_clamp_rect(w, panel, x, y, width, height, true);
 		st->float_order.push_back(item);
 		for (int z = 0; z < 4; ++z)
-			if (st->active[z] == item) st->active[z] = vgui_dock_pick_active(st, z);
+		{
+			if (st->active[z] != item) continue;
+			st->active[z] = vgui_dock_pick_active(st, z);
+			st->scroll_active[z] = 1;
+		}
 		vgui_mark_dirty(w);
 		if (notify_activate && vgui_dock_alive(w))
 			vgui_dock_notify_activate(w, item);
@@ -2150,8 +2154,12 @@ namespace {
 		panel->open = 1;
 		vgui_dock_insert_order(st, zone, item, index);
 		if (old_zone >= 0 && old_zone < 4 && st->active[old_zone] == item)
+		{
 			st->active[old_zone] = vgui_dock_pick_active(st, old_zone);
+			st->scroll_active[old_zone] = 1;
+		}
 		st->active[zone] = item;
+		st->scroll_active[zone] = 1;
 		vgui_mark_dirty(w);
 		if (notify_activate && vgui_dock_alive(w))
 			vgui_dock_notify_activate(w, item);
@@ -2167,7 +2175,10 @@ namespace {
 		if (!st || !panel || !panel->open) return false;
 		panel->open = 0;
 		if (panel->zone >= 0 && panel->zone < 4 && st->active[panel->zone] == item)
+		{
 			st->active[panel->zone] = vgui_dock_pick_active(st, panel->zone);
+			st->scroll_active[panel->zone] = 1;
+		}
 		vgui_dock_forget_focus(w, panel->page);
 		if (panel->page) panel->page->visible = 0;
 		vgui_mark_dirty(w);
@@ -2187,13 +2198,12 @@ namespace {
 		if (!st || !panel || panel->open) return false;
 		panel->open = 1;
 		if (panel->zone == VGUI_DOCK_FLOATING)
-		{
-			if (std::find(st->float_order.begin(), st->float_order.end(), item) ==
-				st->float_order.end())
-				st->float_order.push_back(item);
-		}
+			vgui_dock_raise_float_internal(w, item);
 		else if (panel->zone >= 0 && panel->zone < 4)
+		{
 			st->active[panel->zone] = item;
+			st->scroll_active[panel->zone] = 1;
+		}
 		vgui_mark_dirty(w);
 		if (notify && vgui_dock_alive(w))
 		{
@@ -4581,13 +4591,14 @@ namespace {
 					break;
 				}
 			}
-			if (active != 0 && active_w > 0.0f)
+			if (st->scroll_active[zone] && active != 0 && active_w > 0.0f)
 			{
 				if (active_x - st->tab_scroll[zone] < 0.0f)
 					st->tab_scroll[zone] = active_x;
 				else if (active_x - st->tab_scroll[zone] + active_w > st->zone_w[zone])
 					st->tab_scroll[zone] = active_x + active_w - st->zone_w[zone];
 			}
+			st->scroll_active[zone] = 0;
 			st->tab_scroll[zone] = vgui_clampf(st->tab_scroll[zone], 0.0f, max_scroll);
 
 			float tx = st->zone_x[zone] - st->tab_scroll[zone];
@@ -8708,7 +8719,6 @@ namespace {
 				st->pressed = 0;
 				st->close_pressed = 0;
 				st->drag_mode = 0;
-				st->drag_panel = 0;
 				st->drop_zone = -1;
 				st->drop_index = -1;
 				st->drop_floating = 0;
@@ -8768,6 +8778,7 @@ namespace {
 					if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
 				}
 			}
+			if (st) st->drag_panel = 0;
 			vgui_mark_dirty(target);
 			ctx->want_mouse = ctx->hot != nullptr;
 			vgui_end_input(ctx);
@@ -13662,7 +13673,11 @@ extern "C" {
 		else
 		{
 			vgui_dock_insert_order(st, zone, id, desc->index);
-			if (stored->open) st->active[zone] = id;
+			if (stored->open)
+			{
+				st->active[zone] = id;
+				st->scroll_active[zone] = 1;
+			}
 		}
 		if (page)
 		{
@@ -13689,7 +13704,11 @@ extern "C" {
 			st->index[st->panels[i].id] = i;
 		vgui_dock_erase_order(st, panel_id);
 		for (int z = 0; z < 4; ++z)
-			st->active[z] = vgui_dock_pick_active(st, z);
+		{
+			vgui_item_id next = vgui_dock_pick_active(st, z);
+			if (st->active[z] != next) st->scroll_active[z] = 1;
+			st->active[z] = next;
+		}
 		if (page)
 		{
 			vgui_dock_forget_focus(dock, page);
@@ -13713,7 +13732,11 @@ extern "C" {
 			st->index[st->panels[i].id] = i;
 		vgui_dock_erase_order(st, panel_id);
 		for (int z = 0; z < 4; ++z)
-			st->active[z] = vgui_dock_pick_active(st, z);
+		{
+			vgui_item_id next = vgui_dock_pick_active(st, z);
+			if (st->active[z] != next) st->scroll_active[z] = 1;
+			st->active[z] = next;
+		}
 		if (page)
 		{
 			vgui_dock_forget_focus(dock, page);
@@ -13738,6 +13761,7 @@ extern "C" {
 		{
 			st->order[z].clear();
 			st->active[z] = 0;
+			st->scroll_active[z] = 0;
 			st->tabs[z].clear();
 			st->tab_scroll[z] = 0.0f;
 		}
@@ -13806,6 +13830,9 @@ extern "C" {
 		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
 		if (!panel) return;
 		panel->title = title ? title : "";
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (st && panel->zone >= 0 && panel->zone < 4)
+			st->scroll_active[panel->zone] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
 	}
@@ -13821,6 +13848,9 @@ extern "C" {
 		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
 		if (!panel) return;
 		panel->closeable = closeable ? 1 : 0;
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (st && panel->zone >= 0 && panel->zone < 4)
+			st->scroll_active[panel->zone] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
 	}
@@ -13949,6 +13979,7 @@ extern "C" {
 		int z = (int)zone;
 		if (!st || z < 0 || z > (int)VGUI_DOCK_BOTTOM) return;
 		st->zone_size[z] = size < 0.0f ? -1.0f : size;
+		for (int i = 0; i < 4; ++i) st->scroll_active[i] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
 	}
