@@ -11,6 +11,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -159,6 +160,19 @@ struct demo_state
 	vgui_widget* model_menu = nullptr;
 	int list_added = 0;
 	int tree_added = 0;
+
+	// 国际化 / RTL
+	vgui_widget* i18n_info = nullptr;
+	vgui_widget* i18n_rtl = nullptr;
+	int lang_index = 0;
+
+	// TabView / Splitter
+	vgui_widget* splitter_outer = nullptr;
+	vgui_widget* splitter_inner = nullptr;
+	vgui_widget* splitter_info = nullptr;
+	vgui_widget* tabs_demo = nullptr;
+	vgui_widget* tab_info = nullptr;
+	int tab_added = 0;
 
 	// 数值状态
 	int clicks = 0;
@@ -927,6 +941,216 @@ static void on_theme_green(vgui_widget* w, const vgui_event* e, void* user)
 	statusf(st, "主题: 护眼");
 }
 
+// 国际化 / RTL：语言切换与方向切换共用同一套演示状态
+static void update_i18n_status(demo_state* st)
+{
+	if (!st || !st->i18n_info) return;
+	const char* lang = vgui_context_get_language(st->ui);
+	const char* dir = vgui_context_get_direction(st->ui) == VGUI_DIRECTION_RTL ? "RTL" : "LTR";
+	char buf[128] = {};
+	snprintf(buf, sizeof(buf), "language: %s · direction: %s",
+		(lang && *lang) ? lang : "(none)", dir);
+	vgui_widget_set_text(st->i18n_info, buf);
+}
+
+static void apply_demo_language(demo_state* st, int index, const char* lang, const char* name)
+{
+	st->lang_index = index;
+	vgui_context_set_language(st->ui, lang);
+	update_i18n_status(st);
+	statusf(st, "语言 / Language: %s", name);
+}
+
+static void on_lang_zh(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	apply_demo_language((demo_state*)user, 0, "zh", "中文");
+}
+
+static void on_lang_en(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	apply_demo_language((demo_state*)user, 1, "en", "English");
+}
+
+static void on_lang_ar(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	apply_demo_language((demo_state*)user, 2, "ar", "العربية");
+}
+
+static void on_i18n_rtl_value(vgui_widget* w, float v, void* user)
+{
+	(void)w;
+	demo_state* st = (demo_state*)user;
+	int rtl = v >= 0.5f;
+	vgui_context_set_direction(st->ui, rtl ? VGUI_DIRECTION_RTL : VGUI_DIRECTION_LTR);
+	update_i18n_status(st);
+	statusf(st, "方向 / Direction: %s", rtl ? "RTL" : "LTR");
+}
+
+// Splitter：拖动分隔条会通过 value 回调上报比例
+static void update_splitter_info(demo_state* st)
+{
+	if (!st || !st->splitter_info) return;
+	int outer = (int)std::lround(vgui_splitter_get_ratio(st->splitter_outer) * 100.0f);
+	int inner = (int)std::lround(vgui_splitter_get_ratio(st->splitter_inner) * 100.0f);
+	char buf[96] = {};
+	snprintf(buf, sizeof(buf), "外层 %d / %d · 内层 %d / %d", outer, 100 - outer, inner, 100 - inner);
+	vgui_widget_set_text(st->splitter_info, buf);
+}
+
+static void on_splitter_value(vgui_widget* w, float v, void* user)
+{
+	(void)w;
+	(void)v;
+	update_splitter_info((demo_state*)user);
+}
+
+static void on_splitter_ratio_35(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_splitter_set_ratio(st->splitter_outer, 0.35f);
+	update_splitter_info(st);
+	statusf(st, "Splitter 外层比例: 35 / 65");
+}
+
+static void on_splitter_ratio_70(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_splitter_set_ratio(st->splitter_outer, 0.7f);
+	update_splitter_info(st);
+	statusf(st, "Splitter 外层比例: 70 / 30");
+}
+
+static void on_splitter_reset(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_splitter_reset(st->splitter_outer);
+	vgui_splitter_reset(st->splitter_inner);
+	update_splitter_info(st);
+	statusf(st, "Splitter 已复位为 50 / 50");
+}
+
+// TabView
+static void update_tab_info(demo_state* st)
+{
+	if (!st || !st->tab_info) return;
+	vgui_item_id active = vgui_tab_get_active(st->tabs_demo);
+	const char* title = vgui_tab_get_title(st->tabs_demo, active);
+	int index = vgui_tab_get_index(st->tabs_demo, active);
+	char buf[160] = {};
+	snprintf(buf, sizeof(buf), "当前: %s (#%d/%d) · 未保存=%d",
+		(title && *title) ? title : "(无)", index + 1,
+		vgui_tab_get_count(st->tabs_demo),
+		vgui_tab_get_unsaved(st->tabs_demo, active));
+	vgui_widget_set_text(st->tab_info, buf);
+}
+
+static void on_tab_selected(vgui_widget* w, vgui_item_id item, void* user)
+{
+	demo_state* st = (demo_state*)user;
+	update_tab_info(st);
+	statusf(st, "TabView 选中: %s", vgui_tab_get_title(w, item));
+}
+
+static void on_tab_close_request(vgui_widget* w, vgui_item_id item, void* user)
+{
+	demo_state* st = (demo_state*)user;
+	std::string title = vgui_tab_get_title(w, item);
+	if (vgui_tab_get_unsaved(w, item))
+	{
+		statusf(st, "TabView: “%s” 还有未保存修改，关闭被拒绝", title.c_str());
+		return;
+	}
+	vgui_tab_remove(w, item);
+	update_tab_info(st);
+	statusf(st, "TabView: 已关闭 “%s”", title.c_str());
+}
+
+static void on_tab_add_page(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->tab_added++;
+
+	char title[32] = {};
+	snprintf(title, sizeof(title), "新页 %d", st->tab_added);
+	vgui_widget* page = vgui_widget_create(st->ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 12, 10, 12, 12);
+	vgui_widget_set_gap(page, 6);
+
+	char body[96] = {};
+	snprintf(body, sizeof(body), "这是动态添加的页 %d，可拖动标签重排。", st->tab_added);
+	label(page, body, 14, 0xFFC8C8C8);
+	label(page, "标签支持拖动重排、关闭按钮和未保存圆点。", 12, 0xFF9A9A9A);
+
+	vgui_item_id id = vgui_tab_add(st->tabs_demo, title, page);
+	vgui_tab_set_closeable(st->tabs_demo, id, 1);
+	vgui_tab_set_active(st->tabs_demo, id);
+	update_tab_info(st);
+	statusf(st, "TabView: 新增 “%s”", title);
+}
+
+static void on_tab_close_active(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_item_id active = vgui_tab_get_active(st->tabs_demo);
+	if (!active)
+	{
+		statusf(st, "TabView: 没有活动页");
+		return;
+	}
+	if (vgui_tab_get_unsaved(st->tabs_demo, active))
+	{
+		statusf(st, "TabView: 当前页未保存，先切换“未保存”状态");
+		return;
+	}
+	std::string title = vgui_tab_get_title(st->tabs_demo, active);
+	vgui_tab_remove(st->tabs_demo, active);
+	update_tab_info(st);
+	statusf(st, "TabView: 已关闭 “%s”", title.c_str());
+}
+
+static void on_tab_toggle_unsaved(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_item_id active = vgui_tab_get_active(st->tabs_demo);
+	if (!active) return;
+	int unsaved = vgui_tab_get_unsaved(st->tabs_demo, active);
+	vgui_tab_set_unsaved(st->tabs_demo, active, !unsaved);
+	update_tab_info(st);
+	statusf(st, "TabView: 未保存标记 = %s", unsaved ? "关" : "开");
+}
+
+static void on_tab_move_last(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_item_id active = vgui_tab_get_active(st->tabs_demo);
+	if (!active) return;
+	int count = vgui_tab_get_count(st->tabs_demo);
+	vgui_tab_move(st->tabs_demo, active, count - 1);
+	update_tab_info(st);
+	statusf(st, "TabView: 当前页已移到末尾");
+}
+
 //---------------------------------------------------------------------------
 // 构建界面
 //---------------------------------------------------------------------------
@@ -1593,6 +1817,103 @@ static void build_models(demo_state* st, vgui_widget* root)
 	label(mr, "Esc 关闭；悬停可展开子菜单", 12, 0xFF9A9A9A);
 }
 
+static vgui_widget* splitter_pane(vgui_widget* parent, const char* text, vgui_color bg)
+{
+	vgui_widget* pane = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(pane, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(pane, 10, 8, 10, 8);
+	vgui_widget_set_align_items(pane, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_justify(pane, VGUI_JUSTIFY_CENTER);
+	vgui_widget_set_background(pane, bg);
+	vgui_widget_set_border(pane, 0xFF555555, 1);
+	vgui_widget_set_rounding(pane, 4);
+	vgui_widget* l = label(pane, text, 14, 0xFFF0F0F0);
+	vgui_widget_set_text_align(l, 0.5f, 0.5f);
+	return pane;
+}
+
+static vgui_item_id add_demo_tab(demo_state* st, const char* title,
+	const char* line1, const char* line2, int unsaved)
+{
+	vgui_widget* page = vgui_widget_create(st->ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 12, 10, 12, 12);
+	vgui_widget_set_gap(page, 6);
+	label(page, line1, 14, 0xFFC8C8C8);
+	if (line2 && *line2)
+		label(page, line2, 12, 0xFF9A9A9A);
+
+	vgui_item_id id = vgui_tab_add(st->tabs_demo, title, page);
+	vgui_tab_set_closeable(st->tabs_demo, id, 1);
+	vgui_tab_set_unsaved(st->tabs_demo, id, unsaved);
+	return id;
+}
+
+static void build_tabs_splitter(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "TabView / Splitter 分栏与标签页");
+
+	// ---- Splitter：外层水平 + 右侧内层垂直 ----
+	vgui_widget* r1 = row(c, 8);
+	label(r1, "Splitter（拖动分隔条，双击复位）:", 13, 0xFFB0B0B0);
+	button(r1, "35 / 65", on_splitter_ratio_35, st);
+	button(r1, "70 / 30", on_splitter_ratio_70, st);
+	button(r1, "复位", on_splitter_reset, st);
+	st->splitter_info = label(r1, "外层 - / - · 内层 - / -", 13, 0xFF9A9A9A);
+	vgui_widget_set_id(st->splitter_info, "splitter-info");
+
+	vgui_widget* sp = vgui_widget_add(c, VGUI_SPLITTER, nullptr);
+	vgui_widget_set_id(sp, "splitter-demo");
+	vgui_widget_set_size(sp, 0, 170);
+	vgui_splitter_set_sash_size(sp, 6);
+	vgui_splitter_set_ratio(sp, 0.35f);
+	vgui_widget_on_value(sp, on_splitter_value, st);
+	st->splitter_outer = sp;
+
+	splitter_pane(sp, "左侧面板\n拖动右侧分隔条", 0xFF2D4A6B);
+
+	vgui_widget* inner = vgui_widget_add(sp, VGUI_SPLITTER, nullptr);
+	vgui_widget_set_id(inner, "splitter-inner");
+	vgui_splitter_set_vertical(inner, 1);
+	vgui_splitter_set_sash_size(inner, 6);
+	vgui_splitter_set_ratio(inner, 0.5f);
+	vgui_widget_on_value(inner, on_splitter_value, st);
+	st->splitter_inner = inner;
+	splitter_pane(inner, "右上（竖直分隔）", 0xFF2F5D3A);
+	splitter_pane(inner, "右下", 0xFF6B4A2D);
+
+	// ---- TabView ----
+	vgui_widget* r2 = row(c, 8);
+	label(r2, "TabView（选中 / 关闭 / 未保存 / 拖动重排）:", 13, 0xFFB0B0B0);
+	button(r2, "添加页", on_tab_add_page, st);
+	button(r2, "关闭当前页", on_tab_close_active, st);
+	button(r2, "未保存标记", on_tab_toggle_unsaved, st);
+	button(r2, "移到末尾", on_tab_move_last, st);
+	st->tab_info = label(r2, "当前: -", 13, 0xFF9A9A9A);
+	vgui_widget_set_id(st->tab_info, "tab-info");
+
+	vgui_widget* tv = vgui_widget_add(c, VGUI_TABVIEW, nullptr);
+	vgui_widget_set_id(tv, "tabview-demo");
+	vgui_widget_set_size(tv, 0, 210);
+	vgui_tab_on_select(tv, on_tab_selected, st);
+	vgui_tab_on_close(tv, on_tab_close_request, st);
+	st->tabs_demo = tv;
+
+	vgui_item_id p1 = add_demo_tab(st, "属性 Properties",
+		"名称、位置、旋转和颜色都在这里编辑。", "修改会进入编辑器命令栈。", 0);
+	add_demo_tab(st, "层级 Hierarchy",
+		"场景树、可见性与锁定状态。", "拖动标签可调整页签顺序。", 0);
+	add_demo_tab(st, "资源 Assets",
+		"纹理、材质和模型预览。", "带圆点的页表示有未保存修改。", 1);
+	vgui_item_id disabled = add_demo_tab(st, "禁用页 Disabled",
+		"这一页被禁用，不能切换到。", "", 0);
+	vgui_tab_set_enabled(tv, disabled, 0);
+	vgui_tab_set_active(tv, p1);
+
+	update_splitter_info(st);
+	update_tab_info(st);
+}
+
 static void build_visibility(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "可见性与禁用 Visibility / Enabled");
@@ -1661,6 +1982,96 @@ static void build_focus_theme(demo_state* st, vgui_widget* root)
 	label(r2, "← vgui_context_set_theme", 12, 0xFF9A9A9A);
 }
 
+static void build_i18n(demo_state* st, vgui_widget* root)
+{
+	vgui_context* ui = st->ui;
+	vgui_context_set_string(ui, "zh", "i18n.title", "国际化与 RTL");
+	vgui_context_set_string(ui, "en", "i18n.title", "Internationalisation & RTL");
+	vgui_context_set_string(ui, "ar", "i18n.title", "التدويل واتجاه RTL");
+
+	vgui_context_set_string(ui, "zh", "i18n.desc",
+		"文案按语言切换；开启 RTL 后，行布局、文本对齐和控件排列整体镜像。");
+	vgui_context_set_string(ui, "en", "i18n.desc",
+		"Strings follow the active language; RTL mirrors row layouts, text alignment and controls.");
+	vgui_context_set_string(ui, "ar", "i18n.desc",
+		"تتبدّل النصوص حسب اللغة؛ وعند تفعيل RTL ينعكس ترتيب التخطيط ومحاذاة النص وترتيب العناصر.");
+
+	vgui_context_set_string(ui, "zh", "i18n.lang", "语言:");
+	vgui_context_set_string(ui, "en", "i18n.lang", "Language:");
+	vgui_context_set_string(ui, "ar", "i18n.lang", "اللغة:");
+	vgui_context_set_string(ui, "zh", "i18n.btn", "按钮");
+	vgui_context_set_string(ui, "en", "i18n.btn", "Button");
+	vgui_context_set_string(ui, "ar", "i18n.btn", "زر");
+	vgui_context_set_string(ui, "zh", "i18n.check", "复选项");
+	vgui_context_set_string(ui, "en", "i18n.check", "Checkbox");
+	vgui_context_set_string(ui, "ar", "i18n.check", "خيار");
+	vgui_context_set_string(ui, "zh", "i18n.switch", "开关");
+	vgui_context_set_string(ui, "en", "i18n.switch", "Switch");
+	vgui_context_set_string(ui, "ar", "i18n.switch", "مفتاح");
+	vgui_context_set_string(ui, "zh", "i18n.rtl", "RTL 布局");
+	vgui_context_set_string(ui, "en", "i18n.rtl", "RTL layout");
+	vgui_context_set_string(ui, "ar", "i18n.rtl", "تخطيط RTL");
+	vgui_context_set_language(ui, "zh");
+	st->lang_index = 0;
+
+	vgui_widget* c = vgui_widget_add(root, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(c, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(c, 12, 10, 12, 12);
+	vgui_widget_set_gap(c, 8);
+	vgui_widget_set_align_items(c, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_id(c, "i18n");
+
+	vgui_widget* title = vgui_widget_add(c, VGUI_LABEL, nullptr);
+	vgui_widget_set_text_color(title, 0xFF7FB6FF);
+	vgui_widget_set_text_key(title, "i18n.title");
+	vgui_widget_set_id(title, "i18n-title");
+
+	vgui_widget* desc = vgui_widget_add(c, VGUI_LABEL, nullptr);
+	vgui_widget_set_text_key(desc, "i18n.desc");
+	vgui_widget_set_id(desc, "i18n-desc");
+
+	vgui_widget* r1 = row(c, 8);
+	vgui_widget* lang_label = vgui_widget_add(r1, VGUI_LABEL, nullptr);
+	vgui_widget_set_text_key(lang_label, "i18n.lang");
+	vgui_widget_set_text_color(lang_label, 0xFFB0B0B0);
+	vgui_widget_set_id(lang_label, "i18n-lang-label");
+	button(r1, "中文", on_lang_zh, st);
+	button(r1, "English", on_lang_en, st);
+	button(r1, "العربية", on_lang_ar, st);
+
+	vgui_widget* r2 = row(c, 12);
+	vgui_widget* b = vgui_widget_add(r2, VGUI_BUTTON, nullptr);
+	vgui_widget_set_text_key(b, "i18n.btn");
+	vgui_widget_set_id(b, "i18n-button");
+	vgui_widget_on_event(b, on_widget_event, st);
+
+	vgui_widget* cb = vgui_widget_add(r2, VGUI_CHECKBOX, nullptr);
+	vgui_widget_set_text_key(cb, "i18n.check");
+	vgui_widget_set_id(cb, "i18n-check");
+	vgui_widget_set_checked(cb, 1);
+
+	vgui_widget* sw = vgui_widget_add(r2, VGUI_SWITCH, nullptr);
+	vgui_widget_set_text_key(sw, "i18n.switch");
+	vgui_widget_set_id(sw, "i18n-switch");
+	vgui_widget_set_checked(sw, 1);
+
+	st->i18n_rtl = vgui_widget_add(r2, VGUI_CHECKBOX, nullptr);
+	vgui_widget_set_text_key(st->i18n_rtl, "i18n.rtl");
+	vgui_widget_set_id(st->i18n_rtl, "i18n-rtl");
+	vgui_widget_on_value(st->i18n_rtl, on_i18n_rtl_value, st);
+
+	// 双向文本：阿拉伯语 / 希伯来语 / 日语 / emoji 混排，由底层 ICU bidi 重排
+	vgui_widget* bidi = vgui_widget_add(c, VGUI_LABEL,
+		"Bidi: العربية · עברית · 日本語 · English · 🎨");
+	vgui_widget_set_id(bidi, "i18n-bidi");
+	vgui_widget_set_text_color(bidi, 0xFF9A9A9A);
+
+	st->i18n_info = vgui_widget_add(c, VGUI_LABEL, nullptr);
+	vgui_widget_set_id(st->i18n_info, "i18n-info");
+	vgui_widget_set_text_color(st->i18n_info, 0xFF7FB6FF);
+	update_i18n_status(st);
+}
+
 static void build_status(demo_state* st, vgui_widget* root)
 {
 	separator(root);
@@ -1699,10 +2110,12 @@ static void build_ui(demo_state* st)
 	build_progress(st, root);
 	build_edits(st, root);
 	build_models(st, root);
+	build_tabs_splitter(st, root);
 	build_scroll(st, root);
 	build_dynamic(st, root);
 	build_visibility(st, root);
 	build_focus_theme(st, root);
+	build_i18n(st, root);
 	build_status(st, root);
 }
 
@@ -1744,7 +2157,8 @@ int main()
 {
 	// ---- 后端初始化 ----
 	auto* wg = new app_mgr();
-	font_familys_t* familys = new_font_family(wg->font_ctx, "微软雅黑,Consolas,Segoe UI Emoji", 0);
+	font_familys_t* familys = new_font_family(wg->font_ctx,
+		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
 	auto* cb = new_ctx_cb();
 	rvg_t* vg = cb->new_rvg(cb->ac);
 
@@ -1767,6 +2181,20 @@ int main()
 	st.ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(st.ui, win_w, win_h);
 	build_ui(&st);
+
+	// 演示/截图用：可用环境变量预置语言与方向，例如 VGUI_DEMO_LANG=ar VGUI_DEMO_RTL=1
+	if (const char* lang = std::getenv("VGUI_DEMO_LANG"); lang && *lang)
+	{
+		vgui_context_set_language(st.ui, lang);
+		update_i18n_status(&st);
+	}
+	if (const char* rtl = std::getenv("VGUI_DEMO_RTL"); rtl && *rtl && *rtl != '0')
+	{
+		vgui_context_set_direction(st.ui, VGUI_DIRECTION_RTL);
+		vgui_widget_set_checked(st.i18n_rtl, 1);
+		update_i18n_status(&st);
+	}
+
 	form->viewport->ui = st.ui;
 
 	// ---- 主循环 ----

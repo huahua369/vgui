@@ -420,6 +420,7 @@ struct vgui_widget
 	vgui_widget_kind kind = VGUI_PANEL;
 
 	std::string text;
+	std::string text_key;
 	std::string placeholder;
 	std::string edit_text;
 	std::string ime_text;
@@ -666,6 +667,13 @@ struct vgui_context
 	float focus_alpha = 1.0f;	// default focus-ring opacity
 	vgui_widget* root = nullptr;
 
+	// i18n / direction ------------------------------------------------------
+	vgui_direction direction = VGUI_DIRECTION_LTR;
+	std::string language;
+	/* language -> key -> text.  Ordered maps keep pointers returned by
+	 * vgui_context_translate() stable until the entry is overwritten. */
+	std::map<std::string, std::map<std::string, std::string>> strings;
+
 	std::map<vgui_text_measure_key, float> text_width_cache;
 	std::map<vgui_glyph_advance_key, float> glyph_advance_cache;
 	std::map<std::pair<const font_familys_t*, int>, vgui_font_metrics> font_metrics_cache;
@@ -733,6 +741,59 @@ namespace {
 	static float vgui_clampf(float v, float lo, float hi)
 	{
 		return v < lo ? lo : (v > hi ? hi : v);
+	}
+
+	static bool vgui_is_rtl(const vgui_context* ctx)
+	{
+		return ctx && ctx->direction == VGUI_DIRECTION_RTL;
+	}
+
+	static bool vgui_widget_rtl(const vgui_widget* w)
+	{
+		return w && vgui_is_rtl(w->ctx);
+	}
+
+	// i18n lookup: active language -> "en" fallback -> the key itself.
+	static const char* vgui_translate(vgui_context* ctx, const char* key)
+	{
+		if (!ctx || !key) return key ? key : "";
+		if (ctx->language.empty())
+			return key;
+		auto lang = ctx->strings.find(ctx->language);
+		if (lang != ctx->strings.end())
+		{
+			auto it = lang->second.find(key);
+			if (it != lang->second.end()) return it->second.c_str();
+		}
+		auto en = ctx->strings.find("en");
+		if (en != ctx->strings.end())
+		{
+			auto it = en->second.find(key);
+			if (it != en->second.end()) return it->second.c_str();
+		}
+		return key;
+	}
+
+	// Re-applies every text-key binding after the language or table changes.
+	static void vgui_i18n_refresh(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		for (vgui_widget* w : ctx->alive)
+		{
+			if (!w || w->text_key.empty()) continue;
+			const char* tr = vgui_translate(ctx, w->text_key.c_str());
+			w->text = tr ? tr : "";
+			if (w->kind == VGUI_EDIT)
+			{
+				w->edit_text = w->text;
+				w->edit_cursor = w->edit_anchor = (int)w->edit_text.size();
+				w->ime_text.clear();
+				w->ime_cursor = w->ime_length = 0;
+				w->edit_content_w_valid = 0;
+				w->edit_scroll_x = w->edit_scroll_y = 0;
+			}
+		}
+		ctx->layout_dirty = true;
 	}
 
 	// Tooltip lifetime helpers.  The visible overlay lives on the context, so
@@ -1477,8 +1538,17 @@ namespace {
 		float iw = 0.0f;
 		if (st && index < st->items.size())
 		{
-			for (size_t i = 0; i < index; ++i)
-				px += vgui_menubar_item_width(bar, st->items[i]) + ms.gap;
+			if (vgui_is_rtl(bar->ctx))
+			{
+				px = bar->abs_x + bar->abs_w - ms.padding_x;
+				for (size_t i = 0; i <= index; ++i)
+					px -= vgui_menubar_item_width(bar, st->items[i]) + (i > 0 ? ms.gap : 0.0f);
+			}
+			else
+			{
+				for (size_t i = 0; i < index; ++i)
+					px += vgui_menubar_item_width(bar, st->items[i]) + ms.gap;
+			}
 			iw = vgui_menubar_item_width(bar, st->items[index]);
 		}
 		if (out_x) *out_x = px;
@@ -1557,11 +1627,21 @@ namespace {
 		if (!st || index < 0 || index >= (int)st->tabs.size()) return false;
 		float ix = w->abs_x + w->padding[0];
 		float iy = w->abs_y + w->padding[1];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
 		float th = std::min(st->tab_height, ih);
 		float tx = ix - w->scroll_x;
-		for (int i = 0; i < index; ++i)
-			tx += vgui_tab_item_width(w, st->tabs[(size_t)i]) + st->tab_gap;
+		if (vgui_is_rtl(w->ctx))
+		{
+			tx = ix + iw + w->scroll_x;
+			for (int i = 0; i <= index; ++i)
+				tx -= vgui_tab_item_width(w, st->tabs[(size_t)i]) + (i > 0 ? st->tab_gap : 0.0f);
+		}
+		else
+		{
+			for (int i = 0; i < index; ++i)
+				tx += vgui_tab_item_width(w, st->tabs[(size_t)i]) + st->tab_gap;
+		}
 		if (x) *x = tx;
 		if (y) *y = iy;
 		if (width) *width = vgui_tab_item_width(w, st->tabs[(size_t)index]);
@@ -1577,7 +1657,9 @@ namespace {
 		float tx = 0, ty = 0, tw = 0, th = 0;
 		if (!vgui_tab_rect(w, index, &tx, &ty, &tw, &th)) return false;
 		float size = std::min(st->close_size, th);
-		if (x) *x = tx + tw - size - st->tab_padding * 0.5f;
+		if (x) *x = vgui_is_rtl(w->ctx)
+			? tx + st->tab_padding * 0.5f
+			: tx + tw - size - st->tab_padding * 0.5f;
 		if (y) *y = ty + (th - size) * 0.5f;
 		if (width) *width = size;
 		if (height) *height = size;
@@ -1610,11 +1692,12 @@ namespace {
 	{
 		vgui_tab_state* st = vgui_tabs_of(w);
 		if (!st) return 0;
+		bool rtl = vgui_is_rtl(w->ctx);
 		for (int i = 0; i < (int)st->tabs.size(); ++i)
 		{
 			float tx = 0, ty = 0, tw = 0, th = 0;
 			if (!vgui_tab_rect(w, i, &tx, &ty, &tw, &th)) continue;
-			if (x < tx + tw * 0.5f) return i;
+			if (rtl ? (x > tx + tw * 0.5f) : (x < tx + tw * 0.5f)) return i;
 		}
 		return (int)st->tabs.size();
 	}
@@ -4149,8 +4232,15 @@ namespace {
 			std::vector<vgui_wrap_entry> entries;
 			float cw = 0.0f, ch = 0.0f;
 			vgui_wrap_compute(w, ctx, iw, ih, entries, &cw, &ch);
-			for (const vgui_wrap_entry& e : entries)
-				placements.push_back({ e.child, ix + e.x, iy + e.y, e.w, e.h });
+			/* RTL wraps each line from the right.  The line breaking itself is
+			 * direction-independent, so mirroring the finished x positions keeps
+			 * every line, grow and justify result intact. */
+			bool rtl = vgui_is_rtl(ctx);
+			for (vgui_wrap_entry& e : entries)
+			{
+				float ex = rtl ? iw - e.x - e.w : e.x;
+				placements.push_back({ e.child, ix + ex, iy + e.y, e.w, e.h });
+			}
 			content_w = std::max(content_w, cw);
 			content_h = std::max(content_h, ch);
 		}
@@ -4179,6 +4269,13 @@ namespace {
 				if (c->grow > 0) grow_sum += c->grow;
 			}
 			if (n > 1) total_main += w->gap * (n - 1);
+
+			/* Row layouts mirror their main axis in RTL.  When the content is
+			 * wider than the container it keeps LTR order so that horizontal
+			 * scrolling, which is always left-anchored, cannot produce negative
+			 * coordinates. */
+			bool rtl_row = row && vgui_is_rtl(ctx) &&
+				total_main <= inner_main + 0.01f;
 
 			// A grow item is flexible: when its intrinsic main-axis size no longer
 			// fits the container, shrink it back to the available space instead of
@@ -4216,6 +4313,8 @@ namespace {
 			float start = 0, extra_gap = 0;
 			if (grow_sum <= 0 && n > 0)
 			{
+				/* The mirrored cursor below already measures from the right, so
+				 * START keeps starting at the start edge (the right one in RTL). */
 				switch (w->justify)
 				{
 				case VGUI_JUSTIFY_CENTER: start = leftover * 0.5f; break;
@@ -4245,6 +4344,13 @@ namespace {
 					main += leftover * (c->grow / grow_sum);
 
 				vgui_align al = c->align_self != VGUI_ALIGN_AUTO ? c->align_self : w->align_items;
+				// The cross axis of a column layout is horizontal, so START/END
+				// swap in RTL.  Row cross alignment is vertical and unaffected.
+				if (vgui_is_rtl(ctx) && !row)
+				{
+					if (al == VGUI_ALIGN_START) al = VGUI_ALIGN_END;
+					else if (al == VGUI_ALIGN_END) al = VGUI_ALIGN_START;
+				}
 				float cross_avail = inner_cross - (row ? c->margin[1] + c->margin[3] : c->margin[0] + c->margin[2]);
 				float cross = row ? ch : cw;
 				float cross_pos = 0;
@@ -4253,14 +4359,20 @@ namespace {
 				if (al == VGUI_ALIGN_CENTER) cross_pos = (cross_avail - cross) * 0.5f;
 				else if (al == VGUI_ALIGN_END) cross_pos = cross_avail - cross;
 
+				float m_start = rtl_row ? c->margin[2] : c->margin[0];
+				float m_end = rtl_row ? c->margin[0] : c->margin[2];
+
 				float px, py, pw, ph;
 				if (row)
 				{
-					px = ix + cursor + c->margin[0];
-					py = iy + (row ? c->margin[1] : c->margin[0]) + cross_pos;
+					if (rtl_row)
+						px = ix + inner_main - cursor - m_start - main;
+					else
+						px = ix + cursor + m_start;
+					py = iy + c->margin[1] + cross_pos;
 					pw = main;
 					ph = cross;
-					cursor += main + c->margin[0] + c->margin[2] + w->gap + extra_gap;
+					cursor += main + m_start + m_end + w->gap + extra_gap;
 				}
 				else
 				{
@@ -4271,7 +4383,10 @@ namespace {
 					cursor += main + c->margin[1] + c->margin[3] + w->gap + extra_gap;
 				}
 				placements.push_back({ c, px, py, pw, ph });
-				content_w = std::max(content_w, px - ix + pw + c->margin[2]);
+				if (rtl_row)
+					content_w = std::max(content_w, inner_main - (px - ix) + m_end);
+				else
+					content_w = std::max(content_w, px - ix + pw + m_end);
 				content_h = std::max(content_h, py - iy + ph + c->margin[3]);
 			}
 			// Include the starting offset for centered / end aligned content.
@@ -4786,10 +4901,20 @@ namespace {
 		float y = st->open_y;
 		if (st->parent_menu)
 		{
-			x = st->parent_menu->abs_x + st->parent_menu->abs_w - 2.0f;
+			bool rtl = vgui_is_rtl(ctx);
+			x = rtl ? st->parent_menu->abs_x - aw + 2.0f
+				: st->parent_menu->abs_x + st->parent_menu->abs_w - 2.0f;
 			y = vgui_menu_row_top(st->parent_menu, st->parent_item);
-			if (ctx->width > 0 && x + aw > (float)ctx->width - margin)
-				x = st->parent_menu->abs_x - aw + 2.0f;
+			if (ctx->width > 0)
+			{
+				if (rtl)
+				{
+					if (x < margin)
+						x = st->parent_menu->abs_x + st->parent_menu->abs_w - 2.0f;
+				}
+				else if (x + aw > (float)ctx->width - margin)
+					x = st->parent_menu->abs_x - aw + 2.0f;
+			}
 		}
 
 		if (ctx->width > 0)
@@ -6092,7 +6217,11 @@ namespace {
 	// Byte index under a local (widget space) position.
 	static int vgui_edit_index_at(vgui_widget* w, float x, float y)
 	{
-		float lx = x - w->abs_x - w->padding[0] + w->edit_scroll_x;
+		float ix = w->abs_x + w->padding[0];
+		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		float lx = vgui_is_rtl(w->ctx)
+			? ix + iw + w->edit_scroll_x - x
+			: x - ix + w->edit_scroll_x;
 		int line = vgui_edit_line_at_y(w, y);
 		int lb = 0, le = 0;
 		vgui_edit_line_bytes(w->edit_text, line, lb, le);
@@ -6469,7 +6598,10 @@ namespace {
 		if (w->vertical)
 			t = 1.0f - (ly - w->padding[1]) / inner_h;
 		else
+		{
 			t = (lx - w->padding[0]) / inner_w;
+			if (vgui_is_rtl(w->ctx)) t = 1.0f - t;
+		}
 		vgui_set_value_internal(w, t, true);
 	}
 
@@ -6546,7 +6678,9 @@ namespace {
 		if (axis == 1)
 		{
 			if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= st.panel.scrollbar_min_track) return false;
-			g->track = w->abs_x + w->abs_w - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
+			g->track = vgui_is_rtl(w->ctx)
+				? w->abs_x
+				: w->abs_x + w->abs_w - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
 			g->start = iy;
 			g->span = ih;
 			g->thumb_len = std::min(ih, std::max(st.panel.scrollbar_min_thumb, ih * ih / w->content_h));
@@ -6574,7 +6708,7 @@ namespace {
 				? w->abs_y + w->abs_h - corner : iy + ih;
 			float track_h = track_end - iy;
 			if (track_h <= 0.0f) return false;
-			g->track = w->abs_x + w->abs_w - corner;
+			g->track = vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - corner;
 			g->start = iy;
 			g->span = track_h;
 			g->thumb_len = std::min(track_h, std::max(st.edit.scrollbar_min_thumb, track_h * ih / ch));
@@ -6587,12 +6721,15 @@ namespace {
 			if (!vgui_edit_hbar_visible(w, iw)) return false;
 			float cw = vgui_edit_content_width(w);
 			float corner = st.edit.scrollbar_width + st.edit.scrollbar_inset;
-			float track_end = vgui_edit_vbar_visible(w, ih)
-				? w->abs_x + w->abs_w - corner : ix + iw;
-			float track_w = track_end - ix;
+			bool vbar = vgui_edit_vbar_visible(w, ih);
+			float track_start = vgui_is_rtl(w->ctx) && vbar ? w->abs_x + corner : ix;
+			float track_end = vgui_is_rtl(w->ctx)
+				? ix + iw
+				: (vbar ? w->abs_x + w->abs_w - corner : ix + iw);
+			float track_w = track_end - track_start;
 			if (track_w <= 0.0f) return false;
 			g->track = w->abs_y + w->abs_h - corner;
-			g->start = ix;
+			g->start = track_start;
 			g->span = track_w;
 			g->thumb_len = std::min(track_w, std::max(st.edit.scrollbar_min_thumb, track_w * iw / cw));
 			g->max_scroll = std::max(0.0f, cw - iw + st.edit.scrollbar_extra_scroll);
@@ -6605,6 +6742,9 @@ namespace {
 		float range = g->span - g->thumb_len;
 		float t = (g->max_scroll > 0.0f && range > 0.0f)
 			? vgui_clampf(g->scroll / g->max_scroll, 0.0f, 1.0f) : 0.0f;
+		// Horizontal bars grow from the right edge in RTL.
+		if (vgui_is_rtl(w->ctx) && (axis == 2 || axis == 4))
+			t = 1.0f - t;
 		g->thumb = g->start + t * range;
 		return true;
 	}
@@ -6613,6 +6753,8 @@ namespace {
 	{
 		float range = g.span - g.thumb_len;
 		float t = range > 0.0f ? vgui_clampf((thumb_start - g.start) / range, 0.0f, 1.0f) : 0.0f;
+		if (vgui_is_rtl(w->ctx) && (g.axis == 2 || g.axis == 4))
+			t = 1.0f - t;
 		float scroll = t * g.max_scroll;
 		if (g.axis == 3)
 		{
@@ -6649,7 +6791,8 @@ namespace {
 			float edit_hit = st.edit.scrollbar_width + st.edit.scrollbar_inset + st.edit.scrollbar_hit_padding;
 			float panel_hit = st.panel.scrollbar_width + st.panel.scrollbar_inset + st.panel.scrollbar_hit_padding;
 			if (w->kind == VGUI_EDIT &&
-				x >= w->abs_x + w->abs_w - edit_hit && x <= w->abs_x + w->abs_w &&
+				x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - edit_hit) &&
+				x <= (vgui_is_rtl(w->ctx) ? w->abs_x + edit_hit : w->abs_x + w->abs_w) &&
 				y >= w->abs_y && y <= w->abs_y + w->abs_h &&
 				vgui_scrollbar_geom(w, 3, &g) &&
 				y >= g.start && y <= g.start + g.span)
@@ -6672,7 +6815,8 @@ namespace {
 				// Keep walking after a hit: ancestor bars are painted on top of
 				// descendant bars where the two overlap, and the horizontal bar is
 				// painted after the vertical one.
-				if (x >= w->abs_x + w->abs_w - panel_hit && x <= w->abs_x + w->abs_w &&
+				if (x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - panel_hit) &&
+					x <= (vgui_is_rtl(w->ctx) ? w->abs_x + panel_hit : w->abs_x + w->abs_w) &&
 					y >= w->abs_y && y <= w->abs_y + w->abs_h &&
 					vgui_scrollbar_geom(w, 1, &g) &&
 					y >= g.start && y <= g.start + g.span)
@@ -6800,7 +6944,13 @@ namespace {
 		if (!st || row < 0 || row >= vgui_tree_row_count(w, st)) return false;
 		if (!vgui_tree_row_has_children(w, st, row)) return false;
 		const vgui_tree_style& ts = w->ctx->style.tree;
-		float tx = w->abs_x + w->padding[0] + (float)vgui_tree_row_depth_at(w, st, row) * ts.indent;
+		float depth = (float)vgui_tree_row_depth_at(w, st, row) * ts.indent;
+		if (vgui_is_rtl(w->ctx))
+		{
+			float right = w->abs_x + w->abs_w - w->padding[2] - depth;
+			return x <= right && x >= right - ts.arrow_size - ts.arrow_gap;
+		}
+		float tx = w->abs_x + w->padding[0] + depth;
 		return x >= tx && x <= tx + ts.arrow_size + ts.arrow_gap;
 	}
 
@@ -7495,7 +7645,7 @@ namespace {
 		float cw = 0, ch = 0;
 		vgui_measure_widget(menu, ctx);
 		vgui_menu_content_size(menu, &cw, &ch);
-		float x = anchor->abs_x;
+		float x = vgui_is_rtl(ctx) ? anchor->abs_x + anchor->abs_w - cw : anchor->abs_x;
 		float y = anchor->abs_y + anchor->abs_h;
 		if (ctx->height > 0 && y + ch > (float)ctx->height - 8.0f &&
 			anchor->abs_y - ch >= 8.0f)
@@ -9221,6 +9371,10 @@ namespace {
 				if (span <= 0) span = 1.0f;
 				float delta = f->step > 0 ? f->step / span : 0.01f;
 				if (key == VGUI_KEY_LEFT || key == VGUI_KEY_DOWN) delta = -delta;
+				// A horizontal RTL slider grows towards the left.
+				if (vgui_is_rtl(ctx) && !f->vertical &&
+					(key == VGUI_KEY_LEFT || key == VGUI_KEY_RIGHT))
+					delta = -delta;
 				vgui_set_value_internal(f, f->value + delta, true);
 				handled = 1;
 			}
@@ -9595,9 +9749,12 @@ namespace {
 		cb->fill(vg);
 	}
 
-	static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+	/* Physical text drawing.  ax/ay are used exactly as supplied, so compound
+	 * controls that already placed every sub-region themselves can avoid the
+	 * automatic RTL mirroring done by vgui_draw_text(). */
+	static void vgui_draw_text_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
 		const std::string& text, float x, float y, float width, float height,
-		uint32_t color, float ax = 0.0f, float ay = 0.5f)
+		uint32_t color, float ax, float ay)
 	{
 		if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
 		float lh = vgui_line_height(ctx, w);
@@ -9621,6 +9778,17 @@ namespace {
 		t.text = text.c_str();
 		t.text_len = (int)text.size();
 		cb->add_text(vg, &t, &st, &box);
+	}
+
+	/* Direction-aware text drawing: 0/1 alignment means start/end, so it swaps
+	 * in RTL while centre alignment is unchanged. */
+	static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+		const std::string& text, float x, float y, float width, float height,
+		uint32_t color, float ax = 0.0f, float ay = 0.5f)
+	{
+		if (vgui_is_rtl(ctx))
+			ax = 1.0f - ax;
+		vgui_draw_text_raw(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay);
 	}
 
 	static uint32_t vgui_text_color(vgui_widget* w)
@@ -9858,6 +10026,14 @@ namespace {
 		const bool has_icon = tex && tex->width > 0 && tex->height > 0 && icon_w > 0 && icon_h > 0;
 		const bool has_text = !w->text.empty();
 		const float gap = w->icon_gap > 0 ? w->icon_gap : bs.icon_gap;
+		bool rtl = vgui_is_rtl(ctx);
+		/* LEFT/RIGHT describe the start/end side, so they swap in RTL. */
+		vgui_button_icon_pos pos = w->icon_pos;
+		if (rtl)
+		{
+			if (pos == VGUI_BUTTON_ICON_LEFT) pos = VGUI_BUTTON_ICON_RIGHT;
+			else if (pos == VGUI_BUTTON_ICON_RIGHT) pos = VGUI_BUTTON_ICON_LEFT;
+		}
 
 		if (has_icon || has_text)
 		{
@@ -9866,12 +10042,13 @@ namespace {
 			float tw = has_text ? vgui_text_width(w, w->text) : 0;
 			float th = has_text ? vgui_line_height(ctx, w) : 0;
 
-			bool horiz = (w->icon_pos == VGUI_BUTTON_ICON_LEFT || w->icon_pos == VGUI_BUTTON_ICON_RIGHT);
+			bool horiz = (pos == VGUI_BUTTON_ICON_LEFT || pos == VGUI_BUTTON_ICON_RIGHT);
 			float total_w = horiz ? (iw + (has_icon && has_text ? gap : 0) + tw) : std::max(iw, tw);
 			float total_h = horiz ? std::max(ih, th) : (ih + (has_icon && has_text ? gap : 0) + th);
 
 			// 整体在 content area 内按 text_align 对齐
-			float x_start = tx0 + (cw - total_w) * w->text_align_x;
+			float align_x = rtl ? 1.0f - w->text_align_x : w->text_align_x;
+			float x_start = tx0 + (cw - total_w) * align_x;
 			float y_start = ty0 + (ch - total_h) * w->text_align_y;
 
 			float ix = 0, iy = 0, tx = 0, ty = 0;
@@ -9887,14 +10064,14 @@ namespace {
 				}
 				if (has_text)
 				{
-					if (w->icon_pos == VGUI_BUTTON_ICON_RIGHT)
+					if (pos == VGUI_BUTTON_ICON_RIGHT)
 						tx = x_start;   // text 先
 					else
 						tx = x_start + iw + (has_icon ? gap : 0);
 					ty = y_start + (total_h - th) * 0.5f;
 					draw_text = true;
 				}
-				if (has_icon && has_text && w->icon_pos == VGUI_BUTTON_ICON_RIGHT)
+				if (has_icon && has_text && pos == VGUI_BUTTON_ICON_RIGHT)
 				{
 					ix = tx + tw + gap;
 					draw_icon = true;
@@ -9910,14 +10087,14 @@ namespace {
 				}
 				if (has_text)
 				{
-					if (w->icon_pos == VGUI_BUTTON_ICON_BOTTOM)
+					if (pos == VGUI_BUTTON_ICON_BOTTOM)
 						ty = y_start;
 					else
 						ty = y_start + ih + (has_icon ? gap : 0);
 					tx = x_start + (total_w - tw) * 0.5f;
 					draw_text = true;
 				}
-				if (has_icon && has_text && w->icon_pos == VGUI_BUTTON_ICON_BOTTOM)
+				if (has_icon && has_text && pos == VGUI_BUTTON_ICON_BOTTOM)
 				{
 					iy = ty + th + gap;
 					draw_icon = true;
@@ -9963,7 +10140,7 @@ namespace {
 				{
 					atw = std::max(0.0f, has_icon ? cw - iw - gap : cw);
 					ath = ch;
-					if (w->icon_pos == VGUI_BUTTON_ICON_LEFT && has_icon)
+					if (pos == VGUI_BUTTON_ICON_LEFT && has_icon)
 						atx = tx0 + iw + gap;
 					else
 						atx = tx0;
@@ -9974,7 +10151,7 @@ namespace {
 					atw = cw;
 					ath = std::max(0.0f, has_icon ? ch - ih - gap : ch);
 					atx = tx0;
-					if (w->icon_pos == VGUI_BUTTON_ICON_TOP && has_icon)
+					if (pos == VGUI_BUTTON_ICON_TOP && has_icon)
 						aty = ty + ih + gap;
 					else
 						aty = ty;
@@ -10016,9 +10193,10 @@ namespace {
 	{
 		vgui_context* ctx = w->ctx;
 		const vgui_style& st = ctx->style;
+		bool rtl = vgui_is_rtl(ctx);
 		float lh = vgui_line_height(ctx, w);
 		float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
-		float bx = w->abs_x + w->padding[0];
+		float bx = rtl ? w->abs_x + w->abs_w - w->padding[2] - box : w->abs_x + w->padding[0];
 		float by = w->abs_y + (w->abs_h - box) * 0.5f;
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
@@ -10056,9 +10234,19 @@ namespace {
 
 		if (!w->text.empty())
 		{
-			float tx = bx + box + st.choice.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			if (rtl)
+			{
+				float tx = w->abs_x + w->padding[0];
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
+					std::max(0.0f, bx - st.choice.gap - tx), w->abs_h,
+					vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
+			else
+			{
+				float tx = bx + box + st.choice.gap;
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+					w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -10067,9 +10255,10 @@ namespace {
 	{
 		vgui_context* ctx = w->ctx;
 		const vgui_style& st = ctx->style;
+		bool rtl = vgui_is_rtl(ctx);
 		float lh = vgui_line_height(ctx, w);
 		float d = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
-		float cx = w->abs_x + w->padding[0] + d * 0.5f;
+		float cx = rtl ? w->abs_x + w->abs_w - w->padding[2] - d * 0.5f : w->abs_x + w->padding[0] + d * 0.5f;
 		float cy = w->abs_y + w->abs_h * 0.5f;
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
@@ -10096,9 +10285,19 @@ namespace {
 
 		if (!w->text.empty())
 		{
-			float tx = cx + d * 0.5f + st.choice.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			if (rtl)
+			{
+				float tx = w->abs_x + w->padding[0];
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
+					std::max(0.0f, cx - d * 0.5f - st.choice.gap - tx), w->abs_h,
+					vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
+			else
+			{
+				float tx = cx + d * 0.5f + st.choice.gap;
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+					w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -10107,10 +10306,11 @@ namespace {
 	{
 		vgui_context* ctx = w->ctx;
 		const vgui_switch_style& ss = ctx->style.switch_;
+		bool rtl = vgui_is_rtl(ctx);
 		float lh = vgui_line_height(ctx, w);
 		float track_w = ss.width;
 		float track_h = std::max(ss.min_height, std::min(ss.max_height, lh - ss.line_offset));
-		float x = w->abs_x + w->padding[0];
+		float x = rtl ? w->abs_x + w->abs_w - w->padding[2] - track_w : w->abs_x + w->padding[0];
 		float y = w->abs_y + (w->abs_h - track_h) * 0.5f;
 		uint32_t on = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 		uint32_t off = w->enabled ? ctx->theme.track
@@ -10121,7 +10321,9 @@ namespace {
 
 		float radius = std::max(0.0f, track_h * 0.5f - ss.thumb_inset);
 		float travel = std::max(0.0f, track_w - radius * 2.0f - ss.thumb_inset * 2.0f);
-		float kx = x + radius + ss.thumb_inset + t * travel;
+		float kx = rtl
+			? x + track_w - radius - ss.thumb_inset - t * travel
+			: x + radius + ss.thumb_inset + t * travel;
 		float ky = y + track_h * 0.5f;
 		cb->circle(vg, kx, ky, radius);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.switch_thumb)));
@@ -10129,9 +10331,19 @@ namespace {
 
 		if (!w->text.empty())
 		{
-			float tx = x + track_w + ss.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			if (rtl)
+			{
+				float tx = w->abs_x + w->padding[0];
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
+					std::max(0.0f, x - ss.gap - tx), w->abs_h,
+					vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
+			else
+			{
+				float tx = x + track_w + ss.gap;
+				vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
+					w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
+			}
 		}
 		vgui_draw_focus(w, cb, vg);
 	}
@@ -10162,9 +10374,18 @@ namespace {
 			float x = w->abs_x + w->padding[0];
 			float y = w->abs_y + w->abs_h * 0.5f - thickness * 0.5f;
 			vgui_fill_rect(cb, vg, x, y, inner_w, thickness, track_rounding, vgui_widget_color(w, track));
-			vgui_fill_rect(cb, vg, x, y, inner_w * t, thickness, track_rounding, vgui_widget_color(w, accent));
-			float kx = x + inner_w * t;
-			cb->circle(vg, kx, y + thickness * 0.5f, knob);
+			if (vgui_is_rtl(ctx))
+			{
+				float fill_w = inner_w * t;
+				vgui_fill_rect(cb, vg, x + inner_w - fill_w, y, fill_w, thickness, track_rounding,
+					vgui_widget_color(w, accent));
+				cb->circle(vg, x + inner_w - fill_w, y + thickness * 0.5f, knob);
+			}
+			else
+			{
+				vgui_fill_rect(cb, vg, x, y, inner_w * t, thickness, track_rounding, vgui_widget_color(w, accent));
+				cb->circle(vg, x + inner_w * t, y + thickness * 0.5f, knob);
+			}
 			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 			cb->fill(vg);
 		}
@@ -10201,7 +10422,16 @@ namespace {
 		if (!w->vertical)
 		{
 			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, vgui_widget_color(w, track));
-			vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, rounding, vgui_widget_color(w, accent));
+			if (vgui_is_rtl(ctx))
+			{
+				float fill_w = inner_w * t;
+				vgui_fill_rect(cb, vg, x + inner_w - fill_w, y, fill_w, inner_h, rounding,
+					vgui_widget_color(w, accent));
+			}
+			else
+			{
+				vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, rounding, vgui_widget_color(w, accent));
+			}
 		}
 		else
 		{
@@ -10263,7 +10493,10 @@ namespace {
 
 		int sel_a = std::min(w->edit_cursor, w->edit_anchor);
 		int sel_b = std::max(w->edit_cursor, w->edit_anchor);
-		float tx = ix - w->edit_scroll_x;
+		bool rtl = vgui_is_rtl(ctx);
+		/* LTR anchors the text at the left edge and shifts it left as the user
+		 * scrolls; RTL anchors it at the right edge and shifts it right. */
+		float tx = rtl ? ix + w->edit_scroll_x : ix - w->edit_scroll_x;
 
 		struct vgui_edit_draw_line
 		{
@@ -10298,11 +10531,18 @@ namespace {
 				int b = std::min(sel_b, line_end) - line_start;
 				int sa = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, a));
 				int sb = vgui_u8_byte_at_col(shown, vgui_u8_col_at_byte(line, b));
-				float sx = tx + vgui_text_width_n(w, shown.data(), sa);
-				float sw = vgui_text_width_n(w, shown.data() + sa, sb - sa);
+				float wa = vgui_text_width_n(w, shown.data(), sa);
+				float wb = vgui_text_width_n(w, shown.data(), sb);
+				float sx = rtl ? tx + iw - wb : tx + wa;
+				float sw = wb - wa;
 				// 选中换行符时补一小段尾巴，让跨行选中看起来是连续的
 				if (sel_b > line_end)
-					sw += std::min(st.edit.selection_tail_max_width, lh * st.edit.selection_tail_line_ratio);
+				{
+					float tail = std::min(st.edit.selection_tail_max_width, lh * st.edit.selection_tail_line_ratio);
+					if (rtl)
+						sx -= tail;	// RTL 下选区末端在左侧
+					sw += tail;
+				}
 				if (sw < st.edit.selection_min_width) sw = st.edit.selection_min_width;
 				vgui_sel_band band;
 				band.x0 = sx;
@@ -10343,7 +10583,8 @@ namespace {
 			if (w->focused && w->edit_cursor >= dl.line_start && w->edit_cursor <= dl.line_end)
 			{
 				// Draw the caret only for the line containing the cursor.
-				float cx = tx + vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
+				float prefix = vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
+				float cx = rtl ? tx + iw - prefix : tx + prefix;
 				bool blink = (std::fmod(w->caret_blink, st.edit.caret_blink_period) <
 					st.edit.caret_blink_period * st.edit.caret_blink_duty);
 				if (blink)
@@ -10352,13 +10593,21 @@ namespace {
 
 			if (!w->ime_text.empty() && w->edit_cursor >= dl.line_start && w->edit_cursor <= dl.line_end)
 			{
-				float cx = tx + vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
-				vgui_draw_text(ctx, cb, vg, w, w->ime_text, cx, dl.ty, iw, lh, ctx->theme.accent, 0.0f, 0.5f);
+				float prefix = vgui_text_width_n(w, dl.shown.data(), dl.caret_byte);
+				float cx = rtl ? tx + iw - prefix : tx + prefix;
+				if (rtl)
+					vgui_draw_text_raw(ctx, cb, vg, w, w->ime_text, cx - std::max(iw, 1.0f), dl.ty,
+						std::max(iw, 1.0f), lh, ctx->theme.accent, 1.0f, 0.5f);
+				else
+					vgui_draw_text_raw(ctx, cb, vg, w, w->ime_text, cx, dl.ty, iw, lh,
+						ctx->theme.accent, 0.0f, 0.5f);
 				int ia = vgui_edit_clamp_index(w->ime_text, w->ime_cursor);
 				int ib = vgui_edit_clamp_index(w->ime_text, w->ime_cursor + w->ime_length);
 				if (ib < ia) std::swap(ia, ib);
-				float ux = cx + vgui_text_width_n(w, w->ime_text.data(), ia);
-				float uw = vgui_text_width_n(w, w->ime_text.data() + ia, ib - ia);
+				float ua = vgui_text_width_n(w, w->ime_text.data(), ia);
+				float ub = vgui_text_width_n(w, w->ime_text.data(), ib);
+				float ux = rtl ? cx - ub : cx + ua;
+				float uw = ub - ua;
 				vgui_fill_rect(cb, vg, ux, dl.ty + lh - st.edit.ime_underline_width,
 					std::max(st.edit.ime_underline_min_width, uw), st.edit.ime_underline_width, 0,
 					ctx->theme.accent);
@@ -10408,7 +10657,7 @@ namespace {
 		float corner = bar_w + ps.scrollbar_inset;
 		if (w->scrollable_y && w->content_h > ih + 0.5f && ih > ps.scrollbar_min_track)
 		{
-			float track_x = w->abs_x + w->abs_w - corner;
+			float track_x = vgui_is_rtl(ctx) ? w->abs_x : w->abs_x + w->abs_w - corner;
 			float th = std::min(ih, std::max(ps.scrollbar_min_thumb, ih * ih / w->content_h));
 			float max_scroll = w->content_h - ih;
 			float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
@@ -10420,7 +10669,9 @@ namespace {
 			float track_y = w->abs_y + w->abs_h - corner;
 			float tw = std::min(iw, std::max(ps.scrollbar_min_thumb, iw * iw / w->content_w));
 			float max_scroll = w->content_w - iw;
-			float tx = ix + (max_scroll > 0 ? (w->scroll_x / max_scroll) * (iw - tw) : 0);
+			float ratio = max_scroll > 0 ? (w->scroll_x / max_scroll) : 0.0f;
+			if (vgui_is_rtl(ctx)) ratio = 1.0f - ratio;
+			float tx = ix + ratio * (iw - tw);
 			vgui_fill_rect(cb, vg, ix, track_y, iw, bar_w, bar_r, vgui_widget_color(w, ctx->theme.track));
 			vgui_fill_rect(cb, vg, tx, track_y, tw, bar_w, bar_r, vgui_scrollbar_thumb_color(w, 2));
 		}
@@ -10707,14 +10958,19 @@ namespace {
 			uint32_t color = vgui_row_text_color(w, selected, item.enabled != 0);
 			float detail_w = item.detail.empty() ? 0.0f : vgui_text_width(w, item.detail);
 			float text_w = iw - 12.0f - (detail_w > 0 ? detail_w + 16.0f : 0.0f);
-			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, ix + 6.0f, y,
+			float text_x = vgui_is_rtl(ctx) && detail_w > 0 ? ix + 6.0f + detail_w + 16.0f : ix + 6.0f;
+			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, text_x, y,
 				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
 			if (!item.detail.empty())
 			{
 				uint32_t dc = color;
 				if (selected) dc = vgui_alpha_color(dc, 0.75f);
-				vgui_draw_text(ctx, cb, vg, w, item.detail,
-					ix + iw - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
+				if (vgui_is_rtl(ctx))
+					vgui_draw_text_raw(ctx, cb, vg, w, item.detail, ix + 6.0f, y,
+						detail_w, row_h, dc, 0.0f, 0.5f);
+				else
+					vgui_draw_text(ctx, cb, vg, w, item.detail,
+						ix + iw - detail_w - 6.0f, y, detail_w, row_h, dc, 0.0f, 0.5f);
 			}
 		}
 		if (row_count == 0 && !st->empty_text.empty())
@@ -10728,20 +10984,21 @@ namespace {
 	}
 
 	static void vgui_draw_tree_arrow(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
-		float cx, float cy, float size, bool expanded, uint32_t color)
+		float cx, float cy, float size, bool expanded, uint32_t color, bool flip = false)
 	{
 		float h = size * 0.5f;
+		float s = flip ? -1.0f : 1.0f;
 		if (expanded)
 		{
-			cb->move_to(vg, cx - h, cy - h * 0.45f);
-			cb->line_to(vg, cx + h, cy - h * 0.45f);
+			cb->move_to(vg, cx - h * s, cy - h * 0.45f);
+			cb->line_to(vg, cx + h * s, cy - h * 0.45f);
 			cb->line_to(vg, cx, cy + h * 0.55f);
 		}
 		else
 		{
-			cb->move_to(vg, cx - h * 0.55f, cy - h);
-			cb->line_to(vg, cx + h * 0.55f, cy);
-			cb->line_to(vg, cx - h * 0.55f, cy + h);
+			cb->move_to(vg, cx - h * 0.55f * s, cy - h);
+			cb->line_to(vg, cx + h * 0.55f * s, cy);
+			cb->line_to(vg, cx - h * 0.55f * s, cy + h);
 		}
 		cb->close_path(vg);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, color)));
@@ -10761,6 +11018,7 @@ namespace {
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
 
 		float row_h = vgui_tree_row_height(w);
+		bool rtl = vgui_is_rtl(ctx);
 		uint32_t guide = vgui_alpha_color(
 			ctx->theme.tree_guide ? ctx->theme.tree_guide : ctx->theme.panel_border,
 			ts.guide_alpha);
@@ -10789,19 +11047,25 @@ namespace {
 
 			for (int depth = 0; depth < row_depth; ++depth)
 			{
-				float gx = ix + (float)depth * ts.indent + ts.arrow_size * 0.5f;
+				float gx = rtl
+					? ix + iw - (float)depth * ts.indent - ts.arrow_size * 0.5f
+					: ix + (float)depth * ts.indent + ts.arrow_size * 0.5f;
 				vgui_fill_rect(cb, vg, gx, y + 4.0f, 1.0f,
 					std::max(0.0f, row_h - 8.0f), 0, vgui_widget_color(w, guide));
 			}
 
-			float tx = ix + ts.arrow_gap + (float)row_depth * ts.indent;
-			float text_x = tx + ts.arrow_size + ts.arrow_gap;
+			float tx = rtl
+				? ix + iw - ts.arrow_gap - (float)row_depth * ts.indent - ts.arrow_size
+				: ix + ts.arrow_gap + (float)row_depth * ts.indent;
+			float text_x = rtl ? ix + 4.0f : tx + ts.arrow_size + ts.arrow_gap;
 			uint32_t color = vgui_row_text_color(w, selected, node->enabled != 0);
 			if (st->virtual_mode ? vgui_tree_row_has_children(w, st, i) : !node->children.empty())
 				vgui_draw_tree_arrow(w, cb, vg, tx + ts.arrow_size * 0.5f,
 					y + row_h * 0.5f, ts.arrow_size,
-					st->virtual_mode ? vgui_tree_row_expanded(w, st, i) : node->expanded != 0, color);
-			float text_w = iw - (text_x - ix) - 4.0f;
+					st->virtual_mode ? vgui_tree_row_expanded(w, st, i) : node->expanded != 0, color, rtl);
+			float text_w = rtl
+				? std::max(0.0f, tx - ts.arrow_gap - text_x)
+				: iw - (text_x - ix) - 4.0f;
 			vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
 				std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
 		}
@@ -10921,16 +11185,40 @@ namespace {
 			uint32_t color = item.enabled ? text : disabled;
 			if (!item.enabled && item.enabled == 0)
 				color = vgui_mix_color(text, disabled, ms.disabled_mix);
-			float text_x = row_x + ms.item_padding_x + (any_check ? ms.check_width : 0.0f);
+			bool rtl = vgui_is_rtl(ctx);
 			float right = w->abs_x + w->abs_w - ms.padding_x - ms.item_padding_x;
+			float left = w->abs_x + ms.padding_x + ms.item_padding_x;
+			float text_x, text_end;
 			float shortcut_x = right;
-			if (item.type == VGUI_MENU_ITEM_SUBMENU)
-				shortcut_x -= ms.submenu_arrow_width + ms.item_padding_x;
+			float check_x = row_x + ms.item_padding_x + ms.check_width * 0.5f;
+			float arrow_cx = right - ms.submenu_arrow_width * 0.35f;
+			if (rtl)
+			{
+				/* Mirrored: check column on the right, text right-aligned before
+				 * it, shortcut and submenu arrow on the left. */
+				float arrow_span = item.type == VGUI_MENU_ITEM_SUBMENU
+					? ms.submenu_arrow_width + ms.item_padding_x : 0.0f;
+				float shortcut_span = item.shortcut.empty()
+					? 0.0f : (vgui_text_width(w, item.shortcut) + ms.shortcut_gap);
+				text_x = left + arrow_span + shortcut_span;
+				text_end = right - (any_check ? ms.check_width : 0.0f);
+				shortcut_x = left + arrow_span;
+				check_x = right - ms.check_width * 0.5f;
+				arrow_cx = left + ms.submenu_arrow_width * 0.35f;
+			}
+			else
+			{
+				text_x = row_x + ms.item_padding_x + (any_check ? ms.check_width : 0.0f);
+				if (item.type == VGUI_MENU_ITEM_SUBMENU)
+					shortcut_x -= ms.submenu_arrow_width + ms.item_padding_x;
+				text_end = shortcut_x;
+				if (!item.shortcut.empty()) text_end -= ms.shortcut_gap;
+			}
 
 			if (any_check && item.checkable && item.checked)
 			{
 				float check = std::max(0.0f, std::min(10.0f, ms.check_width - 4.0f));
-				float cx = row_x + ms.item_padding_x + ms.check_width * 0.5f;
+				float cx = check_x;
 				float cy = y + h * 0.5f;
 				float d = check * 0.5f;
 				cb->set_line_width(vg, 2.0f);
@@ -10943,8 +11231,6 @@ namespace {
 				cb->stroke(vg);
 			}
 
-			float text_end = shortcut_x;
-			if (!item.shortcut.empty()) text_end -= ms.shortcut_gap;
 			vgui_draw_text_clipped(ctx, cb, vg, w, item.text, text_x, y,
 				std::max(0.0f, text_end - text_x), h, color, 0.0f, 0.5f, clips);
 			if (!item.shortcut.empty())
@@ -10952,15 +11238,18 @@ namespace {
 				float sw = vgui_text_width(w, item.shortcut);
 				uint32_t sc = item.enabled ? vgui_alpha_color(text, 0.65f)
 					: vgui_mix_color(text, disabled, ms.disabled_mix);
-				vgui_draw_text(ctx, cb, vg, w, item.shortcut, shortcut_x - sw, y,
-					sw, h, vgui_widget_color(w, sc), 0.0f, 0.5f);
+				if (rtl)
+					vgui_draw_text_raw(ctx, cb, vg, w, item.shortcut, shortcut_x, y,
+						sw, h, vgui_widget_color(w, sc), 0.0f, 0.5f);
+				else
+					vgui_draw_text_raw(ctx, cb, vg, w, item.shortcut, shortcut_x - sw, y,
+						sw, h, vgui_widget_color(w, sc), 0.0f, 0.5f);
 			}
 			if (item.type == VGUI_MENU_ITEM_SUBMENU)
 			{
 				uint32_t ac = item.enabled ? color : disabled;
-				vgui_draw_tree_arrow(w, cb, vg,
-					right - ms.submenu_arrow_width * 0.35f, y + h * 0.5f,
-					ms.submenu_arrow_width * 0.7f, false, ac);
+				vgui_draw_tree_arrow(w, cb, vg, arrow_cx, y + h * 0.5f,
+					ms.submenu_arrow_width * 0.7f, false, ac, rtl);
 			}
 			y += h;
 		}
@@ -11225,15 +11514,30 @@ namespace {
 				vgui_fill_rect(cb, vg, tx + 1.0f, ty + th - 2.0f, std::max(0.0f, tw - 2.0f), 2.0f,
 					0.0f, vgui_widget_color(w, ctx->theme.accent));
 
+			bool rtl = vgui_is_rtl(ctx);
 			if (tab.unsaved)
-				vgui_fill_rect(cb, vg, tx + st->tab_padding * 0.5f, ty + th * 0.5f - 2.0f,
+			{
+				float dot_x = rtl ? tx + tw - st->tab_padding * 0.5f - 4.0f
+					: tx + st->tab_padding * 0.5f;
+				vgui_fill_rect(cb, vg, dot_x, ty + th * 0.5f - 2.0f,
 					4.0f, 4.0f, 2.0f,
 					vgui_widget_color(w, disabled ? ctx->theme.disabled : ctx->theme.accent));
+			}
 
-			float text_x = tx + st->tab_padding;
-			if (tab.unsaved) text_x += 10.0f;
 			float close_space = tab.closeable ? (st->close_size + 8.0f) : 0.0f;
-			float text_w = std::max(0.0f, tx + tw - st->tab_padding * 0.5f - close_space - text_x);
+			float text_x, text_w;
+			if (rtl)
+			{
+				text_x = tx + close_space + st->tab_padding * 0.5f;
+				float text_end = tx + tw - st->tab_padding - (tab.unsaved ? 10.0f : 0.0f);
+				text_w = std::max(0.0f, text_end - text_x);
+			}
+			else
+			{
+				text_x = tx + st->tab_padding;
+				if (tab.unsaved) text_x += 10.0f;
+				text_w = std::max(0.0f, tx + tw - st->tab_padding * 0.5f - close_space - text_x);
+			}
 			uint32_t text_color = disabled ? ctx->theme.disabled
 				: (active ? ctx->theme.text : (ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text));
 			vgui_draw_text_clipped(ctx, cb, vg, w, tab.title, text_x, ty,
@@ -12035,6 +12339,48 @@ extern "C" {
 		return ctx ? ctx->focus_alpha : 1.0f;
 	}
 
+	void vgui_context_set_direction(vgui_context* ctx, vgui_direction direction)
+	{
+		if (!ctx) return;
+		vgui_direction dir = direction == VGUI_DIRECTION_RTL ? VGUI_DIRECTION_RTL : VGUI_DIRECTION_LTR;
+		if (ctx->direction == dir) return;
+		ctx->direction = dir;
+		ctx->layout_dirty = true;
+	}
+
+	vgui_direction vgui_context_get_direction(vgui_context* ctx)
+	{
+		return ctx ? ctx->direction : VGUI_DIRECTION_LTR;
+	}
+
+	void vgui_context_set_string(vgui_context* ctx, const char* language, const char* key, const char* text)
+	{
+		if (!ctx || !language || !*language || !key || !*key) return;
+		ctx->strings[language][key] = text ? text : "";
+		if (ctx->language == language)
+			vgui_i18n_refresh(ctx);
+	}
+
+	void vgui_context_set_language(vgui_context* ctx, const char* language)
+	{
+		if (!ctx) return;
+		std::string lang = language ? language : "";
+		if (ctx->language == lang) return;
+		ctx->language = std::move(lang);
+		vgui_i18n_refresh(ctx);
+	}
+
+	const char* vgui_context_get_language(vgui_context* ctx)
+	{
+		return ctx ? ctx->language.c_str() : "";
+	}
+
+	const char* vgui_context_translate(vgui_context* ctx, const char* key)
+	{
+		if (!ctx || !key) return key ? key : "";
+		return vgui_translate(ctx, key);
+	}
+
 	//----------------------------------------------------------------------------
 	// textures
 	//----------------------------------------------------------------------------
@@ -12315,6 +12661,7 @@ extern "C" {
 	void vgui_widget_set_text(vgui_widget* widget, const char* text)
 	{
 		if (!widget) return;
+		widget->text_key.clear();
 		widget->text = text ? text : "";
 		if (widget->kind == VGUI_EDIT)
 		{
@@ -12331,6 +12678,32 @@ extern "C" {
 	{
 		if (!widget) return "";
 		return widget->kind == VGUI_EDIT ? widget->edit_text.c_str() : widget->text.c_str();
+	}
+
+	void vgui_widget_set_text_key(vgui_widget* widget, const char* key)
+	{
+		if (!widget) return;
+		if (!key || !*key)
+		{
+			widget->text_key.clear();
+			return;
+		}
+		widget->text_key = key;
+		widget->text = vgui_translate(widget->ctx, key);
+		if (widget->kind == VGUI_EDIT)
+		{
+			widget->edit_text = widget->text;
+			widget->edit_cursor = widget->edit_anchor = (int)widget->edit_text.size();
+			widget->ime_text.clear();
+			widget->ime_cursor = widget->ime_length = 0;
+			vgui_edit_invalidate_content_width(widget);
+		}
+		vgui_mark_dirty(widget);
+	}
+
+	const char* vgui_widget_get_text_key(vgui_widget* widget)
+	{
+		return widget ? widget->text_key.c_str() : "";
 	}
 
 	void vgui_widget_set_font_size(vgui_widget* widget, float size)

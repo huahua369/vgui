@@ -42,6 +42,7 @@
 - 图形：CPU 纹理、SDL3 native texture、图片 source/fit/tint/flip/pixel snap。
 - 扩展：`VGUI_CUSTOM` 可以用 OVG 自绘内容并处理事件。
 - 主题：运行时主题切换、控件级背景/边框/圆角/文字颜色/透明度/字体大小。
+- 国际化：UTF-8 文案表与运行时语言切换、RTL 布局/文字对齐镜像、多字体回退与 bidi 文本。
 
 ### 2.2 当前边界
 
@@ -422,9 +423,10 @@
   - 完整键盘导航、焦点陷阱、屏幕阅读器、高对比度主题。
   - 验收：核心编辑器流程可仅用键盘完成；焦点顺序可预测；高对比度主题满足基本可读性。
 
-- [ ] **E06 国际化 / RTL**（P2，M）
+- [x] **E06 国际化 / RTL**（P2，M）
   - 文案表、RTL 布局、字体回退。
   - 验收：切换语言不破坏布局；RTL 下文本、图标和控件排列正确。
+  - 已实现：`vgui_context_set_language/get_language/set_string/translate` 与 `vgui_widget_set_text_key/get_text_key` 提供 UTF-8 文案表（当前语言 → `en` → key 回退，空语言显示 key）；`vgui_context_set_direction` 切换 RTL 后 row/wrap 布局从右起排、column START/END 与文本对齐翻转，按钮（含图标侧）、复选框/单选、开关、滑杆、进度、编辑框（光标/选区/IME/滚动条）、列表、树（缩进/箭头）、菜单、菜单栏、标签页和滚动条同步镜像；底层 OVG 继续负责 Unicode bidi shaping 与多字体回退。`vgui_demo` 新增国际化/RTL 演示区块（中文/English/العربية 切换 + RTL 开关 + bidi 混排样例），`vgui_model_test` 新增 17 项 i18n/RTL 用例（现 551 项）。
 
 ## 6. 关键依赖关系
 
@@ -550,7 +552,8 @@ MVP 验收场景：
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件。
 - `drag_payload`、`drop_target`、`row_model`：拖放与虚拟数据模型的接口占位。
 - `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界和布局持久化。
-- 现有 `vgui_model_test`（534 项）、`vgui_c_api_test`（8 项）、`vgui_texture_test` 基线保持通过。
+- 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
+- 现有 `vgui_model_test`（551 项）、`vgui_c_api_test`（8 项）、`vgui_texture_test` 基线保持通过。
 
 下一步优先项：
 

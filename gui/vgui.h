@@ -212,6 +212,15 @@ extern "C" {
 		VGUI_SCROLL_ALIGN_BOTTOM	/* put the item at the bottom/right edge */
 	} vgui_scroll_align;
 
+	/* Layout/text direction for a context.  RTL mirrors horizontal layouts,
+	 * start/end alignment, text alignment and the built-in controls' icons and
+	 * indicators; the UTF-8 text content itself is never reordered by vgui (the
+	 * renderer applies Unicode bidi shaping). */
+	typedef enum vgui_direction {
+		VGUI_DIRECTION_LTR = 0,
+		VGUI_DIRECTION_RTL
+	} vgui_direction;
+
 	typedef enum vgui_menu_item_type {
 		VGUI_MENU_ITEM_NORMAL = 0,
 		VGUI_MENU_ITEM_SEPARATOR,
@@ -846,6 +855,20 @@ extern "C" {
 	VGUI_API void vgui_context_set_focus_alpha(vgui_context* ctx, float alpha);
 	VGUI_API float vgui_context_get_focus_alpha(vgui_context* ctx);
 
+	/* Layout direction.  Defaults to LTR.  Switching re-runs layout; widgets that
+	 * were placed with absolute coordinates keep their coordinates. */
+	VGUI_API void vgui_context_set_direction(vgui_context* ctx, vgui_direction direction);
+	VGUI_API vgui_direction vgui_context_get_direction(vgui_context* ctx);
+
+	/* Localised strings.  Strings are stored per language and key.  set_language()
+	 * activates one language and re-applies every widget's text key; translate()
+	 * falls back to the "en" table and finally returns the key itself.  Passing an
+	 * empty language clears the active language (keys are shown verbatim). */
+	VGUI_API void vgui_context_set_language(vgui_context* ctx, const char* language);
+	VGUI_API const char* vgui_context_get_language(vgui_context* ctx);
+	VGUI_API void vgui_context_set_string(vgui_context* ctx, const char* language, const char* key, const char* text);
+	VGUI_API const char* vgui_context_translate(vgui_context* ctx, const char* key);
+
 	/* ------------------------------------------------------------------------- */
 	/* Textures                                                                  */
 	/* ------------------------------------------------------------------------- */
@@ -896,11 +919,19 @@ extern "C" {
 	VGUI_API void vgui_widget_set_text(vgui_widget* widget, const char* text);
 	VGUI_API const char* vgui_widget_get_text(vgui_widget* widget);
 
+	/* Binds the widget text to an i18n key.  The current translation is applied
+	 * immediately and re-applied whenever the context language or table changes;
+	 * vgui_widget_set_text() clears the binding.  An empty/NULL key removes it. */
+	VGUI_API void vgui_widget_set_text_key(vgui_widget* widget, const char* key);
+	VGUI_API const char* vgui_widget_get_text_key(vgui_widget* widget);
+
 	VGUI_API void vgui_widget_set_font_size(vgui_widget* widget, float size);
 	VGUI_API void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);
+	/* align 0/1 mean start/end, so they swap when the context direction is RTL;
+	 * 0.5 stays centred. */
 	VGUI_API void vgui_widget_set_text_align(vgui_widget* widget, float align_x, float align_y);
 	VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 	VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);

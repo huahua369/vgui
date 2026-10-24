@@ -2855,6 +2855,139 @@ static void test_dock(vgui_context* ui, const vgui_style& base)
 	vgui_context_set_style(ui, &base);
 }
 
+static void test_i18n_rtl(vgui_context* ui)
+{
+	// ---- string table + text-key bindings ----
+	vgui_context_set_string(ui, "en", "greeting", "Hello");
+	vgui_context_set_string(ui, "zh", "greeting", "你好");
+	vgui_context_set_string(ui, "en", "fallback.only", "Fallback");
+	vgui_context_set_language(ui, "en");
+	vgui_widget* label = vgui_widget_add(vgui_root(ui), VGUI_LABEL, nullptr);
+	vgui_widget_set_text_key(label, "greeting");
+	check(std::string(vgui_widget_get_text(label)) == "Hello", "i18n: key uses the en default");
+	check(std::string(vgui_widget_get_text_key(label)) == "greeting", "i18n: key is queryable");
+
+	vgui_context_set_language(ui, "zh");
+	check(std::string(vgui_widget_get_text(label)) == "你好",
+		"i18n: language switch re-applies keys");
+	vgui_context_set_language(ui, "ar");
+	check(std::string(vgui_widget_get_text(label)) == "Hello",
+		"i18n: missing language falls back to en");
+	check(std::string(vgui_context_translate(ui, "fallback.only")) == "Fallback",
+		"i18n: translate falls back to en");
+	check(std::string(vgui_context_translate(ui, "no.such.key")) == "no.such.key",
+		"i18n: unknown key returns itself");
+
+	vgui_widget_set_text(label, "literal");
+	vgui_context_set_language(ui, "zh");
+	check(std::string(vgui_widget_get_text(label)) == "literal",
+		"i18n: set_text clears the key binding");
+	vgui_widget_set_text_key(label, "greeting");
+	check(std::string(vgui_widget_get_text(label)) == "你好",
+		"i18n: rebinding applies the active language");
+	vgui_context_set_language(ui, "");
+	check(std::string(vgui_widget_get_text(label)) == "greeting",
+		"i18n: empty language shows the key verbatim");
+	vgui_widget_destroy(label);
+
+	// ---- RTL row: the first child moves to the right edge ----
+	vgui_widget* row = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(row, VGUI_LAYOUT_ROW);
+	vgui_widget_set_pos(row, 10.0f, 10.0f);
+	vgui_widget_set_size(row, 200.0f, 40.0f);
+	vgui_widget_set_padding(row, 0, 0, 0, 0);
+	vgui_widget_set_gap(row, 10.0f);
+	vgui_widget* a = vgui_widget_add(row, VGUI_PANEL, nullptr);
+	vgui_widget* b = vgui_widget_add(row, VGUI_PANEL, nullptr);
+	vgui_widget* c = vgui_widget_add(row, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(a, 40, 20);
+	vgui_widget_set_size(b, 60, 20);
+	vgui_widget_set_size(c, 30, 20);
+
+	vgui_context_set_direction(ui, VGUI_DIRECTION_LTR);
+	check(vgui_context_get_direction(ui) == VGUI_DIRECTION_LTR,
+		"rtl: context reports LTR");
+	vgui_layout(ui);
+	float ax = 0, bx = 0, cx = 0;
+	vgui_widget_get_rect(a, &ax, nullptr, nullptr, nullptr);
+	vgui_widget_get_rect(b, &bx, nullptr, nullptr, nullptr);
+	vgui_widget_get_rect(c, &cx, nullptr, nullptr, nullptr);
+	check(near(ax, 10) && near(bx, 60) && near(cx, 130), "rtl: LTR row order");
+
+	vgui_context_set_direction(ui, VGUI_DIRECTION_RTL);
+	check(vgui_context_get_direction(ui) == VGUI_DIRECTION_RTL,
+		"rtl: context reports RTL");
+	vgui_layout(ui);
+	vgui_widget_get_rect(a, &ax, nullptr, nullptr, nullptr);
+	vgui_widget_get_rect(b, &bx, nullptr, nullptr, nullptr);
+	vgui_widget_get_rect(c, &cx, nullptr, nullptr, nullptr);
+	check(near(ax, 170) && near(bx, 100) && near(cx, 60), "rtl: row is mirrored");
+
+	// ---- column cross-axis alignment flips START/END ----
+	vgui_widget* col = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(col, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_pos(col, 10.0f, 60.0f);
+	vgui_widget_set_size(col, 200.0f, 100.0f);
+	vgui_widget_set_padding(col, 0, 0, 0, 0);
+	vgui_widget_set_align_items(col, VGUI_ALIGN_START);
+	vgui_widget* c1 = vgui_widget_add(col, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(c1, 40, 20);
+	vgui_layout(ui);
+	float c1x = 0;
+	vgui_widget_get_rect(c1, &c1x, nullptr, nullptr, nullptr);
+	check(near(c1x, 170), "rtl: column START alignment moves to the right");
+
+	// ---- wrap lines mirror their x positions ----
+	vgui_widget* wrap = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(wrap, VGUI_LAYOUT_WRAP);
+	vgui_widget_set_pos(wrap, 10.0f, 200.0f);
+	vgui_widget_set_size(wrap, 100.0f, 100.0f);
+	vgui_widget_set_padding(wrap, 0, 0, 0, 0);
+	vgui_widget_set_gap(wrap, 10.0f);
+	vgui_widget* w1 = vgui_widget_add(wrap, VGUI_PANEL, nullptr);
+	vgui_widget* w2 = vgui_widget_add(wrap, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(w1, 30, 20);
+	vgui_widget_set_size(w2, 30, 20);
+	vgui_layout(ui);
+	float w1x = 0, w2x = 0;
+	vgui_widget_get_rect(w1, &w1x, nullptr, nullptr, nullptr);
+	vgui_widget_get_rect(w2, &w2x, nullptr, nullptr, nullptr);
+	check(near(w1x, 80) && near(w2x, 40), "rtl: wrap line starts on the right");
+
+	// ---- menubar item order ----
+	vgui_widget* bar = vgui_widget_add(vgui_root(ui), VGUI_MENUBAR, nullptr);
+	vgui_widget_set_pos(bar, 0.0f, 400.0f);
+	vgui_widget_set_size(bar, 300.0f, 30.0f);
+	vgui_item_id m1 = vgui_menubar_add_item(bar, "One");
+	vgui_item_id m2 = vgui_menubar_add_item(bar, "Two");
+	vgui_layout(ui);
+	float m1x = 0, m1w = 0, m2x = 0, m2w = 0;
+	vgui_menubar_get_item_rect(bar, m1, &m1x, nullptr, &m1w, nullptr);
+	vgui_menubar_get_item_rect(bar, m2, &m2x, nullptr, &m2w, nullptr);
+	check(m2x < m1x && near(m2x + m2w + 2.0f, m1x) && near(m1x + m1w, 296.0f),
+		"rtl: menubar items start at the right");
+
+	// ---- tab strip order ----
+	vgui_widget* tabs = vgui_widget_add(vgui_root(ui), VGUI_TABVIEW, nullptr);
+	vgui_widget_set_pos(tabs, 0.0f, 450.0f);
+	vgui_widget_set_size(tabs, 400.0f, 120.0f);
+	vgui_item_id ta = vgui_tab_add(tabs, "Alpha", vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_item_id tb = vgui_tab_add(tabs, "Beta", vgui_widget_create(ui, VGUI_PANEL, nullptr));
+	vgui_layout(ui);
+	float tax = 0, tbx = 0;
+	vgui_tab_get_rect(tabs, ta, &tax, nullptr, nullptr, nullptr);
+	vgui_tab_get_rect(tabs, tb, &tbx, nullptr, nullptr, nullptr);
+	check(tax > tbx, "rtl: tabs start at the right");
+
+	vgui_context_set_direction(ui, VGUI_DIRECTION_LTR);
+	vgui_context_set_language(ui, "");
+	vgui_widget_destroy(row);
+	vgui_widget_destroy(col);
+	vgui_widget_destroy(wrap);
+	vgui_widget_destroy(bar);
+	vgui_widget_destroy(tabs);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -2892,6 +3025,7 @@ int main()
 	test_dialog(ui);
 	test_toast(ui, style);
 	test_dock(ui, style);
+	test_i18n_rtl(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
