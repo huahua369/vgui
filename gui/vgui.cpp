@@ -250,6 +250,13 @@ struct vgui_tree_state
 	bool virtual_mode = false;
 	vgui_tree_node scratch_node;	// 虚拟模式下按需materialize的一行
 
+	// 行过滤（仅全量模型）：match 非 0 的行与其祖先链可见，忽略折叠状态。
+	// match_text 命中的子串用 match_color 高亮（0 = 默认暖黄）。
+	vgui_tree_filter_fn filter_fn = nullptr;
+	void* filter_user = nullptr;
+	std::string match_text;
+	vgui_color match_color = 0;
+
 	// F03 行拖拽，与 vgui_list_state 相同。
 	vgui_row_drag_fn row_drag_fn = nullptr;
 	void* row_drag_user = nullptr;
@@ -257,6 +264,11 @@ struct vgui_tree_state
 	int drag_press_index = -1;
 	float drag_press_x = 0.0f, drag_press_y = 0.0f;
 	int drag_pending = 0;
+
+	/* 按在已选行且有拖源时推迟到抬起再改选择，避免按下即把
+	 * 多选拖拽折叠成单选（O03 多选拖动）。 */
+	int defer_click = 0;
+	int press_mods = 0;
 };
 
 struct vgui_menu_item
@@ -777,6 +789,10 @@ struct vgui_context
 	};
 	std::vector<key_handler_entry> key_handlers;
 	int next_key_handler = 1;
+
+	// context 级焦点观察者（vgui_context_set_focus_listener）
+	vgui_focus_fn focus_fn = nullptr;
+	void* focus_user = nullptr;
 
 	bool layout_dirty = true;
 	bool in_input = false;
@@ -2693,6 +2709,32 @@ namespace {
 			vgui_tree_rebuild_rows_rec(st, c, depth + 1);
 	}
 
+	/* 过滤模式 pass 1（后序）：本行命中或任一后代命中的节点进 visible 集合。 */
+	static bool vgui_tree_filter_collect(vgui_widget* w, vgui_tree_state* st,
+		vgui_item_id id, std::unordered_set<vgui_item_id>& visible)
+	{
+		vgui_tree_node* n = vgui_tree_node_find(w, id);
+		if (!n) return false;
+		bool any = st->filter_fn && st->filter_fn(w, id, st->filter_user) != 0;
+		for (vgui_item_id c : n->children)
+			if (vgui_tree_filter_collect(w, st, c, visible)) any = true;
+		if (any) visible.insert(id);
+		return any;
+	}
+
+	/* 过滤模式 pass 2（先序）：只发射 visible 集合内的行，深度照常按层级。 */
+	static void vgui_tree_rows_emit_filtered(vgui_widget* w, vgui_tree_state* st,
+		vgui_item_id id, int depth, const std::unordered_set<vgui_item_id>& visible)
+	{
+		if (visible.find(id) == visible.end()) return;
+		vgui_tree_node* n = vgui_tree_node_find(w, id);
+		if (!n) return;
+		st->row_index[id] = (int)st->rows.size();
+		st->rows.push_back({ id, depth });
+		for (vgui_item_id c : n->children)
+			vgui_tree_rows_emit_filtered(w, st, c, depth + 1, visible);
+	}
+
 	static void vgui_tree_rebuild_rows(vgui_widget* w)
 	{
 		vgui_tree_state* st = vgui_tree_of(w);
@@ -2705,8 +2747,19 @@ namespace {
 		}
 		st->rows.clear();
 		st->row_index.clear();
-		for (vgui_item_id id : st->roots)
-			vgui_tree_rebuild_rows_rec(st, id, 0);
+		if (st->filter_fn)
+		{
+			std::unordered_set<vgui_item_id> visible;
+			for (vgui_item_id id : st->roots)
+				vgui_tree_filter_collect(w, st, id, visible);
+			for (vgui_item_id id : st->roots)
+				vgui_tree_rows_emit_filtered(w, st, id, 0, visible);
+		}
+		else
+		{
+			for (vgui_item_id id : st->roots)
+				vgui_tree_rebuild_rows_rec(st, id, 0);
+		}
 		st->rows_dirty = false;
 		// 可见行集合变了，最宽行宽度需要重算。
 		st->content_w_valid = false;
@@ -5906,6 +5959,7 @@ namespace {
 	{
 		if (!ctx) return;
 		if (ctx->focus == w) return;
+		vgui_widget* previous = ctx->focus;
 		if (ctx->focus && ctx->focus->ctx == ctx)
 		{
 			ctx->focus->focused = 0;
@@ -5920,6 +5974,8 @@ namespace {
 		}
 		ctx->want_key = (w != nullptr);
 		ctx->want_text = (w && w->kind == VGUI_EDIT && !w->readonly);
+		if (ctx->focus_fn)
+			ctx->focus_fn(ctx, previous, w, ctx->focus_user);
 	}
 
 	//----------------------------------------------------------------------------
@@ -6608,8 +6664,16 @@ namespace {
 			}
 			return true;
 		case VGUI_KEY_ESCAPE:
+		{
+			/* 先广播取消再失焦：行内编辑等宿主可借 VGUI_EVENT_CANCEL
+			 * 丢弃未提交内容，而不必区分"失焦提交"路径。 */
+			vgui_event cancel = {};
+			cancel.type = VGUI_EVENT_CANCEL;
+			cancel.key = VGUI_KEY_ESCAPE;
+			vgui_emit_full(w, cancel);
 			vgui_set_focus_internal(w->ctx, nullptr);
 			return true;
+		}
 		default:
 			break;
 		}
@@ -8479,7 +8543,11 @@ namespace {
 			// 拖拽发起后取消按流行程，释放时不再触发行点击。
 			w->pressed = 0;
 			if (w->list) w->list->pressed = 0;
-			if (w->tree) w->tree->pressed = 0;
+			if (w->tree)
+			{
+				w->tree->pressed = 0;
+				w->tree->defer_click = 0;	// 拖走的按下不再补选
+			}
 			ctx->active = nullptr;
 			ctx->press_target = nullptr;
 			vgui_drag_route_move(ctx, x, y);
@@ -9145,7 +9213,25 @@ namespace {
 				else
 				{
 					if (h->tree) h->tree->pressed = (button == 1) ? item : 0;
-					if (button == 1 && item) vgui_tree_apply_click(h, item, ctx->mods);
+					if (button == 1 && item)
+					{
+						/* 按在已选行且挂了拖源:推迟到抬起再改选择,
+						 * 否则按下即把多选拖拽折叠成单选。 */
+						const bool defer = h->tree && h->tree->row_drag_fn &&
+							vgui_id_selected(h->tree->selected, item);
+						if (defer)
+						{
+							h->tree->defer_click = 1;
+							h->tree->press_mods = ctx->mods;
+						}
+						else
+						{
+							h->tree->defer_click = 0;
+							vgui_tree_apply_click(h, item, ctx->mods);
+						}
+					}
+					else if (h->tree)
+						h->tree->defer_click = 0;
 				}
 					if (h->tree) h->tree->hover = item;
 					// F03 行拖拽：箭头/行内按钮上的按下不发起拖拽。
@@ -9453,6 +9539,13 @@ namespace {
 			vgui_item_event(target, VGUI_EVENT_MOUSE_UP, item, index, lx, ly, button, clicks);
 			if (ctx->alive.count(target) && pressed_id != 0 && item == pressed_id && target->enabled)
 			{
+				/* O03:按下时被推迟的选择在这里补上(未发起拖拽的普通点击)。 */
+				if (target->kind == VGUI_TREE && target->tree->defer_click)
+				{
+					target->tree->defer_click = 0;
+					vgui_tree_apply_click(target, item, target->tree->press_mods);
+					if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
+				}
 				vgui_event_type ct = VGUI_EVENT_CLICK;
 				if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
 				else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
@@ -11499,6 +11592,61 @@ namespace {
 		vgui_draw_focus(w, cb, vg);
 	}
 
+	static char vgui_ascii_lower(char c)
+	{
+		return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+	}
+
+	/* 大小写不敏感的首个子串位置（仅折叠 ASCII；UTF-8 多字节安全）。 */
+	static size_t vgui_find_ci(const std::string& hay, const std::string& needle)
+	{
+		if (needle.empty() || needle.size() > hay.size())
+			return std::string::npos;
+		for (size_t i = 0; i + needle.size() <= hay.size(); ++i)
+		{
+			size_t j = 0;
+			while (j < needle.size() &&
+				vgui_ascii_lower(hay[i + j]) == vgui_ascii_lower(needle[j]))
+				++j;
+			if (j == needle.size())
+				return i;
+		}
+		return std::string::npos;
+	}
+
+	/* 树行文本：过滤激活且配置了 match_text 时，把首个命中子串画成
+	 * match_color，其余部分保持原色；未命中退回普通绘制。 */
+	static void vgui_draw_tree_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_widget* w, vgui_tree_state* st, const std::string& text,
+		float x, float y, float width, float height, uint32_t color,
+		vgui_clip_state* clips)
+	{
+		const bool highlight = st->filter_fn && !st->match_text.empty();
+		const size_t pos = highlight ? vgui_find_ci(text, st->match_text)
+			: std::string::npos;
+		if (!highlight || pos == std::string::npos || width <= 0.0f)
+		{
+			vgui_draw_text_clipped(ctx, cb, vg, w, text, x, y, width, height,
+				color, 0.0f, 0.5f, clips);
+			return;
+		}
+		const uint32_t match_color = st->match_color != 0 ? st->match_color
+			: 0xFFE6A23C;
+		const std::string prefix = text.substr(0, pos);
+		const std::string match = text.substr(pos, st->match_text.size());
+		const std::string suffix = text.substr(pos + st->match_text.size());
+		vgui_draw_text_clipped(ctx, cb, vg, w, prefix, x, y, width, height,
+			color, 0.0f, 0.5f, clips);
+		const float pre_w = prefix.empty() ? 0.0f : vgui_text_width(w, prefix);
+		vgui_draw_text_clipped(ctx, cb, vg, w, match, x + pre_w, y,
+			std::max(0.0f, width - pre_w), height, match_color, 0.0f, 0.5f, clips);
+		const float match_w = vgui_text_width(w, match);
+		if (!suffix.empty())
+			vgui_draw_text_clipped(ctx, cb, vg, w, suffix, x + pre_w + match_w, y,
+				std::max(0.0f, width - pre_w - match_w), height, color, 0.0f,
+				0.5f, clips);
+	}
+
 	static void vgui_draw_tree_arrow(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 		float cx, float cy, float size, bool expanded, uint32_t color, bool flip = false)
 	{
@@ -11618,8 +11766,8 @@ namespace {
 						text_w -= isize + 4.0f;
 					}
 				}
-				vgui_draw_text_clipped(ctx, cb, vg, w, node->text, text_x, y,
-					std::max(0.0f, text_w), row_h, color, 0.0f, 0.5f, clips);
+				vgui_draw_tree_text(ctx, cb, vg, w, st, node->text, text_x, y,
+					std::max(0.0f, text_w), row_h, color, clips);
 			}
 			vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, node->id,
 				st->hover, st->hover_button, node->button_count, node->button_icons, color);
@@ -15761,6 +15909,50 @@ extern "C" {
 		vgui_mark_dirty(tree);
 	}
 
+	// ---- 行过滤 / 行矩形（O04/O02）-------------------------------------------
+
+	void vgui_tree_set_filter(vgui_widget* tree, vgui_tree_filter_fn fn, void* user)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->filter_fn = fn;
+		st->filter_user = user;
+		st->rows_dirty = true;
+		st->content_w_valid = false;
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_set_match_text(vgui_widget* tree, const char* text)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->match_text = text ? text : "";
+		vgui_mark_dirty(tree);
+	}
+
+	void vgui_tree_set_match_color(vgui_widget* tree, vgui_color color)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st) return;
+		st->match_color = color;
+		vgui_mark_dirty(tree);
+	}
+
+	int vgui_tree_get_item_rect(vgui_widget* tree, vgui_item_id node,
+		float* x, float* y, float* w, float* h)
+	{
+		vgui_tree_state* st = vgui_tree_of(tree);
+		if (!st || !tree || node == 0 || !x || !y || !w || !h) return 0;
+		const int index = vgui_tree_visible_index(tree, node);
+		if (index < 0) return 0;
+		const float row_h = vgui_tree_row_height(tree);
+		*x = tree->abs_x + tree->padding[0];
+		*w = std::max(0.0f, tree->abs_w - tree->padding[0] - tree->padding[2]);
+		*y = tree->abs_y + tree->padding[1] - tree->scroll_y + (float)index * row_h;
+		*h = row_h;
+		return 1;
+	}
+
 	// ---- F03 通用拖放 ---------------------------------------------------------
 
 	int vgui_begin_drag(vgui_context* ctx, vgui_widget* source, const vgui_drag_payload* payload)
@@ -16970,6 +17162,13 @@ extern "C" {
 		return ctx ? ctx->mods : 0;
 	}
 
+	void vgui_context_set_focus_listener(vgui_context* ctx, vgui_focus_fn fn, void* user)
+	{
+		if (!ctx) return;
+		ctx->focus_fn = fn;
+		ctx->focus_user = user;
+	}
+
 	int vgui_input_mouse_move(vgui_context* ctx, float x, float y)
 	{
 		return vgui_mouse_move_impl(ctx, x, y);
@@ -17380,6 +17579,18 @@ namespace {
 		case SDLK_PAGEUP: return VGUI_KEY_PAGE_UP;
 		case SDLK_PAGEDOWN: return VGUI_KEY_PAGE_DOWN;
 		case SDLK_INSERT: return VGUI_KEY_INSERT;
+		case SDLK_F1: return VGUI_KEY_F1;
+		case SDLK_F2: return VGUI_KEY_F2;
+		case SDLK_F3: return VGUI_KEY_F3;
+		case SDLK_F4: return VGUI_KEY_F4;
+		case SDLK_F5: return VGUI_KEY_F5;
+		case SDLK_F6: return VGUI_KEY_F6;
+		case SDLK_F7: return VGUI_KEY_F7;
+		case SDLK_F8: return VGUI_KEY_F8;
+		case SDLK_F9: return VGUI_KEY_F9;
+		case SDLK_F10: return VGUI_KEY_F10;
+		case SDLK_F11: return VGUI_KEY_F11;
+		case SDLK_F12: return VGUI_KEY_F12;
 		default: break;
 		}
 

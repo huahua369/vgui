@@ -13,15 +13,52 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
+
+#define NOMINMAX
+#include <windows.h>
+#include <dbghelp.h>
+#pragma comment(lib, "dbghelp.lib")
+#include <crtdbg.h>
 
 #include "vgui.h"
 #include "vgui_editor_kit.h"
 
 namespace {
+
+/* 崩溃时打印符号化调用栈,便于定位无窗口测试的段错误。 */
+LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
+{
+	SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS);
+	SymInitialize(GetCurrentProcess(), nullptr, TRUE);
+	void* frames[32] = {};
+	const WORD count = CaptureStackBackTrace(0, 32, frames, nullptr);
+	std::fprintf(stderr, "CRASH exception 0x%08lX at %p\n",
+		info->ExceptionRecord->ExceptionCode,
+		info->ExceptionRecord->ExceptionAddress);
+	char symbol[sizeof(SYMBOL_INFO) + 256] = {};
+	for (WORD i = 0; i < count; ++i)
+	{
+		DWORD64 offset = 0;
+		reinterpret_cast<SYMBOL_INFO*>(symbol)->SizeOfStruct = sizeof(SYMBOL_INFO);
+		reinterpret_cast<SYMBOL_INFO*>(symbol)->MaxNameLen = 255;
+		if (SymFromAddr(GetCurrentProcess(), (DWORD64)frames[i], &offset,
+			reinterpret_cast<SYMBOL_INFO*>(symbol)))
+			std::fprintf(stderr, "  #%u %s+0x%llx\n", i,
+				reinterpret_cast<SYMBOL_INFO*>(symbol)->Name,
+				(unsigned long long)offset);
+		else
+			std::fprintf(stderr, "  #%u %p\n", i, frames[i]);
+	}
+	std::fflush(stderr);
+	return EXCEPTION_EXECUTE_HANDLER;
+}
+
 
 	int fail(const char* message)
 	{
@@ -298,9 +335,7 @@ namespace {
 				return fail("layout source context");
 			vgui_context_set_size(ui, 1280, 800);
 			{
-				editor_context context(ui);
-				editor_shell shell(context);
-				shell.build();
+				editor_context context(ui);		editor_shell shell(context);		shell.build();
 				vgui_widget* dock = shell.dock();
 				if (!shell.built() || !dock ||
 					vgui_widget_get_kind(dock) != VGUI_DOCK)
@@ -396,8 +431,7 @@ namespace {
 					parsed.bottom_tab_order != saved.bottom_tab_order ||
 					parsed.bottom_active_tab != saved.bottom_active_tab)
 					return fail("layout json round trip");
-			}
-			vgui_destroy(ui);
+			}	vgui_destroy(ui);
 		}
 
 		{
@@ -2747,7 +2781,9 @@ namespace {
 				const float row_h = test_style.tree.row_height;
 				const float pad_y = test_style.tree.padding_y;
 				const float drag_y = ty + pad_y + row_h * 3.0f + row_h * 0.5f;
-				const float drop_y = ty + pad_y + row_h * 2.0f + row_h * 0.5f;
+				/* O03 插入语义:行顶部 25% = 插到该行之前。行 2 是节点 4
+				 * (parent=2,index=0),等价旧"换位"断言。 */
+				const float drop_y = ty + pad_y + row_h * 2.0f + row_h * 0.1f;
 				const std::size_t undo_before_drag = commands.undo_count();
 				vgui_input_mouse_move(ui, tx + 30.0f, drag_y);
 				vgui_input_mouse_down(ui, 1, tx + 30.0f, drag_y, 1);
@@ -3113,10 +3149,923 @@ namespace {
 		return 0;
 	}
 
+//----------------------------------------------------------------------------
+// M3 Outliner:O01~O06
+//----------------------------------------------------------------------------
+
+static int test_outliner_row_extensions()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("row ext context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+
+	vgui_item_id root = scene.add_node("Root", 0, 1);
+	vgui_item_id child = scene.add_node("Child", root, 2);
+	scene.expand(root);
+	if (!root || !child)
+		return fail("row ext nodes");
+
+	/* O01 透传:图标与文字颜色。 */
+	scene.set_node_icon(root, nullptr);
+	scene.set_node_text_color(child, 0xFF80FF80u);
+	if (vgui_tree_get_item_text_color(scene.widget(), child) != 0xFF80FF80u)
+		return fail("row ext text color passthrough");
+
+	scene.enable_row_buttons();
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	object_id toggled = invalid_object;
+	bool toggled_state = false;
+	int toggles = 0;
+	scene.set_visibility_listener([&](object_id id, bool state) {
+		toggled = id; toggled_state = state; ++toggles;
+	});
+	object_id locked_id = invalid_object;
+	scene.set_lock_listener([&](object_id id, bool state) {
+		locked_id = id; (void)state;
+	});
+
+	scene.set_object_visibility(2, false);
+	if (scene.object_visibility(2) || !scene.object_visibility(1))
+		return fail("row ext visibility state");
+	scene.set_object_locked(1, true);
+	if (!scene.object_locked(1) || scene.object_locked(2))
+		return fail("row ext lock state");
+
+	/* 点可见性按钮(行尾左侧第一个):不改选中、不改展开。 */
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(scene.widget(), &tx, &ty, &tw, &th);
+	(void)th;
+	const float row_h = style.tree.row_height;
+	const float bsize = std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+	const float row0_y = ty + style.tree.padding_y + row_h * 0.5f;
+	const float content_right = tx + tw - style.tree.padding_x;
+	const float btn0_x = content_right - 4.0f - bsize - (bsize + 4.0f);
+	const float btn1_x = content_right - 4.0f - bsize;
+
+	vgui_input_mouse_move(ui, btn0_x, row0_y);
+	vgui_input_mouse_down(ui, 1, btn0_x, row0_y, 1);
+	vgui_input_mouse_up(ui, 1, btn0_x, row0_y, 1);
+	if (toggles != 1 || toggled != 1 || toggled_state)
+		return fail("row ext visibility button toggles");
+	if (vgui_tree_get_selected_count(scene.widget()) != 0)
+		return fail("row ext visibility button does not select");
+	if (!vgui_tree_get_item_expanded(scene.widget(), root))
+		return fail("row ext visibility button keeps expansion");
+
+	vgui_input_mouse_down(ui, 1, btn1_x, row0_y, 1);
+	vgui_input_mouse_up(ui, 1, btn1_x, row0_y, 1);
+	if (locked_id != 1 || scene.object_locked(1))
+		return fail("row ext lock button toggles");
+
+	/* 正文区仍可选中。 */
+	vgui_input_mouse_down(ui, 1, tx + 30.0f, row0_y, 1);
+	vgui_input_mouse_up(ui, 1, tx + 30.0f, row0_y, 1);
+	if (vgui_tree_get_selected_count(scene.widget()) != 1)
+		return fail("row ext text area still selects");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_outliner_inline_rename()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("rename context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	command_stack commands;
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	scene.set_command_stack(&commands);
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+
+	vgui_item_id root = scene.add_node("Cube", 0, 42);
+	vgui_item_id other = scene.add_node("Cube2", 0, 43);
+	if (!root || !other)
+		return fail("rename nodes");
+	std::map<object_id, std::string> node_names = { { 42, "Cube" },
+		{ 43, "Cube2" } };
+	scene.set_rename_handler([&](object_id id, const std::string& name) {
+		/* 重名检测由宿主负责:不许与其他节点同名。 */
+		if (name.empty())
+			return false;
+		for (const auto& entry : node_names)
+			if (entry.first != id && entry.second == name)
+				return false;
+		node_names[id] = name;
+		return true;
+	});
+	scene.enable_inline_rename();
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	/* 直接程序化改名:命令栈 + 撤销。 */
+	const std::size_t base = commands.undo_count();
+	if (!scene.rename_node(42, "Box") ||
+		std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Box" ||
+		commands.undo_count() != base + 1)
+		return fail("rename node records command");
+	if (!commands.undo() ||
+		std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Cube")
+		return fail("rename undo");
+	if (!commands.redo() ||
+		std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Box")
+		return fail("rename redo");
+
+	/* 空名拒绝、非法(逗号)拒绝、重名拒绝。 */
+	if (scene.rename_node(42, "") || commands.undo_count() != base + 1)
+		return fail("rename empty rejected");
+	if (scene.rename_node(42, "a,b") || commands.undo_count() != base + 1)
+		return fail("rename comma rejected");
+	if (scene.rename_node(42, "Cube2") || commands.undo_count() != base + 1)
+		return fail("rename duplicate rejected");
+
+	/* 行内编辑:Enter 提交入栈。 */
+	commands.undo();
+	if (std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Cube")
+		return fail("rename back to cube");
+	scene.begin_rename(root);
+	if (!scene.renaming_active())
+		return fail("rename editor opens");
+	vgui_input_text(ui, "Sphere");
+	vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+	if (scene.renaming_active())
+		return fail("rename editor closes on enter");
+	if (std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Sphere"
+		|| commands.undo_count() != base + 1)
+		return fail("rename enter commits");
+
+	/* Esc 取消:恢复原名。 */
+	scene.begin_rename(root);
+	vgui_input_text(ui, "zzz");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	if (std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Sphere"
+		|| commands.undo_count() != base + 1)
+		return fail("rename escape cancels");
+
+	/* 失焦提交:焦点被抢走时提交当前文本。 */
+	scene.begin_rename(root);
+	vgui_input_text(ui, "Torus");
+	vgui_set_focus(ui, nullptr);
+	if (scene.renaming_active() ||
+		std::string(vgui_tree_get_item_text(scene.widget(), root)) != "Torus"
+		|| commands.undo_count() != base + 2)
+		return fail("rename blur commits");
+
+	/* F2:树持有焦点且有选中时进入编辑。 */
+	vgui_tree_select(scene.widget(), root, 1);
+	vgui_set_focus(ui, scene.widget());
+	vgui_input_key(ui, VGUI_KEY_F2, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_F2, 0, 0);
+	if (!scene.renaming_active())
+		return fail("rename F2 starts");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+
+	/* 双击进入编辑。 */
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(scene.widget(), &tx, &ty, &tw, &th);
+	(void)tw; (void)th;
+	const float row0_y = ty + style.tree.padding_y + style.tree.row_height * 0.5f;
+	vgui_input_mouse_move(ui, tx + 30.0f, row0_y);
+	vgui_input_mouse_down(ui, 1, tx + 30.0f, row0_y, 1);
+	vgui_input_mouse_up(ui, 1, tx + 30.0f, row0_y, 1);
+	vgui_input_mouse_down(ui, 1, tx + 30.0f, row0_y, 2);
+	vgui_input_mouse_up(ui, 1, tx + 30.0f, row0_y, 2);
+	if (!scene.renaming_active())
+		return fail("rename double click starts");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* O03 用宿主场景模型:与 test_scene_asset_commands 相同模式。 */
+using vgui_editor_kit::object_id;
+using vgui_editor_kit::invalid_object;
+struct outliner_host_scene
+{
+	std::map<object_id, object_id> parent_of;
+	std::map<object_id, std::vector<object_id>> children;
+	std::vector<object_id> roots;
+
+	void set_parent(object_id node, object_id parent)
+	{
+		const bool had = parent_of.count(node) != 0;
+		object_id old = had ? parent_of[node] : invalid_object;
+		if (had && old == parent)
+			return;
+		if (had && old == invalid_object)
+		{
+			auto it = std::find(roots.begin(), roots.end(), node);
+			if (it != roots.end())
+				roots.erase(it);
+		}
+		else if (had)
+		{
+			auto& siblings = children[old];
+			auto it = std::find(siblings.begin(), siblings.end(), node);
+			if (it != siblings.end())
+				siblings.erase(it);
+		}
+		if (parent == invalid_object)
+		{
+			parent_of.erase(node);
+			if (std::find(roots.begin(), roots.end(), node) == roots.end())
+				roots.push_back(node);
+		}
+		else
+		{
+			parent_of[node] = parent;
+			children[parent].push_back(node);
+		}
+	}
+
+	void place(object_id node, object_id parent, std::size_t index)
+	{
+		set_parent(node, parent);
+		std::vector<object_id>& siblings = parent == invalid_object
+			? roots : children[parent];
+		auto it = std::find(siblings.begin(), siblings.end(), node);
+		if (it != siblings.end())
+			siblings.erase(it);
+		index = std::min(index, siblings.size());
+		siblings.insert(siblings.begin() + (std::ptrdiff_t)index, node);
+	}
+};
+
+static int test_outliner_drag_semantics()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("drag context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	command_stack commands;
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	scene.set_command_stack(&commands);
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 260.0f, 300.0f);
+
+	outliner_host_scene model;
+	std::map<object_id, vgui_item_id> item_ids;
+	std::function<void(const std::vector<object_id>&)> rebuild =
+		[&](const std::vector<object_id>& nodes)
+	{
+		scene.clear();
+		item_ids.clear();
+		std::function<void(object_id, vgui_item_id)> add = [&](object_id node,
+			vgui_item_id parent_item)
+		{
+			const vgui_item_id item = scene.add_node(("Node " +
+				std::to_string(node)).c_str(), parent_item, node);
+			item_ids[node] = item;
+			auto it = model.children.find(node);
+			if (it != model.children.end())
+				for (object_id c : it->second)
+					add(c, item);
+		};
+		for (object_id node : nodes)
+			add(node, 0);
+	};
+
+	scene.set_move_handler([&](object_id node, object_id parent,
+		std::size_t index)
+	{
+		object_id walk = parent;
+		while (walk != invalid_object)
+		{
+			if (walk == node)
+				return false;
+			walk = model.parent_of.count(walk) ? model.parent_of[walk]
+				: invalid_object;
+		}
+		model.place(node, parent, index);
+		rebuild(model.roots);
+		return true;
+	});
+
+	/* 1 根,子 2、3;2 的子 4、5。 */
+	model.set_parent(1, invalid_object);
+	model.set_parent(2, 1);
+	model.set_parent(3, 1);
+	model.set_parent(4, 2);
+	model.set_parent(5, 2);
+	rebuild(model.roots);
+	scene.expand(item_ids[1]);
+	scene.expand(item_ids[2]);
+	scene.enable_drag_drop();
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(scene.widget(), &tx, &ty, &tw, &th);
+	(void)tw; (void)th;
+	const float row_h = style.tree.row_height;
+	const auto row_y = [&](int row) {
+		return ty + style.tree.padding_y + row_h * (float)row + row_h * 0.5f;
+	};
+	/* 可见行序:1, 2, 4, 5, 3。 */
+
+	/* 位置解析:上=before,中=onto,下=after,空白=roots。行 2 = 节点 4。 */
+	{
+		auto loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 2.0f + row_h * 0.1f);
+		if (loc.kind != outliner_view::drop_kind::before || loc.parent != 2 ||
+			loc.index != 0)
+			return fail("drop resolve before");
+		loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 2.0f + row_h * 0.9f);
+		if (loc.kind != outliner_view::drop_kind::after || loc.parent != 2 ||
+			loc.index != 1)
+			return fail("drop resolve after");
+		loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 2.0f + row_h * 0.5f);
+		if (loc.kind != outliner_view::drop_kind::onto || loc.parent != 4 ||
+			loc.index != 0)
+			return fail("drop resolve onto");
+		loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 5.0f + row_h * 2.0f);
+		if (loc.kind != outliner_view::drop_kind::roots ||
+			loc.index != model.roots.size())
+			return fail("drop resolve roots");
+		/* 提示:onto 给 RECT,before 给 LINE。 */
+		vgui_drop_hint hint = {};
+		auto onto_loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 2.0f + row_h * 0.5f);
+		scene.emit_hover_hint(onto_loc, &hint);
+		if (hint.kind != VGUI_DROP_HINT_RECT || hint.h < row_h * 0.5f)
+			return fail("drop hint onto rect");
+		auto before_loc = scene.drop_location_at(tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 2.0f + row_h * 0.1f);
+		scene.emit_hover_hint(before_loc, &hint);
+		if (hint.kind != VGUI_DROP_HINT_LINE)
+			return fail("drop hint before line");
+	}
+
+	/* 拖到行中间成为子节点,可撤销。 */
+	{
+		const std::size_t undo_base = commands.undo_count();
+		const float from_y = row_y(4);	/* 节点 3 */
+		const float to_y = ty + style.tree.padding_y + row_h * 1.0f
+			+ row_h * 0.5f;		/* 节点 2 中部 */
+		vgui_input_mouse_move(ui, tx + 30.0f, from_y);
+		vgui_input_mouse_down(ui, 1, tx + 30.0f, from_y, 1);
+		vgui_input_mouse_move(ui, tx + 30.0f, to_y);
+		if (!vgui_drag_active(ui))
+			return fail("onto drag begins");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f, to_y, 1);
+		auto& kids = model.children[2];
+		if (model.parent_of[3] != 2 ||
+			std::find(kids.begin(), kids.end(), 3) == kids.end() ||
+			commands.undo_count() != undo_base + 1)
+			return fail("drop onto makes child");
+		if (!commands.undo() || model.parent_of[3] != 1)
+			return fail("drop onto undo");
+		if (!commands.redo())
+			return fail("drop onto redo");
+	}
+
+	/* 拖父节点到自己后代上:拒绝且不入栈。 */
+	{
+		const std::size_t undo_base = commands.undo_count();
+		/* 重建后 item id 变了,重新展开。 */
+		scene.expand(item_ids[1]);
+		scene.expand(item_ids[2]);
+		vgui_update(ui, 0.016f);
+		const float from_y = row_y(0);	/* 节点 1 */
+		const float to_y = row_y(2);	/* 节点 4(1 的后代)中部 */
+		vgui_input_mouse_move(ui, tx + 30.0f, from_y);
+		vgui_input_mouse_down(ui, 1, tx + 30.0f, from_y, 1);
+		vgui_input_mouse_move(ui, tx + 30.0f, to_y);
+		if (!vgui_drag_active(ui))
+			return fail("cycle drag begins");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f, to_y, 1);
+		if (model.parent_of[1] != invalid_object ||
+			commands.undo_count() != undo_base)
+			return fail("cycle drop rejected");
+	}
+
+	/* 多选拖动:两条移动并入一个事务,一次撤销全部还原。 */
+	{
+		scene.set_multi_select(true);
+		/* 重置为 1 {2 {4,5}, 3}。 */
+		commands.undo();
+		commands.undo();
+		if (model.parent_of[3] != 1)
+			return fail("multi reset state");
+		rebuild(model.roots);
+		scene.expand(item_ids[1]);
+		scene.expand(item_ids[2]);
+		vgui_update(ui, 0.016f);
+
+		/* 选节点 4、5(行 2、3):多选用程序化选择。 */
+		vgui_tree_select(scene.widget(), item_ids[4], 1);
+		vgui_tree_select(scene.widget(), item_ids[5], 1);
+		if (vgui_tree_get_selected_count(scene.widget()) != 2)
+			return fail("multi select rows");
+
+		const std::size_t undo_base = commands.undo_count();
+		const float to_y = ty + style.tree.padding_y + row_h * 4.0f
+			+ row_h * 0.1f;	/* 节点 3 顶部 = before */
+		vgui_input_mouse_move(ui, tx + 30.0f, row_y(2));
+		vgui_input_mouse_down(ui, 1, tx + 30.0f, row_y(2), 1);
+		vgui_input_mouse_move(ui, tx + 30.0f, to_y);
+		if (!vgui_drag_active(ui))
+			return fail("multi drag begins");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f, to_y, 1);
+		if (model.parent_of[4] != 1 || model.parent_of[5] != 1)
+			return fail("multi drop moved both");
+		{
+			auto& kids = model.children[1];
+			if (kids.size() != 4 || kids[1] != 4 || kids[2] != 5)
+				return fail("multi drop order");
+		}
+		if (commands.undo_count() != undo_base + 1)
+			return fail("multi drop single undo record");
+		if (!commands.undo() || model.parent_of[4] != 2 ||
+			model.parent_of[5] != 2)
+			return fail("multi drop undo restores both");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_outliner_filter_sync()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("filter context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+
+	vgui_item_id root = scene.add_node("World", 0, 1);
+	vgui_item_id alpha = scene.add_node("alpha_light", root, 2);
+	vgui_item_id beta = scene.add_node("beta_dark", root, 3);
+	vgui_item_id gamma = scene.add_node("gamma_light", beta, 4);
+	if (!root || !alpha || !beta || !gamma)
+		return fail("filter nodes");
+	scene.expand(root);
+	scene.expand(beta);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	vgui_widget* tree = scene.widget();
+	const auto row_item = [&](int row) {
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+		(void)tw; (void)th;
+		return vgui_tree_item_at_point(tree, 30.0f,
+			style.tree.padding_y + style.tree.row_height * (float)row
+			+ style.tree.row_height * 0.5f);
+	};
+
+	/* 名称过滤:命中 + 祖先可见。行:World, alpha_light,
+	 * beta(gamma 的祖先), gamma_light。 */
+	scene.set_filter("light");
+	vgui_update(ui, 0.016f);
+	if (row_item(0) != root || row_item(1) != alpha ||
+		row_item(2) != beta || row_item(3) != gamma)
+		return fail("filter keeps matches and ancestors");
+	if (row_item(4) != 0)
+		return fail("filter hides non-matching");
+	/* beta 行可见(它是命中行 gamma 的祖先),但选择保留。 */
+	vgui_tree_select(tree, beta, 1);
+	if (!vgui_tree_is_selected(tree, beta))
+		return fail("filter keeps selection");
+	scene.set_filter(nullptr);
+	vgui_update(ui, 0.016f);
+	if (row_item(0) != root || row_item(1) != alpha || row_item(2) != beta)
+		return fail("filter clear restores rows");
+	if (!vgui_tree_is_selected(tree, beta) ||
+		!vgui_tree_get_item_expanded(tree, beta))
+		return fail("filter clear keeps selection and expansion");
+
+	/* 类型过滤(handler)叠加文本过滤。 */
+	int type_calls = 0;
+	scene.set_filter_match_handler([&](object_id, const char*) {
+		++type_calls;
+		return true;
+	});
+	scene.set_filter("light");
+	vgui_update(ui, 0.016f);
+	if (type_calls == 0 || row_item(1) != alpha)
+		return fail("filter match handler consulted");
+	scene.set_filter_match_handler(nullptr);
+	scene.set_filter(nullptr);
+	vgui_update(ui, 0.016f);
+
+	/* 选择同步:外来选中自动展开并选中对应行。 */
+	scene.enable_selection_sync();
+	vgui_tree_set_item_expanded(tree, root, 0);
+	vgui_update(ui, 0.016f);
+	object_id observed = invalid_object;
+	scene.set_selection_listener([&](object_id id) { observed = id; });
+	context.set_selection(4);	/* gamma,藏于折叠的 root 下 */
+	if (!vgui_tree_is_selected(tree, gamma) ||
+		!vgui_tree_get_item_expanded(tree, root))
+		return fail("sync expands and selects");
+	if (observed != 4)
+		return fail("sync notifies listeners");
+	if (context.selection() != 4)
+		return fail("sync keeps context selection");
+
+	/* 自己点击不再引发滚动/重入:选中正常传播。 */
+	vgui_input_mouse_move(ui, 40.0f, 40.0f);
+	context.set_selection(1);
+	if (context.selection() != 1)
+		return fail("sync stable after foreign selection");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_virtual_outliner()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("virtual context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	command_stack commands;
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+
+	/* 万级场景:100 根 × 100 子。带调用计数的适配器。 */
+	struct counting_scene
+	{
+		std::vector<object_id> roots;
+		std::map<object_id, std::vector<object_id>> children;
+		std::map<object_id, object_id> parent_of;
+		std::map<object_id, std::string> names;
+		int name_calls = 0;
+		int child_count_calls = 0;
+	};
+	counting_scene vs;
+	for (object_id r = 1; r <= 100; ++r)
+	{
+		vs.roots.push_back(r);
+		vs.names[r] = "Root " + std::to_string(r);
+		for (object_id c = 1000 + r * 100; c < 1000 + r * 100 + 100; ++c)
+		{
+			vs.children[r].push_back(c);
+			vs.parent_of[c] = r;
+			vs.names[c] = "Child " + std::to_string(c);
+		}
+	}
+
+	outliner_view::scene_source source;
+	source.root_count = [&vs]() { return vs.roots.size(); };
+	source.root_at = [&vs](std::size_t i) { return vs.roots[i]; };
+	source.child_count = [&vs](object_id o) -> std::size_t {
+		auto it = vs.children.find(o);
+		return it == vs.children.end() ? 0 : it->second.size();
+	};
+	source.child_at = [&vs](object_id o, std::size_t i) {
+		return vs.children[o][i];
+	};
+	source.name = [&vs](object_id o) -> std::string {
+		++vs.name_calls;
+		auto it = vs.names.find(o);
+		return it == vs.names.end() ? std::string("?") : it->second;
+	};
+	source.parent_of = [&vs](object_id o) -> object_id {
+		auto it = vs.parent_of.find(o);
+		return it == vs.parent_of.end() ? invalid_object : it->second;
+	};
+	scene.set_scene_source(source);
+	scene.set_command_stack(&commands);
+	if (!scene.is_virtual())
+		return fail("virtual mode entered");
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	vgui_widget* tree = scene.widget();
+	if (scene.projected_row_count() != 100)
+		return fail("virtual collapsed projection");
+	/* 万级节点:折叠子树的名字从不被查询。 */
+	vs.name_calls = 0;
+	vgui_tree_select(tree, 7, 1);
+	vgui_tree_set_cursor(tree, 7);
+	vgui_update(ui, 0.016f);
+	if (vs.name_calls > 300)
+		return fail("virtual only queries visible rows");
+
+	/* 展开:投影增长但结构稳定,选择保持。 */
+	scene.expand(3);
+	vgui_update(ui, 0.016f);
+	if (scene.projected_row_count() != 100 + 100)
+		return fail("virtual expand projection");
+	if (!vgui_tree_is_selected(tree, 7))
+		return fail("virtual selection stable across expand");
+	vs.name_calls = 0;
+	vgui_update(ui, 0.016f);
+	if (vs.name_calls > 400)
+		return fail("virtual expanded queries bounded");
+
+	/* 行内容增量刷新:内容宽度只按投影重测(折叠子树不参与)。 */
+	const float row_h = style.tree.row_height;
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+	(void)tw; (void)th;
+	vs.name_calls = 0;
+	vs.names[3] = "Renamed Root";
+	scene.scene_row_changed(3);
+	vgui_update(ui, 0.016f);
+	if (std::string(vgui_tree_get_item_text(tree, 3)) != "Renamed Root")
+		return fail("virtual row changed updates");
+	if (vs.name_calls > 300)
+		return fail("virtual row refresh bounded");
+
+	/* 结构变化:重建投影但选择保持(稳定 id)。 */
+	scene.scene_changed();
+	vgui_update(ui, 0.016f);
+	if (!vgui_tree_is_selected(tree, 7) || scene.projected_row_count() != 200)
+		return fail("virtual structural change keeps selection");
+
+	/* 重命名走 handler + 命令栈(handler 负责写回宿主模型)。 */
+	const std::size_t undo_base = commands.undo_count();
+	std::string renamed_to;
+	scene.set_rename_handler([&](object_id node, const std::string& name) {
+		renamed_to = name;
+		vs.names[node] = name;
+		return true;
+	});
+	if (!scene.rename_node(7, "Lucky") || renamed_to != "Lucky" ||
+		commands.undo_count() != undo_base + 1)
+		return fail("virtual rename records command");
+	if (std::string(vgui_tree_get_item_text(tree, 7)) != "Lucky")
+		return fail("virtual rename visible");
+	if (!commands.undo() || vs.names[7] != "Root 7")
+		return fail("virtual rename undo restores model");
+	if (!commands.redo() || vs.names[7] != "Lucky")
+		return fail("virtual rename redo");
+
+	/* 拖放:根 2 拖到根 1 中部成为子节点(可撤销)。 */
+	scene.set_move_handler([&](object_id node, object_id parent,
+		std::size_t index)
+	{
+		object_id walk = parent;
+		while (walk != invalid_object)
+		{
+			if (walk == node)
+				return false;
+			auto it = vs.parent_of.find(walk);
+			walk = it == vs.parent_of.end() ? invalid_object : it->second;
+		}
+		std::vector<object_id>& old = vs.parent_of.count(node) &&
+			vs.parent_of[node] != invalid_object
+			? vs.children[vs.parent_of[node]] : vs.roots;
+		auto it = std::find(old.begin(), old.end(), node);
+		if (it != old.end())
+			old.erase(it);
+		if (parent == invalid_object)
+		{
+			vs.parent_of.erase(node);
+			vs.roots.push_back(node);
+			return true;
+		}
+		vs.parent_of[node] = parent;
+		std::vector<object_id>& kids = vs.children[parent];
+		index = std::min(index, kids.size());
+		kids.insert(kids.begin() + (std::ptrdiff_t)index, node);
+		return true;
+	});
+	scene.enable_drag_drop();
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	const auto row_y = [&](int row) {
+		return ty + style.tree.padding_y + row_h * (float)row + row_h * 0.5f;
+	};
+
+	/* 过滤:虚拟投影只保留命中行。"Lucky 7" 唯一命中
+	 * ("Root N" 两位数不会被 "Lucky" 误伤)。 */
+	vs.names[7] = "Lucky 7";
+	scene.set_filter("Lucky");
+	vgui_update(ui, 0.016f);
+	if (scene.projected_row_count() != 1)
+		return fail("virtual filter projection");
+	scene.set_filter(nullptr);
+	vgui_update(ui, 0.016f);
+	if (scene.projected_row_count() != 200)
+		return fail("virtual filter clear restores");
+
+	/* 点击行 2(根 3)箭头折叠:展开状态由 kit 持有,走 row_toggle。 */
+	const float arrow_x = tx + style.tree.padding_x + style.tree.arrow_gap
+		+ style.tree.arrow_size * 0.5f;
+	vgui_input_mouse_move(ui, arrow_x, row_y(2));
+	vgui_input_mouse_down(ui, 1, arrow_x, row_y(2), 1);
+	vgui_input_mouse_up(ui, 1, arrow_x, row_y(2), 1);
+	vgui_update(ui, 0.016f);
+	if (scene.projected_row_count() != 100)
+		return fail("virtual collapse via arrow toggle");
+	if (!vgui_tree_is_selected(tree, 7))
+		return fail("virtual selection stable across collapse");
+
+	/* 拖根 2(行 1)到根 1(行 0)中部:成为子节点,undo 还原。 */
+	{
+		const std::size_t before = commands.undo_count();
+		vgui_input_mouse_move(ui, tx + 30.0f, row_y(1));
+		vgui_input_mouse_down(ui, 1, tx + 30.0f, row_y(1), 1);
+		vgui_input_mouse_move(ui, tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 0.5f);
+		if (!vgui_drag_active(ui))
+			return fail("virtual drag begins");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f,
+			ty + style.tree.padding_y + row_h * 0.5f, 1);
+		auto it = vs.parent_of.find(2);
+		if (it == vs.parent_of.end() || it->second != 1 ||
+			scene.projected_row_count() != 99 ||
+			commands.undo_count() != before + 1)
+			return fail("virtual drag drop reparents");
+		if (!commands.undo() || vs.parent_of.count(2))
+			return fail("virtual drag undo");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_outliner_context_menu()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("menu context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	outliner_view scene;
+	scene.build(context, vgui_root(ui));
+	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
+
+	vgui_item_id root = scene.add_node("Root", 0, 1);
+	vgui_item_id child = scene.add_node("Child", root, 2);
+	if (!root || !child)
+		return fail("menu nodes");
+	scene.expand(root);
+
+	std::vector<outliner_view::action> actions;
+	std::vector<std::vector<object_id>> action_nodes;
+	scene.set_action_handler([&](outliner_view::action kind,
+		const std::vector<object_id>& nodes)
+	{
+		actions.push_back(kind);
+		action_nodes.push_back(nodes);
+		return true;
+	});
+	scene.enable_context_menu();
+	scene.enable_inline_rename();
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	vgui_widget* tree = scene.widget();
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+	(void)tw; (void)th;
+	const float row_h = style.tree.row_height;
+	const float row0_y = ty + style.tree.padding_y + row_h * 0.5f;
+
+	/* 右键行 0:选中并弹出菜单。 */
+	vgui_input_mouse_move(ui, tx + 30.0f, row0_y);
+	vgui_input_mouse_down(ui, 3, tx + 30.0f, row0_y, 1);
+	vgui_input_mouse_up(ui, 3, tx + 30.0f, row0_y, 1);
+	vgui_widget* menu = vgui_context_get_open_menu(ui);
+	if (!menu || !vgui_menu_is_open(menu))
+		return fail("context menu opens");
+	if (!vgui_tree_is_selected(tree, root))
+		return fail("context menu selects row");
+	if (vgui_menu_get_count(menu) < 8)
+		return fail("context menu entries");
+
+	/* 找到 Delete 项并用键盘激活:菜单与命令共用 dispatch。 */
+	vgui_item_id delete_item = 0;
+	for (int i = 0; i < vgui_menu_get_count(menu); ++i)
+	{
+		vgui_item_id item = vgui_menu_get_item_at(menu, i);
+		if (std::string(vgui_menu_get_item_text(menu, item)) == "Delete")
+		{
+			delete_item = item;
+			break;
+		}
+	}
+	if (!delete_item)
+		return fail("context menu has delete");
+	vgui_menu_set_cursor(menu, delete_item);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+	if (actions.size() != 1 || actions[0] != outliner_view::action::remove ||
+		action_nodes[0].size() != 1 || action_nodes[0][0] != 1)
+		return fail("context menu delete dispatches to selection");
+
+	/* 快捷键与菜单共用实现:Delete / Ctrl+D / F2。 */
+	vgui_tree_select(tree, child, 1);
+	vgui_set_focus(ui, tree);
+	vgui_input_key(ui, VGUI_KEY_DELETE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_DELETE, 0, 0);
+	if (actions.size() != 2 || actions[1] != outliner_view::action::remove ||
+		action_nodes[1][0] != 2)
+		return fail("delete key dispatches");
+	vgui_input_key(ui, 'D', 1, VGUI_MOD_CTRL);
+	vgui_input_key(ui, 'D', 0, VGUI_MOD_CTRL);
+	if (actions.size() != 3 || actions[2] != outliner_view::action::duplicate)
+		return fail("ctrl+d dispatches");
+	vgui_input_key(ui, VGUI_KEY_F2, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_F2, 0, 0);
+	if (!scene.renaming_active())
+		return fail("f2 starts rename via shared dispatch");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+
+	/* 菜单里的可见性开关走 kit 内部实现。 */
+	vgui_input_mouse_down(ui, 3, tx + 30.0f, row0_y, 1);
+	vgui_input_mouse_up(ui, 3, tx + 30.0f, row0_y, 1);
+	menu = vgui_context_get_open_menu(ui);
+	if (!menu)
+		return fail("context menu reopens");
+	vgui_item_id visible_item = 0;
+	for (int i = 0; i < vgui_menu_get_count(menu); ++i)
+	{
+		vgui_item_id item = vgui_menu_get_item_at(menu, i);
+		if (std::string(vgui_menu_get_item_text(menu, item)) == "Visible")
+		{
+			visible_item = item;
+			break;
+		}
+	}
+	if (!visible_item || !vgui_menu_get_item_checked(menu, visible_item))
+		return fail("context menu visibility checked state");
+	vgui_menu_set_cursor(menu, visible_item);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+	if (scene.object_visibility(1))
+		return fail("context menu toggles visibility");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
-
+	SetUnhandledExceptionFilter(crash_dump);
 	if (int rc = test_command_stack())
 		return rc;
 	if (int rc = test_command_merge_and_failures())
@@ -3149,6 +4098,18 @@ int main()
 		return rc;
 	if (int rc = test_toolbar_and_status_components())
 		return rc;
+	if (int rc = test_outliner_row_extensions())
+		return rc;
+	if (int rc = test_outliner_inline_rename())
+		return rc;
+	if (int rc = test_outliner_drag_semantics())
+		return rc;
+	if (int rc = test_outliner_filter_sync())
+		return rc;
+	if (int rc = test_virtual_outliner())
+		return rc;
+	if (int rc = test_outliner_context_menu())
+		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
 	if (!ui)
@@ -3175,9 +4136,7 @@ int main()
 		editor_shell shell(context);
 		shell.build();
 		if (!shell.built() || !shell.widget())
-			return fail("shell build");
-
-		vgui_update(ui, 1.0f / 60.0f);
+			return fail("shell build");		vgui_update(ui, 1.0f / 60.0f);
 		vgui_layout(ui);
 
 		if (!shell.toolbar().widget() || !shell.statusbar().widget() ||
@@ -3224,9 +4183,7 @@ int main()
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
 			return fail("shell console tab activation");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab restore");
-
-		vgui_item_id scene_root = shell.scene().add_node("Scene");
+			return fail("shell assets tab restore");		vgui_item_id scene_root = shell.scene().add_node("Scene");
 		vgui_item_id cube = shell.scene().add_node("Cube", scene_root, 42);
 		if (scene_root == 0 || cube == 0)
 			return fail("outliner nodes");
@@ -3238,9 +4195,7 @@ int main()
 		if (shell.statusbar().selection_text() != "Selected: 42" ||
 			shell.path().count() != 2 ||
 			shell.path().item(1).label != "Object 42")
-			return fail("shell status follows selection");
-
-		shell.properties().add_row("Name", "Cube");
+			return fail("shell status follows selection");		shell.properties().add_row("Name", "Cube");
 		shell.properties().add_row("Position", "0, 0, 0");
 		if (shell.properties().row_count() != 2)
 			return fail("property rows");
@@ -3278,9 +4233,7 @@ int main()
 			return fail("shell typed property undo");
 		if (!context.commands().redo() ||
 			shell.properties().property_value("shell.health") != "25")
-			return fail("shell typed property redo");
-
-		vgui_item_id mesh = shell.assets().add_item("Cube.mesh", "Mesh");
+			return fail("shell typed property redo");		vgui_item_id mesh = shell.assets().add_item("Cube.mesh", "Mesh");
 		if (mesh == 0)
 			return fail("asset item");
 		vgui_list_select(shell.assets().widget(), mesh, 1);
@@ -3317,9 +4270,7 @@ int main()
 			if (file_back.kind != drag_payload_kind::files ||
 				file_back.files.size() != 1 || file_back.files[0] != "assets/a.png")
 				return fail("file payload round trip");
-		}
-
-		{
+		}		{
 			vgui_update(ui, 1.0f / 60.0f);
 			vgui_layout(ui);
 			float arx = 0, ary = 0, arw = 0, arh = 0;
@@ -3354,9 +4305,7 @@ int main()
 			vgui_input_mouse_up(ui, 1, ppx + ppw * 0.5f, ppy + pph * 0.5f, 1);
 			if (assigned != "Cube.mesh")
 				return fail("asset drop reaches property grid");
-		}
-
-		test_row_model model;
+		}		test_row_model model;
 		model.rows.push_back({ 1, "A", "first", true });
 		model.rows.push_back({ 2, "B", "second", false });
 		if (model.row_count() != 2 || model.row_at(1).text != "B")

@@ -50,11 +50,11 @@
 |---|---|---|
 | 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
 | 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色/Vector2-4 行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定、行虚拟化 | 仍缺资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
-| 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04） | 行内重命名、拖放重排等编辑器语义仍在 O02/O03 |
+| 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04）；全量树过滤 + 匹配子串高亮 + 行矩形查询 | 树虚拟模式的过滤由行源自理；行内重命名、拖放重排已由 editor kit 的 outliner_view 承载 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
-| 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03） | Outliner 重排的插入线精度、多选拖动与循环检测在 O03；资产引用行在 P06 |
-| 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/资产重命名已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo/资产操作尚未接入 |
+| 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03）；按在已选行且挂拖源时推迟改选（多选拖拽前提）；kit drop target 支持自定义 hover 提示 | 资产引用行在 P06；视口创建对象归 V06 |
+| 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo/资产操作尚未接入 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
 | 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
@@ -268,31 +268,37 @@
 
 依赖：F02、F03、F04；O01 是 O02/O03/O06 的前置。
 
-- [ ] **O01 Tree 行扩展**（P0，M）
+- [x] **O01 Tree 行扩展**（P0，M）（已完成）
   - 行图标、文字颜色、自定义绘制、行内可见性/锁定按钮命中区域。
   - 验收：场景节点可显示类型图标和状态图标；点击可见性/锁定不会改变选中；自定义绘制不破坏滚动裁剪。
+  - 已实现：F04 核心行扩展（icon/text_color/buttons/row_draw + 命中不改选中 + 滚动条避让）已完成；`outliner_view` 封装场景语义——`set_node_icon/set_node_text_color` 透传，`enable_row_buttons()` 每行挂可见性（按钮 0）/锁定（按钮 1）按钮，`set_object_visibility/locked` 维护状态与图标，`set_visibility_listener/set_lock_listener` 通知宿主，`set_row_button_icons` 支持四态图标（无图标仍可命中）。`vgui_editor_kit_test::test_outliner_row_extensions` 断言按钮点击不改选中/不折叠、正文区仍可选中。
 
-- [ ] **O02 行内重命名**（P0，S）
+- [x] **O02 行内重命名**（P0，S）（已完成）
   - F2/双击进入编辑，失焦确认，Esc 取消，重名检测。
   - 验收：重命名进入命令栈；空名称/非法字符被拒绝；取消后恢复原名。
+  - 已实现：核心新增 `VGUI_EVENT_CANCEL`（单行编辑 Esc 先广播再失焦）与 `vgui_context_set_focus_listener`（失焦确认的通路）、`VGUI_KEY_F1..F12` 键码及 SDL 映射；`outliner_view::enable_inline_rename()`（F2 树持焦点时、双击时进入）+ `begin_rename()` 在 `vgui_tree_get_item_rect` 行矩形上叠 VGUI_EDIT，Enter=SUBMIT 提交、Esc=CANCEL 放弃、失焦提交；`rename_node()` 走 `rename_handler`（宿主重名/非法字符校验）+ 命令栈 "Rename node" 命令，空名/逗号拒绝不入栈。`test_outliner_inline_rename` 覆盖程序化改名、三种拒绝、Enter/Esc/失焦/F2/双击全路径。
 
-- [ ] **O03 拖放重排/改变父子关系**（P0，M）
+- [x] **O03 拖放重排/改变父子关系**（P0，M）（已完成）
   - 插入线、拖到节点上成为子节点、多选拖动、禁止循环父子关系。
   - 验收：拖放结果与视觉指示一致；操作可撤销；非法 drop 有拒绝反馈。
+  - 已实现：`outliner_view::drop_location_at()` 解析上 25%=before、下 25%=after、中 50%=onto（成为末子节点）、空白=roots；`emit_hover_hint()` 对应 LINE/RECT 提示，非法位置 NONE（拒绝反馈）；kit `drop_target` 增加可选 `hover()` 虚函数（drag_bridge 转发核心 hover 回调，默认实现保持横向插入线）；循环父子检测移入 kit（`would_cycle` 沿宿主 parent 链），多选拖动 payload 用逗号拼接 id 列表、drop 按视觉序在单个事务内应用（索引随移除修正，单次 undo）。核心配套：按在已选行且有拖源时推迟到抬起再改选择（`defer_click`），避免按下把多选折叠成单选。`test_outliner_drag_semantics` 覆盖位置解析、提示类型、onto 拖放可撤销、循环拒绝、多选单记录撤销。
 
-- [ ] **O04 搜索/过滤/选择同步**（P0，S/M）
+- [x] **O04 搜索/过滤/选择同步**（P0，S/M）（已完成）
   - 按名称/类型过滤，高亮匹配，保留展开状态。
   - 与 Viewport、PropertyGrid 双向选中同步。
   - 验收：搜索过滤后选择不丢失；Viewport 选中对象时 Outliner 自动展开并滚动到可见位置。
+  - 已实现：核心 `vgui_tree_set_filter`（全量树行投影改为命中+祖先闭包，忽略折叠但保留展开状态，清除后恢复）与 `vgui_tree_set_match_text/set_match_color`（首个大小写不敏感子串用 match 色重绘）；`outliner_view::set_filter`（名称子串）+ `set_filter_match_handler`（宿主类型过滤叠加）；`enable_selection_sync()` 注册 context 选择监听，外来选择 `expand_to`+select+`scroll_to_node(NEAREST)`，自身点击经 `syncing_selection_` 重入保护。`editor_shell` 场景搜索框已接 `set_filter`。`test_outliner_filter_sync` 覆盖命中+祖先、选择/展开保留、清除恢复、handler 叠加、同步展开选中。
 
-- [ ] **O05 虚拟 Outliner**（P0，M）
+- [x] **O05 虚拟 Outliner**（P0，M）（已完成）
   - 大型场景按需展开/加载，稳定 ID，增量刷新。
   - 验收：万级节点只查询可见行；展开/折叠不重建整棵树；选择、滚动位置和展开状态保持。
+  - 已实现：`outliner_view::set_scene_source()` 宿主适配器（root_count/root_at/child_count/child_at/name 必需，parent_of/icon/enabled/tooltip/text_color/row_draw 可选）切换 `vgui_tree_set_row_source` 虚拟模式；kit 持有展开状态（`row_toggle` 翻转 + `source_changed`），row_id=object_id 稳定；折叠时只投影可见行（适配器仅对投影内节点查询 name/child_count）；`scene_changed()` 结构级失效、`scene_row_changed()` 单行 `source_rows_changed`；O01~O04 在虚拟模式同样生效（按钮/图标/重命名/拖放/过滤经适配器走闭包投影）。`test_virtual_outliner` 用 100×100=万级场景断言折叠查询有界、展开投影 200、选择跨展开/折叠/结构刷新保持、虚拟过滤投影与清除恢复、虚拟重命名/拖放可撤销。
 
-- [ ] **O06 右键菜单与快捷键**（P0，S）
+- [x] **O06 右键菜单与快捷键**（P0，S）（已完成）
   - 新建、删除、复制、重命名、聚焦、显示/隐藏、锁定。
   - Delete/F2/Ctrl+D 等常用操作。
   - 验收：右键菜单作用于当前选中项；快捷键与菜单命令共用同一套命令实现。
+  - 已实现：`outliner_view::enable_context_menu()` 树右键（button 3）先独占选中再弹出菜单（New Child / Rename F2 / Duplicate Ctrl+D / Delete Del / Focus / Visible / Locked 复选）；`set_action_handler()` 承接 new_child/duplicate/remove/focus（宿主实现、可包命令），rename 与两个开关走 kit 内部实现；Delete/F2/Ctrl+D 经 context key handler（树持焦点时）汇入同一 `dispatch_action`。`test_outliner_context_menu` 覆盖右键选中、菜单激活分发、三个快捷键共用实现、Visible 复选态与切换。
 
 ### M4 资产浏览器与辅助面板（A）
 
@@ -556,13 +562,14 @@ MVP 验收场景：
 - `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）与 PropertyGrid 向量行，以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
+- M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调，以及 M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（621 项，含面板滚动监听通知）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（641 项，含树过滤/行矩形/编辑取消/焦点监听）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
 1. PropertyGrid 的资产/对象引用行（P06）与颜色 HSV 取色器（P05）。
-2. Outliner 行图标 / 可见性锁定按钮（O01，F04 行扩展已就绪）、行内重命名（O02）与拖放重排打磨（O03，F03 已就绪）。
-3. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
-4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
+2. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
+3. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
+4. P07 批量编辑事务（连续拖拽聚合、资源丢失提示、多选混合值）。

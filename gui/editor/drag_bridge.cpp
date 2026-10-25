@@ -7,6 +7,22 @@
 
 namespace vgui_editor_kit {
 
+	/* drop_target 默认 hover：悬停控件内的横向插入线。 */
+	void drop_target::hover(const drag_payload& payload, vgui_widget* target,
+		float x, float y, vgui_drop_hint* hint)
+	{
+		(void)payload;
+		if (!hint) return;
+		float wx = 0, wy = 0, ww = 0, wh = 0;
+		if (target)
+			vgui_widget_get_rect(target, &wx, &wy, &ww, &wh);
+		hint->kind = VGUI_DROP_HINT_LINE;
+		hint->x = wx;
+		hint->y = y - 1.0f;
+		hint->w = ww;
+		hint->h = 2.0f;
+	}
+
 	drag_payload to_editor_payload(const vgui_drag_payload& payload)
 	{
 		drag_payload out;
@@ -98,28 +114,19 @@ namespace vgui_editor_kit {
 		void drop_adapter_hover(void* user, const vgui_drag_payload* payload,
 			float x, float y, vgui_drop_hint* hint)
 		{
-			(void)payload;
 			auto* adapter = static_cast<drop_adapter*>(user);
-			if (!adapter || !adapter->impl || !hint) return;
-			(void)adapter->impl;
-			/* 默认插入指示：悬停控件内的横向插入线。 */
-			float wx = 0, wy = 0, ww = 0, wh = 0;
-			if (adapter->widget)
-				vgui_widget_get_rect(adapter->widget, &wx, &wy, &ww, &wh);
-			hint->kind = VGUI_DROP_HINT_LINE;
-			hint->x = wx;
-			hint->y = y - 1.0f;
-			hint->w = ww;
-			hint->h = 2.0f;
+			if (!adapter || !adapter->impl || !payload || !hint) return;
+			adapter->impl->hover(to_editor_payload(*payload), adapter->widget,
+				x, y, hint);
 		}
 
-		int drop_adapter_drop(void* user, const vgui_drag_payload* payload,
-			float x, float y)
-		{
-			auto* adapter = static_cast<drop_adapter*>(user);
-			if (!adapter || !adapter->impl || !payload) return 0;
-			return adapter->impl->drop(to_editor_payload(*payload), x, y) ? 1 : 0;
-		}
+	int drop_adapter_drop(void* user, const vgui_drag_payload* payload,
+		float x, float y)
+	{
+		auto* adapter = static_cast<drop_adapter*>(user);
+		if (!adapter || !adapter->impl || !payload) return 0;
+		return adapter->impl->drop(to_editor_payload(*payload), x, y) ? 1 : 0;
+	}
 
 		/* 行拖拽存储块：provider 之外再持有一份 kit 载荷（keeper）。vgui 的
 		 * row_drag_fn 返回后才开始拷贝字符串，若直接引用 thunk 局部变量，

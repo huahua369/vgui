@@ -28,6 +28,11 @@ set(SRC_EDITOR_KIT_TEST
     vgui_editor_kit_test.cpp
 )
 
+# 游戏编辑器 dogfood 示例（editor_shell + M3 Outliner 全流程）
+set(SRC_GAME_EDITOR
+    vgui_game_editor.cpp
+)
+
 # Phase 0: 3D FBO -> native texture -> VGUI_IMAGE
 set(SRC_PHASE0
     vgui_phase0.cpp
@@ -72,6 +77,9 @@ target_compile_definitions(vgui_editor PRIVATE VGUI_SOURCE_DIR="${CMAKE_SOURCE_D
 
 add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
 target_link_libraries(vgui_editor_kit_test PRIVATE vgui_editor_kit libovg EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
+target_link_libraries(vgui_game_editor PRIVATE vgui_editor_kit libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_phase0 ${SRC_PHASE0})
 target_link_libraries(vgui_phase0 PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)

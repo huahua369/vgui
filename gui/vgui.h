@@ -183,7 +183,19 @@ extern "C" {
 		VGUI_KEY_END,
 		VGUI_KEY_PAGE_UP,
 		VGUI_KEY_PAGE_DOWN,
-		VGUI_KEY_INSERT
+		VGUI_KEY_INSERT,
+		VGUI_KEY_F1 = 0x110,
+		VGUI_KEY_F2,
+		VGUI_KEY_F3,
+		VGUI_KEY_F4,
+		VGUI_KEY_F5,
+		VGUI_KEY_F6,
+		VGUI_KEY_F7,
+		VGUI_KEY_F8,
+		VGUI_KEY_F9,
+		VGUI_KEY_F10,
+		VGUI_KEY_F11,
+		VGUI_KEY_F12
 	} vgui_key;
 
 	typedef enum vgui_mod {
@@ -247,7 +259,10 @@ extern "C" {
 		VGUI_EVENT_TEXT,
 		VGUI_EVENT_EDITING,
 		VGUI_EVENT_VALUE_CHANGED,
-		VGUI_EVENT_SUBMIT
+		VGUI_EVENT_SUBMIT,
+		/* Sent before a focused single-line edit blurs on Escape, so inline
+		 * editors (rename, combo boxes) can cancel without committing. */
+		VGUI_EVENT_CANCEL
 	} vgui_event_type;
 
 	typedef struct vgui_event {
@@ -287,6 +302,11 @@ extern "C" {
 	 * as handled.  Handlers are called for both key-down and key-up events. */
 	typedef int (*vgui_key_handler_fn)(vgui_context* ctx, int key, int down,
 		int mods, void* user);
+
+	/* Context-level focus observer.  Called after the focus moved; either
+	 * argument may be nullptr.  Used by inline editors to commit on blur. */
+	typedef void (*vgui_focus_fn)(vgui_context* ctx, vgui_widget* old_focus,
+		vgui_widget* new_focus, void* user);
 
 	/* ------------------------------------------------------------------------- */
 	/* Custom-draw widget (VGUI_CUSTOM)                                          */
@@ -1345,6 +1365,24 @@ extern "C" {
 	VGUI_API void vgui_tree_on_select(vgui_widget* tree, vgui_item_select_fn fn, void* user);
 	VGUI_API void vgui_tree_on_activate(vgui_widget* tree, vgui_item_fn fn, void* user);
 
+	/* Row filter for full-model trees (virtual trees filter in their row
+	 * source).  While a filter is set, the visible-row projection keeps only
+	 * rows whose match() returns non-zero plus their ancestors; the collapse
+	 * state is ignored for visibility but preserved, so clearing the filter
+	 * restores the previous expansion and selection untouched.  Pass a null fn
+	 * to clear. */
+	typedef int (*vgui_tree_filter_fn)(vgui_widget* tree, vgui_item_id node, void* user);
+	VGUI_API void vgui_tree_set_filter(vgui_widget* tree, vgui_tree_filter_fn fn, void* user);
+	/* Optional substring highlighted in match_color while a filter is active
+	 * (case-insensitive, first occurrence per row).  Null/empty disables. */
+	VGUI_API void vgui_tree_set_match_text(vgui_widget* tree, const char* text);
+	VGUI_API void vgui_tree_set_match_color(vgui_widget* tree, vgui_color color);
+	/* Absolute-window rectangle of a visible row (the content area spanning
+	 * the row, including the scroll offset).  Returns 0 when the node is not
+	 * currently visible. */
+	VGUI_API int vgui_tree_get_item_rect(vgui_widget* tree, vgui_item_id node,
+		float* x, float* y, float* w, float* h);
+
 	/* ------------------------------------------------------------------------- */
 	/* Optional virtual row source                                               */
 	/* ------------------------------------------------------------------------- */
@@ -1635,6 +1673,10 @@ extern "C" {
 	VGUI_API vgui_widget* vgui_get_focus(vgui_context* ctx);
 	VGUI_API vgui_widget* vgui_hit_test(vgui_context* ctx, float x, float y);
 	VGUI_API vgui_cursor vgui_context_get_cursor(vgui_context* ctx);
+
+	/* Context-level focus observer (single listener; replaces the previous
+	 * one).  Pass a null fn to remove. */
+	VGUI_API void vgui_context_set_focus_listener(vgui_context* ctx, vgui_focus_fn fn, void* user);
 
 	/* Current modifier state (vgui_mod bit mask).  Useful for mouse-driven
 	 * controls that need Shift/Alt fine-tuning. */

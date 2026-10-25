@@ -47,6 +47,13 @@ namespace vgui_editor_kit {
 	public:
 		virtual ~drop_target() = default;
 		virtual bool can_accept(const drag_payload& payload) const = 0;
+		/* Optional hover feedback while an accepted payload hovers the widget
+		 * this target is attached to.  The default draws a horizontal
+		 * insertion line across the widget; override to emit line/rect hints
+		 * in absolute window coordinates, or leave hint->kind = NONE to
+		 * signal that the current position rejects the drop. */
+		virtual void hover(const drag_payload& payload, vgui_widget* target,
+			float x, float y, vgui_drop_hint* hint);
 		virtual bool drop(const drag_payload& payload, float x, float y) = 0;
 	};
 

@@ -293,9 +293,11 @@ namespace vgui_editor_kit {
 
 		search_.build(toolbar_.widget(), "Search scene");
 		search_.set_on_change([this](const std::string& text) {
+			scene_.set_filter(text.c_str());
 			set_status(text.empty() ? "ready" : "search: " + text);
 		});
 		search_.set_on_submit([this](const std::string& text) {
+			scene_.set_filter(text.c_str());
 			set_status(text.empty() ? "search cleared" : "search: " + text);
 		});
 
@@ -399,6 +401,12 @@ namespace vgui_editor_kit {
 		// F03: 三条拖放路径的默认接线——Outliner 行拖拽重排（走命令栈）、
 		// 资产行拖拽、资产拖到属性栏 / 视口的状态反馈。
 		scene_.enable_drag_drop();
+		// M3: Outliner 双向选中同步 + 行内编辑/右键菜单默认可用;宿主可
+		// 通过 scene() 进一步设置 move/rename/action handler。
+		scene_.enable_selection_sync();
+		scene_.enable_inline_rename();
+		scene_.enable_context_menu();
+		scene_.enable_row_buttons();
 		assets_.enable_row_drag();
 		viewport_.set_drop_listener([this](const drag_payload& payload, float, float) {
 			if (!payload.id.empty())

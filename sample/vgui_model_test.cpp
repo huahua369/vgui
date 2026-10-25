@@ -3628,6 +3628,162 @@ static void test_i18n_rtl(vgui_context* ui)
 	vgui_widget_destroy(tabs);
 }
 
+//----------------------------------------------------------------------------
+// tree filter / match highlight / item rect / edit cancel / focus listener
+//----------------------------------------------------------------------------
+
+static bool contains_ci(const char* hay, const char* needle)
+{
+	if (!hay || !needle || !*needle) return false;
+	const std::string h(hay), n(needle);
+	for (size_t i = 0; i + n.size() <= h.size(); ++i)
+	{
+		size_t j = 0;
+		auto lower = [](char c) { return (c >= 'A' && c <= 'Z') ? char(c + 32) : c; };
+		while (j < n.size() && lower(h[i + j]) == lower(n[j])) ++j;
+		if (j == n.size()) return true;
+	}
+	return false;
+}
+
+struct tree_filter_user
+{
+	const char* needle = "";
+};
+
+static int match_contains(vgui_widget* tree, vgui_item_id node, void* user)
+{
+	tree_filter_user* f = (tree_filter_user*)user;
+	return contains_ci(vgui_tree_get_item_text(tree, node), f->needle) ? 1 : 0;
+}
+
+struct edit_event_counter
+{
+	int cancels = 0;
+	int submits = 0;
+};
+
+static void on_edit_event(vgui_widget*, const vgui_event* e, void* user)
+{
+	edit_event_counter* c = (edit_event_counter*)user;
+	if (e->type == VGUI_EVENT_CANCEL) c->cancels++;
+	if (e->type == VGUI_EVENT_SUBMIT) c->submits++;
+}
+
+struct focus_change_counter
+{
+	int changes = 0;
+	vgui_widget* last_old = nullptr;
+	vgui_widget* last_new = nullptr;
+};
+
+static void on_focus_change(vgui_context*, vgui_widget* old_w, vgui_widget* new_w, void* user)
+{
+	focus_change_counter* c = (focus_change_counter*)user;
+	c->changes++;
+	c->last_old = old_w;
+	c->last_new = new_w;
+}
+
+static void test_tree_filter_and_focus(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	vgui_widget_set_id(tree, "filter-tree");
+	vgui_widget_set_pos(tree, 10.0f, 480.0f);
+	vgui_widget_set_size(tree, 240.0f, 200.0f);
+
+	vgui_item_id alpha = vgui_tree_add_node(tree, 0, "Alpha", nullptr);
+	vgui_item_id beta = vgui_tree_add_node(tree, 0, "Beta", nullptr);
+	vgui_item_id alpha_child = vgui_tree_add_node(tree, alpha, "alpha-child", nullptr);
+	vgui_item_id beta_child = vgui_tree_add_node(tree, beta, "gamma", nullptr);
+	check(alpha && beta && alpha_child && beta_child, "tree filter: nodes added");
+	vgui_tree_set_item_expanded(tree, alpha, 1);
+	// beta 保持折叠,gamma 不可见。
+
+	vgui_tree_select(tree, beta, 1);
+	check(vgui_tree_is_selected(tree, beta), "tree filter: selection set");
+
+	tree_filter_user match;
+	match.needle = "alp";
+	vgui_tree_set_match_text(tree, "alp");
+	vgui_tree_set_filter(tree, match_contains, &match);
+	vgui_update(ui, 0.016f);
+
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+	(void)th;
+	const float row_h = style.tree.row_height;
+	const auto row_at = [&](int row) {
+		// item_at_point 接收控件局部坐标。
+		return vgui_tree_item_at_point(tree, 30.0f,
+			style.tree.padding_y + row_h * (float)row + row_h * 0.5f);
+	};
+	// 过滤后只保留 Alpha / alpha-child;折叠的 beta 行被过滤隐藏,但其折叠
+	// 后代的命中测试行 2 应为 0(无第三行)。
+	check(row_at(0) == alpha, "tree filter: matching root kept");
+	check(row_at(1) == alpha_child, "tree filter: matching child kept");
+	check(row_at(2) == 0, "tree filter: non-matching rows hidden");
+	// beta 被过滤隐藏,但选择仍保留(节点未销毁)。
+	check(vgui_tree_is_selected(tree, beta), "tree filter: hidden selection preserved");
+	// 过滤忽略折叠状态:折叠的 beta 若命中也应显示其后代。换过滤词需
+	// 重新 set_filter 触发行投影重建(match 文本只影响绘制)。
+	vgui_tree_set_match_text(tree, "gam");
+	match.needle = "gam";
+	vgui_tree_set_filter(tree, match_contains, &match);
+	vgui_update(ui, 0.016f);
+	check(row_at(0) == beta, "tree filter: ancestor of match shown");
+	check(row_at(1) == beta_child, "tree filter: match under collapsed node shown");
+
+	// 清除过滤:行投影恢复,展开状态未被动过(beta 仍折叠)。
+	vgui_tree_set_match_text(tree, nullptr);
+	vgui_tree_set_filter(tree, nullptr, nullptr);
+	vgui_update(ui, 0.016f);
+	check(row_at(0) == alpha, "tree filter: clear restores rows");
+	check(row_at(1) == alpha_child, "tree filter: clear keeps expansion of alpha");
+	check(row_at(2) == beta, "tree filter: clear keeps beta collapsed");
+	check(vgui_tree_is_selected(tree, beta), "tree filter: clear keeps selection");
+
+	// 行矩形:可见行返回内容区矩形,折叠后代返回 0。
+	float rx = 0, ry = 0, rw = 0, rh = 0;
+	check(vgui_tree_get_item_rect(tree, alpha_child, &rx, &ry, &rw, &rh) == 1,
+		"tree rect: visible row returns rect");
+	check(near(rx, tx + style.tree.padding_x) && near(rw, tw - 2 * style.tree.padding_x)
+		&& near(ry, ty + style.tree.padding_y + row_h) && near(rh, row_h),
+		"tree rect: rect values");
+	check(vgui_tree_get_item_rect(tree, beta_child, &rx, &ry, &rw, &rh) == 0,
+		"tree rect: hidden row returns 0");
+	vgui_widget_destroy(tree);
+
+	// 编辑取消事件 + 焦点监听。
+	vgui_widget* edit = vgui_widget_add(vgui_root(ui), VGUI_EDIT, nullptr);
+	vgui_widget_set_id(edit, "cancel-edit");
+	vgui_widget_set_pos(edit, 10.0f, 700.0f);
+	vgui_widget_set_size(edit, 200.0f, 28.0f);
+	vgui_edit_set_text(edit, "x");
+	edit_event_counter events;
+	vgui_widget_on_event(edit, on_edit_event, &events);
+	focus_change_counter focus;
+	vgui_context_set_focus_listener(ui, on_focus_change, &focus);
+	vgui_update(ui, 0.016f);
+
+	vgui_set_focus(ui, edit);
+	check(focus.changes == 1 && focus.last_new == edit && focus.last_old == nullptr,
+		"focus listener: focus gained");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	check(events.cancels == 1, "edit cancel: Escape fires CANCEL");
+	check(vgui_get_focus(ui) == nullptr, "edit cancel: Escape clears focus");
+	check(focus.changes == 2 && focus.last_old == edit && focus.last_new == nullptr,
+		"focus listener: blur reported");
+
+	vgui_set_focus(ui, edit);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+	check(events.submits == 1 && events.cancels == 1, "edit cancel: Enter still submits");
+	vgui_context_set_focus_listener(ui, nullptr, nullptr);
+	vgui_widget_destroy(edit);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -3670,6 +3826,7 @@ int main()
 	test_toast(ui, style);
 	test_dock(ui, style);
 	test_i18n_rtl(ui);
+	test_tree_filter_and_focus(ui, style);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
