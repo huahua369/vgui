@@ -20,6 +20,7 @@ set(SRC_MODEL_TEST
 # UI 编辑器（文档 JSON + C++ 代码生成 + 实时预览）
 set(SRC_UI_EDITOR
     ui_editor_main.cpp
+    ../gui/ui_editor.cpp
 )
 
 # vgui_editor_kit MVP 骨架自测（无需窗口/GPU）
@@ -36,6 +37,11 @@ set(SRC_PHASE0
 # OVG 原生纹理离屏读回测试（方向/裁剪/tint/flip/九宫格/旋转/矩阵/clip/update/fini）
 set(SRC_OVG_TEXTURE_TEST
     ovg_texture_test.cpp
+)
+
+# OVG tools.hpp 常用图形离屏像素断言测试（基础形状/渐变/虚线/符号/编辑器组件/取色器）
+set(SRC_OVG_TOOLS_TEST
+    ovg_tools_test.cpp
 )
 
 # vgui 原生纹理离屏读回测试（create/crop/tint/flip/update/release）
@@ -61,7 +67,8 @@ add_executable(vgui_model_test ${SRC_MODEL_TEST})
 target_link_libraries(vgui_model_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(vgui_editor ${SRC_UI_EDITOR})
-target_link_libraries(vgui_editor PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
+target_link_libraries(vgui_editor PRIVATE vgui_editor_kit libovg libvgui EnTT::EnTT ZLIB::ZLIB nlohmann_json::nlohmann_json)
+target_compile_definitions(vgui_editor PRIVATE VGUI_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 
 add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
 target_link_libraries(vgui_editor_kit_test PRIVATE vgui_editor_kit libovg EnTT::EnTT ZLIB::ZLIB)
@@ -71,6 +78,9 @@ target_link_libraries(vgui_phase0 PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(ovg_texture_test ${SRC_OVG_TEXTURE_TEST})
 target_link_libraries(ovg_texture_test PRIVATE libovg SDL3::SDL3 glm::glm-header-only)
+
+add_executable(ovg_tools_test ${SRC_OVG_TOOLS_TEST})
+target_link_libraries(ovg_tools_test PRIVATE libovg SDL3::SDL3 glm::glm-header-only)
 
 add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
 target_link_libraries(vgui_texture_test PRIVATE libovg libvgui SDL3::SDL3 glm::glm-header-only)

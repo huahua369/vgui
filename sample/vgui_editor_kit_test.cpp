@@ -1147,6 +1147,79 @@ namespace {
 		return 0;
 	}
 
+	int test_property_grid_virtualization()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property grid virtualization context");
+		vgui_context_set_size(ui, 900, 500);
+
+		{
+			property_grid grid;
+			grid.build(vgui_root(ui));
+			vgui_widget_set_size(grid.widget(), 900.0f, 500.0f);
+			for (int i = 0; i < 1000; ++i)
+			{
+				property_desc desc;
+				desc.id = "p" + std::to_string(i);
+				desc.label = "Property " + std::to_string(i);
+				desc.type = property_type::integer;
+				desc.value = std::to_string(i);
+				desc.category = "Group " + std::to_string(i / 100);
+				if (!grid.add_property(std::move(desc)))
+					return fail("add virtualized property");
+			}
+
+			vgui_layout(ui);
+			if (grid.row_count() != 1000 || grid.visible_row_count() != 1000)
+				return fail("virtualized row count");
+			const std::size_t top_window = grid.materialized_row_count();
+			if (top_window == 0 || top_window >= 100)
+				return fail("virtualized top window is bounded");
+			if (!grid.property_editor("p0") || grid.property_editor("p999"))
+				return fail("virtualized top window contents");
+
+			float content_w = 0.0f, content_h = 0.0f;
+			vgui_panel_get_content_size(grid.widget(), &content_w, &content_h);
+			if (content_h <= 500.0f)
+				return fail("virtualized content height");
+
+			vgui_panel_set_scroll(grid.widget(), 0.0f, content_h);
+			vgui_layout(ui);
+			const std::size_t bottom_window = grid.materialized_row_count();
+			if (bottom_window == 0 || bottom_window >= 100)
+				return fail("virtualized bottom window is bounded");
+			if (grid.property_editor("p0") || !grid.property_editor("p999"))
+				return fail("virtualized bottom window contents");
+
+			vgui_panel_set_scroll(grid.widget(), 0.0f, 0.0f);
+			vgui_layout(ui);
+			if (!grid.property_editor("p0") || grid.property_editor("p999"))
+				return fail("virtualized window scrolls back");
+
+			/* Filtering from the bottom must clamp the scroll offset and
+			 * rebuild the window for the shorter content. */
+			vgui_panel_set_scroll(grid.widget(), 0.0f, content_h);
+			vgui_layout(ui);
+			grid.set_filter("Property 999");
+			vgui_layout(ui);
+			if (grid.visible_row_count() != 1 ||
+				grid.materialized_row_count() != 1)
+				return fail("virtualized filter window");
+			if (!grid.property_editor("p999") || grid.property_editor("p0"))
+				return fail("virtualized filter contents");
+			float scroll_x = 0.0f, scroll_y = 0.0f;
+			vgui_panel_get_scroll(grid.widget(), &scroll_x, &scroll_y);
+			if (scroll_y > 0.5f)
+				return fail("virtualized filter resets scroll");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 	int test_selection_binding()
 	{
 		using namespace vgui_editor_kit;
@@ -1677,6 +1750,8 @@ int main()
 	if (int rc = test_selection_subscriptions())
 		return rc;
 	if (int rc = test_property_grid())
+		return rc;
+	if (int rc = test_property_grid_virtualization())
 		return rc;
 	if (int rc = test_selection_binding())
 		return rc;

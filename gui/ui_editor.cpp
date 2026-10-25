@@ -19,9 +19,14 @@
 
 #include <nlohmann/json.hpp>
 
+#include "property_grid.h"
+
 namespace vgui_editor {
 
 	using json = nlohmann::json;
+	using vgui_editor_kit::property_desc;
+	using vgui_editor_kit::property_grid;
+	using vgui_editor_kit::property_type;
 
 	/* ------------------------------------------------------------------------- */
 	/* small helpers                                                             */
@@ -113,6 +118,91 @@ namespace vgui_editor {
 		char buf[16] = {};
 		snprintf(buf, sizeof(buf), "#%08X", c);
 		return buf;
+	}
+
+	/* The document stores colors as ARGB (#AARRGGBB); property_grid uses the
+	 * canonical RGBA form (#RRGGBB or #RRGGBBAA).  Keep the conversion in one
+	 * place so the inspector and the preview agree. */
+	static std::string property_color_text(uint32_t c)
+	{
+		const unsigned int a = (c >> 24) & 0xFFu;
+		const unsigned int r = (c >> 16) & 0xFFu;
+		const unsigned int g = (c >> 8) & 0xFFu;
+		const unsigned int b = c & 0xFFu;
+		char buf[16] = {};
+		if (a == 0xFFu)
+			snprintf(buf, sizeof(buf), "#%02X%02X%02X", r, g, b);
+		else
+			snprintf(buf, sizeof(buf), "#%02X%02X%02X%02X", r, g, b, a);
+		return buf;
+	}
+
+	static bool property_color_argb(const std::string& text, uint32_t* out)
+	{
+		std::string s = trim_copy(text);
+		bool argb_prefix = false;
+		if (s.size() > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X'))
+		{
+			argb_prefix = true;
+			s = s.substr(2);
+		}
+		else if (!s.empty() && s[0] == '#')
+		{
+			s = s.substr(1);
+		}
+		for (char c : s)
+			if (!std::isxdigit((unsigned char)c)) return false;
+
+		auto nibble = [&s](std::size_t i) -> unsigned int {
+			const char c = s[i];
+			if (c >= '0' && c <= '9') return (unsigned int)(c - '0');
+			if (c >= 'a' && c <= 'f') return (unsigned int)(c - 'a' + 10);
+			return (unsigned int)(c - 'A' + 10);
+		};
+		auto byte = [&](std::size_t i) -> unsigned int {
+			return nibble(i) * 16u + nibble(i + 1);
+		};
+
+		unsigned int r = 0, g = 0, b = 0, a = 0xFFu;
+		switch (s.size())
+		{
+		case 3:
+			r = nibble(0) * 17u;
+			g = nibble(1) * 17u;
+			b = nibble(2) * 17u;
+			break;
+		case 4:
+			r = nibble(0) * 17u;
+			g = nibble(1) * 17u;
+			b = nibble(2) * 17u;
+			a = nibble(3) * 17u;
+			break;
+		case 6:
+			r = byte(0);
+			g = byte(2);
+			b = byte(4);
+			break;
+		case 8:
+			if (argb_prefix)
+			{
+				a = byte(0);
+				r = byte(2);
+				g = byte(4);
+				b = byte(6);
+			}
+			else
+			{
+				r = byte(0);
+				g = byte(2);
+				b = byte(4);
+				a = byte(6);
+			}
+			break;
+		default:
+			return false;
+		}
+		if (out) *out = (a << 24) | (r << 16) | (g << 8) | b;
+		return true;
 	}
 
 	static std::string number_text(float v)
@@ -1192,7 +1282,7 @@ namespace vgui_editor {
 		vgui_widget* json_path_edit = nullptr;
 		vgui_widget* cpp_path_edit = nullptr;
 		vgui_widget* hierarchy_tree = nullptr;
-		vgui_widget* props_body = nullptr;
+		property_grid props_grid;
 		vgui_widget* canvas = nullptr;
 		vgui_widget* preview_root = nullptr;
 		vgui_widget* selection_frame = nullptr;
@@ -1201,15 +1291,6 @@ namespace vgui_editor {
 		std::unordered_map<ui_node*, vgui_widget*> by_node;
 		std::unordered_map<vgui_widget*, ui_node*> by_widget;
 		std::unordered_map<ui_node*, vgui_item_id> tree_items;
-
-		struct binding
-		{
-			impl* ed = nullptr;
-			ui_node* node = nullptr;
-			int prop = 0;
-			int aux = 0;
-		};
-		std::vector<std::unique_ptr<binding>> prop_bindings;
 
 		bool selecting_from_tree = false;
 
@@ -1350,35 +1431,6 @@ namespace vgui_editor {
 		ed->selecting_from_tree = true;
 		ed->select(node);
 		ed->selecting_from_tree = false;
-	}
-
-	static void on_prop_text(vgui_widget* w, const char* text, void* user)
-	{
-		(void)w;
-		auto* b = static_cast<ui_editor::impl::binding*>(user);
-		if (!b || !b->ed) return;
-		b->ed->apply_text_prop(b->node, b->prop, text ? text : "");
-	}
-
-	static void on_prop_bool(vgui_widget* w, const vgui_event* e, void* user)
-	{
-		auto* b = static_cast<ui_editor::impl::binding*>(user);
-		if (!b || !b->ed || !e) return;
-		if (e->type != VGUI_EVENT_VALUE_CHANGED && e->type != VGUI_EVENT_CLICK) return;
-		b->ed->apply_bool_prop(b->node, b->prop, vgui_widget_get_checked(w) != 0);
-	}
-
-	static void on_prop_enum(vgui_widget* w, const vgui_event* e, void* user)
-	{
-		(void)w;
-		auto* b = static_cast<ui_editor::impl::binding*>(user);
-		if (!b || !b->ed || !e || e->type != VGUI_EVENT_CLICK) return;
-		ui_editor::impl* ed = b->ed;
-		ui_node* n = b->node;
-		int prop = b->prop;
-		int value = b->aux;
-		ed->apply_enum_prop(n, prop, value);
-		ed->rebuild_properties();
 	}
 
 	/* ---------------------------- UI construction ---------------------------- */
@@ -1530,14 +1582,8 @@ namespace vgui_editor {
 		vgui_widget_set_font_size(props_title, 14.0f);
 		vgui_widget_set_text_color(props_title, 0xFFAEB4BC);
 
-		props_body = vgui_widget_add(props, VGUI_PANEL, nullptr);
-		vgui_widget_set_grow(props_body, 1.0f);
-		vgui_widget_set_layout(props_body, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_align_items(props_body, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_background(props_body, 0);
-		vgui_widget_set_padding(props_body, 2, 2, 2, 2);
-		vgui_widget_set_gap(props_body, 4);
-		vgui_panel_set_scrollable(props_body, 0, 1);
+		props_grid.build(props);
+		vgui_widget_set_grow(props_grid.widget(), 1.0f);
 
 		return main;
 	}
@@ -1839,216 +1885,204 @@ namespace vgui_editor {
 		}
 	}
 
-	static int align_list_count() { return 5; }
-
 	void ui_editor::impl::rebuild_properties()
 	{
-		if (!props_body) return;
-		vgui_widget_clear(props_body);
-		prop_bindings.clear();
+		props_grid.clear();
 
 		ui_node* n = selected;
 		if (!n)
-		{
-			vgui_widget* hint = vgui_widget_add(props_body, VGUI_LABEL, "未选中控件");
-			vgui_widget_set_text_color(hint, 0xFF9AA0A6);
 			return;
-		}
 
 		const bool is_root = (n == &doc().root);
 
-		auto section = [&](const char* title)
+		auto add = [this, n](property_desc desc, int prop)
 			{
-				vgui_widget* l = vgui_widget_add(props_body, VGUI_LABEL, title);
-				vgui_widget_set_font_size(l, 13.0f);
-				vgui_widget_set_text_color(l, 0xFF7FB2FF);
-				vgui_widget_set_padding(l, 0, 6, 0, 2);
-			};
-
-		auto row = [&]()
-			{
-				vgui_widget* r = vgui_widget_add(props_body, VGUI_PANEL, nullptr);
-				vgui_widget_set_layout(r, VGUI_LAYOUT_ROW);
-				vgui_widget_set_background(r, 0);
-				vgui_widget_set_padding(r, 0, 0, 0, 0);
-				vgui_widget_set_gap(r, 6);
-				vgui_widget_set_align_items(r, VGUI_ALIGN_CENTER);
-				return r;
-			};
-
-		auto text_row = [&](const char* label, const std::string& value, int prop)
-			{
-				vgui_widget* r = row();
-				vgui_widget* l = vgui_widget_add(r, VGUI_LABEL, label);
-				vgui_widget_set_size(l, 86.0f, 24.0f);
-				vgui_widget_set_font_size(l, 12.0f);
-				vgui_widget_set_text_color(l, 0xFFAEB4BC);
-				vgui_widget* e = vgui_widget_add(r, VGUI_EDIT, "");
-				vgui_widget_set_grow(e, 1.0f);
-				vgui_widget_set_size(e, 0.0f, 26.0f);
-				vgui_widget_set_font_size(e, 12.0f);
-				vgui_edit_set_text(e, value.c_str());
-
-				auto b = std::make_unique<binding>();
-				b->ed = this;
-				b->node = n;
-				b->prop = prop;
-				binding* raw = b.get();
-				prop_bindings.push_back(std::move(b));
-				vgui_widget_on_text(e, on_prop_text, raw);
-				return e;
-			};
-
-		auto bool_row = [&](const char* label, bool value, int prop)
-			{
-				vgui_widget* r = row();
-				vgui_widget* l = vgui_widget_add(r, VGUI_LABEL, label);
-				vgui_widget_set_size(l, 86.0f, 24.0f);
-				vgui_widget_set_font_size(l, 12.0f);
-				vgui_widget_set_text_color(l, 0xFFAEB4BC);
-				vgui_widget* c = vgui_widget_add(r, VGUI_CHECKBOX, "");
-				vgui_widget_set_checked(c, value ? 1 : 0);
-				vgui_widget_set_focusable(c, 1);
-
-				auto b = std::make_unique<binding>();
-				b->ed = this;
-				b->node = n;
-				b->prop = prop;
-				binding* raw = b.get();
-				prop_bindings.push_back(std::move(b));
-				vgui_widget_on_event(c, on_prop_bool, raw);
-				return c;
-			};
-
-		auto enum_row = [&](const char* label, int prop, const char* const* names, int count, int current)
-			{
-				vgui_widget* r = row();
-				vgui_widget* l = vgui_widget_add(r, VGUI_LABEL, label);
-				vgui_widget_set_size(l, 86.0f, 24.0f);
-				vgui_widget_set_font_size(l, 12.0f);
-				vgui_widget_set_text_color(l, 0xFFAEB4BC);
-				vgui_widget* group = vgui_widget_add(r, VGUI_PANEL, nullptr);
-				vgui_widget_set_layout(group, VGUI_LAYOUT_ROW);
-				vgui_widget_set_background(group, 0);
-				vgui_widget_set_padding(group, 0, 0, 0, 0);
-				vgui_widget_set_gap(group, 2);
-				vgui_widget_set_grow(group, 1.0f);
-				for (int i = 0; i < count; ++i)
+				if (desc.type == property_type::boolean)
 				{
-					vgui_widget* b = vgui_widget_add(group, VGUI_BUTTON, names[i]);
-					vgui_widget_set_size(b, 0.0f, 24.0f);
-					vgui_widget_set_font_size(b, 11.0f);
-					vgui_widget_set_padding(b, 4, 1, 4, 1);
-					if (i == current)
-						vgui_widget_set_background(b, 0xFF2F5E9E);
-
-					auto bind = std::make_unique<binding>();
-					bind->ed = this;
-					bind->node = n;
-					bind->prop = prop;
-					bind->aux = i;
-					binding* raw = bind.get();
-					prop_bindings.push_back(std::move(bind));
-					vgui_widget_on_event(b, on_prop_enum, raw);
+					desc.set_value = [this, n, prop](const std::string& value) {
+						apply_bool_prop(n, prop, value == "true");
+					};
 				}
+				else if (desc.type == property_type::enumeration)
+				{
+					desc.set_value = [this, n, prop](const std::string& value) {
+						try
+						{
+							apply_enum_prop(n, prop, std::stoi(value));
+						}
+						catch (...)
+						{
+						}
+					};
+				}
+				else
+				{
+					desc.set_value = [this, n, prop](const std::string& value) {
+						apply_text_prop(n, prop, value.c_str());
+					};
+				}
+				props_grid.add_property(std::move(desc));
 			};
 
-		/* common ------------------------------------------------------------- */
-		section("通用");
-		text_row("ID", n->id, P_ID);
-		if (is_text_kind(n->kind))
-			text_row("文本", n->text, P_TEXT);
-		bool_row("可见", n->visible, B_VISIBLE);
-		bool_row("启用", n->enabled, B_ENABLED);
-		bool_row("可聚焦", n->focusable, B_FOCUSABLE);
+		auto text_prop = [&](const char* id, const char* label,
+			const std::string& value, const char* category, int prop)
+			{
+				property_desc desc;
+				desc.id = id;
+				desc.label = label;
+				desc.type = property_type::text;
+				desc.value = value;
+				desc.category = category;
+				add(std::move(desc), prop);
+			};
 
-		/* layout ------------------------------------------------------------- */
+		auto number_prop = [&](const char* id, const char* label,
+			float value, const char* category, int prop)
+			{
+				property_desc desc;
+				desc.id = id;
+				desc.label = label;
+				desc.type = property_type::number;
+				desc.value = number_text(value);
+				desc.category = category;
+				add(std::move(desc), prop);
+			};
+
+		auto bool_prop = [&](const char* id, const char* label,
+			bool value, const char* category, int prop)
+			{
+				property_desc desc;
+				desc.id = id;
+				desc.label = label;
+				desc.type = property_type::boolean;
+				desc.value = value ? "true" : "false";
+				desc.category = category;
+				add(std::move(desc), prop);
+			};
+
+		auto color_prop = [&](const char* id, const char* label,
+			uint32_t value, const char* category, int prop)
+			{
+				property_desc desc;
+				desc.id = id;
+				desc.label = label;
+				desc.type = property_type::color;
+				desc.value = property_color_text(value);
+				desc.category = category;
+				add(std::move(desc), prop);
+			};
+
+		auto enum_prop = [&](const char* id, const char* label, int prop,
+			std::vector<std::string> choices, int current, const char* category)
+			{
+				property_desc desc;
+				desc.id = id;
+				desc.label = label;
+				desc.type = property_type::enumeration;
+				desc.choices = std::move(choices);
+				desc.choice_values.reserve(desc.choices.size());
+				for (std::size_t i = 0; i < desc.choices.size(); ++i)
+					desc.choice_values.push_back(std::to_string(i));
+				desc.value = std::to_string(current);
+				desc.category = category;
+				add(std::move(desc), prop);
+			};
+
+		const char* general = "通用";
+		const char* layout = "布局";
+		const char* canvas = "画布";
+		const char* geometry = "位置与尺寸";
+		const char* spacing = "内边距 / 间距";
+		const char* appearance = "外观";
+		const char* values = "数值";
+		const char* edit = "编辑框";
+
+		text_prop("id", "ID", n->id, general, P_ID);
+		if (is_text_kind(n->kind))
+			text_prop("text", "文本", n->text, general, P_TEXT);
+		bool_prop("visible", "可见", n->visible, general, B_VISIBLE);
+		bool_prop("enabled", "启用", n->enabled, general, B_ENABLED);
+		bool_prop("focusable", "可聚焦", n->focusable, general, B_FOCUSABLE);
+
 		if (n->kind == VGUI_PANEL && !is_root)
 		{
-			section("布局");
-			static const char* layouts[] = { "绝对", "行", "列" };
-			enum_row("排列", E_LAYOUT, layouts, 3, n->layout);
-			static const char* aligns[] = { "自动", "起", "中", "末", "拉伸" };
-			enum_row("对齐", E_ALIGN_ITEMS, aligns, align_list_count(), n->align_items);
-			enum_row("自身对齐", E_ALIGN_SELF, aligns, align_list_count(), n->align_self);
-			static const char* justifies[] = { "起", "中", "末", "两端", "环绕" };
-			enum_row("主轴", E_JUSTIFY, justifies, 5, n->justify);
+			enum_prop("layout", "排列", E_LAYOUT,
+				{ "绝对", "行", "列" }, n->layout, layout);
+			const std::vector<std::string> aligns = { "自动", "起", "中", "末", "拉伸" };
+			enum_prop("align_items", "对齐", E_ALIGN_ITEMS, aligns, n->align_items, layout);
+			enum_prop("align_self", "自身对齐", E_ALIGN_SELF, aligns, n->align_self, layout);
+			enum_prop("justify", "主轴", E_JUSTIFY,
+				{ "起", "中", "末", "两端", "环绕" }, n->justify, layout);
 		}
 
 		if (is_root)
 		{
-			section("画布");
-			text_row("宽度", number_text((float)doc().canvas_width), P_CANVAS_W);
-			text_row("高度", number_text((float)doc().canvas_height), P_CANVAS_H);
+			number_prop("canvas_width", "宽度", (float)doc().canvas_width, canvas, P_CANVAS_W);
+			number_prop("canvas_height", "高度", (float)doc().canvas_height, canvas, P_CANVAS_H);
 		}
 
 		if (!is_root)
 		{
-			section("位置与尺寸");
-			text_row("X", number_text(n->x), P_X);
-			text_row("Y", number_text(n->y), P_Y);
-			text_row("宽", number_text(n->w), P_W);
-			text_row("高", number_text(n->h), P_H);
-			text_row("最小宽", number_text(n->min_w), P_MIN_W);
-			text_row("最小高", number_text(n->min_h), P_MIN_H);
-			text_row("最大宽", number_text(n->max_w), P_MAX_W);
-			text_row("最大高", number_text(n->max_h), P_MAX_H);
+			number_prop("x", "X", n->x, geometry, P_X);
+			number_prop("y", "Y", n->y, geometry, P_Y);
+			number_prop("w", "宽", n->w, geometry, P_W);
+			number_prop("h", "高", n->h, geometry, P_H);
+			number_prop("min_w", "最小宽", n->min_w, geometry, P_MIN_W);
+			number_prop("min_h", "最小高", n->min_h, geometry, P_MIN_H);
+			number_prop("max_w", "最大宽", n->max_w, geometry, P_MAX_W);
+			number_prop("max_h", "最大高", n->max_h, geometry, P_MAX_H);
 		}
 
 		if (n->kind == VGUI_PANEL)
 		{
-			section("内边距 / 间距");
-			text_row("左", number_text(n->padding[0]), P_PAD_L);
-			text_row("上", number_text(n->padding[1]), P_PAD_T);
-			text_row("右", number_text(n->padding[2]), P_PAD_R);
-			text_row("下", number_text(n->padding[3]), P_PAD_B);
-			text_row("间距", number_text(n->gap), P_GAP);
-			text_row("伸缩", number_text(n->grow), P_GROW);
+			number_prop("pad_left", "左", n->padding[0], spacing, P_PAD_L);
+			number_prop("pad_top", "上", n->padding[1], spacing, P_PAD_T);
+			number_prop("pad_right", "右", n->padding[2], spacing, P_PAD_R);
+			number_prop("pad_bottom", "下", n->padding[3], spacing, P_PAD_B);
+			number_prop("gap", "间距", n->gap, spacing, P_GAP);
+			number_prop("grow", "伸缩", n->grow, spacing, P_GROW);
 		}
 
-		section("外观");
-		text_row("背景色", color_text(n->bg), P_BG);
-		text_row("边框色", color_text(n->border_color), P_BORDER_COLOR);
-		text_row("边框宽", number_text(n->border_width), P_BORDER_W);
-		text_row("圆角", number_text(n->rounding), P_ROUNDING);
+		color_prop("bg", "背景色", n->bg, appearance, P_BG);
+		color_prop("border_color", "边框色", n->border_color, appearance, P_BORDER_COLOR);
+		number_prop("border_width", "边框宽", n->border_width, appearance, P_BORDER_W);
+		number_prop("rounding", "圆角", n->rounding, appearance, P_ROUNDING);
 		if (is_text_kind(n->kind) || n->kind == VGUI_EDIT)
 		{
-			text_row("文字色", color_text(n->text_color), P_TEXT_COLOR);
-			text_row("字号", number_text(n->font_size), P_FONT_SIZE);
+			color_prop("text_color", "文字色", n->text_color, appearance, P_TEXT_COLOR);
+			number_prop("font_size", "字号", n->font_size, appearance, P_FONT_SIZE);
 		}
 		if (is_text_kind(n->kind))
 		{
-			text_row("水平对齐", number_text(n->text_align_x), P_ALIGN_X);
-			text_row("垂直对齐", number_text(n->text_align_y), P_ALIGN_Y);
+			number_prop("align_x", "水平对齐", n->text_align_x, appearance, P_ALIGN_X);
+			number_prop("align_y", "垂直对齐", n->text_align_y, appearance, P_ALIGN_Y);
 		}
-		text_row("透明度", number_text(n->opacity), P_OPACITY);
+		number_prop("opacity", "透明度", n->opacity, appearance, P_OPACITY);
 
 		if (is_value_kind(n->kind))
 		{
-			section("数值");
 			if (n->kind == VGUI_CHECKBOX || n->kind == VGUI_RADIO || n->kind == VGUI_SWITCH)
 			{
-				bool_row("选中", n->checked, B_CHECKED);
+				bool_prop("checked", "选中", n->checked, values, B_CHECKED);
 			}
 			else
 			{
-				text_row("最小值", number_text(n->range_min), P_RANGE_MIN);
-				text_row("最大值", number_text(n->range_max), P_RANGE_MAX);
-				text_row("当前值", number_text(n->value), P_VALUE);
-				text_row("步长", number_text(n->step), P_STEP);
+				number_prop("range_min", "最小值", n->range_min, values, P_RANGE_MIN);
+				number_prop("range_max", "最大值", n->range_max, values, P_RANGE_MAX);
+				number_prop("value", "当前值", n->value, values, P_VALUE);
+				number_prop("step", "步长", n->step, values, P_STEP);
 				if (n->kind == VGUI_SLIDER)
-					bool_row("垂直", n->vertical, B_VERTICAL);
+					bool_prop("vertical", "垂直", n->vertical, values, B_VERTICAL);
 			}
 		}
 
 		if (n->kind == VGUI_EDIT)
 		{
-			section("编辑框");
-			text_row("内容", n->edit_text, P_EDIT_TEXT);
-			text_row("占位符", n->placeholder, P_PLACEHOLDER);
-			bool_row("多行", n->multiline, B_MULTILINE);
-			bool_row("密码", n->password, B_PASSWORD);
-			bool_row("只读", n->readonly, B_READONLY);
+			text_prop("edit_text", "内容", n->edit_text, edit, P_EDIT_TEXT);
+			text_prop("placeholder", "占位符", n->placeholder, edit, P_PLACEHOLDER);
+			bool_prop("multiline", "多行", n->multiline, edit, B_MULTILINE);
+			bool_prop("password", "密码", n->password, edit, B_PASSWORD);
+			bool_prop("readonly", "只读", n->readonly, edit, B_READONLY);
 		}
 	}
 
@@ -2085,7 +2119,7 @@ namespace vgui_editor {
 		case P_TEXT_COLOR:
 		{
 			uint32_t color = 0;
-			if (!parse_color(value, &color)) return;
+			if (!property_color_argb(value, &color)) return;
 			if (prop == P_BG) n->bg = color;
 			else if (prop == P_BORDER_COLOR) n->border_color = color;
 			else n->text_color = color;
@@ -2441,6 +2475,11 @@ namespace vgui_editor {
 		if (!p_->status_label) return {};
 		const char* text = vgui_widget_get_text(p_->status_label);
 		return text ? text : "";
+	}
+
+	std::size_t ui_editor::property_count() const
+	{
+		return p_->props_grid.row_count();
 	}
 
 	std::string ui_editor::json_path() const

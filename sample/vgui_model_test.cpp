@@ -1778,6 +1778,53 @@ static void test_splitter(vgui_context* ui)
 	vgui_widget_destroy(outer);
 }
 
+struct scroll_probe
+{
+	int calls = 0;
+	float x = 0.0f;
+	float y = 0.0f;
+};
+
+static void on_panel_scroll(vgui_widget* widget, float x, float y, void* user)
+{
+	(void)widget;
+	auto* probe = static_cast<scroll_probe*>(user);
+	if (!probe) return;
+	probe->calls++;
+	probe->x = x;
+	probe->y = y;
+}
+
+static void test_scroll_listener(vgui_context* ui)
+{
+	vgui_widget* panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(panel, 20.0f, 20.0f);
+	vgui_widget_set_size(panel, 200.0f, 100.0f);
+	vgui_panel_set_scrollable(panel, 0, 1);
+	vgui_widget* content = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(content, 200.0f, 400.0f);
+	vgui_layout(ui);
+
+	scroll_probe probe;
+	vgui_panel_set_scroll_listener(panel, on_panel_scroll, &probe);
+	vgui_panel_set_scroll(panel, 0.0f, 30.0f);
+	check(probe.calls == 1 && near(probe.x, 0.0f) && near(probe.y, 30.0f),
+		"scroll listener: programmatic scroll");
+
+	vgui_panel_scroll_by(panel, 0.0f, 10.0f);
+	check(probe.calls == 2 && near(probe.y, 40.0f), "scroll listener: scroll_by");
+
+	vgui_input_mouse_move(ui, 120.0f, 70.0f);
+	vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+	check(probe.calls == 3 && probe.y > 40.0f, "scroll listener: wheel");
+
+	vgui_panel_set_scroll_listener(panel, nullptr, nullptr);
+	vgui_panel_set_scroll(panel, 0.0f, 0.0f);
+	check(probe.calls == 3, "scroll listener: removal");
+
+	vgui_widget_destroy(panel);
+}
+
 static void test_tabview(vgui_context* ui)
 {
 	vgui_widget* tabs = vgui_widget_add(vgui_root(ui), VGUI_TABVIEW, nullptr);
@@ -3600,6 +3647,7 @@ int main()
 	test_texture_image(ui);
 	test_wrap(ui);
 	test_splitter(ui);
+	test_scroll_listener(ui);
 	test_tabview(ui);
 	test_list_virtual(ui);
 	test_tree_virtual(ui, style);

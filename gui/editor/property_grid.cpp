@@ -26,6 +26,12 @@ namespace vgui_editor_kit {
 		constexpr float kErrorHeight = 16.0f;
 		constexpr float kLabelWidth = 112.0f;
 		constexpr float kResetWidth = 24.0f;
+		constexpr float kCategoryHeight = 24.0f;
+		constexpr float kItemGap = 4.0f;
+		constexpr float kPanelPaddingV = 12.0f;	// build(): 6 top + 6 bottom
+		constexpr float kSearchLead = 28.0f;	// search 24 + gap 4
+		constexpr float kOverscan = 96.0f;
+		constexpr std::size_t kMinWindowEntries = 4;
 
 		struct normalized_value
 		{
@@ -386,22 +392,24 @@ namespace vgui_editor_kit {
 	{
 		unbind_selection();
 		for (row& item : rows_)
-		{
-			if (item.menu)
-			{
-				vgui_widget_destroy(item.menu);
-				item.menu = nullptr;
-			}
-		}
+			release_row(item);
+		for (auto& entry : categories_)
+			release_category(entry.second);
+		categories_.clear();
 		if (panel_)
 		{
+			vgui_panel_set_scroll_listener(panel_, nullptr, nullptr);
 			vgui_widget_destroy(panel_);
 			panel_ = nullptr;
 			search_ = nullptr;
 			content_ = nullptr;
+			top_spacer_ = nullptr;
+			window_ = nullptr;
+			bottom_spacer_ = nullptr;
 		}
 		rows_.clear();
-		categories_.clear();
+		display_.clear();
+		category_order_.clear();
 	}
 
 	void property_grid::build(vgui_widget* parent)
@@ -413,7 +421,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_grow(panel_, 1.0f);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(panel_, 6, 6, 6, 6);
-		vgui_widget_set_gap(panel_, 4);
+		vgui_widget_set_gap(panel_, kItemGap);
 		vgui_widget_set_background(panel_, kPanelBg);
 		vgui_widget_set_border(panel_, kBorder, 1);
 		vgui_panel_set_scrollable(panel_, 0, 1);
@@ -426,31 +434,95 @@ namespace vgui_editor_kit {
 		vgui_edit_set_placeholder(search_, "Search properties");
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
 
+		/* content_ is a fixed-height column of three children:
+		 *   top spacer -> materialized window -> bottom spacer
+		 * The spacers stand in for rows that are outside the viewport, so the
+		 * scroll range stays exact without building every row. */
 		content_ = vgui_widget_add(panel_, VGUI_PANEL, nullptr);
 		vgui_widget_set_align_self(content_, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(content_, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_gap(content_, 4);
+		vgui_widget_set_gap(content_, 0);
+		vgui_widget_set_padding(content_, 0, 0, 0, 0);
 
-		for (row& item : rows_)
-			ensure_row_ui(item);
+		top_spacer_ = vgui_widget_add(content_, VGUI_PANEL, nullptr);
+		vgui_widget_set_align_self(top_spacer_, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_size(top_spacer_, 0, 0);
+		vgui_widget_set_visible(top_spacer_, 0);
+
+		window_ = vgui_widget_add(content_, VGUI_PANEL, nullptr);
+		vgui_widget_set_align_self(window_, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_layout(window_, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_gap(window_, kItemGap);
+		vgui_widget_set_padding(window_, 0, 0, 0, 0);
+		vgui_widget_set_size(window_, 0, 0);
+		vgui_widget_set_visible(window_, 0);
+
+		bottom_spacer_ = vgui_widget_add(content_, VGUI_PANEL, nullptr);
+		vgui_widget_set_align_self(bottom_spacer_, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_size(bottom_spacer_, 0, 0);
+		vgui_widget_set_visible(bottom_spacer_, 0);
+
+		vgui_panel_set_scroll_listener(panel_, &property_grid::on_scroll, this);
+
+		/* Before the first layout we only know the context size.  Use it as a
+		 * generous viewport estimate so a freshly built grid is populated even
+		 * when the host never scrolls it. */
+		vgui_context* ctx = vgui_widget_get_context(panel_);
+		int cw = 0, ch = 0;
+		if (ctx)
+			vgui_context_get_size(ctx, &cw, &ch);
+		(void)cw;
+		viewport_h_ = ch > 0 ? (float)ch - kPanelPaddingV : 0.0f;
+		if (viewport_h_ < 200.0f)
+			viewport_h_ = 200.0f;
+
 		update_visibility();
 	}
 
 	void property_grid::clear()
 	{
 		for (row& item : rows_)
-		{
-			if (item.menu)
-			{
-				vgui_widget_destroy(item.menu);
-				item.menu = nullptr;
-			}
-		}
-		if (content_)
-			vgui_widget_clear(content_);
+			release_row(item);
+		for (auto& entry : categories_)
+			release_category(entry.second);
 		categories_.clear();
 		rows_.clear();
+		display_.clear();
+		category_order_.clear();
 		visible_rows_ = 0;
+		window_begin_ = 0;
+		window_end_ = 0;
+		content_height_ = 0.0f;
+		scroll_y_ = 0.0f;
+
+		/* Released rows and headers detach themselves, but keep this guard so
+		 * clear() also recovers from any widget that was left attached. */
+		if (window_)
+		{
+			std::vector<vgui_widget*> current;
+			const std::size_t count = vgui_widget_get_child_count(window_);
+			current.reserve(count);
+			for (std::size_t i = 0; i < count; ++i)
+				current.push_back(vgui_widget_get_child(window_, i));
+			for (vgui_widget* child : current)
+				vgui_widget_remove(child);
+			vgui_widget_set_size(window_, 0, 0);
+			vgui_widget_set_visible(window_, 0);
+		}
+		if (top_spacer_)
+		{
+			vgui_widget_set_size(top_spacer_, 0, 0);
+			vgui_widget_set_visible(top_spacer_, 0);
+		}
+		if (bottom_spacer_)
+		{
+			vgui_widget_set_size(bottom_spacer_, 0, 0);
+			vgui_widget_set_visible(bottom_spacer_, 0);
+		}
+		if (content_)
+			vgui_widget_set_size(content_, 0, 0);
+		if (panel_)
+			vgui_panel_set_scroll(panel_, 0.0f, 0.0f);
 	}
 
 	void property_grid::add_row(std::string label, std::string value)
@@ -512,9 +584,11 @@ namespace vgui_editor_kit {
 		item.token = next_token_++;
 		item.desc = std::move(desc);
 		item.value = item.desc.value;
+		const std::string category = item.desc.category;
 		rows_.push_back(std::move(item));
-		if (content_)
-			ensure_row_ui(rows_.back());
+		if (std::find(category_order_.begin(), category_order_.end(), category) ==
+			category_order_.end())
+			category_order_.push_back(category);
 		update_visibility();
 		return true;
 	}
@@ -525,10 +599,7 @@ namespace vgui_editor_kit {
 		{
 			if (it->desc.id != id)
 				continue;
-			if (it->menu)
-				vgui_widget_destroy(it->menu);
-			if (it->panel)
-				vgui_widget_destroy(it->panel);
+			release_row(*it);
 			rows_.erase(it);
 			update_visibility();
 			return true;
@@ -699,6 +770,17 @@ namespace vgui_editor_kit {
 	std::size_t property_grid::visible_row_count() const noexcept
 	{
 		return visible_rows_;
+	}
+
+	std::size_t property_grid::materialized_row_count() const noexcept
+	{
+		std::size_t count = 0;
+		for (const row& item : rows_)
+		{
+			if (item.panel)
+				++count;
+		}
+		return count;
 	}
 
 	bool property_grid::property_visible(const std::string& id) const
@@ -900,46 +982,46 @@ namespace vgui_editor_kit {
 	property_grid::category_ui* property_grid::ensure_category(const std::string& name)
 	{
 		auto found = categories_.find(name);
-		if (found != categories_.end())
-			return &found->second;
-		if (!content_)
-			return nullptr;
-
-		category_ui ui;
-		ui.panel = vgui_widget_add(content_, VGUI_PANEL, nullptr);
-		vgui_widget_set_align_self(ui.panel, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_layout(ui.panel, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_gap(ui.panel, 2);
-
-		ui.header = vgui_widget_add(ui.panel, VGUI_BUTTON,
+		if (found == categories_.end())
+			found = categories_.emplace(name, category_ui{}).first;
+		category_ui& ui = found->second;
+		if (!ui.header)
+		{
+			vgui_context* ctx = content_ ? vgui_widget_get_context(content_) : nullptr;
+			if (!ctx)
+				return nullptr;
+			ui.header = vgui_widget_create(ctx, VGUI_BUTTON,
+				category_header_text(name, category_collapsed(name)).c_str());
+			if (!ui.header)
+				return nullptr;
+			vgui_widget_set_size(ui.header, 0, kCategoryHeight);
+			vgui_widget_set_align_self(ui.header, VGUI_ALIGN_STRETCH);
+			vgui_widget_set_font_size(ui.header, 12);
+			vgui_widget_set_background(ui.header, kCategoryBg);
+			vgui_widget_set_id(ui.header, category_widget_id(name).c_str());
+			vgui_widget_on_event(ui.header, &property_grid::on_category_click, this);
+		}
+		vgui_widget_set_text(ui.header,
 			category_header_text(name, category_collapsed(name)).c_str());
-		vgui_widget_set_size(ui.header, 0, 24);
-		vgui_widget_set_align_self(ui.header, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_font_size(ui.header, 12);
-		vgui_widget_set_background(ui.header, kCategoryBg);
-		vgui_widget_set_id(ui.header, category_widget_id(name).c_str());
-		vgui_widget_on_event(ui.header, &property_grid::on_category_click, this);
-
-		ui.rows = vgui_widget_add(ui.panel, VGUI_PANEL, nullptr);
-		vgui_widget_set_align_self(ui.rows, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_layout(ui.rows, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_gap(ui.rows, 2);
-
-		auto inserted = categories_.emplace(name, ui);
-		return &inserted.first->second;
+		return &ui;
 	}
 
 	void property_grid::ensure_row_ui(row& item)
 	{
 		if (!content_ || item.panel)
 			return;
-		category_ui* category = ensure_category(item.desc.category);
-		if (!category)
+		vgui_context* ctx = vgui_widget_get_context(content_);
+		if (!ctx)
+			return;
+
+		/* Rows are created detached; update_window() attaches only the ones in
+		 * the visible window to window_. */
+		item.panel = vgui_widget_create(ctx, VGUI_PANEL, nullptr);
+		if (!item.panel)
 			return;
 
 		// Rows use a fixed height; the style panel padding would make the
 		// 24px controls overflow the row and break hit testing.
-		item.panel = vgui_widget_add(category->rows, VGUI_PANEL, nullptr);
 		vgui_widget_set_align_self(item.panel, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.panel, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_gap(item.panel, 0);
@@ -1110,24 +1192,17 @@ namespace vgui_editor_kit {
 		}
 	}
 
-	void property_grid::update_visibility()
+	float property_grid::row_height(const row& item) const
 	{
-		visible_rows_ = 0;
-		for (row& item : rows_)
-		{
-			const bool matches = row_matches(item);
-			const bool visible = matches && !category_collapsed(item.desc.category);
-			item.visible = visible;
-			if (visible)
-				++visible_rows_;
-			if (item.panel)
-				vgui_widget_set_visible(item.panel, visible ? 1 : 0);
-		}
+		return item.error.empty() ? kRowHeight : kRowHeight + kErrorHeight + 2.0f;
+	}
 
-		for (auto& entry : categories_)
+	void property_grid::rebuild_display()
+	{
+		display_.clear();
+		display_.reserve(rows_.size() + category_order_.size());
+		for (const std::string& name : category_order_)
 		{
-			const std::string& name = entry.first;
-			category_ui& ui = entry.second;
 			bool any_match = false;
 			for (const row& item : rows_)
 			{
@@ -1137,16 +1212,268 @@ namespace vgui_editor_kit {
 					break;
 				}
 			}
-			const bool collapsed = category_collapsed(name);
-			if (ui.panel)
-				vgui_widget_set_visible(ui.panel, any_match ? 1 : 0);
-			if (ui.rows)
-				vgui_widget_set_visible(ui.rows,
-					(!collapsed && any_match) ? 1 : 0);
-			if (ui.header)
-				vgui_widget_set_text(ui.header,
-					category_header_text(name, collapsed).c_str());
+			if (!any_match)
+				continue;
+
+			display_entry header;
+			header.type = display_entry::kind::category;
+			header.key = name;
+			header.height = kCategoryHeight;
+			display_.push_back(std::move(header));
+
+			if (category_collapsed(name))
+				continue;
+
+			for (const row& item : rows_)
+			{
+				if (item.desc.category != name || !row_matches(item))
+					continue;
+				display_entry entry;
+				entry.type = display_entry::kind::property;
+				entry.key = item.desc.id;
+				entry.token = item.token;
+				entry.height = row_height(item);
+				display_.push_back(std::move(entry));
+			}
 		}
+	}
+
+	void property_grid::recompute_display_layout()
+	{
+		float offset = 0.0f;
+		for (std::size_t i = 0; i < display_.size(); ++i)
+		{
+			display_[i].offset = offset;
+			offset += display_[i].height;
+			if (i + 1 < display_.size())
+				offset += kItemGap;
+		}
+		content_height_ = offset;
+		if (content_)
+			vgui_widget_set_size(content_, 0, content_height_);
+	}
+
+	void property_grid::refresh_viewport()
+	{
+		if (!panel_)
+			return;
+		float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+		vgui_widget_get_rect(panel_, &x, &y, &w, &h);
+		if (h > 0.0f)
+			viewport_h_ = std::max(0.0f, h - kPanelPaddingV);
+	}
+
+	/* Filtering, collapsing and row errors change the content height without a
+	 * scroll event.  Clamp the stored offset to the new range (and move the
+	 * panel with it) so the materialized window matches what the next layout
+	 * pass will actually show. */
+	void property_grid::sync_scroll_to_content()
+	{
+		if (!panel_)
+			return;
+		refresh_viewport();
+		float sx = 0.0f, sy = 0.0f;
+		vgui_panel_get_scroll(panel_, &sx, &sy);
+		float clamped = std::max(0.0f, sy);
+		if (viewport_h_ > 0.0f)
+		{
+			const float max_scroll = std::max(0.0f,
+				content_height_ + kSearchLead - viewport_h_);
+			clamped = std::clamp(clamped, 0.0f, max_scroll);
+		}
+		scroll_y_ = clamped;
+		if (clamped != sy)
+			vgui_panel_set_scroll(panel_, sx, clamped);
+	}
+
+	vgui_widget* property_grid::entry_widget(const display_entry& entry)
+	{
+		if (entry.type == display_entry::kind::category)
+		{
+			category_ui* ui = ensure_category(entry.key);
+			return ui ? ui->header : nullptr;
+		}
+		row* item = find_row_by_token(entry.token);
+		if (!item)
+			item = find_row(entry.key);
+		if (!item)
+			return nullptr;
+		ensure_row_ui(*item);
+		return item->panel;
+	}
+
+	void property_grid::release_row(row& item)
+	{
+		if (item.menu)
+		{
+			vgui_widget_destroy(item.menu);
+			item.menu = nullptr;
+			item.menu_values.clear();
+		}
+		if (!item.panel)
+			return;
+		vgui_context* ctx = vgui_widget_get_context(item.panel);
+		if (ctx && item.editor && vgui_get_focus(ctx) == item.editor)
+			vgui_set_focus(ctx, nullptr);
+		vgui_widget_remove(item.panel);
+		vgui_widget_destroy(item.panel);
+		item.panel = nullptr;
+		item.line = nullptr;
+		item.label = nullptr;
+		item.swatch = nullptr;
+		item.editor = nullptr;
+		item.reset = nullptr;
+		item.error_label = nullptr;
+		item.drag_active = false;
+	}
+
+	void property_grid::release_category(category_ui& ui)
+	{
+		if (!ui.header)
+			return;
+		vgui_widget_remove(ui.header);
+		vgui_widget_destroy(ui.header);
+		ui.header = nullptr;
+	}
+
+	void property_grid::update_window()
+	{
+		if (!content_ || !window_ || !top_spacer_ || !bottom_spacer_ ||
+			updating_window_)
+			return;
+		updating_window_ = true;
+
+		const std::size_t count = display_.size();
+		std::size_t begin = 0;
+		std::size_t end = 0;
+		if (count > 0)
+		{
+			const float scroll = std::max(0.0f, scroll_y_ - kSearchLead);
+			const float viewport = viewport_h_ > 0.0f ? viewport_h_ : 600.0f;
+			const float top = std::max(0.0f, scroll - kOverscan);
+			const float bottom = scroll + viewport + kOverscan;
+			auto first = std::lower_bound(display_.begin(), display_.end(), top,
+				[](const display_entry& entry, float value) {
+					return entry.offset + entry.height < value;
+				});
+			begin = (std::size_t)(first - display_.begin());
+			if (begin >= count)
+				begin = count - 1;
+			auto last = std::upper_bound(
+				display_.begin() + (std::ptrdiff_t)begin, display_.end(), bottom,
+				[](float value, const display_entry& entry) {
+					return value < entry.offset;
+				});
+			end = (std::size_t)(last - display_.begin());
+			if (end <= begin)
+				end = std::min(count, begin + 1);
+			if (end - begin < kMinWindowEntries)
+				end = std::min(count, begin + kMinWindowEntries);
+			if (end - begin < kMinWindowEntries && begin > 0)
+			{
+				begin = end > kMinWindowEntries ? end - kMinWindowEntries : 0;
+				if (end <= begin)
+					end = std::min(count, begin + 1);
+			}
+		}
+		window_begin_ = begin;
+		window_end_ = end;
+
+		/* Materialization is tracked per row/header rather than per display
+		 * index, so rebuilding the display list (filter, collapse, add/remove)
+		 * can safely reorder entries without releasing the wrong widgets. */
+		std::vector<std::string> keep_rows;
+		std::vector<std::string> keep_categories;
+		keep_rows.reserve(end > begin ? end - begin : 0);
+		keep_categories.reserve(end > begin ? end - begin : 0);
+		for (std::size_t i = begin; i < end; ++i)
+		{
+			if (display_[i].type == display_entry::kind::category)
+				keep_categories.push_back(display_[i].key);
+			else
+				keep_rows.push_back(display_[i].key);
+		}
+		auto keep = [](const std::vector<std::string>& list, const std::string& key) {
+			return std::find(list.begin(), list.end(), key) != list.end();
+		};
+		for (row& item : rows_)
+		{
+			if (item.panel && !keep(keep_rows, item.desc.id))
+				release_row(item);
+		}
+		for (auto& entry : categories_)
+		{
+			if (entry.second.header && !keep(keep_categories, entry.first))
+				release_category(entry.second);
+		}
+
+		std::vector<vgui_widget*> ordered;
+		ordered.reserve(end > begin ? end - begin : 0);
+		for (std::size_t i = begin; i < end; ++i)
+		{
+			vgui_widget* widget = entry_widget(display_[i]);
+			if (widget)
+				ordered.push_back(widget);
+		}
+
+		/* Detach the current window children, then reattach them in display
+		 * order.  Detach/attach preserves widget identity and focus for rows
+		 * that stay inside the window. */
+		std::vector<vgui_widget*> current;
+		const std::size_t current_count = vgui_widget_get_child_count(window_);
+		current.reserve(current_count);
+		for (std::size_t i = 0; i < current_count; ++i)
+			current.push_back(vgui_widget_get_child(window_, i));
+		for (vgui_widget* child : current)
+			vgui_widget_remove(child);
+		for (vgui_widget* widget : ordered)
+			vgui_widget_attach(window_, widget);
+
+		float window_height = 0.0f;
+		for (std::size_t i = begin; i < end; ++i)
+			window_height += display_[i].height;
+		if (end > begin)
+			window_height += kItemGap * (float)(end - begin - 1);
+		vgui_widget_set_size(window_, 0, window_height);
+		vgui_widget_set_visible(window_, window_height > 0.0f ? 1 : 0);
+
+		float top_height = 0.0f;
+		float bottom_height = 0.0f;
+		if (end > begin)
+		{
+			top_height = display_[begin].offset;
+			const display_entry& last = display_[end - 1];
+			bottom_height = content_height_ - (last.offset + last.height);
+		}
+		else
+		{
+			bottom_height = content_height_;
+		}
+		top_height = std::max(0.0f, top_height);
+		bottom_height = std::max(0.0f, bottom_height);
+		vgui_widget_set_size(top_spacer_, 0, top_height);
+		vgui_widget_set_visible(top_spacer_, top_height > 0.5f ? 1 : 0);
+		vgui_widget_set_size(bottom_spacer_, 0, bottom_height);
+		vgui_widget_set_visible(bottom_spacer_, bottom_height > 0.5f ? 1 : 0);
+		vgui_widget_set_size(content_, 0, content_height_);
+
+		updating_window_ = false;
+	}
+
+	void property_grid::update_visibility()
+	{
+		visible_rows_ = 0;
+		for (row& item : rows_)
+		{
+			item.visible = row_matches(item) &&
+				!category_collapsed(item.desc.category);
+			if (item.visible)
+				++visible_rows_;
+		}
+		rebuild_display();
+		recompute_display_layout();
+		sync_scroll_to_content();
+		update_window();
 	}
 
 	bool property_grid::row_matches(const row& item) const
@@ -1163,8 +1490,15 @@ namespace vgui_editor_kit {
 
 	void property_grid::set_row_error(row& item, std::string error)
 	{
+		const bool height_changed = item.error.empty() != error.empty();
 		item.error = std::move(error);
 		update_row_error_ui(item);
+		if (height_changed && content_)
+		{
+			recompute_display_layout();
+			sync_scroll_to_content();
+			update_window();
+		}
 	}
 
 	void property_grid::clear_row_error(row& item)
@@ -1173,6 +1507,12 @@ namespace vgui_editor_kit {
 			return;
 		item.error.clear();
 		update_row_error_ui(item);
+		if (content_)
+		{
+			recompute_display_layout();
+			sync_scroll_to_content();
+			update_window();
+		}
 	}
 
 	void property_grid::notify_change(const row& item)
@@ -1361,6 +1701,25 @@ namespace vgui_editor_kit {
 		recent_colors_.insert(recent_colors_.begin(), color);
 		if (recent_colors_.size() > 8)
 			recent_colors_.resize(8);
+	}
+
+	void property_grid::on_scroll(vgui_widget* widget, float x, float y, void* user)
+	{
+		auto* self = static_cast<property_grid*>(user);
+		if (!self || widget != self->panel_)
+			return;
+		self->refresh_viewport();
+		float clamped = y;
+		if (self->viewport_h_ > 0.0f)
+		{
+			const float max_scroll = std::max(0.0f,
+				self->content_height_ + kSearchLead - self->viewport_h_);
+			clamped = std::clamp(y, 0.0f, max_scroll);
+		}
+		self->scroll_y_ = clamped;
+		if (clamped != y)
+			vgui_panel_set_scroll(widget, x, clamped);
+		self->update_window();
 	}
 
 	void property_grid::on_search_text(vgui_widget* widget, const char* text, void* user)

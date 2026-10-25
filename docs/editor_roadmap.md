@@ -49,7 +49,7 @@
 | 领域 | 当前能力 | 对编辑器的影响 |
 |---|---|---|
 | 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
-| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定 | 没有行虚拟化、Vector、资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
+| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定、行虚拟化 | 仍缺 Vector、资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
 | 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04） | 行内重命名、拖放重排等编辑器语义仍在 O02/O03 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
@@ -58,7 +58,7 @@
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
 | 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
-| 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档 | 属性面板和层级面板是手工拼装，尚未切换到通用 PropertyGrid |
+| 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
 
 ## 3. 分层方案
 
@@ -215,11 +215,11 @@
 
 依赖：F02、F04、S04；P01 是 P08/P09 的前置。
 
-- [ ] **P01 PropertyGrid 骨架**（P0，M）（进行中）
+- [x] **P01 PropertyGrid 骨架**（P0，M）（已完成）
   - 分类、折叠、搜索、行虚拟化、标签列 + 编辑列。
   - 单行重置、只读状态、错误提示、行级 tooltip。
   - 验收：能替换 `ui_editor` 中的手工属性面板；1000 行属性滚动流畅；分类和搜索状态可保持。
-  - 已实现：分类/折叠/搜索、标签列 + 编辑列、单行重置、只读、错误提示、行级 tooltip、`clear()` 保留搜索和折叠状态。待实现行虚拟化和 1000 行性能验收，`vgui_editor` 尚未切换到 PropertyGrid。
+  - 已实现：分类/折叠/搜索、标签列 + 编辑列、单行重置、只读、错误提示、行级 tooltip；`clear()` 保留搜索、折叠和最近颜色。PropertyGrid 使用扁平显示列表 + 上下 spacer，只物化视口窗口（含 overscan）内的行，滚动/过滤/折叠时按需挂载与释放，`materialized_row_count()` 供无窗口断言；核心新增 `vgui_panel_set_scroll_listener()`，程序化滚动、滚轮与滚动条拖动都会驱动窗口更新。`vgui_editor` 的 UI 文档属性面板已切换到 PropertyGrid（ARGB ↔ RGBA 转换、descriptor setter 写回节点）。`vgui_editor_kit_test` 覆盖 1000 行虚拟化的有界物化、滚动到底部与滚回顶部，`vgui_editor --selftest` 覆盖属性行构建。
 
 - [ ] **P02 Number / Spinbox / DragNumber**（P0，M）（进行中）
   - int/float、范围、步进、拖拽调值、文本输入与校验。
@@ -554,10 +554,10 @@ MVP 验收场景：
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
 - `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
-- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现；行扩展与拖放已接入）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化，以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
+- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现并支持行虚拟化；行扩展与拖放已接入）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复），以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（615 项）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过。
+- 现有 `vgui_model_test`（619 项，含面板滚动监听通知）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
@@ -565,4 +565,3 @@ MVP 验收场景：
 2. Outliner 行图标 / 可见性锁定按钮（O01，F04 行扩展已就绪）、行内重命名（O02）与拖放重排打磨（O03，F03 已就绪）。
 3. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
 4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
-5. PropertyGrid 行虚拟化与 1000 行性能验收（P01 收尾）。

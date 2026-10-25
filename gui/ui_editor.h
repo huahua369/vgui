@@ -11,6 +11,7 @@
  * The implementation lives in gui/ui_editor.cpp; the SDL3 host program is
  * sample/ui_editor_main.cpp.
  */
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -173,6 +174,9 @@ public:
 
 	void set_status(const std::string& text);
 	std::string status() const;
+
+	/* Number of rows currently shown in the PropertyGrid inspector. */
+	std::size_t property_count() const;
 
 	/* Path edits shown in the toolbar; also used by Save/Load/Export. */
 	std::string json_path() const;

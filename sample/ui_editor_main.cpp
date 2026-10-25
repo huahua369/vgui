@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <memory>
 #include <string>
 
 #include "pch.h"          // glm 等基础类型（ovg_c.h 依赖）
@@ -69,8 +70,12 @@ static int run_selftest()
 	if (code.find("vgui_widget_set_background") == std::string::npos)
 		return selftest_fail("生成代码缺少颜色设置");
 
-	/* 无字体、无 GPU 环境下也能构建编辑器界面。 */
-	vgui_context* ctx = vgui_create(nullptr, 16.0f);
+	/* 无字体、无 GPU 环境下也能构建编辑器界面。  The context holder is
+	 * declared before the editor so the editor (and its PropertyGrid) is
+	 * destroyed first, even on the early-return paths below. */
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx_holder(
+		vgui_create(nullptr, 16.0f), &vgui_destroy);
+	vgui_context* ctx = ctx_holder.get();
 	if (!ctx) return selftest_fail("vgui_create 失败");
 	vgui_context_set_size(ctx, 1400, 900);
 
@@ -80,43 +85,31 @@ static int run_selftest()
 	vgui_layout(ctx);
 
 	if (vgui_widget_get_child_count(vgui_root(ctx)) < 4)
-	{
-		vgui_destroy(ctx);
 		return selftest_fail("编辑器界面未创建");
-	}
 	if (editor.selected() == nullptr)
-	{
-		vgui_destroy(ctx);
 		return selftest_fail("编辑器默认未选中根节点");
-	}
+	if (editor.property_count() == 0)
+		return selftest_fail("根节点属性未显示");
 
 	editor.add_widget(VGUI_SLIDER);
 	if (editor.selected() == nullptr || editor.selected()->kind != VGUI_SLIDER)
-	{
-		vgui_destroy(ctx);
 		return selftest_fail("add_widget 失败");
-	}
+	if (editor.property_count() == 0)
+		return selftest_fail("滑杆属性未显示");
 
 	const std::string tmp_json = "ui_editor_selftest.json";
 	const std::string tmp_cpp = "ui_editor_selftest.cpp";
 
 	error.clear();
 	if (!editor.save_json(tmp_json, &error) || !editor.load_json(tmp_json, &error))
-	{
-		vgui_destroy(ctx);
 		return selftest_fail(error.c_str());
-	}
 	if (!editor.export_cpp(tmp_cpp, &error))
-	{
-		vgui_destroy(ctx);
 		return selftest_fail(error.c_str());
-	}
 
 	std::error_code ec;
 	std::filesystem::remove(tmp_json, ec);
 	std::filesystem::remove(tmp_cpp, ec);
 
-	vgui_destroy(ctx);
 	printf("default json: %s\n", default_json_path().c_str());
 	printf("default cpp : %s\n", default_cpp_path().c_str());
 	printf("vgui_editor selftest PASS\n");

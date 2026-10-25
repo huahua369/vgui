@@ -462,6 +462,9 @@ struct vgui_widget
 	vgui_event_fn event_fn = nullptr;
 	vgui_value_fn value_fn = nullptr;
 	vgui_text_fn text_fn = nullptr;
+	vgui_scroll_fn scroll_fn = nullptr;
+	void* scroll_user = nullptr;
+	int scroll_notifying = 0;
 
 	// layout ---------------------------------------------------------------
 	vgui_layout_kind layout = VGUI_LAYOUT_ABSOLUTE;
@@ -1476,6 +1479,24 @@ namespace {
 				return;
 		if (w->event_fn)
 			w->event_fn(w, &e, w->user);
+	}
+
+	/* Scroll listeners run after scroll_x/scroll_y change.  Re-entrant calls
+	 * (a listener that adjusts the scroll offset) are coalesced: the outer
+	 * invocation owns the notification and the listener can read the final
+	 * offset directly from the panel. */
+	static void vgui_notify_scroll(vgui_widget* w)
+	{
+		if (!w || !w->scroll_fn || w->scroll_notifying)
+			return;
+		vgui_scroll_fn fn = w->scroll_fn;
+		void* user = w->scroll_user;
+		vgui_context* ctx = w->ctx;
+		w->scroll_notifying = 1;
+		fn(w, w->scroll_x, w->scroll_y, user);
+		/* The listener may rebuild and destroy this panel. */
+		if (!ctx || ctx->alive.count(w))
+			w->scroll_notifying = 0;
 	}
 
 	static float vgui_value_of(vgui_widget* w)
@@ -5195,6 +5216,18 @@ namespace {
 				ctx->modal.active = 0;
 				ctx->modal.stage = nullptr;
 			}
+			/* Deletion can start at an ancestor, so clear every input
+			 * reference as the recursion reaches the widget itself.  The
+			 * flush path only sees the subtree root; leaving descendant
+			 * pointers here would make later hit-test/focus cleanup walk
+			 * freed widgets. */
+			if (ctx->hot == w) ctx->hot = nullptr;
+			if (ctx->active == w) ctx->active = nullptr;
+			if (ctx->press_target == w) ctx->press_target = nullptr;
+			if (ctx->focus == w) ctx->focus = nullptr;
+			if (ctx->slider_drag == w) ctx->slider_drag = nullptr;
+			if (ctx->open_menu == w) ctx->open_menu = nullptr;
+			if (ctx->menu_pressed == w) ctx->menu_pressed = nullptr;
 		}
 		for (vgui_widget* c : w->children)
 			vgui_delete_rec(c, ctx);
@@ -6859,6 +6892,7 @@ namespace {
 			w->ctx->layout_dirty = true;
 			vgui_ensure_layout(w->ctx);
 		}
+		vgui_notify_scroll(w);
 	}
 
 	// Returns the scrollbar under the pointer.  Walking up from the hit widget is
@@ -9617,6 +9651,7 @@ namespace {
 				p->scroll_x = vgui_clampf(p->scroll_x - delta * 40.0f, 0.0f, max_scroll);
 				ctx->layout_dirty = true;
 				vgui_ensure_layout(ctx);
+				vgui_notify_scroll(p);
 				consumed = 1;
 				break;
 			}
@@ -9629,6 +9664,7 @@ namespace {
 				p->scroll_y -= wy * 40.0f;
 				ctx->layout_dirty = true;
 				vgui_ensure_layout(ctx);
+				vgui_notify_scroll(p);
 				consumed = 1;
 			}
 		}
@@ -9640,6 +9676,7 @@ namespace {
 				p->scroll_x -= wx * 40.0f;
 				ctx->layout_dirty = true;
 				vgui_ensure_layout(ctx);
+				vgui_notify_scroll(p);
 				consumed = 1;
 			}
 		}
@@ -14266,6 +14303,7 @@ extern "C" {
 		panel->scroll_x = x;
 		panel->scroll_y = y;
 		vgui_mark_dirty(panel);
+		vgui_notify_scroll(panel);
 	}
 
 	void vgui_panel_scroll_by(vgui_widget* panel, float dx, float dy)
@@ -14274,6 +14312,7 @@ extern "C" {
 		panel->scroll_x += dx;
 		panel->scroll_y += dy;
 		vgui_mark_dirty(panel);
+		vgui_notify_scroll(panel);
 	}
 
 	void vgui_panel_get_scroll(vgui_widget* panel, float* x, float* y)
@@ -14288,6 +14327,14 @@ extern "C" {
 		if (panel && panel->ctx) vgui_ensure_layout(panel->ctx);
 		if (width) *width = panel ? panel->content_w : 0;
 		if (height) *height = panel ? panel->content_h : 0;
+	}
+
+	void vgui_panel_set_scroll_listener(vgui_widget* panel, vgui_scroll_fn fn,
+		void* user)
+	{
+		if (!panel) return;
+		panel->scroll_fn = fn;
+		panel->scroll_user = fn ? user : nullptr;
 	}
 
 	//----------------------------------------------------------------------------

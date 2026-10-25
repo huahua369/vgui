@@ -270,6 +270,10 @@ extern "C" {
 	typedef void (*vgui_event_fn)(vgui_widget* widget, const vgui_event* event, void* user);
 	typedef void (*vgui_value_fn)(vgui_widget* widget, float value, void* user);
 	typedef void (*vgui_text_fn)(vgui_widget* widget, const char* text, void* user);
+	/* Panel scroll listener: called after scroll_x/scroll_y change.  Listeners
+	 * may update content in response (for example, virtualized rows), but the
+	 * layout pass that clamps the offsets may not have run yet. */
+	typedef void (*vgui_scroll_fn)(vgui_widget* panel, float x, float y, void* user);
 	typedef void (*vgui_item_fn)(vgui_widget* widget, vgui_item_id item, void* user);
 	typedef void (*vgui_item_select_fn)(vgui_widget* widget, vgui_item_id item, int selected, void* user);
 	/* Inline row button click (list/tree row extensions).  button is the
@@ -1059,6 +1063,11 @@ extern "C" {
 	VGUI_API void vgui_panel_scroll_by(vgui_widget* panel, float dx, float dy);
 	VGUI_API void vgui_panel_get_scroll(vgui_widget* panel, float* x, float* y);
 	VGUI_API void vgui_panel_get_content_size(vgui_widget* panel, float* width, float* height);
+	/* Installs a callback that runs whenever the panel's scroll offsets change
+	 * (programmatic scrolling, the wheel, or scrollbar dragging).  Pass nullptr
+	 * to remove it.  The callback may be invoked from inside input handling. */
+	VGUI_API void vgui_panel_set_scroll_listener(vgui_widget* panel,
+		vgui_scroll_fn fn, void* user);
 
 	/* Splitter: a two-pane container.  vertical=0 lays the first visible child
 	 * on the left and the second on the right; vertical=1 lays them out top and

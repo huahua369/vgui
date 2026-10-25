@@ -137,6 +137,11 @@ namespace vgui_editor_kit {
 		std::size_t visible_row_count() const noexcept;
 		bool property_visible(const std::string& id) const;
 
+		/* Number of property rows whose editor widgets are currently
+		 * materialized.  With row virtualization this stays bounded by the
+		 * visible window even when row_count() is much larger. */
+		std::size_t materialized_row_count() const noexcept;
+
 		bool set_category_collapsed(const std::string& category, bool collapsed);
 		bool category_collapsed(const std::string& category) const;
 
@@ -194,9 +199,16 @@ namespace vgui_editor_kit {
 
 		struct category_ui
 		{
-			vgui_widget* panel = nullptr;
 			vgui_widget* header = nullptr;
-			vgui_widget* rows = nullptr;
+		};
+
+		struct display_entry
+		{
+			enum class kind { category, property } type = kind::property;
+			std::string key;		// category name or property id
+			std::uint64_t token = 0;	// row token for property entries
+			float height = 0.0f;
+			float offset = 0.0f;		// top offset inside the content panel
 		};
 
 		row* find_row(const std::string& id);
@@ -210,6 +222,16 @@ namespace vgui_editor_kit {
 		void update_row_error_ui(row& item);
 		void update_visibility();
 		bool row_matches(const row& item) const;
+
+		void rebuild_display();
+		void recompute_display_layout();
+		void update_window();
+		void refresh_viewport();
+		void sync_scroll_to_content();
+		vgui_widget* entry_widget(const display_entry& entry);
+		void release_row(row& item);
+		void release_category(category_ui& ui);
+		float row_height(const row& item) const;
 
 		void set_row_error(row& item, std::string error);
 		void clear_row_error(row& item);
@@ -231,15 +253,27 @@ namespace vgui_editor_kit {
 		static void on_reset_click(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_category_click(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user);
+		static void on_scroll(vgui_widget* panel, float x, float y, void* user);
 
 		vgui_widget* panel_ = nullptr;
 		vgui_widget* search_ = nullptr;
 		vgui_widget* content_ = nullptr;
+		vgui_widget* top_spacer_ = nullptr;
+		vgui_widget* window_ = nullptr;
+		vgui_widget* bottom_spacer_ = nullptr;
 		std::vector<row> rows_;
+		std::vector<display_entry> display_;
+		std::vector<std::string> category_order_;
 		std::map<std::string, category_ui> categories_;
 		std::map<std::string, bool> category_collapsed_;
 		std::string filter_;
 		std::size_t visible_rows_ = 0;
+		std::size_t window_begin_ = 0;
+		std::size_t window_end_ = 0;
+		float content_height_ = 0.0f;
+		float viewport_h_ = 0.0f;
+		float scroll_y_ = 0.0f;
+		bool updating_window_ = false;
 		std::uint64_t next_token_ = 1;
 		std::uint64_t next_row_id_ = 1;
 		std::vector<std::string> recent_colors_;
