@@ -24,6 +24,7 @@ gui实现
 #include <mapView.h>
 
 #include <ovg_c.h>
+#include "tools/tools.hpp"
 #include <harfbuzz/hb.h>
 
 #include <clipper2/clipper.h> 
@@ -9988,35 +9989,15 @@ namespace {
 
 	static void vgui_fill_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, float r, uint32_t color)
 	{
+		// color==0 早退：工具层收到全透明色仍会录制绘制命令
 		if (!cb || !vg || color == 0 || w <= 0 || h <= 0) return;
-		if (r > 0)
-		{
-			r = std::min(r, std::min(w, h) * 0.5f);
-			cb->rounded_rectangle(vg, x, y, w, h, r);
-		}
-		else
-		{
-			cb->rectangle(vg, x, y, w, h);
-		}
-		cb->set_source_color(vg, vgui_ovg_color(color));
-		cb->fill(vg);
+		ovg_tools::fill_round_rect(cb, vg, x, y, w, h, r, vgui_ovg_color(color));
 	}
 
 	static void vgui_stroke_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, float r, uint32_t color, float width)
 	{
 		if (!cb || !vg || color == 0 || w <= 0 || h <= 0 || width <= 0) return;
-		if (r > 0)
-		{
-			r = std::min(r, std::min(w, h) * 0.5f);
-			cb->rounded_rectangle(vg, x, y, w, h, r);
-		}
-		else
-		{
-			cb->rectangle(vg, x, y, w, h);
-		}
-		cb->set_line_width(vg, width);
-		cb->set_source_color(vg, vgui_ovg_color(color));
-		cb->stroke(vg);
+		ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, r, vgui_ovg_color(color), width);
 	}
 
 	// One horizontal selection run (one text line).  Multi-line selections are
@@ -10269,6 +10250,9 @@ namespace {
 		cb->set_dash(vg, d, 2, 0);
 		vgui_stroke_rect(cb, vg, w->abs_x + fs.inset, w->abs_y + fs.inset,
 			w->abs_w - fs.inset * 2.0f, w->abs_h - fs.inset * 2.0f, r, color, fs.width);
+		// dash 用完即清（与 ovg_tools 约定一致）：焦点环泄漏的 dash 会与后续
+		// save/restore 的 dash 数组所有权交互，留下悬空引用后按垃圾值细分描边。
+		cb->set_dash(vg, nullptr, 0, 0);
 	}
 
 	// Forward — declared later at vgui_draw_image. Used by VGUI_BUTTON icon draw.
@@ -10277,16 +10261,6 @@ namespace {
 	// -------------------------------------------------------------------
 	// Gradient button helpers (ported from vgui_legacy.cpp)
 	// -------------------------------------------------------------------
-
-	// 把 0xAARRGGBB 拆成 RGBA float[4]（0..1）。
-	static glm::vec4 vgui_color_to_rgba_f(vgui_color c)
-	{
-		uint8_t r = (c >> 16) & 0xFF;
-		uint8_t g = (c >> 8) & 0xFF;
-		uint8_t b = c & 0xFF;
-		uint8_t a = (c >> 24) & 0xFF;
-		return { r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f };
-	}
 
 	// 把 0xAARRGGBB 的 alpha 按比例乘一遍，返回新颜色（保留 RGB 分量的乘性缩放语义）。
 	static uint32_t vgui_set_alpha_xf(uint32_t c, double af)
@@ -10318,16 +10292,8 @@ namespace {
 		float x, float y, float w, float h, float rounding,
 		vgui_color top, vgui_color bot)
 	{
-		vg_pattern_t* pat = cb->new_pattern_linear(vg, x, y, x, y + h);
-		if (!pat) return;
-		auto tc = vgui_color_to_rgba_f(top);
-		auto bc = vgui_color_to_rgba_f(bot);
-		cb->pattern_add_color_stop(pat, 0.0f, tc.x, tc.y, tc.z, tc.w);
-		cb->pattern_add_color_stop(pat, 1.0f, bc.x, bc.y, bc.z, bc.w);
-		cb->set_source(vg, pat);
-		cb->rounded_rectangle(vg, x, y, w, h, rounding);	// rounding=0 即为直角，且避免 backend 未实现 rectangle 时 crash
-		cb->fill(vg);
-		// pattern 由 ovg 内部管理生命周期，未暴露 destroy 接口
+		ovg_tools::fill_round_rect_gradient(cb, vg, x, y, w, h, rounding,
+			vgui_ovg_color(top), vgui_ovg_color(bot));
 	}
 
 	static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
