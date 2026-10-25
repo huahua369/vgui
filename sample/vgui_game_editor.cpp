@@ -37,6 +37,8 @@ struct scene_object
 	std::vector<object_id> children;
 	bool visible = true;
 	bool locked = false;
+	/* 属性面板演示值(P08 多选编辑的批量目标)。 */
+	std::map<std::string, std::string> props;
 };
 
 struct game_scene
@@ -222,12 +224,19 @@ static void setup_editor(vgui_context* ui)
 
 	/* 初始场景:World { Camera, Light }, Terrain, Enemies { Slime, Bat }。 */
 	const object_id world = g.scene.add("World", invalid_object);
-	g.scene.add("Camera", world);
-	g.scene.add("Light", world);
+	const object_id camera = g.scene.add("Camera", world);
+	const object_id light = g.scene.add("Light", world);
 	g.scene.add("Terrain", invalid_object);
 	const object_id enemies = g.scene.add("Enemies", invalid_object);
-	g.scene.add("Slime", enemies);
-	g.scene.add("Bat", enemies);
+	const object_id slime = g.scene.add("Slime", enemies);
+	const object_id bat = g.scene.add("Bat", enemies);
+	/* P08 演示:对象间值不同 → 多选时属性行进入混合态。 */
+	g.scene.objects[camera].props["tint"] = "#FFFFFFFF";
+	g.scene.objects[camera].props["mesh"] = "Cube.mesh";
+	g.scene.objects[light].props["tint"] = "#FFE0B040";
+	g.scene.objects[slime].props["tint"] = "#FF60E060";
+	g.scene.objects[slime].props["mesh"] = "Sphere.mesh";
+	g.scene.objects[bat].props["tint"] = "#FF8060C0";
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
@@ -390,12 +399,30 @@ static void setup_editor(vgui_context* ui)
 	});
 
 	/* 选中变化 → 重建属性行(名称/颜色/网格/目标)。 */
+	/* 选中变化 → 重建属性行;Outliner 多选(P08)时进入多目标模式,
+	 * 值不同的行显示混合态,提交批量写入所有选中对象。 */
 	g.context->add_selection_listener([](object_id id) {
 		property_grid& grid = g.shell->properties();
 		grid.clear();
+
+		/* 多选集来自 Outliner(视觉顺序);单选退化为普通模式。 */
+		std::vector<object_id> targets =
+			g.shell->scene().selection_objects();
+		if (targets.size() <= 1 || !g.scene.objects.count(id))
+			targets.clear();
+		grid.set_multi_targets(targets);
+
 		if (id == invalid_object || !g.scene.objects.count(id))
 			return;
 		const scene_object& o = g.scene.objects[id];
+
+		auto prop_of = [&](const std::string& pid,
+			const std::string& fallback) -> std::string
+		{
+			auto it = g.scene.objects[id].props.find(pid);
+			return it == g.scene.objects[id].props.end() ? fallback
+				: it->second;
+		};
 
 		property_desc name;
 		name.id = "name";
@@ -411,7 +438,7 @@ static void setup_editor(vgui_context* ui)
 		color.id = "tint";
 		color.label = "Tint";
 		color.type = property_type::color;
-		color.value = "#FFFFFFFF";
+		color.value = prop_of("tint", "#FFFFFFFF");
 		color.category = "Rendering";
 		color.tooltip = "Light tint (HSV picker)";
 		grid.add_property(color);
@@ -420,7 +447,7 @@ static void setup_editor(vgui_context* ui)
 		mesh.id = "mesh";
 		mesh.label = "Mesh";
 		mesh.type = property_type::asset;
-		mesh.value = "";
+		mesh.value = prop_of("mesh", "");
 		mesh.asset_filter = "mesh";
 		mesh.category = "Rendering";
 		mesh.tooltip = "Drag from ASSETS or use ...";
@@ -430,23 +457,51 @@ static void setup_editor(vgui_context* ui)
 		target.id = "target";
 		target.label = "Target";
 		target.type = property_type::object_ref;
-		target.value = "";
+		target.value = prop_of("target", "");
 		target.category = "AI";
 		target.tooltip = "Click the name to select";
 		grid.add_property(target);
 
-		grid.set_change_listener([](const std::string& pid,
+		/* 多目标 getter/setter:值存在对象 props 里(name 特殊)。 */
+		grid.set_multi_getter([](const std::string& pid, object_id obj)
+			-> std::string
+		{
+			auto it = g.scene.objects.find(obj);
+			if (it == g.scene.objects.end())
+				return "";
+			if (pid == "name")
+				return it->second.name;
+			auto pit = it->second.props.find(pid);
+			return pit == it->second.props.end() ? "" : pit->second;
+		});
+		grid.set_multi_setter([](const std::string& pid, object_id obj,
 			const std::string& value)
 		{
-			object_id sel = g.context->selection();
-			if (sel == invalid_object || !g.scene.objects.count(sel))
+			auto it = g.scene.objects.find(obj);
+			if (it == g.scene.objects.end())
 				return;
 			if (pid == "name")
 			{
-				g.scene.objects[sel].name = value;
+				it->second.name = value;
 				g.rebuild_outliner();
 			}
-			else if (pid == "mesh" || pid == "target")
+			else
+			{
+				it->second.props[pid] = value;
+			}
+		});
+		/* 多目标模式下重建后立即检测混合态。 */
+		grid.refresh();
+
+		grid.set_change_listener([](const std::string& pid,
+			const std::string& value)
+		{
+			/* 多目标模式写入走 multi_setter;这里只做状态反馈与
+			 * 单选时的模型写回。 */
+			object_id sel = g.context->selection();
+			if (sel == invalid_object || !g.scene.objects.count(sel))
+				return;
+			if (pid == "mesh" || pid == "target" || pid == "tint")
 			{
 				g.shell->set_status(pid + " = " + (value.empty()
 					? std::string("(none)") : value));

@@ -714,7 +714,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				return fail("edit menu opens");
 			if (vgui_menu_get_item_enabled(edit_menu, undo_item) != 1)
 				return fail("edit menu undo enabled");
-			vgui_item_id delete_item = vgui_menu_get_item_at(edit_menu, 3);
+			/* P08 后 Edit 菜单:undo, redo, sep, copy, paste, sep, delete。 */
+			vgui_item_id delete_item = vgui_menu_get_item_at(edit_menu, 6);
 			if (!delete_item || vgui_menu_get_item_enabled(edit_menu, delete_item) != 1)
 				return fail("edit menu open refreshes state");
 
@@ -3354,6 +3355,285 @@ static int test_color_picker()
 }
 
 //----------------------------------------------------------------------------
+// M2 P08:多选混合值 / 属性剪贴板 / 收藏
+//----------------------------------------------------------------------------
+
+static int test_property_multi()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("multi context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* kit 契约:grid 先于 vgui_context 析构。 */
+	{
+	editor_context context(ui);
+	command_stack commands;
+	property_grid grid;
+	grid.build(vgui_root(ui));
+	grid.set_command_stack(&commands);
+
+	/* 宿主对象存储:两对象同名属性不同值。 */
+	std::map<object_id, std::map<std::string, std::string>> store = {
+		{ 1, { { "hp", "10" }, { "name", "A" }, { "enabled", "true" } } },
+		{ 2, { { "hp", "20" }, { "name", "A" }, { "enabled", "false" } } },
+	};
+	grid.set_multi_getter([&](const std::string& id, object_id target) {
+		return store.count(target) && store[target].count(id)
+			? store[target][id] : std::string();
+	});
+	grid.set_multi_setter([&](const std::string& id, object_id target,
+		const std::string& value)
+	{
+		store[target][id] = value;
+	});
+
+	property_desc hp;
+	hp.id = "hp";
+	hp.label = "HP";
+	hp.type = property_type::integer;
+	hp.value = "10";
+	property_desc name;
+	name.id = "name";
+	name.label = "Name";
+	name.type = property_type::text;
+	name.value = "A";
+	if (!grid.add_property(hp) || !grid.add_property(name))
+		return fail("multi rows added");
+
+	/* 同值 → 不混合;不同值 → 混合。 */
+	grid.set_multi_targets({ 1, 2 });
+	if (grid.multi_targets().size() != 2)
+		return fail("multi targets stored");
+	if (!grid.property_mixed("hp") || grid.property_mixed("name"))
+		return fail("mixed detection");
+	if (grid.property_value("name") != "A")
+		return fail("same value displayed");
+
+	/* 批量提交:两对象同写,一条 undo;undo 回各自旧值并回到混合。 */
+	const std::size_t base = commands.undo_count();
+	if (!grid.commit_property_value("hp", "15"))
+		return fail("multi commit");
+	if (store[1]["hp"] != "15" || store[2]["hp"] != "15")
+		return fail("multi commit writes all targets");
+	if (commands.undo_count() != base + 1)
+		return fail("multi single undo record");
+	if (grid.property_mixed("hp"))
+		return fail("mixed cleared after commit");
+	if (!commands.undo())
+		return fail("multi undo");
+	if (store[1]["hp"] != "10" || store[2]["hp"] != "20")
+		return fail("multi undo restores per-target values");
+	if (!grid.property_mixed("hp"))
+		return fail("mixed restored after undo");
+	if (!commands.redo() || store[1]["hp"] != "15" ||
+		store[2]["hp"] != "15" || grid.property_mixed("hp"))
+		return fail("multi redo");
+
+	/* 空目标列表退回单选路径(desc.set_value 被调)。 */
+	bool single_path_used = false;
+	{
+		property_desc single;
+		single.id = "hp";
+		single.label = "HP";
+		single.type = property_type::integer;
+		single.value = "15";
+		single.set_value = [&](const std::string&) { single_path_used = true; };
+		property_grid single_grid;
+		single_grid.build(vgui_root(ui));
+		single_grid.set_command_stack(&commands);
+		single_grid.add_property(single);
+		single_grid.set_multi_targets({ 1, 2 });
+		single_grid.set_multi_targets({});
+		if (!single_grid.commit_property_value("hp", "30"))
+			return fail("single commit after clearing targets");
+		if (!single_path_used)
+			return fail("single path desc.set_value used");
+	}
+	}	/* kit 契约块:grid 先析构 */
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_property_clipboard()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("clipboard context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	editor_context context(ui);
+	command_stack commands;
+	{
+		property_grid source;
+		source.build(vgui_root(ui));
+		property_desc hp;
+		hp.id = "hp";
+		hp.type = property_type::integer;
+		hp.value = "10";
+		property_desc tint;
+		tint.id = "tint";
+		tint.type = property_type::color;
+		tint.value = "#FF0000";
+		property_desc mesh;
+		mesh.id = "mesh";
+		mesh.type = property_type::asset;
+		mesh.value = "Cube.mesh";
+		property_desc extra;
+		extra.id = "extra";
+		extra.type = property_type::text;
+		extra.value = "keep";
+		if (!source.add_property(hp) || !source.add_property(tint) ||
+			!source.add_property(mesh) || !source.add_property(extra))
+			return fail("clipboard source rows");
+		if (source.copy_properties() != 4 ||
+			property_grid::clipboard_property_count() != 4)
+			return fail("clipboard copy count");
+	}
+
+	/* 目标 grid:同 id 同型 3 行 + 同 id 异型 1 行(text→integer)+ 无关行。 */
+	{
+		property_grid target;
+		target.build(vgui_root(ui));
+		target.set_command_stack(&commands);
+		property_desc hp;
+		hp.id = "hp";
+		hp.type = property_type::integer;
+		hp.value = "30";
+		property_desc tint;
+		tint.id = "tint";
+		tint.type = property_type::color;
+		tint.value = "#00FF00";
+		property_desc mesh;
+		mesh.id = "mesh";
+		mesh.type = property_type::asset;
+		mesh.value = "";
+		property_desc extra;
+		extra.id = "extra";
+		extra.type = property_type::integer;
+		extra.value = "7";
+		property_desc note;
+		note.id = "note";
+		note.type = property_type::text;
+		note.value = "untouched";
+		if (!target.add_property(hp) || !target.add_property(tint) ||
+			!target.add_property(mesh) || !target.add_property(extra) ||
+			!target.add_property(note))
+			return fail("clipboard target rows");
+
+		const std::size_t base = commands.undo_count();
+		if (target.paste_properties() != 3)
+			return fail("clipboard pastes matching typed rows");
+		if (target.property_value("hp") != "10" ||
+			target.property_value("tint") != "#FF0000" ||
+			target.property_value("mesh") != "Cube.mesh")
+			return fail("clipboard values applied");
+		/* 类型不匹配与缺行跳过。 */
+		if (target.property_value("extra") != "7" ||
+			target.property_value("note") != "untouched")
+			return fail("clipboard skips mismatched rows");
+		if (commands.undo_count() != base + 1)
+			return fail("clipboard single undo record");
+		if (!commands.undo() || target.property_value("hp") != "30" ||
+			target.property_value("mesh") != "")
+			return fail("clipboard undo restores");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_property_favorites()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("favorites context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* kit 契约:grid 先于 vgui_context 析构。 */
+	{
+	editor_context context(ui);
+	property_grid grid;
+	grid.build(vgui_root(ui));
+
+	auto add = [&](const char* id) {
+		property_desc desc;
+		desc.id = id;
+		desc.label = id;
+		desc.type = property_type::text;
+		desc.value = id;
+		return grid.add_property(desc);
+	};
+	if (!add("alpha") || !add("beta") || !add("gamma"))
+		return fail("favorites rows");
+	vgui_update(ui, 0.016f);
+
+	grid.set_property_favorite("alpha", true);
+	if (!grid.property_favorite("alpha") || grid.property_favorite("beta"))
+		return fail("favorite toggle");
+	{
+		const std::vector<std::string> ids = grid.favorite_ids();
+		if (ids.size() != 1 || ids[0] != "alpha")
+			return fail("favorite ids export");
+	}
+
+	/* 收藏过滤与可见行数。 */
+	grid.set_favorites_only(true);
+	if (grid.visible_row_count() != 1)
+		return fail("favorites only filters rows");
+
+	/* 与搜索叠加:beta 不收藏 → 0 行。 */
+	grid.set_filter("beta");
+	if (grid.visible_row_count() != 0)
+		return fail("favorites plus search filters");
+	grid.set_filter("");
+	if (grid.visible_row_count() != 1)
+		return fail("search clear restores favorites view");
+	grid.set_favorites_only(false);
+	if (grid.visible_row_count() != 3)
+		return fail("favorites off shows all");
+
+	/* 重建(clear + add)后收藏保持。 */
+	grid.clear();
+	if (!add("alpha") || !add("beta"))
+		return fail("favorites rebuild rows");
+	if (!grid.property_favorite("alpha"))
+		return fail("favorite survives rebuild");
+	grid.set_favorites_only(true);
+	if (grid.visible_row_count() != 1)
+		return fail("favorite filter after rebuild");
+
+	/* 导出到另一个 grid。 */
+	property_grid other;
+	other.build(vgui_root(ui));
+	property_desc desc;
+	desc.id = "alpha";
+	desc.type = property_type::text;
+	other.add_property(desc);
+	for (const std::string& id : grid.favorite_ids())
+		other.set_property_favorite(id, true);
+	if (!other.property_favorite("alpha"))
+		return fail("favorite import to other grid");
+	}	/* kit 契约块:grid 先析构 */
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+//----------------------------------------------------------------------------
 // M2 P06:asset / object 引用行
 //----------------------------------------------------------------------------
 
@@ -4694,6 +4974,12 @@ int main()
 	if (int rc = test_scene_asset_commands())
 		return rc;
 	if (int rc = test_toolbar_and_status_components())
+		return rc;
+	if (int rc = test_property_multi())
+		return rc;
+	if (int rc = test_property_clipboard())
+		return rc;
+	if (int rc = test_property_favorites())
 		return rc;
 	if (int rc = test_property_reference())
 		return rc;

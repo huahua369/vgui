@@ -354,8 +354,8 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、引用行、命令栈、Outliner(O01~O06)与布局持久化自测
-out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树/属性面板(颜色取色器、资产引用)、拖放、命令栈
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)与布局持久化自测
+out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、资产引用、拖放、命令栈
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 

@@ -95,6 +95,60 @@ namespace vgui_editor_kit {
 			apply_fn apply_;
 		};
 
+		/* P08:多目标批量的单对象 undo 记录。push 前效果已应用,undo/redo
+		 * 经 apply 回调写回该对象的旧/新值并刷新行显示。 */
+		class multi_command final : public command
+		{
+		public:
+			using apply_fn = std::function<void(object_id, const std::string&)>;
+			multi_command(std::string name, std::string id, object_id target,
+				std::string old_value, std::string new_value, apply_fn apply)
+				: name_(std::move(name)), id_(std::move(id)), target_(target),
+				old_value_(std::move(old_value)), new_value_(std::move(new_value)),
+				apply_(std::move(apply))
+			{
+			}
+
+			const char* name() const noexcept override
+			{
+				return name_.c_str();
+			}
+
+			bool execute() override
+			{
+				if (apply_)
+					apply_(target_, new_value_);
+				return true;
+			}
+
+			void undo() override
+			{
+				if (apply_)
+					apply_(target_, old_value_);
+			}
+
+		private:
+			std::string name_;
+			std::string id_;
+			object_id target_;
+			std::string old_value_;
+			std::string new_value_;
+			apply_fn apply_;
+		};
+
+		/* P08:进程内属性剪贴板(kit 级,跨 grid 实例共享)。 */
+		struct clipboard_entry
+		{
+			property_type type = property_type::text;
+			std::string value;
+		};
+
+		std::map<std::string, clipboard_entry>& property_clipboard()
+		{
+			static std::map<std::string, clipboard_entry> clipboard;
+			return clipboard;
+		}
+
 		std::string trim_copy(std::string text)
 		{
 			auto is_space = [](unsigned char c) { return std::isspace(c) != 0; };
@@ -499,13 +553,30 @@ namespace vgui_editor_kit {
 		vgui_widget_set_border(panel_, kBorder, 1);
 		vgui_panel_set_scrollable(panel_, 0, 1);
 
-		search_ = vgui_widget_add(panel_, VGUI_EDIT, nullptr);
+		/* 搜索行 = 搜索框 + P08 收藏过滤开关(高度保持 24,kSearchLead
+		 * 不变)。 */
+		vgui_widget* search_row = vgui_widget_add(panel_, VGUI_PANEL, nullptr);
+		vgui_widget_set_size(search_row, 0, 24);
+		vgui_widget_set_align_self(search_row, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_layout(search_row, VGUI_LAYOUT_ROW);
+		vgui_widget_set_gap(search_row, 4);
+		vgui_widget_set_padding(search_row, 0, 0, 0, 0);
+
+		search_ = vgui_widget_add(search_row, VGUI_EDIT, nullptr);
+		vgui_widget_set_grow(search_, 1.0f);
 		vgui_widget_set_size(search_, 0, 24);
-		vgui_widget_set_align_self(search_, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_font_size(search_, 12);
 		vgui_widget_set_id(search_, "__property_search");
 		vgui_edit_set_placeholder(search_, "Search properties");
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
+
+		fav_filter_ = vgui_widget_add(search_row, VGUI_BUTTON, "*");
+		vgui_widget_set_size(fav_filter_, 24, 24);
+		vgui_widget_set_font_size(fav_filter_, 12);
+		vgui_widget_set_id(fav_filter_, "__property_fav_filter");
+		vgui_widget_set_tooltip(fav_filter_, "Favorites only");
+		vgui_widget_on_event(fav_filter_,
+			&property_grid::on_fav_filter_click, this);
 
 		/* content_ is a fixed-height column of three children:
 		 *   top spacer -> materialized window -> bottom spacer
@@ -978,6 +1049,211 @@ namespace vgui_editor_kit {
 		return true;
 	}
 
+	/* ---- P08:多目标编辑 ------------------------------------------------------ */
+
+	void property_grid::set_multi_targets(std::vector<object_id> targets)
+	{
+		multi_targets_ = std::move(targets);
+		for (row& item : rows_)
+		{
+			item.mixed = false;
+			sync_row_from_targets(item);
+			update_row_ui(item, true);
+		}
+		update_visibility();
+	}
+
+	void property_grid::set_multi_getter(multi_getter_fn getter)
+	{
+		multi_getter_ = std::move(getter);
+	}
+
+	void property_grid::set_multi_setter(multi_setter_fn setter)
+	{
+		multi_setter_ = std::move(setter);
+	}
+
+	bool property_grid::property_mixed(const std::string& id) const
+	{
+		const row* item = find_row(id);
+		return item && item->mixed;
+	}
+
+	void property_grid::sync_row_from_targets(row& item)
+	{
+		item.mixed = false;
+		if (!multi_active())
+			return;
+		std::string first;
+		bool have = false;
+		for (object_id target : multi_targets_)
+		{
+			const std::string value = multi_getter_(item.desc.id, target);
+			if (!have)
+			{
+				first = value;
+				have = true;
+			}
+			else if (value != first)
+			{
+				item.mixed = true;
+				return;
+			}
+		}
+		if (have)
+		{
+			/* 全同:显示该值(过一遍规范化,宿主值不规范时兜底)。 */
+			normalized_value normalized = normalize_value(item.desc, first);
+			item.value = normalized.ok ? normalized.value : first;
+		}
+	}
+
+	void property_grid::apply_multi_value(const std::string& id, object_id target,
+		const std::string& value)
+	{
+		if (multi_setter_)
+			multi_setter_(id, target, value);
+		row* item = find_row(id);
+		if (!item)
+			return;
+		sync_row_from_targets(*item);
+		update_row_ui(*item, true);
+		if (change_listener_)
+			change_listener_(id, item->value);
+	}
+
+	void property_grid::update_row_mixed_ui(row& item)
+	{
+		if (!item.panel)
+			return;
+		switch (item.desc.type)
+		{
+		case property_type::enumeration:
+			if (item.editor)
+				vgui_widget_set_text(item.editor, "(mixed)");
+			break;
+		case property_type::boolean:
+			if (item.editor)
+				vgui_widget_set_checked(item.editor, 0);
+			break;
+		case property_type::color:
+			if (item.swatch)
+				vgui_widget_set_background(item.swatch, 0xFF6C7A89);
+			/* color 行编辑框是 edit,落到下一组。 */
+			[[fallthrough]];
+		case property_type::text:
+		case property_type::integer:
+		case property_type::number:
+			if (item.editor)
+			{
+				vgui_edit_set_text(item.editor, "");
+				vgui_edit_set_placeholder(item.editor, "(mixed)");
+			}
+			break;
+		case property_type::asset:
+		case property_type::object_ref:
+			if (item.editor)
+			{
+				vgui_widget_set_text(item.editor, "(mixed)");
+				vgui_widget_set_text_color(item.editor, kLabelText);
+			}
+			if (item.thumb)
+				vgui_widget_set_background(item.thumb, 0xFF6C7A89);
+			break;
+		default:
+			/* vector:保留主选值分量显示,靠 tooltip 提示。 */
+			break;
+		}
+		vgui_widget_set_tooltip(item.panel, "(mixed values)");
+		if (item.label)
+			vgui_widget_set_tooltip(item.label, "(mixed values)");
+	}
+
+	/* ---- P08:属性剪贴板 ------------------------------------------------------ */
+
+	std::size_t property_grid::copy_properties()
+	{
+		auto& clipboard = property_clipboard();
+		clipboard.clear();
+		for (const row& item : rows_)
+			clipboard[item.desc.id] = { item.desc.type, item.value };
+		return clipboard.size();
+	}
+
+	std::size_t property_grid::clipboard_property_count()
+	{
+		return property_clipboard().size();
+	}
+
+	std::size_t property_grid::paste_properties()
+	{
+		const auto& clipboard = property_clipboard();
+		/* 先数可粘贴行(id 相同且类型一致),空批不产生 undo 记录。 */
+		std::vector<std::string> paste_ids;
+		for (const row& item : rows_)
+		{
+			auto it = clipboard.find(item.desc.id);
+			if (it != clipboard.end() && it->second.type == item.desc.type)
+				paste_ids.push_back(item.desc.id);
+		}
+		if (paste_ids.empty())
+			return 0;
+
+		std::size_t pasted = 0;
+		begin_batch("Paste properties");
+		for (const std::string& id : paste_ids)
+		{
+			row* item = find_row(id);
+			auto it = clipboard.find(id);
+			if (item && it != clipboard.end() &&
+				commit_value(*item, it->second.value, "Paste " + id))
+			{
+				++pasted;
+			}
+		}
+		end_batch();
+		return pasted;
+	}
+
+	/* ---- P08:收藏 ------------------------------------------------------------ */
+
+	void property_grid::set_property_favorite(const std::string& id, bool favorite)
+	{
+		favorites_[id] = favorite;
+		row* item = find_row(id);
+		if (item)
+		{
+			item->favorite = favorite;
+			if (item->fav_btn)
+				vgui_widget_set_checked(item->fav_btn, favorite ? 1 : 0);
+			update_visibility();
+		}
+	}
+
+	bool property_grid::property_favorite(const std::string& id) const
+	{
+		auto it = favorites_.find(id);
+		if (it != favorites_.end())
+			return it->second;
+		const row* item = find_row(id);
+		return item && item->favorite;
+	}
+
+	std::vector<std::string> property_grid::favorite_ids() const
+	{
+		std::vector<std::string> out;
+		for (const row& item : rows_)
+			if (item.favorite)
+				out.push_back(item.desc.id);
+		return out;
+	}
+
+	void property_grid::set_favorites_only(bool only)
+	{
+		favorites_only_ = only;
+		update_visibility();
+	}
+
 	bool property_grid::reference_accepts(const row& item,
 		drag_payload_kind kind) const
 	{
@@ -1036,6 +1312,16 @@ private:
 	{
 		if (!item.editor)
 			return;
+
+		/* P08:混合态引用行只显示提示,不做解析。 */
+		if (item.mixed)
+		{
+			vgui_widget_set_text(item.editor, "(mixed)");
+			vgui_widget_set_text_color(item.editor, kLabelText);
+			if (item.thumb)
+				vgui_widget_set_background(item.thumb, 0xFF6C7A89);
+			return;
+		}
 
 		/* 解析:查询宿主;失败/空值 → 名称占位与 missing 态。 */
 		std::string previous_missing = item.missing ? "1" : "0";
@@ -1124,6 +1410,17 @@ private:
 
 	void property_grid::refresh()
 	{
+		/* P08:多目标模式优先从 getter 拉值(混合态检测)。 */
+		if (multi_active())
+		{
+			for (row& item : rows_)
+			{
+				sync_row_from_targets(item);
+				update_row_ui(item, true);
+			}
+			update_visibility();
+			return;
+		}
 		for (row& item : rows_)
 		{
 			std::string value;
@@ -1463,6 +1760,16 @@ private:
 		}
 		vgui_widget_set_id(item.editor, property_widget_id(item.desc.id).c_str());
 
+		/* P08:收藏星标(reset 左侧),点击切换 favorites_only 过滤范围。 */
+		item.favorite = property_favorite(item.desc.id);
+		item.fav_btn = vgui_widget_add(item.line, VGUI_BUTTON, "*");
+		vgui_widget_set_size(item.fav_btn, 20, 24);
+		vgui_widget_set_font_size(item.fav_btn, 12);
+		vgui_widget_set_id(item.fav_btn, property_widget_id(item.desc.id).c_str());
+		vgui_widget_on_event(item.fav_btn, &property_grid::on_row_event, this);
+		vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
+		vgui_widget_set_tooltip(item.fav_btn, "Toggle favorite (common filter)");
+
 		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, "R");
 		vgui_widget_set_size(item.reset, kResetWidth, 24);
 		vgui_widget_set_font_size(item.reset, 11);
@@ -1529,6 +1836,14 @@ private:
 			vgui_widget_set_enabled(item.reset, readonly ? 0 : 1);
 			vgui_widget_set_visible(item.reset, item.desc.has_default ? 1 : 0);
 		}
+		if (item.fav_btn)
+			vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
+
+		if (item.mixed)
+		{
+			update_row_mixed_ui(item);
+			return;
+		}
 
 		if (sync_editor && item.editor)
 		{
@@ -1559,7 +1874,11 @@ private:
 				break;
 			}
 			default:
+				/* 混合态可能残留 "(mixed)" 占位,恢复正常时还原 desc 占位。 */
 				vgui_edit_set_text(item.editor, item.value.c_str());
+				vgui_edit_set_placeholder(item.editor,
+					item.desc.placeholder.empty() ? nullptr
+						: item.desc.placeholder.c_str());
 				break;
 			}
 		}
@@ -1749,6 +2068,7 @@ private:
 		item.label = nullptr;
 		item.swatch = nullptr;
 		item.editor = nullptr;
+		item.fav_btn = nullptr;
 		item.reset = nullptr;
 		item.error_label = nullptr;
 		item.drag_active = false;
@@ -1905,6 +2225,9 @@ private:
 
 	bool property_grid::row_matches(const row& item) const
 	{
+		/* P08:收藏过滤与搜索叠加。 */
+		if (favorites_only_ && !item.favorite)
+			return false;
 		if (filter_.empty())
 			return true;
 		const std::string needle = lower_copy(filter_);
@@ -1953,7 +2276,8 @@ private:
 	{
 		const std::string id = item.desc.id;
 		const std::string value = item.value;
-		if (item.desc.set_value)
+		/* 多目标模式由 multi_setter 写模型;desc.set_value 只服务单选。 */
+		if (!multi_active() && item.desc.set_value)
 			item.desc.set_value(value);
 		if (change_listener_)
 			change_listener_(id, value);
@@ -2029,6 +2353,57 @@ private:
 			}
 		}
 		clear_row_error(item);
+		if (multi_active())
+		{
+			/* P08:混合/多目标提交——值应用到每个 target,batch 内
+			 * per-target 命令(先应用后 push),一条 undo;undo/redo 经
+			 * getter 重刷行(各对象回旧值时自动回到混合态)。 */
+			const std::string new_value = normalized.value;
+			const std::string label = item.desc.label.empty()
+				? item.desc.id : item.desc.label;
+			const std::string name = command_name.empty()
+				? "Set " + label : command_name;
+			item.mixed = false;
+			apply_value(item, new_value);
+			if (item.desc.type == property_type::color)
+				add_recent_color(new_value);
+
+			std::vector<std::pair<object_id, std::string>> records;
+			records.reserve(multi_targets_.size());
+			for (object_id target : multi_targets_)
+			{
+				std::string old_value = multi_getter_(item.desc.id, target);
+				if (old_value != new_value)
+					records.emplace_back(target, std::move(old_value));
+			}
+			if (command_stack_ && !records.empty())
+			{
+				command_stack_->begin_transaction(name);
+				const std::string id = item.desc.id;
+				std::weak_ptr<int> alive = alive_token_;
+				for (auto& record : records)
+				{
+					multi_command::apply_fn apply =
+						[this, alive, id](object_id target,
+							const std::string& value)
+					{
+						if (!alive.expired())
+							apply_multi_value(id, target, value);
+					};
+					command_stack_->push(std::make_unique<multi_command>(
+						name, id, record.first, std::move(record.second),
+						new_value, std::move(apply)));
+					multi_setter_(id, record.first, new_value);
+				}
+				command_stack_->commit_transaction();
+			}
+			else
+			{
+				for (const auto& record : records)
+					multi_setter_(item.desc.id, record.first, new_value);
+			}
+			return true;
+		}
 		if (normalized.value == item.value)
 		{
 			update_row_ui(item, true);
@@ -2245,6 +2620,19 @@ private:
 			self->set_filter(text ? text : "");
 	}
 
+	void property_grid::on_fav_filter_click(vgui_widget* widget,
+		const vgui_event* event, void* user)
+	{
+		(void)widget;
+		auto* self = static_cast<property_grid*>(user);
+		if (!self || !event || event->type != VGUI_EVENT_CLICK)
+			return;
+		self->set_favorites_only(!self->favorites_only_);
+		if (self->fav_filter_)
+			vgui_widget_set_checked(self->fav_filter_,
+				self->favorites_only_ ? 1 : 0);
+	}
+
 	void property_grid::on_edit_event(vgui_widget* widget, const vgui_event* event,
 		void* user)
 	{
@@ -2443,6 +2831,11 @@ private:
 
 		if (event->type == VGUI_EVENT_CLICK)
 		{
+			if (widget == item->fav_btn)
+			{
+				self->set_property_favorite(item->desc.id, !item->favorite);
+				return;
+			}
 			if (widget == item->swatch)
 			{
 				self->open_color_picker(*item);

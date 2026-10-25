@@ -187,6 +187,9 @@ namespace vgui_editor_kit {
 		void scene_changed();				// structural host change
 		void scene_row_changed(object_id object);	// single row content
 		bool is_virtual() const noexcept { return virtual_; }
+		/* P08:当前选中的对象集合(视觉顺序,全量/虚拟模式通用)。宿主
+		 * 把它交给 property_grid::set_multi_targets 做多对象编辑。 */
+		std::vector<object_id> selection_objects() const;
 		/* Test/debug helper: number of currently projected visible rows. */
 		std::size_t projected_row_count() const;
 		/* Test helpers exposing the internal projection. */

@@ -216,6 +216,43 @@ namespace vgui_editor_kit {
 		bool end_batch();
 		std::size_t batch_depth() const noexcept { return batch_depth_; }
 
+		/* P08: multi-target editing.  With a non-empty target list the grid
+		 * pulls per-object values through the getter on every refresh: equal
+		 * values display normally, differing values switch the row into the
+		 * mixed state (placeholder text, neutral swatch, ...).  Commits then
+		 * apply the value to every target inside one transaction (one undo)
+		 * via the setter; desc.set_value is not called in multi mode.  An
+		 * empty target list restores the regular single-object path. */
+		using multi_getter_fn = std::function<std::string(const std::string& id,
+			object_id target)>;
+		using multi_setter_fn = std::function<void(const std::string& id,
+			object_id target, const std::string& value)>;
+		void set_multi_targets(std::vector<object_id> targets);
+		const std::vector<object_id>& multi_targets() const noexcept
+		{
+			return multi_targets_;
+		}
+		void set_multi_getter(multi_getter_fn getter);
+		void set_multi_setter(multi_setter_fn setter);
+		/* True when the row's values across targets differ (display state). */
+		bool property_mixed(const std::string& id) const;
+
+		/* P08: property clipboard (in-process, shared across grids).  copy
+		 * snapshots id/type/value of every row; paste commits matching rows
+		 * (same id AND same type) inside one batch - references paste as
+		 * raw ids.  Returns the copied/pasted entry count. */
+		std::size_t copy_properties();
+		std::size_t paste_properties();
+		static std::size_t clipboard_property_count();
+
+		/* P08: per-row favorites ("commonly used" filter).  The star button
+		 * toggles a row; set_favorites_only() narrows the visible rows to
+		 * favorites (combined with search and category collapse). */
+		void set_property_favorite(const std::string& id, bool favorite);
+		bool property_favorite(const std::string& id) const;
+		std::vector<std::string> favorite_ids() const;
+		void set_favorites_only(bool only);
+
 		void set_change_listener(change_listener listener);
 		void set_value_source(value_source source);
 		void refresh();
@@ -265,6 +302,10 @@ namespace vgui_editor_kit {
 			std::string resolved_name;
 			bool drop_installed = false;
 			bool missing = false;
+			/* P08: values differ across multi targets (display state). */
+			bool mixed = false;
+			bool favorite = false;
+			vgui_widget* fav_btn = nullptr;
 			vgui_widget* panel = nullptr;
 			vgui_widget* line = nullptr;
 			vgui_widget* label = nullptr;
@@ -339,7 +380,19 @@ namespace vgui_editor_kit {
 		void commit_reference(row& item, const std::string& id);
 		bool reference_accepts(const row& item, drag_payload_kind kind) const;
 
+		/* P08 multi-target: pull per-target values, flag the mixed state and
+		 * refresh one target after a multi command applied (undo/redo). */
+		void sync_row_from_targets(row& item);
+		void apply_multi_value(const std::string& id, object_id target,
+			const std::string& value);
+		bool multi_active() const noexcept
+		{
+			return !multi_targets_.empty() && multi_getter_ && multi_setter_;
+		}
+		void update_row_mixed_ui(row& item);
+
 		static void on_search_text(vgui_widget* widget, const char* text, void* user);
+		static void on_fav_filter_click(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_edit_event(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_edit_text(vgui_widget* widget, const char* text, void* user);
 		static void on_bool_value(vgui_widget* widget, float value, void* user);
@@ -351,6 +404,7 @@ namespace vgui_editor_kit {
 
 		vgui_widget* panel_ = nullptr;
 		vgui_widget* search_ = nullptr;
+		vgui_widget* fav_filter_ = nullptr;	// P08 收藏过滤开关
 		vgui_widget* content_ = nullptr;
 		vgui_widget* top_spacer_ = nullptr;
 		vgui_widget* window_ = nullptr;
@@ -398,6 +452,14 @@ namespace vgui_editor_kit {
 		asset_filter_check_fn asset_filter_check_;
 		missing_asset_fn missing_asset_;
 		std::size_t batch_depth_ = 0;
+
+		/* P08 */
+		std::vector<object_id> multi_targets_;
+		multi_getter_fn multi_getter_;
+		multi_setter_fn multi_setter_;
+		bool favorites_only_ = false;
+		/* 收藏按属性 id 存,clear()/重建后保持。 */
+		std::map<std::string, bool> favorites_;
 	};
 
 } /* namespace vgui_editor_kit */

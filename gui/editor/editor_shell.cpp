@@ -86,6 +86,25 @@ namespace vgui_editor_kit {
 			return context_.selection() != invalid_object;
 		});
 
+		/* P08:属性复制/粘贴(作用于属性面板当前行集)。 */
+		commands_.add("edit.copy_properties", "Copy Properties", [this]() {
+			const std::size_t count = properties_.copy_properties();
+			set_status(count ? "copied " + std::to_string(count)
+				+ " properties" : "nothing to copy");
+		}).shortcut = shortcut("Ctrl+Shift+C");
+		commands_.set_enabled("edit.copy_properties", [this]() {
+			return properties_.row_count() > 0;
+		});
+
+		commands_.add("edit.paste_properties", "Paste Properties", [this]() {
+			const std::size_t count = properties_.paste_properties();
+			set_status(count ? "pasted " + std::to_string(count)
+				+ " properties" : "no matching properties");
+		}).shortcut = shortcut("Ctrl+Shift+V");
+		commands_.set_enabled("edit.paste_properties", [this]() {
+			return property_grid::clipboard_property_count() > 0;
+		});
+
 		auto add_panel_toggle = [this](const char* id, const char* title,
 			editor_panel panel)
 		{
@@ -229,6 +248,9 @@ namespace vgui_editor_kit {
 			wire_menu(edit_menu);
 			add_menu_command(edit_menu, "edit.undo", false);
 			add_menu_command(edit_menu, "edit.redo", false);
+			vgui_menu_add_separator(edit_menu);
+			add_menu_command(edit_menu, "edit.copy_properties", false);
+			add_menu_command(edit_menu, "edit.paste_properties", false);
 			vgui_menu_add_separator(edit_menu);
 			add_menu_command(edit_menu, "edit.delete", false);
 			vgui_menubar_add_menu(menubar_, "Edit", edit_menu);

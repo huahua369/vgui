@@ -815,6 +815,11 @@ namespace vgui_editor_kit {
 			? VGUI_SELECTION_MULTIPLE : VGUI_SELECTION_SINGLE);
 	}
 
+	std::vector<object_id> outliner_view::selection_objects() const
+	{
+		return selected_objects_in_order();
+	}
+
 	std::vector<object_id> outliner_view::selected_objects_in_order() const
 	{
 		std::vector<object_id> out;
