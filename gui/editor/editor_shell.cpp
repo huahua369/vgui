@@ -14,7 +14,6 @@ namespace vgui_editor_kit {
 		constexpr vgui_color kBorder = 0xFF2E3440;
 		constexpr vgui_color kTitleText = 0xFFB8C4D6;
 		constexpr vgui_color kMutedText = 0xFF7F8B9C;
-		constexpr vgui_color kStatusText = 0xFF9CC7A4;
 
 		vgui_widget* make_dock_page(vgui_widget* dock)
 		{
@@ -36,10 +35,16 @@ namespace vgui_editor_kit {
 		: context_(context)
 	{
 		register_default_commands();
+		selection_listener_ = context_.add_selection_listener(
+			[this](object_id id) { update_selection_ui(id); });
+		update_selection_ui(context_.selection());
 	}
 
 	editor_shell::~editor_shell()
 	{
+		if (selection_listener_)
+			context_.remove_selection_listener(selection_listener_);
+		selection_listener_ = 0;
 		if (key_handler_token_ && context_.ui())
 			vgui_context_remove_key_handler(context_.ui(), key_handler_token_);
 		key_handler_token_ = 0;
@@ -121,6 +126,26 @@ namespace vgui_editor_kit {
 		return commands_;
 	}
 
+	toolbar_view& editor_shell::toolbar() noexcept
+	{
+		return toolbar_;
+	}
+
+	status_bar& editor_shell::statusbar() noexcept
+	{
+		return statusbar_;
+	}
+
+	search_box& editor_shell::search() noexcept
+	{
+		return search_;
+	}
+
+	breadcrumb& editor_shell::path() noexcept
+	{
+		return path_;
+	}
+
 	bool editor_shell::run_command(const char* id)
 	{
 		bool ran = commands_.invoke(id);
@@ -130,10 +155,7 @@ namespace vgui_editor_kit {
 
 	void editor_shell::refresh_commands()
 	{
-		if (undo_button_)
-			vgui_widget_set_enabled(undo_button_, commands_.is_enabled("edit.undo") ? 1 : 0);
-		if (redo_button_)
-			vgui_widget_set_enabled(redo_button_, commands_.is_enabled("edit.redo") ? 1 : 0);
+		toolbar_.refresh_commands();
 
 		for (const std::unique_ptr<menu_binding>& binding : menu_bindings_)
 		{
@@ -263,38 +285,39 @@ namespace vgui_editor_kit {
 		vgui_widget_set_background(menubar_, kHeaderBg);
 		vgui_widget_set_border(menubar_, kBorder, 1);
 
-		vgui_widget* header = vgui_widget_add(root_, VGUI_PANEL, nullptr);
-		vgui_widget_set_size(header, 0, 34);
-		vgui_widget_set_align_self(header, VGUI_ALIGN_STRETCH);
-		vgui_widget_set_layout(header, VGUI_LAYOUT_ROW);
-		vgui_widget_set_padding(header, 8, 0, 8, 0);
-		vgui_widget_set_gap(header, 8);
-		vgui_widget_set_background(header, kHeaderBg);
-		vgui_widget_set_border(header, kBorder, 1);
-
-		vgui_widget* title = vgui_widget_add(header, VGUI_LABEL,
-			"vgui_editor_kit  ·  MVP skeleton");
-		vgui_widget_set_grow(title, 1.0f);
-		vgui_widget_set_size(title, 0, 24);
+		toolbar_.build(root_);
+		vgui_widget* title = toolbar_.add_label(
+			"vgui_editor_kit  ·  MVP skeleton", true);
 		vgui_widget_set_font_size(title, 14);
 		vgui_widget_set_text_color(title, kTitleText);
-		vgui_widget_set_text_align(title, 0.0f, 0.5f);
 
-		undo_button_ = vgui_widget_add(header, VGUI_BUTTON, "Undo");
-		vgui_widget_set_size(undo_button_, 58, 24);
-		vgui_widget_set_font_size(undo_button_, 12);
-		vgui_widget_on_event(undo_button_, &editor_shell::on_undo, this);
+		search_.build(toolbar_.widget(), "Search scene");
+		search_.set_on_change([this](const std::string& text) {
+			set_status(text.empty() ? "ready" : "search: " + text);
+		});
+		search_.set_on_submit([this](const std::string& text) {
+			set_status(text.empty() ? "search cleared" : "search: " + text);
+		});
 
-		redo_button_ = vgui_widget_add(header, VGUI_BUTTON, "Redo");
-		vgui_widget_set_size(redo_button_, 58, 24);
-		vgui_widget_set_font_size(redo_button_, 12);
-		vgui_widget_on_event(redo_button_, &editor_shell::on_redo, this);
+		toolbar_.add_command_button(commands_, "edit.undo");
+		toolbar_.add_command_button(commands_, "edit.redo");
+		toolbar_.add_separator();
 
-		status_ = vgui_widget_add(header, VGUI_LABEL, "ready");
-		vgui_widget_set_size(status_, 220, 24);
-		vgui_widget_set_font_size(status_, 12);
-		vgui_widget_set_text_color(status_, kStatusText);
-		vgui_widget_set_text_align(status_, 1.0f, 0.5f);
+		toggle_button& grid = toolbar_.add_toggle_button("Grid", true);
+		grid.set_tooltip("Toggle grid");
+		grid.set_on_change([this](bool checked) {
+			set_status(checked ? "grid on" : "grid off");
+		});
+
+		segmented_control& view_mode = toolbar_.add_segmented_control();
+		view_mode.add_segment("Persp");
+		view_mode.add_segment("Top");
+		view_mode.add_segment("Front");
+		view_mode.set_on_change([this](std::size_t index) {
+			static const char* names[] = { "perspective", "top", "front" };
+			if (index < 3)
+				set_status(std::string("view ") + names[index]);
+		});
 
 		dock_ = vgui_widget_add(root_, VGUI_DOCK, nullptr);
 		vgui_widget_set_grow(dock_, 1.0f);
@@ -325,6 +348,8 @@ namespace vgui_editor_kit {
 		viewport_item_ = vgui_dock_add(dock_, &desc);
 
 		properties_panel_ = make_dock_page(dock_);
+		path_.build(properties_panel_);
+		vgui_widget_set_padding(path_.widget(), 6, 0, 6, 0);
 		properties_.build(properties_panel_);
 		properties_.set_command_stack(&context_.commands());
 		desc.id = "properties";
@@ -360,6 +385,9 @@ namespace vgui_editor_kit {
 		desc.panel = bottom_panel_;
 		desc.zone = VGUI_DOCK_BOTTOM;
 		bottom_item_ = vgui_dock_add(dock_, &desc);
+
+		statusbar_.build(root_);
+		update_selection_ui(context_.selection());
 
 		build_menus();
 		if (context_.ui())
@@ -824,30 +852,23 @@ namespace vgui_editor_kit {
 
 	void editor_shell::set_status(std::string text)
 	{
-		if (status_)
-			vgui_widget_set_text(status_, text.c_str());
+		statusbar_.set_message(std::move(text));
 	}
 
-	void editor_shell::on_undo(vgui_widget* widget, const vgui_event* event, void* user)
+	void editor_shell::update_selection_ui(object_id id)
 	{
-		(void)widget;
-		if (event && event->type == VGUI_EVENT_CLICK)
-		{
-			auto* self = static_cast<editor_shell*>(user);
-			if (!self->run_command("edit.undo"))
-				self->set_status("nothing to undo");
-		}
-	}
+		statusbar_.set_selected_object(id);
 
-	void editor_shell::on_redo(vgui_widget* widget, const vgui_event* event, void* user)
-	{
-		(void)widget;
-		if (event && event->type == VGUI_EVENT_CLICK)
+		if (!path_.widget())
+			return;
+		std::vector<breadcrumb_item> path;
+		path.push_back({ "Scene", "scene" });
+		if (id != invalid_object)
 		{
-			auto* self = static_cast<editor_shell*>(user);
-			if (!self->run_command("edit.redo"))
-				self->set_status("nothing to redo");
+			const std::string label = "Object " + std::to_string(id);
+			path.push_back({ label, "object:" + std::to_string(id) });
 		}
+		path_.set_items(std::move(path));
 	}
 
 	void editor_shell::on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user)

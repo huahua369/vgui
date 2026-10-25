@@ -6,6 +6,7 @@
  * dependencies on a game scene, asset database or editor document format.
  */
 #include "asset_browser.h"
+#include "breadcrumb.h"
 #include "command_registry.h"
 #include "command_stack.h"
 #include "drag_bridge.h"
@@ -15,4 +16,7 @@
 #include "editor_types.h"
 #include "outliner_view.h"
 #include "property_grid.h"
+#include "search_box.h"
+#include "status_bar.h"
+#include "toolbar.h"
 #include "viewport_view.h"

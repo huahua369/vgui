@@ -1417,6 +1417,251 @@ namespace {
 		return 0;
 	}
 
+	int test_toolbar_and_status_components()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("toolbar component context");
+		vgui_context_set_size(ui, 1280, 800);
+
+		{
+			vgui_widget* root = vgui_root(ui);
+
+			int clicks = 0;
+			icon_button icon;
+			icon.build(root, "Run");
+			icon.set_tooltip("Run command");
+			icon.set_on_click([&clicks]() { ++clicks; });
+
+			vgui_texture_desc icon_desc = {};
+			icon_desc.width = 4;
+			icon_desc.height = 4;
+			icon_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+			unsigned char icon_pixels[64] = {};
+			icon_desc.pixels = icon_pixels;
+			vgui_texture* icon_texture = vgui_texture_create(ui, &icon_desc);
+			if (!icon_texture)
+				return fail("icon button texture");
+			icon.set_icon(icon_texture, 12, 12);
+
+			if (!icon.widget() ||
+				vgui_widget_get_kind(icon.widget()) != VGUI_BUTTON ||
+				std::string(vgui_widget_get_text(icon.widget())) != "Run")
+				return fail("icon button build");
+			icon.click();
+			if (clicks != 1)
+				return fail("icon button click");
+			icon.set_checked(true);
+			if (!icon.checked() || vgui_widget_get_checked(icon.widget()) != 1)
+				return fail("icon button checked");
+			icon.set_enabled(false);
+			icon.click();
+			if (icon.enabled() || clicks != 1)
+				return fail("icon button disabled");
+
+			toggle_button toggle;
+			toggle.build(root, "Snap");
+			int toggles = 0;
+			bool last_toggle = false;
+			toggle.set_on_change([&](bool value) {
+				++toggles;
+				last_toggle = value;
+			});
+			toggle.toggle();
+			if (!toggle.checked() || toggles != 1 || !last_toggle)
+				return fail("toggle button on");
+			toggle.set_checked(false);
+			if (toggle.checked() || toggles != 1)
+				return fail("toggle button silent set");
+			toggle.set_enabled(false);
+			toggle.toggle();
+			if (toggle.checked() || toggles != 1)
+				return fail("toggle button disabled");
+
+			segmented_control segments;
+			segments.build(root);
+			if (segments.add_segment("One") != 0 ||
+				segments.add_segment("Two") != 1 ||
+				segments.add_segment("Three") != 2 ||
+				segments.count() != 3 || !segments.has_selection() ||
+				segments.selected() != 0)
+				return fail("segmented control add");
+			int selections = 0;
+			std::size_t last_selection = 99;
+			segments.set_on_change([&](std::size_t index) {
+				++selections;
+				last_selection = index;
+			});
+			if (!segments.select(1) || segments.selected() != 1 ||
+				selections != 1 || last_selection != 1)
+				return fail("segmented control select");
+			if (!segments.select(1) || selections != 1)
+				return fail("segmented control same selection");
+			if (segments.select(7))
+				return fail("segmented control invalid selection");
+			segments.set_segment_enabled(2, false);
+			if (segments.segment_enabled(2) || segments.select(2) ||
+				selections != 1)
+				return fail("segmented control disabled segment");
+			segments.set_segment_enabled(2, true);
+			if (!segments.select(2) || selections != 2)
+				return fail("segmented control re-enabled segment");
+			segments.set_selected(0);
+			if (segments.selected() != 0 || selections != 2 ||
+				vgui_widget_get_checked(segments.segment_widget(0)) != 1 ||
+				vgui_widget_get_checked(segments.segment_widget(2)) != 0)
+				return fail("segmented control silent selection");
+
+			command_registry commands;
+			int runs = 0;
+			bool command_enabled = true;
+			commands.add("test.run", "Run", [&runs]() { ++runs; });
+			commands.set_enabled("test.run",
+				[&command_enabled]() { return command_enabled; });
+			commands.set_checked("test.run", []() { return true; });
+
+			toolbar_view toolbar;
+			toolbar.build(root);
+			icon_button* command = toolbar.add_command_button(commands, "test.run");
+			if (!toolbar.widget() || !command || !command->enabled() ||
+				!command->checked() ||
+				std::string(vgui_widget_get_text(command->widget())) != "Run")
+				return fail("toolbar command button");
+			command->click();
+			if (runs != 1)
+				return fail("toolbar command invoke");
+			command_enabled = false;
+			toolbar.refresh_commands();
+			if (command->enabled())
+				return fail("toolbar command refresh");
+			command->click();
+			if (runs != 1)
+				return fail("toolbar disabled command");
+			commands.add("test.run", "Run updated", [&runs]() { ++runs; });
+			toolbar.refresh_commands();
+			if (std::string(vgui_widget_get_text(command->widget())) !=
+				"Run updated")
+				return fail("toolbar command title refresh");
+			if (toolbar.add_command_button(commands, "missing"))
+				return fail("toolbar unknown command");
+
+			toggle_button& toolbar_toggle = toolbar.add_toggle_button("Grid", true);
+			segmented_control& toolbar_segments = toolbar.add_segmented_control();
+			toolbar_segments.add_segment("Persp");
+			toolbar_segments.add_segment("Top");
+			if (!toolbar_toggle.checked() || toolbar_segments.count() != 2 ||
+				!toolbar.add_label("Status") || !toolbar.add_spacer() ||
+				!toolbar.add_separator())
+				return fail("toolbar extra controls");
+
+			status_bar status;
+			status.set_message("before build");
+			status.set_selected_object(12);
+			status.set_coordinates(1.25f, -2.5f);
+			status.set_error("broken");
+			status.build(root);
+			if (!status.widget() || status.message() != "before build" ||
+				status.selection_text() != "Selected: 12" ||
+				status.coordinate_text() != "x 1.25  y -2.50" ||
+				status.error() != "broken")
+				return fail("status bar fields");
+			if (std::string(vgui_widget_get_text(status.message_widget())) !=
+				"before build" ||
+				std::string(vgui_widget_get_text(status.selection_widget())) !=
+				"Selected: 12" ||
+				std::string(vgui_widget_get_text(status.coordinate_widget())) !=
+				"x 1.25  y -2.50" ||
+				std::string(vgui_widget_get_text(status.error_widget())) != "broken")
+				return fail("status bar labels");
+			status.clear_error();
+			status.set_selected_object(invalid_object);
+			if (!status.error().empty() || !status.selection_text().empty() ||
+				!std::string(vgui_widget_get_text(status.error_widget())).empty())
+				return fail("status bar clear");
+
+			search_box search;
+			search.build(root, "Find");
+			int search_changes = 0;
+			int submits = 0;
+			std::string changed;
+			std::string submitted;
+			search.set_on_change([&](const std::string& text) {
+				++search_changes;
+				changed = text;
+			});
+			search.set_on_submit([&](const std::string& text) {
+				++submits;
+				submitted = text;
+			});
+			search.set_text("cube");
+			if (search.text() != "cube" || search_changes != 0 ||
+				vgui_widget_get_visible(search.clear_widget()) != 1)
+				return fail("search box set text");
+			search.submit();
+			if (submits != 1 || submitted != "cube")
+				return fail("search box submit");
+			search.clear();
+			if (!search.text().empty() || search_changes != 1 ||
+				!changed.empty() ||
+				vgui_widget_get_visible(search.clear_widget()) != 0)
+				return fail("search box clear");
+
+			breadcrumb path;
+			path.build(root);
+			int navigations = 0;
+			std::size_t navigated_index = 99;
+			std::string navigated_id;
+			path.set_on_navigate([&](std::size_t index, const std::string& id) {
+				++navigations;
+				navigated_index = index;
+				navigated_id = id;
+			});
+			path.set_items({
+				{ "Scene", "scene" },
+				{ "World", "world" },
+				{ "Cube", "cube" } });
+			if (path.count() != 3 || path.item(1).label != "World" ||
+				path.item(2).id != "cube" || path.active() != 2 ||
+				vgui_widget_get_checked(path.item_widget(2)) != 1)
+				return fail("breadcrumb items");
+			if (!path.navigate(1) || navigations != 1 ||
+				navigated_index != 1 || navigated_id != "world")
+				return fail("breadcrumb navigate");
+			if (path.navigate(3))
+				return fail("breadcrumb invalid navigate");
+			path.set_active(0);
+			if (path.active() != 0 ||
+				vgui_widget_get_checked(path.item_widget(0)) != 1 ||
+				vgui_widget_get_checked(path.item_widget(2)) != 0)
+				return fail("breadcrumb active");
+			path.add_item("Extra", "extra");
+			if (path.count() != 4 || path.active() != 3)
+				return fail("breadcrumb add item");
+			path.clear();
+			if (path.count() != 0 || !path.item(0).label.empty())
+				return fail("breadcrumb clear");
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+			search.focus();
+			if (vgui_get_focus(ui) != search.edit_widget())
+				return fail("search box focus");
+			vgui_input_text(ui, "ab");
+			if (search.text() != "ab" || search_changes != 2 ||
+				changed != "ab")
+				return fail("search box typing");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (submits != 2 || submitted != "ab")
+				return fail("search box enter");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -1436,6 +1681,8 @@ int main()
 	if (int rc = test_selection_binding())
 		return rc;
 	if (int rc = test_scene_asset_commands())
+		return rc;
+	if (int rc = test_toolbar_and_status_components())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
@@ -1467,6 +1714,15 @@ int main()
 
 		vgui_update(ui, 1.0f / 60.0f);
 		vgui_layout(ui);
+
+		if (!shell.toolbar().widget() || !shell.statusbar().widget() ||
+			!shell.search().widget() || !shell.path().widget())
+			return fail("shell toolbar and status widgets");
+		if (shell.statusbar().message() != "ready" ||
+			shell.statusbar().selection_text() != "Selected: 7")
+			return fail("shell status selection");
+		if (shell.path().count() != 2 || shell.path().item(1).id != "object:7")
+			return fail("shell breadcrumb selection");
 
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(shell.widget(), &x, &y, &w, &h);
@@ -1514,6 +1770,10 @@ int main()
 		vgui_tree_select(shell.scene().widget(), cube, 1);
 		if (context.selection() != 42 || selected != 42)
 			return fail("outliner selection mapping");
+		if (shell.statusbar().selection_text() != "Selected: 42" ||
+			shell.path().count() != 2 ||
+			shell.path().item(1).label != "Object 42")
+			return fail("shell status follows selection");
 
 		shell.properties().add_row("Name", "Cube");
 		shell.properties().add_row("Position", "0, 0, 0");

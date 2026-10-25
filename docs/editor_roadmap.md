@@ -203,10 +203,11 @@
   - 验收：面板可在左右/底部停靠、合并为标签组、浮出再停靠；重启后布局恢复。
   - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。
 
-- [ ] **S07 工具栏辅助组件**（P1，S/M）
+- [x] **S07 工具栏辅助组件**（P1，S/M）
   - IconButton、ToggleButton、SegmentedControl。
   - Toolbar、StatusBar、SearchBox、Breadcrumb。
   - 验收：图标按钮有 hover/active/disabled 状态；StatusBar 可显示选中对象、坐标和错误信息。
+  - 已实现：editor kit 新增 `icon_button`、`toggle_button`、`segmented_control`、`toolbar_view`、`status_bar`、`search_box` 和 `breadcrumb`；核心按钮 checked 状态绘制激活底色并触发重绘；工具栏可绑定 `command_registry` 同步标题/禁用/复选状态；状态栏支持消息、选中对象、坐标和错误；`editor_shell` 顶部工具栏（场景搜索、Undo/Redo、Grid、视图分段）和底部状态栏已接入，Properties 面板显示选择路径面包屑；headless 测试覆盖状态切换、命令刷新、搜索回调和面包屑导航。
 
 ### M2 属性编辑（P）
 
@@ -484,7 +485,7 @@ MVP 验收场景：
 ### 7.2 第二批：完整编辑器
 
 - S06 Dock / 浮动面板（核心与 editor_shell 接入均已完成）
-- S07 工具栏辅助组件
+- S07 工具栏辅助组件（已完成）
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient
 - T01 Table/DataGrid
@@ -551,10 +552,10 @@ MVP 验收场景：
 - 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
 - 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
-- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
+- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现；行扩展与拖放已接入）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放与布局持久化。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化，以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
 - 现有 `vgui_model_test`（615 项）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过。
 
@@ -564,4 +565,4 @@ MVP 验收场景：
 2. Outliner 行图标 / 可见性锁定按钮（O01，F04 行扩展已就绪）、行内重命名（O02）与拖放重排打磨（O03，F03 已就绪）。
 3. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
 4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
-5. 工具栏/状态栏辅助组件（S07）与 PropertyGrid 行虚拟化（P01 收尾）。
+5. PropertyGrid 行虚拟化与 1000 行性能验收（P01 收尾）。

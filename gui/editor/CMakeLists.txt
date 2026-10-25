@@ -1,5 +1,6 @@
 set(VGUI_EDITOR_KIT_SOURCES
     asset_browser.cpp
+    breadcrumb.cpp
     command_registry.cpp
     command_stack.cpp
     drag_bridge.cpp
@@ -8,6 +9,9 @@ set(VGUI_EDITOR_KIT_SOURCES
     editor_shell.cpp
     outliner_view.cpp
     property_grid.cpp
+    search_box.cpp
+    status_bar.cpp
+    toolbar.cpp
     viewport_view.cpp
 )
 

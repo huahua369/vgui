@@ -1043,7 +1043,8 @@ extern "C" {
 
 	VGUI_API void vgui_widget_get_rect(vgui_widget* widget, float* x, float* y, float* width, float* height);
 
-	/* Value controls (checkbox/radio/switch/slider/progress). */
+	/* Value controls (checkbox/radio/switch/slider/progress) and the active
+	 * state of toggle buttons. */
 	VGUI_API void vgui_widget_set_value(vgui_widget* widget, float value);
 	VGUI_API float vgui_widget_get_value(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_range(vgui_widget* widget, float min_value, float max_value);

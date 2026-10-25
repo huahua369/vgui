@@ -13,11 +13,15 @@
 #include <vector>
 
 #include "asset_browser.h"
+#include "breadcrumb.h"
 #include "command_registry.h"
 #include "editor_context.h"
 #include "editor_layout.h"
 #include "outliner_view.h"
 #include "property_grid.h"
+#include "search_box.h"
+#include "status_bar.h"
+#include "toolbar.h"
 #include "viewport_view.h"
 #include "vgui.h"
 
@@ -54,6 +58,14 @@ namespace vgui_editor_kit {
 		const command_registry& commands() const noexcept;
 		bool run_command(const char* id);
 		void refresh_commands();
+
+		/* Toolbar and status strip.  The toolbar is bound to the shell's
+		 * command registry; the status bar mirrors set_status() and the current
+		 * editor selection. */
+		toolbar_view& toolbar() noexcept;
+		status_bar& statusbar() noexcept;
+		search_box& search() noexcept;
+		breadcrumb& path() noexcept;
 
 		/* The shell's Dock.  Panel ids are "outliner", "viewport",
 		 * "properties" and "bottom".  Use the vgui_dock_* API to rearrange,
@@ -99,8 +111,6 @@ namespace vgui_editor_kit {
 			std::string command;
 		};
 
-		static void on_undo(vgui_widget* widget, const vgui_event* event, void* user);
-		static void on_redo(vgui_widget* widget, const vgui_event* event, void* user);
 		static void on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user);
 		static void on_menu_open(vgui_widget* menu, void* user);
 		static void on_dock_change(vgui_widget* dock, vgui_item_id item, void* user);
@@ -110,6 +120,7 @@ namespace vgui_editor_kit {
 		void build_menus();
 		void bind_menu_command(vgui_widget* menu, vgui_item_id item, const char* command);
 		vgui_item_id add_menu_command(vgui_widget* menu, const char* command, bool checkable);
+		void update_selection_ui(object_id id);
 
 		vgui_item_id panel_item(editor_panel panel) const noexcept;
 
@@ -124,11 +135,9 @@ namespace vgui_editor_kit {
 		command_registry commands_;
 		std::vector<std::unique_ptr<menu_binding>> menu_bindings_;
 		vgui_widget* menubar_ = nullptr;
-		vgui_widget* undo_button_ = nullptr;
-		vgui_widget* redo_button_ = nullptr;
+		editor_context::selection_listener_id selection_listener_ = 0;
 		int key_handler_token_ = 0;
 		vgui_widget* root_ = nullptr;
-		vgui_widget* status_ = nullptr;
 		vgui_widget* dock_ = nullptr;
 		vgui_item_id outliner_item_ = 0;
 		vgui_item_id viewport_item_ = 0;
@@ -146,6 +155,10 @@ namespace vgui_editor_kit {
 		property_grid properties_;
 		asset_browser assets_;
 		viewport_view viewport_;
+		toolbar_view toolbar_;
+		status_bar statusbar_;
+		search_box search_;
+		breadcrumb path_;
 	};
 
 } /* namespace vgui_editor_kit */

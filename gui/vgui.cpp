@@ -10403,13 +10403,20 @@ namespace {
 				bg = vgui_mix_color(bg, ctx->theme.disabled, bs.disabled_mix);
 				border = vgui_mix_color(border, ctx->theme.disabled, bs.disabled_mix);
 			}
-			else if (w->pressed)
+			else
 			{
-				bg = vgui_mix_color(bg, ctx->theme.button_active, std::max(bs.press_mix_min, w->press_anim));
-			}
-			else if (w->hovered || w->hover_anim > 0.01f)
-			{
-				bg = vgui_mix_color(bg, ctx->theme.button_hover, std::max(bs.hover_mix_min, w->hover_anim));
+				/* Toggle buttons and command buttons use the checked flag as
+				 * their active state.  Keep the same press/hover feedback on
+				 * top of the active tint. */
+				if (w->checked)
+					bg = vgui_mix_color(bg, ctx->theme.button_active,
+						bs.press_mix_min);
+				if (w->pressed)
+					bg = vgui_mix_color(bg, ctx->theme.button_active,
+						std::max(bs.press_mix_min, w->press_anim));
+				else if (w->hovered || w->hover_anim > 0.01f)
+					bg = vgui_mix_color(bg, ctx->theme.button_hover,
+						std::max(bs.hover_mix_min, w->hover_anim));
 			}
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
 			if (w->border_width > 0)
@@ -14230,6 +14237,7 @@ extern "C" {
 			return;
 		}
 		widget->checked = checked;
+		vgui_mark_dirty(widget);
 	}
 
 	int vgui_widget_get_checked(vgui_widget* widget)

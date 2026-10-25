@@ -13,6 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb（`vgui_editor_kit`，基于公共 C API） |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -242,6 +243,32 @@ grid.commit_property_value("position.x", "1.25");
 - `clear()` 重建行时保留搜索词、分类折叠状态和最近颜色；`set_filter()`、`set_category_collapsed()`、`set_read_only()` 可保持或批量调整视图状态。
 - `property_desc::get_value` / `set_value`，或 `set_value_source()` + `refresh()`，可把行绑定到宿主模型。
 - `bind_selection()` 订阅 `editor_context` 的选择变化，在回调中按对象重建行；销毁 grid 前应调用 `unbind_selection()`（析构函数也会自动解绑）。PropertyGrid 必须早于 `vgui_context`、命令栈和 `editor_context` 销毁。
+
+### 工具栏与状态栏组件（vgui_editor_kit）
+
+S07 组件位于 `gui/editor/`，全部构建在公共 C API 之上：
+
+- `icon_button`：包裹 `VGUI_BUTTON`，支持图标、tooltip、enabled 和 checked（激活态）。核心按钮会把 checked 绘制为激活底色。
+- `toggle_button`：点击切换 checked，`set_on_change()` 报告新状态；程序化 `set_checked()` 不触发回调。
+- `segmented_control`：互斥分段按钮。`select()` 拒绝禁用/越界项并通知，`set_selected()` 静默；`set_segment_enabled()` 可禁用单项。
+- `toolbar_view`：横向工具栏，提供 `add_icon_button()`、`add_toggle_button()`、`add_segmented_control()`、`add_label()`、`add_spacer()`、`add_separator()`。`add_command_button(registry, "edit.undo")` 绑定命令，按钮文本、enabled/checked 随 `refresh_commands()` 与菜单同步，点击直接调用 `command_registry::invoke()`。
+- `status_bar`：消息、选中对象、坐标、错误四个字段，可在 `build()` 前设置；`set_selected_object()` 格式化为 `Selected: <id>`，`set_coordinates()` 格式化坐标，`set_error()` / `clear_error()` 管理错误文本。
+- `search_box`：`VGUI_EDIT` + 清除按钮。`set_on_change()` 在用户输入或清除时回调，`set_on_submit()` 在 Enter 或 `submit()` 时回调；`set_text()` 静默，`clear()` 模拟用户清除。
+- `breadcrumb`：`breadcrumb_item{label, id}` 路径，最后一项为当前项。`navigate(index)` 触发回调，`set_items()` / `set_active()` 静默，避免宿主在刷新路径时重入导航逻辑。
+
+```cpp
+vgui_editor_kit::toolbar_view toolbar;
+toolbar.build(parent);
+toolbar.add_command_button(shell.commands(), "edit.undo");
+
+vgui_editor_kit::status_bar status;
+status.build(parent);
+status.set_selected_object(42);
+status.set_coordinates(1.25f, -2.5f);
+status.set_error("asset missing");
+```
+
+组件不可拷贝（控件回调指回 C++ 对象），必须比其控件树存活更久；`toolbar_view` 绑定的 `command_registry` 也必须比工具栏存活更久。`editor_shell` 已使用这些组件：顶部工具栏包含标题、场景搜索、Undo/Redo 命令按钮、Grid 开关和 Persp/Top/Front 分段控件；底部状态栏显示 `set_status()` 消息和当前选择；Properties 面板顶部显示 `Scene / Object <id>` 面包屑。
 
 ### 交互与焦点
 
