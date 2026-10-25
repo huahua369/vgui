@@ -1075,6 +1075,37 @@ namespace {
 			if (w <= 0.0f || h <= 0.0f)
 				return fail("property grid layout size");
 
+			vgui_widget* mode_label = find_widget(grid.widget(), "property:mode",
+				VGUI_LABEL);
+			if (!mode_label)
+				return fail("enum label widget");
+			if (!grid.set_property_read_only("mode", true))
+				return fail("enum read-only set");
+			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+			vgui_widget_get_rect(mode_label, &lx, &ly, &lw, &lh);
+			if (lw <= 0.0f || lh <= 0.0f)
+				return fail("enum label layout size");
+			const float mx = lx + lw * 0.5f;
+			const float my = ly + lh * 0.5f;
+			if (vgui_hit_test(ui, mx, my) != mode_label)
+				return fail("enum label hit test");
+			vgui_input_mouse_move(ui, mx, my);
+			vgui_input_mouse_down(ui, 1, mx, my, 1);
+			vgui_input_mouse_up(ui, 1, mx, my, 1);
+			if (vgui_context_get_open_menu(ui))
+				return fail("read-only enum menu stays closed");
+			if (!grid.set_property_read_only("mode", false))
+				return fail("enum read-only clear");
+			vgui_input_mouse_move(ui, mx, my);
+			vgui_input_mouse_down(ui, 1, mx, my, 1);
+			vgui_input_mouse_up(ui, 1, mx, my, 1);
+			vgui_widget* open_menu = vgui_context_get_open_menu(ui);
+			if (!open_menu)
+				return fail("enum menu opens");
+			vgui_menu_close(open_menu);
+			if (vgui_context_get_open_menu(ui))
+				return fail("enum menu closes");
+
 			grid.set_filter("count");
 			grid.set_category_collapsed("Transform", true);
 			grid.clear();

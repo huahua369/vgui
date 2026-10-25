@@ -937,10 +937,13 @@ namespace vgui_editor_kit {
 		if (!category)
 			return;
 
+		// Rows use a fixed height; the style panel padding would make the
+		// 24px controls overflow the row and break hit testing.
 		item.panel = vgui_widget_add(category->rows, VGUI_PANEL, nullptr);
 		vgui_widget_set_align_self(item.panel, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.panel, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_gap(item.panel, 0);
+		vgui_widget_set_padding(item.panel, 0, 0, 0, 0);
 		vgui_widget_set_size(item.panel, 0, kRowHeight);
 
 		item.line = vgui_widget_add(item.panel, VGUI_PANEL, nullptr);
@@ -948,6 +951,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(item.line, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.line, VGUI_LAYOUT_ROW);
 		vgui_widget_set_gap(item.line, 6);
+		vgui_widget_set_padding(item.line, 0, 0, 0, 0);
 
 		item.label = vgui_widget_add(item.line, VGUI_LABEL, item.desc.label.c_str());
 		vgui_widget_set_size(item.label, kLabelWidth, 24);
