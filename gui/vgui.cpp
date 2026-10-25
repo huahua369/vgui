@@ -16682,6 +16682,27 @@ extern "C" {
 		return st && st->open ? 1 : 0;
 	}
 
+	void vgui_menu_set_cursor(vgui_widget* menu, vgui_item_id item)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		if (!st) return;
+		auto it = st->index.find(item);
+		if (it == st->index.end() || it->second >= st->items.size()) return;
+		const vgui_menu_item& entry = st->items[it->second];
+		if (!entry.enabled || entry.type == VGUI_MENU_ITEM_SEPARATOR) return;
+		if (st->submenu_open && st->submenu_item != item)
+			vgui_menu_close_submenu(menu);
+		st->cursor = item;
+		st->hover = item;
+		vgui_mark_dirty(menu);
+	}
+
+	vgui_item_id vgui_menu_get_cursor(vgui_widget* menu)
+	{
+		vgui_menu_state* st = vgui_menu_of(menu);
+		return st ? st->cursor : 0;
+	}
+
 	vgui_widget* vgui_context_get_open_menu(vgui_context* ctx)
 	{
 		return ctx ? ctx->open_menu : nullptr;

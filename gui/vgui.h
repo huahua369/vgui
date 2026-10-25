@@ -1563,6 +1563,11 @@ extern "C" {
 	VGUI_API void vgui_menu_open_for(vgui_widget* menu, vgui_widget* anchor, float local_x, float local_y);
 	VGUI_API void vgui_menu_close(vgui_widget* menu);
 	VGUI_API int vgui_menu_is_open(vgui_widget* menu);
+	/* Moves the keyboard cursor to a selectable item.  Disabled items and
+	 * separators are ignored.  Call after opening the menu to make a combo box
+	 * start on its current selection. */
+	VGUI_API void vgui_menu_set_cursor(vgui_widget* menu, vgui_item_id item);
+	VGUI_API vgui_item_id vgui_menu_get_cursor(vgui_widget* menu);
 	VGUI_API vgui_widget* vgui_context_get_open_menu(vgui_context* ctx);
 	VGUI_API void vgui_menu_set_width(vgui_widget* menu, float width);
 	VGUI_API float vgui_menu_get_width(vgui_widget* menu);

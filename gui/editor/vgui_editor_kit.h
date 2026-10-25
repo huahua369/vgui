@@ -9,6 +9,7 @@
 #include "breadcrumb.h"
 #include "command_registry.h"
 #include "command_stack.h"
+#include "combo_box.h"
 #include "drag_bridge.h"
 #include "editor_context.h"
 #include "editor_layout.h"

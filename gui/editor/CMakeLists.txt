@@ -3,6 +3,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     breadcrumb.cpp
     command_registry.cpp
     command_stack.cpp
+    combo_box.cpp
     drag_bridge.cpp
     editor_context.cpp
     editor_layout.cpp

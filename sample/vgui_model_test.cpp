@@ -1254,6 +1254,15 @@ static void test_menu(vgui_context* ui, const vgui_style& style)
 	check(vgui_menu_is_open(menu) == 0, "menu: escape closes");
 	check(vgui_context_get_open_menu(ui) == nullptr, "menu: escape clears context");
 
+	// The keyboard cursor can be positioned explicitly (used by combo boxes)
+	// and ignores separators.
+	vgui_menu_open(menu, 100.0f, 100.0f);
+	vgui_menu_set_cursor(menu, normal);
+	check(vgui_menu_get_cursor(menu) == normal, "menu: set cursor");
+	vgui_menu_set_cursor(menu, sep);
+	check(vgui_menu_get_cursor(menu) == normal, "menu: separator cursor rejected");
+	vgui_menu_close(menu);
+
 	// Keyboard navigation: Down moves to the second item, Enter activates it.
 	vgui_menu_open(menu, 100.0f, 100.0f);
 	int handled = vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);

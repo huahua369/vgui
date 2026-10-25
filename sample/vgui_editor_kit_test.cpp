@@ -1677,6 +1677,452 @@ namespace {
 		return 0;
 	}
 
+	int test_combo_box()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("combo box context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+				nullptr);
+			vgui_widget_set_size(host, 360, 220);
+			vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(host, 12, 12, 12, 12);
+			vgui_widget_set_gap(host, 8);
+
+			combo_box combo;
+			combo.set_id("combo_mode");
+			combo.set_placeholder("Choose...");
+			combo.set_items({
+				{ "Low", "low", true },
+				{ "Medium", "medium", false },
+				{ "High", "high", true },
+				{ "", "unlabeled", true },
+			});
+			combo.build(host);
+
+			if (!combo.widget() ||
+				find_widget(host, "combo_mode", VGUI_BUTTON) != combo.widget())
+				return fail("combo box widget id");
+			if (combo.item_count() != 4 || combo.item_at(1) == nullptr ||
+				combo.item_at(1)->value != "medium" ||
+				combo.item_at(1)->enabled || combo.item_at(4) != nullptr)
+				return fail("combo box items");
+			if (combo.selected_index() != -1 || !combo.value().empty() ||
+				combo.display_text() != "Choose..." ||
+				std::string(vgui_widget_get_text(combo.widget())) !=
+					"Choose...")
+				return fail("combo box empty selection");
+
+			int changes = 0;
+			int commits = 0;
+			int last_index = -2;
+			std::string last_value;
+			combo.set_on_change([&](int index, const std::string& value) {
+				++changes;
+				last_index = index;
+				last_value = value;
+			});
+			combo.set_on_commit([&](int index, const std::string& value) {
+				++commits;
+				last_index = index;
+				last_value = value;
+			});
+
+			if (!combo.set_selected_index(2) ||
+				combo.selected_index() != 2 || combo.value() != "high" ||
+				combo.display_text() != "High" || changes != 0 ||
+				commits != 0)
+				return fail("combo box silent index");
+			if (!combo.set_value("low") || combo.selected_index() != 0 ||
+				changes != 0 || commits != 0)
+				return fail("combo box silent value");
+			if (combo.set_value("missing") || combo.selected_index() != 0)
+				return fail("combo box unknown value");
+			combo.clear_selection();
+			if (combo.selected_index() != -1 || !combo.value().empty() ||
+				combo.display_text() != "Choose..." || changes != 0)
+				return fail("combo box silent clear");
+			if (!combo.set_selected_index(-1) ||
+				!combo.set_selected_index(0) ||
+				combo.selected_index() != 0)
+				return fail("combo box index bounds");
+			if (combo.set_selected_index(4))
+				return fail("combo box index out of range");
+
+			if (combo.select_index(1) || combo.selected_index() != 0 ||
+				changes != 0)
+				return fail("combo box disabled select");
+			if (!combo.set_item_enabled(1, true) || !combo.select_index(1) ||
+				combo.selected_index() != 1 || combo.value() != "medium" ||
+				changes != 1 || commits != 1 || last_index != 1 ||
+				last_value != "medium")
+				return fail("combo box user select");
+			if (!combo.set_item_enabled(1, false) ||
+				combo.set_item_enabled(99, false))
+				return fail("combo box item enable bounds");
+			if (combo.select_index(1) || changes != 1)
+				return fail("combo box disabled after enable");
+
+			combo.set_selected_index(2);
+			combo.set_items({
+				{ "Low", "low", true },
+				{ "Medium", "medium", false },
+				{ "High!", "high", true },
+				{ "", "unlabeled", true },
+			});
+			if (combo.selected_index() != 2 || combo.value() != "high" ||
+				combo.display_text() != "High!" || changes != 1)
+				return fail("combo box items preserve value");
+			if (!combo.set_selected_index(3) ||
+				combo.display_text() != "Choose..." ||
+				combo.value() != "unlabeled")
+				return fail("combo box empty label placeholder");
+			combo.set_placeholder("Pick one");
+			if (combo.display_text() != "Pick one")
+				return fail("combo box placeholder update");
+
+			combo.set_selected_index(0);
+			if (!combo.select_none() || combo.selected_index() != -1 ||
+				!combo.value().empty() ||
+				combo.display_text() != "Pick one" || changes != 2 ||
+				commits != 2 || last_index != -1 || !last_value.empty())
+				return fail("combo box select none");
+
+			combo.set_selected_index(2);
+			combo.set_read_only(true);
+			if (vgui_widget_get_enabled(combo.widget()) != 0 ||
+				combo.open() || combo.select_index(0) ||
+				combo.select_none())
+				return fail("combo box read-only");
+			combo.set_read_only(false);
+			if (vgui_widget_get_enabled(combo.widget()) == 0)
+				return fail("combo box read-only recovery");
+			combo.set_enabled(false);
+			if (combo.enabled() ||
+				vgui_widget_get_enabled(combo.widget()) != 0 ||
+				combo.open() || combo.select_index(0))
+				return fail("combo box disabled");
+			combo.set_enabled(true);
+			if (!combo.enabled())
+				return fail("combo box enabled recovery");
+
+			combo.set_selected_index(0);
+			changes = 0;
+			commits = 0;
+			combo.focus();
+			if (vgui_get_focus(ui) != combo.widget())
+				return fail("combo box focus");
+			if (!combo.open() || !combo.is_open())
+				return fail("combo box open");
+			vgui_widget* menu = vgui_context_get_open_menu(ui);
+			if (!menu ||
+				std::string(vgui_widget_get_id(menu)) != "combo_mode_menu" ||
+				vgui_menu_get_count(menu) != 4 ||
+				find_widget(host, "combo_mode_menu", VGUI_MENU) != nullptr)
+				return fail("combo box menu contents");
+			if (vgui_get_focus(ui) != combo.widget())
+				return fail("combo box open keeps focus");
+			vgui_item_id low_item = vgui_menu_get_item_at(menu, 0);
+			vgui_item_id medium_item = vgui_menu_get_item_at(menu, 1);
+			vgui_item_id high_item = vgui_menu_get_item_at(menu, 2);
+			vgui_item_id unlabeled_item = vgui_menu_get_item_at(menu, 3);
+			if (!low_item || !medium_item || !high_item || !unlabeled_item)
+				return fail("combo box menu items");
+			if (vgui_menu_get_cursor(menu) != low_item)
+				return fail("combo box menu cursor starts on selection");
+			if (vgui_menu_get_item_enabled(menu, medium_item) != 0 ||
+				std::string(vgui_menu_get_item_text(menu, unlabeled_item)) !=
+					"Pick one")
+				return fail("combo box menu item state");
+			if (vgui_menu_get_item_checked(menu, low_item) != 1)
+				return fail("combo box menu checked selection");
+			int handled = vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+			if (!handled || vgui_menu_get_cursor(menu) != high_item)
+				return fail("combo box menu skips disabled");
+			handled = vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (!handled || combo.is_open() ||
+				combo.selected_index() != 2 || combo.value() != "high" ||
+				combo.display_text() != "High!" || changes != 1 ||
+				commits != 1 ||
+				vgui_get_focus(ui) != combo.widget())
+				return fail("combo box menu selection");
+
+			if (!combo.open())
+				return fail("combo box reopen");
+			menu = vgui_context_get_open_menu(ui);
+			if (!menu || vgui_menu_get_cursor(menu) != high_item)
+				return fail("combo box menu cursor tracks selection");
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+			if (combo.is_open() || combo.value() != "high" ||
+				changes != 1 || commits != 1 ||
+				vgui_get_focus(ui) != combo.widget())
+				return fail("combo box escape keeps value and focus");
+
+			vgui_input_key(ui, VGUI_KEY_DOWN, 1, VGUI_MOD_ALT);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, VGUI_MOD_ALT);
+			if (!combo.is_open() ||
+				vgui_context_get_open_menu(ui) != menu)
+				return fail("combo box alt down opens");
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+
+			combo.focus();
+			changes = 0;
+			commits = 0;
+			vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+			if (combo.selected_index() != 3 ||
+				combo.value() != "unlabeled" ||
+				combo.display_text() != "Pick one" || changes != 1 ||
+				commits != 1)
+				return fail("combo box closed keyboard down");
+			vgui_input_key(ui, VGUI_KEY_UP, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_UP, 0, 0);
+			if (combo.selected_index() != 2 || combo.value() != "high" ||
+				changes != 2 || commits != 2)
+				return fail("combo box closed keyboard up");
+			vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+			if (combo.selected_index() != 0 || changes != 3)
+				return fail("combo box keyboard home");
+			vgui_input_key(ui, VGUI_KEY_END, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_END, 0, 0);
+			if (combo.selected_index() != 3 || changes != 4)
+				return fail("combo box keyboard end");
+			combo.set_placeholder("Updated");
+			if (combo.display_text() != "Updated" ||
+				std::string(vgui_menu_get_item_text(menu, unlabeled_item)) !=
+					"Updated")
+				return fail("combo box placeholder updates menu");
+
+			combo.set_selected_index(0);
+			if (!combo.open())
+				return fail("combo box destructor open");
+		}
+		if (vgui_context_get_open_menu(ui))
+			return fail("combo box destructor closes menu");
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_property_grid_enum()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property grid enum context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			property_grid grid;
+			command_stack commands;
+			grid.build(vgui_root(ui));
+			grid.set_command_stack(&commands);
+
+			int changes = 0;
+			std::string changed_id;
+			std::string changed_value;
+			grid.set_change_listener([&](const std::string& id,
+				const std::string& value) {
+				++changes;
+				changed_id = id;
+				changed_value = value;
+			});
+
+			property_desc mode;
+			mode.id = "mode";
+			mode.label = "Mode";
+			mode.type = property_type::enumeration;
+			mode.value = "";
+			mode.category = "Rendering";
+			mode.placeholder = "None";
+			mode.allow_empty = true;
+			mode.choices = { "Low", "Medium", "High" };
+			mode.choice_values = { "low", "medium", "high" };
+			mode.choice_enabled = { 1, 0, 1 };
+			mode.has_default = true;
+			mode.default_value = "";
+			if (!grid.add_property(mode))
+				return fail("enum empty property");
+
+			property_desc plain = mode;
+			plain.id = "plain";
+			plain.label = "Plain";
+			plain.placeholder.clear();
+			if (!grid.add_property(plain))
+				return fail("enum default placeholder property");
+
+			property_desc strict = mode;
+			strict.id = "strict";
+			strict.label = "Strict";
+			strict.allow_empty = false;
+			strict.value = "low";
+			strict.default_value = "low";
+			if (!grid.add_property(strict))
+				return fail("enum strict property");
+
+			if (!grid.property_value("mode").empty() ||
+				!grid.property_value("plain").empty() ||
+				grid.property_value("strict") != "low")
+				return fail("enum empty values");
+			vgui_widget* editor = grid.property_editor("mode");
+			vgui_widget* plain_editor = grid.property_editor("plain");
+			if (!editor || vgui_widget_get_kind(editor) != VGUI_BUTTON ||
+				std::string(vgui_widget_get_text(editor)) != "None" ||
+				!plain_editor ||
+				std::string(vgui_widget_get_text(plain_editor)) != "(None)")
+				return fail("enum empty display");
+			if (!grid.set_property_value("mode", "high") ||
+				grid.property_value("mode") != "high" ||
+				std::string(vgui_widget_get_text(editor)) != "High" ||
+				changes != 0)
+				return fail("enum silent value");
+			if (!grid.set_property_value("mode", "") ||
+				!grid.property_value("mode").empty() ||
+				std::string(vgui_widget_get_text(editor)) != "None" ||
+				changes != 0)
+				return fail("enum silent empty");
+			if (!grid.commit_property_value("mode", "None") ||
+				!grid.property_value("mode").empty() || changes != 0 ||
+				commands.can_undo())
+				return fail("enum placeholder commit");
+			if (!grid.set_property_value("mode", "high") ||
+				!grid.reset_property("mode") ||
+				!grid.property_value("mode").empty() ||
+				std::string(vgui_widget_get_text(editor)) != "None" ||
+				changes != 1 || !commands.can_undo())
+				return fail("enum empty reset");
+			if (!commands.undo() || grid.property_value("mode") != "high")
+				return fail("enum reset undo");
+			if (!commands.redo() || !grid.property_value("mode").empty())
+				return fail("enum reset redo");
+			commands.clear();
+			changes = 0;
+
+			if (grid.commit_property_value("strict", "") ||
+				grid.property_error("strict").empty() ||
+				grid.property_value("strict") != "low")
+				return fail("enum strict empty rejected");
+			if (grid.commit_property_value("strict", "None") ||
+				grid.property_value("strict") != "low")
+				return fail("enum strict placeholder rejected");
+			if (!grid.commit_property_value("strict", "High") ||
+				grid.property_value("strict") != "high" ||
+				!grid.property_error("strict").empty())
+				return fail("enum strict label commit");
+			commands.clear();
+			changes = 0;
+
+			vgui_layout(ui);
+			vgui_widget* label = find_widget(grid.widget(), "property:mode",
+				VGUI_LABEL);
+			if (!label)
+				return fail("enum label widget");
+			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+			vgui_widget_get_rect(label, &lx, &ly, &lw, &lh);
+			if (lw <= 0.0f || lh <= 0.0f)
+				return fail("enum label layout size");
+			const float mx = lx + lw * 0.5f;
+			const float my = ly + lh * 0.5f;
+			vgui_set_focus(ui, nullptr);
+			vgui_input_mouse_move(ui, mx, my);
+			vgui_input_mouse_down(ui, 1, mx, my, 1);
+			vgui_input_mouse_up(ui, 1, mx, my, 1);
+			vgui_widget* menu = vgui_context_get_open_menu(ui);
+			if (!menu || vgui_get_focus(ui) != editor)
+				return fail("enum label click opens and keeps focus");
+			if (vgui_menu_get_count(menu) != 4)
+				return fail("enum empty menu count");
+			vgui_item_id none_item = vgui_menu_get_item_at(menu, 0);
+			vgui_item_id low_item = vgui_menu_get_item_at(menu, 1);
+			vgui_item_id medium_item = vgui_menu_get_item_at(menu, 2);
+			vgui_item_id high_item = vgui_menu_get_item_at(menu, 3);
+			if (!none_item || !low_item || !medium_item || !high_item)
+				return fail("enum empty menu items");
+			if (std::string(vgui_menu_get_item_text(menu, none_item)) !=
+					"None" ||
+				vgui_menu_get_cursor(menu) != none_item ||
+				vgui_menu_get_item_checked(menu, none_item) != 1 ||
+				vgui_menu_get_item_enabled(menu, medium_item) != 0)
+				return fail("enum empty menu state");
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+			if (vgui_context_get_open_menu(ui) ||
+				!grid.property_value("mode").empty() || changes != 0 ||
+				vgui_get_focus(ui) != editor)
+				return fail("enum escape keeps value and focus");
+
+			float ex = 0.0f, ey = 0.0f, ew = 0.0f, eh = 0.0f;
+			vgui_widget_get_rect(editor, &ex, &ey, &ew, &eh);
+			if (ew <= 0.0f || eh <= 0.0f)
+				return fail("enum editor layout size");
+			const float ecx = ex + ew * 0.5f;
+			const float ecy = ey + eh * 0.5f;
+			vgui_input_mouse_move(ui, ecx, ecy);
+			vgui_input_mouse_down(ui, 1, ecx, ecy, 1);
+			vgui_input_mouse_up(ui, 1, ecx, ecy, 1);
+			menu = vgui_context_get_open_menu(ui);
+			if (!menu || vgui_menu_get_cursor(menu) != none_item)
+				return fail("enum editor opens on selection");
+			int handled = vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+			if (!handled || vgui_menu_get_cursor(menu) != low_item)
+				return fail("enum menu keyboard down");
+			handled = vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+			if (!handled || vgui_menu_get_cursor(menu) != high_item)
+				return fail("enum menu skips disabled choice");
+			handled = vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (!handled || vgui_context_get_open_menu(ui) ||
+				grid.property_value("mode") != "high" || changes != 1 ||
+				changed_id != "mode" || changed_value != "high" ||
+				std::string(vgui_widget_get_text(editor)) != "High" ||
+				vgui_get_focus(ui) != editor || !commands.can_undo())
+				return fail("enum menu selection");
+			if (!commands.undo() || !grid.property_value("mode").empty() ||
+				std::string(vgui_widget_get_text(editor)) != "None")
+				return fail("enum menu undo");
+			if (!commands.redo() || grid.property_value("mode") != "high")
+				return fail("enum menu redo");
+
+			vgui_input_mouse_move(ui, ecx, ecy);
+			vgui_input_mouse_down(ui, 1, ecx, ecy, 1);
+			vgui_input_mouse_up(ui, 1, ecx, ecy, 1);
+			menu = vgui_context_get_open_menu(ui);
+			if (!menu || vgui_menu_get_cursor(menu) != high_item)
+				return fail("enum menu cursor tracks value");
+			vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+			if (vgui_menu_get_cursor(menu) != none_item)
+				return fail("enum menu home to empty");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (vgui_context_get_open_menu(ui) ||
+				!grid.property_value("mode").empty() ||
+				std::string(vgui_widget_get_text(editor)) != "None" ||
+				changes != 4 || vgui_get_focus(ui) != editor)
+				return fail("enum menu selects empty");
+			if (!commands.undo() || grid.property_value("mode") != "high")
+				return fail("enum empty undo");
+			if (!commands.redo() || !grid.property_value("mode").empty())
+				return fail("enum empty redo");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 } // namespace
 
 	int test_scene_asset_commands()
@@ -2164,6 +2610,10 @@ int main()
 	if (int rc = test_property_grid_drag())
 		return rc;
 	if (int rc = test_spinbox())
+		return rc;
+	if (int rc = test_combo_box())
+		return rc;
+	if (int rc = test_property_grid_enum())
 		return rc;
 	if (int rc = test_selection_binding())
 		return rc;

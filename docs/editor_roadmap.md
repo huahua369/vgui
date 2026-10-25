@@ -227,10 +227,10 @@
   - 验收：拖拽和键盘输入结果一致；越界被钳制或提示；修改进入命令栈。
   - 已实现：新增独立 `vgui_editor_kit::spinbox`（`integer`/`number`、范围、步进、可拖拽标签、加减按钮、Enter 文本校验、错误提示、只读/禁用、change/commit 回调）；拖动时按 Shift 精调、Alt 粗调，按下后跨行或移出控件仍持续更新，释放时只提交一次。PropertyGrid 数字行保持原有 edit + 标签拖拽行为，并补充跨行拖拽、移出控件、越界钳制和命令栈单次提交测试；Spinbox 独立 headless 测试覆盖整数/浮点范围、键盘 Enter/Esc/Up/Down、按钮步进、文本校验恢复和跨行拖拽捕获。
 
-- [ ] **P03 ComboBox / Enum**（P0，S）（进行中）
+- [x] **P03 ComboBox / Enum**（P0，S）（已完成）
   - 下拉列表、键盘选择、禁用项、空值/占位符。
   - 验收：属性枚举不再用一排按钮模拟；打开/关闭/选择不抢焦点；值改变可撤销。
-  - 已实现：枚举行使用下拉菜单、显示标签、禁用项和命令栈撤销。待补充空值/占位符语义。
+  - 已实现：新增独立 `vgui_editor_kit::combo_box`（标签/值/启用状态、禁用项、空标签占位、无选择状态、只读/禁用、菜单与关闭状态键盘导航、Alt+Down、change/commit 回调）；打开菜单时用核心新增的 `vgui_menu_set_cursor()` 把光标停在当前选择上，打开/关闭/选择不改变键盘焦点。PropertyGrid 枚举行保持下拉菜单编辑器，新增 `property_desc::allow_empty`：空值显示为 placeholder（缺省 `(None)`）并作为菜单第一项，禁用项仍不可选；点击标签会先把焦点移到枚举按钮再打开菜单。`vgui_editor_kit_test` 覆盖 ComboBox 与枚举空值、菜单光标/禁用跳过、焦点保持及命令栈撤销/重做，`vgui_model_test` 覆盖菜单光标 API。
 
 - [ ] **P04 Vector2 / Vector3 / Vector4**（P0，M）
   - 多字段联动、统一拖拽调值、可选颜色/坐标语义。

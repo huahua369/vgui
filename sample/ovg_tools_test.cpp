@@ -189,8 +189,8 @@ int main(int argc, char** argv)
 	ot::checkerboard(cb, vg, 264, 132, 64, 64, 8, CHK0, CHK1);
 	ot::dashed_rect(cb, vg, 340, 132.5f, 80, 40, WHITE, 1.f, 8.f, 8.f);
 
-	// 阴影特效（对角偏移，采样点取阴影核内部，规避 ovg offset 方向语义差异）
-	ot::set_shadow(cb, vg, ot::rgba(0, 0, 0), 6.f, 9.f, 9.f);
+	// 阴影特效（严格方向断言：offset (0,15)，正 y = 屏幕向下）
+	ot::set_shadow(cb, vg, ot::rgba(0, 0, 0), 6.f, 0.f, 15.f);
 	ot::fill_round_rect(cb, vg, 436, 132, 68, 50, 8, WHITE);
 	ot::clear_effect(cb, vg);
 	ot::fill_rect(cb, vg, 436, 132, 10, 10, ORANGE); // 特效关闭后恢复正常绘制
@@ -353,9 +353,10 @@ int main(int argc, char** argv)
 	// 虚线矩形（路径自 (340,132) 起，on=8/off=8）
 	expect_pixel(344, 132, WHITE, "dash on-segment");
 	expect_pixel(354, 132, BG, "dash gap");
-	// 阴影特效（矩形右下 +9/+9 是阴影核）
+	// 阴影特效：offset(0,15) 向下——下方有阴影核、上方为纯背景
 	expect_pixel(470, 157, WHITE, "shadow rect body");
-	expect_not_pixel(495, 185, BG, "shadow core");
+	expect_not_pixel(470, 202, BG, "shadow below rect");
+	expect_pixel(470, 110, BG, "no shadow above rect");
 	expect_pixel(441, 137, ORANGE, "effect cleared");
 	// 箭头 / 符号
 	expect_pixel(17, 185, ORANGE, "arrow shaft");

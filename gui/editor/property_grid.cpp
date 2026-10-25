@@ -258,6 +258,12 @@ namespace vgui_editor_kit {
 			return index < desc.choices.size() ? desc.choices[index] : std::string();
 		}
 
+		std::string empty_choice_label(const property_desc& desc)
+		{
+			return desc.placeholder.empty() ? std::string("(None)")
+				: desc.placeholder;
+		}
+
 		int choice_index_for_text(const property_desc& desc, const std::string& text)
 		{
 			const std::string trimmed = trim_copy(text);
@@ -345,9 +351,23 @@ namespace vgui_editor_kit {
 			}
 			case property_type::enumeration:
 			{
+				const std::string trimmed = trim_copy(text);
+				if (desc.allow_empty && trimmed.empty())
+				{
+					result.value.clear();
+					result.ok = true;
+					break;
+				}
 				const int index = choice_index_for_text(desc, text);
 				if (index < 0)
 				{
+					if (desc.allow_empty &&
+						trimmed == empty_choice_label(desc))
+					{
+						result.value.clear();
+						result.ok = true;
+						break;
+					}
 					result.error = "unknown choice";
 					break;
 				}
@@ -1609,6 +1629,8 @@ namespace vgui_editor_kit {
 	{
 		if (item.desc.type == property_type::enumeration)
 		{
+			if (item.value.empty() && item.desc.allow_empty)
+				return empty_choice_label(item.desc);
 			const int index = choice_index_for_text(item.desc, item.value);
 			if (index >= 0)
 				return choice_label_at(item.desc, (std::size_t)index);
@@ -1631,6 +1653,13 @@ namespace vgui_editor_kit {
 			if (!item.menu)
 				return;
 			vgui_menu_on_activate(item.menu, &property_grid::on_menu_activate, this);
+			if (item.desc.allow_empty)
+			{
+				vgui_item_id menu_item = vgui_menu_add_item(item.menu,
+					empty_choice_label(item.desc).c_str());
+				if (menu_item)
+					item.menu_values[menu_item] = std::string();
+			}
 			for (std::size_t i = 0; i < item.desc.choices.size(); ++i)
 			{
 				vgui_item_id menu_item = vgui_menu_add_item(item.menu,
@@ -1647,6 +1676,17 @@ namespace vgui_editor_kit {
 			vgui_menu_set_item_checked(item.menu, entry.first,
 				entry.second == item.value ? 1 : 0);
 		vgui_menu_open_below(item.menu, item.editor);
+		if (!vgui_menu_is_open(item.menu))
+			return;
+		/* Start keyboard navigation on the current selection so opening and
+		 * closing the popup never changes the value by itself. */
+		for (const auto& entry : item.menu_values)
+		{
+			if (entry.second != item.value)
+				continue;
+			vgui_menu_set_cursor(item.menu, entry.first);
+			break;
+		}
 	}
 
 	void property_grid::open_color_menu(row& item)
@@ -1887,6 +1927,13 @@ namespace vgui_editor_kit {
 				}
 				if (item->desc.type == property_type::enumeration)
 				{
+					/* Labels are not focusable.  Move focus to the enum
+					 * button first so closing the popup leaves focus in the
+					 * editor instead of clearing it. */
+					if (item->editor && !self->read_only_ &&
+						!item->desc.read_only)
+						vgui_set_focus(vgui_widget_get_context(widget),
+							item->editor);
 					self->open_enum_menu(*item);
 					return;
 				}

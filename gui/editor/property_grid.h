@@ -51,9 +51,11 @@ namespace vgui_editor_kit {
 	 *
 	 * choices are display labels.  When choice_values is empty, choices are
 	 * used for both labels and values.  choice_enabled is optional; when set
-	 * it must contain one entry per choice.  get_value/set_value are optional
-	 * per-property bindings; a grid-level value source/listener can be used
-	 * instead. */
+	 * it must contain one entry per choice.  allow_empty lets an enumeration
+	 * hold the empty value, shown as placeholder (or "(None)" when no
+	 * placeholder is set) and offered as the first menu entry.  get_value /
+	 * set_value are optional per-property bindings; a grid-level value
+	 * source/listener can be used instead. */
 	struct property_desc
 	{
 		std::string id;
@@ -73,6 +75,7 @@ namespace vgui_editor_kit {
 		std::vector<std::string> choices;
 		std::vector<std::string> choice_values;
 		std::vector<char> choice_enabled;
+		bool allow_empty = false;
 		std::function<std::string()> get_value;
 		std::function<void(const std::string&)> set_value;
 	};
