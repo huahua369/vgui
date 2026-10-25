@@ -264,6 +264,22 @@ namespace vgui_editor_kit {
 				: desc.placeholder;
 		}
 
+		int vector_dimension(property_type type)
+		{
+			switch (type)
+			{
+			case property_type::vector2: return 2;
+			case property_type::vector3: return 3;
+			case property_type::vector4: return 4;
+			default: return 0;
+			}
+		}
+
+		bool is_vector_type(property_type type)
+		{
+			return vector_dimension(type) != 0;
+		}
+
 		int choice_index_for_text(const property_desc& desc, const std::string& text)
 		{
 			const std::string trimmed = trim_copy(text);
@@ -385,6 +401,32 @@ namespace vgui_editor_kit {
 					break;
 				}
 				result.value = std::move(canonical);
+				result.ok = true;
+				break;
+			}
+			case property_type::vector2:
+			case property_type::vector3:
+			case property_type::vector4:
+			{
+				const int dimension = vector_dimension(desc.type);
+				vector_editor::vector_value values{};
+				std::string error;
+				if (!vector_editor::parse_value(text, dimension, values,
+					&error))
+				{
+					result.error = error.empty()
+						? "expected a vector" : error;
+					break;
+				}
+				if (desc.has_range)
+				{
+					const double low = std::min(desc.min_value, desc.max_value);
+					const double high = std::max(desc.min_value, desc.max_value);
+					for (int i = 0; i < dimension; ++i)
+						values[(std::size_t)i] = std::clamp(
+							values[(std::size_t)i], low, high);
+				}
+				result.value = vector_editor::format_value(values, dimension);
 				result.ok = true;
 				break;
 			}
@@ -637,6 +679,7 @@ namespace vgui_editor_kit {
 		if (index >= rows_.size())
 			return false;
 		row& item = rows_[index];
+		reset_drag_state(item);
 		item.value = std::move(value);
 		update_row_ui(item, true);
 		update_visibility();
@@ -671,6 +714,7 @@ namespace vgui_editor_kit {
 			return false;
 		}
 		clear_row_error(*item);
+		reset_drag_state(*item);
 		item->value = normalized.value;
 		update_row_ui(*item, true);
 		update_visibility();
@@ -950,6 +994,13 @@ namespace vgui_editor_kit {
 		return item ? item->editor : nullptr;
 	}
 
+	vector_editor* property_grid::property_vector_editor(
+		const std::string& id) const noexcept
+	{
+		const row* item = find_row(id);
+		return item ? item->vector_ui.get() : nullptr;
+	}
+
 	vgui_widget* property_grid::widget() const noexcept
 	{
 		return panel_;
@@ -1063,7 +1114,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_id(item.label, property_widget_id(item.desc.id).c_str());
 		vgui_widget_on_event(item.label, &property_grid::on_row_event, this);
 		if (item.desc.type == property_type::integer ||
-			item.desc.type == property_type::number)
+			item.desc.type == property_type::number ||
+			is_vector_type(item.desc.type))
 			vgui_widget_set_cursor(item.label, VGUI_CURSOR_SIZE_H);
 
 		if (item.desc.type == property_type::color)
@@ -1090,6 +1142,79 @@ namespace vgui_editor_kit {
 			vgui_widget_set_font_size(item.editor, 13);
 			vgui_widget_on_event(item.editor, &property_grid::on_row_event, this);
 			break;
+		case property_type::vector2:
+		case property_type::vector3:
+		case property_type::vector4:
+		{
+			const int dimension = vector_dimension(item.desc.type);
+			item.vector_ui = std::make_unique<vector_editor>();
+			item.vector_ui->set_id(property_widget_id(item.desc.id));
+			item.vector_ui->set_dimension(dimension);
+			item.vector_ui->set_semantic(item.desc.semantic);
+			if (!item.desc.component_labels.empty())
+				item.vector_ui->set_axis_labels(item.desc.component_labels);
+			if (!item.desc.component_colors.empty())
+				item.vector_ui->set_axis_colors(item.desc.component_colors);
+			item.vector_ui->set_value_type(spinbox::value_type::number);
+			if (item.desc.has_range)
+				item.vector_ui->set_range(item.desc.min_value,
+					item.desc.max_value);
+			if (item.desc.step > 0.0)
+				item.vector_ui->set_step(item.desc.step);
+			item.vector_ui->build(item.line, dimension);
+			if (item.vector_ui->widget())
+			{
+				vgui_widget_set_grow(item.vector_ui->widget(), 1.0f);
+				vgui_widget_set_size(item.vector_ui->widget(), 0, 24);
+				vgui_widget_set_min_size(item.vector_ui->widget(), 80, 24);
+				vector_editor::vector_value values{};
+				std::string error;
+				if (vector_editor::parse_value(item.value, dimension,
+					values, &error))
+					item.vector_ui->set_value(values);
+			}
+			const std::string property_id = item.desc.id;
+			item.vector_ui->set_on_change(
+				[this, property_id](const vector_editor::vector_value& values) {
+					row* target = find_row(property_id);
+					if (!target || !target->vector_ui)
+						return;
+					const int dimension = vector_dimension(target->desc.type);
+					const std::string text =
+						vector_editor::format_value(values, dimension);
+					if (text == target->value)
+						return;
+					if (!target->drag_active)
+					{
+						target->drag_active = true;
+						target->drag_value = target->value;
+					}
+					target->value = text;
+					notify_change(*target);
+				});
+			item.vector_ui->set_on_commit(
+				[this, property_id](const vector_editor::vector_value& values) {
+					row* target = find_row(property_id);
+					if (!target || !target->vector_ui)
+						return;
+					const int dimension = vector_dimension(target->desc.type);
+					const std::string text =
+						vector_editor::format_value(values, dimension);
+					const std::string old_value = target->drag_active
+						? target->drag_value : target->value;
+					const std::uint64_t token = target->token;
+					target->drag_active = false;
+					target->drag_value.clear();
+					target->value = text;
+					update_row_ui(*target, true);
+					const std::string label = target->desc.label.empty()
+						? target->desc.id : target->desc.label;
+					push_value_command(token, old_value, text,
+						"Set " + label);
+				});
+			item.editor = item.vector_ui->widget();
+			break;
+		}
 		default:
 			item.editor = vgui_widget_add(item.line, VGUI_EDIT, item.value.c_str());
 			vgui_widget_set_grow(item.editor, 1.0f);
@@ -1125,6 +1250,16 @@ namespace vgui_editor_kit {
 			vgui_widget_set_tooltip(item.editor, item.desc.tooltip.c_str());
 			if (item.swatch)
 				vgui_widget_set_tooltip(item.swatch, item.desc.tooltip.c_str());
+			if (item.vector_ui)
+			{
+				for (int i = 0; i < vector_dimension(item.desc.type); ++i)
+				{
+					if (vgui_widget* edit =
+						item.vector_ui->component_edit_widget(i))
+						vgui_widget_set_tooltip(edit,
+							item.desc.tooltip.c_str());
+				}
+			}
 		}
 
 		update_row_ui(item, true);
@@ -1137,15 +1272,22 @@ namespace vgui_editor_kit {
 		const bool readonly = read_only_ || item.desc.read_only;
 		if (item.label &&
 			(item.desc.type == property_type::integer ||
-				item.desc.type == property_type::number))
+				item.desc.type == property_type::number ||
+				is_vector_type(item.desc.type)))
 			vgui_widget_set_cursor(item.label,
 				readonly ? VGUI_CURSOR_ARROW : VGUI_CURSOR_SIZE_H);
 		if (item.editor)
 		{
 			vgui_widget_set_enabled(item.editor, readonly ? 0 : 1);
 			if (item.desc.type != property_type::boolean &&
-				item.desc.type != property_type::enumeration)
+				item.desc.type != property_type::enumeration &&
+				!is_vector_type(item.desc.type))
 				vgui_edit_set_readonly(item.editor, readonly ? 1 : 0);
+		}
+		if (item.vector_ui)
+		{
+			item.vector_ui->set_read_only(readonly);
+			item.vector_ui->set_enabled(!readonly);
 		}
 		if (item.reset)
 		{
@@ -1163,6 +1305,20 @@ namespace vgui_editor_kit {
 			case property_type::enumeration:
 				vgui_widget_set_text(item.editor, display_text(item).c_str());
 				break;
+			case property_type::vector2:
+			case property_type::vector3:
+			case property_type::vector4:
+			{
+				if (!item.vector_ui)
+					break;
+				const int dimension = vector_dimension(item.desc.type);
+				vector_editor::vector_value values{};
+				std::string error;
+				if (vector_editor::parse_value(item.value, dimension, values,
+					&error))
+					item.vector_ui->set_value(values);
+				break;
+			}
 			default:
 				vgui_edit_set_text(item.editor, item.value.c_str());
 				break;
@@ -1203,6 +1359,14 @@ namespace vgui_editor_kit {
 			vgui_widget_set_tooltip(item.editor, tip.c_str());
 		if (item.swatch)
 			vgui_widget_set_tooltip(item.swatch, tip.c_str());
+		if (item.vector_ui)
+		{
+			for (int i = 0; i < vector_dimension(item.desc.type); ++i)
+			{
+				if (vgui_widget* edit = item.vector_ui->component_edit_widget(i))
+					vgui_widget_set_tooltip(edit, tip.c_str());
+			}
+		}
 		if (item.editor)
 		{
 			if (has_error)
@@ -1330,6 +1494,10 @@ namespace vgui_editor_kit {
 			item.menu = nullptr;
 			item.menu_values.clear();
 		}
+		/* Destroy the composite editor before its widget tree so no spinbox
+		 * callback can observe a partially destroyed row. */
+		item.vector_ui.reset();
+		reset_drag_state(item);
 		if (!item.panel)
 			return;
 		vgui_context* ctx = vgui_widget_get_context(item.panel);
@@ -1535,6 +1703,13 @@ namespace vgui_editor_kit {
 		}
 	}
 
+	void property_grid::reset_drag_state(row& item)
+	{
+		item.drag_active = false;
+		item.drag_value.clear();
+		item.drag_start_components = {};
+	}
+
 	void property_grid::notify_change(const row& item)
 	{
 		const std::string id = item.desc.id;
@@ -1547,6 +1722,7 @@ namespace vgui_editor_kit {
 
 	void property_grid::apply_value(row& item, std::string value)
 	{
+		reset_drag_state(item);
 		item.value = std::move(value);
 		update_row_ui(item, true);
 		notify_change(item);
@@ -1565,10 +1741,28 @@ namespace vgui_editor_kit {
 			return;
 		}
 		clear_row_error(*item);
+		reset_drag_state(*item);
 		item->value = normalized.value;
 		update_row_ui(*item, true);
 		notify_change(*item);
 		update_visibility();
+	}
+
+	void property_grid::push_value_command(std::uint64_t token,
+		std::string old_value, std::string new_value,
+		std::string command_name)
+	{
+		if (!command_stack_ || old_value == new_value)
+			return;
+		std::weak_ptr<int> alive = alive_token_;
+		property_command::apply_fn apply =
+			[this, alive](std::uint64_t token, const std::string& value) {
+				if (!alive.expired())
+					apply_recorded_value(token, value);
+			};
+		command_stack_->push(std::make_unique<property_command>(
+			std::move(command_name), token, std::move(old_value),
+			std::move(new_value), std::move(apply)));
 	}
 
 	bool property_grid::commit_value(row& item, std::string value,
@@ -1609,19 +1803,8 @@ namespace vgui_editor_kit {
 		apply_value(item, new_value);
 		if (is_color)
 			add_recent_color(new_value);
-
-		if (command_stack_)
-		{
-			std::weak_ptr<int> alive = alive_token_;
-			property_command::apply_fn apply =
-				[this, alive](std::uint64_t token, const std::string& value) {
-					if (!alive.expired())
-						apply_recorded_value(token, value);
-				};
-			command_stack_->push(std::make_unique<property_command>(
-				std::move(command_name), token, old_value, new_value,
-				std::move(apply)));
-		}
+		push_value_command(token, old_value, new_value,
+			std::move(command_name));
 		return true;
 	}
 
@@ -1829,8 +2012,7 @@ namespace vgui_editor_kit {
 		{
 			if (item->drag_active)
 			{
-				item->drag_active = false;
-				item->drag_value.clear();
+				self->reset_drag_state(*item);
 				self->update_row_ui(*item, true);
 			}
 			return;
@@ -1902,6 +2084,71 @@ namespace vgui_editor_kit {
 			}
 		}
 
+		if (widget == item->label &&
+			is_vector_type(item->desc.type))
+		{
+			const int dimension = vector_dimension(item->desc.type);
+			if (event->type == VGUI_EVENT_MOUSE_DOWN && event->button == 1)
+			{
+				vector_editor::vector_value values{};
+				if (!vector_editor::parse_value(item->value, dimension, values))
+					return;
+				item->drag_active = true;
+				item->drag_start_x = event->x;
+				item->drag_start_components = values;
+				item->drag_value = item->value;
+				return;
+			}
+			if (event->type == VGUI_EVENT_MOUSE_MOVE && item->drag_active)
+			{
+				double step = item->desc.step > 0.0 ? item->desc.step : 0.1;
+				vgui_context* ctx = vgui_widget_get_context(widget);
+				const int mods = vgui_context_get_mods(ctx);
+				if (mods & VGUI_MOD_SHIFT)
+					step *= 0.1;
+				if (mods & VGUI_MOD_ALT)
+					step *= 10.0;
+
+				const double delta = (double)(event->x - item->drag_start_x) *
+					step;
+				const double low = std::min(item->desc.min_value,
+					item->desc.max_value);
+				const double high = std::max(item->desc.min_value,
+					item->desc.max_value);
+				vector_editor::vector_value next = item->drag_start_components;
+				for (int i = 0; i < dimension; ++i)
+				{
+					double value = item->drag_start_components[(std::size_t)i] +
+						delta;
+					if (item->desc.step > 0.0)
+					{
+						const double base = item->desc.has_range
+							? item->desc.min_value : 0.0;
+						value = base + std::round((value - base) /
+							item->desc.step) * item->desc.step;
+					}
+					if (item->desc.has_range)
+						value = std::clamp(value, low, high);
+					next[(std::size_t)i] = value;
+				}
+				item->drag_value = vector_editor::format_value(next, dimension);
+				if (item->vector_ui)
+					item->vector_ui->set_value(next);
+				return;
+			}
+			if (event->type == VGUI_EVENT_MOUSE_UP && item->drag_active)
+			{
+				item->drag_active = false;
+				const std::string label = item->desc.label.empty()
+					? item->desc.id : item->desc.label;
+				const std::string value = item->drag_value;
+				item->drag_value.clear();
+				if (!self->commit_value(*item, value, "Set " + label))
+					self->update_row_ui(*item, true);
+				return;
+			}
+		}
+
 		if (event->type == VGUI_EVENT_CLICK)
 		{
 			if (widget == item->swatch)
@@ -1938,7 +2185,16 @@ namespace vgui_editor_kit {
 					return;
 				}
 				if (item->editor && item->desc.type != property_type::color)
-					vgui_set_focus(vgui_widget_get_context(widget), item->editor);
+				{
+					if (is_vector_type(item->desc.type))
+					{
+						if (item->vector_ui)
+							item->vector_ui->focus_component(0);
+					}
+					else
+						vgui_set_focus(vgui_widget_get_context(widget),
+							item->editor);
+				}
 			}
 		}
 	}

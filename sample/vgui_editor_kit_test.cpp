@@ -1492,6 +1492,20 @@ namespace {
 					"Amount")
 				return fail("spinbox label update");
 
+			count.set_label_width(40.0f);
+			if (count.label_width() != 40.0f)
+				return fail("spinbox label width");
+			count.set_buttons_visible(false);
+			if (count.buttons_visible() ||
+				vgui_widget_get_visible(count.decrement_widget()) != 0 ||
+				vgui_widget_get_visible(count.increment_widget()) != 0)
+				return fail("spinbox hidden buttons");
+			count.set_buttons_visible(true);
+			if (!count.buttons_visible() ||
+				vgui_widget_get_visible(count.increment_widget()) == 0)
+				return fail("spinbox shown buttons");
+			count.set_label_width(72.0f);
+
 			int scale_changes = 0;
 			int scale_commits = 0;
 			scale.set_on_change([&](double) { ++scale_changes; });
@@ -1671,6 +1685,248 @@ namespace {
 			if (!count.has_range() || count.min_value() != 0.0 ||
 				count.max_value() != 10.0 || count.value() != 10.0)
 				return fail("spinbox range swap and clamp");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_vector_editor()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("vector editor context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+				nullptr);
+			vgui_widget_set_size(host, 480, 260);
+			vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(host, 12, 12, 12, 12);
+			vgui_widget_set_gap(host, 8);
+
+			vector_editor position;
+			position.set_id("vec_position");
+			position.set_semantic(vector_semantic::position);
+			position.set_range(-10.0, 10.0);
+			position.set_step(1.0);
+			position.build(host, 3);
+			position.set_value({ 1.0, 2.0, 3.0, 0.0 });
+
+			if (!position.widget() || position.dimension() != 3 ||
+				position.value_type() != spinbox::value_type::number ||
+				position.id() != "vec_position")
+				return fail("vector editor build");
+			if (find_widget(host, "vec_position", VGUI_PANEL) !=
+					position.widget() ||
+				!position.component_edit_widget(0) ||
+				!position.component_label_widget(1) ||
+				find_widget(host, "vec_position_0_edit", VGUI_EDIT) !=
+					position.component_edit_widget(0) ||
+				find_widget(host, "vec_position_1_label", VGUI_LABEL) !=
+					position.component_label_widget(1))
+				return fail("vector editor widget ids");
+			if (position.value_text() != "1, 2, 3" ||
+				position.axis_labels()[0] != "X" ||
+				position.axis_labels()[1] != "Y" ||
+				position.axis_labels()[2] != "Z" ||
+				std::string(vgui_widget_get_text(
+					position.component_label_widget(1))) != "Y")
+				return fail("vector editor position semantic");
+			if (position.axis_colors()[0] == 0 ||
+				position.axis_colors()[0] !=
+					vector_editor::default_axis_color(0,
+						vector_semantic::position))
+				return fail("vector editor axis colors");
+			vgui_widget* decrement = find_widget(host,
+				"vec_position_0_decrement", VGUI_BUTTON);
+			vgui_widget* increment = find_widget(host,
+				"vec_position_0_increment", VGUI_BUTTON);
+			if (!decrement || !increment ||
+				vgui_widget_get_visible(decrement) != 0 ||
+				vgui_widget_get_visible(increment) != 0)
+				return fail("vector editor compact buttons");
+
+			position.set_semantic(vector_semantic::color);
+			if (position.axis_labels()[0] != "R" ||
+				position.axis_labels()[3] != "A" ||
+				position.axis_colors()[0] !=
+					vector_editor::default_axis_color(0,
+						vector_semantic::color) ||
+				position.value_text() != "1, 2, 3")
+				return fail("vector editor color semantic");
+
+			position.set_axis_labels({ "Right", "Up", "Forward" });
+			position.set_axis_label(2, "Depth");
+			position.set_axis_color(1, 0xFF123456);
+			if (position.axis_labels()[0] != "Right" ||
+				position.axis_labels()[2] != "Depth" ||
+				position.axis_colors()[1] != 0xFF123456 ||
+				std::string(vgui_widget_get_text(
+					position.component_label_widget(0))) != "Right")
+				return fail("vector editor custom axes");
+
+			int changes = 0;
+			int commits = 0;
+			vector_editor::vector_value last{};
+			position.set_on_change(
+				[&](const vector_editor::vector_value& value) {
+					++changes;
+					last = value;
+				});
+			position.set_on_commit(
+				[&](const vector_editor::vector_value& value) {
+					++commits;
+					last = value;
+				});
+
+			position.set_value({ 4.0, 5.0, 6.0, 0.0 });
+			position.set_component_value(1, 8.0);
+			position.set_component_value(0, 50.0);
+			if (changes != 0 || commits != 0 ||
+				position.value_text() != "10, 8, 6" ||
+				position.value()[1] != 8.0)
+				return fail("vector editor silent values");
+
+			position.set_value({ 1.0, 2.0, 3.0, 0.0 });
+			if (!position.commit_component_text(1, "7") ||
+				changes != 1 || commits != 1 || last[1] != 7.0 ||
+				position.value_text() != "1, 7, 3")
+				return fail("vector editor component commit");
+			if (position.commit_component_text(0, "oops") ||
+				position.component_error(0).empty() ||
+				changes != 1 || commits != 1 ||
+				position.value_text() != "1, 7, 3")
+				return fail("vector editor invalid component");
+			if (!position.commit_component_text(0, "9") ||
+				!position.component_error(0).empty() ||
+				changes != 2 || commits != 2 ||
+				position.value_text() != "9, 7, 3")
+				return fail("vector editor error recovery");
+			if (!position.commit_component_text(0, "9") ||
+				changes != 2 || commits != 2)
+				return fail("vector editor unchanged commit");
+
+			position.set_read_only(true);
+			if (!position.read_only() ||
+				position.commit_component_value(0, 2.0) ||
+				position.component_error(0) != "value is read-only" ||
+				changes != 2 || commits != 2 ||
+				position.value_text() != "9, 7, 3")
+				return fail("vector editor read-only");
+			position.set_read_only(false);
+			position.clear_component_errors();
+			if (!position.component_error(0).empty())
+				return fail("vector editor clear errors");
+
+			position.set_enabled(false);
+			if (position.enabled() ||
+				position.commit_component_value(0, 2.0) ||
+				position.component_error(0) != "value is disabled")
+				return fail("vector editor disabled");
+			position.set_enabled(true);
+			position.clear_component_errors();
+
+			vector_editor::vector_value gizmo{ 9.0, 7.0, 3.0, 0.0 };
+			position.set_value_source(
+				[&](vector_editor::vector_value& out) {
+					out = gizmo;
+					return true;
+				});
+			gizmo = { 4.0, 5.0, 6.0, 0.0 };
+			const int changes_before_refresh = changes;
+			position.refresh();
+			if (changes != changes_before_refresh || commits != 2 ||
+				position.value_text() != "4, 5, 6")
+				return fail("vector editor value source refresh");
+
+			position.set_on_change(
+				[&](const vector_editor::vector_value& value) {
+					++changes;
+					gizmo = value;
+				});
+			if (!position.commit_component_text(0, "7") ||
+				gizmo[0] != 7.0 ||
+				position.value_text() != "7, 5, 6")
+				return fail("vector editor two-way binding");
+
+			if (position.set_dimension(4) || !position.set_dimension(3))
+				return fail("vector editor locked dimension");
+
+			vector_editor uv;
+			uv.set_id("vec_uv");
+			if (!uv.set_dimension(2) || uv.set_dimension(1) ||
+				uv.set_dimension(5))
+				return fail("vector editor dimension bounds");
+			uv.build(host, 0);
+			uv.set_value({ 0.5, 0.25, 0.0, 0.0 });
+			if (uv.dimension() != 2 ||
+				uv.value_text() != "0.5, 0.25" ||
+				uv.axis_labels()[0] != "X" ||
+				uv.axis_labels()[1] != "Y")
+				return fail("vector editor vector2");
+
+			vector_editor tint;
+			tint.set_id("vec_tint");
+			tint.set_semantic(vector_semantic::color);
+			tint.build(host, 4);
+			tint.set_value({ 1.0, 0.5, 0.25, 1.0 });
+			if (tint.dimension() != 4 ||
+				tint.value_text() != "1, 0.5, 0.25, 1" ||
+				tint.axis_labels()[3] != "A")
+				return fail("vector editor vector4");
+
+			vector_editor::vector_value parsed{};
+			std::string error;
+			if (!vector_editor::parse_value("1 2 3", 3, parsed, &error) ||
+				parsed[2] != 3.0)
+				return fail("vector editor space parse");
+			if (!vector_editor::parse_value("[1, 2, 3]", 3, parsed,
+				&error) || parsed[0] != 1.0)
+				return fail("vector editor bracket parse");
+			if (!vector_editor::parse_value("(4; 5; 6)", 3, parsed,
+				&error) || parsed[1] != 5.0)
+				return fail("vector editor semicolon parse");
+			if (vector_editor::parse_value("1, 2", 3, parsed, &error) ||
+				error.empty())
+				return fail("vector editor parse count");
+			if (vector_editor::parse_value("1, x, 3", 3, parsed, &error))
+				return fail("vector editor parse number");
+			if (vector_editor::format_value({ 1.0, 2.0, 3.0, 0.0 }, 3) !=
+				"1, 2, 3")
+				return fail("vector editor format");
+
+			position.set_value({ 1.0, 2.0, 3.0, 0.0 });
+			position.set_step(0.0);
+			changes = 0;
+			commits = 0;
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			vgui_widget* drag_label = position.component_label_widget(0);
+			if (!drag_label)
+				return fail("vector editor drag label");
+			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+			vgui_widget_get_rect(drag_label, &lx, &ly, &lw, &lh);
+			if (lw <= 0.0f || lh <= 0.0f || lw >= 40.0f)
+				return fail("vector editor compact label layout");
+
+			const float cx = lx + lw * 0.5f;
+			const float cy = ly + lh * 0.5f;
+			vgui_input_mouse_move(ui, cx, cy);
+			vgui_input_mouse_down(ui, 1, cx, cy, 1);
+			vgui_input_mouse_move(ui, cx + 3.0f, cy);
+			if (std::fabs(position.value()[0] - 1.3) > 1e-9 ||
+				position.value()[1] != 2.0 || changes == 0 ||
+				commits != 0)
+				return fail("vector editor component drag");
+			vgui_input_mouse_up(ui, 1, cx + 3.0f, cy, 1);
+			if (commits != 1 ||
+				std::fabs(position.value()[0] - 1.3) > 1e-9)
+				return fail("vector editor drag commit");
 		}
 
 		vgui_destroy(ui);
@@ -2117,6 +2373,274 @@ namespace {
 				return fail("enum empty undo");
 			if (!commands.redo() || !grid.property_value("mode").empty())
 				return fail("enum empty redo");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_property_grid_vector()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property grid vector context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			property_grid grid;
+			command_stack commands;
+			grid.build(vgui_root(ui));
+			grid.set_command_stack(&commands);
+
+			int changes = 0;
+			std::string changed_id;
+			std::string changed_value;
+			grid.set_change_listener([&](const std::string& id,
+				const std::string& value) {
+				++changes;
+				changed_id = id;
+				changed_value = value;
+			});
+
+			property_desc position;
+			position.id = "position";
+			position.label = "Position";
+			position.type = property_type::vector3;
+			position.value = "1,2,3";
+			position.category = "Transform";
+			position.semantic = vector_semantic::position;
+			position.step = 1.0;
+			position.has_range = true;
+			position.min_value = -10.0;
+			position.max_value = 10.0;
+			position.has_default = true;
+			position.default_value = "0, 0, 0";
+			position.tooltip = "Object position";
+			if (!grid.add_property(position))
+				return fail("add vector3 property");
+
+			property_desc uv;
+			uv.id = "uv";
+			uv.label = "UV";
+			uv.type = property_type::vector2;
+			uv.value = "0.5; 0.25";
+			uv.category = "Rendering";
+			uv.component_labels = { "U", "V" };
+			uv.component_colors = { 0xFF010203, 0xFF040506 };
+			if (!grid.add_property(uv))
+				return fail("add vector2 property");
+
+			property_desc tint;
+			tint.id = "tint";
+			tint.label = "Tint";
+			tint.type = property_type::vector4;
+			tint.value = "1, 0, 0, 1";
+			tint.category = "Rendering";
+			tint.semantic = vector_semantic::color;
+			if (!grid.add_property(tint))
+				return fail("add vector4 property");
+
+			property_desc clamped;
+			clamped.id = "clamped";
+			clamped.label = "Clamped";
+			clamped.type = property_type::vector2;
+			clamped.value = "5, -5";
+			clamped.category = "Transform";
+			clamped.has_range = true;
+			clamped.min_value = 0.0;
+			clamped.max_value = 1.0;
+			if (!grid.add_property(clamped))
+				return fail("add clamped vector property");
+
+			if (grid.property_value("position") != "1, 2, 3" ||
+				grid.property_value("uv") != "0.5, 0.25" ||
+				grid.property_value("tint") != "1, 0, 0, 1" ||
+				grid.property_value("clamped") != "1, 0")
+				return fail("vector property normalization");
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			vector_editor* pos = grid.property_vector_editor("position");
+			vector_editor* uv_editor = grid.property_vector_editor("uv");
+			vector_editor* tint_editor = grid.property_vector_editor("tint");
+			if (!pos || !uv_editor || !tint_editor)
+				return fail("vector property editors");
+			if (grid.property_editor("position") != pos->widget() ||
+				pos->dimension() != 3 ||
+				pos->value_text() != "1, 2, 3" ||
+				pos->axis_labels()[0] != "X" ||
+				uv_editor->dimension() != 2 ||
+				uv_editor->axis_labels()[0] != "U" ||
+				uv_editor->axis_labels()[1] != "V" ||
+				uv_editor->axis_colors()[0] != 0xFF010203 ||
+				tint_editor->dimension() != 4 ||
+				tint_editor->axis_labels()[3] != "A")
+				return fail("vector property editor setup");
+			if (!pos->component_edit_widget(0) ||
+				std::string(vgui_widget_get_tooltip(
+					pos->component_edit_widget(0))) != "Object position")
+				return fail("vector property component tooltip");
+
+			const std::size_t undo_before = commands.undo_count();
+			changes = 0;
+			if (!pos->commit_component_text(1, "7") ||
+				grid.property_value("position") != "1, 7, 3" ||
+				pos->value_text() != "1, 7, 3" ||
+				changes != 1 || changed_id != "position" ||
+				changed_value != "1, 7, 3" ||
+				commands.undo_count() != undo_before + 1)
+				return fail("vector property component commit");
+			if (!commands.undo() ||
+				grid.property_value("position") != "1, 2, 3" ||
+				pos->value_text() != "1, 2, 3")
+				return fail("vector property undo");
+			if (!commands.redo() ||
+				grid.property_value("position") != "1, 7, 3" ||
+				pos->value_text() != "1, 7, 3")
+				return fail("vector property redo");
+
+			changes = 0;
+			const std::size_t undo_before_enter = commands.undo_count();
+			pos->focus_component(2);
+			vgui_edit_set_text(pos->component_edit_widget(2), "9");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (grid.property_value("position") != "1, 7, 9" ||
+				changes != 1 || changed_value != "1, 7, 9" ||
+				commands.undo_count() != undo_before_enter + 1)
+				return fail("vector property enter edit");
+			if (!commands.undo() ||
+				grid.property_value("position") != "1, 7, 3")
+				return fail("vector property enter undo");
+
+			vgui_widget* label = find_widget(grid.widget(), "property:position",
+				VGUI_LABEL);
+			if (!label)
+				return fail("vector property label");
+			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+			vgui_widget_get_rect(label, &lx, &ly, &lw, &lh);
+			if (lw <= 0.0f || lh <= 0.0f)
+				return fail("vector property label layout");
+			const float start_x = lx + lw * 0.5f;
+			const float start_y = ly + lh * 0.5f;
+			const std::size_t undo_before_drag = commands.undo_count();
+			vgui_input_mouse_move(ui, start_x, start_y);
+			vgui_input_mouse_down(ui, 1, start_x, start_y, 1);
+			vgui_input_mouse_move(ui, start_x + 2.0f, start_y);
+			if (grid.property_value("position") != "1, 7, 3" ||
+				pos->value_text() != "3, 9, 5" ||
+				commands.undo_count() != undo_before_drag)
+				return fail("vector property drag is live");
+			vgui_input_mouse_move(ui, start_x + 20.0f, start_y);
+			if (pos->value_text() != "10, 10, 10")
+				return fail("vector property drag clamps");
+			vgui_input_mouse_up(ui, 1, start_x + 20.0f, start_y, 1);
+			if (grid.property_value("position") != "10, 10, 10" ||
+				commands.undo_count() != undo_before_drag + 1)
+				return fail("vector property drag commit");
+			if (!commands.undo() ||
+				grid.property_value("position") != "1, 7, 3" ||
+				pos->value_text() != "1, 7, 3")
+				return fail("vector property drag undo");
+			if (!commands.redo() ||
+				grid.property_value("position") != "10, 10, 10")
+				return fail("vector property drag redo");
+
+			changes = 0;
+			if (!grid.set_property_read_only("position", true) ||
+				!pos->read_only() ||
+				vgui_widget_get_enabled(grid.property_editor("position")) != 0)
+				return fail("vector property read-only");
+			if (pos->commit_component_text(0, "2") ||
+				pos->component_error(0) != "value is disabled" ||
+				grid.property_value("position") != "10, 10, 10" ||
+				changes != 0)
+				return fail("vector property read-only edit");
+			grid.set_property_read_only("position", false);
+			pos->clear_component_errors();
+			if (pos->read_only() ||
+				vgui_widget_get_enabled(grid.property_editor("position")) == 0)
+				return fail("vector property read-only recovery");
+
+			changes = 0;
+			const std::size_t undo_before_invalid = commands.undo_count();
+			if (pos->commit_component_text(0, "oops") ||
+				pos->component_error(0).empty() ||
+				grid.property_value("position") != "10, 10, 10" ||
+				changes != 0 ||
+				commands.undo_count() != undo_before_invalid)
+				return fail("vector property invalid component");
+			if (!pos->commit_component_text(0, "2") ||
+				grid.property_value("position") != "2, 10, 10" ||
+				changes != 1 ||
+				commands.undo_count() != undo_before_invalid + 1)
+				return fail("vector property invalid recovery");
+			if (!commands.undo() ||
+				grid.property_value("position") != "10, 10, 10")
+				return fail("vector property invalid recovery undo");
+
+			const std::size_t undo_before_reset = commands.undo_count();
+			if (!grid.reset_property("position") ||
+				grid.property_value("position") != "0, 0, 0" ||
+				pos->value_text() != "0, 0, 0" ||
+				commands.undo_count() != undo_before_reset + 1)
+				return fail("vector property reset");
+			if (!commands.undo() ||
+				grid.property_value("position") != "10, 10, 10")
+				return fail("vector property reset undo");
+
+			changes = 0;
+			const std::size_t undo_before_silent = commands.undo_count();
+			if (!grid.set_property_value("position", "[4, 5, 6]") ||
+				grid.property_value("position") != "4, 5, 6" ||
+				pos->value_text() != "4, 5, 6" ||
+				changes != 0 ||
+				commands.undo_count() != undo_before_silent)
+				return fail("vector property silent update");
+
+			vector_editor::vector_value gizmo{ 4.0, 5.0, 6.0, 0.0 };
+			grid.set_change_listener([&](const std::string& id,
+				const std::string& value) {
+				++changes;
+				changed_id = id;
+				changed_value = value;
+				if (id == "position")
+				{
+					vector_editor::vector_value parsed{};
+					if (vector_editor::parse_value(value, 3, parsed))
+						gizmo = parsed;
+				}
+			});
+			pos->set_value_source(
+				[&](vector_editor::vector_value& out) {
+					out = gizmo;
+					return true;
+				});
+			gizmo = { 7.0, 8.0, 9.0, 0.0 };
+			changes = 0;
+			pos->refresh();
+			if (changes != 0 || pos->value_text() != "7, 8, 9")
+				return fail("vector property host refresh");
+			if (!grid.set_property_value("position", pos->value_text()) ||
+				grid.property_value("position") != "7, 8, 9")
+				return fail("vector property host refresh sync");
+			if (!pos->commit_component_text(0, "6") ||
+				gizmo[0] != 6.0 ||
+				grid.property_value("position") != "6, 8, 9" ||
+				changed_value != "6, 8, 9")
+				return fail("vector property gizmo binding");
+
+			grid.set_filter("uv");
+			if (grid.property_vector_editor("position") != nullptr ||
+				!grid.property_vector_editor("uv"))
+				return fail("vector property filter release");
+			grid.set_filter("");
+			pos = grid.property_vector_editor("position");
+			if (!pos || pos->value_text() != "6, 8, 9")
+				return fail("vector property filter rematerialize");
 		}
 
 		vgui_destroy(ui);
@@ -2611,9 +3135,13 @@ int main()
 		return rc;
 	if (int rc = test_spinbox())
 		return rc;
+	if (int rc = test_vector_editor())
+		return rc;
 	if (int rc = test_combo_box())
 		return rc;
 	if (int rc = test_property_grid_enum())
+		return rc;
+	if (int rc = test_property_grid_vector())
 		return rc;
 	if (int rc = test_selection_binding())
 		return rc;

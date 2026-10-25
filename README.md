@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox（`vgui_editor_kit`，基于公共 C API） |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor（`vgui_editor_kit`，基于公共 C API） |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -210,7 +210,7 @@ shell.save_layout("user/editor_layout.json");
 
 ### 属性编辑（PropertyGrid）
 
-`vgui_editor_kit::property_grid` 是类型化属性检查器：行按分类分组，可折叠、搜索过滤，包含标签列 + 编辑列、单行重置、只读状态、行级错误和 tooltip。行按滚动视口虚拟化：只创建可见窗口（含少量 overscan）内的行控件，其余行由上下 spacer 占位，因此上千行属性也能保持稳定的布局与滚动开销。`editor_shell` 的 Properties 面板和 `vgui_editor` 的 UI 文档检查器都已使用它。
+`vgui_editor_kit::property_grid` 是类型化属性检查器：行按分类分组，可折叠、搜索过滤，包含标签列 + 编辑列、单行重置、只读状态、行级错误和 tooltip。行按滚动视口虚拟化：只创建可见窗口（含少量 overscan）内的行控件，其余行由上下 spacer 占位，因此上千行属性也能保持稳定的布局与滚动开销。`editor_shell` 的 Properties 面板和 `vgui_editor` 的 UI 文档检查器都已使用它。Vector2/3/4 行使用紧凑的分量编辑：每个分量可独立输入或拖拽，拖动主标签则按同一增量同步调整全部分量。
 
 ```cpp
 vgui_editor_kit::property_grid grid;
@@ -237,13 +237,13 @@ grid.set_change_listener([](const std::string& id, const std::string& value) {
 grid.commit_property_value("position.x", "1.25");
 ```
 
-- 支持 `text`、`integer`、`number`、`boolean`、`enumeration`、`color` 六种类型。值统一使用规范字符串：整数为十进制，浮点为十进制或科学计数法，布尔为 `true`/`false`，枚举为 `choice_values` 中的值，颜色为 `#RRGGBB` 或 `#RRGGBBAA`。
-- 数字类型可设置范围和步进，输入越界会被钳制；拖动标签可调值，按下后即使指针移出当前行或整个网格仍持续更新，释放时只提交一次命令；按住 Shift 精调、Alt 粗调。枚举支持禁用项；`allow_empty` 允许空值，空值显示为 `placeholder`（未设置时显示 `(None)`），并作为下拉菜单第一项，打开菜单时键盘光标停在当前选择上；颜色行带色块、预设和最近颜色。独立 `spinbox` / `combo_box` 组件复用同一套交互，供向量分量或自定义编辑器使用。
+- 支持 `text`、`integer`、`number`、`boolean`、`enumeration`、`color`、`vector2`、`vector3`、`vector4` 九种类型。值统一使用规范字符串：整数为十进制，浮点为十进制或科学计数法，布尔为 `true`/`false`，枚举为 `choice_values` 中的值，颜色为 `#RRGGBB` 或 `#RRGGBBAA`，向量为逗号加空格分隔的分量（如 `1, 2, 3`；解析也接受空格、分号和外围括号）。
+- 数字类型可设置范围和步进，输入越界会被钳制；拖动标签可调值，按下后即使指针移出当前行或整个网格仍持续更新，释放时只提交一次命令；按住 Shift 精调、Alt 粗调。向量行的范围/步进作用于每个分量，`semantic` 选择轴标签/颜色（`generic`/`position`/`color`），`component_labels` / `component_colors` 可覆盖预设；拖动向量主标签会按同一增量更新所有分量，释放时只记录一条命令。枚举支持禁用项；`allow_empty` 允许空值，空值显示为 `placeholder`（未设置时显示 `(None)`），并作为下拉菜单第一项，打开菜单时键盘光标停在当前选择上；颜色行带色块、预设和最近颜色。独立 `spinbox` / `combo_box` / `vector_editor` 组件复用同一套交互，供自定义编辑器使用。
 - `commit_property_value()` / `reset_property()` 会校验并写回，触发 change listener，并在绑定命令栈时通过 `command_stack::push()` 记录可撤销命令。`set_property_value()` 只做显示/模型同步，不通知也不记录命令；提交失败时保留原值和输入文本，并显示行内错误，修正后可再次提交。
 - `clear()` 重建行时保留搜索词、分类折叠状态和最近颜色；`set_filter()`、`set_category_collapsed()`、`set_read_only()` 可保持或批量调整视图状态。
 - 行虚拟化由扁平化的“分类标题 + 属性行”显示列表驱动：滚动、过滤、折叠和增删行只重建该列表，并按视口窗口挂载/释放行控件。`materialized_row_count()` 返回当前实际创建的属性行数，可用于无窗口性能断言；未物化行的 `property_editor()` 返回 `nullptr`。
 - 核心 `vgui_panel_set_scroll_listener()` 在程序化滚动、滚轮和滚动条拖动后通知监听器，PropertyGrid 用它驱动窗口更新；监听器内再次调整滚动位置是安全的，重入通知会被合并。
-- `property_desc::get_value` / `set_value`，或 `set_value_source()` + `refresh()`，可把行绑定到宿主模型。
+- `property_desc::get_value` / `set_value`，或 `set_value_source()` + `refresh()`，可把行绑定到宿主模型。`property_vector_editor(id)` 额外暴露向量行的复合编辑器，用于把 Gizmo 等外部数值源接到分量控件；该指针在行被移除或移出物化窗口后失效。
 - `bind_selection()` 订阅 `editor_context` 的选择变化，在回调中按对象重建行；销毁 grid 前应调用 `unbind_selection()`（析构函数也会自动解绑）。PropertyGrid 必须早于 `vgui_context`、命令栈和 `editor_context` 销毁。
 
 ### 工具栏与状态栏组件（vgui_editor_kit）
@@ -257,7 +257,8 @@ S07 组件位于 `gui/editor/`，全部构建在公共 C API 之上：
 - `status_bar`：消息、选中对象、坐标、错误四个字段，可在 `build()` 前设置；`set_selected_object()` 格式化为 `Selected: <id>`，`set_coordinates()` 格式化坐标，`set_error()` / `clear_error()` 管理错误文本。
 - `search_box`：`VGUI_EDIT` + 清除按钮。`set_on_change()` 在用户输入或清除时回调，`set_on_submit()` 在 Enter 或 `submit()` 时回调；`set_text()` 静默，`clear()` 模拟用户清除。
 - `breadcrumb`：`breadcrumb_item{label, id}` 路径，最后一项为当前项。`navigate(index)` 触发回调，`set_items()` / `set_active()` 静默，避免宿主在刷新路径时重入导航逻辑。
-- `spinbox`：`VGUI_EDIT` + 可拖拽标签 + 减/加按钮。支持 `integer`/`number` 值类型、范围、步进、Shift 精调、Alt 粗调、Enter 校验、错误提示、只读和禁用状态；`set_value()` 静默，`commit_text()` / `commit_value()` / `step_by()` 以及拖拽提交会触发 change/commit 回调。拖拽按下后跨行或移出控件仍持续更新，释放时只提交一次，便于宿主把整个手势记录为一条命令。
+- `spinbox`：`VGUI_EDIT` + 可拖拽标签 + 减/加按钮。支持 `integer`/`number` 值类型、范围、步进、Shift 精调、Alt 粗调、Enter 校验、错误提示、只读和禁用状态；`set_value()` 静默，`commit_text()` / `commit_value()` / `step_by()` 以及拖拽提交会触发 change/commit 回调。拖拽按下后跨行或移出控件仍持续更新，释放时只提交一次，便于宿主把整个手势记录为一条命令。`set_label_width()` / `set_buttons_visible()` 可压缩布局，供向量分量复用。
+- `vector_editor`：2/3/4 分量紧凑行，每个分量复用 `spinbox`（窄轴标签 + 编辑框，默认隐藏加减按钮）。支持 `generic`/`position`/`color` 语义预设、自定义轴标签/颜色、范围/步进、只读/禁用和分量错误；`set_value()` / `set_component_value()` 静默，分量输入或拖拽通过 change 回调报告完整向量，提交时再报告一次。`set_value_source()` + `refresh()` 提供宿主→编辑器绑定，与 change/commit 一起构成双向同步。
 - `combo_box`：按钮 + 弹出菜单。每项包含显示标签、值和启用状态，支持禁用项、空标签（显示 placeholder）和无选择状态；`set_items()` / `set_selected_index()` / `set_value()` / `clear_selection()` / `set_placeholder()` 静默，`select_index()` / `select_value()` / `select_none()`、菜单选择以及关闭状态下的 Up/Down/Home/End 会校验禁用项并触发 change/commit 回调。打开时菜单键盘光标停在当前选择，打开、关闭和选择都不改变键盘焦点；`Alt+Down` 打开，Esc 关闭。内部菜单是 detached 控件，必须早于 `vgui_context` 销毁。
 
 ```cpp
@@ -291,6 +292,18 @@ mode.set_items({
 mode.build(parent);
 mode.set_on_change([](int index, const std::string& value) { /* preview */ });
 mode.set_on_commit([](int index, const std::string& value) { /* one undo command */ });
+
+vgui_editor_kit::vector_editor position;
+position.set_id("position");
+position.set_semantic(vgui_editor_kit::vector_semantic::position);
+position.set_range(-100.0, 100.0);
+position.set_step(0.1);
+position.build(parent, 3);
+position.set_value({ 1.0, 2.0, 3.0, 0.0 });
+position.set_on_change([](const vgui_editor_kit::vector_editor::vector_value& value) {
+    /* live preview */ });
+position.set_on_commit([](const vgui_editor_kit::vector_editor::vector_value& value) {
+    /* one undo command */ });
 ```
 
 组件不可拷贝（控件回调指回 C++ 对象），必须比其控件树存活更久；`toolbar_view` 绑定的 `command_registry` 也必须比工具栏存活更久。`editor_shell` 已使用这些组件：顶部工具栏包含标题、场景搜索、Undo/Redo 命令按钮、Grid 开关和 Persp/Top/Front 分段控件；底部状态栏显示 `set_status()` 消息和当前选择；Properties 面板顶部显示 `Scene / Object <id>` 面包屑。
@@ -341,7 +354,7 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、命令栈与布局持久化自测
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、命令栈与布局持久化自测
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 
@@ -425,7 +438,7 @@ sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast 与按键处理器自测
-  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性、命令栈、菜单/快捷键与布局持久化自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector）、命令栈、菜单/快捷键与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
@@ -446,7 +459,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态，以及跨行拖拽捕获和释放提交。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser 占位组件、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

@@ -3,10 +3,10 @@
  * property_grid.h - typed property inspector for vgui_editor_kit.
  *
  * A grid is a scrollable list of label/editor rows grouped into collapsible
- * categories.  Text, integer, floating point, boolean, enumeration and color
- * (hex) properties share the same row model, so hosts can build an inspector
- * from property_desc records without knowing which core widget backs each
- * type.
+ * categories.  Text, integer, floating point, boolean, enumeration, color
+ * (hex) and Vector2/3/4 properties share the same row model, so hosts can
+ * build an inspector from property_desc records without knowing which core
+ * widget backs each type.
  *
  * The grid must be destroyed before the vgui context and, when a command stack
  * or editor_context is attached, before those objects.  Committed edits are
@@ -23,6 +23,7 @@
 
 #include "command_stack.h"
 #include "editor_types.h"
+#include "vector_editor.h"
 #include "vgui.h"
 
 namespace vgui_editor_kit {
@@ -36,7 +37,10 @@ namespace vgui_editor_kit {
 		number,
 		boolean,
 		enumeration,
-		color
+		color,
+		vector2,
+		vector3,
+		vector4
 	};
 
 	/* Describes one editable property.  `value` and `default_value` use the
@@ -48,14 +52,18 @@ namespace vgui_editor_kit {
 	 *   enumeration - one of choice_values (or choices when choice_values is
 	 *                 empty)
 	 *   color       - "#RRGGBB" or "#RRGGBBAA"
+	 *   vector2/3/4 - "x, y" / "x, y, z" / "x, y, z, w"
 	 *
 	 * choices are display labels.  When choice_values is empty, choices are
 	 * used for both labels and values.  choice_enabled is optional; when set
 	 * it must contain one entry per choice.  allow_empty lets an enumeration
 	 * hold the empty value, shown as placeholder (or "(None)" when no
-	 * placeholder is set) and offered as the first menu entry.  get_value /
-	 * set_value are optional per-property bindings; a grid-level value
-	 * source/listener can be used instead. */
+	 * placeholder is set) and offered as the first menu entry.  Vector rows
+	 * use a compact component editor: has_range/step apply to every
+	 * component, semantic selects the axis labels/colors, and the optional
+	 * component_labels/component_colors override them.  get_value/set_value
+	 * are optional per-property bindings; a grid-level value source/listener
+	 * can be used instead. */
 	struct property_desc
 	{
 		std::string id;
@@ -76,6 +84,9 @@ namespace vgui_editor_kit {
 		std::vector<std::string> choice_values;
 		std::vector<char> choice_enabled;
 		bool allow_empty = false;
+		vector_semantic semantic = vector_semantic::generic;
+		std::vector<std::string> component_labels;
+		std::vector<vgui_color> component_colors;
 		std::function<std::string()> get_value;
 		std::function<void(const std::string&)> set_value;
 	};
@@ -169,9 +180,16 @@ namespace vgui_editor_kit {
 		void bind_selection(editor_context& context, selection_bind_fn binder);
 		void unbind_selection();
 
-		/* The editor widget backing a property (edit box, checkbox or enum
-		 * button).  Returns nullptr when the row is not built. */
+		/* The editor widget backing a property (edit box, checkbox, enum
+		 * button or vector panel).  Returns nullptr when the row is not
+		 * built. */
 		vgui_widget* property_editor(const std::string& id) const noexcept;
+
+		/* Vector rows expose their composite editor for host bindings.  The
+		 * pointer is owned by the grid and becomes invalid when the row is
+		 * removed, filtered out of the materialized window, or the grid is
+		 * destroyed. */
+		vector_editor* property_vector_editor(const std::string& id) const noexcept;
 
 		vgui_widget* widget() const noexcept;
 
@@ -187,8 +205,10 @@ namespace vgui_editor_kit {
 			bool drag_active = false;
 			float drag_start_x = 0.0f;
 			double drag_start_value = 0.0;
+			vector_editor::vector_value drag_start_components{};
 			std::string drag_value;
 
+			std::unique_ptr<vector_editor> vector_ui;
 			vgui_widget* panel = nullptr;
 			vgui_widget* line = nullptr;
 			vgui_widget* label = nullptr;
@@ -238,9 +258,12 @@ namespace vgui_editor_kit {
 
 		void set_row_error(row& item, std::string error);
 		void clear_row_error(row& item);
+		void reset_drag_state(row& item);
 		void notify_change(const row& item);
 		void apply_value(row& item, std::string value);
 		void apply_recorded_value(std::uint64_t token, const std::string& value);
+		void push_value_command(std::uint64_t token, std::string old_value,
+			std::string new_value, std::string command_name);
 		bool commit_value(row& item, std::string value, std::string command_name);
 		std::string display_text(const row& item) const;
 

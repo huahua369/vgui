@@ -51,6 +51,17 @@ namespace vgui_editor_kit {
 		void set_label(std::string label);
 		const std::string& label() const noexcept;
 
+		/* Label column width.  The default 72px fits names such as "Radius";
+		 * compact editors (for example vector components) can shrink it.
+		 * An empty label keeps its own narrow width. */
+		void set_label_width(float width);
+		float label_width() const noexcept;
+
+		/* Step buttons are shown by default.  Compact editors can hide them
+		 * and rely on text input plus label dragging instead. */
+		void set_buttons_visible(bool visible);
+		bool buttons_visible() const noexcept;
+
 		void set_value_type(value_type type);
 		value_type type() const noexcept;
 
@@ -132,6 +143,8 @@ namespace vgui_editor_kit {
 		std::string id_ = "spinbox";
 		std::string label_;
 		std::string error_;
+		float label_width_ = 72.0f;
+		bool buttons_visible_ = true;
 		value_type type_ = value_type::number;
 		double value_ = 0.0;
 		bool has_range_ = false;

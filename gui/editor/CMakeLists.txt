@@ -14,6 +14,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     spinbox.cpp
     status_bar.cpp
     toolbar.cpp
+    vector_editor.cpp
     viewport_view.cpp
 )
 

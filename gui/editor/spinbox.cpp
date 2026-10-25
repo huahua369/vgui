@@ -90,7 +90,7 @@ namespace vgui_editor_kit {
 
 		label_widget_ = vgui_widget_add(panel_, VGUI_LABEL, label_.c_str());
 		vgui_widget_set_size(label_widget_,
-			label_.empty() ? kEmptyLabelWidth : kLabelWidth, 24);
+			label_.empty() ? kEmptyLabelWidth : label_width_, 24);
 		vgui_widget_set_font_size(label_widget_, 12);
 		vgui_widget_set_text_align(label_widget_, 0.0f, 0.5f);
 		vgui_widget_set_tooltip(label_widget_, "Drag to change");
@@ -114,6 +114,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(increment_.widget(), 24, 24);
 
 		apply_ids();
+		set_buttons_visible(buttons_visible_);
 		update_control_state();
 		sync_text();
 		update_error_ui();
@@ -155,12 +156,45 @@ namespace vgui_editor_kit {
 			return;
 		vgui_widget_set_text(label_widget_, label_.c_str());
 		vgui_widget_set_size(label_widget_,
-			label_.empty() ? kEmptyLabelWidth : kLabelWidth, 24);
+			label_.empty() ? kEmptyLabelWidth : label_width_, 24);
 	}
 
 	const std::string& spinbox::label() const noexcept
 	{
 		return label_;
+	}
+
+	void spinbox::set_label_width(float width)
+	{
+		if (!std::isfinite(width))
+			return;
+		label_width_ = std::clamp(width, 0.0f, 512.0f);
+		if (label_widget_)
+		{
+			vgui_widget_set_size(label_widget_,
+				label_.empty() ? kEmptyLabelWidth : label_width_, 24);
+		}
+	}
+
+	float spinbox::label_width() const noexcept
+	{
+		return label_width_;
+	}
+
+	void spinbox::set_buttons_visible(bool visible)
+	{
+		buttons_visible_ = visible;
+		if (decrement_.widget())
+			vgui_widget_set_visible(decrement_.widget(), visible ? 1 : 0);
+		if (increment_.widget())
+			vgui_widget_set_visible(increment_.widget(), visible ? 1 : 0);
+		if (panel_)
+			vgui_widget_set_min_size(panel_, visible ? 120 : 60, 24);
+	}
+
+	bool spinbox::buttons_visible() const noexcept
+	{
+		return buttons_visible_;
 	}
 
 	void spinbox::set_value_type(value_type type)

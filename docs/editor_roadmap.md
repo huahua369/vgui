@@ -35,7 +35,7 @@
 - 数据模型控件：列表、树、菜单，支持稳定 `vgui_item_id`、多选、键盘导航和滚动；列表/树可通过行源回调虚拟化。
 - 编辑器外壳：`VGUI_DOCK` 支持左/右/下/中停靠区、标签组、浮动/再停靠、区域折叠与尺寸调整；`VGUI_SPLITTER` 支持水平/垂直嵌套与拖动比例，`VGUI_TABVIEW` 支持页切换/关闭/重排。
 - 覆盖层：Tooltip、Modal、Alert/Confirm/Prompt、Toast，支持焦点陷阱、背景输入隔离和主题回退。
-- 编辑器组件：`vgui_editor_kit` 已提供 Dock 外壳、命令/撤销栈、菜单与快捷键注册、布局持久化，以及类型化 PropertyGrid、Outliner、AssetBrowser 和 Viewport 边界组件。
+- 编辑器组件：`vgui_editor_kit` 已提供 Dock 外壳、命令/撤销栈、菜单与快捷键注册、布局持久化，以及类型化 PropertyGrid（含 Vector2-4）、Outliner、AssetBrowser 和 Viewport 边界组件。
 - 布局：绝对定位、横向/纵向布局、自动换行、min/max、grow、margin、padding、gap、滚动面板。
 - 输入：鼠标、键盘、文本输入、IME、剪贴板、焦点、悬停/按下/选中状态。
 - 文本编辑：单行/多行、选择、复制/剪切/粘贴、编辑框内撤销/重做。
@@ -49,7 +49,7 @@
 | 领域 | 当前能力 | 对编辑器的影响 |
 |---|---|---|
 | 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
-| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定、行虚拟化 | 仍缺 Vector、资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
+| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色/Vector2-4 行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定、行虚拟化 | 仍缺资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
 | 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04） | 行内重命名、拖放重排等编辑器语义仍在 O02/O03 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
@@ -232,9 +232,10 @@
   - 验收：属性枚举不再用一排按钮模拟；打开/关闭/选择不抢焦点；值改变可撤销。
   - 已实现：新增独立 `vgui_editor_kit::combo_box`（标签/值/启用状态、禁用项、空标签占位、无选择状态、只读/禁用、菜单与关闭状态键盘导航、Alt+Down、change/commit 回调）；打开菜单时用核心新增的 `vgui_menu_set_cursor()` 把光标停在当前选择上，打开/关闭/选择不改变键盘焦点。PropertyGrid 枚举行保持下拉菜单编辑器，新增 `property_desc::allow_empty`：空值显示为 placeholder（缺省 `(None)`）并作为菜单第一项，禁用项仍不可选；点击标签会先把焦点移到枚举按钮再打开菜单。`vgui_editor_kit_test` 覆盖 ComboBox 与枚举空值、菜单光标/禁用跳过、焦点保持及命令栈撤销/重做，`vgui_model_test` 覆盖菜单光标 API。
 
-- [ ] **P04 Vector2 / Vector3 / Vector4**（P0，M）
+- [x] **P04 Vector2 / Vector3 / Vector4**（P0，M）（已完成）
   - 多字段联动、统一拖拽调值、可选颜色/坐标语义。
   - 验收：单个分量可独立编辑；拖拽时所有分量同步更新；与 Gizmo 数值双向绑定。
+  - 已实现：新增独立 `vgui_editor_kit::vector_editor`（2/3/4 分量，每个分量复用 `spinbox` 的窄轴标签 + 编辑框并默认隐藏加减按钮）；支持 `generic`/`position`/`color` 语义预设、自定义轴标签/颜色、范围/步进、只读/禁用、分量错误、change/commit 回调和 `set_value_source()` + `refresh()` 双向绑定。`spinbox` 新增 `set_label_width()` / `set_buttons_visible()` 供紧凑布局复用。PropertyGrid 新增 `vector2`/`vector3`/`vector4` 类型、`semantic` / `component_labels` / `component_colors` 描述字段和 `property_vector_editor()` 访问器；分量可独立输入或拖拽，拖动主标签按同一增量更新全部分量，拖动过程实时刷新分量控件，释放时只提交一条命令。`vgui_editor_kit_test` 覆盖向量文本解析、语义/自定义轴、分量编辑、统一拖拽、范围钳制、只读/禁用、错误恢复、值源刷新、撤销/重做、重置、Gizmo 式双向同步和过滤后编辑器重建。
 
 - [ ] **P05 ColorPicker**（P0，M）（进行中）
   - RGBA/HSV、Alpha、Hex 输入、色板、最近颜色。
@@ -554,14 +555,14 @@ MVP 验收场景：
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
 - `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
-- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现并支持行虚拟化；行扩展与拖放已接入）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复），以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
+- `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）与 PropertyGrid 向量行，以及 S07 工具栏/状态栏/搜索框/面包屑状态与回调。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（619 项，含面板滚动监听通知）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（621 项，含面板滚动监听通知）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. PropertyGrid 的资产/对象引用行（P06）与颜色 HSV 取色器（P05），Vector 多字段行（P04）。
+1. PropertyGrid 的资产/对象引用行（P06）与颜色 HSV 取色器（P05）。
 2. Outliner 行图标 / 可见性锁定按钮（O01，F04 行扩展已就绪）、行内重命名（O02）与拖放重排打磨（O03，F03 已就绪）。
 3. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
 4. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
