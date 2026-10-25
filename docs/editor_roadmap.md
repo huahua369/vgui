@@ -221,11 +221,11 @@
   - 验收：能替换 `ui_editor` 中的手工属性面板；1000 行属性滚动流畅；分类和搜索状态可保持。
   - 已实现：分类/折叠/搜索、标签列 + 编辑列、单行重置、只读、错误提示、行级 tooltip；`clear()` 保留搜索、折叠和最近颜色。PropertyGrid 使用扁平显示列表 + 上下 spacer，只物化视口窗口（含 overscan）内的行，滚动/过滤/折叠时按需挂载与释放，`materialized_row_count()` 供无窗口断言；核心新增 `vgui_panel_set_scroll_listener()`，程序化滚动、滚轮与滚动条拖动都会驱动窗口更新。`vgui_editor` 的 UI 文档属性面板已切换到 PropertyGrid（ARGB ↔ RGBA 转换、descriptor setter 写回节点）。`vgui_editor_kit_test` 覆盖 1000 行虚拟化的有界物化、滚动到底部与滚回顶部，`vgui_editor --selftest` 覆盖属性行构建。
 
-- [ ] **P02 Number / Spinbox / DragNumber**（P0，M）（进行中）
+- [x] **P02 Number / Spinbox / DragNumber**（P0，M）（已完成）
   - int/float、范围、步进、拖拽调值、文本输入与校验。
   - 支持 Alt/Shift 精调等常用交互。
   - 验收：拖拽和键盘输入结果一致；越界被钳制或提示；修改进入命令栈。
-  - 已实现：PropertyGrid 的 integer/number 行支持范围钳制、步进、拖动标签调值、Enter 文本提交与校验；Shift 精调、Alt 粗调；提交进入命令栈。独立 Spinbox 控件和拖拽跨行捕获尚未实现。
+  - 已实现：新增独立 `vgui_editor_kit::spinbox`（`integer`/`number`、范围、步进、可拖拽标签、加减按钮、Enter 文本校验、错误提示、只读/禁用、change/commit 回调）；拖动时按 Shift 精调、Alt 粗调，按下后跨行或移出控件仍持续更新，释放时只提交一次。PropertyGrid 数字行保持原有 edit + 标签拖拽行为，并补充跨行拖拽、移出控件、越界钳制和命令栈单次提交测试；Spinbox 独立 headless 测试覆盖整数/浮点范围、键盘 Enter/Esc/Up/Down、按钮步进、文本校验恢复和跨行拖拽捕获。
 
 - [ ] **P03 ComboBox / Enum**（P0，S）（进行中）
   - 下拉列表、键盘选择、禁用项、空值/占位符。

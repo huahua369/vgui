@@ -10,6 +10,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     outliner_view.cpp
     property_grid.cpp
     search_box.cpp
+    spinbox.cpp
     status_bar.cpp
     toolbar.cpp
     viewport_view.cpp

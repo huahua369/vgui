@@ -17,6 +17,7 @@
 #include "outliner_view.h"
 #include "property_grid.h"
 #include "search_box.h"
+#include "spinbox.h"
 #include "status_bar.h"
 #include "toolbar.h"
 #include "viewport_view.h"

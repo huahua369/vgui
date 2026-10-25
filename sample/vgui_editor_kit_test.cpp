@@ -1269,6 +1269,414 @@ namespace {
 		return 0;
 	}
 
+	int test_property_grid_drag()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property grid drag context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			property_grid grid;
+			command_stack commands;
+			grid.build(vgui_root(ui));
+			grid.set_command_stack(&commands);
+
+			property_desc a;
+			a.id = "a";
+			a.label = "A";
+			a.type = property_type::integer;
+			a.value = "5";
+			a.category = "Drag";
+			a.has_range = true;
+			a.min_value = 0.0;
+			a.max_value = 10.0;
+			if (!grid.add_property(a))
+				return fail("add drag property a");
+
+			property_desc b;
+			b.id = "b";
+			b.label = "B";
+			b.type = property_type::integer;
+			b.value = "50";
+			b.category = "Drag";
+			b.has_range = true;
+			b.min_value = 0.0;
+			b.max_value = 100.0;
+			if (!grid.add_property(b))
+				return fail("add drag property b");
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			vgui_widget* label_a = find_widget(grid.widget(), "property:a",
+				VGUI_LABEL);
+			vgui_widget* label_b = find_widget(grid.widget(), "property:b",
+				VGUI_LABEL);
+			if (!label_a || !label_b)
+				return fail("property drag labels");
+
+			float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
+			float bx = 0.0f, by = 0.0f, bw = 0.0f, bh = 0.0f;
+			vgui_widget_get_rect(label_a, &ax, &ay, &aw, &ah);
+			vgui_widget_get_rect(label_b, &bx, &by, &bw, &bh);
+			(void)bx;
+			if (aw <= 0.0f || ah <= 0.0f || bw <= 0.0f || bh <= 0.0f)
+				return fail("property drag label layout");
+
+			const std::size_t undo_before = commands.undo_count();
+			const float start_x = ax + aw * 0.5f;
+			const float start_y = ay + ah * 0.5f;
+			const float across_y = by + bh * 0.5f;
+
+			vgui_input_mouse_move(ui, start_x, start_y);
+			vgui_input_mouse_down(ui, 1, start_x, start_y, 1);
+			vgui_input_mouse_move(ui, start_x + 3.0f, across_y);
+			if (!grid.property_editor("a") ||
+				std::string(vgui_edit_get_text(grid.property_editor("a"))) != "8")
+				return fail("property drag crosses rows");
+			if (grid.property_value("b") != "50")
+				return fail("property drag leaves other row unchanged");
+			if (commands.undo_count() != undo_before)
+				return fail("property drag commits only on release");
+
+			vgui_input_mouse_move(ui, start_x + 25.0f, across_y);
+			if (std::string(vgui_edit_get_text(grid.property_editor("a"))) != "10")
+				return fail("property drag clamps");
+
+			vgui_input_mouse_up(ui, 1, start_x + 25.0f, across_y, 1);
+			if (grid.property_value("a") != "10" ||
+				grid.property_value("b") != "50")
+				return fail("property drag release commits");
+			if (commands.undo_count() != undo_before + 1)
+				return fail("property drag records one command");
+			if (!commands.undo() || grid.property_value("a") != "5")
+				return fail("property drag undo");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
+	int test_spinbox()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("spinbox context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+				nullptr);
+			vgui_widget_set_size(host, 420, 260);
+			vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(host, 12, 12, 12, 12);
+			vgui_widget_set_gap(host, 10);
+
+			spinbox count;
+			count.set_id("spin_count");
+			count.set_value_type(spinbox::value_type::integer);
+			count.set_range(0.0, 10.0);
+			count.set_step(1.0);
+			count.build(host, "Count");
+			count.set_value(5.0);
+
+			spinbox scale;
+			scale.set_id("spin_scale");
+			scale.set_value_type(spinbox::value_type::number);
+			scale.set_range(-1.0, 1.0);
+			scale.set_step(0.1);
+			scale.build(host, "Scale");
+			scale.set_value(0.5);
+
+			if (!count.widget() || !count.edit_widget() ||
+				!count.label_widget() || !count.decrement_widget() ||
+				!count.increment_widget() || !scale.widget())
+				return fail("spinbox widgets");
+			if (count.id() != "spin_count" ||
+				find_widget(host, "spin_count_edit", VGUI_EDIT) !=
+					count.edit_widget() ||
+				find_widget(host, "spin_count_label", VGUI_LABEL) !=
+					count.label_widget() ||
+				find_widget(host, "spin_count_decrement", VGUI_BUTTON) !=
+					count.decrement_widget())
+				return fail("spinbox widget ids");
+			if (std::string(vgui_widget_get_text(count.edit_widget())) != "5" ||
+				std::string(vgui_widget_get_text(count.label_widget())) !=
+					"Count")
+				return fail("spinbox initial text");
+			if (count.step() != 1.0 ||
+				std::fabs(scale.step() - 0.1) > 1e-9)
+				return fail("spinbox effective step");
+
+			int count_changes = 0;
+			int count_commits = 0;
+			double last_count = 0.0;
+			count.set_on_change([&](double value) {
+				++count_changes;
+				last_count = value;
+			});
+			count.set_on_commit([&](double value) {
+				++count_commits;
+				last_count = value;
+			});
+
+			count.set_value(12.0);
+			if (count.value() != 10.0 || count_changes != 0 ||
+				count_commits != 0 ||
+				std::string(vgui_edit_get_text(count.edit_widget())) != "10")
+				return fail("spinbox silent upper clamp");
+			count.set_value(-3.0);
+			if (count.value() != 0.0 || count_changes != 0)
+				return fail("spinbox silent lower clamp");
+			count.set_value(4.0);
+
+			if (!count.commit_text("7") || count.value() != 7.0 ||
+				count_changes != 1 || count_commits != 1 || last_count != 7.0)
+				return fail("spinbox text commit");
+			vgui_edit_set_text(count.edit_widget(), "abc");
+			if (count.commit_text("abc") || count.value() != 7.0 ||
+				count.error().empty())
+				return fail("spinbox invalid text");
+			if (std::string(vgui_edit_get_text(count.edit_widget())) != "abc")
+				return fail("spinbox invalid text preserved");
+			if (!count.commit_text("9") || !count.error().empty() ||
+				count.value() != 9.0)
+				return fail("spinbox error recovery");
+
+			const int changes_before_unchanged = count_changes;
+			const int commits_before_unchanged = count_commits;
+			if (!count.commit_text("9") ||
+				count_changes != changes_before_unchanged ||
+				count_commits != commits_before_unchanged)
+				return fail("spinbox unchanged commit is silent");
+
+			count.set_value(10.0);
+			const int changes_at_max = count_changes;
+			const int commits_at_max = count_commits;
+			count.step_by(1);
+			if (count.value() != 10.0 || count_changes != changes_at_max ||
+				count_commits != commits_at_max)
+				return fail("spinbox step clamps silently");
+			count.step_by(-1);
+			if (count.value() != 9.0 || count_changes != changes_at_max + 1 ||
+				count_commits != commits_at_max + 1)
+				return fail("spinbox step commit");
+
+			count.set_read_only(true);
+			if (vgui_widget_get_enabled(count.decrement_widget()) != 0 ||
+				vgui_widget_get_enabled(count.increment_widget()) != 0)
+				return fail("spinbox read-only buttons");
+			if (count.commit_text("6") || count.error().empty() ||
+				count.value() != 9.0)
+				return fail("spinbox read-only commit");
+			count.set_read_only(false);
+			if (vgui_widget_get_enabled(count.decrement_widget()) == 0)
+				return fail("spinbox read-only recovery");
+
+			count.set_enabled(false);
+			if (count.enabled() || count.commit_text("6") ||
+				count.error() != "value is disabled")
+				return fail("spinbox disabled commit");
+			count.set_enabled(true);
+			if (!count.enabled())
+				return fail("spinbox enabled recovery");
+
+			count.set_label("Amount");
+			if (count.label() != "Amount" ||
+				std::string(vgui_widget_get_text(count.label_widget())) !=
+					"Amount")
+				return fail("spinbox label update");
+
+			int scale_changes = 0;
+			int scale_commits = 0;
+			scale.set_on_change([&](double) { ++scale_changes; });
+			scale.set_on_commit([&](double) { ++scale_commits; });
+
+			scale.set_value(2.0);
+			if (scale.value() != 1.0 || scale_changes != 0)
+				return fail("spinbox float upper clamp");
+			scale.set_value(-2.0);
+			if (scale.value() != -1.0 || scale_changes != 0)
+				return fail("spinbox float lower clamp");
+			scale.set_value(0.5);
+			if (!scale.commit_text("0.25") || scale.value() != 0.25)
+				return fail("spinbox float text commit");
+			scale_changes = 0;
+			scale_commits = 0;
+			scale.step_by(1);
+			if (scale.value_text() != "0.35" || scale_commits != 1)
+				return fail("spinbox float step");
+			scale.step_by(-1);
+			if (scale.value_text() != "0.25")
+				return fail("spinbox float step back");
+			if (!scale.commit_text("1.5") || scale.value() != 1.0)
+				return fail("spinbox float clamp commit");
+
+			count.set_value(5.0);
+			count.set_error("");
+			scale.set_value(0.5);
+			scale.set_error("");
+			count_changes = 0;
+			count_commits = 0;
+			scale_changes = 0;
+			scale_commits = 0;
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			float clx = 0.0f, cly = 0.0f, clw = 0.0f, clh = 0.0f;
+			float slx = 0.0f, sly = 0.0f, slw = 0.0f, slh = 0.0f;
+			vgui_widget_get_rect(count.label_widget(), &clx, &cly, &clw, &clh);
+			vgui_widget_get_rect(scale.label_widget(), &slx, &sly, &slw, &slh);
+			if (clw <= 0.0f || clh <= 0.0f || slw <= 0.0f || slh <= 0.0f)
+				return fail("spinbox drag label layout");
+
+			const float count_x = clx + clw * 0.5f;
+			const float count_y = cly + clh * 0.5f;
+			const float scale_y = sly + slh * 0.5f;
+
+			vgui_input_mouse_move(ui, count_x, count_y);
+			vgui_input_mouse_down(ui, 1, count_x, count_y, 1);
+			if (count.value() != 5.0)
+				return fail("spinbox drag press is silent");
+			vgui_input_mouse_move(ui, count_x + 3.0f, scale_y);
+			if (count.value() != 8.0 || count_changes == 0 ||
+				count_commits != 0)
+				return fail("spinbox drag crosses rows");
+			if (scale.value() != 0.5 || scale_changes != 0)
+				return fail("spinbox drag leaves other control unchanged");
+			vgui_input_mouse_move(ui, count_x + 6.0f, scale_y + 300.0f);
+			if (count.value() != 10.0)
+				return fail("spinbox drag updates outside control");
+			vgui_input_mouse_up(ui, 1, count_x + 6.0f, scale_y + 300.0f, 1);
+			if (count_commits != 1 || count.value() != 10.0)
+				return fail("spinbox drag release commits once");
+
+			count.set_value(5.0);
+			count_changes = 0;
+			count_commits = 0;
+			vgui_input_mouse_move(ui, count_x, count_y);
+			vgui_input_mouse_down(ui, 1, count_x, count_y, 1);
+			vgui_input_mouse_move(ui, count_x + 3.0f, scale_y);
+			vgui_input_mouse_up(ui, 1, count_x + 3.0f, scale_y, 1);
+			if (count.value() != 8.0 || count_commits != 1 ||
+				scale.value() != 0.5 || scale_changes != 0)
+				return fail("spinbox cross-row release");
+
+			scale.set_value(0.5);
+			scale_changes = 0;
+			scale_commits = 0;
+			vgui_input_mouse_move(ui, slx + slw * 0.5f, scale_y);
+			vgui_input_mouse_down(ui, 1, slx + slw * 0.5f, scale_y, 1);
+			vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+			vgui_input_mouse_move(ui, slx + slw * 0.5f + 20.0f, scale_y + 4.0f);
+			if (std::fabs(scale.value() - 0.7) > 1e-9 ||
+				scale_commits != 0)
+				return fail("spinbox shift drag precision");
+			vgui_input_key(ui, 0, 0, 0);
+			vgui_input_mouse_up(ui, 1, slx + slw * 0.5f + 20.0f,
+				scale_y + 4.0f, 1);
+			if (scale_commits != 1 || std::fabs(scale.value() - 0.7) > 1e-9)
+				return fail("spinbox shift drag commit");
+
+			scale.set_value(0.0);
+			scale_changes = 0;
+			scale_commits = 0;
+			vgui_input_mouse_move(ui, slx + slw * 0.5f, scale_y);
+			vgui_input_mouse_down(ui, 1, slx + slw * 0.5f, scale_y, 1);
+			vgui_input_key(ui, 0, 0, VGUI_MOD_ALT);
+			vgui_input_mouse_move(ui, slx + slw * 0.5f + 2.0f, scale_y);
+			if (std::fabs(scale.value() - 1.0) > 1e-9)
+				return fail("spinbox alt drag coarse");
+			vgui_input_key(ui, 0, 0, 0);
+			vgui_input_mouse_up(ui, 1, slx + slw * 0.5f + 2.0f, scale_y, 1);
+			if (scale_commits != 1 || std::fabs(scale.value() - 1.0) > 1e-9)
+				return fail("spinbox alt drag commit");
+
+			scale.set_value(0.5);
+			scale_changes = 0;
+			scale_commits = 0;
+			float bx = 0.0f, by = 0.0f, bw = 0.0f, bh = 0.0f;
+			vgui_widget_get_rect(scale.increment_widget(), &bx, &by, &bw, &bh);
+			const float button_x = bx + bw * 0.5f;
+			const float button_y = by + bh * 0.5f;
+			vgui_input_mouse_move(ui, button_x, button_y);
+			vgui_input_mouse_down(ui, 1, button_x, button_y, 1);
+			vgui_input_mouse_up(ui, 1, button_x, button_y, 1);
+			if (std::fabs(scale.value() - 0.6) > 1e-9 ||
+				scale_commits != 1)
+				return fail("spinbox step button");
+
+			scale.set_read_only(true);
+			const double before_readonly = scale.value();
+			const int commits_before_readonly = scale_commits;
+			vgui_input_mouse_move(ui, button_x, button_y);
+			vgui_input_mouse_down(ui, 1, button_x, button_y, 1);
+			vgui_input_mouse_up(ui, 1, button_x, button_y, 1);
+			if (scale.value() != before_readonly ||
+				scale_commits != commits_before_readonly)
+				return fail("spinbox read-only step button");
+			scale.set_read_only(false);
+
+			scale.set_value(0.4);
+			scale_changes = 0;
+			scale_commits = 0;
+			scale.focus();
+			vgui_edit_set_text(scale.edit_widget(), "0.6");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (std::fabs(scale.value() - 0.6) > 1e-9 ||
+				scale_commits != 1)
+				return fail("spinbox enter commit");
+
+			vgui_edit_set_text(scale.edit_widget(), "oops");
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+			if (scale.error().empty() ||
+				std::fabs(scale.value() - 0.6) > 1e-9 ||
+				std::string(vgui_edit_get_text(scale.edit_widget())) != "oops")
+				return fail("spinbox enter validation");
+
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+			if (!scale.error().empty() ||
+				std::string(vgui_edit_get_text(scale.edit_widget())) != "0.6")
+				return fail("spinbox escape restores text");
+
+			scale.set_value(0.4);
+			scale_changes = 0;
+			scale_commits = 0;
+			scale.focus();
+			vgui_input_key(ui, VGUI_KEY_UP, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_UP, 0, 0);
+			if (std::fabs(scale.value() - 0.5) > 1e-9 ||
+				scale_commits != 1)
+				return fail("spinbox keyboard up");
+			vgui_input_key(ui, VGUI_KEY_DOWN, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_DOWN, 0, 0);
+			if (std::fabs(scale.value() - 0.4) > 1e-9 ||
+				scale_commits != 2)
+				return fail("spinbox keyboard down");
+
+			count.clear_range();
+			count.set_value(100.0);
+			if (count.has_range() || count.value() != 100.0)
+				return fail("spinbox clear range");
+			count.set_range(10.0, 0.0);
+			if (!count.has_range() || count.min_value() != 0.0 ||
+				count.max_value() != 10.0 || count.value() != 10.0)
+				return fail("spinbox range swap and clamp");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 } // namespace
 
 	int test_scene_asset_commands()
@@ -1752,6 +2160,10 @@ int main()
 	if (int rc = test_property_grid())
 		return rc;
 	if (int rc = test_property_grid_virtualization())
+		return rc;
+	if (int rc = test_property_grid_drag())
+		return rc;
+	if (int rc = test_spinbox())
 		return rc;
 	if (int rc = test_selection_binding())
 		return rc;

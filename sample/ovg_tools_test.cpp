@@ -241,8 +241,6 @@ int main(int argc, char** argv)
 	ot::swatch(cb, vg, 332, 478, 28, 18, BLUE2, true);
 
 	// ---- 填充规则回归（不开 tess2，验证默认路径自动路由到 tess2） ----
-#if 0 // TEMP BISECT
-	// 双子路径圆环：嵌套 bbox 重叠 -> 自动路由，出洞
 	// 双子路径圆环：嵌套 bbox 重叠 -> 自动路由，出洞
 	cb->new_path(vg);
 	cb->arc(vg, 60, 570, 40, 0, ot::kPi2);
@@ -282,6 +280,8 @@ int main(int argc, char** argv)
 	cb->set_source_color(vg, WHITE);
 	cb->fill(vg);
 	// 复合路径裁剪：环外/内孔都被裁掉
+	// 注：路径裁剪生效需要先 reset_clip(0) 清模板（帧初始为全通过 1）
+	cb->reset_clip(vg, 0);
 	cb->new_path(vg);
 	cb->arc(vg, 170, 655, 42, 0, ot::kPi2);
 	cb->new_sub_path(vg);
@@ -289,7 +289,13 @@ int main(int argc, char** argv)
 	cb->clip(vg);
 	ot::fill_rect(cb, vg, 130, 620, 100, 80, CYAN);
 	cb->reset_clip(vg, 1);
-#endif // TEMP BISECT
+	// 对照：单圆路径裁剪（不路由 tess2，验证渲染器路径裁剪本身）
+	cb->reset_clip(vg, 0);
+	cb->new_path(vg);
+	cb->circle(vg, 350, 655, 40);
+	cb->clip(vg);
+	ot::fill_rect(cb, vg, 300, 620, 100, 80, MAGENTA);
+	cb->reset_clip(vg, 1);
 
 	// ---- 提交并读回 ----
 	ovg_draw_data_t data = get_draw_list(vg);
@@ -435,6 +441,9 @@ int main(int argc, char** argv)
 	expect_pixel(170, 624, CYAN, "compound clip band");		// r=31 在环带内
 	expect_pixel(170, 655, BG, "compound clip hole");
 	expect_pixel(215, 690, BG, "compound clip outside");	// 矩形内、环外
+	// 对照：单圆裁剪
+	expect_pixel(350, 655, MAGENTA, "simple clip inside");
+	expect_pixel(390, 690, BG, "simple clip outside");
 	// 扩展区背景
 	expect_pixel(508, 760, BG, "extended background");
 

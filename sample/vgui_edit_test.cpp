@@ -626,7 +626,7 @@ int main()
 				cb->save(vg);
 				cb->restore(vg);
 			}
-			printf("dash: save/restore ok\n");
+ 			printf("dash: save/restore ok\n");
 
 			for (int i = 0; i < 6; i++)
 			{
