@@ -49,7 +49,7 @@
 | 领域 | 当前能力 | 对编辑器的影响 |
 |---|---|---|
 | 编辑器外壳 | 基础面板、菜单浮层/MenuBar、Splitter、TabView、Dock/浮动面板、Modal/Dialog/Toast；editor_shell 已基于 Dock，布局可保存/恢复 | 尚无工具栏/状态栏辅助组件，Dock 标签暂无图标与上下文菜单 |
-| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色/Vector2-4 行、分类折叠、搜索、重置、只读、错误态、命令栈集成、选择绑定、行虚拟化 | 仍缺资产/对象引用；颜色仅支持 Hex/预设/最近颜色，尚无 HSV 取色器和实时预览 |
+| 属性编辑 | 类型化 PropertyGrid：文本/整数/浮点/布尔/枚举/颜色/Vector2-4/资产/对象引用行、分类折叠、搜索、重置、只读、错误态、命令栈集成（同行合并 + begin/end_batch 批量事务）、选择绑定、行虚拟化；颜色行弹 HSV 取色器（实时预览/Esc 回滚/颜色空间策略钩子），引用行支持拖放赋值/清空/丢失态 | 多选混合值与复制粘贴在 P08；颜色空间转换仅提供挂钩，预设策略由应用配置 |
 | 列表/树 | 文本/详情、选择、展开、键盘导航、绘制裁剪、虚拟行源；行图标、文字颜色、行内按钮与自定义绘制（F04）；全量树过滤 + 匹配子串高亮 + 行矩形查询 | 树虚拟模式的过滤由行源自理；行内重命名、拖放重排已由 editor kit 的 outliner_view 承载 |
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
@@ -237,21 +237,22 @@
   - 验收：单个分量可独立编辑；拖拽时所有分量同步更新；与 Gizmo 数值双向绑定。
   - 已实现：新增独立 `vgui_editor_kit::vector_editor`（2/3/4 分量，每个分量复用 `spinbox` 的窄轴标签 + 编辑框并默认隐藏加减按钮）；支持 `generic`/`position`/`color` 语义预设、自定义轴标签/颜色、范围/步进、只读/禁用、分量错误、change/commit 回调和 `set_value_source()` + `refresh()` 双向绑定。`spinbox` 新增 `set_label_width()` / `set_buttons_visible()` 供紧凑布局复用。PropertyGrid 新增 `vector2`/`vector3`/`vector4` 类型、`semantic` / `component_labels` / `component_colors` 描述字段和 `property_vector_editor()` 访问器；分量可独立输入或拖拽，拖动主标签按同一增量更新全部分量，拖动过程实时刷新分量控件，释放时只提交一条命令。`vgui_editor_kit_test` 覆盖向量文本解析、语义/自定义轴、分量编辑、统一拖拽、范围钳制、只读/禁用、错误恢复、值源刷新、撤销/重做、重置、Gizmo 式双向同步和过滤后编辑器重建。
 
-- [ ] **P05 ColorPicker**（P0，M）（进行中）
+- [x] **P05 ColorPicker**（P0，M）（已完成）
   - RGBA/HSV、Alpha、Hex 输入、色板、最近颜色。
   - 验收：颜色选择实时预览；取消可回滚；支持 sRGB/线性颜色转换策略由应用配置。
-  - 已实现：PropertyGrid 颜色行支持 `#RRGGBB`/`#RRGGBBAA` Hex 输入、色块、预设和最近颜色，修改可撤销。待实现 HSV 取色器、Alpha 滑杆、实时预览/取消回滚和颜色空间策略。
+  - 已实现：新增核心 context 级通用弹出面板 `vgui_popup_open/close/active/content/on_close`（承载任意 detached 子树,外点/滚轮点外/Esc 关闭并区分原因,菜单/模态互斥,边缘钳制,焦点陷阱）与 editor kit `color_picker` 组件——SV 盒/色相条/Alpha 条（ovg tools.hpp 取色器原语,0xAABBGGRR↔0xAARRGGBB 换位）、new/current 预览、Hex 编辑（Enter 提交/Esc 恢复）、预设与最近色块行；change 每次手势实时预览、press/commit 协议一次手势一条可合并命令、Esc 回滚会话起点;`set_color_transform` 挂钩应用颜色空间策略。PropertyGrid 颜色行点色块弹 popup 取色器（取代原文本预设菜单）,原 Hex 输入/预设/最近色保留。测试:kit `test_color_picker`（hex/alpha 往返、策略转换、SV 拖拽 commit、popup 集成预览/合并/Esc 回滚）;核心 popup 12 项进 `vgui_model_test`（现 656 项）。
 
-- [ ] **P06 Asset / Object Reference**（P0，M）
+- [x] **P06 Asset / Object Reference**（P0，M）（已完成）
   - 资源选择、对象选择、清空、拖放赋值、类型过滤。
   - 显示缩略图/类型图标/丢失资源状态。
   - 验收：AssetBrowser 拖入即可赋值；清空和撤销正确；丢失资源显示错误态。
+  - 已实现：`property_type` 新增 `asset`/`object_ref`（值为引用 id 或空,空显示 `(None)`）,`property_desc::asset_filter` 宿主类型过滤;行 UI = 缩略图槽（类型色块/丢失红块）+ 名称 + 清空(x) + 浏览(...) 按钮;宿主松耦合接口 `set_asset_query`（解析名称/类型/缩略图/丢失）`set_asset_browse_handler` `set_object_activated_handler`（点名跳转）`set_asset_filter_check`（drop 过滤）;行级 drop target 挂缩略图（按行类型收 asset/scene_object 载荷,赋值走命令栈可撤销）;丢失态复用行内错误（红名/tooltip）并触发 `set_missing_asset_handler`。kit `test_property_reference` 覆盖解析/丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活与拖放。
 
-- [ ] **P07 校验与命令集成**（P0，M）（进行中）
+- [x] **P07 校验与命令集成**（P0，M）（已完成）
   - 属性描述结构：类型、get/set、范围、分类、tooltip、只读、默认值。
   - 错误显示、资源丢失提示、修改事务、撤销合并。
   - 验收：连续拖拽只产生合理数量的撤销记录；非法输入不写回模型；错误可定位到具体行。
-  - 已实现：`property_desc`（类型、get/set、范围、分类、tooltip、只读、默认值、枚举选项）、行内错误、只读状态、提交/重置命令和撤销/重做、拖拽结束单次提交、重建后的陈旧命令隔离。待补充批量编辑事务/撤销合并、资源丢失提示和多选混合值。
+  - 已实现：`property_desc`（类型/get/set/范围/分类/tooltip/只读/默认值/枚举/向量语义/asset_filter）、行内错误、只读、提交/重置命令和撤销/重做、拖拽结束单次提交、重建后的陈旧命令隔离（P01 阶段已有）;本步补 `property_grid::begin_batch/end_batch`（嵌套安全,跨属性多次提交并入一条 undo;`reset_all()` 改走 batch）与资源丢失提示（P06 `set_missing_asset_handler` + 行内错误态）。连续拖拽聚合 = 同行 merge 链（P05 取色器会话整段合成一条 undo）。kit `test_property_reference` 尾段覆盖批量一条 undo、嵌套并入、不平衡/无栈拒绝、reset_all 单记录。
 
 - [ ] **P08 多选/混合值/复制粘贴/搜索**（P1，M）
   - 多对象编辑、混合值显示、批量赋值、属性复制粘贴。
@@ -562,14 +563,14 @@ MVP 验收场景：
 - `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
 - `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
+- M2 收口（P05～P07）：核心 context 级通用弹出面板 `vgui_popup_*`（外点/Esc/滚轮点外关闭并区分原因、菜单/模态互斥、边缘钳制、焦点陷阱、close 回调）；kit `color_picker`（ovg tools 取色器原语 + press/change/commit 手势协议 + `set_color_transform` 颜色空间策略）；PropertyGrid 颜色行经 popup 取色（实时预览、会话单条 undo、Esc 回滚）、`asset`/`object_ref` 引用行（asset_query/browse/filter_check/object_activated/missing 五个宿主接口、行级 drop、清空、丢失态）、`begin_batch/end_batch` 批量事务（`reset_all` 改用）；`vgui_game_editor` 属性面板按选择重建（Name/Tint/颜色/网格/目标行）、资产拖到属性行赋值、丢失资产演示。
 - M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调，以及 M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键），以及 M2 收口三项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（641 项，含树过滤/行矩形/编辑取消/焦点监听）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（656 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. PropertyGrid 的资产/对象引用行（P06）与颜色 HSV 取色器（P05）。
-2. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
-3. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
-4. P07 批量编辑事务（连续拖拽聚合、资源丢失提示、多选混合值）。
+1. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
+2. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
+3. P08 多选/混合值/复制粘贴（第一批范围外的打磨项）。

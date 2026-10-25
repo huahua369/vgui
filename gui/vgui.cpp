@@ -708,6 +708,16 @@ struct vgui_modal_state
 	vgui_modal_options options = {};
 };
 
+// context 级通用弹出面板(vgui_popup_open):无遮罩的轻量模态。
+struct vgui_popup_state
+{
+	vgui_widget* content = nullptr;	// detached 子树,宿主拥有
+	float x = 0.0f, y = 0.0f;		// 请求锚点(左上角)
+	int swallow_up = 0;
+	vgui_popup_close_fn close_fn = nullptr;
+	void* close_user = nullptr;
+};
+
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
@@ -776,6 +786,7 @@ struct vgui_context
 	int tooltip_enabled = 1;
 
 	vgui_modal_state modal;
+	vgui_popup_state popup;
 	vgui_dialog_state dialog;
 	std::vector<vgui_toast_record> toasts;
 	vgui_toast_id next_toast_id = 1;
@@ -911,11 +922,14 @@ namespace {
 
 	// Input and focus run against the modal stage while a modal is open.  The
 	// background tree stays intact but cannot be reached by hit testing or Tab.
+	// A context-level popup (vgui_popup_open) does the same without a backdrop.
 	static vgui_widget* vgui_active_root(vgui_context* ctx)
 	{
 		if (!ctx) return nullptr;
 		if (ctx->modal.active && ctx->modal.stage)
 			return ctx->modal.stage;
+		if (ctx->popup.content)
+			return ctx->popup.content;
 		return ctx->root;
 	}
 
@@ -5153,6 +5167,65 @@ namespace {
 		vgui_layout_widget(panel, ctx, px, py, pw, ph);
 	}
 
+	// ---- context 级通用弹出面板 ------------------------------------------------
+
+	// 度量 content、按请求锚点定位并钳制到窗口内。每次布局都会重跑,
+	// 内容尺寸变化(如 hex 编辑出错行变高)后位置自动修正。
+	static void vgui_popup_update_layout(vgui_context* ctx)
+	{
+		if (!ctx || !ctx->popup.content) return;
+		vgui_widget* content = ctx->popup.content;
+		vgui_measure_widget(content, ctx);
+
+		float pw = content->req_w > 0.0f ? content->req_w : content->intrinsic_w;
+		float ph = content->req_h > 0.0f ? content->req_h : content->intrinsic_h;
+		if (content->min_w > 0.0f) pw = std::max(pw, content->min_w);
+		if (content->min_h > 0.0f) ph = std::max(ph, content->min_h);
+		if (content->max_w > 0.0f) pw = std::min(pw, content->max_w);
+		if (content->max_h > 0.0f) ph = std::min(ph, content->max_h);
+		pw = std::max(1.0f, pw);
+		ph = std::max(1.0f, ph);
+
+		const float margin = 8.0f;
+		if (ctx->width > 0)
+		{
+			pw = std::min(pw, std::max(1.0f, (float)ctx->width - margin * 2.0f));
+			content->abs_x = vgui_clampf(ctx->popup.x, margin,
+				std::max(margin, (float)ctx->width - pw - margin));
+		}
+		else
+			content->abs_x = ctx->popup.x;
+		if (ctx->height > 0)
+		{
+			ph = std::min(ph, std::max(1.0f, (float)ctx->height - margin * 2.0f));
+			content->abs_y = vgui_clampf(ctx->popup.y, margin,
+				std::max(margin, (float)ctx->height - ph - margin));
+		}
+		else
+			content->abs_y = ctx->popup.y;
+		content->abs_w = pw;
+		content->abs_h = ph;
+
+		vgui_layout_widget(content, ctx, content->abs_x, content->abs_y, pw, ph);
+	}
+
+	/* close_fn 通知 + 状态清理。close 监听器是 context 级持久回调,
+	 * 跨会话保留;内容销毁路径不通知(宿主已在析构流程里)。 */
+	static void vgui_popup_close_internal(vgui_context* ctx, int reason)
+	{
+		if (!ctx || !ctx->popup.content) return;
+		vgui_widget* content = ctx->popup.content;
+		vgui_popup_close_fn fn = ctx->popup.close_fn;
+		void* user = ctx->popup.close_user;
+		ctx->popup.content = nullptr;
+		ctx->popup.swallow_up = 0;
+		ctx->popup.x = ctx->popup.y = 0.0f;
+		if (ctx->focus && vgui_is_within(content, ctx->focus))
+			vgui_set_focus_internal(ctx, nullptr);
+		if (fn)
+			fn(user, reason);
+	}
+
 	static void vgui_toast_layout(vgui_context* ctx)
 	{
 		if (!ctx) return;
@@ -5227,11 +5300,13 @@ namespace {
 		if (ctx->open_menu)
 			vgui_menu_update_layout(ctx->open_menu, ctx);
 		vgui_modal_layout(ctx);
+		vgui_popup_update_layout(ctx);
 		vgui_toast_layout(ctx);
 	}
 
 	static void vgui_menu_close_internal(vgui_widget* menu);
 	static void vgui_modal_close_internal(vgui_context* ctx, int result);
+	static void vgui_popup_close_internal(vgui_context* ctx, int reason);
 	static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w);
 
 	static void vgui_dialog_forget_widget(vgui_context* ctx, vgui_widget* w)
@@ -5269,6 +5344,12 @@ namespace {
 			{
 				ctx->modal.active = 0;
 				ctx->modal.stage = nullptr;
+			}
+			if (ctx->popup.content == w)
+			{
+				/* 内容被直接销毁:静默清状态,不通知 close_fn(宿主自己
+				 * 销毁内容时通常已在析构流程里)。 */
+				ctx->popup = vgui_popup_state();
 			}
 			/* Deletion can start at an ancestor, so clear every input
 			 * reference as the recursion reaches the widget itself.  The
@@ -5833,7 +5914,7 @@ namespace {
 		if (!ctx) return;
 		vgui_tooltip_state& t = ctx->tooltip;
 		t.suppressed = 0;
-		if (!ctx->tooltip_enabled || ctx->open_menu || vgui_any_mouse_down(ctx))
+		if (!ctx->tooltip_enabled || ctx->open_menu || ctx->popup.content || vgui_any_mouse_down(ctx))
 		{
 			vgui_tooltip_clear_candidate(ctx);
 			return;
@@ -5878,7 +5959,7 @@ namespace {
 	{
 		if (!ctx) return;
 		vgui_tooltip_state& t = ctx->tooltip;
-		if (!ctx->tooltip_enabled || ctx->open_menu)
+		if (!ctx->tooltip_enabled || ctx->open_menu || ctx->popup.content)
 		{
 			vgui_tooltip_clear_candidate(ctx);
 			return;
@@ -7873,6 +7954,8 @@ namespace {
 		vgui_tooltip_clear_candidate(ctx);
 		if (ctx->open_menu && ctx->open_menu != menu)
 			vgui_menu_close_all(ctx);
+		if (ctx->popup.content)
+			vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
 		if (!ctx->alive.count(menu)) return;
 		st = vgui_menu_of(menu);
 		if (!st) return;
@@ -8897,6 +8980,25 @@ namespace {
 			}
 		}
 
+		// popup:内容矩形之外的按下关闭并吞掉;内容内部(含面板自身空白)
+		// 走正常路由(active_root 已指向 content)。
+		if (ctx->popup.content)
+		{
+			vgui_widget* mh = vgui_hit_rec(ctx->popup.content, x, y);
+			if (!mh)
+			{
+				ctx->want_mouse = 1;
+				ctx->cursor = VGUI_CURSOR_ARROW;
+				if (button == 1)
+				{
+					ctx->popup.swallow_up = 1;
+					vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_OUTSIDE);
+				}
+				vgui_end_input(ctx);
+				return 1;
+			}
+		}
+
 		// Track the click count here as well so callers that only forward raw
 		// mouse events still get click/double-click information.
 		double now = SDL_GetTicks() / 1000.0;
@@ -9336,6 +9438,13 @@ namespace {
 			vgui_end_input(ctx);
 			return 1;
 		}
+		if (ctx->popup.swallow_up)
+		{
+			ctx->popup.swallow_up = 0;
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 		if (ctx->modal.active && !ctx->press_target)
 		{
 			ctx->want_mouse = 1;
@@ -9695,6 +9804,15 @@ namespace {
 		if (!ctx) return 0;
 		vgui_begin_input(ctx);
 		vgui_tooltip_suppress(ctx);
+		// popup:内容外的滚轮关闭弹出层;内容内走正常路由。
+		if (ctx->popup.content &&
+			!vgui_hit_rec(ctx->popup.content, ctx->mouse_x, ctx->mouse_y))
+		{
+			vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_WHEEL);
+			ctx->want_mouse = 1;
+			vgui_end_input(ctx);
+			return 1;
+		}
 		if (ctx->open_menu)
 		{
 			vgui_widget* m = vgui_menu_hit_rec(ctx->open_menu, ctx->mouse_x, ctx->mouse_y);
@@ -9820,6 +9938,20 @@ namespace {
 				vgui_modal_close_internal(ctx, ctx->modal.options.escape_result);
 			vgui_end_input(ctx);
 			return 1;
+		}
+		// popup:焦点在内容内的 edit 上时 Esc 先走 edit 取消(blur),
+		// 失焦后的下一个 Esc 才关闭 popup;其他焦点控件不拦截。
+		if (ctx->popup.content && down && key == VGUI_KEY_ESCAPE)
+		{
+			vgui_widget* pf = ctx->focus;
+			const bool edit_holds = pf && pf->kind == VGUI_EDIT &&
+				vgui_is_within(ctx->popup.content, pf);
+			if (!edit_holds)
+			{
+				vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_ESCAPE);
+				vgui_end_input(ctx);
+				return 1;
+			}
 		}
 		if (ctx->modal.active && down && key == VGUI_KEY_ENTER &&
 			ctx->dialog.panel && ctx->dialog.panel == ctx->modal.panel)
@@ -13679,6 +13811,8 @@ extern "C" {
 		else opts.backdrop_alpha = vgui_clampf(opts.backdrop_alpha, 0.0f, 1.0f);
 
 		if (ctx->open_menu) vgui_menu_close_all(ctx);
+		if (ctx->popup.content)
+			vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
 		if (!ctx->alive.count(panel) || panel->destroy_pending) return 0;
 
 		vgui_widget* restore = ctx->focus;
@@ -14058,6 +14192,65 @@ extern "C" {
 		return 0;
 	}
 
+	// ---- context 级通用弹出面板 -----------------------------------------------
+
+	int vgui_popup_open(vgui_context* ctx, vgui_widget* content, float x, float y)
+	{
+		if (!ctx || !content || content->ctx != ctx) return 0;
+		if (content->parent) return 0;	/* 只接受 detached 子树 */
+		if (ctx->modal.active) return 0;
+		if (ctx->popup.content == content)
+		{
+			/* 重复打开同一个内容:仅更新锚点。 */
+			ctx->popup.x = x;
+			ctx->popup.y = y;
+			vgui_popup_update_layout(ctx);
+			return 1;
+		}
+		if (ctx->popup.content)
+			vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
+		if (ctx->open_menu)
+			vgui_menu_close_all(ctx);
+		if (!ctx->alive.count(content) || content->destroy_pending)
+			return 0;
+
+		/* 保留 close 监听器:on_close 是 context 级持久回调,跨会话有效。 */
+		vgui_popup_close_fn fn = ctx->popup.close_fn;
+		void* user = ctx->popup.close_user;
+		ctx->popup = vgui_popup_state();
+		ctx->popup.close_fn = fn;
+		ctx->popup.close_user = user;
+		ctx->popup.content = content;
+		ctx->popup.x = x;
+		ctx->popup.y = y;
+		content->visible = 1;
+		ctx->layout_dirty = true;
+		vgui_ensure_layout(ctx);
+		return 1;
+	}
+
+	void vgui_popup_close(vgui_context* ctx)
+	{
+		vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
+	}
+
+	int vgui_popup_active(vgui_context* ctx)
+	{
+		return ctx && ctx->popup.content ? 1 : 0;
+	}
+
+	vgui_widget* vgui_popup_content(vgui_context* ctx)
+	{
+		return ctx ? ctx->popup.content : nullptr;
+	}
+
+	void vgui_popup_on_close(vgui_context* ctx, vgui_popup_close_fn fn, void* user)
+	{
+		if (!ctx) return;
+		ctx->popup.close_fn = fn;
+		ctx->popup.close_user = user;
+	}
+
 	void vgui_image_set_texture(vgui_widget* widget, vgui_texture* texture)
 	{
 		if (!widget || widget->kind != VGUI_IMAGE || !widget->image)
@@ -14316,7 +14509,10 @@ extern "C" {
 		{
 			// Open menus are context popups: their geometry is maintained by
 			// the menu layout pass, not by the regular widget-tree layout.
-			if (widget->kind != VGUI_MENU || !widget->menu || !widget->menu->open)
+			// The context-level popup (vgui_popup_open) is the same.
+			const bool menu_open = widget->kind == VGUI_MENU && widget->menu &&
+				widget->menu->open;
+			if (!menu_open && widget != widget->ctx->popup.content)
 			{
 				vgui_measure_widget(widget, widget->ctx);
 				vgui_layout_widget(widget, widget->ctx, 0, 0,
@@ -17139,6 +17335,8 @@ extern "C" {
 			!vgui_is_within(ctx->modal.stage, widget))
 			return;
 		if (ctx->open_menu) vgui_menu_close_all(ctx);
+		if (ctx->popup.content && !vgui_is_within(ctx->popup.content, widget))
+			vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
 		vgui_set_focus_internal(ctx, widget);
 	}
 
@@ -17313,7 +17511,7 @@ extern "C" {
 	int vgui_context_wants_mouse(vgui_context* ctx)
 	{
 		if (!ctx) return 0;
-		if (ctx->open_menu) return 1;
+		if (ctx->open_menu || ctx->popup.content) return 1;
 		if (ctx->menu_swallow_up) return 1;
 		if (ctx->hot && ctx->alive.count(ctx->hot)) return 1;
 		if (ctx->active && ctx->alive.count(ctx->active)) return 1;
@@ -17324,7 +17522,7 @@ extern "C" {
 	int vgui_context_wants_keyboard(vgui_context* ctx)
 	{
 		if (!ctx) return 0;
-		if (ctx->open_menu) return 1;
+		if (ctx->open_menu || ctx->popup.content) return 1;
 		if (!ctx->key_handlers.empty()) return 1;
 		if (!ctx->focus) return 0;
 		return ctx->alive.count(ctx->focus) && ctx->focus->enabled ? 1 : 0;
@@ -17412,6 +17610,14 @@ extern "C" {
 		if (ctx->open_menu)
 		{
 			vgui_draw_menu_chain(ctx->open_menu, cb, vg, &clips);
+			while (!clips.stack.empty())
+				vgui_clip_pop(&clips, cb, vg);
+		}
+
+		// context 级 popup 画在菜单之上;modal 层再压过 popup。
+		if (ctx->popup.content)
+		{
+			vgui_draw_widget(ctx->popup.content, cb, vg, &clips);
 			while (!clips.stack.empty())
 				vgui_clip_pop(&clips, cb, vg);
 		}

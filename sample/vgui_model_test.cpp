@@ -3784,6 +3784,124 @@ static void test_tree_filter_and_focus(vgui_context* ui, const vgui_style& style
 	vgui_widget_destroy(edit);
 }
 
+//----------------------------------------------------------------------------
+// context-level popup
+//----------------------------------------------------------------------------
+
+static void test_popup(vgui_context* ui)
+{
+	/* detached 内容面板:一个按钮子控件。 */
+	vgui_widget* content = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_id(content, "popup-content");
+	vgui_widget_set_size(content, 160.0f, 90.0f);
+	vgui_widget_set_background(content, 0xFF202020);
+	vgui_widget_set_border(content, 0xFF404040, 1.0f);
+	vgui_widget* btn = vgui_widget_add(content, VGUI_BUTTON, "inside");
+	vgui_widget_set_pos(btn, 10.0f, 10.0f);
+	vgui_widget_set_size(btn, 80.0f, 26.0f);
+	int clicks = 0;
+	vgui_widget_on_event(btn, [](vgui_widget*, const vgui_event* e, void* u) {
+		if (e->type == VGUI_EVENT_CLICK) (*(int*)u)++;
+	}, &clicks);
+
+	int closes = 0;
+	vgui_popup_on_close(ui, [](void* u, int) { (*(int*)u)++; }, &closes);
+
+	/* 打开:激活、内容定位、钳制。 */
+	vgui_widget_set_pos(vgui_root(ui), 0.0f, 0.0f);
+	check(vgui_popup_open(ui, content, 500.0f, 400.0f) == 1, "popup: open");
+	check(vgui_popup_active(ui) == 1 && vgui_popup_content(ui) == content,
+		"popup: active");
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	float px = 0, py = 0, pw = 0, ph = 0;
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	std::fprintf(stderr, "DBG popup rect %.1f %.1f %.1f %.1f\n", px, py, pw, ph);
+	check(near(px, 500.0f) && near(py, 400.0f) && near(pw, 160.0f),
+		"popup: positioned at anchor");
+
+	/* 边缘钳制:超出窗口右下角时收回窗口内。 */
+	vgui_popup_open(ui, content, 1200.0f, 900.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	check(px + pw <= 900.0f + 0.5f && py + ph <= 700.0f + 0.5f,
+		"popup: clamped to window");
+
+	/* 内容内点击正常路由(不关闭)。 */
+	click_at(ui, px + 30.0f, py + 20.0f);
+	check(clicks == 1 && vgui_popup_active(ui) == 1,
+		"popup: inside click routes to content");
+
+	/* 外点关闭并吞掉(背景按钮不收到该次点击)。 */
+	click_at(ui, 30.0f, 30.0f);
+	check(vgui_popup_active(ui) == 0 && closes == 1,
+		"popup: outside click closes");
+
+	/* 重新打开后 Esc 关闭(焦点不在内容内)。 */
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	check(vgui_popup_active(ui) == 0 && closes == 2, "popup: escape closes");
+
+	/* 内容内 edit:焦点进入,Esc 先取消编辑(清焦点),再按才关 popup。 */
+	vgui_widget* edit = vgui_widget_add(content, VGUI_EDIT, nullptr);
+	vgui_widget_set_pos(edit, 10.0f, 50.0f);
+	vgui_widget_set_size(edit, 120.0f, 24.0f);
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	click_at(ui, px + 30.0f, py + 62.0f);
+	check(vgui_get_focus(ui) == edit, "popup: edit inside takes focus");
+	vgui_input_text(ui, "abc");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	check(vgui_popup_active(ui) == 1 && vgui_get_focus(ui) == nullptr,
+		"popup: first escape cancels edit only");
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	check(vgui_popup_active(ui) == 0 && closes == 3,
+		"popup: second escape closes");
+
+	/* 菜单与 popup 互斥:开菜单关 popup。 */
+	vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_menu_add_item(menu, "item");
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_menu_open(menu, 300.0f, 300.0f);
+	check(vgui_popup_active(ui) == 0 && closes == 4,
+		"popup: menu opening closes popup");
+	vgui_menu_close(menu);
+	vgui_widget_destroy(menu);
+
+	/* 滚轮在外:关闭。 */
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	vgui_input_mouse_move(ui, 20.0f, 20.0f);
+	vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+	check(vgui_popup_active(ui) == 0 && closes == 5,
+		"popup: outside wheel closes");
+
+	/* 重复打开同一内容仅更新锚点,不触发 close 回调。 */
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_popup_open(ui, content, 200.0f, 200.0f);
+	check(vgui_popup_active(ui) == 1 && closes == 5,
+		"popup: reopen same content keeps session");
+	vgui_popup_close(ui);
+	check(closes == 6, "popup: explicit close notifies");
+
+	/* 挂到树上的控件拒绝作为 popup 内容。 */
+	vgui_widget* attached = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	check(vgui_popup_open(ui, attached, 10.0f, 10.0f) == 0,
+		"popup: attached widget rejected");
+	vgui_widget_destroy(attached);
+	vgui_widget_destroy(content);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -3827,6 +3945,7 @@ int main()
 	test_dock(ui, style);
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
+	test_popup(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

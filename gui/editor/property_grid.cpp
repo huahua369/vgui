@@ -404,6 +404,12 @@ namespace vgui_editor_kit {
 				result.ok = true;
 				break;
 			}
+			case property_type::asset:
+			case property_type::object_ref:
+				/* 引用值是宿主 id 文本;空 = 未设置。 */
+				result.value = trim_copy(std::move(text));
+				result.ok = true;
+				break;
 			case property_type::vector2:
 			case property_type::vector3:
 			case property_type::vector4:
@@ -452,6 +458,11 @@ namespace vgui_editor_kit {
 
 	property_grid::~property_grid()
 	{
+		if (color_session_active_ && panel_)
+		{
+			color_session_active_ = false;
+			vgui_popup_close(vgui_widget_get_context(panel_));
+		}
 		unbind_selection();
 		for (row& item : rows_)
 			release_row(item);
@@ -543,6 +554,13 @@ namespace vgui_editor_kit {
 
 	void property_grid::clear()
 	{
+		if (color_session_active_)
+		{
+			color_session_active_ = false;
+			if (panel_)
+				vgui_popup_close(vgui_widget_get_context(panel_));
+		}
+
 		for (row& item : rows_)
 			release_row(item);
 		for (auto& entry : categories_)
@@ -761,12 +779,10 @@ namespace vgui_editor_kit {
 		ids.reserve(rows_.size());
 		for (const row& item : rows_)
 			ids.push_back(item.desc.id);
-		if (command_stack_)
-			command_stack_->begin_transaction("Reset all properties");
+		begin_batch("Reset all properties");
 		for (const std::string& id : ids)
 			reset_property(id);
-		if (command_stack_)
-			command_stack_->commit_transaction();
+		end_batch();
 	}
 
 	std::string property_grid::property_error(const std::string& id) const
@@ -915,6 +931,185 @@ namespace vgui_editor_kit {
 			drop_target_ = std::make_unique<asset_drop_target>(this);
 		}
 		set_editor_drop_target(panel_, drop_target_.get());
+	}
+
+	/* P06 reference rows ------------------------------------------------------ */
+
+	void property_grid::set_asset_query(asset_query_fn handler)
+	{
+		asset_query_ = std::move(handler);
+	}
+
+	void property_grid::set_asset_browse_handler(asset_browse_fn handler)
+	{
+		asset_browse_ = std::move(handler);
+	}
+
+	void property_grid::set_object_activated_handler(object_activate_fn handler)
+	{
+		object_activate_ = std::move(handler);
+	}
+
+	void property_grid::set_asset_filter_check(asset_filter_check_fn handler)
+	{
+		asset_filter_check_ = std::move(handler);
+	}
+
+	void property_grid::set_missing_asset_handler(missing_asset_fn handler)
+	{
+		missing_asset_ = std::move(handler);
+	}
+
+	bool property_grid::begin_batch(const std::string& name)
+	{
+		if (!command_stack_)
+			return false;
+		command_stack_->begin_transaction(name);
+		++batch_depth_;
+		return true;
+	}
+
+	bool property_grid::end_batch()
+	{
+		if (!command_stack_ || batch_depth_ == 0)
+			return false;
+		--batch_depth_;
+		command_stack_->commit_transaction();
+		return true;
+	}
+
+	bool property_grid::reference_accepts(const row& item,
+		drag_payload_kind kind) const
+	{
+		const drag_payload_kind wanted = item.desc.type == property_type::asset
+			? drag_payload_kind::asset
+			: drag_payload_kind::scene_object;
+		if (kind != wanted)
+			return false;
+		if (asset_filter_check_)
+			return asset_filter_check_(item.value, item.desc.asset_filter);
+		return true;
+	}
+
+	void property_grid::commit_reference(row& item, const std::string& id)
+	{
+		const std::string label = item.desc.label.empty()
+			? item.desc.id : item.desc.label;
+		(void)commit_value(item, id, "Set " + label);
+	}
+
+class property_grid::reference_row_drop_target final : public drop_target
+{
+public:
+	reference_row_drop_target(property_grid* owner, std::string id)
+		: owner_(owner), id_(std::move(id))
+	{
+	}
+
+	bool can_accept(const drag_payload& payload) const override
+	{
+		if (!owner_)
+			return false;
+		const row* item = owner_->find_row(id_);
+		return item && owner_->reference_accepts(*item, payload.kind);
+	}
+
+	bool drop(const drag_payload& payload, float x, float y) override
+	{
+		(void)x;
+		(void)y;
+		if (!owner_ || payload.id.empty())
+			return false;
+		row* item = owner_->find_row(id_);
+		if (!item)
+			return false;
+		owner_->commit_reference(*item, payload.id);
+		return true;
+	}
+
+private:
+	property_grid* owner_;
+	std::string id_;
+};
+
+	void property_grid::refresh_reference_row(row& item)
+	{
+		if (!item.editor)
+			return;
+
+		/* 解析:查询宿主;失败/空值 → 名称占位与 missing 态。 */
+		std::string previous_missing = item.missing ? "1" : "0";
+		item.missing = false;
+		item.resolved_name.clear();
+		vgui_texture* thumbnail = nullptr;
+		if (!item.value.empty() && asset_query_)
+		{
+			asset_info info;
+			if (asset_query_(item.value, item.desc.asset_filter, &info))
+			{
+				item.resolved_name = info.name;
+				thumbnail = info.thumbnail;
+			}
+			else
+			{
+				item.missing = true;
+			}
+		}
+		else if (!item.value.empty())
+		{
+			item.missing = true;	/* 无 query handler:视为未解析 */
+		}
+
+		vgui_widget_set_text(item.editor, display_text(item).c_str());
+		vgui_widget_set_text_color(item.editor,
+			item.missing ? kErrorText : kLabelText);
+		if (item.missing)
+		{
+			const std::string tip = "missing " +
+				(item.desc.asset_filter.empty() ? std::string("asset")
+					: item.desc.asset_filter) + ": " + item.value;
+			vgui_widget_set_tooltip(item.editor, tip.c_str());
+			vgui_widget_set_tooltip(item.thumb, tip.c_str());
+		}
+		else if (!item.desc.tooltip.empty())
+		{
+			vgui_widget_set_tooltip(item.editor, item.desc.tooltip.c_str());
+			vgui_widget_set_tooltip(item.thumb, item.desc.tooltip.c_str());
+		}
+		else
+		{
+			vgui_widget_set_tooltip(item.editor, nullptr);
+			vgui_widget_set_tooltip(item.thumb, nullptr);
+		}
+
+		/* 缩略图:有纹理贴纹理,否则用类型色块。 */
+		if (item.thumb)
+		{
+			if (thumbnail)
+				vgui_widget_set_background(item.thumb, 0x00000000);
+			else if (item.desc.type == property_type::object_ref)
+				vgui_widget_set_background(item.thumb, 0xFF7090C0);
+			else if (item.missing)
+				vgui_widget_set_background(item.thumb, kErrorText);
+			else
+				vgui_widget_set_background(item.thumb, item.value.empty()
+					? kPanelBg : 0xFF40E0D0);
+		}
+		vgui_widget_set_enabled(item.clear_btn,
+			(read_only_ || item.desc.read_only) ? 0 : 1);
+
+		/* missing 转换时通知宿主(P07 hook)。 */
+		if (item.missing && previous_missing != "1" && missing_asset_)
+			missing_asset_(item.desc.id, item.desc.asset_filter);
+
+		/* 行级 drop target(thumb 作锚点;detached adapter 泄漏式,
+		 * 每行只挂一次)。 */
+		if (item.thumb && !item.drop_installed)
+		{
+			set_editor_drop_target(item.thumb,
+				new reference_row_drop_target(this, item.desc.id));
+			item.drop_installed = true;
+		}
 	}
 
 	void property_grid::set_change_listener(change_listener listener)
@@ -1142,6 +1337,46 @@ namespace vgui_editor_kit {
 			vgui_widget_set_font_size(item.editor, 13);
 			vgui_widget_on_event(item.editor, &property_grid::on_row_event, this);
 			break;
+		case property_type::asset:
+		case property_type::object_ref:
+		{
+			/* 缩略图 + 名称(占 editor 槽) + 清空 + 浏览。 */
+			item.thumb = vgui_widget_add(item.line, VGUI_PANEL, nullptr);
+			vgui_widget_set_size(item.thumb, 24, 24);
+			vgui_widget_set_border(item.thumb, kBorder, 1);
+			vgui_widget_set_id(item.thumb,
+				property_widget_id(item.desc.id).c_str());
+			vgui_widget_on_event(item.thumb,
+				&property_grid::on_row_event, this);
+
+			item.editor = vgui_widget_add(item.line, VGUI_LABEL, nullptr);
+			vgui_widget_set_grow(item.editor, 1.0f);
+			vgui_widget_set_size(item.editor, 0, 24);
+			vgui_widget_set_font_size(item.editor, 13);
+			vgui_widget_set_text_align(item.editor, 0.0f, 0.5f);
+			vgui_widget_set_text_color(item.editor, kLabelText);
+			vgui_widget_on_event(item.editor,
+				&property_grid::on_row_event, this);
+
+			item.clear_btn = vgui_widget_add(item.line, VGUI_BUTTON, "x");
+			vgui_widget_set_size(item.clear_btn, 24, 24);
+			vgui_widget_set_font_size(item.clear_btn, 11);
+			vgui_widget_set_id(item.clear_btn,
+				property_widget_id(item.desc.id).c_str());
+			vgui_widget_set_tooltip(item.clear_btn, "Clear reference");
+			vgui_widget_on_event(item.clear_btn,
+				&property_grid::on_row_event, this);
+
+			item.browse_btn = vgui_widget_add(item.line, VGUI_BUTTON, "...");
+			vgui_widget_set_size(item.browse_btn, 30, 24);
+			vgui_widget_set_font_size(item.browse_btn, 11);
+			vgui_widget_set_id(item.browse_btn,
+				property_widget_id(item.desc.id).c_str());
+			vgui_widget_set_tooltip(item.browse_btn, "Browse");
+			vgui_widget_on_event(item.browse_btn,
+				&property_grid::on_row_event, this);
+			break;
+		}
 		case property_type::vector2:
 		case property_type::vector3:
 		case property_type::vector4:
@@ -1304,6 +1539,10 @@ namespace vgui_editor_kit {
 				break;
 			case property_type::enumeration:
 				vgui_widget_set_text(item.editor, display_text(item).c_str());
+				break;
+			case property_type::asset:
+			case property_type::object_ref:
+				refresh_reference_row(item);
 				break;
 			case property_type::vector2:
 			case property_type::vector3:
@@ -1810,6 +2049,15 @@ namespace vgui_editor_kit {
 
 	std::string property_grid::display_text(const row& item) const
 	{
+		if (item.desc.type == property_type::asset ||
+			item.desc.type == property_type::object_ref)
+		{
+			if (item.value.empty())
+				return "(None)";
+			return item.missing ? item.value + " (missing)"
+				: (item.resolved_name.empty() ? item.value
+					: item.resolved_name);
+		}
 		if (item.desc.type == property_type::enumeration)
 		{
 			if (item.value.empty() && item.desc.allow_empty)
@@ -1872,48 +2120,92 @@ namespace vgui_editor_kit {
 		}
 	}
 
-	void property_grid::open_color_menu(row& item)
+	void property_grid::open_color_picker(row& item)
 	{
 		if (read_only_ || item.desc.read_only)
 			return;
 		if (!item.editor)
 			return;
-		if (!item.menu)
+		vgui_context* ctx = vgui_widget_get_context(item.editor);
+		if (!ctx)
+			return;
+		if (!color_picker_)
 		{
-			vgui_context* ctx = vgui_widget_get_context(item.editor);
-			if (!ctx)
-				return;
-			item.menu = vgui_widget_create(ctx, VGUI_MENU, nullptr);
-			if (!item.menu)
-				return;
-			vgui_menu_on_activate(item.menu, &property_grid::on_menu_activate, this);
+			color_picker_ = std::make_unique<color_picker>();
+			color_picker_->set_id("property-grid.color-picker");
+			color_picker_->build(ctx);
 		}
 
-		vgui_menu_clear(item.menu);
-		item.menu_values.clear();
-		static const char* const presets[] = {
+		static const char* const kPresets[] = {
 			"#FFFFFF", "#000000", "#FF0000", "#00FF00",
 			"#0000FF", "#FFFF00", "#00FFFF", "#FF00FF",
 			"#808080", "#FFA500"
 		};
-		auto add_color = [&item](const char* color) {
-			vgui_item_id menu_item = vgui_menu_add_item(item.menu, color);
-			if (!menu_item)
+		std::vector<std::string> presets;
+		for (const char* preset : kPresets)
+			presets.push_back(preset);
+		color_picker_->set_presets(presets);
+		color_picker_->set_recent(recent_colors_);
+
+		/* 会话:change 实时预览(不入栈),手势结束提交单条可合并命令,
+		 * Esc 回滚到会话起点(与合并链顶相接,undo 一次恢复)。 */
+		color_session_start_ = item.value;
+		color_session_id_ = item.desc.id;
+		color_session_active_ = true;
+		const std::string id = item.desc.id;
+		color_picker_->set_on_change([this, id](const std::string& hex) {
+			(void)set_property_value(id, hex);
+		});
+		/* 仿向量行:press 记录手势起点,change 实时预览(不入栈),
+		 * commit 用起点做 old 直接入栈一条可合并命令。 */
+		color_picker_->set_on_press([this](const std::string&) {
+			row* target = find_row(color_session_id_);
+			if (!target)
 				return;
-			item.menu_values[menu_item] = color;
-		};
-		for (const char* preset : presets)
-			add_color(preset);
-		if (!recent_colors_.empty())
+			color_drag_active_ = true;
+			color_drag_value_ = target->value;
+		});
+		color_picker_->set_on_commit([this](const std::string& hex) {
+			row* target = find_row(color_session_id_);
+			if (!target)
+				return;
+			const std::string old_value = color_drag_active_
+				? color_drag_value_ : target->value;
+			color_drag_active_ = false;
+			color_drag_value_.clear();
+			if (old_value == hex)
+				return;
+			apply_value(*target, hex);
+			add_recent_color(hex);
+			push_value_command(target->token, old_value, hex,
+				"Set " + target->desc.label);
+		});
+		color_picker_->set_value(item.value);
+		color_picker_->set_current(item.value);
+
+		vgui_popup_on_close(ctx, &property_grid::on_color_popup_close, this);
+		float ax = 0, ay = 0, aw = 0, ah = 0;
+		if (item.swatch)
+			vgui_widget_get_rect(item.swatch, &ax, &ay, &aw, &ah);
+		else
+			vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
+		(void)aw;
+		vgui_popup_open(ctx, color_picker_->widget(), ax, ay + ah + 4.0f);
+	}
+
+	void property_grid::on_color_popup_close(void* user, int reason)
+	{
+		auto* self = static_cast<property_grid*>(user);
+		if (!self || !self->color_session_active_)
+			return;
+		self->color_session_active_ = false;
+		if (reason == VGUI_POPUP_CLOSE_ESCAPE)
 		{
-			vgui_menu_add_separator(item.menu);
-			for (const std::string& recent : recent_colors_)
-				add_color(recent.c_str());
+			/* 显示层回到起点;若会话内有提交,合并链顶 old==起点,
+			 * undo 一次即回到原色。 */
+			(void)self->set_property_value(self->color_session_id_,
+				self->color_session_start_);
 		}
-		for (const auto& entry : item.menu_values)
-			vgui_menu_set_item_checked(item.menu, entry.first,
-				entry.second == item.value ? 1 : 0);
-		vgui_menu_open_below(item.menu, item.editor);
 	}
 
 	void property_grid::add_recent_color(const std::string& color)
@@ -2153,7 +2445,39 @@ namespace vgui_editor_kit {
 		{
 			if (widget == item->swatch)
 			{
-				self->open_color_menu(*item);
+				self->open_color_picker(*item);
+				return;
+			}
+			if (widget == item->clear_btn &&
+				(item->desc.type == property_type::asset ||
+					item->desc.type == property_type::object_ref))
+			{
+				self->commit_reference(*item, "");
+				return;
+			}
+			if (widget == item->browse_btn &&
+				(item->desc.type == property_type::asset ||
+					item->desc.type == property_type::object_ref))
+			{
+				if (self->asset_browse_)
+					self->asset_browse_(item->value, item->desc.asset_filter);
+				return;
+			}
+			if (widget == item->editor &&
+				item->desc.type == property_type::object_ref &&
+				!item->value.empty())
+			{
+				if (self->object_activate_)
+				{
+					try
+					{
+						self->object_activate_(static_cast<object_id>(
+							std::stoull(item->value)));
+					}
+					catch (...)
+					{
+					}
+				}
 				return;
 			}
 			if (widget == item->editor &&

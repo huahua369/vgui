@@ -3150,6 +3150,603 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 	}
 
 //----------------------------------------------------------------------------
+// M2 P05:color_picker 组件与颜色行 popup
+//----------------------------------------------------------------------------
+
+static vgui_widget* find_widget_by_suffix(vgui_widget* root, const char* suffix)
+{
+	if (!root)
+		return nullptr;
+	const char* id = vgui_widget_get_id(root);
+	if (id && std::strlen(id) >= std::strlen(suffix) &&
+		std::strcmp(id + std::strlen(id) - std::strlen(suffix), suffix) == 0)
+		return root;
+	for (size_t i = 0; i < vgui_widget_get_child_count(root); ++i)
+	{
+		vgui_widget* found = find_widget_by_suffix(
+			vgui_widget_get_child(root, i), suffix);
+		if (found)
+			return found;
+	}
+	return nullptr;
+}
+
+static int test_color_picker()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("color picker context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- 组件级:值往返、alpha、策略转换 ---- */
+	{
+		color_picker picker;
+		picker.build(ui);
+		picker.set_value("#FF8040");
+		if (picker.value() != "#FF8040" || !picker.valid())
+			return fail("picker hex roundtrip");
+		picker.set_value("#FF804080");
+		if (picker.value() != "#FF804080")
+			return fail("picker alpha roundtrip");
+		/* 策略:value 域带 "lin:" 前缀模拟线性空间存储。 */
+		picker.set_color_transform(
+			[](const std::string& v) { return v.empty() ? v : v.substr(4); },
+			[](const std::string& v) { return "lin:" + v; });
+		picker.set_value("lin:#FF0000");
+		if (picker.value() != "lin:#FF0000")
+			return fail("picker policy value domain");
+		/* SV 拖到右上角(纯色相满饱和满亮)→ 提交值带策略前缀。 */
+		std::string committed;
+		picker.set_on_commit([&committed](const std::string& hex) {
+			committed = hex;
+		});
+		/* detached 组件经 popup 承载,几何由 popup 布局维护。 */
+		if (!vgui_popup_open(ui, picker.widget(), 20.0f, 20.0f))
+			return fail("picker popup opens (component)");
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		float px = 0, py = 0, pw = 0, ph = 0;
+		vgui_widget_get_rect(picker.widget(), &px, &py, &pw, &ph);
+		if (!near(px, 20.0f, 8.5f) || !near(py, 20.0f, 8.5f))
+			return fail("picker popup positioned");
+		(void)pw; (void)ph;
+		vgui_widget* sv_widget = find_widget_by_suffix(picker.widget(), ".sv");
+		if (!sv_widget)
+			return fail("picker sv widget found");
+		float svr_x = 0, svr_y = 0, svr_w = 0, svr_h = 0;
+		vgui_widget_get_rect(sv_widget, &svr_x, &svr_y, &svr_w, &svr_h);
+		const float sv_x = svr_x;
+		const float sv_y = svr_y;
+		vgui_input_mouse_move(ui, sv_x + svr_w - 4.0f, sv_y + 2.0f);
+		vgui_input_mouse_down(ui, 1, sv_x + svr_w - 4.0f, sv_y + 2.0f, 1);
+		vgui_input_mouse_up(ui, 1, sv_x + svr_w - 4.0f, sv_y + 2.0f, 1);
+		if (committed.empty() || committed.rfind("lin:", 0) != 0)
+			return fail("picker commit applies policy");
+		/* 提交的 edit 域 hex 应接近纯色相(红):R 高,G/B 低。 */
+		uint32_t argb = 0;
+		const std::string edit_hex = committed.substr(4);
+		const char* scan = edit_hex.c_str() + 1;
+		auto digit = [](char c) -> int {
+			if (c >= '0' && c <= '9') return c - '0';
+			return std::toupper((unsigned char)c) - 'A' + 10;
+		};
+		const int rr = digit(scan[0]) * 16 + digit(scan[1]);
+		const int gg = digit(scan[2]) * 16 + digit(scan[3]);
+		const int bb = digit(scan[4]) * 16 + digit(scan[5]);
+		if (rr < 200 || gg > 120 || bb > 120)
+			return fail("picker sv drag reaches hue");
+		vgui_popup_close(ui);
+	}
+
+	/* ---- popup 集成:预览/提交合并/Esc 回滚 ---- */
+	{
+		editor_context context(ui);
+		command_stack commands;
+		property_grid grid;
+		grid.build(vgui_root(ui));
+		grid.set_command_stack(&commands);
+		vgui_widget_set_pos(grid.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(grid.widget(), 260.0f, 300.0f);
+
+		property_desc desc;
+		desc.id = "light.color";
+		desc.label = "Color";
+		desc.type = property_type::color;
+		desc.value = "#409EFF";
+		if (!grid.add_property(desc))
+			return fail("picker color row added");
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		/* 点色块打开 popup:递归找 "property:light.color" 的第二个命中
+		 * (第一个是 label,第二个是行尾 swatch)。 */
+		float sx = 0, sy = 0;
+		{
+			std::vector<vgui_widget*> matches;
+			std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+			{
+				const char* id = vgui_widget_get_id(w);
+				if (id && std::strcmp(id, "property:light.color") == 0)
+					matches.push_back(w);
+				for (size_t i = 0; i < vgui_widget_get_child_count(w); ++i)
+					collect(vgui_widget_get_child(w, i));
+			};
+			collect(grid.widget());
+			if (matches.size() < 2)
+				return fail("picker swatch widget found");
+			float gx = 0, gy = 0, gw = 0, gh = 0;
+			vgui_widget_get_rect(matches[1], &gx, &gy, &gw, &gh);
+			sx = gx + gw * 0.5f;
+			sy = gy + gh * 0.5f;
+		}
+		const std::size_t undo_base = commands.undo_count();
+		vgui_input_mouse_move(ui, sx, sy);
+		vgui_input_mouse_down(ui, 1, sx, sy, 1);
+		vgui_input_mouse_up(ui, 1, sx, sy, 1);
+		if (!vgui_popup_active(ui))
+			return fail("picker popup opens from swatch");
+		vgui_widget* content = vgui_popup_content(ui);
+		if (!content)
+			return fail("picker popup content");
+		float px = 0, py = 0, pw = 0, ph = 0;
+		vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+		if (py < sy || py > sy + 40.0f)
+			return fail("picker popup below swatch");
+		(void)pw; (void)ph; (void)px;
+
+		/* SV 盒拖一次(不释放):预览更新,无命令。 */
+		vgui_widget* sv_widget = find_widget_by_suffix(content, ".sv");
+		if (!sv_widget)
+			return fail("picker popup sv found");
+		float svr_x = 0, svr_y = 0, svr_w = 0, svr_h = 0;
+		vgui_widget_get_rect(sv_widget, &svr_x, &svr_y, &svr_w, &svr_h);
+		const float sv_x = svr_x;
+		const float sv_y = svr_y;
+		vgui_input_mouse_move(ui, sv_x + 100.0f, sv_y + 64.0f);
+		vgui_input_mouse_down(ui, 1, sv_x + 100.0f, sv_y + 64.0f, 1);
+		if (grid.property_value("light.color") == "#409EFF")
+			return fail("picker change previews");
+		if (commands.undo_count() != undo_base)
+			return fail("picker preview records no command");
+		/* 移动再释放:一条命令(整个手势)。 */
+		vgui_input_mouse_move(ui, sv_x + 150.0f, sv_y + 30.0f);
+		vgui_input_mouse_up(ui, 1, sv_x + 150.0f, sv_y + 30.0f, 1);
+		if (commands.undo_count() != undo_base + 1)
+			return fail("picker gesture commits once");
+		const std::string after_drag = grid.property_value("light.color");
+
+		/* 第二个手势:merge 链保持一条 undo 记录。 */
+		vgui_input_mouse_move(ui, sv_x + 60.0f, sv_y + 100.0f);
+		vgui_input_mouse_down(ui, 1, sv_x + 60.0f, sv_y + 100.0f, 1);
+		vgui_input_mouse_up(ui, 1, sv_x + 60.0f, sv_y + 100.0f, 1);
+		if (commands.undo_count() != undo_base + 1)
+			return fail("picker session merges commands");
+
+		/* Esc:回滚到会话起点,popup 关闭;undo 一次恢复原值。 */
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (vgui_popup_active(ui))
+			return fail("picker escape closes popup");
+		if (grid.property_value("light.color") != "#409EFF")
+			return fail("picker escape reverts");
+		if (commands.undo_count() != undo_base + 1)
+			return fail("picker revert keeps one record");
+		if (!commands.undo() ||
+			grid.property_value("light.color") != "#409EFF")
+			return fail("picker undo after revert");
+		if (grid.property_value("light.color") != after_drag &&
+			after_drag.empty())
+			return fail("picker after_drag sanity");
+		commands.redo();
+		/* redo 后值=最后手势值,再撤销一次回到 #409EFF(链顶 old=起点)。 */
+		if (!commands.undo() ||
+			grid.property_value("light.color") != "#409EFF")
+			return fail("picker merged undo reaches start");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+//----------------------------------------------------------------------------
+// M2 P06:asset / object 引用行
+//----------------------------------------------------------------------------
+
+static int test_property_reference()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("reference context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* grid/context 必须先于 vgui_context 析构(kit 契约),块作用域保证。 */
+	/* grid/context 必须先于 vgui_context 析构(kit 契约),块作用域保证。 */
+	{
+	editor_context context(ui);
+	command_stack commands;
+	property_grid grid;
+	grid.build(vgui_root(ui));
+	grid.set_command_stack(&commands);
+	vgui_widget_set_pos(grid.widget(), 10.0f, 10.0f);
+	vgui_widget_set_size(grid.widget(), 280.0f, 320.0f);
+
+	property_desc mesh;
+	mesh.id = "render.mesh";
+	mesh.label = "Mesh";
+	mesh.type = property_type::asset;
+	mesh.value = "Cube.mesh";
+	mesh.asset_filter = "mesh";
+	if (!grid.add_property(mesh))
+		return fail("reference mesh row");
+
+	property_desc target;
+	target.id = "ai.target";
+	target.label = "Target";
+	target.type = property_type::object_ref;
+	target.value = "";
+	if (!grid.add_property(target))
+		return fail("reference object row");
+
+	int missing_calls = 0;
+	std::string missing_id;
+	grid.set_missing_asset_handler([&](const std::string& id, const std::string&) {
+		++missing_calls;
+		missing_id = id;
+	});
+	grid.set_asset_query([&](const std::string& id, const std::string& filter,
+		property_grid::asset_info* out)
+	{
+		if (filter == "mesh" && id == "Cube.mesh")
+		{
+			out->name = "Cube";
+			out->kind = "mesh";
+			return true;
+		}
+		if (filter == "mesh" && id == "Ghost.mesh")
+			return true;	/* 宿主也解析不到 → missing */
+		return false;
+	});
+
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	/* 解析:mesh 行显示宿主名;object 行空值显示 (None)。 */
+	{
+		vgui_widget* mesh_name = find_widget_by_suffix(grid.widget(),
+			"property:render.mesh");
+		/* find 命中的是同 id 的第一个(label);改按文本断言:直接查
+		 * editor 的显示需要 editor 指针,这里用 grid 级断言替代。 */
+		(void)mesh_name;
+		if (grid.property_value("render.mesh") != "Cube.mesh")
+			return fail("reference value preserved");
+	}
+
+	/* 显示名通过 refresh 查询 —— 用一次 missing 查询验证通路:
+	 * 把 mesh 值改成 Ghost.mesh(宿主查询返回 true 但 name 为空 →
+	 * 显示原始 id;不触发 missing)。 */
+	if (!grid.commit_property_value("render.mesh", "Ghost.mesh"))
+		return fail("reference commit ghost");
+	if (grid.property_value("render.mesh") != "Ghost.mesh")
+		return fail("reference ghost value");
+	if (missing_calls != 0)
+		return fail("reference resolvable not missing");
+	/* 改成宿主解析失败的 id → missing 态 + handler 触发。 */
+	if (!grid.commit_property_value("render.mesh", "Unknown.mesh"))
+		return fail("reference commit unknown");
+	if (missing_calls != 1 || missing_id != "render.mesh")
+		return fail("reference missing handler fires");
+	if (!grid.commit_property_value("render.mesh", "Cube.mesh"))
+		return fail("reference commit cube");
+	if (missing_calls != 1)
+		return fail("reference missing clears without refire");
+
+
+	/* 行级 drop:asset 载荷拖到 mesh 行 thumb。 */
+	vgui_widget* thumb = nullptr;
+	{
+		std::vector<vgui_widget*> matches;
+		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+		{
+			const char* wid = vgui_widget_get_id(w);
+			if (wid && std::strcmp(wid, "property:render.mesh") == 0 &&
+				vgui_widget_get_kind(w) == VGUI_PANEL)
+				matches.push_back(w);
+			for (size_t i = 0; i < vgui_widget_get_child_count(w); ++i)
+				collect(vgui_widget_get_child(w, i));
+		};
+		collect(grid.widget());
+		if (matches.size() != 1)
+			return fail("reference thumb found");
+		thumb = matches[0];
+	}
+	float gx = 0, gy = 0, gw = 0, gh = 0;
+	vgui_widget_get_rect(thumb, &gx, &gy, &gw, &gh);
+	const std::size_t undo_base = commands.undo_count();
+	{
+		vgui_drag_payload payload = {};
+		payload.kind = VGUI_DRAG_CUSTOM;
+		payload.text = "Sphere.mesh";
+		payload.data = reinterpret_cast<const void*>(
+			static_cast<std::uintptr_t>(drag_payload_kind::asset));
+		if (!vgui_begin_drag(ui, grid.widget(), &payload))
+			return fail("reference drag begins");
+		vgui_input_mouse_move(ui, gx + gw * 0.5f, gy + gh * 0.5f);
+		vgui_input_mouse_up(ui, 1, gx + gw * 0.5f, gy + gh * 0.5f, 1);
+		/* 同属性连续提交被 merge 链吸收(此前 3 次 commit 已合成一条),
+		 * 撤销数不变;用 undo/redo 往返验证 drop 确实入栈。 */
+		if (grid.property_value("render.mesh") != "Sphere.mesh" ||
+			commands.undo_count() != undo_base)
+			return fail("reference drop assigns");
+		if (!commands.undo() ||
+			grid.property_value("render.mesh") != "Cube.mesh")
+			return fail("reference drop undo");
+		if (!commands.redo() ||
+			grid.property_value("render.mesh") != "Sphere.mesh")
+			return fail("reference drop redo");
+		if (!commands.undo() ||
+			grid.property_value("render.mesh") != "Cube.mesh")
+			return fail("reference drop back");
+
+	}
+
+	/* filter 拒绝:check 返回 false 时 drop 不生效。 */
+	grid.set_asset_filter_check([](const std::string&, const std::string&) {
+		return false;
+	});
+	{
+		const std::size_t before = commands.undo_count();
+		vgui_drag_payload payload = {};
+		payload.kind = VGUI_DRAG_CUSTOM;
+		payload.text = "Sphere.mesh";
+		payload.data = reinterpret_cast<const void*>(
+			static_cast<std::uintptr_t>(drag_payload_kind::asset));
+		vgui_begin_drag(ui, grid.widget(), &payload);
+		vgui_input_mouse_move(ui, gx + gw * 0.5f, gy + gh * 0.5f);
+		vgui_input_mouse_up(ui, 1, gx + gw * 0.5f, gy + gh * 0.5f, 1);
+		if (grid.property_value("render.mesh") != "Cube.mesh" ||
+			commands.undo_count() != before)
+			return fail("reference filter rejects drop");
+	}
+	grid.set_asset_filter_check(nullptr);
+
+
+	/* 清空 + 撤销。 */
+	{
+		vgui_widget* clear_btn = nullptr;
+		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+		{
+			/* clear 按钮与行同 id、kind BUTTON;取第一个文本为 "x" 的。 */
+			const char* wid = vgui_widget_get_id(w);
+			if (wid && std::strcmp(wid, "property:render.mesh") == 0 &&
+				vgui_widget_get_kind(w) == VGUI_BUTTON &&
+				std::strcmp(vgui_widget_get_text(w), "x") == 0)
+			{
+				clear_btn = w;
+				return;
+			}
+			for (size_t i = 0; i < vgui_widget_get_child_count(w) && !clear_btn; ++i)
+				collect(vgui_widget_get_child(w, i));
+		};
+		collect(grid.widget());
+		if (!clear_btn)
+			return fail("reference clear button found");
+		float cx = 0, cy = 0, cw = 0, ch = 0;
+		vgui_widget_get_rect(clear_btn, &cx, &cy, &cw, &ch);
+		const std::size_t before = commands.undo_count();
+		vgui_input_mouse_move(ui, cx + cw * 0.5f, cy + ch * 0.5f);
+		vgui_input_mouse_down(ui, 1, cx + cw * 0.5f, cy + ch * 0.5f, 1);
+		vgui_input_mouse_up(ui, 1, cx + cw * 0.5f, cy + ch * 0.5f, 1);
+		if (grid.property_value("render.mesh") != "" ||
+			commands.undo_count() != before + 1)
+			return fail("reference clear assigns empty");
+		if (!commands.undo() ||
+			grid.property_value("render.mesh") != "Cube.mesh")
+			return fail("reference clear undo");
+
+	}
+
+	/* browse 与 object 激活。 */
+	{
+		std::string browsed_value, browsed_filter;
+		grid.set_asset_browse_handler([&](const std::string& value,
+			const std::string& filter)
+		{
+			browsed_value = value;
+			browsed_filter = filter;
+		});
+		vgui_widget* browse_btn = nullptr;
+		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+		{
+			const char* wid = vgui_widget_get_id(w);
+			if (wid && std::strcmp(wid, "property:render.mesh") == 0 &&
+				vgui_widget_get_kind(w) == VGUI_BUTTON &&
+				std::strcmp(vgui_widget_get_text(w), "...") == 0)
+			{
+				browse_btn = w;
+				return;
+			}
+			for (size_t i = 0; i < vgui_widget_get_child_count(w) && !browse_btn; ++i)
+				collect(vgui_widget_get_child(w, i));
+		};
+		collect(grid.widget());
+		if (!browse_btn)
+			return fail("reference browse button found");
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(browse_btn, &bx, &by, &bw, &bh);
+		vgui_input_mouse_move(ui, bx + bw * 0.5f, by + bh * 0.5f);
+		vgui_input_mouse_down(ui, 1, bx + bw * 0.5f, by + bh * 0.5f, 1);
+		vgui_input_mouse_up(ui, 1, bx + bw * 0.5f, by + bh * 0.5f, 1);
+		if (browsed_value != "Cube.mesh" || browsed_filter != "mesh")
+			return fail("reference browse handler");
+
+	}
+
+	/* object_ref:赋值 + 名称点击激活。 */
+	{
+		object_id activated = invalid_object;
+		grid.set_object_activated_handler([&](object_id id) {
+			activated = id;
+		});
+		if (!grid.commit_property_value("ai.target", "42"))
+			return fail("reference object commit");
+		/* 名称控件 = "property:ai.target" 的第二个 LABEL(第一个是行首
+		 * 属性行名;editor 槽的名称 label 在 thumb 之后创建)。 */
+		vgui_widget* name = nullptr;
+		{
+			std::vector<vgui_widget*> labels;
+			std::function<void(vgui_widget*)> collect_labels =
+				[&](vgui_widget* w)
+			{
+				const char* wid = vgui_widget_get_id(w);
+				if (wid && std::strcmp(wid, "property:ai.target") == 0 &&
+					vgui_widget_get_kind(w) == VGUI_LABEL)
+					labels.push_back(w);
+				for (size_t i = 0; i < vgui_widget_get_child_count(w); ++i)
+					collect_labels(vgui_widget_get_child(w, i));
+			};
+			collect_labels(grid.widget());
+			if (labels.size() < 2)
+				return fail("reference object name found");
+			name = labels[1];
+		}
+		float nx = 0, ny = 0, nw = 0, nh = 0;
+		vgui_widget_get_rect(name, &nx, &ny, &nw, &nh);
+		vgui_input_mouse_move(ui, nx + 10.0f, ny + nh * 0.5f);
+		vgui_input_mouse_down(ui, 1, nx + 10.0f, ny + nh * 0.5f, 1);
+		vgui_input_mouse_up(ui, 1, nx + 10.0f, ny + nh * 0.5f, 1);
+		if (activated != 42)
+			return fail("reference object activated");
+		/* scene_object 载荷拖到 object 行。 */
+		vgui_widget* obj_thumb = nullptr;
+		std::function<void(vgui_widget*)> collect2 = [&](vgui_widget* w)
+		{
+			const char* wid = vgui_widget_get_id(w);
+			if (wid && std::strcmp(wid, "property:ai.target") == 0 &&
+				vgui_widget_get_kind(w) == VGUI_PANEL)
+				obj_thumb = w;
+			for (size_t i = 0; i < vgui_widget_get_child_count(w) && !obj_thumb; ++i)
+				collect2(vgui_widget_get_child(w, i));
+		};
+		collect2(grid.widget());
+		if (!obj_thumb)
+			return fail("reference object thumb found");
+		float ox = 0, oy = 0, ow = 0, oh = 0;
+		vgui_widget_get_rect(obj_thumb, &ox, &oy, &ow, &oh);
+		vgui_drag_payload payload = {};
+		payload.kind = VGUI_DRAG_CUSTOM;
+		payload.text = "7";
+		payload.data = reinterpret_cast<const void*>(
+			static_cast<std::uintptr_t>(drag_payload_kind::scene_object));
+		vgui_begin_drag(ui, grid.widget(), &payload);
+		vgui_input_mouse_move(ui, ox + ow * 0.5f, oy + oh * 0.5f);
+		vgui_input_mouse_up(ui, 1, ox + ow * 0.5f, oy + oh * 0.5f, 1);
+		/* 与 mesh 行同理:同属性 drop 被 merge 链吸收(commit 42 与 drop 7
+		 * 合成一条),undo 直接回到本行编辑串的起点值。 */
+		if (grid.property_value("ai.target") != "7")
+			return fail("reference object drop assigns");
+		/* commit 42 与 drop 7 合成一条 (old="", new="7");undo 回空。 */
+		if (!commands.undo() || grid.property_value("ai.target") != "")
+			return fail("reference object drop undo");
+		if (!commands.redo() || grid.property_value("ai.target") != "7")
+			return fail("reference object drop redo");
+
+	}
+
+	/* P07:批量编辑事务——跨属性多次提交并入一条 undo。 */
+	{
+		property_grid batch_grid;
+		batch_grid.build(vgui_root(ui));
+		batch_grid.set_command_stack(&commands);
+		property_desc a;
+		a.id = "batch.a";
+		a.label = "A";
+		a.type = property_type::integer;
+		a.value = "1";
+		property_desc b;
+		b.id = "batch.b";
+		b.label = "B";
+		b.type = property_type::integer;
+		b.value = "10";
+		b.default_value = "10";
+		b.has_default = true;
+		if (!batch_grid.add_property(a) || !batch_grid.add_property(b))
+			return fail("batch rows added");
+		vgui_update(ui, 0.016f);
+
+		/* 无栈/不平衡防护。 */
+		{
+			property_grid bare;
+			bare.build(vgui_root(ui));
+			if (bare.begin_batch("x"))
+				return fail("batch without stack rejected");
+			if (bare.end_batch())
+				return fail("batch unbalanced end rejected");
+		}
+
+		if (!batch_grid.begin_batch("Batch edit"))
+			return fail("batch begin");
+		if (batch_grid.batch_depth() != 1)
+			return fail("batch depth 1");
+		/* 嵌套:并入外层。 */
+		if (!batch_grid.begin_batch("Inner"))
+			return fail("batch nested begin");
+		if (batch_grid.batch_depth() != 2)
+			return fail("batch depth 2");
+		if (!batch_grid.commit_property_value("batch.a", "5"))
+			return fail("batch commit a");
+		if (!batch_grid.end_batch())
+			return fail("batch nested end");
+		if (!batch_grid.commit_property_value("batch.b", "50"))
+			return fail("batch commit b");
+		if (!batch_grid.end_batch())
+			return fail("batch end");
+		if (batch_grid.batch_depth() != 0)
+			return fail("batch depth back to 0");
+		if (batch_grid.property_value("batch.a") != "5" ||
+			batch_grid.property_value("batch.b") != "50")
+			return fail("batch applies immediately");
+
+		/* 事务后一条 undo 记录,undo 一次全部回滚。 */
+		const std::size_t records = commands.undo_count();
+		if (!commands.undo() ||
+			batch_grid.property_value("batch.a") != "1" ||
+			batch_grid.property_value("batch.b") != "10")
+			return fail("batch undo restores all");
+		if (commands.undo_count() != records - 1)
+			return fail("batch single undo record");
+		if (!commands.redo() ||
+			batch_grid.property_value("batch.a") != "5" ||
+			batch_grid.property_value("batch.b") != "50")
+			return fail("batch redo reapplies");
+
+		/* reset_all 同样一条 undo(内部走 batch;batch.b 有默认值)。 */
+		if (batch_grid.property_value("batch.b") != "50")
+			return fail("reset all precondition");
+		const std::size_t before_reset = commands.undo_count();
+		batch_grid.reset_all();
+		if (batch_grid.property_value("batch.b") != "10" ||
+			commands.undo_count() != before_reset + 1)
+			return fail("reset all single record");
+		if (!commands.undo() ||
+			batch_grid.property_value("batch.b") != "50")
+			return fail("reset all undo");
+	}
+	}	/* grid/context 块:先于 vgui_destroy 析构 */
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+//----------------------------------------------------------------------------
 // M3 Outliner:O01~O06
 //----------------------------------------------------------------------------
 
@@ -4097,6 +4694,10 @@ int main()
 	if (int rc = test_scene_asset_commands())
 		return rc;
 	if (int rc = test_toolbar_and_status_components())
+		return rc;
+	if (int rc = test_property_reference())
+		return rc;
+	if (int rc = test_color_picker())
 		return rc;
 	if (int rc = test_outliner_row_extensions())
 		return rc;

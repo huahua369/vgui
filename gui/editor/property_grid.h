@@ -21,6 +21,7 @@
 #include <string>
 #include <vector>
 
+#include "color_picker.h"
 #include "command_stack.h"
 #include "editor_types.h"
 #include "vector_editor.h"
@@ -40,7 +41,12 @@ namespace vgui_editor_kit {
 		color,
 		vector2,
 		vector3,
-		vector4
+		vector4,
+		/* P06 reference rows.  The value is the referenced id (or empty for
+		 * none); the host resolves names/thumbnails through the query
+		 * handlers below. */
+		asset,
+		object_ref
 	};
 
 	/* Describes one editable property.  `value` and `default_value` use the
@@ -87,6 +93,9 @@ namespace vgui_editor_kit {
 		vector_semantic semantic = vector_semantic::generic;
 		std::vector<std::string> component_labels;
 		std::vector<vgui_color> component_colors;
+		/* asset/object_ref rows: host-interpreted type filter (e.g. "mesh"
+		 * or ".png;.jpg"); passed through to the query/drop check handlers. */
+		std::string asset_filter;
 		std::function<std::string()> get_value;
 		std::function<void(const std::string&)> set_value;
 	};
@@ -163,10 +172,49 @@ namespace vgui_editor_kit {
 		command_stack* command_stack_ptr() const noexcept;
 
 		/* F03: attaches a drop target to the grid that accepts asset payloads
-		 * and hands the asset id (drag_payload::id) to the handler.  The full
-		 * asset/object reference row type is a later MVP step (P06). */
+		 * and hands the asset id (drag_payload::id) to the handler.  Reference
+		 * rows (asset/object_ref) install their own per-row drop targets. */
 		using asset_drop_handler = std::function<void(const std::string& asset)>;
 		void set_asset_drop_handler(asset_drop_handler handler);
+
+		/* P06 reference rows.  The grid never touches an asset database: the
+		 * host resolves ids through these handlers. */
+		struct asset_info
+		{
+			std::string name;			/* display name; empty -> raw id */
+			std::string kind;			/* host-interpreted type tag */
+			vgui_texture* thumbnail = nullptr;	/* optional */
+			bool missing = false;		/* id not resolvable */
+		};
+		/* Resolve a reference for display.  Return false when the id is not
+		 * resolvable (the grid reports it through the missing state). */
+		using asset_query_fn = std::function<bool(const std::string& id,
+			const std::string& filter, asset_info* out)>;
+		/* Browse button pressed; the host opens its picker UI. */
+		using asset_browse_fn = std::function<void(const std::string& id,
+			const std::string& filter)>;
+		/* An object_ref row's name was clicked; hosts usually select it. */
+		using object_activate_fn = std::function<void(object_id id)>;
+		/* Drop acceptance for a reference row; default accepts everything. */
+		using asset_filter_check_fn = std::function<bool(const std::string& id,
+			const std::string& filter)>;
+		/* A row transitioned into the missing state (P07 hook: hosts may
+		 * toast/alert; the row itself shows the error state). */
+		using missing_asset_fn = std::function<void(const std::string& id,
+			const std::string& filter)>;
+		void set_asset_query(asset_query_fn handler);
+		void set_asset_browse_handler(asset_browse_fn handler);
+		void set_object_activated_handler(object_activate_fn handler);
+		void set_asset_filter_check(asset_filter_check_fn handler);
+		void set_missing_asset_handler(missing_asset_fn handler);
+
+		/* P07: wraps several commits in a single undoable transaction.
+		 * Nested batches collapse into the outer one; every commit inside
+		 * still applies immediately.  Returns false when no command stack is
+		 * attached or the batching is unbalanced. */
+		bool begin_batch(const std::string& name);
+		bool end_batch();
+		std::size_t batch_depth() const noexcept { return batch_depth_; }
 
 		void set_change_listener(change_listener listener);
 		void set_value_source(value_source source);
@@ -209,6 +257,14 @@ namespace vgui_editor_kit {
 			std::string drag_value;
 
 			std::unique_ptr<vector_editor> vector_ui;
+			/* asset/object_ref row widgets.  The name label sits in the
+			 * editor slot; the thumb doubles as the drop target anchor. */
+			vgui_widget* thumb = nullptr;
+			vgui_widget* clear_btn = nullptr;
+			vgui_widget* browse_btn = nullptr;
+			std::string resolved_name;
+			bool drop_installed = false;
+			bool missing = false;
 			vgui_widget* panel = nullptr;
 			vgui_widget* line = nullptr;
 			vgui_widget* label = nullptr;
@@ -268,8 +324,20 @@ namespace vgui_editor_kit {
 		std::string display_text(const row& item) const;
 
 		void open_enum_menu(row& item);
-		void open_color_menu(row& item);
+		/* Opens the HSV color picker in a context popup anchored below the
+		 * row swatch.  Change previews without a command; gestures commit
+		 * one mergeable command; Escape reverts the session start value.
+		 */
+		class reference_row_drop_target;
+		friend class reference_row_drop_target;
+		void open_color_picker(row& item);
+		static void on_color_popup_close(void* user, int reason);
 		void add_recent_color(const std::string& color);
+		/* P06 reference rows: resolve via the query handler, refresh thumb/
+		 * name/missing state and install the per-row drop target. */
+		void refresh_reference_row(row& item);
+		void commit_reference(row& item, const std::string& id);
+		bool reference_accepts(const row& item, drag_payload_kind kind) const;
 
 		static void on_search_text(vgui_widget* widget, const char* text, void* user);
 		static void on_edit_event(vgui_widget* widget, const vgui_event* event, void* user);
@@ -303,6 +371,12 @@ namespace vgui_editor_kit {
 		std::uint64_t next_token_ = 1;
 		std::uint64_t next_row_id_ = 1;
 		std::vector<std::string> recent_colors_;
+		std::unique_ptr<color_picker> color_picker_;
+		bool color_session_active_ = false;
+		std::string color_session_start_;
+		bool color_drag_active_ = false;
+		std::string color_drag_value_;
+		std::string color_session_id_;
 		std::shared_ptr<int> alive_token_ = std::make_shared<int>(0);
 
 		command_stack* command_stack_ = nullptr;
@@ -316,6 +390,14 @@ namespace vgui_editor_kit {
 
 		asset_drop_handler asset_drop_;
 		std::unique_ptr<drop_target> drop_target_;	// F03 资产赋值 drop target
+
+		/* P06 reference-row host bindings. */
+		asset_query_fn asset_query_;
+		asset_browse_fn asset_browse_;
+		object_activate_fn object_activate_;
+		asset_filter_check_fn asset_filter_check_;
+		missing_asset_fn missing_asset_;
+		std::size_t batch_depth_ = 0;
 	};
 
 } /* namespace vgui_editor_kit */

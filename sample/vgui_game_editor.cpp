@@ -338,7 +338,130 @@ static void setup_editor(vgui_context* ui)
 				: std::to_string(id)));
 	});
 
-	g.shell->set_status("M3 outliner ready");
+	/* ---- M2 属性编辑 dogfood:选中对象 → 类型化属性行 ---- */
+	property_grid& props = g.shell->properties();
+	props.set_command_stack(&commands);
+
+	/* 资产表:query 解析;browse 用菜单做简易选择列表(popup 由核心
+	 * 菜单承载,足够 MVP)。 */
+	static const struct { const char* id; const char* name; } kAssets[] = {
+		{ "Cube.mesh", "Cube" },
+		{ "Sphere.mesh", "Sphere" },
+		{ "Ghost.mesh", nullptr },		/* 解析失败 → 丢失态演示 */
+	};
+	props.set_asset_query([](const std::string& id, const std::string&,
+		property_grid::asset_info* out)
+	{
+		for (const auto& asset : kAssets)
+		{
+			if (id == asset.id)
+			{
+				if (!asset.name)
+					return false;	/* 宿主也解析不到 → missing */
+				out->name = asset.name;
+				out->kind = "mesh";
+				return true;
+			}
+		}
+		return false;
+	});
+	props.set_asset_browse_handler([ui](const std::string& current,
+		const std::string&)
+	{
+		vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+		vgui_menu_add_item(menu, "(None)");
+		for (const auto& asset : kAssets)
+			if (asset.name)
+				vgui_menu_add_item(menu, asset.id);
+		vgui_menu_on_activate(menu, [](vgui_widget*, vgui_item_id, void*) {
+			/* 菜单项文本即资产 id;选择结果由 change listener 落行——
+			 * MVP 演示从简,状态栏提示。 */
+		}, nullptr);
+		(void)current;
+		vgui_menu_open(menu, 400.0f, 300.0f);
+	});
+	props.set_object_activated_handler([](object_id id) {
+		g.context->set_selection(id);	/* 点击引用名跳转选择 */
+	});
+	props.set_missing_asset_handler([](const std::string& id,
+		const std::string&)
+	{
+		g.shell->set_status("missing asset on " + id);
+	});
+
+	/* 选中变化 → 重建属性行(名称/颜色/网格/目标)。 */
+	g.context->add_selection_listener([](object_id id) {
+		property_grid& grid = g.shell->properties();
+		grid.clear();
+		if (id == invalid_object || !g.scene.objects.count(id))
+			return;
+		const scene_object& o = g.scene.objects[id];
+
+		property_desc name;
+		name.id = "name";
+		name.label = "Name";
+		name.type = property_type::text;
+		name.value = o.name;
+		name.category = "Object";
+		name.default_value = o.name;
+		name.has_default = true;
+		grid.add_property(name);
+
+		property_desc color;
+		color.id = "tint";
+		color.label = "Tint";
+		color.type = property_type::color;
+		color.value = "#FFFFFFFF";
+		color.category = "Rendering";
+		color.tooltip = "Light tint (HSV picker)";
+		grid.add_property(color);
+
+		property_desc mesh;
+		mesh.id = "mesh";
+		mesh.label = "Mesh";
+		mesh.type = property_type::asset;
+		mesh.value = "";
+		mesh.asset_filter = "mesh";
+		mesh.category = "Rendering";
+		mesh.tooltip = "Drag from ASSETS or use ...";
+		grid.add_property(mesh);
+
+		property_desc target;
+		target.id = "target";
+		target.label = "Target";
+		target.type = property_type::object_ref;
+		target.value = "";
+		target.category = "AI";
+		target.tooltip = "Click the name to select";
+		grid.add_property(target);
+
+		grid.set_change_listener([](const std::string& pid,
+			const std::string& value)
+		{
+			object_id sel = g.context->selection();
+			if (sel == invalid_object || !g.scene.objects.count(sel))
+				return;
+			if (pid == "name")
+			{
+				g.scene.objects[sel].name = value;
+				g.rebuild_outliner();
+			}
+			else if (pid == "mesh" || pid == "target")
+			{
+				g.shell->set_status(pid + " = " + (value.empty()
+					? std::string("(none)") : value));
+			}
+		});
+	});
+
+	/* 资产浏览器填充(可拖到属性行/视口)。 */
+	asset_browser& assets = g.shell->assets();
+	assets.add_item("Cube.mesh", "Mesh");
+	assets.add_item("Sphere.mesh", "Mesh");
+	assets.add_item("Ghost.mesh", "Mesh");
+	assets.add_item("icon.png", "Texture");
+
+	g.shell->set_status("M2+M3 editor ready: select an object, drag assets");
 }
 
 int main()

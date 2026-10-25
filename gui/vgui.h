@@ -492,6 +492,40 @@ extern "C" {
 	VGUI_API int vgui_toast_get_rect(vgui_context* ctx, vgui_toast_id toast, float* x, float* y, float* width, float* height);
 
 	/* ------------------------------------------------------------------------- */
+	/* Context-level popup                                                       */
+	/* ------------------------------------------------------------------------- */
+
+	/* A floating panel hosting an arbitrary detached widget subtree (a color
+	 * picker, an asset chooser, ...).  While a popup is open it owns input and
+	 * focus like a borderless modal without a backdrop mask: hit testing and
+	 * Tab navigation run against the content, clicks outside close it, Escape
+	 * closes it when the focus is not inside an edit that consumes it first.
+	 * Only one popup per context; opening one closes menus and vice versa. */
+
+	/* Notified from every close path.  reason is one of VGUI_POPUP_CLOSE_*:
+	 * EXPLICIT (vgui_popup_close / replaced by another popup or a menu /
+	 * a modal), OUTSIDE (click), ESCAPE, WHEEL.  Not called when the content
+	 * widget is destroyed directly. */
+	typedef enum vgui_popup_close_reason {
+		VGUI_POPUP_CLOSE_EXPLICIT = 0,
+		VGUI_POPUP_CLOSE_OUTSIDE,
+		VGUI_POPUP_CLOSE_ESCAPE,
+		VGUI_POPUP_CLOSE_WHEEL
+	} vgui_popup_close_reason;
+
+	typedef void (*vgui_popup_close_fn)(void* user, int reason);
+
+	/* content must be a detached widget (vgui_widget_create).  x/y is the
+	 * requested anchor of its top-left corner, clamped to the window.  Returns
+	 * 0 when a modal is open or content is not detached. */
+	VGUI_API int vgui_popup_open(vgui_context* ctx, vgui_widget* content, float x, float y);
+	VGUI_API void vgui_popup_close(vgui_context* ctx);
+	VGUI_API int vgui_popup_active(vgui_context* ctx);
+	/* The open popup's content widget, or NULL. */
+	VGUI_API vgui_widget* vgui_popup_content(vgui_context* ctx);
+	VGUI_API void vgui_popup_on_close(vgui_context* ctx, vgui_popup_close_fn fn, void* user);
+
+	/* ------------------------------------------------------------------------- */
 	/* Theme                                                                     */
 	/* ------------------------------------------------------------------------- */
 
