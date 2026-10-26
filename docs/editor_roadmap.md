@@ -325,9 +325,10 @@
   - 验收：预览与选中同步；大文件预览不阻塞主线程；加载失败有占位和错误提示。
   - 已实现：新增独立 `asset_preview` 组件。`set_load_handler()` 接收只在后台 worker 上运行的 CPU 加载器（禁止调用 vgui），每次请求携带 generation token；快速换选时旧结果被 `poll()`/`tick()` 丢弃，主线程只应用当前代结果并创建/销毁纹理。`data` 支持 image（RGBA/BGRA CPU 像素、stride）、model、material（详情/色板）、text、audio（波形）与 custom（纹理/文本回退）；stage/info 用 `VGUI_CUSTOM` + ovg_tools 自绘，包含加载动画、类型化预览、错误占位和错误文本，`set_texts()` 可定制空/加载/失败文案。`editor_shell` 在 PROPERTIES 面板底部嵌入预览，经 `asset_browser::add_selection_listener()` 自动跟随选中项；新增 `asset_browser::item_info()` 让被搜索/类型过滤隐藏的选中项仍能解析名称/类型，原 `set_selection_listener()` 保持兼容。示例新增 Materials 目录、Steel.mat、Broken.mesh 和后台 CPU 图像/模型/材质加载器。`test_asset_preview` 覆盖加载非阻塞、陈旧结果丢弃、图像纹理、失败占位与错误、无加载器状态、多监听器增删、过滤后 item_info，以及 shell 的选择同步与布局。
 
-- [ ] **A04 拖放资产到场景/属性栏**（P0，M）
+- [x] **A04 拖放资产到场景/属性栏**（P0，M）（已完成）
   - 拖到 Viewport 创建对象，拖到 PropertyGrid 赋值，拖到 Outliner 建立父子关系。
   - 验收：三条路径都有明确落点反馈；drop 结果可撤销；OS 文件拖入等价于资产导入入口。
+  - 已实现：在 F03 的 `drag_payload`/`drop_target`/`drag_bridge` 上扩展三条资产路径与文件导入，不引入新依赖。核心新增 `vgui_drag_hint(ctx, hint)`，把当前悬停目标的实时提示（绝对坐标）提供给宿主/测试，拖拽结束或目标拒绝时返回 0 并清空输出。`viewport_view` 的 drop 监听器改为返回 `bool`（宿主拒绝时不覆盖上次结果），记录 `last_drop_x()/last_drop_y()`，并在悬停时绘制钳制在视口内的 80x48 RECT 落点框。`outliner_view` 的树 target 同时接受 `asset` 与 `scene_object`；新增 `set_asset_drop_handler(asset, parent, index)` 与 `apply_asset_drop()`，复用既有插入线/行高亮语义，宿主可据落点建立父子/兄弟关系并拒绝非法位置。`property_grid` 的引用行 target 锚定整行面板（缩略图、名称和按钮都能落），悬停高亮整行；`asset_drop_handler`/行级 `commit_reference()` 返回 `bool`，drop 经 `commit_value()` 进入命令栈；行控件虚拟化释放时清除 `drop_installed`，重新物化后重装 target。`asset_browser` 根控件新增 `VGUI_DRAG_FILES` target，`set_import_handler(files, path_id)` 与 `import_files(files)` 共用导入入口，OS 文件拖入与工具栏导入等价；整批拒绝时不导入任何文件。示例把三条路径接到 `editor_state`：Viewport/Outliner 落点新建对象并记录可撤销的 "Create …" 命令（undo 删除、redo 按稳定 id 和原位置重建），PropertyGrid 的 mesh 赋值写回 `scene_object::props` 并经 `set_value` 参与 undo/redo，OS 文件导入整批一条可撤销命令；资产引用改为动态索引，演示目录、查询、浏览菜单和缩略图共用同一数据源。`test_asset_drop_paths` 覆盖视口 RECT 跟随光标/拒绝保持上次结果、Outliner 行中部父子与空白根落点/插入线提示、属性行整行高亮与命令撤销重做、导入入口及 `vgui_input_drop_files()` 等价路径/整批拒绝；`vgui_model_test` 新增 `vgui_drag_hint` 的实时查询与落点清空断言（现 659 项）；`editor_shell` 默认状态反馈同步改为 bool 处理器，四个 Dock 面板布局契约保持不变。
 
 - [ ] **A05 异步缩略图加载与缓存**（P0，M）
   - 占位图、取消、失败重试、LRU/磁盘缓存策略由应用配置。

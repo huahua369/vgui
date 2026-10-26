@@ -180,10 +180,12 @@ namespace vgui_editor_kit {
 		void set_command_stack(command_stack* stack);
 		command_stack* command_stack_ptr() const noexcept;
 
-		/* F03: attaches a drop target to the grid that accepts asset payloads
-		 * and hands the asset id (drag_payload::id) to the handler.  Reference
-		 * rows (asset/object_ref) install their own per-row drop targets. */
-		using asset_drop_handler = std::function<void(const std::string& asset)>;
+		/* F03/A04: attaches a drop target to the grid that accepts asset
+		 * payloads and hands the asset id (drag_payload::id) to the handler.
+		 * Reference rows (asset/object_ref) install their own full-row drop
+		 * targets and highlight the row while hovering.  The handler returns
+		 * true when it assigned the asset. */
+		using asset_drop_handler = std::function<bool(const std::string& asset)>;
 		void set_asset_drop_handler(asset_drop_handler handler);
 
 		/* P06 reference rows.  The grid never touches an asset database: the
@@ -411,7 +413,7 @@ namespace vgui_editor_kit {
 		/* P06 reference rows: resolve via the query handler, refresh thumb/
 		 * name/missing state and install the per-row drop target. */
 		void refresh_reference_row(row& item);
-		void commit_reference(row& item, const std::string& id);
+		bool commit_reference(row& item, const std::string& id);
 		bool reference_accepts(const row& item, drag_payload_kind kind) const;
 
 		/* P08 multi-target: pull per-target values, flag the mixed state and

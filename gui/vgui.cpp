@@ -16235,6 +16235,17 @@ extern "C" {
 		return ctx && ctx->drop_accepted ? ctx->drop_hover : nullptr;
 	}
 
+	int vgui_drag_hint(vgui_context* ctx, vgui_drop_hint* hint)
+	{
+		if (!hint) return 0;
+		*hint = {};
+		if (!ctx || ctx->drag_kind == VGUI_DRAG_NONE || !ctx->drop_accepted ||
+			ctx->drop_hint.kind == VGUI_DROP_HINT_NONE)
+			return 0;
+		*hint = ctx->drop_hint;
+		return 1;
+	}
+
 	void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target)
 	{
 		if (widget)

@@ -452,12 +452,15 @@ namespace vgui_editor_kit {
 				else
 					preview_.set_item(item);
 			});
-		viewport_.set_drop_listener([this](const drag_payload& payload, float, float) {
-			if (!payload.id.empty())
-				set_status("drop " + payload.id);
+		viewport_.set_drop_listener([this](const drag_payload& payload, float, float) -> bool {
+			if (payload.id.empty())
+				return false;
+			set_status("drop " + payload.id);
+			return true;
 		});
-		properties_.set_asset_drop_handler([this](const std::string& asset) {
+		properties_.set_asset_drop_handler([this](const std::string& asset) -> bool {
 			set_status("assign " + asset);
+			return true;
 		});
 
 		default_layout_ = capture_layout();

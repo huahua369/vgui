@@ -305,6 +305,8 @@ namespace vgui_editor_kit {
 		if (row_drag_enabled_)
 			enable_row_drag();
 
+		update_import_target();
+
 		update_breadcrumb();
 		update_type_combo();
 		update_filter_visibility();
@@ -1416,6 +1418,82 @@ namespace vgui_editor_kit {
 			out.id = info.name;
 			return true;
 		});
+	}
+
+	void asset_browser::set_import_handler(import_handler handler)
+	{
+		import_handler_ = std::move(handler);
+		update_import_target();
+	}
+
+	bool asset_browser::import_files(const std::vector<std::string>& files)
+	{
+		if (!import_handler_ || files.empty())
+			return false;
+		return import_handler_(files, current_path_id_);
+	}
+
+	void asset_browser::update_import_target()
+	{
+		if (!root_)
+			return;
+		if (!import_handler_)
+		{
+			if (import_target_)
+			{
+				set_editor_drop_target(root_, nullptr);
+				import_target_.reset();
+			}
+			return;
+		}
+		if (!import_target_)
+		{
+			/* A04: OS 文件拖入整个浏览器根;hover 高亮根区域。 */
+			class files_drop_target final : public drop_target
+			{
+			public:
+				explicit files_drop_target(asset_browser* owner) : owner_(owner) {}
+
+				bool can_accept(const drag_payload& payload) const override
+				{
+					return payload.kind == drag_payload_kind::files &&
+						!payload.files.empty();
+				}
+
+				void hover(const drag_payload& payload, vgui_widget* target,
+					float x, float y, vgui_drop_hint* hint) override
+				{
+					(void)payload;
+					(void)x;
+					(void)y;
+					if (!hint || !target)
+						return;
+					float rx = 0, ry = 0, rw = 0, rh = 0;
+					vgui_widget_get_rect(target, &rx, &ry, &rw, &rh);
+					if (rw <= 0.0f || rh <= 0.0f)
+						return;
+					hint->kind = VGUI_DROP_HINT_RECT;
+					hint->x = rx + 1.0f;
+					hint->y = ry + 1.0f;
+					hint->w = std::max(0.0f, rw - 2.0f);
+					hint->h = std::max(0.0f, rh - 2.0f);
+				}
+
+				bool drop(const drag_payload& payload, float x, float y) override
+				{
+					(void)x;
+					(void)y;
+					if (!owner_)
+						return false;
+					return owner_->import_files(payload.files);
+				}
+
+			private:
+				asset_browser* owner_;
+			};
+			import_target_ = std::make_unique<files_drop_target>(this);
+		}
+		set_editor_drop_target(root_, import_target_.get());
 	}
 
 	vgui_widget* asset_browser::widget() const noexcept

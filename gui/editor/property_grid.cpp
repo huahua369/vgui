@@ -1011,7 +1011,8 @@ namespace vgui_editor_kit {
 
 				bool can_accept(const drag_payload& payload) const override
 				{
-					return payload.kind == drag_payload_kind::asset;
+					return !owner_->read_only_ &&
+						payload.kind == drag_payload_kind::asset;
 				}
 
 				bool drop(const drag_payload& payload, float x, float y) override
@@ -1020,8 +1021,7 @@ namespace vgui_editor_kit {
 					(void)y;
 					if (!owner_ || payload.id.empty())
 						return false;
-					owner_->asset_drop_(payload.id);
-					return true;
+					return owner_->asset_drop_(payload.id);
 				}
 
 			private:
@@ -1295,11 +1295,11 @@ namespace vgui_editor_kit {
 		return true;
 	}
 
-	void property_grid::commit_reference(row& item, const std::string& id)
+	bool property_grid::commit_reference(row& item, const std::string& id)
 	{
 		const std::string label = item.desc.label.empty()
 			? item.desc.id : item.desc.label;
-		(void)commit_value(item, id, "Set " + label);
+		return commit_value(item, id, "Set " + label);
 	}
 
 class property_grid::reference_row_drop_target final : public drop_target
@@ -1315,7 +1315,31 @@ public:
 		if (!owner_)
 			return false;
 		const row* item = owner_->find_row(id_);
-		return item && owner_->reference_accepts(*item, payload.kind);
+		if (!item || !item->panel || owner_->read_only_ || item->desc.read_only)
+			return false;
+		return owner_->reference_accepts(*item, payload.kind);
+	}
+
+	void hover(const drag_payload& payload, vgui_widget* target, float x,
+		float y, vgui_drop_hint* hint) override
+	{
+		(void)target;
+		(void)x;
+		(void)y;
+		if (!hint || !can_accept(payload))
+			return;
+		row* item = owner_->find_row(id_);
+		if (!item || !item->panel)
+			return;
+		float rx = 0, ry = 0, rw = 0, rh = 0;
+		vgui_widget_get_rect(item->panel, &rx, &ry, &rw, &rh);
+		if (rw <= 0.0f || rh <= 0.0f)
+			return;
+		hint->kind = VGUI_DROP_HINT_RECT;
+		hint->x = rx;
+		hint->y = ry;
+		hint->w = rw;
+		hint->h = rh;
 	}
 
 	bool drop(const drag_payload& payload, float x, float y) override
@@ -1327,8 +1351,7 @@ public:
 		row* item = owner_->find_row(id_);
 		if (!item)
 			return false;
-		owner_->commit_reference(*item, payload.id);
-		return true;
+		return owner_->commit_reference(*item, payload.id);
 	}
 
 private:
@@ -1416,11 +1439,11 @@ private:
 		if (item.missing && previous_missing != "1" && missing_asset_)
 			missing_asset_(item.desc.id, item.desc.asset_filter);
 
-		/* 行级 drop target(thumb 作锚点;detached adapter 泄漏式,
-		 * 每行只挂一次)。 */
-		if (item.thumb && !item.drop_installed)
+		/* A04 行级 drop target:整行面板作锚点(缩略图/名称/按钮都可落),
+		 * hover 用 RECT 高亮整行;detached adapter 泄漏式,每行只挂一次。 */
+		if (item.panel && !item.drop_installed)
 		{
-			set_editor_drop_target(item.thumb,
+			set_editor_drop_target(item.panel,
 				new reference_row_drop_target(this, item.desc.id));
 			item.drop_installed = true;
 		}
@@ -2122,10 +2145,16 @@ private:
 		item.line = nullptr;
 		item.label = nullptr;
 		item.swatch = nullptr;
+		item.thumb = nullptr;
+		item.clear_btn = nullptr;
+		item.browse_btn = nullptr;
 		item.editor = nullptr;
 		item.fav_btn = nullptr;
 		item.reset = nullptr;
 		item.error_label = nullptr;
+		/* The widgets are gone, so the next materialization must reinstall the
+		 * row drop target on the new panel. */
+		item.drop_installed = false;
 		item.drag_active = false;
 	}
 

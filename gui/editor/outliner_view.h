@@ -156,6 +156,16 @@ namespace vgui_editor_kit {
 		 * routes through move_node() with insertion semantics. */
 		void enable_drag_drop();
 		void set_multi_select(bool enabled);
+		/* A04: asset payloads dropped on the tree create a child/sibling via
+		 * the host handler, which receives the asset id and resolved
+		 * (parent, index).  Return false to reject the drop. */
+		using asset_drop_handler = std::function<bool(const std::string& asset,
+			object_id parent, std::size_t index)>;
+		void set_asset_drop_handler(asset_drop_handler handler);
+		bool asset_drop_enabled() const noexcept { return asset_drop_ != nullptr; }
+		/* Applies an asset payload at the drop point; exposes the same path
+		 * used by the internal target for tests and programmatic drops. */
+		bool apply_asset_drop(const std::string& asset, float x, float y);
 		/* Resolves a drop point (absolute window coordinates) to its position
 		 * kind and final (parent, index). */
 		drop_location drop_location_at(float x, float y) const;
@@ -343,6 +353,7 @@ namespace vgui_editor_kit {
 
 		/* O03. */
 		bool multi_select_ = false;
+		asset_drop_handler asset_drop_;
 
 		/* O04. */
 		std::string filter_text_;

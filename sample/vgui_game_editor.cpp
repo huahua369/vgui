@@ -12,11 +12,14 @@
 // 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
 
 #include <algorithm>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <functional>
 #include <map>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
@@ -144,13 +147,22 @@ struct game_scene
 // 编辑器状态
 //---------------------------------------------------------------------------
 
+static vgui_texture* make_asset_thumbnail(vgui_context* ui, uint32_t base,
+	uint32_t accent);
+
 struct editor_state
 {
 	game_scene scene;
 	editor_context* context = nullptr;
 	editor_shell* shell = nullptr;
+	vgui_context* ui = nullptr;
 	/* A02 资产目录由宿主提供,浏览器只按 path id 取快照。 */
 	std::map<std::string, asset_browser::asset_directory> asset_directories;
+	/* A04 资产索引:按名称解析属性引用/拖放载荷,目录与预览共用。 */
+	std::map<std::string, asset_info> assets;
+	vgui_item_id next_asset = 100;
+	/* Browse 菜单项 → 资产名(菜单回调只带 item id)。 */
+	std::map<vgui_item_id, std::string> browse_assets;
 	/* 资产网格的 CPU 缩略图由示例持有,shell 销毁后统一释放。 */
 	std::vector<vgui_texture*> asset_thumbnails;
 
@@ -159,6 +171,131 @@ struct editor_state
 		return context->selection() != invalid_object &&
 			scene.objects.count(context->selection()) != 0;
 	}
+
+	const asset_info* find_asset(const std::string& name) const
+	{
+		auto it = assets.find(name);
+		return it == assets.end() ? nullptr : &it->second;
+	}
+
+	void add_asset(const std::string& path_id, const asset_info& info)
+	{
+		auto directory = asset_directories.find(path_id);
+		if (directory != asset_directories.end())
+		{
+			auto& items = directory->second.items;
+			auto it = std::find_if(items.begin(), items.end(),
+				[&](const asset_info& item) { return item.name == info.name; });
+			if (it == items.end())
+				items.push_back(info);
+			else
+				*it = info;
+		}
+		assets[info.name] = info;
+	}
+
+	void remove_asset(const std::string& path_id, const std::string& name)
+	{
+		auto directory = asset_directories.find(path_id);
+		if (directory != asset_directories.end())
+		{
+			auto& items = directory->second.items;
+			items.erase(std::remove_if(items.begin(), items.end(),
+				[&](const asset_info& item) { return item.name == name; }),
+				items.end());
+		}
+		assets.erase(name);
+	}
+
+	std::string unique_asset_name(const std::string& base) const
+	{
+		if (!assets.count(base) && !base.empty())
+			return base;
+		std::string stem = base.empty() ? "Imported" : base;
+		std::string extension;
+		const std::size_t dot = stem.find_last_of('.');
+		if (dot != std::string::npos && dot > 0)
+		{
+			extension = stem.substr(dot);
+			stem = stem.substr(0, dot);
+		}
+		for (int suffix = 2; ; ++suffix)
+		{
+			const std::string name = stem + " (" + std::to_string(suffix) +
+				")" + extension;
+			if (!assets.count(name))
+				return name;
+		}
+	}
+
+	/* A04: 重做/创建命令用同一稳定 id 重新插入对象。 */
+	void insert_object(const scene_object& snapshot, std::size_t index)
+	{
+		if (scene.objects.count(snapshot.id))
+			return;
+		scene.objects[snapshot.id] = snapshot;
+		std::vector<object_id>* siblings = nullptr;
+		if (snapshot.parent == invalid_object)
+			siblings = &scene.roots;
+		else
+		{
+			auto parent = scene.objects.find(snapshot.parent);
+			if (parent != scene.objects.end())
+				siblings = &parent->second.children;
+			else
+				siblings = &scene.roots;
+		}
+		index = std::min(index, siblings->size());
+		siblings->insert(siblings->begin() + (std::ptrdiff_t)index,
+			snapshot.id);
+	}
+
+	void erase_object(object_id id)
+	{
+		auto it = scene.objects.find(id);
+		if (it == scene.objects.end())
+			return;
+		std::vector<object_id>& siblings = it->second.parent == invalid_object
+			? scene.roots : scene.objects[it->second.parent].children;
+		auto found = std::find(siblings.begin(), siblings.end(), id);
+		if (found != siblings.end())
+			siblings.erase(found);
+		scene.objects.erase(it);
+	}
+
+	/* A04: 资产拖入场景 -> 新建叶子对象,返回快照供命令重做。 */
+	object_id add_asset_object(const std::string& asset, object_id parent,
+		std::size_t index, scene_object* out_snapshot)
+	{
+		std::string name = asset;
+		const std::size_t dot = name.find_last_of('.');
+		if (dot != std::string::npos && dot > 0)
+			name = name.substr(0, dot);
+		if (name.empty())
+			name = "Asset";
+		const object_id id = scene.add(name.c_str(), parent);
+		scene.place(id, parent, index);
+		const asset_info* info = find_asset(asset);
+		scene.objects[id].props["tint"] = "#FF80C0FF";
+		if (info && info->type == "Mesh")
+			scene.objects[id].props["mesh"] = asset;
+		else
+			scene.objects[id].props["asset"] = asset;
+		if (out_snapshot)
+			*out_snapshot = scene.objects[id];
+		return id;
+	}
+
+	void push_create_command(const scene_object& snapshot, std::size_t index);
+
+	/* A04: OS 文件导入与宿主导入入口共用此路径;整批一个可撤销命令。 */
+	bool import_assets(const std::vector<std::string>& files,
+		const std::string& path_id);
+
+	static std::string file_basename(const std::string& path);
+	static std::string asset_type_for_path(const std::string& path);
+	static vgui_color asset_base_color(const std::string& type);
+	static vgui_color asset_accent_color(const std::string& type);
 
 	void rebuild_outliner()
 	{
@@ -184,6 +321,118 @@ struct editor_state
 };
 
 static editor_state g;
+
+std::string editor_state::file_basename(const std::string& path)
+{
+	const std::size_t slash = path.find_last_of("/\\");
+	return slash == std::string::npos ? path : path.substr(slash + 1);
+}
+
+std::string editor_state::asset_type_for_path(const std::string& path)
+{
+	std::string extension = file_basename(path);
+	const std::size_t dot = extension.find_last_of('.');
+	extension = dot == std::string::npos ? "" : extension.substr(dot + 1);
+	for (char& c : extension)
+		c = (char)std::tolower((unsigned char)c);
+	if (extension == "mesh" || extension == "glb" || extension == "gltf" ||
+		extension == "obj" || extension == "fbx")
+		return "Mesh";
+	if (extension == "png" || extension == "jpg" || extension == "jpeg" ||
+		extension == "bmp" || extension == "tga" || extension == "dds")
+		return "Texture";
+	if (extension == "mat" || extension == "material")
+		return "Material";
+	return "File";
+}
+
+vgui_color editor_state::asset_base_color(const std::string& type)
+{
+	if (type == "Mesh") return 0xFF6E9ED8u;
+	if (type == "Texture") return 0xFF6CC878u;
+	if (type == "Material") return 0xFFC8A050u;
+	return 0xFF8FA8C8u;
+}
+
+vgui_color editor_state::asset_accent_color(const std::string& type)
+{
+	if (type == "Mesh") return 0xFF355C8Cu;
+	if (type == "Texture") return 0xFF327E42u;
+	if (type == "Material") return 0xFF705820u;
+	return 0xFF3A4658u;
+}
+
+void editor_state::push_create_command(const scene_object& snapshot,
+	std::size_t index)
+{
+	if (!context)
+		return;
+	context->commands().push(std::make_unique<function_command>(
+		"Create " + snapshot.name,
+		[snapshot, index]() {
+			g.insert_object(snapshot, index);
+			if (g.shell)
+				g.rebuild_outliner();
+			if (g.context)
+				g.context->set_selection(snapshot.id);
+		},
+		[snapshot]() {
+			if (g.context && g.context->selection() == snapshot.id)
+				g.context->clear_selection();
+			g.erase_object(snapshot.id);
+			if (g.shell)
+				g.rebuild_outliner();
+		}));
+}
+
+bool editor_state::import_assets(const std::vector<std::string>& files,
+	const std::string& path_id)
+{
+	if (!context || !shell || files.empty() ||
+		!asset_directories.count(path_id))
+		return false;
+
+	std::vector<asset_info> imported;
+	for (const std::string& path : files)
+	{
+		const std::string base = file_basename(path);
+		asset_info info;
+		info.name = unique_asset_name(base);
+		info.type = asset_type_for_path(path);
+		info.id = next_asset++;
+		info.thumbnail = make_asset_thumbnail(ui,
+			asset_base_color(info.type), asset_accent_color(info.type));
+		if (info.thumbnail)
+			asset_thumbnails.push_back(info.thumbnail);
+		add_asset(path_id, info);
+		imported.push_back(info);
+	}
+	if (imported.empty())
+		return false;
+
+	asset_browser& browser = shell->assets();
+	browser.reload();
+	browser.set_selection({ imported.back().id });
+	shell->set_status("imported " + std::to_string(imported.size()) +
+		" asset(s) into " + path_id);
+
+	context->commands().push(std::make_unique<function_command>(
+		"Import assets",
+		[path_id, imported]() {
+			for (const asset_info& info : imported)
+				g.add_asset(path_id, info);
+			g.shell->assets().reload();
+			g.shell->set_status("reimported " +
+				std::to_string(imported.size()) + " asset(s)");
+		},
+		[path_id, imported]() {
+			for (const asset_info& info : imported)
+				g.remove_asset(path_id, info.name);
+			g.shell->assets().reload();
+			g.shell->set_status("undid import");
+		}));
+	return true;
+}
 
 /* 类型图标:2x2 纯色 CPU 纹理,按类型着色(无外部资源)。 */
 static vgui_texture* make_type_texture(vgui_context* ui, uint32_t color)
@@ -373,6 +622,7 @@ static vgui_item_id item_for(outliner_view& outliner, object_id id)
 
 static void setup_editor(vgui_context* ui)
 {
+	g.ui = ui;
 	g.context = new editor_context(ui);
 	g.shell = new editor_shell(*g.context);
 	g.shell->build();
@@ -513,38 +763,52 @@ static void setup_editor(vgui_context* ui)
 
 	/* 资产表:query 解析;browse 用菜单做简易选择列表(popup 由核心
 	 * 菜单承载,足够 MVP)。 */
-	static const struct { const char* id; const char* name; } kAssets[] = {
-		{ "Cube.mesh", "Cube" },
-		{ "Sphere.mesh", "Sphere" },
-		{ "Ghost.mesh", nullptr },		/* 解析失败 → 丢失态演示 */
-	};
 	props.set_asset_query([](const std::string& id, const std::string&,
 		property_grid::asset_info* out)
 	{
-		for (const auto& asset : kAssets)
-		{
-			if (id == asset.id)
-			{
-				if (!asset.name)
-					return false;	/* 宿主也解析不到 → missing */
-				out->name = asset.name;
-				out->kind = "mesh";
-				return true;
-			}
-		}
-		return false;
+		const asset_info* asset = g.find_asset(id);
+		if (!asset)
+			return false;
+		out->name = asset->name;
+		out->kind = asset->type;
+		out->thumbnail = asset->thumbnail;
+		return true;
+	});
+	/* A04:mesh 行只接受 Mesh 资产,悬停/落点反馈会明确拒绝其它类型。 */
+	props.set_asset_filter_check([](const std::string& id,
+		const std::string& filter)
+	{
+		const asset_info* asset = g.find_asset(id);
+		if (!asset)
+			return false;
+		if (filter == "mesh")
+			return asset->type == "Mesh";
+		if (filter == "material")
+			return asset->type == "Material";
+		return true;
 	});
 	props.set_asset_browse_handler([ui](const std::string& current,
-		const std::string&)
+		const std::string& filter)
 	{
 		vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
-		vgui_menu_add_item(menu, "(None)");
-		for (const auto& asset : kAssets)
-			if (asset.name)
-				vgui_menu_add_item(menu, asset.id);
-		vgui_menu_on_activate(menu, [](vgui_widget*, vgui_item_id, void*) {
-			/* 菜单项文本即资产 id;选择结果由 change listener 落行——
-			 * MVP 演示从简,状态栏提示。 */
+		g.browse_assets.clear();
+		const vgui_item_id none = vgui_menu_add_item(menu, "(None)");
+		g.browse_assets[none] = "";
+		for (const auto& entry : g.assets)
+		{
+			if (filter == "mesh" && entry.second.type != "Mesh")
+				continue;
+			if (filter == "material" && entry.second.type != "Material")
+				continue;
+			const vgui_item_id item = vgui_menu_add_item(menu,
+				entry.first.c_str());
+			g.browse_assets[item] = entry.first;
+		}
+		vgui_menu_on_activate(menu, [](vgui_widget*, vgui_item_id item, void*) {
+			auto found = g.browse_assets.find(item);
+			if (found == g.browse_assets.end())
+				return;
+			g.shell->properties().commit_property_value("mesh", found->second);
 		}, nullptr);
 		(void)current;
 		vgui_menu_open(menu, 400.0f, 300.0f);
@@ -611,6 +875,12 @@ static void setup_editor(vgui_context* ui)
 		mesh.asset_filter = "mesh";
 		mesh.category = "Rendering";
 		mesh.tooltip = "Drag from ASSETS or use ...";
+		/* A04:拖放/浏览提交写回宿主模型;undo/redo 经同一 setter 同步。 */
+		mesh.set_value = [oid = id](const std::string& value) {
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end())
+				it->second.props["mesh"] = value;
+		};
 		grid.add_property(mesh);
 
 		property_desc target;
@@ -753,7 +1023,6 @@ static void setup_editor(vgui_context* ui)
 	g.asset_directories["materials"] = materials;
 
 	vgui_item_id first_asset = 0;
-	vgui_item_id next_asset = 100;
 	for (const auto& item : kDemoAssets)
 	{
 		vgui_texture* thumb = make_asset_thumbnail(ui, (uint32_t)item.base,
@@ -764,8 +1033,9 @@ static void setup_editor(vgui_context* ui)
 		info.name = item.name;
 		info.type = item.type;
 		info.thumbnail = thumb;
-		info.id = next_asset++;
+		info.id = g.next_asset++;
 		g.asset_directories[item.folder].items.push_back(info);
+		g.assets[info.name] = info;
 		if (!first_asset)
 			first_asset = info.id;
 	}
@@ -814,7 +1084,67 @@ static void setup_editor(vgui_context* ui)
 		assets.set_selection({ first_asset });
 	assets.set_view(asset_browser::view_mode::grid);
 
-	g.shell->set_status("A02: breadcrumb, search/filter, folders; drag assets");
+	/* ---- A04 三条资产拖放路径 + OS 文件导入 ----------------------------- */
+
+	/* 1) Viewport:落点处新建对象;新建走命令栈,undo 删除、redo 原 id 重建。 */
+	g.shell->viewport().set_drop_listener([](const drag_payload& payload,
+		float, float) -> bool
+	{
+		if (payload.kind != drag_payload_kind::asset || !g.find_asset(payload.id))
+			return false;
+		object_id parent = g.context->selection();
+		if (!g.scene.objects.count(parent))
+			parent = invalid_object;
+		const std::size_t index = parent == invalid_object
+			? g.scene.roots.size() : g.scene.objects[parent].children.size();
+		scene_object snapshot;
+		const object_id created = g.add_asset_object(payload.id, parent, index,
+			&snapshot);
+		g.rebuild_outliner();
+		g.context->set_selection(created);
+		g.push_create_command(snapshot, index);
+		g.shell->set_status("created " + snapshot.name + " from " + payload.id);
+		return true;
+	});
+
+	/* 2) Outliner:落点解析为 parent/index,建立父子/兄弟关系。 */
+	outliner.set_asset_drop_handler([](const std::string& asset,
+		object_id parent, std::size_t index) -> bool
+	{
+		if (!g.find_asset(asset))
+			return false;
+		scene_object snapshot;
+		const object_id created = g.add_asset_object(asset, parent, index,
+			&snapshot);
+		g.rebuild_outliner();
+		g.context->set_selection(created);
+		g.push_create_command(snapshot, index);
+		g.shell->set_status("parented " + snapshot.name + " under " +
+			(parent == invalid_object ? std::string("root")
+				: std::to_string(parent)));
+		return true;
+	});
+
+	/* 3) PropertyGrid:行级 drop 由 kit 处理;落点不在行上时仍按 Mesh 赋值。 */
+	props.set_asset_drop_handler([](const std::string& asset) -> bool
+	{
+		const asset_info* info = g.find_asset(asset);
+		if (!info || info->type != "Mesh" || !g.valid_selection())
+			return false;
+		if (!g.shell->properties().commit_property_value("mesh", asset))
+			return false;
+		g.shell->set_status("assigned " + asset + " to mesh");
+		return true;
+	});
+
+	/* 4) OS 文件拖入与导入入口一致:整批可撤销,写入当前目录。 */
+	assets.set_import_handler([](const std::vector<std::string>& files,
+		const std::string& path_id) -> bool
+	{
+		return g.import_assets(files, path_id);
+	});
+
+	g.shell->set_status("A04: drag assets to viewport / outliner / properties; drop files to import");
 }
 
 int main()

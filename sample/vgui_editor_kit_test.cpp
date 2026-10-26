@@ -6270,6 +6270,241 @@ static int test_asset_preview()
 	return 0;
 }
 
+/* A04: 资产拖放三条路径的落点反馈、拒绝语义、可撤销结果与 OS 文件导入。 */
+static int test_asset_drop_paths()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("a04 context");
+	vgui_context_set_size(ui, 900, 650);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	{
+		editor_context context(ui);
+		command_stack commands;
+		drag_payload asset;
+		asset.kind = drag_payload_kind::asset;
+		asset.id = "Cube.mesh";
+
+		/* 1) Viewport:光标处 RECT 反馈,接受后记录落点;拒绝不覆盖上次结果。 */
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		vgui_widget_set_pos(viewport.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(viewport.widget(), 300.0f, 180.0f);
+		int viewport_drops = 0;
+		std::string viewport_asset;
+		viewport.set_drop_listener([&](const drag_payload& payload, float, float)
+		{
+			++viewport_drops;
+			viewport_asset = payload.id;
+			return true;
+		});
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		const float vcx = vx + vw * 0.5f;
+		const float vcy = vy + vh * 0.5f;
+		if (!begin_editor_drag(ui, viewport.widget(), asset))
+			return fail("a04 viewport drag begins");
+		vgui_input_mouse_move(ui, vcx, vcy);
+		vgui_drop_hint hint = {};
+		if (!vgui_drag_hint(ui, &hint) || hint.kind != VGUI_DROP_HINT_RECT ||
+			hint.w <= 0.0f || hint.h <= 0.0f)
+			return fail("a04 viewport hover feedback");
+		if (std::fabs(hint.x + hint.w * 0.5f - vcx) > 1.5f ||
+			std::fabs(hint.y + hint.h * 0.5f - vcy) > 1.5f)
+			return fail("a04 viewport hint follows cursor");
+		vgui_input_mouse_up(ui, 1, vcx, vcy, 1);
+		if (viewport_drops != 1 || viewport_asset != "Cube.mesh" ||
+			viewport.last_drop().id != "Cube.mesh" ||
+			std::fabs(viewport.last_drop_x() - vcx) > 1.0f ||
+			std::fabs(viewport.last_drop_y() - vcy) > 1.0f)
+			return fail("a04 viewport accepts drop");
+		if (vgui_drag_hint(ui, &hint) != 0 ||
+			hint.kind != VGUI_DROP_HINT_NONE)
+			return fail("a04 drag hint clears after drop");
+
+		viewport.set_drop_listener([&](const drag_payload&, float, float)
+		{
+			++viewport_drops;
+			return false;
+		});
+		drag_payload rejected = asset;
+		rejected.id = "Sphere.mesh";
+		if (viewport.record_drop(rejected, 1.0f, 2.0f))
+			return fail("a04 viewport rejects payload");
+		if (viewport.last_drop().id != "Cube.mesh" || viewport_drops != 2)
+			return fail("a04 viewport keeps last accepted");
+
+		/* 2) Outliner:资产落到行中部成为子对象,落到空白成为根;hover 同步。 */
+		outliner_view outliner;
+		outliner.build(context, vgui_root(ui));
+		vgui_widget_set_pos(outliner.widget(), 10.0f, 210.0f);
+		vgui_widget_set_size(outliner.widget(), 300.0f, 240.0f);
+		const vgui_item_id root = outliner.add_node("Root", 0, 1);
+		outliner.add_node("Child", root, 2);
+		outliner.expand(root);
+		int asset_drops = 0;
+		std::string outliner_asset;
+		object_id outliner_parent = invalid_object;
+		std::size_t outliner_index = 0;
+		outliner.set_asset_drop_handler([&](const std::string& name,
+			object_id parent, std::size_t index)
+		{
+			++asset_drops;
+			outliner_asset = name;
+			outliner_parent = parent;
+			outliner_index = index;
+			return true;
+		});
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		vgui_widget_get_rect(outliner.widget(), &tx, &ty, &tw, &th);
+		(void)tw;
+		(void)th;
+		const float row_h = style.tree.row_height;
+		const float root_mid = ty + style.tree.padding_y + row_h * 0.5f;
+		if (!begin_editor_drag(ui, outliner.widget(), asset))
+			return fail("a04 outliner drag begins");
+		vgui_input_mouse_move(ui, tx + 30.0f, root_mid);
+		if (!vgui_drag_hint(ui, &hint) || hint.kind != VGUI_DROP_HINT_RECT)
+			return fail("a04 outliner hover feedback");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f, root_mid, 1);
+		if (asset_drops != 1 || outliner_asset != "Cube.mesh" ||
+			outliner_parent != 1 || outliner_index != 1)
+			return fail("a04 outliner parents asset");
+
+		const float roots_y = ty + style.tree.padding_y + row_h * 5.0f;
+		if (!begin_editor_drag(ui, outliner.widget(), asset))
+			return fail("a04 outliner roots drag begins");
+		vgui_input_mouse_move(ui, tx + 30.0f, roots_y);
+		if (!vgui_drag_hint(ui, &hint) || hint.kind != VGUI_DROP_HINT_LINE)
+			return fail("a04 outliner roots feedback");
+		vgui_input_mouse_up(ui, 1, tx + 30.0f, roots_y, 1);
+		if (asset_drops != 2 || outliner_parent != invalid_object ||
+			outliner_index != 1)
+			return fail("a04 outliner roots drop");
+
+		/* 3) PropertyGrid:整行 RECT 高亮;drop 走命令栈,undo/redo 往返。 */
+		property_grid grid;
+		grid.build(vgui_root(ui));
+		vgui_widget_set_pos(grid.widget(), 330.0f, 10.0f);
+		vgui_widget_set_size(grid.widget(), 330.0f, 320.0f);
+		grid.set_command_stack(&commands);
+		grid.set_asset_query([](const std::string& id, const std::string&,
+			property_grid::asset_info* out)
+		{
+			if (id != "Cube.mesh" && id != "Sphere.mesh")
+				return false;
+			out->name = id;
+			out->kind = "Mesh";
+			return true;
+		});
+		property_desc mesh;
+		mesh.id = "mesh";
+		mesh.label = "Mesh";
+		mesh.type = property_type::asset;
+		mesh.value = "Cube.mesh";
+		mesh.asset_filter = "mesh";
+		if (!grid.add_property(mesh))
+			return fail("a04 property row");
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		vgui_widget* mesh_editor = grid.property_editor("mesh");
+		if (!mesh_editor)
+			return fail("a04 property editor");
+		float ex = 0, ey = 0, ew = 0, eh = 0;
+		vgui_widget_get_rect(mesh_editor, &ex, &ey, &ew, &eh);
+		const float ecx = ex + ew * 0.5f;
+		const float ecy = ey + eh * 0.5f;
+		const std::size_t undo_base = commands.undo_count();
+		asset.id = "Sphere.mesh";
+		if (!begin_editor_drag(ui, grid.widget(), asset))
+			return fail("a04 property drag begins");
+		vgui_input_mouse_move(ui, ecx, ecy);
+		if (!vgui_drag_hint(ui, &hint) || hint.kind != VGUI_DROP_HINT_RECT ||
+			hint.h <= eh || hint.w <= ew)
+			return fail("a04 property row feedback");
+		vgui_input_mouse_up(ui, 1, ecx, ecy, 1);
+		if (grid.property_value("mesh") != "Sphere.mesh" ||
+			commands.undo_count() != undo_base + 1)
+			return fail("a04 property drop assigns undoably");
+		if (!commands.undo() || grid.property_value("mesh") != "Cube.mesh")
+			return fail("a04 property drop undo");
+		if (!commands.redo() || grid.property_value("mesh") != "Sphere.mesh")
+			return fail("a04 property drop redo");
+		if (!commands.undo())
+			return fail("a04 property drop rewind");
+
+		/* 4) AssetBrowser:宿主导入入口与 OS 文件拖入走同一条路径。 */
+		asset_browser browser;
+		browser.build(vgui_root(ui));
+		vgui_widget_set_pos(browser.root(), 330.0f, 350.0f);
+		vgui_widget_set_size(browser.root(), 340.0f, 250.0f);
+		browser.set_navigate_handler([](const std::string& path_id,
+			asset_browser::asset_directory* out)
+		{
+			if (path_id != "assets" || !out)
+				return false;
+			out->path.push_back({ "Assets", "assets" });
+			out->items.push_back({ "Cube.mesh", "Mesh", nullptr, 1 });
+			return true;
+		});
+		if (!browser.navigate_to("assets"))
+			return fail("a04 browser navigate");
+		int import_calls = 0;
+		std::vector<std::string> last_files;
+		std::string last_path;
+		browser.set_import_handler([&](const std::vector<std::string>& files,
+			const std::string& path_id)
+		{
+			++import_calls;
+			last_files = files;
+			last_path = path_id;
+			return path_id == "assets" && !files.empty();
+		});
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		if (!browser.import_files({ "C:/in/a.png", "C:/in/b.mesh" }) ||
+			import_calls != 1 || last_files.size() != 2 ||
+			last_path != "assets")
+			return fail("a04 import entry");
+
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(browser.root(), &bx, &by, &bw, &bh);
+		const char* files[] = { "C:/drop/c.mat" };
+		if (vgui_input_drop_files(ui, files, 1, bx + bw * 0.5f,
+			by + bh * 0.3f) != 1)
+			return fail("a04 os file drop");
+		if (import_calls != 2 || last_files.size() != 1 ||
+			last_files[0] != "C:/drop/c.mat" || last_path != "assets")
+			return fail("a04 os file drop uses import entry");
+
+		browser.set_import_handler([&](const std::vector<std::string>&,
+			const std::string&)
+		{
+			++import_calls;
+			return false;
+		});
+		if (vgui_input_drop_files(ui, files, 1, bx + bw * 0.5f,
+			by + bh * 0.3f) != 0)
+			return fail("a04 os file drop rejection");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -6339,6 +6574,8 @@ int main()
 	if (int rc = test_asset_browser_navigation())
 		return rc;
 	if (int rc = test_asset_preview())
+		return rc;
+	if (int rc = test_asset_drop_paths())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
@@ -6526,7 +6763,10 @@ int main()
 
 			std::string assigned;
 			shell.properties().set_asset_drop_handler(
-				[&assigned](const std::string& asset) { assigned = asset; });
+				[&assigned](const std::string& asset) {
+					assigned = asset;
+					return true;
+				});
 			vgui_input_mouse_move(ui, arx + 30.0f, arow_y);
 			vgui_input_mouse_down(ui, 1, arx + 30.0f, arow_y, 1);
 			vgui_input_mouse_move(ui, ppx + ppw * 0.5f, ppy + pph * 0.5f);

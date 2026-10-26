@@ -3455,12 +3455,21 @@ static void test_drag_drop(vgui_context* ui, const vgui_style& style)
 	check(vgui_drag_hover_target(ui) == zone, "drag: hover target resolves");
 	check(ds.accepts == 1 && ds.hovers >= 1, "drag: accept + hover callbacks");
 	check(ds.last_hint.kind == VGUI_DROP_HINT_LINE, "drag: hover hint recorded");
+	{
+		vgui_drop_hint live = {};
+		check(vgui_drag_hint(ui, &live) == 1 &&
+			live.kind == ds.last_hint.kind && live.w == ds.last_hint.w &&
+			live.x == ds.last_hint.x, "drag: live hint query");
+		check(vgui_drag_hint(ui, nullptr) == 0, "drag: null hint rejected");
+	}
 
 	// Release delivers the payload and ends the drag.
 	vgui_input_mouse_up(ui, 1, zone_cx, zone_cy, 1);
 	check(ds.drops == 1 && ds.last_text == "dragged row",
 		"drag: drop delivers the payload");
 	check(vgui_drag_active(ui) == 0, "drag: release ends the drag");
+	check(vgui_drag_hint(ui, &ds.last_hint) == 0,
+		"drag: hint query clears after drop");
 
 	// A rejected payload never reaches drop.
 	ds.reject = true;

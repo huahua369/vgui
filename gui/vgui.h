@@ -1586,6 +1586,11 @@ extern "C" {
 	VGUI_API int vgui_drag_active(vgui_context* ctx);
 	/* The widget whose drop target is currently hovered, or NULL. */
 	VGUI_API vgui_widget* vgui_drag_hover_target(vgui_context* ctx);
+	/* Copies the hovered target's drop hint (absolute coordinates).  Returns
+	 * non-zero while a drag is active and the target supplied feedback; the
+	 * output is cleared otherwise.  Hosts/tests use this to verify the same
+	 * indicator the core draws. */
+	VGUI_API int vgui_drag_hint(vgui_context* ctx, vgui_drop_hint* hint);
 	VGUI_API void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target);
 
 	VGUI_API void vgui_list_set_row_drag(vgui_widget* list, vgui_row_drag_fn fn, void* user);

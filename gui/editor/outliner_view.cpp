@@ -59,8 +59,8 @@ namespace vgui_editor_kit {
 		outliner_view* owner = nullptr;
 	};
 
-	/* F03: 树上的 drop target——接受 scene_object 载荷;hover 依 O03 插入语义
-	 * 给出插入线/高亮提示,非法位置不给提示(拒绝反馈)。 */
+	/* F03/A04: 树上的 drop target——接受 scene_object 与资产载荷;hover 依
+	 * O03 插入语义给出插入线/高亮提示,非法位置不给提示(拒绝反馈)。 */
 		class outliner_drop_target final : public drop_target
 		{
 		public:
@@ -68,15 +68,20 @@ namespace vgui_editor_kit {
 
 			bool can_accept(const drag_payload& payload) const override
 			{
-				return payload.kind == drag_payload_kind::scene_object;
+				if (payload.kind == drag_payload_kind::scene_object)
+					return true;
+				return payload.kind == drag_payload_kind::asset &&
+					!payload.id.empty() && owner_ && owner_->asset_drop_enabled();
 			}
 
 			void hover(const drag_payload& payload, vgui_widget* target, float x,
 				float y, vgui_drop_hint* hint) override
 			{
-				(void)payload;
 				(void)target;
 				if (!owner_ || !hint)
+					return;
+				if (payload.kind == drag_payload_kind::asset &&
+					!owner_->asset_drop_enabled())
 					return;
 				const auto location = owner_->drop_location_at(x, y);
 				owner_->emit_hover_hint(location, hint);
@@ -86,6 +91,8 @@ namespace vgui_editor_kit {
 			{
 				if (!owner_)
 					return false;
+				if (payload.kind == drag_payload_kind::asset)
+					return owner_->apply_asset_drop(payload.id, x, y);
 				return owner_->apply_drop_by_payload(payload.id, x, y);
 			}
 
@@ -813,6 +820,31 @@ namespace vgui_editor_kit {
 		multi_select_ = enabled;
 		vgui_tree_set_selection_mode(tree_, enabled
 			? VGUI_SELECTION_MULTIPLE : VGUI_SELECTION_SINGLE);
+	}
+
+	void outliner_view::set_asset_drop_handler(asset_drop_handler handler)
+	{
+		asset_drop_ = std::move(handler);
+		/* Install the target on demand so a host that only wants asset drops
+		 * does not have to enable row dragging first.  enable_drag_drop() also
+		 * installs it (idempotently) for the scene_object path. */
+		if (asset_drop_ && tree_)
+		{
+			if (!drop_target_)
+				drop_target_ = std::make_unique<outliner_drop_target>(this);
+			set_editor_drop_target(tree_, drop_target_.get());
+		}
+	}
+
+	bool outliner_view::apply_asset_drop(const std::string& asset, float x,
+		float y)
+	{
+		if (!tree_ || !asset_drop_ || asset.empty())
+			return false;
+		const drop_location location = drop_location_at(x, y);
+		if (location.kind == drop_kind::none)
+			return false;
+		return asset_drop_(asset, location.parent, location.index);
 	}
 
 	std::vector<object_id> outliner_view::selection_objects() const

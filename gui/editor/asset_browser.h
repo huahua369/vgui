@@ -25,6 +25,7 @@
 #include <vector>
 
 #include "command_stack.h"
+#include "editor_types.h"
 #include "vgui.h"
 
 namespace vgui_editor_kit {
@@ -211,6 +212,15 @@ namespace vgui_editor_kit {
 		 * drag_payload::id.  The same provider is used by the grid cells. */
 		void enable_row_drag();
 
+		/* A04: OS files/asset imports.  The root of the browser accepts
+		 * VGUI_DRAG_FILES and routes them through the same import entry as
+		 * import_files(), with the current path id.  Return false to reject
+		 * the whole batch (no assets are imported). */
+		using import_handler = std::function<bool(const std::vector<std::string>& files,
+			const std::string& path_id)>;
+		void set_import_handler(import_handler handler);
+		bool import_files(const std::vector<std::string>& files);
+
 		vgui_widget* widget() const noexcept;
 		vgui_widget* root() const noexcept;
 		vgui_widget* grid() const noexcept;
@@ -295,6 +305,7 @@ namespace vgui_editor_kit {
 		void update_primary_from_list(vgui_item_id item, int selected);
 		bool begin_grid_drag(float local_x, float local_y);
 		void finish_grid_drag();
+		void update_import_target();
 
 		static void on_select(vgui_widget* widget, vgui_item_id item, int selected, void* user);
 		static void on_activate(vgui_widget* widget, vgui_item_id item, void* user);
@@ -391,6 +402,10 @@ namespace vgui_editor_kit {
 		float drag_press_y_ = 0.0f;
 		vgui_item_id drag_item_ = 0;
 		std::string drag_name_;
+
+		/* A04 import drop target (root widget, VGUI_DRAG_FILES). */
+		import_handler import_handler_;
+		std::unique_ptr<drop_target> import_target_;
 
 		bool marquee_active_ = false;
 		float marquee_x0_ = 0.0f;
