@@ -95,8 +95,12 @@ namespace vgui_editor_kit {
 
 	void icon_button::click()
 	{
-		if (button_ && enabled() && listener_)
-			listener_();
+		if (!button_ || !enabled() || !listener_)
+			return;
+		/* Keep the callback alive for the duration of the call: a breadcrumb
+		 * navigation may rebuild the strip and destroy this button. */
+		click_listener listener = listener_;
+		listener();
 	}
 
 	vgui_widget* icon_button::widget() const noexcept

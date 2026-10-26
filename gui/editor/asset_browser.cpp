@@ -1,12 +1,16 @@
 #include "asset_browser.h"
 
+#include "breadcrumb.h"
+#include "combo_box.h"
 #include "drag_bridge.h"
+#include "search_box.h"
 #include "toolbar.h"
 
 #include "pch.h"
 #include "tools/tools.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <utility>
 
@@ -65,6 +69,40 @@ namespace vgui_editor_kit {
 		bool rects_intersect(float ax, float ay, float aw, float ah, float bx, float by, float bw, float bh)
 		{
 			return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+		}
+
+		std::string lower_ascii(std::string text)
+		{
+			for (char& ch : text)
+			{
+				const unsigned char value = (unsigned char)ch;
+				if (value < 128)
+					ch = (char)std::tolower(value);
+			}
+			return text;
+		}
+
+		bool contains_ci(const std::string& haystack, const std::string& needle)
+		{
+			if (needle.empty())
+				return true;
+			return lower_ascii(haystack).find(lower_ascii(needle)) != std::string::npos;
+		}
+
+		bool equals_ci(const std::string& lhs, const std::string& rhs)
+		{
+			return lower_ascii(lhs) == lower_ascii(rhs);
+		}
+
+		std::string trim_ascii(std::string text)
+		{
+			std::size_t begin = 0;
+			while (begin < text.size() && std::isspace((unsigned char)text[begin]))
+				++begin;
+			std::size_t end = text.size();
+			while (end > begin && std::isspace((unsigned char)text[end - 1]))
+				--end;
+			return text.substr(begin, end - begin);
 		}
 
 	} /* namespace */
@@ -134,15 +172,33 @@ namespace vgui_editor_kit {
 		vgui_widget_set_layout(header_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_align_items(header_, VGUI_ALIGN_CENTER);
 		vgui_widget_set_padding(header_, 0, 0, 0, 0);
-		vgui_widget_set_gap(header_, 0);
+		vgui_widget_set_gap(header_, 2);
 		vgui_widget_set_background(header_, 0);
 		vgui_widget_set_border(header_, 0, 0);
 
-		vgui_widget* spacer = vgui_widget_add(header_, VGUI_PANEL, nullptr);
-		vgui_widget_set_grow(spacer, 1.0f);
-		vgui_widget_set_min_size(spacer, 1, 1);
-		vgui_widget_set_background(spacer, 0);
-		vgui_widget_set_border(spacer, 0, 0);
+		back_button_ = std::make_unique<icon_button>();
+		back_button_->build(header_, "<");
+		back_button_->set_tooltip("Back");
+		back_button_->set_on_click([this]() { (void)go_back(); });
+		forward_button_ = std::make_unique<icon_button>();
+		forward_button_->build(header_, ">");
+		forward_button_->set_tooltip("Forward");
+		forward_button_->set_on_click([this]() { (void)go_forward(); });
+		reload_button_ = std::make_unique<icon_button>();
+		reload_button_->build(header_, "R");
+		reload_button_->set_tooltip("Refresh");
+		reload_button_->set_on_click([this]() { (void)reload(); });
+
+		breadcrumb_ = std::make_unique<breadcrumb>();
+		breadcrumb_->build(header_);
+		vgui_widget* crumbs = breadcrumb_->widget();
+		vgui_widget_set_grow(crumbs, 1.0f);
+		vgui_widget_set_min_size(crumbs, 60, 24);
+		breadcrumb_->set_on_navigate([this](std::size_t index, const std::string& id) {
+			if (!breadcrumb_ || index + 1 >= breadcrumb_->count())
+				return;
+			(void)navigate_to(id);
+		});
 
 		view_switch_ = std::make_unique<segmented_control>();
 		view_switch_->build(header_);
@@ -150,15 +206,62 @@ namespace vgui_editor_kit {
 		(void)view_switch_->add_segment("Grid");
 		view_switch_->set_on_change([this](std::size_t index) { set_view(index == 1 ? view_mode::grid : view_mode::list); });
 		view_switch_->set_selected(view_ == view_mode::list ? 0 : 1);
-		vgui_widget_set_visible(header_, switch_visible_ ? 1 : 0);
+		vgui_widget_set_visible(view_switch_->widget(), switch_visible_ ? 1 : 0);
+		vgui_widget_set_visible(header_, navigation_visible_ ? 1 : 0);
+
+		filter_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(filter_row_, VGUI_LAYOUT_ROW);
+		vgui_widget_set_align_items(filter_row_, VGUI_ALIGN_CENTER);
+		vgui_widget_set_padding(filter_row_, 0, 0, 0, 0);
+		vgui_widget_set_gap(filter_row_, 4);
+		vgui_widget_set_background(filter_row_, 0);
+		vgui_widget_set_border(filter_row_, 0, 0);
+
+		search_ = std::make_unique<search_box>();
+		search_->build(filter_row_, "Search assets");
+		vgui_widget_set_grow(search_->widget(), 1.0f);
+		vgui_widget_set_min_size(search_->widget(), 100, 24);
+		search_->set_on_change([this](const std::string& text) {
+			if (search_query_ == text)
+				return;
+			search_query_ = text;
+			search_pending_ = true;
+			search_elapsed_ = 0.0f;
+			if (search_debounce_ <= 0.0f)
+				apply_search();
+		});
+		search_->set_on_submit([this](const std::string& text) {
+			search_query_ = text;
+			apply_search();
+		});
+		if (!search_query_.empty())
+			search_->set_text(search_query_);
+
+		type_combo_ = std::make_unique<combo_box>();
+		type_combo_->set_id("asset_type_filter");
+		type_combo_->build(filter_row_);
+		vgui_widget_set_size(type_combo_->widget(), 104, 24);
+		vgui_widget_set_min_size(type_combo_->widget(), 84, 24);
+		type_combo_->set_placeholder("All types");
+		type_combo_->set_on_change([this](int, const std::string& value) { set_type_filter(value); });
+
+		/* A zero-size custom widget would be culled before draw, so the
+		 * debounce driver is a 2x2 transparent ticker in the filter row. */
+		ticker_ = vgui_widget_add(filter_row_, VGUI_CUSTOM, nullptr);
+		vgui_widget_set_size(ticker_, 2, 2);
+		vgui_widget_set_min_size(ticker_, 1, 1);
+		vgui_widget_set_background(ticker_, 0);
+		vgui_widget_set_border(ticker_, 0, 0);
+		vgui_custom_set_draw(ticker_, &asset_browser::on_tick_draw, this);
 
 		list_ = vgui_widget_add(root_, VGUI_LIST, nullptr);
 		vgui_widget_set_grow(list_, 1.0f);
 		vgui_widget_set_min_size(list_, 160, 80);
 		vgui_widget_set_size(list_, 0, 0);
 		vgui_list_set_selection_mode(list_, VGUI_SELECTION_MULTIPLE);
-		vgui_list_set_empty_text(list_, "No assets");
+		vgui_list_set_empty_text(list_, empty_state_.c_str());
 		vgui_list_on_select(list_, &asset_browser::on_select, this);
+		vgui_list_on_activate(list_, &asset_browser::on_activate, this);
 
 		vgui_row_source row_source = {};
 		row_source.row_count = &asset_browser::source_row_count;
@@ -202,8 +305,12 @@ namespace vgui_editor_kit {
 		if (row_drag_enabled_)
 			enable_row_drag();
 
+		update_breadcrumb();
+		update_type_combo();
+		update_filter_visibility();
 		refresh();
 		sync_list_selection();
+		update_history_buttons();
 	}
 
 	void asset_browser::clear()
@@ -231,7 +338,7 @@ namespace vgui_editor_kit {
 
 	bool asset_browser::set_item_thumbnail(vgui_item_id item, vgui_texture* texture)
 	{
-		const int index = index_of(item);
+		const int index = base_index_of(item);
 		if (index < 0)
 			return false;
 		if (virtual_mode_)
@@ -251,7 +358,7 @@ namespace vgui_editor_kit {
 
 	vgui_texture* asset_browser::item_thumbnail(vgui_item_id item) const
 	{
-		const int index = index_of(item);
+		const int index = base_index_of(item);
 		if (index < 0)
 			return nullptr;
 		if (!virtual_mode_)
@@ -261,7 +368,7 @@ namespace vgui_editor_kit {
 		if (found != virtual_thumbs_.end())
 			return found->second;
 		asset_info info;
-		if (!item_at(index, &info))
+		if (!base_item_at(index, &info))
 			return nullptr;
 		return info.thumbnail;
 	}
@@ -289,17 +396,8 @@ namespace vgui_editor_kit {
 		reset_model(false);
 	}
 
-	void asset_browser::reset_model(bool detach_source)
+	void asset_browser::clear_model_data()
 	{
-		if (detach_source)
-		{
-			source_ = {};
-			pending_source_ = {};
-			has_pending_source_ = false;
-			virtual_mode_ = false;
-		}
-
-		const bool had_selection = !selection_.empty();
 		items_.clear();
 		item_index_.clear();
 		next_item_id_ = 1;
@@ -317,15 +415,89 @@ namespace vgui_editor_kit {
 		drag_name_.clear();
 		marquee_active_ = false;
 		marquee_base_.clear();
+	}
 
-		if (list_)
+	void asset_browser::reset_model(bool detach_source, bool notify)
+	{
+		if (detach_source)
 		{
-			vgui_list_source_changed(list_);
-			sync_list_selection();
+			source_ = {};
+			pending_source_ = {};
+			has_pending_source_ = false;
+			virtual_mode_ = false;
 		}
+
+		const bool had_selection = !selection_.empty();
+		clear_model_data();
 		refresh();
-		if (had_selection)
+		sync_list_selection();
+		if (had_selection && notify)
 			notify_selection();
+	}
+
+	bool asset_browser::install_directory(const asset_directory& directory)
+	{
+		if (source_valid(directory.source))
+		{
+			source_ = directory.source;
+			virtual_mode_ = true;
+			return true;
+		}
+
+		for (const asset_info& info : directory.items)
+		{
+			item_entry entry;
+			entry.id = info.id;
+			if (entry.id == 0 || item_index_.find(entry.id) != item_index_.end())
+			{
+				do
+				{
+					entry.id = next_item_id_++;
+				} while (entry.id == 0 || item_index_.find(entry.id) != item_index_.end());
+			}
+			else if (entry.id >= next_item_id_)
+			{
+				next_item_id_ = entry.id + 1;
+				if (next_item_id_ == 0)
+					next_item_id_ = 1;
+			}
+			entry.name = info.name;
+			entry.type = info.type;
+			entry.thumbnail = info.thumbnail;
+			item_index_[entry.id] = (int)items_.size();
+			items_.push_back(std::move(entry));
+		}
+		return false;
+	}
+
+	void asset_browser::apply_directory(const std::string& path_id, const asset_directory& directory)
+	{
+		clear_model_data();
+		source_ = {};
+		pending_source_ = {};
+		has_pending_source_ = false;
+		virtual_mode_ = false;
+		directory_empty_text_ = directory.empty_text.empty()
+			? default_empty_text_ : directory.empty_text;
+
+		(void)install_directory(directory);
+
+		current_path_id_ = path_id;
+		has_location_ = true;
+		path_items_ = directory.path;
+		if (path_items_.empty() && !path_id.empty())
+			path_items_.push_back({ path_id, path_id });
+		update_breadcrumb();
+
+		refresh();
+		sync_list_selection();
+		if (list_)
+			vgui_panel_set_scroll(list_, 0.0f, 0.0f);
+		if (scroll_)
+			vgui_panel_set_scroll(scroll_, 0.0f, 0.0f);
+		update_history_buttons();
+		if (path_callback_)
+			path_callback_(current_path_id_);
 	}
 
 	bool asset_browser::is_virtual() const noexcept
@@ -333,7 +505,7 @@ namespace vgui_editor_kit {
 		return virtual_mode_;
 	}
 
-	int asset_browser::item_count() const noexcept
+	int asset_browser::base_item_count() const noexcept
 	{
 		if (!virtual_mode_)
 			return (int)items_.size();
@@ -342,9 +514,9 @@ namespace vgui_editor_kit {
 		return std::max(0, source_.count(source_.user));
 	}
 
-	bool asset_browser::item_at(int index, asset_info* out) const
+	bool asset_browser::base_item_at(int index, asset_info* out) const
 	{
-		if (!out || index < 0 || index >= item_count())
+		if (!out || index < 0 || index >= base_item_count())
 			return false;
 		if (!virtual_mode_)
 		{
@@ -359,7 +531,7 @@ namespace vgui_editor_kit {
 		if (!source_.item_at || !source_.item_at(source_.user, index, out))
 			return false;
 		if (out->id == 0)
-			out->id = id_at(index);
+			out->id = base_id_at(index);
 		auto thumb = virtual_thumbs_.end();
 		if (out->id)
 			thumb = virtual_thumbs_.find(out->id);
@@ -368,9 +540,9 @@ namespace vgui_editor_kit {
 		return true;
 	}
 
-	vgui_item_id asset_browser::id_at(int index) const noexcept
+	vgui_item_id asset_browser::base_id_at(int index) const noexcept
 	{
-		if (index < 0 || index >= item_count())
+		if (index < 0 || index >= base_item_count())
 			return 0;
 		if (!virtual_mode_)
 			return items_[(std::size_t)index].id;
@@ -379,7 +551,7 @@ namespace vgui_editor_kit {
 		return (vgui_item_id)index + 1;
 	}
 
-	int asset_browser::index_of(vgui_item_id item) const noexcept
+	int asset_browser::base_index_of(vgui_item_id item) const noexcept
 	{
 		if (item == 0)
 			return -1;
@@ -388,7 +560,7 @@ namespace vgui_editor_kit {
 			auto found = item_index_.find(item);
 			return found == item_index_.end() ? -1 : found->second;
 		}
-		const int count = item_count();
+		const int count = base_item_count();
 		if (source_.index_of)
 			return source_.index_of(source_.user, item);
 		if (!source_.id_at)
@@ -403,6 +575,83 @@ namespace vgui_editor_kit {
 				return i;
 		}
 		return -1;
+	}
+
+	int asset_browser::view_index_to_base(int index) const noexcept
+	{
+		if (index < 0)
+			return -1;
+		if (!filtered_)
+			return index < base_item_count() ? index : -1;
+		if (index >= (int)view_indices_.size())
+			return -1;
+		return view_indices_[(std::size_t)index];
+	}
+
+	int asset_browser::base_index_to_view(int index) const noexcept
+	{
+		if (index < 0)
+			return -1;
+		if (!filtered_)
+			return index < base_item_count() ? index : -1;
+		auto found = std::lower_bound(view_indices_.begin(), view_indices_.end(), index);
+		if (found == view_indices_.end() || *found != index)
+			return -1;
+		return (int)(found - view_indices_.begin());
+	}
+
+	void asset_browser::rebuild_view_indices()
+	{
+		view_indices_.clear();
+		const bool has_text = !applied_search_.empty();
+		const bool has_type = !type_filter_.empty();
+		filtered_ = has_text || has_type;
+		if (!filtered_)
+			return;
+
+		const int count = base_item_count();
+		view_indices_.reserve((std::size_t)count);
+		for (int i = 0; i < count; ++i)
+		{
+			asset_info info;
+			if (!base_item_at(i, &info))
+				continue;
+			if (has_type && !equals_ci(info.type, type_filter_))
+				continue;
+			if (has_text && !contains_ci(info.name, applied_search_) &&
+				!contains_ci(info.type, applied_search_))
+				continue;
+			view_indices_.push_back(i);
+		}
+	}
+
+	int asset_browser::item_count() const noexcept
+	{
+		if (!filtered_)
+			return base_item_count();
+		return (int)view_indices_.size();
+	}
+
+	int asset_browser::total_item_count() const noexcept
+	{
+		return base_item_count();
+	}
+
+	bool asset_browser::item_at(int index, asset_info* out) const
+	{
+		const int base = view_index_to_base(index);
+		return base >= 0 && base_item_at(base, out);
+	}
+
+	vgui_item_id asset_browser::id_at(int index) const noexcept
+	{
+		const int base = view_index_to_base(index);
+		return base >= 0 ? base_id_at(base) : 0;
+	}
+
+	int asset_browser::index_of(vgui_item_id item) const noexcept
+	{
+		return base_index_to_view(base_index_of(item));
 	}
 
 	asset_browser::view_mode asset_browser::view() const noexcept
@@ -457,8 +706,8 @@ namespace vgui_editor_kit {
 	void asset_browser::set_view_switch_visible(bool visible)
 	{
 		switch_visible_ = visible;
-		if (header_)
-			vgui_widget_set_visible(header_, visible ? 1 : 0);
+		if (view_switch_)
+			vgui_widget_set_visible(view_switch_->widget(), visible ? 1 : 0);
 	}
 
 	bool asset_browser::view_switch_visible() const noexcept
@@ -601,6 +850,8 @@ namespace vgui_editor_kit {
 
 	void asset_browser::refresh()
 	{
+		rebuild_view_indices();
+		update_empty_text();
 		if (!root_)
 			return;
 		update_grid_metrics();
@@ -612,6 +863,392 @@ namespace vgui_editor_kit {
 		}
 		if (list_)
 			vgui_list_source_changed(list_);
+	}
+
+	void asset_browser::set_navigate_handler(navigate_handler handler)
+	{
+		navigate_handler_ = std::move(handler);
+		update_history_buttons();
+	}
+
+	void asset_browser::set_path_listener(path_listener listener)
+	{
+		path_callback_ = std::move(listener);
+	}
+
+	asset_browser::nav_state asset_browser::capture_navigation_state() const
+	{
+		nav_state state;
+		state.path_id = current_path_id_;
+		state.selection = selection_;
+		state.primary = primary_;
+		state.cursor = cursor();
+		state.anchor = anchor_index_;
+		if (list_)
+			vgui_panel_get_scroll(list_, nullptr, &state.list_scroll);
+		if (scroll_)
+			vgui_panel_get_scroll(scroll_, nullptr, &state.grid_scroll);
+		return state;
+	}
+
+	void asset_browser::restore_navigation_state(const nav_state& state, bool notify)
+	{
+		std::vector<vgui_item_id> items;
+		items.reserve(state.selection.size());
+		for (vgui_item_id item : state.selection)
+		{
+			if (base_index_of(item) >= 0)
+				items.push_back(item);
+		}
+
+		vgui_item_id primary = state.primary;
+		if (base_index_of(primary) < 0)
+			primary = items.empty() ? 0 : items.front();
+		vgui_item_id cursor = state.cursor;
+		if (base_index_of(cursor) < 0)
+			cursor = primary;
+		int anchor = primary ? index_of(primary) : -1;
+		if (state.anchor >= 0 && state.anchor < item_count())
+			anchor = state.anchor;
+
+		apply_selection(std::move(items), primary, anchor, false);
+		cursor_ = cursor;
+		if (list_ && cursor)
+			vgui_list_set_cursor(list_, cursor);
+		if (list_)
+			vgui_panel_set_scroll(list_, 0.0f, state.list_scroll);
+		if (scroll_)
+			vgui_panel_set_scroll(scroll_, 0.0f, state.grid_scroll);
+		if (notify)
+			notify_selection();
+	}
+
+	void asset_browser::update_breadcrumb()
+	{
+		if (!breadcrumb_)
+			return;
+		std::vector<breadcrumb_item> items;
+		items.reserve(path_items_.size());
+		for (const asset_path_item& segment : path_items_)
+			items.push_back({ segment.label, segment.id });
+		breadcrumb_->set_items(std::move(items));
+	}
+
+	void asset_browser::update_history_buttons()
+	{
+		if (back_button_)
+			back_button_->set_enabled(navigate_handler_ && !back_stack_.empty());
+		if (forward_button_)
+			forward_button_->set_enabled(navigate_handler_ && !forward_stack_.empty());
+		if (reload_button_)
+			reload_button_->set_enabled(has_location_ && navigate_handler_ != nullptr);
+	}
+
+	bool asset_browser::navigate_to(const std::string& path_id)
+	{
+		if (!navigate_handler_)
+			return false;
+		/* The caller may pass a breadcrumb's internal id; keep it alive because
+		 * apply_directory() rebuilds the strip during this call. */
+		const std::string target = path_id;
+		if (has_location_ && current_path_id_ == target)
+			return true;
+
+		asset_directory directory;
+		if (!navigate_handler_(target, &directory))
+			return false;
+
+		const bool had_location = has_location_;
+		const bool had_selection = !selection_.empty();
+		nav_state previous = capture_navigation_state();
+		apply_directory(target, directory);
+		if (had_location)
+			back_stack_.push_back(std::move(previous));
+		forward_stack_.clear();
+		update_history_buttons();
+		if (had_selection)
+			notify_selection();
+		return true;
+	}
+
+	bool asset_browser::can_go_back() const noexcept
+	{
+		return navigate_handler_ != nullptr && !back_stack_.empty();
+	}
+
+	bool asset_browser::can_go_forward() const noexcept
+	{
+		return navigate_handler_ != nullptr && !forward_stack_.empty();
+	}
+
+	bool asset_browser::go_back()
+	{
+		if (!navigate_handler_ || back_stack_.empty())
+			return false;
+		const nav_state target = back_stack_.back();
+		asset_directory directory;
+		if (!navigate_handler_(target.path_id, &directory))
+			return false;
+
+		nav_state current = capture_navigation_state();
+		back_stack_.pop_back();
+		forward_stack_.push_back(std::move(current));
+		apply_directory(target.path_id, directory);
+		restore_navigation_state(target, true);
+		update_history_buttons();
+		return true;
+	}
+
+	bool asset_browser::go_forward()
+	{
+		if (!navigate_handler_ || forward_stack_.empty())
+			return false;
+		const nav_state target = forward_stack_.back();
+		asset_directory directory;
+		if (!navigate_handler_(target.path_id, &directory))
+			return false;
+
+		nav_state current = capture_navigation_state();
+		forward_stack_.pop_back();
+		back_stack_.push_back(std::move(current));
+		apply_directory(target.path_id, directory);
+		restore_navigation_state(target, true);
+		update_history_buttons();
+		return true;
+	}
+
+	bool asset_browser::reload()
+	{
+		if (!navigate_handler_ || !has_location_)
+			return false;
+		asset_directory directory;
+		if (!navigate_handler_(current_path_id_, &directory))
+			return false;
+
+		const nav_state state = capture_navigation_state();
+		apply_directory(current_path_id_, directory);
+		restore_navigation_state(state, true);
+		update_history_buttons();
+		return true;
+	}
+
+	const std::string& asset_browser::current_path() const noexcept
+	{
+		return current_path_id_;
+	}
+
+	void asset_browser::set_navigation_visible(bool visible)
+	{
+		navigation_visible_ = visible;
+		if (header_)
+			vgui_widget_set_visible(header_, visible ? 1 : 0);
+	}
+
+	bool asset_browser::navigation_visible() const noexcept
+	{
+		return navigation_visible_;
+	}
+
+	void asset_browser::set_search_debounce(float seconds)
+	{
+		search_debounce_ = std::max(0.0f, seconds);
+		if (search_debounce_ <= 0.0f && search_pending_)
+			apply_search();
+	}
+
+	float asset_browser::search_debounce() const noexcept
+	{
+		return search_debounce_;
+	}
+
+	void asset_browser::set_search_text(std::string text, bool immediate)
+	{
+		search_query_ = std::move(text);
+		if (search_)
+			search_->set_text(search_query_);
+		if (immediate || search_debounce_ <= 0.0f)
+		{
+			apply_search();
+			return;
+		}
+		search_pending_ = true;
+		search_elapsed_ = 0.0f;
+	}
+
+	const std::string& asset_browser::search_text() const noexcept
+	{
+		return search_query_;
+	}
+
+	bool asset_browser::search_pending() const noexcept
+	{
+		return search_pending_;
+	}
+
+	void asset_browser::apply_search()
+	{
+		search_pending_ = false;
+		search_elapsed_ = 0.0f;
+		const std::string query = trim_ascii(search_query_);
+		if (query == applied_search_)
+			return;
+
+		applied_search_ = query;
+		refresh();
+		sync_list_selection();
+		if (list_)
+			vgui_panel_set_scroll(list_, 0.0f, 0.0f);
+		if (scroll_)
+			vgui_panel_set_scroll(scroll_, 0.0f, 0.0f);
+	}
+
+	bool asset_browser::filter_active() const noexcept
+	{
+		return !applied_search_.empty() || !type_filter_.empty();
+	}
+
+	void asset_browser::set_empty_texts(std::string empty, std::string no_matches)
+	{
+		default_empty_text_ = empty.empty() ? "No assets" : std::move(empty);
+		directory_empty_text_ = default_empty_text_;
+		no_matches_text_ = no_matches.empty() ? "No matches" : std::move(no_matches);
+		update_empty_text();
+	}
+
+	const std::string& asset_browser::empty_state_text() const noexcept
+	{
+		return empty_state_;
+	}
+
+	void asset_browser::tick(float delta_time)
+	{
+		if (!search_pending_)
+			return;
+		if (search_debounce_ <= 0.0f)
+		{
+			apply_search();
+			return;
+		}
+		search_elapsed_ += std::max(0.0f, delta_time);
+		if (search_elapsed_ >= search_debounce_)
+			apply_search();
+	}
+
+	void asset_browser::set_type_options(std::vector<std::string> types)
+	{
+		type_options_ = std::move(types);
+		bool found = type_filter_.empty();
+		for (const std::string& type : type_options_)
+		{
+			if (equals_ci(type, type_filter_))
+			{
+				type_filter_ = type;
+				found = true;
+				break;
+			}
+		}
+		if (!found)
+			type_filter_.clear();
+		update_type_combo();
+		if (!found)
+		{
+			refresh();
+			sync_list_selection();
+			if (list_)
+				vgui_panel_set_scroll(list_, 0.0f, 0.0f);
+			if (scroll_)
+				vgui_panel_set_scroll(scroll_, 0.0f, 0.0f);
+		}
+	}
+
+	const std::vector<std::string>& asset_browser::type_options() const noexcept
+	{
+		return type_options_;
+	}
+
+	void asset_browser::set_type_filter(std::string type)
+	{
+		type = trim_ascii(std::move(type));
+		if (!type.empty())
+		{
+			for (const std::string& option : type_options_)
+			{
+				if (equals_ci(option, type))
+				{
+					type = option;
+					break;
+				}
+			}
+		}
+		if (type == type_filter_)
+		{
+			if (type_combo_)
+				type_combo_->set_value(type);
+			return;
+		}
+		type_filter_ = std::move(type);
+		if (type_combo_)
+			type_combo_->set_value(type_filter_);
+		refresh();
+		sync_list_selection();
+		if (list_)
+			vgui_panel_set_scroll(list_, 0.0f, 0.0f);
+		if (scroll_)
+			vgui_panel_set_scroll(scroll_, 0.0f, 0.0f);
+	}
+
+	const std::string& asset_browser::type_filter() const noexcept
+	{
+		return type_filter_;
+	}
+
+	void asset_browser::update_type_combo()
+	{
+		if (!type_combo_)
+		{
+			update_filter_visibility();
+			return;
+		}
+		std::vector<combo_box::item> items;
+		items.reserve(type_options_.size() + 1);
+		items.push_back({ "All types", std::string(), true });
+		for (const std::string& type : type_options_)
+			items.push_back({ type, type, true });
+		type_combo_->set_items(std::move(items));
+		if (!type_combo_->set_value(type_filter_) && !type_filter_.empty())
+			type_combo_->clear_selection();
+		update_filter_visibility();
+	}
+
+	void asset_browser::update_filter_visibility()
+	{
+		if (type_combo_)
+		{
+			vgui_widget* widget = type_combo_->widget();
+			const bool visible = type_filter_visible_ && !type_options_.empty();
+			vgui_widget_set_visible(widget, visible ? 1 : 0);
+		}
+	}
+
+	void asset_browser::update_empty_text()
+	{
+		if (item_count() == 0 && base_item_count() > 0 && filtered_)
+			empty_state_ = no_matches_text_;
+		else
+			empty_state_ = directory_empty_text_;
+		if (list_)
+			vgui_list_set_empty_text(list_, empty_state_.c_str());
+	}
+
+	void asset_browser::set_type_filter_visible(bool visible)
+	{
+		type_filter_visible_ = visible;
+		update_filter_visibility();
+	}
+
+	bool asset_browser::type_filter_visible() const noexcept
+	{
+		return type_filter_visible_;
 	}
 
 	vgui_item_id asset_browser::selected() const noexcept
@@ -679,6 +1316,18 @@ namespace vgui_editor_kit {
 		rename_handler_ = std::move(handler);
 	}
 
+	void asset_browser::set_activate_listener(activate_listener listener)
+	{
+		activate_listener_ = std::move(listener);
+	}
+
+	void asset_browser::activate_selected()
+	{
+		const vgui_item_id item = selected();
+		if (item && activate_listener_)
+			activate_listener_(item);
+	}
+
 	bool asset_browser::rename_item(vgui_item_id item, const std::string& name)
 	{
 		if (!list_ || item == 0)
@@ -705,7 +1354,7 @@ namespace vgui_editor_kit {
 	{
 		if (!rename_handler_ || item == 0)
 			return false;
-		const int index = index_of(item);
+		const int index = base_index_of(item);
 		if (index < 0)
 			return false;
 		if (!rename_handler_(item, name))
@@ -713,6 +1362,7 @@ namespace vgui_editor_kit {
 		if (!virtual_mode_)
 			items_[(std::size_t)index].name = name;
 		refresh();
+		sync_list_selection();
 		return true;
 	}
 
@@ -760,6 +1410,21 @@ namespace vgui_editor_kit {
 		return view_switch_.get();
 	}
 
+	breadcrumb* asset_browser::path() const noexcept
+	{
+		return breadcrumb_.get();
+	}
+
+	search_box* asset_browser::search() const noexcept
+	{
+		return search_.get();
+	}
+
+	combo_box* asset_browser::type_combo() const noexcept
+	{
+		return type_combo_.get();
+	}
+
 	void asset_browser::update_grid_metrics()
 	{
 		if (!grid_)
@@ -770,7 +1435,7 @@ namespace vgui_editor_kit {
 		const int rows = count > 0 ? (count + metrics.columns - 1) / metrics.columns : 0;
 		const float content_h = rows > 0
 			? metrics.pad * 2.0f + (float)rows * metrics.cell_h + (float)(rows - 1) * metrics.gap
-			: 0.0f;
+			: available_height();
 		const bool width_changed = std::fabs(width - last_grid_width_) > 0.5f;
 		const bool height_changed = std::fabs(content_h - grid_content_h_) > 0.5f;
 		last_grid_width_ = width;
@@ -869,7 +1534,7 @@ namespace vgui_editor_kit {
 		const int count = item_count();
 		if (count <= 0)
 		{
-			vgui_custom_draw_text(grid_, cb, vg, "No assets", abs_x, abs_y, abs_w, std::min(abs_h, available_height()), theme.disabled ? theme.disabled : theme.text, 0.5f, 0.5f);
+			vgui_custom_draw_text(grid_, cb, vg, empty_state_.c_str(), abs_x, abs_y, abs_w, std::min(abs_h, available_height()), theme.disabled ? theme.disabled : theme.text, 0.5f, 0.5f);
 			return;
 		}
 
@@ -1137,8 +1802,7 @@ namespace vgui_editor_kit {
 			if (index_of(item) >= 0)
 				vgui_list_select(list_, item, 1);
 		}
-		if (cursor_ && index_of(cursor_) >= 0)
-			vgui_list_set_cursor(list_, cursor_);
+		vgui_list_set_cursor(list_, cursor_ && index_of(cursor_) >= 0 ? cursor_ : 0);
 		syncing_ = false;
 	}
 
@@ -1215,6 +1879,29 @@ namespace vgui_editor_kit {
 		if (self->syncing_)
 			return;
 		self->update_primary_from_list(item, selected);
+	}
+
+	void asset_browser::on_activate(vgui_widget* widget, vgui_item_id item, void* user)
+	{
+		(void)widget;
+		if (!user || !item)
+			return;
+		auto* self = static_cast<asset_browser*>(user);
+		if (self->activate_listener_)
+			self->activate_listener_(item);
+	}
+
+	void asset_browser::on_tick_draw(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg, float abs_x, float abs_y, float abs_w, float abs_h, float delta_time, void* user)
+	{
+		(void)widget;
+		(void)cb;
+		(void)vg;
+		(void)abs_x;
+		(void)abs_y;
+		(void)abs_w;
+		(void)abs_h;
+		if (user)
+			static_cast<asset_browser*>(user)->tick(delta_time);
 	}
 
 	void asset_browser::on_draw(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg, float abs_x, float abs_y, float abs_w, float abs_h, float delta_time, void* user)
@@ -1312,6 +1999,13 @@ namespace vgui_editor_kit {
 
 			self->cursor_ = info.id;
 			self->hover_index_ = index;
+			if (event->clicks >= 2)
+			{
+				self->finish_grid_drag();
+				if (self->activate_listener_)
+					self->activate_listener_(info.id);
+				return 1;
+			}
 			self->drag_pending_ = self->row_drag_enabled_ && !info.name.empty();
 			self->drag_started_ = false;
 			self->drag_item_ = info.id;
@@ -1340,6 +2034,11 @@ namespace vgui_editor_kit {
 			const bool shift = (event->mods & VGUI_MOD_SHIFT) != 0;
 			const bool ctrl = (event->mods & VGUI_MOD_CTRL) != 0;
 			const int count = self->item_count();
+			if (event->key == VGUI_KEY_ENTER)
+			{
+				self->activate_selected();
+				return 1;
+			}
 			if (ctrl && (event->key == 'A' || event->key == 'a'))
 			{
 				if (count <= 0)

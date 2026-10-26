@@ -5,6 +5,8 @@
 //   * editor_shell 外壳(Dock + 菜单 + 工具栏 + 状态栏 + 布局持久化)
 //   * Outliner:类型图标、可见性/锁定行内按钮、F2/双击行内重命名、
 //     拖放重排/改父子(含多选)、名称过滤高亮、双向选中同步、右键菜单
+//   * Assets:Breadcrumb/前进后退/刷新、宿主目录、双击进入文件夹、
+//     防抖搜索与类型过滤
 //   * 命令栈:移动/重命名/删除/新建/复制全部可撤销
 //
 // 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
@@ -145,6 +147,8 @@ struct editor_state
 	game_scene scene;
 	editor_context* context = nullptr;
 	editor_shell* shell = nullptr;
+	/* A02 资产目录由宿主提供,浏览器只按 path id 取快照。 */
+	std::map<std::string, asset_browser::asset_directory> asset_directories;
 	/* 资产网格的 CPU 缩略图由示例持有,shell 销毁后统一释放。 */
 	std::vector<vgui_texture*> asset_thumbnails;
 
@@ -568,38 +572,106 @@ static void setup_editor(vgui_context* ui)
 		});
 	});
 
-	/* 资产浏览器填充(可拖到属性行/视口)。A01:带缩略图并默认网格视图。 */
+	/* A02 资产浏览器:宿主按 path id 提供面包屑与目录内容,双击文件夹进入;
+	 * 返回/前进恢复该目录的选择与滚动,搜索/类型过滤在本地视图上生效。 */
 	asset_browser& assets = g.shell->assets();
 	static const struct
 	{
 		const char* name;
 		const char* type;
+		const char* folder;
 		vgui_color base;
 		vgui_color accent;
 	} kDemoAssets[] = {
-		{ "Cube.mesh", "Mesh", 0xFFC08A4Eu, 0xFF7A5428u },
-		{ "Sphere.mesh", "Mesh", 0xFF6E9ED8u, 0xFF355C8Cu },
-		{ "Ghost.mesh", "Mesh", 0xFFC8D2E0u, 0xFF6C7888u },
-		{ "icon.png", "Texture", 0xFF6CC878u, 0xFF327E42u },
+		{ "Cube.mesh", "Mesh", "models", 0xFFC08A4Eu, 0xFF7A5428u },
+		{ "Sphere.mesh", "Mesh", "models", 0xFF6E9ED8u, 0xFF355C8Cu },
+		{ "Ghost.mesh", "Mesh", "models", 0xFFC8D2E0u, 0xFF6C7888u },
+		{ "icon.png", "Texture", "textures", 0xFF6CC878u, 0xFF327E42u },
+		{ "checker.png", "Texture", "textures", 0xFFC8A050u, 0xFF705820u },
 	};
+	g.asset_directories.clear();
+
+	asset_browser::asset_directory root;
+	root.path.push_back({ "Root", "root" });
+	root.items.push_back({ "Models", "Folder", nullptr, 1 });
+	root.items.push_back({ "Textures", "Folder", nullptr, 2 });
+	root.items.push_back({ "Empty", "Folder", nullptr, 3 });
+	g.asset_directories["root"] = root;
+
+	asset_browser::asset_directory models;
+	models.path.push_back({ "Root", "root" });
+	models.path.push_back({ "Models", "models" });
+	g.asset_directories["models"] = models;
+
+	asset_browser::asset_directory textures;
+	textures.path.push_back({ "Root", "root" });
+	textures.path.push_back({ "Textures", "textures" });
+	g.asset_directories["textures"] = textures;
+
+	asset_browser::asset_directory empty;
+	empty.path.push_back({ "Root", "root" });
+	empty.path.push_back({ "Empty", "empty" });
+	empty.empty_text = "No assets in this folder";
+	g.asset_directories["empty"] = empty;
+
 	vgui_item_id first_asset = 0;
+	vgui_item_id next_asset = 100;
 	for (const auto& item : kDemoAssets)
 	{
 		vgui_texture* thumb = make_asset_thumbnail(ui, (uint32_t)item.base,
 			(uint32_t)item.accent);
 		if (thumb)
 			g.asset_thumbnails.push_back(thumb);
-		const vgui_item_id id = assets.add_item(item.name, item.type);
-		if (id && thumb)
-			assets.set_item_thumbnail(id, thumb);
+		asset_info info;
+		info.name = item.name;
+		info.type = item.type;
+		info.thumbnail = thumb;
+		info.id = next_asset++;
+		g.asset_directories[item.folder].items.push_back(info);
 		if (!first_asset)
-			first_asset = id;
+			first_asset = info.id;
 	}
+
+	assets.set_type_options({ "Folder", "Mesh", "Texture" });
+	assets.set_navigate_handler([](const std::string& path_id,
+		asset_browser::asset_directory* out) {
+		auto found = g.asset_directories.find(path_id);
+		if (found == g.asset_directories.end() || !out)
+			return false;
+		*out = found->second;
+		return true;
+	});
+	assets.set_path_listener([](const std::string& path_id) {
+		g.shell->set_status("assets: " + path_id);
+	});
+	assets.set_activate_listener([](vgui_item_id item) {
+		if (item == 1)
+		{
+			(void)g.shell->assets().navigate_to("models");
+			return;
+		}
+		if (item == 2)
+		{
+			(void)g.shell->assets().navigate_to("textures");
+			return;
+		}
+		if (item == 3)
+		{
+			(void)g.shell->assets().navigate_to("empty");
+			return;
+		}
+		asset_browser& browser = g.shell->assets();
+		const int index = browser.index_of(item);
+		asset_info info;
+		if (index >= 0 && browser.item_at(index, &info))
+			g.shell->set_status("open asset: " + info.name);
+	});
+	(void)assets.navigate_to("models");
 	if (first_asset)
 		assets.set_selection({ first_asset });
 	assets.set_view(asset_browser::view_mode::grid);
 
-	g.shell->set_status("M2+M3 editor ready: select an object, drag assets");
+	g.shell->set_status("A02: breadcrumb, search/filter, folders; drag assets");
 }
 
 int main()

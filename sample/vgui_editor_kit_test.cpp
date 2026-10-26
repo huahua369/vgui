@@ -5762,6 +5762,283 @@ static int test_asset_browser_views()
 	return 0;
 }
 
+/* A02: breadcrumb 路径/前进后退、回到目录后的选择与滚动恢复、
+ * 防抖搜索/类型过滤/空状态,以及宿主目录提供者。 */
+static int test_asset_browser_navigation()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("asset navigation context");
+	vgui_context_set_size(ui, 1000, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.list.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	std::map<std::string, asset_browser::asset_directory> directories;
+	{
+		asset_browser::asset_directory root;
+		root.path.push_back({ "Root", "root" });
+		root.items.push_back({ "Models", "Folder", nullptr, 101 });
+		root.items.push_back({ "Textures", "Folder", nullptr, 102 });
+		root.items.push_back({ "Empty", "Folder", nullptr, 103 });
+		directories["root"] = root;
+
+		asset_browser::asset_directory models;
+		models.path.push_back({ "Root", "root" });
+		models.path.push_back({ "Models", "models" });
+		for (int i = 0; i < 40; ++i)
+		{
+			asset_info info;
+			info.name = "Model " + std::to_string(i);
+			info.type = i < 32 ? "Mesh" : "Texture";
+			info.id = (vgui_item_id)(2000 + i);
+			models.items.push_back(info);
+		}
+		directories["models"] = models;
+
+		asset_browser::asset_directory textures;
+		textures.path.push_back({ "Root", "root" });
+		textures.path.push_back({ "Textures", "textures" });
+		for (int i = 0; i < 3; ++i)
+		{
+			asset_info info;
+			info.name = "Tex " + std::to_string(i) + ".png";
+			info.type = "Texture";
+			info.id = (vgui_item_id)(3000 + i);
+			textures.items.push_back(info);
+		}
+		directories["textures"] = textures;
+
+		asset_browser::asset_directory empty;
+		empty.path.push_back({ "Root", "root" });
+		empty.path.push_back({ "Empty", "empty" });
+		empty.empty_text = "Nothing here";
+		directories["empty"] = empty;
+
+		asset_browser::asset_directory bare;
+		bare.path.push_back({ "Root", "root" });
+		bare.path.push_back({ "Bare", "bare" });
+		directories["bare"] = bare;
+	}
+
+	{
+		asset_browser assets;
+		assets.build(vgui_root(ui));
+		vgui_widget_set_pos(assets.root(), 20.0f, 20.0f);
+		vgui_widget_set_size(assets.root(), 460.0f, 360.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		std::vector<std::string> resolved;
+		assets.set_navigate_handler([&](const std::string& path_id,
+			asset_browser::asset_directory* out) {
+			resolved.push_back(path_id);
+			auto found = directories.find(path_id);
+			if (found == directories.end() || !out)
+				return false;
+			*out = found->second;
+			return true;
+		});
+		std::vector<std::string> visited;
+		assets.set_path_listener([&](const std::string& path_id) {
+			visited.push_back(path_id);
+		});
+		assets.set_type_options({ "Mesh", "Texture" });
+		assets.set_search_debounce(0.25f);
+		if (!assets.navigation_visible() || !assets.type_filter_visible() ||
+			assets.type_options().size() != 2 || !assets.path() ||
+			!assets.search() || !assets.type_combo() ||
+			assets.search_debounce() != 0.25f)
+			return fail("asset navigation widgets");
+
+		if (!assets.navigate_to("root") || assets.current_path() != "root" ||
+			assets.item_count() != 3 || assets.total_item_count() != 3 ||
+			!assets.path() || assets.path()->count() != 1 ||
+			assets.path()->item(0).label != "Root" ||
+			assets.path()->item(0).id != "root" || visited.size() != 1 ||
+			visited[0] != "root" || assets.can_go_back() ||
+			assets.can_go_forward() || assets.selected() != 0)
+			return fail("asset navigate initial directory");
+		if (assets.navigate_to("missing") ||
+			assets.current_path() != "root" || assets.item_count() != 3)
+			return fail("asset navigate rejection");
+		if (assets.type_combo()->value() != "" ||
+			assets.type_combo()->display_text() != "All types")
+			return fail("asset type combo default");
+
+		if (!assets.navigate_to("models") ||
+			assets.current_path() != "models" || assets.item_count() != 40 ||
+			assets.path()->count() != 2 ||
+			assets.path()->item(1).label != "Models" ||
+			assets.path()->active() != 1 ||
+			!assets.can_go_back() || assets.can_go_forward())
+			return fail("asset navigate models");
+
+		/* 目录内选择 + 列表滚动应成为 models 的历史快照。 */
+		assets.set_selection({ 2003, 2004 });
+		vgui_panel_set_scroll(assets.widget(), 0.0f, 96.0f);
+		if (assets.selected() != 2003 || assets.selection().size() != 2)
+			return fail("asset models selection");
+		if (!assets.navigate_to("textures") ||
+			assets.current_path() != "textures" || assets.item_count() != 3 ||
+			!assets.selection().empty() || !assets.can_go_back() ||
+			assets.path()->count() != 2)
+			return fail("asset navigate textures");
+		if (!assets.go_back() || assets.current_path() != "models" ||
+			assets.selection().size() != 2 || !assets.is_selected(2003) ||
+			!assets.is_selected(2004) || assets.selected() != 2003 ||
+			assets.cursor() != 2003 || !assets.can_go_forward())
+			return fail("asset back restores models selection");
+		float scroll_x = 0.0f, scroll_y = 0.0f;
+		vgui_panel_get_scroll(assets.widget(), &scroll_x, &scroll_y);
+		if (scroll_y < 95.0f || scroll_y > 97.0f)
+			return fail("asset back restores list scroll");
+
+		/* 前进后返回仍应恢复同一快照;面包屑点击也走同一导航路径。 */
+		if (!assets.go_forward() || assets.current_path() != "textures" ||
+			assets.can_go_forward() || assets.selection().size() != 0)
+			return fail("asset forward textures");
+		if (!assets.go_back() || assets.current_path() != "models" ||
+			assets.selection().size() != 2)
+			return fail("asset back after forward");
+		vgui_widget* root_crumb = assets.path()->item_widget(0);
+		float crumb_x = 0.0f, crumb_y = 0.0f;
+		float crumb_w = 0.0f, crumb_h = 0.0f;
+		if (!root_crumb)
+			return fail("asset breadcrumb root widget");
+		vgui_widget_get_rect(root_crumb, &crumb_x, &crumb_y,
+			&crumb_w, &crumb_h);
+		if (crumb_w <= 0.0f || crumb_h <= 0.0f)
+			return fail("asset breadcrumb root rect");
+		const float crumb_press_x = crumb_x + crumb_w * 0.5f;
+		const float crumb_press_y = crumb_y + crumb_h * 0.5f;
+		vgui_input_mouse_move(ui, crumb_press_x, crumb_press_y);
+		vgui_input_mouse_down(ui, 1, crumb_press_x, crumb_press_y, 1);
+		vgui_input_mouse_up(ui, 1, crumb_press_x, crumb_press_y, 1);
+		if (assets.current_path() != "root" || assets.item_count() != 3)
+			return fail("asset breadcrumb navigate root");
+		if (!assets.go_back() || assets.current_path() != "models" ||
+			assets.selection().size() != 2 ||
+			assets.selected() != 2003)
+			return fail("asset breadcrumb history");
+		vgui_panel_get_scroll(assets.widget(), &scroll_x, &scroll_y);
+		if (scroll_y < 95.0f || scroll_y > 97.0f)
+			return fail("asset breadcrumb back restores scroll");
+
+		/* 网格滚动同样随历史快照恢复。 */
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		vgui_panel_set_scroll(assets.scroll(), 0.0f, 420.0f);
+		if (!assets.navigate_to("textures") || !assets.go_back() ||
+			assets.current_path() != "models" ||
+			assets.selection().size() != 2)
+			return fail("asset grid history navigation");
+		vgui_panel_get_scroll(assets.scroll(), &scroll_x, &scroll_y);
+		if (scroll_y < 419.0f || scroll_y > 421.0f)
+			return fail("asset back restores grid scroll");
+		assets.set_view(asset_browser::view_mode::list);
+		if (!vgui_widget_get_visible(assets.widget()) ||
+			assets.selection().size() != 2 || assets.selected() != 2003)
+			return fail("asset list selection after history");
+
+		/* 激活回调供宿主打开文件夹/预览。 */
+		vgui_item_id activated = 0;
+		assets.set_activate_listener([&](vgui_item_id item) {
+			activated = item;
+		});
+		assets.activate_selected();
+		if (activated != 2003)
+			return fail("asset activate selection");
+
+		/* 防抖:输入后先保留旧结果,tick 到阈值才过滤。 */
+		assets.set_search_text("model 1");
+		if (!assets.search_pending() || assets.search_text() != "model 1" ||
+			assets.item_count() != 40 || assets.filter_active())
+			return fail("asset search pending");
+		assets.tick(0.1f);
+		if (!assets.search_pending() || assets.item_count() != 40)
+			return fail("asset search debounce early");
+		assets.tick(0.2f);
+		if (assets.search_pending() || !assets.filter_active() ||
+			assets.item_count() != 11 || assets.total_item_count() != 40)
+			return fail("asset search debounce apply");
+		for (int i = 0; i < assets.item_count(); ++i)
+		{
+			asset_info info;
+			if (!assets.item_at(i, &info) ||
+				info.name.find("Model 1") == std::string::npos)
+				return fail("asset search filtered names");
+		}
+		assets.set_search_text("MODEL 1", true);
+		if (assets.item_count() != 11 || assets.search_pending())
+			return fail("asset search immediate case insensitive");
+		assets.set_search_text("", true);
+		if (assets.item_count() != 40 || assets.filter_active())
+			return fail("asset search clear");
+
+		/* 类型过滤与搜索叠加;全隐藏时显示 No matches。 */
+		assets.set_type_filter("Mesh");
+		if (assets.type_filter() != "Mesh" || assets.item_count() != 32 ||
+			assets.type_combo()->value() != "Mesh")
+			return fail("asset type filter mesh");
+		assets.set_search_text("zzz", true);
+		if (assets.item_count() != 0 ||
+			assets.empty_state_text() != "No matches")
+			return fail("asset filter empty state");
+		assets.set_search_text("", true);
+		if (assets.item_count() != 32)
+			return fail("asset search clears under type filter");
+		assets.set_type_filter("Texture");
+		if (assets.item_count() != 8 || assets.type_combo()->value() != "Texture")
+			return fail("asset type filter texture");
+		assets.set_type_filter("");
+		if (assets.item_count() != 40 || assets.filter_active())
+			return fail("asset type filter clear");
+		assets.set_type_filter_visible(false);
+		if (assets.type_filter_visible() ||
+			vgui_widget_get_visible(assets.type_combo()->widget()))
+			return fail("asset type filter hide");
+		assets.set_type_filter_visible(true);
+		assets.set_type_options({ "Texture", "Mesh" });
+		if (!vgui_widget_get_visible(assets.type_combo()->widget()) ||
+			assets.type_options().size() != 2)
+			return fail("asset type filter show");
+
+		/* reload 不影响历史栈,并尽量保留选择/滚动。 */
+		assets.set_selection({ 2007 });
+		vgui_panel_set_scroll(assets.widget(), 0.0f, 48.0f);
+		const bool reload_back = assets.can_go_back();
+		const bool reload_forward = assets.can_go_forward();
+		if (!assets.reload() || assets.current_path() != "models" ||
+			assets.selection().size() != 1 || !assets.is_selected(2007) ||
+			assets.can_go_back() != reload_back ||
+			assets.can_go_forward() != reload_forward)
+			return fail("asset reload restores state");
+		vgui_panel_get_scroll(assets.widget(), &scroll_x, &scroll_y);
+		if (scroll_y < 47.0f || scroll_y > 49.0f)
+			return fail("asset reload restores list scroll");
+
+		/* 空目录:目录专属文案优先,未提供时使用全局默认。 */
+		assets.set_empty_texts("Global empty", "Global no match");
+		if (!assets.navigate_to("bare") || assets.current_path() != "bare" ||
+			assets.item_count() != 0 || assets.total_item_count() != 0 ||
+			assets.empty_state_text() != "Global empty" ||
+			!assets.selection().empty() ||
+			assets.path()->item(1).id != "bare")
+			return fail("asset empty default text");
+		if (!assets.navigate_to("empty") || assets.current_path() != "empty" ||
+			assets.item_count() != 0 ||
+			assets.empty_state_text() != "Nothing here")
+			return fail("asset empty directory");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -5827,6 +6104,8 @@ int main()
 	if (int rc = test_outliner_context_menu())
 		return rc;
 	if (int rc = test_asset_browser_views())
+		return rc;
+	if (int rc = test_asset_browser_navigation())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

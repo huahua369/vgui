@@ -315,9 +315,10 @@
   - 验收：十万级资产目录只请求可见项；切换视图不丢失选择；键盘导航和框选可用。
   - 已实现：`asset_browser` 自动构建 Grid/List 分段开关（`set_view()`/`set_view_switch_visible()`），列表复用核心行模型，网格在一个滚动面板内只绘制可见单元格；`asset_source` 提供 `count`/`item_at`/`id_at`/`index_of` 懒加载接口，默认 id 为 `index + 1`，十万级目录滚动到中段只查询可见范围；选择集由浏览器统一持有并在两种视图间同步，支持 Ctrl/Shift 多选、方向键/Home/End/PageUp/PageDown、空格反选与 Ctrl+A；网格框选只命中选择可见单元格，单元格拖拽复用 `begin_editor_drag()` 的 asset payload；`set_item_thumbnail()`/`item_thumbnail()` 管理借用纹理，列表行图标与网格缩略图共用。核心新增 `vgui_custom_draw_text()`/`vgui_custom_draw_texture()`，并让列表行纹理同时支持 CPU 纹理（`add_image`）与原生纹理（`add_texture`）。`test_asset_browser_views` 覆盖视图切换选择保持、缩略图/类型元数据、键盘导航、框选、网格拖拽、十万级虚拟源可见范围与懒查询、虚拟缩略图及 detach。
 
-- [ ] **A02 路径导航与搜索**（P0，S/M）
+- [x] **A02 路径导航与搜索**（P0，S/M）（已完成）
   - Breadcrumb、前进/后退、刷新、搜索、类型过滤。
   - 验收：路径跳转正确；返回后恢复滚动位置和选择；搜索有防抖和空状态。
+  - 已实现：`set_navigate_handler(path_id, asset_directory*)` 由宿主按 path id 返回 `{path, items/source, empty_text}`；`asset_browser` 构建返回/前进/刷新按钮与 `breadcrumb`，历史快照记录该目录的选择、主选、光标、锚点和列表/网格滚动，`go_back()`/`go_forward()` 重新解析目录后恢复，`reload()` 只刷新当前目录不改变历史；`set_activate_listener()` 承接列表 Enter/双击与网格 Enter/双击（示例用于进入文件夹）。搜索框输入只更新待处理查询，2x2 ticker 的绘制回调（或无窗口测试的 `tick()`）推进防抖，提交/立即设置则同步生效；过滤通过视图索引映射到原始模型，`item_count()/item_at()/id_at()/index_of()` 均作用于过滤结果，`total_item_count()` 保留原目录计数。类型下拉由 `set_type_options()`/`set_type_filter()` 驱动并与搜索叠加；全隐藏时使用 `No matches`，空目录使用宿主 `empty_text`，网格与列表共用空状态。`test_asset_browser_navigation` 覆盖目录提供者、拒绝跳转、面包屑/前进后退、列表与网格滚动及选择恢复、reload、搜索防抖/大小写不敏感、类型过滤叠加、空目录文案与激活回调。
 
 - [ ] **A03 资产预览**（P0，M）
   - 选中资产预览面板，按类型扩展图片、模型、材质等预览。
@@ -570,12 +571,12 @@ MVP 验收场景：
 - M2 P09：Curve / Gradient 编辑器——`curve_editor`（linear/step/cubic、关键帧与切线拖拽、双击加点、T/V/In/Out spinbox、紧凑预览）、`gradient_editor`（渐变条/色标拖放、双击插点、内嵌 HSV 取色器、4 预设、紧凑预览）；PropertyGrid `property_type::curve/gradient` 共用 popup 会话（实时预览、单条可合并 undo、Esc 回滚、多目标事务）；`vgui_game_editor` 增加 Idle Curve / Color Ramp 可操作路径。
 - M2 收口（P05～P07）：核心 context 级通用弹出面板 `vgui_popup_*`（外点/Esc/滚轮点外关闭并区分原因、菜单/模态互斥、边缘钳制、焦点陷阱、close 回调）；kit `color_picker`（ovg tools 取色器原语 + press/change/commit 手势协议 + `set_color_transform` 颜色空间策略）；PropertyGrid 颜色行经 popup 取色（实时预览、会话单条 undo、Esc 回滚）、`asset`/`object_ref` 引用行（asset_query/browse/filter_check/object_activated/missing 五个宿主接口、行级 drop、清空、丢失态）、`begin_batch/end_batch` 批量事务（`reset_all` 改用）；`vgui_game_editor` 属性面板按选择重建（Name/Tint/颜色/网格/目标行）、资产拖到属性行赋值、丢失资产演示。
 - M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
 - 现有 `vgui_model_test`（656 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. 接入 AssetBrowser 缩略图、搜索和拖入场景的完整落点反馈（A01/A02/A04）。
+1. 继续 AssetBrowser 预览、异步缩略图与拖入场景的完整落点反馈（A03/A04/A05）。
 2. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
 3. P09 Curve/Gradient 编辑器（已完成）；第二批继续 T01 Table/DataGrid 与 A06 资产操作。
