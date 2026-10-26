@@ -21,6 +21,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     toolbar.cpp
     vector_editor.cpp
     viewport_camera.cpp
+    viewport_selection.cpp
     viewport_view.cpp
 )
 

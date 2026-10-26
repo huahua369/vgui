@@ -188,7 +188,7 @@ namespace vgui_editor_kit {
 		 * vgui_context 级注册不注销——后者可能已先被销毁;thunk 靠存活
 		 * 令牌自守。 */
 		if (context_ && selection_sync_id_)
-			context_->remove_selection_listener(selection_sync_id_);
+			context_->remove_selection_set_listener(selection_sync_id_);
 	}
 
 	void outliner_view::build(editor_context& context, vgui_widget* parent)
@@ -1188,50 +1188,79 @@ namespace vgui_editor_kit {
 	{
 		if (!context_ || selection_sync_id_)
 			return;
-		selection_sync_id_ = context_->add_selection_listener(
-			[this](object_id object) { on_context_selection(object); });
+		selection_sync_id_ = context_->add_selection_set_listener(
+			[this](const std::vector<object_id>& ids)
+			{
+				on_context_selection_set(ids);
+			});
 	}
 
-	void outliner_view::on_context_selection(object_id object)
+	void outliner_view::on_context_selection_set(const std::vector<object_id>& ids)
 	{
 		if (!tree_ || syncing_selection_)
 			return;
-		if (object == invalid_object)
+
+		std::vector<std::pair<object_id, vgui_item_id>> items;
+		items.reserve(ids.size());
+		for (object_id object : ids)
 		{
-			vgui_tree_clear_selection(tree_);
+			if (object == invalid_object)
+				continue;
+			vgui_item_id item = 0;
+			if (virtual_)
+			{
+				ensure_vrows();
+				if (vrow_index_.find(object) == vrow_index_.end())
+				{
+					/* 折叠/过滤掉了:展开祖先链再投影。 */
+					std::vector<object_id> path;
+					if (!find_virtual_path(object, path))
+						continue;
+					for (object_id ancestor : path)
+						expanded_.insert(ancestor);
+					invalidate_vrows();
+					ensure_vrows();
+					vgui_tree_source_changed(tree_);
+				}
+				if (vrow_index_.find(object) == vrow_index_.end())
+					continue;	/* 被过滤隐藏 */
+				item = static_cast<vgui_item_id>(object);
+			}
+			else
+			{
+				item = item_for_object(object);
+				if (item == 0)
+					continue;
+				vgui_tree_expand_to(tree_, item);
+			}
+			items.push_back({ object, item });
+		}
+
+		syncing_selection_ = true;
+		vgui_tree_clear_selection(tree_);
+		for (const auto& entry : items)
+			vgui_tree_select(tree_, entry.second, 1);
+		syncing_selection_ = false;
+
+		const object_id primary = context_->selection();
+		if (primary == invalid_object)
+		{
+			last_synced_primary_ = invalid_object;
 			return;
 		}
-		vgui_item_id item = 0;
-		if (virtual_)
+		/* 纯追加时不移动滚动位置；主选变化才展开/滚动到主选。 */
+		if (primary == last_synced_primary_)
+			return;
+		for (const auto& entry : items)
 		{
-			ensure_vrows();
-			if (vrow_index_.find(object) == vrow_index_.end())
-			{
-				/* 折叠/过滤掉了:展开祖先链再投影。 */
-				std::vector<object_id> path;
-				if (!find_virtual_path(object, path))
-					return;
-				for (object_id ancestor : path)
-					expanded_.insert(ancestor);
-				invalidate_vrows();
-				ensure_vrows();
-				vgui_tree_source_changed(tree_);
-			}
-			if (vrow_index_.find(object) == vrow_index_.end())
-				return;	/* 被过滤隐藏 */
-			item = static_cast<vgui_item_id>(object);
+			if (entry.first != primary)
+				continue;
+			vgui_tree_set_cursor(tree_, entry.second);
+			vgui_tree_scroll_to_node(tree_, entry.second,
+				VGUI_SCROLL_ALIGN_NEAREST);
+			break;
 		}
-		else
-		{
-			item = item_for_object(object);
-			if (item == 0)
-				return;
-			vgui_tree_expand_to(tree_, item);
-		}
-		vgui_tree_clear_selection(tree_);
-		vgui_tree_select(tree_, item, 1);
-		vgui_tree_set_cursor(tree_, item);
-		vgui_tree_scroll_to_node(tree_, item, VGUI_SCROLL_ALIGN_NEAREST);
+		last_synced_primary_ = primary;
 	}
 
 	//----------------------------------------------------------------------------
@@ -1805,24 +1834,32 @@ namespace vgui_editor_kit {
 		int selected, void* user)
 	{
 		(void)widget;
-		if (!selected || !user)
+		if (!user)
 			return;
 
 		auto* self = static_cast<outliner_view*>(user);
-		self->selected_ = item;
-
 		object_id object = invalid_object;
 		if (self->tree_)
 			object = self->object_for_item(item);
 
-		if (self->context_)
+		if (selected)
+			self->selected_ = item;
+		else if (self->selected_ == item)
+			self->selected_ = 0;
+
+		if (self->context_ && !self->syncing_selection_)
 		{
-			/* 自己点击推给 context;同步监听里不再回滚滚动。 */
+			/* 多选时把整棵树的选择集推给 context;反选事件也要发布，
+			 * 否则 Ctrl 取消选择无法同步到视口/属性面板。 */
+			const std::vector<object_id> ids = self->selected_objects_in_order();
+			const object_id primary = selected
+				? object : self->context_->selection();
 			self->syncing_selection_ = true;
-			self->context_->set_selection(object);
+			self->context_->set_selection(ids, primary);
 			self->syncing_selection_ = false;
+			self->last_synced_primary_ = self->context_->selection();
 		}
-		if (self->listener_)
+		if (selected && self->listener_)
 			self->listener_(object);
 	}
 

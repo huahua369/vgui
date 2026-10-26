@@ -37,7 +37,12 @@ namespace vgui_editor_kit {
 		register_default_commands();
 		selection_listener_ = context_.add_selection_listener(
 			[this](object_id id) { update_selection_ui(id); });
+		selection_set_listener_ = context_.add_selection_set_listener(
+			[this](const std::vector<object_id>& ids) {
+				update_selection_summary(ids);
+			});
 		update_selection_ui(context_.selection());
+		update_selection_summary(context_.selection_ids());
 	}
 
 	editor_shell::~editor_shell()
@@ -45,6 +50,9 @@ namespace vgui_editor_kit {
 		if (selection_listener_)
 			context_.remove_selection_listener(selection_listener_);
 		selection_listener_ = 0;
+		if (selection_set_listener_)
+			context_.remove_selection_set_listener(selection_set_listener_);
+		selection_set_listener_ = 0;
 		if (asset_selection_listener_)
 			assets_.remove_selection_listener(asset_selection_listener_);
 		asset_selection_listener_ = 0;
@@ -372,6 +380,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(viewport_.widget(), VGUI_ALIGN_STRETCH);
 		/* V02: 视口默认带轨道相机——中/右键导航、滚轮缩放、F 聚焦。 */
 		camera_.attach(viewport_);
+		/* V03: 左键拾取/框选，选择集写入 editor_context 并与 Outliner 同步。 */
+		picking_.attach(viewport_, context_);
 		desc.id = "viewport";
 		desc.title = "VIEWPORT";
 		desc.panel = viewport_panel_;
@@ -435,6 +445,8 @@ namespace vgui_editor_kit {
 		scene_.enable_drag_drop();
 		// M3: Outliner 双向选中同步 + 行内编辑/右键菜单默认可用;宿主可
 		// 通过 scene() 进一步设置 move/rename/action handler。
+		/* V03: 视口多选需要树保持多选模式,Ctrl/Shift 才能在两侧一致。 */
+		scene_.set_multi_select(true);
 		scene_.enable_selection_sync();
 		scene_.enable_inline_rename();
 		scene_.enable_context_menu();
@@ -924,6 +936,16 @@ namespace vgui_editor_kit {
 		return camera_;
 	}
 
+	viewport_selection& editor_shell::picking() noexcept
+	{
+		return picking_;
+	}
+
+	const viewport_selection& editor_shell::picking() const noexcept
+	{
+		return picking_;
+	}
+
 	void editor_shell::set_status(std::string text)
 	{
 		statusbar_.set_message(std::move(text));
@@ -943,6 +965,18 @@ namespace vgui_editor_kit {
 			path.push_back({ label, "object:" + std::to_string(id) });
 		}
 		path_.set_items(std::move(path));
+	}
+
+	void editor_shell::update_selection_summary(const std::vector<object_id>& ids)
+	{
+		if (ids.size() <= 1)
+		{
+			/* 单选保持原有 "Selected: <id>" 文案;0 清空。 */
+			statusbar_.set_selected_object(context_.selection());
+			return;
+		}
+		statusbar_.set_selection_text("Selected: " + std::to_string(ids.size()) +
+			" objects (primary " + std::to_string(context_.selection()) + ")");
 	}
 
 	void editor_shell::on_menu_activate(vgui_widget* menu, vgui_item_id item, void* user)

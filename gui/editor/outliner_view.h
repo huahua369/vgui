@@ -300,7 +300,8 @@ namespace vgui_editor_kit {
 		static void on_menu_activate_thunk(vgui_widget* menu, vgui_item_id item,
 			void* user);
 		static int filter_thunk(vgui_widget* tree, vgui_item_id node, void* user);
-		void on_context_selection(object_id object);
+		/* V03: apply the whole editor_context selection set to the tree. */
+		void on_context_selection_set(const std::vector<object_id>& ids);
 
 		/* vgui_row_source trampolines (virtual mode). */
 		static int vs_row_count(void* user);
@@ -358,8 +359,9 @@ namespace vgui_editor_kit {
 		/* O04. */
 		std::string filter_text_;
 		filter_match_handler filter_match_;
-		editor_context::selection_listener_id selection_sync_id_ = 0;
+		editor_context::selection_set_listener_id selection_sync_id_ = 0;
 		bool syncing_selection_ = false;
+		object_id last_synced_primary_ = invalid_object;
 
 		/* O05 virtual mode. */
 		bool virtual_ = false;

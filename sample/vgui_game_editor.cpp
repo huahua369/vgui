@@ -174,6 +174,8 @@ struct editor_state
 	/* V01: 视口 3D 离屏渲染器与借给 vgui 的原生纹理。 */
 	phase0_renderer* renderer = nullptr;
 	vgui_texture* viewport_texture = nullptr;
+	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
+	object_id pickable_object = invalid_object;
 
 	bool valid_selection() const
 	{
@@ -1070,6 +1072,155 @@ static vgui_item_id item_for(outliner_view& outliner, object_id id)
 	return 0;
 }
 
+//---------------------------------------------------------------------------
+// V03: 示例级拾取——射线/AABB/投影数学留在宿主，kit 只负责手势与选择同步
+//---------------------------------------------------------------------------
+
+static glm::vec3 to_glm(const camera_vec3& value)
+{
+	return glm::vec3(value.x, value.y, value.z);
+}
+
+static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
+	glm::vec3* direction)
+{
+	if (!g.shell || !origin || !direction || query.width <= 0 || query.height <= 0)
+		return false;
+	const viewport_camera& camera = g.shell->camera();
+	const camera_state state = camera.get_state();
+	const float nx = (query.x / (float)query.width) * 2.0f - 1.0f;
+	const float ny = 1.0f - (query.y / (float)query.height) * 2.0f;
+	const float tan_half = std::tan(glm::radians(state.fov_deg) * 0.5f);
+	const float aspect = (float)query.width / (float)query.height;
+	*origin = to_glm(camera.position());
+	*direction = glm::normalize(to_glm(camera.forward()) +
+		to_glm(camera.right()) * (nx * tan_half * aspect) +
+		to_glm(camera.up()) * (ny * tan_half));
+	return true;
+}
+
+static bool ray_hits_cube(const glm::vec3& origin, const glm::vec3& direction)
+{
+	const float lo = -1.75f;
+	const float hi = 1.75f;
+	float t_min = -1e30f;
+	float t_max = 1e30f;
+	for (int axis = 0; axis < 3; ++axis)
+	{
+		const float o = origin[axis];
+		const float d = direction[axis];
+		if (std::fabs(d) < 1e-8f)
+		{
+			if (o < lo || o > hi)
+				return false;
+			continue;
+		}
+		float t1 = (lo - o) / d;
+		float t2 = (hi - o) / d;
+		if (t1 > t2)
+			std::swap(t1, t2);
+		t_min = std::max(t_min, t1);
+		t_max = std::min(t_max, t2);
+		if (t_min > t_max)
+			return false;
+	}
+	return t_max >= 0.0f;
+}
+
+static bool project_cube_box(const camera_state& state, int width, int height,
+	glm::vec4* out)
+{
+	if (!g.shell || !out || width <= 0 || height <= 0)
+		return false;
+	const viewport_camera& camera = g.shell->camera();
+	const glm::mat4 view = glm::lookAt(to_glm(camera.position()),
+		to_glm(state.target), glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::mat4 projection = glm::perspectiveRH_ZO(
+		glm::radians(state.fov_deg), (float)width / (float)height, 0.1f, 100.0f);
+	const glm::mat4 mvp = projection * view;
+	const float extent = 1.75f;
+	float min_x = 1e30f, min_y = 1e30f;
+	float max_x = -1e30f, max_y = -1e30f;
+	for (int i = 0; i < 8; ++i)
+	{
+		const glm::vec4 corner((i & 1) ? extent : -extent,
+			(i & 2) ? extent : -extent,
+			(i & 4) ? extent : -extent, 1.0f);
+		const glm::vec4 clip = mvp * corner;
+		if (clip.w <= 1e-4f)
+			return false;
+		const float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * (float)width;
+		const float sy = (1.0f - ((clip.y / clip.w) * 0.5f + 0.5f)) *
+			(float)height;
+		min_x = std::min(min_x, sx);
+		max_x = std::max(max_x, sx);
+		min_y = std::min(min_y, sy);
+		max_y = std::max(max_y, sy);
+	}
+	*out = glm::vec4(min_x, min_y, max_x, max_y);
+	return true;
+}
+
+static object_id pick_object_at(const selection_point_query& query)
+{
+	if (g.pickable_object == invalid_object)
+		return invalid_object;
+	glm::vec3 origin(0.0f);
+	glm::vec3 direction(0.0f);
+	if (!viewport_ray(query, &origin, &direction) ||
+		!ray_hits_cube(origin, direction))
+		return invalid_object;
+	if (g.shell)
+		g.shell->set_status("picked Cube");
+	return g.pickable_object;
+}
+
+static std::vector<object_id> pick_objects_in_box(const selection_box_query& query)
+{
+	std::vector<object_id> out;
+	if (!g.shell || g.pickable_object == invalid_object)
+		return out;
+	glm::vec4 box(0.0f);
+	if (!project_cube_box(g.shell->camera().get_state(), query.width,
+		query.height, &box))
+		return out;
+	if (box.x >= query.x1 || box.z <= query.x0 ||
+		box.y >= query.y1 || box.w <= query.y0)
+		return out;
+	out.push_back(g.pickable_object);
+	g.shell->set_status("box selected Cube");
+	return out;
+}
+
+static std::vector<selection_box> highlight_selection(
+	const std::vector<object_id>& ids)
+{
+	std::vector<selection_box> out;
+	if (!g.shell || g.pickable_object == invalid_object ||
+		std::find(ids.begin(), ids.end(), g.pickable_object) == ids.end())
+		return out;
+	int width = g.shell->viewport().render_width();
+	int height = g.shell->viewport().render_height();
+	if (width <= 0 || height <= 0)
+	{
+		float cx = 0, cy = 0, cw = 0, ch = 0;
+		g.shell->viewport().get_content_rect(&cx, &cy, &cw, &ch);
+		width = (int)std::lround(cw);
+		height = (int)std::lround(ch);
+	}
+	glm::vec4 box(0.0f);
+	if (!project_cube_box(g.shell->camera().get_state(), width, height, &box))
+		return out;
+	selection_box item;
+	item.id = g.pickable_object;
+	item.x = box.x;
+	item.y = box.y;
+	item.width = box.z - box.x;
+	item.height = box.w - box.y;
+	out.push_back(item);
+	return out;
+}
+
 static void setup_editor(vgui_context* ui)
 {
 	g.ui = ui;
@@ -1117,6 +1268,11 @@ static void setup_editor(vgui_context* ui)
 		g.shell->set_status(text);
 	});
 
+	/* V03: 左键拾取/框选与屏幕空间选中高亮；几何求交留在宿主。 */
+	g.shell->picking().set_point_picker(&pick_object_at);
+	g.shell->picking().set_box_picker(&pick_objects_in_box);
+	g.shell->picking().set_highlight_provider(&highlight_selection);
+
 	command_stack& commands = g.context->commands();
 	outliner_view& outliner = g.shell->scene();
 	outliner.set_command_stack(&commands);
@@ -1138,6 +1294,10 @@ static void setup_editor(vgui_context* ui)
 	g.scene.objects[slime].props["tint"] = "#FF60E060";
 	g.scene.objects[slime].props["mesh"] = "Sphere.mesh";
 	g.scene.objects[bat].props["tint"] = "#FF8060C0";
+	/* V03: 视口里唯一可见的立方体对应一个可拾取对象。 */
+	const object_id cube = g.scene.add("Cube", invalid_object);
+	g.scene.objects[cube].props["mesh"] = "Cube.mesh";
+	g.pickable_object = cube;
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
@@ -1316,13 +1476,14 @@ static void setup_editor(vgui_context* ui)
 	/* 选中变化 → 重建属性行(名称/颜色/网格/目标)。 */
 	/* 选中变化 → 重建属性行;Outliner 多选(P08)时进入多目标模式,
 	 * 值不同的行显示混合态,提交批量写入所有选中对象。 */
-	g.context->add_selection_listener([](object_id id) {
+	/* V03: 监听完整选择集——视口框选/Outliner 多选都走同一条路径。 */
+	g.context->add_selection_set_listener([](const std::vector<object_id>& selection)
+	{
 		property_grid& grid = g.shell->properties();
 		grid.clear();
+		const object_id id = g.context->selection();
 
-		/* 多选集来自 Outliner(视觉顺序);单选退化为普通模式。 */
-		std::vector<object_id> targets =
-			g.shell->scene().selection_objects();
+		std::vector<object_id> targets = selection;
 		if (targets.size() <= 1 || !g.scene.objects.count(id))
 			targets.clear();
 		grid.set_multi_targets(targets);
@@ -1671,7 +1832,7 @@ static void setup_editor(vgui_context* ui)
 	/* F2 / Delete / Ctrl+D / F5 / Ctrl+I 与右键菜单共用同一 dispatch。 */
 	assets.enable_context_menu();
 
-	g.shell->set_status("A06: F2 rename, Del delete, Ctrl+D duplicate, F5 reimport, Ctrl+I import");
+	g.shell->set_status("V03: LMB pick / drag box, Ctrl toggle, Shift add, Esc cancel");
 }
 
 int main()

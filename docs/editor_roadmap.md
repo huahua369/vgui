@@ -56,7 +56,7 @@
 | 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03）；按在已选行且挂拖源时推迟改选（多选拖拽前提）；kit drop target 支持自定义 hover 提示 | 资产引用行在 P06；视口创建对象归 V06 |
 | 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务、资产批量操作已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo 尚未接入 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
-| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消；V02 轨道相机（中键平移、右键旋转、滚轮缩放、F 取景、状态保存/恢复） | 没有拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
+| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消；V02 轨道相机（中键平移、右键旋转、滚轮缩放、F 取景、状态保存/恢复）；V03 左键点击/框选、多选集合与 Outliner 双向同步、屏幕空间选中高亮 | 没有 Gizmo、多视口、HDR/MSAA/深度纹理；3D 描边与射线求交由宿主提供 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
 | 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
 
@@ -361,10 +361,11 @@
   - 验收：导航不与 Gizmo 操作冲突；聚焦后对象位于视口中心；相机状态可保存/恢复。
   - 已实现：新增 `viewport_camera`（与渲染器无关的轨道相机）——`camera_state`（target/yaw/pitch/distance/fov/near/far）与 `camera_focus`（center/radius）纯数据结构；中键按屏幕空间 1:1 平移 target，右键按 `yaw += dx*sens / pitch += dy*sens` 轨道旋转并把 pitch 钳制在 ±1.5 rad，滚轮 `distance *= exp(-wheel_y*speed)` 并受 min/max 限制，F 通过宿主 `focus_provider` 把 target 移到对象中心并按半径取景（朝向不变，对象落在视口中心）。相机只消费中/右键，左键完全留给 V03/V05；`set_navigation_enabled(false)` 可整体关闭并在 Gizmo 期间使用，`cancel_navigation()` 结束拖动但保留当前视角。`get_state/set_state/reset` 支持保存恢复，`set_state` 钳制非法 pitch/distance/fov/near/far。`viewport_view` 新增 `add_event_listener/remove_event_listener`（与宿主 `set_event_listener` 并存、token 安全分发），相机以其挂载；合成的取消事件也会经过附加监听器。`editor_shell` 默认 `camera_.attach(viewport_)` 并暴露 `camera()`，同时给视口补 `align_self=STRETCH` 修复 COLUMN 页面里只占 min-width 的问题。`phase0_renderer` 新增 `phase0_renderer_set_camera`（NULL 保持旧默认视角），`vgui_game_editor` 每帧把相机位置/目标/FOV 推给渲染器，状态栏显示 yaw/pitch/dist 并演示平移/旋转/缩放。测试：kit `test_viewport_camera`（派生位置、平移保持距离与越界连续、旋转方向与 pitch 钳制、缩放上下限、左键预留、焦点旁落取消、总开关、F 取景与半径距离、修改键 F 忽略、状态往返/钳制、多监听器并存与移除、重复 attach）。
 
-- [ ] **V03 拾取与选中**（P0，L）
+- [x] **V03 拾取与选中**（P0，L）（已完成）
   - 射线拾取、框选、选中描边/高亮。
   - 与 Outliner 选中同步。
   - 验收：点击/框选结果准确；多选和取消选择行为一致；选中高亮不遮挡 Gizmo。
+  - 已实现：`editor_context` 扩展为有序多选集合（`selection_ids/selection_count/is_selected`、`set_selection(ids,primary)`、add/remove/toggle/clear、`selection_set_listener`），主选 `selection()` 与旧单监听器完全兼容，通知时先主选后集合。新增 `viewport_selection`：左键按下记录内容区起点，超过阈值进入框选，拖出视口仍连续；`point_picker` 收到内容区本地坐标/尺寸/修饰键，`box_picker` 收到规范化矩形；无修饰替换、Ctrl 切换、Shift 追加、空白点击清空、Ctrl/Shift 空白保持，一次手势只通知一次，Esc 与 `VGUI_EVENT_CANCEL` 取消不改选择；`highlight_provider` 返回屏幕空间矩形，kit 绘制半透明填充 + 1px 描边（主选强调色）与跑马灯。`viewport_view` 新增 `get_content_rect` 和三段 overlay（selection → interaction → foreground），固定顺序保证 V05 Gizmo 始终绘制在高亮之上；`outliner_view::enable_selection_sync` 改用集合监听器，树到 context 同时发布选中与反选，纯追加不滚动、主选变化才展开滚动；`editor_shell` 默认挂载 `picking()`、启用 Outliner 多选并在状态栏显示 `Selected: N objects`。`vgui_game_editor` 新增 `Cube` 可拾取对象、宿主侧射线/AABB/投影求交、框选与屏幕高亮，属性面板改为监听完整选择集。测试：kit `test_editor_context_multi_selection`（集合语义/主选/通知）、`test_viewport_selection`（点击/框选/修饰键/取消/坐标/禁用）、`test_outliner_multi_selection_sync`（双向同步/反选/清空）。
 
 - [ ] **V04 网格、坐标轴、吸附**（P0，M）
   - 世界网格、原点轴、平移/旋转/缩放吸附、网格尺寸切换。
@@ -580,12 +581,13 @@ MVP 验收场景：
 - M4 A06 资产操作：`asset_browser` 统一 `operation_handler` 处理重命名/删除/复制/移动/重新导入，结构化错误覆盖冲突/只读/占用/非法目标/I/O；整批请求只有在宿主提供 `undo`/`redo` 时记录为一条命令，否则明确标记 `(not undoable)` 并警告；右键菜单覆盖列表/网格，F2/Delete/Ctrl+D/F5/Ctrl+I 与菜单共用 dispatch，Move To 子菜单、依赖模态框、Import... 提示框与通知/Toast 全部接通；旧 `rename_handler` 路径保留。`vgui_game_editor` 演示宿主数据库原子事务、快照撤销/重做、只读/占用/冲突/损坏资源与不可撤销重导入。
 - M5 V01 Viewport 表面：`viewport_view` 改为可聚焦 `VGUI_CUSTOM`，`poll_resize()` + `resize_listener` 驱动宿主原地重建 FBO/native texture，跨边界鼠标捕获、`vgui_context_add_focus_listener` 焦点取消、`vgui_input_cancel()` 与 SDL3 窗口失焦接线；`vgui_game_editor` 用 `phase0_renderer` 接入真实 3D 视口。
 - M5 V02 相机导航：`viewport_camera` 轨道相机（中键平移/右键旋转/滚轮缩放/F 取景、pitch 与距离钳制、左键预留、`set_navigation_enabled`/`cancel_navigation`、`get_state/set_state` 保存恢复）；`viewport_view` 支持附加事件监听器，`editor_shell` 默认挂载并暴露 `camera()`，视口横向拉伸铺满中心区；`phase0_renderer_set_camera` 让示例按相机出图，状态栏反馈 yaw/pitch/dist。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）、`test_viewport_widget`（V01：渲染尺寸边沿触发、纹理跨 resize 保持、跨边界鼠标捕获与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）、`test_viewport_camera`（V02：派生位置、平移/旋转/缩放与钳制、左键预留、焦点取消、总开关、F 取景、状态往返、多监听器与重复 attach）。
+- M5 V03 拾取与选中：`editor_context` 有序多选集合与集合监听器；`viewport_selection` 左键点击/框选、Ctrl 切换/Shift 追加/空白清空、Esc/CANCEL 取消、宿主 point/box picker 与屏幕高亮 provider；`viewport_view` 三段 overlay（selection/interaction/foreground）与内容区坐标；`outliner_view` 多选双向同步；`editor_shell` 默认挂载 `picking()` 并显示选择数量；`vgui_game_editor` 用宿主射线/AABB/投影演示点击、框选、高亮与属性面板多目标。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）、`test_viewport_widget`（V01：渲染尺寸边沿触发、纹理跨 resize 保持、跨边界鼠标捕获与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）、`test_viewport_camera`（V02：派生位置、平移/旋转/缩放与钳制、左键预留、焦点取消、总开关、F 取景、状态往返、多监听器与重复 attach）、`test_editor_context_multi_selection`/`test_viewport_selection`/`test_outliner_multi_selection_sync`（V03：集合语义/通知、点击/框选/修饰键/取消/坐标、Outliner 双向同步与反选）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
 - 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（23 项，含 V01 附加焦点监听与 `vgui_input_cancel`）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
 1. 第二批继续 A07 Console / Log View（等级颜色、过滤、搜索、自动滚动与增量追加）。
-2. V01/V02 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、中/右键导航与 F 取景），继续 V03 拾取与 V05 平移 Gizmo。
+2. V01～V03 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步），继续 V04 网格吸附与 V05 平移 Gizmo。
 3. 继续 T01 Table/DataGrid 与 V07 旋转/缩放 Gizmo。

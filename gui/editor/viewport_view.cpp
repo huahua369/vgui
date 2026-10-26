@@ -155,9 +155,40 @@ namespace vgui_editor_kit {
 			*height = render_h_;
 	}
 
+	void viewport_view::get_content_rect(float* x, float* y, float* width,
+		float* height) const noexcept
+	{
+		float wx = 0, wy = 0, ww = 0, wh = 0;
+		if (surface_)
+			vgui_widget_get_rect(surface_, &wx, &wy, &ww, &wh);
+		if (x)
+			*x = kBorderInset;
+		if (y)
+			*y = kBorderInset;
+		if (width)
+			*width = std::max(0.0f, ww - kBorderInset * 2.0f);
+		if (height)
+			*height = std::max(0.0f, wh - kBorderInset * 2.0f);
+	}
+
 	void viewport_view::set_resize_listener(resize_listener listener)
 	{
 		resize_listener_ = std::move(listener);
+	}
+
+	void viewport_view::set_selection_overlay(overlay_draw_fn draw)
+	{
+		selection_overlay_ = std::move(draw);
+	}
+
+	void viewport_view::set_interaction_overlay(overlay_draw_fn draw)
+	{
+		interaction_overlay_ = std::move(draw);
+	}
+
+	void viewport_view::set_foreground_overlay(overlay_draw_fn draw)
+	{
+		foreground_overlay_ = std::move(draw);
 	}
 
 	void viewport_view::set_event_listener(event_listener listener)
@@ -269,7 +300,6 @@ namespace vgui_editor_kit {
 		rvg_t* vg, float abs_x, float abs_y, float abs_w, float abs_h,
 		float delta_time, void* user)
 	{
-		(void)delta_time;
 		auto* self = static_cast<viewport_view*>(user);
 		if (!self || !widget || !cb || !vg)
 			return;
@@ -281,20 +311,29 @@ namespace vgui_editor_kit {
 		if (width <= 0.0f || height <= 0.0f)
 			return;
 
-		/* 核心绘制 VGUI_CUSTOM 时已在外层包 save/restore；这里只做只读采样，
-		 * 不直接改 OVG 状态。 */
 		if (self->texture_)
 		{
 			vgui_custom_draw_texture(widget, cb, vg, self->texture_,
 				x, y, width, height, 0xFFFFFFFF);
-			return;
+		}
+		else
+		{
+			vgui_theme theme = {};
+			if (vgui_context* ctx = vgui_widget_get_context(widget))
+				vgui_context_get_theme(ctx, &theme);
+			vgui_custom_draw_text(widget, cb, vg, "No viewport texture",
+				x, y, width, height, theme.disabled, 0.5f, 0.5f);
 		}
 
-		vgui_theme theme = {};
-		if (vgui_context* ctx = vgui_widget_get_context(widget))
-			vgui_context_get_theme(ctx, &theme);
-		vgui_custom_draw_text(widget, cb, vg, "No viewport texture",
-			x, y, width, height, theme.disabled, 0.5f, 0.5f);
+		/* 固定层次：选中高亮 → 交互反馈(框选) → 前景(V05 Gizmo)。 */
+		const auto draw_overlay = [&](const overlay_draw_fn& draw)
+		{
+			if (draw)
+				draw(cb, vg, x, y, width, height, delta_time);
+		};
+		draw_overlay(self->selection_overlay_);
+		draw_overlay(self->interaction_overlay_);
+		draw_overlay(self->foreground_overlay_);
 	}
 
 	int viewport_view::on_event(vgui_widget* widget, const vgui_event* event,

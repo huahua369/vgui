@@ -23,6 +23,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #define NOMINMAX
@@ -8315,6 +8316,427 @@ static int test_viewport_camera()
 	return 0;
 }
 
+/* V03: editor_context 多选集合、主选语义与集合监听器。 */
+static int test_editor_context_multi_selection()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v03 context");
+	{
+		editor_context context(ui);
+		int primary_calls = 0;
+		object_id last_primary = 999;
+		int set_calls = 0;
+		std::vector<object_id> last_set;
+		const auto pid = context.add_selection_listener([&](object_id id) {
+			++primary_calls;
+			last_primary = id;
+		});
+		const auto sid = context.add_selection_set_listener(
+			[&](const std::vector<object_id>& ids) {
+				++set_calls;
+				last_set = ids;
+			});
+		if (!pid || !sid)
+			return fail("v03 selection listeners");
+		if (context.selection() != invalid_object ||
+			context.selection_count() != 0 || !context.selection_ids().empty())
+			return fail("v03 selection starts empty");
+
+		context.set_selection(5);
+		if (context.selection() != 5 || context.selection_count() != 1 ||
+			context.selection_ids()[0] != 5 || last_primary != 5 ||
+			primary_calls != 1 || set_calls != 1 || last_set.size() != 1 ||
+			last_set[0] != 5)
+			return fail("v03 single selection");
+
+		context.set_selection(5);
+		if (primary_calls != 1 || set_calls != 1)
+			return fail("v03 duplicate selection ignored");
+
+		context.set_selection({ 1, 2, 3 }, 2);
+		if (context.selection() != 2 || context.selection_count() != 3 ||
+			context.selection_ids()[1] != 2 ||
+			primary_calls != 2 || set_calls != 2)
+			return fail("v03 selection set");
+
+		/* 重复/无效 id 被过滤;primary 不在集合时回退到首个。 */
+		context.set_selection({ 2, 1, 2, 0 }, 9);
+		if (context.selection() != 2 || context.selection_count() != 2 ||
+			context.selection_ids()[0] != 2 || context.selection_ids()[1] != 1 ||
+			primary_calls != 2 || set_calls != 3)
+			return fail("v03 set sanitize and primary fallback");
+
+		/* 纯主选变化只触发单监听器;集合不变。 */
+		context.set_selection({ 2, 1 }, 1);
+		if (context.selection() != 1 || primary_calls != 3 || set_calls != 3)
+			return fail("v03 primary-only change");
+
+		context.add_to_selection(4);
+		if (context.selection_count() != 3 || context.selection() != 1 ||
+			set_calls != 4)
+			return fail("v03 add to selection");
+		context.add_to_selection(4);
+		context.add_to_selection(0);
+		if (set_calls != 4)
+			return fail("v03 duplicate add ignored");
+
+		context.remove_from_selection(1);
+		if (context.selection() != 2 || context.selection_count() != 2 ||
+			primary_calls != 4 || set_calls != 5)
+			return fail("v03 remove primary");
+
+		if (!context.is_selected(2) || context.is_selected(1) ||
+			context.is_selected(9))
+			return fail("v03 is_selected");
+
+		context.toggle_selection(2);
+		if (context.selection() != 4 || context.selection_count() != 1 ||
+			primary_calls != 5 || set_calls != 6)
+			return fail("v03 toggle primary off");
+		context.toggle_selection(7);
+		if (context.selection() != 4 || context.selection_count() != 2 ||
+			primary_calls != 5 || set_calls != 7)
+			return fail("v03 toggle add");
+
+		context.clear_selection();
+		if (context.selection() != invalid_object ||
+			context.selection_count() != 0 ||
+			primary_calls != 6 || set_calls != 8)
+			return fail("v03 clear selection");
+		context.clear_selection();
+		if (primary_calls != 6 || set_calls != 8)
+			return fail("v03 duplicate clear ignored");
+
+		context.remove_selection_listener(pid);
+		context.remove_selection_set_listener(sid);
+		context.set_selection(9);
+		if (primary_calls != 6 || set_calls != 8)
+			return fail("v03 listener removal");
+	}
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* V03: 点击/框选手势、修饰键规则、取消与坐标换算。 */
+static int test_viewport_selection()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v03 viewport context");
+	vgui_context_set_size(ui, 900, 650);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.dock.drag_threshold = 4.0f;
+	vgui_context_set_style(ui, &style);
+
+	{
+		editor_context context(ui);
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		vgui_widget_set_pos(viewport.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(viewport.widget(), 400.0f, 300.0f);
+
+		viewport_selection picking;
+		picking.attach(viewport, context);
+		if (!picking.attached())
+			return fail("v03 picking attach");
+		picking.set_drag_threshold(4.0f);
+
+		object_id point_hit = 7;
+		selection_point_query point_query = {};
+		int point_calls = 0;
+		picking.set_point_picker([&](const selection_point_query& query)
+		{
+			++point_calls;
+			point_query = query;
+			return point_hit;
+		});
+
+		selection_box_query box_query = {};
+		int box_calls = 0;
+		std::vector<object_id> box_hits;
+		picking.set_box_picker([&](const selection_box_query& query)
+		{
+			++box_calls;
+			box_query = query;
+			return box_hits;
+		});
+
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		viewport.poll_resize();
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		auto surface = [&](float content_x, float content_y)
+		{
+			return std::pair<float, float>(vx + 1.0f + content_x,
+				vy + 1.0f + content_y);
+		};
+		auto ids_are = [&](std::initializer_list<object_id> expected)
+		{
+			return context.selection_ids() == std::vector<object_id>(expected);
+		};
+
+		auto click_at = [&](float content_x, float content_y, int mods)
+		{
+			if (mods)
+				vgui_input_key(ui, 'X', 1, mods);
+			const auto p = surface(content_x, content_y);
+			vgui_input_mouse_move(ui, p.first, p.second);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+			vgui_input_mouse_up(ui, 1, p.first, p.second, 1);
+			if (mods)
+				vgui_input_key(ui, 'X', 0, 0);
+		};
+
+		auto drag_box = [&](float x0, float y0, float x1, float y1, int mods)
+		{
+			if (mods)
+				vgui_input_key(ui, 'X', 1, mods);
+			const auto a = surface(x0, y0);
+			const auto b = surface(x1, y1);
+			vgui_input_mouse_move(ui, a.first, a.second);
+			vgui_input_mouse_down(ui, 1, a.first, a.second, 1);
+			vgui_input_mouse_move(ui, a.first + 20.0f, a.second + 20.0f);
+			vgui_input_mouse_move(ui, b.first, b.second);
+			vgui_input_mouse_up(ui, 1, b.first, b.second, 1);
+			if (mods)
+				vgui_input_key(ui, 'X', 0, 0);
+		};
+
+		/* 1) 点击替换 + 内容区坐标/尺寸。 */
+		click_at(100.0f, 100.0f, 0);
+		if (point_calls != 1 || !ids_are({ 7 }))
+			return fail("v03 point pick replaces");
+		if (std::fabs(point_query.x - 100.0f) > 1e-3f ||
+			std::fabs(point_query.y - 100.0f) > 1e-3f ||
+			point_query.width != 398 || point_query.height != 298)
+			return fail("v03 point query coordinates");
+
+		/* 2) Ctrl 切换、Shift 追加、空白点击清空。 */
+		click_at(100.0f, 100.0f, VGUI_MOD_CTRL);
+		if (!context.selection_ids().empty())
+			return fail("v03 ctrl toggles off");
+		click_at(100.0f, 100.0f, VGUI_MOD_CTRL);
+		if (!ids_are({ 7 }))
+			return fail("v03 ctrl toggles on");
+		point_hit = 8;
+		click_at(100.0f, 100.0f, VGUI_MOD_SHIFT);
+		if (!ids_are({ 7, 8 }) || context.selection() != 7)
+			return fail("v03 shift appends");
+		point_hit = 0;
+		click_at(10.0f, 10.0f, 0);
+		if (!context.selection_ids().empty())
+			return fail("v03 empty click clears");
+		context.set_selection(7);
+		click_at(10.0f, 10.0f, VGUI_MOD_CTRL);
+		if (!ids_are({ 7 }))
+			return fail("v03 empty ctrl click keeps");
+		context.clear_selection();
+
+		/* 3) 框选替换/追加/切换/空框清空。 */
+		box_hits = { 1, 2 };
+		drag_box(100.0f, 100.0f, 200.0f, 200.0f, 0);
+		if (box_calls != 1 || !ids_are({ 1, 2 }) || context.selection() != 1)
+			return fail("v03 box pick replaces");
+		if (std::fabs(box_query.x0 - 100.0f) > 1e-3f ||
+			std::fabs(box_query.y0 - 100.0f) > 1e-3f ||
+			std::fabs(box_query.x1 - 200.0f) > 1e-3f ||
+			std::fabs(box_query.y1 - 200.0f) > 1e-3f ||
+			box_query.width != 398 || box_query.height != 298)
+			return fail("v03 box query normalised");
+
+		box_hits = { 1, 3 };
+		drag_box(100.0f, 100.0f, 200.0f, 200.0f, VGUI_MOD_CTRL);
+		if (!ids_are({ 2, 3 }) || context.selection() != 2)
+			return fail("v03 ctrl box toggles");
+
+		box_hits = { 4 };
+		drag_box(100.0f, 100.0f, 200.0f, 200.0f, VGUI_MOD_SHIFT);
+		if (!ids_are({ 2, 3, 4 }) || context.selection() != 2)
+			return fail("v03 shift box appends");
+
+		box_hits.clear();
+		drag_box(100.0f, 100.0f, 200.0f, 200.0f, 0);
+		if (!context.selection_ids().empty())
+			return fail("v03 empty box clears");
+
+		/* 4) 小于阈值仍按点击;拖出视口仍继续框选。 */
+		context.clear_selection();
+		point_hit = 9;
+		const int point_before_small_drag = point_calls;
+		{
+			const auto p = surface(100.0f, 100.0f);
+			vgui_input_mouse_move(ui, p.first, p.second);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+			vgui_input_mouse_move(ui, p.first + 2.0f, p.second + 2.0f);
+			vgui_input_mouse_up(ui, 1, p.first + 2.0f, p.second + 2.0f, 1);
+		}
+		if (point_calls != point_before_small_drag + 1 || !ids_are({ 9 }))
+			return fail("v03 small drag stays a click");
+
+		box_hits = { 5 };
+		{
+			const auto p = surface(100.0f, 100.0f);
+			vgui_input_mouse_move(ui, p.first, p.second);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+			vgui_input_mouse_move(ui, p.first + 50.0f, p.second + 50.0f);
+			if (!picking.selecting())
+				return fail("v03 box drag starts");
+			vgui_input_mouse_move(ui, 5.0f, 5.0f);
+			vgui_input_mouse_up(ui, 1, 5.0f, 5.0f, 1);
+		}
+		if (!ids_are({ 5 }))
+			return fail("v03 box drag outside");
+		/* widget(5,5) - widget origin(20,20) - content inset(1,1) = (-16,-16) */
+		if (std::fabs(box_query.x0 + 16.0f) > 1e-3f ||
+			std::fabs(box_query.y0 + 16.0f) > 1e-3f ||
+			std::fabs(box_query.x1 - 100.0f) > 1e-3f ||
+			std::fabs(box_query.y1 - 100.0f) > 1e-3f)
+			return fail("v03 outside box coordinates");
+
+		/* 5) Esc 与 CANCEL 取消框选，不调用 picker。 */
+		box_hits = { 6 };
+		context.clear_selection();
+		{
+			const auto p = surface(100.0f, 100.0f);
+			vgui_input_mouse_move(ui, p.first, p.second);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+			vgui_input_mouse_move(ui, p.first + 50.0f, p.second + 50.0f);
+			if (!picking.selecting())
+				return fail("v03 escape gesture starts");
+			const int before = box_calls;
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+			if (picking.selecting() || picking.pending())
+				return fail("v03 escape cancels");
+			vgui_input_mouse_up(ui, 1, p.first + 50.0f, p.second + 50.0f, 1);
+			if (box_calls != before || !context.selection_ids().empty())
+				return fail("v03 escape does not pick");
+		}
+		{
+			const auto p = surface(100.0f, 100.0f);
+			vgui_input_mouse_move(ui, p.first, p.second);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+			vgui_input_mouse_move(ui, p.first + 50.0f, p.second + 50.0f);
+			const int before = box_calls;
+			vgui_input_cancel(ui);
+			if (picking.selecting())
+				return fail("v03 cancel resets gesture");
+			vgui_input_mouse_up(ui, 1, p.first + 50.0f, p.second + 50.0f, 1);
+			if (box_calls != before)
+				return fail("v03 cancel does not pick");
+		}
+
+		/* 6) 禁用、关闭多选、缺失 picker。 */
+		box_hits = { 7 };
+		context.set_selection(5);
+		picking.set_enabled(false);
+		point_hit = 6;
+		const int point_before_disable = point_calls;
+		click_at(100.0f, 100.0f, 0);
+		if (point_calls != point_before_disable || !ids_are({ 5 }))
+			return fail("v03 disabled picking");
+		picking.set_enabled(true);
+
+		picking.set_multi_select(false);
+		context.set_selection(7);
+		point_hit = 8;
+		click_at(100.0f, 100.0f, VGUI_MOD_CTRL);
+		if (!ids_are({ 8 }))
+			return fail("v03 multi-select disabled");
+		picking.set_multi_select(true);
+
+		picking.set_point_picker({});
+		const std::vector<object_id> before_empty_picker = context.selection_ids();
+		click_at(100.0f, 100.0f, 0);
+		if (context.selection_ids() != before_empty_picker)
+			return fail("v03 missing picker is a no-op");
+		if (picking.selected_ids() != context.selection_ids())
+			return fail("v03 selected ids mirror context");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* V03: Outliner 多选与 editor_context 双向同步。 */
+static int test_outliner_multi_selection_sync()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v03 outliner context");
+	vgui_context_set_size(ui, 900, 650);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	{
+		editor_context context(ui);
+		outliner_view outliner;
+		outliner.build(context, vgui_root(ui));
+		vgui_widget_set_pos(outliner.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(outliner.widget(), 300.0f, 300.0f);
+
+		const vgui_item_id item_a = outliner.add_node("A", 0, 1);
+		const vgui_item_id item_b = outliner.add_node("B", 0, 2);
+		const vgui_item_id item_c = outliner.add_node("C", 0, 3);
+		outliner.set_multi_select(true);
+		outliner.enable_selection_sync();
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		/* context -> tree */
+		context.set_selection({ 1, 3 }, 1);
+		if (!vgui_tree_is_selected(outliner.widget(), item_a) ||
+			vgui_tree_is_selected(outliner.widget(), item_b) ||
+			!vgui_tree_is_selected(outliner.widget(), item_c) ||
+			context.selection() != 1)
+			return fail("v03 context to outliner set");
+
+		/* tree -> context: 追加 B, 视觉顺序 A,B,C */
+		vgui_tree_select(outliner.widget(), item_b, 1);
+		if (context.selection_count() != 3 ||
+			context.selection_ids()[0] != 1 ||
+			context.selection_ids()[1] != 2 ||
+			context.selection_ids()[2] != 3 ||
+			context.selection() != 2)
+			return fail("v03 outliner adds to context");
+
+		/* 反选 B -> context 回到 {A,C}, 主选回到 A */
+		vgui_tree_select(outliner.widget(), item_b, 0);
+		if (context.selection_count() != 2 || context.selection() != 1 ||
+			!context.is_selected(1) || context.is_selected(2) ||
+			!context.is_selected(3))
+			return fail("v03 outliner deselect updates context");
+
+		vgui_tree_clear_selection(outliner.widget());
+		if (!context.selection_ids().empty())
+			return fail("v03 outliner clear selection");
+
+		/* context -> tree 单选 */
+		context.set_selection(2);
+		if (!vgui_tree_is_selected(outliner.widget(), item_b) ||
+			vgui_tree_is_selected(outliner.widget(), item_a) ||
+			vgui_tree_is_selected(outliner.widget(), item_c))
+			return fail("v03 context single selection sync");
+
+		context.set_selection({ 1, 2, 3 }, 3);
+		if (vgui_tree_get_selected_count(outliner.widget()) != 3 ||
+			context.selection() != 3)
+			return fail("v03 context multi selection sync");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -8395,6 +8817,12 @@ int main()
 		return rc;
 	if (int rc = test_viewport_camera())
 		return rc;
+	if (int rc = test_editor_context_multi_selection())
+		return rc;
+	if (int rc = test_viewport_selection())
+		return rc;
+	if (int rc = test_outliner_multi_selection_sync())
+		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
 	if (!ui)
@@ -8432,6 +8860,16 @@ int main()
 			return fail("shell status selection");
 		if (shell.path().count() != 2 || shell.path().item(1).id != "object:7")
 			return fail("shell breadcrumb selection");
+		if (!shell.picking().attached())
+			return fail("shell picking attached");
+
+		context.set_selection(std::vector<object_id>{ 7, 8 }, 7);
+		if (shell.statusbar().selection_text() !=
+			"Selected: 2 objects (primary 7)")
+			return fail("shell multi selection summary");
+		context.set_selection(7);
+		if (shell.statusbar().selection_text() != "Selected: 7")
+			return fail("shell selection summary restores");
 
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(shell.widget(), &x, &y, &w, &h);

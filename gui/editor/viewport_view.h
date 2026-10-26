@@ -52,6 +52,13 @@ namespace vgui_editor_kit {
 		/* Focus entered (true) or left (false) the surface. */
 		using focus_listener = std::function<void(bool focused)>;
 
+		/* Overlay drawing on top of the bound texture.  x/y/width/height is the
+		 * absolute content rect (the area inside the 1px border).  Three slots
+		 * are drawn in a fixed order: selection highlights, interaction
+		 * feedback (box-select marquee), then foreground (gizmos). */
+		using overlay_draw_fn = std::function<void(ovg_ctx_cb* cb, rvg_t* vg,
+			float x, float y, float width, float height, float delta_time)>;
+
 		viewport_view() = default;
 		~viewport_view();
 
@@ -73,7 +80,13 @@ namespace vgui_editor_kit {
 		int render_width() const noexcept;
 		int render_height() const noexcept;
 		void get_render_size(int* width, int* height) const noexcept;
+		/* Content rect in surface-local coordinates (excludes the 1px border). */
+		void get_content_rect(float* x, float* y, float* width, float* height) const noexcept;
 		void set_resize_listener(resize_listener listener);
+
+		void set_selection_overlay(overlay_draw_fn draw);
+		void set_interaction_overlay(overlay_draw_fn draw);
+		void set_foreground_overlay(overlay_draw_fn draw);
 
 		void set_event_listener(event_listener listener);
 		/* Additional event observers used by components layered on the surface
@@ -133,6 +146,9 @@ namespace vgui_editor_kit {
 		};
 
 		resize_listener resize_listener_;
+		overlay_draw_fn selection_overlay_;
+		overlay_draw_fn interaction_overlay_;
+		overlay_draw_fn foreground_overlay_;
 		event_listener event_listener_;
 		std::vector<event_listener_entry> event_listeners_;
 		int next_event_listener_ = 1;
