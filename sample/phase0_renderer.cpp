@@ -190,6 +190,8 @@ struct phase0_renderer
 	SDL_GPUTexture* depth = nullptr;
 	int width = 0;
 	int height = 0;
+	bool has_camera = false;
+	phase0_camera camera = {};
 };
 
 static void release_target(phase0_renderer* r)
@@ -420,6 +422,21 @@ int phase0_renderer_height(phase0_renderer* r)
 	return r ? r->height : 0;
 }
 
+void phase0_renderer_set_camera(phase0_renderer* r, const phase0_camera* camera)
+{
+	if (!r) return;
+	if (camera)
+	{
+		r->camera = *camera;
+		r->has_camera = true;
+	}
+	else
+	{
+		r->camera = phase0_camera{};
+		r->has_camera = false;
+	}
+}
+
 void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 {
 	if (!r || !r->pipeline || !r->color || !r->depth)
@@ -467,9 +484,22 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 	SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
 
 	const float aspect = (float)r->width / (float)r->height;
-	const glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(50.0f), aspect, 0.1f, 100.0f);
-	const glm::mat4 view = glm::lookAt(glm::vec3(3.2f, 2.8f, 4.5f),
-		glm::vec3(0.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+	float fov_deg = 50.0f;
+	glm::vec3 eye(3.2f, 2.8f, 4.5f);
+	glm::vec3 eye_target(0.0f);
+	if (r->has_camera)
+	{
+		fov_deg = r->camera.fov_deg;
+		eye = glm::vec3(r->camera.eye[0], r->camera.eye[1], r->camera.eye[2]);
+		eye_target = glm::vec3(r->camera.target[0], r->camera.target[1],
+			r->camera.target[2]);
+	}
+	if (glm::distance(eye, eye_target) < 1e-4f)
+		eye.z += 1.0f;
+	const glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(fov_deg),
+		aspect, 0.1f, 100.0f);
+	const glm::mat4 view = glm::lookAt(eye, eye_target,
+		glm::vec3(0.0f, 1.0f, 0.0f));
 	const glm::mat4 model = glm::rotate(glm::mat4(1.0f), time_seconds * 0.7f, glm::vec3(0.0f, 1.0f, 0.0f))
 		* glm::rotate(glm::mat4(1.0f), 0.35f, glm::vec3(1.0f, 0.0f, 0.0f));
 	p0_uniform uniform = {};

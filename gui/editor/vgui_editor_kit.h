@@ -26,4 +26,5 @@
 #include "thumbnail_cache.h"
 #include "toolbar.h"
 #include "vector_editor.h"
+#include "viewport_camera.h"
 #include "viewport_view.h"

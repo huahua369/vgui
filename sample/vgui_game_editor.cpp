@@ -1089,12 +1089,32 @@ static void setup_editor(vgui_context* ui)
 		if (!g.shell || !event)
 			return false;
 		if (event->type == VGUI_EVENT_MOUSE_DOWN)
-			g.shell->set_status("viewport: drag outside the panel to test capture");
-		else if (event->type == VGUI_EVENT_MOUSE_UP)
-			g.shell->set_status("viewport: drag released");
+			g.shell->set_status("viewport: MMB pan / RMB orbit / wheel zoom / F frame");
 		else if (event->type == VGUI_EVENT_CANCEL)
 			g.shell->set_status("viewport: gesture cancelled (focus lost)");
 		return false;
+	});
+
+	/* V02: 相机导航——F 取景当前选中对象；状态栏跟随相机状态。 */
+	g.shell->camera().set_focus_provider([](camera_focus* out) -> bool {
+		if (!out || !g.valid_selection())
+			return false;
+		/* 玩具场景没有真实变换：立方体固定在原点，用固定半径演示取景。 */
+		out->center = {};
+		out->radius = 2.5f;
+		g.shell->set_status("camera: frame " +
+			g.scene.objects[g.context->selection()].name);
+		return true;
+	});
+	g.shell->camera().set_change_listener([] {
+		if (!g.shell)
+			return;
+		const camera_state state = g.shell->camera().get_state();
+		char text[128] = {};
+		std::snprintf(text, sizeof(text),
+			"camera yaw %.2f pitch %.2f dist %.2f",
+			state.yaw, state.pitch, state.distance);
+		g.shell->set_status(text);
 	});
 
 	command_stack& commands = g.context->commands();
@@ -1743,6 +1763,17 @@ int main()
 							wg->vgctx, color, rw, rh, VGUI_TEXTURE_FORMAT_RGBA8);
 					}
 				}
+				const camera_vec3 eye = g.shell->camera().position();
+				const camera_state camera_view = g.shell->camera().get_state();
+				phase0_camera view = {};
+				view.eye[0] = eye.x;
+				view.eye[1] = eye.y;
+				view.eye[2] = eye.z;
+				view.target[0] = camera_view.target.x;
+				view.target[1] = camera_view.target.y;
+				view.target[2] = camera_view.target.z;
+				view.fov_deg = camera_view.fov_deg;
+				phase0_renderer_set_camera(g.renderer, &view);
 				phase0_renderer_render(g.renderer, (float)SDL_GetTicks() / 1000.0f);
 			}
 

@@ -27,6 +27,7 @@
  */
 #include <functional>
 #include <memory>
+#include <vector>
 
 #include "editor_types.h"
 #include "vgui.h"
@@ -75,6 +76,12 @@ namespace vgui_editor_kit {
 		void set_resize_listener(resize_listener listener);
 
 		void set_event_listener(event_listener listener);
+		/* Additional event observers used by components layered on the surface
+		 * (viewport_camera, gizmos).  They run after the listener installed by
+		 * set_event_listener(), in registration order; any observer may consume
+		 * the event.  Returns a token for remove_event_listener(). */
+		int add_event_listener(event_listener listener);
+		void remove_event_listener(int token);
 		void set_focus_listener(focus_listener listener);
 
 		/* True between a mouse-down inside the surface and its matching
@@ -119,8 +126,16 @@ namespace vgui_editor_kit {
 		vgui_context* context_ = nullptr;
 		vgui_texture* texture_ = nullptr;
 
+		struct event_listener_entry
+		{
+			int token = 0;
+			event_listener fn;
+		};
+
 		resize_listener resize_listener_;
 		event_listener event_listener_;
+		std::vector<event_listener_entry> event_listeners_;
+		int next_event_listener_ = 1;
 		focus_listener focus_listener_;
 
 		int render_w_ = 0;

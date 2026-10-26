@@ -20,6 +20,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     thumbnail_cache.cpp
     toolbar.cpp
     vector_editor.cpp
+    viewport_camera.cpp
     viewport_view.cpp
 )
 

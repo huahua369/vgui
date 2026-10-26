@@ -8061,6 +8061,260 @@ static int test_viewport_widget()
 	return 0;
 }
 
+/* V02: 轨道相机——平移/旋转/缩放/取景、左键预留、焦点取消与状态往返。 */
+static int test_viewport_camera()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v02 context");
+	vgui_context_set_size(ui, 900, 650);
+
+	{
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		vgui_widget_set_pos(viewport.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(viewport.widget(), 400.0f, 300.0f);
+
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "other");
+		vgui_widget_set_pos(other, 600.0f, 500.0f);
+		vgui_widget_set_size(other, 120.0f, 30.0f);
+
+		viewport_camera camera;
+		camera.attach(viewport);
+		if (!camera.attached())
+			return fail("v02 camera attach");
+
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		viewport.poll_resize();
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		const float cx = vx + vw * 0.5f;
+		const float cy = vy + vh * 0.5f;
+
+		/* 注意:windows.h 把 near 定义成空宏,这里不能用这个名字。 */
+		auto close_to = [](float a, float b, float eps = 1e-3f) {
+			return std::fabs(a - b) <= eps;
+		};
+		auto moved = [](const camera_vec3& a, const camera_vec3& b) {
+			return std::fabs(a.x - b.x) + std::fabs(a.y - b.y) +
+				std::fabs(a.z - b.z) > 1e-4f;
+		};
+		const camera_state initial = camera.get_state();
+		const camera_vec3 position0 = camera.position();
+		const float span0 = std::sqrt(
+			(position0.x - initial.target.x) * (position0.x - initial.target.x) +
+			(position0.y - initial.target.y) * (position0.y - initial.target.y) +
+			(position0.z - initial.target.z) * (position0.z - initial.target.z));
+		if (!close_to(span0, initial.distance, 1e-3f))
+			return fail("v02 derived position");
+
+		int changes = 0;
+		camera.set_change_listener([&] { ++changes; });
+
+		/* 1) 中键平移：target 改变、距离保持；拖出视口仍连续。 */
+		vgui_input_mouse_move(ui, cx, cy);
+		vgui_input_mouse_down(ui, 2, cx, cy, 1);
+		if (!camera.panning())
+			return fail("v02 middle drag starts pan");
+		const camera_vec3 target_before_pan = camera.get_state().target;
+		vgui_input_mouse_move(ui, cx + 40.0f, cy);
+		const camera_state panned = camera.get_state();
+		if (!moved(panned.target, target_before_pan) ||
+			!close_to(panned.distance, initial.distance))
+			return fail("v02 pan updates target");
+		const camera_vec3 position1 = camera.position();
+		const float span1 = std::sqrt(
+			(position1.x - panned.target.x) * (position1.x - panned.target.x) +
+			(position1.y - panned.target.y) * (position1.y - panned.target.y) +
+			(position1.z - panned.target.z) * (position1.z - panned.target.z));
+		if (!close_to(span1, initial.distance))
+			return fail("v02 pan keeps distance");
+		const camera_vec3 target_mid = panned.target;
+		vgui_input_mouse_move(ui, 5.0f, 5.0f);
+		if (!camera.panning() || !moved(camera.get_state().target, target_mid))
+			return fail("v02 pan continues outside");
+		vgui_input_mouse_up(ui, 2, 5.0f, 5.0f, 1);
+		if (camera.navigating())
+			return fail("v02 pan release ends");
+		if (changes == 0)
+			return fail("v02 change listener");
+
+		/* 2) 右键旋转与 pitch 钳制。 */
+		camera.reset();
+		vgui_input_mouse_move(ui, cx, cy);
+		vgui_input_mouse_down(ui, 3, cx, cy, 1);
+		if (!camera.orbiting())
+			return fail("v02 right drag starts orbit");
+		const camera_state before_orbit = camera.get_state();
+		vgui_input_mouse_move(ui, cx + 50.0f, cy + 20.0f);
+		const camera_state orbited = camera.get_state();
+		if (!(orbited.yaw > before_orbit.yaw) ||
+			!(orbited.pitch > before_orbit.pitch))
+			return fail("v02 orbit direction");
+		vgui_input_mouse_move(ui, cx + 50.0f, cy + 10000.0f);
+		if (!close_to(camera.get_state().pitch, 1.5f, 1e-4f))
+			return fail("v02 orbit pitch clamp");
+		vgui_input_mouse_up(ui, 3, cx + 50.0f, cy + 10000.0f, 1);
+		if (camera.navigating())
+			return fail("v02 orbit release ends");
+
+		/* 3) 滚轮缩放与距离上下限。 */
+		camera.reset();
+		camera.set_distance_range(1.0f, 10.0f);
+		vgui_input_mouse_move(ui, cx, cy);
+		const float zoom_start = camera.get_state().distance;
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		const float zoomed_in = camera.get_state().distance;
+		if (!(zoomed_in < zoom_start))
+			return fail("v02 wheel zooms in");
+		vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+		if (!(camera.get_state().distance > zoomed_in))
+			return fail("v02 wheel zooms out");
+		vgui_input_mouse_wheel(ui, 0.0f, 100.0f);
+		if (!close_to(camera.get_state().distance, 1.0f))
+			return fail("v02 zoom min clamp");
+		vgui_input_mouse_wheel(ui, 0.0f, -100.0f);
+		if (!close_to(camera.get_state().distance, 10.0f))
+			return fail("v02 zoom max clamp");
+		camera.set_distance_range(0.1f, 1000.0f);
+
+		/* 4) 左键完全不动相机（V03/V05 预留）。 */
+		camera.reset();
+		const camera_state before_left = camera.get_state();
+		vgui_input_mouse_move(ui, cx, cy);
+		vgui_input_mouse_down(ui, 1, cx, cy, 1);
+		vgui_input_mouse_move(ui, cx + 60.0f, cy + 30.0f);
+		vgui_input_mouse_up(ui, 1, cx + 60.0f, cy + 30.0f, 1);
+		const camera_state after_left = camera.get_state();
+		if (moved(after_left.target, before_left.target) ||
+			!close_to(after_left.yaw, before_left.yaw) ||
+			!close_to(after_left.pitch, before_left.pitch) ||
+			!close_to(after_left.distance, before_left.distance) ||
+			camera.navigating())
+			return fail("v02 left button reserved");
+
+		/* 5) 焦点旁落取消导航（复用 V01 的 CANCEL 通路）。 */
+		camera.reset();
+		vgui_input_mouse_move(ui, cx, cy);
+		vgui_input_mouse_down(ui, 3, cx, cy, 1);
+		if (!camera.orbiting())
+			return fail("v02 cancel gesture starts");
+		vgui_set_focus(ui, other);
+		if (camera.navigating())
+			return fail("v02 focus loss cancels navigation");
+		vgui_input_mouse_up(ui, 3, cx, cy, 1);
+
+		/* 6) 导航总开关。 */
+		camera.reset();
+		camera.set_navigation_enabled(false);
+		const camera_state disabled_before = camera.get_state();
+		vgui_input_mouse_move(ui, cx, cy);
+		vgui_input_mouse_down(ui, 2, cx, cy, 1);
+		vgui_input_mouse_move(ui, cx + 40.0f, cy);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		vgui_input_mouse_up(ui, 2, cx + 40.0f, cy, 1);
+		const camera_state disabled_after = camera.get_state();
+		if (moved(disabled_after.target, disabled_before.target) ||
+			!close_to(disabled_after.distance, disabled_before.distance))
+			return fail("v02 navigation disabled");
+		camera.set_navigation_enabled(true);
+
+		/* 7) F 取景选中对象。 */
+		camera.reset();
+		bool have_selection = false;
+		camera_focus focus_target;
+		focus_target.center = { 2.0f, -1.0f, 3.0f };
+		focus_target.radius = 2.0f;
+		camera.set_focus_provider([&](camera_focus* out) {
+			if (!have_selection)
+				return false;
+			*out = focus_target;
+			return true;
+		});
+		vgui_set_focus(ui, viewport.widget());
+		if (camera.focus_selection())
+			return fail("v02 focus without selection");
+		have_selection = true;
+		vgui_input_key(ui, 'F', 1, 0);
+		const camera_state framed = camera.get_state();
+		if (!close_to(framed.target.x, 2.0f) || !close_to(framed.target.y, -1.0f) ||
+			!close_to(framed.target.z, 3.0f))
+			return fail("v02 F frames selection");
+		const float expected_distance = 2.0f /
+			std::sin(25.0f * 3.14159265358979323846f / 180.0f) * 1.15f;
+		if (!close_to(framed.distance, expected_distance, 0.01f))
+			return fail("v02 focus distance");
+		vgui_input_key(ui, 'F', 0, 0);
+		const camera_state before_ctrl_f = camera.get_state();
+		vgui_input_key(ui, 'F', 1, VGUI_MOD_CTRL);
+		const camera_state after_ctrl_f = camera.get_state();
+		vgui_input_key(ui, 'F', 0, VGUI_MOD_CTRL);
+		if (moved(after_ctrl_f.target, before_ctrl_f.target) ||
+			!close_to(after_ctrl_f.distance, before_ctrl_f.distance))
+			return fail("v02 modified F ignored");
+
+		/* 8) 状态保存/恢复与非法值钳制。 */
+		camera_state stored = camera.get_state();
+		stored.target = { 1.0f, 2.0f, 3.0f };
+		stored.yaw = 1.25f;
+		stored.pitch = -0.5f;
+		stored.distance = 4.0f;
+		stored.fov_deg = 60.0f;
+		camera.set_state(stored);
+		const camera_state round_trip = camera.get_state();
+		if (!close_to(round_trip.yaw, 1.25f) || !close_to(round_trip.pitch, -0.5f) ||
+			!close_to(round_trip.distance, 4.0f) || !close_to(round_trip.fov_deg, 60.0f) ||
+			!close_to(round_trip.target.y, 2.0f))
+			return fail("v02 state round trip");
+		camera_state wild = stored;
+		wild.pitch = 99.0f;
+		wild.distance = 0.0f;
+		wild.fov_deg = 1000.0f;
+		wild.near_plane = -1.0f;
+		wild.far_plane = 0.0f;
+		camera.set_state(wild);
+		const camera_state clamped = camera.get_state();
+		if (!close_to(clamped.pitch, 1.5f) || !close_to(clamped.distance, 0.1f) ||
+			!close_to(clamped.fov_deg, 120.0f) ||
+			!(clamped.far_plane > clamped.near_plane) ||
+			!(clamped.near_plane > 0.0f))
+			return fail("v02 state clamping");
+
+		/* 9) 附加事件监听器与宿主主监听器并存，并可单独移除。 */
+		int primary_events = 0;
+		int extra_events = 0;
+		viewport.set_event_listener([&](const vgui_event*) {
+			++primary_events;
+			return false;
+		});
+		const int token = viewport.add_event_listener([&](const vgui_event*) {
+			++extra_events;
+			return false;
+		});
+		if (!token)
+			return fail("v02 additive listener token");
+		vgui_input_mouse_move(ui, cx, cy);
+		if (primary_events == 0 || extra_events == 0)
+			return fail("v02 additive listener dispatch");
+		viewport.remove_event_listener(token);
+		const int extra_before_removal = extra_events;
+		vgui_input_mouse_move(ui, cx + 1.0f, cy);
+		if (extra_events != extra_before_removal)
+			return fail("v02 listener removal");
+
+		/* 10) 重新 attach 不会叠加监听。 */
+		camera.attach(viewport);
+		if (!camera.attached())
+			return fail("v02 reattach");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -8138,6 +8392,8 @@ int main()
 	if (int rc = test_asset_operations())
 		return rc;
 	if (int rc = test_viewport_widget())
+		return rc;
+	if (int rc = test_viewport_camera())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
@@ -8271,6 +8527,8 @@ int main()
 
 		if (!shell.viewport().widget())
 			return fail("viewport widget");
+		if (!shell.camera().attached())
+			return fail("shell camera attached");
 		shell.viewport().set_texture(nullptr);
 
 		drag_payload payload;

@@ -23,6 +23,7 @@
 #include "search_box.h"
 #include "status_bar.h"
 #include "toolbar.h"
+#include "viewport_camera.h"
 #include "viewport_view.h"
 #include "vgui.h"
 
@@ -102,6 +103,10 @@ namespace vgui_editor_kit {
 		asset_browser& assets() noexcept;
 		asset_preview& preview() noexcept;
 		viewport_view& viewport() noexcept;
+		/* V02: the shell attaches an orbit camera to the viewport by default.
+		 * Hosts can disable navigation, re-map the buttons or detach it. */
+		viewport_camera& camera() noexcept;
+		const viewport_camera& camera() const noexcept;
 
 		void set_status(std::string text);
 
@@ -159,6 +164,8 @@ namespace vgui_editor_kit {
 		asset_browser assets_;
 		asset_preview preview_;
 		viewport_view viewport_;
+		/* Declared after the viewport so it detaches before the surface dies. */
+		viewport_camera camera_;
 		toolbar_view toolbar_;
 		status_bar statusbar_;
 		search_box search_;

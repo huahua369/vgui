@@ -368,6 +368,10 @@ namespace vgui_editor_kit {
 
 		viewport_panel_ = make_dock_page(dock_);
 		viewport_.build(viewport_panel_);
+		/* 面板是 COLUMN 布局：视口需要显式拉伸横向，否则只会占 min-size 宽。 */
+		vgui_widget_set_align_self(viewport_.widget(), VGUI_ALIGN_STRETCH);
+		/* V02: 视口默认带轨道相机——中/右键导航、滚轮缩放、F 聚焦。 */
+		camera_.attach(viewport_);
 		desc.id = "viewport";
 		desc.title = "VIEWPORT";
 		desc.panel = viewport_panel_;
@@ -908,6 +912,16 @@ namespace vgui_editor_kit {
 	viewport_view& editor_shell::viewport() noexcept
 	{
 		return viewport_;
+	}
+
+	viewport_camera& editor_shell::camera() noexcept
+	{
+		return camera_;
+	}
+
+	const viewport_camera& editor_shell::camera() const noexcept
+	{
+		return camera_;
 	}
 
 	void editor_shell::set_status(std::string text)

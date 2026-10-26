@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 namespace vgui_editor_kit {
 
@@ -162,6 +163,30 @@ namespace vgui_editor_kit {
 	void viewport_view::set_event_listener(event_listener listener)
 	{
 		event_listener_ = std::move(listener);
+	}
+
+	int viewport_view::add_event_listener(event_listener listener)
+	{
+		if (!listener)
+			return 0;
+		event_listener_entry entry;
+		entry.token = next_event_listener_++;
+		entry.fn = std::move(listener);
+		event_listeners_.push_back(std::move(entry));
+		return event_listeners_.back().token;
+	}
+
+	void viewport_view::remove_event_listener(int token)
+	{
+		if (token <= 0)
+			return;
+		for (auto it = event_listeners_.begin(); it != event_listeners_.end(); ++it)
+		{
+			if (it->token != token)
+				continue;
+			event_listeners_.erase(it);
+			return;
+		}
 	}
 
 	void viewport_view::set_focus_listener(focus_listener listener)
@@ -368,15 +393,37 @@ namespace vgui_editor_kit {
 		cancel.button = button;
 		if (context_)
 			cancel.mods = vgui_context_get_mods(context_);
-		if (event_listener_)
-			event_listener_(&cancel);
+		/* 合成的取消事件也必须经过附加监听器（相机/Gizmo 依赖它收尾）。 */
+		forward_event(&cancel);
 	}
 
 	bool viewport_view::forward_event(const vgui_event* event)
 	{
-		if (!event_listener_ || !event)
+		if (!event)
 			return false;
-		return event_listener_(event);
+		bool consumed = false;
+		if (event_listener_)
+			consumed = event_listener_(event);
+		if (event_listeners_.empty())
+			return consumed;
+
+		/* 监听器可能在回调里移除自己；先拍快照，调用前确认 token 仍然有效。 */
+		const std::vector<event_listener_entry> snapshot = event_listeners_;
+		for (const event_listener_entry& entry : snapshot)
+		{
+			bool alive = false;
+			for (const event_listener_entry& live : event_listeners_)
+			{
+				if (live.token == entry.token)
+				{
+					alive = true;
+					break;
+				}
+			}
+			if (alive && entry.fn && entry.fn(event))
+				consumed = true;
+		}
+		return consumed;
 	}
 
 } /* namespace vgui_editor_kit */
