@@ -54,7 +54,7 @@
 | 菜单 | 上下文菜单、子菜单、复选、禁用、快捷键文本；MenuBar 与命令/快捷键注册 | 没有菜单图标、动态重建和原生菜单 |
 | 文本 | 纯文本编辑，支持 IME 和编辑框内撤销 | 没有富文本、语法高亮、行号、查找替换 |
 | 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03）；按在已选行且挂拖源时推迟改选（多选拖拽前提）；kit drop target 支持自定义 hover 提示 | 资产引用行在 P06；视口创建对象归 V06 |
-| 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo/资产操作尚未接入 |
+| 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务、资产批量操作已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo 尚未接入 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
 | 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
@@ -335,9 +335,10 @@
   - 验收：快速滚动不阻塞 UI；离开可见区域后取消低优先级请求；缓存命中不重复加载。
   - 已实现：新增独立 `thumbnail_cache`（`gui/editor/thumbnail_cache.*`）：`set_load_handler()` 在后台 worker 执行 CPU 解码，`set_disk_cache(read, write)` 的读写回调也在 worker；主线程只由 `poll()`/`tick()` 上传纹理。`options` 配置 `memory_limit`（LRU 纹理数）、`max_attempts`/`retry_delay` 与 `disk_cache` 开关；稳定字符串 key 对应请求状态 `queued/loading/ready/failed`，`enqueue(..., priority)` 分高/低队列，`cancel()` 移除排队任务并用 generation token 丢弃在途结果，`retry()` 从第一次尝试重启失败项，`erase()` 同时释放纹理；`stats()` 暴露内存/磁盘命中、加载、上传、失败、重试与取消计数，`idle()` 供宿主/测试等待。`asset_browser` 在 `tick()` 中只对 `visible_first()/visible_last()` 范围发起请求，滚动离开后取消未完成项，网格显示 queued/loading 动画或 failed 占位并在工具提示中给出原因，宿主 `set_item_thumbnail()` 仍优先于异步结果；`thumbnails()`、`thumbnail_key()`、`thumbnail_state()`、`retry_thumbnail()` 构成宿主接口。示例把 loader 与临时目录 raw 磁盘缓存接到资产浏览器，`Broken.mesh` 前两次失败后自动重试成功；`test_asset_thumbnails` 覆盖非阻塞入队、优先级顺序、低优先级取消、陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、宿主缩略图优先、浏览器可见范围请求及离屏取消。
 
-- [ ] **A06 资产操作**（P1，M）
+- [x] **A06 资产操作**（P1，M）（已完成）
   - 重命名、删除、复制、移动、导入、重新导入、依赖查看。
   - 验收：文件操作与资产数据库一致；冲突/只读/占用有错误提示；批量操作可撤销或明确不可撤销。
+  - 已实现：`asset_browser` 新增宿主驱动的统一操作层——`set_operation_handler()` 接收结构化 `operation_request`（`kind`、`items`、`name`、`path_id`、`target_path_id`），宿主负责原子检查并应用整批改动，返回 `operation_result`；固定 `operation_error` 覆盖 `conflict`/`read_only`/`in_use`/`invalid_target`/`not_found`/`io_error` 等，浏览器合成 `last_message()`、`last_error()`、`last_undoable()`，并同时通过 `notice_listener`、状态栏和错误 Toast 反馈。成功时刷新当前目录并恢复/更新选择，未装导航处理器时本地镜像同步改名/删除/移动并清除重导入缩略图；旧 `rename_handler` + `rename_command` 仍作为兼容回退。整批操作只有在宿主设置 `undoable=true` 并同时给出 `undo`/`redo` 时才经 `operation_command` 记录为一条命令，否则消息明确追加 `(not undoable)` 并显示警告 Toast；撤销/重做回调统一刷新浏览器。`enable_context_menu()` 在列表行和网格单元上安装右键菜单，并与 F2 重命名、Delete 删除、Ctrl+D 复制、F5 重新导入、Ctrl+I 导入快捷键共用同一 dispatch；`Move To` 子菜单由 `set_move_targets_handler()` 填充且自动排除当前目录，依赖查看由 `set_dependency_handler()` 提供并以模态 Alert 展示，Import... 通过 `set_import_prompt_handler()` 打开宿主动态文件选择后仍调用 A04 `import_files()`。重命名/删除确认使用核心 Prompt/Confirm 对话框，空名称、外部空目标、同目录移动和未安装处理器都有前端校验。示例 `vgui_game_editor` 接入了命令栈快照、只读 `Ghost.mesh`、被相机引用的 `Steel.mat`、重名/移动冲突、`Broken.mesh` 重导入 I/O 失败、不可撤销重导入、依赖/移动目标与导入提示框；`test_asset_operations` 覆盖成功/失败操作、批次原子拒绝、批量单条撤销/重做、不可撤销标记与 Toast、列表/网格右键、Move To 子菜单、快捷键与焦点门控、重命名/删除对话框、导入通知和依赖模态框。
 
 - [ ] **A07 Console / Log View**（P1，M）
   - 等级颜色、过滤、搜索、复制、自动滚动、增量追加、堆栈折叠。
@@ -504,7 +505,7 @@ MVP 验收场景：
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient（已完成）
 - T01 Table/DataGrid
-- A06 资产操作
+- A06 资产操作（已完成）
 - A07 Console/Log
 - V07 旋转/缩放 Gizmo
 - V08 2D Canvas
@@ -574,12 +575,13 @@ MVP 验收场景：
 - M2 P09：Curve / Gradient 编辑器——`curve_editor`（linear/step/cubic、关键帧与切线拖拽、双击加点、T/V/In/Out spinbox、紧凑预览）、`gradient_editor`（渐变条/色标拖放、双击插点、内嵌 HSV 取色器、4 预设、紧凑预览）；PropertyGrid `property_type::curve/gradient` 共用 popup 会话（实时预览、单条可合并 undo、Esc 回滚、多目标事务）；`vgui_game_editor` 增加 Idle Curve / Color Ramp 可操作路径。
 - M2 收口（P05～P07）：核心 context 级通用弹出面板 `vgui_popup_*`（外点/Esc/滚轮点外关闭并区分原因、菜单/模态互斥、边缘钳制、焦点陷阱、close 回调）；kit `color_picker`（ovg tools 取色器原语 + press/change/commit 手势协议 + `set_color_transform` 颜色空间策略）；PropertyGrid 颜色行经 popup 取色（实时预览、会话单条 undo、Esc 回滚）、`asset`/`object_ref` 引用行（asset_query/browse/filter_check/object_activated/missing 五个宿主接口、行级 drop、清空、丢失态）、`begin_batch/end_batch` 批量事务（`reset_all` 改用）；`vgui_game_editor` 属性面板按选择重建（Name/Tint/颜色/网格/目标行）、资产拖到属性行赋值、丢失资产演示。
 - M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）。
+- M4 A06 资产操作：`asset_browser` 统一 `operation_handler` 处理重命名/删除/复制/移动/重新导入，结构化错误覆盖冲突/只读/占用/非法目标/I/O；整批请求只有在宿主提供 `undo`/`redo` 时记录为一条命令，否则明确标记 `(not undoable)` 并警告；右键菜单覆盖列表/网格，F2/Delete/Ctrl+D/F5/Ctrl+I 与菜单共用 dispatch，Move To 子菜单、依赖模态框、Import... 提示框与通知/Toast 全部接通；旧 `rename_handler` 路径保留。`vgui_game_editor` 演示宿主数据库原子事务、快照撤销/重做、只读/占用/冲突/损坏资源与不可撤销重导入。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（656 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. 继续 AssetBrowser 资产操作（重命名/删除/复制/移动/重新导入/依赖查看，A06）。
+1. 第二批继续 A07 Console / Log View（等级颜色、过滤、搜索、自动滚动与增量追加）。
 2. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
-3. P09 Curve/Gradient 编辑器（已完成）；第二批继续 T01 Table/DataGrid 与 A07 Console / Log View。
+3. 继续 T01 Table/DataGrid 与 V07 旋转/缩放 Gizmo。

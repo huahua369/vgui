@@ -414,6 +414,46 @@ assets.thumbnails().set_disk_cache(
 
 直接使用缓存时，`enqueue({ key, name, type }, priority)` 发起请求，`state_of()`/`texture()` 查询状态和纹理，`cancel()`/`retry()`/`erase()` 管理单个 key；低优先级请求适合预取，离开可见范围后取消不会影响已缓存纹理。示例把加载器和临时目录下的 raw 磁盘缓存接到资产浏览器，`Broken.mesh` 前两次故意失败后由自动重试补上。
 
+### 资产操作（vgui_editor_kit）
+
+A06 把重命名、删除、复制、移动和重新导入统一交回宿主数据库。`asset_browser` 只做选择校验、请求分发、刷新与通知，不直接修改文件。`set_operation_handler()` 收到 `operation_request`（`kind`、`items`、`name`、`path_id`、`target_path_id`），在返回 `true` 前必须已把整批改动原子地写入宿主数据库；失败时填 `operation_result::error`/`message`。固定错误类别覆盖 `conflict`、`read_only`、`in_use`、`invalid_target`、`io_error` 等，浏览器会把类别和宿主细节合成 `last_message()`，并通过 `notice_listener` 和错误 Toast 显示。
+
+整批操作只有在宿主同时提供 `undo`/`redo` 且设置 `undoable=true` 时才记录为一条命令；否则成功消息追加 `(not undoable)` 并显示警告 Toast。`last_error()`/`last_message()`/`last_undoable()` 可查询最近一次结果。`enable_context_menu()` 安装右键菜单与快捷键（F2 重命名、Delete 删除、Ctrl+D 复制、F5 重新导入、Ctrl+I 导入），列表行和网格单元共用同一 dispatch。移动目标由 `set_move_targets_handler()` 提供，依赖列表由 `set_dependency_handler()` 提供并以模态 Alert 展示；Import... 只调用 `set_import_prompt_handler()`，宿主的文件对话框最终仍应走 A04 的 `import_files()`/`set_import_handler()`。
+
+```cpp
+vgui_editor_kit::editor_shell shell(context);
+auto& assets = shell.assets();
+assets.set_command_stack(&context.commands());
+assets.set_operation_handler(
+    [](const vgui_editor_kit::asset_browser::operation_request& req,
+        vgui_editor_kit::asset_browser::operation_result* out) {
+        /* 在宿主数据库中检查并原子应用整批 req.items；失败时填
+         * out->error/out->message 并 return false。 */
+        out->undoable = true;
+        out->undo = [] { /* 恢复上一份快照 */ return true; };
+        out->redo = [] { /* 重新应用快照 */ return true; };
+        return true;
+    });
+assets.set_move_targets_handler([] {
+    return std::vector<vgui_editor_kit::asset_browser::asset_move_target>{
+        { "Models", "models" }, { "Textures", "textures" } };
+});
+assets.set_dependency_handler([](vgui_item_id id) {
+    /* 返回引用该资产的宿主对象/资产列表。 */
+    return std::vector<vgui_editor_kit::asset_browser::asset_dependency>{};
+});
+assets.set_import_prompt_handler([] { /* 打开宿主文件对话框 */ });
+assets.set_notice_listener([](const std::string& message,
+    vgui_editor_kit::asset_browser::operation_error error) {
+    shell.set_status(
+        error == vgui_editor_kit::asset_browser::operation_error::none
+            ? message : "asset error: " + message);
+});
+assets.enable_context_menu();
+```
+
+示例程序用命令栈快照演示整批撤销/重做，并模拟只读 `Ghost.mesh`、被场景引用的 `Steel.mat`、重名冲突、移动冲突、`Broken.mesh` 的重新导入 I/O 失败以及不可撤销的重新导入。
+
 ### 交互与焦点
 
 - Tab / Shift+Tab 切换焦点，鼠标点击自动聚焦，可设置 `focusable`。
@@ -460,8 +500,8 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A05)、资产拖放/导入与布局持久化自测
-out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、曲线/渐变、资产引用、目录导航/搜索、异步缩略图/LRU/磁盘缓存、资产拖放到视口/Outliner/属性栏、OS 文件导入、命令栈
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、资产拖放/导入、资产操作与布局持久化自测
+out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、曲线/渐变、资产引用、目录导航/搜索、异步缩略图/LRU/磁盘缓存、资产拖放到视口/Outliner/属性栏、OS 文件导入、重命名/删除/复制/移动/重新导入、依赖查看与命令栈
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 
@@ -545,7 +585,7 @@ sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast 与按键处理器自测
-  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector/曲线/渐变）、命令栈、菜单/快捷键、资产拖放/导入与布局持久化自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector/曲线/渐变）、命令栈、菜单/快捷键、资产拖放/导入、资产操作与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
@@ -566,7 +606,7 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、资产操作（A06 重命名/删除/复制/移动/重新导入、冲突/只读/占用/非法目标/I/O 错误、整批原子失败、批量单条撤销、不可撤销标记与警告 Toast、列表/网格右键菜单、F2/Delete/Ctrl+D/F5/Ctrl+I、重命名/删除对话框、导入通知与依赖模态框）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
 
 ## 第三方与许可证
 

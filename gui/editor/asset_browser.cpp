@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <utility>
 
 namespace vgui_editor_kit {
@@ -105,6 +106,50 @@ namespace vgui_editor_kit {
 			return text.substr(begin, end - begin);
 		}
 
+		const char* operation_verb(asset_browser::operation kind)
+		{
+			switch (kind)
+			{
+			case asset_browser::operation::rename: return "Rename";
+			case asset_browser::operation::remove: return "Delete";
+			case asset_browser::operation::duplicate: return "Duplicate";
+			case asset_browser::operation::move: return "Move";
+			case asset_browser::operation::reimport: return "Reimport";
+			}
+			return "Asset operation";
+		}
+
+		std::string operation_command_name(asset_browser::operation kind)
+		{
+			switch (kind)
+			{
+			case asset_browser::operation::rename: return "Rename asset";
+			case asset_browser::operation::remove: return "Delete assets";
+			case asset_browser::operation::duplicate: return "Duplicate assets";
+			case asset_browser::operation::move: return "Move assets";
+			case asset_browser::operation::reimport: return "Reimport assets";
+			}
+			return "Asset operation";
+		}
+
+		const char* operation_error_text(asset_browser::operation_error error)
+		{
+			switch (error)
+			{
+			case asset_browser::operation_error::none: return "unknown error";
+			case asset_browser::operation_error::no_selection: return "nothing selected";
+			case asset_browser::operation_error::invalid_name: return "invalid name";
+			case asset_browser::operation_error::invalid_target: return "invalid destination";
+			case asset_browser::operation_error::not_found: return "asset not found";
+			case asset_browser::operation_error::conflict: return "name conflict";
+			case asset_browser::operation_error::read_only: return "asset is read-only";
+			case asset_browser::operation_error::in_use: return "asset is in use";
+			case asset_browser::operation_error::unsupported: return "operation not supported";
+			case asset_browser::operation_error::io_error: return "I/O error";
+			}
+			return "unknown error";
+		}
+
 	} /* namespace */
 
 	/* Undo record for one asset rename.  Commands capture the owner through the
@@ -142,6 +187,122 @@ namespace vgui_editor_kit {
 		std::string old_name_;
 		std::string new_name_;
 	};
+
+	/* A06: one host-backed batch.  The host already applied the operation when
+	 * this is pushed; execute() re-applies it for redo and undo() reverses it.
+	 * Both refresh the current directory so the browser and the database stay
+	 * in sync even when undo/redo comes from the shell menu. */
+	class asset_browser::operation_command final : public command
+	{
+	public:
+		operation_command(asset_browser* owner, std::weak_ptr<int> alive,
+			std::string name, std::function<bool()> redo,
+			std::function<bool()> undo)
+			: owner_(owner), alive_(std::move(alive)), name_(std::move(name)),
+			redo_(std::move(redo)), undo_(std::move(undo))
+		{
+		}
+
+		const char* name() const noexcept override
+		{
+			return name_.c_str();
+		}
+
+		bool execute() override
+		{
+			if (alive_.expired() || !redo_)
+				return true;
+			const bool ok = redo_();
+			owner_->refresh_after_command();
+			return ok;
+		}
+
+		void undo() override
+		{
+			if (alive_.expired())
+				return;
+			if (undo_)
+				(void)undo_();
+			owner_->refresh_after_command();
+		}
+
+	private:
+		asset_browser* owner_;
+		std::weak_ptr<int> alive_;
+		std::string name_;
+		std::function<bool()> redo_;
+		std::function<bool()> undo_;
+	};
+
+	namespace {
+
+		/* Context-level handlers have no destroy callback, so the registration
+		 * block is intentionally leaked (same pattern as outliner_view and
+		 * drag_bridge).  The weak token makes stale entries harmless. */
+		struct context_entry
+		{
+			std::weak_ptr<int> alive;
+			asset_browser* owner = nullptr;
+		};
+
+		/* Menu item ids are local to one menu, so the action/target is stored
+		 * in the item's user pointer.  Small tagged integers dodge the id
+		 * collisions between the top-level menu and the Move To submenu. */
+		constexpr std::uintptr_t kMenuActionBase = 1;
+		constexpr std::uintptr_t kMenuMoveBase = 1000;
+
+		void* menu_tag(std::uintptr_t value)
+		{
+			return reinterpret_cast<void*>(value);
+		}
+
+		std::uintptr_t menu_tag_value(void* user)
+		{
+			return reinterpret_cast<std::uintptr_t>(user);
+		}
+
+		struct rename_prompt_state
+		{
+			std::weak_ptr<int> alive;
+			asset_browser* owner = nullptr;
+			vgui_item_id item = 0;
+		};
+
+		void on_rename_prompt_result(vgui_context* ctx, int result,
+			const char* text, void* user)
+		{
+			(void)ctx;
+			std::unique_ptr<rename_prompt_state> state(
+				static_cast<rename_prompt_state*>(user));
+			if (!state || state->alive.expired() || !state->owner)
+				return;
+			if (result != VGUI_MODAL_RESULT_CONFIRM || !text)
+				return;
+			(void)state->owner->rename_item(state->item, text);
+		}
+
+		struct remove_confirm_state
+		{
+			std::weak_ptr<int> alive;
+			asset_browser* owner = nullptr;
+			std::vector<vgui_item_id> items;
+		};
+
+		void on_remove_confirm_result(vgui_context* ctx, int result,
+			const char* text, void* user)
+		{
+			(void)ctx;
+			(void)text;
+			std::unique_ptr<remove_confirm_state> state(
+				static_cast<remove_confirm_state*>(user));
+			if (!state || state->alive.expired() || !state->owner)
+				return;
+			if (result != VGUI_MODAL_RESULT_CONFIRM)
+				return;
+			(void)state->owner->remove_items(state->items);
+		}
+
+	} /* namespace */
 
 	asset_browser::asset_browser()
 		: thumbnails_(std::make_unique<thumbnail_cache>())
@@ -325,6 +486,8 @@ namespace vgui_editor_kit {
 		refresh();
 		sync_list_selection();
 		update_history_buttons();
+		if (context_menu_)
+			enable_context_menu();
 	}
 
 	void asset_browser::clear()
@@ -1520,23 +1683,907 @@ namespace vgui_editor_kit {
 	bool asset_browser::rename_item(vgui_item_id item, const std::string& name)
 	{
 		if (!list_ || item == 0)
-			return false;
-		const int index = index_of(item);
-		if (index < 0)
-			return false;
-		asset_info info;
-		if (!item_at(index, &info))
-			return false;
-		const std::string old_name = info.name;
-		if (old_name == name)
-			return true;
-		if (!apply_rename(item, name))
-			return false;
-		if (command_stack_)
 		{
-			command_stack_->push(std::make_unique<rename_command>(this, alive_token_, item, old_name, name));
+			report_failure("Rename", {}, operation_error::no_selection, {});
+			return false;
+		}
+		const int index = index_of(item);
+		asset_info info;
+		if (index < 0 || !item_at(index, &info))
+		{
+			report_failure("Rename", {}, operation_error::not_found, {});
+			return false;
+		}
+
+		const std::string clean = trim_ascii(name);
+		if (clean.empty())
+		{
+			report_failure("Rename", "'" + info.name + "'",
+				operation_error::invalid_name, "name cannot be empty");
+			return false;
+		}
+		if (clean == info.name)
+		{
+			last_error_ = operation_error::none;
+			last_undoable_ = true;
+			publish_notice("Rename '" + info.name + "': unchanged",
+				operation_error::none, false);
+			return true;
+		}
+
+		operation_request request;
+		request.kind = operation::rename;
+		request.items.push_back(item);
+		request.name = clean;
+		request.path_id = current_path_id_;
+		return perform_operation(std::move(request));
+	}
+
+	void asset_browser::set_operation_handler(operation_handler handler)
+	{
+		operation_handler_ = std::move(handler);
+	}
+
+	void asset_browser::set_notice_listener(notice_listener listener)
+	{
+		notice_listener_ = std::move(listener);
+	}
+
+	void asset_browser::set_move_targets_handler(move_targets_handler handler)
+	{
+		move_targets_handler_ = std::move(handler);
+	}
+
+	void asset_browser::set_dependency_handler(dependency_handler handler)
+	{
+		dependency_handler_ = std::move(handler);
+	}
+
+	void asset_browser::set_import_prompt_handler(import_prompt_handler handler)
+	{
+		import_prompt_handler_ = std::move(handler);
+	}
+
+	bool asset_browser::operation_available(operation kind) const noexcept
+	{
+		switch (kind)
+		{
+		case operation::rename:
+			return operation_handler_ != nullptr || rename_handler_ != nullptr;
+		case operation::remove:
+		case operation::duplicate:
+		case operation::move:
+		case operation::reimport:
+			return operation_handler_ != nullptr;
+		}
+		return false;
+	}
+
+	std::vector<vgui_item_id> asset_browser::selected_items_in_order() const
+	{
+		std::vector<vgui_item_id> ordered;
+		ordered.reserve(selection_.size());
+		std::unordered_set<vgui_item_id> seen;
+		if (primary_ != 0 && selection_lookup_.count(primary_) && index_of(primary_) >= 0)
+		{
+			ordered.push_back(primary_);
+			seen.insert(primary_);
+		}
+		for (vgui_item_id item : selection_)
+		{
+			if (item == 0 || !seen.insert(item).second || index_of(item) < 0)
+				continue;
+			ordered.push_back(item);
+		}
+		return ordered;
+	}
+
+	std::vector<vgui_item_id> asset_browser::valid_operation_items(
+		const std::vector<vgui_item_id>& items) const
+	{
+		std::vector<vgui_item_id> valid;
+		valid.reserve(items.size());
+		std::unordered_set<vgui_item_id> seen;
+		for (vgui_item_id item : items)
+		{
+			if (item == 0 || !seen.insert(item).second || index_of(item) < 0)
+				continue;
+			valid.push_back(item);
+		}
+		return valid;
+	}
+
+	std::string asset_browser::operation_target_text(const operation_request& request) const
+	{
+		if (request.items.empty())
+			return {};
+		if (request.items.size() == 1)
+		{
+			const int index = index_of(request.items.front());
+			asset_info info;
+			if (index >= 0 && item_at(index, &info) && !info.name.empty())
+				return "'" + info.name + "'";
+		}
+		return std::to_string(request.items.size()) + " assets";
+	}
+
+	void asset_browser::show_toast(const std::string& message, int level)
+	{
+		vgui_context* ctx = list_ ? vgui_widget_get_context(list_)
+			: (grid_ ? vgui_widget_get_context(grid_) : nullptr);
+		if (!ctx || message.empty())
+			return;
+		vgui_toast_options options;
+		vgui_toast_options_default(&options);
+		options.level = (vgui_toast_level)level;
+		(void)vgui_toast_show(ctx, message.c_str(), &options);
+	}
+
+	void asset_browser::publish_notice(std::string message,
+		operation_error error, bool warning_toast)
+	{
+		last_message_ = std::move(message);
+		last_error_ = error;
+		if (notice_listener_)
+			notice_listener_(last_message_, last_error_);
+		if (last_error_ != operation_error::none)
+			show_toast(last_message_, VGUI_TOAST_ERROR);
+		else if (warning_toast)
+			show_toast(last_message_, VGUI_TOAST_WARNING);
+	}
+
+	void asset_browser::report_failure(const std::string& action_text,
+		const std::string& target_text, operation_error error,
+		const std::string& detail)
+	{
+		last_undoable_ = false;
+		std::string message = action_text.empty() ? "Asset operation" : action_text;
+		if (!target_text.empty())
+			message += " " + target_text;
+		message += " failed: ";
+		message += operation_error_text(error);
+		if (!detail.empty())
+			message += " (" + detail + ")";
+		publish_notice(std::move(message), error, false);
+	}
+
+	void asset_browser::report_operation_failure(operation kind,
+		const std::vector<vgui_item_id>& items, operation_error error,
+		const std::string& detail)
+	{
+		operation_request request;
+		request.kind = kind;
+		request.items = items;
+		report_failure(operation_verb(kind), operation_target_text(request),
+			error, detail);
+	}
+
+	void asset_browser::remove_mirror_items(const std::vector<vgui_item_id>& items)
+	{
+		if (virtual_mode_)
+		{
+			for (vgui_item_id item : items)
+				virtual_thumbs_.erase(item);
+			return;
+		}
+		if (items.empty())
+			return;
+		std::unordered_set<vgui_item_id> removed(items.begin(), items.end());
+		items_.erase(std::remove_if(items_.begin(), items_.end(),
+			[&](const item_entry& entry) { return removed.count(entry.id) != 0; }),
+			items_.end());
+		item_index_.clear();
+		for (std::size_t i = 0; i < items_.size(); ++i)
+			item_index_[items_[(std::size_t)i].id] = (int)i;
+	}
+
+	void asset_browser::refresh_after_operation()
+	{
+		if (navigate_handler_ && has_location_)
+		{
+			(void)reload();
+			return;
+		}
+		refresh();
+		sync_list_selection();
+	}
+
+	void asset_browser::refresh_after_command()
+	{
+		if (navigate_handler_ && has_location_)
+		{
+			(void)reload();
+			return;
+		}
+		refresh();
+		sync_list_selection();
+	}
+
+	bool asset_browser::perform_operation(operation_request request)
+	{
+		request.items = valid_operation_items(request.items);
+		if (request.items.empty())
+		{
+			report_operation_failure(request.kind, {}, operation_error::no_selection,
+				{});
+			return false;
+		}
+
+		const std::string target = operation_target_text(request);
+		std::string old_name;
+		if (request.kind == operation::rename)
+		{
+			asset_info info;
+			const int index = index_of(request.items.front());
+			if (index >= 0)
+				(void)item_at(index, &info);
+			old_name = info.name;
+		}
+
+		/* Legacy hosts that only installed rename_handler keep the A01/A02
+		 * path.  It records rename_command and remains fully undoable. */
+		if (!operation_handler_)
+		{
+			if (request.kind == operation::rename && rename_handler_)
+			{
+				if (!apply_rename(request.items.front(), request.name))
+				{
+					report_failure("Rename", target, operation_error::io_error,
+						"host rejected the rename");
+					return false;
+				}
+				if (command_stack_)
+				{
+					command_stack_->push(std::make_unique<rename_command>(this,
+						alive_token_, request.items.front(), old_name,
+						request.name));
+					last_undoable_ = true;
+				}
+				else
+				{
+					last_undoable_ = false;
+				}
+				std::string message = "Renamed '" + old_name + "' to '" +
+					request.name + "'";
+				if (!last_undoable_)
+					message += " (not undoable)";
+				publish_notice(std::move(message), operation_error::none,
+					!last_undoable_);
+				refresh_after_operation();
+				return true;
+			}
+			report_operation_failure(request.kind, request.items,
+				operation_error::unsupported, "no operation handler installed");
+			return false;
+		}
+
+		operation_result result;
+		if (!operation_handler_(request, &result))
+		{
+			const operation_error error = result.error == operation_error::none
+				? operation_error::io_error : result.error;
+			report_operation_failure(request.kind, request.items, error,
+				result.message);
+			return false;
+		}
+
+		const bool undoable = result.undoable && result.undo && result.redo;
+		last_undoable_ = undoable && command_stack_ != nullptr;
+		if (last_undoable_)
+		{
+			command_stack_->push(std::make_unique<operation_command>(this,
+				alive_token_, operation_command_name(request.kind),
+				std::move(result.redo), std::move(result.undo)));
+		}
+
+		/* Keep local models usable when no navigate handler is installed.  A
+		 * full-model host without navigation rebuilds the directory itself. */
+		if (!(navigate_handler_ && has_location_))
+		{
+			switch (request.kind)
+			{
+			case operation::rename:
+				if (!virtual_mode_)
+				{
+					const int index = base_index_of(request.items.front());
+					if (index >= 0)
+						items_[(std::size_t)index].name = request.name;
+				}
+				break;
+			case operation::remove:
+			case operation::move:
+				remove_mirror_items(request.items);
+				break;
+			case operation::reimport:
+				if (thumbnails_)
+				{
+					for (vgui_item_id item : request.items)
+						thumbnails_->erase(thumbnail_key(item));
+				}
+				break;
+			case operation::duplicate:
+				break;
+			}
+		}
+
+		refresh_after_operation();
+
+		std::vector<vgui_item_id> wanted = selection_;
+		if (!result.select.empty())
+			wanted = result.select;
+		else if (request.kind == operation::duplicate && !result.created.empty())
+			wanted = result.created;
+		else if (request.kind == operation::remove ||
+			request.kind == operation::move)
+		{
+			std::unordered_set<vgui_item_id> gone(request.items.begin(),
+				request.items.end());
+			wanted.erase(std::remove_if(wanted.begin(), wanted.end(),
+				[&](vgui_item_id item) { return gone.count(item) != 0; }),
+				wanted.end());
+		}
+
+		std::vector<vgui_item_id> filtered;
+		std::unordered_set<vgui_item_id> seen;
+		for (vgui_item_id item : wanted)
+		{
+			if (item == 0 || !seen.insert(item).second || index_of(item) < 0)
+				continue;
+			filtered.push_back(item);
+		}
+		const vgui_item_id primary = filtered.empty() ? 0 : filtered.front();
+		const int anchor = primary ? index_of(primary) : -1;
+		apply_selection(std::move(filtered), primary, anchor, true);
+
+		std::string message;
+		switch (request.kind)
+		{
+		case operation::rename:
+			message = "Renamed '" + old_name + "' to '" + request.name + "'";
+			break;
+		case operation::remove:
+			message = "Deleted " + std::to_string(request.items.size()) +
+				(request.items.size() == 1 ? " asset" : " assets");
+			break;
+		case operation::duplicate:
+			message = "Duplicated " + std::to_string(request.items.size()) +
+				(request.items.size() == 1 ? " asset" : " assets");
+			break;
+		case operation::move:
+			message = "Moved " + std::to_string(request.items.size()) +
+				(request.items.size() == 1 ? " asset" : " assets") +
+				" to '" + request.target_path_id + "'";
+			break;
+		case operation::reimport:
+			message = "Reimported " + std::to_string(request.items.size()) +
+				(request.items.size() == 1 ? " asset" : " assets");
+			break;
+		}
+		if (!result.message.empty())
+			message += " (" + result.message + ")";
+		if (!last_undoable_)
+			message += " (not undoable)";
+		publish_notice(std::move(message), operation_error::none,
+			!last_undoable_);
+		return true;
+	}
+
+	bool asset_browser::remove_items(const std::vector<vgui_item_id>& items)
+	{
+		const std::vector<vgui_item_id> valid = valid_operation_items(items);
+		if (valid.empty())
+		{
+			report_operation_failure(operation::remove, items,
+				items.empty() ? operation_error::no_selection
+					: operation_error::not_found, {});
+			return false;
+		}
+		operation_request request;
+		request.kind = operation::remove;
+		request.items = valid;
+		request.path_id = current_path_id_;
+		return perform_operation(std::move(request));
+	}
+
+	bool asset_browser::remove_selected()
+	{
+		return remove_items(selected_items_in_order());
+	}
+
+	bool asset_browser::duplicate_items(const std::vector<vgui_item_id>& items)
+	{
+		const std::vector<vgui_item_id> valid = valid_operation_items(items);
+		if (valid.empty())
+		{
+			report_operation_failure(operation::duplicate, items,
+				items.empty() ? operation_error::no_selection
+					: operation_error::not_found, {});
+			return false;
+		}
+		operation_request request;
+		request.kind = operation::duplicate;
+		request.items = valid;
+		request.path_id = current_path_id_;
+		return perform_operation(std::move(request));
+	}
+
+	bool asset_browser::duplicate_selected()
+	{
+		return duplicate_items(selected_items_in_order());
+	}
+
+	bool asset_browser::move_items(const std::vector<vgui_item_id>& items,
+		const std::string& target_path_id)
+	{
+		if (target_path_id.empty())
+		{
+			report_operation_failure(operation::move, items,
+				operation_error::invalid_target, "no destination given");
+			return false;
+		}
+		if (target_path_id == current_path_id_ && has_location_)
+		{
+			report_operation_failure(operation::move, items,
+				operation_error::invalid_target, "already in this folder");
+			return false;
+		}
+		const std::vector<vgui_item_id> valid = valid_operation_items(items);
+		if (valid.empty())
+		{
+			report_operation_failure(operation::move, items,
+				items.empty() ? operation_error::no_selection
+					: operation_error::not_found, {});
+			return false;
+		}
+		operation_request request;
+		request.kind = operation::move;
+		request.items = valid;
+		request.path_id = current_path_id_;
+		request.target_path_id = target_path_id;
+		return perform_operation(std::move(request));
+	}
+
+	bool asset_browser::move_selected(const std::string& target_path_id)
+	{
+		return move_items(selected_items_in_order(), target_path_id);
+	}
+
+	bool asset_browser::reimport_items(const std::vector<vgui_item_id>& items)
+	{
+		const std::vector<vgui_item_id> valid = valid_operation_items(items);
+		if (valid.empty())
+		{
+			report_operation_failure(operation::reimport, items,
+				items.empty() ? operation_error::no_selection
+					: operation_error::not_found, {});
+			return false;
+		}
+		operation_request request;
+		request.kind = operation::reimport;
+		request.items = valid;
+		request.path_id = current_path_id_;
+		return perform_operation(std::move(request));
+	}
+
+	bool asset_browser::reimport_selected()
+	{
+		return reimport_items(selected_items_in_order());
+	}
+
+	bool asset_browser::context_menu_enabled() const noexcept
+	{
+		return context_menu_;
+	}
+
+	bool asset_browser::perform_action(action kind, const std::string& argument)
+	{
+		switch (kind)
+		{
+		case action::rename:
+			return begin_rename();
+		case action::duplicate:
+			return duplicate_selected();
+		case action::remove:
+			return confirm_remove_selected();
+		case action::move:
+			return move_selected(argument);
+		case action::reimport:
+			return reimport_selected();
+		case action::import:
+			return request_import();
+		case action::dependencies:
+			return show_dependencies();
+		}
+		return false;
+	}
+
+	bool asset_browser::begin_rename(vgui_item_id item)
+	{
+		const vgui_item_id target = item != 0 ? item : primary_;
+		if (target == 0)
+		{
+			report_failure("Rename", {}, operation_error::no_selection, {});
+			return false;
+		}
+		const int index = index_of(target);
+		asset_info info;
+		if (index < 0 || !item_at(index, &info))
+		{
+			report_failure("Rename", {}, operation_error::not_found, {});
+			return false;
+		}
+		vgui_context* ctx = list_ ? vgui_widget_get_context(list_)
+			: (grid_ ? vgui_widget_get_context(grid_) : nullptr);
+		if (!ctx)
+			return false;
+		auto* state = new rename_prompt_state{ alive_token_, this, target };
+		vgui_widget* dialog = vgui_dialog_prompt(ctx, "Rename Asset",
+			"Enter a new asset name:", info.name.c_str(),
+			&on_rename_prompt_result, state);
+		if (!dialog)
+		{
+			delete state;
+			report_failure("Rename", "'" + info.name + "'",
+				operation_error::unsupported, "another dialog is open");
+			return false;
 		}
 		return true;
+	}
+
+	bool asset_browser::confirm_remove(const std::vector<vgui_item_id>& items)
+	{
+		const std::vector<vgui_item_id> valid = valid_operation_items(items);
+		if (valid.empty())
+		{
+			report_operation_failure(operation::remove, items,
+				items.empty() ? operation_error::no_selection
+					: operation_error::not_found, {});
+			return false;
+		}
+		if (!operation_handler_)
+		{
+			report_operation_failure(operation::remove, valid,
+				operation_error::unsupported, "no operation handler installed");
+			return false;
+		}
+		vgui_context* ctx = list_ ? vgui_widget_get_context(list_)
+			: (grid_ ? vgui_widget_get_context(grid_) : nullptr);
+		if (!ctx)
+			return false;
+
+		std::string message;
+		if (valid.size() == 1)
+		{
+			asset_info info;
+			const int index = index_of(valid.front());
+			if (index >= 0)
+				(void)item_at(index, &info);
+			message = "Delete '" + info.name + "'?";
+		}
+		else
+			message = "Delete " + std::to_string(valid.size()) + " assets?";
+		message += "\nThe asset files are removed from the project. Hosts that "
+			"supply undo callbacks can reverse this.";
+		auto* state = new remove_confirm_state{ alive_token_, this, valid };
+		vgui_widget* dialog = vgui_dialog_confirm(ctx, "Delete Assets",
+			message.c_str(), 1, &on_remove_confirm_result, state);
+		if (!dialog)
+		{
+			delete state;
+			report_operation_failure(operation::remove, valid,
+				operation_error::unsupported, "another dialog is open");
+			return false;
+		}
+		return true;
+	}
+
+	bool asset_browser::confirm_remove_selected()
+	{
+		return confirm_remove(selected_items_in_order());
+	}
+
+	bool asset_browser::request_import()
+	{
+		if (!import_prompt_handler_)
+		{
+			report_failure("Import", {}, operation_error::unsupported,
+				"no import dialog handler installed");
+			return false;
+		}
+		import_prompt_handler_();
+		last_error_ = operation_error::none;
+		last_undoable_ = false;
+		last_message_ = "Import dialog requested";
+		return true;
+	}
+
+	std::vector<asset_browser::asset_dependency> asset_browser::dependencies(
+		vgui_item_id item) const
+	{
+		const vgui_item_id target = item != 0 ? item : primary_;
+		if (!dependency_handler_ || target == 0 || index_of(target) < 0)
+			return {};
+		return dependency_handler_(target);
+	}
+
+	bool asset_browser::show_dependencies(vgui_item_id item)
+	{
+		const vgui_item_id target = item != 0 ? item : primary_;
+		if (target == 0 || index_of(target) < 0)
+		{
+			report_failure("Show Dependencies", {},
+				operation_error::no_selection, {});
+			return false;
+		}
+		if (!dependency_handler_)
+		{
+			report_failure("Show Dependencies", {},
+				operation_error::unsupported, "no dependency handler installed");
+			return false;
+		}
+		asset_info info;
+		const int index = index_of(target);
+		if (index >= 0)
+			(void)item_at(index, &info);
+
+		const std::vector<asset_dependency> list = dependency_handler_(target);
+		std::string message;
+		if (list.empty())
+			message = "No assets depend on '" + info.name + "'.";
+		else
+		{
+			message = "'" + info.name + "' is used by " +
+				std::to_string(list.size()) +
+				(list.size() == 1 ? " asset:" : " assets:");
+			for (const asset_dependency& dep : list)
+			{
+				message += "\n  ";
+				message += dep.name.empty() ? "(unnamed)" : dep.name;
+				if (!dep.type.empty())
+					message += " [" + dep.type + "]";
+				if (!dep.path_id.empty())
+					message += "  " + dep.path_id;
+			}
+		}
+		last_error_ = operation_error::none;
+		last_undoable_ = false;
+		last_message_ = message;
+
+		vgui_context* ctx = list_ ? vgui_widget_get_context(list_)
+			: (grid_ ? vgui_widget_get_context(grid_) : nullptr);
+		if (!ctx)
+			return false;
+		return vgui_dialog_alert(ctx, "Dependencies", message.c_str(),
+			nullptr, nullptr) != nullptr;
+	}
+
+	asset_browser::operation_error asset_browser::last_error() const noexcept
+	{
+		return last_error_;
+	}
+
+	const std::string& asset_browser::last_message() const noexcept
+	{
+		return last_message_;
+	}
+
+	bool asset_browser::last_undoable() const noexcept
+	{
+		return last_undoable_;
+	}
+
+	void asset_browser::enable_context_menu()
+	{
+		context_menu_ = true;
+		vgui_context* ctx = root_ ? vgui_widget_get_context(root_)
+			: (list_ ? vgui_widget_get_context(list_) : nullptr);
+		if (!ctx)
+			return;
+		if (!menu_)
+		{
+			menu_ = vgui_widget_create(ctx, VGUI_MENU, nullptr);
+			if (menu_)
+			{
+				auto* entry = new context_entry{ alive_token_, this };
+				vgui_menu_on_activate(menu_, &asset_browser::on_menu_activate_thunk,
+					entry);
+			}
+		}
+		if (list_ && !list_event_installed_)
+		{
+			vgui_widget_on_event(list_, &asset_browser::on_list_event_thunk, this);
+			list_event_installed_ = true;
+		}
+		if (!key_entry_)
+		{
+			key_entry_ = new context_entry{ alive_token_, this };
+			(void)vgui_context_add_key_handler(ctx, &asset_browser::on_key_thunk,
+				key_entry_);
+		}
+	}
+
+	bool asset_browser::open_context_menu(float abs_x, float abs_y)
+	{
+		if (!menu_)
+			return false;
+		const std::vector<vgui_item_id> items = selected_items_in_order();
+		if (items.empty())
+			return false;
+
+		vgui_menu_clear(menu_);
+		const bool rename_ok = operation_available(operation::rename) &&
+			items.size() == 1;
+		const bool ops_ok = operation_handler_ != nullptr;
+		const auto add_plain = [this](const char* text, action kind,
+			const char* shortcut, bool enabled)
+		{
+			const vgui_item_id id = vgui_menu_add_item(menu_, text);
+			if (id == 0)
+				return;
+			vgui_menu_set_item_user(menu_, id, menu_tag(kMenuActionBase +
+				(std::uintptr_t)kind));
+			if (shortcut)
+				vgui_menu_set_item_shortcut(menu_, id, shortcut);
+			if (!enabled)
+				vgui_menu_set_item_enabled(menu_, id, 0);
+		};
+
+		add_plain("Rename", action::rename, "F2", rename_ok);
+		add_plain("Duplicate", action::duplicate, "Ctrl+D", ops_ok);
+		add_plain("Delete", action::remove, "Del", ops_ok);
+
+		move_menu_targets_.clear();
+		if (move_targets_handler_)
+		{
+			const std::vector<asset_move_target> all = move_targets_handler_();
+			std::unordered_set<std::string> seen;
+			for (const asset_move_target& target : all)
+			{
+				if (target.path_id.empty() || !seen.insert(target.path_id).second)
+					continue;
+				if (has_location_ && target.path_id == current_path_id_)
+					continue;
+				move_menu_targets_.push_back(target);
+			}
+		}
+
+		vgui_widget* move_menu = nullptr;
+		const vgui_item_id move_item = vgui_menu_add_submenu(menu_, "Move To",
+			&move_menu);
+		const bool move_ok = ops_ok && !move_menu_targets_.empty();
+		if (move_item && !move_ok)
+			vgui_menu_set_item_enabled(menu_, move_item, 0);
+		if (move_menu)
+		{
+			if (!move_entry_)
+				move_entry_ = new context_entry{ alive_token_, this };
+			vgui_menu_on_activate(move_menu,
+				&asset_browser::on_menu_activate_thunk, move_entry_);
+			for (std::size_t i = 0; i < move_menu_targets_.size(); ++i)
+			{
+				const asset_move_target& target = move_menu_targets_[i];
+				const vgui_item_id id = vgui_menu_add_item(move_menu,
+					target.label.empty() ? target.path_id.c_str()
+						: target.label.c_str());
+				if (id)
+					vgui_menu_set_item_user(move_menu, id,
+						menu_tag(kMenuMoveBase + i));
+			}
+			if (!move_ok)
+			{
+				const vgui_item_id id = vgui_menu_add_item(move_menu,
+					"(No destinations)");
+				if (id)
+					vgui_menu_set_item_enabled(move_menu, id, 0);
+			}
+		}
+
+		vgui_menu_add_separator(menu_);
+		add_plain("Import...", action::import, "Ctrl+I",
+			import_prompt_handler_ != nullptr);
+		add_plain("Reimport", action::reimport, "F5",
+			operation_available(operation::reimport));
+		vgui_menu_add_separator(menu_);
+		add_plain("Show Dependencies", action::dependencies, nullptr,
+			dependency_handler_ != nullptr);
+
+		vgui_menu_open(menu_, abs_x, abs_y);
+		return true;
+	}
+
+	void asset_browser::on_list_event(const vgui_event* event)
+	{
+		if (!context_menu_ || !event || !list_)
+			return;
+		if (event->type != VGUI_EVENT_MOUSE_DOWN || event->button != 3 ||
+			event->item == 0)
+			return;
+		if (!is_selected(event->item))
+		{
+			const int index = index_of(event->item);
+			apply_selection({ event->item }, event->item, index, true);
+		}
+		float x = 0, y = 0, w = 0, h = 0;
+		vgui_widget_get_rect(list_, &x, &y, &w, &h);
+		(void)w;
+		(void)h;
+		(void)open_context_menu(x + event->x, y + event->y);
+	}
+
+	void asset_browser::on_list_event_thunk(vgui_widget* widget,
+		const vgui_event* event, void* user)
+	{
+		(void)widget;
+		if (auto* self = static_cast<asset_browser*>(user))
+			self->on_list_event(event);
+	}
+
+	void asset_browser::on_menu_activate_thunk(vgui_widget* menu,
+		vgui_item_id item, void* user)
+	{
+		auto* entry = static_cast<context_entry*>(user);
+		if (!entry || entry->alive.expired() || !menu || item == 0)
+			return;
+		asset_browser* self = entry->owner;
+		const std::uintptr_t tag = menu_tag_value(
+			vgui_menu_get_item_user(menu, item));
+		if (tag >= kMenuMoveBase)
+		{
+			const std::size_t index = (std::size_t)(tag - kMenuMoveBase);
+			if (index < self->move_menu_targets_.size())
+			{
+				(void)self->perform_action(action::move,
+					self->move_menu_targets_[index].path_id);
+			}
+			return;
+		}
+		if (tag < kMenuActionBase)
+			return;
+		const std::uintptr_t value = tag - kMenuActionBase;
+		if (value > (std::uintptr_t)action::dependencies)
+			return;
+		(void)self->perform_action((action)value);
+	}
+
+	int asset_browser::on_key_thunk(vgui_context* ctx, int key, int down,
+		int mods, void* user)
+	{
+		auto* entry = static_cast<context_entry*>(user);
+		if (!entry || entry->alive.expired() || !ctx || !down)
+			return 0;
+		asset_browser* self = entry->owner;
+		if (!self->context_menu_)
+			return 0;
+		/* Only react while the asset view owns focus. */
+		vgui_widget* focus = vgui_get_focus(ctx);
+		if (focus != self->list_ && focus != self->grid_)
+			return 0;
+		if (key == VGUI_KEY_F2)
+		{
+			(void)self->perform_action(action::rename);
+			return 1;
+		}
+		if (key == VGUI_KEY_DELETE)
+		{
+			(void)self->perform_action(action::remove);
+			return 1;
+		}
+		if (key == 'D' && (mods & VGUI_MOD_CTRL))
+		{
+			(void)self->perform_action(action::duplicate);
+			return 1;
+		}
+		if (key == VGUI_KEY_F5)
+		{
+			(void)self->perform_action(action::reimport);
+			return 1;
+		}
+		if (key == 'I' && (mods & VGUI_MOD_CTRL))
+		{
+			(void)self->perform_action(action::import);
+			return 1;
+		}
+		return 0;
 	}
 
 	bool asset_browser::apply_rename(vgui_item_id item, const std::string& name)
@@ -1582,9 +2629,32 @@ namespace vgui_editor_kit {
 
 	bool asset_browser::import_files(const std::vector<std::string>& files)
 	{
-		if (!import_handler_ || files.empty())
+		if (files.empty())
+		{
+			report_failure("Import", {}, operation_error::no_selection,
+				"no files given");
 			return false;
-		return import_handler_(files, current_path_id_);
+		}
+		if (!import_handler_)
+		{
+			report_failure("Import", {}, operation_error::unsupported,
+				"no import handler installed");
+			return false;
+		}
+		if (!import_handler_(files, current_path_id_))
+		{
+			report_failure("Import",
+				std::to_string(files.size()) +
+					(files.size() == 1 ? " file" : " files"),
+				operation_error::io_error, "host rejected the import");
+			return false;
+		}
+		last_error_ = operation_error::none;
+		last_undoable_ = false;
+		publish_notice("Imported " + std::to_string(files.size()) +
+			(files.size() == 1 ? " file" : " files"),
+			operation_error::none, false);
+		return true;
 	}
 
 	void asset_browser::update_import_target()
@@ -2274,6 +3344,23 @@ namespace vgui_editor_kit {
 
 		case VGUI_EVENT_MOUSE_DOWN:
 		{
+			if (event->button == 3)
+			{
+				const int index = self->grid_index_at(event->x, event->y);
+				if (index < 0 || !self->context_menu_)
+					return 0;
+				const vgui_item_id item = self->id_at(index);
+				if (item == 0)
+					return 0;
+				if (!self->is_selected(item))
+					self->apply_selection({ item }, item, index, true);
+				float x = 0, y = 0, w = 0, h = 0;
+				vgui_widget_get_rect(widget, &x, &y, &w, &h);
+				(void)w;
+				(void)h;
+				(void)self->open_context_menu(x + event->x, y + event->y);
+				return 1;
+			}
 			if (event->button != 1)
 				return 0;
 			self->update_hover(event->x, event->y);

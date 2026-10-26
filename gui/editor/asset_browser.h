@@ -15,6 +15,13 @@
  * rename_item() routes through the rename handler and records an undoable
  * command when a command stack is attached.
  *
+ * A06 adds host-backed asset operations: rename, delete, duplicate, move and
+ * reimport.  The host applies them to its database and returns structured
+ * errors plus optional undo/redo callbacks; the browser routes context-menu
+ * and keyboard actions through the same path, reloads the current directory
+ * and turns a whole batch into one undo record when the host supports it.
+ * Non-undoable results are reported explicitly, never silently.
+ *
  * A05 adds an owned thumbnail_cache.  Host thumbnails supplied through
  * set_item_thumbnail() still win; otherwise the browser requests missing
  * thumbnails for the visible range from a host loader, shows queued/failed
@@ -241,6 +248,143 @@ namespace vgui_editor_kit {
 		void set_import_handler(import_handler handler);
 		bool import_files(const std::vector<std::string>& files);
 
+		/* ---- A06: asset operations ---------------------------------------- */
+		/* The host owns the database and the files.  The browser never touches
+		 * either directly: it validates the selection, builds a request, and
+		 * reports the host's structured result.  Return false on failure and
+		 * fill result->error/message; return true after the database has been
+		 * updated.  The browser reloads the current directory on success.
+		 * Set undo/redo (both) plus undoable=true to record the whole batch as
+		 * one command.  Leave undoable=false when the operation cannot be
+		 * reversed; the browser then reports "(not undoable)" explicitly. */
+		enum class operation
+		{
+			rename,
+			remove,
+			duplicate,
+			move,
+			reimport
+		};
+
+		/* Fixed error categories so hosts and UI keep the same wording for
+		 * the common failures required by A06: name conflicts, read-only
+		 * assets and assets still in use. */
+		enum class operation_error
+		{
+			none,
+			no_selection,
+			invalid_name,
+			invalid_target,
+			not_found,
+			conflict,
+			read_only,
+			in_use,
+			unsupported,
+			io_error
+		};
+
+		struct operation_request
+		{
+			operation kind = operation::rename;
+			std::vector<vgui_item_id> items;
+			std::string name;			// rename target
+			std::string path_id;		// directory the request started in
+			std::string target_path_id;	// move destination
+		};
+
+		struct operation_result
+		{
+			operation_error error = operation_error::none;
+			std::string message;		// optional host detail appended to the UI text
+			bool undoable = false;
+			std::function<bool()> undo;
+			std::function<bool()> redo;
+			std::vector<vgui_item_id> select;	// selection after success
+			std::vector<vgui_item_id> created;	// duplicate results
+		};
+
+		using operation_handler = std::function<bool(const operation_request&,
+			operation_result*)>;
+		/* Receives the final human-readable message for every operation and
+		 * error (error == operation_error::none on success). */
+		using notice_listener = std::function<void(const std::string& message,
+			operation_error error)>;
+
+		struct asset_move_target
+		{
+			std::string label;
+			std::string path_id;
+		};
+		using move_targets_handler = std::function<std::vector<asset_move_target>()>;
+
+		struct asset_dependency
+		{
+			std::string name;
+			std::string type;
+			std::string path_id;		// optional location for display
+			vgui_item_id id = 0;
+		};
+		using dependency_handler = std::function<std::vector<asset_dependency>(
+			vgui_item_id item)>;
+		using import_prompt_handler = std::function<void()>;
+
+		void set_operation_handler(operation_handler handler);
+		void set_notice_listener(notice_listener listener);
+		void set_move_targets_handler(move_targets_handler handler);
+		void set_dependency_handler(dependency_handler handler);
+		/* Invoked by the Import... action.  The host opens its file dialog and
+		 * calls import_files() with the selected paths. */
+		void set_import_prompt_handler(import_prompt_handler handler);
+
+		/* Programmatic operations.  These apply immediately (no confirmation
+		 * dialog) and return false when the host rejected the request.  The
+		 * failure reason is available through last_error()/last_message(). */
+		bool remove_items(const std::vector<vgui_item_id>& items);
+		bool remove_selected();
+		bool duplicate_items(const std::vector<vgui_item_id>& items);
+		bool duplicate_selected();
+		bool move_items(const std::vector<vgui_item_id>& items,
+			const std::string& target_path_id);
+		bool move_selected(const std::string& target_path_id);
+		bool reimport_items(const std::vector<vgui_item_id>& items);
+		bool reimport_selected();
+
+		/* ---- A06: context menu, shortcuts and dependencies ---------------- */
+		enum class action
+		{
+			rename,
+			duplicate,
+			remove,
+			move,
+			reimport,
+			import,
+			dependencies
+		};
+
+		/* Installs the right-click menu plus F2 / Delete / Ctrl+D / F5 /
+		 * Ctrl+I shortcuts.  Both list rows and grid cells are covered. */
+		void enable_context_menu();
+		bool context_menu_enabled() const noexcept;
+		/* Dispatches the same action as the menu/shortcuts.  argument is the
+		 * destination path for action::move. */
+		bool perform_action(action kind, const std::string& argument = {});
+
+		/* Opens the inline-style rename prompt for item (0 = primary). */
+		bool begin_rename(vgui_item_id item = 0);
+		/* Confirmation dialog used by the Delete action/shortcut. */
+		bool confirm_remove(const std::vector<vgui_item_id>& items);
+		bool confirm_remove_selected();
+		bool request_import();
+
+		/* Reads the host dependency list.  show_dependencies() formats it in
+		 * a modal alert and also updates last_message(). */
+		std::vector<asset_dependency> dependencies(vgui_item_id item) const;
+		bool show_dependencies(vgui_item_id item = 0);
+
+		operation_error last_error() const noexcept;
+		const std::string& last_message() const noexcept;
+		bool last_undoable() const noexcept;
+
 		vgui_widget* widget() const noexcept;
 		vgui_widget* root() const noexcept;
 		vgui_widget* grid() const noexcept;
@@ -252,6 +396,7 @@ namespace vgui_editor_kit {
 
 	private:
 		class rename_command;
+		class operation_command;
 
 		struct item_entry
 		{
@@ -283,6 +428,26 @@ namespace vgui_editor_kit {
 
 		bool source_valid(const asset_source& source) const noexcept;
 		bool apply_rename(vgui_item_id item, const std::string& name);
+		bool perform_operation(operation_request request);
+		bool operation_available(operation kind) const noexcept;
+		std::vector<vgui_item_id> selected_items_in_order() const;
+		std::vector<vgui_item_id> valid_operation_items(
+			const std::vector<vgui_item_id>& items) const;
+		std::string operation_target_text(const operation_request& request) const;
+		void refresh_after_operation();
+		void refresh_after_command();
+		void remove_mirror_items(const std::vector<vgui_item_id>& items);
+		void report_failure(const std::string& action_text,
+			const std::string& target_text, operation_error error,
+			const std::string& detail);
+		void report_operation_failure(operation kind,
+			const std::vector<vgui_item_id>& items, operation_error error,
+			const std::string& detail);
+		void publish_notice(std::string message, operation_error error,
+			bool warning_toast);
+		void show_toast(const std::string& message, int level);
+		bool open_context_menu(float abs_x, float abs_y);
+		void on_list_event(const vgui_event* event);
 		void apply_virtual_source();
 		void reset_model(bool detach_source, bool notify = true);
 		void clear_model_data();
@@ -336,6 +501,12 @@ namespace vgui_editor_kit {
 		static void on_tick_draw(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg, float abs_x, float abs_y, float abs_w, float abs_h, float delta_time, void* user);
 		static int on_event(vgui_widget* widget, const vgui_event* event, void* user);
 		static const char* on_grid_tooltip(vgui_widget* widget, void* user);
+		static void on_list_event_thunk(vgui_widget* widget,
+			const vgui_event* event, void* user);
+		static void on_menu_activate_thunk(vgui_widget* menu,
+			vgui_item_id item, void* user);
+		static int on_key_thunk(vgui_context* ctx, int key, int down, int mods,
+			void* user);
 
 		static int source_row_count(void* user);
 		static int source_row_info(void* user, int index, const char** text, const char** detail, void** item_user);
@@ -429,6 +600,25 @@ namespace vgui_editor_kit {
 		/* A04 import drop target (root widget, VGUI_DRAG_FILES). */
 		import_handler import_handler_;
 		std::unique_ptr<drop_target> import_target_;
+
+		/* A06 host-backed operations, menu/shortcut wiring and notices. */
+		operation_handler operation_handler_;
+		move_targets_handler move_targets_handler_;
+		dependency_handler dependency_handler_;
+		import_prompt_handler import_prompt_handler_;
+		notice_listener notice_listener_;
+		operation_error last_error_ = operation_error::none;
+		std::string last_message_;
+		bool last_undoable_ = false;
+
+		bool context_menu_ = false;
+		vgui_widget* menu_ = nullptr;
+		void* key_entry_ = nullptr;
+		/* The Move To submenu is recreated on every open; its activation
+		 * context is allocated once so rebuilding the menu does not leak. */
+		void* move_entry_ = nullptr;
+		bool list_event_installed_ = false;
+		std::vector<asset_move_target> move_menu_targets_;
 
 		/* A05 asynchronous visible-range thumbnails. */
 		std::unique_ptr<thumbnail_cache> thumbnails_;

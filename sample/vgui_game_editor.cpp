@@ -297,6 +297,70 @@ struct editor_state
 	bool import_assets(const std::vector<std::string>& files,
 		const std::string& path_id);
 
+	/* A06: 宿主资产数据库;浏览器只发结构化请求,这里负责冲突/只读/占用
+	 * 检查、整批应用以及可撤销快照。 */
+	bool asset_operation(const asset_browser::operation_request& request,
+		asset_browser::operation_result* result);
+	std::vector<asset_browser::asset_dependency> asset_dependencies(
+		vgui_item_id item) const;
+	std::vector<asset_browser::asset_move_target> asset_move_targets() const;
+
+	bool locate_asset(vgui_item_id id, std::string* path_id,
+		asset_info* out) const
+	{
+		for (const auto& directory : asset_directories)
+		{
+			for (const asset_info& item : directory.second.items)
+			{
+				if (item.id != id)
+					continue;
+				if (path_id)
+					*path_id = directory.first;
+				if (out)
+					*out = item;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	std::string asset_user_list(const std::string& name) const
+	{
+		std::vector<std::string> users;
+		for (const auto& entry : scene.objects)
+		{
+			for (const auto& prop : entry.second.props)
+			{
+				if (prop.second != name)
+					continue;
+				if (std::find(users.begin(), users.end(), entry.second.name) ==
+					users.end())
+					users.push_back(entry.second.name);
+			}
+		}
+		std::string text;
+		for (std::size_t i = 0; i < users.size(); ++i)
+		{
+			if (i)
+				text += ", ";
+			text += users[i];
+		}
+		return text;
+	}
+
+	void rename_asset_references(const std::string& old_name,
+		const std::string& new_name)
+	{
+		for (auto& entry : scene.objects)
+		{
+			for (auto& prop : entry.second.props)
+			{
+				if (prop.second == old_name)
+					prop.second = new_name;
+			}
+		}
+	}
+
 	static std::string file_basename(const std::string& path);
 	static std::string asset_type_for_path(const std::string& path);
 	static vgui_color asset_base_color(const std::string& type);
@@ -326,6 +390,18 @@ struct editor_state
 };
 
 static editor_state g;
+
+/* A06 Import...: 宿主负责文件对话框;这里用一个路径输入框模拟,确认后走
+ * 与 OS 拖入完全相同的 import_files() 入口。 */
+static void on_demo_import_prompt(vgui_context* ctx, int result,
+	const char* text, void* user)
+{
+	(void)ctx;
+	(void)user;
+	if (result != VGUI_MODAL_RESULT_CONFIRM || !text || !*text || !g.shell)
+		return;
+	(void)g.shell->assets().import_files({ std::string(text) });
+}
 
 std::string editor_state::file_basename(const std::string& path)
 {
@@ -433,6 +509,270 @@ bool editor_state::import_assets(const std::vector<std::string>& files,
 			g.shell->set_status("undid import");
 		}));
 	return true;
+}
+
+bool editor_state::asset_operation(
+	const asset_browser::operation_request& request,
+	asset_browser::operation_result* result)
+{
+	if (!result)
+		return false;
+	result->error = asset_browser::operation_error::none;
+	result->message.clear();
+	result->undoable = false;
+	result->undo = {};
+	result->redo = {};
+	result->select.clear();
+	result->created.clear();
+
+	const auto fail = [result](asset_browser::operation_error error,
+		std::string message) {
+		result->error = error;
+		result->message = std::move(message);
+		return false;
+	};
+
+	struct entry
+	{
+		std::string path_id;
+		asset_info info;
+	};
+	std::vector<entry> entries;
+	entries.reserve(request.items.size());
+	for (vgui_item_id id : request.items)
+	{
+		entry found;
+		if (!locate_asset(id, &found.path_id, &found.info) ||
+			found.path_id.empty())
+			return fail(asset_browser::operation_error::not_found,
+				"asset " + std::to_string(id) + " no longer exists");
+		entries.push_back(std::move(found));
+	}
+	if (entries.empty())
+		return fail(asset_browser::operation_error::no_selection,
+			"no assets selected");
+
+	/* Ghost.mesh 演示只读资产:所有破坏性操作都必须给出同一类错误。 */
+	for (const entry& item : entries)
+	{
+		if (item.info.type == "Folder")
+			return fail(asset_browser::operation_error::unsupported,
+				"folders are managed by the host database");
+		if (item.info.name == "Ghost.mesh")
+			return fail(asset_browser::operation_error::read_only,
+				"Ghost.mesh is marked read-only");
+	}
+
+	const auto before_dirs = asset_directories;
+	const auto before_assets = assets;
+
+	auto capture_command = [this, &before_dirs, &before_assets, result](
+		const std::map<object_id, std::map<std::string, std::string>>*
+			props_before = nullptr,
+		const std::map<object_id, std::map<std::string, std::string>>*
+			props_after = nullptr)
+	{
+		const auto after_dirs = asset_directories;
+		const auto after_assets = assets;
+		result->undoable = true;
+		result->undo = [this, before_dirs, before_assets, props_before]() {
+			asset_directories = before_dirs;
+			assets = before_assets;
+			if (props_before)
+			{
+				for (const auto& entry : *props_before)
+				{
+					auto object = scene.objects.find(entry.first);
+					if (object != scene.objects.end())
+						object->second.props = entry.second;
+				}
+			}
+			if (shell)
+				shell->set_status("undid asset operation");
+			return true;
+		};
+		result->redo = [this, after_dirs, after_assets, props_after]() {
+			asset_directories = after_dirs;
+			assets = after_assets;
+			if (props_after)
+			{
+				for (const auto& entry : *props_after)
+				{
+					auto object = scene.objects.find(entry.first);
+					if (object != scene.objects.end())
+						object->second.props = entry.second;
+				}
+			}
+			if (shell)
+				shell->set_status("redid asset operation");
+			return true;
+		};
+	};
+
+	switch (request.kind)
+	{
+	case asset_browser::operation::rename:
+	{
+		if (entries.size() != 1)
+			return fail(asset_browser::operation_error::invalid_name,
+				"rename expects exactly one asset");
+		const std::string clean = request.name;
+		if (clean.empty() || clean.find_first_of("/\\") != std::string::npos)
+			return fail(asset_browser::operation_error::invalid_name,
+				"name cannot be empty or contain path separators");
+		const entry& item = entries.front();
+		if (clean == item.info.name)
+			return true;
+		auto existing = assets.find(clean);
+		if (existing != assets.end() && existing->second.name != item.info.name)
+			return fail(asset_browser::operation_error::conflict,
+				"an asset named '" + clean + "' already exists");
+		std::map<object_id, std::map<std::string, std::string>> props_before_map;
+		for (const auto& object : scene.objects)
+			props_before_map[object.first] = object.second.props;
+
+		auto directory = asset_directories.find(item.path_id);
+		if (directory == asset_directories.end())
+			return fail(asset_browser::operation_error::not_found,
+				"directory " + item.path_id + " no longer exists");
+		auto slot = std::find_if(directory->second.items.begin(),
+			directory->second.items.end(),
+			[&](const asset_info& info) { return info.id == item.info.id; });
+		if (slot == directory->second.items.end())
+			return fail(asset_browser::operation_error::not_found,
+				"asset disappeared from its directory");
+		assets.erase(item.info.name);
+		slot->name = clean;
+		assets[clean] = *slot;
+		rename_asset_references(item.info.name, clean);
+		result->select.push_back(item.info.id);
+
+		std::map<object_id, std::map<std::string, std::string>> props_after_map;
+		for (const auto& object : scene.objects)
+			props_after_map[object.first] = object.second.props;
+		capture_command(&props_before_map, &props_after_map);
+		return true;
+	}
+	case asset_browser::operation::remove:
+	{
+		for (const entry& item : entries)
+		{
+			const std::string users = asset_user_list(item.info.name);
+			if (!users.empty())
+				return fail(asset_browser::operation_error::in_use,
+					"'" + item.info.name + "' is used by " + users);
+		}
+		for (const entry& item : entries)
+			remove_asset(item.path_id, item.info.name);
+		capture_command();
+		return true;
+	}
+	case asset_browser::operation::duplicate:
+	{
+		for (const entry& item : entries)
+		{
+			asset_info copy = item.info;
+			copy.name = unique_asset_name(item.info.name);
+			copy.id = next_asset++;
+			add_asset(item.path_id, copy);
+			result->created.push_back(copy.id);
+			result->select.push_back(copy.id);
+		}
+		capture_command();
+		return true;
+	}
+	case asset_browser::operation::move:
+	{
+		if (request.target_path_id.empty() ||
+			request.target_path_id == request.path_id)
+			return fail(asset_browser::operation_error::invalid_target,
+				"choose a different destination folder");
+		auto target = asset_directories.find(request.target_path_id);
+		if (target == asset_directories.end())
+			return fail(asset_browser::operation_error::invalid_target,
+				"destination folder no longer exists");
+		for (const entry& item : entries)
+		{
+			for (const asset_info& existing : target->second.items)
+			{
+				if (existing.name == item.info.name)
+					return fail(asset_browser::operation_error::conflict,
+						"'" + item.info.name +
+						"' already exists in the destination folder");
+			}
+		}
+		for (const entry& item : entries)
+		{
+			remove_asset(item.path_id, item.info.name);
+			add_asset(request.target_path_id, item.info);
+		}
+		capture_command();
+		return true;
+	}
+	case asset_browser::operation::reimport:
+	{
+		if (entries.size() == 1 && entries.front().info.name == "Broken.mesh")
+			return fail(asset_browser::operation_error::io_error,
+				"Broken.mesh failed to decode; the source file is corrupt");
+		/* Reimport only refreshes derived data and intentionally serves as the
+		 * demo's non-undoable operation. */
+		result->select = request.items;
+		result->message = "refreshed from disk; no undo snapshot";
+		return true;
+	}
+	}
+	return fail(asset_browser::operation_error::unsupported,
+		"unhandled asset operation");
+}
+
+std::vector<asset_browser::asset_dependency> editor_state::asset_dependencies(
+	vgui_item_id item) const
+{
+	std::vector<asset_browser::asset_dependency> deps;
+	std::string path_id;
+	asset_info info;
+	if (!locate_asset(item, &path_id, &info))
+		return deps;
+	for (const auto& entry : scene.objects)
+	{
+		bool used = false;
+		for (const auto& prop : entry.second.props)
+		{
+			if (prop.second == info.name)
+			{
+				used = true;
+				break;
+			}
+		}
+		if (!used)
+			continue;
+		asset_browser::asset_dependency dep;
+		dep.name = entry.second.name;
+		dep.type = "Scene Object";
+		dep.path_id = "scene";
+		deps.push_back(std::move(dep));
+	}
+	return deps;
+}
+
+std::vector<asset_browser::asset_move_target> editor_state::asset_move_targets() const
+{
+	std::vector<asset_browser::asset_move_target> targets;
+	for (const auto& directory : asset_directories)
+	{
+		asset_browser::asset_move_target target;
+		for (std::size_t i = 0; i < directory.second.path.size(); ++i)
+		{
+			if (i)
+				target.label += " / ";
+			target.label += directory.second.path[i].label;
+		}
+		if (target.label.empty())
+			target.label = directory.first;
+		target.path_id = directory.first;
+		targets.push_back(std::move(target));
+	}
+	return targets;
 }
 
 /* 类型图标:2x2 纯色 CPU 纹理,按类型着色(无外部资源)。 */
@@ -749,6 +1089,8 @@ static void setup_editor(vgui_context* ui)
 	/* P08 演示:对象间值不同 → 多选时属性行进入混合态。 */
 	g.scene.objects[camera].props["tint"] = "#FFFFFFFF";
 	g.scene.objects[camera].props["mesh"] = "Cube.mesh";
+	/* A06 依赖/占用演示:材质被相机使用,删除 Steel.mat 会被宿主拒绝。 */
+	g.scene.objects[camera].props["material"] = "Steel.mat";
 	g.scene.objects[light].props["tint"] = "#FFE0B040";
 	g.scene.objects[slime].props["tint"] = "#FF60E060";
 	g.scene.objects[slime].props["mesh"] = "Sphere.mesh";
@@ -1256,7 +1598,37 @@ static void setup_editor(vgui_context* ui)
 		return g.import_assets(files, path_id);
 	});
 
-	g.shell->set_status("A05: async thumbnails with LRU/disk cache; Broken.mesh retries twice");
+	/* ---- A06 资产操作:右键菜单/快捷键 + 宿主数据库事务 ------------------ */
+	assets.set_command_stack(&commands);
+	assets.set_operation_handler([](const asset_browser::operation_request& request,
+		asset_browser::operation_result* result) -> bool
+	{
+		return g.asset_operation(request, result);
+	});
+	assets.set_notice_listener([](const std::string& message,
+		asset_browser::operation_error error)
+	{
+		if (!g.shell)
+			return;
+		const char* prefix = error == asset_browser::operation_error::none
+			? "assets: " : "asset error: ";
+		g.shell->set_status(prefix + message);
+	});
+	assets.set_move_targets_handler([]() {
+		return g.asset_move_targets();
+	});
+	assets.set_dependency_handler([](vgui_item_id item) {
+		return g.asset_dependencies(item);
+	});
+	assets.set_import_prompt_handler([]() {
+		vgui_dialog_prompt(g.ui, "Import Asset",
+			"File path (simulated OS dialog):", "NewAsset.png",
+			&on_demo_import_prompt, nullptr);
+	});
+	/* F2 / Delete / Ctrl+D / F5 / Ctrl+I 与右键菜单共用同一 dispatch。 */
+	assets.enable_context_menu();
+
+	g.shell->set_status("A06: F2 rename, Del delete, Ctrl+D duplicate, F5 reimport, Ctrl+I import");
 }
 
 int main()

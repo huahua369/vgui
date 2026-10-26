@@ -7041,6 +7041,837 @@ static int test_asset_thumbnails()
 	return 0;
 }
 
+/* A06: 宿主数据库操作、整批撤销、结构化错误、右键/快捷键与依赖查看。 */
+static int test_asset_operations()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("a06 context");
+	vgui_context_set_size(ui, 1100, 760);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.list.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	/* 一个最小的宿主资产数据库:名称 + 所属目录。 */
+	std::map<vgui_item_id, std::pair<std::string, std::string>> db;
+	std::vector<vgui_item_id> order;
+	const auto add_asset = [&](vgui_item_id id, std::string name,
+		std::string folder)
+	{
+		db[id] = { std::move(name), std::move(folder) };
+		order.push_back(id);
+	};
+	add_asset(201, "Cube.mesh", "models");
+	add_asset(202, "Sphere.mesh", "models");
+	add_asset(203, "Ghost.mesh", "models");
+	add_asset(204, "Broken.mesh", "models");
+	add_asset(405, "Steel.mat", "models");
+	add_asset(301, "icon.png", "textures");
+	add_asset(302, "checker.png", "textures");
+	vgui_item_id next_id = 500;
+
+	const auto type_of = [](const std::string& name)
+	{
+		const auto dot = name.find_last_of('.');
+		const std::string ext = dot == std::string::npos
+			? std::string() : name.substr(dot + 1);
+		if (ext == "mesh")
+			return std::string("Mesh");
+		if (ext == "png")
+			return std::string("Texture");
+		if (ext == "mat")
+			return std::string("Material");
+		return std::string("Asset");
+	};
+	const auto folder_label = [](const std::string& path_id)
+	{
+		if (path_id == "models")
+			return std::string("Models");
+		if (path_id == "textures")
+			return std::string("Textures");
+		if (path_id == "materials")
+			return std::string("Materials");
+		if (path_id == "archive")
+			return std::string("Archive");
+		return path_id;
+	};
+	const auto name_exists = [&](const std::string& name)
+	{
+		for (const auto& entry : db)
+			if (entry.second.first == name)
+				return true;
+		return false;
+	};
+
+	bool reimport_undoable = true;
+	command_stack commands;
+	{
+		asset_browser assets;
+		assets.build(vgui_root(ui));
+		vgui_widget_set_pos(assets.root(), 20.0f, 20.0f);
+		vgui_widget_set_size(assets.root(), 520.0f, 440.0f);
+		assets.set_command_stack(&commands);
+
+		assets.set_navigate_handler([&](const std::string& path_id,
+			asset_browser::asset_directory* out)
+		{
+			if (!out)
+				return false;
+			if (path_id != "models" && path_id != "textures" &&
+				path_id != "materials" && path_id != "archive")
+				return false;
+			asset_browser::asset_directory directory;
+			directory.path.push_back({ "Root", "root" });
+			directory.path.push_back({ folder_label(path_id), path_id });
+			for (vgui_item_id id : order)
+			{
+				const auto found = db.find(id);
+				if (found == db.end() || found->second.second != path_id)
+					continue;
+				asset_info info;
+				info.name = found->second.first;
+				info.type = type_of(info.name);
+				info.id = id;
+				directory.items.push_back(info);
+			}
+			*out = std::move(directory);
+			return true;
+		});
+
+		std::vector<std::pair<std::string, asset_browser::operation_error>>
+			notices;
+		assets.set_notice_listener([&](const std::string& message,
+			asset_browser::operation_error error)
+		{
+			notices.emplace_back(message, error);
+		});
+
+		assets.set_operation_handler(
+			[&](const asset_browser::operation_request& request,
+				asset_browser::operation_result* result) -> bool
+			{
+				if (!result)
+					return false;
+				*result = asset_browser::operation_result();
+				const auto fail = [result](
+					asset_browser::operation_error error,
+					std::string message)
+				{
+					result->error = error;
+					result->message = std::move(message);
+					return false;
+				};
+				if (request.items.empty())
+					return fail(asset_browser::operation_error::no_selection,
+						"no assets selected");
+				for (vgui_item_id id : request.items)
+				{
+					if (!db.count(id))
+						return fail(asset_browser::operation_error::not_found,
+							"asset " + std::to_string(id) +
+							" no longer exists");
+					if (db[id].first == "Ghost.mesh")
+						return fail(asset_browser::operation_error::read_only,
+							"Ghost.mesh is marked read-only");
+					if (db[id].first == "Steel.mat")
+						return fail(asset_browser::operation_error::in_use,
+							"'Steel.mat' is used by Camera");
+				}
+
+				const auto before = db;
+				bool record_undo = true;
+				switch (request.kind)
+				{
+				case asset_browser::operation::rename:
+				{
+					if (request.items.size() != 1)
+						return fail(asset_browser::operation_error::invalid_name,
+							"rename expects one asset");
+					const vgui_item_id item = request.items.front();
+					if (request.name.empty() ||
+						request.name.find_first_of("/\\") != std::string::npos)
+						return fail(asset_browser::operation_error::invalid_name,
+							"name cannot be empty or contain separators");
+					for (const auto& entry : db)
+					{
+						if (entry.first != item &&
+							entry.second.first == request.name)
+							return fail(asset_browser::operation_error::conflict,
+								"an asset named '" + request.name +
+								"' already exists");
+					}
+					db[item].first = request.name;
+					result->select.push_back(item);
+					break;
+				}
+				case asset_browser::operation::remove:
+					for (vgui_item_id id : request.items)
+						db.erase(id);
+					break;
+				case asset_browser::operation::duplicate:
+				{
+					for (vgui_item_id id : request.items)
+					{
+						const auto found = db.find(id);
+						if (found == db.end())
+							return fail(
+								asset_browser::operation_error::not_found,
+								"asset disappeared during duplicate");
+						const std::string base = found->second.first;
+						const auto dot = base.find_last_of('.');
+						const std::string stem = dot == std::string::npos
+							? base : base.substr(0, dot);
+						const std::string ext = dot == std::string::npos
+							? std::string() : base.substr(dot);
+						std::string copy_name = stem + " copy" + ext;
+						int attempt = 2;
+						while (name_exists(copy_name))
+							copy_name = stem + " copy " +
+								std::to_string(attempt++) + ext;
+						const vgui_item_id copy_id = next_id++;
+						db[copy_id] = { copy_name, found->second.second };
+						order.push_back(copy_id);
+						result->created.push_back(copy_id);
+						result->select.push_back(copy_id);
+					}
+					break;
+				}
+				case asset_browser::operation::move:
+				{
+					const std::string& target = request.target_path_id;
+					if (target.empty() || target == "missing" ||
+						target == request.path_id)
+						return fail(
+							asset_browser::operation_error::invalid_target,
+							target == "missing"
+								? "destination folder no longer exists"
+								: "choose a different destination folder");
+					for (vgui_item_id id : request.items)
+					{
+						const auto found = db.find(id);
+						if (found == db.end())
+							return fail(
+								asset_browser::operation_error::not_found,
+								"asset disappeared during move");
+						for (const auto& entry : db)
+						{
+							if (entry.first != id &&
+								entry.second.second == target &&
+								entry.second.first == found->second.first)
+								return fail(
+									asset_browser::operation_error::conflict,
+									"'" + found->second.first +
+									"' already exists in the destination");
+						}
+					}
+					for (vgui_item_id id : request.items)
+						db[id].second = target;
+					result->select = request.items;
+					break;
+				}
+				case asset_browser::operation::reimport:
+					if (request.items.size() == 1 &&
+						db.count(request.items.front()) &&
+						db[request.items.front()].first == "Broken.mesh")
+						return fail(asset_browser::operation_error::io_error,
+							"Broken.mesh failed to decode; the source file is corrupt");
+					result->select = request.items;
+					result->message = "refreshed from disk";
+					record_undo = reimport_undoable;
+					break;
+				}
+
+				if (record_undo)
+				{
+					const auto after = db;
+					result->undoable = true;
+					result->undo = [&db, before]()
+					{
+						db = before;
+						return true;
+					};
+					result->redo = [&db, after]()
+					{
+						db = after;
+						return true;
+					};
+				}
+				return true;
+			});
+
+		assets.set_move_targets_handler([&]()
+		{
+			return std::vector<asset_browser::asset_move_target>{
+				{ "Models", "models" },
+				{ "Textures", "textures" },
+				{ "Archive", "archive" },
+			};
+		});
+		assets.set_dependency_handler([](vgui_item_id item)
+		{
+			std::vector<asset_browser::asset_dependency> deps;
+			if (item == 201)
+			{
+				deps.push_back({ "Camera", "Scene Object", "scene", 1 });
+				deps.push_back({ "Light", "Scene Object", "scene", 2 });
+			}
+			return deps;
+		});
+
+		int import_calls = 0;
+		bool import_ok = true;
+		std::vector<std::string> last_files;
+		std::string last_import_path;
+		assets.set_import_handler([&](const std::vector<std::string>& files,
+			const std::string& path_id)
+		{
+			++import_calls;
+			last_files = files;
+			last_import_path = path_id;
+			return import_ok;
+		});
+		int import_prompt_calls = 0;
+		assets.set_import_prompt_handler([&]()
+		{
+			++import_prompt_calls;
+		});
+
+		const auto item_name = [&](vgui_item_id id)
+		{
+			for (int i = 0; i < assets.item_count(); ++i)
+			{
+				asset_info info;
+				if (assets.item_at(i, &info) && info.id == id)
+					return info.name;
+			}
+			return std::string();
+		};
+		const auto item_index = [&](vgui_item_id id)
+		{
+			for (int i = 0; i < assets.item_count(); ++i)
+			{
+				asset_info info;
+				if (assets.item_at(i, &info) && info.id == id)
+					return i;
+			}
+			return -1;
+		};
+		const auto item_present = [&](vgui_item_id id)
+		{
+			return item_index(id) >= 0;
+		};
+		const auto menu_item = [](vgui_widget* menu, const char* text)
+		{
+			if (!menu)
+				return (vgui_item_id)0;
+			for (int i = 0; i < vgui_menu_get_count(menu); ++i)
+			{
+				const vgui_item_id item = vgui_menu_get_item_at(menu, i);
+				const char* label = vgui_menu_get_item_text(menu, item);
+				if (label && std::string(label) == text)
+					return item;
+			}
+			return (vgui_item_id)0;
+		};
+		const auto press_enter = [&]()
+		{
+			vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		};
+		const auto press_escape = [&]()
+		{
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		};
+		const auto open_menu_at = [&](vgui_item_id id)
+		{
+			const int index = item_index(id);
+			float x = 0, y = 0, w = 0, h = 0;
+			if (index < 0 ||
+				!assets.item_rect(index, &x, &y, &w, &h) ||
+				w <= 0.0f || h <= 0.0f)
+				return (vgui_widget*)nullptr;
+			vgui_input_mouse_move(ui, x + w * 0.5f, y + h * 0.5f);
+			vgui_input_mouse_down(ui, 3, x + w * 0.5f, y + h * 0.5f, 1);
+			vgui_input_mouse_up(ui, 3, x + w * 0.5f, y + h * 0.5f, 1);
+			return vgui_context_get_open_menu(ui);
+		};
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (!assets.navigate_to("models") || assets.item_count() != 5 ||
+			!item_present(201) || !item_present(405))
+			return fail("a06 initial directory");
+
+		/* 成功重命名 + 可撤销。 */
+		assets.set_selection({ 201 });
+		std::size_t before_commands = commands.undo_count();
+		if (!assets.rename_item(201, "CubeA.mesh") ||
+			db[201].first != "CubeA.mesh" ||
+			item_name(201) != "CubeA.mesh" ||
+			assets.selected() != 201 ||
+			commands.undo_count() != before_commands + 1 ||
+			std::string(commands.next_undo_name()) != "Rename asset" ||
+			assets.last_error() != asset_browser::operation_error::none ||
+			!assets.last_undoable() ||
+			assets.last_message().find("Renamed 'Cube.mesh' to 'CubeA.mesh'") ==
+				std::string::npos)
+			return fail("a06 rename success");
+		if (notices.empty() || notices.back().second !=
+			asset_browser::operation_error::none ||
+			notices.back().first.find("Renamed") == std::string::npos)
+			return fail("a06 rename notice");
+		if (!commands.undo() || db[201].first != "Cube.mesh" ||
+			item_name(201) != "Cube.mesh" || commands.can_undo())
+			return fail("a06 rename undo");
+		if (!commands.redo() || db[201].first != "CubeA.mesh" ||
+			item_name(201) != "CubeA.mesh" || commands.can_redo())
+			return fail("a06 rename redo");
+		if (!commands.undo())
+			return fail("a06 rename undo again");
+		commands.clear();
+
+		/* 冲突/空名称是明确的结构化错误,且不留撤销记录。 */
+		before_commands = commands.undo_count();
+		if (assets.rename_item(201, "Sphere.mesh") ||
+			assets.last_error() != asset_browser::operation_error::conflict ||
+			assets.last_message().find("name conflict") == std::string::npos ||
+			assets.last_message().find("Sphere.mesh") == std::string::npos ||
+			db[201].first != "Cube.mesh" ||
+			item_name(201) != "Cube.mesh" ||
+			commands.undo_count() != before_commands ||
+			assets.last_undoable())
+			return fail("a06 rename conflict");
+		if (assets.rename_item(201, "   ") ||
+			assets.last_error() != asset_browser::operation_error::invalid_name ||
+			db[201].first != "Cube.mesh" ||
+			commands.undo_count() != before_commands)
+			return fail("a06 rename empty");
+
+		/* 只读与占用错误,以及整批失败不产生部分写入。 */
+		if (assets.remove_items({ 203 }) ||
+			assets.last_error() != asset_browser::operation_error::read_only ||
+			assets.last_message().find("read-only") == std::string::npos ||
+			assets.last_message().find("Ghost.mesh") == std::string::npos ||
+			!item_present(203) || commands.undo_count() != before_commands)
+			return fail("a06 remove read-only");
+		if (assets.remove_items({ 405 }) ||
+			assets.last_error() != asset_browser::operation_error::in_use ||
+			assets.last_message().find("in use") == std::string::npos ||
+			assets.last_message().find("Steel.mat") == std::string::npos ||
+			!item_present(405))
+			return fail("a06 remove in-use");
+		if (assets.remove_items({ 201, 405 }) ||
+			assets.last_error() != asset_browser::operation_error::in_use ||
+			db.size() != 7 || !item_present(201) || !item_present(405) ||
+			commands.undo_count() != before_commands)
+			return fail("a06 batch atomicity");
+
+		/* 批量复制:一个撤销记录、结果选择新资产。 */
+		commands.clear();
+		assets.set_selection({ 201, 202 });
+		if (!assets.duplicate_selected() ||
+			db.size() != 9 || assets.item_count() != 7 ||
+			assets.selection().size() != 2 ||
+			!assets.is_selected(500) || !assets.is_selected(501) ||
+			assets.selected() != 500 ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Duplicate assets" ||
+			!assets.last_undoable() ||
+			assets.last_message().find("Duplicated 2 assets") == std::string::npos)
+			return fail("a06 duplicate batch");
+		if (!commands.undo() || db.size() != 7 || assets.item_count() != 5)
+			return fail("a06 duplicate undo");
+		if (!commands.redo() || db.size() != 9 || assets.item_count() != 7)
+			return fail("a06 duplicate redo");
+		if (!commands.undo())
+			return fail("a06 duplicate undo again");
+		commands.clear();
+
+		/* 批量删除也作为一个撤销记录。 */
+		assets.set_selection({ 201, 202 });
+		if (!assets.remove_items({ 201, 202 }) ||
+			db.count(201) || db.count(202) || assets.item_count() != 3 ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Delete assets" ||
+			assets.last_message().find("Deleted 2 assets") == std::string::npos)
+			return fail("a06 remove batch");
+		if (!commands.undo() || !item_present(201) || !item_present(202) ||
+			assets.item_count() != 5)
+			return fail("a06 remove batch undo");
+		if (!commands.redo() || item_present(201) || item_present(202) ||
+			assets.item_count() != 3)
+			return fail("a06 remove batch redo");
+		if (!commands.undo())
+			return fail("a06 remove batch undo again");
+		commands.clear();
+
+		/* 移动:空目标、当前目录与不存在目标都拒绝;成功后可撤销。 */
+		assets.set_selection({ 201 });
+		if (assets.move_items({ 201 }, "") ||
+			assets.last_error() != asset_browser::operation_error::invalid_target ||
+			assets.last_message().find("no destination given") ==
+				std::string::npos ||
+			commands.undo_count() != 0)
+			return fail("a06 move empty target");
+		if (assets.move_items({ 201 }, "models") ||
+			assets.last_error() != asset_browser::operation_error::invalid_target ||
+			assets.last_message().find("already in this folder") ==
+				std::string::npos ||
+			commands.undo_count() != 0)
+			return fail("a06 move same folder");
+		if (assets.move_items({ 201 }, "missing") ||
+			assets.last_error() != asset_browser::operation_error::invalid_target ||
+			assets.last_message().find("destination folder no longer exists") ==
+				std::string::npos ||
+			commands.undo_count() != 0)
+			return fail("a06 move missing target");
+		if (!assets.move_items({ 201 }, "textures") ||
+			db[201].second != "textures" || item_present(201) ||
+			assets.item_count() != 4 ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Move assets" ||
+			assets.last_message().find("Moved 1 asset to 'textures'") ==
+				std::string::npos ||
+			!assets.last_undoable())
+			return fail("a06 move success");
+		if (!commands.undo() || db[201].second != "models" ||
+			!item_present(201) || assets.item_count() != 5)
+			return fail("a06 move undo");
+		if (!commands.redo() || db[201].second != "textures" ||
+			item_present(201) || assets.item_count() != 4)
+			return fail("a06 move redo");
+		if (!commands.undo())
+			return fail("a06 move undo again");
+		commands.clear();
+
+		/* 重新导入:可撤销成功、I/O 错误、以及显式不可撤销。 */
+		assets.set_selection({ 201 });
+		reimport_undoable = true;
+		if (!assets.reimport_items({ 201 }) ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Reimport assets" ||
+			!assets.last_undoable() ||
+			assets.last_message().find("Reimported 1 asset") ==
+				std::string::npos)
+			return fail("a06 reimport success");
+		if (!commands.undo() || commands.can_undo())
+			return fail("a06 reimport undo");
+		commands.clear();
+		if (assets.reimport_items({ 204 }) ||
+			assets.last_error() != asset_browser::operation_error::io_error ||
+			assets.last_message().find("I/O error") == std::string::npos ||
+			assets.last_message().find("Broken.mesh") == std::string::npos ||
+			commands.undo_count() != 0)
+			return fail("a06 reimport io error");
+		vgui_toast_clear(ui);
+		reimport_undoable = false;
+		if (!assets.reimport_items({ 201 }) || assets.last_undoable() ||
+			assets.last_message().find("(not undoable)") == std::string::npos ||
+			commands.undo_count() != 0 ||
+			vgui_toast_count(ui) == 0)
+			return fail("a06 reimport not undoable");
+		reimport_undoable = true;
+		vgui_toast_clear(ui);
+
+		/* 右键菜单:列表行打开、项启用状态、快捷键提示和依赖查看。 */
+		assets.enable_context_menu();
+		if (!assets.context_menu_enabled())
+			return fail("a06 context menu enabled");
+		assets.set_selection({ 201, 202 });
+		vgui_widget* menu = open_menu_at(201);
+		if (!menu || !vgui_menu_is_open(menu))
+			return fail("a06 list context menu opens");
+		if (menu_item(menu, "Rename") == 0 ||
+			vgui_menu_get_item_enabled(menu, menu_item(menu, "Rename")) != 0)
+			return fail("a06 rename disabled for multi-selection");
+		press_escape();
+		if (vgui_context_get_open_menu(ui))
+			return fail("a06 context menu closes");
+
+		assets.set_selection({ 201 });
+		menu = open_menu_at(201);
+		if (!menu || !assets.is_selected(201))
+			return fail("a06 list context menu selection");
+		const vgui_item_id rename_item = menu_item(menu, "Rename");
+		const vgui_item_id duplicate_item = menu_item(menu, "Duplicate");
+		const vgui_item_id delete_item = menu_item(menu, "Delete");
+		vgui_item_id move_root = menu_item(menu, "Move To");
+		const vgui_item_id import_item = menu_item(menu, "Import...");
+		const vgui_item_id reimport_item = menu_item(menu, "Reimport");
+		const vgui_item_id deps_item = menu_item(menu, "Show Dependencies");
+		if (!rename_item || !duplicate_item || !delete_item || !move_root ||
+			!import_item || !reimport_item || !deps_item)
+			return fail("a06 context menu entries");
+		if (vgui_menu_get_item_enabled(menu, rename_item) != 1 ||
+			vgui_menu_get_item_enabled(menu, duplicate_item) != 1 ||
+			vgui_menu_get_item_enabled(menu, delete_item) != 1 ||
+			vgui_menu_get_item_enabled(menu, move_root) != 1 ||
+			vgui_menu_get_item_enabled(menu, import_item) != 1 ||
+			vgui_menu_get_item_enabled(menu, reimport_item) != 1 ||
+			vgui_menu_get_item_enabled(menu, deps_item) != 1)
+			return fail("a06 context menu item states");
+		if (std::string(vgui_menu_get_item_shortcut(menu, rename_item)) != "F2" ||
+			std::string(vgui_menu_get_item_shortcut(menu, duplicate_item)) !=
+				"Ctrl+D" ||
+			std::string(vgui_menu_get_item_shortcut(menu, delete_item)) != "Del" ||
+			std::string(vgui_menu_get_item_shortcut(menu, import_item)) !=
+				"Ctrl+I" ||
+			std::string(vgui_menu_get_item_shortcut(menu, reimport_item)) != "F5")
+			return fail("a06 context menu shortcuts");
+
+		vgui_menu_set_cursor(menu, deps_item);
+		press_enter();
+		if (!vgui_modal_active(ui) ||
+			assets.last_message().find("Camera") == std::string::npos ||
+			assets.last_message().find("Light") == std::string::npos ||
+			assets.last_message().find("Scene Object") == std::string::npos ||
+			assets.last_message().find("scene") == std::string::npos)
+			return fail("a06 menu dependencies dispatch");
+		press_escape();
+
+		/* Move To 子菜单:当前目录被排除,激活后执行移动。 */
+		menu = open_menu_at(201);
+		if (!menu)
+			return fail("a06 move menu reopen");
+		move_root = menu_item(menu, "Move To");
+		vgui_widget* submenu = vgui_menu_get_submenu(menu, move_root);
+		const vgui_item_id textures_item = menu_item(submenu, "Textures");
+		if (!submenu || !textures_item ||
+			menu_item(submenu, "Models") != 0 ||
+			menu_item(submenu, "Archive") == 0)
+			return fail("a06 move submenu contents");
+		vgui_menu_set_cursor(menu, move_root);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 0, 0);
+		vgui_menu_set_cursor(submenu, textures_item);
+		press_enter();
+		if (db[201].second != "textures" || item_present(201) ||
+			commands.undo_count() != 1 ||
+			assets.last_message().find("Moved 1 asset to 'textures'") ==
+				std::string::npos)
+			return fail("a06 move submenu dispatch");
+		if (!commands.undo() || db[201].second != "models" ||
+			!item_present(201))
+			return fail("a06 move submenu undo");
+		commands.clear();
+
+		/* 网格右键与列表共用菜单和 dispatch。 */
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		assets.set_selection({ 202 });
+		menu = open_menu_at(202);
+		if (!menu || !assets.is_selected(202) ||
+			menu_item(menu, "Duplicate") == 0)
+			return fail("a06 grid context menu");
+		vgui_menu_set_cursor(menu, menu_item(menu, "Duplicate"));
+		press_enter();
+		if (db.size() != 8 || commands.undo_count() != 1 ||
+			assets.last_message().find("Duplicated 1 asset") == std::string::npos)
+			return fail("a06 grid menu duplicate");
+		if (!commands.undo() || db.size() != 7)
+			return fail("a06 grid menu undo");
+		commands.clear();
+		assets.set_view(asset_browser::view_mode::list);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		/* 快捷键与菜单共用 dispatch;焦点不在浏览器时不应抢占。 */
+		assets.set_selection({ 201 });
+		vgui_set_focus(ui, assets.widget());
+		vgui_input_key(ui, VGUI_KEY_F2, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_F2, 0, 0);
+		if (!vgui_modal_active(ui) || !vgui_dialog_input(ui) ||
+			std::string(vgui_edit_get_text(vgui_dialog_input(ui))) !=
+				"Cube.mesh")
+			return fail("a06 f2 opens rename dialog");
+		press_escape();
+		if (db[201].first != "Cube.mesh" || commands.undo_count() != 0)
+			return fail("a06 f2 cancel");
+
+		vgui_input_key(ui, VGUI_KEY_DELETE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_DELETE, 0, 0);
+		if (!vgui_modal_active(ui))
+			return fail("a06 delete shortcut dialog");
+		press_escape();
+		if (!item_present(201) || commands.undo_count() != 0)
+			return fail("a06 delete shortcut cancel");
+
+		vgui_input_key(ui, 'D', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'D', 0, VGUI_MOD_CTRL);
+		if (db.size() != 8 || commands.undo_count() != 1 ||
+			!assets.last_undoable())
+			return fail("a06 ctrl+d shortcut");
+		if (!commands.undo())
+			return fail("a06 ctrl+d undo");
+		commands.clear();
+
+		assets.set_selection({ 201 });
+		vgui_set_focus(ui, assets.widget());
+		vgui_input_key(ui, VGUI_KEY_F5, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_F5, 0, 0);
+		if (commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Reimport assets")
+			return fail("a06 f5 shortcut");
+		if (!commands.undo())
+			return fail("a06 f5 undo");
+		commands.clear();
+
+		vgui_input_key(ui, 'I', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'I', 0, VGUI_MOD_CTRL);
+		if (import_prompt_calls != 1 ||
+			assets.last_message() != "Import dialog requested" ||
+			commands.undo_count() != 0)
+			return fail("a06 ctrl+i import prompt");
+
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON,
+			"Other");
+		vgui_widget_set_size(other, 80.0f, 24.0f);
+		vgui_set_focus(ui, other);
+		vgui_input_key(ui, VGUI_KEY_F2, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_F2, 0, 0);
+		if (vgui_modal_active(ui) || commands.undo_count() != 0)
+			return fail("a06 shortcuts respect focus");
+		vgui_set_focus(ui, assets.widget());
+
+		/* 重命名对话框:确认、取消和失败路径。 */
+		assets.set_selection({ 201 });
+		if (!assets.begin_rename(201))
+			return fail("a06 rename dialog opens");
+		vgui_widget* input = vgui_dialog_input(ui);
+		if (!input || std::string(vgui_edit_get_text(input)) != "Cube.mesh")
+			return fail("a06 rename dialog initial text");
+		vgui_edit_set_text(input, "Dialog.mesh");
+		press_enter();
+		if (vgui_modal_active(ui) || db[201].first != "Dialog.mesh" ||
+			item_name(201) != "Dialog.mesh" ||
+			commands.undo_count() != 1 ||
+			assets.last_message().find("Renamed 'Cube.mesh' to 'Dialog.mesh'") ==
+				std::string::npos)
+			return fail("a06 rename dialog confirm");
+		if (!commands.undo())
+			return fail("a06 rename dialog undo");
+		commands.clear();
+
+		if (!assets.begin_rename(201))
+			return fail("a06 rename dialog reopens");
+		input = vgui_dialog_input(ui);
+		vgui_edit_set_text(input, "Nope.mesh");
+		press_escape();
+		if (vgui_modal_active(ui) || db[201].first != "Cube.mesh" ||
+			commands.undo_count() != 0)
+			return fail("a06 rename dialog cancel");
+
+		if (!assets.begin_rename(201))
+			return fail("a06 rename dialog invalid opens");
+		input = vgui_dialog_input(ui);
+		vgui_edit_set_text(input, "   ");
+		press_enter();
+		if (db[201].first != "Cube.mesh" || commands.undo_count() != 0 ||
+			assets.last_error() != asset_browser::operation_error::invalid_name)
+			return fail("a06 rename dialog invalid name");
+
+		/* 删除确认:确认后删除并可撤销,取消不写入。 */
+		assets.set_selection({ 201 });
+		if (!assets.confirm_remove({ 201 }) || !vgui_modal_active(ui))
+			return fail("a06 delete dialog opens");
+		press_enter();
+		if (db.count(201) || item_present(201) || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Delete assets" ||
+			assets.last_message().find("Deleted 1 asset") == std::string::npos)
+			return fail("a06 delete dialog confirm");
+		if (!commands.undo() || !item_present(201) || db.count(201) != 1)
+			return fail("a06 delete dialog undo");
+		commands.clear();
+
+		if (!assets.confirm_remove({ 201 }) || !vgui_modal_active(ui))
+			return fail("a06 delete dialog reopens");
+		press_escape();
+		if (!item_present(201) || commands.undo_count() != 0)
+			return fail("a06 delete dialog cancel");
+		if (assets.confirm_remove({}) ||
+			assets.last_error() != asset_browser::operation_error::no_selection ||
+			vgui_modal_active(ui))
+			return fail("a06 delete empty selection");
+
+		/* 导入入口仍走 A04 import_handler,并通过通知/错误暴露结果。 */
+		vgui_toast_clear(ui);
+		import_ok = true;
+		const std::size_t notice_count = notices.size();
+		if (!assets.import_files({ "C:/new.png" }) ||
+			import_calls != 1 || last_files.size() != 1 ||
+			last_files[0] != "C:/new.png" || last_import_path != "models" ||
+			assets.last_error() != asset_browser::operation_error::none ||
+			assets.last_undoable() ||
+			assets.last_message().find("Imported 1 file") == std::string::npos ||
+			notices.size() != notice_count + 1 ||
+			notices.back().second != asset_browser::operation_error::none)
+			return fail("a06 import success notice");
+		import_ok = false;
+		if (assets.import_files({ "C:/bad.png" }) || import_calls != 2 ||
+			assets.last_error() != asset_browser::operation_error::io_error ||
+			assets.last_message().find("host rejected the import") ==
+				std::string::npos ||
+			assets.last_undoable())
+			return fail("a06 import failure");
+		assets.set_import_handler({});
+		if (assets.import_files({ "C:/x.png" }) ||
+			assets.last_error() !=
+				asset_browser::operation_error::unsupported ||
+			assets.last_message().find("no import handler installed") ==
+				std::string::npos)
+			return fail("a06 import without handler");
+
+		if (!assets.request_import() || import_prompt_calls != 2 ||
+			assets.last_message() != "Import dialog requested" ||
+			assets.last_undoable())
+			return fail("a06 import prompt");
+		assets.set_import_prompt_handler({});
+		if (assets.request_import() ||
+			assets.last_error() !=
+				asset_browser::operation_error::unsupported ||
+			assets.last_message().find("no import dialog handler installed") ==
+				std::string::npos)
+			return fail("a06 import prompt missing");
+
+		/* 依赖列表:直接读取、模态展示、空结果与无处理器。 */
+		if (assets.dependencies(201).size() != 2 ||
+			!assets.dependencies(999).empty())
+			return fail("a06 dependencies query");
+		if (!assets.show_dependencies(201) || !vgui_modal_active(ui) ||
+			assets.last_message().find("'Cube.mesh' is used by 2 assets") ==
+				std::string::npos ||
+			assets.last_message().find("Camera") == std::string::npos ||
+			assets.last_message().find("Light") == std::string::npos)
+			return fail("a06 dependencies modal");
+		press_escape();
+		if (!assets.show_dependencies(202) || !vgui_modal_active(ui) ||
+			assets.last_message().find("No assets depend on 'Sphere.mesh'") ==
+				std::string::npos)
+			return fail("a06 dependencies empty");
+		press_escape();
+		assets.set_dependency_handler({});
+		if (assets.show_dependencies(201) ||
+			assets.last_error() !=
+				asset_browser::operation_error::unsupported)
+			return fail("a06 dependencies missing handler");
+
+		assets.clear_selection();
+		if (assets.show_dependencies(0) ||
+			assets.last_error() != asset_browser::operation_error::no_selection)
+			return fail("a06 dependencies no selection");
+		if (assets.begin_rename(0) ||
+			assets.last_error() != asset_browser::operation_error::no_selection)
+			return fail("a06 rename no selection");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -7114,6 +7945,8 @@ int main()
 	if (int rc = test_asset_drop_paths())
 		return rc;
 	if (int rc = test_asset_thumbnails())
+		return rc;
+	if (int rc = test_asset_operations())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
