@@ -8873,6 +8873,237 @@ static int test_outliner_multi_selection_sync()
 	return 0;
 }
 
+/* V05: 平移 Gizmo——轴/平面命中、拖动约束、吸附、取消与局部空间。 */
+static int test_viewport_gizmo()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v05 viewport context");
+	vgui_context_set_size(ui, 900, 650);
+
+	{
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		vgui_widget_set_pos(viewport.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(viewport.widget(), 400.0f, 300.0f);
+
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "other");
+		vgui_widget_set_pos(other, 600.0f, 500.0f);
+		vgui_widget_set_size(other, 120.0f, 30.0f);
+
+		viewport_gizmo gizmo;
+		gizmo.attach(viewport);
+		if (!gizmo.attached())
+			return fail("v05 gizmo attach");
+
+		/* 2D fake camera: +X right, +Y up, Z has no screen extent.  The ray
+		 * provider intersects the XY plane at z = 0 for plane drags. */
+		bool frame_valid = true;
+		bool local_axes = false;
+		gizmo.set_frame_provider([&]() {
+			gizmo_frame frame;
+			frame.valid = frame_valid;
+			frame.origin = { 0.0f, 0.0f, 0.0f };
+			if (local_axes)
+			{
+				const float c = std::sqrt(0.5f);
+				frame.axis[0] = { c, c, 0.0f };
+				frame.axis[1] = { -c, c, 0.0f };
+				frame.axis[2] = { 0.0f, 0.0f, 1.0f };
+			}
+			frame.screen_length = 80.0f;
+			return frame;
+		});
+		gizmo.set_projection([](const camera_vec3& world, float* x, float* y) {
+			*x = 199.0f + world.x * 40.0f;
+			*y = 149.0f - world.y * 40.0f;
+			return true;
+		});
+		gizmo.set_ray_provider([](float x, float y, gizmo_ray* out) {
+			out->origin = { (x - 199.0f) / 40.0f,
+				(149.0f - y) / 40.0f, 10.0f };
+			out->direction = { 0.0f, 0.0f, -1.0f };
+			return true;
+		});
+
+		snap_settings snap;
+		snap.enabled = true;
+		snap.translate = true;
+		snap.translate_step = 1.0f;
+		gizmo.set_snap_settings(&snap);
+
+		std::vector<gizmo_phase> phases;
+		std::vector<camera_vec3> deltas;
+		gizmo.set_drag_handler([&](gizmo_phase phase, const camera_vec3& delta) {
+			phases.push_back(phase);
+			deltas.push_back(delta);
+		});
+
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		viewport.poll_resize();
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		auto surface = [&](float content_x, float content_y) {
+			return std::pair<float, float>(vx + 1.0f + content_x,
+				vy + 1.0f + content_y);
+		};
+		auto move_to = [&](float content_x, float content_y) {
+			const auto p = surface(content_x, content_y);
+			vgui_input_mouse_move(ui, p.first, p.second);
+		};
+		auto down_at = [&](float content_x, float content_y) {
+			const auto p = surface(content_x, content_y);
+			vgui_input_mouse_down(ui, 1, p.first, p.second, 1);
+		};
+		auto up_at = [&](float content_x, float content_y) {
+			const auto p = surface(content_x, content_y);
+			vgui_input_mouse_up(ui, 1, p.first, p.second, 1);
+		};
+		auto close_to = [](float a, float b, float eps = 1e-4f) {
+			return std::fabs(a - b) <= eps;
+		};
+		auto reset_drag_log = [&]() {
+			phases.clear();
+			deltas.clear();
+		};
+
+		/* 1) 命中：X 轴、Y 轴与 XY 平面。 */
+		move_to(239.0f, 149.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::axis_x)
+			return fail("v05 hover x axis");
+		move_to(199.0f, 109.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::axis_y)
+			return fail("v05 hover y axis");
+		move_to(211.0f, 137.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::plane_xy)
+			return fail("v05 hover xy plane");
+
+		/* 2) X 轴拖动 + 吸附（增量 0.5 先吸附到 1.0）。 */
+		reset_drag_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		if (!gizmo.dragging() || gizmo.active_handle() != gizmo_handle::axis_x ||
+			phases.size() != 1 || phases[0] != gizmo_phase::begin)
+			return fail("v05 axis drag begins");
+		move_to(259.0f, 149.0f);
+		if (phases.size() < 2 || phases.back() != gizmo_phase::preview ||
+			!close_to(deltas.back().x, 1.0f) ||
+			!close_to(deltas.back().y, 0.0f) ||
+			!close_to(deltas.back().z, 0.0f))
+			return fail("v05 axis drag snaps");
+		move_to(279.0f, 149.0f);
+		up_at(279.0f, 149.0f);
+		if (gizmo.dragging() || phases.back() != gizmo_phase::commit ||
+			!close_to(deltas.back().x, 1.0f))
+			return fail("v05 axis drag commits");
+		if (gizmo.hovered_handle() != gizmo_handle::none)
+			return fail("v05 commit clears hover");
+
+		/* 3) 关闭吸附后增量保持自由。 */
+		snap.enabled = false;
+		reset_drag_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		move_to(259.0f, 149.0f);
+		if (!close_to(deltas.back().x, 0.5f))
+			return fail("v05 axis drag unsnapped");
+		up_at(259.0f, 149.0f);
+
+		/* 4) XY 平面拖动约束在平面上。 */
+		reset_drag_log();
+		move_to(211.0f, 137.0f);
+		down_at(211.0f, 137.0f);
+		if (!gizmo.dragging() || gizmo.active_handle() != gizmo_handle::plane_xy)
+			return fail("v05 plane drag begins");
+		move_to(221.0f, 127.0f);
+		if (!close_to(deltas.back().x, 0.25f) ||
+			!close_to(deltas.back().y, 0.25f) ||
+			!close_to(deltas.back().z, 0.0f))
+			return fail("v05 plane drag constrains z");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		if (gizmo.dragging() || phases.back() != gizmo_phase::cancel)
+			return fail("v05 escape cancels drag");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+
+		/* 5) 焦点旁落走 CANCEL 通路。 */
+		reset_drag_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		move_to(249.0f, 149.0f);
+		vgui_set_focus(ui, other);
+		if (gizmo.dragging() || phases.back() != gizmo_phase::cancel)
+			return fail("v05 focus loss cancels drag");
+
+		/* 6) 显式 cancel_drag 与可见性开关。 */
+		reset_drag_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		if (!gizmo.dragging())
+			return fail("v05 explicit cancel begins");
+		gizmo.cancel_drag();
+		if (gizmo.dragging() || phases.back() != gizmo_phase::cancel)
+			return fail("v05 explicit cancel");
+		gizmo.set_visible(false);
+		move_to(239.0f, 149.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::none)
+			return fail("v05 hidden gizmo ignores hover");
+		reset_drag_log();
+		down_at(239.0f, 149.0f);
+		up_at(239.0f, 149.0f);
+		if (gizmo.dragging() || !phases.empty())
+			return fail("v05 hidden gizmo ignores drag");
+		gizmo.set_visible(true);
+
+		/* 7) 局部轴：45 度旋转后的 X 轴沿屏幕对角线拖动。 */
+		local_axes = true;
+		snap.enabled = false;
+		reset_drag_log();
+		const float diagonal = 80.0f * std::sqrt(0.5f);
+		move_to(199.0f + diagonal, 149.0f - diagonal);
+		if (gizmo.hovered_handle() != gizmo_handle::axis_x)
+			return fail("v05 hover local x axis");
+		down_at(199.0f + diagonal, 149.0f - diagonal);
+		move_to(199.0f + diagonal + 28.28f,
+			149.0f - diagonal - 28.28f);
+		if (!close_to(deltas.back().x, 0.7071f, 1e-3f) ||
+			!close_to(deltas.back().y, 0.7071f, 1e-3f) ||
+			!close_to(deltas.back().z, 0.0f))
+			return fail("v05 local axis drag direction");
+		up_at(199.0f + diagonal + 28.28f, 149.0f - diagonal - 28.28f);
+		local_axes = false;
+
+		/* 8) 无有效目标时完全不参与命中。 */
+		frame_valid = false;
+		move_to(239.0f, 149.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::none)
+			return fail("v05 invalid frame ignores hover");
+		reset_drag_log();
+		down_at(239.0f, 149.0f);
+		up_at(239.0f, 149.0f);
+		if (gizmo.dragging() || !phases.empty())
+			return fail("v05 invalid frame ignores drag");
+		frame_valid = true;
+
+		/* 9) 空间/可见性状态与分离。 */
+		gizmo.set_space(gizmo_space::local);
+		if (gizmo.space() != gizmo_space::local)
+			return fail("v05 local space state");
+		gizmo.set_space(gizmo_space::world);
+		if (gizmo.space() != gizmo_space::world)
+			return fail("v05 world space state");
+
+		gizmo.detach();
+		if (gizmo.attached())
+			return fail("v05 gizmo detach");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* V04: 世界网格自适应密度、线段对齐、轴线与可见性。 */
 static int test_viewport_grid()
 {
@@ -9123,6 +9354,8 @@ int main()
 		return rc;
 	if (int rc = test_outliner_multi_selection_sync())
 		return rc;
+	if (int rc = test_viewport_gizmo())
+		return rc;
 	if (int rc = test_viewport_grid())
 		return rc;
 	if (int rc = test_snap_settings())
@@ -9205,6 +9438,26 @@ int main()
 			!shell.grid().auto_density() ||
 			!shell.commands().is_checked("view.grid.auto"))
 			return fail("shell grid auto");
+
+		/* V05: gizmo visibility and world/local space commands. */
+		if (!shell.gizmo().attached())
+			return fail("shell gizmo attached");
+		const bool gizmo_visible = shell.gizmo().visible();
+		if (!shell.run_command("view.gizmo") ||
+			shell.gizmo().visible() == gizmo_visible ||
+			shell.commands().is_checked("view.gizmo") != shell.gizmo().visible())
+			return fail("shell gizmo toggle");
+		if (!shell.run_command("view.gizmo") || !shell.gizmo().visible())
+			return fail("shell gizmo restore");
+		const gizmo_space gizmo_space_before = shell.gizmo().space();
+		if (!shell.run_command("view.gizmo.local") ||
+			shell.gizmo().space() == gizmo_space_before ||
+			!shell.commands().is_checked("view.gizmo.local"))
+			return fail("shell gizmo local space");
+		if (!shell.run_command("view.gizmo.local") ||
+			shell.gizmo().space() != gizmo_space_before ||
+			shell.commands().is_checked("view.gizmo.local"))
+			return fail("shell gizmo world space");
 
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(shell.widget(), &x, &y, &w, &h);

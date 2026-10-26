@@ -48,6 +48,9 @@ struct scene_object
 	std::vector<object_id> children;
 	bool visible = true;
 	bool locked = false;
+	/* V05: world transform used by the viewport demo (gizmo + renderer). */
+	camera_vec3 position{};
+	float yaw = 0.0f;
 	/* 属性面板演示值(P08 多选编辑的批量目标)。 */
 	std::map<std::string, std::string> props;
 };
@@ -141,6 +144,8 @@ struct game_scene
 		const object_id copy = add(name.c_str(), parent);
 		objects[copy].visible = o.visible;
 		objects[copy].locked = o.locked;
+		objects[copy].position = o.position;
+		objects[copy].yaw = o.yaw;
 		for (object_id c : o.children)
 			duplicate(c, copy);
 		return copy;
@@ -176,6 +181,10 @@ struct editor_state
 	vgui_texture* viewport_texture = nullptr;
 	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
 	object_id pickable_object = invalid_object;
+	/* V05: gizmo drag snapshots (before = pre-drag, start = preview base). */
+	std::map<object_id, camera_vec3> gizmo_before_positions;
+	std::map<object_id, camera_vec3> gizmo_start_positions;
+	camera_vec3 gizmo_last_delta{};
 
 	bool valid_selection() const
 	{
@@ -1081,17 +1090,46 @@ static glm::vec3 to_glm(const camera_vec3& value)
 	return glm::vec3(value.x, value.y, value.z);
 }
 
-static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
-	glm::vec3* direction)
+static camera_vec3 from_glm(const glm::vec3& value)
 {
-	if (!g.shell || !origin || !direction || query.width <= 0 || query.height <= 0)
+	return { value.x, value.y, value.z };
+}
+
+static const scene_object* find_scene_object(object_id id)
+{
+	auto it = g.scene.objects.find(id);
+	return it == g.scene.objects.end() ? nullptr : &it->second;
+}
+
+static void content_size(int* width, int* height)
+{
+	int w = 1, h = 1;
+	if (g.shell)
+	{
+		float cx = 0, cy = 0, cw = 0, ch = 0;
+		g.shell->viewport().get_content_rect(&cx, &cy, &cw, &ch);
+		w = std::max(1, (int)std::lround(cw));
+		h = std::max(1, (int)std::lround(ch));
+	}
+	if (width)
+		*width = w;
+	if (height)
+		*height = h;
+}
+
+/* Content-local screen point -> world ray.  V03/V05 share the same camera
+ * math; only the input structs differ. */
+static bool screen_ray(float x, float y, int width, int height,
+	glm::vec3* origin, glm::vec3* direction)
+{
+	if (!g.shell || !origin || !direction || width <= 0 || height <= 0)
 		return false;
 	const viewport_camera& camera = g.shell->camera();
 	const camera_state state = camera.get_state();
-	const float nx = (query.x / (float)query.width) * 2.0f - 1.0f;
-	const float ny = 1.0f - (query.y / (float)query.height) * 2.0f;
+	const float nx = (x / (float)width) * 2.0f - 1.0f;
+	const float ny = 1.0f - (y / (float)height) * 2.0f;
 	const float tan_half = std::tan(glm::radians(state.fov_deg) * 0.5f);
-	const float aspect = (float)query.width / (float)query.height;
+	const float aspect = (float)width / (float)height;
 	*origin = to_glm(camera.position());
 	*direction = glm::normalize(to_glm(camera.forward()) +
 		to_glm(camera.right()) * (nx * tan_half * aspect) +
@@ -1099,24 +1137,40 @@ static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
 	return true;
 }
 
-static bool ray_hits_cube(const glm::vec3& origin, const glm::vec3& direction)
+static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
+	glm::vec3* direction)
 {
-	const float lo = -1.75f;
-	const float hi = 1.75f;
+	return screen_ray(query.x, query.y, query.width, query.height, origin,
+		direction);
+}
+
+/* Ray/box in the object's local space, so a yaw-rotated cube still picks
+ * accurately.  The box half extent matches the rendered cube. */
+static bool ray_hits_box(const glm::vec3& origin, const glm::vec3& direction,
+	const camera_vec3& center, float yaw)
+{
+	constexpr float kHalfExtent = 1.0f;
+	const glm::mat4 inverse_rotation = glm::rotate(glm::mat4(1.0f), -yaw,
+		glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::vec3 local_origin = glm::vec3(inverse_rotation *
+		glm::vec4(origin - to_glm(center), 1.0f));
+	const glm::vec3 local_direction = glm::vec3(inverse_rotation *
+		glm::vec4(direction, 0.0f));
+
 	float t_min = -1e30f;
 	float t_max = 1e30f;
 	for (int axis = 0; axis < 3; ++axis)
 	{
-		const float o = origin[axis];
-		const float d = direction[axis];
+		const float o = local_origin[axis];
+		const float d = local_direction[axis];
 		if (std::fabs(d) < 1e-8f)
 		{
-			if (o < lo || o > hi)
+			if (o < -kHalfExtent || o > kHalfExtent)
 				return false;
 			continue;
 		}
-		float t1 = (lo - o) / d;
-		float t2 = (hi - o) / d;
+		float t1 = (-kHalfExtent - o) / d;
+		float t2 = (kHalfExtent - o) / d;
 		if (t1 > t2)
 			std::swap(t1, t2);
 		t_min = std::max(t_min, t1);
@@ -1127,31 +1181,57 @@ static bool ray_hits_cube(const glm::vec3& origin, const glm::vec3& direction)
 	return t_max >= 0.0f;
 }
 
-static bool project_cube_box(const camera_state& state, int width, int height,
-	glm::vec4* out)
+static bool camera_matrices(const camera_state& state, int width, int height,
+	glm::mat4* view, glm::mat4* projection)
 {
-	if (!g.shell || !out || width <= 0 || height <= 0)
+	if (!g.shell || !view || !projection || width <= 0 || height <= 0)
 		return false;
 	const viewport_camera& camera = g.shell->camera();
-	const glm::mat4 view = glm::lookAt(to_glm(camera.position()),
-		to_glm(state.target), glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::mat4 projection = glm::perspectiveRH_ZO(
-		glm::radians(state.fov_deg), (float)width / (float)height, 0.1f, 100.0f);
+	*view = glm::lookAt(to_glm(camera.position()), to_glm(state.target),
+		glm::vec3(0.0f, 1.0f, 0.0f));
+	*projection = glm::perspectiveRH_ZO(glm::radians(state.fov_deg),
+		(float)width / (float)height, 0.1f, 100.0f);
+	return true;
+}
+
+static bool project_screen(const glm::mat4& mvp, int width, int height,
+	const glm::vec3& world, float* sx, float* sy)
+{
+	if (!sx || !sy || width <= 0 || height <= 0)
+		return false;
+	const glm::vec4 clip = mvp * glm::vec4(world, 1.0f);
+	if (clip.w <= 1e-4f)
+		return false;
+	*sx = ((clip.x / clip.w) * 0.5f + 0.5f) * (float)width;
+	*sy = (1.0f - ((clip.y / clip.w) * 0.5f + 0.5f)) * (float)height;
+	return std::isfinite(*sx) && std::isfinite(*sy);
+}
+
+static bool project_box(const camera_state& state, int width, int height,
+	const camera_vec3& center, float yaw, glm::vec4* out)
+{
+	if (!out)
+		return false;
+	glm::mat4 view(1.0f), projection(1.0f);
+	if (!camera_matrices(state, width, height, &view, &projection))
+		return false;
 	const glm::mat4 mvp = projection * view;
-	const float extent = 1.75f;
+	const glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), yaw,
+		glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::vec3 origin = to_glm(center);
+	constexpr float kHalfExtent = 1.0f;
 	float min_x = 1e30f, min_y = 1e30f;
 	float max_x = -1e30f, max_y = -1e30f;
 	for (int i = 0; i < 8; ++i)
 	{
-		const glm::vec4 corner((i & 1) ? extent : -extent,
-			(i & 2) ? extent : -extent,
-			(i & 4) ? extent : -extent, 1.0f);
-		const glm::vec4 clip = mvp * corner;
-		if (clip.w <= 1e-4f)
+		const glm::vec3 corner((i & 1) ? kHalfExtent : -kHalfExtent,
+			(i & 2) ? kHalfExtent : -kHalfExtent,
+			(i & 4) ? kHalfExtent : -kHalfExtent);
+		const glm::vec3 world = origin + glm::vec3(rotation *
+			glm::vec4(corner, 0.0f));
+		float sx = 0.0f, sy = 0.0f;
+		if (!project_screen(mvp, width, height, world, &sx, &sy))
 			return false;
-		const float sx = ((clip.x / clip.w) * 0.5f + 0.5f) * (float)width;
-		const float sy = (1.0f - ((clip.y / clip.w) * 0.5f + 0.5f)) *
-			(float)height;
 		min_x = std::min(min_x, sx);
 		max_x = std::max(max_x, sx);
 		min_y = std::min(min_y, sy);
@@ -1161,14 +1241,45 @@ static bool project_cube_box(const camera_state& state, int width, int height,
 	return true;
 }
 
+static bool project_world(const camera_vec3& world, float* x, float* y)
+{
+	if (!g.shell)
+		return false;
+	int width = 0, height = 0;
+	content_size(&width, &height);
+	const camera_state state = g.shell->camera().get_state();
+	glm::mat4 view(1.0f), projection(1.0f);
+	if (!camera_matrices(state, width, height, &view, &projection))
+		return false;
+	return project_screen(projection * view, width, height, to_glm(world),
+		x, y);
+}
+
+static bool gizmo_ray_at(float x, float y, gizmo_ray* out)
+{
+	if (!out)
+		return false;
+	int width = 0, height = 0;
+	content_size(&width, &height);
+	glm::vec3 origin(0.0f), direction(0.0f);
+	if (!screen_ray(x, y, width, height, &origin, &direction))
+		return false;
+	out->origin = from_glm(origin);
+	out->direction = from_glm(direction);
+	return true;
+}
+
 static object_id pick_object_at(const selection_point_query& query)
 {
 	if (g.pickable_object == invalid_object)
 		return invalid_object;
+	const scene_object* object = find_scene_object(g.pickable_object);
+	if (!object)
+		return invalid_object;
 	glm::vec3 origin(0.0f);
 	glm::vec3 direction(0.0f);
 	if (!viewport_ray(query, &origin, &direction) ||
-		!ray_hits_cube(origin, direction))
+		!ray_hits_box(origin, direction, object->position, object->yaw))
 		return invalid_object;
 	if (g.shell)
 		g.shell->set_status("picked Cube");
@@ -1178,11 +1289,12 @@ static object_id pick_object_at(const selection_point_query& query)
 static std::vector<object_id> pick_objects_in_box(const selection_box_query& query)
 {
 	std::vector<object_id> out;
-	if (!g.shell || g.pickable_object == invalid_object)
+	const scene_object* object = find_scene_object(g.pickable_object);
+	if (!g.shell || !object)
 		return out;
 	glm::vec4 box(0.0f);
-	if (!project_cube_box(g.shell->camera().get_state(), query.width,
-		query.height, &box))
+	if (!project_box(g.shell->camera().get_state(), query.width,
+		query.height, object->position, object->yaw, &box))
 		return out;
 	if (box.x >= query.x1 || box.z <= query.x0 ||
 		box.y >= query.y1 || box.w <= query.y0)
@@ -1196,20 +1308,15 @@ static std::vector<selection_box> highlight_selection(
 	const std::vector<object_id>& ids)
 {
 	std::vector<selection_box> out;
-	if (!g.shell || g.pickable_object == invalid_object ||
+	const scene_object* object = find_scene_object(g.pickable_object);
+	if (!g.shell || !object ||
 		std::find(ids.begin(), ids.end(), g.pickable_object) == ids.end())
 		return out;
-	int width = g.shell->viewport().render_width();
-	int height = g.shell->viewport().render_height();
-	if (width <= 0 || height <= 0)
-	{
-		float cx = 0, cy = 0, cw = 0, ch = 0;
-		g.shell->viewport().get_content_rect(&cx, &cy, &cw, &ch);
-		width = (int)std::lround(cw);
-		height = (int)std::lround(ch);
-	}
+	int width = 0, height = 0;
+	content_size(&width, &height);
 	glm::vec4 box(0.0f);
-	if (!project_cube_box(g.shell->camera().get_state(), width, height, &box))
+	if (!project_box(g.shell->camera().get_state(), width, height,
+		object->position, object->yaw, &box))
 		return out;
 	selection_box item;
 	item.id = g.pickable_object;
@@ -1219,6 +1326,153 @@ static std::vector<selection_box> highlight_selection(
 	item.height = box.w - box.y;
 	out.push_back(item);
 	return out;
+}
+
+//---------------------------------------------------------------------------
+// V05: 平移 Gizmo——kit 负责手势/绘制，宿主提供帧、投影、射线与命令栈
+//---------------------------------------------------------------------------
+
+static gizmo_frame gizmo_frame_for_selection()
+{
+	gizmo_frame frame;
+	if (!g.shell || !g.context)
+		return frame;
+	const std::vector<object_id>& ids = g.context->selection_ids();
+	if (ids.empty())
+		return frame;
+
+	camera_vec3 center{};
+	int count = 0;
+	for (object_id id : ids)
+	{
+		const scene_object* object = find_scene_object(id);
+		if (!object)
+			continue;
+		center.x += object->position.x;
+		center.y += object->position.y;
+		center.z += object->position.z;
+		++count;
+	}
+	if (!count)
+		return frame;
+	center.x /= (float)count;
+	center.y /= (float)count;
+	center.z /= (float)count;
+
+	/* Multi-select uses the primary object's local orientation; world space
+	 * ignores it and uses the canonical basis. */
+	float yaw = 0.0f;
+	object_id primary = g.context->selection() != invalid_object
+		? g.context->selection() : ids.front();
+	if (const scene_object* object = find_scene_object(primary))
+		yaw = object->yaw;
+	if (g.shell->gizmo().space() == gizmo_space::world)
+		yaw = 0.0f;
+
+	const float c = std::cos(yaw);
+	const float s = std::sin(yaw);
+	frame.valid = true;
+	frame.origin = center;
+	frame.axis[0] = { c, 0.0f, -s };
+	frame.axis[1] = { 0.0f, 1.0f, 0.0f };
+	frame.axis[2] = { s, 0.0f, c };
+	frame.screen_length = 80.0f;
+	return frame;
+}
+
+static std::map<object_id, camera_vec3> capture_selected_positions()
+{
+	std::map<object_id, camera_vec3> out;
+	if (!g.context)
+		return out;
+	for (object_id id : g.context->selection_ids())
+	{
+		const scene_object* object = find_scene_object(id);
+		if (object)
+			out[id] = object->position;
+	}
+	return out;
+}
+
+static void apply_position_map(const std::map<object_id, camera_vec3>& positions)
+{
+	for (const auto& entry : positions)
+	{
+		auto it = g.scene.objects.find(entry.first);
+		if (it != g.scene.objects.end())
+			it->second.position = entry.second;
+	}
+}
+
+static void apply_position_delta(const std::map<object_id, camera_vec3>& base,
+	const camera_vec3& delta)
+{
+	for (const auto& entry : base)
+	{
+		auto it = g.scene.objects.find(entry.first);
+		if (it == g.scene.objects.end())
+			continue;
+		it->second.position.x = entry.second.x + delta.x;
+		it->second.position.y = entry.second.y + delta.y;
+		it->second.position.z = entry.second.z + delta.z;
+	}
+}
+
+static void setup_gizmo()
+{
+	if (!g.shell || !g.context)
+		return;
+	viewport_gizmo& gizmo = g.shell->gizmo();
+	gizmo.set_frame_provider(&gizmo_frame_for_selection);
+	gizmo.set_projection(&project_world);
+	gizmo.set_ray_provider(&gizmo_ray_at);
+	gizmo.set_drag_handler([](gizmo_phase phase, const camera_vec3& delta)
+	{
+		if (!g.shell || !g.context)
+			return;
+		switch (phase)
+		{
+		case gizmo_phase::begin:
+			g.gizmo_before_positions = capture_selected_positions();
+			g.gizmo_start_positions = g.gizmo_before_positions;
+			g.gizmo_last_delta = {};
+			break;
+		case gizmo_phase::preview:
+			g.gizmo_last_delta = delta;
+			apply_position_delta(g.gizmo_start_positions, delta);
+			break;
+		case gizmo_phase::commit:
+		{
+			g.gizmo_last_delta = delta;
+			apply_position_delta(g.gizmo_start_positions, delta);
+			const float magnitude = std::fabs(delta.x) + std::fabs(delta.y) +
+				std::fabs(delta.z);
+			if (magnitude > 1e-4f && !g.gizmo_before_positions.empty())
+			{
+				std::map<object_id, camera_vec3> before =
+					g.gizmo_before_positions;
+				std::map<object_id, camera_vec3> after =
+					capture_selected_positions();
+				g.context->commands().push(
+					std::make_unique<function_command>("Translate",
+						[after]() { apply_position_map(after); },
+						[before]() { apply_position_map(before); }));
+			}
+			char text[128] = {};
+			std::snprintf(text, sizeof(text),
+				"translated %.2f %.2f %.2f", delta.x, delta.y, delta.z);
+			g.shell->set_status(text);
+			/* The command was pushed directly, so refresh Undo/Redo enabled
+			 * state in the toolbar and menus. */
+			g.shell->refresh_commands();
+			break;
+		}
+		case gizmo_phase::cancel:
+			apply_position_map(g.gizmo_before_positions);
+			g.shell->set_status("translate cancelled");
+			break;
+		}
+	});
 }
 
 static void setup_editor(vgui_context* ui)
@@ -1250,11 +1504,13 @@ static void setup_editor(vgui_context* ui)
 	g.shell->camera().set_focus_provider([](camera_focus* out) -> bool {
 		if (!out || !g.valid_selection())
 			return false;
-		/* 玩具场景没有真实变换：立方体固定在原点，用固定半径演示取景。 */
-		out->center = {};
+		const scene_object* object =
+			find_scene_object(g.context->selection());
+		if (!object)
+			return false;
+		out->center = object->position;
 		out->radius = 2.5f;
-		g.shell->set_status("camera: frame " +
-			g.scene.objects[g.context->selection()].name);
+		g.shell->set_status("camera: frame " + object->name);
 		return true;
 	});
 	g.shell->camera().set_change_listener([] {
@@ -1272,6 +1528,8 @@ static void setup_editor(vgui_context* ui)
 	g.shell->picking().set_point_picker(&pick_object_at);
 	g.shell->picking().set_box_picker(&pick_objects_in_box);
 	g.shell->picking().set_highlight_provider(&highlight_selection);
+	/* V05: 平移 Gizmo 的帧/投影/射线与命令栈接线。 */
+	setup_gizmo();
 
 	command_stack& commands = g.context->commands();
 	outliner_view& outliner = g.shell->scene();
@@ -1297,6 +1555,9 @@ static void setup_editor(vgui_context* ui)
 	/* V03: 视口里唯一可见的立方体对应一个可拾取对象。 */
 	const object_id cube = g.scene.add("Cube", invalid_object);
 	g.scene.objects[cube].props["mesh"] = "Cube.mesh";
+	/* V05: 立方体落在网格上，并带一点偏航角以区分局部/世界空间。 */
+	g.scene.objects[cube].position = { 0.0f, 1.0f, 0.0f };
+	g.scene.objects[cube].yaw = 0.55f;
 	g.pickable_object = cube;
 	g.rebuild_outliner();
 
@@ -1935,6 +2196,19 @@ int main()
 				view.target[2] = camera_view.target.z;
 				view.fov_deg = camera_view.fov_deg;
 				phase0_renderer_set_camera(g.renderer, &view);
+
+				/* V05: the gizmo edits the scene transform; the cube follows it. */
+				if (const scene_object* object =
+					find_scene_object(g.pickable_object))
+				{
+					const float position[3] = {
+						object->position.x,
+						object->position.y,
+						object->position.z
+					};
+					phase0_renderer_set_object_transform(g.renderer,
+						position, object->yaw);
+				}
 
 				/* V04: grid geometry (kit) -> renderer line quads (host). */
 				std::vector<viewport_grid_line> grid_lines;

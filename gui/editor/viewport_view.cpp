@@ -442,11 +442,17 @@ namespace vgui_editor_kit {
 			return false;
 		bool consumed = false;
 		if (event_listener_)
+		{
 			consumed = event_listener_(event);
+			if (consumed)
+				return true;
+		}
 		if (event_listeners_.empty())
 			return consumed;
 
-		/* 监听器可能在回调里移除自己；先拍快照，调用前确认 token 仍然有效。 */
+		/* 监听器可能在回调里移除自己；先拍快照，调用前确认 token 仍然有效。
+	 * 第一个消费事件的监听器终止后续分发：Gizmo 挂在拾取之前，命中手柄时
+	 * 不能让拾取再启动一次框选。 */
 		const std::vector<event_listener_entry> snapshot = event_listeners_;
 		for (const event_listener_entry& entry : snapshot)
 		{
@@ -460,7 +466,10 @@ namespace vgui_editor_kit {
 				}
 			}
 			if (alive && entry.fn && entry.fn(event))
+			{
 				consumed = true;
+				break;
+			}
 		}
 		return consumed;
 	}

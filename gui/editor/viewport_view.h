@@ -91,8 +91,10 @@ namespace vgui_editor_kit {
 		void set_event_listener(event_listener listener);
 		/* Additional event observers used by components layered on the surface
 		 * (viewport_camera, gizmos).  They run after the listener installed by
-		 * set_event_listener(), in registration order; any observer may consume
-		 * the event.  Returns a token for remove_event_listener(). */
+		 * set_event_listener(), in registration order.  The first observer that
+		 * consumes an event (returns true) stops later observers, so an earlier
+		 * gizmo can own the pointer before picking starts a select gesture.
+		 * Returns a token for remove_event_listener(). */
 		int add_event_listener(event_listener listener);
 		void remove_event_listener(int token);
 		void set_focus_listener(focus_listener listener);

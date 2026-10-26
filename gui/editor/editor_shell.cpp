@@ -175,6 +175,24 @@ namespace vgui_editor_kit {
 		add_grid_size("view.grid.2", "2", "2", 2.0f);
 		add_grid_size("view.grid.5", "5", "5", 5.0f);
 
+		/* V05: 平移 Gizmo 可见性与世界/局部空间切换。 */
+		commands_.add("view.gizmo", "Translate Gizmo", [this]() {
+			gizmo_.set_visible(!gizmo_.visible());
+			set_status(gizmo_.visible() ? "gizmo on" : "gizmo off");
+		});
+		commands_.set_checked("view.gizmo", [this]() {
+			return gizmo_.visible();
+		});
+
+		commands_.add("view.gizmo.local", "Local Space", [this]() {
+			const bool local = gizmo_.space() == gizmo_space::local;
+			gizmo_.set_space(local ? gizmo_space::world : gizmo_space::local);
+			set_status(local ? "gizmo world space" : "gizmo local space");
+		});
+		commands_.set_checked("view.gizmo.local", [this]() {
+			return gizmo_.space() == gizmo_space::local;
+		});
+
 		commands_.add("view.reset_layout", "Reset Layout", [this]() {
 			reset_layout();
 			set_status("layout reset");
@@ -322,6 +340,8 @@ namespace vgui_editor_kit {
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
+			add_menu_command(view_menu, "view.gizmo", true);
+			add_menu_command(view_menu, "view.gizmo.local", true);
 			vgui_widget* grid_size_menu = nullptr;
 			if (vgui_menu_add_submenu(view_menu, "Grid Size", &grid_size_menu) &&
 				grid_size_menu)
@@ -437,6 +457,9 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(viewport_.widget(), VGUI_ALIGN_STRETCH);
 		/* V02: 视口默认带轨道相机——中/右键导航、滚轮缩放、F 聚焦。 */
 		camera_.attach(viewport_);
+		/* V05: Gizmo 先于拾取挂载，左键命中手柄时先消费事件。 */
+		gizmo_.attach(viewport_);
+		gizmo_.set_snap_settings(&snap_);
 		/* V03: 左键拾取/框选，选择集写入 editor_context 并与 Outliner 同步。 */
 		picking_.attach(viewport_, context_);
 		desc.id = "viewport";
@@ -1001,6 +1024,16 @@ namespace vgui_editor_kit {
 	const viewport_selection& editor_shell::picking() const noexcept
 	{
 		return picking_;
+	}
+
+	viewport_gizmo& editor_shell::gizmo() noexcept
+	{
+		return gizmo_;
+	}
+
+	const viewport_gizmo& editor_shell::gizmo() const noexcept
+	{
+		return gizmo_;
 	}
 
 	viewport_grid& editor_shell::grid() noexcept

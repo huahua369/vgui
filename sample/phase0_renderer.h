@@ -51,4 +51,9 @@ struct phase0_grid_line
 void phase0_renderer_set_grid(phase0_renderer* renderer,
 	const phase0_grid_line* lines, int count);
 
+/* Editor demo: place/rotate the cube.  Once called the built-in idle spin is
+ * disabled, so the host fully owns the object transform. */
+void phase0_renderer_set_object_transform(phase0_renderer* renderer,
+	const float position[3], float yaw_radians);
+
 void phase0_renderer_render(phase0_renderer* renderer, float time_seconds);

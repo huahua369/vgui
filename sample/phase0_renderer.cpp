@@ -199,6 +199,11 @@ struct phase0_renderer
 	SDL_GPUBuffer* grid_buffer = nullptr;
 	Uint32 grid_capacity = 0;
 	std::vector<phase0_grid_line> grid_lines;
+
+	/* V05: the editor drives the cube transform; unset keeps the idle spin. */
+	bool object_transform_set = false;
+	float object_position[3] = { 0.0f, 0.0f, 0.0f };
+	float object_yaw = 0.0f;
 };
 
 static void release_target(phase0_renderer* r)
@@ -528,6 +533,26 @@ void phase0_renderer_set_grid(phase0_renderer* r, const phase0_grid_line* lines,
 	r->grid_lines.assign(lines, lines + count);
 }
 
+void phase0_renderer_set_object_transform(phase0_renderer* r,
+	const float position[3], float yaw_radians)
+{
+	if (!r) return;
+	r->object_transform_set = true;
+	if (position)
+	{
+		r->object_position[0] = position[0];
+		r->object_position[1] = position[1];
+		r->object_position[2] = position[2];
+	}
+	else
+	{
+		r->object_position[0] = 0.0f;
+		r->object_position[1] = 0.0f;
+		r->object_position[2] = 0.0f;
+	}
+	r->object_yaw = yaw_radians;
+}
+
 static std::vector<p0_vertex> build_grid_vertices(
 	const std::vector<phase0_grid_line>& lines)
 {
@@ -665,11 +690,25 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 	if (glm::distance(eye, eye_target) < 1e-4f)
 		eye.z += 1.0f;
 	const glm::mat4 projection = glm::perspectiveRH_ZO(glm::radians(fov_deg),
-		aspect, 0.1f, 100.0f);
+		aspect, 0.1f, 100.0f) * glm::scale(glm::mat4(1.0f),
+			glm::vec3(1.0f, -1.0f, 1.0f));
 	const glm::mat4 view = glm::lookAt(eye, eye_target,
 		glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::mat4 model = glm::rotate(glm::mat4(1.0f), time_seconds * 0.7f, glm::vec3(0.0f, 1.0f, 0.0f))
-		* glm::rotate(glm::mat4(1.0f), 0.35f, glm::vec3(1.0f, 0.0f, 0.0f));
+	glm::mat4 model;
+	if (r->object_transform_set)
+	{
+		model = glm::translate(glm::mat4(1.0f),
+			glm::vec3(r->object_position[0], r->object_position[1],
+				r->object_position[2])) *
+			glm::rotate(glm::mat4(1.0f), r->object_yaw,
+				glm::vec3(0.0f, 1.0f, 0.0f));
+	}
+	else
+	{
+		model = glm::rotate(glm::mat4(1.0f), time_seconds * 0.7f,
+			glm::vec3(0.0f, 1.0f, 0.0f)) *
+			glm::rotate(glm::mat4(1.0f), 0.35f, glm::vec3(1.0f, 0.0f, 0.0f));
+	}
 	p0_uniform uniform = {};
 	uniform.mvp = projection * view * model;
 	SDL_PushGPUVertexUniformData(cmd, 0, &uniform, sizeof(uniform));

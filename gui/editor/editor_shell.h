@@ -24,6 +24,7 @@
 #include "status_bar.h"
 #include "toolbar.h"
 #include "viewport_camera.h"
+#include "viewport_gizmo.h"
 #include "viewport_grid.h"
 #include "viewport_selection.h"
 #include "viewport_view.h"
@@ -114,6 +115,11 @@ namespace vgui_editor_kit {
 		 * editor_context and is mirrored by the Outliner. */
 		viewport_selection& picking() noexcept;
 		const viewport_selection& picking() const noexcept;
+		/* V05: translate gizmo.  The shell attaches it before picking so its
+		 * left-button hit test wins; hosts install the frame/projection/ray
+		 * providers and the drag handler. */
+		viewport_gizmo& gizmo() noexcept;
+		const viewport_gizmo& gizmo() const noexcept;
 		/* V04: world grid settings/geometry and the snapping policy shared with
 		 * future gizmos.  The host renders grid().build() itself. */
 		viewport_grid& grid() noexcept;
@@ -181,6 +187,7 @@ namespace vgui_editor_kit {
 		viewport_view viewport_;
 		/* Declared after the viewport so they detach before the surface dies. */
 		viewport_camera camera_;
+		viewport_gizmo gizmo_;
 		viewport_selection picking_;
 		viewport_grid grid_;
 		snap_settings snap_;

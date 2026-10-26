@@ -27,6 +27,7 @@
 #include "toolbar.h"
 #include "vector_editor.h"
 #include "viewport_camera.h"
+#include "viewport_gizmo.h"
 #include "viewport_grid.h"
 #include "viewport_selection.h"
 #include "viewport_view.h"
