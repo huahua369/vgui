@@ -86,6 +86,7 @@ namespace vgui_editor_kit {
 		};
 
 		using selection_listener = std::function<void(vgui_item_id)>;
+		using selection_listener_id = std::size_t;
 		using activate_listener = std::function<void(vgui_item_id)>;
 		using path_listener = std::function<void(const std::string& path_id)>;
 		/* Applies the new name to the host asset model.  Return false to reject
@@ -116,6 +117,9 @@ namespace vgui_editor_kit {
 		bool item_at(int index, asset_info* out) const;
 		vgui_item_id id_at(int index) const noexcept;
 		int index_of(vgui_item_id item) const noexcept;
+		/* Looks up an item by id even when the current search/type filter
+		 * hides it.  Used by selection-driven panels such as asset_preview. */
+		bool item_info(vgui_item_id item, asset_info* out) const;
 
 		view_mode view() const noexcept;
 		void set_view(view_mode mode);
@@ -187,7 +191,11 @@ namespace vgui_editor_kit {
 		bool is_selected(vgui_item_id item) const noexcept;
 		void set_selection(const std::vector<vgui_item_id>& items);
 		void clear_selection();
+		/* Legacy single listener.  Prefer add_selection_listener() when more
+		 * than one component tracks the selection. */
 		void set_selection_listener(selection_listener listener);
+		selection_listener_id add_selection_listener(selection_listener listener);
+		bool remove_selection_listener(selection_listener_id id);
 
 		void set_command_stack(command_stack* stack);
 		void set_rename_handler(rename_handler handler);
@@ -363,7 +371,15 @@ namespace vgui_editor_kit {
 		int anchor_index_ = -1;
 		bool syncing_ = false;
 
+		struct selection_listener_entry
+		{
+			selection_listener_id id = 0;
+			selection_listener fn;
+		};
+
 		selection_listener listener_;
+		std::vector<selection_listener_entry> selection_listeners_;
+		selection_listener_id next_selection_listener_ = 1;
 		activate_listener activate_listener_;
 		command_stack* command_stack_ = nullptr;
 		rename_handler rename_handler_;

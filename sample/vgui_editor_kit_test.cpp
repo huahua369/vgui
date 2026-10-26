@@ -9,6 +9,8 @@
 // and model callbacks.
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -18,6 +20,7 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #define NOMINMAX
@@ -6039,6 +6042,234 @@ static int test_asset_browser_navigation()
 	return 0;
 }
 
+/* A03: 选中资产预览的异步加载、失败占位、陈旧结果丢弃与 shell 自动同步。 */
+static int test_asset_preview()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("a03 vgui_create failed");
+	vgui_context_set_size(ui, 480, 600);
+
+	{
+		vgui_widget* root = vgui_root(ui);
+		vgui_widget_set_layout(root, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_align_items(root, VGUI_ALIGN_STRETCH);
+
+		asset_preview preview;
+		preview.build(root);
+		if (!preview.widget() || !preview.stage())
+			return fail("a03 preview build");
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		float stage_w = 0, stage_h = 0;
+		vgui_widget_get_rect(preview.stage(), nullptr, nullptr, &stage_w, &stage_h);
+		if (stage_w <= 0.0f || stage_h <= 0.0f)
+			return fail("a03 preview layout");
+		if (preview.item() != 0 || preview.loading() ||
+			preview.status_text() != "Select an asset to preview")
+			return fail("a03 preview initial state");
+
+		std::atomic<int> loads{ 0 };
+		preview.set_load_handler([&](const asset_preview::request& req,
+			asset_preview::data* out)
+		{
+			loads.fetch_add(1);
+			if (req.id == 1 || req.id == 4)
+			{
+				/* Simulate a large file decode. */
+				std::this_thread::sleep_for(std::chrono::milliseconds(200));
+				out->kind = asset_preview::preview_kind::image;
+				out->name = req.name;
+				out->type = req.type;
+				out->detail = "RGBA8 texture";
+				out->image.width = 8;
+				out->image.height = 6;
+				out->image.stride = 0;
+				out->image.format = VGUI_TEXTURE_FORMAT_RGBA8;
+				out->image.pixels.assign(8u * 6u * 4u, 0xC0u);
+				out->fields.push_back({ "Size", "8 x 6" });
+				return true;
+			}
+			if (req.id == 2)
+			{
+				out->name = req.name;
+				out->type = req.type;
+				out->error = "missing file";
+				return false;
+			}
+			if (req.id == 3)
+			{
+				out->kind = asset_preview::preview_kind::text;
+				out->name = req.name;
+				out->type = req.type;
+				out->text = "slow result";
+				return true;
+			}
+			return true;
+		});
+
+		const auto start = std::chrono::steady_clock::now();
+		preview.set_item(1, "hero.png", "Texture");
+		const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+			std::chrono::steady_clock::now() - start).count();
+		if (elapsed > 100)
+			return fail("a03 set_item blocks on loader");
+		if (!preview.loading() || preview.item() != 1)
+			return fail("a03 preview loading state");
+
+		/* Switch immediately: the older 200 ms job must not win. */
+		preview.set_item(3, "notes.txt", "Text");
+		if (preview.item() != 3 || !preview.loading())
+			return fail("a03 rapid selection");
+
+		auto wait_applied = [&preview](int timeout_ms) {
+			const auto deadline = std::chrono::steady_clock::now() +
+				std::chrono::milliseconds(timeout_ms);
+			while (std::chrono::steady_clock::now() < deadline)
+			{
+				if (preview.poll())
+					return true;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			}
+			return preview.poll();
+		};
+
+		if (!wait_applied(2500))
+			return fail("a03 async result poll");
+		if (preview.loading() || preview.item() != 3 ||
+			preview.current_data().kind != asset_preview::preview_kind::text ||
+			preview.current_data().name != "notes.txt" ||
+			preview.current_data().text != "slow result")
+			return fail("a03 stale result discarded");
+
+		preview.set_item(2, "Broken.mesh", "Mesh");
+		if (!wait_applied(1500))
+			return fail("a03 failure result poll");
+		if (!preview.has_error() || preview.error() != "missing file" ||
+			preview.current_data().error != "missing file" ||
+			preview.texture() != nullptr ||
+			preview.status_text().find("Preview failed") == std::string::npos)
+			return fail("a03 failure placeholder state");
+
+		preview.set_item(4, "icon.png", "Texture");
+		if (!wait_applied(1500))
+			return fail("a03 image result poll");
+		if (preview.has_error() || !preview.texture() ||
+			vgui_texture_get_width(preview.texture()) != 8 ||
+			vgui_texture_get_height(preview.texture()) != 6 ||
+			preview.current_data().kind != asset_preview::preview_kind::image)
+			return fail("a03 image texture");
+
+		preview.clear();
+		if (preview.item() != 0 || preview.loading() || preview.has_error() ||
+			preview.texture() != nullptr ||
+			preview.status_text() != "Select an asset to preview")
+			return fail("a03 preview clear");
+
+		preview.set_texts("Empty!", "Loading!", "Failed!");
+		preview.set_load_handler({});
+		preview.set_item(5, "Docs", "Folder");
+		if (preview.loading() || preview.has_error() ||
+			preview.item() != 5 ||
+			preview.status_text() != "No preview available")
+			return fail("a03 no loader placeholder");
+		preview.clear();
+		if (preview.status_text() != "Empty!")
+			return fail("a03 custom empty text");
+
+		/* A03 also relies on asset_browser's multi-listener API and on item
+		 * lookup surviving the search/type filter. */
+		vgui_widget* browser_host = vgui_widget_add(root, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(browser_host, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_size(browser_host, 320, 220);
+		asset_browser browser;
+		browser.build(browser_host);
+		vgui_item_id alpha = browser.add_item("Alpha.mesh", "Mesh");
+		vgui_item_id beta = browser.add_item("Beta.png", "Texture");
+		asset_info info;
+		if (!alpha || !beta || !browser.item_info(alpha, &info) ||
+			info.name != "Alpha.mesh" || info.type != "Mesh")
+			return fail("a03 asset item_info");
+		int first_hits = 0;
+		int second_hits = 0;
+		const auto first_id = browser.add_selection_listener(
+			[&first_hits](vgui_item_id) { ++first_hits; });
+		const auto second_id = browser.add_selection_listener(
+			[&second_hits](vgui_item_id) { ++second_hits; });
+		if (!first_id || !second_id || first_id == second_id)
+			return fail("a03 listener ids");
+		browser.set_selection({ alpha });
+		if (first_hits != 1 || second_hits != 1)
+			return fail("a03 multi selection listeners");
+		if (!browser.remove_selection_listener(first_id) ||
+			browser.remove_selection_listener(first_id))
+			return fail("a03 remove selection listener");
+		browser.set_selection({ beta });
+		if (first_hits != 1 || second_hits != 2)
+			return fail("a03 removed listener stops");
+		browser.set_search_text("no-such-asset", true);
+		if (browser.index_of(alpha) != -1 ||
+			!browser.item_info(alpha, &info) || info.name != "Alpha.mesh")
+			return fail("a03 item_info ignores filter");
+	}
+
+	vgui_destroy(ui);
+
+	vgui_context* shell_ui = vgui_create(nullptr, 16.0f);
+	if (!shell_ui)
+		return fail("a03 shell vgui_create failed");
+	vgui_context_set_size(shell_ui, 1280, 800);
+	{
+		std::atomic<int> loads{ 0 };
+		editor_context context(shell_ui);
+		editor_shell shell(context);
+		shell.build();
+		shell.preview().set_load_handler([&](const asset_preview::request& req,
+			asset_preview::data* out)
+		{
+			loads.fetch_add(1);
+			out->kind = asset_preview::preview_kind::model;
+			out->name = req.name;
+			out->type = req.type;
+			out->detail = "Static mesh";
+			return true;
+		});
+		vgui_item_id item = shell.assets().add_item("Hero.mesh", "Mesh");
+		if (!item || !shell.preview().widget())
+			return fail("a03 shell preview widget");
+		shell.assets().set_selection({ item });
+		if (shell.preview().item() != item)
+			return fail("a03 shell preview selection sync");
+
+		const auto deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (shell.preview().loading() &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			shell.preview().poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (shell.preview().loading() || shell.preview().has_error() ||
+			shell.preview().current_data().name != "Hero.mesh" ||
+			shell.preview().current_data().kind !=
+				asset_preview::preview_kind::model ||
+			loads.load() < 1)
+			return fail("a03 shell preview async sync");
+
+		vgui_update(shell_ui, 1.0f / 60.0f);
+		vgui_layout(shell_ui);
+		float pw = 0, ph = 0;
+		vgui_widget_get_rect(shell.preview().widget(), nullptr, nullptr, &pw, &ph);
+		if (pw <= 0.0f || ph <= 0.0f)
+			return fail("a03 shell preview layout");
+	}
+
+	vgui_destroy(shell_ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -6106,6 +6337,8 @@ int main()
 	if (int rc = test_asset_browser_views())
 		return rc;
 	if (int rc = test_asset_browser_navigation())
+		return rc;
+	if (int rc = test_asset_preview())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

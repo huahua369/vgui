@@ -654,6 +654,12 @@ namespace vgui_editor_kit {
 		return base_index_to_view(base_index_of(item));
 	}
 
+	bool asset_browser::item_info(vgui_item_id item, asset_info* out) const
+	{
+		const int index = base_index_of(item);
+		return index >= 0 && base_item_at(index, out);
+	}
+
 	asset_browser::view_mode asset_browser::view() const noexcept
 	{
 		return view_;
@@ -1306,6 +1312,33 @@ namespace vgui_editor_kit {
 		listener_ = std::move(listener);
 	}
 
+	asset_browser::selection_listener_id asset_browser::add_selection_listener(
+		selection_listener listener)
+	{
+		if (!listener)
+			return 0;
+		selection_listener_entry entry;
+		entry.id = next_selection_listener_++;
+		entry.fn = std::move(listener);
+		const selection_listener_id id = entry.id;
+		selection_listeners_.push_back(std::move(entry));
+		return id;
+	}
+
+	bool asset_browser::remove_selection_listener(selection_listener_id id)
+	{
+		if (!id)
+			return false;
+		for (auto it = selection_listeners_.begin(); it != selection_listeners_.end(); ++it)
+		{
+			if (it->id != id)
+				continue;
+			selection_listeners_.erase(it);
+			return true;
+		}
+		return false;
+	}
+
 	void asset_browser::set_command_stack(command_stack* stack)
 	{
 		command_stack_ = stack;
@@ -1818,6 +1851,19 @@ namespace vgui_editor_kit {
 	{
 		if (listener_)
 			listener_(primary_);
+		if (selection_listeners_.empty())
+			return;
+		/* Copy the callbacks so listeners may add or remove listeners while
+		 * being notified without invalidating this iteration. */
+		std::vector<selection_listener> listeners;
+		listeners.reserve(selection_listeners_.size());
+		for (const selection_listener_entry& entry : selection_listeners_)
+			listeners.push_back(entry.fn);
+		for (const selection_listener& listener : listeners)
+		{
+			if (listener)
+				listener(primary_);
+		}
 	}
 
 	void asset_browser::update_primary_from_list(vgui_item_id item, int selected)

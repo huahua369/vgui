@@ -6,6 +6,7 @@
  * dependencies on a game scene, asset database or editor document format.
  */
 #include "asset_browser.h"
+#include "asset_preview.h"
 #include "breadcrumb.h"
 #include "command_registry.h"
 #include "command_stack.h"

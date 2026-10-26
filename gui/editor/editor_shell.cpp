@@ -45,6 +45,9 @@ namespace vgui_editor_kit {
 		if (selection_listener_)
 			context_.remove_selection_listener(selection_listener_);
 		selection_listener_ = 0;
+		if (asset_selection_listener_)
+			assets_.remove_selection_listener(asset_selection_listener_);
+		asset_selection_listener_ = 0;
 		if (key_handler_token_ && context_.ui())
 			vgui_context_remove_key_handler(context_.ui(), key_handler_token_);
 		key_handler_token_ = 0;
@@ -376,6 +379,9 @@ namespace vgui_editor_kit {
 		vgui_widget_set_padding(path_.widget(), 6, 0, 6, 0);
 		properties_.build(properties_panel_);
 		properties_.set_command_stack(&context_.commands());
+		/* A03: the selected-asset preview sits below the property grid so the
+		 * four dock panels (and their persisted layout) stay unchanged. */
+		preview_.build(properties_panel_);
 		desc.id = "properties";
 		desc.title = "PROPERTIES";
 		desc.panel = properties_panel_;
@@ -430,6 +436,22 @@ namespace vgui_editor_kit {
 		scene_.enable_context_menu();
 		scene_.enable_row_buttons();
 		assets_.enable_row_drag();
+		/* A03: keep the preview in sync with the asset selection.  A separate
+		 * listener leaves the host's legacy selection callback untouched. */
+		asset_selection_listener_ = assets_.add_selection_listener(
+			[this](vgui_item_id item)
+			{
+				if (!item)
+				{
+					preview_.clear();
+					return;
+				}
+				asset_info info;
+				if (assets_.item_info(item, &info))
+					preview_.set_item(item, info.name, info.type);
+				else
+					preview_.set_item(item);
+			});
 		viewport_.set_drop_listener([this](const drag_payload& payload, float, float) {
 			if (!payload.id.empty())
 				set_status("drop " + payload.id);
@@ -873,6 +895,11 @@ namespace vgui_editor_kit {
 	asset_browser& editor_shell::assets() noexcept
 	{
 		return assets_;
+	}
+
+	asset_preview& editor_shell::preview() noexcept
+	{
+		return preview_;
 	}
 
 	viewport_view& editor_shell::viewport() noexcept

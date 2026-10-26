@@ -12,11 +12,13 @@
 // 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <map>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pch.h"		// glm 等基础类型(ovg_c.h 依赖)
@@ -219,6 +221,133 @@ static vgui_texture* make_asset_thumbnail(vgui_context* ui, uint32_t base,
 	return vgui_texture_create(ui, &desc);
 }
 
+/* A03 预览加载器在后台线程运行:只读请求与静态数据,绝不调用 vgui。 */
+static asset_preview::image_data make_preview_image(int size, vgui_color base,
+	vgui_color accent, bool checker)
+{
+	asset_preview::image_data image;
+	image.width = size;
+	image.height = size;
+	image.stride = size * 4;
+	image.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	image.pixels.resize((std::size_t)size * (std::size_t)size * 4u);
+	const unsigned br = (base >> 16) & 0xFF, bg = (base >> 8) & 0xFF, bb = base & 0xFF;
+	const unsigned ar = (accent >> 16) & 0xFF, ag = (accent >> 8) & 0xFF, ab = accent & 0xFF;
+	for (int y = 0; y < size; ++y)
+	{
+		for (int x = 0; x < size; ++x)
+		{
+			float t = (float)(x + y) / (float)(size * 2);
+			unsigned r = (unsigned)(br + (ar - br) * t);
+			unsigned g = (unsigned)(bg + (ag - bg) * t);
+			unsigned b = (unsigned)(bb + (ab - bb) * t);
+			if (checker && (((x / 8) + (y / 8)) & 1))
+			{
+				r = (r + 235u) / 2u;
+				g = (g + 235u) / 2u;
+				b = (b + 235u) / 2u;
+			}
+			const float dx = (float)x - (float)size * 0.5f;
+			const float dy = (float)y - (float)size * 0.5f;
+			const float dist = std::sqrt(dx * dx + dy * dy);
+			if (dist < (float)size * 0.27f)
+			{
+				r = (r + 255u) / 2u;
+				g = (g + 255u) / 2u;
+				b = (b + 255u) / 2u;
+			}
+			const std::size_t p = ((std::size_t)y * (std::size_t)size + (std::size_t)x) * 4u;
+			image.pixels[p] = (unsigned char)std::min(255u, r);
+			image.pixels[p + 1] = (unsigned char)std::min(255u, g);
+			image.pixels[p + 2] = (unsigned char)std::min(255u, b);
+			image.pixels[p + 3] = 255;
+		}
+	}
+	return image;
+}
+
+static bool load_demo_preview(const asset_preview::request& req,
+	asset_preview::data* out)
+{
+	if (!out)
+		return false;
+	using kind = asset_preview::preview_kind;
+	out->name = req.name;
+	out->type = req.type;
+
+	if (req.type == "Folder")
+	{
+		out->kind = kind::none;
+		out->detail = "Folder";
+		out->fields.push_back({ "Type", "Folder" });
+		out->fields.push_back({ "Open", "Double-click" });
+		return true;
+	}
+
+	if (req.name == "Broken.mesh")
+	{
+		out->kind = kind::model;
+		out->error = "Corrupt mesh header (0x0BADC0DE)";
+		out->fields.push_back({ "Error", out->error });
+		out->fields.push_back({ "Hint", "Re-import or repair the file" });
+		return false;
+	}
+
+	if (req.type == "Texture")
+	{
+		/* Deliberately slow enough to show the loading state without blocking
+		 * the editor thread. */
+		std::this_thread::sleep_for(std::chrono::milliseconds(90));
+		const bool checker = req.name == "checker.png";
+		out->kind = kind::image;
+		out->detail = "RGBA8 texture";
+		out->accent = checker ? 0xFFC8A050u : 0xFF6CC878u;
+		out->secondary = checker ? 0xFF705820u : 0xFF327E42u;
+		out->image = make_preview_image(96,
+			checker ? 0xFFC8A050u : 0xFF6CC878u,
+			checker ? 0xFF705820u : 0xFF327E42u, checker);
+		out->fields.push_back({ "Size", "96 x 96" });
+		out->fields.push_back({ "Format", "RGBA8" });
+		out->fields.push_back({ "Filter", "Linear / repeat" });
+		return true;
+	}
+
+	if (req.type == "Mesh")
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(60));
+		out->kind = kind::model;
+		const bool sphere = req.name == "Sphere.mesh";
+		out->detail = sphere ? "Sphere · 482 tris" : "Static mesh · 12 tris";
+		out->accent = sphere ? 0xFF6E9ED8u : 0xFFC08A4Eu;
+		out->secondary = sphere ? 0xFF355C8Cu : 0xFF7A5428u;
+		out->fields.push_back({ "Vertices", sphere ? "242" : "8" });
+		out->fields.push_back({ "Triangles", sphere ? "482" : "12" });
+		out->fields.push_back({ "Bounds", sphere ? "1.0 x 1.0 x 1.0" : "1.0 x 1.0 x 1.0" });
+		out->fields.push_back({ "Material", "Steel.mat" });
+		return true;
+	}
+
+	if (req.type == "Material")
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(70));
+		out->kind = kind::material;
+		out->detail = "PBR material";
+		out->accent = 0xFF8FA8C8u;
+		out->secondary = 0xFF3A4658u;
+		out->swatches = { 0xFF8FA8C8u, 0xFF3A4658u, 0xFFE0B040u, 0xFF202830u };
+		out->fields.push_back({ "Shader", "Standard PBR" });
+		out->fields.push_back({ "Metallic", "0.85" });
+		out->fields.push_back({ "Roughness", "0.28" });
+		out->fields.push_back({ "Textures", "albedo, normal, orm" });
+		return true;
+	}
+
+	out->kind = kind::none;
+	out->detail = "No preview available";
+	out->fields.push_back({ "Type", req.type.empty() ? std::string("-") : req.type });
+	return true;
+}
+
 /* item_for:遍历树把 object_id 映射回 vgui_item_id(图标等行级设置用)。 */
 static vgui_item_id item_for(outliner_view& outliner, object_id id)
 {
@@ -247,6 +376,7 @@ static void setup_editor(vgui_context* ui)
 	g.context = new editor_context(ui);
 	g.shell = new editor_shell(*g.context);
 	g.shell->build();
+	g.shell->preview().set_load_handler(&load_demo_preview);
 
 	command_stack& commands = g.context->commands();
 	outliner_view& outliner = g.shell->scene();
@@ -586,8 +716,10 @@ static void setup_editor(vgui_context* ui)
 		{ "Cube.mesh", "Mesh", "models", 0xFFC08A4Eu, 0xFF7A5428u },
 		{ "Sphere.mesh", "Mesh", "models", 0xFF6E9ED8u, 0xFF355C8Cu },
 		{ "Ghost.mesh", "Mesh", "models", 0xFFC8D2E0u, 0xFF6C7888u },
+		{ "Broken.mesh", "Mesh", "models", 0xFFB05050u, 0xFF502020u },
 		{ "icon.png", "Texture", "textures", 0xFF6CC878u, 0xFF327E42u },
 		{ "checker.png", "Texture", "textures", 0xFFC8A050u, 0xFF705820u },
+		{ "Steel.mat", "Material", "materials", 0xFF8FA8C8u, 0xFF3A4658u },
 	};
 	g.asset_directories.clear();
 
@@ -596,6 +728,7 @@ static void setup_editor(vgui_context* ui)
 	root.items.push_back({ "Models", "Folder", nullptr, 1 });
 	root.items.push_back({ "Textures", "Folder", nullptr, 2 });
 	root.items.push_back({ "Empty", "Folder", nullptr, 3 });
+	root.items.push_back({ "Materials", "Folder", nullptr, 4 });
 	g.asset_directories["root"] = root;
 
 	asset_browser::asset_directory models;
@@ -613,6 +746,11 @@ static void setup_editor(vgui_context* ui)
 	empty.path.push_back({ "Empty", "empty" });
 	empty.empty_text = "No assets in this folder";
 	g.asset_directories["empty"] = empty;
+
+	asset_browser::asset_directory materials;
+	materials.path.push_back({ "Root", "root" });
+	materials.path.push_back({ "Materials", "materials" });
+	g.asset_directories["materials"] = materials;
 
 	vgui_item_id first_asset = 0;
 	vgui_item_id next_asset = 100;
@@ -632,7 +770,7 @@ static void setup_editor(vgui_context* ui)
 			first_asset = info.id;
 	}
 
-	assets.set_type_options({ "Folder", "Mesh", "Texture" });
+	assets.set_type_options({ "Folder", "Mesh", "Texture", "Material" });
 	assets.set_navigate_handler([](const std::string& path_id,
 		asset_browser::asset_directory* out) {
 		auto found = g.asset_directories.find(path_id);
@@ -658,6 +796,11 @@ static void setup_editor(vgui_context* ui)
 		if (item == 3)
 		{
 			(void)g.shell->assets().navigate_to("empty");
+			return;
+		}
+		if (item == 4)
+		{
+			(void)g.shell->assets().navigate_to("materials");
 			return;
 		}
 		asset_browser& browser = g.shell->assets();

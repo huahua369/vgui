@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "asset_browser.h"
+#include "asset_preview.h"
 #include "breadcrumb.h"
 #include "command_registry.h"
 #include "editor_context.h"
@@ -99,6 +100,7 @@ namespace vgui_editor_kit {
 		outliner_view& scene() noexcept;
 		property_grid& properties() noexcept;
 		asset_browser& assets() noexcept;
+		asset_preview& preview() noexcept;
 		viewport_view& viewport() noexcept;
 
 		void set_status(std::string text);
@@ -136,6 +138,7 @@ namespace vgui_editor_kit {
 		std::vector<std::unique_ptr<menu_binding>> menu_bindings_;
 		vgui_widget* menubar_ = nullptr;
 		editor_context::selection_listener_id selection_listener_ = 0;
+		asset_browser::selection_listener_id asset_selection_listener_ = 0;
 		int key_handler_token_ = 0;
 		vgui_widget* root_ = nullptr;
 		vgui_widget* dock_ = nullptr;
@@ -154,6 +157,7 @@ namespace vgui_editor_kit {
 		outliner_view scene_;
 		property_grid properties_;
 		asset_browser assets_;
+		asset_preview preview_;
 		viewport_view viewport_;
 		toolbar_view toolbar_;
 		status_bar statusbar_;
