@@ -337,17 +337,25 @@ namespace vgui_editor_kit {
 		return parse_hex_color(to_edit_ ? to_edit_(value_) : value_, &argb);
 	}
 
-	void color_picker::apply_color(const picker_rgb& rgb, bool commit)
+	float color_picker::hue_degrees() const noexcept
+	{
+		return h_deg_;
+	}
+
+	void color_picker::apply_color(const picker_rgb& rgb, bool commit, bool sync_hsv)
 	{
 		edit_rgb_ = rgb;
-		/* 回填 HSV(拖动中由调用方维护,swatch/hex 路径重算)。
-		 * 组装直接用 ovg 序 0xAABBGGRR,rgb_to_hsv 按此读取。 */
-		const uint32_t ovg =
-			((uint32_t)std::lround(std::clamp(rgb.a, 0.0f, 1.0f) * 255.0f) << 24) |
-			((uint32_t)std::lround(std::clamp(rgb.b, 0.0f, 1.0f) * 255.0f) << 16) |
-			((uint32_t)std::lround(std::clamp(rgb.g, 0.0f, 1.0f) * 255.0f) << 8) |
-			(uint32_t)std::lround(std::clamp(rgb.r, 0.0f, 1.0f) * 255.0f);
-		ovg_tools::rgb_to_hsv(ovg, h_deg_, s_, v_);
+		if (sync_hsv)
+		{
+			/* swatch/hex 路径从 RGB 回填 HSV。
+			 * 组装直接用 ovg 序 0xAABBGGRR,rgb_to_hsv 按此读取。 */
+			const uint32_t ovg =
+				((uint32_t)std::lround(std::clamp(rgb.a, 0.0f, 1.0f) * 255.0f) << 24) |
+				((uint32_t)std::lround(std::clamp(rgb.b, 0.0f, 1.0f) * 255.0f) << 16) |
+				((uint32_t)std::lround(std::clamp(rgb.g, 0.0f, 1.0f) * 255.0f) << 8) |
+				(uint32_t)std::lround(std::clamp(rgb.r, 0.0f, 1.0f) * 255.0f);
+			ovg_tools::rgb_to_hsv(ovg, h_deg_, s_, v_);
+		}
 		a_ = rgb.a;
 
 		const std::string edit_hex = rgb_to_hex(rgb);
@@ -417,30 +425,55 @@ namespace vgui_editor_kit {
 		}
 	}
 
+	bool color_picker::accept_drag_event(vgui_widget* widget,
+		const vgui_event* event)
+	{
+		if (!event)
+			return false;
+		switch (event->type)
+		{
+		case VGUI_EVENT_MOUSE_DOWN:
+			if (event->button != 1)
+				return false;
+			drag_widget_ = widget;
+			dragging_ = true;
+			if (press_listener_)
+				press_listener_(value_);
+			return true;
+		case VGUI_EVENT_MOUSE_MOVE:
+			/* 鼠标移动事件在 vgui 0.3 里 button 为 0,必须靠按下时记录的
+			 * 控件判断归属;否则拖过相邻色条会同时改动另一个通道。 */
+			return dragging_ && drag_widget_ == widget;
+		case VGUI_EVENT_MOUSE_UP:
+			if (event->button != 1 || !dragging_ || drag_widget_ != widget)
+				return false;
+			dragging_ = false;
+			drag_widget_ = nullptr;
+			return true;
+		case VGUI_EVENT_CANCEL:
+			dragging_ = false;
+			drag_widget_ = nullptr;
+			return false;
+		default:
+			return false;
+		}
+	}
+
 	int color_picker::on_sv_event(vgui_widget* widget, const vgui_event* event,
 		void* user)
 	{
 		auto* self = static_cast<color_picker*>(user);
-		if (!self || !event || event->button != 1)
-			return 0;
-		if (event->type != VGUI_EVENT_MOUSE_DOWN &&
-			event->type != VGUI_EVENT_MOUSE_MOVE &&
-			event->type != VGUI_EVENT_MOUSE_UP)
-			return 0;
-		if (event->type == VGUI_EVENT_MOUSE_UP && !self->dragging_)
+		if (!self || !event || !self->accept_drag_event(widget, event))
 			return 0;
 
 		float wx = 0, wy = 0, ww = 0, wh = 0;
 		vgui_widget_get_rect(widget, &wx, &wy, &ww, &wh);
-		const float sx = std::clamp((event->x) / std::max(1.0f, ww), 0.0f, 1.0f);
-		const float sy = std::clamp(1.0f - (event->y) / std::max(1.0f, wh), 0.0f, 1.0f);
-		self->s_ = sx;
-		self->v_ = sy;
-		if (event->type == VGUI_EVENT_MOUSE_DOWN && self->press_listener_)
-			self->press_listener_(self->value_);
-		self->dragging_ = event->type != VGUI_EVENT_MOUSE_UP;
+		(void)wx;
+		(void)wy;
+		self->s_ = std::clamp(event->x / std::max(1.0f, ww), 0.0f, 1.0f);
+		self->v_ = std::clamp(1.0f - event->y / std::max(1.0f, wh), 0.0f, 1.0f);
 		self->apply_color(hsv_to_rgb(self->h_deg_, self->s_, self->v_, self->a_),
-			event->type == VGUI_EVENT_MOUSE_UP);
+			event->type == VGUI_EVENT_MOUSE_UP, false);
 		return 1;
 	}
 
@@ -448,24 +481,17 @@ namespace vgui_editor_kit {
 		void* user)
 	{
 		auto* self = static_cast<color_picker*>(user);
-		if (!self || !event || event->button != 1)
-			return 0;
-		if (event->type != VGUI_EVENT_MOUSE_DOWN &&
-			event->type != VGUI_EVENT_MOUSE_MOVE &&
-			event->type != VGUI_EVENT_MOUSE_UP)
-			return 0;
-		if (event->type == VGUI_EVENT_MOUSE_UP && !self->dragging_)
+		if (!self || !event || !self->accept_drag_event(widget, event))
 			return 0;
 
 		float wx = 0, wy = 0, ww = 0, wh = 0;
 		vgui_widget_get_rect(widget, &wx, &wy, &ww, &wh);
+		(void)wx;
+		(void)wy;
 		(void)wh;
 		self->h_deg_ = std::clamp(event->x / std::max(1.0f, ww), 0.0f, 1.0f) * 360.0f;
-		if (event->type == VGUI_EVENT_MOUSE_DOWN && self->press_listener_)
-			self->press_listener_(self->value_);
-		self->dragging_ = event->type != VGUI_EVENT_MOUSE_UP;
 		self->apply_color(hsv_to_rgb(self->h_deg_, self->s_, self->v_, self->a_),
-			event->type == VGUI_EVENT_MOUSE_UP);
+			event->type == VGUI_EVENT_MOUSE_UP, false);
 		return 1;
 	}
 
@@ -473,24 +499,17 @@ namespace vgui_editor_kit {
 		void* user)
 	{
 		auto* self = static_cast<color_picker*>(user);
-		if (!self || !event || event->button != 1)
-			return 0;
-		if (event->type != VGUI_EVENT_MOUSE_DOWN &&
-			event->type != VGUI_EVENT_MOUSE_MOVE &&
-			event->type != VGUI_EVENT_MOUSE_UP)
-			return 0;
-		if (event->type == VGUI_EVENT_MOUSE_UP && !self->dragging_)
+		if (!self || !event || !self->accept_drag_event(widget, event))
 			return 0;
 
 		float wx = 0, wy = 0, ww = 0, wh = 0;
 		vgui_widget_get_rect(widget, &wx, &wy, &ww, &wh);
+		(void)wx;
+		(void)wy;
 		(void)wh;
 		self->a_ = std::clamp(event->x / std::max(1.0f, ww), 0.0f, 1.0f);
-		if (event->type == VGUI_EVENT_MOUSE_DOWN && self->press_listener_)
-			self->press_listener_(self->value_);
-		self->dragging_ = event->type != VGUI_EVENT_MOUSE_UP;
 		self->apply_color(hsv_to_rgb(self->h_deg_, self->s_, self->v_, self->a_),
-			event->type == VGUI_EVENT_MOUSE_UP);
+			event->type == VGUI_EVENT_MOUSE_UP, false);
 		return 1;
 	}
 

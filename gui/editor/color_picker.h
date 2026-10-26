@@ -67,12 +67,21 @@ namespace vgui_editor_kit {
 
 		/* True when the current edit-domain color parses. */
 		bool valid() const noexcept;
+		/* Current hue in degrees (0~360).  Kept at the position set by the hue
+		 * bar even at the wrap-around end, where the RGB is identical to 0°. */
+		float hue_degrees() const noexcept;
 
 	private:
 		void build_swatch_row();
 		void sync_ui();
-		void apply_color(const picker_rgb& rgb, bool commit);
+		/* sync_hsv=false keeps the h/s/v values already maintained by a drag;
+		 * otherwise they are recomputed from rgb (hex/swatch paths). */
+		void apply_color(const picker_rgb& rgb, bool commit, bool sync_hsv = true);
 		void commit_edit_text();
+		/* Drag ownership for the SV/hue/alpha bars: mouse moves do not carry a
+		 * button in vgui 0.3, so the press widget must be tracked explicitly.
+		 * Returns true when this event should drive the given bar. */
+		bool accept_drag_event(vgui_widget* widget, const vgui_event* event);
 		static void set_swatch_background(vgui_widget* swatch, const picker_rgb& rgb);
 
 		static void on_swatch_click(vgui_widget* widget, const vgui_event* event,
@@ -119,6 +128,7 @@ namespace vgui_editor_kit {
 		color_listener press_listener_;
 		color_listener commit_listener_;
 		bool dragging_ = false;		/* suppresses commit-on-hex-blur noise */
+		vgui_widget* drag_widget_ = nullptr;	/* SV box / hue bar / alpha bar */
 		bool inside_edit_ = false;
 	};
 

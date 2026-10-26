@@ -3382,6 +3382,142 @@ static int test_color_picker()
 	return 0;
 }
 
+/* P05 回归:SV/色相/透明条必须能拖动。vgui 0.3 的 MOUSE_MOVE button 为 0,
+ * 旧实现按 button==1 过滤导致拖动完全无效;这里同时验证拖动归属，拖过相邻
+ * 色条时不能误改另一个通道。 */
+static int test_color_picker_drag()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("picker drag context");
+	vgui_context_set_size(ui, 800, 600);
+	{
+		color_picker picker;
+		picker.build(ui);
+		picker.set_value("#FF8040");
+		int changes = 0;
+		int commits = 0;
+		std::string last;
+		picker.set_on_change([&](const std::string& hex) {
+			++changes;
+			last = hex;
+		});
+		picker.set_on_commit([&](const std::string& hex) {
+			++commits;
+			last = hex;
+		});
+		if (!vgui_popup_open(ui, picker.widget(), 20.0f, 20.0f))
+			return fail("picker drag popup");
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		vgui_widget* sv = find_widget_by_suffix(picker.widget(), ".sv");
+		vgui_widget* hue = find_widget_by_suffix(picker.widget(), ".hue");
+		vgui_widget* alpha = find_widget_by_suffix(picker.widget(), ".alpha");
+		if (!sv || !hue || !alpha)
+			return fail("picker drag widgets");
+		float sx = 0, sy = 0, sw = 0, sh = 0;
+		float hx = 0, hy = 0, hw = 0, hh = 0;
+		float ax = 0, ay = 0, aw = 0, ah = 0;
+		vgui_widget_get_rect(sv, &sx, &sy, &sw, &sh);
+		vgui_widget_get_rect(hue, &hx, &hy, &hw, &hh);
+		vgui_widget_get_rect(alpha, &ax, &ay, &aw, &ah);
+		(void)hh;
+		(void)ah;
+
+		auto hex_byte = [](const std::string& hex, int index) {
+			auto digit = [](char c) {
+				if (c >= '0' && c <= '9') return c - '0';
+				return std::toupper((unsigned char)c) - 'A' + 10;
+			};
+			return digit(hex[(std::size_t)index]) * 16 +
+				digit(hex[(std::size_t)index + 1]);
+		};
+
+		/* 1) SV 拖动:左下(黑)→右上(亮),过程中持续 change,抬起只提交一次。 */
+		const int changes_before_sv = changes;
+		vgui_input_mouse_move(ui, sx + 2.0f, sy + sh - 2.0f);
+		vgui_input_mouse_down(ui, 1, sx + 2.0f, sy + sh - 2.0f, 1);
+		vgui_input_mouse_move(ui, sx + sw - 2.0f, sy + 2.0f);
+		if (changes <= changes_before_sv)
+			return fail("picker sv drag updates");
+		vgui_input_mouse_up(ui, 1, sx + sw - 2.0f, sy + 2.0f, 1);
+		if (commits != 1 || last.size() < 7)
+			return fail("picker sv drag commits once");
+		if (hex_byte(last, 1) + hex_byte(last, 3) + hex_byte(last, 5) < 200)
+			return fail("picker sv drag reaches bright color");
+
+		/* 2) 透明条:右侧(a≈1)拖到中点(a≈0.5),提交值带 alpha。 */
+		picker.set_value("#FF0000");
+		const int commits_before_alpha = commits;
+		vgui_input_mouse_move(ui, ax + aw - 2.0f, ay + 4.0f);
+		vgui_input_mouse_down(ui, 1, ax + aw - 2.0f, ay + 4.0f, 1);
+		vgui_input_mouse_move(ui, ax + aw * 0.5f, ay + 4.0f);
+		vgui_input_mouse_up(ui, 1, ax + aw * 0.5f, ay + 4.0f, 1);
+		if (commits != commits_before_alpha + 1 || last.size() != 9)
+			return fail("picker alpha drag commits");
+		{
+			const int a = hex_byte(last, 7);
+			if (a < 100 || a > 160)
+				return fail("picker alpha drag value");
+		}
+
+		/* 3) 色相拖动;拖过 SV 盒时悬停也会收到 MOUSE_MOVE，不能改 s/v。 */
+		picker.set_value("#FF0000");
+		const int changes_before_hue = changes;
+		vgui_input_mouse_move(ui, hx + 2.0f, hy + 4.0f);
+		vgui_input_mouse_down(ui, 1, hx + 2.0f, hy + 4.0f, 1);
+		vgui_input_mouse_move(ui, hx + hw * 0.5f, hy + 4.0f);
+		if (changes <= changes_before_hue)
+			return fail("picker hue drag updates");
+		vgui_input_mouse_move(ui, sx + sw * 0.5f, sy + sh * 0.5f);
+		/* 色相约 180°,s/v 仍为 1 → 亮青;若 SV 被误改则 G/B 会降到 ~128。 */
+		if (hex_byte(last, 3) < 200 || hex_byte(last, 5) < 200 ||
+			hex_byte(last, 1) > 40)
+			return fail("picker drag does not cross channels");
+		vgui_input_mouse_up(ui, 1, sx + sw * 0.5f, sy + sh * 0.5f, 1);
+		if (commits != commits_before_alpha + 2)
+			return fail("picker hue drag commits");
+
+		/* 3b) 色相条拖到最右端(≈360°)时,RGB 回绕不能让色相位置跳回 0°。 */
+		picker.set_value("#00FF00");
+		if (picker.hue_degrees() < 100.0f || picker.hue_degrees() > 140.0f)
+			return fail("picker hue starts green");
+		const int commits_before_edge = commits;
+		vgui_input_mouse_move(ui, hx + hw - 1.0f, hy + 4.0f);
+		vgui_input_mouse_down(ui, 1, hx + hw - 1.0f, hy + 4.0f, 1);
+		vgui_input_mouse_up(ui, 1, hx + hw - 1.0f, hy + 4.0f, 1);
+		if (picker.hue_degrees() < 350.0f)
+			return fail("picker hue keeps right-edge position");
+		if (commits != commits_before_edge + 1)
+			return fail("picker hue edge commits");
+		/* 后续 SV 拖动仍使用右端色相,不回到 0°。 */
+		vgui_input_mouse_move(ui, sx + 2.0f, sy + 2.0f);
+		vgui_input_mouse_down(ui, 1, sx + 2.0f, sy + 2.0f, 1);
+		vgui_input_mouse_move(ui, sx + sw * 0.5f, sy + sh * 0.5f);
+		vgui_input_mouse_up(ui, 1, sx + sw * 0.5f, sy + sh * 0.5f, 1);
+		if (picker.hue_degrees() < 350.0f)
+			return fail("picker sv drag keeps edge hue");
+
+		/* 4) CANCEL 结束拖动:之后移动不应继续改色或提交。 */
+		vgui_input_mouse_move(ui, sx + 2.0f, sy + sh - 2.0f);
+		vgui_input_mouse_down(ui, 1, sx + 2.0f, sy + sh - 2.0f, 1);
+		const int changes_before_cancel = changes;
+		const int commits_before_cancel = commits;
+		vgui_input_cancel(ui);
+		vgui_input_mouse_move(ui, sx + sw * 0.5f, sy + sh * 0.5f);
+		vgui_input_mouse_up(ui, 1, sx + sw * 0.5f, sy + sh * 0.5f, 1);
+		if (changes != changes_before_cancel ||
+			commits != commits_before_cancel)
+			return fail("picker cancel stops drag");
+
+		vgui_popup_close(ui);
+	}
+	vgui_destroy(ui);
+	return 0;
+}
+
 //----------------------------------------------------------------------------
 // M2 P09:曲线 / 渐变编辑器
 //----------------------------------------------------------------------------
@@ -8782,6 +8918,8 @@ int main()
 	if (int rc = test_property_reference())
 		return rc;
 	if (int rc = test_color_picker())
+		return rc;
+	if (int rc = test_color_picker_drag())
 		return rc;
 	if (int rc = test_curve_editor())
 		return rc;
