@@ -13,8 +13,13 @@
  * path's selection and scroll offset so going back restores what the user saw.
  *
  * rename_item() routes through the rename handler and records an undoable
- * command when a command stack is attached.  Thumbnail textures are borrowed;
- * the host keeps them alive for as long as the browser uses them.
+ * command when a command stack is attached.
+ *
+ * A05 adds an owned thumbnail_cache.  Host thumbnails supplied through
+ * set_item_thumbnail() still win; otherwise the browser requests missing
+ * thumbnails for the visible range from a host loader, shows queued/failed
+ * placeholders and cancels requests when items scroll away.  Configure it via
+ * thumbnails().set_load_handler()/set_options()/set_disk_cache().
  */
 #include <cstddef>
 #include <functional>
@@ -26,6 +31,7 @@
 
 #include "command_stack.h"
 #include "editor_types.h"
+#include "thumbnail_cache.h"
 #include "vgui.h"
 
 namespace vgui_editor_kit {
@@ -108,6 +114,20 @@ namespace vgui_editor_kit {
 		vgui_item_id add_item(std::string text, std::string detail = {});
 		bool set_item_thumbnail(vgui_item_id item, vgui_texture* texture);
 		vgui_texture* item_thumbnail(vgui_item_id item) const;
+
+		/* A05: asynchronous thumbnails.  The browser drives requests from
+		 * visible_first()/visible_last() inside tick() and cancels queued or
+		 * in-flight work for items that leave the visible range.  Host
+		 * thumbnails set with set_item_thumbnail() always win. */
+		thumbnail_cache& thumbnails() noexcept;
+		const thumbnail_cache& thumbnails() const noexcept;
+		/* Stable cache key for this item under the current path.  Passed to
+		 * thumbnail_cache::enqueue and visible through the cache handlers. */
+		std::string thumbnail_key(vgui_item_id item) const;
+		thumbnail_cache::state thumbnail_state(vgui_item_id item) const;
+		/* Restarts a failed automatic load.  Returns false when the item does
+		 * not exist or already has a texture. */
+		bool retry_thumbnail(vgui_item_id item);
 
 		/* Replaces the current model with a virtual source.  The source struct
 		 * is copied; call refresh() after the backing data changes.  Passing
@@ -306,6 +326,9 @@ namespace vgui_editor_kit {
 		bool begin_grid_drag(float local_x, float local_y);
 		void finish_grid_drag();
 		void update_import_target();
+		void sync_thumbnail_requests();
+		void cancel_thumbnail_requests();
+		vgui_texture* cached_thumbnail(vgui_item_id item) const;
 
 		static void on_select(vgui_widget* widget, vgui_item_id item, int selected, void* user);
 		static void on_activate(vgui_widget* widget, vgui_item_id item, void* user);
@@ -406,6 +429,11 @@ namespace vgui_editor_kit {
 		/* A04 import drop target (root widget, VGUI_DRAG_FILES). */
 		import_handler import_handler_;
 		std::unique_ptr<drop_target> import_target_;
+
+		/* A05 asynchronous visible-range thumbnails. */
+		std::unique_ptr<thumbnail_cache> thumbnails_;
+		std::unordered_set<std::string> thumbnail_requests_;
+		float thumbnail_phase_ = 0.0f;
 
 		bool marquee_active_ = false;
 		float marquee_x0_ = 0.0f;

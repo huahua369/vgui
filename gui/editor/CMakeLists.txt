@@ -17,6 +17,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     search_box.cpp
     spinbox.cpp
     status_bar.cpp
+    thumbnail_cache.cpp
     toolbar.cpp
     vector_editor.cpp
     viewport_view.cpp

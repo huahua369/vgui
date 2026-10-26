@@ -12,12 +12,14 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 #include <thread>
@@ -6505,6 +6507,540 @@ static int test_asset_drop_paths()
 	return 0;
 }
 
+/* A05: 异步缩略图加载、可见范围取消、失败重试与 LRU/磁盘缓存。 */
+static int test_asset_thumbnails()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("a05 context");
+	vgui_context_set_size(ui, 900, 650);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.list.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	auto fill = [](thumbnail_cache::image* img, unsigned char red,
+		unsigned char green)
+	{
+		img->width = 2;
+		img->height = 2;
+		img->stride = 8;
+		img->format = VGUI_TEXTURE_FORMAT_RGBA8;
+		img->pixels.clear();
+		img->pixels.reserve(16);
+		for (int i = 0; i < 4; ++i)
+		{
+			img->pixels.push_back(red);
+			img->pixels.push_back(green);
+			img->pixels.push_back(90);
+			img->pixels.push_back(255);
+		}
+	};
+
+	{
+		/* Declared before the cache so the worker stops before these disappear. */
+		std::mutex gate_mutex;
+		std::condition_variable gate_cv;
+		bool gate_open = false;
+		std::atomic<int> gated_started{ 0 };
+		std::mutex log_mutex;
+		std::vector<std::string> order;
+		std::atomic<int> auto_attempts{ 0 };
+		std::atomic<int> retry_attempts{ 0 };
+		std::atomic<bool> retry_fail{ true };
+		std::mutex disk_mutex;
+		std::map<std::string, thumbnail_cache::image> disk;
+		std::atomic<int> disk_reads{ 0 };
+		std::atomic<int> disk_writes{ 0 };
+
+		thumbnail_cache cache(ui);
+		thumbnail_cache::options options;
+		options.memory_limit = 8;
+		options.max_attempts = 2;
+		options.retry_delay = 0.0f;
+		cache.set_options(options);
+		if (cache.configured() || !cache.idle())
+			return fail("a05 cache initial state");
+
+		cache.set_load_handler([&](const thumbnail_cache::request& req,
+			thumbnail_cache::image* img)
+		{
+			if (req.key == "blocked" || req.key == "stale")
+			{
+				gated_started.fetch_add(1);
+				std::unique_lock<std::mutex> lock(gate_mutex);
+				gate_cv.wait(lock, [&]() { return gate_open; });
+			}
+			{
+				std::lock_guard<std::mutex> lock(log_mutex);
+				order.push_back(req.key);
+			}
+			if (req.key == "auto-retry" &&
+				auto_attempts.fetch_add(1) == 0)
+			{
+				img->error = "transient failure";
+				return false;
+			}
+			if (req.key == "retry")
+			{
+				retry_attempts.fetch_add(1);
+				if (retry_fail.load())
+				{
+					img->error = "permanent failure";
+					return false;
+				}
+			}
+			fill(img, 200, 60);
+			return true;
+		});
+
+		/* A blocked worker must not block enqueue(), and low-priority queued
+		 * work must run after high-priority work. */
+		cache.enqueue({ "blocked", "Blocked", "Test" },
+			thumbnail_cache::priority::low);
+		auto deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (gated_started.load() == 0 &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (gated_started.load() == 0 ||
+			cache.state_of("blocked") != thumbnail_cache::state::loading)
+			return fail("a05 blocked loader start");
+
+		const auto enqueue_start = std::chrono::steady_clock::now();
+		cache.enqueue({ "queued-low", "Low", "Test" },
+			thumbnail_cache::priority::low);
+		cache.enqueue({ "queued-high", "High", "Test" },
+			thumbnail_cache::priority::high);
+		cache.enqueue({ "queued-cancel", "Cancel", "Test" },
+			thumbnail_cache::priority::low);
+		cache.cancel("queued-cancel");
+		const auto enqueue_ms = std::chrono::duration_cast<
+			std::chrono::milliseconds>(
+				std::chrono::steady_clock::now() - enqueue_start).count();
+		if (enqueue_ms > 250)
+			return fail("a05 enqueue must not block the main thread");
+
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			gate_open = true;
+		}
+		gate_cv.notify_all();
+		auto all_ready = [&]()
+		{
+			return cache.state_of("blocked") == thumbnail_cache::state::ready &&
+				cache.state_of("queued-low") == thumbnail_cache::state::ready &&
+				cache.state_of("queued-high") == thumbnail_cache::state::ready;
+		};
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(2000);
+		while (!all_ready() &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (!all_ready() || cache.stats().cancellations == 0)
+			return fail("a05 queued jobs and cancellation");
+		if (cache.state_of("queued-cancel") != thumbnail_cache::state::missing)
+			return fail("a05 cancelled key state");
+		{
+			std::lock_guard<std::mutex> lock(log_mutex);
+			const bool saw_cancelled = std::find(order.begin(), order.end(),
+				"queued-cancel") != order.end();
+			const auto high = std::find(order.begin(), order.end(), "queued-high");
+			const auto low = std::find(order.begin(), order.end(), "queued-low");
+			if (saw_cancelled || high == order.end() || low == order.end() ||
+				high > low)
+				return fail("a05 priority ordering");
+		}
+
+		/* A cancelled in-flight result is stale and must not upload. */
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			gate_open = false;
+		}
+		gated_started.store(0);
+		cache.enqueue({ "stale", "Stale", "Test" },
+			thumbnail_cache::priority::low);
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (gated_started.load() == 0 &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (gated_started.load() == 0)
+			return fail("a05 stale loader start");
+		cache.cancel("stale");
+		cache.enqueue({ "sentinel", "Sentinel", "Test" },
+			thumbnail_cache::priority::high);
+		const std::uint64_t uploads_before = cache.stats().uploads;
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			gate_open = true;
+		}
+		gate_cv.notify_all();
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(2000);
+		while (cache.state_of("sentinel") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.state_of("sentinel") != thumbnail_cache::state::ready)
+			return fail("a05 sentinel upload");
+		if (cache.state_of("stale") != thumbnail_cache::state::missing ||
+			cache.lookup("stale") != nullptr)
+			return fail("a05 stale result discarded");
+		if (cache.stats().uploads != uploads_before + 1)
+			return fail("a05 cancelled upload count");
+
+		/* Exhausted automatic retries end in failed; retry() restarts. */
+		const std::uint64_t failures_before = cache.stats().failures;
+		cache.enqueue({ "retry", "Retry", "Test" },
+			thumbnail_cache::priority::high);
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(2000);
+		while (cache.state_of("retry") != thumbnail_cache::state::failed &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.tick(0.05f);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.state_of("retry") != thumbnail_cache::state::failed ||
+			retry_attempts.load() != 2 || cache.error("retry").empty() ||
+			cache.stats().failures != failures_before + 1)
+			return fail("a05 terminal failure state");
+
+		retry_fail.store(false);
+		cache.retry("retry");
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("retry") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.state_of("retry") != thumbnail_cache::state::ready ||
+			retry_attempts.load() != 3 || cache.lookup("retry") == nullptr)
+			return fail("a05 manual retry");
+
+		/* A transient failure retries automatically. */
+		const std::uint64_t retries_before = cache.stats().retries;
+		auto_attempts.store(0);
+		cache.enqueue({ "auto-retry", "Auto", "Test" },
+			thumbnail_cache::priority::high);
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(2000);
+		while (cache.state_of("auto-retry") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.tick(0.05f);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.state_of("auto-retry") != thumbnail_cache::state::ready ||
+			auto_attempts.load() != 2 ||
+			cache.stats().retries != retries_before + 1)
+			return fail("a05 automatic retry");
+
+		/* Memory hits neither reload nor consume the disk cache. */
+		const std::uint64_t loads_before_hit = cache.stats().loads;
+		const std::uint64_t hits_before = cache.stats().memory_hits;
+		cache.enqueue({ "hit", "Hit", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("hit") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		vgui_texture* hit_texture = cache.texture("hit");
+		if (!hit_texture)
+			return fail("a05 memory texture");
+		cache.enqueue({ "hit", "Hit", "Test" });
+		if (cache.stats().loads != loads_before_hit + 1 ||
+			cache.stats().memory_hits != hits_before + 1 ||
+			cache.texture("hit") != hit_texture)
+			return fail("a05 memory hit dedupe");
+
+		/* LRU eviction falls back to disk; disabling the disk cache forces a
+		 * fresh load. */
+		options.memory_limit = 1;
+		options.max_attempts = 1;
+		cache.set_options(options);
+		cache.set_disk_cache(
+			[&](const thumbnail_cache::request& req,
+				thumbnail_cache::image* out)
+			{
+				std::lock_guard<std::mutex> lock(disk_mutex);
+				disk_reads.fetch_add(1);
+				auto found = disk.find(req.key);
+				if (found == disk.end())
+					return false;
+				*out = found->second;
+				return true;
+			},
+			[&](const thumbnail_cache::request& req,
+				const thumbnail_cache::image& img)
+			{
+				std::lock_guard<std::mutex> lock(disk_mutex);
+				disk_writes.fetch_add(1);
+				disk[req.key] = img;
+				return true;
+			});
+		cache.enqueue({ "lru-a", "A", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("lru-a") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		const std::uint64_t loads_after_a = cache.stats().loads;
+		cache.enqueue({ "lru-b", "B", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("lru-b") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.lookup("lru-a") != nullptr || cache.lookup("lru-b") == nullptr)
+			return fail("a05 lru eviction");
+
+		const std::uint64_t disk_hits_before = cache.stats().disk_hits;
+		const int reads_before = disk_reads.load();
+		cache.enqueue({ "lru-a", "A", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("lru-a") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.stats().loads != loads_after_a + 1 ||
+			cache.stats().disk_hits != disk_hits_before + 1 ||
+			disk_reads.load() != reads_before + 1 ||
+			cache.lookup("lru-a") == nullptr)
+			return fail("a05 disk cache hit");
+
+		options.disk_cache = false;
+		cache.set_options(options);
+		cache.enqueue({ "lru-c", "C", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("lru-c") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		const std::uint64_t loads_before_bypass = cache.stats().loads;
+		const int reads_before_bypass = disk_reads.load();
+		cache.enqueue({ "lru-a", "A", "Test" });
+		deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (cache.state_of("lru-a") != thumbnail_cache::state::ready &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			cache.poll();
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (cache.stats().loads != loads_before_bypass + 1 ||
+			disk_reads.load() != reads_before_bypass)
+			return fail("a05 disk cache bypass");
+		if (disk_writes.load() < 2 || cache.stats().disk_hits == 0)
+			return fail("a05 disk cache writes");
+
+		cache.clear();
+		if (cache.stats().memory_entries != 0 ||
+			cache.lookup("hit") != nullptr ||
+			cache.state_of("hit") != thumbnail_cache::state::missing)
+			return fail("a05 cache clear");
+	}
+
+	/* Browser integration: host thumbnails win, only visible rows request
+	 * asynchronously, and scrolling cancels obsolete queued work. */
+	unsigned char host_pixels[4] = { 255, 210, 80, 255 };
+	vgui_texture_desc host_desc = {};
+	host_desc.width = 1;
+	host_desc.height = 1;
+	host_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	host_desc.pixels = host_pixels;
+	vgui_texture* host_texture = vgui_texture_create(ui, &host_desc);
+	if (!host_texture)
+		return fail("a05 host texture");
+
+	{
+		std::mutex gate_mutex;
+		std::condition_variable gate_cv;
+		bool gate_open = false;
+		std::atomic<int> loads{ 0 };
+		std::atomic<int> gated_started{ 0 };
+		std::mutex log_mutex;
+		std::set<std::string> loaded_keys;
+
+		asset_browser assets;
+		assets.build(vgui_root(ui));
+		vgui_widget_set_size(assets.root(), 360.0f, 150.0f);
+		std::vector<vgui_item_id> ids;
+		for (int i = 0; i < 30; ++i)
+			ids.push_back(assets.add_item(
+				"Item " + std::to_string(i) + ".mesh", "Mesh"));
+		if (!assets.set_item_thumbnail(ids[0], host_texture))
+			return fail("a05 browser host thumbnail");
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		thumbnail_cache::options options;
+		options.memory_limit = 16;
+		options.max_attempts = 1;
+		assets.thumbnails().set_options(options);
+		assets.thumbnails().set_load_handler(
+			[&](const thumbnail_cache::request& req,
+				thumbnail_cache::image* img)
+			{
+				loads.fetch_add(1);
+				{
+					std::lock_guard<std::mutex> lock(log_mutex);
+					loaded_keys.insert(req.key);
+				}
+				fill(img, 120, 180);
+				return true;
+			});
+
+		const int first_visible = assets.visible_first();
+		const int last_visible = assets.visible_last();
+		if (last_visible - first_visible <= 0 ||
+			last_visible - first_visible >= (int)ids.size())
+			return fail("a05 browser visible range");
+
+		auto pump = [&](int wait_ms)
+		{
+			const auto pump_deadline = std::chrono::steady_clock::now() +
+				std::chrono::milliseconds(wait_ms);
+			do
+			{
+				assets.tick(0.016f);
+				if (assets.thumbnails().idle())
+					break;
+				std::this_thread::sleep_for(std::chrono::milliseconds(1));
+			} while (std::chrono::steady_clock::now() < pump_deadline);
+		};
+		pump(2000);
+		if (!assets.thumbnails().idle())
+			return fail("a05 browser idle");
+		if (assets.thumbnail_state(ids[(std::size_t)first_visible]) !=
+			thumbnail_cache::state::ready)
+			return fail("a05 browser async thumbnail");
+		if (assets.item_thumbnail(ids[0]) != host_texture ||
+			assets.thumbnail_state(ids[0]) != thumbnail_cache::state::ready)
+			return fail("a05 browser host precedence");
+		if (loads.load() >= (int)ids.size())
+			return fail("a05 browser loads hidden items");
+		{
+			std::lock_guard<std::mutex> lock(log_mutex);
+			if (loaded_keys.count(assets.thumbnail_key(ids[0])) != 0)
+				return fail("a05 browser loads host item");
+		}
+
+		const int loads_before_hit = loads.load();
+		assets.tick(0.016f);
+		assets.tick(0.016f);
+		if (loads.load() != loads_before_hit)
+			return fail("a05 browser cache hit reload");
+
+		if (!assets.set_item_thumbnail(ids[0], nullptr))
+			return fail("a05 browser clear host thumbnail");
+		pump(2000);
+		if (assets.item_thumbnail(ids[0]) == host_texture ||
+			assets.item_thumbnail(ids[0]) == nullptr ||
+			assets.thumbnail_state(ids[0]) != thumbnail_cache::state::ready)
+			return fail("a05 browser async after host clear");
+
+		/* Replace the loader with a gated one, scroll far away, then scroll
+		 * back before releasing the worker.  Queued offscreen requests are
+		 * cancelled and the in-flight result is discarded. */
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			gate_open = false;
+		}
+		gated_started.store(0);
+		loads.store(0);
+		assets.thumbnails().set_load_handler(
+			[&](const thumbnail_cache::request& req,
+				thumbnail_cache::image* img)
+			{
+				gated_started.fetch_add(1);
+				std::unique_lock<std::mutex> lock(gate_mutex);
+				gate_cv.wait(lock, [&]() { return gate_open; });
+				loads.fetch_add(1);
+				{
+					std::lock_guard<std::mutex> log_lock(log_mutex);
+					loaded_keys.insert(req.key);
+				}
+				fill(img, 30, 200);
+				return true;
+			});
+
+		const int top_first = assets.visible_first();
+		vgui_panel_set_scroll(assets.widget(), 0.0f, 100000.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		const int bottom_first = assets.visible_first();
+		if (bottom_first <= top_first)
+			return fail("a05 browser scroll range");
+		assets.tick(0.016f);
+		auto deadline = std::chrono::steady_clock::now() +
+			std::chrono::milliseconds(1500);
+		while (gated_started.load() == 0 &&
+			std::chrono::steady_clock::now() < deadline)
+		{
+			assets.tick(0.016f);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (gated_started.load() == 0)
+			return fail("a05 browser offscreen loader start");
+
+		vgui_panel_set_scroll(assets.widget(), 0.0f, 0.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		assets.tick(0.016f);
+		const std::uint64_t cancellations =
+			assets.thumbnails().stats().cancellations;
+		if (cancellations == 0)
+			return fail("a05 browser offscreen cancellation");
+		{
+			std::lock_guard<std::mutex> lock(gate_mutex);
+			gate_open = true;
+		}
+		gate_cv.notify_all();
+		for (int i = 0; i < 100; ++i)
+		{
+			assets.tick(0.016f);
+			std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		}
+		if (loads.load() > 1)
+			return fail("a05 browser cancelled loads");
+	}
+
+	vgui_texture_destroy(host_texture);
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -6576,6 +7112,8 @@ int main()
 	if (int rc = test_asset_preview())
 		return rc;
 	if (int rc = test_asset_drop_paths())
+		return rc;
+	if (int rc = test_asset_thumbnails())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

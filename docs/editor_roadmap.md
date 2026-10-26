@@ -330,9 +330,10 @@
   - 验收：三条路径都有明确落点反馈；drop 结果可撤销；OS 文件拖入等价于资产导入入口。
   - 已实现：在 F03 的 `drag_payload`/`drop_target`/`drag_bridge` 上扩展三条资产路径与文件导入，不引入新依赖。核心新增 `vgui_drag_hint(ctx, hint)`，把当前悬停目标的实时提示（绝对坐标）提供给宿主/测试，拖拽结束或目标拒绝时返回 0 并清空输出。`viewport_view` 的 drop 监听器改为返回 `bool`（宿主拒绝时不覆盖上次结果），记录 `last_drop_x()/last_drop_y()`，并在悬停时绘制钳制在视口内的 80x48 RECT 落点框。`outliner_view` 的树 target 同时接受 `asset` 与 `scene_object`；新增 `set_asset_drop_handler(asset, parent, index)` 与 `apply_asset_drop()`，复用既有插入线/行高亮语义，宿主可据落点建立父子/兄弟关系并拒绝非法位置。`property_grid` 的引用行 target 锚定整行面板（缩略图、名称和按钮都能落），悬停高亮整行；`asset_drop_handler`/行级 `commit_reference()` 返回 `bool`，drop 经 `commit_value()` 进入命令栈；行控件虚拟化释放时清除 `drop_installed`，重新物化后重装 target。`asset_browser` 根控件新增 `VGUI_DRAG_FILES` target，`set_import_handler(files, path_id)` 与 `import_files(files)` 共用导入入口，OS 文件拖入与工具栏导入等价；整批拒绝时不导入任何文件。示例把三条路径接到 `editor_state`：Viewport/Outliner 落点新建对象并记录可撤销的 "Create …" 命令（undo 删除、redo 按稳定 id 和原位置重建），PropertyGrid 的 mesh 赋值写回 `scene_object::props` 并经 `set_value` 参与 undo/redo，OS 文件导入整批一条可撤销命令；资产引用改为动态索引，演示目录、查询、浏览菜单和缩略图共用同一数据源。`test_asset_drop_paths` 覆盖视口 RECT 跟随光标/拒绝保持上次结果、Outliner 行中部父子与空白根落点/插入线提示、属性行整行高亮与命令撤销重做、导入入口及 `vgui_input_drop_files()` 等价路径/整批拒绝；`vgui_model_test` 新增 `vgui_drag_hint` 的实时查询与落点清空断言（现 659 项）；`editor_shell` 默认状态反馈同步改为 bool 处理器，四个 Dock 面板布局契约保持不变。
 
-- [ ] **A05 异步缩略图加载与缓存**（P0，M）
+- [x] **A05 异步缩略图加载与缓存**（P0，M）（已完成）
   - 占位图、取消、失败重试、LRU/磁盘缓存策略由应用配置。
   - 验收：快速滚动不阻塞 UI；离开可见区域后取消低优先级请求；缓存命中不重复加载。
+  - 已实现：新增独立 `thumbnail_cache`（`gui/editor/thumbnail_cache.*`）：`set_load_handler()` 在后台 worker 执行 CPU 解码，`set_disk_cache(read, write)` 的读写回调也在 worker；主线程只由 `poll()`/`tick()` 上传纹理。`options` 配置 `memory_limit`（LRU 纹理数）、`max_attempts`/`retry_delay` 与 `disk_cache` 开关；稳定字符串 key 对应请求状态 `queued/loading/ready/failed`，`enqueue(..., priority)` 分高/低队列，`cancel()` 移除排队任务并用 generation token 丢弃在途结果，`retry()` 从第一次尝试重启失败项，`erase()` 同时释放纹理；`stats()` 暴露内存/磁盘命中、加载、上传、失败、重试与取消计数，`idle()` 供宿主/测试等待。`asset_browser` 在 `tick()` 中只对 `visible_first()/visible_last()` 范围发起请求，滚动离开后取消未完成项，网格显示 queued/loading 动画或 failed 占位并在工具提示中给出原因，宿主 `set_item_thumbnail()` 仍优先于异步结果；`thumbnails()`、`thumbnail_key()`、`thumbnail_state()`、`retry_thumbnail()` 构成宿主接口。示例把 loader 与临时目录 raw 磁盘缓存接到资产浏览器，`Broken.mesh` 前两次失败后自动重试成功；`test_asset_thumbnails` 覆盖非阻塞入队、优先级顺序、低优先级取消、陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、宿主缩略图优先、浏览器可见范围请求及离屏取消。
 
 - [ ] **A06 资产操作**（P1，M）
   - 重命名、删除、复制、移动、导入、重新导入、依赖查看。
@@ -579,6 +580,6 @@ MVP 验收场景：
 
 下一步优先项：
 
-1. 继续 AssetBrowser 异步缩略图与拖入场景的完整落点反馈（A04/A05）。
+1. 继续 AssetBrowser 资产操作（重命名/删除/复制/移动/重新导入/依赖查看，A06）。
 2. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
-3. P09 Curve/Gradient 编辑器（已完成）；第二批继续 T01 Table/DataGrid 与 A06 资产操作。
+3. P09 Curve/Gradient 编辑器（已完成）；第二批继续 T01 Table/DataGrid 与 A07 Console / Log View。

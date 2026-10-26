@@ -23,6 +23,7 @@
 #include "search_box.h"
 #include "spinbox.h"
 #include "status_bar.h"
+#include "thumbnail_cache.h"
 #include "toolbar.h"
 #include "vector_editor.h"
 #include "viewport_view.h"

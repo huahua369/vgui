@@ -17,9 +17,12 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -147,8 +150,12 @@ struct game_scene
 // 编辑器状态
 //---------------------------------------------------------------------------
 
-static vgui_texture* make_asset_thumbnail(vgui_context* ui, uint32_t base,
-	uint32_t accent);
+static bool load_demo_thumbnail(const thumbnail_cache::request& req,
+	thumbnail_cache::image* out);
+static bool read_demo_thumbnail_disk(const thumbnail_cache::request& req,
+	thumbnail_cache::image* out);
+static bool write_demo_thumbnail_disk(const thumbnail_cache::request& req,
+	const thumbnail_cache::image& img);
 
 struct editor_state
 {
@@ -163,8 +170,6 @@ struct editor_state
 	vgui_item_id next_asset = 100;
 	/* Browse 菜单项 → 资产名(菜单回调只带 item id)。 */
 	std::map<vgui_item_id, std::string> browse_assets;
-	/* 资产网格的 CPU 缩略图由示例持有,shell 销毁后统一释放。 */
-	std::vector<vgui_texture*> asset_thumbnails;
 
 	bool valid_selection() const
 	{
@@ -400,10 +405,6 @@ bool editor_state::import_assets(const std::vector<std::string>& files,
 		info.name = unique_asset_name(base);
 		info.type = asset_type_for_path(path);
 		info.id = next_asset++;
-		info.thumbnail = make_asset_thumbnail(ui,
-			asset_base_color(info.type), asset_accent_color(info.type));
-		if (info.thumbnail)
-			asset_thumbnails.push_back(info.thumbnail);
 		add_asset(path_id, info);
 		imported.push_back(info);
 	}
@@ -446,28 +447,133 @@ static vgui_texture* make_type_texture(vgui_context* ui, uint32_t color)
 	return vgui_texture_create(ui, &desc);
 }
 
-/* A01 资产缩略图:16x16 棋盘格 CPU 纹理 + 对角高光,无外部资源。 */
-static vgui_texture* make_asset_thumbnail(vgui_context* ui, uint32_t base,
-	uint32_t accent)
+/* A05 缩略图加载器:在后台线程生成 16x16 棋盘格 CPU 像素。
+ * "Broken.mesh" 前两次故意失败,第三次成功,用来演示自动重试。 */
+static bool demo_thumbnail_failure(const std::string& name)
+{
+	if (name != "Broken.mesh")
+		return false;
+	static std::mutex mutex;
+	static std::map<std::string, int> attempts;
+	std::lock_guard<std::mutex> lock(mutex);
+	return ++attempts[name] <= 2;
+}
+
+static std::filesystem::path demo_thumbnail_file(const std::string& key)
+{
+	const std::size_t hash = std::hash<std::string>{}(key);
+	return std::filesystem::temp_directory_path() /
+		"vgui_game_editor_thumbs" / (std::to_string(hash) + ".thumb");
+}
+
+static void render_demo_thumbnail(const thumbnail_cache::request& req,
+	thumbnail_cache::image* out)
 {
 	const int size = 16;
-	std::vector<uint32_t> pixels((std::size_t)size * size);
+	out->width = size;
+	out->height = size;
+	out->stride = size * 4;
+	out->format = VGUI_TEXTURE_FORMAT_RGBA8;
+	out->pixels.resize((std::size_t)size * size * 4u);
+
+	uint32_t hash = 2166136261u;
+	for (unsigned char ch : req.name)
+		hash = (hash ^ ch) * 16777619u;
+	const int cell = 2 + (int)(hash % 4);
+	const int shine = 18 + (int)(hash % 13);
+	const vgui_color base = editor_state::asset_base_color(req.type);
+	const vgui_color accent = editor_state::asset_accent_color(req.type);
+
 	for (int y = 0; y < size; ++y)
 	{
 		for (int x = 0; x < size; ++x)
 		{
-			const bool checker = ((x / 4) + (y / 4)) % 2 == 0;
-			const bool shine = x + y >= 20 && x + y <= 24;
-			pixels[(std::size_t)y * size + x] = shine
-				? 0xFFFFFFFFu : (checker ? base : accent);
+			const bool checker = ((x / cell) + (y / cell)) % 2 == 0;
+			const bool highlight = x + y >= shine && x + y <= shine + 4;
+			const vgui_color color = highlight ? 0xFFFFFFFFu
+				: (checker ? base : accent);
+			unsigned char* p = out->pixels.data() +
+				((std::size_t)y * size + x) * 4u;
+			p[0] = (unsigned char)((color >> 16) & 0xFF);
+			p[1] = (unsigned char)((color >> 8) & 0xFF);
+			p[2] = (unsigned char)(color & 0xFF);
+			p[3] = (unsigned char)((color >> 24) & 0xFF);
 		}
 	}
-	vgui_texture_desc desc = {};
-	desc.width = size;
-	desc.height = size;
-	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
-	desc.pixels = pixels.data();
-	return vgui_texture_create(ui, &desc);
+}
+
+static bool load_demo_thumbnail(const thumbnail_cache::request& req,
+	thumbnail_cache::image* out)
+{
+	/* 模拟真实解码/采样耗时,让占位与取消在演示里可见。 */
+	std::this_thread::sleep_for(std::chrono::milliseconds(24));
+	if (demo_thumbnail_failure(req.name))
+	{
+		out->error = "simulated corrupt thumbnail";
+		return false;
+	}
+	render_demo_thumbnail(req, out);
+	return true;
+}
+
+static bool read_demo_thumbnail_disk(const thumbnail_cache::request& req,
+	thumbnail_cache::image* out)
+{
+	if (req.name == "Broken.mesh")
+		return false;	/* 每次运行都演示一次失败重试 */
+	try
+	{
+		std::ifstream in(demo_thumbnail_file(req.key), std::ios::binary);
+		if (!in)
+			return false;
+		std::int32_t header[4] = {};
+		in.read(reinterpret_cast<char*>(header), sizeof(header));
+		if (!in || header[0] <= 0 || header[1] <= 0 || header[2] <= 0 ||
+			header[0] > 4096 || header[1] > 4096 ||
+			header[3] < 0 || header[3] > (std::int32_t)VGUI_TEXTURE_FORMAT_BGRA8_SRGB)
+			return false;
+		const std::size_t bytes = (std::size_t)header[2] *
+			(std::size_t)header[1];
+		if (bytes == 0 || bytes > 4u * 1024u * 1024u)
+			return false;
+		out->width = header[0];
+		out->height = header[1];
+		out->stride = header[2];
+		out->format = (vgui_texture_format)header[3];
+		out->pixels.resize(bytes);
+		in.read(reinterpret_cast<char*>(out->pixels.data()),
+			(std::streamsize)bytes);
+		return (bool)in;
+	}
+	catch (...)
+	{
+		return false;
+	}
+}
+
+static bool write_demo_thumbnail_disk(const thumbnail_cache::request& req,
+	const thumbnail_cache::image& img)
+{
+	if (req.name == "Broken.mesh")
+		return false;
+	try
+	{
+		const std::filesystem::path file = demo_thumbnail_file(req.key);
+		std::filesystem::create_directories(file.parent_path());
+		std::ofstream out(file, std::ios::binary | std::ios::trunc);
+		if (!out)
+			return false;
+		const std::int32_t header[4] = { img.width, img.height, img.stride,
+			(std::int32_t)img.format };
+		out.write(reinterpret_cast<const char*>(header), sizeof(header));
+		out.write(reinterpret_cast<const char*>(img.pixels.data()),
+			(std::streamsize)img.pixels.size());
+		return (bool)out;
+	}
+	catch (...)
+	{
+		return false;
+	}
 }
 
 /* A03 预览加载器在后台线程运行:只读请求与静态数据,绝不调用 vgui。 */
@@ -980,16 +1086,14 @@ static void setup_editor(vgui_context* ui)
 		const char* name;
 		const char* type;
 		const char* folder;
-		vgui_color base;
-		vgui_color accent;
 	} kDemoAssets[] = {
-		{ "Cube.mesh", "Mesh", "models", 0xFFC08A4Eu, 0xFF7A5428u },
-		{ "Sphere.mesh", "Mesh", "models", 0xFF6E9ED8u, 0xFF355C8Cu },
-		{ "Ghost.mesh", "Mesh", "models", 0xFFC8D2E0u, 0xFF6C7888u },
-		{ "Broken.mesh", "Mesh", "models", 0xFFB05050u, 0xFF502020u },
-		{ "icon.png", "Texture", "textures", 0xFF6CC878u, 0xFF327E42u },
-		{ "checker.png", "Texture", "textures", 0xFFC8A050u, 0xFF705820u },
-		{ "Steel.mat", "Material", "materials", 0xFF8FA8C8u, 0xFF3A4658u },
+		{ "Cube.mesh", "Mesh", "models" },
+		{ "Sphere.mesh", "Mesh", "models" },
+		{ "Ghost.mesh", "Mesh", "models" },
+		{ "Broken.mesh", "Mesh", "models" },
+		{ "icon.png", "Texture", "textures" },
+		{ "checker.png", "Texture", "textures" },
+		{ "Steel.mat", "Material", "materials" },
 	};
 	g.asset_directories.clear();
 
@@ -1025,14 +1129,9 @@ static void setup_editor(vgui_context* ui)
 	vgui_item_id first_asset = 0;
 	for (const auto& item : kDemoAssets)
 	{
-		vgui_texture* thumb = make_asset_thumbnail(ui, (uint32_t)item.base,
-			(uint32_t)item.accent);
-		if (thumb)
-			g.asset_thumbnails.push_back(thumb);
 		asset_info info;
 		info.name = item.name;
 		info.type = item.type;
-		info.thumbnail = thumb;
 		info.id = g.next_asset++;
 		g.asset_directories[item.folder].items.push_back(info);
 		g.assets[info.name] = info;
@@ -1041,6 +1140,19 @@ static void setup_editor(vgui_context* ui)
 	}
 
 	assets.set_type_options({ "Folder", "Mesh", "Texture", "Material" });
+
+	/* A05 异步缩略图:worker 线程生成/读盘,主线程只上传纹理。
+	 * 可见范围变化时取消过期请求;LRU 限制内存中的纹理数量。 */
+	thumbnail_cache& thumbnails = assets.thumbnails();
+	thumbnail_cache::options cache_options;
+	cache_options.memory_limit = 96;
+	cache_options.max_attempts = 3;
+	cache_options.retry_delay = 0.45f;
+	cache_options.disk_cache = true;
+	thumbnails.set_options(cache_options);
+	thumbnails.set_load_handler(&load_demo_thumbnail);
+	thumbnails.set_disk_cache(&read_demo_thumbnail_disk,
+		&write_demo_thumbnail_disk);
 	assets.set_navigate_handler([](const std::string& path_id,
 		asset_browser::asset_directory* out) {
 		auto found = g.asset_directories.find(path_id);
@@ -1144,7 +1256,7 @@ static void setup_editor(vgui_context* ui)
 		return g.import_assets(files, path_id);
 	});
 
-	g.shell->set_status("A04: drag assets to viewport / outliner / properties; drop files to import");
+	g.shell->set_status("A05: async thumbnails with LRU/disk cache; Broken.mesh retries twice");
 }
 
 int main()
@@ -1225,9 +1337,6 @@ int main()
 	wg->wait_gpu();
 	delete g.shell;
 	delete g.context;
-	for (vgui_texture* thumb : g.asset_thumbnails)
-		vgui_texture_destroy(thumb);
-	g.asset_thumbnails.clear();
 	vgui_destroy(ui);
 	form->viewport->ui = nullptr;
 	delete_font_family(familys);

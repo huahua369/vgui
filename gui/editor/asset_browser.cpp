@@ -143,14 +143,26 @@ namespace vgui_editor_kit {
 		std::string new_name_;
 	};
 
-	asset_browser::asset_browser() = default;
+	asset_browser::asset_browser()
+		: thumbnails_(std::make_unique<thumbnail_cache>())
+	{
+	}
 
-	asset_browser::~asset_browser() = default;
+	asset_browser::~asset_browser()
+	{
+		/* Join the thumbnail worker before the host-scoped loader data and the
+		 * vgui context disappear. */
+		cancel_thumbnail_requests();
+		thumbnails_.reset();
+	}
 
 	void asset_browser::build(vgui_widget* parent)
 	{
 		if (root_ || !parent)
 			return;
+
+		if (thumbnails_)
+			thumbnails_->set_context(vgui_widget_get_context(parent));
 
 		const vgui_theme theme = theme_for(parent);
 		const vgui_style style = style_for(parent);
@@ -343,6 +355,11 @@ namespace vgui_editor_kit {
 		const int index = base_index_of(item);
 		if (index < 0)
 			return false;
+		/* A host texture supersedes (or clears) any asynchronous result for
+		 * this item. */
+		if (thumbnails_)
+			thumbnails_->erase(thumbnail_key(item));
+		thumbnail_requests_.erase(thumbnail_key(item));
 		if (virtual_mode_)
 		{
 			if (texture)
@@ -364,7 +381,10 @@ namespace vgui_editor_kit {
 		if (index < 0)
 			return nullptr;
 		if (!virtual_mode_)
-			return items_[(std::size_t)index].thumbnail;
+		{
+			vgui_texture* host = items_[(std::size_t)index].thumbnail;
+			return host ? host : cached_thumbnail(item);
+		}
 
 		auto found = virtual_thumbs_.find(item);
 		if (found != virtual_thumbs_.end())
@@ -373,6 +393,53 @@ namespace vgui_editor_kit {
 		if (!base_item_at(index, &info))
 			return nullptr;
 		return info.thumbnail;
+	}
+
+	thumbnail_cache& asset_browser::thumbnails() noexcept
+	{
+		return *thumbnails_;
+	}
+
+	const thumbnail_cache& asset_browser::thumbnails() const noexcept
+	{
+		return *thumbnails_;
+	}
+
+	std::string asset_browser::thumbnail_key(vgui_item_id item) const
+	{
+		if (item == 0)
+			return {};
+		std::string key = current_path_id_;
+		key.push_back('\x1F');
+		key += std::to_string((unsigned long long)item);
+		return key;
+	}
+
+	thumbnail_cache::state asset_browser::thumbnail_state(vgui_item_id item) const
+	{
+		if (!thumbnails_ || item == 0)
+			return thumbnail_cache::state::missing;
+		if (item_thumbnail(item))
+			return thumbnail_cache::state::ready;
+		return thumbnails_->state_of(thumbnail_key(item));
+	}
+
+	bool asset_browser::retry_thumbnail(vgui_item_id item)
+	{
+		if (!thumbnails_ || item == 0 || item_thumbnail(item))
+			return false;
+		const std::string key = thumbnail_key(item);
+		if (thumbnails_->state_of(key) != thumbnail_cache::state::failed)
+			return false;
+		thumbnails_->retry(key);
+		return true;
+	}
+
+	vgui_texture* asset_browser::cached_thumbnail(vgui_item_id item) const
+	{
+		if (!thumbnails_ || item == 0)
+			return nullptr;
+		return thumbnails_->lookup(thumbnail_key(item));
 	}
 
 	bool asset_browser::source_valid(const asset_source& source) const noexcept
@@ -400,6 +467,10 @@ namespace vgui_editor_kit {
 
 	void asset_browser::clear_model_data()
 	{
+		/* Items are about to change identity (or disappear), so no pending
+		 * thumbnail request can still target them.  Already cached textures
+		 * stay in the LRU for the next visit to this path. */
+		cancel_thumbnail_requests();
 		items_.clear();
 		item_index_.clear();
 		next_item_id_ = 1;
@@ -527,6 +598,8 @@ namespace vgui_editor_kit {
 			out->type = entry.type;
 			out->thumbnail = entry.thumbnail;
 			out->id = entry.id;
+			if (!out->thumbnail)
+				out->thumbnail = cached_thumbnail(out->id);
 			return true;
 		}
 
@@ -539,6 +612,8 @@ namespace vgui_editor_kit {
 			thumb = virtual_thumbs_.find(out->id);
 		if (thumb != virtual_thumbs_.end())
 			out->thumbnail = thumb->second;
+		if (!out->thumbnail)
+			out->thumbnail = cached_thumbnail(out->id);
 		return true;
 	}
 
@@ -1128,8 +1203,87 @@ namespace vgui_editor_kit {
 		return empty_state_;
 	}
 
+	void asset_browser::cancel_thumbnail_requests()
+	{
+		if (!thumbnails_)
+		{
+			thumbnail_requests_.clear();
+			return;
+		}
+		for (const std::string& key : thumbnail_requests_)
+			thumbnails_->cancel(key);
+		thumbnail_requests_.clear();
+	}
+
+	void asset_browser::sync_thumbnail_requests()
+	{
+		if (!thumbnails_)
+			return;
+		if (!thumbnails_->configured())
+		{
+			cancel_thumbnail_requests();
+			return;
+		}
+
+		std::unordered_set<std::string> wanted;
+		const int first = visible_first();
+		const int last = visible_last();
+		for (int i = first; i < last; ++i)
+		{
+			asset_info info;
+			if (!item_at(i, &info) || info.id == 0)
+				continue;
+			if (info.thumbnail)
+				continue;	/* host or already uploaded */
+
+			const std::string key = thumbnail_key(info.id);
+			const thumbnail_cache::state state = thumbnails_->state_of(key);
+			if (state == thumbnail_cache::state::ready)
+				continue;
+			if (state == thumbnail_cache::state::failed)
+			{
+				/* Keep a visible failure tracked so it is not cancelled and
+				 * immediately retried every tick.  retry_thumbnail() restarts
+				 * it explicitly. */
+				wanted.insert(key);
+				continue;
+			}
+
+			thumbnail_cache::request req;
+			req.key = key;
+			req.name = info.name;
+			req.type = info.type;
+			thumbnails_->enqueue(req, thumbnail_cache::priority::high);
+			wanted.insert(key);
+		}
+
+		for (const std::string& key : thumbnail_requests_)
+		{
+			if (wanted.find(key) == wanted.end())
+				thumbnails_->cancel(key);
+		}
+		thumbnail_requests_ = std::move(wanted);
+	}
+
 	void asset_browser::tick(float delta_time)
 	{
+		thumbnail_phase_ += std::max(0.0f, delta_time);
+		if (thumbnail_phase_ > 1000.0f)
+			thumbnail_phase_ = std::fmod(thumbnail_phase_, 1000.0f);
+
+		sync_thumbnail_requests();
+		if (thumbnails_)
+		{
+			const bool changed = thumbnails_->tick(delta_time);
+			/* Uploads change row icons without changing the row count. */
+			if (changed && list_)
+			{
+				const int count = item_count();
+				if (count > 0)
+					vgui_list_source_rows_changed(list_, 0, count);
+			}
+		}
+
 		if (!search_pending_)
 			return;
 		if (search_debounce_ <= 0.0f)
@@ -1700,7 +1854,35 @@ namespace vgui_editor_kit {
 		if (info.thumbnail)
 			vgui_custom_draw_texture(grid_, cb, vg, info.thumbnail, thumb_x, thumb_y, thumb_w, thumb_h, 0xFFFFFFFF);
 		else
-			vgui_custom_draw_text(grid_, cb, vg, info.type.empty() ? "?" : info.type.c_str(), thumb_x, thumb_y, thumb_w, thumb_h, theme.disabled ? theme.disabled : theme.text, 0.5f, 0.5f);
+		{
+			/* A05: an asynchronous thumbnail shows its progress instead of the
+			 * type fallback.  Failures stay visible until the host retries. */
+			const thumbnail_cache::state state = (thumbnails_ && info.id)
+				? thumbnails_->state_of(thumbnail_key(info.id))
+				: thumbnail_cache::state::missing;
+			if (state == thumbnail_cache::state::failed)
+			{
+				const vgui_color danger = theme.modal_danger
+					? theme.modal_danger : 0xFFE06C75;
+				vgui_custom_draw_text(grid_, cb, vg, "!",
+					thumb_x, thumb_y, thumb_w, thumb_h, danger, 0.5f, 0.5f);
+			}
+			else if (state == thumbnail_cache::state::queued ||
+				state == thumbnail_cache::state::loading)
+			{
+				const int dots = ((int)(thumbnail_phase_ * 4.0f)) % 4;
+				std::string label = state == thumbnail_cache::state::loading
+					? "loading" : "queued";
+				label.append((std::size_t)dots, '.');
+				vgui_custom_draw_text(grid_, cb, vg, label.c_str(),
+					thumb_x, thumb_y, thumb_w, thumb_h,
+					theme.disabled ? theme.disabled : theme.text, 0.5f, 0.5f);
+			}
+			else
+			{
+				vgui_custom_draw_text(grid_, cb, vg, info.type.empty() ? "?" : info.type.c_str(), thumb_x, thumb_y, thumb_w, thumb_h, theme.disabled ? theme.disabled : theme.text, 0.5f, 0.5f);
+			}
+		}
 
 		const vgui_color text_color = selected ? selected_text_color_of(theme) : text_color_of(theme);
 		vgui_custom_draw_text(grid_, cb, vg, info.name.c_str(), x + 6.0f, y + h - 30.0f, std::max(1.0f, w - 12.0f), 16.0f, text_color, 0.5f, 0.5f);
@@ -1729,6 +1911,25 @@ namespace vgui_editor_kit {
 					tooltip_ += " (";
 					tooltip_ += info.type;
 					tooltip_ += ")";
+				}
+				if (!info.thumbnail && thumbnails_ && info.id)
+				{
+					const std::string key = thumbnail_key(info.id);
+					const thumbnail_cache::state state = thumbnails_->state_of(key);
+					if (state == thumbnail_cache::state::queued)
+						tooltip_ += " - thumbnail queued";
+					else if (state == thumbnail_cache::state::loading)
+						tooltip_ += " - loading thumbnail";
+					else if (state == thumbnail_cache::state::failed)
+					{
+						tooltip_ += " - thumbnail failed";
+						const std::string& error = thumbnails_->error(key);
+						if (!error.empty())
+						{
+							tooltip_ += ": ";
+							tooltip_ += error;
+						}
+					}
 				}
 			}
 		}
@@ -2306,6 +2507,26 @@ namespace vgui_editor_kit {
 			self->scratch_tooltip_ += " (";
 			self->scratch_tooltip_ += self->scratch_info_.type;
 			self->scratch_tooltip_ += ")";
+		}
+		if (!self->scratch_info_.thumbnail && self->thumbnails_ &&
+			self->scratch_info_.id)
+		{
+			const std::string key = self->thumbnail_key(self->scratch_info_.id);
+			const thumbnail_cache::state state = self->thumbnails_->state_of(key);
+			if (state == thumbnail_cache::state::queued)
+				self->scratch_tooltip_ += " - thumbnail queued";
+			else if (state == thumbnail_cache::state::loading)
+				self->scratch_tooltip_ += " - loading thumbnail";
+			else if (state == thumbnail_cache::state::failed)
+			{
+				self->scratch_tooltip_ += " - thumbnail failed";
+				const std::string& error = self->thumbnails_->error(key);
+				if (!error.empty())
+				{
+					self->scratch_tooltip_ += ": ";
+					self->scratch_tooltip_ += error;
+				}
+			}
 		}
 		return self->scratch_tooltip_.c_str();
 	}
