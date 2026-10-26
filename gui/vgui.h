@@ -1747,6 +1747,14 @@ extern "C" {
 	/* 1=裁剪到控件边界（默认），0=允许超出（发光/阴影等效果）。 */
 	VGUI_API void vgui_custom_set_clip_content(vgui_widget* widget, int clip);
 
+	/* Helpers for VGUI_CUSTOM draw callbacks.  Text is clipped to the supplied
+	 * rect and uses the widget font; align_x/align_y are 0..1.  Textures keep
+	 * their aspect ratio (contain) inside the rect and support CPU/native
+	 * textures plus lazy upload.  Coordinates are absolute window coordinates,
+	 * matching the abs_x/abs_y passed to the draw callback. */
+	VGUI_API void vgui_custom_draw_text(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y);
+	VGUI_API void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint);
+
 	/* ------------------------------------------------------------------------- */
 	/* Frame                                                                     */
 	/* ------------------------------------------------------------------------- */

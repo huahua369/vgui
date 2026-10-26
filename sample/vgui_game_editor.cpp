@@ -145,6 +145,8 @@ struct editor_state
 	game_scene scene;
 	editor_context* context = nullptr;
 	editor_shell* shell = nullptr;
+	/* 资产网格的 CPU 缩略图由示例持有,shell 销毁后统一释放。 */
+	std::vector<vgui_texture*> asset_thumbnails;
 
 	bool valid_selection() const
 	{
@@ -186,6 +188,30 @@ static vgui_texture* make_type_texture(vgui_context* ui, uint32_t color)
 	desc.height = 2;
 	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
 	desc.pixels = pixels;
+	return vgui_texture_create(ui, &desc);
+}
+
+/* A01 资产缩略图:16x16 棋盘格 CPU 纹理 + 对角高光,无外部资源。 */
+static vgui_texture* make_asset_thumbnail(vgui_context* ui, uint32_t base,
+	uint32_t accent)
+{
+	const int size = 16;
+	std::vector<uint32_t> pixels((std::size_t)size * size);
+	for (int y = 0; y < size; ++y)
+	{
+		for (int x = 0; x < size; ++x)
+		{
+			const bool checker = ((x / 4) + (y / 4)) % 2 == 0;
+			const bool shine = x + y >= 20 && x + y <= 24;
+			pixels[(std::size_t)y * size + x] = shine
+				? 0xFFFFFFFFu : (checker ? base : accent);
+		}
+	}
+	vgui_texture_desc desc = {};
+	desc.width = size;
+	desc.height = size;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels.data();
 	return vgui_texture_create(ui, &desc);
 }
 
@@ -542,12 +568,36 @@ static void setup_editor(vgui_context* ui)
 		});
 	});
 
-	/* 资产浏览器填充(可拖到属性行/视口)。 */
+	/* 资产浏览器填充(可拖到属性行/视口)。A01:带缩略图并默认网格视图。 */
 	asset_browser& assets = g.shell->assets();
-	assets.add_item("Cube.mesh", "Mesh");
-	assets.add_item("Sphere.mesh", "Mesh");
-	assets.add_item("Ghost.mesh", "Mesh");
-	assets.add_item("icon.png", "Texture");
+	static const struct
+	{
+		const char* name;
+		const char* type;
+		vgui_color base;
+		vgui_color accent;
+	} kDemoAssets[] = {
+		{ "Cube.mesh", "Mesh", 0xFFC08A4Eu, 0xFF7A5428u },
+		{ "Sphere.mesh", "Mesh", 0xFF6E9ED8u, 0xFF355C8Cu },
+		{ "Ghost.mesh", "Mesh", 0xFFC8D2E0u, 0xFF6C7888u },
+		{ "icon.png", "Texture", 0xFF6CC878u, 0xFF327E42u },
+	};
+	vgui_item_id first_asset = 0;
+	for (const auto& item : kDemoAssets)
+	{
+		vgui_texture* thumb = make_asset_thumbnail(ui, (uint32_t)item.base,
+			(uint32_t)item.accent);
+		if (thumb)
+			g.asset_thumbnails.push_back(thumb);
+		const vgui_item_id id = assets.add_item(item.name, item.type);
+		if (id && thumb)
+			assets.set_item_thumbnail(id, thumb);
+		if (!first_asset)
+			first_asset = id;
+	}
+	if (first_asset)
+		assets.set_selection({ first_asset });
+	assets.set_view(asset_browser::view_mode::grid);
 
 	g.shell->set_status("M2+M3 editor ready: select an object, drag assets");
 }
@@ -630,6 +680,9 @@ int main()
 	wg->wait_gpu();
 	delete g.shell;
 	delete g.context;
+	for (vgui_texture* thumb : g.asset_thumbnails)
+		vgui_texture_destroy(thumb);
+	g.asset_thumbnails.clear();
 	vgui_destroy(ui);
 	form->viewport->ui = nullptr;
 	delete_font_family(familys);

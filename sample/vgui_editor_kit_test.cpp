@@ -5480,6 +5480,288 @@ static int test_outliner_context_menu()
 	return 0;
 }
 
+/* A01: 列表/网格双视图共享选择、键盘/框选、100k 虚拟目录只取可见项。 */
+static int test_asset_browser_views()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("asset views context");
+	vgui_context_set_size(ui, 1000, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.list.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	vgui_texture_desc thumb_desc = {};
+	thumb_desc.width = 2;
+	thumb_desc.height = 2;
+	thumb_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	unsigned char thumb_pixels[16] = { 255, 80, 40, 255, 40, 160, 255, 255,
+		40, 160, 255, 255, 255, 80, 40, 255 };
+	thumb_desc.pixels = thumb_pixels;
+	vgui_texture* thumb = vgui_texture_create(ui, &thumb_desc);
+	if (!thumb)
+		return fail("asset thumbnail texture");
+
+	{
+		asset_browser assets;
+		assets.build(vgui_root(ui));
+		assets.enable_row_drag();
+		vgui_widget_set_pos(assets.root(), 20.0f, 20.0f);
+		vgui_widget_set_size(assets.root(), 420.0f, 320.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		const vgui_item_id a = assets.add_item("Cube.mesh", "Mesh");
+		const vgui_item_id b = assets.add_item("Sphere.mesh", "Mesh");
+		const vgui_item_id c = assets.add_item("Ghost.mesh", "Mesh");
+		const vgui_item_id d = assets.add_item("icon.png", "Texture");
+		if (!a || !b || !c || !d || a == b || b == c || c == d)
+			return fail("asset view items");
+		if (!assets.set_item_thumbnail(b, thumb) ||
+			assets.item_thumbnail(b) != thumb)
+			return fail("asset thumbnail set");
+
+		asset_info info;
+		if (!assets.item_at(1, &info) || info.name != "Sphere.mesh" ||
+			info.type != "Mesh" || info.thumbnail != thumb ||
+			info.id != b)
+			return fail("asset metadata");
+		if (vgui_list_get_item_icon(assets.widget(), b) != thumb)
+			return fail("asset list row thumbnail");
+
+		/* 视图自动开关存在;默认列表,切到网格后选择不变。 */
+		if (assets.view() != asset_browser::view_mode::list ||
+			!assets.view_switch() || !assets.view_switch_visible() ||
+			assets.view_switch()->selected() != 0)
+			return fail("asset default list view");
+		assets.set_selection({ a, b });
+		if (assets.selected() != a || assets.selection().size() != 2)
+			return fail("asset initial selection");
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (assets.view() != asset_browser::view_mode::grid ||
+			assets.view_switch()->selected() != 1 ||
+			assets.selection().size() != 2 || !assets.is_selected(b) ||
+			!vgui_widget_get_visible(assets.grid()) ||
+			vgui_widget_get_visible(assets.widget()))
+			return fail("asset switch to grid");
+		if (assets.grid_columns() < 1 || assets.visible_count() != 4)
+			return fail("asset grid metrics");
+
+		assets.set_view(asset_browser::view_mode::list);
+		if (assets.selection().size() != 2 || !assets.is_selected(b) ||
+			!vgui_widget_get_visible(assets.widget()))
+			return fail("asset switch back keeps selection");
+		assets.set_view_switch_visible(false);
+		if (assets.view_switch_visible())
+			return fail("asset view switch hide");
+		assets.set_view_switch_visible(true);
+		if (!assets.view_switch_visible())
+			return fail("asset view switch show");
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		/* 键盘:方向键/I 光标、Shift 扩展、Ctrl+Space 反选、Home/End、Ctrl+A。 */
+		assets.set_selection({ a });
+		vgui_set_focus(ui, assets.grid());
+		if (vgui_get_focus(ui) != assets.grid())
+			return fail("asset grid focus");
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 0, 0);
+		if (assets.cursor() != b || assets.selected() != b ||
+			assets.selection().size() != 1)
+			return fail("asset grid arrow selection");
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 1, VGUI_MOD_SHIFT);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 0, VGUI_MOD_SHIFT);
+		if (assets.selection().size() != 2 || !assets.is_selected(b) ||
+			!assets.is_selected(c) || assets.selected() != c)
+			return fail("asset grid shift range");
+		vgui_input_key(ui, ' ', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, ' ', 0, VGUI_MOD_CTRL);
+		if (assets.selection().size() != 1 || !assets.is_selected(b) ||
+			assets.selected() != b)
+			return fail("asset grid ctrl toggle");
+		vgui_input_key(ui, VGUI_KEY_END, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_END, 0, 0);
+		if (assets.cursor() != d || assets.selected() != d)
+			return fail("asset grid end key");
+		vgui_input_key(ui, 'A', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'A', 0, VGUI_MOD_CTRL);
+		if (assets.selection().size() != 4 || !assets.is_selected(a) ||
+			!assets.is_selected(d))
+			return fail("asset grid select all");
+		assets.set_view(asset_browser::view_mode::list);
+		if (!vgui_list_is_selected(assets.widget(), d) ||
+			assets.selection().size() != 4)
+			return fail("asset list mirrors grid selection");
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		vgui_panel_set_scroll(assets.scroll(), 0.0f, 0.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		/* 框选:从留白拖到第 3 个单元格,只选中可见的 3 项。 */
+		assets.clear_selection();
+		float gx = 0, gy = 0, gw = 0, gh = 0;
+		vgui_widget_get_rect(assets.grid(), &gx, &gy, &gw, &gh);
+		(void)gw; (void)gh;
+		float c0x = 0, c0y = 0, c0w = 0, c0h = 0;
+		float c2x = 0, c2y = 0, c2w = 0, c2h = 0;
+		if (!assets.item_rect(0, &c0x, &c0y, &c0w, &c0h) ||
+			!assets.item_rect(2, &c2x, &c2y, &c2w, &c2h))
+			return fail("asset grid cell rects");
+		(void)c0x; (void)c0y; (void)c0w; (void)c0h;
+		vgui_input_mouse_move(ui, gx + 2.0f, gy + 2.0f);
+		vgui_input_mouse_down(ui, 1, gx + 2.0f, gy + 2.0f, 1);
+		vgui_input_mouse_move(ui, c2x + c2w * 0.5f, c2y + c2h * 0.5f);
+		vgui_input_mouse_up(ui, 1, c2x + c2w * 0.5f, c2y + c2h * 0.5f, 1);
+		if (assets.selection().size() != 3 || !assets.is_selected(a) ||
+			!assets.is_selected(b) || !assets.is_selected(c))
+			return fail("asset grid marquee");
+
+		/* 单元格拖放与列表共用 asset payload。 */
+		if (!assets.item_rect(0, &c0x, &c0y, &c0w, &c0h))
+			return fail("asset drag cell rect");
+		const float press_x = c0x + c0w * 0.5f;
+		const float press_y = c0y + c0h * 0.5f;
+		vgui_input_mouse_move(ui, press_x, press_y);
+		vgui_input_mouse_down(ui, 1, press_x, press_y, 1);
+		vgui_input_mouse_move(ui, press_x + 20.0f, press_y + 10.0f);
+		if (!vgui_drag_active(ui))
+			return fail("asset grid drag begins");
+		vgui_input_mouse_up(ui, 1, press_x + 20.0f, press_y + 10.0f, 1);
+
+		/* 100k 虚拟目录:滚动到中段后仅可见范围取元数据。 */
+		struct virtual_assets
+		{
+			int count = 100000;
+			int item_calls = 0;
+		};
+		virtual_assets va;
+		asset_browser::asset_source source;
+		source.count = [](void* user) {
+			return static_cast<virtual_assets*>(user)->count;
+		};
+		source.item_at = [](void* user, int index, asset_info* out) -> int {
+			auto* model = static_cast<virtual_assets*>(user);
+			++model->item_calls;
+			if (!out || index < 0 || index >= model->count)
+				return 0;
+			out->name = "Asset " + std::to_string(index);
+			out->type = (index & 1) ? "Texture" : "Mesh";
+			out->thumbnail = nullptr;
+			out->id = 0;
+			return 1;
+		};
+		source.user = &va;
+		assets.set_virtual_source(&source);
+		if (!assets.is_virtual() || assets.item_count() != 100000 ||
+			assets.index_of(90000) != 89999)
+			return fail("asset virtual source");
+		assets.set_selection({ 90000 });
+		if (assets.selected() != 90000 || !assets.is_selected(90000))
+			return fail("asset virtual selection");
+		if (!assets.set_item_thumbnail(90000, thumb) ||
+			assets.item_thumbnail(90000) != thumb)
+			return fail("asset virtual thumbnail");
+		assets.set_view(asset_browser::view_mode::list);
+		vgui_update(ui, 0.016f);
+		if (!vgui_list_is_selected(assets.widget(), 90000))
+			return fail("asset virtual list selection");
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (assets.visible_first() < 80000 || assets.visible_last() > 100000 ||
+			assets.visible_count() <= 0 || assets.visible_count() > 200)
+			return fail("asset virtual visible range");
+
+		va.item_calls = 0;
+		const std::vector<vgui_item_id> visible = assets.visible_items();
+		const int before_loop = va.item_calls;
+		if ((int)visible.size() != assets.visible_count())
+			return fail("asset virtual visible items");
+		std::size_t matched = 0;
+		for (vgui_item_id id : visible)
+		{
+			const int index = assets.index_of(id);
+			asset_info item;
+			if (index >= 0 && assets.item_at(index, &item) &&
+				item.id == id && item.name == "Asset " + std::to_string(index))
+				++matched;
+		}
+		if (matched != visible.size() ||
+			va.item_calls - before_loop != (int)visible.size() ||
+			va.item_calls > 256)
+			return fail("asset virtual lazy metadata");
+		asset_info near_end;
+		if (!assets.item_at(89999, &near_end) ||
+			near_end.name != "Asset 89999")
+			return fail("asset virtual item lookup");
+		if (assets.item_at(-1, &near_end) || assets.item_at(100000, &near_end))
+			return fail("asset virtual bounds");
+
+		assets.clear();
+		if (assets.is_virtual() || assets.item_count() != 0 ||
+			!assets.selection().empty())
+			return fail("asset virtual detach");
+
+		/* 自定义 id_at/index_of：宿主稳定 ID 不依赖行号,列表与网格仍同步。 */
+		struct custom_assets
+		{
+			int count = 1000;
+		};
+		custom_assets ca;
+		asset_browser::asset_source custom;
+		custom.count = [](void* user) {
+			return static_cast<custom_assets*>(user)->count;
+		};
+		custom.item_at = [](void* user, int index, asset_info* out) -> int {
+			auto* model = static_cast<custom_assets*>(user);
+			if (!out || index < 0 || index >= model->count)
+				return 0;
+			out->name = "Custom " + std::to_string(index);
+			out->type = "Mesh";
+			out->thumbnail = nullptr;
+			out->id = 0;
+			return 1;
+		};
+		custom.id_at = [](void*, int index) -> vgui_item_id {
+			return (vgui_item_id)(10000 + index);
+		};
+		custom.index_of = [](void*, vgui_item_id item) -> int {
+			return item >= 10000 && item < 11000 ? (int)(item - 10000) : -1;
+		};
+		custom.user = &ca;
+		assets.set_virtual_source(&custom);
+		asset_info custom_info;
+		if (!assets.is_virtual() || assets.id_at(5) != 10005 ||
+			assets.index_of(10005) != 5 || assets.index_of(9999) != -1 ||
+			!assets.item_at(5, &custom_info) || custom_info.id != 10005 ||
+			custom_info.name != "Custom 5")
+			return fail("asset virtual custom ids");
+		assets.set_selection({ 10005 });
+		if (assets.selected() != 10005 || !assets.is_selected(10005))
+			return fail("asset virtual custom selection");
+		assets.set_view(asset_browser::view_mode::list);
+		if (!vgui_list_is_selected(assets.widget(), 10005))
+			return fail("asset virtual custom list selection");
+		assets.set_view(asset_browser::view_mode::grid);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (assets.selection().size() != 1 || !assets.is_selected(10005))
+			return fail("asset virtual custom grid selection");
+	}
+
+	vgui_texture_destroy(thumb);
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -5543,6 +5825,8 @@ int main()
 	if (int rc = test_virtual_outliner())
 		return rc;
 	if (int rc = test_outliner_context_menu())
+		return rc;
+	if (int rc = test_asset_browser_views())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

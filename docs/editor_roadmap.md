@@ -309,10 +309,11 @@
 
 依赖：F03、F04、S01/S02；A01/A04 依赖 Outliner/PropertyGrid 的 drop target。
 
-- [ ] **A01 缩略图网格/列表**（P0，L）
+- [x] **A01 缩略图网格/列表**（P0，L）（已完成）
   - Grid/List 两种视图，缩略图、名称、类型、选中态。
   - 虚拟滚动，支持大目录。
   - 验收：十万级资产目录只请求可见项；切换视图不丢失选择；键盘导航和框选可用。
+  - 已实现：`asset_browser` 自动构建 Grid/List 分段开关（`set_view()`/`set_view_switch_visible()`），列表复用核心行模型，网格在一个滚动面板内只绘制可见单元格；`asset_source` 提供 `count`/`item_at`/`id_at`/`index_of` 懒加载接口，默认 id 为 `index + 1`，十万级目录滚动到中段只查询可见范围；选择集由浏览器统一持有并在两种视图间同步，支持 Ctrl/Shift 多选、方向键/Home/End/PageUp/PageDown、空格反选与 Ctrl+A；网格框选只命中选择可见单元格，单元格拖拽复用 `begin_editor_drag()` 的 asset payload；`set_item_thumbnail()`/`item_thumbnail()` 管理借用纹理，列表行图标与网格缩略图共用。核心新增 `vgui_custom_draw_text()`/`vgui_custom_draw_texture()`，并让列表行纹理同时支持 CPU 纹理（`add_image`）与原生纹理（`add_texture`）。`test_asset_browser_views` 覆盖视图切换选择保持、缩略图/类型元数据、键盘导航、框选、网格拖拽、十万级虚拟源可见范围与懒查询、虚拟缩略图及 detach。
 
 - [ ] **A02 路径导航与搜索**（P0，S/M）
   - Breadcrumb、前进/后退、刷新、搜索、类型过滤。

@@ -11544,17 +11544,31 @@ namespace {
 		vgui_context* ctx = w->ctx;
 		if (!ctx || !tex || size <= 0.0f) return;
 		vgui_texture_ensure_upload(ctx, tex, cb, vg);
-		if (tex->native.image.id == 0 || !cb->add_texture) return;
 		uint32_t color = tint ? tint : 0xFFFFFFFF;
 		if (!enabled)
 			color = vgui_mix_color(color, ctx->theme.disabled, 0.5f);
-		ovg_texture_r r = {};
-		r.tex = &tex->native;
-		r.rc = { 0, 0, tex->width, tex->height };
-		r.dst = { (int)std::lround(x), (int)std::lround(y),
-			(int)std::lround(size), (int)std::lround(size) };
-		r.color = vgui_ovg_color(color);
-		cb->add_texture(vg, &r);
+		// Native textures use the backend texture path; CPU textures keep the
+		// image handle filled by image_update and must go through add_image.
+		const bool native = !tex->cpu && tex->native.image.id != 0;
+		if (native && cb->add_texture)
+		{
+			ovg_texture_r r = {};
+			r.tex = &tex->native;
+			r.rc = { 0, 0, tex->width, tex->height };
+			r.dst = { (int)std::lround(x), (int)std::lround(y), (int)std::lround(size), (int)std::lround(size) };
+			r.color = vgui_ovg_color(color);
+			cb->add_texture(vg, &r);
+			return;
+		}
+		if (!native && tex->image.id != 0 && cb->add_image)
+		{
+			ovg_image_r r = {};
+			r.img = &tex->image;
+			r.rc = { 0, 0, tex->width, tex->height };
+			r.dst = { (int)std::lround(x), (int)std::lround(y), (int)std::lround(size), (int)std::lround(size) };
+			r.color = vgui_ovg_color(color);
+			cb->add_image(vg, &r);
+		}
 	}
 
 	// F04 行尾内联按钮绘制。hover 行 id 与按钮序号由调用方从控件状态取出。
@@ -12887,6 +12901,42 @@ namespace {
 	}
 
 } // anonymous namespace
+
+// Clip helpers for the public VGUI_CUSTOM drawing helpers.  save/restore does
+// not cover the scissor rectangle, so callers capture and restore it explicitly
+// and intersect the requested rect with the active clip instead of replacing it.
+static void vgui_custom_clip_begin(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, glm::ivec4* saved, int* has_saved)
+{
+	*has_saved = 0;
+	saved->x = saved->y = saved->z = saved->w = 0;
+	if (!cb || !vg || !cb->clip_rect) return;
+	if (cb->get_clip_rect)
+	{
+		cb->get_clip_rect(vg, saved);
+		*has_saved = 1;
+	}
+	int x0 = (int)std::floor(x);
+	int y0 = (int)std::floor(y);
+	int x1 = (int)std::ceil(x + w);
+	int y1 = (int)std::ceil(y + h);
+	if (*has_saved && saved->z > 0 && saved->w > 0)
+	{
+		x0 = std::max(x0, saved->x);
+		y0 = std::max(y0, saved->y);
+		x1 = std::min(x1, saved->x + saved->z);
+		y1 = std::min(y1, saved->y + saved->w);
+	}
+	cb->clip_rect(vg, x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
+}
+
+static void vgui_custom_clip_end(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec4& saved, int has_saved)
+{
+	if (!cb || !vg) return;
+	if (has_saved && cb->set_clip_rect)
+		cb->set_clip_rect(vg, const_cast<glm::ivec4*>(&saved));
+	else if (cb->clip_rect)
+		cb->clip_rect(vg, 0, 0, -1, -1);
+}
 
 //----------------------------------------------------------------------------
 // Public C API
@@ -17671,6 +17721,54 @@ extern "C" {
 	{
 		if (!widget) return;
 		widget->custom_clip_content = clip ? 1 : 0;
+	}
+
+	void vgui_custom_draw_text(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y)
+	{
+		if (!widget || !widget->ctx || !cb || !vg || !text || !*text || width <= 0.0f || height <= 0.0f || color == 0) return;
+		glm::ivec4 saved = {};
+		int has_saved = 0;
+		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
+		vgui_draw_text(widget->ctx, cb, vg, widget, text, x, y, width, height, vgui_widget_color(widget, color), align_x, align_y);
+		vgui_custom_clip_end(cb, vg, saved, has_saved);
+	}
+
+	void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint)
+	{
+		if (!widget || !widget->ctx || !cb || !vg || !texture || width <= 0.0f || height <= 0.0f) return;
+		vgui_texture_ensure_upload(widget->ctx, texture, cb, vg);
+		const int tex_w = texture->width;
+		const int tex_h = texture->height;
+		if (tex_w <= 0 || tex_h <= 0) return;
+		const float scale = std::min(width / (float)tex_w, height / (float)tex_h);
+		const float draw_w = std::max(1.0f, (float)tex_w * scale);
+		const float draw_h = std::max(1.0f, (float)tex_h * scale);
+		const float draw_x = x + (width - draw_w) * 0.5f;
+		const float draw_y = y + (height - draw_h) * 0.5f;
+		glm::ivec4 saved = {};
+		int has_saved = 0;
+		vgui_custom_clip_begin(cb, vg, draw_x, draw_y, draw_w, draw_h, &saved, &has_saved);
+		const uint32_t color = vgui_ovg_color(vgui_widget_color(widget, tint ? tint : 0xFFFFFFFF));
+		const bool native = !texture->cpu && texture->native.image.id != 0;
+		if (native && cb->add_texture)
+		{
+			ovg_texture_r r = {};
+			r.tex = &texture->native;
+			r.rc = { 0, 0, tex_w, tex_h };
+			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
+			r.color = color;
+			cb->add_texture(vg, &r);
+		}
+		else if (!native && texture->image.id != 0 && cb->add_image)
+		{
+			ovg_image_r r = {};
+			r.img = &texture->image;
+			r.rc = { 0, 0, tex_w, tex_h };
+			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
+			r.color = color;
+			cb->add_image(vg, &r);
+		}
+		vgui_custom_clip_end(cb, vg, saved, has_saved);
 	}
 
 } // extern "C"
