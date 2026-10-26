@@ -51,6 +51,8 @@ struct scene_object
 	/* V05: world transform used by the viewport demo (gizmo + renderer). */
 	camera_vec3 position{};
 	float yaw = 0.0f;
+	/* V06: viewport-dropped objects (and the demo cube) are drawn/pickable. */
+	bool renderable = false;
 	/* 属性面板演示值(P08 多选编辑的批量目标)。 */
 	std::map<std::string, std::string> props;
 };
@@ -146,6 +148,7 @@ struct game_scene
 		objects[copy].locked = o.locked;
 		objects[copy].position = o.position;
 		objects[copy].yaw = o.yaw;
+		objects[copy].renderable = o.renderable;
 		for (object_id c : o.children)
 			duplicate(c, copy);
 		return copy;
@@ -180,11 +183,15 @@ struct editor_state
 	phase0_renderer* renderer = nullptr;
 	vgui_texture* viewport_texture = nullptr;
 	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
-	object_id pickable_object = invalid_object;
 	/* V05: gizmo drag snapshots (before = pre-drag, start = preview base). */
 	std::map<object_id, camera_vec3> gizmo_before_positions;
 	std::map<object_id, camera_vec3> gizmo_start_positions;
 	camera_vec3 gizmo_last_delta{};
+	/* V06: host-side drop preview resolved from the viewport hover. */
+	bool drop_preview_active = false;
+	camera_vec3 drop_preview_position{};
+	std::string drop_preview_asset;
+	std::string drop_preview_type;
 
 	bool valid_selection() const
 	{
@@ -283,9 +290,11 @@ struct editor_state
 		scene.objects.erase(it);
 	}
 
-	/* A04: 资产拖入场景 -> 新建叶子对象,返回快照供命令重做。 */
+	/* A04: 资产拖入场景 -> 新建叶子对象,返回快照供命令重做。
+	 * V06: 视口落点会传入世界位置,并让对象进入渲染/拾取集合。 */
 	object_id add_asset_object(const std::string& asset, object_id parent,
-		std::size_t index, scene_object* out_snapshot)
+		std::size_t index, scene_object* out_snapshot,
+		const camera_vec3* position = nullptr)
 	{
 		std::string name = asset;
 		const std::size_t dot = name.find_last_of('.');
@@ -301,6 +310,11 @@ struct editor_state
 			scene.objects[id].props["mesh"] = asset;
 		else
 			scene.objects[id].props["asset"] = asset;
+		if (position)
+		{
+			scene.objects[id].position = *position;
+			scene.objects[id].renderable = true;
+		}
 		if (out_snapshot)
 			*out_snapshot = scene.objects[id];
 		return id;
@@ -479,6 +493,8 @@ void editor_state::push_create_command(const scene_object& snapshot,
 			if (g.shell)
 				g.rebuild_outliner();
 		}));
+	if (shell)
+		shell->refresh_commands();
 }
 
 bool editor_state::import_assets(const std::vector<std::string>& files,
@@ -1145,9 +1161,10 @@ static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
 }
 
 /* Ray/box in the object's local space, so a yaw-rotated cube still picks
- * accurately.  The box half extent matches the rendered cube. */
-static bool ray_hits_box(const glm::vec3& origin, const glm::vec3& direction,
-	const camera_vec3& center, float yaw)
+ * accurately.  Returns the entry distance for nearest-hit ordering. */
+static bool ray_box_distance(const glm::vec3& origin,
+	const glm::vec3& direction, const camera_vec3& center, float yaw,
+	float* out_distance)
 {
 	constexpr float kHalfExtent = 1.0f;
 	const glm::mat4 inverse_rotation = glm::rotate(glm::mat4(1.0f), -yaw,
@@ -1178,7 +1195,11 @@ static bool ray_hits_box(const glm::vec3& origin, const glm::vec3& direction,
 		if (t_min > t_max)
 			return false;
 	}
-	return t_max >= 0.0f;
+	if (t_max < 0.0f)
+		return false;
+	if (out_distance)
+		*out_distance = t_min > 0.0f ? t_min : 0.0f;
+	return true;
 }
 
 static bool camera_matrices(const camera_state& state, int width, int height,
@@ -1269,38 +1290,115 @@ static bool gizmo_ray_at(float x, float y, gizmo_ray* out)
 	return true;
 }
 
+/* V06: absolute cursor point -> ground-plane drop position.  The returned
+ * point is the object centre one unit above the grid plane, so the cube proxy
+ * sits on the ground. */
+static bool viewport_drop_point(float x, float y, camera_vec3* out)
+{
+	if (!g.shell || !out)
+		return false;
+	float wx = 0, wy = 0, ww = 0, wh = 0;
+	vgui_widget_get_rect(g.shell->viewport().widget(), &wx, &wy, &ww, &wh);
+	(void)ww;
+	(void)wh;
+	float ox = 1.0f, oy = 1.0f, cw = 0.0f, ch = 0.0f;
+	g.shell->viewport().get_content_rect(&ox, &oy, &cw, &ch);
+	const int width = std::max(1, (int)std::lround(cw));
+	const int height = std::max(1, (int)std::lround(ch));
+	glm::vec3 origin(0.0f), direction(0.0f);
+	if (!screen_ray(x - wx - ox, y - wy - oy, width, height, &origin,
+		&direction))
+		return false;
+	const float plane_y = g.shell->grid().plane_height();
+	if (!(direction.y < -1e-4f))
+		return false;
+	const float t = (plane_y - origin.y) / direction.y;
+	if (!(t > 0.0f) || !std::isfinite(t))
+		return false;
+	const glm::vec3 hit = origin + direction * t;
+	if (!std::isfinite(hit.x) || !std::isfinite(hit.z))
+		return false;
+	*out = { hit.x, plane_y + 1.0f, hit.z };
+	return true;
+}
+
+static void update_drop_preview()
+{
+	const std::string previous_asset = g.drop_preview_asset;
+	g.drop_preview_active = false;
+	g.drop_preview_asset.clear();
+	g.drop_preview_type.clear();
+	if (!g.shell)
+		return;
+	float x = 0.0f, y = 0.0f;
+	drag_payload payload;
+	if (!g.shell->viewport().drop_hover(&x, &y, &payload) ||
+		payload.kind != drag_payload_kind::asset)
+		return;
+	const asset_info* info = g.find_asset(payload.id);
+	camera_vec3 point;
+	if (!info || !viewport_drop_point(x, y, &point))
+		return;
+	if (previous_asset != payload.id)
+		g.shell->set_status("drop " + payload.id + " (" + info->type + ")");
+	g.drop_preview_active = true;
+	g.drop_preview_position = point;
+	g.drop_preview_asset = payload.id;
+	g.drop_preview_type = info->type;
+}
+
 static object_id pick_object_at(const selection_point_query& query)
 {
-	if (g.pickable_object == invalid_object)
-		return invalid_object;
-	const scene_object* object = find_scene_object(g.pickable_object);
-	if (!object)
+	if (!g.shell)
 		return invalid_object;
 	glm::vec3 origin(0.0f);
 	glm::vec3 direction(0.0f);
-	if (!viewport_ray(query, &origin, &direction) ||
-		!ray_hits_box(origin, direction, object->position, object->yaw))
+	if (!viewport_ray(query, &origin, &direction))
 		return invalid_object;
-	if (g.shell)
-		g.shell->set_status("picked Cube");
-	return g.pickable_object;
+
+	object_id best = invalid_object;
+	float best_distance = 1e30f;
+	for (const auto& entry : g.scene.objects)
+	{
+		const scene_object& object = entry.second;
+		if (!object.renderable || !object.visible)
+			continue;
+		float distance = 0.0f;
+		if (ray_box_distance(origin, direction, object.position, object.yaw,
+			&distance) && distance < best_distance)
+		{
+			best = entry.first;
+			best_distance = distance;
+		}
+	}
+	if (best != invalid_object)
+		g.shell->set_status("picked " + g.scene.objects[best].name);
+	return best;
 }
 
 static std::vector<object_id> pick_objects_in_box(const selection_box_query& query)
 {
 	std::vector<object_id> out;
-	const scene_object* object = find_scene_object(g.pickable_object);
-	if (!g.shell || !object)
+	if (!g.shell)
 		return out;
-	glm::vec4 box(0.0f);
-	if (!project_box(g.shell->camera().get_state(), query.width,
-		query.height, object->position, object->yaw, &box))
-		return out;
-	if (box.x >= query.x1 || box.z <= query.x0 ||
-		box.y >= query.y1 || box.w <= query.y0)
-		return out;
-	out.push_back(g.pickable_object);
-	g.shell->set_status("box selected Cube");
+	const camera_state state = g.shell->camera().get_state();
+	for (const auto& entry : g.scene.objects)
+	{
+		const scene_object& object = entry.second;
+		if (!object.renderable || !object.visible)
+			continue;
+		glm::vec4 box(0.0f);
+		if (!project_box(state, query.width, query.height, object.position,
+			object.yaw, &box))
+			continue;
+		if (box.x >= query.x1 || box.z <= query.x0 ||
+			box.y >= query.y1 || box.w <= query.y0)
+			continue;
+		out.push_back(entry.first);
+	}
+	if (!out.empty())
+		g.shell->set_status("box selected " + std::to_string(out.size()) +
+			" object(s)");
 	return out;
 }
 
@@ -1308,23 +1406,28 @@ static std::vector<selection_box> highlight_selection(
 	const std::vector<object_id>& ids)
 {
 	std::vector<selection_box> out;
-	const scene_object* object = find_scene_object(g.pickable_object);
-	if (!g.shell || !object ||
-		std::find(ids.begin(), ids.end(), g.pickable_object) == ids.end())
+	if (!g.shell)
 		return out;
 	int width = 0, height = 0;
 	content_size(&width, &height);
-	glm::vec4 box(0.0f);
-	if (!project_box(g.shell->camera().get_state(), width, height,
-		object->position, object->yaw, &box))
-		return out;
-	selection_box item;
-	item.id = g.pickable_object;
-	item.x = box.x;
-	item.y = box.y;
-	item.width = box.z - box.x;
-	item.height = box.w - box.y;
-	out.push_back(item);
+	const camera_state state = g.shell->camera().get_state();
+	for (object_id id : ids)
+	{
+		const scene_object* object = find_scene_object(id);
+		if (!object || !object->renderable || !object->visible)
+			continue;
+		glm::vec4 box(0.0f);
+		if (!project_box(state, width, height, object->position, object->yaw,
+			&box))
+			continue;
+		selection_box item;
+		item.id = id;
+		item.x = box.x;
+		item.y = box.y;
+		item.width = box.z - box.x;
+		item.height = box.w - box.y;
+		out.push_back(item);
+	}
 	return out;
 }
 
@@ -1558,7 +1661,8 @@ static void setup_editor(vgui_context* ui)
 	/* V05: 立方体落在网格上，并带一点偏航角以区分局部/世界空间。 */
 	g.scene.objects[cube].position = { 0.0f, 1.0f, 0.0f };
 	g.scene.objects[cube].yaw = 0.55f;
-	g.pickable_object = cube;
+	/* V06: 渲染/拾取集合由 renderable 标记驱动。 */
+	g.scene.objects[cube].renderable = true;
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
@@ -2007,9 +2111,13 @@ static void setup_editor(vgui_context* ui)
 
 	/* 1) Viewport:落点处新建对象;新建走命令栈,undo 删除、redo 原 id 重建。 */
 	g.shell->viewport().set_drop_listener([](const drag_payload& payload,
-		float, float) -> bool
+		float x, float y) -> bool
 	{
-		if (payload.kind != drag_payload_kind::asset || !g.find_asset(payload.id))
+		const asset_info* info = g.find_asset(payload.id);
+		if (payload.kind != drag_payload_kind::asset || !info)
+			return false;
+		camera_vec3 point;
+		if (!viewport_drop_point(x, y, &point))
 			return false;
 		object_id parent = g.context->selection();
 		if (!g.scene.objects.count(parent))
@@ -2018,11 +2126,16 @@ static void setup_editor(vgui_context* ui)
 			? g.scene.roots.size() : g.scene.objects[parent].children.size();
 		scene_object snapshot;
 		const object_id created = g.add_asset_object(payload.id, parent, index,
-			&snapshot);
+			&snapshot, &point);
 		g.rebuild_outliner();
 		g.context->set_selection(created);
 		g.push_create_command(snapshot, index);
-		g.shell->set_status("created " + snapshot.name + " from " + payload.id);
+		g.drop_preview_active = false;
+		char text[192] = {};
+		std::snprintf(text, sizeof(text),
+			"created %s (%s) at %.2f %.2f %.2f", snapshot.name.c_str(),
+			info->type.c_str(), point.x, point.y, point.z);
+		g.shell->set_status(text);
 		return true;
 	});
 
@@ -2165,6 +2278,9 @@ int main()
 			 * 原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会闪空白。 */
 			if (g.shell)
 				g.shell->viewport().poll_resize();
+			/* V06: resolve the current asset hover into a world-space drop
+			 * preview before building the frame. */
+			update_drop_preview();
 			if (g.renderer && g.shell)
 			{
 				int rw = 0, rh = 0;
@@ -2197,25 +2313,66 @@ int main()
 				view.fov_deg = camera_view.fov_deg;
 				phase0_renderer_set_camera(g.renderer, &view);
 
-				/* V05: the gizmo edits the scene transform; the cube follows it. */
-				if (const scene_object* object =
-					find_scene_object(g.pickable_object))
+				/* V06: all renderable scene objects become cube proxies; the
+				 * drop preview adds one translucent ghost instance. */
+				std::vector<phase0_instance> instances;
+				for (const auto& entry : g.scene.objects)
 				{
-					const float position[3] = {
-						object->position.x,
-						object->position.y,
-						object->position.z
-					};
-					phase0_renderer_set_object_transform(g.renderer,
-						position, object->yaw);
+					const scene_object& object = entry.second;
+					if (!object.renderable || !object.visible)
+						continue;
+					phase0_instance instance = {};
+					instance.position[0] = object.position.x;
+					instance.position[1] = object.position.y;
+					instance.position[2] = object.position.z;
+					instance.yaw = object.yaw;
+					instance.scale = 1.0f;
+					instance.ghost = false;
+					instances.push_back(instance);
 				}
+				if (g.drop_preview_active)
+				{
+					phase0_instance ghost = {};
+					ghost.position[0] = g.drop_preview_position.x;
+					ghost.position[1] = g.drop_preview_position.y;
+					ghost.position[2] = g.drop_preview_position.z;
+					ghost.scale = 1.0f;
+					ghost.ghost = true;
+					instances.push_back(ghost);
+				}
+				phase0_renderer_set_instances(g.renderer,
+					instances.empty() ? nullptr : instances.data(),
+					(int)instances.size());
 
-				/* V04: grid geometry (kit) -> renderer line quads (host). */
+				/* V04: grid geometry (kit) -> renderer line quads (host).
+				 * V06 appends a ground marker under the drop preview. */
 				std::vector<viewport_grid_line> grid_lines;
 				const int grid_w = rw > 0 ? rw : 1;
 				const int grid_h = rh > 0 ? rh : 1;
-				if (g.shell->grid().build(camera_view, grid_w, grid_h,
-					&grid_lines))
+				g.shell->grid().build(camera_view, grid_w, grid_h, &grid_lines);
+				if (g.drop_preview_active)
+				{
+					const float px = g.drop_preview_position.x;
+					const float pz = g.drop_preview_position.z;
+					const float y = g.shell->grid().plane_height() + 0.02f;
+					const float half = 1.0f;
+					const vgui_color color =
+						editor_state::asset_accent_color(g.drop_preview_type);
+					auto marker = [&](float ax, float az, float bx, float bz)
+					{
+						viewport_grid_line line;
+						line.a = { ax, y, az };
+						line.b = { bx, y, bz };
+						line.color = color;
+						line.width = 0.06f;
+						grid_lines.push_back(line);
+					};
+					marker(px - half, pz - half, px + half, pz - half);
+					marker(px + half, pz - half, px + half, pz + half);
+					marker(px + half, pz + half, px - half, pz + half);
+					marker(px - half, pz + half, px - half, pz - half);
+				}
+				if (!grid_lines.empty())
 				{
 					std::vector<phase0_grid_line> render_lines;
 					render_lines.reserve(grid_lines.size());

@@ -204,6 +204,11 @@ struct phase0_renderer
 	bool object_transform_set = false;
 	float object_position[3] = { 0.0f, 0.0f, 0.0f };
 	float object_yaw = 0.0f;
+
+	/* V06: instance list + translucent ghost pass for drop previews. */
+	bool instances_set = false;
+	std::vector<phase0_instance> instances;
+	SDL_GPUBuffer* ghost_vertex_buffer = nullptr;
 };
 
 static void release_target(phase0_renderer* r)
@@ -430,6 +435,23 @@ phase0_renderer* phase0_renderer_create(SDL_GPUDevice* device)
 		return nullptr;
 	}
 
+	/* A translucent copy of the cube feeds the drop-preview pass; failure is
+	 * non-fatal because the host still has the ground marker. */
+	std::vector<p0_vertex> ghost_vertices = make_cube();
+	for (p0_vertex& vertex : ghost_vertices)
+		vertex.color = (vertex.color & 0x00FFFFFFu) | (112u << 24);
+	r->ghost_vertex_buffer = SDL_CreateGPUBuffer(device, &buffer_info);
+	if (!r->ghost_vertex_buffer ||
+		!upload_buffer(device, r->ghost_vertex_buffer, ghost_vertices.data(),
+			buffer_info.size))
+	{
+		if (r->ghost_vertex_buffer)
+		{
+			SDL_ReleaseGPUBuffer(device, r->ghost_vertex_buffer);
+			r->ghost_vertex_buffer = nullptr;
+		}
+	}
+
 	SDL_GPUTextureCreateInfo texture_info = {};
 	texture_info.type = SDL_GPU_TEXTURETYPE_2D;
 	texture_info.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
@@ -472,6 +494,8 @@ void phase0_renderer_destroy(phase0_renderer* r)
 		if (r->white_sampler) SDL_ReleaseGPUSampler(r->device, r->white_sampler);
 		if (r->white_texture) SDL_ReleaseGPUTexture(r->device, r->white_texture);
 		if (r->grid_buffer) SDL_ReleaseGPUBuffer(r->device, r->grid_buffer);
+		if (r->ghost_vertex_buffer)
+			SDL_ReleaseGPUBuffer(r->device, r->ghost_vertex_buffer);
 		if (r->vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->vertex_buffer);
 		if (r->grid_pipeline)
 			SDL_ReleaseGPUGraphicsPipeline(r->device, r->grid_pipeline);
@@ -551,6 +575,17 @@ void phase0_renderer_set_object_transform(phase0_renderer* r,
 		r->object_position[2] = 0.0f;
 	}
 	r->object_yaw = yaw_radians;
+}
+
+void phase0_renderer_set_instances(phase0_renderer* r,
+	const phase0_instance* instances, int count)
+{
+	if (!r) return;
+	r->instances_set = true;
+	r->instances.clear();
+	if (!instances || count <= 0)
+		return;
+	r->instances.assign(instances, instances + count);
 }
 
 static std::vector<p0_vertex> build_grid_vertices(
@@ -694,26 +729,55 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 			glm::vec3(1.0f, -1.0f, 1.0f));
 	const glm::mat4 view = glm::lookAt(eye, eye_target,
 		glm::vec3(0.0f, 1.0f, 0.0f));
-	glm::mat4 model;
-	if (r->object_transform_set)
+
+	auto instance_model = [](const phase0_instance& instance)
 	{
-		model = glm::translate(glm::mat4(1.0f),
-			glm::vec3(r->object_position[0], r->object_position[1],
-				r->object_position[2])) *
-			glm::rotate(glm::mat4(1.0f), r->object_yaw,
-				glm::vec3(0.0f, 1.0f, 0.0f));
+		const float scale = instance.scale > 0.0f ? instance.scale : 1.0f;
+		return glm::translate(glm::mat4(1.0f),
+			glm::vec3(instance.position[0], instance.position[1],
+				instance.position[2])) *
+			glm::rotate(glm::mat4(1.0f), instance.yaw,
+				glm::vec3(0.0f, 1.0f, 0.0f)) *
+			glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+	};
+
+	if (!r->instances_set)
+	{
+		/* Legacy single-cube path for the Phase 0 sample. */
+		glm::mat4 model;
+		if (r->object_transform_set)
+		{
+			model = glm::translate(glm::mat4(1.0f),
+				glm::vec3(r->object_position[0], r->object_position[1],
+					r->object_position[2])) *
+				glm::rotate(glm::mat4(1.0f), r->object_yaw,
+					glm::vec3(0.0f, 1.0f, 0.0f));
+		}
+		else
+		{
+			model = glm::rotate(glm::mat4(1.0f), time_seconds * 0.7f,
+				glm::vec3(0.0f, 1.0f, 0.0f)) *
+				glm::rotate(glm::mat4(1.0f), 0.35f,
+					glm::vec3(1.0f, 0.0f, 0.0f));
+		}
+		p0_uniform uniform = {};
+		uniform.mvp = projection * view * model;
+		SDL_PushGPUVertexUniformData(cmd, 0, &uniform, sizeof(uniform));
+		SDL_DrawGPUPrimitives(pass, 36, 1, 0, 0);
 	}
 	else
 	{
-		model = glm::rotate(glm::mat4(1.0f), time_seconds * 0.7f,
-			glm::vec3(0.0f, 1.0f, 0.0f)) *
-			glm::rotate(glm::mat4(1.0f), 0.35f, glm::vec3(1.0f, 0.0f, 0.0f));
+		for (const phase0_instance& instance : r->instances)
+		{
+			if (instance.ghost)
+				continue;
+			p0_uniform uniform = {};
+			uniform.mvp = projection * view * instance_model(instance);
+			SDL_PushGPUVertexUniformData(cmd, 0, &uniform,
+				sizeof(uniform));
+			SDL_DrawGPUPrimitives(pass, 36, 1, 0, 0);
+		}
 	}
-	p0_uniform uniform = {};
-	uniform.mvp = projection * view * model;
-	SDL_PushGPUVertexUniformData(cmd, 0, &uniform, sizeof(uniform));
-
-	SDL_DrawGPUPrimitives(pass, 36, 1, 0, 0);
 
 	/* Grid after the cube: depth test hides lines behind the cube, while the
 	 * blended pass does not disturb the cube's depth values. */
@@ -728,6 +792,39 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 		SDL_PushGPUVertexUniformData(cmd, 0, &grid_uniform,
 			sizeof(grid_uniform));
 		SDL_DrawGPUPrimitives(pass, (Uint32)grid_vertices.size(), 1, 0, 0);
+	}
+
+	/* Drop-preview ghosts use the blended grid pipeline but a translucent cube
+	 * vertex buffer.  Drawing them after the grid lets the marker/ground read
+	 * through the ghost; depth testing still hides it behind opaque objects. */
+	bool any_ghost = false;
+	if (r->instances_set)
+	{
+		for (const phase0_instance& instance : r->instances)
+		{
+			if (instance.ghost)
+			{
+				any_ghost = true;
+				break;
+			}
+		}
+	}
+	if (any_ghost && r->grid_pipeline && r->ghost_vertex_buffer)
+	{
+		SDL_BindGPUGraphicsPipeline(pass, r->grid_pipeline);
+		SDL_GPUBufferBinding ghost_binding = { r->ghost_vertex_buffer, 0 };
+		SDL_BindGPUVertexBuffers(pass, 0, &ghost_binding, 1);
+		SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
+		for (const phase0_instance& instance : r->instances)
+		{
+			if (!instance.ghost)
+				continue;
+			p0_uniform ghost_uniform = {};
+			ghost_uniform.mvp = projection * view * instance_model(instance);
+			SDL_PushGPUVertexUniformData(cmd, 0, &ghost_uniform,
+				sizeof(ghost_uniform));
+			SDL_DrawGPUPrimitives(pass, 36, 1, 0, 0);
+		}
 	}
 
 	SDL_EndGPURenderPass(pass);

@@ -121,6 +121,15 @@ namespace vgui_editor_kit {
 		/* Records a drop (called by the internal drop target).  Returns false
 		 * when no listener is installed or the host rejects the payload. */
 		bool record_drop(const drag_payload& payload, float x, float y);
+		/* Latest accepted hover while a drag is over this viewport.  x/y are
+		 * absolute coordinates; call once per frame after vgui_update() to drive
+		 * a host-side drop preview.  Returns false once the drag leaves, is
+		 * cancelled or has dropped, so the preview can be cleared without a
+		 * separate leave callback. */
+		bool drop_hover(float* x, float* y, drag_payload* payload = nullptr) const;
+		/* Internal: called by the viewport's drop target while a payload hovers
+		 * it.  Hosts should use drop_hover() instead. */
+		void set_drop_hover(const drag_payload& payload, float x, float y);
 
 		vgui_widget* widget() const noexcept;
 
@@ -168,6 +177,10 @@ namespace vgui_editor_kit {
 		drag_payload last_drop_;
 		float last_drop_x_ = 0.0f;
 		float last_drop_y_ = 0.0f;
+		drag_payload drop_hover_payload_;
+		float drop_hover_x_ = 0.0f;
+		float drop_hover_y_ = 0.0f;
+		bool drop_hover_valid_ = false;
 		std::unique_ptr<drop_target> drop_target_;
 	};
 

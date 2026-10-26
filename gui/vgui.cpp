@@ -9965,6 +9965,15 @@ namespace {
 		ctx->want_key = ctx->focus != nullptr || ctx->open_menu != nullptr ||
 			!ctx->key_handlers.empty() || ctx->modal.active;
 
+		/* An in-flight drag owns Escape: cancel it before menus/popups or the
+		 * focused widget can consume the key. */
+		if (down && key == VGUI_KEY_ESCAPE && ctx->drag_kind != VGUI_DRAG_NONE)
+		{
+			vgui_input_cancel(ctx);
+			vgui_end_input(ctx);
+			return 1;
+		}
+
 		if (ctx->modal.active && down && key == VGUI_KEY_ESCAPE)
 		{
 			if (ctx->modal.options.close_on_escape)

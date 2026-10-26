@@ -8873,6 +8873,77 @@ static int test_outliner_multi_selection_sync()
 	return 0;
 }
 
+/* V06: viewport drop hover polling clears on leave, cancel and drop. */
+static int test_viewport_drop_hover()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v06 viewport context");
+	vgui_context_set_size(ui, 900, 650);
+
+	{
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		vgui_widget_set_pos(viewport.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(viewport.widget(), 300.0f, 180.0f);
+
+		int drops = 0;
+		viewport.set_drop_listener([&](const drag_payload&, float, float) {
+			++drops;
+			return true;
+		});
+		drag_payload asset;
+		asset.kind = drag_payload_kind::asset;
+		asset.id = "Cube.mesh";
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		const float cx = vx + vw * 0.5f;
+		const float cy = vy + vh * 0.5f;
+
+		float hx = 0, hy = 0;
+		drag_payload hover;
+		if (viewport.drop_hover(&hx, &hy, &hover))
+			return fail("v06 no hover before drag");
+
+		if (!begin_editor_drag(ui, viewport.widget(), asset))
+			return fail("v06 drag begins");
+		vgui_input_mouse_move(ui, cx, cy);
+		if (!viewport.drop_hover(&hx, &hy, &hover) ||
+			hover.id != "Cube.mesh" ||
+			std::fabs(hx - cx) > 1.0f || std::fabs(hy - cy) > 1.0f)
+			return fail("v06 hover reports payload");
+
+		/* Leaving the viewport clears the preview even without a leave event. */
+		vgui_input_mouse_move(ui, 700.0f, 600.0f);
+		if (viewport.drop_hover(&hx, &hy, &hover))
+			return fail("v06 hover clears on leave");
+
+		/* Escape cancels the in-flight drag and never creates an object. */
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (viewport.drop_hover(&hx, &hy, &hover) || drops != 0)
+			return fail("v06 escape clears hover");
+
+		/* A real drop reports the payload once and then clears the hover. */
+		if (!begin_editor_drag(ui, viewport.widget(), asset))
+			return fail("v06 drop drag begins");
+		vgui_input_mouse_move(ui, cx, cy);
+		if (!viewport.drop_hover(&hx, &hy, &hover))
+			return fail("v06 drop hover present");
+		vgui_input_mouse_up(ui, 1, cx, cy, 1);
+		if (drops != 1 || viewport.drop_hover(&hx, &hy, &hover))
+			return fail("v06 drop clears hover");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* V05: 平移 Gizmo——轴/平面命中、拖动约束、吸附、取消与局部空间。 */
 static int test_viewport_gizmo()
 {
@@ -9339,6 +9410,8 @@ int main()
 	if (int rc = test_asset_preview())
 		return rc;
 	if (int rc = test_asset_drop_paths())
+		return rc;
+	if (int rc = test_viewport_drop_hover())
 		return rc;
 	if (int rc = test_asset_thumbnails())
 		return rc;

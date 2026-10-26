@@ -58,6 +58,7 @@ namespace vgui_editor_kit {
 				}
 				hint->w = w;
 				hint->h = h;
+				owner_->set_drop_hover(payload, x, y);
 			}
 
 			bool drop(const drag_payload& payload, float x, float y) override
@@ -288,6 +289,37 @@ namespace vgui_editor_kit {
 		last_drop_ = payload;
 		last_drop_x_ = x;
 		last_drop_y_ = y;
+		return true;
+	}
+
+	void viewport_view::set_drop_hover(const drag_payload& payload, float x,
+		float y)
+	{
+		drop_hover_payload_ = payload;
+		drop_hover_x_ = x;
+		drop_hover_y_ = y;
+		drop_hover_valid_ = !payload.empty();
+	}
+
+	bool viewport_view::drop_hover(float* x, float* y,
+		drag_payload* payload) const
+	{
+		if (x)
+			*x = 0.0f;
+		if (y)
+			*y = 0.0f;
+		if (payload)
+			*payload = drag_payload{};
+		if (!context_ || !surface_ || !drop_hover_valid_ ||
+			!vgui_drag_active(context_) ||
+			vgui_drag_hover_target(context_) != surface_)
+			return false;
+		if (x)
+			*x = drop_hover_x_;
+		if (y)
+			*y = drop_hover_y_;
+		if (payload)
+			*payload = drop_hover_payload_;
 		return true;
 	}
 
