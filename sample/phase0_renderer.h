@@ -5,6 +5,8 @@
 // texture is borrowed by vgui through vgui_sdl3_texture_create_native() and is
 // never released by vgui.
 
+#include <cstdint>
+
 struct SDL_GPUDevice;
 struct SDL_GPUTexture;
 
@@ -33,5 +35,20 @@ int phase0_renderer_height(phase0_renderer* renderer);
 /* Overrides the built-in view.  Pass NULL to restore the Phase 0 default. */
 void phase0_renderer_set_camera(phase0_renderer* renderer,
 	const phase0_camera* camera);
+
+/* Optional world grid, submitted as line segments (world space).  Colour uses
+ * the renderer's vertex order 0xAABBGGRR; width is in world units.  Pass
+ * NULL/0 to clear.  The grid is drawn after the cube with depth testing so
+ * the cube occludes it correctly. */
+struct phase0_grid_line
+{
+	float a[3] = { 0.0f, 0.0f, 0.0f };
+	float b[3] = { 0.0f, 0.0f, 0.0f };
+	uint32_t color = 0xFFFFFFFFu;
+	float width = 1.0f;
+};
+
+void phase0_renderer_set_grid(phase0_renderer* renderer,
+	const phase0_grid_line* lines, int count);
 
 void phase0_renderer_render(phase0_renderer* renderer, float time_seconds);

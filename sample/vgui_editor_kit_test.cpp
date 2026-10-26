@@ -8873,6 +8873,168 @@ static int test_outliner_multi_selection_sync()
 	return 0;
 }
 
+/* V04: 世界网格自适应密度、线段对齐、轴线与可见性。 */
+static int test_viewport_grid()
+{
+	using namespace vgui_editor_kit;
+	viewport_grid grid;
+	if (!grid.visible() || !grid.auto_density() ||
+		grid.half_cell_count() != 32 || grid.major_every() != 10 ||
+		!grid.axes_visible() ||
+		std::fabs(grid.plane_height()) > 1e-6f)
+		return fail("v04 grid defaults");
+
+	auto close_to = [](float a, float b, float eps = 1e-4f) {
+		return std::fabs(a - b) <= eps;
+	};
+	const float pi = 3.14159265358979323846f;
+	auto cell_pixels = [&](float cell, float distance, int height) {
+		return cell * (float)height /
+			(2.0f * distance * std::tan(25.0f * pi / 180.0f));
+	};
+
+	const float near_cell = grid.effective_cell_size(2.0f, 500, 50.0f);
+	const float mid_cell = grid.effective_cell_size(10.0f, 500, 50.0f);
+	const float far_cell = grid.effective_cell_size(50.0f, 500, 50.0f);
+	if (!(near_cell < mid_cell && mid_cell < far_cell))
+		return fail("v04 grid auto density ladder");
+	const float near_px = cell_pixels(near_cell, 2.0f, 500);
+	const float mid_px = cell_pixels(mid_cell, 10.0f, 500);
+	const float far_px = cell_pixels(far_cell, 50.0f, 500);
+	if (near_px < 23.0f || near_px > 97.0f ||
+		mid_px < 23.0f || mid_px > 97.0f ||
+		far_px < 23.0f || far_px > 97.0f)
+		return fail("v04 grid auto density pixels");
+
+	grid.set_auto_density(false);
+	grid.set_cell_size(2.5f);
+	if (!close_to(grid.effective_cell_size(50.0f, 500, 50.0f), 2.5f))
+		return fail("v04 grid pinned cell");
+	grid.set_auto_density(true);
+
+	grid.set_colors(0x33112233u, 0x44112233u, 0xFF010203u, 0xFF040506u,
+		0xFF070809u);
+	camera_state camera;
+	std::vector<viewport_grid_line> lines;
+	if (!grid.build(camera, 800, 500, &lines))
+		return fail("v04 grid build");
+	const float cell = grid.effective_cell_size(camera.distance, 500,
+		camera.fov_deg);
+	const int half = grid.half_cell_count();
+	if (lines.size() != (std::size_t)(2 * (2 * half + 1) + 3))
+		return fail("v04 grid line count");
+
+	bool has_minor = false;
+	bool has_major = false;
+	for (std::size_t i = 0; i + 3 < lines.size(); ++i)
+	{
+		const viewport_grid_line& line = lines[i];
+		if (!close_to(line.a.y, 0.0f) || !close_to(line.b.y, 0.0f))
+			return fail("v04 grid plane");
+		const bool x_line = close_to(line.a.x, line.b.x);
+		const bool z_line = close_to(line.a.z, line.b.z);
+		if (!x_line && !z_line)
+			return fail("v04 grid orientation");
+		if (x_line)
+		{
+			const float k = line.a.x / cell;
+			if (!close_to(k, std::round(k), 1e-3f))
+				return fail("v04 grid x alignment");
+		}
+		else
+		{
+			const float k = line.a.z / cell;
+			if (!close_to(k, std::round(k), 1e-3f))
+				return fail("v04 grid z alignment");
+		}
+		if (line.color == 0x44112233u)
+			has_major = true;
+		else if (line.color == 0x33112233u)
+			has_minor = true;
+	}
+	if (!has_minor || !has_major)
+		return fail("v04 grid major/minor colours");
+	if (lines[lines.size() - 3].color != 0xFF010203u ||
+		lines[lines.size() - 2].color != 0xFF070809u ||
+		lines[lines.size() - 1].color != 0xFF040506u)
+		return fail("v04 grid axis colours");
+
+	/* Axis directions: X and Z span both sides, Y goes up. */
+	if (!(lines[lines.size() - 3].a.x < 0.0f &&
+		lines[lines.size() - 3].b.x > 0.0f &&
+		close_to(lines[lines.size() - 3].a.z, 0.0f)))
+		return fail("v04 grid x axis");
+	if (!(lines[lines.size() - 2].a.z < 0.0f &&
+		lines[lines.size() - 2].b.z > 0.0f &&
+		close_to(lines[lines.size() - 2].a.x, 0.0f)))
+		return fail("v04 grid z axis");
+	if (!(close_to(lines[lines.size() - 1].a.y, 0.0f) &&
+		lines[lines.size() - 1].b.y > 0.0f))
+		return fail("v04 grid y axis");
+
+	grid.set_plane_height(2.0f);
+	grid.build(camera, 800, 500, &lines);
+	if (!close_to(lines[0].a.y, 2.0f) || !close_to(lines[0].b.y, 2.0f))
+		return fail("v04 grid custom plane");
+	grid.set_plane_height(0.0f);
+
+	grid.set_half_cell_count(4);
+	grid.build(camera, 800, 500, &lines);
+	if (lines.size() != (std::size_t)(2 * (2 * 4 + 1) + 3))
+		return fail("v04 grid half count");
+
+	grid.set_visible(false);
+	if (grid.build(camera, 800, 500, &lines) || !lines.empty())
+		return fail("v04 grid hidden");
+	return 0;
+}
+
+/* V04: 吸附策略与自由移动回退。 */
+static int test_snap_settings()
+{
+	using namespace vgui_editor_kit;
+	auto close_to = [](float a, float b, float eps = 1e-4f) {
+		return std::fabs(a - b) <= eps;
+	};
+	snap_settings snap;
+	if (!snap.enabled || !snap.translate || !snap.rotate || !snap.scale)
+		return fail("v04 snap defaults");
+	if (!close_to(snap.snap_translation(0.26f), 0.5f) ||
+		!close_to(snap.snap_translation(0.24f), 0.0f) ||
+		!close_to(snap.snap_translation(-0.26f), -0.5f))
+		return fail("v04 snap translation");
+	if (!close_to(snap.snap_rotation_degrees(7.0f), 0.0f) ||
+		!close_to(snap.snap_rotation_degrees(23.0f), 30.0f))
+		return fail("v04 snap rotation");
+	if (!close_to(snap.snap_scale(0.26f), 0.3f) ||
+		!close_to(snap.snap_scale(0.24f), 0.2f))
+		return fail("v04 snap scale");
+	const camera_vec3 vector = snap.snap_translation(
+		camera_vec3{ 0.26f, 0.74f, 1.26f });
+	if (!close_to(vector.x, 0.5f) || !close_to(vector.y, 0.5f) ||
+		!close_to(vector.z, 1.5f))
+		return fail("v04 snap vector");
+
+	snap.enabled = false;
+	if (!close_to(snap.snap_translation(0.26f), 0.26f) ||
+		!close_to(snap.snap_rotation_degrees(7.0f), 7.0f) ||
+		!close_to(snap.snap_scale(0.26f), 0.26f))
+		return fail("v04 snap disabled is free");
+	snap.enabled = true;
+	snap.translate = false;
+	if (!close_to(snap.snap_translation(0.26f), 0.26f))
+		return fail("v04 snap channel disabled");
+	snap.translate = true;
+	snap.translate_step = 0.0f;
+	if (!close_to(snap.snap_translation(0.26f), 0.26f))
+		return fail("v04 snap zero step");
+	snap.translate_step = 0.5f;
+	snap.rotate_step_deg = 45.0f;
+	if (!close_to(snap.snap_rotation_degrees(50.0f), 45.0f))
+		return fail("v04 snap custom rotation step");
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -8961,6 +9123,10 @@ int main()
 		return rc;
 	if (int rc = test_outliner_multi_selection_sync())
 		return rc;
+	if (int rc = test_viewport_grid())
+		return rc;
+	if (int rc = test_snap_settings())
+		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
 	if (!ui)
@@ -9008,6 +9174,37 @@ int main()
 		context.set_selection(7);
 		if (shell.statusbar().selection_text() != "Selected: 7")
 			return fail("shell selection summary restores");
+
+		/* V04: grid/snap commands and their checked state stay in sync. */
+		const bool grid_visible = shell.grid().visible();
+		if (!shell.run_command("view.grid") ||
+			shell.grid().visible() == grid_visible ||
+			shell.commands().is_checked("view.grid") != shell.grid().visible())
+			return fail("shell grid toggle");
+		if (!shell.run_command("view.grid") || !shell.grid().visible())
+			return fail("shell grid restore");
+		const bool snap_enabled = shell.snap().enabled;
+		if (!shell.run_command("view.snap") ||
+			shell.snap().enabled == snap_enabled)
+			return fail("shell snap toggle");
+		if (!shell.run_command("view.snap") || !shell.snap().enabled)
+			return fail("shell snap restore");
+
+		if (!shell.run_command("view.grid.0.5") ||
+			shell.grid().auto_density() ||
+			std::fabs(shell.grid().cell_size() - 0.5f) > 1e-4f ||
+			!shell.commands().is_checked("view.grid.0.5") ||
+			shell.commands().is_checked("view.grid.2"))
+			return fail("shell grid size 0.5");
+		if (!shell.run_command("view.grid.2") ||
+			std::fabs(shell.grid().cell_size() - 2.0f) > 1e-4f ||
+			std::fabs(shell.snap().translate_step - 2.0f) > 1e-4f ||
+			!shell.commands().is_checked("view.grid.2"))
+			return fail("shell grid size 2");
+		if (!shell.run_command("view.grid.auto") ||
+			!shell.grid().auto_density() ||
+			!shell.commands().is_checked("view.grid.auto"))
+			return fail("shell grid auto");
 
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(shell.widget(), &x, &y, &w, &h);

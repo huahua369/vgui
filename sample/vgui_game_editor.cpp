@@ -1935,6 +1935,50 @@ int main()
 				view.target[2] = camera_view.target.z;
 				view.fov_deg = camera_view.fov_deg;
 				phase0_renderer_set_camera(g.renderer, &view);
+
+				/* V04: grid geometry (kit) -> renderer line quads (host). */
+				std::vector<viewport_grid_line> grid_lines;
+				const int grid_w = rw > 0 ? rw : 1;
+				const int grid_h = rh > 0 ? rh : 1;
+				if (g.shell->grid().build(camera_view, grid_w, grid_h,
+					&grid_lines))
+				{
+					std::vector<phase0_grid_line> render_lines;
+					render_lines.reserve(grid_lines.size());
+					for (const viewport_grid_line& line : grid_lines)
+					{
+						phase0_grid_line out = {};
+						out.a[0] = line.a.x;
+						out.a[1] = line.a.y;
+						out.a[2] = line.a.z;
+						out.b[0] = line.b.x;
+						out.b[1] = line.b.y;
+						out.b[2] = line.b.z;
+						/* vgui 0xAARRGGBB -> vertex colour 0xAABBGGRR. */
+						const uint32_t c = line.color;
+						out.color = (c & 0xFF00FF00u) |
+							((c & 0x000000FFu) << 16) |
+							((c >> 16) & 0x000000FFu);
+						out.width = line.width;
+						render_lines.push_back(out);
+					}
+					phase0_renderer_set_grid(g.renderer, render_lines.data(),
+						(int)render_lines.size());
+				}
+				else
+				{
+					phase0_renderer_set_grid(g.renderer, nullptr, 0);
+				}
+
+				/* Auto grid keeps the translation snap in step with the cell. */
+				if (g.shell->grid().auto_density())
+				{
+					const float cell = g.shell->grid().effective_cell_size(
+						camera_view.distance, grid_h, camera_view.fov_deg);
+					if (cell > 0.0f)
+						g.shell->snap().translate_step = cell;
+				}
+
 				phase0_renderer_render(g.renderer, (float)SDL_GetTicks() / 1000.0f);
 			}
 

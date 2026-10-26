@@ -7,6 +7,7 @@
 #include "shaders/spv_c/a_base3d.vert.h"
 #include "shaders/spv_c/a_base3d.frag.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -192,6 +193,12 @@ struct phase0_renderer
 	int height = 0;
 	bool has_camera = false;
 	phase0_camera camera = {};
+
+	/* V04 grid: a blended, depth-tested (no depth write) line-quad pass. */
+	SDL_GPUGraphicsPipeline* grid_pipeline = nullptr;
+	SDL_GPUBuffer* grid_buffer = nullptr;
+	Uint32 grid_capacity = 0;
+	std::vector<phase0_grid_line> grid_lines;
 };
 
 static void release_target(phase0_renderer* r)
@@ -311,6 +318,77 @@ static bool create_pipeline(phase0_renderer* r)
 	return r->pipeline != nullptr;
 }
 
+/* Grid lines are expanded into world-space thin quads by the host; this pass
+ * blends them over the cube and tests (but does not write) depth. */
+static bool create_grid_pipeline(phase0_renderer* r)
+{
+	static const SDL_GPUVertexAttribute attributes[] = {
+		{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0 },
+		{ 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 12 },
+		{ 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 20 },
+	};
+
+	SDL_GPUVertexBufferDescription vertex_buffer = {};
+	vertex_buffer.slot = 0;
+	vertex_buffer.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+	vertex_buffer.pitch = sizeof(p0_vertex);
+
+	SDL_GPUVertexInputState vertex_input = {};
+	vertex_input.num_vertex_buffers = 1;
+	vertex_input.vertex_buffer_descriptions = &vertex_buffer;
+	vertex_input.num_vertex_attributes = 3;
+	vertex_input.vertex_attributes = attributes;
+
+	SDL_GPUColorTargetDescription color_target = {};
+	color_target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	color_target.blend_state.enable_blend = true;
+	color_target.blend_state.src_color_blendfactor =
+		SDL_GPU_BLENDFACTOR_SRC_ALPHA;
+	color_target.blend_state.dst_color_blendfactor =
+		SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+	color_target.blend_state.color_blend_op = SDL_GPU_BLENDOP_ADD;
+	color_target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
+	color_target.blend_state.dst_alpha_blendfactor =
+		SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+	color_target.blend_state.alpha_blend_op = SDL_GPU_BLENDOP_ADD;
+	color_target.blend_state.enable_color_write_mask = true;
+	color_target.blend_state.color_write_mask =
+		SDL_GPU_COLORCOMPONENT_R | SDL_GPU_COLORCOMPONENT_G |
+		SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
+
+	SDL_GPUDepthStencilState depth = {};
+	depth.enable_depth_test = true;
+	depth.enable_depth_write = false;
+	depth.compare_op = SDL_GPU_COMPAREOP_LESS;
+	depth.enable_stencil_test = false;
+
+	SDL_GPURasterizerState rasterizer = {};
+	rasterizer.fill_mode = SDL_GPU_FILLMODE_FILL;
+	rasterizer.cull_mode = SDL_GPU_CULLMODE_NONE;
+	rasterizer.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+
+	SDL_GPUMultisampleState multisample = {};
+	multisample.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+	SDL_GPUGraphicsPipelineCreateInfo info = {};
+	info.vertex_shader = r->vert;
+	info.fragment_shader = r->frag;
+	info.vertex_input_state = vertex_input;
+	info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+	info.rasterizer_state = rasterizer;
+	info.multisample_state = multisample;
+	info.depth_stencil_state = depth;
+	info.target_info.has_depth_stencil_target = true;
+	info.target_info.depth_stencil_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+	info.target_info.num_color_targets = 1;
+	info.target_info.color_target_descriptions = &color_target;
+
+	r->grid_pipeline = SDL_CreateGPUGraphicsPipeline(r->device, &info);
+	if (!r->grid_pipeline)
+		SDL_Log("phase0: failed to create grid pipeline: %s", SDL_GetError());
+	return r->grid_pipeline != nullptr;
+}
+
 phase0_renderer* phase0_renderer_create(SDL_GPUDevice* device)
 {
 	if (!device)
@@ -329,7 +407,7 @@ phase0_renderer* phase0_renderer_create(SDL_GPUDevice* device)
 		a_base3d_vert, sizeof(a_base3d_vert), 0, 1);
 	r->frag = make_shader(device, SDL_GPU_SHADERSTAGE_FRAGMENT,
 		a_base3d_frag, sizeof(a_base3d_frag), 1, 0);
-	if (!r->vert || !r->frag || !create_pipeline(r))
+	if (!r->vert || !r->frag || !create_pipeline(r) || !create_grid_pipeline(r))
 	{
 		phase0_renderer_destroy(r);
 		return nullptr;
@@ -388,7 +466,10 @@ void phase0_renderer_destroy(phase0_renderer* r)
 		release_target(r);
 		if (r->white_sampler) SDL_ReleaseGPUSampler(r->device, r->white_sampler);
 		if (r->white_texture) SDL_ReleaseGPUTexture(r->device, r->white_texture);
+		if (r->grid_buffer) SDL_ReleaseGPUBuffer(r->device, r->grid_buffer);
 		if (r->vertex_buffer) SDL_ReleaseGPUBuffer(r->device, r->vertex_buffer);
+		if (r->grid_pipeline)
+			SDL_ReleaseGPUGraphicsPipeline(r->device, r->grid_pipeline);
 		if (r->pipeline) SDL_ReleaseGPUGraphicsPipeline(r->device, r->pipeline);
 		if (r->vert) SDL_ReleaseGPUShader(r->device, r->vert);
 		if (r->frag) SDL_ReleaseGPUShader(r->device, r->frag);
@@ -437,10 +518,97 @@ void phase0_renderer_set_camera(phase0_renderer* r, const phase0_camera* camera)
 	}
 }
 
+void phase0_renderer_set_grid(phase0_renderer* r, const phase0_grid_line* lines,
+	int count)
+{
+	if (!r) return;
+	r->grid_lines.clear();
+	if (!lines || count <= 0)
+		return;
+	r->grid_lines.assign(lines, lines + count);
+}
+
+static std::vector<p0_vertex> build_grid_vertices(
+	const std::vector<phase0_grid_line>& lines)
+{
+	std::vector<p0_vertex> vertices;
+	vertices.reserve(lines.size() * 6);
+	for (const phase0_grid_line& line : lines)
+	{
+		const glm::vec3 a(line.a[0], line.a[1], line.a[2]);
+		const glm::vec3 b(line.b[0], line.b[1], line.b[2]);
+		const glm::vec3 dir = b - a;
+		if (glm::length(dir) < 1e-6f)
+			continue;
+		glm::vec3 perpendicular = glm::cross(dir, glm::vec3(0.0f, 1.0f, 0.0f));
+		if (glm::length(perpendicular) < 1e-6f)
+			perpendicular = glm::vec3(1.0f, 0.0f, 0.0f);
+		perpendicular = glm::normalize(perpendicular) *
+			(std::max(line.width, 1e-5f) * 0.5f);
+
+		const glm::vec3 c0 = a - perpendicular;
+		const glm::vec3 c1 = a + perpendicular;
+		const glm::vec3 c2 = b + perpendicular;
+		const glm::vec3 c3 = b - perpendicular;
+		const uint32_t color = line.color;
+		auto push = [&](const glm::vec3& p) {
+			vertices.push_back({ p.x, p.y, p.z, 0.5f, 0.5f, color });
+		};
+		push(c0); push(c1); push(c2);
+		push(c0); push(c2); push(c3);
+	}
+	return vertices;
+}
+
+static bool ensure_grid_buffer(phase0_renderer* r, Uint32 bytes)
+{
+	if (!r || !r->device || bytes == 0)
+		return false;
+	if (r->grid_buffer && r->grid_capacity >= bytes)
+		return true;
+	if (r->grid_buffer)
+	{
+		SDL_ReleaseGPUBuffer(r->device, r->grid_buffer);
+		r->grid_buffer = nullptr;
+		r->grid_capacity = 0;
+	}
+	Uint32 capacity = 256;
+	while (capacity < bytes)
+		capacity *= 2;
+	SDL_GPUBufferCreateInfo info = {};
+	info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+	info.size = capacity;
+	r->grid_buffer = SDL_CreateGPUBuffer(r->device, &info);
+	if (!r->grid_buffer)
+	{
+		SDL_Log("phase0: failed to create grid buffer: %s", SDL_GetError());
+		return false;
+	}
+	r->grid_capacity = capacity;
+	return true;
+}
+
 void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 {
 	if (!r || !r->pipeline || !r->color || !r->depth)
 		return;
+
+	/* Expand and upload the grid before the render pass.  The upload helper
+	 * submits its own command buffer, so it must run outside this one. */
+	std::vector<p0_vertex> grid_vertices;
+	if (!r->grid_lines.empty() && r->grid_pipeline)
+	{
+		grid_vertices = build_grid_vertices(r->grid_lines);
+		if (!grid_vertices.empty())
+		{
+			const Uint32 bytes =
+				(Uint32)(grid_vertices.size() * sizeof(p0_vertex));
+			if (!ensure_grid_buffer(r, bytes) ||
+				!upload_buffer(r->device, r->grid_buffer,
+					grid_vertices.data(), bytes))
+				grid_vertices.clear();
+		}
+	}
 
 	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(r->device);
 	if (!cmd)
@@ -507,6 +675,22 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 	SDL_PushGPUVertexUniformData(cmd, 0, &uniform, sizeof(uniform));
 
 	SDL_DrawGPUPrimitives(pass, 36, 1, 0, 0);
+
+	/* Grid after the cube: depth test hides lines behind the cube, while the
+	 * blended pass does not disturb the cube's depth values. */
+	if (!grid_vertices.empty() && r->grid_pipeline && r->grid_buffer)
+	{
+		p0_uniform grid_uniform = {};
+		grid_uniform.mvp = projection * view;
+		SDL_BindGPUGraphicsPipeline(pass, r->grid_pipeline);
+		SDL_GPUBufferBinding grid_binding = { r->grid_buffer, 0 };
+		SDL_BindGPUVertexBuffers(pass, 0, &grid_binding, 1);
+		SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
+		SDL_PushGPUVertexUniformData(cmd, 0, &grid_uniform,
+			sizeof(grid_uniform));
+		SDL_DrawGPUPrimitives(pass, (Uint32)grid_vertices.size(), 1, 0, 0);
+	}
+
 	SDL_EndGPURenderPass(pass);
 	SDL_SubmitGPUCommandBuffer(cmd);
 }

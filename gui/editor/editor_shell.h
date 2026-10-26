@@ -24,6 +24,7 @@
 #include "status_bar.h"
 #include "toolbar.h"
 #include "viewport_camera.h"
+#include "viewport_grid.h"
 #include "viewport_selection.h"
 #include "viewport_view.h"
 #include "vgui.h"
@@ -113,6 +114,12 @@ namespace vgui_editor_kit {
 		 * editor_context and is mirrored by the Outliner. */
 		viewport_selection& picking() noexcept;
 		const viewport_selection& picking() const noexcept;
+		/* V04: world grid settings/geometry and the snapping policy shared with
+		 * future gizmos.  The host renders grid().build() itself. */
+		viewport_grid& grid() noexcept;
+		const viewport_grid& grid() const noexcept;
+		snap_settings& snap() noexcept;
+		const snap_settings& snap() const noexcept;
 
 		void set_status(std::string text);
 
@@ -175,6 +182,8 @@ namespace vgui_editor_kit {
 		/* Declared after the viewport so they detach before the surface dies. */
 		viewport_camera camera_;
 		viewport_selection picking_;
+		viewport_grid grid_;
+		snap_settings snap_;
 		toolbar_view toolbar_;
 		status_bar statusbar_;
 		search_box search_;

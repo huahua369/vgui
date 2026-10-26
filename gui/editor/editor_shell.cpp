@@ -131,6 +131,50 @@ namespace vgui_editor_kit {
 		add_panel_toggle("view.properties", "Properties", editor_panel::properties);
 		add_panel_toggle("view.bottom", "Bottom Panel", editor_panel::bottom);
 
+		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
+		commands_.add("view.grid", "Grid", [this]() {
+			grid_.set_visible(!grid_.visible());
+			set_status(grid_.visible() ? "grid on" : "grid off");
+		});
+		commands_.set_checked("view.grid", [this]() {
+			return grid_.visible();
+		});
+
+		commands_.add("view.snap", "Snapping", [this]() {
+			snap_.enabled = !snap_.enabled;
+			set_status(snap_.enabled ? "snapping on" : "snapping off");
+		});
+		commands_.set_checked("view.snap", [this]() {
+			return snap_.enabled;
+		});
+
+		commands_.add("view.grid.auto", "Auto", [this]() {
+			grid_.set_auto_density(true);
+			set_status("grid auto");
+		});
+		commands_.set_checked("view.grid.auto", [this]() {
+			return grid_.auto_density();
+		});
+
+		auto add_grid_size = [this](const char* id, const char* title,
+			const char* label, float size)
+		{
+			commands_.add(id, title, [this, size, label]() {
+				grid_.set_auto_density(false);
+				grid_.set_cell_size(size);
+				snap_.translate_step = size;
+				set_status(std::string("grid ") + label);
+			});
+			commands_.set_checked(id, [this, size]() {
+				return !grid_.auto_density() &&
+					std::fabs(grid_.cell_size() - size) < 1e-4f;
+			});
+		};
+		add_grid_size("view.grid.0.5", "0.5", "0.5", 0.5f);
+		add_grid_size("view.grid.1", "1", "1", 1.0f);
+		add_grid_size("view.grid.2", "2", "2", 2.0f);
+		add_grid_size("view.grid.5", "5", "5", 5.0f);
+
 		commands_.add("view.reset_layout", "Reset Layout", [this]() {
 			reset_layout();
 			set_status("layout reset");
@@ -276,6 +320,21 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.properties", true);
 			add_menu_command(view_menu, "view.bottom", true);
 			vgui_menu_add_separator(view_menu);
+			add_menu_command(view_menu, "view.grid", true);
+			add_menu_command(view_menu, "view.snap", true);
+			vgui_widget* grid_size_menu = nullptr;
+			if (vgui_menu_add_submenu(view_menu, "Grid Size", &grid_size_menu) &&
+				grid_size_menu)
+			{
+				wire_menu(grid_size_menu);
+				add_menu_command(grid_size_menu, "view.grid.auto", true);
+				vgui_menu_add_separator(grid_size_menu);
+				add_menu_command(grid_size_menu, "view.grid.0.5", true);
+				add_menu_command(grid_size_menu, "view.grid.1", true);
+				add_menu_command(grid_size_menu, "view.grid.2", true);
+				add_menu_command(grid_size_menu, "view.grid.5", true);
+			}
+			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.reset_layout", false);
 			vgui_menubar_add_menu(menubar_, "View", view_menu);
 		}
@@ -338,11 +397,9 @@ namespace vgui_editor_kit {
 		toolbar_.add_command_button(commands_, "edit.redo");
 		toolbar_.add_separator();
 
-		toggle_button& grid = toolbar_.add_toggle_button("Grid", true);
-		grid.set_tooltip("Toggle grid");
-		grid.set_on_change([this](bool checked) {
-			set_status(checked ? "grid on" : "grid off");
-		});
+		/* V04: 网格/吸附开关与菜单共用同一命令状态。 */
+		toolbar_.add_command_button(commands_, "view.grid");
+		toolbar_.add_command_button(commands_, "view.snap");
 
 		segmented_control& view_mode = toolbar_.add_segmented_control();
 		view_mode.add_segment("Persp");
@@ -944,6 +1001,26 @@ namespace vgui_editor_kit {
 	const viewport_selection& editor_shell::picking() const noexcept
 	{
 		return picking_;
+	}
+
+	viewport_grid& editor_shell::grid() noexcept
+	{
+		return grid_;
+	}
+
+	const viewport_grid& editor_shell::grid() const noexcept
+	{
+		return grid_;
+	}
+
+	snap_settings& editor_shell::snap() noexcept
+	{
+		return snap_;
+	}
+
+	const snap_settings& editor_shell::snap() const noexcept
+	{
+		return snap_;
 	}
 
 	void editor_shell::set_status(std::string text)
