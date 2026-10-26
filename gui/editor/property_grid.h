@@ -23,7 +23,9 @@
 
 #include "color_picker.h"
 #include "command_stack.h"
+#include "curve_editor.h"
 #include "editor_types.h"
+#include "gradient_editor.h"
 #include "vector_editor.h"
 #include "vgui.h"
 
@@ -46,7 +48,12 @@ namespace vgui_editor_kit {
 		 * none); the host resolves names/thumbnails through the query
 		 * handlers below. */
 		asset,
-		object_ref
+		object_ref,
+		/* P09 custom editors.  Values are canonical strings produced by
+		 * curve_editor/gradient_editor; rows show a compact preview and open
+		 * the full editor in a context popup. */
+		curve,
+		gradient
 	};
 
 	/* Describes one editable property.  `value` and `default_value` use the
@@ -59,6 +66,8 @@ namespace vgui_editor_kit {
 	 *                 empty)
 	 *   color       - "#RRGGBB" or "#RRGGBBAA"
 	 *   vector2/3/4 - "x, y" / "x, y, z" / "x, y, z, w"
+	 *   curve       - "cubic;0,0,0,0;0.5,1,0,0;1,0,0,0"
+	 *   gradient    - "0,#FF0000FF;0.5,#00FF00FF;1,#0000FFFF"
 	 *
 	 * choices are display labels.  When choice_values is empty, choices are
 	 * used for both labels and values.  choice_enabled is optional; when set
@@ -371,9 +380,34 @@ namespace vgui_editor_kit {
 		 */
 		class reference_row_drop_target;
 		friend class reference_row_drop_target;
+		enum class popup_kind
+		{
+			none = 0,
+			color,
+			curve,
+			gradient
+		};
+		/* Opens the curve/gradient editor in a context popup anchored below
+		 * the row preview. */
+		void open_curve_editor(row& item);
+		void open_gradient_editor(row& item);
+		/* Shared popup session: previews use the row display only (no undo
+		 * record), the completed gesture pushes exactly one mergeable
+		 * command via commit_value(); Escape restores the session start. */
+		void begin_popup_session(row& item, popup_kind kind);
+		void reset_popup_session();
+		void preview_popup_value(const std::string& id, const std::string& value);
+		void commit_popup_value(const std::string& id, const std::string& value);
 		void open_color_picker(row& item);
-		static void on_color_popup_close(void* user, int reason);
+		static void on_popup_close(void* user, int reason);
 		void add_recent_color(const std::string& color);
+		/* P09 row previews (VGUI_CUSTOM). */
+		static void draw_curve_preview(vgui_widget* widget, ovg_ctx_cb* cb,
+			rvg_t* vg, float x, float y, float w, float h, float dt,
+			void* user);
+		static void draw_gradient_preview(vgui_widget* widget, ovg_ctx_cb* cb,
+			rvg_t* vg, float x, float y, float w, float h, float dt,
+			void* user);
 		/* P06 reference rows: resolve via the query handler, refresh thumb/
 		 * name/missing state and install the per-row drop target. */
 		void refresh_reference_row(row& item);
@@ -426,11 +460,15 @@ namespace vgui_editor_kit {
 		std::uint64_t next_row_id_ = 1;
 		std::vector<std::string> recent_colors_;
 		std::unique_ptr<color_picker> color_picker_;
-		bool color_session_active_ = false;
-		std::string color_session_start_;
-		bool color_drag_active_ = false;
-		std::string color_drag_value_;
-		std::string color_session_id_;
+		std::unique_ptr<curve_editor> curve_editor_;
+		std::unique_ptr<gradient_editor> gradient_editor_;
+		popup_kind popup_kind_ = popup_kind::none;
+		bool popup_session_active_ = false;
+		bool popup_session_mixed_ = false;
+		std::string popup_session_start_;
+		bool popup_drag_active_ = false;
+		std::string popup_drag_value_;
+		std::string popup_session_id_;
 		std::shared_ptr<int> alive_token_ = std::make_shared<int>(0);
 
 		command_stack* command_stack_ = nullptr;

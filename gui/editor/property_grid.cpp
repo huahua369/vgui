@@ -464,6 +464,33 @@ namespace vgui_editor_kit {
 				result.value = trim_copy(std::move(text));
 				result.ok = true;
 				break;
+			case property_type::curve:
+			{
+				curve_value curve;
+				std::string error;
+				if (!curve_editor::parse_value(text, curve, &error))
+				{
+					result.error = error.empty() ? "expected a curve" : error;
+					break;
+				}
+				result.value = curve_editor::format_value(curve);
+				result.ok = true;
+				break;
+			}
+			case property_type::gradient:
+			{
+				gradient_value gradient;
+				std::string error;
+				if (!gradient_editor::parse_value(text, gradient, &error))
+				{
+					result.error = error.empty() ? "expected a gradient"
+						: error;
+					break;
+				}
+				result.value = gradient_editor::format_value(gradient);
+				result.ok = true;
+				break;
+			}
 			case property_type::vector2:
 			case property_type::vector3:
 			case property_type::vector4:
@@ -512,9 +539,9 @@ namespace vgui_editor_kit {
 
 	property_grid::~property_grid()
 	{
-		if (color_session_active_ && panel_)
+		if (popup_session_active_ && panel_)
 		{
-			color_session_active_ = false;
+			popup_session_active_ = false;
 			vgui_popup_close(vgui_widget_get_context(panel_));
 		}
 		unbind_selection();
@@ -625,11 +652,12 @@ namespace vgui_editor_kit {
 
 	void property_grid::clear()
 	{
-		if (color_session_active_)
+		if (popup_session_active_)
 		{
-			color_session_active_ = false;
+			popup_session_active_ = false;
 			if (panel_)
 				vgui_popup_close(vgui_widget_get_context(panel_));
+			reset_popup_session();
 		}
 
 		for (row& item : rows_)
@@ -1621,6 +1649,27 @@ private:
 
 		switch (item.desc.type)
 		{
+		case property_type::curve:
+		case property_type::gradient:
+		{
+			/* P09:紧凑预览占用 editor 槽;点击在 context popup 中打开
+			 * 完整编辑器(与颜色行一致)。 */
+			item.editor = vgui_widget_add(item.line, VGUI_CUSTOM, nullptr);
+			vgui_widget_set_grow(item.editor, 1.0f);
+			vgui_widget_set_size(item.editor, 0, 24);
+			vgui_widget_set_min_size(item.editor, 80, 24);
+			vgui_widget_set_id(item.editor,
+				property_widget_id(item.desc.id).c_str());
+			vgui_widget_on_event(item.editor, &property_grid::on_row_event,
+				this);
+			if (item.desc.type == property_type::curve)
+				vgui_custom_set_draw(item.editor,
+					&property_grid::draw_curve_preview, this);
+			else
+				vgui_custom_set_draw(item.editor,
+					&property_grid::draw_gradient_preview, this);
+			break;
+		}
 		case property_type::boolean:
 			item.editor = vgui_widget_add(item.line, VGUI_CHECKBOX, nullptr);
 			vgui_widget_set_size(item.editor, 24, 24);
@@ -1823,6 +1872,8 @@ private:
 			vgui_widget_set_enabled(item.editor, readonly ? 0 : 1);
 			if (item.desc.type != property_type::boolean &&
 				item.desc.type != property_type::enumeration &&
+				item.desc.type != property_type::curve &&
+				item.desc.type != property_type::gradient &&
 				!is_vector_type(item.desc.type))
 				vgui_edit_set_readonly(item.editor, readonly ? 1 : 0);
 		}
@@ -1873,6 +1924,10 @@ private:
 					item.vector_ui->set_value(values);
 				break;
 			}
+			case property_type::curve:
+			case property_type::gradient:
+				/* 自绘预览每帧从 item.value 读取,无需同步控件。 */
+				break;
 			default:
 				/* 混合态可能残留 "(mixed)" 占位,恢复正常时还原 desc 占位。 */
 				vgui_edit_set_text(item.editor, item.value.c_str());
@@ -2495,6 +2550,77 @@ private:
 		}
 	}
 
+	void property_grid::begin_popup_session(row& item, popup_kind kind)
+	{
+		popup_kind_ = kind;
+		popup_session_active_ = true;
+		popup_session_mixed_ = item.mixed;
+		popup_session_start_ = item.value;
+		popup_session_id_ = item.desc.id;
+		popup_drag_active_ = false;
+		popup_drag_value_.clear();
+	}
+
+	void property_grid::reset_popup_session()
+	{
+		popup_kind_ = popup_kind::none;
+		popup_session_active_ = false;
+		popup_session_mixed_ = false;
+		popup_session_start_.clear();
+		popup_session_id_.clear();
+		popup_drag_active_ = false;
+		popup_drag_value_.clear();
+	}
+
+	void property_grid::preview_popup_value(const std::string& id,
+		const std::string& value)
+	{
+		row* target = find_row(id);
+		if (!target)
+			return;
+		normalized_value normalized = normalize_value(target->desc, value);
+		if (!normalized.ok)
+			return;
+		if (!popup_drag_active_)
+		{
+			/* 第一次预览:快照手势起点,提交时作为 undo 记录的 old。 */
+			popup_drag_active_ = true;
+			popup_drag_value_ = target->value;
+		}
+		target->mixed = false;
+		target->value = normalized.value;
+		update_row_ui(*target, true);
+		update_visibility();
+	}
+
+	void property_grid::commit_popup_value(const std::string& id,
+		const std::string& value)
+	{
+		row* target = find_row(id);
+		if (!target)
+			return;
+		normalized_value normalized = normalize_value(target->desc, value);
+		if (!normalized.ok)
+			return;
+		const std::string old_value = popup_drag_active_
+			? popup_drag_value_ : target->value;
+		popup_drag_active_ = false;
+		popup_drag_value_.clear();
+		target->mixed = false;
+		if (old_value == normalized.value)
+		{
+			target->value = normalized.value;
+			update_row_ui(*target, true);
+			return;
+		}
+		/* commit_value() 用行当前值作为 old;先回填手势起点,这样单目标
+		 * 直接入栈,多目标仍按每 target getter 生成 per-target 记录。 */
+		target->value = old_value;
+		const std::string label = target->desc.label.empty()
+			? target->desc.id : target->desc.label;
+		(void)commit_value(*target, normalized.value, "Set " + label);
+	}
+
 	void property_grid::open_color_picker(row& item)
 	{
 		if (read_only_ || item.desc.read_only)
@@ -2522,65 +2648,119 @@ private:
 		color_picker_->set_presets(presets);
 		color_picker_->set_recent(recent_colors_);
 
-		/* 会话:change 实时预览(不入栈),手势结束提交单条可合并命令,
-		 * Esc 回滚到会话起点(与合并链顶相接,undo 一次恢复)。 */
-		color_session_start_ = item.value;
-		color_session_id_ = item.desc.id;
-		color_session_active_ = true;
 		const std::string id = item.desc.id;
 		color_picker_->set_on_change([this, id](const std::string& hex) {
-			(void)set_property_value(id, hex);
+			preview_popup_value(id, hex);
 		});
-		/* 仿向量行:press 记录手势起点,change 实时预览(不入栈),
-		 * commit 用起点做 old 直接入栈一条可合并命令。 */
-		color_picker_->set_on_press([this](const std::string&) {
-			row* target = find_row(color_session_id_);
-			if (!target)
-				return;
-			color_drag_active_ = true;
-			color_drag_value_ = target->value;
-		});
-		color_picker_->set_on_commit([this](const std::string& hex) {
-			row* target = find_row(color_session_id_);
-			if (!target)
-				return;
-			const std::string old_value = color_drag_active_
-				? color_drag_value_ : target->value;
-			color_drag_active_ = false;
-			color_drag_value_.clear();
-			if (old_value == hex)
-				return;
-			apply_value(*target, hex);
-			add_recent_color(hex);
-			push_value_command(target->token, old_value, hex,
-				"Set " + target->desc.label);
+		color_picker_->set_on_commit([this, id](const std::string& hex) {
+			commit_popup_value(id, hex);
 		});
 		color_picker_->set_value(item.value);
 		color_picker_->set_current(item.value);
 
-		vgui_popup_on_close(ctx, &property_grid::on_color_popup_close, this);
 		float ax = 0, ay = 0, aw = 0, ah = 0;
 		if (item.swatch)
 			vgui_widget_get_rect(item.swatch, &ax, &ay, &aw, &ah);
 		else
 			vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
 		(void)aw;
-		vgui_popup_open(ctx, color_picker_->widget(), ax, ay + ah + 4.0f);
+		if (!vgui_popup_open(ctx, color_picker_->widget(), ax, ay + ah + 4.0f))
+			return;
+		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
+		begin_popup_session(item, popup_kind::color);
 	}
 
-	void property_grid::on_color_popup_close(void* user, int reason)
+	void property_grid::open_curve_editor(row& item)
+	{
+		if (read_only_ || item.desc.read_only || !item.editor)
+			return;
+		vgui_context* ctx = vgui_widget_get_context(item.editor);
+		if (!ctx)
+			return;
+		if (!curve_editor_)
+		{
+			curve_editor_ = std::make_unique<curve_editor>();
+			curve_editor_->set_id("property-grid.curve-editor");
+			curve_editor_->build(ctx);
+		}
+		const std::string id = item.desc.id;
+		curve_editor_->set_on_change([this, id](const curve_value& v) {
+			preview_popup_value(id, curve_editor::format_value(v));
+		});
+		curve_editor_->set_on_commit([this, id](const curve_value& v) {
+			commit_popup_value(id, curve_editor::format_value(v));
+		});
+		(void)curve_editor_->set_value_text(item.value);
+
+		float ax = 0, ay = 0, aw = 0, ah = 0;
+		vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
+		(void)aw;
+		if (!vgui_popup_open(ctx, curve_editor_->widget(), ax, ay + ah + 4.0f))
+			return;
+		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
+		begin_popup_session(item, popup_kind::curve);
+	}
+
+	void property_grid::open_gradient_editor(row& item)
+	{
+		if (read_only_ || item.desc.read_only || !item.editor)
+			return;
+		vgui_context* ctx = vgui_widget_get_context(item.editor);
+		if (!ctx)
+			return;
+		if (!gradient_editor_)
+		{
+			gradient_editor_ = std::make_unique<gradient_editor>();
+			gradient_editor_->set_id("property-grid.gradient-editor");
+			gradient_editor_->build(ctx);
+		}
+		const std::string id = item.desc.id;
+		gradient_editor_->set_on_change(
+			[this, id](const gradient_value& v) {
+				preview_popup_value(id, gradient_editor::format_value(v));
+			});
+		gradient_editor_->set_on_commit(
+			[this, id](const gradient_value& v) {
+				commit_popup_value(id, gradient_editor::format_value(v));
+			});
+		(void)gradient_editor_->set_value_text(item.value);
+
+		float ax = 0, ay = 0, aw = 0, ah = 0;
+		vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
+		(void)aw;
+		if (!vgui_popup_open(ctx, gradient_editor_->widget(),
+			ax, ay + ah + 4.0f))
+			return;
+		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
+		begin_popup_session(item, popup_kind::gradient);
+	}
+
+	void property_grid::on_popup_close(void* user, int reason)
 	{
 		auto* self = static_cast<property_grid*>(user);
-		if (!self || !self->color_session_active_)
+		if (!self || !self->popup_session_active_)
 			return;
-		self->color_session_active_ = false;
-		if (reason == VGUI_POPUP_CLOSE_ESCAPE)
+		self->popup_session_active_ = false;
+		const std::string id = self->popup_session_id_;
+		/* 未提交的预览(Esc/外点/替换)回到会话起点;已提交的手势保留
+		 * 新值,但 Esc 仍回滚显示(与合并链顶相接,undo 一次恢复)。 */
+		const bool rollback = reason == VGUI_POPUP_CLOSE_ESCAPE ||
+			self->popup_drag_active_;
+		row* target = self->find_row(id);
+		if (target && rollback)
 		{
-			/* 显示层回到起点;若会话内有提交,合并链顶 old==起点,
-			 * undo 一次即回到原色。 */
-			(void)self->set_property_value(self->color_session_id_,
-				self->color_session_start_);
+			if (self->popup_session_mixed_ && self->multi_active())
+			{
+				self->sync_row_from_targets(*target);
+				self->update_row_ui(*target, true);
+			}
+			else
+			{
+				(void)self->set_property_value(id,
+					self->popup_session_start_);
+			}
 		}
+		self->reset_popup_session();
 	}
 
 	void property_grid::add_recent_color(const std::string& color)
@@ -2591,6 +2771,41 @@ private:
 		recent_colors_.insert(recent_colors_.begin(), color);
 		if (recent_colors_.size() > 8)
 			recent_colors_.resize(8);
+	}
+
+	void property_grid::draw_curve_preview(vgui_widget* widget, ovg_ctx_cb* cb,
+		rvg_t* vg, float x, float y, float w, float h, float dt, void* user)
+	{
+		(void)dt;
+		auto* self = static_cast<property_grid*>(user);
+		if (!self || !cb || !vg)
+			return;
+		row* item = self->row_for_widget(widget);
+		if (!item)
+			return;
+		curve_value value;
+		const bool parsed = !item->mixed &&
+			curve_editor::parse_value(item->value, value);
+		curve_editor::draw_preview(cb, vg, x, y, w, h, value,
+			item->mixed || !parsed);
+	}
+
+	void property_grid::draw_gradient_preview(vgui_widget* widget,
+		ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+		float dt, void* user)
+	{
+		(void)dt;
+		auto* self = static_cast<property_grid*>(user);
+		if (!self || !cb || !vg)
+			return;
+		row* item = self->row_for_widget(widget);
+		if (!item)
+			return;
+		gradient_value value;
+		const bool parsed = !item->mixed &&
+			gradient_editor::parse_value(item->value, value);
+		gradient_editor::draw_preview(cb, vg, x, y, w, h, value,
+			item->mixed || !parsed);
 	}
 
 	void property_grid::on_scroll(vgui_widget* widget, float x, float y, void* user)
@@ -2841,6 +3056,18 @@ private:
 				self->open_color_picker(*item);
 				return;
 			}
+			if (widget == item->editor &&
+				item->desc.type == property_type::curve)
+			{
+				self->open_curve_editor(*item);
+				return;
+			}
+			if (widget == item->editor &&
+				item->desc.type == property_type::gradient)
+			{
+				self->open_gradient_editor(*item);
+				return;
+			}
 			if (widget == item->clear_btn &&
 				(item->desc.type == property_type::asset ||
 					item->desc.type == property_type::object_ref))
@@ -2899,6 +3126,16 @@ private:
 						vgui_set_focus(vgui_widget_get_context(widget),
 							item->editor);
 					self->open_enum_menu(*item);
+					return;
+				}
+				if (item->desc.type == property_type::curve)
+				{
+					self->open_curve_editor(*item);
+					return;
+				}
+				if (item->desc.type == property_type::gradient)
+				{
+					self->open_gradient_editor(*item);
 					return;
 				}
 				if (item->editor && item->desc.type != property_type::color)

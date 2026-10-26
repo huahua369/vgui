@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor（`vgui_editor_kit`，基于公共 C API） |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor（`vgui_editor_kit`，基于公共 C API） |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
@@ -210,7 +210,7 @@ shell.save_layout("user/editor_layout.json");
 
 ### 属性编辑（PropertyGrid）
 
-`vgui_editor_kit::property_grid` 是类型化属性检查器：行按分类分组，可折叠、搜索过滤，包含标签列 + 编辑列、单行重置、只读状态、行级错误和 tooltip。行按滚动视口虚拟化：只创建可见窗口（含少量 overscan）内的行控件，其余行由上下 spacer 占位，因此上千行属性也能保持稳定的布局与滚动开销。`editor_shell` 的 Properties 面板和 `vgui_editor` 的 UI 文档检查器都已使用它。Vector2/3/4 行使用紧凑的分量编辑：每个分量可独立输入或拖拽，拖动主标签则按同一增量同步调整全部分量。
+`vgui_editor_kit::property_grid` 是类型化属性检查器：行按分类分组，可折叠、搜索过滤，包含标签列 + 编辑列、单行重置、只读状态、行级错误和 tooltip。行按滚动视口虚拟化：只创建可见窗口（含少量 overscan）内的行控件，其余行由上下 spacer 占位，因此上千行属性也能保持稳定的布局与滚动开销。`editor_shell` 的 Properties 面板和 `vgui_editor` 的 UI 文档检查器都已使用它。Vector2/3/4 行使用紧凑的分量编辑：每个分量可独立输入或拖拽，拖动主标签则按同一增量同步调整全部分量。颜色行弹出 HSV 取色器；曲线/渐变行显示紧凑自绘预览，点击后在弹出面板中打开完整编辑器，修改实时预览并合并为一条可撤销命令。
 
 ```cpp
 vgui_editor_kit::property_grid grid;
@@ -237,8 +237,8 @@ grid.set_change_listener([](const std::string& id, const std::string& value) {
 grid.commit_property_value("position.x", "1.25");
 ```
 
-- 支持 `text`、`integer`、`number`、`boolean`、`enumeration`、`color`、`vector2`、`vector3`、`vector4` 九种类型。值统一使用规范字符串：整数为十进制，浮点为十进制或科学计数法，布尔为 `true`/`false`，枚举为 `choice_values` 中的值，颜色为 `#RRGGBB` 或 `#RRGGBBAA`，向量为逗号加空格分隔的分量（如 `1, 2, 3`；解析也接受空格、分号和外围括号）。
-- 数字类型可设置范围和步进，输入越界会被钳制；拖动标签可调值，按下后即使指针移出当前行或整个网格仍持续更新，释放时只提交一次命令；按住 Shift 精调、Alt 粗调。向量行的范围/步进作用于每个分量，`semantic` 选择轴标签/颜色（`generic`/`position`/`color`），`component_labels` / `component_colors` 可覆盖预设；拖动向量主标签会按同一增量更新所有分量，释放时只记录一条命令。枚举支持禁用项；`allow_empty` 允许空值，空值显示为 `placeholder`（未设置时显示 `(None)`），并作为下拉菜单第一项，打开菜单时键盘光标停在当前选择上；颜色行带色块、预设和最近颜色。独立 `spinbox` / `combo_box` / `vector_editor` 组件复用同一套交互，供自定义编辑器使用。
+- 支持 `text`、`integer`、`number`、`boolean`、`enumeration`、`color`、`vector2`、`vector3`、`vector4`、`asset`、`object_ref`、`curve`、`gradient` 共 13 种类型。值统一使用规范字符串：整数为十进制，浮点为十进制或科学计数法，布尔为 `true`/`false`，枚举为 `choice_values` 中的值，颜色为 `#RRGGBB` 或 `#RRGGBBAA`，向量为逗号加空格分隔的分量（如 `1, 2, 3`；解析也接受空格、分号和外围括号），曲线为 `cubic;0,0,0,0;0.5,1,0,0;1,0,0,0`，渐变为 `0,#FF0000;1,#0000FF`。
+- 数字类型可设置范围和步进，输入越界会被钳制；拖动标签可调值，按下后即使指针移出当前行或整个网格仍持续更新，释放时只提交一次命令；按住 Shift 精调、Alt 粗调。向量行的范围/步进作用于每个分量，`semantic` 选择轴标签/颜色（`generic`/`position`/`color`），`component_labels` / `component_colors` 可覆盖预设；拖动向量主标签会按同一增量更新所有分量，释放时只记录一条命令。枚举支持禁用项；`allow_empty` 允许空值，空值显示为 `placeholder`（未设置时显示 `(None)`），并作为下拉菜单第一项，打开菜单时键盘光标停在当前选择上；颜色行带色块、预设和最近颜色；曲线行支持 linear/step/cubic 插值与切线手柄，渐变行支持拖动色标、双击插点和预设。独立 `spinbox` / `combo_box` / `vector_editor` / `curve_editor` / `gradient_editor` 组件复用同一套交互，供自定义编辑器使用。
 - `commit_property_value()` / `reset_property()` 会校验并写回，触发 change listener，并在绑定命令栈时通过 `command_stack::push()` 记录可撤销命令。`set_property_value()` 只做显示/模型同步，不通知也不记录命令；提交失败时保留原值和输入文本，并显示行内错误，修正后可再次提交。
 - `clear()` 重建行时保留搜索词、分类折叠状态和最近颜色；`set_filter()`、`set_category_collapsed()`、`set_read_only()` 可保持或批量调整视图状态。
 - 行虚拟化由扁平化的“分类标题 + 属性行”显示列表驱动：滚动、过滤、折叠和增删行只重建该列表，并按视口窗口挂载/释放行控件。`materialized_row_count()` 返回当前实际创建的属性行数，可用于无窗口性能断言；未物化行的 `property_editor()` 返回 `nullptr`。
@@ -260,6 +260,8 @@ S07 组件位于 `gui/editor/`，全部构建在公共 C API 之上：
 - `spinbox`：`VGUI_EDIT` + 可拖拽标签 + 减/加按钮。支持 `integer`/`number` 值类型、范围、步进、Shift 精调、Alt 粗调、Enter 校验、错误提示、只读和禁用状态；`set_value()` 静默，`commit_text()` / `commit_value()` / `step_by()` 以及拖拽提交会触发 change/commit 回调。拖拽按下后跨行或移出控件仍持续更新，释放时只提交一次，便于宿主把整个手势记录为一条命令。`set_label_width()` / `set_buttons_visible()` 可压缩布局，供向量分量复用。
 - `vector_editor`：2/3/4 分量紧凑行，每个分量复用 `spinbox`（窄轴标签 + 编辑框，默认隐藏加减按钮）。支持 `generic`/`position`/`color` 语义预设、自定义轴标签/颜色、范围/步进、只读/禁用和分量错误；`set_value()` / `set_component_value()` 静默，分量输入或拖拽通过 change 回调报告完整向量，提交时再报告一次。`set_value_source()` + `refresh()` 提供宿主→编辑器绑定，与 change/commit 一起构成双向同步。
 - `combo_box`：按钮 + 弹出菜单。每项包含显示标签、值和启用状态，支持禁用项、空标签（显示 placeholder）和无选择状态；`set_items()` / `set_selected_index()` / `set_value()` / `clear_selection()` / `set_placeholder()` 静默，`select_index()` / `select_value()` / `select_none()`、菜单选择以及关闭状态下的 Up/Down/Home/End 会校验禁用项并触发 change/commit 回调。打开时菜单键盘光标停在当前选择，打开、关闭和选择都不改变键盘焦点；`Alt+Down` 打开，Esc 关闭。内部菜单是 detached 控件，必须早于 `vgui_context` 销毁。
+- `curve_editor`：归一化 t/value 曲线，支持 linear/step/cubic 插值与 cubic 入/出切线；双击图区加点，拖动关键帧/切线手柄，T/V/In/Out `spinbox` 精确输入。`set_value()` 静默，用户手势按 press → change → commit 报告，适合宿主实时预览并只记录一条命令。`draw_preview()` 供 PropertyGrid 行绘制紧凑曲线。
+- `gradient_editor`：多色标渐变条，拖动色标调整位置，双击插入按相邻色标插值的停靠点；选中色标的时间用 `spinbox` 编辑，颜色用内嵌 `color_picker` 编辑，另带四个常用预设。与 `curve_editor` 使用相同的 press/change/commit 协议和 `draw_preview()` 行预览；文本格式为 `t,#RRGGBB[AA];...`。
 
 ```cpp
 vgui_editor_kit::toolbar_view toolbar;
@@ -303,6 +305,24 @@ position.set_value({ 1.0, 2.0, 3.0, 0.0 });
 position.set_on_change([](const vgui_editor_kit::vector_editor::vector_value& value) {
     /* live preview */ });
 position.set_on_commit([](const vgui_editor_kit::vector_editor::vector_value& value) {
+    /* one undo command */ });
+
+vgui_editor_kit::curve_editor curve;
+curve.set_id("idle_curve");
+curve.build(parent);
+curve.set_value_text("cubic;0,0,0,0;0.5,1,0,0;1,0,0,0");
+curve.set_on_change([](const vgui_editor_kit::curve_value& value) {
+    /* live preview */ });
+curve.set_on_commit([](const vgui_editor_kit::curve_value& value) {
+    /* one undo command */ });
+
+vgui_editor_kit::gradient_editor gradient;
+gradient.set_id("color_ramp");
+gradient.build(parent);
+gradient.set_value_text("0,#FF0000;0.5,#00FF00;1,#0000FF");
+gradient.set_on_change([](const vgui_editor_kit::gradient_value& value) {
+    /* live preview */ });
+gradient.set_on_commit([](const vgui_editor_kit::gradient_value& value) {
     /* one undo command */ });
 ```
 
@@ -354,8 +374,8 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)与布局持久化自测
-out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、资产引用、拖放、命令栈
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)与布局持久化自测
+out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、曲线/渐变、资产引用、拖放、命令栈
 out/bin/x64d/vgui.exe                  # OVG 场景示例
 ```
 
@@ -439,7 +459,7 @@ sample/
   vgui_demo.cpp             全部控件的交互演示
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast 与按键处理器自测
-  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector）、命令栈、菜单/快捷键与布局持久化自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector/曲线/渐变）、命令栈、菜单/快捷键与布局持久化自测
   main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力

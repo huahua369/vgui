@@ -5,10 +5,12 @@ set(VGUI_EDITOR_KIT_SOURCES
     command_registry.cpp
     command_stack.cpp
     combo_box.cpp
+    curve_editor.cpp
     drag_bridge.cpp
     editor_context.cpp
     editor_layout.cpp
     editor_shell.cpp
+    gradient_editor.cpp
     outliner_view.cpp
     property_grid.cpp
     search_box.cpp

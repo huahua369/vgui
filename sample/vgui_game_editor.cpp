@@ -462,6 +462,38 @@ static void setup_editor(vgui_context* ui)
 		target.tooltip = "Click the name to select";
 		grid.add_property(target);
 
+		/* P09:曲线 / 渐变自定义编辑器。行内显示紧凑预览,点击打开
+		 * popup;预览与 popup 共用同一撤销记录。 */
+		property_desc idle_curve;
+		idle_curve.id = "idle_curve";
+		idle_curve.label = "Idle Curve";
+		idle_curve.type = property_type::curve;
+		idle_curve.value = prop_of("idle_curve",
+			"cubic;0,0,0,0;0.5,1,0,0;1,0,0,0");
+		idle_curve.category = "Animation";
+		idle_curve.tooltip = "Double-click the graph to add keys; edit tangents";
+		idle_curve.set_value = [oid = id](const std::string& value) {
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end())
+				it->second.props["idle_curve"] = value;
+		};
+		grid.add_property(idle_curve);
+
+		property_desc color_ramp;
+		color_ramp.id = "color_ramp";
+		color_ramp.label = "Color Ramp";
+		color_ramp.type = property_type::gradient;
+		color_ramp.value = prop_of("color_ramp",
+			"0,#FF6A00;0.5,#FFD000;1,#FFFFFF");
+		color_ramp.category = "Rendering";
+		color_ramp.tooltip = "Drag stops, double-click to add, apply presets";
+		color_ramp.set_value = [oid = id](const std::string& value) {
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end())
+				it->second.props["color_ramp"] = value;
+		};
+		grid.add_property(color_ramp);
+
 		/* 多目标 getter/setter:值存在对象 props 里(name 特殊)。 */
 		grid.set_multi_getter([](const std::string& pid, object_id obj)
 			-> std::string
@@ -501,7 +533,8 @@ static void setup_editor(vgui_context* ui)
 			object_id sel = g.context->selection();
 			if (sel == invalid_object || !g.scene.objects.count(sel))
 				return;
-			if (pid == "mesh" || pid == "target" || pid == "tint")
+			if (pid == "mesh" || pid == "target" || pid == "tint" ||
+				pid == "idle_curve" || pid == "color_ramp")
 			{
 				g.shell->set_status(pid + " = " + (value.empty()
 					? std::string("(none)") : value));

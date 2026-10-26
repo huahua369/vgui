@@ -3172,6 +3172,28 @@ static vgui_widget* find_widget_by_suffix(vgui_widget* root, const char* suffix)
 	return nullptr;
 }
 
+static void click_widget_center(vgui_context* ui, vgui_widget* widget)
+{
+	if (!ui || !widget)
+		return;
+	float x = 0, y = 0, w = 0, h = 0;
+	vgui_widget_get_rect(widget, &x, &y, &w, &h);
+	const float cx = x + w * 0.5f;
+	const float cy = y + h * 0.5f;
+	vgui_input_mouse_move(ui, cx, cy);
+	vgui_input_mouse_down(ui, 1, cx, cy, 1);
+	vgui_input_mouse_up(ui, 1, cx, cy, 1);
+}
+
+static void double_click_at(vgui_context* ui, float x, float y)
+{
+	if (!ui)
+		return;
+	vgui_input_mouse_move(ui, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 2);
+	vgui_input_mouse_up(ui, 1, x, y, 2);
+}
+
 static int test_color_picker()
 {
 	using namespace vgui_editor_kit;
@@ -3348,6 +3370,525 @@ static int test_color_picker()
 		if (!commands.undo() ||
 			grid.property_value("light.color") != "#409EFF")
 			return fail("picker merged undo reaches start");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+//----------------------------------------------------------------------------
+// M2 P09:曲线 / 渐变编辑器
+//----------------------------------------------------------------------------
+
+static int test_curve_editor()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("curve editor context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- 文本格式与规范化 ---- */
+	curve_value parsed;
+	std::string error;
+	if (!curve_editor::parse_value("bezier; 0,0; 0.5, 1, 0, 0; 1,1",
+		parsed, &error))
+		return fail("curve parse aliases");
+	if (parsed.interpolation != curve_interpolation::cubic ||
+		parsed.keys.size() != 3)
+		return fail("curve parse mode and keys");
+	if (curve_editor::format_value(parsed) !=
+		"cubic;0,0,0,0;0.5,1,0,0;1,1,0,0")
+		return fail("curve format canonical");
+	if (curve_editor::parse_value("linear;0,0", parsed, &error) ||
+		error.empty())
+		return fail("curve rejects one key");
+	if (curve_editor::parse_value("cubic;0,0,0,0;0,1,0,0", parsed, &error))
+		return fail("curve rejects duplicate times");
+	if (!curve_editor::parse_value("linear;0,-2;2,3", parsed, &error))
+		return fail("curve clamps out-of-range keys");
+	if (!near_px(parsed.keys[1].t, 1.0f) ||
+		!near_px(parsed.keys[1].value, 1.0f))
+		return fail("curve clamp values");
+
+	/* ---- 组件:键操作 / 模式 / 手势通知 ---- */
+	curve_editor editor;
+	editor.set_id("test.curve");
+	editor.build(vgui_root(ui));
+	if (!editor.widget() || !editor.graph_widget() || !editor.add_widget() ||
+		!editor.remove_widget() || !editor.time_widget() ||
+		!editor.value_widget() || !editor.in_tangent_widget() ||
+		!editor.out_tangent_widget())
+		return fail("curve editor widgets");
+	vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
+	vgui_widget_set_size(editor.widget(), 380.0f, 340.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	int presses = 0;
+	int changes = 0;
+	int commits = 0;
+	editor.set_on_press([&](const curve_value&) { ++presses; });
+	editor.set_on_change([&](const curve_value&) { ++changes; });
+	editor.set_on_commit([&](const curve_value&) { ++commits; });
+
+	curve_value linear;
+	linear.interpolation = curve_interpolation::linear;
+	linear.keys = { { 0.0f, 0.0f, 0.0f, 0.0f },
+		{ 1.0f, 1.0f, 0.0f, 0.0f } };
+	if (!editor.set_value(linear) || presses != 0 || changes != 0 ||
+		commits != 0)
+		return fail("curve silent set_value");
+	if (editor.value_text() != "linear;0,0,0,0;1,1,0,0")
+		return fail("curve editor value text");
+
+	/* 模式按钮:改 cubic 是一次可提交手势。 */
+	vgui_widget* cubic_button = find_widget(editor.widget(),
+		"test.curve.mode.cubic", VGUI_BUTTON);
+	if (!cubic_button)
+		return fail("curve cubic mode button");
+	click_widget_center(ui, cubic_button);
+	if (editor.interpolation() != curve_interpolation::cubic ||
+		presses != 1 || changes != 1 || commits != 1)
+		return fail("curve mode click commits");
+
+	/* 双击图内空白处添加关键帧。 */
+	float gx = 0, gy = 0, gw = 0, gh = 0;
+	vgui_widget_get_rect(editor.graph_widget(), &gx, &gy, &gw, &gh);
+	const float margin = 10.0f;
+	const float area_w = gw - margin * 2.0f;
+	const float area_h = gh - margin * 2.0f;
+	const float center_x = gx + margin + area_w * 0.5f;
+	const float center_y = gy + margin + area_h * 0.5f;
+	double_click_at(ui, center_x, center_y);
+	if (editor.value().keys.size() != 3 ||
+		editor.selected_key() != 1 ||
+		presses != 2 || changes != 2 || commits != 2)
+		return fail("curve double-click adds key");
+	if (!near_px(editor.value().keys[1].t, 0.5f) ||
+		!near_px(editor.value().keys[1].value, 0.5f))
+		return fail("curve new key position");
+
+	/* 拖拽选中的关键帧:预览走 change,释放只提交一次。 */
+	const float key_x = gx + margin + editor.value().keys[1].t * area_w;
+	const float key_y = gy + margin +
+		(1.0f - editor.value().keys[1].value) * area_h;
+	vgui_input_mouse_move(ui, key_x, key_y);
+	vgui_input_mouse_down(ui, 1, key_x, key_y, 1);
+	vgui_input_mouse_move(ui, key_x + area_w * 0.15f,
+		key_y - area_h * 0.2f);
+	if (changes != 3 || commits != 2)
+		return fail("curve key drag previews without commit");
+	if (!near_px(editor.value().keys[1].t, 0.65f) ||
+		!near_px(editor.value().keys[1].value, 0.7f))
+		return fail("curve key drag updates value");
+	vgui_input_mouse_up(ui, 1, key_x + area_w * 0.15f,
+		key_y - area_h * 0.2f, 1);
+	if (commits != 3)
+		return fail("curve key drag commits once");
+
+	/* 拖拽 cubic 出切线手柄。 */
+	const curve_key key = editor.value().keys[1];
+	const curve_key next = editor.value().keys[2];
+	const float dt = next.t - key.t;
+	const float tangent_x = key_x + area_w * 0.15f + dt * area_w / 3.0f;
+	const float tangent_y = key_y - area_h * 0.2f;
+	vgui_input_mouse_move(ui, tangent_x, tangent_y);
+	vgui_input_mouse_down(ui, 1, tangent_x, tangent_y, 1);
+	vgui_input_mouse_move(ui, tangent_x, tangent_y - 24.0f);
+	if (editor.value().keys[1].out_tangent <= 0.2f)
+		return fail("curve tangent drag updates slope");
+	vgui_input_mouse_up(ui, 1, tangent_x, tangent_y - 24.0f, 1);
+	if (changes != 4 || commits != 4)
+		return fail("curve tangent drag commits");
+	if (!near_px(editor.value().keys[1].in_tangent, 0.0f))
+		return fail("curve tangent drag keeps incoming slope");
+
+	/* 删除与只读保护。 */
+	if (!editor.remove_selected_key() || editor.value().keys.size() != 2)
+		return fail("curve removes selected key");
+	editor.set_read_only(true);
+	if (editor.add_key(0.8f, 0.5f) || editor.value().keys.size() != 2)
+		return fail("curve read-only blocks changes");
+	editor.set_read_only(false);
+	if (!editor.select_key(0))
+		return fail("curve select key");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_gradient_editor()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("gradient editor context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- 文本格式:短写 / alpha / 0x 前缀归一 ---- */
+	gradient_value parsed;
+	std::string error;
+	if (!gradient_editor::parse_value(
+		" 0, #f00 ; .5, #00FF0080 ; 1, 0x0000FF ", parsed, &error))
+		return fail("gradient parse aliases");
+	if (gradient_editor::format_value(parsed) !=
+		"0,#FF0000;0.5,#00FF0080;1,#0000FF")
+		return fail("gradient format canonical");
+	if (gradient_editor::parse_value("0,#FF0000", parsed, &error) ||
+		error.empty())
+		return fail("gradient rejects one stop");
+	if (gradient_editor::parse_value(
+		"0,#FF0000;0.0,#00FF00;1,#0000FF", parsed, &error))
+		return fail("gradient rejects duplicate times");
+	if (gradient_editor::parse_value("0,red;1,#0000FF", parsed, &error))
+		return fail("gradient rejects bad color");
+
+	/* ---- 组件:停靠点 / 取色 / 预设 / 通知 ---- */
+	gradient_editor editor;
+	editor.set_id("test.gradient");
+	editor.build(vgui_root(ui));
+	if (!editor.widget() || !editor.bar_widget() || !editor.add_widget() ||
+		!editor.remove_widget() || !editor.time_widget() ||
+		!editor.picker() || !editor.preset_widget(0))
+		return fail("gradient editor widgets");
+	vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
+	vgui_widget_set_size(editor.widget(), 380.0f, 360.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+
+	int presses = 0;
+	int changes = 0;
+	int commits = 0;
+	editor.set_on_press([&](const gradient_value&) { ++presses; });
+	editor.set_on_change([&](const gradient_value&) { ++changes; });
+	editor.set_on_commit([&](const gradient_value&) { ++commits; });
+
+	gradient_value mono;
+	mono.stops = { { 0.0f, "#000000" }, { 1.0f, "#FFFFFF" } };
+	if (!editor.set_value(mono) || presses != 0 || changes != 0 ||
+		commits != 0)
+		return fail("gradient silent set_value");
+
+	/* 中间停靠点采样灰度 50%。 */
+	if (!editor.add_stop(0.5f) || editor.value().stops.size() != 3 ||
+		editor.selected_stop() != 1 ||
+		editor.value().stops[1].color != "#808080")
+		return fail("gradient add stop samples color");
+	if (presses != 1 || changes != 1 || commits != 1)
+		return fail("gradient add stop commits");
+
+	if (!editor.set_selected_color("#FF0000") ||
+		editor.value().stops[1].color != "#FF0000" ||
+		presses != 2 || changes != 2 || commits != 2)
+		return fail("gradient selected color commit");
+
+	if (!editor.commit_preset(1) ||
+		editor.value().stops.size() != 4 ||
+		editor.value().stops[0].color != "#000000" ||
+		editor.value().stops[3].color != "#FFFF66")
+		return fail("gradient preset commit");
+
+	editor.set_read_only(true);
+	if (editor.add_stop(0.25f) || editor.commit_preset(0))
+		return fail("gradient read-only blocks changes");
+	editor.set_read_only(false);
+
+	/* 双击渐变条插入停靠点,再拖动新点。 */
+	if (!editor.set_value(mono))
+		return fail("gradient reset value");
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	vgui_widget_get_rect(editor.bar_widget(), &bx, &by, &bw, &bh);
+	(void)bh;
+	double_click_at(ui, bx + bw * 0.5f, by + 10.0f);
+	if (editor.value().stops.size() != 3 ||
+		!near_px(editor.value().stops[1].t, 0.5f))
+		return fail("gradient bar double-click adds stop");
+
+	const float stop_x = bx + bw * 0.5f;
+	vgui_input_mouse_move(ui, stop_x, by + 10.0f);
+	vgui_input_mouse_down(ui, 1, stop_x, by + 10.0f, 1);
+	vgui_input_mouse_move(ui, bx + 6.0f + (bw - 12.0f) * 0.75f,
+		by + 10.0f);
+	if (!near_px(editor.value().stops[1].t, 0.75f))
+		return fail("gradient bar drag moves stop");
+	vgui_input_mouse_up(ui, 1, bx + 6.0f + (bw - 12.0f) * 0.75f,
+		by + 10.0f, 1);
+	if (editor.value().stops[1].t > 0.9f)
+		return fail("gradient bar drag keeps order");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+static int test_property_grid_curve_gradient()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("curve/gradient grid context");
+	vgui_context_set_size(ui, 900, 700);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- 单目标:预览、popup、实时预览、合并 undo、Esc 回滚 ---- */
+	{
+		editor_context context(ui);
+		command_stack commands;
+		property_grid grid;
+		grid.build(vgui_root(ui));
+		grid.set_command_stack(&commands);
+		vgui_widget_set_pos(grid.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(grid.widget(), 300.0f, 360.0f);
+
+		property_desc curve_desc;
+		curve_desc.id = "anim.curve";
+		curve_desc.label = "Curve";
+		curve_desc.type = property_type::curve;
+		curve_desc.value = "linear;0,0;1,1";
+		property_desc gradient_desc;
+		gradient_desc.id = "fx.gradient";
+		gradient_desc.label = "Gradient";
+		gradient_desc.type = property_type::gradient;
+		gradient_desc.value = "0,#FF0000;1,#0000FF";
+		if (!grid.add_property(curve_desc) ||
+			!grid.add_property(gradient_desc))
+			return fail("curve/gradient rows added");
+
+		const std::string curve_start = grid.property_value("anim.curve");
+		const std::string gradient_start =
+			grid.property_value("fx.gradient");
+		if (curve_start != "linear;0,0,0,0;1,1,0,0" ||
+			gradient_start != "0,#FF0000;1,#0000FF")
+			return fail("curve/gradient rows normalized");
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		vgui_widget* curve_preview = find_widget(grid.widget(),
+			"property:anim.curve", VGUI_CUSTOM);
+		vgui_widget* gradient_preview = find_widget(grid.widget(),
+			"property:fx.gradient", VGUI_CUSTOM);
+		if (!curve_preview || !gradient_preview)
+			return fail("curve/gradient preview widgets");
+
+		/* 曲线行点击打开 popup 并保持值不变。 */
+		const std::size_t curve_base = commands.undo_count();
+		click_widget_center(ui, curve_preview);
+		if (!vgui_popup_active(ui))
+			return fail("curve popup opens from preview");
+		vgui_widget* content = vgui_popup_content(ui);
+		if (!content || std::string(vgui_widget_get_id(content)) !=
+			"property-grid.curve-editor")
+			return fail("curve popup content");
+		if (grid.property_value("anim.curve") != curve_start)
+			return fail("curve popup open keeps value");
+		float curve_px = 0, curve_py = 0, curve_pw = 0, curve_ph = 0;
+		vgui_widget_get_rect(curve_preview, nullptr, nullptr,
+			&curve_pw, &curve_ph);
+		vgui_widget_get_rect(content, &curve_px, &curve_py, nullptr,
+			nullptr);
+		if (curve_py < 10.0f)
+			return fail("curve popup positioned");
+		(void)curve_py;
+		(void)curve_pw;
+		(void)curve_ph;
+		(void)curve_px;
+
+		/* 双击图中点:实时预览 + 提交一条命令。 */
+		vgui_widget* graph = find_widget(content,
+			"property-grid.curve-editor.graph", VGUI_CUSTOM);
+		if (!graph)
+			return fail("curve popup graph");
+		float gx = 0, gy = 0, gw = 0, gh = 0;
+		vgui_widget_get_rect(graph, &gx, &gy, &gw, &gh);
+		const float margin = 10.0f;
+		double_click_at(ui, gx + margin + (gw - margin * 2.0f) * 0.5f,
+			gy + margin + (gh - margin * 2.0f) * 0.5f);
+		curve_value after_add;
+		if (!curve_editor::parse_value(grid.property_value("anim.curve"),
+			after_add, nullptr) || after_add.keys.size() != 3)
+			return fail("curve popup previews new key");
+		if (!near_px(after_add.keys[1].t, 0.5f) ||
+			!near_px(after_add.keys[1].value, 0.5f))
+			return fail("curve popup key position");
+		if (commands.undo_count() != curve_base + 1)
+			return fail("curve popup records one command");
+
+		/* 切换 interpolation:第二个手势合并进同一 undo 记录。 */
+		vgui_widget* cubic = find_widget(content,
+			"property-grid.curve-editor.mode.cubic", VGUI_BUTTON);
+		if (!cubic)
+			return fail("curve popup cubic button");
+		click_widget_center(ui, cubic);
+		curve_value after_mode;
+		if (!curve_editor::parse_value(grid.property_value("anim.curve"),
+			after_mode, nullptr) ||
+			after_mode.interpolation != curve_interpolation::cubic)
+			return fail("curve popup mode preview");
+		if (commands.undo_count() != curve_base + 1)
+			return fail("curve popup merges gestures");
+
+		/* Esc:显示回滚到会话起点,popup 关闭。 */
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (vgui_popup_active(ui))
+			return fail("curve escape closes popup");
+		if (grid.property_value("anim.curve") != curve_start)
+			return fail("curve escape reverts display");
+		if (commands.undo_count() != curve_base + 1)
+			return fail("curve escape keeps one record");
+		if (!commands.undo() ||
+			grid.property_value("anim.curve") != curve_start)
+			return fail("curve undo after revert");
+		if (!commands.redo())
+			return fail("curve redo after revert");
+		curve_value redone;
+		if (!curve_editor::parse_value(grid.property_value("anim.curve"),
+			redone, nullptr) || redone.keys.size() != 3 ||
+			redone.interpolation != curve_interpolation::cubic)
+			return fail("curve redo restores merged value");
+
+		/* 渐变行:双击条新增停靠点,预设合并,显式关闭保留已提交值。 */
+		const std::size_t gradient_base = commands.undo_count();
+		click_widget_center(ui, gradient_preview);
+		if (!vgui_popup_active(ui))
+			return fail("gradient popup opens from preview");
+		content = vgui_popup_content(ui);
+		if (!content || std::string(vgui_widget_get_id(content)) !=
+			"property-grid.gradient-editor")
+			return fail("gradient popup content");
+		vgui_widget* bar = find_widget(content,
+			"property-grid.gradient-editor.bar", VGUI_CUSTOM);
+		if (!bar)
+			return fail("gradient popup bar");
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(bar, &bx, &by, &bw, &bh);
+		(void)bh;
+		double_click_at(ui, bx + bw * 0.5f, by + 10.0f);
+		gradient_value after_stop;
+		if (!gradient_editor::parse_value(
+			grid.property_value("fx.gradient"), after_stop, nullptr) ||
+			after_stop.stops.size() != 3 ||
+			!near_px(after_stop.stops[1].t, 0.5f))
+			return fail("gradient popup previews new stop");
+		if (commands.undo_count() != gradient_base + 1)
+			return fail("gradient popup records one command");
+
+		vgui_widget* fire = find_widget(content,
+			"property-grid.gradient-editor.preset.1", VGUI_BUTTON);
+		if (!fire)
+			return fail("gradient popup preset button");
+		click_widget_center(ui, fire);
+		gradient_value after_preset;
+		if (!gradient_editor::parse_value(
+			grid.property_value("fx.gradient"), after_preset, nullptr) ||
+			after_preset.stops.size() != 4 ||
+			after_preset.stops[0].color != "#000000" ||
+			after_preset.stops[3].color != "#FFFF66")
+			return fail("gradient popup preset preview");
+		if (commands.undo_count() != gradient_base + 1)
+			return fail("gradient popup merges preset");
+
+		vgui_popup_close(ui);
+		if (vgui_popup_active(ui))
+			return fail("gradient explicit close");
+		gradient_value kept;
+		if (!gradient_editor::parse_value(
+			grid.property_value("fx.gradient"), kept, nullptr) ||
+			kept.stops.size() != 4)
+			return fail("gradient close keeps committed value");
+		if (!commands.undo() ||
+			grid.property_value("fx.gradient") != gradient_start)
+			return fail("gradient undo reaches session start");
+		if (!commands.redo())
+			return fail("gradient redo");
+		gradient_value redone_gradient;
+		if (!gradient_editor::parse_value(
+			grid.property_value("fx.gradient"), redone_gradient, nullptr) ||
+			redone_gradient.stops.size() != 4)
+			return fail("gradient redo restores preset");
+	}
+
+	/* ---- 多目标:弹窗编辑写入所有 target,一条事务 undo ---- */
+	{
+		editor_context context(ui);
+		command_stack commands;
+		property_grid grid;
+		grid.build(vgui_root(ui));
+		grid.set_command_stack(&commands);
+		vgui_widget_set_pos(grid.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(grid.widget(), 300.0f, 300.0f);
+
+		const std::string start = "linear;0,0,0,0;1,1,0,0";
+		std::map<object_id, std::map<std::string, std::string>> store = {
+			{ 1, { { "fx.curve", start } } },
+			{ 2, { { "fx.curve", start } } }
+		};
+		grid.set_multi_getter([&](const std::string& id, object_id target) {
+			return store.count(target) && store[target].count(id)
+				? store[target][id] : std::string();
+		});
+		grid.set_multi_setter([&](const std::string& id, object_id target,
+			const std::string& value)
+		{
+			store[target][id] = value;
+		});
+
+		property_desc desc;
+		desc.id = "fx.curve";
+		desc.label = "Curve";
+		desc.type = property_type::curve;
+		desc.value = start;
+		if (!grid.add_property(desc))
+			return fail("multi curve row added");
+		grid.set_multi_targets({ 1, 2 });
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (grid.property_mixed("fx.curve"))
+			return fail("multi curve same value not mixed");
+
+		vgui_widget* preview = find_widget(grid.widget(),
+			"property:fx.curve", VGUI_CUSTOM);
+		if (!preview)
+			return fail("multi curve preview");
+		const std::size_t base = commands.undo_count();
+		click_widget_center(ui, preview);
+		if (!vgui_popup_active(ui))
+			return fail("multi curve popup opens");
+		vgui_widget* content = vgui_popup_content(ui);
+		vgui_widget* graph = content ? find_widget(content,
+			"property-grid.curve-editor.graph", VGUI_CUSTOM) : nullptr;
+		if (!graph)
+			return fail("multi curve graph");
+		float gx = 0, gy = 0, gw = 0, gh = 0;
+		vgui_widget_get_rect(graph, &gx, &gy, &gw, &gh);
+		const float margin = 10.0f;
+		double_click_at(ui, gx + margin + (gw - margin * 2.0f) * 0.5f,
+			gy + margin + (gh - margin * 2.0f) * 0.5f);
+		if (store[1]["fx.curve"] != store[2]["fx.curve"] ||
+			store[1]["fx.curve"] == start)
+			return fail("multi curve commit writes all targets");
+		curve_value multi_value;
+		if (!curve_editor::parse_value(store[1]["fx.curve"],
+			multi_value, nullptr) || multi_value.keys.size() != 3)
+			return fail("multi curve committed value");
+		if (commands.undo_count() != base + 1)
+			return fail("multi curve single transaction");
+		if (!commands.undo() ||
+			store[1]["fx.curve"] != start || store[2]["fx.curve"] != start)
+			return fail("multi curve undo restores targets");
+		if (!commands.redo() ||
+			store[1]["fx.curve"] == start || store[2]["fx.curve"] == start)
+			return fail("multi curve redo");
+		vgui_popup_close(ui);
 	}
 
 	vgui_destroy(ui);
@@ -4984,6 +5525,12 @@ int main()
 	if (int rc = test_property_reference())
 		return rc;
 	if (int rc = test_color_picker())
+		return rc;
+	if (int rc = test_curve_editor())
+		return rc;
+	if (int rc = test_gradient_editor())
+		return rc;
+	if (int rc = test_property_grid_curve_gradient())
 		return rc;
 	if (int rc = test_outliner_row_extensions())
 		return rc;
