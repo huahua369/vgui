@@ -932,6 +932,14 @@ void app_mgr::process_event(const SDL_Event* e)
 		}
 	}
 	break;
+	case SDL_EVENT_WINDOW_FOCUS_LOST:
+	{
+		// V01: 窗口切走时结束仍按住的交互（相机导航、Gizmo、行拖拽等），
+		// 避免回到窗口后控件以为鼠标还按着。没有进行中的交互时是空操作。
+		if (pw && pw->viewport && pw->viewport->ui)
+			vgui_input_cancel(pw->viewport->ui);
+	}
+	break;
 	}
 
 }

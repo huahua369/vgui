@@ -32,6 +32,7 @@
 #include <vgui.h>
 #include <vgui_editor_kit.h>
 #include "ovg_main.h"
+#include "phase0_renderer.h"
 
 using namespace vgui_editor_kit;
 
@@ -170,6 +171,9 @@ struct editor_state
 	vgui_item_id next_asset = 100;
 	/* Browse 菜单项 → 资产名(菜单回调只带 item id)。 */
 	std::map<vgui_item_id, std::string> browse_assets;
+	/* V01: 视口 3D 离屏渲染器与借给 vgui 的原生纹理。 */
+	phase0_renderer* renderer = nullptr;
+	vgui_texture* viewport_texture = nullptr;
 
 	bool valid_selection() const
 	{
@@ -1074,6 +1078,25 @@ static void setup_editor(vgui_context* ui)
 	g.shell->build();
 	g.shell->preview().set_load_handler(&load_demo_preview);
 
+	/* V01: 视口表面——尺寸变化与跨边界拖拽/失焦取消的状态反馈。真实 3D FBO
+	 * 由宿主按 resize 回调重建（见 phase0 示例），这里先验证控件的交互边界。 */
+	g.shell->viewport().set_resize_listener([](int w, int h) {
+		if (g.shell)
+			g.shell->set_status("viewport surface " + std::to_string(w) +
+				"x" + std::to_string(h));
+	});
+	g.shell->viewport().set_event_listener([](const vgui_event* event) -> bool {
+		if (!g.shell || !event)
+			return false;
+		if (event->type == VGUI_EVENT_MOUSE_DOWN)
+			g.shell->set_status("viewport: drag outside the panel to test capture");
+		else if (event->type == VGUI_EVENT_MOUSE_UP)
+			g.shell->set_status("viewport: drag released");
+		else if (event->type == VGUI_EVENT_CANCEL)
+			g.shell->set_status("viewport: gesture cancelled (focus lost)");
+		return false;
+	});
+
 	command_stack& commands = g.context->commands();
 	outliner_view& outliner = g.shell->scene();
 	outliner.set_command_stack(&commands);
@@ -1654,6 +1677,11 @@ int main()
 		return -1;
 	}
 
+	/* V01: 视口离屏渲染器（失败时视口显示占位文本，编辑器仍可用）。 */
+	g.renderer = phase0_renderer_create(wg->device);
+	if (!g.renderer)
+		fprintf(stderr, "3D 渲染器不可用，视口将显示占位内容\n");
+
 	// ---- 创建 UI 上下文并挂到窗口 viewport ----
 	vgui_context* ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(ui, win_w, win_h);
@@ -1691,6 +1719,32 @@ int main()
 			}
 
 			vgui_update(ui, delta);
+			/* V01: 布局完成后取视口渲染尺寸，宿主在此原地重建 3D FBO 并更新
+			 * 原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会闪空白。 */
+			if (g.shell)
+				g.shell->viewport().poll_resize();
+			if (g.renderer && g.shell)
+			{
+				int rw = 0, rh = 0;
+				g.shell->viewport().get_render_size(&rw, &rh);
+				if (phase0_renderer_resize(g.renderer, rw, rh))
+				{
+					SDL_GPUTexture* color = phase0_renderer_color_texture(g.renderer);
+					if (color && !g.viewport_texture)
+					{
+						g.viewport_texture = vgui_sdl3_texture_create_native(ui,
+							wg->vgctx, color, rw, rh, VGUI_TEXTURE_FORMAT_RGBA8);
+						if (g.viewport_texture)
+							g.shell->viewport().set_texture(g.viewport_texture);
+					}
+					else if (color)
+					{
+						vgui_sdl3_texture_update_native(g.viewport_texture,
+							wg->vgctx, color, rw, rh, VGUI_TEXTURE_FORMAT_RGBA8);
+					}
+				}
+				phase0_renderer_render(g.renderer, (float)SDL_GetTicks() / 1000.0f);
+			}
 
 			rtc.end();
 			rtc.begin();
@@ -1711,6 +1765,12 @@ int main()
 	delete g.context;
 	vgui_destroy(ui);
 	form->viewport->ui = nullptr;
+	if (g.renderer)
+	{
+		phase0_renderer_destroy(g.renderer);
+		g.renderer = nullptr;
+		g.viewport_texture = nullptr;
+	}
 	delete_font_family(familys);
 	cb->destroy_rvg(vg);
 	free_ctx_cb(cb);

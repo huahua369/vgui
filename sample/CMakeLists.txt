@@ -31,6 +31,7 @@ set(SRC_EDITOR_KIT_TEST
 # 游戏编辑器 dogfood 示例（editor_shell + M3 Outliner 全流程）
 set(SRC_GAME_EDITOR
     vgui_game_editor.cpp
+    phase0_renderer.cpp
 )
 
 # Phase 0: 3D FBO -> native texture -> VGUI_IMAGE

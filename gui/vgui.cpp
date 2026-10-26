@@ -718,6 +718,16 @@ struct vgui_popup_state
 	void* close_user = nullptr;
 };
 
+// Additional focus observers registered with vgui_context_add_focus_listener().
+// The legacy single listener (vgui_context_set_focus_listener) is kept apart so
+// existing components that replace it continue to behave the same way.
+struct vgui_focus_listener_entry
+{
+	int token = 0;
+	vgui_focus_fn fn = nullptr;
+	void* user = nullptr;
+};
+
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
@@ -804,6 +814,9 @@ struct vgui_context
 	// context 级焦点观察者（vgui_context_set_focus_listener）
 	vgui_focus_fn focus_fn = nullptr;
 	void* focus_user = nullptr;
+	// 附加焦点观察者（vgui_context_add_focus_listener）
+	std::vector<vgui_focus_listener_entry> focus_listeners;
+	int next_focus_listener = 1;
 
 	bool layout_dirty = true;
 	bool in_input = false;
@@ -6057,6 +6070,26 @@ namespace {
 		ctx->want_text = (w && w->kind == VGUI_EDIT && !w->readonly);
 		if (ctx->focus_fn)
 			ctx->focus_fn(ctx, previous, w, ctx->focus_user);
+		if (!ctx->focus_listeners.empty())
+		{
+			/* 回调可能移除自己（控件销毁时），先拍快照并在调用前确认 token
+			 * 仍然有效，避免回调里 remove 后访问到已释放的 user。 */
+			const std::vector<vgui_focus_listener_entry> snapshot = ctx->focus_listeners;
+			for (const vgui_focus_listener_entry& entry : snapshot)
+			{
+				bool alive = false;
+				for (const vgui_focus_listener_entry& live : ctx->focus_listeners)
+				{
+					if (live.token == entry.token)
+					{
+						alive = true;
+						break;
+					}
+				}
+				if (alive && entry.fn)
+					entry.fn(ctx, previous, w, entry.user);
+			}
+		}
 	}
 
 	//----------------------------------------------------------------------------
@@ -17428,6 +17461,28 @@ extern "C" {
 		ctx->focus_user = user;
 	}
 
+	int vgui_context_add_focus_listener(vgui_context* ctx, vgui_focus_fn fn, void* user)
+	{
+		if (!ctx || !fn) return 0;
+		vgui_focus_listener_entry entry;
+		entry.token = ctx->next_focus_listener++;
+		entry.fn = fn;
+		entry.user = user;
+		ctx->focus_listeners.push_back(entry);
+		return entry.token;
+	}
+
+	void vgui_context_remove_focus_listener(vgui_context* ctx, int token)
+	{
+		if (!ctx || token <= 0) return;
+		for (auto it = ctx->focus_listeners.begin(); it != ctx->focus_listeners.end(); ++it)
+		{
+			if (it->token != token) continue;
+			ctx->focus_listeners.erase(it);
+			return;
+		}
+	}
+
 	int vgui_input_mouse_move(vgui_context* ctx, float x, float y)
 	{
 		return vgui_mouse_move_impl(ctx, x, y);
@@ -17540,6 +17595,55 @@ extern "C" {
 		ctx->want_key = ctx->focus != nullptr;
 		ctx->want_text = (ctx->focus && ctx->focus->kind == VGUI_EDIT && !ctx->focus->readonly);
 		vgui_flush_pending(ctx);
+	}
+
+	void vgui_input_cancel(vgui_context* ctx)
+	{
+		if (!ctx) return;
+		const bool pointer_busy = ctx->active != nullptr ||
+			ctx->press_target != nullptr || ctx->slider_drag != nullptr;
+		const bool drag_busy = ctx->drag_kind != VGUI_DRAG_NONE;
+		if (!pointer_busy && !drag_busy) return;
+
+		const bool was_in_input = ctx->in_input;
+		if (!was_in_input)
+			vgui_begin_input(ctx);
+		if (drag_busy && ctx->drag_kind != VGUI_DRAG_NONE)
+			vgui_cancel_drag(ctx);
+
+		vgui_widget* pressed = ctx->press_target;
+		vgui_widget* active = ctx->active;
+		const int button = ctx->press_button;
+		vgui_event cancel = {};
+		cancel.type = VGUI_EVENT_CANCEL;
+		cancel.button = button;
+		if (pressed && ctx->alive.count(pressed))
+		{
+			cancel.x = ctx->mouse_x - pressed->abs_x;
+			cancel.y = ctx->mouse_y - pressed->abs_y;
+		}
+
+		/* 先清引用再通知：回调里可以安全地查询/重建控件，不会再次路由到
+		 * 本次已取消的按下状态。 */
+		ctx->active = nullptr;
+		ctx->press_target = nullptr;
+		ctx->slider_drag = nullptr;
+		ctx->press_button = 0;
+		if (pressed && ctx->alive.count(pressed))
+			vgui_emit_full(pressed, cancel);
+		if (active && active != pressed && ctx->alive.count(active))
+		{
+			if (active->ctx == ctx)
+			{
+				cancel.x = ctx->mouse_x - active->abs_x;
+				cancel.y = ctx->mouse_y - active->abs_y;
+			}
+			vgui_emit_full(active, cancel);
+		}
+
+		vgui_input_clear(ctx);
+		if (!was_in_input)
+			vgui_end_input(ctx);
 	}
 
 	void vgui_input_focus_next(vgui_context* ctx, int reverse)

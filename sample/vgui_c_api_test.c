@@ -10,6 +10,17 @@
 
 static int g_pass;
 static int g_fail;
+static int g_focus_calls;
+
+static void c_focus_listener(vgui_context* ctx, vgui_widget* old_focus,
+	vgui_widget* new_focus, void* user)
+{
+	(void)ctx;
+	(void)old_focus;
+	(void)new_focus;
+	(void)user;
+	++g_focus_calls;
+}
 
 static void check(int ok, const char* what)
 {
@@ -114,6 +125,20 @@ int main(void)
 		vgui_tree_set_item_buttons(tree, ti, 1);
 		check(vgui_tree_get_item_buttons(tree, ti) == 1, "C API: tree item buttons");
 		vgui_tree_on_item_button(tree, NULL, NULL);
+	}
+
+	/* V01: additional focus observers coexist with the legacy listener and the
+	 * pointer-cancel entry point is callable from plain C. */
+	{
+		vgui_widget* focusable = vgui_widget_add(root, VGUI_BUTTON, "focus");
+		vgui_widget_set_size(focusable, 80.0f, 24.0f);
+		int token = vgui_context_add_focus_listener(ui, c_focus_listener, NULL);
+		check(token != 0, "C API: focus listener token");
+		vgui_set_focus(ui, focusable);
+		check(g_focus_calls == 1, "C API: focus listener fires");
+		vgui_context_remove_focus_listener(ui, token);
+		vgui_input_cancel(ui);
+		check(vgui_context_wants_mouse(ui) == 0, "C API: input cancel is safe");
 	}
 
 	/* The image keeps the texture alive after the caller drops its handle. */

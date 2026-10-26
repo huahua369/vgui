@@ -1717,6 +1717,14 @@ extern "C" {
 	 * one).  Pass a null fn to remove. */
 	VGUI_API void vgui_context_set_focus_listener(vgui_context* ctx, vgui_focus_fn fn, void* user);
 
+	/* Additional focus observers.  They run after the listener installed by
+	 * vgui_context_set_focus_listener(), in registration order, and never
+	 * replace it.  Returns a non-zero token for
+	 * vgui_context_remove_focus_listener().  Observers may remove themselves
+	 * from inside the callback. */
+	VGUI_API int vgui_context_add_focus_listener(vgui_context* ctx, vgui_focus_fn fn, void* user);
+	VGUI_API void vgui_context_remove_focus_listener(vgui_context* ctx, int token);
+
 	/* Current modifier state (vgui_mod bit mask).  Useful for mouse-driven
 	 * controls that need Shift/Alt fine-tuning. */
 	VGUI_API int vgui_context_get_mods(vgui_context* ctx);
@@ -1735,6 +1743,11 @@ extern "C" {
 	VGUI_API int vgui_input_text(vgui_context* ctx, const char* utf8);
 	VGUI_API int vgui_input_editing(vgui_context* ctx, const char* utf8, int cursor, int length);
 	VGUI_API void vgui_input_clear(vgui_context* ctx);
+	/* Cancels an in-flight pointer interaction, for example when the OS window
+	 * loses focus.  The pressed/active widget receives VGUI_EVENT_CANCEL, an
+	 * active drag is cancelled, then every button, hover, drag and menu state
+	 * is cleared.  Does nothing when no pointer interaction is running. */
+	VGUI_API void vgui_input_cancel(vgui_context* ctx);
 	VGUI_API void vgui_input_focus_next(vgui_context* ctx, int reverse);
 
 	VGUI_API int vgui_context_wants_mouse(vgui_context* ctx);

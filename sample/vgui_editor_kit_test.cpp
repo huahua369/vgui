@@ -7872,6 +7872,195 @@ static int test_asset_operations()
 	return 0;
 }
 
+/* V01: Viewport 表面——渲染尺寸、resize 通知、跨边界鼠标捕获与焦点取消。 */
+static int test_viewport_widget()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v01 context");
+	vgui_context_set_size(ui, 900, 650);
+
+	{
+		viewport_view viewport;
+		viewport.build(vgui_root(ui));
+		if (!viewport.widget() ||
+			vgui_widget_get_kind(viewport.widget()) != VGUI_CUSTOM)
+			return fail("v01 surface kind");
+		vgui_widget_set_pos(viewport.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(viewport.widget(), 400.0f, 300.0f);
+
+		/* 焦点旁落需要一个可聚焦的对照控件。 */
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON, "other");
+		vgui_widget_set_pos(other, 600.0f, 500.0f);
+		vgui_widget_set_size(other, 120.0f, 30.0f);
+
+		/* 附加监听器不能顶掉现有的单监听器接口（Outliner 行内重命名依赖它）。 */
+		int legacy_focus = 0;
+		vgui_context_set_focus_listener(ui,
+			[](vgui_context*, vgui_widget*, vgui_widget*, void* user)
+			{
+				++*static_cast<int*>(user);
+			}, &legacy_focus);
+
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		/* 1) 渲染尺寸 = 内容区（去掉 1px 边框），并且只在变化时通知一次。 */
+		if (!viewport.poll_resize())
+			return fail("v01 initial resize");
+		if (viewport.render_width() != 398 || viewport.render_height() != 298)
+			return fail("v01 render size");
+		if (viewport.poll_resize())
+			return fail("v01 resize edge triggered");
+
+		int resize_calls = 0;
+		int resize_w = 0, resize_h = 0;
+		viewport.set_resize_listener([&](int w, int h)
+		{
+			++resize_calls;
+			resize_w = w;
+			resize_h = h;
+		});
+		vgui_widget_set_size(viewport.widget(), 520.0f, 360.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		if (!viewport.poll_resize() || resize_calls != 1 ||
+			resize_w != 518 || resize_h != 358)
+			return fail("v01 resize listener");
+
+		/* 2) resize 期间纹理保持绑定：宿主原地更新即可，不会空一帧。 */
+		uint32_t pixels[4] = { 0xFF202020u, 0xFFE0E0E0u, 0xFFE0E0E0u, 0xFF202020u };
+		vgui_texture_desc desc = {};
+		desc.width = 2;
+		desc.height = 2;
+		desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+		desc.pixels = pixels;
+		vgui_texture* texture = vgui_texture_create(ui, &desc);
+		if (!texture)
+			return fail("v01 texture");
+		viewport.set_texture(texture);
+		if (viewport.texture() != texture)
+			return fail("v01 bind texture");
+		vgui_widget_set_size(viewport.widget(), 300.0f, 200.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		viewport.poll_resize();
+		if (viewport.texture() != texture || resize_calls != 2)
+			return fail("v01 texture survives resize");
+		viewport.set_texture(nullptr);
+		vgui_texture_destroy(texture);
+
+		/* 3) 按下后拖出控件边界，事件仍然送达且坐标保持本地（可为负）。 */
+		int moves = 0, downs = 0, ups = 0, cancels = 0, keys = 0;
+		float local_x = 0.0f, local_y = 0.0f;
+		viewport.set_event_listener([&](const vgui_event* event)
+		{
+			if (!event)
+				return false;
+			switch (event->type)
+			{
+			case VGUI_EVENT_MOUSE_MOVE:
+				++moves;
+				local_x = event->x;
+				local_y = event->y;
+				break;
+			case VGUI_EVENT_MOUSE_DOWN:
+				++downs;
+				break;
+			case VGUI_EVENT_MOUSE_UP:
+				++ups;
+				break;
+			case VGUI_EVENT_CANCEL:
+				++cancels;
+				break;
+			case VGUI_EVENT_KEY_DOWN:
+				++keys;
+				break;
+			default:
+				break;
+			}
+			return false;
+		});
+		int focus_events = 0;
+		bool focus_now = false;
+		viewport.set_focus_listener([&](bool focused)
+		{
+			++focus_events;
+			focus_now = focused;
+		});
+
+		float vx = 0, vy = 0, vw = 0, vh = 0;
+		vgui_widget_get_rect(viewport.widget(), &vx, &vy, &vw, &vh);
+		const float inside_x = vx + vw * 0.5f;
+		const float inside_y = vy + vh * 0.5f;
+
+		vgui_input_mouse_move(ui, inside_x, inside_y);
+		if (moves != 1 || downs != 0)
+			return fail("v01 hover move");
+		vgui_input_mouse_down(ui, 1, inside_x, inside_y, 1);
+		if (downs != 1 || !viewport.dragging() || viewport.drag_button() != 1)
+			return fail("v01 gesture begins");
+		if (!viewport.focused() || !focus_now || focus_events != 1 ||
+			legacy_focus == 0)
+			return fail("v01 press focuses surface");
+
+		const int moves_before_outside = moves;
+		vgui_input_mouse_move(ui, 5.0f, 5.0f);
+		if (!viewport.dragging() || moves <= moves_before_outside)
+			return fail("v01 drag continues outside");
+		if (local_x > 0.0f || local_y > 0.0f)
+			return fail("v01 outside coordinates stay local");
+		vgui_input_mouse_up(ui, 1, 5.0f, 5.0f, 1);
+		if (ups != 1 || viewport.dragging())
+			return fail("v01 release ends gesture");
+
+		/* 4) 键盘事件只发给获得焦点的表面。 */
+		vgui_input_key(ui, 'F', 1, 0);
+		vgui_input_key(ui, 'F', 0, 0);
+		if (keys != 1)
+			return fail("v01 keyboard reaches focused surface");
+
+		/* 5) 焦点旁落时取消手势并向宿主转发 CANCEL。 */
+		const int cancels_before_focus = cancels;
+		vgui_input_mouse_move(ui, inside_x, inside_y);
+		vgui_input_mouse_down(ui, 1, inside_x, inside_y, 1);
+		if (!viewport.dragging())
+			return fail("v01 second gesture");
+		vgui_set_focus(ui, other);
+		if (viewport.dragging() || cancels != cancels_before_focus + 1)
+			return fail("v01 focus loss cancels");
+		if (focus_now || viewport.focused())
+			return fail("v01 focus listener reports loss");
+		vgui_input_mouse_up(ui, 1, inside_x, inside_y, 1);
+
+		/* 6) vgui_input_cancel（窗口失焦）同样结束手势并清空指针状态。 */
+		const int cancels_before_cancel = cancels;
+		vgui_input_mouse_move(ui, inside_x, inside_y);
+		vgui_input_mouse_down(ui, 1, inside_x, inside_y, 1);
+		if (!viewport.dragging())
+			return fail("v01 cancel gesture begins");
+		vgui_input_cancel(ui);
+		if (viewport.dragging() || cancels != cancels_before_cancel + 1)
+			return fail("v01 input cancel");
+		if (vgui_context_wants_mouse(ui) != 0)
+			return fail("v01 cancel clears pointer state");
+
+		/* 7) 隐藏或折叠的页不给宿主发 1x1 的重建请求。 */
+		vgui_widget_set_visible(viewport.widget(), 0);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		if (viewport.poll_resize())
+			return fail("v01 hidden surface keeps size");
+		vgui_widget_set_visible(viewport.widget(), 1);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -7947,6 +8136,8 @@ int main()
 	if (int rc = test_asset_thumbnails())
 		return rc;
 	if (int rc = test_asset_operations())
+		return rc;
+	if (int rc = test_viewport_widget())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

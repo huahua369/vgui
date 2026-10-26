@@ -56,7 +56,7 @@
 | 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03）；按在已选行且挂拖源时推迟改选（多选拖拽前提）；kit drop target 支持自定义 hover 提示 | 资产引用行在 P06；视口创建对象归 V06 |
 | 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务、资产批量操作已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务；Gizmo 尚未接入 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
-| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
+| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消 | 没有相机导航、拾取、框选、Gizmo、多视口、HDR/MSAA/深度纹理 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
 | 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
 
@@ -350,10 +350,11 @@
 
 依赖：F02、F03；V01/V02/V03 是 V05/V07 的前置；V08 是 T02/T03 的画布基础。
 
-- [ ] **V01 Viewport 控件封装**（P0，M）
+- [x] **V01 Viewport 控件封装**（P0，M）（已完成）
   - 绑定 native texture，处理 resize/FBO 重建。
   - 鼠标捕获、焦点、拖出控件边界时继续接收事件。
   - 验收：窗口缩放时视口不闪烁；拖拽 Gizmo 到视口外仍连续；失去焦点时正确结束操作。
+  - 已实现：`viewport_view` 从 `VGUI_IMAGE` 重构为可聚焦的 `VGUI_CUSTOM` 表面，纹理绘制在 1px 边框内侧；`poll_resize()` 在布局后给出整数渲染尺寸（隐藏/折叠页不触发 1x1 重建）并回调 `resize_listener`，宿主原地 `vgui_sdl3_texture_update_native` 重建 FBO，旧纹理保持绑定避免闪白。事件经 `set_event_listener` 全量透传，按下后核心 `press_target`/`active` 保证拖出控件边界仍有 MOUSE_MOVE/MOUSE_UP 且坐标为本地（可为负）；新增 `vgui_context_add_focus_listener`/`remove_focus_listener`（与旧单监听器并存，不覆盖 Outliner 的行内重命名提交）和 `vgui_input_cancel()`，焦点旁落时结束手势并向宿主转发 `VGUI_EVENT_CANCEL`。SDL3 后端在 `SDL_EVENT_WINDOW_FOCUS_LOST` 调用 `vgui_input_cancel`，窗口切走不会残留按住的交互。`vgui_game_editor` 用 `phase0_renderer` 接入真实 FBO + native texture，状态栏显示视口尺寸与拖拽/取消反馈。测试：kit `test_viewport_widget`（渲染尺寸边沿触发、纹理跨 resize 保持、跨边界拖拽与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）。
 
 - [ ] **V02 相机导航**（P0，M）
   - 中键平移、右键旋转、滚轮缩放、F 聚焦选中对象。
@@ -576,12 +577,13 @@ MVP 验收场景：
 - M2 收口（P05～P07）：核心 context 级通用弹出面板 `vgui_popup_*`（外点/Esc/滚轮点外关闭并区分原因、菜单/模态互斥、边缘钳制、焦点陷阱、close 回调）；kit `color_picker`（ovg tools 取色器原语 + press/change/commit 手势协议 + `set_color_transform` 颜色空间策略）；PropertyGrid 颜色行经 popup 取色（实时预览、会话单条 undo、Esc 回滚）、`asset`/`object_ref` 引用行（asset_query/browse/filter_check/object_activated/missing 五个宿主接口、行级 drop、清空、丢失态）、`begin_batch/end_batch` 批量事务（`reset_all` 改用）；`vgui_game_editor` 属性面板按选择重建（Name/Tint/颜色/网格/目标行）、资产拖到属性行赋值、丢失资产演示。
 - M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
 - M4 A06 资产操作：`asset_browser` 统一 `operation_handler` 处理重命名/删除/复制/移动/重新导入，结构化错误覆盖冲突/只读/占用/非法目标/I/O；整批请求只有在宿主提供 `undo`/`redo` 时记录为一条命令，否则明确标记 `(not undoable)` 并警告；右键菜单覆盖列表/网格，F2/Delete/Ctrl+D/F5/Ctrl+I 与菜单共用 dispatch，Move To 子菜单、依赖模态框、Import... 提示框与通知/Toast 全部接通；旧 `rename_handler` 路径保留。`vgui_game_editor` 演示宿主数据库原子事务、快照撤销/重做、只读/占用/冲突/损坏资源与不可撤销重导入。
-- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）。
+- M5 V01 Viewport 表面：`viewport_view` 改为可聚焦 `VGUI_CUSTOM`，`poll_resize()` + `resize_listener` 驱动宿主原地重建 FBO/native texture，跨边界鼠标捕获、`vgui_context_add_focus_listener` 焦点取消、`vgui_input_cancel()` 与 SDL3 窗口失焦接线；`vgui_game_editor` 用 `phase0_renderer` 接入真实 3D 视口。
+- `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）、`test_viewport_widget`（V01：渲染尺寸边沿触发、纹理跨 resize 保持、跨边界鼠标捕获与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（20 项）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（23 项，含 V01 附加焦点监听与 `vgui_input_cancel`）、`vgui_texture_test` 基线保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
 1. 第二批继续 A07 Console / Log View（等级颜色、过滤、搜索、自动滚动与增量追加）。
-2. 用 native texture 接入真实 Viewport，再补相机导航、拾取和平移 Gizmo（V01～V03）。
+2. V01 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入），继续 V02 相机导航、V03 拾取与 V05 平移 Gizmo。
 3. 继续 T01 Table/DataGrid 与 V07 旋转/缩放 Gizmo。
