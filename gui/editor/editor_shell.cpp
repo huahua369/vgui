@@ -258,6 +258,39 @@ namespace vgui_editor_kit {
 		add_gizmo_space("view.gizmo.space.parent", "Parent", gizmo_space::parent);
 		add_gizmo_space("view.gizmo.space.screen", "Screen", gizmo_space::screen);
 
+		/* V09: runtime render switches.  The shell only records the request;
+		 * the host applies it to its phase0 views and may clamp MSAA. */
+		commands_.add("view.hdr", "HDR", [this]() {
+			viewport_render_settings settings = viewport_settings_;
+			settings.hdr = !settings.hdr;
+			set_viewport_settings(settings);
+			set_status(settings.hdr ? "hdr on" : "hdr off");
+		});
+		commands_.set_checked("view.hdr", [this]() {
+			return viewport_settings_.hdr;
+		});
+
+		commands_.add("view.msaa", "MSAA 4x", [this]() {
+			viewport_render_settings settings = viewport_settings_;
+			settings.msaa_samples = settings.msaa_samples > 1 ? 1 : 4;
+			set_viewport_settings(settings);
+			set_status(settings.msaa_samples > 1 ? "msaa 4x on" : "msaa off");
+		});
+		commands_.set_checked("view.msaa", [this]() {
+			return viewport_settings_.msaa_samples > 1;
+		});
+
+		commands_.add("view.depth", "Depth Preview", [this]() {
+			viewport_render_settings settings = viewport_settings_;
+			settings.depth_preview = !settings.depth_preview;
+			set_viewport_settings(settings);
+			set_status(settings.depth_preview ? "depth preview on" :
+				"depth preview off");
+		});
+		commands_.set_checked("view.depth", [this]() {
+			return viewport_settings_.depth_preview;
+		});
+
 		commands_.add("view.reset_layout", "Reset Layout", [this]() {
 			reset_layout();
 			set_status("layout reset");
@@ -438,6 +471,11 @@ namespace vgui_editor_kit {
 				add_menu_command(grid_size_menu, "view.grid.5", true);
 			}
 			vgui_menu_add_separator(view_menu);
+			/* V09 */
+			add_menu_command(view_menu, "view.hdr", true);
+			add_menu_command(view_menu, "view.msaa", true);
+			add_menu_command(view_menu, "view.depth", true);
+			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.reset_layout", false);
 			vgui_menubar_add_menu(menubar_, "View", view_menu);
 		}
@@ -545,6 +583,31 @@ namespace vgui_editor_kit {
 		gizmo_.set_snap_settings(&snap_);
 		/* V03: 左键拾取/框选，选择集写入 editor_context 并与 Outliner 同步。 */
 		picking_.attach(viewport_, context_);
+		/* V09: 主视口下方并排一个第二相机视口和一个深度预览视口。两者都是
+		 * 独立 viewport_view，各自绑定宿主提供的纹理；深度预览关闭时只保留
+		 * 第二相机视口。 */
+		vgui_widget_set_gap(viewport_panel_, 4);
+		vgui_widget* view_strip = vgui_widget_add(viewport_panel_, VGUI_PANEL,
+			nullptr);
+		vgui_widget_set_layout(view_strip, VGUI_LAYOUT_ROW);
+		vgui_widget_set_padding(view_strip, 0, 0, 0, 0);
+		vgui_widget_set_gap(view_strip, 4);
+		vgui_widget_set_size(view_strip, 0, 150);
+		vgui_widget_set_align_self(view_strip, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_background(view_strip, kSectionBg);
+
+		preview_viewport_.build(view_strip);
+		vgui_widget_set_min_size(preview_viewport_.widget(), 120, 80);
+		vgui_widget_set_align_self(preview_viewport_.widget(),
+			VGUI_ALIGN_STRETCH);
+		/* 第二个相机可独立导航，不与主视口共享状态。 */
+		preview_camera_.attach(preview_viewport_);
+
+		depth_viewport_.build(view_strip);
+		vgui_widget_set_min_size(depth_viewport_.widget(), 120, 80);
+		vgui_widget_set_align_self(depth_viewport_.widget(),
+			VGUI_ALIGN_STRETCH);
+
 		desc.id = "viewport";
 		desc.title = "VIEWPORT";
 		desc.panel = viewport_panel_;
@@ -649,6 +712,10 @@ namespace vgui_editor_kit {
 			set_status("assign " + asset);
 			return true;
 		});
+
+		/* Reflect the initial V09 settings (depth preview on) in the auxiliary
+		 * surface visibility and menu checks. */
+		set_viewport_settings(viewport_settings_);
 
 		default_layout_ = capture_layout();
 	}
@@ -1117,6 +1184,16 @@ namespace vgui_editor_kit {
 		return viewport_;
 	}
 
+	viewport_view& editor_shell::preview_viewport() noexcept
+	{
+		return preview_viewport_;
+	}
+
+	viewport_view& editor_shell::depth_viewport() noexcept
+	{
+		return depth_viewport_;
+	}
+
 	viewport_camera& editor_shell::camera() noexcept
 	{
 		return camera_;
@@ -1125,6 +1202,40 @@ namespace vgui_editor_kit {
 	const viewport_camera& editor_shell::camera() const noexcept
 	{
 		return camera_;
+	}
+
+	viewport_camera& editor_shell::preview_camera() noexcept
+	{
+		return preview_camera_;
+	}
+
+	const viewport_camera& editor_shell::preview_camera() const noexcept
+	{
+		return preview_camera_;
+	}
+
+	viewport_render_settings& editor_shell::viewport_settings() noexcept
+	{
+		return viewport_settings_;
+	}
+
+	const viewport_render_settings& editor_shell::viewport_settings() const noexcept
+	{
+		return viewport_settings_;
+	}
+
+	void editor_shell::set_viewport_settings(
+		const viewport_render_settings& settings)
+	{
+		viewport_settings_ = settings;
+		if (viewport_settings_.msaa_samples < 1)
+			viewport_settings_.msaa_samples = 1;
+		if (depth_viewport_.widget())
+		{
+			vgui_widget_set_visible(depth_viewport_.widget(),
+				viewport_settings_.depth_preview ? 1 : 0);
+		}
+		refresh_commands();
 	}
 
 	viewport_selection& editor_shell::picking() noexcept

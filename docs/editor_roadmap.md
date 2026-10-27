@@ -56,10 +56,10 @@
 | 拖放 | 核心 C API：载荷/拖拽源/drop target/路由/拖影/插入指示/光标反馈；SDL3 OS 文件拖入已桥接（F03）；按在已选行且挂拖源时推迟改选（多选拖拽前提）；kit drop target 支持自定义 hover 提示；V06 视口悬停可轮询 `drop_hover`，Escape 取消拖拽 | 资产引用行在 P06；视口拖放落点/预览由宿主提供（V06 已在示例接入） |
 | 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务、资产批量操作、V05 平移 Gizmo、V06 拖放创建、V07 旋转/缩放 Gizmo 已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务 |
 | 图片 | source/fit/tint/flip/pixel snap | 九宫格、旋转、任意矩阵只在 OVG 层暴露 |
-| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消；V02 轨道相机（中键平移、右键旋转、滚轮缩放、F 取景、状态保存/恢复）；V03 左键点击/框选、多选集合与 Outliner 双向同步、屏幕空间选中高亮；V04 世界网格/原点轴生成、自适应密度与平移/旋转/缩放吸附；V05 世界/局部空间平移 Gizmo（三轴 + 平面手柄、多选中心、吸附、begin/preview/commit/cancel 命令栈接入）；V06 资产拖入落点求交、半透明幽灵预览/地面标记、多实例渲染与新建对象选中；V07 旋转环/缩放轴/统一缩放、世界/局部/父级/屏幕空间、数值面板联动与旋转/缩放吸附 | 没有多视口、HDR/MSAA/深度纹理；3D 描边、射线求交与网格 GPU 绘制由宿主提供 |
+| 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消；V02 轨道相机（中键平移、右键旋转、滚轮缩放、F 取景、状态保存/恢复）；V03 左键点击/框选、多选集合与 Outliner 双向同步、屏幕空间选中高亮；V04 世界网格/原点轴生成、自适应密度与平移/旋转/缩放吸附；V05 世界/局部空间平移 Gizmo（三轴 + 平面手柄、多选中心、吸附、begin/preview/commit/cancel 命令栈接入）；V06 资产拖入落点求交、半透明幽灵预览/地面标记、多实例渲染与新建对象选中；V07 旋转环/缩放轴/统一缩放、世界/局部/父级/屏幕空间、数值面板联动与旋转/缩放吸附；V08 独立 2D Canvas；V09 多相机 view 共享管线、HDR（RGBA16F + tonemap）、MSAA resolve 与深度可视化纹理 | 深度纹理在 MSAA 开启时通过额外单采样深度通道生成，不支持直接解析 MSAA 深度；3D 描边、射线求交与网格 GPU 绘制由宿主提供 |
 | DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
 | 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
-
+| shader要求使用slang来写
 ## 3. 分层方案
 
 ```text
@@ -394,9 +394,10 @@
   - 验收：Canvas 可独立作为控件使用；选择/拖拽/缩放状态与命令栈集成。
   - 已实现：新增 `canvas_view`（`gui/editor/canvas_view.h/.cpp`），与 3D 视口解耦，自己持有轻量 item 模型——稳定 `object_id`、未旋转 `canvas_rect`、绕中心旋转、矩形/椭圆/菱形、填充/描边/文字色、边框宽度、圆角、标签、可见与锁定；`add_item/update_item/remove_item/clear_items/find_item` 支持显式 id（重复 id 返回 `invalid_object`）与自动分配。视图以内容区左上角对应的画布坐标 + 正缩放表示，中键平移、滚轮按光标锚点缩放，`set_view_state/reset_view/zoom_at` 与缩放上下限可保存恢复；自适应网格按像素范围升降档并绘制原点轴，`effective_grid_step()` 可供宿主导航/标尺复用。左键点击选中，Ctrl 切换、Shift 追加、空白拖动为框选（与可视图元相交即选中，锁定/隐藏项忽略），空白点击清空；单选显示八个缩放手柄与旋转手柄，手柄在内容区屏幕坐标中固定大小并有独立容差。拖动时快照选中项，移动按主选绝对包围框吸附、单选缩放保持对角锚点且支持任意旋转、旋转按中心角与 `snap_settings::rotate_step_deg` 吸附；Esc、`VGUI_EVENT_CANCEL`、失焦、禁用、`set_view_state` 与显式 `cancel_gesture()` 均恢复快照。每次提交只向 `command_stack` 压入一条 `Move`/`Resize`/`Rotate`，无变化不产生命令；命令保存前后完整 item 副本，通过 weak token 在画布销毁后自动失效。主题感知绘制复用 OVG tools 的网格、原点轴、选择框/手柄、旋转手柄和蚂蚁线；`selection_listener` 与 `change_listener` 分别通知宿主选择集和模型/视图变化。`editor_shell` 在底部新增 CANVAS 标签（ASSETS / CONSOLE / CANVAS），暴露 `canvas()`，把共享 `snap_settings` 与 `context_.commands()` 接入画布，并新增 `view.canvas` 命令/View 菜单项用于展开、切换和聚焦；布局持久化自动记录第三个标签。`vgui_game_editor` 为画布覆盖为与 20 单位网格一致的独立吸附策略（不跟随 3D 视口相机格距），并预置锁定背景、面板、按钮、头像和徽章 item，选择监听器在状态栏反馈，可直接拖动/缩放/旋转并用 Undo/Redo 验证。测试：kit `test_canvas_view`（模型/显式 id/坐标/缩放钳制、自适应网格、点击/Ctrl/Shift/框选与清空、锁定/不可见过滤、悬停与旋转手柄、移动/缩放/旋转吸附及 undo/redo、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用、选择监听器、删除选中项），shell 块断言 CANVAS 页、`view.canvas` 命令、访问器、聚焦与三标签布局顺序。
 
-- [ ] **V09 多视口 / HDR / MSAA / 深度纹理**（P1，L）
+- [x] **V09 多视口 / HDR / MSAA / 深度纹理**（P1，L）（已完成）
   - 多相机视口、线性空间和 HDR、MSAA resolve、深度纹理作为 UI 纹理。
   - 验收：多视口共享资源但不互相覆盖；HDR/MSAA 开关可运行时切换；深度纹理可用于后处理预览。
+  - 已实现：`sample/phase0_renderer` 从一个 `phase0_renderer` 统一持有着色器、管线缓存、立方体/幽灵顶点缓冲与采样器，每个 `phase0_view` 独立持有相机、实例/网格数据、颜色/深度附件和渲染选项；旧的 `phase0_renderer_*` 单视口 API 全部转发到默认 view，示例与旧代码无需改动。`phase0_view_set_options()` 可运行时切换 `hdr`、`msaa_samples`（1/2/4/8，按设备能力钳制）和 `depth_preview`：HDR 先渲染到 RGBA16F 再经 tonemap 写入 RGBA8 显示纹理；MSAA 通过 SDL_GPU resolve 到显示纹理，HDR+MSAA 先 resolve 到中间纹理再 tonemap；每个 view 的附件按需重建，不会覆盖其他 view 的颜色/深度目标。深度可视化输出 RGBA8 预览纹理，关闭 MSAA 时直接采样单采样深度，开启 MSAA 时因 SDL_GPU 不支持深度 resolve，另用一个单采样、无颜色目标的深度专用管线和空片段着色器重新填充 `preview_depth`。`editor_shell` 在 VIEWPORT 停靠页内新增第二相机视口与深度预览视口、独立 `preview_camera()`、`viewport_render_settings` 和 `view.hdr` / `view.msaa` / `view.depth` 命令（View 菜单可勾选，深度预览命令同时显隐深度面板）。`vgui_game_editor` 主视口与第二相机共享实例列表和管线，但各自维护相机、网格缓冲和附件；深度视口绑定主视口的深度可视化纹理，状态栏反馈 `hdr on` / `msaa 4x on` / 深度预览开关。测试：kit shell 块断言两个新视口/第二相机、默认设置、命令切换与设置 setter/重置；运行示例验证 LDR、HDR、MSAA、HDR+MSAA 与 MSAA 深度预览均无 Vulkan 校验错误或设备丢失。
 
 - [ ] **V10 `VGUI_IMAGE` 变换扩展**（P1，S/M）
   - 九宫格、旋转、任意矩阵。
@@ -518,7 +519,7 @@ MVP 验收场景：
 - A07 Console/Log（已完成）
 - V07 旋转/缩放 Gizmo（已完成）
 - V08 2D Canvas（已完成）
-- V09 多视口/HDR/MSAA/深度纹理
+- V09 多视口/HDR/MSAA/深度纹理（已完成）
 - V10 `VGUI_IMAGE` 变换扩展
 - E01 DPI 缩放
 - E02 性能与增量更新

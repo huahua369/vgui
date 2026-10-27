@@ -169,6 +169,48 @@ static bool read_demo_thumbnail_disk(const thumbnail_cache::request& req,
 static bool write_demo_thumbnail_disk(const thumbnail_cache::request& req,
 	const thumbnail_cache::image& img);
 
+/* V09: borrows a phase0 attachment as a vgui native texture.  The UI texture is
+ * only updated when the GPU handle or the attachment size changes, so a
+ * stable frame does not dirty the UI layout. */
+struct native_view_texture
+{
+	vgui_texture* texture = nullptr;
+	SDL_GPUTexture* source = nullptr;
+	int width = 0;
+	int height = 0;
+
+	bool sync(vgui_context* ui, vgpu_ctx_t* gpu_ctx, viewport_view& surface,
+		SDL_GPUTexture* next_source, int next_width, int next_height)
+	{
+		if (!ui || !gpu_ctx || !next_source || next_width <= 0 ||
+			next_height <= 0)
+			return false;
+		if (texture && source == next_source && width == next_width &&
+			height == next_height)
+			return false;
+
+		if (!texture)
+		{
+			texture = vgui_sdl3_texture_create_native(ui, gpu_ctx,
+				next_source, next_width, next_height,
+				VGUI_TEXTURE_FORMAT_RGBA8);
+			if (!texture)
+				return false;
+			surface.set_texture(texture);
+		}
+		else if (!vgui_sdl3_texture_update_native(texture, gpu_ctx,
+			next_source, next_width, next_height, VGUI_TEXTURE_FORMAT_RGBA8))
+		{
+			return false;
+		}
+
+		source = next_source;
+		width = next_width;
+		height = next_height;
+		return true;
+	}
+};
+
 struct editor_state
 {
 	game_scene scene;
@@ -182,9 +224,15 @@ struct editor_state
 	vgui_item_id next_asset = 100;
 	/* Browse 菜单项 → 资产名(菜单回调只带 item id)。 */
 	std::map<vgui_item_id, std::string> browse_assets;
-	/* V01: 视口 3D 离屏渲染器与借给 vgui 的原生纹理。 */
+	/* V01/V09: 共享 3D 渲染器、每个相机视口独立的 view 与 UI 原生纹理。 */
 	phase0_renderer* renderer = nullptr;
-	vgui_texture* viewport_texture = nullptr;
+	phase0_view* main_view = nullptr;
+	phase0_view* preview_view = nullptr;
+	native_view_texture viewport_texture;
+	native_view_texture preview_texture;
+	native_view_texture depth_texture;
+	viewport_render_settings render_settings{};
+	bool render_settings_initialized = false;
 	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
 	/* V05/V07: gizmo drag snapshots (before = pre-drag, start = preview base). */
 	std::map<object_id, editor_transform::transform> gizmo_before_transforms;
@@ -1733,6 +1781,25 @@ static void setup_editor(vgui_context* ui)
 		g.shell->set_status(text);
 	});
 
+	/* V09: 第二视口从俯视角度观察同一场景，并拥有独立的轨道相机。 */
+	{
+		camera_state state = g.shell->preview_camera().get_state();
+		state.yaw = 0.0f;
+		state.pitch = 1.45f;
+		state.distance = 9.0f;
+		g.shell->preview_camera().set_state(state);
+	}
+	g.shell->preview_camera().set_change_listener([] {
+		if (!g.shell)
+			return;
+		const camera_state state = g.shell->preview_camera().get_state();
+		char text[128] = {};
+		std::snprintf(text, sizeof(text),
+			"preview camera yaw %.2f pitch %.2f dist %.2f",
+			state.yaw, state.pitch, state.distance);
+		g.shell->set_status(text);
+	});
+
 	/* V03: 左键拾取/框选与屏幕空间选中高亮；几何求交留在宿主。 */
 	g.shell->picking().set_point_picker(&pick_object_at);
 	g.shell->picking().set_box_picker(&pick_objects_in_box);
@@ -2544,10 +2611,17 @@ int main()
 		return -1;
 	}
 
-	/* V01: 视口离屏渲染器（失败时视口显示占位文本，编辑器仍可用）。 */
+	/* V01/V09: 视口离屏渲染器（失败时视口显示占位文本，编辑器仍可用）。
+	 * 默认 view 给主相机，额外 view 给第二相机；两者共享着色器/管线/立方体
+	 * 缓冲，但各自拥有相机、实例、网格与颜色/深度附件。 */
 	g.renderer = phase0_renderer_create(wg->device);
 	if (!g.renderer)
 		fprintf(stderr, "3D 渲染器不可用，视口将显示占位内容\n");
+	else
+	{
+		g.main_view = phase0_renderer_default_view(g.renderer);
+		g.preview_view = phase0_renderer_create_view(g.renderer);
+	}
 
 	// ---- 创建 UI 上下文并挂到窗口 viewport ----
 	vgui_context* ui = vgui_create(familys, 16.0f);
@@ -2590,10 +2664,14 @@ int main()
 			 * so producers never accumulate an unbounded queue. */
 			if (g.shell)
 				g.shell->console().tick(delta);
-			/* V01: 布局完成后取视口渲染尺寸，宿主在此原地重建 3D FBO 并更新
-			 * 原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会闪空白。 */
+			/* V01/V09: 布局完成后取每个相机视口的渲染尺寸，宿主在此原地重建
+			 * 3D 附件并更新原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会
+			 * 闪空白。深度预览视口直接复用主视口的深度可视化纹理。 */
 			if (g.shell)
+			{
 				g.shell->viewport().poll_resize();
+				g.shell->preview_viewport().poll_resize();
+			}
 			/* V06: resolve the current asset hover into a world-space drop
 			 * preview before building the frame. */
 			update_drop_preview();
@@ -2601,36 +2679,81 @@ int main()
 			{
 				int rw = 0, rh = 0;
 				g.shell->viewport().get_render_size(&rw, &rh);
-				if (phase0_renderer_resize(g.renderer, rw, rh))
+				int pw = 0, ph = 0;
+				g.shell->preview_viewport().get_render_size(&pw, &ph);
+				if (g.main_view && rw > 0 && rh > 0)
+					phase0_view_resize(g.main_view, rw, rh);
+				if (g.preview_view && pw > 0 && ph > 0)
+					phase0_view_resize(g.preview_view, pw, ph);
+
+				/* V09: runtime HDR / MSAA / depth preview.  Both camera views
+				 * share pipelines for the same format/sample count, but keep
+				 * independent attachments and camera state. */
+				const viewport_render_settings requested =
+					g.shell->viewport_settings();
+				if (!g.render_settings_initialized ||
+					requested.hdr != g.render_settings.hdr ||
+					requested.msaa_samples != g.render_settings.msaa_samples ||
+					requested.depth_preview != g.render_settings.depth_preview)
 				{
-					SDL_GPUTexture* color = phase0_renderer_color_texture(g.renderer);
-					if (color && !g.viewport_texture)
+					g.render_settings = requested;
+					g.render_settings_initialized = true;
+
+					phase0_view_options options =
+						phase0_view_get_options(g.main_view);
+					options.hdr = requested.hdr;
+					options.msaa_samples = requested.msaa_samples;
+					options.depth_preview = requested.depth_preview;
+					phase0_view_set_options(g.main_view, &options);
+
+					options = phase0_view_get_options(g.preview_view);
+					options.hdr = requested.hdr;
+					options.msaa_samples = requested.msaa_samples;
+					options.depth_preview = false;
+					phase0_view_set_options(g.preview_view, &options);
+
+					/* The device may clamp MSAA; reflect the effective value so
+					 * the menu check does not claim an unsupported mode. */
+					const int effective_msaa =
+						phase0_view_get_options(g.main_view).msaa_samples;
+					if (effective_msaa != requested.msaa_samples)
 					{
-						g.viewport_texture = vgui_sdl3_texture_create_native(ui,
-							wg->vgctx, color, rw, rh, VGUI_TEXTURE_FORMAT_RGBA8);
-						if (g.viewport_texture)
-							g.shell->viewport().set_texture(g.viewport_texture);
-					}
-					else if (color)
-					{
-						vgui_sdl3_texture_update_native(g.viewport_texture,
-							wg->vgctx, color, rw, rh, VGUI_TEXTURE_FORMAT_RGBA8);
+						viewport_render_settings actual =
+							g.shell->viewport_settings();
+						actual.msaa_samples = effective_msaa;
+						g.shell->set_viewport_settings(actual);
 					}
 				}
-				const camera_vec3 eye = g.shell->camera().position();
-				const camera_state camera_view = g.shell->camera().get_state();
-				phase0_camera view = {};
-				view.eye[0] = eye.x;
-				view.eye[1] = eye.y;
-				view.eye[2] = eye.z;
-				view.target[0] = camera_view.target.x;
-				view.target[1] = camera_view.target.y;
-				view.target[2] = camera_view.target.z;
-				view.fov_deg = camera_view.fov_deg;
-				phase0_renderer_set_camera(g.renderer, &view);
+
+				auto make_camera = [](const viewport_camera& source)
+				{
+					const camera_vec3 eye = source.position();
+					const camera_state state = source.get_state();
+					phase0_camera camera = {};
+					camera.eye[0] = eye.x;
+					camera.eye[1] = eye.y;
+					camera.eye[2] = eye.z;
+					camera.target[0] = state.target.x;
+					camera.target[1] = state.target.y;
+					camera.target[2] = state.target.z;
+					camera.fov_deg = state.fov_deg;
+					return camera;
+				};
+				const camera_state camera_view =
+					g.shell->camera().get_state();
+				const camera_state preview_camera_view =
+					g.shell->preview_camera().get_state();
+				const phase0_camera main_camera =
+					make_camera(g.shell->camera());
+				const phase0_camera preview_camera =
+					make_camera(g.shell->preview_camera());
+				phase0_view_set_camera(g.main_view, &main_camera);
+				phase0_view_set_camera(g.preview_view, &preview_camera);
 
 				/* V06: all renderable scene objects become cube proxies; the
-				 * drop preview adds one translucent ghost instance. */
+				 * drop preview adds one translucent ghost instance.  Both
+				 * cameras share the instance list but render it into their own
+				 * attachments. */
 				std::vector<phase0_instance> instances;
 				for (const auto& entry : g.scene.objects)
 				{
@@ -2669,18 +2792,20 @@ int main()
 					ghost.ghost = true;
 					instances.push_back(ghost);
 				}
-				phase0_renderer_set_instances(g.renderer,
+				phase0_view_set_instances(g.main_view,
+					instances.empty() ? nullptr : instances.data(),
+					(int)instances.size());
+				phase0_view_set_instances(g.preview_view,
 					instances.empty() ? nullptr : instances.data(),
 					(int)instances.size());
 
 				/* V04: grid geometry (kit) -> renderer line quads (host).
-				 * V06 appends a ground marker under the drop preview. */
-				std::vector<viewport_grid_line> grid_lines;
-				const int grid_w = rw > 0 ? rw : 1;
-				const int grid_h = rh > 0 ? rh : 1;
-				g.shell->grid().build(camera_view, grid_w, grid_h, &grid_lines);
-				if (g.drop_preview_active)
+				 * V06 appends a ground marker under the drop preview.  Each
+				 * view receives its own grid buffer built for its camera. */
+				auto append_drop_marker = [&](std::vector<viewport_grid_line>& lines)
 				{
+					if (!g.drop_preview_active)
+						return;
 					const float px = g.drop_preview_position.x;
 					const float pz = g.drop_preview_position.z;
 					const float y = g.shell->grid().plane_height() + 0.02f;
@@ -2694,18 +2819,26 @@ int main()
 						line.b = { bx, y, bz };
 						line.color = color;
 						line.width = 0.06f;
-						grid_lines.push_back(line);
+						lines.push_back(line);
 					};
 					marker(px - half, pz - half, px + half, pz - half);
 					marker(px + half, pz - half, px + half, pz + half);
 					marker(px + half, pz + half, px - half, pz + half);
 					marker(px - half, pz + half, px - half, pz - half);
-				}
-				if (!grid_lines.empty())
+				};
+				auto upload_grid = [](phase0_view* view,
+					const std::vector<viewport_grid_line>& lines)
 				{
+					if (!view)
+						return;
+					if (lines.empty())
+					{
+						phase0_view_set_grid(view, nullptr, 0);
+						return;
+					}
 					std::vector<phase0_grid_line> render_lines;
-					render_lines.reserve(grid_lines.size());
-					for (const viewport_grid_line& line : grid_lines)
+					render_lines.reserve(lines.size());
+					for (const viewport_grid_line& line : lines)
 					{
 						phase0_grid_line out = {};
 						out.a[0] = line.a.x;
@@ -2722,12 +2855,26 @@ int main()
 						out.width = line.width;
 						render_lines.push_back(out);
 					}
-					phase0_renderer_set_grid(g.renderer, render_lines.data(),
+					phase0_view_set_grid(view, render_lines.data(),
 						(int)render_lines.size());
-				}
-				else
+				};
+
+				const int grid_w = rw > 0 ? rw : 1;
+				const int grid_h = rh > 0 ? rh : 1;
+				std::vector<viewport_grid_line> grid_lines;
+				g.shell->grid().build(camera_view, grid_w, grid_h, &grid_lines);
+				append_drop_marker(grid_lines);
+				upload_grid(g.main_view, grid_lines);
+
+				if (g.preview_view)
 				{
-					phase0_renderer_set_grid(g.renderer, nullptr, 0);
+					const int preview_grid_w = pw > 0 ? pw : 1;
+					const int preview_grid_h = ph > 0 ? ph : 1;
+					std::vector<viewport_grid_line> preview_lines;
+					g.shell->grid().build(preview_camera_view,
+						preview_grid_w, preview_grid_h, &preview_lines);
+					append_drop_marker(preview_lines);
+					upload_grid(g.preview_view, preview_lines);
 				}
 
 				/* Auto grid keeps the translation snap in step with the cell. */
@@ -2740,6 +2887,23 @@ int main()
 				}
 
 				phase0_renderer_render(g.renderer, (float)SDL_GetTicks() / 1000.0f);
+
+				/* V09: bind the freshly rendered attachments.  The UI textures
+				 * are only updated when the GPU handle or size changed, so the
+				 * runtime HDR/MSAA switches rebind without sampling a stale
+				 * texture on the frame after the attachment swap. */
+				g.viewport_texture.sync(ui, wg->vgctx,
+					g.shell->viewport(),
+					phase0_view_color_texture(g.main_view), rw, rh);
+				g.preview_texture.sync(ui, wg->vgctx,
+					g.shell->preview_viewport(),
+					phase0_view_color_texture(g.preview_view), pw, ph);
+				if (g.render_settings.depth_preview)
+				{
+					g.depth_texture.sync(ui, wg->vgctx,
+						g.shell->depth_viewport(),
+						phase0_view_depth_preview_texture(g.main_view), rw, rh);
+				}
 			}
 
 			rtc.end();
@@ -2765,7 +2929,11 @@ int main()
 	{
 		phase0_renderer_destroy(g.renderer);
 		g.renderer = nullptr;
-		g.viewport_texture = nullptr;
+		g.main_view = nullptr;
+		g.preview_view = nullptr;
+		g.viewport_texture = {};
+		g.preview_texture = {};
+		g.depth_texture = {};
 	}
 	delete_font_family(familys);
 	cb->destroy_rvg(vg);

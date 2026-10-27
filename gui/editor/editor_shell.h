@@ -42,6 +42,17 @@ namespace vgui_editor_kit {
 		bottom
 	};
 
+	/* V09: per-view render request mirrored by the shell.  The shell does not
+	 * own a GPU device; the host applies these values to its renderer each
+	 * frame and can also change them from its own UI. */
+	struct viewport_render_settings
+	{
+		bool hdr = false;
+		/* 1 or 4; the host may clamp to what the device supports. */
+		int msaa_samples = 1;
+		bool depth_preview = true;
+	};
+
 	class editor_shell
 	{
 	public:
@@ -119,10 +130,25 @@ namespace vgui_editor_kit {
 		asset_browser& assets() noexcept;
 		asset_preview& preview() noexcept;
 		viewport_view& viewport() noexcept;
+		/* V09: a second camera surface and a depth-preview surface hosted under
+		 * the main viewport.  They are independent viewport_view instances with
+		 * their own textures; the host renders a second camera into one and a
+		 * depth visualization into the other. */
+		viewport_view& preview_viewport() noexcept;
+		viewport_view& depth_viewport() noexcept;
 		/* V02: the shell attaches an orbit camera to the viewport by default.
-		 * Hosts can disable navigation, re-map the buttons or detach it. */
+		 * Hosts can disable navigation, re-map the buttons or detach it.  The
+		 * preview viewport gets its own camera so both views navigate
+		 * independently. */
 		viewport_camera& camera() noexcept;
 		const viewport_camera& camera() const noexcept;
+		viewport_camera& preview_camera() noexcept;
+		const viewport_camera& preview_camera() const noexcept;
+		/* V09: HDR/MSAA/depth-preview requests shared with the host through
+		 * view.hdr, view.msaa and view.depth. */
+		viewport_render_settings& viewport_settings() noexcept;
+		const viewport_render_settings& viewport_settings() const noexcept;
+		void set_viewport_settings(const viewport_render_settings& settings);
 		/* V03: left-button picking/box selection.  Hosts install the point/box
 		 * pickers and the highlight provider; selection state lives in
 		 * editor_context and is mirrored by the Outliner. */
@@ -200,12 +226,16 @@ namespace vgui_editor_kit {
 		asset_browser assets_;
 		asset_preview preview_;
 		viewport_view viewport_;
-		/* Declared after the viewport so they detach before the surface dies. */
+		viewport_view preview_viewport_;
+		viewport_view depth_viewport_;
+		/* Declared after the viewports so they detach before the surfaces die. */
 		viewport_camera camera_;
+		viewport_camera preview_camera_;
 		viewport_gizmo gizmo_;
 		viewport_selection picking_;
 		viewport_grid grid_;
 		snap_settings snap_;
+		viewport_render_settings viewport_settings_;
 		toolbar_view toolbar_;
 		status_bar statusbar_;
 		search_box search_;

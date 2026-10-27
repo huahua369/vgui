@@ -10559,6 +10559,73 @@ int main()
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
 			return fail("shell assets tab after canvas");
 
+		/* V09: the viewport dock page hosts a second camera surface and a depth
+		 * preview surface, and the render settings are shared with the host
+		 * through commands and the settings setter. */
+		if (!shell.preview_viewport().widget() ||
+			!shell.depth_viewport().widget() ||
+			shell.preview_viewport().widget() == shell.depth_viewport().widget() ||
+			vgui_widget_get_kind(shell.preview_viewport().widget()) != VGUI_CUSTOM ||
+			vgui_widget_get_kind(shell.depth_viewport().widget()) != VGUI_CUSTOM)
+			return fail("shell v09 viewports built");
+		if (&shell.preview_camera() == &shell.camera() ||
+			!shell.preview_camera().attached())
+			return fail("shell v09 preview camera");
+		const viewport_render_settings v09_defaults = shell.viewport_settings();
+		if (v09_defaults.hdr || v09_defaults.msaa_samples != 1 ||
+			!v09_defaults.depth_preview ||
+			!vgui_widget_get_visible(shell.depth_viewport().widget()))
+			return fail("shell v09 default settings");
+		if (!shell.commands().has("view.hdr") ||
+			!shell.commands().has("view.msaa") ||
+			!shell.commands().has("view.depth"))
+			return fail("shell v09 commands");
+		if (!shell.run_command("view.hdr") ||
+			!shell.viewport_settings().hdr ||
+			!shell.commands().is_checked("view.hdr"))
+			return fail("shell v09 hdr on");
+		if (!shell.run_command("view.hdr") || shell.viewport_settings().hdr ||
+			shell.commands().is_checked("view.hdr"))
+			return fail("shell v09 hdr off");
+		if (!shell.run_command("view.msaa") ||
+			shell.viewport_settings().msaa_samples != 4 ||
+			!shell.commands().is_checked("view.msaa"))
+			return fail("shell v09 msaa on");
+		if (!shell.run_command("view.msaa") ||
+			shell.viewport_settings().msaa_samples != 1 ||
+			shell.commands().is_checked("view.msaa"))
+			return fail("shell v09 msaa off");
+		if (!shell.run_command("view.depth") ||
+			shell.viewport_settings().depth_preview ||
+			shell.commands().is_checked("view.depth") ||
+			vgui_widget_get_visible(shell.depth_viewport().widget()))
+			return fail("shell v09 depth off");
+		if (!shell.run_command("view.depth") ||
+			!shell.viewport_settings().depth_preview ||
+			!shell.commands().is_checked("view.depth") ||
+			!vgui_widget_get_visible(shell.depth_viewport().widget()))
+			return fail("shell v09 depth on");
+
+		viewport_render_settings v09_custom = shell.viewport_settings();
+		v09_custom.hdr = true;
+		v09_custom.msaa_samples = 4;
+		v09_custom.depth_preview = false;
+		shell.set_viewport_settings(v09_custom);
+		if (!shell.viewport_settings().hdr ||
+			shell.viewport_settings().msaa_samples != 4 ||
+			shell.viewport_settings().depth_preview ||
+			!shell.commands().is_checked("view.hdr") ||
+			!shell.commands().is_checked("view.msaa") ||
+			shell.commands().is_checked("view.depth") ||
+			vgui_widget_get_visible(shell.depth_viewport().widget()))
+			return fail("shell v09 settings setter");
+		shell.set_viewport_settings({});
+		if (shell.viewport_settings().hdr ||
+			shell.viewport_settings().msaa_samples != 1 ||
+			!shell.viewport_settings().depth_preview ||
+			!vgui_widget_get_visible(shell.depth_viewport().widget()))
+			return fail("shell v09 settings reset");
+
 		vgui_item_id scene_root = shell.scene().add_node("Scene");
 		vgui_item_id cube = shell.scene().add_node("Cube", scene_root, 42);
 		if (scene_root == 0 || cube == 0)

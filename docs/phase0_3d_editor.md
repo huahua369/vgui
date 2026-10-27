@@ -11,15 +11,15 @@ Phase 0 只建立后续场景编辑器需要的底层能力，不实现编辑器
 - `VGUI_LAYOUT_WRAP`：基于 OVG flex 的自动换行，vgui 负责 gap、每行 justify 和多行 align-content 的最终坐标。
 - SDL3 native texture bridge：把应用创建的 `SDL_GPUTexture` 借给 vgui 采样。
 - `sample/vgui_phase0.cpp`：单窗口、单视口、固定布局的最小 3D FBO 示例。
-- `sample/phase0_renderer.*`：最小 3D 渲染器，渲染旋转立方体到离屏颜色纹理。
+- `sample/phase0_renderer.*`：最小 3D 渲染器，支持多个独立相机 view 共享管线、HDR/tonemap、MSAA resolve 与深度可视化纹理。
 - `sample/vgui_c_api_test.c`：以 C 编译并链接的公开头文件/API 冒烟测试。
 
 明确不包含：
 
 - splitter、tabs、dock、property grid、number/vector/color 控件、combo。
-- 2D canvas、gizmo、多视口、场景树编辑 UI。
+- 2D canvas、gizmo、场景树编辑 UI。
 - UI 编辑器中的图片/3D 节点 schema。
-- HDR、MSAA resolve、深度纹理作为 UI 纹理、多采样 native texture。
+- 多采样 native texture（显示纹理始终是 RGBA8，MSAA 在 GPU 内 resolve）。
 - 线程安全。纹理创建/更新和绘制应在同一个 GPU/主线程调用。
 
 ## 帧顺序
@@ -35,6 +35,20 @@ Phase 0 只建立后续场景编辑器需要的底层能力，不实现编辑器
 7. 提交 UI
 
 `vgpu_render_frame()` 使用 `CLEAR` 开始窗口通道，因此 3D 内容不能依赖在同一窗口 pass 中先画再叠加；本阶段通过独立 FBO + 纹理采样组合，避免修改渲染器的 overlay/LOAD 行为。
+
+### V09 多视口与渲染选项
+
+一个 `phase0_renderer` 统一持有可共享的 GPU 资源，`phase0_view` 持有相机、实例/网格数据和独立的颜色/深度附件。每个 view 都可以单独设置：
+
+```cpp
+phase0_view_options options = phase0_view_get_options(view);
+options.hdr = true;            /* RGBA16F -> tonemap -> RGBA8 */
+options.msaa_samples = 4;      /* 1/2/4/8；设备不支持时会钳制 */
+options.depth_preview = true;  /* 生成 RGBA8 深度可视化 */
+phase0_view_set_options(view, &options);
+```
+
+`phase0_view_color_texture()` 返回可借给 vgui 的 RGBA8 纹理；HDR/MSAA 变化会重建附件，宿主应重新查询句柄并调用 `vgui_sdl3_texture_update_native()`。`phase0_view_depth_preview_texture()` 是深度可视化纹理，句柄在仅切换 `depth_preview` 时保持稳定。SDL_GPU 没有深度 resolve，因此 MSAA 模式额外用一个单采样、无颜色目标的深度专用通道填充预览深度；非 MSAA 模式直接采样场景深度。`sample/vgui_phase0.cpp` 仍使用旧单视口接口，`vgui_game_editor` 演示主视图、第二相机和深度预览三张纹理同帧渲染。
 
 示例中的关键循环：
 
