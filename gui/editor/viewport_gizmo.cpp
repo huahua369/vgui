@@ -14,6 +14,8 @@ namespace vgui_editor_kit {
 		constexpr float kEpsilon = 1e-6f;
 		constexpr float kDefaultScreenLength = 80.0f;
 		constexpr float kPlaneLengthRatio = 0.32f;
+		constexpr float kPi = 3.14159265358979323846f;
+		constexpr float kDegreesPerRadian = 180.0f / kPi;
 
 		/* OVG native 0xAABBGGRR.  X/Y/Z use the usual red/green/blue axes. */
 		constexpr uint32_t kAxisColors[3] = {
@@ -94,6 +96,28 @@ namespace vgui_editor_kit {
 			}
 		}
 
+		int rotation_axis_index(gizmo_handle handle)
+		{
+			switch (handle)
+			{
+			case gizmo_handle::rotate_x: return 0;
+			case gizmo_handle::rotate_y: return 1;
+			case gizmo_handle::rotate_z: return 2;
+			default: return -1;
+			}
+		}
+
+		int scale_axis_index(gizmo_handle handle)
+		{
+			switch (handle)
+			{
+			case gizmo_handle::scale_x: return 0;
+			case gizmo_handle::scale_y: return 1;
+			case gizmo_handle::scale_z: return 2;
+			default: return -1;
+			}
+		}
+
 		gizmo_handle axis_handle(int index)
 		{
 			switch (index)
@@ -112,6 +136,28 @@ namespace vgui_editor_kit {
 			case 0: return gizmo_handle::plane_yz;
 			case 1: return gizmo_handle::plane_zx;
 			case 2: return gizmo_handle::plane_xy;
+			default: return gizmo_handle::none;
+			}
+		}
+
+		gizmo_handle rotation_handle(int index)
+		{
+			switch (index)
+			{
+			case 0: return gizmo_handle::rotate_x;
+			case 1: return gizmo_handle::rotate_y;
+			case 2: return gizmo_handle::rotate_z;
+			default: return gizmo_handle::none;
+			}
+		}
+
+		gizmo_handle scale_handle(int index)
+		{
+			switch (index)
+			{
+			case 0: return gizmo_handle::scale_x;
+			case 1: return gizmo_handle::scale_y;
+			case 2: return gizmo_handle::scale_z;
 			default: return gizmo_handle::none;
 			}
 		}
@@ -186,6 +232,22 @@ namespace vgui_editor_kit {
 			return finite_vec(*out);
 		}
 
+		/* Angle of a point in a ring plane.  The two in-plane axes are ordered
+		 * so u x v = normal, i.e. a positive angle turns around +normal. */
+		bool ring_angle(const camera_vec3& point, const gizmo_frame& frame,
+			int normal_index, float* out)
+		{
+			int first = 0, second = 0;
+			plane_axes(normal_index, &first, &second);
+			const camera_vec3 offset = sub(point, frame.origin);
+			const float u = dot(offset, frame.axis[first]);
+			const float v = dot(offset, frame.axis[second]);
+			if (std::hypot(u, v) <= 1e-5f)
+				return false;
+			*out = std::atan2(v, u);
+			return finite(*out);
+		}
+
 	} /* namespace */
 
 	viewport_gizmo::~viewport_gizmo()
@@ -250,6 +312,11 @@ namespace vgui_editor_kit {
 		drag_handler_ = std::move(handler);
 	}
 
+	void viewport_gizmo::set_transform_handler(transform_handler handler)
+	{
+		transform_handler_ = std::move(handler);
+	}
+
 	void viewport_gizmo::set_snap_settings(const snap_settings* snap)
 	{
 		snap_ = snap;
@@ -269,6 +336,22 @@ namespace vgui_editor_kit {
 	bool viewport_gizmo::visible() const noexcept
 	{
 		return visible_;
+	}
+
+	void viewport_gizmo::set_mode(gizmo_mode mode)
+	{
+		if (mode_ == mode)
+			return;
+		/* Handles and drag math change with the mode, so an in-flight drag
+		 * cannot continue. */
+		cancel_drag();
+		mode_ = mode;
+		hovered_ = gizmo_handle::none;
+	}
+
+	gizmo_mode viewport_gizmo::mode() const noexcept
+	{
+		return mode_;
 	}
 
 	void viewport_gizmo::set_space(gizmo_space space)
@@ -326,12 +409,11 @@ namespace vgui_editor_kit {
 	{
 		if (!dragging_)
 			return;
-		const camera_vec3 delta = last_delta_;
+		const gizmo_transform transform = last_transform_;
 		dragging_ = false;
 		active_ = gizmo_handle::none;
-		last_delta_ = {};
-		if (drag_handler_)
-			drag_handler_(gizmo_phase::cancel, delta);
+		last_transform_ = {};
+		emit(gizmo_phase::cancel, transform);
 	}
 
 	void viewport_gizmo::reset_hover()
@@ -456,6 +538,70 @@ namespace vgui_editor_kit {
 			plane.y[3] = oy + b.dy * plane_len;
 		}
 
+		/* Rotation rings: estimate the world radius whose projection is about
+		 * `len` pixels, then sample the circle.  The two in-plane axes are used
+		 * for the estimate so an edge-on ring still gets a useful radius. */
+		for (int normal = 0; normal < 3; ++normal)
+		{
+			int first = 0, second = 0;
+			plane_axes(normal, &first, &second);
+
+			float world_radius = 1.0f;
+			for (int attempt = 0; attempt < 6; ++attempt)
+			{
+				float extent = 0.0f;
+				for (int which = 0; which < 2; ++which)
+				{
+					const camera_vec3& direction = frame.axis[
+						which == 0 ? first : second];
+					float px = 0.0f, py = 0.0f;
+					if (!projection_(add(frame.origin,
+						scale(direction, world_radius)), &px, &py))
+						continue;
+					extent = std::max(extent, std::hypot(px - ox, py - oy));
+				}
+				if (!finite(extent) || !(world_radius > 0.0f))
+					break;
+				if (extent >= len - 0.25f && extent <= len + 0.25f)
+					break;
+				if (extent < 1e-3f)
+				{
+					world_radius *= 10.0f;
+					continue;
+				}
+				world_radius *= len / extent;
+			}
+			if (!(world_radius > 0.0f) || !finite(world_radius) ||
+				world_radius > 1e12f)
+				continue;
+
+			screen_ring& ring = out->ring[normal];
+			float max_distance = 0.0f;
+			bool valid = true;
+			for (int segment = 0; segment < kRingSegments; ++segment)
+			{
+				const float angle = (2.0f * kPi * (float)segment) /
+					(float)kRingSegments;
+				const camera_vec3 point = add(frame.origin,
+					add(scale(frame.axis[first], std::cos(angle) *
+						world_radius),
+						scale(frame.axis[second], std::sin(angle) *
+							world_radius)));
+				float px = 0.0f, py = 0.0f;
+				if (!projection_(point, &px, &py))
+				{
+					valid = false;
+					break;
+				}
+				ring.x[segment] = px;
+				ring.y[segment] = py;
+				max_distance = std::max(max_distance,
+					std::hypot(px - ox, py - oy));
+			}
+			ring.valid = valid && finite(max_distance) &&
+				max_distance >= 12.0f;
+		}
+
 		out->valid = out->axis[0].valid || out->axis[1].valid ||
 			out->axis[2].valid;
 		return out->valid;
@@ -470,6 +616,61 @@ namespace vgui_editor_kit {
 		screen_geometry geometry;
 		if (!build_geometry(frame, width, height, &geometry))
 			return gizmo_handle::none;
+
+		if (mode_ == gizmo_mode::rotate)
+		{
+			float best_distance = std::numeric_limits<float>::max();
+			int best_ring = -1;
+			for (int normal = 0; normal < 3; ++normal)
+			{
+				const screen_ring& ring = geometry.ring[normal];
+				if (!ring.valid)
+					continue;
+				for (int segment = 0; segment < kRingSegments; ++segment)
+				{
+					const int next = (segment + 1) % kRingSegments;
+					const float distance = point_segment_distance(x, y,
+						ring.x[segment], ring.y[segment], ring.x[next],
+						ring.y[next]);
+					if (distance <= handle_tolerance_ &&
+						distance < best_distance)
+					{
+						best_distance = distance;
+						best_ring = normal;
+					}
+				}
+			}
+			if (best_ring >= 0)
+				return rotation_handle(best_ring);
+			return gizmo_handle::none;
+		}
+
+		if (mode_ == gizmo_mode::scale)
+		{
+			/* The centre handle wins over the axis roots. */
+			if (std::hypot(x - geometry.ox, y - geometry.oy) <=
+				handle_tolerance_ + 1.0f)
+				return gizmo_handle::scale_uniform;
+
+			float best_distance = std::numeric_limits<float>::max();
+			int best_axis = -1;
+			for (int i = 0; i < 3; ++i)
+			{
+				const screen_axis& axis = geometry.axis[i];
+				if (!axis.valid)
+					continue;
+				const float distance = point_segment_distance(x, y,
+					geometry.ox, geometry.oy, axis.ex, axis.ey);
+				if (distance <= handle_tolerance_ && distance < best_distance)
+				{
+					best_distance = distance;
+					best_axis = i;
+				}
+			}
+			if (best_axis >= 0)
+				return scale_handle(best_axis);
+			return gizmo_handle::none;
+		}
 
 		float best_distance = std::numeric_limits<float>::max();
 		int best_axis = -1;
@@ -501,8 +702,16 @@ namespace vgui_editor_kit {
 	bool viewport_gizmo::begin_drag(gizmo_handle handle, float x, float y,
 		int width, int height)
 	{
-		if (!ray_provider_)
+		const bool valid_handle =
+			(mode_ == gizmo_mode::translate &&
+				(axis_index(handle) >= 0 || plane_normal_index(handle) >= 0)) ||
+			(mode_ == gizmo_mode::rotate && rotation_axis_index(handle) >= 0) ||
+			(mode_ == gizmo_mode::scale &&
+				(scale_axis_index(handle) >= 0 ||
+					handle == gizmo_handle::scale_uniform));
+		if (!valid_handle)
 			return false;
+
 		gizmo_frame frame;
 		if (!query_frame(&frame))
 			return false;
@@ -512,38 +721,76 @@ namespace vgui_editor_kit {
 		if (!build_geometry(frame, width, height, &geometry))
 			return false;
 
-		gizmo_ray ray;
-		if (!ray_provider_(x, y, &ray))
-			return false;
-		if (!finite_vec(ray.origin) || !normalize(&ray.direction))
+		if (mode_ != gizmo_mode::scale && !ray_provider_)
 			return false;
 
-		const int axis = axis_index(handle);
-		const int normal = plane_normal_index(handle);
-		if (axis >= 0)
+		gizmo_ray ray;
+		const bool needs_ray = mode_ != gizmo_mode::scale;
+		if (needs_ray)
 		{
-			if (!axis_parameter(ray, frame.origin, frame.axis[axis],
-				&axis_start_))
+			if (!ray_provider_(x, y, &ray))
 				return false;
-		}
-		else if (normal >= 0)
-		{
-			if (!ray_plane(ray, frame.origin, frame.axis[normal],
-				&plane_start_))
+			if (!finite_vec(ray.origin) || !normalize(&ray.direction))
 				return false;
-		}
-		else
-		{
-			return false;
 		}
 
 		drag_frame_ = frame;
+		drag_geometry_ = geometry;
+		drag_transform_ = {};
+		drag_transform_.mode = mode_;
+		drag_transform_.handle = handle;
+		drag_transform_.origin = frame.origin;
+		for (int i = 0; i < 3; ++i)
+			drag_transform_.axis[i] = frame.axis[i];
+
+		const int axis = axis_index(handle);
+		const int normal = plane_normal_index(handle);
+		const int rotation = rotation_axis_index(handle);
+		const int scale_axis = scale_axis_index(handle);
+		drag_start_x_ = x;
+		drag_start_y_ = y;
+		drag_start_distance_ = std::hypot(x - geometry.ox, y - geometry.oy);
+
+		if (mode_ == gizmo_mode::translate)
+		{
+			if (axis >= 0)
+			{
+				if (!axis_parameter(ray, frame.origin, frame.axis[axis],
+					&axis_start_))
+					return false;
+			}
+			else if (normal >= 0)
+			{
+				if (!ray_plane(ray, frame.origin, frame.axis[normal],
+					&plane_start_))
+					return false;
+			}
+			else
+			{
+				return false;
+			}
+		}
+		else if (mode_ == gizmo_mode::rotate)
+		{
+			camera_vec3 hit;
+			if (!ray_plane(ray, frame.origin, frame.axis[rotation], &hit))
+				return false;
+			if (!ring_angle(hit, frame, rotation, &ring_start_angle_))
+				return false;
+			ring_last_angle_ = 0.0f;
+		}
+		else
+		{
+			(void)scale_axis;
+			/* Scale derives its factor from screen movement; the stored
+			 * geometry and start point are all it needs. */
+		}
+
 		active_ = handle;
 		hovered_ = handle;
 		dragging_ = true;
-		last_delta_ = {};
-		if (drag_handler_)
-			drag_handler_(gizmo_phase::begin, {});
+		last_transform_ = drag_transform_;
+		emit(gizmo_phase::begin, last_transform_);
 		return true;
 	}
 
@@ -554,67 +801,173 @@ namespace vgui_editor_kit {
 		return snap_->snap_translation(value);
 	}
 
-	bool viewport_gizmo::compute_delta(float x, float y, camera_vec3* delta) const
+	float viewport_gizmo::snap_rotation(float radians) const
 	{
-		if (!delta || !ray_provider_ || !dragging_)
-			return false;
-		gizmo_ray ray;
-		if (!ray_provider_(x, y, &ray))
-			return false;
-		if (!finite_vec(ray.origin) || !normalize(&ray.direction))
-			return false;
+		if (!snap_)
+			return radians;
+		return snap_->snap_rotation_degrees(radians * kDegreesPerRadian) /
+			kDegreesPerRadian;
+	}
 
-		const int axis = axis_index(active_);
-		const int normal = plane_normal_index(active_);
-		if (axis >= 0)
+	float viewport_gizmo::snap_scale_value(float value) const
+	{
+		if (!snap_)
+			return value;
+		return snap_->snap_scale(value);
+	}
+
+	bool viewport_gizmo::compute_transform(float x, float y,
+		gizmo_transform* out)
+	{
+		if (!out || !dragging_)
+			return false;
+		*out = drag_transform_;
+
+		if (mode_ == gizmo_mode::translate)
 		{
-			float parameter = 0.0f;
-			if (!axis_parameter(ray, drag_frame_.origin, drag_frame_.axis[axis],
-				&parameter))
+			if (!ray_provider_)
 				return false;
-			float amount = snap_scalar(parameter - axis_start_);
-			*delta = scale(drag_frame_.axis[axis], amount);
+			gizmo_ray ray;
+			if (!ray_provider_(x, y, &ray))
+				return false;
+			if (!finite_vec(ray.origin) || !normalize(&ray.direction))
+				return false;
+
+			const int axis = axis_index(active_);
+			const int normal = plane_normal_index(active_);
+			if (axis >= 0)
+			{
+				float parameter = 0.0f;
+				if (!axis_parameter(ray, drag_frame_.origin,
+					drag_frame_.axis[axis], &parameter))
+					return false;
+				float amount = snap_scalar(parameter - axis_start_);
+				out->translation = scale(drag_frame_.axis[axis], amount);
+				return true;
+			}
+			if (normal < 0)
+				return false;
+
+			camera_vec3 hit;
+			if (!ray_plane(ray, drag_frame_.origin,
+				drag_frame_.axis[normal], &hit))
+				return false;
+			int first = 0, second = 0;
+			plane_axes(normal, &first, &second);
+			const camera_vec3 offset = sub(hit, plane_start_);
+			const float u = snap_scalar(dot(offset,
+				drag_frame_.axis[first]));
+			const float v = snap_scalar(dot(offset,
+				drag_frame_.axis[second]));
+			out->translation = add(scale(drag_frame_.axis[first], u),
+				scale(drag_frame_.axis[second], v));
 			return true;
 		}
-		if (normal < 0)
-			return false;
 
-		camera_vec3 hit;
-		if (!ray_plane(ray, drag_frame_.origin, drag_frame_.axis[normal], &hit))
+		if (mode_ == gizmo_mode::rotate)
+		{
+			if (!ray_provider_)
+				return false;
+			gizmo_ray ray;
+			if (!ray_provider_(x, y, &ray))
+				return false;
+			if (!finite_vec(ray.origin) || !normalize(&ray.direction))
+				return false;
+
+			const int normal = rotation_axis_index(active_);
+			if (normal < 0)
+				return false;
+			camera_vec3 hit;
+			if (!ray_plane(ray, drag_frame_.origin,
+				drag_frame_.axis[normal], &hit))
+				return false;
+			float angle = 0.0f;
+			if (!ring_angle(hit, drag_frame_, normal, &angle))
+				return false;
+
+			float raw = angle - ring_start_angle_;
+			while (raw - ring_last_angle_ > kPi)
+				raw -= 2.0f * kPi;
+			while (raw - ring_last_angle_ < -kPi)
+				raw += 2.0f * kPi;
+			ring_last_angle_ = raw;
+
+			const float snapped = snap_rotation(raw);
+			out->rotation = scale(drag_frame_.axis[normal], snapped);
+			return true;
+		}
+
+		/* Scale: axes and the centre both use projected movement, no ray. */
+		const int axis = scale_axis_index(active_);
+		if (axis >= 0)
+		{
+			const screen_axis& screen_axis = drag_geometry_.axis[axis];
+			if (!screen_axis.valid)
+				return false;
+			const float offset =
+				(x - drag_start_x_) * screen_axis.dx +
+				(y - drag_start_y_) * screen_axis.dy;
+			const float denominator = std::max(drag_geometry_.length, 18.0f);
+			float factor = 1.0f + offset / denominator;
+			factor = snap_scale_value(factor);
+			factor = std::max(factor, 0.01f);
+			out->scale = { 1.0f, 1.0f, 1.0f };
+			if (axis == 0)
+				out->scale.x = factor;
+			else if (axis == 1)
+				out->scale.y = factor;
+			else
+				out->scale.z = factor;
+			return true;
+		}
+
+		if (active_ != gizmo_handle::scale_uniform)
 			return false;
-		int first = 0, second = 0;
-		plane_axes(normal, &first, &second);
-		const camera_vec3 offset = sub(hit, plane_start_);
-		const float u = snap_scalar(dot(offset, drag_frame_.axis[first]));
-		const float v = snap_scalar(dot(offset, drag_frame_.axis[second]));
-		*delta = add(scale(drag_frame_.axis[first], u),
-			scale(drag_frame_.axis[second], v));
+		const float distance = std::hypot(x - drag_geometry_.ox,
+			y - drag_geometry_.oy);
+		const float denominator = std::max(drag_geometry_.length * 0.5f,
+			18.0f);
+		float factor = 1.0f + (distance - drag_start_distance_) /
+			denominator;
+		factor = snap_scale_value(factor);
+		factor = std::max(factor, 0.01f);
+		out->scale = { factor, factor, factor };
 		return true;
 	}
 
 	void viewport_gizmo::update_drag(float x, float y)
 	{
-		camera_vec3 delta = last_delta_;
-		if (compute_delta(x, y, &delta))
-			last_delta_ = delta;
-		if (drag_handler_)
-			drag_handler_(gizmo_phase::preview, last_delta_);
+		gizmo_transform transform;
+		if (compute_transform(x, y, &transform))
+			last_transform_ = transform;
+		emit(gizmo_phase::preview, last_transform_);
 	}
 
 	void viewport_gizmo::finish_drag(bool commit, float x, float y)
 	{
 		if (!dragging_)
 			return;
-		camera_vec3 delta = last_delta_;
-		if (commit && !compute_delta(x, y, &delta))
-			delta = last_delta_;
+		gizmo_transform transform = last_transform_;
+		if (commit)
+		{
+			gizmo_transform candidate;
+			if (compute_transform(x, y, &candidate))
+				transform = candidate;
+		}
 		dragging_ = false;
 		active_ = gizmo_handle::none;
 		hovered_ = gizmo_handle::none;
-		last_delta_ = {};
-		if (drag_handler_)
-			drag_handler_(commit ? gizmo_phase::commit : gizmo_phase::cancel,
-				delta);
+		last_transform_ = {};
+		emit(commit ? gizmo_phase::commit : gizmo_phase::cancel, transform);
+	}
+
+	void viewport_gizmo::emit(gizmo_phase phase,
+		const gizmo_transform& transform)
+	{
+		if (drag_handler_ && transform.mode == gizmo_mode::translate)
+			drag_handler_(phase, transform.translation);
+		if (transform_handler_)
+			transform_handler_(phase, transform);
 	}
 
 	int viewport_gizmo::on_input(const vgui_event* event)
@@ -696,6 +1049,33 @@ namespace vgui_editor_kit {
 			(int)std::lround(height), &geometry))
 			return;
 
+		switch (mode_)
+		{
+		case gizmo_mode::translate:
+			draw_translate(cb, vg, x, y, geometry);
+			break;
+		case gizmo_mode::rotate:
+			draw_rotate(cb, vg, x, y, geometry);
+			break;
+		case gizmo_mode::scale:
+			draw_scale(cb, vg, x, y, geometry);
+			break;
+		}
+
+		if (mode_ != gizmo_mode::scale)
+		{
+			/* Non-interactive pivot marker keeps the origin readable over busy
+			 * scenes without competing with the axis hit boxes. */
+			ovg_tools::fill_circle(cb, vg, x + geometry.ox, y + geometry.oy,
+				3.5f, ovg_tools::rgba(18, 20, 24, 220));
+			ovg_tools::stroke_circle(cb, vg, x + geometry.ox, y + geometry.oy,
+				3.5f, ovg_tools::rgba(220, 226, 236, 240), 1.0f);
+		}
+	}
+
+	void viewport_gizmo::draw_translate(ovg_ctx_cb* cb, rvg_t* vg, float x,
+		float y, const screen_geometry& geometry) const
+	{
 		for (int normal = 0; normal < 3; ++normal)
 		{
 			const screen_plane& plane = geometry.plane[normal];
@@ -750,13 +1130,107 @@ namespace vgui_editor_kit {
 			ovg_tools::arrow(cb, vg, x + geometry.ox, y + geometry.oy,
 				x + axis.ex, y + axis.ey, color, line_width, 9.0f);
 		}
+	}
 
-		/* Non-interactive pivot marker keeps the origin readable over busy
-		 * scenes without competing with the axis hit boxes. */
-		ovg_tools::fill_circle(cb, vg, x + geometry.ox, y + geometry.oy,
-			3.5f, ovg_tools::rgba(18, 20, 24, 220));
-		ovg_tools::stroke_circle(cb, vg, x + geometry.ox, y + geometry.oy,
-			3.5f, ovg_tools::rgba(220, 226, 236, 240), 1.0f);
+	void viewport_gizmo::draw_rotate(ovg_ctx_cb* cb, rvg_t* vg, float x,
+		float y, const screen_geometry& geometry) const
+	{
+		for (int normal = 0; normal < 3; ++normal)
+		{
+			const screen_ring& ring = geometry.ring[normal];
+			if (!ring.valid)
+				continue;
+			const gizmo_handle handle = rotation_handle(normal);
+			const bool highlighted = handle == hovered_ ||
+				(dragging_ && handle == active_);
+			uint32_t color = kAxisColors[normal];
+			float line_width = axis_width_;
+			if (highlighted)
+			{
+				color = ovg_tools::lerp_color(color, 0xFFFFFFFFu, 0.4f);
+				line_width += 1.0f;
+			}
+			else if (dragging_)
+			{
+				color = ovg_tools::with_alpha(color, 72);
+			}
+
+			glm::vec2 points[kRingSegments] = {};
+			for (int segment = 0; segment < kRingSegments; ++segment)
+			{
+				points[segment] = { x + ring.x[segment],
+					y + ring.y[segment] };
+			}
+			ovg_tools::stroke_polyline(cb, vg, points, kRingSegments,
+				0xB4000000u, line_width + 2.5f, VG_LINE_CAP_ROUND,
+				VG_LINE_JOIN_ROUND, true);
+			ovg_tools::stroke_polyline(cb, vg, points, kRingSegments,
+				color, line_width, VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND,
+				true);
+		}
+	}
+
+	void viewport_gizmo::draw_scale(ovg_ctx_cb* cb, rvg_t* vg, float x,
+		float y, const screen_geometry& geometry) const
+	{
+		for (int i = 0; i < 3; ++i)
+		{
+			const screen_axis& axis = geometry.axis[i];
+			if (!axis.valid)
+				continue;
+			const gizmo_handle handle = scale_handle(i);
+			const bool highlighted = handle == hovered_ ||
+				(dragging_ && handle == active_);
+			uint32_t color = kAxisColors[i];
+			float line_width = axis_width_;
+			if (highlighted)
+			{
+				color = ovg_tools::lerp_color(color, 0xFFFFFFFFu, 0.4f);
+				line_width += 1.0f;
+			}
+			else if (dragging_)
+			{
+				color = ovg_tools::with_alpha(color, 80);
+			}
+
+			glm::vec2 points[2] = {
+				{ x + geometry.ox, y + geometry.oy },
+				{ x + axis.ex, y + axis.ey }
+			};
+			ovg_tools::stroke_polyline(cb, vg, points, 2, 0xB4000000u,
+				line_width + 2.5f, VG_LINE_CAP_ROUND,
+				VG_LINE_JOIN_ROUND, false);
+			ovg_tools::stroke_polyline(cb, vg, points, 2, color,
+				line_width, VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, false);
+
+			const float handle_size = highlighted ? 8.0f : 6.5f;
+			const float hx = x + axis.ex - handle_size * 0.5f;
+			const float hy = y + axis.ey - handle_size * 0.5f;
+			ovg_tools::fill_rect(cb, vg, hx - 1.0f, hy - 1.0f,
+				handle_size + 2.0f, handle_size + 2.0f, 0xB4000000u);
+			ovg_tools::fill_rect(cb, vg, hx, hy, handle_size, handle_size,
+				color);
+		}
+
+		/* Centre square: uniform scale. */
+		const bool center_highlighted = hovered_ == gizmo_handle::scale_uniform ||
+			(dragging_ && active_ == gizmo_handle::scale_uniform);
+		uint32_t center_color = ovg_tools::rgba(220, 226, 236, 240);
+		float center_size = center_highlighted ? 9.0f : 7.0f;
+		if (dragging_ && !center_highlighted)
+			center_color = ovg_tools::with_alpha(center_color, 80);
+		const float cx = x + geometry.ox;
+		const float cy = y + geometry.oy;
+		ovg_tools::fill_rect(cb, vg, cx - center_size * 0.5f - 1.0f,
+			cy - center_size * 0.5f - 1.0f, center_size + 2.0f,
+			center_size + 2.0f, 0xB4000000u);
+		ovg_tools::fill_rect(cb, vg, cx - center_size * 0.5f,
+			cy - center_size * 0.5f, center_size, center_size,
+			center_color);
+		ovg_tools::stroke_rect(cb, vg, cx - center_size * 0.5f,
+			cy - center_size * 0.5f, center_size, center_size,
+			center_highlighted ? 0xFFFFFFFFu : ovg_tools::rgba(18, 20, 24, 220),
+			1.0f);
 	}
 
 } /* namespace vgui_editor_kit */

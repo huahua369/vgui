@@ -33,6 +33,7 @@
 #include <vgui_editor_kit.h>
 #include "ovg_main.h"
 #include "phase0_renderer.h"
+#include "editor_transform.h"
 
 using namespace vgui_editor_kit;
 
@@ -48,9 +49,10 @@ struct scene_object
 	std::vector<object_id> children;
 	bool visible = true;
 	bool locked = false;
-	/* V05: world transform used by the viewport demo (gizmo + renderer). */
+	/* V05/V07: world transform used by the viewport demo (gizmo + renderer). */
 	camera_vec3 position{};
-	float yaw = 0.0f;
+	glm::quat rotation{ 1.0f, 0.0f, 0.0f, 0.0f };
+	camera_vec3 scale{ 1.0f, 1.0f, 1.0f };
 	/* V06: viewport-dropped objects (and the demo cube) are drawn/pickable. */
 	bool renderable = false;
 	/* 属性面板演示值(P08 多选编辑的批量目标)。 */
@@ -147,7 +149,8 @@ struct game_scene
 		objects[copy].visible = o.visible;
 		objects[copy].locked = o.locked;
 		objects[copy].position = o.position;
-		objects[copy].yaw = o.yaw;
+		objects[copy].rotation = o.rotation;
+		objects[copy].scale = o.scale;
 		objects[copy].renderable = o.renderable;
 		for (object_id c : o.children)
 			duplicate(c, copy);
@@ -183,10 +186,9 @@ struct editor_state
 	phase0_renderer* renderer = nullptr;
 	vgui_texture* viewport_texture = nullptr;
 	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
-	/* V05: gizmo drag snapshots (before = pre-drag, start = preview base). */
-	std::map<object_id, camera_vec3> gizmo_before_positions;
-	std::map<object_id, camera_vec3> gizmo_start_positions;
-	camera_vec3 gizmo_last_delta{};
+	/* V05/V07: gizmo drag snapshots (before = pre-drag, start = preview base). */
+	std::map<object_id, editor_transform::transform> gizmo_before_transforms;
+	std::map<object_id, editor_transform::transform> gizmo_start_transforms;
 	/* V06: host-side drop preview resolved from the viewport hover. */
 	bool drop_preview_active = false;
 	camera_vec3 drop_preview_position{};
@@ -1120,6 +1122,23 @@ static const scene_object* find_scene_object(object_id id)
 	return it == g.scene.objects.end() ? nullptr : &it->second;
 }
 
+static editor_transform::transform object_transform(const scene_object& object)
+{
+	editor_transform::transform transform;
+	transform.position = object.position;
+	transform.rotation = object.rotation;
+	transform.scale = object.scale;
+	return transform;
+}
+
+static void write_object_transform(scene_object& object,
+	const editor_transform::transform& transform)
+{
+	object.position = transform.position;
+	object.rotation = transform.rotation;
+	object.scale = transform.scale;
+}
+
 static void content_size(int* width, int* height)
 {
 	int w = 1, h = 1;
@@ -1163,18 +1182,18 @@ static bool viewport_ray(const selection_point_query& query, glm::vec3* origin,
 		direction);
 }
 
-/* Ray/box in the object's local space, so a yaw-rotated cube still picks
+/* Ray/box in the object's local space, so rotated/scaled cubes still pick
  * accurately.  Returns the entry distance for nearest-hit ordering. */
 static bool ray_box_distance(const glm::vec3& origin,
-	const glm::vec3& direction, const camera_vec3& center, float yaw,
+	const glm::vec3& direction, const editor_transform::transform& transform,
 	float* out_distance)
 {
 	constexpr float kHalfExtent = 1.0f;
-	const glm::mat4 inverse_rotation = glm::rotate(glm::mat4(1.0f), -yaw,
-		glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::vec3 local_origin = glm::vec3(inverse_rotation *
-		glm::vec4(origin - to_glm(center), 1.0f));
-	const glm::vec3 local_direction = glm::vec3(inverse_rotation *
+	const glm::mat4 inverse = glm::inverse(
+		editor_transform::matrix(transform));
+	const glm::vec3 local_origin = glm::vec3(inverse *
+		glm::vec4(origin, 1.0f));
+	const glm::vec3 local_direction = glm::vec3(inverse *
 		glm::vec4(direction, 0.0f));
 
 	float t_min = -1e30f;
@@ -1232,7 +1251,7 @@ static bool project_screen(const glm::mat4& mvp, int width, int height,
 }
 
 static bool project_box(const camera_state& state, int width, int height,
-	const camera_vec3& center, float yaw, glm::vec4* out)
+	const editor_transform::transform& transform, glm::vec4* out)
 {
 	if (!out)
 		return false;
@@ -1240,9 +1259,7 @@ static bool project_box(const camera_state& state, int width, int height,
 	if (!camera_matrices(state, width, height, &view, &projection))
 		return false;
 	const glm::mat4 mvp = projection * view;
-	const glm::mat4 rotation = glm::rotate(glm::mat4(1.0f), yaw,
-		glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::vec3 origin = to_glm(center);
+	const glm::mat4 model = editor_transform::matrix(transform);
 	constexpr float kHalfExtent = 1.0f;
 	float min_x = 1e30f, min_y = 1e30f;
 	float max_x = -1e30f, max_y = -1e30f;
@@ -1251,8 +1268,7 @@ static bool project_box(const camera_state& state, int width, int height,
 		const glm::vec3 corner((i & 1) ? kHalfExtent : -kHalfExtent,
 			(i & 2) ? kHalfExtent : -kHalfExtent,
 			(i & 4) ? kHalfExtent : -kHalfExtent);
-		const glm::vec3 world = origin + glm::vec3(rotation *
-			glm::vec4(corner, 0.0f));
+		const glm::vec3 world = glm::vec3(model * glm::vec4(corner, 1.0f));
 		float sx = 0.0f, sy = 0.0f;
 		if (!project_screen(mvp, width, height, world, &sx, &sy))
 			return false;
@@ -1367,7 +1383,7 @@ static object_id pick_object_at(const selection_point_query& query)
 		if (!object.renderable || !object.visible)
 			continue;
 		float distance = 0.0f;
-		if (ray_box_distance(origin, direction, object.position, object.yaw,
+		if (ray_box_distance(origin, direction, object_transform(object),
 			&distance) && distance < best_distance)
 		{
 			best = entry.first;
@@ -1391,8 +1407,8 @@ static std::vector<object_id> pick_objects_in_box(const selection_box_query& que
 		if (!object.renderable || !object.visible)
 			continue;
 		glm::vec4 box(0.0f);
-		if (!project_box(state, query.width, query.height, object.position,
-			object.yaw, &box))
+		if (!project_box(state, query.width, query.height,
+			object_transform(object), &box))
 			continue;
 		if (box.x >= query.x1 || box.z <= query.x0 ||
 			box.y >= query.y1 || box.w <= query.y0)
@@ -1420,7 +1436,7 @@ static std::vector<selection_box> highlight_selection(
 		if (!object || !object->renderable || !object->visible)
 			continue;
 		glm::vec4 box(0.0f);
-		if (!project_box(state, width, height, object->position, object->yaw,
+		if (!project_box(state, width, height, object_transform(*object),
 			&box))
 			continue;
 		selection_box item;
@@ -1435,7 +1451,8 @@ static std::vector<selection_box> highlight_selection(
 }
 
 //---------------------------------------------------------------------------
-// V05: 平移 Gizmo——kit 负责手势/绘制，宿主提供帧、投影、射线与命令栈
+// V05/V07: 平移/旋转/缩放 Gizmo——kit 负责手势/绘制，宿主提供帧、投影、
+// 射线与命令栈；所有变换结果写回同一份场景数据，属性面板只读取该数据。
 //---------------------------------------------------------------------------
 
 static gizmo_frame gizmo_frame_for_selection()
@@ -1465,63 +1482,146 @@ static gizmo_frame gizmo_frame_for_selection()
 	center.y /= (float)count;
 	center.z /= (float)count;
 
-	/* Multi-select uses the primary object's local orientation; world space
-	 * ignores it and uses the canonical basis. */
-	float yaw = 0.0f;
 	object_id primary = g.context->selection() != invalid_object
 		? g.context->selection() : ids.front();
-	if (const scene_object* object = find_scene_object(primary))
-		yaw = object->yaw;
-	if (g.shell->gizmo().space() == gizmo_space::world)
-		yaw = 0.0f;
+	const scene_object* primary_object = find_scene_object(primary);
+	const gizmo_space space = g.shell->gizmo().space();
 
-	const float c = std::cos(yaw);
-	const float s = std::sin(yaw);
 	frame.valid = true;
 	frame.origin = center;
-	frame.axis[0] = { c, 0.0f, -s };
-	frame.axis[1] = { 0.0f, 1.0f, 0.0f };
-	frame.axis[2] = { s, 0.0f, c };
 	frame.screen_length = 80.0f;
+
+	if (space == gizmo_space::screen)
+	{
+		/* Screen space: the rings face the camera; axis[2] is the view
+		 * direction (back), keeping right/up/back right-handed. */
+		const viewport_camera& camera = g.shell->camera();
+		frame.axis[0] = camera.right();
+		frame.axis[1] = camera.up();
+		frame.axis[2] = from_glm(-to_glm(camera.forward()));
+		return frame;
+	}
+
+	glm::quat orientation(1.0f, 0.0f, 0.0f, 0.0f);
+	if (space == gizmo_space::local && primary_object)
+		orientation = primary_object->rotation;
+	else if (space == gizmo_space::parent && primary_object &&
+		primary_object->parent != invalid_object)
+	{
+		if (const scene_object* parent =
+			find_scene_object(primary_object->parent))
+			orientation = parent->rotation;
+	}
+	orientation = glm::normalize(orientation);
+	frame.axis[0] = from_glm(orientation * glm::vec3(1.0f, 0.0f, 0.0f));
+	frame.axis[1] = from_glm(orientation * glm::vec3(0.0f, 1.0f, 0.0f));
+	frame.axis[2] = from_glm(orientation * glm::vec3(0.0f, 0.0f, 1.0f));
 	return frame;
 }
 
-static std::map<object_id, camera_vec3> capture_selected_positions()
+static std::map<object_id, editor_transform::transform>
+capture_selected_transforms()
 {
-	std::map<object_id, camera_vec3> out;
+	std::map<object_id, editor_transform::transform> out;
 	if (!g.context)
 		return out;
 	for (object_id id : g.context->selection_ids())
 	{
 		const scene_object* object = find_scene_object(id);
 		if (object)
-			out[id] = object->position;
+			out[id] = object_transform(*object);
 	}
 	return out;
 }
 
-static void apply_position_map(const std::map<object_id, camera_vec3>& positions)
+static void apply_transform_map(
+	const std::map<object_id, editor_transform::transform>& transforms)
 {
-	for (const auto& entry : positions)
+	for (const auto& entry : transforms)
 	{
 		auto it = g.scene.objects.find(entry.first);
 		if (it != g.scene.objects.end())
-			it->second.position = entry.second;
+			write_object_transform(it->second, entry.second);
 	}
+	if (g.shell)
+		g.shell->properties().refresh();
 }
 
-static void apply_position_delta(const std::map<object_id, camera_vec3>& base,
-	const camera_vec3& delta)
+static void apply_gizmo_delta(
+	const std::map<object_id, editor_transform::transform>& base,
+	const gizmo_transform& delta)
 {
 	for (const auto& entry : base)
 	{
 		auto it = g.scene.objects.find(entry.first);
 		if (it == g.scene.objects.end())
 			continue;
-		it->second.position.x = entry.second.x + delta.x;
-		it->second.position.y = entry.second.y + delta.y;
-		it->second.position.z = entry.second.z + delta.z;
+		editor_transform::transform transform = entry.second;
+		editor_transform::apply(delta, &transform);
+		write_object_transform(it->second, transform);
 	}
+	if (g.shell)
+		g.shell->properties().refresh();
+}
+
+static const char* gizmo_axis_name(gizmo_handle handle)
+{
+	switch (handle)
+	{
+	case gizmo_handle::rotate_x:
+	case gizmo_handle::scale_x:
+	case gizmo_handle::axis_x:
+	case gizmo_handle::plane_yz:
+		return "X";
+	case gizmo_handle::rotate_y:
+	case gizmo_handle::scale_y:
+	case gizmo_handle::axis_y:
+	case gizmo_handle::plane_zx:
+		return "Y";
+	case gizmo_handle::rotate_z:
+	case gizmo_handle::scale_z:
+	case gizmo_handle::axis_z:
+	case gizmo_handle::plane_xy:
+		return "Z";
+	default:
+		return "uniform";
+	}
+}
+
+static void report_gizmo_commit(const gizmo_transform& delta)
+{
+	if (!g.shell)
+		return;
+	char text[160] = {};
+	switch (delta.mode)
+	{
+	case gizmo_mode::translate:
+		std::snprintf(text, sizeof(text),
+			"translated %.2f %.2f %.2f", delta.translation.x,
+			delta.translation.y, delta.translation.z);
+		break;
+	case gizmo_mode::rotate:
+	{
+		const float angle = std::sqrt(delta.rotation.x * delta.rotation.x +
+			delta.rotation.y * delta.rotation.y +
+			delta.rotation.z * delta.rotation.z) * 57.2957795f;
+		std::snprintf(text, sizeof(text), "rotated %.1f deg around %s",
+			angle, gizmo_axis_name(delta.handle));
+		break;
+	}
+	case gizmo_mode::scale:
+		if (delta.handle == gizmo_handle::scale_uniform)
+			std::snprintf(text, sizeof(text), "scaled uniformly %.3f",
+				delta.scale.x);
+		else
+			std::snprintf(text, sizeof(text), "scaled %s %.3f",
+				gizmo_axis_name(delta.handle),
+				delta.handle == gizmo_handle::scale_x ? delta.scale.x
+					: delta.handle == gizmo_handle::scale_y ? delta.scale.y
+					: delta.scale.z);
+		break;
+	}
+	g.shell->set_status(text);
 }
 
 static void setup_gizmo()
@@ -1532,50 +1632,48 @@ static void setup_gizmo()
 	gizmo.set_frame_provider(&gizmo_frame_for_selection);
 	gizmo.set_projection(&project_world);
 	gizmo.set_ray_provider(&gizmo_ray_at);
-	gizmo.set_drag_handler([](gizmo_phase phase, const camera_vec3& delta)
+	gizmo.set_transform_handler([](gizmo_phase phase,
+		const gizmo_transform& delta)
 	{
 		if (!g.shell || !g.context)
 			return;
 		switch (phase)
 		{
 		case gizmo_phase::begin:
-			g.gizmo_before_positions = capture_selected_positions();
-			g.gizmo_start_positions = g.gizmo_before_positions;
-			g.gizmo_last_delta = {};
+			g.gizmo_before_transforms = capture_selected_transforms();
+			g.gizmo_start_transforms = g.gizmo_before_transforms;
 			break;
 		case gizmo_phase::preview:
-			g.gizmo_last_delta = delta;
-			apply_position_delta(g.gizmo_start_positions, delta);
+			apply_gizmo_delta(g.gizmo_start_transforms, delta);
 			break;
 		case gizmo_phase::commit:
 		{
-			g.gizmo_last_delta = delta;
-			apply_position_delta(g.gizmo_start_positions, delta);
-			const float magnitude = std::fabs(delta.x) + std::fabs(delta.y) +
-				std::fabs(delta.z);
-			if (magnitude > 1e-4f && !g.gizmo_before_positions.empty())
+			apply_gizmo_delta(g.gizmo_start_transforms, delta);
+			if (editor_transform::changed(delta) &&
+				!g.gizmo_before_transforms.empty())
 			{
-				std::map<object_id, camera_vec3> before =
-					g.gizmo_before_positions;
-				std::map<object_id, camera_vec3> after =
-					capture_selected_positions();
+				std::map<object_id, editor_transform::transform> before =
+					g.gizmo_before_transforms;
+				std::map<object_id, editor_transform::transform> after =
+					capture_selected_transforms();
+				const char* name = delta.mode == gizmo_mode::rotate
+					? "Rotate"
+					: delta.mode == gizmo_mode::scale ? "Scale"
+					: "Translate";
 				g.context->commands().push(
-					std::make_unique<function_command>("Translate",
-						[after]() { apply_position_map(after); },
-						[before]() { apply_position_map(before); }));
+					std::make_unique<function_command>(name,
+						[after]() { apply_transform_map(after); },
+						[before]() { apply_transform_map(before); }));
 			}
-			char text[128] = {};
-			std::snprintf(text, sizeof(text),
-				"translated %.2f %.2f %.2f", delta.x, delta.y, delta.z);
-			g.shell->set_status(text);
+			report_gizmo_commit(delta);
 			/* The command was pushed directly, so refresh Undo/Redo enabled
 			 * state in the toolbar and menus. */
 			g.shell->refresh_commands();
 			break;
 		}
 		case gizmo_phase::cancel:
-			apply_position_map(g.gizmo_before_positions);
-			g.shell->set_status("translate cancelled");
+			apply_transform_map(g.gizmo_before_transforms);
+			g.shell->set_status("gizmo cancelled");
 			break;
 		}
 	});
@@ -1615,7 +1713,9 @@ static void setup_editor(vgui_context* ui)
 		if (!object)
 			return false;
 		out->center = object->position;
-		out->radius = 2.5f;
+		const float extent = std::max({ object->scale.x, object->scale.y,
+			object->scale.z, 0.25f });
+		out->radius = 2.5f * extent;
 		g.shell->set_status("camera: frame " + object->name);
 		return true;
 	});
@@ -1661,9 +1761,10 @@ static void setup_editor(vgui_context* ui)
 	/* V03: 视口里唯一可见的立方体对应一个可拾取对象。 */
 	const object_id cube = g.scene.add("Cube", invalid_object);
 	g.scene.objects[cube].props["mesh"] = "Cube.mesh";
-	/* V05: 立方体落在网格上，并带一点偏航角以区分局部/世界空间。 */
+	/* V05/V07: 立方体落在网格上，并带一点偏航角以区分局部/世界空间。 */
 	g.scene.objects[cube].position = { 0.0f, 1.0f, 0.0f };
-	g.scene.objects[cube].yaw = 0.55f;
+	g.scene.objects[cube].rotation = glm::angleAxis(0.55f,
+		glm::vec3(0.0f, 1.0f, 0.0f));
 	/* V06: 渲染/拾取集合由 renderable 标记驱动。 */
 	g.scene.objects[cube].renderable = true;
 	g.rebuild_outliner();
@@ -1878,6 +1979,76 @@ static void setup_editor(vgui_context* ui)
 		name.has_default = true;
 		grid.add_property(name);
 
+		/* V07: Transform rows read the same scene state the gizmo writes, so a
+		 * gizmo drag and a numeric edit converge on identical values. */
+		property_desc position;
+		position.id = "position";
+		position.label = "Position";
+		position.type = property_type::vector3;
+		position.semantic = vector_semantic::position;
+		position.value = editor_transform::vec3_text(o.position);
+		position.category = "Transform";
+		position.get_value = [oid = id]() -> std::string {
+			auto it = g.scene.objects.find(oid);
+			return it == g.scene.objects.end() ? std::string()
+				: editor_transform::vec3_text(it->second.position);
+		};
+		position.set_value = [oid = id](const std::string& value) {
+			camera_vec3 parsed;
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end() &&
+				editor_transform::parse_vec3(value, &parsed))
+				it->second.position = parsed;
+		};
+		grid.add_property(position);
+
+		property_desc rotation;
+		rotation.id = "rotation";
+		rotation.label = "Rotation";
+		rotation.type = property_type::vector3;
+		rotation.value = editor_transform::euler_text(o.rotation);
+		rotation.category = "Transform";
+		rotation.tooltip = "Euler degrees (XYZ)";
+		rotation.get_value = [oid = id]() -> std::string {
+			auto it = g.scene.objects.find(oid);
+			return it == g.scene.objects.end() ? std::string()
+				: editor_transform::euler_text(it->second.rotation);
+		};
+		rotation.set_value = [oid = id](const std::string& value) {
+			camera_vec3 parsed;
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end() &&
+				editor_transform::parse_vec3(value, &parsed))
+				it->second.rotation =
+					editor_transform::from_euler_degrees(parsed);
+		};
+		grid.add_property(rotation);
+
+		property_desc scale;
+		scale.id = "scale";
+		scale.label = "Scale";
+		scale.type = property_type::vector3;
+		scale.value = editor_transform::vec3_text(o.scale);
+		scale.category = "Transform";
+		scale.tooltip = "Per-axis scale";
+		scale.get_value = [oid = id]() -> std::string {
+			auto it = g.scene.objects.find(oid);
+			return it == g.scene.objects.end() ? std::string()
+				: editor_transform::vec3_text(it->second.scale);
+		};
+		scale.set_value = [oid = id](const std::string& value) {
+			camera_vec3 parsed;
+			auto it = g.scene.objects.find(oid);
+			if (it != g.scene.objects.end() &&
+				editor_transform::parse_vec3(value, &parsed))
+			{
+				it->second.scale = { editor_transform::clamp_scale(parsed.x),
+					editor_transform::clamp_scale(parsed.y),
+					editor_transform::clamp_scale(parsed.z) };
+			}
+		};
+		grid.add_property(scale);
+
 		property_desc color;
 		color.id = "tint";
 		color.label = "Tint";
@@ -1944,7 +2115,8 @@ static void setup_editor(vgui_context* ui)
 		};
 		grid.add_property(color_ramp);
 
-		/* 多目标 getter/setter:值存在对象 props 里(name 特殊)。 */
+		/* 多目标 getter/setter:Transform 读场景字段,其余值存在对象 props
+		 * 里(name 特殊)。 */
 		grid.set_multi_getter([](const std::string& pid, object_id obj)
 			-> std::string
 		{
@@ -1953,6 +2125,12 @@ static void setup_editor(vgui_context* ui)
 				return "";
 			if (pid == "name")
 				return it->second.name;
+			if (pid == "position")
+				return editor_transform::vec3_text(it->second.position);
+			if (pid == "rotation")
+				return editor_transform::euler_text(it->second.rotation);
+			if (pid == "scale")
+				return editor_transform::vec3_text(it->second.scale);
 			auto pit = it->second.props.find(pid);
 			return pit == it->second.props.end() ? "" : pit->second;
 		});
@@ -1962,6 +2140,23 @@ static void setup_editor(vgui_context* ui)
 			auto it = g.scene.objects.find(obj);
 			if (it == g.scene.objects.end())
 				return;
+			if (pid == "position" || pid == "rotation" || pid == "scale")
+			{
+				camera_vec3 parsed;
+				if (!editor_transform::parse_vec3(value, &parsed))
+					return;
+				if (pid == "position")
+					it->second.position = parsed;
+				else if (pid == "rotation")
+					it->second.rotation =
+						editor_transform::from_euler_degrees(parsed);
+				else
+					it->second.scale = {
+						editor_transform::clamp_scale(parsed.x),
+						editor_transform::clamp_scale(parsed.y),
+						editor_transform::clamp_scale(parsed.z) };
+				return;
+			}
 			if (pid == "name")
 			{
 				it->second.name = value;
@@ -1983,7 +2178,8 @@ static void setup_editor(vgui_context* ui)
 			object_id sel = g.context->selection();
 			if (sel == invalid_object || !g.scene.objects.count(sel))
 				return;
-			if (pid == "mesh" || pid == "target" || pid == "tint" ||
+			if (pid == "position" || pid == "rotation" || pid == "scale" ||
+				pid == "mesh" || pid == "target" || pid == "tint" ||
 				pid == "idle_curve" || pid == "color_ramp")
 			{
 				g.shell->set_status(pid + " = " + (value.empty()
@@ -2392,8 +2588,18 @@ int main()
 					instance.position[0] = object.position.x;
 					instance.position[1] = object.position.y;
 					instance.position[2] = object.position.z;
-					instance.yaw = object.yaw;
-					instance.scale = 1.0f;
+					const glm::quat rotation = glm::normalize(
+						object.rotation);
+					instance.rotation[0] = rotation.x;
+					instance.rotation[1] = rotation.y;
+					instance.rotation[2] = rotation.z;
+					instance.rotation[3] = rotation.w;
+					instance.scale[0] =
+						editor_transform::clamp_scale(object.scale.x);
+					instance.scale[1] =
+						editor_transform::clamp_scale(object.scale.y);
+					instance.scale[2] =
+						editor_transform::clamp_scale(object.scale.z);
 					instance.ghost = false;
 					instances.push_back(instance);
 				}
@@ -2403,7 +2609,10 @@ int main()
 					ghost.position[0] = g.drop_preview_position.x;
 					ghost.position[1] = g.drop_preview_position.y;
 					ghost.position[2] = g.drop_preview_position.z;
-					ghost.scale = 1.0f;
+					ghost.rotation[3] = 1.0f;
+					ghost.scale[0] = 1.0f;
+					ghost.scale[1] = 1.0f;
+					ghost.scale[2] = 1.0f;
 					ghost.ghost = true;
 					instances.push_back(ghost);
 				}

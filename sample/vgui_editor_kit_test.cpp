@@ -34,6 +34,7 @@
 
 #include "vgui.h"
 #include "vgui_editor_kit.h"
+#include "editor_transform.h"
 
 namespace {
 
@@ -8972,10 +8973,11 @@ static int test_viewport_gizmo()
 		 * provider intersects the XY plane at z = 0 for plane drags. */
 		bool frame_valid = true;
 		bool local_axes = false;
+		camera_vec3 frame_origin{};
 		gizmo.set_frame_provider([&]() {
 			gizmo_frame frame;
 			frame.valid = frame_valid;
-			frame.origin = { 0.0f, 0.0f, 0.0f };
+			frame.origin = frame_origin;
 			if (local_axes)
 			{
 				const float c = std::sqrt(0.5f);
@@ -9011,6 +9013,15 @@ static int test_viewport_gizmo()
 			deltas.push_back(delta);
 		});
 
+		/* V07: the transform handler receives the full payload for every mode. */
+		std::vector<gizmo_phase> transform_phases;
+		std::vector<gizmo_transform> transforms;
+		gizmo.set_transform_handler([&](gizmo_phase phase,
+			const gizmo_transform& transform) {
+			transform_phases.push_back(phase);
+			transforms.push_back(transform);
+		});
+
 		vgui_update(ui, 1.0f / 60.0f);
 		vgui_layout(ui);
 		viewport.poll_resize();
@@ -9040,6 +9051,11 @@ static int test_viewport_gizmo()
 			phases.clear();
 			deltas.clear();
 		};
+		auto reset_transform_log = [&]() {
+			transform_phases.clear();
+			transforms.clear();
+		};
+		const float pi = 3.14159265358979323846f;
 
 		/* 1) 命中：X 轴、Y 轴与 XY 平面。 */
 		move_to(239.0f, 149.0f);
@@ -9166,9 +9182,266 @@ static int test_viewport_gizmo()
 		if (gizmo.space() != gizmo_space::world)
 			return fail("v05 world space state");
 
+		/* 10) V07: mode switching is exclusive and cancels a live drag; the
+		 * same applies to space changes. */
+		gizmo.set_mode(gizmo_mode::rotate);
+		if (gizmo.mode() != gizmo_mode::rotate)
+			return fail("v07 rotate mode state");
+		local_axes = false;
+		snap.enabled = false;
+		gizmo.set_mode(gizmo_mode::translate);
+		reset_transform_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		if (!gizmo.dragging())
+			return fail("v07 mode switch drag begins");
+		gizmo.set_mode(gizmo_mode::rotate);
+		if (gizmo.dragging() || transform_phases.back() != gizmo_phase::cancel)
+			return fail("v07 mode switch cancels drag");
+		gizmo.set_mode(gizmo_mode::translate);
+		reset_transform_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		gizmo.set_space(gizmo_space::screen);
+		if (gizmo.dragging() || transform_phases.back() != gizmo_phase::cancel)
+			return fail("v07 space switch cancels drag");
+		gizmo.set_space(gizmo_space::world);
+
+		/* 11) V07: Z ring drag yields a signed axis-angle rotation snapped to
+		 * the configured degrees; the legacy translate callback stays silent. */
+		gizmo.set_mode(gizmo_mode::rotate);
+		snap.enabled = true;
+		snap.rotate = true;
+		snap.rotate_step_deg = 15.0f;
+		reset_drag_log();
+		reset_transform_log();
+		const float diagonal80 = 80.0f * std::sqrt(0.5f);
+		move_to(199.0f + diagonal80, 149.0f - diagonal80);
+		if (gizmo.hovered_handle() != gizmo_handle::rotate_z)
+			return fail("v07 hover z ring");
+		down_at(199.0f + diagonal80, 149.0f - diagonal80);
+		if (!gizmo.dragging() ||
+			gizmo.active_handle() != gizmo_handle::rotate_z ||
+			transform_phases.size() != 1 ||
+			transform_phases[0] != gizmo_phase::begin ||
+			transforms[0].mode != gizmo_mode::rotate ||
+			transforms[0].handle != gizmo_handle::rotate_z ||
+			!close_to(transforms[0].origin.x, 0.0f) ||
+			!close_to(transforms[0].origin.y, 0.0f) ||
+			!close_to(transforms[0].origin.z, 0.0f))
+			return fail("v07 ring drag begins");
+		if (!deltas.empty())
+			return fail("v07 rotate skips legacy drag handler");
+
+		const float angle80 = 80.0f * pi / 180.0f;
+		move_to(199.0f + 80.0f * std::cos(angle80),
+			149.0f - 80.0f * std::sin(angle80));
+		if (transform_phases.back() != gizmo_phase::preview ||
+			!close_to(transforms.back().rotation.z * 180.0f / pi, 30.0f,
+				1e-3f) ||
+			!close_to(transforms.back().rotation.x, 0.0f) ||
+			!close_to(transforms.back().rotation.y, 0.0f))
+			return fail("v07 ring snaps to 30 degrees");
+
+		/* Snapping disabled: 45 -> 60 degrees is a free 15 degree turn. */
+		snap.enabled = false;
+		move_to(199.0f + 40.0f, 149.0f - 80.0f * 0.8660254f);
+		if (!close_to(transforms.back().rotation.z * 180.0f / pi, 15.0f,
+			1e-3f))
+			return fail("v07 ring unsnapped rotation");
+		up_at(199.0f + 40.0f, 149.0f - 80.0f * 0.8660254f);
+		if (gizmo.dragging() ||
+			transform_phases.back() != gizmo_phase::commit ||
+			!close_to(transforms.back().rotation.z * 180.0f / pi, 15.0f,
+				1e-3f))
+			return fail("v07 ring commits");
+
+		/* Crossing +/-pi unwraps: 170 -> -170 degrees is +20 degrees. */
+		reset_transform_log();
+		const float angle170 = 170.0f * pi / 180.0f;
+		move_to(199.0f + 80.0f * std::cos(angle170),
+			149.0f - 80.0f * std::sin(angle170));
+		if (gizmo.hovered_handle() != gizmo_handle::rotate_z)
+			return fail("v07 hover ring at 170 degrees");
+		down_at(199.0f + 80.0f * std::cos(angle170),
+			149.0f - 80.0f * std::sin(angle170));
+		const float angle_minus170 = -170.0f * pi / 180.0f;
+		move_to(199.0f + 80.0f * std::cos(angle_minus170),
+			149.0f - 80.0f * std::sin(angle_minus170));
+		if (!close_to(transforms.back().rotation.z * 180.0f / pi, 20.0f,
+			1e-3f))
+			return fail("v07 ring unwraps across pi");
+		gizmo.cancel_drag();
+		if (gizmo.dragging() ||
+			transform_phases.back() != gizmo_phase::cancel)
+			return fail("v07 ring cancel");
+
+		/* 12) V07: scale axis + uniform center, snapping and cancellation. */
+		gizmo.set_mode(gizmo_mode::scale);
+		snap.enabled = true;
+		snap.scale = true;
+		snap.scale_step = 0.1f;
+		reset_transform_log();
+		move_to(279.0f, 149.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::scale_x)
+			return fail("v07 hover scale x");
+		down_at(279.0f, 149.0f);
+		if (!gizmo.dragging() ||
+			gizmo.active_handle() != gizmo_handle::scale_x ||
+			transforms.empty() ||
+			transforms[0].mode != gizmo_mode::scale)
+			return fail("v07 scale drag begins");
+		move_to(309.0f, 149.0f);
+		if (!close_to(transforms.back().scale.x, 1.4f, 1e-3f) ||
+			!close_to(transforms.back().scale.y, 1.0f) ||
+			!close_to(transforms.back().scale.z, 1.0f))
+			return fail("v07 scale axis snap");
+		up_at(309.0f, 149.0f);
+		if (gizmo.dragging() ||
+			transform_phases.back() != gizmo_phase::commit)
+			return fail("v07 scale commits");
+
+		reset_transform_log();
+		move_to(199.0f, 149.0f);
+		if (gizmo.hovered_handle() != gizmo_handle::scale_uniform)
+			return fail("v07 hover uniform scale");
+		down_at(199.0f, 149.0f);
+		move_to(219.0f, 149.0f);
+		if (!close_to(transforms.back().scale.x, 1.5f, 1e-3f) ||
+			!close_to(transforms.back().scale.y, 1.5f, 1e-3f) ||
+			!close_to(transforms.back().scale.z, 1.5f, 1e-3f))
+			return fail("v07 uniform scale");
+		up_at(219.0f, 149.0f);
+
+		reset_transform_log();
+		move_to(279.0f, 149.0f);
+		down_at(279.0f, 149.0f);
+		move_to(299.0f, 149.0f);
+		gizmo.cancel_drag();
+		if (gizmo.dragging() ||
+			transform_phases.back() != gizmo_phase::cancel)
+			return fail("v07 scale cancel");
+
+		/* 13) V07: the payload captures origin/axes at begin; preview keeps the
+		 * snapshot even when the host frame moves (the host previews objects
+		 * during the drag, so re-reading the frame must not feed back). */
+		gizmo.set_mode(gizmo_mode::translate);
+		snap.enabled = true;
+		snap.translate = true;
+		snap.translate_step = 0.5f;
+		frame_origin = { 0.0f, 0.0f, 0.0f };
+		reset_drag_log();
+		reset_transform_log();
+		move_to(239.0f, 149.0f);
+		down_at(239.0f, 149.0f);
+		if (!gizmo.dragging() || transforms.empty() ||
+			transforms[0].mode != gizmo_mode::translate ||
+			transforms[0].handle != gizmo_handle::axis_x)
+			return fail("v07 translate payload begins");
+		if (phases.empty() || phases[0] != gizmo_phase::begin)
+			return fail("v07 translate legacy callback begins");
+		frame_origin = { 10.0f, 20.0f, 30.0f };
+		move_to(259.0f, 149.0f);
+		if (!close_to(transforms.back().translation.x, 0.5f) ||
+			!close_to(transforms.back().origin.x, 0.0f) ||
+			!close_to(transforms.back().origin.y, 0.0f) ||
+			!close_to(transforms.back().origin.z, 0.0f))
+			return fail("v07 translate keeps begin snapshot");
+		up_at(259.0f, 149.0f);
+		if (gizmo.dragging() ||
+			transform_phases.back() != gizmo_phase::commit)
+			return fail("v07 translate snapshot commits");
+		frame_origin = { 0.0f, 0.0f, 0.0f };
+
 		gizmo.detach();
 		if (gizmo.attached())
 			return fail("v05 gizmo detach");
+	}
+
+	/* 14) V07: gizmo deltas and numeric transform rows agree.  The sample
+	 * applies gesture results and formats property values through the same
+	 * helpers, so this locks down that shared contract. */
+	{
+		using namespace vgui_editor_kit;
+		auto close_to = [](float a, float b, float eps = 1e-4f) {
+			return std::fabs(a - b) <= eps;
+		};
+		const float pi = 3.14159265358979323846f;
+
+		editor_transform::transform object;
+		gizmo_transform rotate_delta;
+		rotate_delta.mode = gizmo_mode::rotate;
+		rotate_delta.handle = gizmo_handle::rotate_z;
+		rotate_delta.origin = { 0.0f, 0.0f, 0.0f };
+		rotate_delta.rotation = { 0.0f, 0.0f, 30.0f * pi / 180.0f };
+		editor_transform::apply(rotate_delta, &object);
+		const camera_vec3 euler = editor_transform::euler_degrees(
+			object.rotation);
+		if (!close_to(euler.x, 0.0f, 1e-3f) ||
+			!close_to(euler.y, 0.0f, 1e-3f) ||
+			!close_to(euler.z, 30.0f, 1e-3f))
+			return fail("v07 rotation matches property panel");
+
+		camera_vec3 parsed_euler;
+		if (!editor_transform::parse_vec3(
+			editor_transform::euler_text(object.rotation), &parsed_euler))
+			return fail("v07 rotation property text parses");
+		const glm::quat parsed_rotation =
+			editor_transform::from_euler_degrees(parsed_euler);
+		if (!close_to(parsed_rotation.z, object.rotation.z, 1e-5f) ||
+			!close_to(parsed_rotation.w, object.rotation.w, 1e-5f))
+			return fail("v07 rotation property round trip");
+
+		editor_transform::transform scaled;
+		gizmo_transform scale_delta;
+		scale_delta.mode = gizmo_mode::scale;
+		scale_delta.handle = gizmo_handle::scale_x;
+		scale_delta.origin = { 0.0f, 0.0f, 0.0f };
+		scale_delta.scale = { 1.4f, 1.0f, 1.0f };
+		editor_transform::apply(scale_delta, &scaled);
+		if (!close_to(scaled.scale.x, 1.4f) ||
+			!close_to(scaled.scale.y, 1.0f) ||
+			!close_to(scaled.scale.z, 1.0f))
+			return fail("v07 scale applies to property state");
+		vector_editor::vector_value scale_values{};
+		scale_values[0] = 1.4;
+		scale_values[1] = 1.0;
+		scale_values[2] = 1.0;
+		if (editor_transform::vec3_text(scaled.scale) !=
+			vector_editor::format_value(scale_values, 3))
+			return fail("v07 scale matches property text");
+
+		/* Multi-select: every selected transform turns/scales around the same
+		 * begin pivot supplied by the host. */
+		editor_transform::transform a, b;
+		a.position = { 1.0f, 0.0f, 0.0f };
+		b.position = { -1.0f, 0.0f, 0.0f };
+		gizmo_transform orbit;
+		orbit.mode = gizmo_mode::rotate;
+		orbit.origin = { 0.0f, 0.0f, 0.0f };
+		orbit.rotation = { 0.0f, 0.0f, pi * 0.5f };
+		editor_transform::apply(orbit, &a);
+		editor_transform::apply(orbit, &b);
+		if (!close_to(a.position.x, 0.0f, 1e-5f) ||
+			!close_to(a.position.y, 1.0f, 1e-5f) ||
+			!close_to(b.position.x, 0.0f, 1e-5f) ||
+			!close_to(b.position.y, -1.0f, 1e-5f))
+			return fail("v07 multi-select orbits shared pivot");
+
+		editor_transform::transform left, right;
+		left.position = { 1.0f, 0.0f, 0.0f };
+		right.position = { 3.0f, 0.0f, 0.0f };
+		gizmo_transform grow;
+		grow.mode = gizmo_mode::scale;
+		grow.origin = { 2.0f, 0.0f, 0.0f };
+		grow.scale = { 2.0f, 2.0f, 2.0f };
+		editor_transform::apply(grow, &left);
+		editor_transform::apply(grow, &right);
+		if (!close_to(left.position.x, 0.0f) ||
+			!close_to(right.position.x, 4.0f) ||
+			!close_to(left.scale.x, 2.0f) ||
+			!close_to(right.scale.z, 2.0f))
+			return fail("v07 multi-select scales around shared pivot");
 	}
 
 	vgui_destroy(ui);
@@ -9749,6 +10022,50 @@ int main()
 			shell.gizmo().space() != gizmo_space_before ||
 			shell.commands().is_checked("view.gizmo.local"))
 			return fail("shell gizmo world space");
+
+		/* V07: tool modes and discrete spaces are mutually exclusive, and the
+		 * W/E/R shortcuts match their commands. */
+		if (!shell.run_command("view.gizmo.rotate") ||
+			shell.gizmo().mode() != gizmo_mode::rotate ||
+			!shell.commands().is_checked("view.gizmo.rotate") ||
+			shell.commands().is_checked("view.gizmo.translate"))
+			return fail("shell gizmo rotate mode");
+		if (!shell.run_command("view.gizmo.scale") ||
+			shell.gizmo().mode() != gizmo_mode::scale ||
+			!shell.commands().is_checked("view.gizmo.scale") ||
+			shell.commands().is_checked("view.gizmo.rotate"))
+			return fail("shell gizmo scale mode");
+		if (!shell.run_command("view.gizmo.translate") ||
+			shell.gizmo().mode() != gizmo_mode::translate ||
+			!shell.commands().is_checked("view.gizmo.translate") ||
+			shell.commands().is_checked("view.gizmo.scale"))
+			return fail("shell gizmo translate mode");
+		if (!shell.run_command("view.gizmo.space.parent") ||
+			shell.gizmo().space() != gizmo_space::parent ||
+			!shell.commands().is_checked("view.gizmo.space.parent") ||
+			shell.commands().is_checked("view.gizmo.space.world"))
+			return fail("shell gizmo parent space");
+		if (!shell.run_command("view.gizmo.space.screen") ||
+			shell.gizmo().space() != gizmo_space::screen ||
+			!shell.commands().is_checked("view.gizmo.space.screen") ||
+			shell.commands().is_checked("view.gizmo.space.parent"))
+			return fail("shell gizmo screen space");
+		if (!shell.run_command("view.gizmo.space.world") ||
+			shell.gizmo().space() != gizmo_space::world ||
+			!shell.commands().is_checked("view.gizmo.space.world") ||
+			shell.commands().is_checked("view.gizmo.space.screen"))
+			return fail("shell gizmo world space command");
+		const command_entry* rotate_command =
+			shell.commands().find("view.gizmo.rotate");
+		const command_entry* scale_command =
+			shell.commands().find("view.gizmo.scale");
+		const command_entry* translate_command =
+			shell.commands().find("view.gizmo.translate");
+		if (!rotate_command || !scale_command || !translate_command ||
+			rotate_command->shortcut.key != 'E' ||
+			scale_command->shortcut.key != 'R' ||
+			translate_command->shortcut.key != 'W')
+			return fail("shell gizmo shortcuts");
 
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(shell.widget(), &x, &y, &w, &h);

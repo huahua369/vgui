@@ -122,9 +122,9 @@ namespace vgui_editor_kit {
 		 * editor_context and is mirrored by the Outliner. */
 		viewport_selection& picking() noexcept;
 		const viewport_selection& picking() const noexcept;
-		/* V05: translate gizmo.  The shell attaches it before picking so its
-		 * left-button hit test wins; hosts install the frame/projection/ray
-		 * providers and the drag handler. */
+		/* V05/V07: translate/rotate/scale gizmo.  The shell attaches it before
+		 * picking so its left-button hit test wins; hosts install the
+		 * frame/projection/ray providers and the transform handler. */
 		viewport_gizmo& gizmo() noexcept;
 		const viewport_gizmo& gizmo() const noexcept;
 		/* V04: world grid settings/geometry and the snapping policy shared with

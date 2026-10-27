@@ -3,6 +3,7 @@
 #include "pch.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#include <glm/gtc/quaternion.hpp>
 
 #include "shaders/spv_c/a_base3d.vert.h"
 #include "shaders/spv_c/a_base3d.frag.h"
@@ -732,13 +733,19 @@ void phase0_renderer_render(phase0_renderer* r, float time_seconds)
 
 	auto instance_model = [](const phase0_instance& instance)
 	{
-		const float scale = instance.scale > 0.0f ? instance.scale : 1.0f;
+		glm::quat rotation(instance.rotation[3], instance.rotation[0],
+			instance.rotation[1], instance.rotation[2]);
+		if (glm::dot(rotation, rotation) < 1e-8f)
+			rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+		rotation = glm::normalize(rotation);
+		glm::vec3 scale(instance.scale[0] > 0.0f ? instance.scale[0] : 1.0f,
+			instance.scale[1] > 0.0f ? instance.scale[1] : 1.0f,
+			instance.scale[2] > 0.0f ? instance.scale[2] : 1.0f);
 		return glm::translate(glm::mat4(1.0f),
 			glm::vec3(instance.position[0], instance.position[1],
 				instance.position[2])) *
-			glm::rotate(glm::mat4(1.0f), instance.yaw,
-				glm::vec3(0.0f, 1.0f, 0.0f)) *
-			glm::scale(glm::mat4(1.0f), glm::vec3(scale));
+			glm::mat4_cast(rotation) *
+			glm::scale(glm::mat4(1.0f), scale);
 	};
 
 	if (!r->instances_set)

@@ -56,17 +56,18 @@ void phase0_renderer_set_grid(phase0_renderer* renderer,
 void phase0_renderer_set_object_transform(phase0_renderer* renderer,
 	const float position[3], float yaw_radians);
 
-/* V06: draw a list of cube proxies instead of the built-in single cube.
- * Each instance carries a world position, yaw and uniform scale.  Ghost
- * instances are translucent and do not write depth, which the viewport drop
- * preview uses.  Calling this function (even with count 0) switches the
- * renderer to instance mode; the built-in cube only appears before the first
- * call. */
+/* V06/V07: draw a list of cube proxies instead of the built-in single cube.
+ * Each instance carries a world position, a quaternion rotation and per-axis
+ * scale.  Ghost instances are translucent and do not write depth, which the
+ * viewport drop preview uses.  Calling this function (even with count 0)
+ * switches the renderer to instance mode; the built-in cube only appears
+ * before the first call. */
 struct phase0_instance
 {
 	float position[3] = { 0.0f, 0.0f, 0.0f };
-	float yaw = 0.0f;
-	float scale = 1.0f;
+	/* XYZW quaternion.  An all-zero value falls back to identity. */
+	float rotation[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
+	float scale[3] = { 1.0f, 1.0f, 1.0f };
 	bool ghost = false;
 };
 

@@ -190,8 +190,8 @@ namespace vgui_editor_kit {
 		add_grid_size("view.grid.2", "2", "2", 2.0f);
 		add_grid_size("view.grid.5", "5", "5", 5.0f);
 
-		/* V05: 平移 Gizmo 可见性与世界/局部空间切换。 */
-		commands_.add("view.gizmo", "Translate Gizmo", [this]() {
+		/* V05/V07: Gizmo 可见性、工具模式与世界/局部/父级/屏幕空间。 */
+		commands_.add("view.gizmo", "Gizmo", [this]() {
 			gizmo_.set_visible(!gizmo_.visible());
 			set_status(gizmo_.visible() ? "gizmo on" : "gizmo off");
 		});
@@ -199,6 +199,25 @@ namespace vgui_editor_kit {
 			return gizmo_.visible();
 		});
 
+		auto add_gizmo_mode = [this](const char* id, const char* title,
+			gizmo_mode mode, const char* key)
+		{
+			commands_.add(id, title, [this, mode, title]() {
+				gizmo_.set_mode(mode);
+				set_status(std::string("gizmo ") + title + " tool");
+			});
+			commands_.set_checked(id, [this, mode]() {
+				return gizmo_.mode() == mode;
+			});
+			commands_.set_shortcut(id, command_shortcut::parse(key));
+		};
+		add_gizmo_mode("view.gizmo.translate", "Translate", gizmo_mode::translate,
+			"W");
+		add_gizmo_mode("view.gizmo.rotate", "Rotate", gizmo_mode::rotate, "E");
+		add_gizmo_mode("view.gizmo.scale", "Scale", gizmo_mode::scale, "R");
+
+		/* V05 compatibility: this command still toggles between world and local.
+		 * The discrete space commands below expose parent/screen as well. */
 		commands_.add("view.gizmo.local", "Local Space", [this]() {
 			const bool local = gizmo_.space() == gizmo_space::local;
 			gizmo_.set_space(local ? gizmo_space::world : gizmo_space::local);
@@ -207,6 +226,22 @@ namespace vgui_editor_kit {
 		commands_.set_checked("view.gizmo.local", [this]() {
 			return gizmo_.space() == gizmo_space::local;
 		});
+
+		auto add_gizmo_space = [this](const char* id, const char* title,
+			gizmo_space space)
+		{
+			commands_.add(id, title, [this, space, title]() {
+				gizmo_.set_space(space);
+				set_status(std::string("gizmo ") + title + " space");
+			});
+			commands_.set_checked(id, [this, space]() {
+				return gizmo_.space() == space;
+			});
+		};
+		add_gizmo_space("view.gizmo.space.world", "World", gizmo_space::world);
+		add_gizmo_space("view.gizmo.space.local", "Local", gizmo_space::local);
+		add_gizmo_space("view.gizmo.space.parent", "Parent", gizmo_space::parent);
+		add_gizmo_space("view.gizmo.space.screen", "Screen", gizmo_space::screen);
 
 		commands_.add("view.reset_layout", "Reset Layout", [this]() {
 			reset_layout();
@@ -357,7 +392,23 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
 			add_menu_command(view_menu, "view.gizmo", true);
-			add_menu_command(view_menu, "view.gizmo.local", true);
+			add_menu_command(view_menu, "view.gizmo.translate", true);
+			add_menu_command(view_menu, "view.gizmo.rotate", true);
+			add_menu_command(view_menu, "view.gizmo.scale", true);
+			vgui_widget* gizmo_space_menu = nullptr;
+			if (vgui_menu_add_submenu(view_menu, "Gizmo Space",
+				&gizmo_space_menu) && gizmo_space_menu)
+			{
+				wire_menu(gizmo_space_menu);
+				add_menu_command(gizmo_space_menu,
+					"view.gizmo.space.world", true);
+				add_menu_command(gizmo_space_menu,
+					"view.gizmo.space.local", true);
+				add_menu_command(gizmo_space_menu,
+					"view.gizmo.space.parent", true);
+				add_menu_command(gizmo_space_menu,
+					"view.gizmo.space.screen", true);
+			}
 			vgui_widget* grid_size_menu = nullptr;
 			if (vgui_menu_add_submenu(view_menu, "Grid Size", &grid_size_menu) &&
 				grid_size_menu)
