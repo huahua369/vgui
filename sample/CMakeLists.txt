@@ -55,6 +55,11 @@ set(SRC_VGUI_TEXTURE_TEST
     vgui_texture_test.cpp
 )
 
+# E03 截图回归测试：离屏渲染编辑器关键状态，与基线 PNG 容差对比
+set(SRC_SCREENSHOT_TEST
+    vgui_screenshot_test.cpp
+)
+
 # C API 头文件/链接冒烟测试（以 C 编译）
 set(SRC_C_API_TEST
     vgui_c_api_test.c
@@ -93,6 +98,17 @@ target_link_libraries(ovg_tools_test PRIVATE libovg SDL3::SDL3 glm::glm-header-o
 
 add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
 target_link_libraries(vgui_texture_test PRIVATE libovg libvgui SDL3::SDL3 glm::glm-header-only)
+
+add_executable(vgui_screenshot_test ${SRC_SCREENSHOT_TEST})
+target_link_libraries(vgui_screenshot_test PRIVATE vgui_editor_kit libovg libvgui
+    SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB glm::glm-header-only)
+target_compile_definitions(vgui_screenshot_test PRIVATE
+    VGUI_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+add_test(NAME vgui_screenshots
+    COMMAND vgui_screenshot_test
+        --baseline-dir "${CMAKE_SOURCE_DIR}/sample/screenshots"
+        --out-dir "${CMAKE_BINARY_DIR}/screenshots")
+set_tests_properties(vgui_screenshots PROPERTIES SKIP_RETURN_CODE 77)
 
 add_executable(vgui_c_api_test ${SRC_C_API_TEST})
 target_link_libraries(vgui_c_api_test PRIVATE libovg libvgui EnTT::EnTT ZLIB::ZLIB)

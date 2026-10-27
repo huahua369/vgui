@@ -12,6 +12,8 @@ endif()
 project ("vgui")
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+# E03: 截图回归测试通过 CTest 注册，CI 可直接运行 ctest -R vgui_screenshots。
+enable_testing()
 if (MSVC)
     add_compile_options(/utf-8)
     add_compile_options(/std:c++latest)

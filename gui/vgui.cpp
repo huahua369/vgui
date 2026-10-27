@@ -556,6 +556,11 @@ struct vgui_widget
 	// F03 drop target ------------------------------------------------------
 	const vgui_drop_target* drop_target = nullptr;
 
+	// E05 accessibility ----------------------------------------------------
+	std::string a11y_name;
+	vgui_a11y_role a11y_role = VGUI_A11Y_ROLE_NONE;	// NONE -> derive from kind
+	int focus_trap = 0;
+
 	// values ---------------------------------------------------------------
 	float value = 0.0f;
 	float range_min = 0.0f;
@@ -839,6 +844,16 @@ struct vgui_context
 	std::vector<vgui_focus_listener_entry> focus_listeners;
 	int next_focus_listener = 1;
 
+	// E05 accessibility listeners (vgui_context_add_a11y_listener)
+	struct a11y_listener_entry
+	{
+		int token = 0;
+		vgui_a11y_fn fn = nullptr;
+		void* user = nullptr;
+	};
+	std::vector<a11y_listener_entry> a11y_listeners;
+	int next_a11y_listener = 1;
+
 	// UI scale listeners (vgui_context_add_ui_scale_listener)
 	struct ui_scale_listener_entry
 	{
@@ -893,6 +908,28 @@ namespace {
 			if (it != en->second.end()) return it->second.c_str();
 		}
 		return key;
+	}
+
+	// E05 accessibility state-change notifications.  Snapshot + token re-check
+	// mirrors the focus listeners: callbacks may remove themselves.
+	static void vgui_a11y_notify(vgui_context* ctx, vgui_widget* w, vgui_a11y_event event)
+	{
+		if (!ctx || ctx->a11y_listeners.empty()) return;
+		const std::vector<vgui_context::a11y_listener_entry> snapshot = ctx->a11y_listeners;
+		for (const vgui_context::a11y_listener_entry& entry : snapshot)
+		{
+			bool alive = false;
+			for (const vgui_context::a11y_listener_entry& live : ctx->a11y_listeners)
+			{
+				if (live.token == entry.token)
+				{
+					alive = true;
+					break;
+				}
+			}
+			if (alive && entry.fn)
+				entry.fn(ctx, w, event, entry.user);
+		}
 	}
 
 	// Re-applies every text-key binding after the language or table changes.
@@ -1614,6 +1651,10 @@ namespace {
 			e.type = (int)type;
 			vgui_emit_full(w, e);
 		}
+		// E05: check-state toggles read as state changes, everything else as a
+		// value change (sliders, progress, spin values).
+		bool state = (w->kind == VGUI_CHECKBOX || w->kind == VGUI_SWITCH || w->kind == VGUI_RADIO);
+		vgui_a11y_notify(w->ctx, w, state ? VGUI_A11Y_EVENT_STATE_CHANGED : VGUI_A11Y_EVENT_VALUE_CHANGED);
 	}
 
 	static void vgui_notify_text(vgui_widget* w)
@@ -2613,6 +2654,7 @@ namespace {
 		e.item = id;
 		e.index = (index == (size_t)-1) ? -1 : (int)index;
 		vgui_emit_full(w, e);
+		vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_SELECTION_CHANGED);
 	}
 
 	static bool vgui_list_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
@@ -2931,6 +2973,7 @@ namespace {
 		e.item = id;
 		e.index = index;
 		vgui_emit_full(w, e);
+		vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_SELECTION_CHANGED);
 	}
 
 	static bool vgui_tree_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
@@ -6229,6 +6272,8 @@ namespace {
 					entry.fn(ctx, previous, w, entry.user);
 			}
 		}
+		if (w)
+			vgui_a11y_notify(ctx, w, VGUI_A11Y_EVENT_FOCUS_CHANGED);
 	}
 
 	//----------------------------------------------------------------------------
@@ -7046,6 +7091,15 @@ namespace {
 	{
 		vgui_widget* root = vgui_active_root(ctx);
 		if (!ctx || !root) return;
+		// E05: when the current focus sits inside a trapped container (dock
+		// floating frames, custom traps) Tab cycles within that container only.
+		// Focus outside every trap keeps traversing the whole active root.
+		vgui_widget* scope = root;
+		if (ctx->focus && ctx->alive.count(ctx->focus))
+		{
+			for (vgui_widget* p = ctx->focus; p; p = p->parent)
+				if (p->focus_trap) { scope = p; break; }
+		}
 		std::vector<vgui_widget*> list;
 		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
 			{
@@ -7053,7 +7107,13 @@ namespace {
 				if (w->focusable) list.push_back(w);
 				for (vgui_widget* c : w->children) collect(c);
 			};
-		collect(root);
+		collect(scope);
+		if (list.empty() && scope != root)
+		{
+			// A trap without focusable widgets must not eat Tab.
+			scope = root;
+			collect(scope);
+		}
 		if (list.empty())
 		{
 			vgui_set_focus_internal(ctx, nullptr);
@@ -14739,6 +14799,9 @@ extern "C" {
 		vgui_toast_id id = rec.id;
 		ctx->toasts.push_back(std::move(rec));
 		ctx->layout_dirty = true;
+		/* Screen readers announce toasts as live-region alerts; a toast has no
+		 * widget, so the listener receives a null widget. */
+		vgui_a11y_notify(ctx, nullptr, VGUI_A11Y_EVENT_ALERT);
 		return id;
 	}
 

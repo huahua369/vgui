@@ -195,7 +195,11 @@ extern "C" {
 		VGUI_KEY_F9,
 		VGUI_KEY_F10,
 		VGUI_KEY_F11,
-		VGUI_KEY_F12
+		VGUI_KEY_F12,
+		/* The keyboard menu key (also sent for Shift+F10 on hosts that map it).
+		 * When a list/tree holds focus it opens the context menu path; otherwise
+		 * it behaves like F10 for menubars. */
+		VGUI_KEY_MENU
 	} vgui_key;
 
 	typedef enum vgui_mod {
@@ -262,7 +266,11 @@ extern "C" {
 		VGUI_EVENT_SUBMIT,
 		/* Sent before a focused single-line edit blurs on Escape, so inline
 		 * editors (rename, combo boxes) can cancel without committing. */
-		VGUI_EVENT_CANCEL
+		VGUI_EVENT_CANCEL,
+		/* Keyboard request for the context menu: Menu key or Shift+F10 on the
+		 * focused list/tree.  item/index carry the current selection like a
+		 * right click does; hosts open the same menu they show for button 3. */
+		VGUI_EVENT_CONTEXT
 	} vgui_event_type;
 
 	typedef struct vgui_event {
@@ -906,6 +914,12 @@ extern "C" {
 	VGUI_API float vgui_context_get_font_size(vgui_context* ctx);
 	VGUI_API void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme);
 	VGUI_API void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme);
+	/* Fills theme with the built-in high-contrast preset: near-black panels,
+	 * white text, saturated yellow/azure accents and full-strength borders.
+	 * Every field is set explicitly (no zero-field fallbacks), so the result is
+	 * deterministic and remains readable for low-vision users.  Apply it with
+	 * vgui_context_set_theme(). */
+	VGUI_API void vgui_theme_high_contrast(vgui_theme* theme);
 
 	/* UI scale (DPI scaling).  All public geometry, style and font-size values
 	 * are logical units; the context multiplies them by ui_scale when it lays out
@@ -1822,6 +1836,98 @@ extern "C" {
 	VGUI_API int vgui_widget_wants_text_input(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_text_input_rect(vgui_widget* widget, float x,
 		float y, float width, float height);
+
+	/* Marks a container as a focus trap (E05).  Tab/Shift+Tab then cycles inside
+	 * the nearest trapped ancestor of the current focus; when the focus is
+	 * outside every trap the first Tab step jumps into the innermost trap that
+	 * contains it.  Mouse clicks are unaffected.  Modals and context popups
+	 * trap automatically; use this for floating windows such as dock frames. */
+	VGUI_API void vgui_widget_set_focus_trap(vgui_widget* container, int trapped);
+	VGUI_API int vgui_widget_get_focus_trap(vgui_widget* container);
+
+	/* ------------------------------------------------------------------------- */
+	/* Accessibility (E05)                                                       */
+	/* ------------------------------------------------------------------------- */
+
+	/* Widgets expose a coarse accessibility tree that hosts can bridge to OS
+	 * screen readers (UIA, AT-SPI, NS Accessibility, AccessKit).  Roles are
+	 * derived from the widget kind; name/value/states are derived from widget
+	 * state and can be overridden per widget.  Model rows are not separate
+	 * nodes: a list/tree reports its selection through vgui_a11y_info and the
+	 * host can read row text with the existing item APIs. */
+	typedef enum vgui_a11y_role {
+		VGUI_A11Y_ROLE_NONE = 0,	/* no meaningful role */
+		VGUI_A11Y_ROLE_PANEL,
+		VGUI_A11Y_ROLE_LABEL,
+		VGUI_A11Y_ROLE_BUTTON,
+		VGUI_A11Y_ROLE_TOGGLE,		/* checkbox / switch / toggle button */
+		VGUI_A11Y_ROLE_RADIO,
+		VGUI_A11Y_ROLE_SLIDER,
+		VGUI_A11Y_ROLE_PROGRESS,
+		VGUI_A11Y_ROLE_EDIT,		/* single-line text field */
+		VGUI_A11Y_ROLE_MULTILINE_EDIT,
+		VGUI_A11Y_ROLE_LIST,
+		VGUI_A11Y_ROLE_LIST_ITEM,
+		VGUI_A11Y_ROLE_TREE,
+		VGUI_A11Y_ROLE_TREE_ITEM,
+		VGUI_A11Y_ROLE_TAB,
+		VGUI_A11Y_ROLE_TAB_PANEL,
+		VGUI_A11Y_ROLE_MENU,
+		VGUI_A11Y_ROLE_MENU_ITEM,
+		VGUI_A11Y_ROLE_MENUBAR,
+		VGUI_A11Y_ROLE_COMBOBOX,
+		VGUI_A11Y_ROLE_IMAGE,
+		VGUI_A11Y_ROLE_CUSTOM
+	} vgui_a11y_role;
+
+	typedef enum vgui_a11y_state {
+		VGUI_A11Y_FOCUSED = 1 << 0,
+		VGUI_A11Y_CHECKED = 1 << 1,
+		VGUI_A11Y_DISABLED = 1 << 2,
+		VGUI_A11Y_READONLY = 1 << 3,
+		VGUI_A11Y_SELECTED = 1 << 4,
+		VGUI_A11Y_EXPANDED = 1 << 5
+	} vgui_a11y_state;
+
+	typedef struct vgui_a11y_info {
+		vgui_a11y_role role;
+		const char* name;	/* widget-owned storage, stable until renamed */
+		const char* value;	/* edit text / value text, may be empty */
+		int states;		/* vgui_a11y_state bit mask */
+		vgui_item_id item;	/* current selection for list/tree, else 0 */
+		float x, y, w, h;	/* absolute window rect in effective pixels */
+	} vgui_a11y_info;
+
+	/* Explicit overrides.  name/role NULL/NONE return to the derived values. */
+	VGUI_API void vgui_widget_set_a11y_name(vgui_widget* widget, const char* name);
+	VGUI_API const char* vgui_widget_get_a11y_name(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_a11y_role(vgui_widget* widget, vgui_a11y_role role);
+	VGUI_API vgui_a11y_role vgui_widget_get_a11y_role(vgui_widget* widget);
+
+	/* Snapshot of one widget's accessibility state.  Requires a layout pass to
+	 * have run for meaningful rects (same as vgui_widget_get_rect). */
+	VGUI_API void vgui_widget_get_a11y_info(vgui_widget* widget, vgui_a11y_info* info);
+
+	/* Pre-order visit of every visible widget (accessibility tree). */
+	VGUI_API void vgui_context_a11y_walk(vgui_context* ctx,
+		void (*visit)(vgui_widget* widget, void* user), void* user);
+
+	/* State-change notifications for screen-reader bridges.  Listeners run in
+	 * registration order; they may remove themselves.  widget is NULL for
+	 * VGUI_A11Y_EVENT_ALERT (a toast has no widget; read nothing). */
+	typedef enum vgui_a11y_event {
+		VGUI_A11Y_EVENT_NONE = 0,
+		VGUI_A11Y_EVENT_FOCUS_CHANGED,
+		VGUI_A11Y_EVENT_VALUE_CHANGED,
+		VGUI_A11Y_EVENT_STATE_CHANGED,
+		VGUI_A11Y_EVENT_SELECTION_CHANGED,
+		VGUI_A11Y_EVENT_ALERT
+	} vgui_a11y_event;
+
+	typedef void (*vgui_a11y_fn)(vgui_context* ctx, vgui_widget* widget,
+		vgui_a11y_event event, void* user);
+	VGUI_API int vgui_context_add_a11y_listener(vgui_context* ctx, vgui_a11y_fn fn, void* user);
+	VGUI_API void vgui_context_remove_a11y_listener(vgui_context* ctx, int token);
 
 	/* ------------------------------------------------------------------------- */
 	/* Custom widget                                                             */
