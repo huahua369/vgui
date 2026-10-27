@@ -830,6 +830,48 @@ struct editor_state
 			return true;
 		});
 	}
+
+	/* T04: code editor demo.  The CODE tab is a full editable script view with
+	 * syntax highlighting, line numbers, find/replace (Ctrl+F), undo/redo and
+	 * caret/selection handling.  The same widget doubles as a read-only rich
+	 * log when a host calls set_read_only(true) and append_log(). */
+	void configure_code()
+	{
+		if (!shell)
+			return;
+		code_editor& code = shell->code();
+		code.set_language(code_language::cpp);
+		code.set_text(
+			"// vgui game editor - T04 code editor demo\n"
+			"#include \"scene.h\"\n"
+			"\n"
+			"namespace demo {\n"
+			"\n"
+			"struct frame_stats\n"
+			"{\n"
+			"\tfloat delta = 0.0f;\n"
+			"\tint draw_calls = 0;\n"
+			"};\n"
+			"\n"
+			"// Rotate the cube around the world Y axis.\n"
+			"void tick(scene& world, float delta)\n"
+			"{\n"
+			"\tconst float speed = 0.55f;\n"
+			"\tworld.cube.rotation.y += speed * delta;\n"
+			"\tconst char* label = \"cube yaw\";\n"
+			"\tif (world.cube.rotation.y > 6.283185f)\n"
+			"\t\tworld.cube.rotation.y -= 6.283185f;\n"
+			"\tlog_info(\"%s: %.3f\", label, world.cube.rotation.y);\n"
+			"}\n"
+			"\n"
+			"} // namespace demo\n");
+		code.set_caret(12, 4);
+		code.set_change_listener([this]() {
+			if (shell)
+				shell->set_status("code: document edited (Ctrl+Z undo)");
+		});
+		shell->set_status("code: Ctrl+F find/replace, Tab indent, drag to select");
+	}
 };
 
 static editor_state g;
@@ -2201,6 +2243,7 @@ static void setup_editor(vgui_context* ui)
 	g.configure_table();
 	g.configure_timeline(cube);
 	g.configure_node_graph();
+	g.configure_code();
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
@@ -3032,6 +3075,8 @@ int main()
 				/* T02: advance the timeline from the external frame clock; the
 				 * playhead listener writes the sampled pose into the scene. */
 				g.shell->timeline().tick(delta);
+				/* T04: drive incremental file loading and log auto-scroll. */
+				g.shell->code().tick(delta);
 			}
 			/* V01/V09: 布局完成后取每个相机视口的渲染尺寸，宿主在此原地重建
 			 * 3D 附件并更新原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会

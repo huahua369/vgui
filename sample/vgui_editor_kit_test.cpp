@@ -356,13 +356,14 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 6 ||
+					initial.bottom_tab_order.size() != 7 ||
 					initial.bottom_tab_order[0] != "ASSETS" ||
 					initial.bottom_tab_order[1] != "CONSOLE" ||
 					initial.bottom_tab_order[2] != "CANVAS" ||
 					initial.bottom_tab_order[3] != "TABLE" ||
 					initial.bottom_tab_order[4] != "TIMELINE" ||
 					initial.bottom_tab_order[5] != "NODEGRAPH" ||
+					initial.bottom_tab_order[6] != "CODE" ||
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
 
@@ -461,6 +462,19 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				node_graph.set_minimap_visible(false);
 				node_graph.set_selection({ 101, 301 }, 101);
 
+				/* T04: non-default editor presentation and caret state.  The
+				 * document text is host-owned and not part of the layout. */
+				code_editor& code = shell.code();
+				std::string code_doc;
+				for (int line = 0; line < 200; ++line)
+					code_doc += "line " + std::to_string(line) + "\n";
+				code.set_text(std::move(code_doc));
+				code.set_language(code_language::cpp);
+				code.set_show_line_numbers(false);
+				code.set_tab_size(2);
+				code.set_caret(1, 3);
+				code.set_scroll(12.0f, 34.0f);
+
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
 				vgui_item_id properties = vgui_dock_find(dock, "properties");
@@ -497,13 +511,14 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					saved.dock_panels.size() != 4 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 6 ||
+					saved.bottom_tab_order.size() != 7 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
 					saved.bottom_tab_order[1] != "ASSETS" ||
 					saved.bottom_tab_order[2] != "CANVAS" ||
 					saved.bottom_tab_order[3] != "TABLE" ||
 					saved.bottom_tab_order[4] != "TIMELINE" ||
 					saved.bottom_tab_order[5] != "NODEGRAPH" ||
+					saved.bottom_tab_order[6] != "CODE" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
 				if (saved.table_state.empty())
@@ -512,6 +527,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					return fail("layout timeline state capture");
 				if (saved.node_graph_state.empty())
 					return fail("layout node graph state capture");
+				if (saved.code_editor_state.empty())
+					return fail("layout code editor state capture");
 
 				auto find_panel = [&saved](const char* id)
 					-> const editor_dock_panel_layout* {
@@ -549,7 +566,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					parsed.bottom_active_tab != saved.bottom_active_tab ||
 					parsed.table_state != saved.table_state ||
 					parsed.timeline_state != saved.timeline_state ||
-					parsed.node_graph_state != saved.node_graph_state)
+					parsed.node_graph_state != saved.node_graph_state ||
+					parsed.code_editor_state != saved.code_editor_state)
 					return fail("layout json round trip");
 			}	vgui_destroy(ui);
 		}
@@ -639,6 +657,14 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					node_graph.add_connection(graph_link) != 301)
 					return fail("layout restored node graph setup");
 
+				/* The code editor document is host-owned, so recreate it
+				 * before restoring the persisted caret/scroll state. */
+				code_editor& restored_code_setup = shell.code();
+				std::string restored_code_doc;
+				for (int line = 0; line < 200; ++line)
+					restored_code_doc += "line " + std::to_string(line) + "\n";
+				restored_code_setup.set_text(std::move(restored_code_doc));
+
 				std::string error;
 				if (!shell.load_layout(layout_path.string(), &error))
 					return fail("layout load");
@@ -668,6 +694,25 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!node_graph.is_selected(301) ||
 					node_graph.primary_selection() != 101)
 					return fail("layout restored node graph state");
+
+				const code_editor& restored_code = shell.code();
+				if (restored_code.language() != code_language::cpp ||
+					restored_code.show_line_numbers() ||
+					restored_code.tab_size() != 2 ||
+					restored_code.caret() != code_position{ 1, 3 } ||
+					std::fabs(restored_code.scroll_y() - 34.0f) > 1e-6)
+					return fail("layout restored code editor state");
+
+				/* A malformed code editor payload is rejected before any
+				 * dock or editor state changes. */
+				editor_layout bad_code_layout = shell.capture_layout();
+				bad_code_layout.code_editor_state = "{\"version\": 99}";
+				if (shell.apply_layout(bad_code_layout, &error))
+					return fail("layout malformed code editor accepted");
+				if (shell.code().language() != code_language::cpp ||
+					shell.code().caret() != code_position{ 1, 3 } ||
+					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f))
+					return fail("layout malformed code editor fallback");
 
 				/* A malformed node graph payload is rejected by apply_layout()
 				 * before any graph or dock state changes.  Calling apply_layout
@@ -726,7 +771,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 6)
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 7)
 					return fail("layout restored tab count");
 				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
@@ -11758,6 +11803,464 @@ static int test_node_graph_view()
 	return 0;
 }
 
+/* T04: code editor model, tokenizer, editing, find/replace, rich log,
+ * incremental loading and persisted presentation state. */
+static int test_code_editor()
+{
+	using namespace vgui_editor_kit;
+
+	std::error_code ec;
+	std::string error;
+
+	auto span_has = [](const std::vector<code_span>& spans,
+		code_token_kind kind) {
+		for (const code_span& span : spans)
+			if (span.kind == kind)
+				return true;
+		return false;
+	};
+
+	if (std::string(code_language_name(code_language::cpp)) != "cpp" ||
+		std::string(code_language_name(code_language::markdown)) != "markdown")
+		return fail("t04 language names");
+	code_language language = code_language::plain;
+	if (!code_language_from_name("C#", &language) ||
+		language != code_language::csharp ||
+		!code_language_from_name("py", &language) ||
+		language != code_language::python ||
+		code_language_from_name("unknown", &language))
+		return fail("t04 language names from text");
+	if (code_language_from_path("script.py") != code_language::python ||
+		code_language_from_path("shader.frag") != code_language::glsl ||
+		code_language_from_path("data.json") != code_language::json ||
+		code_language_from_path("notes.md") != code_language::markdown ||
+		code_language_from_path(".gitignore") != code_language::plain ||
+		code_language_from_path("noext") != code_language::plain)
+		return fail("t04 language from path");
+
+	/* Persisted state round-trip and validation. */
+	code_editor_state state;
+	state.language = code_language::lua;
+	state.read_only = true;
+	state.show_line_numbers = false;
+	state.tab_size = 3;
+	state.caret = { 2, 5 };
+	state.scroll_x = 7.5f;
+	state.scroll_y = 12.25f;
+	code_editor_state decoded;
+	if (!code_editor_state_from_json(code_editor_state_to_json(state),
+		decoded) ||
+		decoded.language != state.language ||
+		decoded.read_only != state.read_only ||
+		decoded.show_line_numbers != state.show_line_numbers ||
+		decoded.tab_size != state.tab_size ||
+		decoded.caret != state.caret ||
+		std::fabs(decoded.scroll_x - state.scroll_x) > 1e-6f ||
+		std::fabs(decoded.scroll_y - state.scroll_y) > 1e-6f)
+		return fail("t04 state round trip");
+	if (code_editor_state_from_json("{\"version\": 99}", decoded) ||
+		code_editor_state_from_json("{\"language\": \"unknown\"}", decoded) ||
+		code_editor_state_from_json(
+			"{\"caret\": {\"line\": -1, \"column\": 0}}", decoded))
+		return fail("t04 state validation");
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("t04 code editor context");
+	vgui_context_set_size(ui, 900, 600);
+
+	{
+		code_editor editor;
+		editor.build(vgui_root(ui));
+		if (!editor.built() || !editor.widget() ||
+			vgui_widget_get_kind(editor.widget()) != VGUI_PANEL ||
+			!editor.editor_widget() || !editor.find_bar() ||
+			find_widget(vgui_root(ui), "code_editor", VGUI_PANEL) !=
+				editor.widget() ||
+			find_widget(vgui_root(ui), "code_editor_surface", VGUI_CUSTOM) !=
+				editor.editor_widget())
+			return fail("t04 code editor build");
+		vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(editor.widget(), 760.0f, 300.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		int changes = 0;
+		editor.set_change_listener([&changes]() { ++changes; });
+
+		/* Document model: newline normalization and line access. */
+		editor.set_text("alpha\r\nbeta\rgamma\n");
+		if (editor.text() != "alpha\nbeta\ngamma\n" ||
+			editor.line_count() != 4 ||
+			editor.line_text(0) != "alpha" ||
+			editor.line_text(1) != "beta" ||
+			editor.line_text(2) != "gamma" ||
+			!editor.line_text(3).empty() ||
+			editor.line_text(99).size() != 0)
+			return fail("t04 document normalization");
+		if (changes <= 0)
+			return fail("t04 change listener");
+
+		/* C++ tokenizer: preprocessor, types, calls, comments and numbers. */
+		editor.set_language(code_language::cpp);
+		editor.set_text("#include <cstdio>\n"
+			"int main() {\n"
+			"\t// hi\n"
+			"\treturn 42;\n"
+			"}\n");
+		const std::vector<code_span>& include_spans = editor.line_spans(0);
+		const std::vector<code_span>& main_spans = editor.line_spans(1);
+		const std::vector<code_span>& comment_spans = editor.line_spans(2);
+		const std::vector<code_span>& return_spans = editor.line_spans(3);
+		if (!span_has(include_spans, code_token_kind::preprocessor) ||
+			!span_has(main_spans, code_token_kind::type) ||
+			!span_has(main_spans, code_token_kind::function) ||
+			!span_has(comment_spans, code_token_kind::comment) ||
+			!span_has(return_spans, code_token_kind::keyword) ||
+			!span_has(return_spans, code_token_kind::number))
+			return fail("t04 cpp tokenizer");
+
+		/* Highlighting is lazy and can be forced through the model. */
+		editor.set_text("int x;\nint y;\nint z;");
+		std::size_t highlighted = 0;
+		if (editor.highlight_valid_upto(&highlighted) || highlighted >= 3)
+			return fail("t04 lazy highlight invalidated");
+		if (editor.line_spans(1).empty())
+			return fail("t04 lazy highlight spans");
+		if (editor.highlight_valid_upto(&highlighted) || highlighted < 2)
+			return fail("t04 lazy highlight progress");
+		(void)editor.line_spans(2);
+		if (!editor.highlight_valid_upto(&highlighted) || highlighted != 3)
+			return fail("t04 lazy highlight complete");
+
+		/* Multi-line lexer states. */
+		editor.set_text("/* start\nmiddle\n*/ int x;");
+		const std::vector<code_span>& block_middle = editor.line_spans(1);
+		const std::vector<code_span>& block_end = editor.line_spans(2);
+		if (block_middle.size() != 1 ||
+			block_middle[0].kind != code_token_kind::comment ||
+			!span_has(block_end, code_token_kind::comment) ||
+			!span_has(block_end, code_token_kind::type))
+			return fail("t04 cpp multiline comment");
+
+		editor.set_language(code_language::python);
+		editor.set_text("x = \"\"\"a\nb\n\"\"\"\nprint(x)");
+		const std::vector<code_span>& python_middle = editor.line_spans(1);
+		const std::vector<code_span>& python_call = editor.line_spans(3);
+		if (python_middle.size() != 1 ||
+			python_middle[0].kind != code_token_kind::string_literal ||
+			!span_has(python_call, code_token_kind::function))
+			return fail("t04 python tokenizer");
+
+		editor.set_language(code_language::lua);
+		editor.set_text("--[[comment\nmore]]\nlocal x = 1");
+		if (!span_has(editor.line_spans(1), code_token_kind::comment) ||
+			!span_has(editor.line_spans(2), code_token_kind::keyword) ||
+			!span_has(editor.line_spans(2), code_token_kind::number))
+			return fail("t04 lua tokenizer");
+
+		editor.set_language(code_language::markdown);
+		editor.set_text("# Title\n```cpp\nint x;\n```\n");
+		if (!span_has(editor.line_spans(0), code_token_kind::attribute) ||
+			!span_has(editor.line_spans(1), code_token_kind::comment) ||
+			!span_has(editor.line_spans(2),
+				code_token_kind::string_literal) ||
+			!span_has(editor.line_spans(3), code_token_kind::comment))
+			return fail("t04 markdown tokenizer");
+
+		editor.set_language(code_language::json);
+		editor.set_text("{\"on\": true, \"n\": 1}");
+		if (!span_has(editor.line_spans(0), code_token_kind::keyword) ||
+			!span_has(editor.line_spans(0), code_token_kind::number))
+			return fail("t04 json tokenizer");
+
+		editor.set_language(code_language::csharp);
+		editor.set_text("public class Foo { }");
+		if (!span_has(editor.line_spans(0), code_token_kind::keyword))
+			return fail("t04 csharp tokenizer");
+		editor.set_language(code_language::glsl);
+		editor.set_text("uniform vec4 color;");
+		if (!span_has(editor.line_spans(0), code_token_kind::keyword) ||
+			!span_has(editor.line_spans(0), code_token_kind::type))
+			return fail("t04 glsl tokenizer");
+		editor.set_language(code_language::ini);
+		editor.set_text("[main]\nkey = true ; note");
+		if (!span_has(editor.line_spans(0), code_token_kind::attribute) ||
+			!span_has(editor.line_spans(1), code_token_kind::keyword) ||
+			!span_has(editor.line_spans(1), code_token_kind::comment))
+			return fail("t04 ini tokenizer");
+
+		/* Manual spans for rich lines. */
+		editor.set_language(code_language::plain);
+		editor.set_text("hello");
+		std::vector<code_span> manual(2);
+		manual[0].start = 0;
+		manual[0].length = 1;
+		manual[0].kind = code_token_kind::keyword;
+		manual[0].color = 0xFF112233;
+		manual[1].start = 1;
+		manual[1].length = 4;
+		manual[1].kind = code_token_kind::text;
+		if (!editor.set_line_spans(0, manual) ||
+			editor.line_spans(0).size() != 2 ||
+			editor.line_spans(0)[0].color != 0xFF112233)
+			return fail("t04 manual spans");
+		code_span invalid_span;
+		invalid_span.start = 4;
+		invalid_span.length = 5;
+		if (editor.set_line_spans(0, { invalid_span }))
+			return fail("t04 manual span validation");
+
+		/* Editing: auto-indent, backspace, indent/outdent and undo/redo. */
+		editor.set_text("if (x) {");
+		editor.set_caret(0, 8);
+		if (!editor.newline() || editor.text() != "if (x) {\n\t" ||
+			editor.caret() != code_position{ 1, 1 })
+			return fail("t04 newline auto indent");
+		if (!editor.backspace() || editor.text() != "if (x) {\n")
+			return fail("t04 backspace");
+
+		editor.set_text("a\nb");
+		editor.select_all();
+		if (!editor.indent_selection() || editor.text() != "\ta\n\tb")
+			return fail("t04 indent selection");
+		if (!editor.undo() || editor.text() != "a\nb")
+			return fail("t04 undo indent");
+		editor.set_text("  a\n    b");
+		editor.select_all();
+		if (!editor.outdent_selection() || editor.text() != "a\nb")
+			return fail("t04 outdent selection");
+
+		editor.set_text("");
+		editor.set_caret(0, 0);
+		if (!editor.insert_text("a") || !editor.insert_text("b") ||
+			editor.text() != "ab" || !editor.can_undo())
+			return fail("t04 local history setup");
+		if (!editor.undo() || editor.text() != "")
+			return fail("t04 local history merge");
+		if (!editor.redo() || editor.text() != "ab")
+			return fail("t04 local redo");
+
+		/* The host command stack takes over when bound. */
+		command_stack commands;
+		editor.set_command_stack(&commands);
+		editor.set_text("stem");
+		editor.set_caret(0, 4);
+		if (!editor.insert_text("!") || editor.text() != "stem!" ||
+			!commands.can_undo() || commands.undo_count() != 1)
+			return fail("t04 command stack record");
+		if (!editor.undo() || editor.text() != "stem" || !commands.can_redo())
+			return fail("t04 command stack undo");
+		if (!editor.redo() || editor.text() != "stem!")
+			return fail("t04 command stack redo");
+		editor.set_text("");
+		editor.set_caret(0, 0);
+		if (!editor.insert_text("a") || !editor.insert_text("b") ||
+			commands.undo_count() != 1)
+			return fail("t04 command stack merge");
+		if (!editor.undo() || editor.text() != "")
+			return fail("t04 command stack merged undo");
+		editor.set_command_stack(nullptr);
+
+		/* UTF-8 caret clamping and selection text. */
+		editor.set_text("a\xC3\xA9z");
+		editor.set_caret(0, 2);
+		if (editor.caret() != code_position{ 0, 1 })
+			return fail("t04 utf8 caret clamp");
+		editor.set_caret(0, 3);
+		if (editor.caret() != code_position{ 0, 3 })
+			return fail("t04 utf8 caret end");
+		editor.set_selection({ 0, 0 }, { 0, 3 });
+		if (editor.selected_text() != "a\xC3\xA9" ||
+			editor.selection_anchor() != code_position{ 0, 0 })
+			return fail("t04 utf8 selection");
+
+		/* Clipboard bridge is injectable for tests and hosts. */
+		std::string clipboard;
+		editor.set_clipboard_handlers(
+			[&clipboard]() { return clipboard; },
+			[&clipboard](const std::string& text) { clipboard = text; });
+		if (!editor.copy() || clipboard != "a\xC3\xA9")
+			return fail("t04 copy");
+		editor.set_selection({ 0, 0 }, { 0, 3 });
+		if (!editor.cut() || editor.text() != "z" ||
+			clipboard != "a\xC3\xA9")
+			return fail("t04 cut");
+		editor.set_caret(0, 0);
+		if (!editor.paste() || editor.text() != "a\xC3\xA9z")
+			return fail("t04 paste");
+
+		/* Read-only mode rejects mutations but keeps selection/copy. */
+		editor.set_read_only(true);
+		editor.set_selection({ 0, 0 }, { 0, 1 });
+		if (!editor.copy() || clipboard != "a")
+			return fail("t04 read-only copy");
+		if (editor.insert_text("x") || editor.backspace() ||
+			editor.delete_forward() || editor.newline() ||
+			editor.paste() || editor.cut() ||
+			editor.indent_selection() || editor.outdent_selection())
+			return fail("t04 read-only mutation");
+		editor.set_read_only(false);
+
+		/* Find and replace. */
+		editor.set_text("Alpha beta alpha ALPHA\nbeta alpha");
+		editor.set_caret(0, 0);
+		editor.set_find_query("alpha");
+		if (editor.matches().size() != 4 || !editor.find_next() ||
+			editor.active_match() != 0 || editor.selected_text() != "Alpha")
+			return fail("t04 find next from start");
+		if (!editor.find_next() || editor.selected_text() != "alpha")
+			return fail("t04 find next");
+		editor.set_find_case_sensitive(true);
+		if (editor.matches().size() != 2 || !editor.find_case_sensitive())
+			return fail("t04 find case");
+		if (!editor.find_next() || editor.selected_text() != "alpha")
+			return fail("t04 find case next");
+		if (!editor.find_previous())
+			return fail("t04 find previous");
+		if (editor.replace_all("alpha", "X", false) != 4 ||
+			editor.text() != "X beta X X\nbeta X" ||
+			!editor.matches().empty())
+			return fail("t04 replace all");
+
+		editor.set_text("a a");
+		editor.set_caret(0, 0);
+		editor.set_find_query("a");
+		if (!editor.replace_current("b") || editor.text() != "b a")
+			return fail("t04 replace current");
+
+		if (editor.find_visible())
+			return fail("t04 find bar initial");
+		editor.open_find(false);
+		if (!editor.find_visible() ||
+			!vgui_widget_get_visible(editor.find_bar()))
+			return fail("t04 find bar open");
+		editor.open_find(true);
+		vgui_widget* replace_edit =
+			find_widget(editor.widget(), "code_editor_replace", VGUI_EDIT);
+		if (!replace_edit || !vgui_widget_get_visible(replace_edit))
+			return fail("t04 find replace bar");
+		editor.close_find();
+		if (editor.find_visible())
+			return fail("t04 find bar close");
+
+		/* Rich log: timestamps, colours, retention and auto-scroll. */
+		editor.set_read_only(true);
+		editor.clear();
+		editor.set_max_lines(4);
+		const vgui_color warning_color = 0xFF123456;
+		editor.set_log_level_color(code_log_level::warning, warning_color);
+		editor.append_log(code_log_level::info, "hello", "12:00");
+		editor.append_log(code_log_level::warning, "warn");
+		if (editor.line_count() != 2 ||
+			editor.line_text(0) != "12:00 hello" ||
+			editor.line_text(1) != "warn")
+			return fail("t04 rich log append");
+		const std::vector<code_span>& timestamp_spans = editor.line_spans(0);
+		if (timestamp_spans.size() != 2 ||
+			timestamp_spans[0].kind != code_token_kind::comment ||
+			timestamp_spans[1].color !=
+				editor.log_level_color(code_log_level::info))
+			return fail("t04 rich log timestamp");
+		const std::vector<code_span>& warning_spans = editor.line_spans(1);
+		if (warning_spans.empty() ||
+			warning_spans.back().color != warning_color)
+			return fail("t04 rich log level color");
+		editor.append_log(code_log_level::error, "bad\nnext");
+		editor.append_log(code_log_level::debug, "overflow");
+		if (editor.line_count() != 4 || editor.dropped_lines() != 1 ||
+			editor.line_text(0) != "warn" ||
+			editor.line_text(1) != "bad" ||
+			editor.line_text(2) != "next" ||
+			editor.line_text(3) != "overflow")
+			return fail("t04 rich log retention");
+		if (!span_has(editor.line_spans(1), code_token_kind::text) ||
+			editor.line_spans(1).back().color !=
+				editor.log_level_color(code_log_level::error))
+			return fail("t04 rich log multiline");
+
+		editor.set_max_lines(0);
+		editor.set_auto_scroll(true);
+		for (int i = 0; i < 60; ++i)
+			editor.append_log(code_log_level::trace, "line " +
+				std::to_string(i));
+		if (!editor.auto_scroll() || editor.scroll_y() <= 0.0f)
+			return fail("t04 rich log auto scroll");
+		editor.set_auto_scroll(false);
+		const float kept_scroll = editor.scroll_y();
+		editor.append_log(code_log_level::trace, "append without scroll");
+		editor.tick(1.0f / 60.0f);
+		if (editor.scroll_y() != kept_scroll)
+			return fail("t04 rich log auto scroll off");
+
+		/* Incremental loading, including CRLF split across chunks. */
+		editor.set_read_only(false);
+		editor.set_load_chunk_size(4);
+		editor.begin_incremental_load("ab\r\ncd\nef\rgh");
+		if (!editor.loading() || editor.load_progress() != 0.0f ||
+			editor.load_chunk_size() != 4)
+			return fail("t04 incremental load start");
+		int steps = 0;
+		while (editor.process_load_step())
+		{
+			if (++steps > 32)
+				return fail("t04 incremental load progress");
+		}
+		if (editor.loading() || editor.text() != "ab\ncd\nef\ngh" ||
+			editor.line_count() != 4 ||
+			std::fabs(editor.load_progress() - 1.0f) > 1e-6f)
+			return fail("t04 incremental load result");
+
+		const std::filesystem::path code_path =
+			std::filesystem::temp_directory_path(ec) / "vgui_t04_code.py";
+		if (!write_text(code_path, "print('hi')\r\n") ||
+			!editor.open_file(code_path.string(), &error) ||
+			editor.language() != code_language::python ||
+			!editor.loading())
+			return fail("t04 open file");
+		while (editor.process_load_step())
+		{
+		}
+		if (editor.text() != "print('hi')\n" || editor.loading())
+			return fail("t04 open file result");
+		std::filesystem::remove(code_path, ec);
+
+		const std::string before_missing = editor.text();
+		if (editor.open_file((std::filesystem::temp_directory_path(ec) /
+			"vgui_t04_missing.py").string(), &error) ||
+			editor.text() != before_missing)
+			return fail("t04 open missing file");
+
+		editor.begin_incremental_load(std::string(256, 'x'));
+		if (!editor.loading())
+			return fail("t04 cancel load setup");
+		editor.cancel_load();
+		if (editor.loading())
+			return fail("t04 cancel load");
+
+		/* Apply a captured state, and reject unsupported versions without
+		 * mutating the current presentation. */
+		code_editor_state applied;
+		applied.language = code_language::glsl;
+		applied.show_line_numbers = true;
+		applied.tab_size = 8;
+		applied.caret = { 0, 0 };
+		if (!editor.apply_state(applied, &error) ||
+			editor.language() != code_language::glsl ||
+			!editor.show_line_numbers() || editor.tab_size() != 8)
+			return fail("t04 apply state");
+		code_editor_state bad_state = applied;
+		bad_state.version = 99;
+		if (editor.apply_state(bad_state, &error) ||
+			editor.language() != code_language::glsl ||
+			editor.tab_size() != 8)
+			return fail("t04 reject state version");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* A07: console model, filtering, stack folding, jump locations and producers. */
 static int test_console_view()
 {
@@ -12304,6 +12807,8 @@ int main()
 		return rc;
 	if (int rc = test_node_graph_view())
 		return rc;
+	if (int rc = test_code_editor())
+		return rc;
 	if (int rc = test_property_grid_drag())
 		return rc;
 	if (int rc = test_spinbox())
@@ -12553,7 +13058,7 @@ int main()
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 6)
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 7)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
 		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
@@ -12561,12 +13066,14 @@ int main()
 		vgui_item_id table_tab = vgui_tab_get_at(shell.bottom_tabs(), 3);
 		vgui_item_id timeline_tab = vgui_tab_get_at(shell.bottom_tabs(), 4);
 		vgui_item_id node_graph_tab = vgui_tab_get_at(shell.bottom_tabs(), 5);
+		vgui_item_id code_tab = vgui_tab_get_at(shell.bottom_tabs(), 6);
 		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), timeline_tab)) != "TIMELINE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), node_graph_tab)) != "NODEGRAPH")
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), node_graph_tab)) != "NODEGRAPH" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), code_tab)) != "CODE")
 			return fail("shell bottom tab titles");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
@@ -12652,6 +13159,24 @@ int main()
 			return fail("shell node graph command");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
 			return fail("shell assets tab after node graph");
+
+		/* T04: the CODE tab hosts the editor and the command reveals,
+		 * focuses and checks it. */
+		if (!shell.code().built() || !shell.code().widget() ||
+			find_widget(shell.widget(), "code_editor", VGUI_PANEL) == nullptr ||
+			find_widget(shell.widget(), "code_editor_surface", VGUI_CUSTOM) ==
+				nullptr ||
+			shell.code().command_stack() != &context.commands())
+			return fail("shell code editor built");
+		if (!shell.commands().has("view.code") ||
+			!shell.run_command("view.code") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != code_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.code") ||
+			!shell.code().focused())
+			return fail("shell code editor command");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab after code editor");
 
 		/* V09: the viewport dock page hosts a second camera surface and a depth
 		 * preview surface, and the render settings are shared with the host

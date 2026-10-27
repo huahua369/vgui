@@ -631,6 +631,11 @@ struct vgui_widget
 	float custom_dt = 0;
 	int custom_clip_content = 1;	// 1=裁剪到控件边界（默认），0=允许超出（发光/阴影/拖影等）
 
+	// custom text input ------------------------------------------------
+	int wants_text_input = 0;
+	int text_input_rect_set = 0;
+	float text_input_rect[4] = { 0, 0, 0, 0 };
+
 	bool destroy_pending = false;
 };
 
@@ -1159,6 +1164,17 @@ namespace {
 		float fs = w && w->font_size > 0 ? w->font_size : (ctx ? ctx->font_size : 16.0f);
 		if (fs < 1) fs = 16.0f;
 		return fs;
+	}
+
+	/* A widget that consumes printable text: either a writable edit box or a
+	 * custom widget that edits text itself. */
+	static bool vgui_wants_text(vgui_widget* w)
+	{
+		if (!w || !w->enabled)
+			return false;
+		if (w->kind == VGUI_EDIT)
+			return !w->readonly;
+		return w->kind == VGUI_CUSTOM && w->wants_text_input;
 	}
 
 	static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
@@ -6079,7 +6095,7 @@ namespace {
 			w->caret_blink = 0;
 		}
 		ctx->want_key = (w != nullptr);
-		ctx->want_text = (w && w->kind == VGUI_EDIT && !w->readonly);
+		ctx->want_text = vgui_wants_text(w);
 		if (ctx->focus_fn)
 			ctx->focus_fn(ctx, previous, w, ctx->focus_user);
 		if (!ctx->focus_listeners.empty())
@@ -10048,7 +10064,9 @@ namespace {
 			return 1;
 		}
 
-		if (down && key == VGUI_KEY_TAB && (mods & VGUI_MOD_CTRL) == 0)
+		if (down && key == VGUI_KEY_TAB && (mods & VGUI_MOD_CTRL) == 0 &&
+			!(ctx->focus && ctx->focus->kind == VGUI_CUSTOM &&
+				ctx->focus->wants_text_input && ctx->focus->enabled))
 		{
 			vgui_focus_next_impl(ctx, (mods & VGUI_MOD_SHIFT) != 0);
 			vgui_end_input(ctx);
@@ -10085,7 +10103,8 @@ namespace {
 		}
 		else
 		{
-			if (down && (key == VGUI_KEY_ENTER || key == ' '))
+			if (down && (key == VGUI_KEY_ENTER || key == ' ') &&
+				!(f->kind == VGUI_CUSTOM && f->wants_text_input))
 			{
 				vgui_activate_widget(f, 1);
 				handled = 1;
@@ -10134,10 +10153,9 @@ namespace {
 		vgui_begin_input(ctx);
 		vgui_widget* f = ctx->focus;
 		int ret = 0;
-		if (f && ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly)
+		if (f && ctx->alive.count(f) && f->enabled)
 		{
-			vgui_edit_insert(f, text);
-			if (ctx->alive.count(f))
+			if (f->kind == VGUI_CUSTOM && f->wants_text_input)
 			{
 				vgui_event e = {};
 				e.type = VGUI_EVENT_TEXT;
@@ -10146,8 +10164,23 @@ namespace {
 				e.x = ctx->mouse_x - f->abs_x;
 				e.y = ctx->mouse_y - f->abs_y;
 				vgui_emit_full(f, e);
+				ret = 1;
 			}
-			ret = 1;
+			else if (f->kind == VGUI_EDIT && !f->readonly)
+			{
+				vgui_edit_insert(f, text);
+				if (ctx->alive.count(f))
+				{
+					vgui_event e = {};
+					e.type = VGUI_EVENT_TEXT;
+					e.text = text;
+					e.codepoint = vgui_u8_decode(text);
+					e.x = ctx->mouse_x - f->abs_x;
+					e.y = ctx->mouse_y - f->abs_y;
+					vgui_emit_full(f, e);
+				}
+				ret = 1;
+			}
 		}
 		vgui_end_input(ctx);
 		return ret;
@@ -10159,23 +10192,36 @@ namespace {
 		vgui_begin_input(ctx);
 		vgui_widget* f = ctx->focus;
 		int ret = 0;
-		if (f && ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly)
+		if (f && ctx->alive.count(f) && f->enabled)
 		{
-			// The ovg/SDL editing event describes the composition string and the
-			// selection inside it.  Keep the committed text untouched until the
-			// backend sends SDL_EVENT_TEXT_INPUT.
-			f->ime_text = text ? text : "";
-			f->ime_cursor = vgui_edit_clamp_index(f->ime_text, cursor);
-			f->ime_length = std::max(0, length);
-			if (f->ime_cursor + f->ime_length > (int)f->ime_text.size())
-				f->ime_length = std::max(0, (int)f->ime_text.size() - f->ime_cursor);
-			vgui_event e = {};
-			e.type = VGUI_EVENT_EDITING;
-			e.text = f->ime_text.c_str();
-			e.codepoint = (uint32_t)f->ime_cursor;
-			e.button = f->ime_length;
-			vgui_emit_full(f, e);
-			ret = 1;
+			if (f->kind == VGUI_CUSTOM && f->wants_text_input)
+			{
+				vgui_event e = {};
+				e.type = VGUI_EVENT_EDITING;
+				e.text = text ? text : "";
+				e.codepoint = (uint32_t)std::max(0, cursor);
+				e.button = std::max(0, length);
+				vgui_emit_full(f, e);
+				ret = 1;
+			}
+			else if (f->kind == VGUI_EDIT && !f->readonly)
+			{
+				// The ovg/SDL editing event describes the composition string and the
+				// selection inside it.  Keep the committed text untouched until the
+				// backend sends SDL_EVENT_TEXT_INPUT.
+				f->ime_text = text ? text : "";
+				f->ime_cursor = vgui_edit_clamp_index(f->ime_text, cursor);
+				f->ime_length = std::max(0, length);
+				if (f->ime_cursor + f->ime_length > (int)f->ime_text.size())
+					f->ime_length = std::max(0, (int)f->ime_text.size() - f->ime_cursor);
+				vgui_event e = {};
+				e.type = VGUI_EVENT_EDITING;
+				e.text = f->ime_text.c_str();
+				e.codepoint = (uint32_t)f->ime_cursor;
+				e.button = f->ime_length;
+				vgui_emit_full(f, e);
+				ret = 1;
+			}
 		}
 		vgui_end_input(ctx);
 		return ret;
@@ -17836,7 +17882,7 @@ extern "C" {
 		ctx->cursor = VGUI_CURSOR_ARROW;
 		ctx->want_mouse = 0;
 		ctx->want_key = ctx->focus != nullptr;
-		ctx->want_text = (ctx->focus && ctx->focus->kind == VGUI_EDIT && !ctx->focus->readonly);
+		ctx->want_text = vgui_wants_text(ctx->focus);
 		vgui_flush_pending(ctx);
 	}
 
@@ -17940,7 +17986,10 @@ extern "C" {
 	{
 		if (!ctx || ctx->open_menu || !ctx->focus) return 0;
 		vgui_widget* f = ctx->focus;
-		return (ctx->alive.count(f) && f->enabled && f->kind == VGUI_EDIT && !f->readonly) ? 1 : 0;
+		if (!ctx->alive.count(f) || !f->enabled) return 0;
+		if (f->kind == VGUI_CUSTOM)
+			return f->wants_text_input ? 1 : 0;
+		return (f->kind == VGUI_EDIT && !f->readonly) ? 1 : 0;
 	}
 
 	int vgui_context_get_text_input_rect(vgui_context* ctx, int* x, int* y, int* width, int* height)
@@ -17949,10 +17998,33 @@ extern "C" {
 		if (y) *y = 0;
 		if (width) *width = 0;
 		if (height) *height = 0;
-		if (!ctx || !ctx->focus || ctx->focus->kind != VGUI_EDIT) return 0;
+		if (!ctx || !ctx->focus) return 0;
 
 		vgui_widget* w = ctx->focus;
 		if (!ctx->alive.count(w) || !w->visible) return 0;
+		if (w->kind == VGUI_CUSTOM)
+		{
+			if (!w->wants_text_input) return 0;
+			vgui_ensure_layout(ctx);
+			float rx = w->abs_x;
+			float ry = w->abs_y;
+			float rw = w->abs_w;
+			float rh = w->abs_h;
+			if (w->text_input_rect_set)
+			{
+				rx += w->text_input_rect[0];
+				ry += w->text_input_rect[1];
+				rw = w->text_input_rect[2];
+				rh = w->text_input_rect[3];
+			}
+			if (x) *x = (int)std::floor(rx);
+			if (y) *y = (int)std::floor(ry);
+			if (width) *width = (int)std::ceil(std::max(1.0f, rw));
+			if (height) *height = (int)std::ceil(std::max(1.0f, rh));
+			return 1;
+		}
+		if (w->kind != VGUI_EDIT) return 0;
+
 		vgui_ensure_layout(ctx);
 
 		float lh = vgui_line_height(ctx, w);
@@ -18079,6 +18151,42 @@ extern "C" {
 	{
 		if (!widget) return;
 		widget->custom_clip_content = clip ? 1 : 0;
+	}
+
+	float vgui_widget_measure_text(vgui_widget* widget, const char* text)
+	{
+		if (!widget || !text || !*text) return 0.0f;
+		return vgui_text_width_n(widget, text, (int)std::strlen(text));
+	}
+
+	float vgui_widget_get_line_height(vgui_widget* widget)
+	{
+		if (!widget || !widget->ctx) return 0.0f;
+		return vgui_line_height(widget->ctx, widget);
+	}
+
+	void vgui_widget_set_wants_text_input(vgui_widget* widget, int wants)
+	{
+		if (!widget) return;
+		widget->wants_text_input = wants ? 1 : 0;
+		if (widget->ctx && widget->ctx->focus == widget)
+			widget->ctx->want_text = vgui_wants_text(widget);
+	}
+
+	int vgui_widget_wants_text_input(vgui_widget* widget)
+	{
+		return widget ? widget->wants_text_input : 0;
+	}
+
+	void vgui_widget_set_text_input_rect(vgui_widget* widget, float x, float y,
+		float width, float height)
+	{
+		if (!widget) return;
+		widget->text_input_rect[0] = x;
+		widget->text_input_rect[1] = y;
+		widget->text_input_rect[2] = std::max(1.0f, width);
+		widget->text_input_rect[3] = std::max(1.0f, height);
+		widget->text_input_rect_set = 1;
 	}
 
 	void vgui_custom_draw_text(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y)

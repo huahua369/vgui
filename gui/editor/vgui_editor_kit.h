@@ -9,6 +9,7 @@
 #include "asset_preview.h"
 #include "breadcrumb.h"
 #include "canvas_view.h"
+#include "code_editor.h"
 #include "command_registry.h"
 #include "command_stack.h"
 #include "combo_box.h"

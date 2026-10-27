@@ -3,6 +3,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     asset_preview.cpp
     breadcrumb.cpp
     canvas_view.cpp
+    code_editor.cpp
     color_picker.cpp
     command_registry.cpp
     command_stack.cpp

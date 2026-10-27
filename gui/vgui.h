@@ -987,6 +987,11 @@ extern "C" {
 	VGUI_API const char* vgui_widget_get_text_key(vgui_widget* widget);
 
 	VGUI_API void vgui_widget_set_font_size(vgui_widget* widget, float size);
+	/* Text metrics using the widget font.  Useful for VGUI_CUSTOM widgets
+	 * that lay out code/grid text themselves.  Both return a positive value
+	 * when a font is available and a size-derived fallback otherwise. */
+	VGUI_API float vgui_widget_measure_text(vgui_widget* widget, const char* text);
+	VGUI_API float vgui_widget_get_line_height(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
@@ -1776,6 +1781,18 @@ extern "C" {
 	VGUI_API int vgui_context_wants_keyboard(vgui_context* ctx);
 	VGUI_API int vgui_context_wants_text_input(vgui_context* ctx);
 	VGUI_API int vgui_context_get_text_input_rect(vgui_context* ctx, int* x, int* y, int* width, int* height);
+
+	/* Custom widgets that edit text themselves (code editors, text canvases)
+	 * can request text input even though they are not VGUI_EDIT.  While such a
+	 * widget has focus, vgui_input_text()/vgui_input_editing() deliver
+	 * VGUI_EVENT_TEXT/VGUI_EVENT_EDITING to it, Tab is not consumed by focus
+	 * traversal, and Enter/Space do not activate it.  The IME candidate
+	 * rectangle is widget-local; call the setter whenever the caret moves.
+	 * vgui_context_get_text_input_rect() reports it in window coordinates. */
+	VGUI_API void vgui_widget_set_wants_text_input(vgui_widget* widget, int wants);
+	VGUI_API int vgui_widget_wants_text_input(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_text_input_rect(vgui_widget* widget, float x,
+		float y, float width, float height);
 
 	/* ------------------------------------------------------------------------- */
 	/* Custom widget                                                             */

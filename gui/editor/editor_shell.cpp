@@ -206,6 +206,21 @@ namespace vgui_editor_kit {
 				panel_visible(editor_panel::bottom);
 		});
 
+		/* T04: reveal and focus the code editor tab. */
+		commands_.add("view.code", "Code", [this]() {
+			set_panel_visible(editor_panel::bottom, true);
+			if (code_tab_ && bottom_tabs_)
+				vgui_tab_set_active(bottom_tabs_, code_tab_);
+			if (code_.built())
+				code_.request_focus();
+			set_status("code");
+		});
+		commands_.set_checked("view.code", [this]() {
+			return code_tab_ && bottom_tabs_ &&
+				vgui_tab_get_active(bottom_tabs_) == code_tab_ &&
+				panel_visible(editor_panel::bottom);
+		});
+
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
 		commands_.add("view.grid", "Grid", [this]() {
 			grid_.set_visible(!grid_.visible());
@@ -485,6 +500,7 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.table", true);
 			add_menu_command(view_menu, "view.timeline", true);
 			add_menu_command(view_menu, "view.nodegraph", true);
+			add_menu_command(view_menu, "view.code", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
@@ -735,6 +751,16 @@ namespace vgui_editor_kit {
 			node_graph_page);
 		vgui_tab_set_closeable(bottom_tabs_, node_graph_tab_, 0);
 
+		vgui_widget* code_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL,
+			nullptr);
+		vgui_widget_set_layout(code_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(code_page, 0, 0, 0, 0);
+		code_.build(code_page);
+		vgui_widget_set_align_self(code_.widget(), VGUI_ALIGN_STRETCH);
+		code_.set_command_stack(&context_.commands());
+		code_tab_ = vgui_tab_add(bottom_tabs_, "CODE", code_page);
+		vgui_tab_set_closeable(bottom_tabs_, code_tab_, 0);
+
 		desc.id = "bottom";
 		desc.title = "PANELS";
 		desc.panel = bottom_panel_;
@@ -882,6 +908,16 @@ namespace vgui_editor_kit {
 		return node_graph_;
 	}
 
+	code_editor& editor_shell::code() noexcept
+	{
+		return code_;
+	}
+
+	const code_editor& editor_shell::code() const noexcept
+	{
+		return code_;
+	}
+
 	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept
 	{
 		switch (panel)
@@ -1019,6 +1055,9 @@ namespace vgui_editor_kit {
 		if (node_graph_.built())
 			layout.node_graph_state = node_graph_state_to_json(
 				node_graph_.capture_state());
+		if (code_.built())
+			layout.code_editor_state = code_editor_state_to_json(
+				code_.capture_state());
 
 		/* Keep the legacy splitter ratios meaningful for hosts that read them
 		 * directly.  They are derived from the Dock zone sizes. */
@@ -1239,6 +1278,19 @@ namespace vgui_editor_kit {
 			}
 		}
 
+		/* T04: validate the code editor payload before changing dock state. */
+		code_editor_state loaded_code_editor_state;
+		if (!layout.code_editor_state.empty())
+		{
+			std::string reason;
+			if (!code_editor_state_from_json(layout.code_editor_state,
+				loaded_code_editor_state, &reason))
+			{
+				if (error) *error = reason;
+				return false;
+			}
+		}
+
 		const bool was_applying = applying_layout_;
 		applying_layout_ = true;
 
@@ -1292,6 +1344,18 @@ namespace vgui_editor_kit {
 		{
 			std::string reason;
 			if (!node_graph_.apply_state(loaded_node_graph_state, &reason))
+			{
+				applying_layout_ = was_applying;
+				if (error) *error = reason;
+				refresh_commands();
+				return false;
+			}
+		}
+
+		if (!layout.code_editor_state.empty())
+		{
+			std::string reason;
+			if (!code_.apply_state(loaded_code_editor_state, &reason))
 			{
 				applying_layout_ = was_applying;
 				if (error) *error = reason;

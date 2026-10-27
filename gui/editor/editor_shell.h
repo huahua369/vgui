@@ -6,8 +6,8 @@
  * the bottom panel are dock panels with stable ids, so hosts and users can
  * move them between the left/right/bottom/centre zones, merge them into tab
  * groups, float them and restore the arrangement after a restart.  The bottom
- * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH
- * TabView.
+ * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH /
+ * CODE TabView.
  */
 #include <memory>
 #include <string>
@@ -17,6 +17,7 @@
 #include "asset_preview.h"
 #include "breadcrumb.h"
 #include "canvas_view.h"
+#include "code_editor.h"
 #include "command_registry.h"
 #include "console_view.h"
 #include "editor_context.h"
@@ -134,6 +135,13 @@ namespace vgui_editor_kit {
 		node_graph_view& node_graph() noexcept;
 		const node_graph_view& node_graph() const noexcept;
 
+		/* T04: syntax-highlighted code editor / rich log hosted by the CODE
+		 * tab.  The shell wires its command stack and persists language,
+		 * caret, scroll and presentation through editor_layout; hosts supply
+		 * the document with set_text()/open_file(). */
+		code_editor& code() noexcept;
+		const code_editor& code() const noexcept;
+
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
 
@@ -241,6 +249,7 @@ namespace vgui_editor_kit {
 		vgui_item_id table_tab_ = 0;
 		vgui_item_id timeline_tab_ = 0;
 		vgui_item_id node_graph_tab_ = 0;
+		vgui_item_id code_tab_ = 0;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
@@ -272,6 +281,7 @@ namespace vgui_editor_kit {
 		table_view table_;
 		timeline_view timeline_;
 		node_graph_view node_graph_;
+		code_editor code_;
 	};
 
 } /* namespace vgui_editor_kit */

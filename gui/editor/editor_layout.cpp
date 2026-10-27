@@ -189,6 +189,9 @@ namespace vgui_editor_kit {
 		if (!layout.node_graph_state.empty())
 			root["node_graph"] = layout.node_graph_state;
 
+		if (!layout.code_editor_state.empty())
+			root["code_editor"] = layout.code_editor_state;
+
 		return root.dump(2) + "\n";
 	}
 
@@ -327,6 +330,11 @@ namespace vgui_editor_kit {
 			if (root.contains("node_graph"))
 			{
 				parsed.node_graph_state = read_string(root, "node_graph");
+			}
+
+			if (root.contains("code_editor"))
+			{
+				parsed.code_editor_state = read_string(root, "code_editor");
 			}
 
 			out = std::move(parsed);
