@@ -143,6 +143,9 @@ struct demo_state
 	int image_tint = 0;
 	int image_source = 0;
 	int image_fit = 0;
+	int image_rotation = 0;
+	int image_slice = 0;
+	int image_matrix = 0;
 
 	int sel_color_index = 0;
 	vgui_widget* scroll_panel = nullptr;
@@ -816,15 +819,22 @@ static const char* image_fit_name(int fit)
 	return names[fit & 3];
 }
 
+static const int kDemoImageRotations[] = { 0, 45, 90, 180 };
+
 static void update_image_info(demo_state* st)
 {
 	if (!st->image_info) return;
-	char buf[192] = {};
-	snprintf(buf, sizeof(buf), "source: %s   fit: %s   flip: %d,%d   tint: %s",
+	char buf[256] = {};
+	snprintf(buf, sizeof(buf),
+		"source: %s   fit: %s   flip: %d,%d   tint: %s\n"
+		"rot: %d°   九宫格: %s   矩阵: %s",
 		st->image_source ? "上半 96x24" : "全图 96x48",
 		image_fit_name(st->image_fit),
 		st->image_flip_x, st->image_flip_y,
-		st->image_tint ? "开" : "关");
+		st->image_tint ? "开" : "关",
+		kDemoImageRotations[st->image_rotation],
+		st->image_slice ? "16px" : "关",
+		st->image_matrix ? "错切" : "关");
 	vgui_widget_set_text(st->image_info, buf);
 }
 
@@ -884,6 +894,55 @@ static void on_image_fit(vgui_widget* w, const vgui_event* e, void* user)
 	vgui_image_set_fit(st->image_demo, (vgui_image_fit)st->image_fit);
 	update_image_info(st);
 	statusf(st, "VGUI_IMAGE: vgui_image_set_fit(%s)", image_fit_name(st->image_fit));
+}
+
+// V10：旋转（0/45/90/180°）、九宫格 16px 边框、矩阵错切。
+static void on_image_rotation(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_rotation = (st->image_rotation + 1) % 4;
+	const int deg = kDemoImageRotations[st->image_rotation];
+	vgui_image_set_rotation(st->image_demo, (float)deg);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_rotation(%d)", deg);
+}
+
+static void on_image_slice(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_slice ^= 1;
+	if (st->image_slice)
+		vgui_image_set_nine_slice(st->image_demo, 16, 16, 16, 16);
+	else
+		vgui_image_set_nine_slice(st->image_demo, 0, 0, 0, 0);
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_nine_slice(%s)",
+		st->image_slice ? "16, 16, 16, 16" : "0, 0, 0, 0");
+}
+
+static void on_image_matrix(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->image_matrix ^= 1;
+	if (st->image_matrix)
+	{
+		// 绕图片中心错切：x' = x + 0.25 * y。
+		const float shear[6] = { 1.0f, 0.0f, 0.25f, 1.0f, 0.0f, 0.0f };
+		vgui_image_set_matrix(st->image_demo, shear);
+	}
+	else
+	{
+		vgui_image_set_matrix(st->image_demo, nullptr);
+	}
+	update_image_info(st);
+	statusf(st, "VGUI_IMAGE: vgui_image_set_matrix(%s)",
+		st->image_matrix ? "{1, 0, 0.25, 1, 0, 0}" : "NULL");
 }
 
 // 焦点
@@ -1560,7 +1619,8 @@ static void build_images(demo_state* st, vgui_widget* root)
 	vgui_widget_set_grow(info, 1);
 	label(info, "CPU 纹理 96x48；四象限 + 白边 + 左上角箭头。", 14, 0xFFB0B0B0);
 	st->image_info = label(info, "", 12, 0xFF9A9A9A);
-	label(info, "按钮演示 set_flip / set_tint / set_source / set_fit。", 12, 0xFF9A9A9A);
+	label(info, "按钮演示 set_flip / set_tint / set_source / set_fit，"
+		"以及 V10 的 set_rotation / set_nine_slice / set_matrix。", 12, 0xFF9A9A9A);
 	update_image_info(st);
 
 	vgui_widget* actions = row(c, 8);
@@ -1569,6 +1629,11 @@ static void build_images(demo_state* st, vgui_widget* root)
 	button(actions, "tint 着色", on_image_tint, st);
 	button(actions, "源裁剪", on_image_source, st);
 	button(actions, "fit 切换", on_image_fit, st);
+
+	vgui_widget* actions2 = row(c, 8);
+	button(actions2, "旋转循环", on_image_rotation, st);
+	button(actions2, "九宫格", on_image_slice, st);
+	button(actions2, "矩阵错切", on_image_matrix, st);
 
 	// 图片控件会 retain；调用方可以立即释放创建引用。
 	vgui_texture_destroy(texture);

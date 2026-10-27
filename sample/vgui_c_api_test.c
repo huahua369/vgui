@@ -80,6 +80,20 @@ int main(void)
 	vgui_image_set_flip(image, 1, 0);
 	vgui_image_set_pixel_snap(image, 1);
 
+	/* V10 transforms: compile/link check from plain C (no C++ types), then
+	 * clear everything again. */
+	{
+		const float matrix6[6] = { 1.0f, 0.0f, 0.25f, 1.0f, 0.0f, 0.0f };
+		vgui_image_set_nine_slice(image, 2, 2, 2, 2);
+		vgui_image_set_nine_slice(image, 0, 0, 0, 0);
+		vgui_image_set_rotation(image, 30.0f);
+		vgui_image_set_rotation(image, 0.0f);
+		vgui_image_set_rotation_center(image, 1.0f, 1.0f, 1);
+		vgui_image_set_rotation_center(image, 0.0f, 0.0f, 0);
+		vgui_image_set_matrix(image, matrix6);
+		vgui_image_set_matrix(image, NULL);
+	}
+
 	vgui_widget* wrap = vgui_widget_add(root, VGUI_PANEL, NULL);
 	vgui_widget_set_layout(wrap, VGUI_LAYOUT_WRAP);
 	vgui_widget_set_size(wrap, 100.0f, 100.0f);

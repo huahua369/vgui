@@ -450,6 +450,18 @@ struct vgui_image_state
 	int flip_y = 0;
 	int pixel_snap = 0;
 
+	// V10 transforms.  Matrix is {xx,yx,xy,yy,tx,ty} around the rotation pivot.
+	int slice_l = 0;
+	int slice_t = 0;
+	int slice_r = 0;
+	int slice_b = 0;
+	float rotation = 0.0f;
+	float rotation_cx = 0.0f;
+	float rotation_cy = 0.0f;
+	int rotation_center_set = 0;
+	int has_matrix = 0;
+	float matrix[6] = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+
 	~vgui_image_state()
 	{
 		if (texture)
@@ -11403,6 +11415,179 @@ namespace {
 		texture->image.valid = false;
 	}
 
+	static bool vgui_image_has_transform(const vgui_image_state* image)
+	{
+		return image && (image->slice_l > 0 || image->rotation != 0.0f ||
+			image->has_matrix);
+	}
+
+	static glm::vec2 vgui_image_xform_point(const vgui_image_state* image,
+		glm::vec2 p, const glm::vec2& flip_c, const glm::vec2& pivot)
+	{
+		if (image->flip_x) p.x = flip_c.x * 2.0f - p.x;
+		if (image->flip_y) p.y = flip_c.y * 2.0f - p.y;
+		if (image->rotation != 0.0f)
+		{
+			const float rad = glm::radians(image->rotation);
+			const float cs = std::cos(rad);
+			const float sn = std::sin(rad);
+			const float dx = p.x - pivot.x;
+			const float dy = p.y - pivot.y;
+			p.x = pivot.x + cs * dx - sn * dy;
+			p.y = pivot.y + sn * dx + cs * dy;
+		}
+		if (image->has_matrix)
+		{
+			const float dx = p.x - pivot.x;
+			const float dy = p.y - pivot.y;
+			p.x = pivot.x + image->matrix[0] * dx + image->matrix[2] * dy +
+				image->matrix[4];
+			p.y = pivot.y + image->matrix[1] * dx + image->matrix[3] * dy +
+				image->matrix[5];
+		}
+		return p;
+	}
+
+	// CPU textures are uploaded through image_update and do not receive their
+	// OVG image id until the draw list is submitted.  They therefore cannot use
+	// add_texture (which rejects id == 0): generate the same quad / nine-slice
+	// geometry here and let add_geometry resolve the texture at submission time.
+	static void vgui_draw_image_geometry(ovg_ctx_cb* cb, rvg_t* vg, vg_image_t* texture,
+		int tex_w, int tex_h, int sx, int sy, int sw, int sh,
+		float dst_x, float dst_y, float dst_w, float dst_h,
+		uint32_t tint, const vgui_image_state* image)
+	{
+		if (!cb || !vg || !texture || tex_w <= 0 || tex_h <= 0 ||
+			sw <= 0 || sh <= 0 || dst_w <= 0.0f || dst_h <= 0.0f)
+			return;
+
+		static const uint32_t quad_indices[6] = { 0, 1, 2, 0, 2, 3 };
+		static const uint32_t slice_indices[54] = {
+			0, 8, 12, 8, 12, 4, 12, 4, 14, 4, 14, 6, 14, 6, 2, 6, 2, 10,
+			6, 7, 10, 7, 10, 11, 4, 5, 6, 5, 6, 7, 8, 9, 4, 9, 4, 5,
+			9, 1, 5, 1, 5, 13, 5, 13, 7, 13, 7, 15, 7, 15, 11, 15, 11, 3,
+		};
+
+		glm::vec2 pos[16];
+		glm::vec2 uv[16];
+		int count = 4;
+		const uint32_t* indices = quad_indices;
+		int index_count = 6;
+
+		const float u0 = (float)sx / (float)tex_w;
+		const float v0 = (float)sy / (float)tex_h;
+		const float u1 = (float)(sx + sw) / (float)tex_w;
+		const float v1 = (float)(sy + sh) / (float)tex_h;
+		const float x = dst_x;
+		const float y = dst_y;
+		const float width = dst_w;
+		const float height = dst_h;
+
+		if (image->slice_l > 0)
+		{
+			count = 16;
+			indices = slice_indices;
+			index_count = 54;
+
+			float left = (float)std::max(image->slice_l, 0);
+			float top = (float)std::max(image->slice_t, 0);
+			float right = (float)std::max(image->slice_r, 0);
+			float bottom = (float)std::max(image->slice_b, 0);
+			if (left + right > width && left + right > 0.0f)
+			{
+				const float k = width / (left + right);
+				left *= k;
+				right *= k;
+			}
+			if (top + bottom > height && top + bottom > 0.0f)
+			{
+				const float k = height / (top + bottom);
+				top *= k;
+				bottom *= k;
+			}
+
+			// Source edge widths are clamped to the source rectangle; target
+			// edge widths keep the values above (matching OVG add_texture).
+			const float src_left = std::min(left, (float)sw);
+			const float src_top = std::min(top, (float)sh);
+			const float src_right = std::min(right, std::max(0.0f, (float)sw - src_left));
+			const float src_bottom = std::min(bottom, std::max(0.0f, (float)sh - src_top));
+			const glm::vec4 suv = {
+				(float)(sx + src_left) / (float)tex_w,
+				(float)(sy + src_top) / (float)tex_h,
+				(float)(sx + sw - src_right) / (float)tex_w,
+				(float)(sy + sh - src_bottom) / (float)tex_h,
+			};
+			const glm::vec4 ruv = { u0, v0, u1, v1 };
+
+			pos[0] = { x, y };								uv[0] = { ruv.x, ruv.y };
+			pos[1] = { x, y + height };						uv[1] = { ruv.x, ruv.w };
+			pos[2] = { x + width, y };						uv[2] = { ruv.z, ruv.y };
+			pos[3] = { x + width, y + height };				uv[3] = { ruv.z, ruv.w };
+			pos[4] = { x + left, y + top };					uv[4] = { suv.x, suv.y };
+			pos[5] = { x + left, y + height - bottom };		uv[5] = { suv.x, suv.w };
+			pos[6] = { x + width - right, y + top };			uv[6] = { suv.z, suv.y };
+			pos[7] = { x + width - right, y + height - bottom }; uv[7] = { suv.z, suv.w };
+			pos[8] = { x, y + top };							uv[8] = { ruv.x, suv.y };
+			pos[9] = { x, y + height - bottom };				uv[9] = { ruv.x, suv.w };
+			pos[10] = { x + width, y + top };				uv[10] = { ruv.z, suv.y };
+			pos[11] = { x + width, y + height - bottom };		uv[11] = { ruv.z, suv.w };
+			pos[12] = { x + left, y };						uv[12] = { suv.x, ruv.y };
+			pos[13] = { x + left, y + height };				uv[13] = { suv.x, ruv.w };
+			pos[14] = { x + width - right, y };				uv[14] = { suv.z, ruv.y };
+			pos[15] = { x + width - right, y + height };		uv[15] = { suv.z, ruv.w };
+		}
+		else
+		{
+			pos[0] = { x, y };					uv[0] = { u0, v0 };
+			pos[1] = { x, y + height };			uv[1] = { u0, v1 };
+			pos[2] = { x + width, y };			uv[2] = { u1, v0 };
+			pos[3] = { x + width, y + height };	uv[3] = { u1, v1 };
+		}
+
+		const glm::vec2 flip_c = { x + width * 0.5f, y + height * 0.5f };
+		const glm::vec2 pivot = {
+			x + (image->rotation_center_set ? image->rotation_cx : width * 0.5f),
+			y + (image->rotation_center_set ? image->rotation_cy : height * 0.5f)
+		};
+		for (int i = 0; i < count; ++i)
+			pos[i] = vgui_image_xform_point(image, pos[i], flip_c, pivot);
+
+		gem_info_t info = {};
+		info.blendMode = (int8_t)blendMode_e::normal;
+		info.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
+		info.frontFace = 0;
+		info.cullMode = 0;
+		info.shader = ST_NONE;
+		const glm::mat4 mat = glm::ortho(0.0f, (float)vg->width,
+			0.0f, (float)vg->height, -1.0f, 1.0f);
+		cb->set_geom_state(vg, &info, &mat);
+
+		uint32_t colors[16];
+		for (int i = 0; i < count; ++i)
+			colors[i] = tint;
+		cb->add_geometry(vg, texture,
+			(const float*)pos, (int)sizeof(glm::vec2), colors, (int)sizeof(uint32_t),
+			(const float*)uv, (int)sizeof(glm::vec2), count, indices, index_count,
+			(int)sizeof(uint32_t), 1);
+	}
+
+	// OVG applies the matrix around absolute screen coordinates.  The public
+	// vgui matrix is relative to the same pivot as rotation, so conjugate it:
+	// p' = pivot + M * (p - pivot).
+	static glm::mat3x2 vgui_image_absolute_matrix(const vgui_image_state* image,
+		const glm::ivec4& dst)
+	{
+		const float px = (float)dst.x + (image->rotation_center_set
+			? image->rotation_cx : (float)dst.z * 0.5f);
+		const float py = (float)dst.y + (image->rotation_center_set
+			? image->rotation_cy : (float)dst.w * 0.5f);
+		const float* m = image->matrix;
+		const float tx = m[4] + px - (m[0] * px + m[2] * py);
+		const float ty = m[5] + py - (m[1] * px + m[3] * py);
+		return glm::mat3x2(m[0], m[1], m[2], m[3], tx, ty);
+	}
+
 	static void vgui_draw_image(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 	{
 		vgui_context* ctx = w->ctx;
@@ -11430,7 +11615,17 @@ namespace {
 		float dst_w = w->abs_w;
 		float dst_h = w->abs_h;
 
-		if (texture && texture->image.id != 0 && texture->width > 0 && texture->height > 0 &&
+		// CPU textures receive their OVG image id during image-descriptor
+		// processing, after the draw list is recorded.  They can still be
+		// recorded on the first frame once ensure_upload() has queued the
+		// copy: the commands keep a vg_image_t pointer and the backend
+		// resolves it after process_image_descs().  Empty CPU textures have
+		// no queued copy and stay skipped instead of drawing the white
+		// fallback texture.
+		const bool cpu_queued = texture && texture->cpu &&
+			texture->upload_frame == ctx->frame_index;
+		if (texture && (texture->image.id != 0 || cpu_queued) &&
+			texture->width > 0 && texture->height > 0 &&
 			dst_w > 0.0f && dst_h > 0.0f)
 		{
 			const int tex_w = texture->width;
@@ -11487,6 +11682,7 @@ namespace {
 				cb->save(vg);
 				vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
 				const bool native = !texture->cpu && texture->native.image.id != 0;
+				const bool transformed = vgui_image_has_transform(image);
 				if (native && cb->add_texture)
 				{
 					ovg_texture_r r = {};
@@ -11497,38 +11693,28 @@ namespace {
 					r.color = tint;
 					r.flip = (int8_t)((image->flip_x ? FLIP_HORIZONTAL : 0) |
 						(image->flip_y ? FLIP_VERTICAL : 0));
+					if (image->slice_l > 0)
+						r.sliced = { image->slice_l, image->slice_t,
+							image->slice_r, image->slice_b };
+					r.angle = image->rotation;
+					r.center = { image->rotation_cx, image->rotation_cy };
+					r.center_set = image->rotation_center_set ? 1 : 0;
+					glm::mat3x2 matrix;
+					if (image->has_matrix)
+					{
+						matrix = vgui_image_absolute_matrix(image, r.dst);
+						r.matrix = &matrix;
+					}
 					cb->add_texture(vg, &r);
 				}
-				else if (image->flip_x || image->flip_y)
+				else if (transformed || image->flip_x || image->flip_y)
 				{
-					// CPU textures keep the geometry path because add_texture only
-					// accepts backend-owned ovg_texture_t handles.
-					gem_info_t info = {};
-					info.blendMode = (int8_t)blendMode_e::normal;
-					info.flags = (uint8_t)depth_stencil_State::d_stenciltest_enable;
-					info.frontFace = 0;
-					info.cullMode = 0;
-					info.shader = ST_NONE;
-					const glm::mat4 mat = glm::ortho(0.0f, (float)vg->width,
-						0.0f, (float)vg->height, -1.0f, 1.0f);
-					cb->set_geom_state(vg, &info, &mat);
-
-					float u0 = (float)sx / (float)tex_w;
-					float v0 = (float)sy / (float)tex_h;
-					float u1 = (float)(sx + sw) / (float)tex_w;
-					float v1 = (float)(sy + sh) / (float)tex_h;
-					if (image->flip_x) std::swap(u0, u1);
-					if (image->flip_y) std::swap(v0, v1);
-
-					const float x0 = dst_x, y0 = dst_y;
-					const float x1 = dst_x + dst_w, y1 = dst_y + dst_h;
-					const float xy[8] = { x0, y0, x1, y0, x1, y1, x0, y1 };
-					const float uv[8] = { u0, v0, u1, v0, u1, v1, u0, v1 };
-					const uint32_t colors[4] = { tint, tint, tint, tint };
-					const uint32_t indices[6] = { 0, 1, 2, 0, 2, 3 };
-					cb->add_geometry(vg, &texture->image,
-						xy, 2 * sizeof(float), colors, sizeof(uint32_t),
-						uv, 2 * sizeof(float), 4, indices, 6, sizeof(uint32_t), 1);
+					// CPU textures (and native fallbacks without add_texture) use
+					// generated geometry so rotation/matrix/nine-slice work before
+					// the backend assigns the CPU image id.
+					vg_image_t* tex = native ? &texture->native.image : &texture->image;
+					vgui_draw_image_geometry(cb, vg, tex, tex_w, tex_h, sx, sy, sw, sh,
+						dst_x, dst_y, dst_w, dst_h, tint, image);
 				}
 				else
 				{
@@ -14394,6 +14580,54 @@ extern "C" {
 	{
 		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
 		widget->image->pixel_snap = enabled != 0;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_nine_slice(vgui_widget* widget, int left, int top, int right, int bottom)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->slice_l = std::max(0, left);
+		widget->image->slice_t = std::max(0, top);
+		widget->image->slice_r = std::max(0, right);
+		widget->image->slice_b = std::max(0, bottom);
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_rotation(vgui_widget* widget, float degrees)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->rotation = std::isfinite(degrees) ? degrees : 0.0f;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_rotation_center(vgui_widget* widget, float x, float y, int enabled)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		widget->image->rotation_cx = std::isfinite(x) ? x : 0.0f;
+		widget->image->rotation_cy = std::isfinite(y) ? y : 0.0f;
+		widget->image->rotation_center_set = enabled != 0;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_image_set_matrix(vgui_widget* widget, const float* matrix6)
+	{
+		if (!widget || widget->kind != VGUI_IMAGE || !widget->image) return;
+		if (!matrix6)
+		{
+			widget->image->has_matrix = 0;
+			const float identity[6] = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+			for (int i = 0; i < 6; ++i)
+				widget->image->matrix[i] = identity[i];
+		}
+		else
+		{
+			for (int i = 0; i < 6; ++i)
+			{
+				const float fallback = (i == 0 || i == 3) ? 1.0f : 0.0f;
+				widget->image->matrix[i] = std::isfinite(matrix6[i]) ? matrix6[i] : fallback;
+			}
+			widget->image->has_matrix = 1;
+		}
 		vgui_mark_dirty(widget);
 	}
 

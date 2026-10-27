@@ -82,7 +82,7 @@ vgui_texture* texture = vgui_texture_create(ui, &desc);
 
 - 输入像素在 `vgui_texture_create/update` 内复制并整理为紧凑 stride，调用方可以立即释放原缓冲。
 - `pixels == NULL` 可以创建空纹理，之后用 `vgui_texture_update` 填充。
-- 首次绘制时惰性上传；同一帧多次绘制同一纹理只入队一次上传。上传由绘制提交阶段完成，因此新 CPU 纹理通常从下一帧开始可见；native 纹理当帧即可见。
+- 首次绘制时惰性上传；同一帧多次绘制同一纹理只入队一次上传。上传在绘制提交阶段先于绘制命令执行，因此新 CPU 纹理当帧即可见；native 纹理同样当帧可见。
 - `vgui_texture` 引用计数由 vgui 内部管理。`VGUI_IMAGE` 持有纹理引用；`vgui_texture_destroy` 只释放调用方自己的引用。
 - CPU 纹理的 GPU 句柄延迟到下一次绘制时销毁，因为 OVG 的 `image_destroy` 描述符需要在帧结束前保持有效。
 
@@ -101,7 +101,19 @@ vgui_image_set_flip(image, 1, 0);
 vgui_image_set_pixel_snap(image, 1);
 ```
 
-`sample/vgui_demo.cpp` 的“图片 VGUI_IMAGE”卡片用 CPU 纹理演示了上述接口，并可通过按钮切换 flip / tint / source / fit。
+`sample/vgui_demo.cpp` 的“图片 VGUI_IMAGE”卡片用 CPU 纹理演示了上述接口，并可通过按钮切换 flip / tint / source / fit 以及 V10 的旋转、九宫格和矩阵错切。
+
+V10 增加九宫格、旋转和任意矩阵：
+
+```c
+vgui_image_set_nine_slice(image, 16, 16, 16, 16); /* 纹理像素边宽，全 0 关闭 */
+vgui_image_set_rotation(image, 30.0f);            /* 正值 = 屏幕顺时针 */
+vgui_image_set_rotation_center(image, 8, 8, 1);   /* 相对目标左上角；0 = 目标中心 */
+const float shear[6] = { 1, 0, 0.25f, 1, 0, 0 };
+vgui_image_set_matrix(image, shear);              /* NULL 清除 */
+```
+
+变换顺序固定为 **flip → rotation → matrix**，在 source/fit/pixel snap 之后应用。九宫格源边宽按源区域收缩、目标过小时按比例压缩；矩阵为 `{xx,yx,xy,yy,tx,ty}`（`x' = xx*x + xy*y + tx`，`y' = yx*x + yy*y + ty`），与旋转共享枢轴。`sample/vgui_texture_test.cpp` 的 72 项离屏回读断言覆盖原生/CPU 首帧绘制、九宫格、旋转、自定义旋转中心、矩阵及与 source/flip/update 的组合。
 
 fit 语义：
 
@@ -110,7 +122,7 @@ fit 语义：
 - `COVER`：保持宽高比，从 source 中心裁切后填满控件。
 - `NONE`：1:1 像素尺寸，居中，超出控件部分裁剪。
 
-翻转通过 `add_geometry` 使用翻转 UV 实现，因为 OVG `add_image` 不接受负的目标尺寸。图片控件本身参与焦点/禁用状态；禁用时按 `image.disabled_mix` 向主题禁用色混合。
+翻转在原生纹理路径由 OVG `add_texture` 完成，在 CPU 纹理路径由生成的顶点/UV 几何完成（`add_image` 不支持负的目标尺寸）。V10 的九宫格/旋转/矩阵也分别走这两条路径。图片控件本身参与焦点/禁用状态；禁用时按 `image.disabled_mix` 向主题禁用色混合。
 
 ## 自动换行布局
 
@@ -164,7 +176,7 @@ bool vgpu_texture_update_native(vgpu_ctx_t*, ovg_texture_t*,
 void vgpu_texture_fini_native(vgpu_ctx_t*, ovg_texture_t*);
 ```
 
-`vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip 和当前 clip 都由 OVG 统一处理。九宫格、旋转、任意矩阵目前只通过 OVG 的 `add_texture` 暴露；`VGUI_IMAGE` 只映射其已有的 source/tint/flip 属性。
+`vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时优先走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip、九宫格、旋转、矩阵和当前 clip 都由 OVG 统一处理。CPU 纹理在提交阶段才获得 OVG image id，vgui 用生成的四边形/九宫格几何（`add_geometry`）实现相同的变换语义，两条路径由 `vgui_texture_test` 逐像素对齐验证。
 
 ## 兼容性
 

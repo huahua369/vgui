@@ -1038,6 +1038,28 @@ extern "C" {
 	VGUI_API void vgui_image_set_flip(vgui_widget* widget, int flip_x, int flip_y);
 	VGUI_API void vgui_image_set_pixel_snap(vgui_widget* widget, int enabled);
 
+	/* V10 transforms.  They apply to the final destination rectangle after
+	 * source cropping, fit and pixel snapping, in this order:
+	 *     flip -> rotation -> matrix
+	 *
+	 * nine_slice uses texture-pixel borders {left,top,right,bottom}; all zeros
+	 * disable slicing.  The left border must be > 0 to enable it.  Source
+	 * borders are clamped to the source rectangle; destination borders are
+	 * compressed when the destination is too small.
+	 *
+	 * rotation is in degrees, positive = clockwise on screen.  The rotation
+	 * and matrix pivot is the destination center unless rotation_center is
+	 * enabled; custom centers are relative to the destination top-left.
+	 *
+	 * matrix6 is {xx,yx,xy,yy,tx,ty} and maps around the same pivot:
+	 *     x' = xx*x + xy*y + tx
+	 *     y' = yx*x + yy*y + ty
+	 * Passing NULL clears the matrix. */
+	VGUI_API void vgui_image_set_nine_slice(vgui_widget* widget, int left, int top, int right, int bottom);
+	VGUI_API void vgui_image_set_rotation(vgui_widget* widget, float degrees);
+	VGUI_API void vgui_image_set_rotation_center(vgui_widget* widget, float x, float y, int enabled);
+	VGUI_API void vgui_image_set_matrix(vgui_widget* widget, const float* matrix6);
+
 	/* ------------------------------------------------------------------------- */
 	/* Button icon                                                               */
 	/* ------------------------------------------------------------------------- */
