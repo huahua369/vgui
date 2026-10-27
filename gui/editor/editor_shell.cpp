@@ -176,6 +176,21 @@ namespace vgui_editor_kit {
 				panel_visible(editor_panel::bottom);
 		});
 
+		/* T02: reveal and focus the animation timeline tab. */
+		commands_.add("view.timeline", "Timeline", [this]() {
+			set_panel_visible(editor_panel::bottom, true);
+			if (timeline_tab_ && bottom_tabs_)
+				vgui_tab_set_active(bottom_tabs_, timeline_tab_);
+			if (timeline_.built())
+				timeline_.request_focus();
+			set_status("timeline");
+		});
+		commands_.set_checked("view.timeline", [this]() {
+			return timeline_tab_ && bottom_tabs_ &&
+				vgui_tab_get_active(bottom_tabs_) == timeline_tab_ &&
+				panel_visible(editor_panel::bottom);
+		});
+
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
 		commands_.add("view.grid", "Grid", [this]() {
 			grid_.set_visible(!grid_.visible());
@@ -453,6 +468,7 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.console", true);
 			add_menu_command(view_menu, "view.canvas", true);
 			add_menu_command(view_menu, "view.table", true);
+			add_menu_command(view_menu, "view.timeline", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
@@ -683,6 +699,15 @@ namespace vgui_editor_kit {
 		table_tab_ = vgui_tab_add(bottom_tabs_, "TABLE", table_page);
 		vgui_tab_set_closeable(bottom_tabs_, table_tab_, 0);
 
+		vgui_widget* timeline_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(timeline_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(timeline_page, 0, 0, 0, 0);
+		timeline_.build(timeline_page);
+		vgui_widget_set_align_self(timeline_.widget(), VGUI_ALIGN_STRETCH);
+		timeline_.set_command_stack(&context_.commands());
+		timeline_tab_ = vgui_tab_add(bottom_tabs_, "TIMELINE", timeline_page);
+		vgui_tab_set_closeable(bottom_tabs_, timeline_tab_, 0);
+
 		desc.id = "bottom";
 		desc.title = "PANELS";
 		desc.panel = bottom_panel_;
@@ -808,6 +833,16 @@ namespace vgui_editor_kit {
 	const table_view& editor_shell::table() const noexcept
 	{
 		return table_;
+	}
+
+	timeline_view& editor_shell::timeline() noexcept
+	{
+		return timeline_;
+	}
+
+	const timeline_view& editor_shell::timeline() const noexcept
+	{
+		return timeline_;
 	}
 
 	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept
@@ -941,6 +976,9 @@ namespace vgui_editor_kit {
 		capture_bottom_tabs(layout);
 		if (table_.built())
 			layout.table_state = table_state_to_json(table_.capture_state());
+		if (timeline_.built())
+			layout.timeline_state = timeline_state_to_json(
+				timeline_.capture_state());
 
 		/* Keep the legacy splitter ratios meaningful for hosts that read them
 		 * directly.  They are derived from the Dock zone sizes. */
@@ -1134,6 +1172,20 @@ namespace vgui_editor_kit {
 			}
 		}
 
+		/* T02: validate the timeline payload the same way before touching any
+		 * dock state. */
+		timeline_state loaded_timeline_state;
+		if (!layout.timeline_state.empty())
+		{
+			std::string reason;
+			if (!timeline_state_from_json(layout.timeline_state,
+				loaded_timeline_state, &reason))
+			{
+				if (error) *error = reason;
+				return false;
+			}
+		}
+
 		const bool was_applying = applying_layout_;
 		applying_layout_ = true;
 
@@ -1163,6 +1215,18 @@ namespace vgui_editor_kit {
 		{
 			std::string reason;
 			if (!table_.apply_state(loaded_table_state, &reason))
+			{
+				applying_layout_ = was_applying;
+				if (error) *error = reason;
+				refresh_commands();
+				return false;
+			}
+		}
+
+		if (!layout.timeline_state.empty())
+		{
+			std::string reason;
+			if (!timeline_.apply_state(loaded_timeline_state, &reason))
 			{
 				applying_layout_ = was_applying;
 				if (error) *error = reason;

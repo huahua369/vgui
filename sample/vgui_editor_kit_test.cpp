@@ -356,11 +356,12 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 4 ||
+					initial.bottom_tab_order.size() != 5 ||
 					initial.bottom_tab_order[0] != "ASSETS" ||
 					initial.bottom_tab_order[1] != "CONSOLE" ||
 					initial.bottom_tab_order[2] != "CANVAS" ||
 					initial.bottom_tab_order[3] != "TABLE" ||
+					initial.bottom_tab_order[4] != "TIMELINE" ||
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
 
@@ -393,6 +394,23 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				if (!table.set_column_width(0, 210.0f) ||
 					!table.set_sort(1, false))
 					return fail("layout table setup");
+
+				/* T02: give the timeline a stable track id and non-default
+				 * view/playback settings so they round-trip below. */
+				timeline_view& timeline = shell.timeline();
+				timeline_track timeline_track;
+				timeline_track.id = 42;
+				timeline_track.name = "Cube";
+				if (timeline.add_track(timeline_track) != 42 ||
+					timeline.add_keyframe(42, { 0, 0.0, 0.0 }) ==
+						invalid_object)
+					return fail("layout timeline setup");
+				timeline.set_selected_track(42);
+				timeline.set_duration(12.0);
+				timeline.set_playhead(1.25);
+				timeline.set_view_state({ 0.5, 240.0, 0.0f });
+				timeline.set_frame_rate(24.0);
+				timeline.set_loop(true);
 
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
@@ -430,15 +448,18 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					saved.dock_panels.size() != 4 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 4 ||
+					saved.bottom_tab_order.size() != 5 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
 					saved.bottom_tab_order[1] != "ASSETS" ||
 					saved.bottom_tab_order[2] != "CANVAS" ||
 					saved.bottom_tab_order[3] != "TABLE" ||
+					saved.bottom_tab_order[4] != "TIMELINE" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
 				if (saved.table_state.empty())
 					return fail("layout table state capture");
+				if (saved.timeline_state.empty())
+					return fail("layout timeline state capture");
 
 				auto find_panel = [&saved](const char* id)
 					-> const editor_dock_panel_layout* {
@@ -474,7 +495,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					parsed.dock_active != saved.dock_active ||
 					parsed.bottom_tab_order != saved.bottom_tab_order ||
 					parsed.bottom_active_tab != saved.bottom_active_tab ||
-					parsed.table_state != saved.table_state)
+					parsed.table_state != saved.table_state ||
+					parsed.timeline_state != saved.timeline_state)
 					return fail("layout json round trip");
 			}	vgui_destroy(ui);
 		}
@@ -517,12 +539,30 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				table_columns[1].editor.type = property_type::integer;
 				table.set_columns(std::move(table_columns));
 
+				/* The timeline persists view/playback state only; the host owns
+				 * the model, so recreate the same stable track id before load. */
+				timeline_view& timeline = shell.timeline();
+				timeline_track timeline_track;
+				timeline_track.id = 42;
+				timeline_track.name = "Cube";
+				if (timeline.add_track(timeline_track) != 42)
+					return fail("layout restored timeline setup");
+
 				std::string error;
 				if (!shell.load_layout(layout_path.string(), &error))
 					return fail("layout load");
 				if (!near_px(table.column_width(0), 210.0f) ||
 					table.sort_column() != 1 || table.sort_ascending())
 					return fail("layout restored table state");
+				if (timeline.selected_track() != 42 ||
+					std::fabs(timeline.playhead() - 1.25) > 1e-9 ||
+					std::fabs(timeline.duration() - 12.0) > 1e-9 ||
+					std::fabs(timeline.zoom() - 240.0) > 1e-9 ||
+					std::fabs(timeline.frame_rate() - 24.0) > 1e-9 ||
+					std::fabs(timeline.snap_step() - 1.0 / 24.0) > 1e-9 ||
+					!timeline.loop() || !timeline.snap_enabled() ||
+					std::fabs(timeline.view_state().view_start - 0.5) > 1e-9)
+					return fail("layout restored timeline state");
 				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 340.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 150.0f))
@@ -559,7 +599,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 4)
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 5)
 					return fail("layout restored tab count");
 				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
@@ -593,6 +633,18 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					return fail("layout version mismatch accepted");
 				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 230.0f))
 					return fail("layout version fallback");
+
+				/* A malformed timeline payload is rejected before any dock or
+				 * timeline state changes. */
+				if (!write_text(bad_path, R"({"version": 4, "timeline": "{\"version\": 99}"})"))
+					return fail("layout write bad timeline");
+				if (shell.load_layout(bad_path.string(), &error))
+					return fail("layout malformed timeline accepted");
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 230.0f) ||
+					timeline.selected_track() != invalid_object ||
+					std::fabs(timeline.playhead()) > 1e-9 ||
+					std::fabs(timeline.zoom() - 120.0) > 1e-9)
+					return fail("layout malformed timeline fallback");
 
 				// Version-1 files still map their splitter ratios onto the Dock.
 				if (!write_text(bad_path,
@@ -10091,6 +10143,591 @@ static int test_canvas_view()
 	return 0;
 }
 
+/* T02: timeline model, hit testing, selection, editing commands, snapping,
+ * zoom precision, playback and state persistence. */
+static int test_timeline_view()
+{
+	using namespace vgui_editor_kit;
+	auto close_to = [](double a, double b, double eps = 1e-9) {
+		return std::fabs(a - b) <= eps;
+	};
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("t02 timeline context");
+	vgui_context_set_size(ui, 1000, 700);
+
+	{
+		command_stack commands;
+		timeline_view timeline;
+		timeline.build(vgui_root(ui));
+		vgui_widget_set_pos(timeline.widget(), 40.0f, 30.0f);
+		vgui_widget_set_size(timeline.widget(), 800.0f, 320.0f);
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON,
+			"other");
+		vgui_widget_set_pos(other, 900.0f, 640.0f);
+		vgui_widget_set_size(other, 70.0f, 30.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		if (!timeline.built() || !timeline.widget() ||
+			vgui_widget_get_kind(timeline.widget()) != VGUI_CUSTOM)
+			return fail("t02 timeline build");
+		timeline.set_drag_threshold(3.0f);
+		timeline.set_command_stack(&commands);
+
+		float wx = 0.0f, wy = 0.0f, ww = 0.0f, wh = 0.0f;
+		vgui_widget_get_rect(timeline.widget(), &wx, &wy, &ww, &wh);
+		if (ww < 400.0f || wh < 200.0f)
+			return fail("t02 timeline size");
+		auto screen = [&](float x, float y) {
+			return std::pair<float, float>(wx + 1.0f + x, wy + 1.0f + y);
+		};
+		auto move_to = [&](float x, float y) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_move(ui, p.first, p.second);
+		};
+		auto down_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_down(ui, button, p.first, p.second, 1);
+		};
+		auto up_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_up(ui, button, p.first, p.second, 1);
+		};
+		auto click_at = [&](float x, float y) {
+			move_to(x, y);
+			down_at(x, y);
+			up_at(x, y);
+		};
+
+		/* Defaults and model bookkeeping. */
+		if (!close_to(timeline.zoom(), 120.0) ||
+			!close_to(timeline.duration(), 10.0) ||
+			!close_to(timeline.playhead(), 0.0) ||
+			!close_to(timeline.frame_rate(), 30.0) ||
+			!timeline.snap_enabled() || timeline.loop() ||
+			timeline.playing() ||
+			!close_to(timeline.snap_time(0.04), 1.0 / 30.0))
+			return fail("t02 timeline defaults");
+
+		int changes = 0;
+		std::vector<object_id> notified;
+		int selection_events = 0;
+		timeline.set_change_listener([&changes]() { ++changes; });
+		timeline.set_selection_listener([&](const std::vector<object_id>& ids) {
+			notified = ids;
+			++selection_events;
+		});
+
+		timeline_track track_a;
+		track_a.name = "Cube Position";
+		track_a.color = 0xFF5FA8FF;
+		timeline_track track_b;
+		track_b.name = "Light";
+		timeline_track locked_track;
+		locked_track.name = "Locked";
+		locked_track.locked = true;
+		timeline_track hidden_track;
+		hidden_track.name = "Hidden";
+		hidden_track.visible = false;
+
+		const object_id ta = timeline.add_track(track_a);
+		const object_id tb = timeline.add_track(track_b);
+		const object_id tc = timeline.add_track(locked_track);
+		const object_id td = timeline.add_track(hidden_track);
+		if (ta == invalid_object || tb == invalid_object ||
+			tc == invalid_object || td == invalid_object ||
+			timeline.track_count() != 4 || changes == 0)
+			return fail("t02 timeline add tracks");
+		timeline_track duplicate;
+		duplicate.id = ta;
+		if (timeline.add_track(duplicate) != invalid_object ||
+			timeline.add_track({}) == invalid_object)
+			return fail("t02 timeline explicit track ids");
+
+		const object_id k0 = timeline.add_keyframe(ta, { 0, 0.0, 0.0,
+			timeline_interpolation::linear });
+		const object_id k1 = timeline.add_keyframe(ta, { 0, 1.0, 10.0,
+			timeline_interpolation::linear });
+		const object_id k2 = timeline.add_keyframe(ta, { 0, 2.0, 20.0,
+			timeline_interpolation::smooth });
+		const object_id k3 = timeline.add_keyframe(ta, { 0, 3.0, 30.0,
+			timeline_interpolation::step });
+		const object_id b0 = timeline.add_keyframe(tb, { 0, 0.5, 100.0,
+			timeline_interpolation::linear });
+		const object_id c0 = timeline.add_keyframe(tc, { 0, 4.0, 0.0,
+			timeline_interpolation::linear });
+		const object_id d0 = timeline.add_keyframe(td, { 0, 4.0, 0.0,
+			timeline_interpolation::linear });
+		if (k0 == invalid_object || k1 == invalid_object ||
+			k2 == invalid_object || k3 == invalid_object ||
+			b0 == invalid_object || c0 == invalid_object ||
+			d0 == invalid_object || timeline.keyframe_count() != 7)
+			return fail("t02 timeline add keyframes");
+		object_id found_track = invalid_object;
+		const timeline_keyframe* found = timeline.find_keyframe(k2,
+			&found_track);
+		if (!found || found_track != ta || found->time != 2.0 ||
+			timeline.find_keyframe(9999) != nullptr)
+			return fail("t02 timeline find keyframe");
+		if (!close_to(timeline.evaluate(ta, -1.0), 0.0) ||
+			!close_to(timeline.evaluate(ta, 0.5), 5.0) ||
+			!close_to(timeline.evaluate(ta, 1.5), 15.0) ||
+			!close_to(timeline.evaluate(ta, 2.5), 25.0) ||
+			!close_to(timeline.evaluate(ta, 9.0), 30.0) ||
+			!close_to(timeline.evaluate(9999, 1.0), 0.0))
+			return fail("t02 timeline evaluate");
+
+		/* Geometry is content-local and follows time -> x exactly. */
+		float kx = 0.0f, ky = 0.0f, kw = 0.0f, kh = 0.0f;
+		if (!timeline.keyframe_rect(k1, &kx, &ky, &kw, &kh) ||
+			!close_to(kx, 263.0, 0.01) || !close_to(ky, 56.0, 0.01) ||
+			!close_to(kw, 14.0, 0.01) || !close_to(kh, 14.0, 0.01))
+			return fail("t02 timeline keyframe rect");
+		float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+		if (!timeline.track_rect(ta, &tx, &ty, &tw, &th) ||
+			!close_to(tx, 0.0, 0.01) || !close_to(ty, 50.0, 0.01) ||
+			!close_to(tw, 798.0, 0.01) || !close_to(th, 26.0, 0.01))
+			return fail("t02 timeline track rect");
+		if (timeline.hit_test(270.0f, 63.0f) != k1 ||
+			timeline.hit_test(210.0f, 89.0f) != b0 ||
+			timeline.hit_test(270.0f, 89.0f) != invalid_object ||
+			timeline.hit_test(630.0f, 115.0f) != invalid_object ||
+			timeline.hit_test(630.0f, 141.0f) != invalid_object ||
+			timeline.hit_test(10.0f, 63.0f) != invalid_object)
+			return fail("t02 timeline hit test");
+		if (timeline.track_at(63.0f) != ta ||
+			timeline.track_at(89.0f) != tb ||
+			timeline.track_at(115.0f) != tc ||
+			timeline.track_at(141.0f) != td ||
+			timeline.track_at(10.0f) != invalid_object)
+			return fail("t02 timeline track_at");
+
+		/* Click, Ctrl toggle and Shift append. */
+		click_at(270.0f, 63.0f);
+		if (!timeline.focused() || timeline.selection_ids().size() != 1 ||
+			timeline.selection_ids()[0] != k1 ||
+			timeline.primary_selection() != k1 || timeline.dragging())
+			return fail("t02 timeline click selection");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(390.0f, 63.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (timeline.selection_ids().size() != 2 ||
+			!timeline.is_selected(k1) || !timeline.is_selected(k2))
+			return fail("t02 timeline ctrl selection");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(390.0f, 63.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (timeline.selection_ids().size() != 1 ||
+			!timeline.is_selected(k1))
+			return fail("t02 timeline ctrl toggle");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+		click_at(390.0f, 63.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (timeline.selection_ids().size() != 2 ||
+			!timeline.is_selected(k2) ||
+			timeline.primary_selection() != k2)
+			return fail("t02 timeline shift append");
+		click_at(600.0f, 63.0f);
+		if (!timeline.selection_ids().empty() ||
+			timeline.primary_selection() != invalid_object)
+			return fail("t02 timeline empty click clears");
+
+		/* Marquee selects keyframe centers inside the dragged rectangle. */
+		move_to(150.0f, 52.0f);
+		down_at(150.0f, 52.0f);
+		move_to(420.0f, 75.0f);
+		if (timeline.gesture() != timeline_gesture::marquee)
+			return fail("t02 timeline marquee begins");
+		up_at(420.0f, 75.0f);
+		if (timeline.gesture() != timeline_gesture::none ||
+			timeline.selection_ids().size() != 3 ||
+			!timeline.is_selected(k0) || !timeline.is_selected(k1) ||
+			!timeline.is_selected(k2))
+			return fail("t02 timeline marquee selection");
+		if (selection_events == 0 || notified.size() != 3)
+			return fail("t02 timeline selection listener");
+
+		/* Dragging keyframes snaps to the frame grid and records one command
+		 * covering the whole selection. */
+		commands.clear();
+		timeline.set_selection({ k1 });
+		changes = 0;
+		move_to(270.0f, 63.0f);
+		down_at(270.0f, 63.0f);
+		if (timeline.gesture() != timeline_gesture::pending_move)
+			return fail("t02 timeline move pending");
+		move_to(360.0f, 63.0f);
+		const double snapped = timeline.snap_time(1.75);
+		if (timeline.gesture() != timeline_gesture::move ||
+			!close_to(snapped, 53.0 / 30.0) ||
+			!close_to(timeline.find_keyframe(k1)->time, snapped))
+			return fail("t02 timeline move preview");
+		up_at(360.0f, 63.0f);
+		if (timeline.dragging() || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Move keyframes")
+			return fail("t02 timeline move command");
+		if (!commands.undo() ||
+			!close_to(timeline.find_keyframe(k1)->time, 1.0))
+			return fail("t02 timeline move undo");
+		if (!commands.redo() ||
+			!close_to(timeline.find_keyframe(k1)->time, snapped))
+			return fail("t02 timeline move redo");
+
+		/* Esc, synthetic cancel and focus loss restore the drag snapshot. */
+		const float snapped_x = timeline.content_x_at_time(snapped);
+		move_to(snapped_x, 63.0f);
+		down_at(snapped_x, 63.0f);
+		move_to(snapped_x + 100.0f, 63.0f);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (timeline.dragging() || commands.undo_count() != 1 ||
+			!close_to(timeline.find_keyframe(k1)->time, snapped))
+			return fail("t02 timeline esc cancel");
+
+		move_to(snapped_x, 63.0f);
+		down_at(snapped_x, 63.0f);
+		move_to(snapped_x + 100.0f, 63.0f);
+		vgui_input_cancel(ui);
+		if (timeline.dragging() || commands.undo_count() != 1 ||
+			!close_to(timeline.find_keyframe(k1)->time, snapped))
+			return fail("t02 timeline synthetic cancel");
+
+		move_to(snapped_x, 63.0f);
+		down_at(snapped_x, 63.0f);
+		move_to(snapped_x + 100.0f, 63.0f);
+		vgui_set_focus(ui, other);
+		if (timeline.dragging() || commands.undo_count() != 1 ||
+			!close_to(timeline.find_keyframe(k1)->time, snapped))
+			return fail("t02 timeline focus cancel");
+		timeline.request_focus();
+
+		/* Copy/paste preserves relative times, pastes at the playhead and is a
+		 * single undoable command. */
+		commands.clear();
+		timeline.set_selection({ k1, k2 });
+		timeline.copy_selection();
+		if (timeline.clipboard_count() != 2)
+			return fail("t02 timeline copy");
+		const double copied_first = timeline.find_keyframe(k1)->time;
+		const double copied_second = timeline.find_keyframe(k2)->time;
+		const double earliest = std::min(copied_first, copied_second);
+		timeline.set_playhead(5.0);
+		if (!timeline.paste_at_playhead() || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Paste keyframes" ||
+			timeline.keyframe_count() != 9 ||
+			timeline.selection_ids().size() != 2 ||
+			timeline.find_track(ta)->keyframes.size() != 6)
+			return fail("t02 timeline paste");
+		const object_id pasted_first = timeline.selection_ids()[0];
+		const object_id pasted_second = timeline.selection_ids()[1];
+		if (!close_to(timeline.find_keyframe(pasted_first)->time,
+				5.0 + copied_first - earliest) ||
+			!close_to(timeline.find_keyframe(pasted_second)->time,
+				5.0 + copied_second - earliest))
+			return fail("t02 timeline paste relative times");
+		if (!commands.undo() || timeline.keyframe_count() != 7 ||
+			timeline.find_keyframe(pasted_first) != nullptr ||
+			timeline.find_keyframe(pasted_second) != nullptr)
+			return fail("t02 timeline paste undo");
+		if (!commands.redo() || timeline.keyframe_count() != 9 ||
+			timeline.find_keyframe(pasted_first) == nullptr ||
+			timeline.find_keyframe(pasted_second) == nullptr)
+			return fail("t02 timeline paste redo");
+
+		/* Delete removes the selection and undo restores every keyframe. */
+		timeline.set_selection({ pasted_first, pasted_second });
+		commands.clear();
+		if (!timeline.delete_selection() || timeline.keyframe_count() != 7 ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Delete keyframes")
+			return fail("t02 timeline delete");
+		if (!commands.undo() || timeline.keyframe_count() != 9 ||
+			timeline.find_keyframe(pasted_first) == nullptr ||
+			timeline.find_keyframe(pasted_second) == nullptr)
+			return fail("t02 timeline delete undo");
+		if (!commands.redo() || timeline.keyframe_count() != 7 ||
+			timeline.find_keyframe(pasted_first) != nullptr)
+			return fail("t02 timeline delete redo");
+
+		/* Insert snaps to the frame grid, refuses locked tracks and undoes. */
+		commands.clear();
+		timeline.set_playhead(0.77);
+		const object_id added = timeline.add_keyframe_at_playhead();
+		if (added == invalid_object || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Add keyframe" ||
+			!close_to(timeline.find_keyframe(added)->time,
+				std::round(0.77 * 30.0) / 30.0) ||
+			timeline.selection_ids().size() != 1 ||
+			timeline.selection_ids()[0] != added)
+			return fail("t02 timeline add keyframe");
+		if (!commands.undo() || timeline.find_keyframe(added) != nullptr)
+			return fail("t02 timeline add undo");
+		if (timeline.insert_keyframe(tc, 1.0) != invalid_object)
+			return fail("t02 timeline locked insert");
+
+		/* Keyboard shortcuts mirror the transport and clipboard commands. */
+		timeline.request_focus();
+		vgui_input_key(ui, 'A', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'A', 0, VGUI_MOD_CTRL);
+		if (timeline.selection_ids().size() != timeline.keyframe_count())
+			return fail("t02 timeline ctrl+a");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (!timeline.selection_ids().empty())
+			return fail("t02 timeline escape clear selection");
+		timeline.set_playhead(1.0);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_RIGHT, 0, 0);
+		if (!close_to(timeline.playhead(), 1.0 + 1.0 / 30.0))
+			return fail("t02 timeline right step");
+		vgui_input_key(ui, VGUI_KEY_LEFT, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_LEFT, 0, 0);
+		if (!close_to(timeline.playhead(), 1.0))
+			return fail("t02 timeline left step");
+		vgui_input_key(ui, VGUI_KEY_HOME, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_HOME, 0, 0);
+		if (!close_to(timeline.playhead(), 0.0))
+			return fail("t02 timeline home");
+		vgui_input_key(ui, VGUI_KEY_END, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_END, 0, 0);
+		if (!close_to(timeline.playhead(), timeline.duration()))
+			return fail("t02 timeline end");
+		const bool was_playing = timeline.playing();
+		vgui_input_key(ui, ' ', 1, 0);
+		vgui_input_key(ui, ' ', 0, 0);
+		if (timeline.playing() == was_playing)
+			return fail("t02 timeline space playback");
+		timeline.pause();
+		timeline.set_playhead(4.0);
+		timeline.set_selection({ k3 });
+		commands.clear();
+		vgui_input_key(ui, VGUI_KEY_DELETE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_DELETE, 0, 0);
+		if (timeline.find_keyframe(k3) != nullptr ||
+			commands.undo_count() != 1)
+			return fail("t02 timeline delete key");
+		if (!commands.undo())
+			return fail("t02 timeline delete key undo");
+		timeline.set_selection({ k3 });
+		vgui_input_key(ui, 'C', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'C', 0, VGUI_MOD_CTRL);
+		if (timeline.clipboard_count() != 1)
+			return fail("t02 timeline ctrl+c");
+		timeline.set_playhead(7.0);
+		vgui_input_key(ui, 'V', 1, VGUI_MOD_CTRL);
+		vgui_input_key(ui, 'V', 0, VGUI_MOD_CTRL);
+		if (timeline.keyframe_count() != 8 ||
+			timeline.clipboard_count() != 1)
+			return fail("t02 timeline ctrl+v");
+		commands.undo();
+
+		/* Playback is host driven: tick(), external playhead writes, looping
+		 * and frame stepping. */
+		std::vector<double> playheads;
+		timeline.set_playhead_listener([&](double time) {
+			playheads.push_back(time);
+		});
+		timeline.set_duration(2.0);
+		timeline.set_loop(false);
+		timeline.set_playhead(0.0);
+		timeline.play();
+		if (!timeline.playing())
+			return fail("t02 timeline play");
+		timeline.tick(0.5);
+		if (!close_to(timeline.playhead(), 0.5) ||
+			playheads.empty() || !close_to(playheads.back(), 0.5))
+			return fail("t02 timeline tick");
+		timeline.set_playhead(1.25);
+		if (!close_to(timeline.playhead(), 1.25))
+			return fail("t02 timeline external playhead");
+		timeline.tick(0.5);
+		if (!close_to(timeline.playhead(), 1.75))
+			return fail("t02 timeline tick after seek");
+		timeline.tick(1.0);
+		if (!close_to(timeline.playhead(), 2.0) || timeline.playing())
+			return fail("t02 timeline tick stops at end");
+		timeline.play();
+		if (!timeline.playing() || !close_to(timeline.playhead(), 0.0))
+			return fail("t02 timeline replay from end");
+		timeline.set_loop(true);
+		timeline.set_playhead(1.9);
+		timeline.tick(0.3);
+		if (!timeline.playing() || !close_to(timeline.playhead(), 0.2))
+			return fail("t02 timeline loop");
+		timeline.pause();
+		if (timeline.playing())
+			return fail("t02 timeline pause");
+		timeline.set_duration(10.0);
+		timeline.set_playhead(1.0);
+		timeline.step_frames(2);
+		if (!close_to(timeline.playhead(), 1.0 + 2.0 / 30.0))
+			return fail("t02 timeline step forward");
+		timeline.step_frames(-1);
+		if (!close_to(timeline.playhead(), 1.0 + 1.0 / 30.0))
+			return fail("t02 timeline step back");
+		timeline.stop();
+		if (timeline.playing() || !close_to(timeline.playhead(), 0.0))
+			return fail("t02 timeline stop");
+		timeline.tick(1.0);
+		if (!close_to(timeline.playhead(), 0.0))
+			return fail("t02 timeline tick while paused");
+
+		/* Zoom/pan keep sub-frame precision and the cursor anchor fixed. */
+		timeline.set_view_state({ 0.1, 333.333333, 0.0f });
+		const double precise_time = 1.234567891234;
+		if (!close_to(timeline.x_to_time(timeline.time_to_x(precise_time)),
+				precise_time, 1e-12))
+			return fail("t02 timeline time precision");
+		timeline.set_view_state({ 0.0, 4000.0, 0.0f });
+		if (!close_to(timeline.x_to_time(timeline.time_to_x(3.333333333333)),
+				3.333333333333, 1e-12))
+			return fail("t02 timeline zoom precision");
+		timeline.set_view_state({ 0.0, 120.0, 0.0f });
+		const float anchor_lane = 123.456f;
+		const double anchor_time = timeline.x_to_time(anchor_lane);
+		timeline.zoom_at(anchor_lane, 2.0);
+		if (!(timeline.zoom() > 120.0) ||
+			!close_to(timeline.x_to_time(anchor_lane), anchor_time))
+			return fail("t02 timeline zoom anchor");
+		timeline.set_zoom_limits(10.0, 500.0);
+		timeline.set_view_state({ 0.0, 5000.0, 0.0f });
+		if (!close_to(timeline.zoom(), 500.0))
+			return fail("t02 timeline zoom clamp");
+		timeline.set_view_state({ 0.0, 120.0, 0.0f });
+
+		timeline.reset_view();
+		move_to(300.0f, 200.0f);
+		down_at(300.0f, 200.0f, 2);
+		if (timeline.gesture() != timeline_gesture::pan)
+			return fail("t02 timeline pan begins");
+		move_to(340.0f, 200.0f);
+		if (!close_to(timeline.view_state().view_start, -40.0 / 120.0))
+			return fail("t02 timeline pan moves view");
+		up_at(340.0f, 200.0f, 2);
+		if (timeline.dragging())
+			return fail("t02 timeline pan ends");
+
+		timeline.reset_view();
+		move_to(350.0f, 200.0f);
+		const double wheel_anchor = timeline.time_at_content_x(350.0f);
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (!(timeline.zoom() > 120.0) ||
+			!close_to(timeline.time_at_content_x(350.0f), wheel_anchor))
+			return fail("t02 timeline wheel zoom");
+		const double shift_start = timeline.view_state().view_start;
+		const double shift_zoom = timeline.zoom();
+		move_to(350.0f, 200.0f);
+		vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (!close_to(timeline.view_state().view_start,
+				shift_start - 40.0 / shift_zoom))
+			return fail("t02 timeline shift wheel pan");
+
+		for (int i = 0; i < 8; ++i)
+		{
+			timeline_track extra;
+			extra.name = "Extra " + std::to_string(i);
+			timeline.add_track(extra);
+		}
+		timeline.set_view_state({ 0.0, 120.0, 0.0f });
+		move_to(350.0f, 200.0f);
+		vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+		if (!(timeline.view_state().scroll_y > 0.0f) ||
+			timeline.view_state().scroll_y > 30.0f + 1e-4f)
+			return fail("t02 timeline wheel scroll");
+
+		/* Disabling ignores input, and cancel_gesture() is safe when idle. */
+		timeline.cancel_gesture();
+		timeline.reset_view();
+		timeline.set_selection({ k1 });
+		timeline.set_enabled(false);
+		click_at(snapped_x, 63.0f);
+		if (!timeline.is_selected(k1) || timeline.selection_ids().size() != 1)
+			return fail("t02 timeline disabled ignores clicks");
+		timeline.set_enabled(true);
+
+		/* State JSON round-trips and rejects malformed values without touching
+		 * the live view. */
+		timeline.set_view_state({ 0.25, 200.0, 12.0f });
+		timeline.set_duration(20.0);
+		timeline.set_playhead(3.5);
+		timeline.set_frame_rate(24.0);
+		timeline.set_snap_enabled(false);
+		timeline.set_snap_step(0.05);
+		timeline.set_loop(true);
+		timeline.set_selected_track(ta);
+		const timeline_state saved = timeline.capture_state();
+		std::string state_error;
+		timeline_state parsed_state;
+		if (!timeline_state_from_json(timeline_state_to_json(saved),
+				parsed_state, &state_error) ||
+			!close_to(parsed_state.view.view_start, 0.25) ||
+			!close_to(parsed_state.view.pixels_per_second, 200.0) ||
+			!close_to(parsed_state.view.scroll_y, 12.0, 1e-6) ||
+			!close_to(parsed_state.playhead, 3.5) ||
+			!close_to(parsed_state.duration, 20.0) ||
+			!close_to(parsed_state.frame_rate, 24.0) ||
+			parsed_state.snap_enabled ||
+			!close_to(parsed_state.snap_step, 0.05) ||
+			!parsed_state.loop || parsed_state.selected_track != ta)
+			return fail("t02 timeline state json");
+
+		timeline.set_playhead(0.0);
+		timeline.set_view_state({ 0.0, 120.0, 0.0f });
+		timeline.set_loop(false);
+		timeline.set_snap_enabled(true);
+		if (!timeline.apply_state(parsed_state, &state_error) ||
+			!close_to(timeline.playhead(), 3.5) ||
+			!close_to(timeline.zoom(), 200.0) ||
+			!close_to(timeline.view_state().view_start, 0.25) ||
+			!close_to(timeline.duration(), 20.0) ||
+			!close_to(timeline.frame_rate(), 24.0) ||
+			timeline.snap_enabled() || timeline.snap_to_frames() ||
+			!timeline.loop() || timeline.selected_track() != ta)
+			return fail("t02 timeline state apply");
+
+		timeline_state bad_state = saved;
+		bad_state.playhead = 999.0;
+		if (timeline.apply_state(bad_state, &state_error) ||
+			!close_to(timeline.playhead(), 3.5))
+			return fail("t02 timeline state apply validation");
+		timeline_state bad;
+		if (timeline_state_from_json("{", bad, &state_error) ||
+			timeline_state_from_json(R"({"version": 99})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "view": {"pixels_per_second": 0}})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "view": {"scroll_y": -1}})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "duration": 0})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "duration": 10, "playhead": 11})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "frame_rate": 0})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "snap": {"step": 0}})", bad) ||
+			timeline_state_from_json(
+				R"({"version": 1, "selected_track": -3})", bad))
+			return fail("t02 timeline state validation");
+
+		/* View-state sanitation keeps invalid inputs finite and clamped. */
+		timeline.set_view_state({ std::numeric_limits<double>::quiet_NaN(),
+			0.0, -2.0f });
+		if (!close_to(timeline.view_state().view_start, 0.0) ||
+			!close_to(timeline.zoom(), 120.0) ||
+			!close_to(timeline.view_state().scroll_y, 0.0f))
+			return fail("t02 timeline view sanitation");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* A07: console model, filtering, stack folding, jump locations and producers. */
 static int test_console_view()
 {
@@ -10633,6 +11270,8 @@ int main()
 		return rc;
 	if (int rc = test_table_view())
 		return rc;
+	if (int rc = test_timeline_view())
+		return rc;
 	if (int rc = test_property_grid_drag())
 		return rc;
 	if (int rc = test_spinbox())
@@ -10882,16 +11521,18 @@ int main()
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 4)
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 5)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
 		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
 		vgui_item_id canvas_tab = vgui_tab_get_at(shell.bottom_tabs(), 2);
 		vgui_item_id table_tab = vgui_tab_get_at(shell.bottom_tabs(), 3);
+		vgui_item_id timeline_tab = vgui_tab_get_at(shell.bottom_tabs(), 4);
 		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE")
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), timeline_tab)) != "TIMELINE")
 			return fail("shell bottom tab titles");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
@@ -10946,6 +11587,21 @@ int main()
 			return fail("shell table command");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
 			return fail("shell assets tab after table");
+
+		/* T02: the TIMELINE tab hosts the timeline editor and the command
+		 * reveals, focuses and checks it. */
+		if (!shell.timeline().built() || !shell.timeline().widget() ||
+			find_widget(shell.widget(), "timeline_view", VGUI_CUSTOM) == nullptr)
+			return fail("shell timeline built");
+		if (!shell.commands().has("view.timeline") ||
+			!shell.run_command("view.timeline") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != timeline_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.timeline") ||
+			!shell.timeline().focused())
+			return fail("shell timeline command");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab after timeline");
 
 		/* V09: the viewport dock page hosts a second camera surface and a depth
 		 * preview surface, and the render settings are shared with the host

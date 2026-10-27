@@ -415,9 +415,10 @@
   - 验收：大数据表只渲染可见行；列宽和排序状态可保存；单元格编辑器复用 PropertyGrid 的类型化编辑器。
   - 已实现：新增独立 `table_view`（`gui/editor/table_view.*`），`editor_shell` 底部新增 TABLE 页并暴露 `table()` 与 `view.table` 命令。数据源是拉取式 `table_source`：`row_count` 每次刷新只查询一次，绘制只为可见窗口调用 `cell_text`，`last_render_cell_queries()` 可供测试断言；可选 `row_id` 让选中单元格跨排序/刷新跟随稳定行 id，`cell_style` 可覆盖单元格文字/背景色。列由 `table_column` 描述（id/label/宽度/最小宽度/对齐/可排序/可编辑/`property_desc`/自定义比较/`set_value`），表头点击切换升/降序，拖拽表头边界调整列宽；排序为稳定排序，数字/布尔按类型比较、文本大小写不敏感，排序前只读取当前排序列。支持横/纵向滚动条拖动与滚轮滚动、点击/双击命中、方向键/Home/End/PageUp/PageDown 导航、Enter/F2 或双击开始编辑、Esc 清除选择。单元格编辑器直接复用 PropertyGrid 的类型化组件（文本、Spinbox、Checkbox、枚举菜单、颜色、Vector2-4、曲线/渐变），写入前经 `property_normalize_value()` 归一与校验；文本/数字/向量在提交或弹窗关闭时写入，布尔/枚举立即写入，颜色/曲线/渐变在单元格内实时预览并在弹窗关闭时提交（Esc 回滚）；每次实际变化压入一条 `Set <列>` 命令，只读列、校验失败或宿主拒绝不产生记录。`table_state`（版本 1）保存列宽与排序列/方向，`table_state_to_json/from_json` 校验版本、数值和索引；`editor_layout` 升至版本 3，以不透明 `table` 字符串保存该状态，仍接受 v1/v2 文件，存在但非法的表格状态会使加载失败而不是静默覆盖。`editor_shell::capture_layout/apply_layout` 自动收集/恢复表格状态。`vgui_game_editor` 以场景对象为表格模型提供 Name/Parent/Visible/Locked/Position/Tint/Mesh 七列，布尔/向量/颜色/文本编辑复用类型化编辑器并同步属性面板、Outliner 与状态栏。测试 `test_table_view` 使用 1 万行数据断言行数只查一次、滚动与绘制只查询可见行、排序只读取排序列、稳定选择、宽度/排序 JSON 往返与非法状态拒绝、文本/整数（越界钳制与非法输入）/布尔/枚举/颜色/向量编辑、只读列拒绝、取消与 undo/redo；布局测试覆盖 TABLE 页顺序、`view.table` 命令及 v3 表格状态保存/恢复。
 
-- [ ] **T02 Timeline / 动画编辑器**（P1，L）
+- [x] **T02 Timeline / 动画编辑器**（P1，L）（已完成）
   - 轨道、关键帧、时间尺、缩放/平移、框选、复制/粘贴、吸附、播放控制。
   - 验收：关键帧拖拽/复制/删除可撤销；缩放后时间精度正确；播放头与外部时钟同步。
+  - 已实现：新增独立 `timeline_view`（`gui/editor/timeline_view.*`），`editor_shell` 底部新增 TIMELINE 页并暴露 `timeline()` 与 `view.timeline` 命令。模型由 `timeline_track`/`timeline_keyframe` 组成：轨道含稳定 id、名称、颜色、行高、可见/锁定/静音，关键帧含稳定 id、`double` 秒时间、标量值和 step/linear/smooth 插值；`add_track()`/`add_keyframe()` 支持显式 id 并拒绝冲突，`evaluate()` 负责采样。视图用 `view_start` + `pixels_per_second` 描述，时间换算全程 `double`；时间尺按缩放选择 1/30 s 到 10 min 的可读步长，中键平移、Ctrl+滚轮以光标为锚缩放、Shift+滚轮水平滚动、普通滚轮纵向滚动，缩放/框选/命中在极端缩放下仍保持亚帧精度。交互支持点选、Ctrl 切换、Shift 追加、空白拖动框选、双击插入、拖动选中集合、Esc/CANCEL/失焦回滚；快捷键包括 Space 播放、Left/Right 单帧、Home/End、Delete、Ctrl+C/V/X/A。吸附默认跟随帧率（30 fps），可切换为自定义步长；拖动、插入、粘贴、删除各生成一条 `Move keyframes`/`Add keyframe`/`Paste keyframes`/`Delete keyframes` 命令，多选移动只记录一条，剪贴板保存相对时间并在播放头处粘贴。播放由宿主 `tick(delta)` 驱动，支持 play/pause/stop/toggle、单帧步进、循环与到达末尾自动停止；`set_playhead()` 始终权威，`set_playhead_listener()` 让宿主采样动画。`timeline_state`（版本 1）保存视图范围/缩放/滚动、播放头、时长、帧率、吸附开关/步长、循环和选中轨道，`timeline_state_to_json/from_json` 校验版本、有限数值、正缩放/时长/帧率/步长与播放头范围；`editor_layout` 升至版本 4，以不透明 `timeline` 字符串保存该状态并继续接受 v1/v2/v3 文件，存在但非法的 TIMELINE 状态会使加载失败而不是静默覆盖。`vgui_game_editor` 用 Cube Height/Cube Yaw 两条轨道演示关键帧编辑，主循环调用 `timeline().tick(delta)`，播放头监听器把高度和偏航写回立方体。测试 `test_timeline_view` 覆盖模型/显式 id/插值采样、几何与命中、点选/Ctrl/Shift/框选、拖拽吸附与 Esc/CANCEL/失焦回滚、复制/剪切/粘贴相对时间、插入/删除/移动的 undo/redo、键盘快捷键、播放/循环/步进/外部 tick 与监听器、缩放锚点与亚帧精度、状态 JSON 往返与非法值拒绝；布局测试覆盖 TIMELINE 页顺序、`view.timeline` 命令及 v4 时间线状态保存/恢复。
 
 - [ ] **T03 NodeGraph**（P1，L）
   - 节点、端口、连线、框选、缩放/平移、搜索、小地图、右键菜单。
@@ -529,7 +530,7 @@ MVP 验收场景：
 
 ### 7.3 第三批：专业编辑器与打磨
 
-- T02 Timeline / 动画编辑器
+- T02 Timeline / 动画编辑器（已完成）
 - T03 NodeGraph
 - T04 CodeEditor / RichText
 - E05 无障碍

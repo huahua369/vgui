@@ -27,6 +27,7 @@
 #include "status_bar.h"
 #include "table_view.h"
 #include "thumbnail_cache.h"
+#include "timeline_view.h"
 #include "toolbar.h"
 #include "vector_editor.h"
 #include "viewport_camera.h"

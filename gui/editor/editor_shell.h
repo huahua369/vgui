@@ -6,7 +6,7 @@
  * the bottom panel are dock panels with stable ids, so hosts and users can
  * move them between the left/right/bottom/centre zones, merge them into tab
  * groups, float them and restore the arrangement after a restart.  The bottom
- * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE TabView.
+ * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE TabView.
  */
 #include <memory>
 #include <string>
@@ -25,6 +25,7 @@
 #include "search_box.h"
 #include "status_bar.h"
 #include "table_view.h"
+#include "timeline_view.h"
 #include "toolbar.h"
 #include "viewport_camera.h"
 #include "viewport_gizmo.h"
@@ -97,8 +98,8 @@ namespace vgui_editor_kit {
 		vgui_widget* workspace_splitter() const noexcept;
 		vgui_widget* center_splitter() const noexcept;
 
-		/* The ASSETS / CONSOLE / CANVAS / TABLE TabView inside the bottom dock
-		 * panel. */
+		/* The ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE TabView inside the
+		 * bottom dock panel. */
 		vgui_widget* bottom_tabs() const noexcept;
 
 		/* A07: the log console hosted by the CONSOLE tab.  Hosts append from
@@ -117,6 +118,12 @@ namespace vgui_editor_kit {
 		 * editor_layout; hosts install the data source and columns. */
 		table_view& table() noexcept;
 		const table_view& table() const noexcept;
+
+		/* T02: animation timeline hosted by the TIMELINE tab.  The shell wires
+		 * its command stack and persists its playhead/view settings through
+		 * editor_layout; hosts populate tracks and drive playback with tick(). */
+		timeline_view& timeline() noexcept;
+		const timeline_view& timeline() const noexcept;
 
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
@@ -223,6 +230,7 @@ namespace vgui_editor_kit {
 		vgui_item_id console_tab_ = 0;
 		vgui_item_id canvas_tab_ = 0;
 		vgui_item_id table_tab_ = 0;
+		vgui_item_id timeline_tab_ = 0;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
@@ -252,6 +260,7 @@ namespace vgui_editor_kit {
 		console_view console_;
 		canvas_view canvas_;
 		table_view table_;
+		timeline_view timeline_;
 	};
 
 } /* namespace vgui_editor_kit */

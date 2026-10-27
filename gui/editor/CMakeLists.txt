@@ -21,6 +21,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     status_bar.cpp
     table_view.cpp
     thumbnail_cache.cpp
+    timeline_view.cpp
     toolbar.cpp
     vector_editor.cpp
     viewport_camera.cpp

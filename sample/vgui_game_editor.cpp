@@ -648,6 +648,64 @@ struct editor_state
 					" = " + value);
 		});
 	}
+
+	/* T02: animation timeline demo.  The timeline owns tracks/keyframes while
+	 * the host samples the playhead each frame and writes the animated transform
+	 * back into the scene.  Playback is driven by the main loop tick(), which
+	 * also proves playhead synchronization with the external clock. */
+	void configure_timeline(object_id cube)
+	{
+		if (!shell)
+			return;
+		timeline_view& timeline = shell->timeline();
+
+		timeline_track height;
+		height.name = "Cube Height";
+		height.color = 0xFF5FA8FF;
+		height.keyframes = {
+			{ 0, 0.0, 1.0, timeline_interpolation::smooth },
+			{ 0, 1.0, 2.5, timeline_interpolation::smooth },
+			{ 0, 2.0, 1.0, timeline_interpolation::smooth },
+			{ 0, 3.0, 2.5, timeline_interpolation::smooth }
+		};
+		const object_id height_track = timeline.add_track(height);
+
+		timeline_track yaw;
+		yaw.name = "Cube Yaw";
+		yaw.color = 0xFFD9A441;
+		yaw.keyframes = {
+			{ 0, 0.0, 0.55, timeline_interpolation::linear },
+			{ 0, 3.0, 6.833185, timeline_interpolation::linear }
+		};
+		const object_id yaw_track = timeline.add_track(yaw);
+
+		timeline.set_duration(3.0);
+		timeline.set_frame_rate(30.0);
+		timeline.set_loop(true);
+		timeline.set_playhead(0.0);
+		timeline.set_selected_track(height_track);
+		timeline.set_selection_listener([this](const std::vector<object_id>& ids) {
+			if (!shell)
+				return;
+			shell->set_status(ids.empty()
+				? "timeline: click or marquee keyframes"
+				: "timeline: " + std::to_string(ids.size()) +
+					" keyframe(s) selected");
+		});
+		timeline.set_playhead_listener([this, cube, height_track,
+			yaw_track](double time) {
+			auto found = scene.objects.find(cube);
+			if (found == scene.objects.end() || !shell)
+				return;
+			timeline_view& view = shell->timeline();
+			found->second.position.y =
+				(float)view.evaluate(height_track, time);
+			found->second.rotation = glm::angleAxis(
+				(float)view.evaluate(yaw_track, time),
+				glm::vec3(0.0f, 1.0f, 0.0f));
+		});
+		timeline.play();
+	}
 };
 
 static editor_state g;
@@ -2017,6 +2075,7 @@ static void setup_editor(vgui_context* ui)
 	/* V06: 渲染/拾取集合由 renderable 标记驱动。 */
 	g.scene.objects[cube].renderable = true;
 	g.configure_table();
+	g.configure_timeline(cube);
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
@@ -2843,7 +2902,12 @@ int main()
 			/* A07: drain the console every frame even when its tab is hidden,
 			 * so producers never accumulate an unbounded queue. */
 			if (g.shell)
+			{
 				g.shell->console().tick(delta);
+				/* T02: advance the timeline from the external frame clock; the
+				 * playhead listener writes the sampled pose into the scene. */
+				g.shell->timeline().tick(delta);
+			}
 			/* V01/V09: 布局完成后取每个相机视口的渲染尺寸，宿主在此原地重建
 			 * 3D 附件并更新原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会
 			 * 闪空白。深度预览视口直接复用主视口的深度可视化纹理。 */

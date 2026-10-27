@@ -183,6 +183,9 @@ namespace vgui_editor_kit {
 		if (!layout.table_state.empty())
 			root["table"] = layout.table_state;
 
+		if (!layout.timeline_state.empty())
+			root["timeline"] = layout.timeline_state;
+
 		return root.dump(2) + "\n";
 	}
 
@@ -311,6 +314,11 @@ namespace vgui_editor_kit {
 			if (root.contains("table"))
 			{
 				parsed.table_state = read_string(root, "table");
+			}
+
+			if (root.contains("timeline"))
+			{
+				parsed.timeline_state = read_string(root, "timeline");
 			}
 
 			out = std::move(parsed);

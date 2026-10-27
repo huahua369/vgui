@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView（`vgui_editor_kit`，基于公共 C API） |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView（`vgui_editor_kit`，基于公共 C API） |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
@@ -228,9 +228,9 @@ vgui_dock_on_close(dock, on_dock_close, app);
 
 ### 编辑器布局持久化
 
-`vgui_editor_kit::editor_shell` 使用一个 `VGUI_DOCK` 组织 Outliner / Viewport / Properties / Bottom 四个面板，稳定 id 分别为 `"outliner"`、`"viewport"`、`"properties"`、`"bottom"`。`dock()` 返回该 Dock，宿主可直接用 `vgui_dock_*` 调整停靠区、合并标签组或浮出面板；`bottom_tabs()` 仍返回底部的 ASSETS / CONSOLE / CANVAS / TABLE TabView。旧的 `body_splitter()` / `workspace_splitter()` / `center_splitter()` 为源码兼容保留，但已不再创建 Splitter，统一返回 `nullptr`。
+`vgui_editor_kit::editor_shell` 使用一个 `VGUI_DOCK` 组织 Outliner / Viewport / Properties / Bottom 四个面板，稳定 id 分别为 `"outliner"`、`"viewport"`、`"properties"`、`"bottom"`。`dock()` 返回该 Dock，宿主可直接用 `vgui_dock_*` 调整停靠区、合并标签组或浮出面板；`bottom_tabs()` 仍返回底部的 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE TabView。旧的 `body_splitter()` / `workspace_splitter()` / `center_splitter()` 为源码兼容保留，但已不再创建 Splitter，统一返回 `nullptr`。
 
-外壳布局记录为带版本号的 JSON（当前版本 3）：Dock 左/右/底部区域尺寸、每个区域的标签顺序、面板打开状态与活动页、浮动面板矩形，以及底部 Tab 顺序和当前页；版本 3 额外保存 TABLE 的列宽与排序状态（不透明 JSON 字符串）。布局文件与场景文档分离，可在退出时保存、启动时恢复；版本 1/2 的旧文件仍可加载并映射到当前格式，文件损坏或版本不支持时回退到 `build()` 后的默认布局。
+外壳布局记录为带版本号的 JSON（当前版本 4）：Dock 左/右/底部区域尺寸、每个区域的标签顺序、面板打开状态与活动页、浮动面板矩形，以及底部 Tab 顺序和当前页；版本 3 额外保存 TABLE 的列宽与排序状态，版本 4 保存 TIMELINE 的视图范围、缩放、播放头、时长、帧率、吸附与循环状态（均为不透明 JSON 字符串）。布局文件与场景文档分离，可在退出时保存、启动时恢复；版本 1/2/3 的旧文件仍可加载并映射到当前格式，文件损坏或版本不支持时回退到 `build()` 后的默认布局。
 
 ```cpp
 vgui_editor_kit::editor_context context(ui);
@@ -324,6 +324,34 @@ const std::string state =
 - `table_column::editor` 复用 PropertyGrid 的 `property_desc`：文本、整数/浮点 Spinbox、Checkbox、枚举菜单、颜色、Vector2-4、曲线/渐变；写入前统一经 `property_normalize_value()` 校验。文本/数字/向量在提交或弹窗关闭时写入，布尔/枚举立即写入，颜色/曲线/渐变在单元格内实时预览并在关闭时提交（Esc 回滚）。每次实际变化压入一条 `Set <列>` 命令；只读列、校验失败或宿主拒绝不产生记录。
 - `table_state`（版本 1）保存列宽和排序列/方向；`table_state_to_json()` / `table_state_from_json()` 可单独持久化或校验。`editor_shell` 会把该状态放进 `editor_layout`（版本 3）并暴露 `table()` 与 `view.table` 命令。
 - `last_render_cell_queries()` 返回上一次绘制的单元格查询次数，可用于断言虚拟化边界；`refresh_row()` 可在单元格变化后刷新排序投影。控件回调指回 C++ 对象，`table_view` 必须比其控件树存活更久，析构时会解除自定义回调并销毁弹出编辑器。
+
+### 时间线（Timeline）
+
+`vgui_editor_kit::timeline_view` 是独立的动画时间线：它拥有轻量轨道/关键帧模型（稳定 `object_id`、秒为单位的 `double` 时间、标量值、step/linear/smooth 插值），不依赖 3D 场景或渲染器。轨道可设置名称、颜色、行高、可见/锁定/静音；`evaluate()` 按关键帧插值采样，宿主可在播放头监听器里把值写回自己的对象。
+
+```cpp
+vgui_editor_kit::timeline_view& timeline = shell.timeline();  // 或独立 timeline.build(parent)
+vgui_editor_kit::timeline_track track;
+track.name = "Cube Height";
+track.keyframes = {
+    { 0, 0.0, 1.0, vgui_editor_kit::timeline_interpolation::smooth },
+    { 0, 1.0, 2.5, vgui_editor_kit::timeline_interpolation::smooth },
+};
+const vgui_editor_kit::object_id id = timeline.add_track(track);
+timeline.set_playhead_listener([&](double time) {
+    cube.y = timeline.evaluate(id, time);
+});
+timeline.set_loop(true);
+timeline.play();
+// main loop: timeline.tick(delta);
+```
+
+- 时间尺显示自适应刻度；中键平移、Ctrl+滚轮以光标为锚缩放、Shift+滚轮水平滚动、普通滚轮纵向滚动轨道列表。视口由 `view_start` + `pixels_per_second` 描述，时间换算全程使用 `double`，高倍缩放下命中/拖动仍保持亚帧精度。
+- 左键点选关键帧（Ctrl 切换、Shift 追加），拖动选中集合按帧吸附移动；空白轨道拖动框选，双击轨道插入关键帧。`Space` 播放/暂停，`Left`/`Right` 单帧步进，`Home`/`End` 跳到首尾，`Delete` 删除，`Ctrl+C`/`Ctrl+V`/`Ctrl+X` 复制/粘贴/剪切，`Esc` 取消手势或清空选择。
+- 吸附默认跟随帧率（30 fps → 1/30 s），`set_snap_step()` 可改用自定义步长；`set_snap_enabled()` 总开关。拖动、插入、粘贴、删除各提交一条命令（`"Move keyframes"`、`"Add keyframe"`、`"Paste keyframes"`、`"Delete keyframes"`），整组或多选只产生一条撤销记录；直接调用 `add_keyframe()`/`update_keyframe()` 不记录命令，适合加载文档。
+- 播放由宿主驱动：主循环调用 `tick(delta)`；`play`/`pause`/`stop`/`toggle_play`/`step_frames`/`set_loop` 控制状态，`set_playhead()` 写入始终优先，因此外部时钟可以覆盖播放头。`set_playhead_listener()` 在播放头变化时回调。
+- `timeline_state`（版本 1）保存视图起点/缩放/纵向滚动、播放头、时长、帧率、吸附开关/步长与循环；`timeline_state_to_json()` / `timeline_state_from_json()` 可单独持久化或校验，非法版本、非有限值、非正缩放/时长/帧率/步长或越界播放头会被拒绝。`editor_shell` 将其放入 `editor_layout`（版本 4）并暴露 `timeline()` 与 `view.timeline` 命令。
+- `vgui_game_editor` 用两条轨道驱动立方体的高度和偏航，主循环调用 `timeline().tick(delta)`，播放头监听器把采样值写回场景；拖动/复制/删除关键帧后可直接用 Edit > Undo/Redo 验证。
 
 ### 工具栏与状态栏组件（vgui_editor_kit）
 
@@ -694,7 +722,7 @@ Debug 输出目录为 `out/bin/x64d/`：
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
 out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、曲线/渐变、资产引用、目录导航/搜索、异步缩略图/LRU/磁盘缓存、资产拖放到视口/Outliner/属性栏、OS 文件导入、重命名/删除/复制/移动/重新导入、依赖查看、平移/旋转/缩放 Gizmo、2D Canvas 编辑、多视口/HDR/MSAA/深度预览、分级日志/堆栈折叠/错误跳转与命令栈
 out/bin/x64d/vgui.exe                  # OVG 场景示例
@@ -804,7 +832,7 @@ out/bin/x64d/vgui_editor_kit_test.exe
 out/bin/x64d/vgui_texture_test.exe
 ```
 
-自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、资产操作（A06 重命名/删除/复制/移动/重新导入、冲突/只读/占用/非法目标/I/O 错误、整批原子失败、批量单条撤销、不可撤销标记与警告 Toast、列表/网格右键菜单、F2/Delete/Ctrl+D/F5/Ctrl+I、重命名/删除对话框、导入通知与依赖模态框）、日志控制台（A07 构建/默认值、生产者队列与模型分离、有界排空、等级+搜索独立/组合/大小写、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空、保留上限与 dropped 计数、4 线程并发追加，以及 shell CONSOLE 页、`view.console` 命令与访问器追加）、2D Canvas（V08 模型/显式 id、坐标与缩放钳制、自适应网格、点击/Ctrl/Shift/框选、锁定与不可见过滤、手柄随旋转/缩放、移动/缩放/旋转吸附与命令撤销、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用与选择监听器、shell CANVAS 页/`view.canvas` 命令）、多视口与 HDR/MSAA/深度预览（V09 第二相机视口/深度视口、默认设置、`view.hdr`/`view.msaa`/`view.depth` 命令与设置 setter/重置）、Gizmo（V05/V07 三模式/四空间、旋转环 15° 吸附与跨 ±π 展开、轴向/统一缩放与 0.1 吸附、模式/空间切换取消、begin 快照、数值文本往返与多选共享枢轴）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
+自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、资产操作（A06 重命名/删除/复制/移动/重新导入、冲突/只读/占用/非法目标/I/O 错误、整批原子失败、批量单条撤销、不可撤销标记与警告 Toast、列表/网格右键菜单、F2/Delete/Ctrl+D/F5/Ctrl+I、重命名/删除对话框、导入通知与依赖模态框）、日志控制台（A07 构建/默认值、生产者队列与模型分离、有界排空、等级+搜索独立/组合/大小写、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空、保留上限与 dropped 计数、4 线程并发追加，以及 shell CONSOLE 页、`view.console` 命令与访问器追加）、2D Canvas（V08 模型/显式 id、坐标与缩放钳制、自适应网格、点击/Ctrl/Shift/框选、锁定与不可见过滤、手柄随旋转/缩放、移动/缩放/旋转吸附与命令撤销、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用与选择监听器、shell CANVAS 页/`view.canvas` 命令）、时间线（T02 轨道/关键帧/显式 id、线性/阶梯/平滑求值、关键帧命中与框选、拖拽/复制粘贴/插入/删除命令撤销、30fps 吸附与自定义步长、缩放锚点与亚帧精度、播放/循环/步进/外部 tick 与播放头监听、状态 JSON 往返与非法值拒绝、shell TIMELINE 页/`view.timeline` 命令）、多视口与 HDR/MSAA/深度预览（V09 第二相机视口/深度视口、默认设置、`view.hdr`/`view.msaa`/`view.depth` 命令与设置 setter/重置）、Gizmo（V05/V07 三模式/四空间、旋转环 15° 吸附与跨 ±π 展开、轴向/统一缩放与 0.1 吸附、模式/空间切换取消、begin 快照、数值文本往返与多选共享枢轴）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、版本 1 兼容映射、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
 
 `vgui_texture_test` 使用离屏 FBO + 像素回读，覆盖原生与 CPU 纹理的 source/fit/tint/flip/pixel snap，以及 V10 九宫格、旋转、自定义旋转中心、矩阵和它们的组合，并包含 CPU 图片在父级裁剪内的回归用例（79 项断言）；`vgui_demo` 的图片卡片可交互验证同一组变换。
 
