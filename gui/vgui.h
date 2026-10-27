@@ -899,15 +899,40 @@ extern "C" {
 
 	VGUI_API void vgui_context_set_size(vgui_context* ctx, int width, int height);
 	VGUI_API void vgui_context_get_size(vgui_context* ctx, int* width, int* height);
+	/* Font sizes are logical units: the effective size used for layout and
+	 * rendering is font_size * ui_scale.  get_font_size() returns the effective
+	 * size, while the value passed to set_font() is always logical. */
 	VGUI_API void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* font, float font_size);
+	VGUI_API float vgui_context_get_font_size(vgui_context* ctx);
 	VGUI_API void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme);
 	VGUI_API void vgui_context_get_theme(vgui_context* ctx, vgui_theme* theme);
+
+	/* UI scale (DPI scaling).  All public geometry, style and font-size values
+	 * are logical units; the context multiplies them by ui_scale when it lays out
+	 * and draws.  Changing the scale rescales the live widget tree, so moving a
+	 * window to a monitor with a different content scale does not require
+	 * rebuilding it.  Values outside [0.25, 4] and non-finite values are clamped
+	 * or replaced with 1. */
+	VGUI_API void vgui_context_set_ui_scale(vgui_context* ctx, float scale);
+	VGUI_API float vgui_context_get_ui_scale(vgui_context* ctx);
+
+	/* Called after the effective style, fonts and widgets have been rescaled.
+	 * Listeners may add/remove themselves.  The returned token can be passed to
+	 * remove_ui_scale_listener(). */
+	typedef void (*vgui_ui_scale_fn)(vgui_context* ctx, float scale, void* user);
+	VGUI_API int vgui_context_add_ui_scale_listener(vgui_context* ctx, vgui_ui_scale_fn fn, void* user);
+	VGUI_API void vgui_context_remove_ui_scale_listener(vgui_context* ctx, int token);
 
 	/* Fills style with the built-in defaults.  Style changes are applied to the
 	 * context immediately; widgets whose padding/rounding/requested sizes still
 	 * equal the previous defaults are migrated as well, so an existing tree can be
-	 * restyled without rebuilding it. */
+	 * restyled without rebuilding it.  set_style() takes logical values (they are
+	 * multiplied by ui_scale); get_style() returns the effective values currently
+	 * used by layout and drawing. */
 	VGUI_API void vgui_style_default(vgui_style* style);
+	/* Multiplies every geometry field (paddings, sizes, widths, roundings, gaps)
+	 * by scale in place.  Colour and timing fields are left untouched. */
+	VGUI_API void vgui_style_scale(vgui_style* style, float scale);
 	VGUI_API void vgui_context_set_style(vgui_context* ctx, const vgui_style* style);
 	VGUI_API void vgui_context_get_style(vgui_context* ctx, vgui_style* style);
 
@@ -986,7 +1011,10 @@ extern "C" {
 	VGUI_API void vgui_widget_set_text_key(vgui_widget* widget, const char* key);
 	VGUI_API const char* vgui_widget_get_text_key(vgui_widget* widget);
 
+	/* Font sizes are logical units.  get_font_size() returns the effective size
+	 * (size * context ui_scale); pass 0 to inherit the context font. */
 	VGUI_API void vgui_widget_set_font_size(vgui_widget* widget, float size);
+	VGUI_API float vgui_widget_get_font_size(vgui_widget* widget);
 	/* Text metrics using the widget font.  Useful for VGUI_CUSTOM widgets
 	 * that lay out code/grid text themselves.  Both return a positive value
 	 * when a font is available and a size-derived fallback otherwise. */
@@ -1110,7 +1138,8 @@ extern "C" {
 	VGUI_API void vgui_widget_set_focus_alpha(vgui_widget* widget, float alpha);
 	VGUI_API float vgui_widget_get_focus_alpha(vgui_widget* widget);
 
-	/* Layout properties. */
+	/* Layout properties.  Geometry values are logical units and are multiplied
+	 * by the context ui_scale; get_rect() reports effective pixels. */
 	VGUI_API void vgui_widget_set_layout(vgui_widget* widget, vgui_layout_kind layout);
 	VGUI_API void vgui_widget_set_pos(vgui_widget* widget, float x, float y);
 	VGUI_API void vgui_widget_set_size(vgui_widget* widget, float width, float height);

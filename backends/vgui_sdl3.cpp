@@ -20,6 +20,7 @@ vgui sdl3实现
 #include <typeindex>
 #include <mutex>
 #include <array>
+#include <cmath>
 #include <ovg_c.h>
 #include "vgui_sdl3.h"
 #include <stb_image.h>
@@ -259,7 +260,52 @@ bool os_window::text_input_active()
 {
 	return SDL_TextInputActive(window);
 }
-// 设置输入法坐标
+
+float os_window::content_scale() const
+{
+	if (!window)
+		return 1.0f;
+	float scale = SDL_GetWindowDisplayScale(window);
+	if (!std::isfinite(scale) || scale <= 0.0f)
+		scale = 1.0f;
+	return scale;
+}
+
+float os_window::pixel_ratio() const
+{
+	if (!window)
+		return 1.0f;
+	int pixel_w = 0, pixel_h = 0;
+	int window_w = 0, window_h = 0;
+	if (!SDL_GetWindowSizeInPixels(window, &pixel_w, &pixel_h) ||
+		!SDL_GetWindowSize(window, &window_w, &window_h) ||
+		window_w <= 0 || window_h <= 0)
+		return 1.0f;
+	const float ratio = (float)pixel_w / (float)window_w;
+	if (!std::isfinite(ratio) || ratio <= 0.0f)
+		return 1.0f;
+	return ratio;
+}
+
+bool os_window::sync_ui_scale(bool force)
+{
+	if (!viewport)
+		return false;
+
+	const float next_scale = viewport->ui_scale_override > 0.0f
+		? viewport->ui_scale_override : content_scale();
+	const float next_ratio = pixel_ratio();
+	const bool changed = force ||
+		std::fabs(viewport->ui_scale - next_scale) > 1e-5f ||
+		std::fabs(viewport->pixel_ratio - next_ratio) > 1e-5f;
+	viewport->ui_scale = next_scale;
+	viewport->pixel_ratio = next_ratio;
+	if (viewport->ui)
+		vgui_context_set_ui_scale(viewport->ui, next_scale);
+	return changed;
+}
+
+// 设置输入法坐标。输入矩形来自 vgui，使用渲染像素；SDL 使用窗口点。
 void os_window::set_ime_pos(const glm::ivec4& r) {
 	do
 	{
@@ -285,7 +331,14 @@ void os_window::set_ime_pos(const glm::ivec4& r) {
 			::ImmReleaseContext(hWnd, hIMC);
 		}
 #else 
-		SDL_Rect rect = { r.x,r.y, r.z, r.w };
+		const float ratio = pixel_ratio();
+		SDL_Rect rect = {
+			(int)std::lround((float)r.x / ratio),
+			(int)std::lround((float)r.y / ratio),
+			(int)std::lround((float)r.z / ratio),
+			(int)std::lround((float)r.w / ratio) };
+		if (rect.w < 1) rect.w = 1;
+		if (rect.h < 1) rect.h = 1;
 		SDL_SetTextInputArea(window, &rect, 0);
 #endif
 	} while (0);

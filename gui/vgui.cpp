@@ -521,7 +521,8 @@ struct vgui_widget
 	vgui_color text_color = 0;
 	vgui_color accent = 0;
 	vgui_color track = 0;
-	float font_size = 0;
+	float font_size = 0;		// effective size (0 = inherit context)
+	float base_font_size = 0;	// logical size supplied by the host
 	float rounding = 0;
 	float border_width = 0;
 	float opacity = 1.0f;
@@ -748,10 +749,13 @@ struct vgui_focus_listener_entry
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
-	float font_size = 16.0f;
+	float font_size = 16.0f;		// effective size (base_font_size * ui_scale)
+	float base_font_size = 16.0f;	// logical size supplied by the host
+	float ui_scale = 1.0f;
 	int width = 0, height = 0;
 	vgui_theme theme = {};
-	vgui_style style = {};
+	vgui_style style = {};			// effective style (base_style * ui_scale)
+	vgui_style base_style = {};		// logical style supplied by the host
 	float focus_alpha = 1.0f;	// default focus-ring opacity
 	vgui_widget* root = nullptr;
 
@@ -834,6 +838,16 @@ struct vgui_context
 	// 附加焦点观察者（vgui_context_add_focus_listener）
 	std::vector<vgui_focus_listener_entry> focus_listeners;
 	int next_focus_listener = 1;
+
+	// UI scale listeners (vgui_context_add_ui_scale_listener)
+	struct ui_scale_listener_entry
+	{
+		int token = 0;
+		vgui_ui_scale_fn fn = nullptr;
+		void* user = nullptr;
+	};
+	std::vector<ui_scale_listener_entry> ui_scale_listeners;
+	int next_ui_scale_listener = 1;
 
 	bool layout_dirty = true;
 	bool in_input = false;
@@ -3558,6 +3572,95 @@ namespace {
 		if (s->image.disabled_mix == 0) s->image.disabled_mix = def.image.disabled_mix;
 	}
 
+	// Returns a copy of style with every geometric field multiplied by scale.
+	// Timing, opacity, mixing and unitless ratios stay in their own domain.
+	static vgui_style vgui_style_scaled(const vgui_style& in, float scale)
+	{
+		vgui_style s = in;
+		const float k = scale > 0.0f ? scale : 1.0f;
+		auto g = [k](float& v) { v *= k; };
+
+		g(s.focus.min_size); g(s.focus.rounding); g(s.focus.inset); g(s.focus.width);
+
+		g(s.panel.padding); g(s.panel.border_width); g(s.panel.rounding);
+		g(s.panel.scrollbar_width); g(s.panel.scrollbar_inset);
+		g(s.panel.scrollbar_min_thumb); g(s.panel.scrollbar_rounding);
+		g(s.panel.scrollbar_hit_padding); g(s.panel.scrollbar_min_track);
+
+		g(s.label.padding_x);
+
+		g(s.button.padding_x); g(s.button.padding_y); g(s.button.rounding);
+		g(s.button.border_width); g(s.button.min_height);
+		g(s.button.text_extra_width); g(s.button.press_offset); g(s.button.icon_gap);
+
+		g(s.choice.box_min); g(s.choice.box_max); g(s.choice.line_offset); g(s.choice.gap);
+		g(s.checkbox.rounding); g(s.checkbox.border_width); g(s.checkbox.check_width);
+		g(s.radio.border_width);
+		g(s.switch_.width); g(s.switch_.min_height); g(s.switch_.max_height);
+		g(s.switch_.line_offset); g(s.switch_.min_control_height);
+		g(s.switch_.thumb_inset); g(s.switch_.gap);
+		g(s.slider.req_width); g(s.slider.min_height);
+		g(s.slider.track_thickness); g(s.slider.knob_radius);
+		g(s.progress.req_width); g(s.progress.min_height); g(s.progress.rounding);
+
+		g(s.edit.padding_x); g(s.edit.padding_y); g(s.edit.rounding);
+		g(s.edit.border_width); g(s.edit.req_width); g(s.edit.req_height);
+		g(s.edit.min_width); g(s.edit.text_extra_width);
+		g(s.edit.selection_rounding); g(s.edit.selection_tail_max_width);
+		g(s.edit.selection_min_width); g(s.edit.caret_width);
+		g(s.edit.ime_underline_width); g(s.edit.ime_underline_min_width);
+		g(s.edit.scrollbar_width); g(s.edit.scrollbar_inset);
+		g(s.edit.scrollbar_min_thumb); g(s.edit.scrollbar_rounding);
+		g(s.edit.scrollbar_hit_padding); g(s.edit.scrollbar_min_track);
+		g(s.edit.scrollbar_min_cross); g(s.edit.scrollbar_extra_scroll);
+
+		g(s.separator.thickness);
+
+		g(s.list.row_height); g(s.list.padding_x); g(s.list.padding_y);
+		g(s.list.rounding); g(s.list.req_width); g(s.list.req_height);
+
+		g(s.tree.row_height); g(s.tree.indent); g(s.tree.arrow_size);
+		g(s.tree.arrow_gap); g(s.tree.padding_x); g(s.tree.padding_y);
+		g(s.tree.rounding); g(s.tree.req_width); g(s.tree.req_height);
+
+		g(s.menu.item_height); g(s.menu.padding_x); g(s.menu.padding_y);
+		g(s.menu.item_padding_x); g(s.menu.check_width); g(s.menu.shortcut_gap);
+		g(s.menu.submenu_arrow_width); g(s.menu.separator_height);
+		g(s.menu.rounding); g(s.menu.min_width); g(s.menu.max_width);
+		g(s.menu.max_height);
+
+		g(s.menubar.item_height); g(s.menubar.padding_x); g(s.menubar.padding_y);
+		g(s.menubar.item_padding_x); g(s.menubar.gap); g(s.menubar.rounding);
+		g(s.menubar.req_height);
+
+		g(s.tooltip.pointer_offset_x); g(s.tooltip.pointer_offset_y);
+		g(s.tooltip.widget_gap); g(s.tooltip.padding_x); g(s.tooltip.padding_y);
+		g(s.tooltip.rounding); g(s.tooltip.border_width);
+		g(s.tooltip.max_width); g(s.tooltip.margin); g(s.tooltip.line_gap);
+
+		g(s.modal.margin); g(s.modal.dialog_width); g(s.modal.min_width);
+		g(s.modal.max_height); g(s.modal.padding); g(s.modal.rounding);
+		g(s.modal.border_width); g(s.modal.title_gap); g(s.modal.message_gap);
+		g(s.modal.button_gap); g(s.modal.button_top_gap);
+
+		g(s.toast.max_width); g(s.toast.padding_x); g(s.toast.padding_y);
+		g(s.toast.rounding); g(s.toast.border_width); g(s.toast.margin);
+		g(s.toast.gap); g(s.toast.line_gap);
+
+		g(s.dock.left_width); g(s.dock.right_width); g(s.dock.bottom_height);
+		g(s.dock.gap); g(s.dock.tab_height); g(s.dock.tab_padding);
+		g(s.dock.tab_gap); g(s.dock.tab_min_width); g(s.dock.tab_max_width);
+		g(s.dock.close_size); g(s.dock.floating_title_height);
+		g(s.dock.floating_width); g(s.dock.floating_height);
+		g(s.dock.floating_min_width); g(s.dock.floating_min_height);
+		g(s.dock.floating_rounding); g(s.dock.floating_border_width);
+		g(s.dock.shadow); g(s.dock.drag_threshold);
+
+		g(s.image.req_width); g(s.image.req_height);
+		g(s.image.border_width); g(s.image.rounding);
+		return s;
+	}
+
 	static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, const char* text)
 	{
 		vgui_widget* w = new vgui_widget();
@@ -3692,6 +3795,7 @@ namespace {
 			break;
 		case VGUI_SPLITTER:
 			w->splitter = std::make_unique<vgui_splitter_state>();
+			w->splitter->sash_size *= ctx->ui_scale > 0.0f ? ctx->ui_scale : 1.0f;
 			w->bg = 0;
 			w->border = th.panel_border;
 			w->border_width = 0;
@@ -3705,6 +3809,13 @@ namespace {
 			break;
 		case VGUI_TABVIEW:
 			w->tabs = std::make_unique<vgui_tab_state>();
+			if (ctx->ui_scale > 0.0f)
+			{
+				w->tabs->tab_height *= ctx->ui_scale;
+				w->tabs->tab_padding *= ctx->ui_scale;
+				w->tabs->tab_gap *= ctx->ui_scale;
+				w->tabs->close_size *= ctx->ui_scale;
+			}
 			w->bg = th.panel_bg;
 			w->border = th.panel_border;
 			w->border_width = 1.0f;
@@ -13216,6 +13327,74 @@ static void vgui_custom_clip_end(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec4& sa
 // Public C API
 //----------------------------------------------------------------------------
 
+namespace {
+	// Rescales the effective geometry of an existing widget tree when ui_scale
+	// changes.  Values are multiplied by the ratio between the old and the new
+	// scale, so repeated changes do not compound: widget metrics always store
+	// effective (render) units, while explicit fonts keep their logical base.
+	static void vgui_rescale_widget_tree(vgui_context* ctx, float ratio, float new_scale)
+	{
+		if (!ctx || !(ratio > 0.0f)) return;
+		auto m = [ratio](float& v) { v *= ratio; };
+		auto mi = [ratio](int& v)
+			{
+				if (v > 0) v = (int)std::lround((float)v * ratio);
+			};
+
+		for (vgui_widget* w : ctx->all_widgets)
+		{
+			if (!w || !ctx->alive.count(w) || w == ctx->root) continue;
+
+			m(w->x); m(w->y);
+			m(w->req_w); m(w->req_h);
+			m(w->min_w); m(w->min_h);
+			m(w->max_w); m(w->max_h);
+			for (float& v : w->margin) m(v);
+			for (float& v : w->padding) m(v);
+			m(w->gap);
+			m(w->rounding); m(w->border_width);
+			m(w->caret_width); m(w->sel_rounding);
+			m(w->scroll_x); m(w->scroll_y);
+			m(w->edit_scroll_x); m(w->edit_scroll_y);
+			for (int i = 0; i < 4; ++i) m(w->text_input_rect[i]);
+
+			if (w->base_font_size > 0.0f)
+				w->font_size = w->base_font_size * new_scale;
+			else
+				w->font_size = 0.0f;
+
+			mi(w->icon_w); mi(w->icon_h);
+			if (w->icon_gap > 0.0f) m(w->icon_gap);
+
+			if (w->splitter)
+			{
+				m(w->splitter->sash_size);
+				m(w->splitter->sash_x); m(w->splitter->sash_y);
+				m(w->splitter->sash_w); m(w->splitter->sash_h);
+			}
+			if (w->tabs)
+			{
+				m(w->tabs->tab_height);
+				m(w->tabs->tab_padding);
+				m(w->tabs->tab_gap);
+				m(w->tabs->close_size);
+			}
+			if (w->dock)
+			{
+				for (int z = 0; z < 4; ++z)
+				{
+					if (w->dock->zone_size[z] >= 0.0f) m(w->dock->zone_size[z]);
+					m(w->dock->tab_scroll[z]);
+				}
+				for (vgui_dock_panel& panel : w->dock->panels)
+				{
+					m(panel.fx); m(panel.fy); m(panel.fw); m(panel.fh);
+				}
+			}
+		}
+	}
+}
+
 extern "C" {
 
 	const char* vgui_version(void)
@@ -13231,9 +13410,12 @@ extern "C" {
 	{
 		vgui_context* ctx = new vgui_context();
 		ctx->font = font;
-		ctx->font_size = (font_size > 0) ? font_size : 16.0f;
+		ctx->base_font_size = (font_size > 0) ? font_size : 16.0f;
+		ctx->font_size = ctx->base_font_size;
+		ctx->ui_scale = 1.0f;
 		ctx->theme = vgui_default_theme();
-		ctx->style = vgui_default_style();
+		ctx->base_style = vgui_default_style();
+		ctx->style = ctx->base_style;
 
 		ctx->root = vgui_new_widget(ctx, VGUI_PANEL, nullptr);
 		ctx->root->bg = 0;
@@ -13324,11 +13506,17 @@ extern "C" {
 	{
 		if (!ctx) return;
 		ctx->font = font;
-		if (font_size > 0) ctx->font_size = font_size;
+		if (font_size > 0) ctx->base_font_size = font_size;
+		ctx->font_size = ctx->base_font_size * ctx->ui_scale;
 		ctx->text_width_cache.clear();
 		ctx->glyph_advance_cache.clear();
 		ctx->font_metrics_cache.clear();
 		ctx->layout_dirty = true;
+	}
+
+	float vgui_context_get_font_size(vgui_context* ctx)
+	{
+		return ctx ? ctx->font_size : 0.0f;
 	}
 
 	void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme)
@@ -13438,12 +13626,87 @@ extern "C" {
 		if (style) *style = vgui_default_style();
 	}
 
+	void vgui_style_scale(vgui_style* style, float scale)
+	{
+		if (!style) return;
+		*style = vgui_style_scaled(*style, scale);
+	}
+
+	void vgui_context_set_ui_scale(vgui_context* ctx, float scale)
+	{
+		if (!ctx) return;
+		if (!std::isfinite(scale) || scale <= 0.0f) scale = 1.0f;
+		scale = vgui_clampf(scale, 0.25f, 4.0f);
+		if (std::fabs(scale - ctx->ui_scale) < 1e-5f) return;
+
+		const float old_scale = ctx->ui_scale;
+		const float ratio = scale / old_scale;
+		ctx->ui_scale = scale;
+
+		/* The effective style is always derived from the logical base, which
+		 * keeps repeated monitor moves from accumulating rounding error. */
+		ctx->style = vgui_style_scaled(ctx->base_style, scale);
+		ctx->font_size = ctx->base_font_size * scale;
+		vgui_rescale_widget_tree(ctx, ratio, scale);
+
+		ctx->text_width_cache.clear();
+		ctx->glyph_advance_cache.clear();
+		ctx->font_metrics_cache.clear();
+		ctx->layout_dirty = true;
+
+		// Copy first: listeners are allowed to add or remove themselves.
+		std::vector<vgui_ui_scale_fn> listeners;
+		std::vector<void*> users;
+		listeners.reserve(ctx->ui_scale_listeners.size());
+		users.reserve(ctx->ui_scale_listeners.size());
+		for (const vgui_context::ui_scale_listener_entry& entry : ctx->ui_scale_listeners)
+		{
+			if (!entry.fn) continue;
+			listeners.push_back(entry.fn);
+			users.push_back(entry.user);
+		}
+		for (size_t i = 0; i < listeners.size(); ++i)
+			listeners[i](ctx, scale, users[i]);
+	}
+
+	float vgui_context_get_ui_scale(vgui_context* ctx)
+	{
+		return ctx ? ctx->ui_scale : 1.0f;
+	}
+
+	int vgui_context_add_ui_scale_listener(vgui_context* ctx, vgui_ui_scale_fn fn, void* user)
+	{
+		if (!ctx || !fn) return 0;
+		vgui_context::ui_scale_listener_entry entry;
+		entry.token = ctx->next_ui_scale_listener++;
+		entry.fn = fn;
+		entry.user = user;
+		ctx->ui_scale_listeners.push_back(entry);
+		return entry.token;
+	}
+
+	void vgui_context_remove_ui_scale_listener(vgui_context* ctx, int token)
+	{
+		if (!ctx || token <= 0) return;
+		for (auto it = ctx->ui_scale_listeners.begin();
+			it != ctx->ui_scale_listeners.end(); ++it)
+		{
+			if (it->token == token)
+			{
+				ctx->ui_scale_listeners.erase(it);
+				return;
+			}
+		}
+	}
+
 	void vgui_context_set_style(vgui_context* ctx, const vgui_style* style)
 	{
 		if (!ctx || !style) return;
 		vgui_style old = ctx->style;
-		vgui_style next = *style;
-		vgui_sanitize_style(&next);
+		vgui_style next_base = *style;
+		vgui_sanitize_style(&next_base);
+		ctx->base_style = next_base;
+		vgui_style next = vgui_style_scaled(next_base, ctx->ui_scale);
 		ctx->style = next;
 
 		auto move = [](float& value, float old_value, float new_value)
@@ -13921,8 +14184,17 @@ extern "C" {
 	void vgui_widget_set_font_size(vgui_widget* widget, float size)
 	{
 		if (!widget) return;
-		widget->font_size = size > 0 ? size : 0;
+		widget->base_font_size = size > 0 ? size : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->font_size = widget->base_font_size * scale;
 		vgui_mark_dirty(widget);
+	}
+
+	float vgui_widget_get_font_size(vgui_widget* widget)
+	{
+		if (!widget) return 0.0f;
+		if (widget->font_size > 0.0f) return widget->font_size;
+		return widget->ctx ? widget->ctx->font_size : 0.0f;
 	}
 
 	void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color)
@@ -13939,12 +14211,15 @@ extern "C" {
 	{
 		if (!widget) return;
 		widget->border = color;
-		widget->border_width = width > 0 ? width : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->border_width = width > 0 ? width * scale : 0;
 	}
 
 	void vgui_widget_set_rounding(vgui_widget* widget, float radius)
 	{
-		if (widget) widget->rounding = radius > 0 ? radius : 0;
+		if (!widget) return;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->rounding = radius > 0 ? radius * scale : 0;
 	}
 
 	void vgui_widget_set_text_align(vgui_widget* widget, float align_x, float align_y)
@@ -14685,15 +14960,21 @@ extern "C" {
 		int icon_w, int icon_h, vgui_button_icon_pos pos)
 	{
 		if (!widget || widget->kind != VGUI_BUTTON) return;
-		if (widget->icon_tex == tex && widget->icon_w == icon_w &&
-			widget->icon_h == icon_h && widget->icon_pos == pos)
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		int ew = 0, eh = 0;
+		if (icon_w > 0) ew = (int)std::lround((float)icon_w * scale);
+		else if (tex && tex->width > 0) ew = (int)std::lround((float)tex->width * scale);
+		if (icon_h > 0) eh = (int)std::lround((float)icon_h * scale);
+		else if (tex && tex->height > 0) eh = (int)std::lround((float)tex->height * scale);
+		if (widget->icon_tex == tex && widget->icon_w == ew &&
+			widget->icon_h == eh && widget->icon_pos == pos)
 			return;
 		if (tex) vgui_texture_retain(tex);
 		vgui_texture* old = widget->icon_tex;
 		widget->icon_tex = tex;
 		if (old) vgui_texture_release(old);
-		widget->icon_w = icon_w;
-		widget->icon_h = icon_h;
+		widget->icon_w = ew;
+		widget->icon_h = eh;
 		widget->icon_pos = pos;
 		if (widget->ctx) widget->ctx->layout_dirty = true;
 		vgui_mark_dirty(widget);
@@ -14702,8 +14983,10 @@ extern "C" {
 	void vgui_button_set_icon_gap(vgui_widget* widget, float gap)
 	{
 		if (!widget || widget->kind != VGUI_BUTTON) return;
-		if (widget->icon_gap == gap) return;
-		widget->icon_gap = gap;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		const float effective = gap > 0.0f ? gap * scale : gap;
+		if (widget->icon_gap == effective) return;
+		widget->icon_gap = effective;
 		if (widget->ctx) widget->ctx->layout_dirty = true;
 		vgui_mark_dirty(widget);
 	}
@@ -14770,59 +15053,66 @@ extern "C" {
 	void vgui_widget_set_pos(vgui_widget* widget, float x, float y)
 	{
 		if (!widget) return;
-		widget->x = x;
-		widget->y = y;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->x = x * scale;
+		widget->y = y * scale;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_size(vgui_widget* widget, float width, float height)
 	{
 		if (!widget) return;
-		widget->req_w = width > 0 ? width : 0;
-		widget->req_h = height > 0 ? height : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->req_w = width > 0 ? width * scale : 0;
+		widget->req_h = height > 0 ? height * scale : 0;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_min_size(vgui_widget* widget, float width, float height)
 	{
 		if (!widget) return;
-		widget->min_w = width > 0 ? width : 0;
-		widget->min_h = height > 0 ? height : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->min_w = width > 0 ? width * scale : 0;
+		widget->min_h = height > 0 ? height * scale : 0;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_max_size(vgui_widget* widget, float width, float height)
 	{
 		if (!widget) return;
-		widget->max_w = width > 0 ? width : 0;
-		widget->max_h = height > 0 ? height : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->max_w = width > 0 ? width * scale : 0;
+		widget->max_h = height > 0 ? height * scale : 0;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_margin(vgui_widget* widget, float left, float top, float right, float bottom)
 	{
 		if (!widget) return;
-		widget->margin[0] = left;
-		widget->margin[1] = top;
-		widget->margin[2] = right;
-		widget->margin[3] = bottom;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->margin[0] = left * scale;
+		widget->margin[1] = top * scale;
+		widget->margin[2] = right * scale;
+		widget->margin[3] = bottom * scale;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_padding(vgui_widget* widget, float left, float top, float right, float bottom)
 	{
 		if (!widget) return;
-		widget->padding[0] = left;
-		widget->padding[1] = top;
-		widget->padding[2] = right;
-		widget->padding[3] = bottom;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->padding[0] = left * scale;
+		widget->padding[1] = top * scale;
+		widget->padding[2] = right * scale;
+		widget->padding[3] = bottom * scale;
 		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_gap(vgui_widget* widget, float gap)
 	{
 		if (!widget) return;
-		widget->gap = gap > 0 ? gap : 0;
+		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
+		widget->gap = gap > 0 ? gap * scale : 0;
 		vgui_mark_dirty(widget);
 	}
 
@@ -15052,7 +15342,8 @@ extern "C" {
 	{
 		vgui_splitter_state* st = vgui_splitter_of(splitter);
 		if (!st) return;
-		st->sash_size = std::max(0.0f, size);
+		const float scale = splitter->ctx ? splitter->ctx->ui_scale : 1.0f;
+		st->sash_size = std::max(0.0f, size * scale);
 		vgui_mark_dirty(splitter);
 	}
 
@@ -15289,7 +15580,8 @@ extern "C" {
 	{
 		vgui_tab_state* st = vgui_tabs_of(tabs);
 		if (!st) return;
-		st->tab_height = std::max(1.0f, height);
+		const float scale = tabs->ctx ? tabs->ctx->ui_scale : 1.0f;
+		st->tab_height = std::max(1.0f, height * scale);
 		vgui_mark_dirty(tabs);
 	}
 
@@ -15686,7 +15978,8 @@ extern "C" {
 		vgui_dock_state* st = vgui_dock_of(dock);
 		int z = (int)zone;
 		if (!st || z < 0 || z > (int)VGUI_DOCK_BOTTOM) return;
-		st->zone_size[z] = size < 0.0f ? -1.0f : size;
+		const float scale = dock->ctx ? dock->ctx->ui_scale : 1.0f;
+		st->zone_size[z] = size < 0.0f ? -1.0f : size * scale;
 		for (int i = 0; i < 4; ++i) st->scroll_active[i] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);

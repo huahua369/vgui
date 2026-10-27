@@ -68,6 +68,14 @@ struct gui_viewport {
 	// Retained C API tree attached to this window.  The viewport owns the
 	// context and destroys it together with the window.
 	vgui_context* ui = nullptr;
+	// Effective UI scale last pushed to `ui` (content scale, or the override
+	// below).  Widget geometry and input are kept in render pixels, so
+	// `pixel_ratio` converts SDL window points to that space.
+	float ui_scale = 1.0f;
+	float pixel_ratio = 1.0f;
+	// Optional host override (for example an accessibility zoom).  <= 0 means
+	// "follow the monitor content scale" (the default).
+	float ui_scale_override = 0.0f;
 	// Rectangle used by the SDL IME.  io.ime_rect points here.
 	glm::ivec4 ime_rect = {};
 	std::string drop_text;
@@ -102,6 +110,15 @@ struct os_window {
 	// 锁定/释放鼠标
 	void set_capture();
 	void release_capture();
+	// DPI helpers.  SDL window coordinates are in points; vgui lays out and
+	// draws in render pixels.  `content_scale()` is the monitor UI scale,
+	// `pixel_ratio()` is pixels / window points.
+	float content_scale() const;
+	float pixel_ratio() const;
+	// Re-reads the window scale and applies it to viewport->ui.  Returns true
+	// when the effective scale or pixel ratio changed.  Safe to call every
+	// frame; a no-op when nothing changed.
+	bool sync_ui_scale(bool force = false);
 	// 开始输入法
 	void start_text_input();
 	void stop_text_input();
@@ -171,6 +188,8 @@ public:
 	void kncdown();
 	bool has_maximized(void* nwptr);
 	void UpdateMonitors();
+	// Re-syncs every window's UI scale (safe to call once per frame).
+	void sync_ui_scales();
 	int get_event();
 	void process_event(const SDL_Event* e);
 	gui_io_state_t* io();
