@@ -85,6 +85,12 @@ namespace vgui_editor_kit {
 
 	console_view::~console_view()
 	{
+		if (context_ && key_handler_token_)
+			vgui_context_remove_key_handler(context_, key_handler_token_);
+		context_ = nullptr;
+		key_handler_token_ = 0;
+		delete key_entry_;
+		key_entry_ = nullptr;
 		if (alive_token_)
 			alive_token_.reset();
 	}
@@ -101,11 +107,17 @@ namespace vgui_editor_kit {
 		if (!alive_token_)
 			alive_token_ = std::make_shared<int>(0);
 
-		vgui_context* ctx = vgui_widget_get_context(parent);
-		if (ctx)
+		context_ = vgui_widget_get_context(parent);
+		if (context_)
 		{
-			auto* entry = new context_entry{ alive_token_, this };
-			(void)vgui_context_add_key_handler(ctx, &console_view::on_key, entry);
+			key_entry_ = new context_entry{ alive_token_, this };
+			key_handler_token_ = vgui_context_add_key_handler(context_,
+				&console_view::on_key, key_entry_);
+			if (key_handler_token_ <= 0)
+			{
+				delete key_entry_;
+				key_entry_ = nullptr;
+			}
 		}
 
 		root_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);

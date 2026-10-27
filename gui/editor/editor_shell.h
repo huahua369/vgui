@@ -16,6 +16,7 @@
 #include "asset_preview.h"
 #include "breadcrumb.h"
 #include "command_registry.h"
+#include "console_view.h"
 #include "editor_context.h"
 #include "editor_layout.h"
 #include "outliner_view.h"
@@ -85,6 +86,12 @@ namespace vgui_editor_kit {
 
 		/* The ASSETS / CONSOLE TabView inside the bottom dock panel. */
 		vgui_widget* bottom_tabs() const noexcept;
+
+		/* A07: the log console hosted by the CONSOLE tab.  Hosts append from
+		 * any thread, install a jump handler for error locations, and call
+		 * tick()/poll() if the console is not being drawn. */
+		console_view& console() noexcept;
+		const console_view& console() const noexcept;
 
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
@@ -173,6 +180,7 @@ namespace vgui_editor_kit {
 		vgui_item_id properties_item_ = 0;
 		vgui_item_id bottom_item_ = 0;
 		vgui_widget* bottom_tabs_ = nullptr;
+		vgui_item_id console_tab_ = 0;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
@@ -195,6 +203,7 @@ namespace vgui_editor_kit {
 		status_bar statusbar_;
 		search_box search_;
 		breadcrumb path_;
+		console_view console_;
 	};
 
 } /* namespace vgui_editor_kit */

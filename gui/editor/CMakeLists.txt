@@ -6,6 +6,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     command_registry.cpp
     command_stack.cpp
     combo_box.cpp
+    console_view.cpp
     curve_editor.cpp
     drag_bridge.cpp
     editor_context.cpp

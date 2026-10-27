@@ -13,7 +13,6 @@ namespace vgui_editor_kit {
 		constexpr vgui_color kSectionBg = 0xFF1B1E24;
 		constexpr vgui_color kBorder = 0xFF2E3440;
 		constexpr vgui_color kTitleText = 0xFFB8C4D6;
-		constexpr vgui_color kMutedText = 0xFF7F8B9C;
 
 		vgui_widget* make_dock_page(vgui_widget* dock)
 		{
@@ -130,6 +129,22 @@ namespace vgui_editor_kit {
 		add_panel_toggle("view.viewport", "Viewport", editor_panel::viewport);
 		add_panel_toggle("view.properties", "Properties", editor_panel::properties);
 		add_panel_toggle("view.bottom", "Bottom Panel", editor_panel::bottom);
+
+		/* A07: reveal and focus the log console even when the bottom panel or
+		 * another bottom tab is active. */
+		commands_.add("view.console", "Console", [this]() {
+			set_panel_visible(editor_panel::bottom, true);
+			if (console_tab_ && bottom_tabs_)
+				vgui_tab_set_active(bottom_tabs_, console_tab_);
+			if (context_.ui() && console_.tree())
+				vgui_set_focus(context_.ui(), console_.tree());
+			set_status("console");
+		});
+		commands_.set_checked("view.console", [this]() {
+			return console_tab_ && bottom_tabs_ &&
+				vgui_tab_get_active(bottom_tabs_) == console_tab_ &&
+				panel_visible(editor_panel::bottom);
+		});
 
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
 		commands_.add("view.grid", "Grid", [this]() {
@@ -337,6 +352,7 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.viewport", true);
 			add_menu_command(view_menu, "view.properties", true);
 			add_menu_command(view_menu, "view.bottom", true);
+			add_menu_command(view_menu, "view.console", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
@@ -497,12 +513,10 @@ namespace vgui_editor_kit {
 
 		vgui_widget* console_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(console_page, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_padding(console_page, 8, 8, 8, 8);
-		vgui_widget* console_text = vgui_widget_add(console_page, VGUI_LABEL, "No messages.");
-		vgui_widget_set_font_size(console_text, 12);
-		vgui_widget_set_text_color(console_text, kMutedText);
-		vgui_item_id console_tab = vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
-		vgui_tab_set_closeable(bottom_tabs_, console_tab, 0);
+		vgui_widget_set_padding(console_page, 6, 4, 6, 4);
+		console_.build(console_page);
+		console_tab_ = vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
+		vgui_tab_set_closeable(bottom_tabs_, console_tab_, 0);
 
 		desc.id = "bottom";
 		desc.title = "PANELS";
@@ -595,6 +609,16 @@ namespace vgui_editor_kit {
 	vgui_widget* editor_shell::bottom_tabs() const noexcept
 	{
 		return bottom_tabs_;
+	}
+
+	console_view& editor_shell::console() noexcept
+	{
+		return console_;
+	}
+
+	const console_view& editor_shell::console() const noexcept
+	{
+		return console_;
 	}
 
 	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept

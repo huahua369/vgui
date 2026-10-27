@@ -247,6 +247,9 @@ namespace vgui_editor_kit {
 		std::array<vgui_widget*, level_count> level_widgets_ = {};
 		vgui_widget* stats_label_ = nullptr;
 		vgui_widget* copy_sink_ = nullptr;
+		vgui_context* context_ = nullptr;
+		int key_handler_token_ = 0;
+		context_entry* key_entry_ = nullptr;
 
 		std::deque<record> entries_;
 		std::unordered_map<vgui_item_id, record*> entry_index_;

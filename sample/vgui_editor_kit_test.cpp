@@ -9337,6 +9337,222 @@ static int test_snap_settings()
 	return 0;
 }
 
+/* A07: console model, filtering, stack folding, jump locations and producers. */
+static int test_console_view()
+{
+	using namespace vgui_editor_kit;
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("console context");
+	vgui_context_set_size(ui, 900, 600);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.tree.row_height = 20.0f;
+	style.list.row_height = 20.0f;
+	vgui_context_set_style(ui, &style);
+
+	{
+		console_view console;
+		console.build(vgui_root(ui));
+		if (!console.built() || !console.tree() || !console.ticker() ||
+			!console.search().widget() || !console.copy_widget() ||
+			!console.clear_widget() || !console.auto_scroll_widget() ||
+			find_widget(vgui_root(ui), "console_tree", VGUI_TREE) !=
+				console.tree())
+			return fail("console build");
+
+		if (console.entry_count() != 0 || console.pending_count() != 0 ||
+			console.visible_entry_count() != 0 || console.filter_active() ||
+			!console.auto_scroll() || console.max_entries() == 0 ||
+			console.drain_batch() == 0)
+			return fail("console defaults");
+		if (std::string(console_view::level_name(
+				console_view::level::warning)) != "warning" ||
+			console.level_color(console_view::level::error) == 0)
+			return fail("console level metadata");
+
+		/* Producers queue without touching the visible model. */
+		console.set_drain_batch(2);
+		const vgui_item_id first = console.append(console_view::level::info,
+			"alpha ready", "app");
+		const vgui_item_id second = console.append(console_view::level::warning,
+			"beta NEEDLE in render", "render");
+		std::vector<console_view::entry> batch(3);
+		batch[0].severity = console_view::level::debug;
+		batch[0].message = "gamma batch";
+		batch[1].severity = console_view::level::trace;
+		batch[1].message = "delta detail";
+		batch[2].severity = console_view::level::error;
+		batch[2].message = "epsilon failed";
+		const std::vector<vgui_item_id> batch_ids = console.append_batch(batch);
+		if (!first || !second || first >= second || batch_ids.size() != 3 ||
+			console.pending_count() != 5 || console.entry_count() != 0)
+			return fail("console append queues");
+
+		if (console.poll() != 2 || console.entry_count() != 2 ||
+			console.pending_count() != 3 || !console.entry_at(first, nullptr))
+			return fail("console bounded drain first");
+		if (console.poll() != 2 || console.entry_count() != 4)
+			return fail("console bounded drain second");
+		if (console.poll() != 1 || !console.idle() || console.entry_count() != 5 ||
+			console.visible_entry_count() != 5 || console.visible_row_count() != 5 ||
+			console.last_entry_id() != batch_ids.back())
+			return fail("console bounded drain rest");
+
+		/* Level and text filters are independent and update the projection. */
+		console.set_level_enabled(console_view::level::warning, false);
+		if (!console.filter_active() || console.visible_entry_count() != 4 ||
+			console.visible_row_count() != 4 ||
+			vgui_widget_get_checked(console.level_widget(
+				console_view::level::warning)) != 0)
+			return fail("console level filter");
+		console.set_search_text("needle");
+		if (console.visible_entry_count() != 0)
+			return fail("console filters combine");
+		console.set_level_enabled(console_view::level::warning, true);
+		if (console.visible_entry_count() != 1 ||
+			console.visible_row_count() != 1)
+			return fail("console search message");
+		console.set_search_text("RENDER");
+		if (console.visible_entry_count() != 1 ||
+			console.search_text() != "RENDER")
+			return fail("console search source case-insensitive");
+		console.set_search_text("");
+		if (console.filter_active() || console.visible_entry_count() != 5)
+			return fail("console filter reset");
+
+		/* Stack traces stay collapsed until explicitly expanded. */
+		console_view::entry failure;
+		failure.severity = console_view::level::error;
+		failure.message = "decode failed";
+		failure.source = "renderer";
+		failure.where.path = "scripts/render.cpp";
+		failure.where.line = 42;
+		failure.where.column = 7;
+		failure.stack.push_back({ "decode_texture",
+			{ 77, {}, 0, 0 } });
+		failure.stack.push_back({ "load_asset",
+			{ 0, "scripts/load.cpp", 12, 3 } });
+		const vgui_item_id error_id = console.append(std::move(failure));
+		if (!error_id || console.poll() != 1 || console.entry_count() != 6 ||
+			console.visible_row_count() != 6 || console.stack_expanded(error_id))
+			return fail("console stack collapsed");
+
+		if (!console.toggle_stack(error_id) || !console.stack_expanded(error_id) ||
+			console.visible_row_count() != 8)
+			return fail("console stack expanded");
+
+		vgui_item_id entry_part = 0;
+		int frame_part = -2;
+		if (!console.row_entry(console.row_id_at(6), &entry_part, &frame_part) ||
+			entry_part != error_id || frame_part != 0 ||
+			!console.row_entry(console.row_id_at(7), &entry_part, &frame_part) ||
+			entry_part != error_id || frame_part != 1)
+			return fail("console stack row ids");
+
+		int jumps = 0;
+		console_view::location jumped;
+		console.set_jump_handler([&](const console_view::location& where) {
+			++jumps;
+			jumped = where;
+			return true;
+		});
+		if (!console.activate_row(console.row_id_at(7)) || jumps != 1 ||
+			jumped.path != "scripts/load.cpp" || jumped.line != 12 ||
+			jumped.column != 3)
+			return fail("console stack frame jump");
+		if (!console.activate_row(console.row_id_at(5)) || jumps != 2 ||
+			jumped.path != "scripts/render.cpp" || jumped.line != 42)
+			return fail("console entry jump");
+
+		/* Search matches the entry's stack, so its expanded frame rows remain
+		 * part of the projection together with the entry row. */
+		console.set_search_text("scripts/load.cpp");
+		if (console.visible_entry_count() != 1 || console.visible_row_count() != 3)
+			return fail("console search stack path");
+		console.set_search_text("");
+
+		if (!console.toggle_stack(error_id) || console.stack_expanded(error_id) ||
+			console.visible_row_count() != 6)
+			return fail("console stack collapsed again");
+		if (console.visible_text().find("alpha ready") == std::string::npos ||
+			console.visible_text().find("decode failed") == std::string::npos)
+			return fail("console visible text");
+
+		vgui_tree_select(console.tree(), console.row_id_at(0), 1);
+		if (console.selected_text().find("alpha ready") == std::string::npos)
+			return fail("console selected text");
+		vgui_tree_clear_selection(console.tree());
+
+		const vgui_color custom = 0xFF123456;
+		console.set_level_color(console_view::level::error, custom);
+		if (console.level_color(console_view::level::error) != custom)
+			return fail("console level color");
+
+		console.set_auto_scroll(false);
+		if (console.auto_scroll() ||
+			vgui_widget_get_checked(console.auto_scroll_widget()) != 0 ||
+			console.filter_active())
+			return fail("console auto scroll off");
+		console.set_auto_scroll(true);
+		if (!console.auto_scroll() ||
+			vgui_widget_get_checked(console.auto_scroll_widget()) != 1)
+			return fail("console auto scroll on");
+
+		console.clear();
+		if (console.entry_count() != 0 || console.visible_row_count() != 0 ||
+			console.pending_count() != 0 || console.dropped_count() != 0 ||
+			console.visible_text().size() != 0)
+			return fail("console clear");
+
+		/* Retention applies to both queued and visible records. */
+		console.set_max_entries(3);
+		console.set_drain_batch(16);
+		vgui_item_id trim_first = 0;
+		for (int i = 0; i < 5; ++i)
+		{
+			const vgui_item_id id = console.append(console_view::level::info,
+				"trim " + std::to_string(i), "retain");
+			if (i == 0)
+				trim_first = id;
+		}
+		if (console.pending_count() != 3 || console.dropped_count() != 2)
+			return fail("console pending retention");
+		if (console.poll() != 3 || console.entry_count() != 3 ||
+			console.dropped_count() != 2 ||
+			console.last_entry_id() != trim_first + 4 ||
+			!console.entry_at(trim_first + 2, nullptr) ||
+			console.entry_at(trim_first + 1, nullptr))
+			return fail("console visible retention");
+
+		console.clear();
+		console.set_max_entries(20000);
+		console.set_drain_batch(1024);
+		std::vector<std::thread> workers;
+		for (int worker = 0; worker < 4; ++worker)
+		{
+			workers.emplace_back([&console, worker]() {
+				for (int i = 0; i < 100; ++i)
+					console.append(console_view::level::info,
+						"worker " + std::to_string(worker) + " item " +
+							std::to_string(i), "thread");
+			});
+		}
+		for (std::thread& worker : workers)
+			worker.join();
+		if (console.pending_count() != 400)
+			return fail("console threaded append queue");
+		if (console.poll() != 400 || !console.idle() ||
+			console.entry_count() != 400 || console.visible_entry_count() != 400 ||
+			console.visible_row_count() != 400)
+			return fail("console threaded append drain");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -9432,6 +9648,8 @@ int main()
 	if (int rc = test_viewport_grid())
 		return rc;
 	if (int rc = test_snap_settings())
+		return rc;
+	if (int rc = test_console_view())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);
@@ -9567,7 +9785,29 @@ int main()
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
 			return fail("shell console tab activation");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab restore");		vgui_item_id scene_root = shell.scene().add_node("Scene");
+			return fail("shell assets tab restore");
+
+		/* A07: the CONSOLE tab is a live console_view, reachable through the
+		 * view.console command and the shell accessor. */
+		if (!shell.console().built() || !shell.console().tree() ||
+			find_widget(shell.widget(), "console_view", VGUI_PANEL) == nullptr)
+			return fail("shell console built");
+		if (!shell.commands().has("view.console") ||
+			!shell.run_command("view.console") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != console_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.console"))
+			return fail("shell console command");
+		shell.console().append(console_view::level::info,
+			"shell log line", "test");
+		if (shell.console().poll() != 1 ||
+			shell.console().visible_text().find("shell log line") ==
+				std::string::npos)
+			return fail("shell console append");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab after console");
+
+		vgui_item_id scene_root = shell.scene().add_node("Scene");
 		vgui_item_id cube = shell.scene().add_node("Cube", scene_root, 42);
 		if (scene_root == 0 || cube == 0)
 			return fail("outliner nodes");

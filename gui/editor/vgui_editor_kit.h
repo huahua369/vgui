@@ -11,6 +11,7 @@
 #include "command_registry.h"
 #include "command_stack.h"
 #include "combo_box.h"
+#include "console_view.h"
 #include "curve_editor.h"
 #include "drag_bridge.h"
 #include "editor_context.h"

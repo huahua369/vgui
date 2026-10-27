@@ -523,6 +523,9 @@ bool editor_state::import_assets(const std::vector<std::string>& files,
 	browser.set_selection({ imported.back().id });
 	shell->set_status("imported " + std::to_string(imported.size()) +
 		" asset(s) into " + path_id);
+	shell->console().append(console_view::level::info,
+		"imported " + std::to_string(imported.size()) + " asset(s) into " +
+			path_id, "assets");
 
 	context->commands().push(std::make_unique<function_command>(
 		"Import assets",
@@ -2136,6 +2139,8 @@ static void setup_editor(vgui_context* ui)
 			"created %s (%s) at %.2f %.2f %.2f", snapshot.name.c_str(),
 			info->type.c_str(), point.x, point.y, point.z);
 		g.shell->set_status(text);
+		g.shell->console().append(console_view::level::info, text,
+			"viewport");
 		return true;
 	});
 
@@ -2191,6 +2196,10 @@ static void setup_editor(vgui_context* ui)
 		const char* prefix = error == asset_browser::operation_error::none
 			? "assets: " : "asset error: ";
 		g.shell->set_status(prefix + message);
+		g.shell->console().append(
+			error == asset_browser::operation_error::none
+				? console_view::level::info : console_view::level::warning,
+			message, "assets");
 	});
 	assets.set_move_targets_handler([]() {
 		return g.asset_move_targets();
@@ -2205,6 +2214,60 @@ static void setup_editor(vgui_context* ui)
 	});
 	/* F2 / Delete / Ctrl+D / F5 / Ctrl+I 与右键菜单共用同一 dispatch。 */
 	assets.enable_context_menu();
+
+	/* ---- A07 日志控制台:分级日志、堆栈折叠与错误跳转 ------------------- */
+	console_view& console = g.shell->console();
+	console.set_jump_handler([](const console_view::location& where) -> bool {
+		if (where.asset_id != 0)
+		{
+			std::string path_id;
+			asset_info info;
+			if (g.locate_asset(where.asset_id, &path_id, &info))
+			{
+				if (!path_id.empty())
+					(void)g.shell->assets().navigate_to(path_id);
+				g.shell->assets().set_selection({ where.asset_id });
+				g.shell->set_panel_visible(editor_panel::bottom, true);
+				g.shell->set_status("console jump: " + info.name);
+				return true;
+			}
+		}
+		if (!where.path.empty())
+		{
+			std::string text = where.path;
+			if (where.line > 0)
+			{
+				text += ":" + std::to_string(where.line);
+				if (where.column > 0)
+					text += ":" + std::to_string(where.column);
+			}
+			g.shell->set_status("console jump: " + text);
+			return true;
+		}
+		return false;
+	});
+	console.append(console_view::level::trace, "console initialized",
+		"console");
+	console.append(console_view::level::debug,
+		"producers queue on any thread; tick drains a bounded batch",
+		"console");
+	console.append(console_view::level::info,
+		"editor ready: 7 demo assets, 4 asset folders", "app");
+	console.append(console_view::level::warning,
+		"Broken.mesh is intentionally corrupt for the A06 error demo",
+		"assets");
+	console_view::entry failure;
+	failure.severity = console_view::level::error;
+	failure.message = "Failed to decode Broken.mesh";
+	failure.source = "renderer";
+	if (const asset_info* broken = g.find_asset("Broken.mesh"))
+		failure.where.asset_id = broken->id;
+	failure.stack.push_back({ "decode_texture",
+		{ 0, "assets/codec/png.cpp", 128, 9 } });
+	failure.stack.push_back({ "load_asset",
+		{ 0, "assets/asset_database.cpp", 87, 5 } });
+	console.append(std::move(failure));
+	console.poll();
 
 	g.shell->set_status("V03: LMB pick / drag box, Ctrl toggle, Shift add, Esc cancel");
 }
@@ -2274,6 +2337,10 @@ int main()
 			}
 
 			vgui_update(ui, delta);
+			/* A07: drain the console every frame even when its tab is hidden,
+			 * so producers never accumulate an unbounded queue. */
+			if (g.shell)
+				g.shell->console().tick(delta);
 			/* V01: 布局完成后取视口渲染尺寸，宿主在此原地重建 3D FBO 并更新
 			 * 原生纹理；旧纹理在新纹理就绪前一直保持绑定，不会闪空白。 */
 			if (g.shell)
