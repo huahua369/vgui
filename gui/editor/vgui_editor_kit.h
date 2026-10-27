@@ -25,6 +25,7 @@
 #include "search_box.h"
 #include "spinbox.h"
 #include "status_bar.h"
+#include "table_view.h"
 #include "thumbnail_cache.h"
 #include "toolbar.h"
 #include "vector_editor.h"

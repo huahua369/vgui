@@ -356,12 +356,43 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 3 ||
+					initial.bottom_tab_order.size() != 4 ||
 					initial.bottom_tab_order[0] != "ASSETS" ||
 					initial.bottom_tab_order[1] != "CONSOLE" ||
 					initial.bottom_tab_order[2] != "CANVAS" ||
+					initial.bottom_tab_order[3] != "TABLE" ||
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
+
+				/* T01: install a small table model so the saved layout can
+				 * round-trip widths and sort state. */
+				table_view& table = shell.table();
+				table_source source;
+				source.row_count = [] { return (std::size_t)3; };
+				source.cell_text = [](std::size_t row,
+					const std::string& column) -> std::string {
+					if (column == "name")
+						return row == 0 ? "Alpha" : row == 1 ? "Beta" : "Gamma";
+					if (column == "score")
+						return row == 0 ? "30" : row == 1 ? "10" : "20";
+					return {};
+				};
+				source.row_id = [](std::size_t row) {
+					return (object_id)(row + 1);
+				};
+				table.set_source(source);
+				std::vector<table_column> table_columns(2);
+				table_columns[0].id = "name";
+				table_columns[0].label = "Name";
+				table_columns[0].width = 120.0f;
+				table_columns[1].id = "score";
+				table_columns[1].label = "Score";
+				table_columns[1].width = 80.0f;
+				table_columns[1].editor.type = property_type::integer;
+				table.set_columns(std::move(table_columns));
+				if (!table.set_column_width(0, 210.0f) ||
+					!table.set_sort(1, false))
+					return fail("layout table setup");
 
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
@@ -399,12 +430,15 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					saved.dock_panels.size() != 4 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 3 ||
+					saved.bottom_tab_order.size() != 4 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
 					saved.bottom_tab_order[1] != "ASSETS" ||
 					saved.bottom_tab_order[2] != "CANVAS" ||
+					saved.bottom_tab_order[3] != "TABLE" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
+				if (saved.table_state.empty())
+					return fail("layout table state capture");
 
 				auto find_panel = [&saved](const char* id)
 					-> const editor_dock_panel_layout* {
@@ -439,7 +473,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					parsed.dock_panels.size() != saved.dock_panels.size() ||
 					parsed.dock_active != saved.dock_active ||
 					parsed.bottom_tab_order != saved.bottom_tab_order ||
-					parsed.bottom_active_tab != saved.bottom_active_tab)
+					parsed.bottom_active_tab != saved.bottom_active_tab ||
+					parsed.table_state != saved.table_state)
 					return fail("layout json round trip");
 			}	vgui_destroy(ui);
 		}
@@ -457,9 +492,37 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				if (!shell.built() || !dock)
 					return fail("layout restored shell build");
 
+				table_view& table = shell.table();
+				table_source source;
+				source.row_count = [] { return (std::size_t)3; };
+				source.cell_text = [](std::size_t row,
+					const std::string& column) -> std::string {
+					if (column == "name")
+						return row == 0 ? "Alpha" : row == 1 ? "Beta" : "Gamma";
+					if (column == "score")
+						return row == 0 ? "30" : row == 1 ? "10" : "20";
+					return {};
+				};
+				source.row_id = [](std::size_t row) {
+					return (object_id)(row + 1);
+				};
+				table.set_source(source);
+				std::vector<table_column> table_columns(2);
+				table_columns[0].id = "name";
+				table_columns[0].label = "Name";
+				table_columns[0].width = 120.0f;
+				table_columns[1].id = "score";
+				table_columns[1].label = "Score";
+				table_columns[1].width = 80.0f;
+				table_columns[1].editor.type = property_type::integer;
+				table.set_columns(std::move(table_columns));
+
 				std::string error;
 				if (!shell.load_layout(layout_path.string(), &error))
 					return fail("layout load");
+				if (!near_px(table.column_width(0), 210.0f) ||
+					table.sort_column() != 1 || table.sort_ascending())
+					return fail("layout restored table state");
 				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 340.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 150.0f))
@@ -496,7 +559,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 3)
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 4)
 					return fail("layout restored tab count");
 				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
@@ -10244,6 +10307,312 @@ static int test_console_view()
 	return 0;
 }
 
+int test_table_view()
+{
+	using namespace vgui_editor_kit;
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("table view context");
+	vgui_context_set_size(ui, 900, 500);
+
+	{
+		constexpr std::size_t row_total = 10000;
+		std::vector<std::string> names(row_total);
+		std::vector<int> scores(row_total);
+		std::vector<bool> enabled(row_total);
+		std::vector<std::string> modes(row_total);
+		std::vector<std::string> tints(row_total);
+		std::vector<std::string> positions(row_total);
+		for (std::size_t i = 0; i < row_total; ++i)
+		{
+			names[i] = "Row " + std::to_string(i);
+			scores[i] = (int)((i * 37) % 101);
+			enabled[i] = i % 3 == 0;
+			modes[i] = i % 2 == 0 ? "one" : "two";
+			tints[i] = "#FF203040";
+			positions[i] = "1, 2, 3";
+		}
+
+		command_stack commands;
+		table_view table;
+		table.build(vgui_root(ui));
+		table.set_command_stack(&commands);
+		vgui_widget_set_size(table.widget(), 720.0f, 320.0f);
+
+		int row_count_calls = 0;
+		int cell_queries = 0;
+		table_source source;
+		source.row_count = [&]() {
+			++row_count_calls;
+			return names.size();
+		};
+		source.cell_text = [&](std::size_t row,
+			const std::string& column) -> std::string {
+			++cell_queries;
+			if (row >= names.size())
+				return {};
+			if (column == "name") return names[row];
+			if (column == "score") return std::to_string(scores[row]);
+			if (column == "enabled") return enabled[row] ? "true" : "false";
+			if (column == "mode") return modes[row];
+			if (column == "tint") return tints[row];
+			if (column == "position") return positions[row];
+			return {};
+		};
+		source.row_id = [](std::size_t row) {
+			return (object_id)(row + 1);
+		};
+		table.set_source(source);
+
+		std::vector<table_column> columns(7);
+		columns[0].id = "name";
+		columns[0].label = "Name";
+		columns[0].width = 160.0f;
+		columns[0].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= names.size()) return false;
+			names[row] = value;
+			return true;
+		};
+		columns[1].id = "score";
+		columns[1].label = "Score";
+		columns[1].width = 80.0f;
+		columns[1].editor.type = property_type::integer;
+		columns[1].editor.has_range = true;
+		columns[1].editor.min_value = 0.0;
+		columns[1].editor.max_value = 100.0;
+		columns[1].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= scores.size() || value.empty()) return false;
+			scores[row] = std::stoi(value);
+			return true;
+		};
+		columns[2].id = "enabled";
+		columns[2].label = "Enabled";
+		columns[2].width = 80.0f;
+		columns[2].editor.type = property_type::boolean;
+		columns[2].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= enabled.size()) return false;
+			enabled[row] = value == "true";
+			return true;
+		};
+		columns[3].id = "mode";
+		columns[3].label = "Mode";
+		columns[3].width = 90.0f;
+		columns[3].editor.type = property_type::enumeration;
+		columns[3].editor.choices = { "One", "Two" };
+		columns[3].editor.choice_values = { "one", "two" };
+		columns[3].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= modes.size()) return false;
+			modes[row] = value;
+			return true;
+		};
+		columns[4].id = "tint";
+		columns[4].label = "Tint";
+		columns[4].width = 100.0f;
+		columns[4].editor.type = property_type::color;
+		columns[4].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= tints.size()) return false;
+			tints[row] = value;
+			return true;
+		};
+		columns[5].id = "position";
+		columns[5].label = "Position";
+		columns[5].width = 150.0f;
+		columns[5].editor.type = property_type::vector3;
+		columns[5].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= positions.size()) return false;
+			positions[row] = value;
+			return true;
+		};
+		columns[6].id = "locked";
+		columns[6].label = "Locked";
+		columns[6].width = 70.0f;
+		columns[6].editable = false;
+		columns[6].editor.type = property_type::boolean;
+		table.set_columns(std::move(columns));
+
+		if (row_count_calls != 1 || table.row_count() != row_total)
+			return fail("table row count query");
+		vgui_layout(ui);
+
+		const table_row_range top = table.visible_row_range();
+		if (top.first != 0 || top.count == 0 || top.count >= 40)
+			return fail("table virtual top window");
+		if (table.last_render_cell_queries() != 0)
+			return fail("table render query baseline");
+
+		/* Scrolling must not query cell text; painting does that. */
+		cell_queries = 0;
+		table.set_scroll(0.0f, 9000.0f);
+		const table_row_range bottom = table.visible_row_range();
+		if (cell_queries != 0 || bottom.first <= top.count ||
+			bottom.end() > table.row_count())
+			return fail("table virtual scroll window");
+		table.set_scroll(0.0f, 0.0f);
+
+		/* Sorting queries only the active column and orders the display. */
+		cell_queries = 0;
+		if (!table.set_sort(1, true) || table.sort_column() != 1 ||
+			!table.sort_ascending())
+			return fail("table sort setup");
+		if (cell_queries < (int)row_total)
+			return fail("table sort reads active column");
+		std::size_t smallest = 0;
+		for (std::size_t i = 1; i < row_total; ++i)
+			if (scores[i] < scores[smallest])
+				smallest = i;
+		if (table.source_row_at(0) != smallest ||
+			table.display_index_of(smallest) != 0)
+			return fail("table sorted display order");
+
+		/* Selection follows the stable row id across re-sorts. */
+		if (!table.select_cell(500, 0) ||
+			table.selected_cell().row != 500)
+			return fail("table selection");
+		if (!table.set_sort(1, false) ||
+			table.selected_cell().row != 500 ||
+			table.selected_cell().column != 0)
+			return fail("table selection survives sort");
+		const table_cell sorted_cell = table.hit_test(10.0f, 30.0f + 26.0f);
+		(void)sorted_cell;
+
+		table.clear_sort();
+		if (table.source_row_at(0) != 0 || table.display_index_of(0) != 0)
+			return fail("table natural order");
+
+		/* Width and sort state round-trip through JSON. */
+		if (!table.set_column_width(0, 222.0f) ||
+			!table.set_sort(1, false))
+			return fail("table state source");
+		const table_state state = table.capture_state();
+		std::string json_error;
+		table_state parsed;
+		if (!table_state_from_json(table_state_to_json(state), parsed,
+			&json_error) ||
+			!near_px(parsed.column_widths[0], 222.0f) ||
+			parsed.sort_column != 1 || parsed.sort_ascending)
+			return fail("table state json");
+		if (!table.set_column_width(0, 50.0f))
+			return fail("table state reset");
+		table.clear_sort();
+		if (!table.apply_state(parsed, &json_error) ||
+			!near_px(table.column_width(0), 222.0f) ||
+			table.sort_column() != 1 || table.sort_ascending())
+			return fail("table state apply");
+		table_state bad;
+		if (table_state_from_json("{\"version\": 99}", bad) ||
+			table_state_from_json("{\"version\": 1, \"column_widths\": [-1]}",
+				bad))
+			return fail("table state validation");
+		table.clear_sort();
+
+		/* Typed editors reuse property normalization and record one undo
+		 * command per committed cell. */
+		const std::size_t row = 7;
+		commands.clear();
+		if (!table.begin_edit(row, 0) || !table.editing())
+			return fail("table text edit begin");
+		if (!table.commit_edit("Renamed") || table.editing() ||
+			names[row] != "Renamed" || commands.undo_count() != 1)
+			return fail("table text edit commit");
+		if (!commands.undo() || names[row] != "Row 7" ||
+			!commands.redo() || names[row] != "Renamed")
+			return fail("table text edit undo");
+		if (!table.begin_edit(row, 0) || !table.cancel_edit() ||
+			names[row] != "Renamed")
+			return fail("table edit cancel");
+
+		if (!table.begin_edit(row, 1))
+			return fail("table integer edit begin");
+		if (table.commit_edit("not a number") || !table.editing())
+			return fail("table invalid integer");
+		if (!table.cancel_edit())
+			return fail("table invalid integer cancel");
+		if (!table.begin_edit(row, 1) || !table.commit_edit("500") ||
+			scores[row] != 100)
+			return fail("table integer range clamp");
+
+		if (!table.begin_edit(row, 3) || !table.commit_edit("two") ||
+			modes[row] != "two")
+			return fail("table enum edit");
+		if (!table.begin_edit(row, 2) || !table.commit_edit("true") ||
+			!enabled[row])
+			return fail("table boolean edit");
+		if (!table.begin_edit(row, 4) || !table.commit_edit("#FF0000FF") ||
+			tints[row] != "#FF0000")
+			return fail("table color edit");
+		vector_editor::vector_value vector{};
+		vector[0] = 1.5;
+		vector[1] = -2.0;
+		vector[2] = 3.25;
+		const std::string vector_text =
+			vector_editor::format_value(vector, 3);
+		if (!table.begin_edit(row, 5) ||
+			!table.commit_edit(vector_text) ||
+			positions[row] != vector_text)
+			return fail("table vector edit");
+		if (table.begin_edit(row, 6))
+			return fail("table read-only column");
+		if (table.editing())
+			return fail("table read-only edit state");
+	}
+
+	/* row_id keeps selection and undo records attached to the same host row
+	 * when rows are inserted before it. */
+	{
+		std::vector<std::string> values = { "A", "B", "C" };
+		std::vector<object_id> ids = { 11, 22, 33 };
+		command_stack commands;
+		table_view table;
+		table.build(vgui_root(ui));
+		table.set_command_stack(&commands);
+		table_source source;
+		source.row_count = [&]() { return values.size(); };
+		source.row_id = [&](std::size_t row) {
+			return row < ids.size() ? ids[row] : invalid_object;
+		};
+		source.cell_text = [&](std::size_t row,
+			const std::string& column) -> std::string {
+			return row < values.size() && column == "name"
+				? values[row] : std::string();
+		};
+		table.set_source(source);
+		std::vector<table_column> columns(1);
+		columns[0].id = "name";
+		columns[0].label = "Name";
+		columns[0].set_value = [&](std::size_t row,
+			const std::string& value) {
+			if (row >= values.size())
+				return false;
+			values[row] = value;
+			return true;
+		};
+		table.set_columns(std::move(columns));
+
+		if (!table.begin_edit(1, 0) || !table.commit_edit("B2") ||
+			values[1] != "B2")
+			return fail("table row id edit");
+		values.insert(values.begin(), "A0");
+		ids.insert(ids.begin(), 44);
+		table.refresh();
+		if (table.selected_cell().row != 2)
+			return fail("table selection follows inserted row id");
+		if (!commands.undo() || values[0] != "A0" || values[2] != "B")
+			return fail("table undo follows row id");
+		if (!commands.redo() || values[0] != "A0" || values[2] != "B2")
+			return fail("table redo follows row id");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -10261,6 +10630,8 @@ int main()
 	if (int rc = test_property_grid())
 		return rc;
 	if (int rc = test_property_grid_virtualization())
+		return rc;
+	if (int rc = test_table_view())
 		return rc;
 	if (int rc = test_property_grid_drag())
 		return rc;
@@ -10511,14 +10882,16 @@ int main()
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 3)
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 4)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
 		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
 		vgui_item_id canvas_tab = vgui_tab_get_at(shell.bottom_tabs(), 2);
+		vgui_item_id table_tab = vgui_tab_get_at(shell.bottom_tabs(), 3);
 		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS")
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE")
 			return fail("shell bottom tab titles");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
@@ -10558,6 +10931,21 @@ int main()
 			return fail("shell canvas command");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
 			return fail("shell assets tab after canvas");
+
+		/* T01: the TABLE tab hosts the editable table and the command reveals,
+		 * focuses and checks it. */
+		if (!shell.table().built() || !shell.table().widget() ||
+			find_widget(shell.widget(), "table_view", VGUI_CUSTOM) == nullptr)
+			return fail("shell table built");
+		if (!shell.commands().has("view.table") ||
+			!shell.run_command("view.table") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != table_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.table") ||
+			vgui_get_focus(ui) != shell.table().widget())
+			return fail("shell table command");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab after table");
 
 		/* V09: the viewport dock page hosts a second camera surface and a depth
 		 * preview surface, and the render settings are shared with the host

@@ -224,6 +224,8 @@ struct editor_state
 	vgui_item_id next_asset = 100;
 	/* Browse 菜单项 → 资产名(菜单回调只带 item id)。 */
 	std::map<vgui_item_id, std::string> browse_assets;
+	/* T01: stable object ids backing the TABLE tab rows. */
+	std::vector<object_id> table_rows;
 	/* V01/V09: 共享 3D 渲染器、每个相机视口独立的 view 与 UI 原生纹理。 */
 	phase0_renderer* renderer = nullptr;
 	phase0_view* main_view = nullptr;
@@ -468,6 +470,183 @@ struct editor_state
 		/* 恢复选择与展开 */
 		if (context->selection() != invalid_object)
 			context->set_selection(context->selection());
+		refresh_table_rows();
+	}
+
+	void refresh_table_rows()
+	{
+		table_rows.clear();
+		table_rows.reserve(scene.objects.size());
+		for (const auto& entry : scene.objects)
+			table_rows.push_back(entry.first);
+		if (shell)
+			shell->table().refresh();
+	}
+
+	scene_object* table_object(std::size_t row)
+	{
+		if (row >= table_rows.size())
+			return nullptr;
+		auto found = scene.objects.find(table_rows[row]);
+		return found == scene.objects.end() ? nullptr : &found->second;
+	}
+
+	/* T01: the object list doubles as the demo DataGrid model.  Values are
+	 * pulled lazily per visible row and edits go through typed cell editors
+	 * shared with PropertyGrid. */
+	void configure_table()
+	{
+		if (!shell)
+			return;
+		table_view& table = shell->table();
+		table_source source;
+		source.row_count = [this]() { return table_rows.size(); };
+		source.row_id = [this](std::size_t row) {
+			return row < table_rows.size() ? table_rows[row] : invalid_object;
+		};
+		source.cell_text = [this](std::size_t row,
+			const std::string& column) -> std::string {
+			scene_object* object = table_object(row);
+			if (!object)
+				return {};
+			if (column == "name")
+				return object->name;
+			if (column == "parent")
+			{
+				auto parent = scene.objects.find(object->parent);
+				return object->parent == invalid_object || parent == scene.objects.end()
+					? std::string("-") : parent->second.name;
+			}
+			if (column == "visible")
+				return object->visible ? "true" : "false";
+			if (column == "locked")
+				return object->locked ? "true" : "false";
+			if (column == "position")
+			{
+				vector_editor::vector_value value{};
+				value[0] = object->position.x;
+				value[1] = object->position.y;
+				value[2] = object->position.z;
+				return vector_editor::format_value(value, 3);
+			}
+			if (column == "tint")
+			{
+				auto tint = object->props.find("tint");
+				return tint == object->props.end() ? std::string("#9FB0C4")
+					: tint->second;
+			}
+			if (column == "mesh")
+			{
+				auto mesh = object->props.find("mesh");
+				if (mesh != object->props.end())
+					return mesh->second;
+				auto asset = object->props.find("asset");
+				return asset == object->props.end() ? std::string()
+					: asset->second;
+			}
+			return {};
+		};
+		table.set_source(source);
+
+		std::vector<table_column> columns(7);
+		columns[0].id = "name";
+		columns[0].label = "Name";
+		columns[0].width = 160.0f;
+		columns[0].editor.type = property_type::text;
+		columns[0].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			if (!object || value.empty())
+				return false;
+			object->name = value;
+			rebuild_outliner();
+			return true;
+		};
+
+		columns[1].id = "parent";
+		columns[1].label = "Parent";
+		columns[1].width = 120.0f;
+		columns[1].editable = false;
+		columns[1].editor.type = property_type::text;
+
+		columns[2].id = "visible";
+		columns[2].label = "Visible";
+		columns[2].width = 80.0f;
+		columns[2].editor.type = property_type::boolean;
+		columns[2].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			if (!object)
+				return false;
+			object->visible = value == "true";
+			rebuild_outliner();
+			return true;
+		};
+
+		columns[3].id = "locked";
+		columns[3].label = "Locked";
+		columns[3].width = 80.0f;
+		columns[3].editor.type = property_type::boolean;
+		columns[3].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			if (!object)
+				return false;
+			object->locked = value == "true";
+			rebuild_outliner();
+			return true;
+		};
+
+		columns[4].id = "position";
+		columns[4].label = "Position";
+		columns[4].width = 180.0f;
+		columns[4].editor.type = property_type::vector3;
+		columns[4].editor.semantic = vector_semantic::position;
+		columns[4].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			vector_editor::vector_value parsed{};
+			if (!object ||
+				!vector_editor::parse_value(value, 3, parsed))
+				return false;
+			object->position = { (float)parsed[0], (float)parsed[1],
+				(float)parsed[2] };
+			return true;
+		};
+
+		columns[5].id = "tint";
+		columns[5].label = "Tint";
+		columns[5].width = 110.0f;
+		columns[5].editor.type = property_type::color;
+		columns[5].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			if (!object)
+				return false;
+			object->props["tint"] = value;
+			return true;
+		};
+
+		columns[6].id = "mesh";
+		columns[6].label = "Mesh / Asset";
+		columns[6].width = 170.0f;
+		columns[6].editor.type = property_type::text;
+		columns[6].set_value = [this](std::size_t row,
+			const std::string& value) {
+			scene_object* object = table_object(row);
+			if (!object)
+				return false;
+			object->props["mesh"] = value;
+			return true;
+		};
+
+		table.set_columns(std::move(columns));
+		table.set_edit_listener([this](const table_cell& cell,
+			const std::string& value) {
+			if (shell)
+				shell->set_status("table row " + std::to_string(cell.row + 1) +
+					" = " + value);
+		});
 	}
 };
 
@@ -1837,6 +2016,7 @@ static void setup_editor(vgui_context* ui)
 		glm::vec3(0.0f, 1.0f, 0.0f));
 	/* V06: 渲染/拾取集合由 renderable 标记驱动。 */
 	g.scene.objects[cube].renderable = true;
+	g.configure_table();
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU

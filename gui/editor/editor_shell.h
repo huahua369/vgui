@@ -6,7 +6,7 @@
  * the bottom panel are dock panels with stable ids, so hosts and users can
  * move them between the left/right/bottom/centre zones, merge them into tab
  * groups, float them and restore the arrangement after a restart.  The bottom
- * panel keeps its ASSETS / CONSOLE / CANVAS TabView.
+ * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE TabView.
  */
 #include <memory>
 #include <string>
@@ -24,6 +24,7 @@
 #include "property_grid.h"
 #include "search_box.h"
 #include "status_bar.h"
+#include "table_view.h"
 #include "toolbar.h"
 #include "viewport_camera.h"
 #include "viewport_gizmo.h"
@@ -96,7 +97,8 @@ namespace vgui_editor_kit {
 		vgui_widget* workspace_splitter() const noexcept;
 		vgui_widget* center_splitter() const noexcept;
 
-		/* The ASSETS / CONSOLE / CANVAS TabView inside the bottom dock panel. */
+		/* The ASSETS / CONSOLE / CANVAS / TABLE TabView inside the bottom dock
+		 * panel. */
 		vgui_widget* bottom_tabs() const noexcept;
 
 		/* A07: the log console hosted by the CONSOLE tab.  Hosts append from
@@ -109,6 +111,12 @@ namespace vgui_editor_kit {
 		 * its snapping policy and command stack; hosts own the item model. */
 		canvas_view& canvas() noexcept;
 		const canvas_view& canvas() const noexcept;
+
+		/* T01: virtualized, editable table hosted by the TABLE tab.  The shell
+		 * wires its command stack and persists widths/sort through
+		 * editor_layout; hosts install the data source and columns. */
+		table_view& table() noexcept;
+		const table_view& table() const noexcept;
 
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
@@ -214,6 +222,7 @@ namespace vgui_editor_kit {
 		vgui_widget* bottom_tabs_ = nullptr;
 		vgui_item_id console_tab_ = 0;
 		vgui_item_id canvas_tab_ = 0;
+		vgui_item_id table_tab_ = 0;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
@@ -242,6 +251,7 @@ namespace vgui_editor_kit {
 		breadcrumb path_;
 		console_view console_;
 		canvas_view canvas_;
+		table_view table_;
 	};
 
 } /* namespace vgui_editor_kit */

@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `vgui.h`，不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView（`vgui_editor_kit`，基于公共 C API） |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView（`vgui_editor_kit`，基于公共 C API） |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
@@ -228,9 +228,9 @@ vgui_dock_on_close(dock, on_dock_close, app);
 
 ### 编辑器布局持久化
 
-`vgui_editor_kit::editor_shell` 使用一个 `VGUI_DOCK` 组织 Outliner / Viewport / Properties / Bottom 四个面板，稳定 id 分别为 `"outliner"`、`"viewport"`、`"properties"`、`"bottom"`。`dock()` 返回该 Dock，宿主可直接用 `vgui_dock_*` 调整停靠区、合并标签组或浮出面板；`bottom_tabs()` 仍返回底部的 ASSETS / CONSOLE / CANVAS TabView。旧的 `body_splitter()` / `workspace_splitter()` / `center_splitter()` 为源码兼容保留，但已不再创建 Splitter，统一返回 `nullptr`。
+`vgui_editor_kit::editor_shell` 使用一个 `VGUI_DOCK` 组织 Outliner / Viewport / Properties / Bottom 四个面板，稳定 id 分别为 `"outliner"`、`"viewport"`、`"properties"`、`"bottom"`。`dock()` 返回该 Dock，宿主可直接用 `vgui_dock_*` 调整停靠区、合并标签组或浮出面板；`bottom_tabs()` 仍返回底部的 ASSETS / CONSOLE / CANVAS / TABLE TabView。旧的 `body_splitter()` / `workspace_splitter()` / `center_splitter()` 为源码兼容保留，但已不再创建 Splitter，统一返回 `nullptr`。
 
-外壳布局记录为带版本号的 JSON（当前版本 2）：Dock 左/右/底部区域尺寸、每个区域的标签顺序、面板打开状态与活动页、浮动面板矩形，以及底部 Tab 顺序和当前页。布局文件与场景文档分离，可在退出时保存、启动时恢复；版本 1 的旧文件（仅 Splitter 比例、面板可见性和底部 Tab）仍可加载并映射到 Dock，文件损坏或版本不支持时回退到 `build()` 后的默认布局。
+外壳布局记录为带版本号的 JSON（当前版本 3）：Dock 左/右/底部区域尺寸、每个区域的标签顺序、面板打开状态与活动页、浮动面板矩形，以及底部 Tab 顺序和当前页；版本 3 额外保存 TABLE 的列宽与排序状态（不透明 JSON 字符串）。布局文件与场景文档分离，可在退出时保存、启动时恢复；版本 1/2 的旧文件仍可加载并映射到当前格式，文件损坏或版本不支持时回退到 `build()` 后的默认布局。
 
 ```cpp
 vgui_editor_kit::editor_context context(ui);
@@ -281,6 +281,49 @@ grid.commit_property_value("position.x", "1.25");
 - 核心 `vgui_panel_set_scroll_listener()` 在程序化滚动、滚轮和滚动条拖动后通知监听器，PropertyGrid 用它驱动窗口更新；监听器内再次调整滚动位置是安全的，重入通知会被合并。
 - `property_desc::get_value` / `set_value`，或 `set_value_source()` + `refresh()`，可把行绑定到宿主模型。`property_vector_editor(id)` 额外暴露向量行的复合编辑器，用于把 Gizmo 等外部数值源接到分量控件；该指针在行被移除或移出物化窗口后失效。
 - `bind_selection()` 订阅 `editor_context` 的选择变化，在回调中按对象重建行；销毁 grid 前应调用 `unbind_selection()`（析构函数也会自动解绑）。PropertyGrid 必须早于 `vgui_context`、命令栈和 `editor_context` 销毁。
+
+### 表格视图（Table / DataGrid）
+
+`vgui_editor_kit::table_view` 是拉取式虚拟表格：宿主拥有数据，控件只保存选择、排序、列宽、滚动和临时编辑 UI。行数在每次 `refresh()` 时查询一次；绘制只为当前可见窗口调用 `cell_text`，排序也只读取当前排序列，因此十万行数据不会带来成比例的行控件或绘制开销。`row_id` 可选，但设置后选择会跟随稳定行 id 跨排序和刷新保持。
+
+```cpp
+vgui_editor_kit::table_view table;
+table.build(parent);
+table.set_command_stack(&context.commands());
+
+vgui_editor_kit::table_source source;
+source.row_count = [] { return rows.size(); };
+source.row_id = [](std::size_t row) { return rows[row].id; };
+source.cell_text = [](std::size_t row, const std::string& column) {
+    return rows[row].text(column);
+};
+table.set_source(source);
+
+std::vector<vgui_editor_kit::table_column> columns(2);
+columns[0].id = "name";
+columns[0].label = "Name";
+columns[0].width = 180.0f;
+columns[1].id = "score";
+columns[1].label = "Score";
+columns[1].editor.type = vgui_editor_kit::property_type::integer;
+columns[1].editor.has_range = true;
+columns[1].editor.min_value = 0.0;
+columns[1].editor.max_value = 100.0;
+columns[1].set_value = [](std::size_t row, const std::string& value) {
+    rows[row].score = std::stoi(value);
+    return true;
+};
+table.set_columns(std::move(columns));
+table.set_sort(1, false);
+
+const std::string state =
+    vgui_editor_kit::table_state_to_json(table.capture_state());
+```
+
+- 表头点击切换升/降序，拖动列边界调整列宽；支持横/纵向滚动条、滚轮滚动、点击/双击命中、方向键/Home/End/PageUp/PageDown 导航、Enter/F2 或双击开始编辑、Esc 清除选择。
+- `table_column::editor` 复用 PropertyGrid 的 `property_desc`：文本、整数/浮点 Spinbox、Checkbox、枚举菜单、颜色、Vector2-4、曲线/渐变；写入前统一经 `property_normalize_value()` 校验。文本/数字/向量在提交或弹窗关闭时写入，布尔/枚举立即写入，颜色/曲线/渐变在单元格内实时预览并在关闭时提交（Esc 回滚）。每次实际变化压入一条 `Set <列>` 命令；只读列、校验失败或宿主拒绝不产生记录。
+- `table_state`（版本 1）保存列宽和排序列/方向；`table_state_to_json()` / `table_state_from_json()` 可单独持久化或校验。`editor_shell` 会把该状态放进 `editor_layout`（版本 3）并暴露 `table()` 与 `view.table` 命令。
+- `last_render_cell_queries()` 返回上一次绘制的单元格查询次数，可用于断言虚拟化边界；`refresh_row()` 可在单元格变化后刷新排序投影。控件回调指回 C++ 对象，`table_view` 必须比其控件树存活更久，析构时会解除自定义回调并销毁弹出编辑器。
 
 ### 工具栏与状态栏组件（vgui_editor_kit）
 

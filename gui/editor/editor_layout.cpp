@@ -180,6 +180,9 @@ namespace vgui_editor_kit {
 			root["dock"] = std::move(dock);
 		}
 
+		if (!layout.table_state.empty())
+			root["table"] = layout.table_state;
+
 		return root.dump(2) + "\n";
 	}
 
@@ -303,6 +306,11 @@ namespace vgui_editor_kit {
 						parsed.dock_panels.push_back(std::move(panel));
 					}
 				}
+			}
+
+			if (root.contains("table"))
+			{
+				parsed.table_state = read_string(root, "table");
 			}
 
 			out = std::move(parsed);

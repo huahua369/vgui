@@ -9,8 +9,10 @@
  *
  * Version 1 stored splitter ratios, panel visibility and bottom-tab order.
  * Version 2 adds the Dock state (zone sizes, per-zone order, active tabs,
- * open state and floating rectangles).  Version-1 files are still accepted
- * and mapped onto the Dock so existing user layouts keep working.
+ * open state and floating rectangles).  Version 3 adds the editor table state
+ * (column widths and sort) as an opaque JSON string so the layout format does
+ * not need to track the table schema.  Older files are still accepted and
+ * mapped onto the current format so existing user layouts keep working.
  */
 #include <array>
 #include <string>
@@ -39,7 +41,7 @@ namespace vgui_editor_kit {
 
 	struct editor_layout
 	{
-		static constexpr int current_version = 2;
+		static constexpr int current_version = 3;
 
 		int version = current_version;
 
@@ -77,6 +79,10 @@ namespace vgui_editor_kit {
 		 * vgui_dock_zone (left, right, bottom, centre).  Empty entries mean no
 		 * active panel or a collapsed zone. */
 		std::array<std::string, 4> dock_active{};
+
+		/* Version 3: opaque table_state_to_json() payload owned by the TABLE
+		 * bottom tab.  An empty string leaves the current table state. */
+		std::string table_state;
 	};
 
 	std::string editor_layout_to_json(const editor_layout& layout);

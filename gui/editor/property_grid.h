@@ -109,6 +109,22 @@ namespace vgui_editor_kit {
 		std::function<void(const std::string&)> set_value;
 	};
 
+	/* Result of property_normalize_value(): validates a candidate value for a
+	 * property_desc and returns its canonical text form.  Cell editors in
+	 * table_view reuse this so typed cell editing follows exactly the same
+	 * range/choice/vector rules as PropertyGrid. */
+	struct property_value_result
+	{
+		bool ok = false;
+		std::string value;
+		std::string error;
+	};
+
+	/* Validates and canonicalizes `text` for desc.  This is the same
+	 * normalization PropertyGrid applies to programmatic and user edits. */
+	property_value_result property_normalize_value(const property_desc& desc,
+		std::string text);
+
 	class property_grid
 	{
 	public:

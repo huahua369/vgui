@@ -33,12 +33,7 @@ namespace vgui_editor_kit {
 		constexpr float kOverscan = 96.0f;
 		constexpr std::size_t kMinWindowEntries = 4;
 
-		struct normalized_value
-		{
-			bool ok = false;
-			std::string value;
-			std::string error;
-		};
+		using normalized_value = property_value_result;
 
 		/* Undo record for one property row.  Consecutive commits on the same row
 		 * merge into a single record so drags and repeated edits undo at once. */
@@ -535,6 +530,12 @@ namespace vgui_editor_kit {
 		{
 			return (collapsed ? ">  " : "v  ") + name;
 		}
+	}
+
+	property_value_result property_normalize_value(const property_desc& desc,
+		std::string text)
+	{
+		return normalize_value(desc, std::move(text));
 	}
 
 	property_grid::~property_grid()
