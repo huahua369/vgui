@@ -80,6 +80,7 @@ namespace vgui_editor_kit {
 			return;
 
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+		vgui_widget_set_a11y_name(panel_, "Status bar");
 		vgui_widget_set_size(panel_, 0, 26);
 		vgui_widget_set_min_size(panel_, 0, 22);
 		vgui_widget_set_align_self(panel_, VGUI_ALIGN_STRETCH);

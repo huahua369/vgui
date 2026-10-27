@@ -558,6 +558,7 @@ struct vgui_widget
 
 	// E05 accessibility ----------------------------------------------------
 	std::string a11y_name;
+	std::string a11y_value;	// cache filled by vgui_widget_get_a11y_info
 	vgui_a11y_role a11y_role = VGUI_A11Y_ROLE_NONE;	// NONE -> derive from kind
 	int focus_trap = 0;
 
@@ -853,6 +854,7 @@ struct vgui_context
 	};
 	std::vector<a11y_listener_entry> a11y_listeners;
 	int next_a11y_listener = 1;
+	std::string a11y_announcement;
 
 	// UI scale listeners (vgui_context_add_ui_scale_listener)
 	struct ui_scale_listener_entry
@@ -1662,6 +1664,8 @@ namespace {
 		if (!w || !w->ctx || !w->ctx->alive.count(w)) return;
 		if (w->text_fn)
 			w->text_fn(w, w->text.c_str(), w->user);
+		if (w->kind == VGUI_EDIT)
+			vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_VALUE_CHANGED);
 	}
 
 	//----------------------------------------------------------------------------
@@ -2399,6 +2403,7 @@ namespace {
 		vgui_dock_erase_order(st, item);
 		panel->zone = VGUI_DOCK_FLOATING;
 		panel->open = 1;
+		if (panel->page) panel->page->focus_trap = 1;
 		vgui_dock_clamp_rect(w, panel, x, y, width, height, true);
 		st->float_order.push_back(item);
 		for (int z = 0; z < 4; ++z)
@@ -2429,6 +2434,7 @@ namespace {
 		vgui_dock_erase_order(st, item);
 		panel->zone = (vgui_dock_zone)zone;
 		panel->open = 1;
+		if (panel->page) panel->page->focus_trap = 0;
 		vgui_dock_insert_order(st, zone, item, index);
 		if (old_zone >= 0 && old_zone < 4 && st->active[old_zone] == item)
 		{
@@ -6975,7 +6981,9 @@ namespace {
 		default:
 			break;
 		}
-		return true;
+		// Unhandled keys must reach context-level shortcuts (F6, Ctrl+S, ...);
+		// handled edit keys already returned true above.
+		return false;
 	}
 
 	//----------------------------------------------------------------------------
@@ -10200,6 +10208,45 @@ namespace {
 			vgui_modal_close_internal(ctx, VGUI_MODAL_RESULT_CONFIRM);
 			vgui_end_input(ctx);
 			return 1;
+		}
+
+		// E05: F10 opens the first enabled MenuBar title so the whole menu bar is
+		// reachable without a pointer.  Shift+F10 is left for context menus.
+		if (down && key == VGUI_KEY_F10 && (mods & VGUI_MOD_SHIFT) == 0 &&
+			!ctx->modal.active)
+		{
+			if (ctx->open_menu)
+			{
+				vgui_menu_close_all(ctx);
+				ctx->want_key = 1;
+				ctx->want_text = 0;
+				vgui_end_input(ctx);
+				return 1;
+			}
+			vgui_widget* root = vgui_active_root(ctx);
+			vgui_widget* bar = nullptr;
+			std::function<void(vgui_widget*)> find_bar = [&](vgui_widget* w)
+			{
+				if (!w || bar || !w->visible || !w->enabled) return;
+				if (w->kind == VGUI_MENUBAR) { bar = w; return; }
+				for (vgui_widget* child : w->children) find_bar(child);
+			};
+			if (root) find_bar(root);
+			if (bar)
+			{
+				for (int i = 0; i < vgui_menubar_get_count(bar); ++i)
+				{
+					const vgui_item_id item = vgui_menubar_get_item_at(bar, i);
+					if (item && vgui_menubar_get_item_enabled(bar, item))
+					{
+						vgui_menubar_show(bar, item);
+						ctx->want_key = 1;
+						ctx->want_text = 0;
+						vgui_end_input(ctx);
+						return 1;
+					}
+				}
+			}
 		}
 
 		if (ctx->open_menu)
@@ -13681,6 +13728,66 @@ extern "C" {
 		if (theme) *theme = ctx ? ctx->theme : vgui_theme();
 	}
 
+	void vgui_theme_high_contrast(vgui_theme* theme)
+	{
+		if (!theme)
+			return;
+		vgui_theme t = {};
+		/* E05: black/white/yellow palette.  Text on panels, selected rows and
+		 * controls all keep a large luminance delta; focus/accent use yellow. */
+		t.text = 0xFFFFFFFF;
+		t.panel_bg = 0xFF000000;
+		t.panel_border = 0xFFFFFFFF;
+		t.button_bg = 0xFF000000;
+		t.button_hover = 0xFF2E2E2E;
+		t.button_active = 0xFF1A1A1A;
+		t.button_border = 0xFFFFFFFF;
+		t.accent = 0xFFFFFF00;
+		t.accent_hover = 0xFFFFFFFF;
+		t.track = 0xFFFFFFFF;
+		t.edit_bg = 0xFF000000;
+		t.edit_selection = 0x66FFFF00;
+		t.scrollbar = 0xFFFFFFFF;
+		t.disabled = 0xFFB8B8B8;
+		t.scrollbar_hover = 0xFFFFFF00;
+		t.checkmark = 0xFF000000;
+		t.switch_thumb = 0xFF000000;
+		t.list_bg = 0xFF000000;
+		t.list_border = 0xFFFFFFFF;
+		t.row_text = 0xFFFFFFFF;
+		t.row_hover = 0xFF2A2A2A;
+		t.row_selected = 0xFFFFFF00;
+		t.row_selected_text = 0xFF000000;
+		t.tree_guide = 0xFF808080;
+		t.menu_bg = 0xFF000000;
+		t.menu_border = 0xFFFFFFFF;
+		t.menu_hover = 0xFF2A2A2A;
+		t.menu_disabled_text = 0xFFB8B8B8;
+		t.tooltip_bg = 0xFF000000;
+		t.tooltip_border = 0xFFFFFFFF;
+		t.tooltip_text = 0xFFFFFFFF;
+		t.modal_backdrop = 0xD0000000;
+		t.modal_bg = 0xFF000000;
+		t.modal_border = 0xFFFFFF00;
+		t.modal_danger = 0xFFFF5050;
+		t.toast_bg = 0xFF000000;
+		t.toast_border = 0xFFFFFFFF;
+		t.toast_text = 0xFFFFFFFF;
+		t.toast_info = 0xFFFFFF00;
+		t.toast_success = 0xFF5CFF8A;
+		t.toast_warning = 0xFFFFC24D;
+		t.toast_error = 0xFFFF6060;
+		t.dock_bg = 0xFF000000;
+		t.dock_border = 0xFFFFFFFF;
+		t.dock_tab_bg = 0xFF1A1A1A;
+		t.dock_tab_active = 0xFF000000;
+		t.dock_tab_text = 0xFFFFFFFF;
+		t.dock_floating_bg = 0xFF000000;
+		t.dock_floating_border = 0xFFFFFF00;
+		t.dock_floating_title = 0xFF1A1A1A;
+		*theme = t;
+	}
+
 	void vgui_style_default(vgui_style* style)
 	{
 		if (style) *style = vgui_default_style();
@@ -14193,6 +14300,16 @@ extern "C" {
 		return widget ? widget->focusable : 0;
 	}
 
+	void vgui_widget_set_focus_trap(vgui_widget* container, int trapped)
+	{
+		if (container) container->focus_trap = trapped ? 1 : 0;
+	}
+
+	int vgui_widget_get_focus_trap(vgui_widget* container)
+	{
+		return container ? container->focus_trap : 0;
+	}
+
 	void vgui_widget_set_text(vgui_widget* widget, const char* text)
 	{
 		if (!widget) return;
@@ -14521,6 +14638,7 @@ extern "C" {
 		ctx->modal.panel = panel;
 		ctx->modal.restore_focus = restore;
 		ctx->modal.options = opts;
+		stage->focus_trap = 1;
 		ctx->layout_dirty = true;
 
 		vgui_widget* first = keep_focus ? keep_focus : vgui_first_focusable(panel);
@@ -14799,8 +14917,9 @@ extern "C" {
 		vgui_toast_id id = rec.id;
 		ctx->toasts.push_back(std::move(rec));
 		ctx->layout_dirty = true;
-		/* Screen readers announce toasts as live-region alerts; a toast has no
-		 * widget, so the listener receives a null widget. */
+		/* Screen readers announce toasts as live-region alerts.  The listener
+		 * receives a null widget and reads the text through the announcement. */
+		ctx->a11y_announcement = text ? text : "";
 		vgui_a11y_notify(ctx, nullptr, VGUI_A11Y_EVENT_ALERT);
 		return id;
 	}
@@ -14886,6 +15005,7 @@ extern "C" {
 		ctx->popup.x = x;
 		ctx->popup.y = y;
 		content->visible = 1;
+		content->focus_trap = 1;
 		ctx->layout_dirty = true;
 		vgui_ensure_layout(ctx);
 		return 1;
@@ -15460,6 +15580,12 @@ extern "C" {
 		item.id = id;
 		item.title = title ? title : "";
 		item.page = page;
+		if (page)
+		{
+			page->a11y_role = VGUI_A11Y_ROLE_TAB_PANEL;
+			if (page->a11y_name.empty())
+				page->a11y_name = item.title;
+		}
 		st->index[id] = st->tabs.size();
 		st->tabs.push_back(item);
 
@@ -17906,6 +18032,8 @@ extern "C" {
 		st->index[st->items.back().id] = st->items.size() - 1;
 		ms->owner_menubar = menubar;
 		ms->owner_item = st->items.back().id;
+		if (title && *title)
+			menu->a11y_name = title;
 		vgui_mark_dirty(menubar);
 		return st->items.back().id;
 	}
@@ -18086,6 +18214,243 @@ extern "C" {
 	vgui_widget* vgui_get_focus(vgui_context* ctx)
 	{
 		return ctx ? ctx->focus : nullptr;
+	}
+
+	// E05 accessibility helpers.  Roles/names/values are derived on demand so
+	// hosts always read the current state; explicit overrides live on the widget.
+	static vgui_a11y_role vgui_a11y_derived_role(const vgui_widget* w)
+	{
+		if (!w) return VGUI_A11Y_ROLE_NONE;
+		if (w->a11y_role != VGUI_A11Y_ROLE_NONE) return w->a11y_role;
+		switch (w->kind)
+		{
+		case VGUI_LABEL: return VGUI_A11Y_ROLE_LABEL;
+		case VGUI_BUTTON: return VGUI_A11Y_ROLE_BUTTON;
+		case VGUI_CHECKBOX:
+		case VGUI_SWITCH: return VGUI_A11Y_ROLE_TOGGLE;
+		case VGUI_RADIO: return VGUI_A11Y_ROLE_RADIO;
+		case VGUI_SLIDER: return VGUI_A11Y_ROLE_SLIDER;
+		case VGUI_PROGRESS: return VGUI_A11Y_ROLE_PROGRESS;
+		case VGUI_EDIT: return w->multiline ? VGUI_A11Y_ROLE_MULTILINE_EDIT : VGUI_A11Y_ROLE_EDIT;
+		case VGUI_LIST: return VGUI_A11Y_ROLE_LIST;
+		case VGUI_TREE: return VGUI_A11Y_ROLE_TREE;
+		case VGUI_MENU: return VGUI_A11Y_ROLE_MENU;
+		case VGUI_MENUBAR: return VGUI_A11Y_ROLE_MENUBAR;
+		case VGUI_TABVIEW: return VGUI_A11Y_ROLE_TAB_PANEL;
+		case VGUI_IMAGE: return VGUI_A11Y_ROLE_IMAGE;
+		case VGUI_CUSTOM: return VGUI_A11Y_ROLE_CUSTOM;
+		case VGUI_SEPARATOR: return VGUI_A11Y_ROLE_NONE;
+		case VGUI_PANEL:
+		case VGUI_SPLITTER:
+		case VGUI_DOCK:
+		default: return VGUI_A11Y_ROLE_PANEL;
+		}
+	}
+
+	static const char* vgui_a11y_derived_name(vgui_widget* w)
+	{
+		if (!w) return "";
+		if (!w->a11y_name.empty()) return w->a11y_name.c_str();
+		// Edit content is not its accessible name; prefer tooltip/placeholder.
+		if (w->kind != VGUI_EDIT && !w->text.empty()) return w->text.c_str();
+		if (!w->tooltip.empty()) return w->tooltip.c_str();
+		if (w->kind == VGUI_EDIT && !w->placeholder.empty())
+			return w->placeholder.c_str();
+		return "";
+	}
+
+	static vgui_item_id vgui_a11y_current_item(vgui_widget* w)
+	{
+		if (!w) return 0;
+		if (w->kind == VGUI_LIST)
+		{
+			vgui_list_state* st = vgui_list_of(w);
+			if (!st) return 0;
+			if (st->cursor) return st->cursor;
+			return st->selected.empty() ? 0 : st->selected.back();
+		}
+		if (w->kind == VGUI_TREE)
+		{
+			vgui_tree_state* st = vgui_tree_of(w);
+			if (!st) return 0;
+			if (st->cursor) return st->cursor;
+			return st->selected.empty() ? 0 : st->selected.back();
+		}
+		if (w->kind == VGUI_MENU)
+		{
+			vgui_menu_state* st = vgui_menu_of(w);
+			return st ? st->cursor : 0;
+		}
+		if (w->kind == VGUI_MENUBAR)
+			return vgui_menubar_get_active(w);
+		if (w->kind == VGUI_TABVIEW)
+			return vgui_tab_get_active(w);
+		return 0;
+	}
+
+	static const char* vgui_a11y_derived_value(vgui_widget* w)
+	{
+		if (!w) return "";
+		w->a11y_value.clear();
+		switch (w->kind)
+		{
+		case VGUI_EDIT:
+			if (!w->password) w->a11y_value = w->edit_text;
+			break;
+		case VGUI_CHECKBOX:
+		case VGUI_SWITCH:
+		case VGUI_RADIO:
+			w->a11y_value = w->checked ? "on" : "off";
+			break;
+		case VGUI_SLIDER:
+		case VGUI_PROGRESS:
+		{
+			char buffer[48] = {};
+			std::snprintf(buffer, sizeof(buffer), "%g", vgui_value_of(w));
+			w->a11y_value = buffer;
+			break;
+		}
+		case VGUI_LIST:
+		case VGUI_TREE:
+		case VGUI_MENU:
+		case VGUI_MENUBAR:
+		case VGUI_TABVIEW:
+		{
+			const vgui_item_id item = vgui_a11y_current_item(w);
+			if (!item) break;
+			const char* text = nullptr;
+			if (w->kind == VGUI_LIST) text = vgui_list_get_item_text(w, item);
+			else if (w->kind == VGUI_TREE) text = vgui_tree_get_item_text(w, item);
+			else if (w->kind == VGUI_MENU) text = vgui_menu_get_item_text(w, item);
+			else if (w->kind == VGUI_MENUBAR) text = vgui_menubar_get_item_text(w, item);
+			else text = vgui_tab_get_title(w, item);
+			if (text) w->a11y_value = text;
+			break;
+		}
+		default:
+			break;
+		}
+		return w->a11y_value.c_str();
+	}
+
+	static int vgui_a11y_derived_states(vgui_widget* w)
+	{
+		if (!w) return 0;
+		int states = 0;
+		if (w->ctx && w->ctx->focus == w) states |= VGUI_A11Y_FOCUSED;
+		if (!w->enabled) states |= VGUI_A11Y_DISABLED;
+		if (w->checked && (w->kind == VGUI_CHECKBOX || w->kind == VGUI_SWITCH ||
+			w->kind == VGUI_RADIO || w->kind == VGUI_BUTTON))
+			states |= VGUI_A11Y_CHECKED;
+		if (w->kind == VGUI_EDIT && w->readonly) states |= VGUI_A11Y_READONLY;
+		if (w->kind == VGUI_LIST && vgui_list_get_selected_count(w) > 0)
+			states |= VGUI_A11Y_SELECTED;
+		if (w->kind == VGUI_TREE && vgui_tree_get_selected_count(w) > 0)
+			states |= VGUI_A11Y_SELECTED;
+		if (w->kind == VGUI_TREE)
+		{
+			const vgui_item_id item = vgui_a11y_current_item(w);
+			if (item && vgui_tree_get_item_expanded(w, item))
+				states |= VGUI_A11Y_EXPANDED;
+		}
+		if (w->kind == VGUI_MENU)
+		{
+			vgui_menu_state* st = vgui_menu_of(w);
+			if (st && st->open) states |= VGUI_A11Y_EXPANDED;
+		}
+		return states;
+	}
+
+	void vgui_widget_set_a11y_name(vgui_widget* widget, const char* name)
+	{
+		if (!widget) return;
+		widget->a11y_name = name ? name : "";
+	}
+
+	const char* vgui_widget_get_a11y_name(vgui_widget* widget)
+	{
+		return vgui_a11y_derived_name(widget);
+	}
+
+	void vgui_widget_set_a11y_role(vgui_widget* widget, vgui_a11y_role role)
+	{
+		if (widget) widget->a11y_role = role;
+	}
+
+	vgui_a11y_role vgui_widget_get_a11y_role(vgui_widget* widget)
+	{
+		return vgui_a11y_derived_role(widget);
+	}
+
+	void vgui_widget_get_a11y_info(vgui_widget* widget, vgui_a11y_info* info)
+	{
+		if (!info) return;
+		*info = vgui_a11y_info();
+		if (!widget)
+			return;
+		info->role = vgui_a11y_derived_role(widget);
+		info->name = vgui_a11y_derived_name(widget);
+		info->value = vgui_a11y_derived_value(widget);
+		info->states = vgui_a11y_derived_states(widget);
+		info->item = vgui_a11y_current_item(widget);
+		info->x = widget->abs_x;
+		info->y = widget->abs_y;
+		info->w = widget->abs_w;
+		info->h = widget->abs_h;
+	}
+
+	void vgui_context_a11y_walk(vgui_context* ctx,
+		void (*visit)(vgui_widget* widget, void* user), void* user)
+	{
+		if (!ctx || !visit) return;
+		std::unordered_set<vgui_widget*> visited;
+		std::function<void(vgui_widget*)> walk = [&](vgui_widget* w)
+		{
+			if (!w || !w->visible || !ctx->alive.count(w)) return;
+			if (!visited.insert(w).second) return;
+			visit(w, user);
+			for (vgui_widget* child : w->children) walk(child);
+		};
+		walk(ctx->root);
+		walk(ctx->open_menu);
+		walk(ctx->modal.stage);
+		walk(ctx->popup.content);
+	}
+
+	int vgui_context_add_a11y_listener(vgui_context* ctx, vgui_a11y_fn fn, void* user)
+	{
+		if (!ctx || !fn) return 0;
+		vgui_context::a11y_listener_entry entry;
+		entry.token = ctx->next_a11y_listener++;
+		entry.fn = fn;
+		entry.user = user;
+		ctx->a11y_listeners.push_back(entry);
+		return entry.token;
+	}
+
+	void vgui_context_remove_a11y_listener(vgui_context* ctx, int token)
+	{
+		if (!ctx || !token) return;
+		for (auto it = ctx->a11y_listeners.begin(); it != ctx->a11y_listeners.end(); ++it)
+		{
+			if (it->token == token)
+			{
+				ctx->a11y_listeners.erase(it);
+				return;
+			}
+		}
+	}
+
+	const char* vgui_context_get_a11y_announcement(vgui_context* ctx)
+	{
+		return ctx ? ctx->a11y_announcement.c_str() : "";
+	}
+
+	void vgui_context_announce(vgui_context* ctx, const char* text)
+	{
+		if (!ctx) return;
+		ctx->a11y_announcement = text ? text : "";
+		vgui_a11y_notify(ctx, nullptr, VGUI_A11Y_EVENT_ALERT);
 	}
 
 	vgui_widget* vgui_hit_test(vgui_context* ctx, float x, float y)

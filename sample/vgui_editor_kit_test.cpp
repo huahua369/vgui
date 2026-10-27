@@ -13405,6 +13405,203 @@ static int test_shell_ui_scale()
 	return 0;
 }
 
+static bool e05_has_ancestor(vgui_widget* widget, vgui_widget* ancestor)
+{
+	if (!widget || !ancestor)
+		return false;
+	for (vgui_widget* p = widget; p; p = vgui_widget_get_parent(p))
+		if (p == ancestor)
+			return true;
+	return false;
+}
+
+struct e05_a11y_entry
+{
+	std::string name;
+	vgui_a11y_role role = VGUI_A11Y_ROLE_NONE;
+};
+
+struct e05_a11y_walk
+{
+	std::vector<e05_a11y_entry> entries;
+};
+
+static void e05_collect_a11y(vgui_widget* widget, void* user)
+{
+	e05_a11y_walk* walk = (e05_a11y_walk*)user;
+	if (!walk || !widget)
+		return;
+	vgui_a11y_info info = {};
+	vgui_widget_get_a11y_info(widget, &info);
+	e05_a11y_entry entry;
+	entry.name = info.name ? info.name : "";
+	entry.role = info.role;
+	walk->entries.push_back(std::move(entry));
+}
+
+static bool e05_walk_has(const e05_a11y_walk& walk, const char* name,
+	vgui_a11y_role role)
+{
+	for (const e05_a11y_entry& entry : walk.entries)
+		if (entry.role == role && entry.name == name)
+			return true;
+	return false;
+}
+
+static float e05_channel(float v)
+{
+	const float c = v / 255.0f;
+	return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static float e05_contrast(vgui_color a, vgui_color b)
+{
+	auto lum = [](vgui_color c)
+	{
+		return 0.2126f * e05_channel((float)((c >> 16) & 0xFF)) +
+			0.7152f * e05_channel((float)((c >> 8) & 0xFF)) +
+			0.0722f * e05_channel((float)(c & 0xFF));
+	};
+	const float la = lum(a);
+	const float lb = lum(b);
+	return (std::max(la, lb) + 0.05f) / (std::min(la, lb) + 0.05f);
+}
+
+static int g_e05_focus_events = 0;
+
+static void e05_on_a11y_event(vgui_context*, vgui_widget*, vgui_a11y_event event,
+	void*)
+{
+	if (event == VGUI_A11Y_EVENT_FOCUS_CHANGED)
+		g_e05_focus_events++;
+}
+
+static int test_shell_accessibility_e05()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("a11y shell: create context");
+	vgui_context_set_size(ui, 1280, 800);
+
+	{
+		editor_context context(ui);
+		editor_shell shell(context);
+		shell.build();
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		if (std::string(vgui_widget_get_a11y_name(shell.scene().widget())) !=
+			"Scene outliner")
+			return fail("a11y shell: outliner name");
+		if (vgui_widget_get_a11y_role(shell.scene().widget()) != VGUI_A11Y_ROLE_TREE)
+			return fail("a11y shell: outliner role");
+		if (std::string(vgui_widget_get_a11y_name(shell.viewport().widget())) !=
+			"3D viewport")
+			return fail("a11y shell: viewport name");
+		if (vgui_widget_get_a11y_role(shell.viewport().widget()) !=
+			VGUI_A11Y_ROLE_CUSTOM)
+			return fail("a11y shell: viewport role");
+		if (std::string(vgui_widget_get_a11y_name(shell.properties().widget())) !=
+			"Properties")
+			return fail("a11y shell: properties name");
+		if (std::string(vgui_widget_get_a11y_name(shell.assets().widget())) !=
+			"Assets")
+			return fail("a11y shell: assets name");
+		if (std::string(vgui_widget_get_a11y_name(shell.menubar())) != "Main menu")
+			return fail("a11y shell: menubar name");
+		if (std::string(vgui_widget_get_a11y_name(shell.toolbar().widget())) !=
+			"Toolbar")
+			return fail("a11y shell: toolbar name");
+		if (std::string(vgui_widget_get_a11y_name(shell.statusbar().widget())) !=
+			"Status bar")
+			return fail("a11y shell: status name");
+
+		/* Property rows inherit accessible names from their labels. */
+		property_desc position;
+		position.id = "position";
+		position.label = "Position";
+		position.type = property_type::vector3;
+		position.value = "1, 2, 3";
+		position.category = "Transform";
+		shell.properties().set_properties({ position });
+		shell.assets().set_type_options({ "Texture" });
+		shell.assets().set_type_filter_visible(true);
+		vgui_layout(ui);
+
+		e05_a11y_walk walk;
+		vgui_context_a11y_walk(ui, e05_collect_a11y, &walk);
+		if (!e05_walk_has(walk, "Search properties", VGUI_A11Y_ROLE_EDIT))
+			return fail("a11y shell: property search name");
+		if (!e05_walk_has(walk, "Asset type filter", VGUI_A11Y_ROLE_COMBOBOX))
+			return fail("a11y shell: asset type filter role");
+		if (!e05_walk_has(walk, "Position X", VGUI_A11Y_ROLE_EDIT))
+			return fail("a11y shell: vector component name");
+		if (!e05_walk_has(walk, "ASSETS", VGUI_A11Y_ROLE_TAB_PANEL))
+			return fail("a11y shell: tab page role/name");
+
+		/* F6 / Shift+F6 focus order: outliner -> viewport -> properties -> bottom. */
+		vgui_set_focus(ui, nullptr);
+		if (vgui_input_key(ui, VGUI_KEY_F6, 1, 0) != 1 ||
+			vgui_get_focus(ui) != shell.scene().widget())
+			return fail("a11y shell: F6 outliner");
+		if (vgui_input_key(ui, VGUI_KEY_F6, 1, 0) != 1 ||
+			vgui_get_focus(ui) != shell.viewport().widget())
+			return fail("a11y shell: F6 viewport");
+		if (vgui_input_key(ui, VGUI_KEY_F6, 1, 0) != 1 ||
+			!e05_has_ancestor(vgui_get_focus(ui), shell.properties().widget()))
+			return fail("a11y shell: F6 properties");
+		if (vgui_input_key(ui, VGUI_KEY_F6, 1, 0) != 1 ||
+			!e05_has_ancestor(vgui_get_focus(ui), shell.bottom_tabs()))
+			return fail("a11y shell: F6 bottom");
+		if (vgui_input_key(ui, VGUI_KEY_F6, 1, VGUI_MOD_SHIFT) != 1 ||
+			!e05_has_ancestor(vgui_get_focus(ui), shell.properties().widget()))
+			return fail("a11y shell: Shift+F6 reverse");
+
+		const command_entry* next = shell.commands().find("view.focus.next");
+		const command_entry* prev = shell.commands().find("view.focus.prev");
+		if (!next || !prev || next->shortcut.key != VGUI_KEY_F6 ||
+			(prev->shortcut.mods & VGUI_MOD_SHIFT) == 0)
+			return fail("a11y shell: focus shortcuts");
+
+		g_e05_focus_events = 0;
+		const int listener = vgui_context_add_a11y_listener(ui, e05_on_a11y_event,
+			nullptr);
+		if (!listener)
+			return fail("a11y shell: listener");
+		vgui_set_focus(ui, nullptr);
+		vgui_set_focus(ui, shell.scene().widget());
+		if (g_e05_focus_events < 1)
+			return fail("a11y shell: focus event");
+		vgui_context_remove_a11y_listener(ui, listener);
+
+		/* High contrast command + palette contrast. */
+		if (!shell.run_command("view.high_contrast") || !shell.high_contrast())
+			return fail("a11y shell: high contrast on");
+		if (!shell.commands().is_checked("view.high_contrast"))
+			return fail("a11y shell: high contrast checked");
+		vgui_theme theme = {};
+		vgui_context_get_theme(ui, &theme);
+		if (theme.panel_bg != 0xFF000000 || theme.text != 0xFFFFFFFF)
+			return fail("a11y shell: high contrast theme");
+		if (e05_contrast(theme.text, theme.panel_bg) < 7.0f)
+			return fail("a11y shell: high contrast ratio");
+		if (!shell.run_command("view.high_contrast") || shell.high_contrast())
+			return fail("a11y shell: high contrast off");
+		if (shell.commands().is_checked("view.high_contrast"))
+			return fail("a11y shell: high contrast unchecked");
+		vgui_context_get_theme(ui, &theme);
+		if (theme.panel_bg == 0xFF000000)
+			return fail("a11y shell: previous theme restored");
+
+		if (vgui_get_focus(ui))
+			vgui_set_focus(ui, nullptr);
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -13514,6 +13711,8 @@ int main()
 	if (int rc = test_canvas_view())
 		return rc;
 	if (int rc = test_console_view())
+		return rc;
+	if (int rc = test_shell_accessibility_e05())
 		return rc;
 	if (int rc = test_shell_ui_scale())
 		return rc;

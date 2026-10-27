@@ -388,6 +388,7 @@ namespace vgui_editor_kit {
 		if (!widget_)
 			return;
 		vgui_widget_set_id(widget_, "table_view");
+		vgui_widget_set_a11y_name(widget_, "Table");
 		vgui_widget_set_size(widget_, 420, 220);
 		vgui_widget_set_min_size(widget_, 160, 80);
 		vgui_widget_set_grow(widget_, 1.0f);

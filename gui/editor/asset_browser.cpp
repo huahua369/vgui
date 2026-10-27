@@ -489,6 +489,16 @@ namespace vgui_editor_kit {
 		update_history_buttons();
 		if (context_menu_)
 			enable_context_menu();
+
+		/* E05 semantic names for host screen-reader bridges. */
+		vgui_widget_set_a11y_name(root_, "Assets");
+		vgui_widget_set_a11y_name(breadcrumb_->widget(), "Asset path");
+		vgui_widget_set_a11y_name(view_switch_->widget(), "Asset view");
+		vgui_widget_set_a11y_name(search_->widget(), "Search assets");
+		vgui_widget_set_a11y_name(type_combo_->widget(), "Asset type filter");
+		vgui_widget_set_a11y_role(type_combo_->widget(), VGUI_A11Y_ROLE_COMBOBOX);
+		vgui_widget_set_a11y_name(list_, "Asset list");
+		vgui_widget_set_a11y_name(grid_, "Asset grid");
 	}
 
 	void asset_browser::clear()

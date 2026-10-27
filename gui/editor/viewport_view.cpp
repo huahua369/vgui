@@ -102,6 +102,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_background(surface_, 0xFF0E1116);
 		vgui_widget_set_border(surface_, 0xFF2A3038, 1);
 		vgui_widget_set_focusable(surface_, 1);
+		vgui_widget_set_a11y_name(surface_, "3D viewport");
 		vgui_custom_set_draw(surface_, &viewport_view::on_draw, this);
 		vgui_custom_set_event(surface_, &viewport_view::on_event, this);
 		if (context_)

@@ -203,6 +203,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_grow(tree_, 1.0f);
 		vgui_widget_set_min_size(tree_, 120, 80);
 		vgui_widget_set_focusable(tree_, 1);
+		vgui_widget_set_a11y_name(tree_, "Scene outliner");
 		vgui_tree_set_selection_mode(tree_, VGUI_SELECTION_SINGLE);
 		vgui_tree_on_select(tree_, &outliner_view::on_select, this);
 	}

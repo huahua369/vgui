@@ -34,6 +34,7 @@ namespace vgui_editor_kit {
 		button_ = vgui_widget_add(parent, VGUI_BUTTON, nullptr);
 		if (!button_)
 			return;
+		vgui_widget_set_a11y_role(button_, VGUI_A11Y_ROLE_COMBOBOX);
 		vgui_widget_set_size(button_, 180, 24);
 		vgui_widget_set_min_size(button_, 80, 24);
 		vgui_widget_set_font_size(button_, 13);

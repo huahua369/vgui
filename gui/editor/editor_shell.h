@@ -198,6 +198,13 @@ namespace vgui_editor_kit {
 		snap_settings& snap() noexcept;
 		const snap_settings& snap() const noexcept;
 
+		/* E05: shell-wide high-contrast palette.  Enabling stores the current
+		 * context theme, installs vgui_theme_high_contrast(), and moves the
+		 * shell-owned chrome (root/menubar/panels) to black/white/yellow.
+		 * Disabling restores the captured theme. */
+		bool high_contrast() const noexcept;
+		void set_high_contrast(bool enabled);
+
 		void set_status(std::string text);
 
 	private:
@@ -220,6 +227,12 @@ namespace vgui_editor_kit {
 		void update_selection_ui(object_id id);
 		void update_selection_summary(const std::vector<object_id>& ids);
 
+		/* E05 keyboard navigation: F6 / Shift+F6 cycles the four dock panels.
+		 * Panels that are closed are revealed first; empty panels are skipped. */
+		void focus_next_panel(int direction);
+		void apply_shell_palette();
+		void install_accessibility_names();
+
 		vgui_item_id panel_item(editor_panel panel) const noexcept;
 
 		void capture_bottom_tabs(editor_layout& layout) const;
@@ -239,6 +252,11 @@ namespace vgui_editor_kit {
 		int key_handler_token_ = 0;
 		vgui_widget* root_ = nullptr;
 		vgui_widget* dock_ = nullptr;
+		vgui_widget* title_label_ = nullptr;
+		vgui_widget* view_strip_ = nullptr;
+		bool high_contrast_ = false;
+		bool has_saved_theme_ = false;
+		vgui_theme saved_theme_ = {};
 		vgui_item_id outliner_item_ = 0;
 		vgui_item_id viewport_item_ = 0;
 		vgui_item_id properties_item_ = 0;

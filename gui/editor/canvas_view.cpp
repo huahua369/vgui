@@ -139,6 +139,7 @@ namespace vgui_editor_kit {
 		context_ = vgui_widget_get_context(parent);
 		widget_ = vgui_widget_add(parent, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_id(widget_, "canvas_view");
+		vgui_widget_set_a11y_name(widget_, "Canvas");
 		vgui_widget_set_grow(widget_, 1.0f);
 		vgui_widget_set_min_size(widget_, 240, 120);
 		vgui_widget_set_background(widget_, 0xFF101419);

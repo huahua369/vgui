@@ -576,6 +576,7 @@ namespace vgui_editor_kit {
 			return;
 
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+		vgui_widget_set_a11y_name(panel_, "Properties");
 		vgui_widget_set_grow(panel_, 1.0f);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(panel_, 6, 6, 6, 6);
@@ -598,6 +599,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(search_, 0, 24);
 		vgui_widget_set_font_size(search_, 12);
 		vgui_widget_set_id(search_, "__property_search");
+		vgui_widget_set_a11y_name(search_, "Search properties");
 		vgui_edit_set_placeholder(search_, "Search properties");
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
 
@@ -605,6 +607,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(fav_filter_, 24, 24);
 		vgui_widget_set_font_size(fav_filter_, 12);
 		vgui_widget_set_id(fav_filter_, "__property_fav_filter");
+		vgui_widget_set_a11y_name(fav_filter_, "Favorites only");
+		vgui_widget_set_a11y_role(fav_filter_, VGUI_A11Y_ROLE_TOGGLE);
 		vgui_widget_set_tooltip(fav_filter_, "Favorites only");
 		vgui_widget_on_event(fav_filter_,
 			&property_grid::on_fav_filter_click, this);
@@ -1879,6 +1883,7 @@ private:
 			vgui_widget_set_id(item.clear_btn,
 				property_widget_id(item.desc.id).c_str());
 			vgui_widget_set_tooltip(item.clear_btn, "Clear reference");
+			vgui_widget_set_a11y_name(item.clear_btn, "Clear reference");
 			vgui_widget_on_event(item.clear_btn,
 				&property_grid::on_row_event, this);
 
@@ -1888,6 +1893,7 @@ private:
 			vgui_widget_set_id(item.browse_btn,
 				property_widget_id(item.desc.id).c_str());
 			vgui_widget_set_tooltip(item.browse_btn, "Browse");
+			vgui_widget_set_a11y_name(item.browse_btn, "Browse reference");
 			vgui_widget_on_event(item.browse_btn,
 				&property_grid::on_row_event, this);
 			break;
@@ -1977,6 +1983,24 @@ private:
 			break;
 		}
 		vgui_widget_set_id(item.editor, property_widget_id(item.desc.id).c_str());
+		const std::string a11y_label = item.desc.label.empty()
+			? item.desc.id : item.desc.label;
+		vgui_widget_set_a11y_name(item.editor, a11y_label.c_str());
+		if (item.vector_ui)
+		{
+			for (int i = 0; i < item.vector_ui->dimension(); ++i)
+			{
+				vgui_widget* component = item.vector_ui->component_edit_widget(i);
+				if (!component)
+					component = item.vector_ui->component_widget(i);
+				const std::vector<std::string>& axis_labels =
+					item.vector_ui->axis_labels();
+				const std::string axis = i < (int)axis_labels.size()
+					? axis_labels[(size_t)i] : std::to_string(i);
+				const std::string component_name = a11y_label + " " + axis;
+				vgui_widget_set_a11y_name(component, component_name.c_str());
+			}
+		}
 
 		/* P08:收藏星标(reset 左侧),点击切换 favorites_only 过滤范围。 */
 		item.favorite = property_favorite(item.desc.id);
@@ -1987,6 +2011,8 @@ private:
 		vgui_widget_on_event(item.fav_btn, &property_grid::on_row_event, this);
 		vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
 		vgui_widget_set_tooltip(item.fav_btn, "Toggle favorite (common filter)");
+		vgui_widget_set_a11y_name(item.fav_btn, "Toggle favorite");
+		vgui_widget_set_a11y_role(item.fav_btn, VGUI_A11Y_ROLE_TOGGLE);
 
 		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, "R");
 		vgui_widget_set_size(item.reset, kResetWidth, 24);
@@ -1995,6 +2021,7 @@ private:
 		vgui_widget_on_event(item.reset, &property_grid::on_reset_click, this);
 		vgui_widget_set_visible(item.reset, item.desc.has_default ? 1 : 0);
 		vgui_widget_set_tooltip(item.reset, "Reset to default");
+		vgui_widget_set_a11y_name(item.reset, "Reset to default");
 
 		item.error_label = vgui_widget_add(item.panel, VGUI_LABEL, nullptr);
 		vgui_widget_set_size(item.error_label, 0, kErrorHeight);

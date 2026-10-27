@@ -10,7 +10,9 @@
 //
 // Run the executable directly; it returns 0 when every check passes.
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -4074,7 +4076,255 @@ static void test_popup(vgui_context* ui)
 			"ui_scale: style_scale leaves timing alone");
 	}
 
-	int main()
+	struct a11y_walk_capture
+{
+	vgui_widget* edit = nullptr;
+	vgui_widget* checkbox = nullptr;
+	vgui_widget* hidden = nullptr;
+	int total = 0;
+	bool saw_edit = false;
+	bool saw_checkbox = false;
+	bool saw_hidden = false;
+};
+
+static void on_a11y_walk(vgui_widget* widget, void* user)
+{
+	a11y_walk_capture* s = (a11y_walk_capture*)user;
+	if (!s || !widget) return;
+	s->total++;
+	if (widget == s->edit) s->saw_edit = true;
+	if (widget == s->checkbox) s->saw_checkbox = true;
+	if (widget == s->hidden) s->saw_hidden = true;
+}
+
+struct a11y_event_capture
+{
+	int focus = 0;
+	int value = 0;
+	int state = 0;
+	int selection = 0;
+	int alert = 0;
+};
+
+static void on_a11y_event(vgui_context*, vgui_widget* widget,
+	vgui_a11y_event event, void* user)
+{
+	a11y_event_capture* s = (a11y_event_capture*)user;
+	if (!s) return;
+	switch (event)
+	{
+	case VGUI_A11Y_EVENT_FOCUS_CHANGED: if (widget) s->focus++; break;
+	case VGUI_A11Y_EVENT_VALUE_CHANGED: if (widget) s->value++; break;
+	case VGUI_A11Y_EVENT_STATE_CHANGED: if (widget) s->state++; break;
+	case VGUI_A11Y_EVENT_SELECTION_CHANGED: if (widget) s->selection++; break;
+	case VGUI_A11Y_EVENT_ALERT: if (!widget) s->alert++; break;
+	default: break;
+	}
+}
+
+static float srgb_linear(uint8_t v)
+{
+	const float c = (float)v / 255.0f;
+	return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+}
+
+static float contrast_ratio(vgui_color a, vgui_color b)
+{
+	auto luminance = [](vgui_color c)
+	{
+		const float r = srgb_linear((uint8_t)((c >> 16) & 0xFF));
+		const float g = srgb_linear((uint8_t)((c >> 8) & 0xFF));
+		const float bl = srgb_linear((uint8_t)(c & 0xFF));
+		return 0.2126f * r + 0.7152f * g + 0.0722f * bl;
+	};
+	const float la = luminance(a);
+	const float lb = luminance(b);
+	const float hi = std::max(la, lb);
+	const float lo = std::min(la, lb);
+	return (hi + 0.05f) / (lo + 0.05f);
+}
+
+static void test_accessibility_e05(vgui_context* ui)
+{
+	vgui_widget_clear(vgui_root(ui));
+	vgui_set_focus(ui, nullptr);
+
+	vgui_widget* page = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(page, 20, 20);
+	vgui_widget_set_size(page, 420, 340);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 8, 8, 8, 8);
+	vgui_widget_set_gap(page, 4);
+
+	vgui_widget* label = vgui_widget_add(page, VGUI_LABEL, "Name");
+	vgui_widget* edit = vgui_widget_add(page, VGUI_EDIT, "");
+	vgui_widget_set_a11y_name(edit, "Name field");
+	vgui_edit_set_text(edit, "hello");
+	vgui_widget* checkbox = vgui_widget_add(page, VGUI_CHECKBOX, "Enabled");
+	vgui_widget_set_checked(checkbox, 1);
+	vgui_widget* button = vgui_widget_add(page, VGUI_BUTTON, "Save");
+	vgui_widget* list = vgui_widget_add(page, VGUI_LIST, nullptr);
+	vgui_widget* hidden = vgui_widget_add(page, VGUI_LABEL, "Hidden");
+	vgui_widget_set_visible(hidden, 0);
+	const vgui_item_id alpha = vgui_list_add_item(list, "Alpha", nullptr);
+	const vgui_item_id beta = vgui_list_add_item(list, "Beta", nullptr);
+
+	vgui_layout(ui);
+
+	vgui_a11y_info info = {};
+	vgui_widget_get_a11y_info(label, &info);
+	check(info.role == VGUI_A11Y_ROLE_LABEL, "a11y: label role");
+	check(info.name && std::strcmp(info.name, "Name") == 0, "a11y: label name");
+
+	vgui_widget_get_a11y_info(edit, &info);
+	check(info.role == VGUI_A11Y_ROLE_EDIT, "a11y: edit role");
+	check(info.name && std::strcmp(info.name, "Name field") == 0, "a11y: explicit name");
+	check(info.value && std::strcmp(info.value, "hello") == 0, "a11y: edit value");
+
+	vgui_widget_get_a11y_info(checkbox, &info);
+	check(info.role == VGUI_A11Y_ROLE_TOGGLE, "a11y: checkbox toggle role");
+	check((info.states & VGUI_A11Y_CHECKED) != 0, "a11y: checked state");
+	check(info.value && std::strcmp(info.value, "on") == 0, "a11y: toggle value on");
+
+	vgui_set_focus(ui, edit);
+	vgui_widget_get_a11y_info(edit, &info);
+	check((info.states & VGUI_A11Y_FOCUSED) != 0, "a11y: focused state");
+	vgui_edit_set_readonly(edit, 1);
+	vgui_widget_get_a11y_info(edit, &info);
+	check((info.states & VGUI_A11Y_READONLY) != 0, "a11y: readonly state");
+	vgui_edit_set_readonly(edit, 0);
+
+	vgui_widget_set_enabled(checkbox, 0);
+	vgui_widget_get_a11y_info(checkbox, &info);
+	check((info.states & VGUI_A11Y_DISABLED) != 0, "a11y: disabled state");
+	vgui_widget_set_enabled(checkbox, 1);
+
+	vgui_list_select(list, beta, 1);
+	vgui_list_set_cursor(list, beta);
+	vgui_widget_get_a11y_info(list, &info);
+	check(info.role == VGUI_A11Y_ROLE_LIST, "a11y: list role");
+	check(info.item == beta, "a11y: list current item");
+	check(info.value && std::strcmp(info.value, "Beta") == 0, "a11y: list value");
+	check((info.states & VGUI_A11Y_SELECTED) != 0, "a11y: list selected state");
+	(void)alpha;
+
+	vgui_widget_set_a11y_name(button, "Save button");
+	vgui_widget_set_a11y_role(button, VGUI_A11Y_ROLE_SLIDER);
+	check(std::strcmp(vgui_widget_get_a11y_name(button), "Save button") == 0,
+		"a11y: name override round-trip");
+	check(vgui_widget_get_a11y_role(button) == VGUI_A11Y_ROLE_SLIDER,
+		"a11y: role override round-trip");
+	vgui_widget_set_a11y_role(button, VGUI_A11Y_ROLE_NONE);
+	check(vgui_widget_get_a11y_role(button) == VGUI_A11Y_ROLE_BUTTON,
+		"a11y: role falls back to derived");
+
+	a11y_walk_capture walk;
+	walk.edit = edit;
+	walk.checkbox = checkbox;
+	walk.hidden = hidden;
+	vgui_context_a11y_walk(ui, on_a11y_walk, &walk);
+	check(walk.total > 0, "a11y: walk visits widgets");
+	check(walk.saw_edit && walk.saw_checkbox, "a11y: walk sees visible widgets");
+	check(!walk.saw_hidden, "a11y: walk skips hidden widgets");
+
+	a11y_event_capture events;
+	const int token = vgui_context_add_a11y_listener(ui, on_a11y_event, &events);
+	check(token != 0, "a11y: listener registered");
+	vgui_set_focus(ui, nullptr);
+	vgui_set_focus(ui, edit);
+	check(events.focus == 1, "a11y: focus event");
+	vgui_set_focus(ui, checkbox);
+	vgui_input_key(ui, ' ', 1, 0);
+	check(events.state == 1, "a11y: toggle state event");
+	vgui_list_select(list, alpha, 1);
+	check(events.selection >= 1, "a11y: selection event");
+	vgui_context_announce(ui, "saved");
+	check(events.alert == 1, "a11y: alert event");
+	check(std::strcmp(vgui_context_get_a11y_announcement(ui), "saved") == 0,
+		"a11y: announcement text");
+	vgui_context_remove_a11y_listener(ui, token);
+	vgui_context_announce(ui, "ignored");
+	check(events.alert == 1, "a11y: listener removal stops events");
+
+	/* Focus trap: Tab cycles inside the trapped panel. */
+	vgui_widget* trap = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(trap, 460, 20);
+	vgui_widget_set_size(trap, 200, 100);
+	vgui_widget_set_layout(trap, VGUI_LAYOUT_COLUMN);
+	vgui_widget* a1 = vgui_widget_add(trap, VGUI_BUTTON, "A1");
+	vgui_widget* a2 = vgui_widget_add(trap, VGUI_BUTTON, "A2");
+	vgui_widget_set_focus_trap(trap, 1);
+	check(vgui_widget_get_focus_trap(trap) == 1, "focus trap: getter");
+	vgui_layout(ui);
+	vgui_set_focus(ui, a1);
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, 0);
+	check(vgui_get_focus(ui) == a2, "focus trap: Tab moves inside");
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, 0);
+	check(vgui_get_focus(ui) == a1, "focus trap: Tab wraps inside");
+	vgui_input_key(ui, VGUI_KEY_TAB, 1, VGUI_MOD_SHIFT);
+	check(vgui_get_focus(ui) == a2, "focus trap: Shift+Tab reverses inside");
+	vgui_widget_set_focus_trap(trap, 0);
+	check(vgui_widget_get_focus_trap(trap) == 0, "focus trap: clear");
+
+	/* Floating Dock pages trap focus automatically. */
+	vgui_widget* dock = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(dock, 460, 140);
+	vgui_widget_set_size(dock, 300, 200);
+	vgui_widget* dock_page = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_dock_panel_desc desc;
+	vgui_dock_panel_desc_default(&desc);
+	desc.id = "trap_test";
+	desc.title = "Trap";
+	desc.panel = dock_page;
+	desc.zone = VGUI_DOCK_CENTER;
+	const vgui_item_id dock_item = vgui_dock_add(dock, &desc);
+	check(dock_item != 0, "focus trap: dock panel added");
+	check(vgui_dock_float(dock, dock_item, 460, 140, 300, 200) == 1,
+		"focus trap: dock float");
+	check(vgui_widget_get_focus_trap(dock_page) == 1,
+		"focus trap: floating dock page traps");
+	check(vgui_dock_set_zone(dock, dock_item, VGUI_DOCK_CENTER, 0) == 1,
+		"focus trap: dock re-dock");
+	check(vgui_widget_get_focus_trap(dock_page) == 0,
+		"focus trap: docked page does not trap");
+
+	/* F10 opens the first MenuBar title using the keyboard only. */
+	vgui_widget* bar = vgui_widget_add(vgui_root(ui), VGUI_MENUBAR, nullptr);
+	vgui_widget_set_pos(bar, 20, 380);
+	vgui_widget_set_size(bar, 300, 26);
+	vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_menu_add_item(menu, "Save");
+	const vgui_item_id file_item = vgui_menubar_add_menu(bar, "File", menu);
+	check(file_item != 0, "keyboard menu: menubar title");
+	vgui_set_focus(ui, button);
+	check(vgui_input_key(ui, VGUI_KEY_F10, 1, 0) == 1,
+		"keyboard menu: F10 opens");
+	check(vgui_menu_is_open(menu) == 1, "keyboard menu: menu is open");
+	check(vgui_menubar_get_active(bar) == file_item,
+		"keyboard menu: active title");
+	check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1,
+		"keyboard menu: Esc closes");
+	check(vgui_menu_is_open(menu) == 0, "keyboard menu: menu closed");
+
+	/* High contrast palette: WCAG contrast for core surfaces. */
+	vgui_theme hc = {};
+	vgui_theme_high_contrast(&hc);
+	check(contrast_ratio(hc.text, hc.panel_bg) >= 7.0f,
+		"high contrast: text/panel >= 7:1");
+	check(contrast_ratio(hc.row_text, hc.list_bg) >= 7.0f,
+		"high contrast: row text/list >= 7:1");
+	check(contrast_ratio(hc.row_selected_text, hc.row_selected) >= 7.0f,
+		"high contrast: selected row >= 7:1");
+	check(contrast_ratio(hc.accent, hc.panel_bg) >= 4.5f,
+		"high contrast: accent/panel >= 4.5:1");
+	check(contrast_ratio(hc.disabled, hc.panel_bg) >= 4.5f,
+		"high contrast: disabled/panel >= 4.5:1");
+
+	vgui_set_focus(ui, nullptr);
+	vgui_widget_clear(vgui_root(ui));
+}
+
+int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 	auto* wg = new app_mgr();
@@ -4118,6 +4368,7 @@ static void test_popup(vgui_context* ui)
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
 	test_popup(ui);
+	test_accessibility_e05(ui);
 	test_ui_scale(ui);
 
 	vgui_destroy(ui);

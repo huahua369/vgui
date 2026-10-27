@@ -28,6 +28,34 @@ namespace vgui_editor_kit {
 		{
 			return std::isfinite(value) ? value : fallback;
 		}
+
+		// E05: first focusable, visible and enabled descendant (pre-order).
+		vgui_widget* first_focusable_descendant(vgui_widget* widget)
+		{
+			if (!widget || !vgui_widget_get_visible(widget) ||
+				!vgui_widget_get_enabled(widget))
+				return nullptr;
+			if (vgui_widget_get_focusable(widget))
+				return widget;
+			const std::size_t count = vgui_widget_get_child_count(widget);
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				if (vgui_widget* hit = first_focusable_descendant(
+					vgui_widget_get_child(widget, i)))
+					return hit;
+			}
+			return nullptr;
+		}
+
+		bool widget_within_root(vgui_widget* root, vgui_widget* widget)
+		{
+			if (!root || !widget)
+				return false;
+			for (vgui_widget* p = widget; p; p = vgui_widget_get_parent(p))
+				if (p == root)
+					return true;
+			return false;
+		}
 	}
 
 	editor_shell::editor_shell(editor_context& context)
@@ -129,6 +157,20 @@ namespace vgui_editor_kit {
 		add_panel_toggle("view.viewport", "Viewport", editor_panel::viewport);
 		add_panel_toggle("view.properties", "Properties", editor_panel::properties);
 		add_panel_toggle("view.bottom", "Bottom Panel", editor_panel::bottom);
+
+		/* E05: keyboard-only panel cycling and high-contrast presentation. */
+		commands_.add("view.focus.next", "Focus Next Panel", [this]() {
+			focus_next_panel(1);
+		}).shortcut = shortcut("F6");
+		commands_.add("view.focus.prev", "Focus Previous Panel", [this]() {
+			focus_next_panel(-1);
+		}).shortcut = shortcut("Shift+F6");
+		commands_.add("view.high_contrast", "High Contrast", [this]() {
+			set_high_contrast(!high_contrast_);
+		}).shortcut = shortcut("Ctrl+Shift+H");
+		commands_.set_checked("view.high_contrast", [this]() {
+			return high_contrast_;
+		});
 
 		/* A07: reveal and focus the log console even when the bottom panel or
 		 * another bottom tab is active. */
@@ -502,6 +544,9 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.nodegraph", true);
 			add_menu_command(view_menu, "view.code", true);
 			vgui_menu_add_separator(view_menu);
+			add_menu_command(view_menu, "view.focus.next", false);
+			add_menu_command(view_menu, "view.focus.prev", false);
+			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
 			add_menu_command(view_menu, "view.gizmo", true);
@@ -539,6 +584,8 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.hdr", true);
 			add_menu_command(view_menu, "view.msaa", true);
 			add_menu_command(view_menu, "view.depth", true);
+			vgui_menu_add_separator(view_menu);
+			add_menu_command(view_menu, "view.high_contrast", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.reset_layout", false);
 			vgui_menubar_add_menu(menubar_, "View", view_menu);
@@ -583,10 +630,10 @@ namespace vgui_editor_kit {
 		vgui_widget_set_border(menubar_, kBorder, 1);
 
 		toolbar_.build(root_);
-		vgui_widget* title = toolbar_.add_label(
+		title_label_ = toolbar_.add_label(
 			"vgui_editor_kit  ·  MVP skeleton", true);
-		vgui_widget_set_font_size(title, 14);
-		vgui_widget_set_text_color(title, kTitleText);
+		vgui_widget_set_font_size(title_label_, 14);
+		vgui_widget_set_text_color(title_label_, kTitleText);
 
 		search_.build(toolbar_.widget(), "Search scene");
 		search_.set_on_change([this](const std::string& text) {
@@ -653,6 +700,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_gap(viewport_panel_, 4);
 		vgui_widget* view_strip = vgui_widget_add(viewport_panel_, VGUI_PANEL,
 			nullptr);
+		view_strip_ = view_strip;
 		vgui_widget_set_layout(view_strip, VGUI_LAYOUT_ROW);
 		vgui_widget_set_padding(view_strip, 0, 0, 0, 0);
 		vgui_widget_set_gap(view_strip, 4);
@@ -819,6 +867,7 @@ namespace vgui_editor_kit {
 		/* Reflect the initial V09 settings (depth preview on) in the auxiliary
 		 * surface visibility and menu checks. */
 		set_viewport_settings(viewport_settings_);
+		install_accessibility_names();
 
 		default_layout_ = capture_layout();
 	}
@@ -1553,6 +1602,164 @@ namespace vgui_editor_kit {
 	void editor_shell::set_status(std::string text)
 	{
 		statusbar_.set_message(std::move(text));
+	}
+
+	bool editor_shell::high_contrast() const noexcept
+	{
+		return high_contrast_;
+	}
+
+	void editor_shell::set_high_contrast(bool enabled)
+	{
+		if (enabled == high_contrast_)
+			return;
+		vgui_context* ui = context_.ui();
+		if (!ui)
+			return;
+		if (enabled)
+		{
+			vgui_context_get_theme(ui, &saved_theme_);
+			has_saved_theme_ = true;
+			vgui_theme contrast = {};
+			vgui_theme_high_contrast(&contrast);
+			vgui_context_set_theme(ui, &contrast);
+		}
+		else if (has_saved_theme_)
+		{
+			vgui_context_set_theme(ui, &saved_theme_);
+		}
+		high_contrast_ = enabled;
+		apply_shell_palette();
+		refresh_commands();
+	}
+
+	void editor_shell::apply_shell_palette()
+	{
+		const vgui_color root_bg = high_contrast_ ? 0xFF000000 : kRootBg;
+		const vgui_color header_bg = high_contrast_ ? 0xFF000000 : kHeaderBg;
+		const vgui_color section_bg = high_contrast_ ? 0xFF000000 : kSectionBg;
+		const vgui_color border = high_contrast_ ? 0xFFFFFFFF : kBorder;
+		const vgui_color title_text = high_contrast_ ? 0xFFFFFFFF : kTitleText;
+		if (root_) vgui_widget_set_background(root_, root_bg);
+		if (menubar_)
+		{
+			vgui_widget_set_background(menubar_, header_bg);
+			vgui_widget_set_border(menubar_, border, 1);
+		}
+		vgui_widget* pages[] = { outliner_panel_, viewport_panel_,
+			properties_panel_, bottom_panel_ };
+		for (vgui_widget* page : pages)
+			if (page) vgui_widget_set_background(page, section_bg);
+		if (bottom_tabs_)
+		{
+			/* Tab pages are plain panels created with the shell section color;
+			 * theme migration cannot see those hard-coded values. */
+			const std::size_t count = vgui_widget_get_child_count(bottom_tabs_);
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				vgui_widget* child = vgui_widget_get_child(bottom_tabs_, i);
+				if (child) vgui_widget_set_background(child, section_bg);
+			}
+		}
+		if (view_strip_) vgui_widget_set_background(view_strip_, section_bg);
+		if (title_label_) vgui_widget_set_text_color(title_label_, title_text);
+	}
+
+	void editor_shell::focus_next_panel(int direction)
+	{
+		vgui_context* ui = context_.ui();
+		if (!ui || !dock_)
+			return;
+		auto panel_root = [this](editor_panel panel) -> vgui_widget*
+		{
+			switch (panel)
+			{
+			case editor_panel::outliner: return scene_.widget();
+			case editor_panel::viewport: return viewport_.widget();
+			case editor_panel::properties: return properties_.widget();
+			case editor_panel::bottom:
+			{
+				if (bottom_tabs_)
+				{
+					vgui_item_id active = vgui_tab_get_active(bottom_tabs_);
+					if (!active)
+					{
+						active = vgui_tab_get_at(bottom_tabs_, 0);
+						if (active) vgui_tab_set_active(bottom_tabs_, active);
+					}
+					if (active)
+						if (vgui_widget* page = vgui_tab_get_page(bottom_tabs_, active))
+							return page;
+				}
+				return bottom_tabs_;
+			}
+			default: return nullptr;
+			}
+		};
+
+		const editor_panel panels[4] = {
+			editor_panel::outliner,
+			editor_panel::viewport,
+			editor_panel::properties,
+			editor_panel::bottom
+		};
+
+		vgui_widget* focus = vgui_get_focus(ui);
+		int current = -1;
+		for (int i = 0; i < 4; ++i)
+			if (widget_within_root(panel_root(panels[i]), focus))
+				current = i;
+
+		int index = current;
+		for (int step = 0; step < 4; ++step)
+		{
+			if (index < 0)
+				index = direction > 0 ? 0 : 3;
+			else
+				index = (index + (direction > 0 ? 1 : 3)) % 4;
+
+			set_panel_visible(panels[index], true);
+			const vgui_item_id item = panel_item(panels[index]);
+			if (item)
+				vgui_dock_activate(dock_, item);
+			vgui_layout(ui);
+			if (vgui_widget* target = first_focusable_descendant(panel_root(panels[index])))
+			{
+				vgui_set_focus(ui, target);
+				return;
+			}
+		}
+	}
+
+	void editor_shell::install_accessibility_names()
+	{
+		auto name = [](vgui_widget* widget, const char* text) {
+			if (widget) vgui_widget_set_a11y_name(widget, text);
+		};
+		name(root_, "Editor shell");
+		name(menubar_, "Main menu");
+		name(toolbar_.widget(), "Toolbar");
+		name(statusbar_.widget(), "Status bar");
+		name(search_.widget(), "Search scene");
+		name(path_.widget(), "Selection path");
+		name(outliner_panel_, "Outliner panel");
+		name(viewport_panel_, "Viewport panel");
+		name(properties_panel_, "Properties panel");
+		name(bottom_panel_, "Bottom panel");
+		name(bottom_tabs_, "Bottom tabs");
+		name(scene_.widget(), "Scene outliner");
+		name(viewport_.widget(), "3D viewport");
+		name(preview_viewport_.widget(), "Preview viewport");
+		name(depth_viewport_.widget(), "Depth preview");
+		name(properties_.widget(), "Properties");
+		name(assets_.widget(), "Assets");
+		name(preview_.widget(), "Asset preview");
+		name(console_.tree(), "Console log");
+		name(canvas_.widget(), "Canvas");
+		name(table_.widget(), "Table");
+		name(timeline_.widget(), "Timeline");
+		name(node_graph_.widget(), "Node graph");
+		name(code_.widget(), "Code editor");
 	}
 
 	void editor_shell::update_selection_ui(object_id id)

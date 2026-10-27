@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 namespace vgui_editor_kit {
@@ -61,6 +62,12 @@ namespace vgui_editor_kit {
 			if (name == "pageup" || name == "pgup" || name == "page up") return VGUI_KEY_PAGE_UP;
 			if (name == "pagedown" || name == "pgdn" || name == "page down") return VGUI_KEY_PAGE_DOWN;
 			if (name == "insert" || name == "ins") return VGUI_KEY_INSERT;
+			if (name.size() >= 2 && name[0] == 'f')
+			{
+				const int index = std::atoi(name.c_str() + 1);
+				if (index >= 1 && index <= 12)
+					return VGUI_KEY_F1 + (index - 1);
+			}
 			return 0;
 		}
 
@@ -84,6 +91,14 @@ namespace vgui_editor_kit {
 			case VGUI_KEY_INSERT: return "Insert";
 			case ' ': return "Space";
 			default: break;
+			}
+			if (key >= VGUI_KEY_F1 && key <= VGUI_KEY_F12)
+			{
+				static const char* function_keys[] = {
+					"F1", "F2", "F3", "F4", "F5", "F6",
+					"F7", "F8", "F9", "F10", "F11", "F12"
+				};
+				return function_keys[key - VGUI_KEY_F1];
 			}
 			return nullptr;
 		}

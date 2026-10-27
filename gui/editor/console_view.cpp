@@ -121,6 +121,7 @@ namespace vgui_editor_kit {
 		}
 
 		root_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+		vgui_widget_set_a11y_name(root_, "Console");
 		vgui_widget_set_id(root_, "console_view");
 		vgui_widget_set_grow(root_, 1.0f);
 		vgui_widget_set_min_size(root_, 160, 80);
@@ -205,6 +206,7 @@ namespace vgui_editor_kit {
 		vgui_custom_set_draw(ticker_, &console_view::on_tick_draw, this);
 
 		tree_ = vgui_widget_add(root_, VGUI_TREE, nullptr);
+		vgui_widget_set_a11y_name(tree_, "Console log");
 		vgui_widget_set_id(tree_, "console_tree");
 		vgui_widget_set_grow(tree_, 1.0f);
 		vgui_widget_set_min_size(tree_, 160, 64);

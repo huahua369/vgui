@@ -1004,6 +1004,17 @@ static void on_theme_green(vgui_widget* w, const vgui_event* e, void* user)
 	statusf(st, "主题: 护眼");
 }
 
+static void on_theme_high_contrast(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	vgui_theme t = {};
+	vgui_theme_high_contrast(&t);
+	vgui_context_set_theme(st->ui, &t);
+	statusf(st, "主题: 高对比度");
+}
+
 // 国际化 / RTL：语言切换与方向切换共用同一套演示状态
 static void update_i18n_status(demo_state* st)
 {
@@ -2153,6 +2164,7 @@ static void build_focus_theme(demo_state* st, vgui_widget* root)
 	button(r2, "深色", on_theme_dark, st);
 	button(r2, "浅色", on_theme_light, st);
 	button(r2, "护眼", on_theme_green, st);
+	button(r2, "高对比度", on_theme_high_contrast, st);
 	label(r2, "← vgui_context_set_theme", 12, 0xFF9A9A9A);
 }
 

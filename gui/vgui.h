@@ -1838,10 +1838,10 @@ extern "C" {
 		float y, float width, float height);
 
 	/* Marks a container as a focus trap (E05).  Tab/Shift+Tab then cycles inside
-	 * the nearest trapped ancestor of the current focus; when the focus is
-	 * outside every trap the first Tab step jumps into the innermost trap that
-	 * contains it.  Mouse clicks are unaffected.  Modals and context popups
-	 * trap automatically; use this for floating windows such as dock frames. */
+	 * the nearest trapped ancestor of the current focus.  When the focus is
+	 * outside every trap, traversal continues through the whole active root.
+	 * Mouse clicks are unaffected.  Modals, context popups and floating Dock
+	 * frames set this automatically; use it for other floating containers. */
 	VGUI_API void vgui_widget_set_focus_trap(vgui_widget* container, int trapped);
 	VGUI_API int vgui_widget_get_focus_trap(vgui_widget* container);
 
@@ -1892,9 +1892,9 @@ extern "C" {
 	typedef struct vgui_a11y_info {
 		vgui_a11y_role role;
 		const char* name;	/* widget-owned storage, stable until renamed */
-		const char* value;	/* edit text / value text, may be empty */
+		const char* value;	/* widget-owned cache: edit text / value text, may be empty */
 		int states;		/* vgui_a11y_state bit mask */
-		vgui_item_id item;	/* current selection for list/tree, else 0 */
+		vgui_item_id item;	/* current selection for list/tree/menu, else 0 */
 		float x, y, w, h;	/* absolute window rect in effective pixels */
 	} vgui_a11y_info;
 
@@ -1914,7 +1914,8 @@ extern "C" {
 
 	/* State-change notifications for screen-reader bridges.  Listeners run in
 	 * registration order; they may remove themselves.  widget is NULL for
-	 * VGUI_A11Y_EVENT_ALERT (a toast has no widget; read nothing). */
+	 * VGUI_A11Y_EVENT_ALERT; read the announcement text with
+	 * vgui_context_get_a11y_announcement(). */
 	typedef enum vgui_a11y_event {
 		VGUI_A11Y_EVENT_NONE = 0,
 		VGUI_A11Y_EVENT_FOCUS_CHANGED,
@@ -1928,6 +1929,13 @@ extern "C" {
 		vgui_a11y_event event, void* user);
 	VGUI_API int vgui_context_add_a11y_listener(vgui_context* ctx, vgui_a11y_fn fn, void* user);
 	VGUI_API void vgui_context_remove_a11y_listener(vgui_context* ctx, int token);
+
+	/* Live-region text for the most recent alert/announcement.  Toasts update it
+	 * automatically before VGUI_A11Y_EVENT_ALERT fires; hosts may call
+	 * vgui_context_announce() to push custom messages (form validation, status
+	 * changes) to the screen-reader bridge. */
+	VGUI_API const char* vgui_context_get_a11y_announcement(vgui_context* ctx);
+	VGUI_API void vgui_context_announce(vgui_context* ctx, const char* text);
 
 	/* ------------------------------------------------------------------------- */
 	/* Custom widget                                                             */

@@ -44,6 +44,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(button_, 0, 24);
 		vgui_widget_set_min_size(button_, 24, 24);
 		vgui_widget_set_font_size(button_, 12);
+		vgui_widget_set_a11y_role(button_, VGUI_A11Y_ROLE_BUTTON);
 		vgui_widget_on_event(button_, &icon_button::on_event, this);
 	}
 
@@ -120,6 +121,8 @@ namespace vgui_editor_kit {
 	void toggle_button::build(vgui_widget* parent, std::string text)
 	{
 		button_.build(parent, std::move(text));
+		if (button_.widget())
+			vgui_widget_set_a11y_role(button_.widget(), VGUI_A11Y_ROLE_TOGGLE);
 		button_.set_on_click([this]() { toggle(); });
 	}
 
@@ -197,7 +200,12 @@ namespace vgui_editor_kit {
 			return (std::size_t)-1;
 		const std::size_t index = segments_.size();
 		auto segment = std::make_unique<icon_button>();
-		segment->build(panel_, std::move(text));
+		segment->build(panel_, text);
+		if (segment->widget())
+		{
+			vgui_widget_set_a11y_role(segment->widget(), VGUI_A11Y_ROLE_RADIO);
+			vgui_widget_set_a11y_name(segment->widget(), text.c_str());
+		}
 		segment->set_on_click([this, index]() { (void)select(index); });
 		segments_.push_back(std::move(segment));
 		if (!has_selection_)
@@ -288,6 +296,7 @@ namespace vgui_editor_kit {
 		if (panel_ || !parent)
 			return;
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+		vgui_widget_set_a11y_name(panel_, "Toolbar");
 		vgui_widget_set_size(panel_, 0, 34);
 		vgui_widget_set_min_size(panel_, 0, 28);
 		vgui_widget_set_align_self(panel_, VGUI_ALIGN_STRETCH);

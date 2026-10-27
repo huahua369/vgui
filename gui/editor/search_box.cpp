@@ -19,6 +19,9 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_items(panel_, VGUI_ALIGN_CENTER);
 
 		edit_ = vgui_widget_add(panel_, VGUI_EDIT, "");
+		vgui_widget_set_a11y_name(edit_,
+			placeholder.empty() ? "Search" : placeholder.c_str());
+		vgui_widget_set_a11y_role(edit_, VGUI_A11Y_ROLE_EDIT);
 		vgui_widget_set_id(edit_, "search_box_edit");
 		vgui_widget_set_grow(edit_, 1.0f);
 		vgui_widget_set_size(edit_, 0, 24);

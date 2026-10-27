@@ -994,6 +994,7 @@ namespace vgui_editor_kit {
 
 		root_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(root_, "code_editor");
+		vgui_widget_set_a11y_name(root_, "Code editor");
 		vgui_widget_set_grow(root_, 1.0f);
 		vgui_widget_set_min_size(root_, 200, 100);
 		vgui_widget_set_size(root_, 0, 0);

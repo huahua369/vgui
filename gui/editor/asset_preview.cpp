@@ -231,6 +231,7 @@ namespace vgui_editor_kit {
 		vgui_theme theme = theme_for(parent);
 
 		root_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+		vgui_widget_set_a11y_name(root_, "Asset preview");
 		vgui_widget_set_layout(root_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(root_, 6, 6, 6, 6);
 		vgui_widget_set_gap(root_, 4);
