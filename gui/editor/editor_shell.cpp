@@ -191,6 +191,21 @@ namespace vgui_editor_kit {
 				panel_visible(editor_panel::bottom);
 		});
 
+		/* T03: reveal and focus the node graph tab. */
+		commands_.add("view.nodegraph", "Node Graph", [this]() {
+			set_panel_visible(editor_panel::bottom, true);
+			if (node_graph_tab_ && bottom_tabs_)
+				vgui_tab_set_active(bottom_tabs_, node_graph_tab_);
+			if (node_graph_.built())
+				node_graph_.request_focus();
+			set_status("node graph");
+		});
+		commands_.set_checked("view.nodegraph", [this]() {
+			return node_graph_tab_ && bottom_tabs_ &&
+				vgui_tab_get_active(bottom_tabs_) == node_graph_tab_ &&
+				panel_visible(editor_panel::bottom);
+		});
+
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
 		commands_.add("view.grid", "Grid", [this]() {
 			grid_.set_visible(!grid_.visible());
@@ -469,6 +484,7 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.canvas", true);
 			add_menu_command(view_menu, "view.table", true);
 			add_menu_command(view_menu, "view.timeline", true);
+			add_menu_command(view_menu, "view.nodegraph", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
@@ -708,6 +724,17 @@ namespace vgui_editor_kit {
 		timeline_tab_ = vgui_tab_add(bottom_tabs_, "TIMELINE", timeline_page);
 		vgui_tab_set_closeable(bottom_tabs_, timeline_tab_, 0);
 
+		vgui_widget* node_graph_page = vgui_widget_add(bottom_tabs_,
+			VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(node_graph_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(node_graph_page, 0, 0, 0, 0);
+		node_graph_.build(node_graph_page);
+		vgui_widget_set_align_self(node_graph_.widget(), VGUI_ALIGN_STRETCH);
+		node_graph_.set_command_stack(&context_.commands());
+		node_graph_tab_ = vgui_tab_add(bottom_tabs_, "NODEGRAPH",
+			node_graph_page);
+		vgui_tab_set_closeable(bottom_tabs_, node_graph_tab_, 0);
+
 		desc.id = "bottom";
 		desc.title = "PANELS";
 		desc.panel = bottom_panel_;
@@ -845,6 +872,16 @@ namespace vgui_editor_kit {
 		return timeline_;
 	}
 
+	node_graph_view& editor_shell::node_graph() noexcept
+	{
+		return node_graph_;
+	}
+
+	const node_graph_view& editor_shell::node_graph() const noexcept
+	{
+		return node_graph_;
+	}
+
 	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept
 	{
 		switch (panel)
@@ -979,6 +1016,9 @@ namespace vgui_editor_kit {
 		if (timeline_.built())
 			layout.timeline_state = timeline_state_to_json(
 				timeline_.capture_state());
+		if (node_graph_.built())
+			layout.node_graph_state = node_graph_state_to_json(
+				node_graph_.capture_state());
 
 		/* Keep the legacy splitter ratios meaningful for hosts that read them
 		 * directly.  They are derived from the Dock zone sizes. */
@@ -1186,6 +1226,19 @@ namespace vgui_editor_kit {
 			}
 		}
 
+		/* T03: validate the node graph payload before changing dock state. */
+		node_graph_state loaded_node_graph_state;
+		if (!layout.node_graph_state.empty())
+		{
+			std::string reason;
+			if (!node_graph_state_from_json(layout.node_graph_state,
+				loaded_node_graph_state, &reason))
+			{
+				if (error) *error = reason;
+				return false;
+			}
+		}
+
 		const bool was_applying = applying_layout_;
 		applying_layout_ = true;
 
@@ -1227,6 +1280,18 @@ namespace vgui_editor_kit {
 		{
 			std::string reason;
 			if (!timeline_.apply_state(loaded_timeline_state, &reason))
+			{
+				applying_layout_ = was_applying;
+				if (error) *error = reason;
+				refresh_commands();
+				return false;
+			}
+		}
+
+		if (!layout.node_graph_state.empty())
+		{
+			std::string reason;
+			if (!node_graph_.apply_state(loaded_node_graph_state, &reason))
 			{
 				applying_layout_ = was_applying;
 				if (error) *error = reason;

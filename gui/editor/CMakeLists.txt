@@ -14,6 +14,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     editor_layout.cpp
     editor_shell.cpp
     gradient_editor.cpp
+    node_graph_view.cpp
     outliner_view.cpp
     property_grid.cpp
     search_box.cpp

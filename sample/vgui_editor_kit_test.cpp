@@ -356,12 +356,13 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 5 ||
+					initial.bottom_tab_order.size() != 6 ||
 					initial.bottom_tab_order[0] != "ASSETS" ||
 					initial.bottom_tab_order[1] != "CONSOLE" ||
 					initial.bottom_tab_order[2] != "CANVAS" ||
 					initial.bottom_tab_order[3] != "TABLE" ||
 					initial.bottom_tab_order[4] != "TIMELINE" ||
+					initial.bottom_tab_order[5] != "NODEGRAPH" ||
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
 
@@ -412,6 +413,54 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				timeline.set_frame_rate(24.0);
 				timeline.set_loop(true);
 
+				/* T03: build a tiny graph and a non-default view/selection so
+				 * the opaque node graph payload round-trips below.  The model
+				 * itself is host-owned, so the restore block recreates the same
+				 * stable ids before load_layout(). */
+				node_graph_view& node_graph = shell.node_graph();
+				node_node source_node;
+				source_node.id = 101;
+				source_node.title = "Source";
+				source_node.category = "Flow";
+				source_node.x = 48.0;
+				source_node.y = 72.5;
+				source_node.width = 220.0;
+				node_port source_output;
+				source_output.id = 201;
+				source_output.name = "Out";
+				source_output.direction = node_port_direction::output;
+				source_output.type = node_port_type::flow;
+				source_node.outputs.push_back(source_output);
+				node_node sink_node;
+				sink_node.id = 102;
+				sink_node.title = "Sink";
+				sink_node.category = "Flow";
+				sink_node.x = 360.0;
+				sink_node.y = 140.0;
+				sink_node.width = 200.0;
+				node_port sink_input;
+				sink_input.id = 202;
+				sink_input.name = "In";
+				sink_input.direction = node_port_direction::input;
+				sink_input.type = node_port_type::flow;
+				sink_node.inputs.push_back(sink_input);
+				node_connection graph_link;
+				graph_link.id = 301;
+				graph_link.from_node = 101;
+				graph_link.from_port = 201;
+				graph_link.to_node = 102;
+				graph_link.to_port = 202;
+				if (node_graph.add_node(std::move(source_node)) != 101 ||
+					node_graph.add_node(std::move(sink_node)) != 102 ||
+					node_graph.add_connection(graph_link) != 301)
+					return fail("layout node graph setup");
+				node_graph.set_view_state({ -35.5, 42.25, 1.75 });
+				node_graph.set_grid_step(16.0);
+				node_graph.set_grid_visible(false);
+				node_graph.set_snap_to_grid(false);
+				node_graph.set_minimap_visible(false);
+				node_graph.set_selection({ 101, 301 }, 101);
+
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
 				vgui_item_id properties = vgui_dock_find(dock, "properties");
@@ -448,18 +497,21 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					saved.dock_panels.size() != 4 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 5 ||
+					saved.bottom_tab_order.size() != 6 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
 					saved.bottom_tab_order[1] != "ASSETS" ||
 					saved.bottom_tab_order[2] != "CANVAS" ||
 					saved.bottom_tab_order[3] != "TABLE" ||
 					saved.bottom_tab_order[4] != "TIMELINE" ||
+					saved.bottom_tab_order[5] != "NODEGRAPH" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
 				if (saved.table_state.empty())
 					return fail("layout table state capture");
 				if (saved.timeline_state.empty())
 					return fail("layout timeline state capture");
+				if (saved.node_graph_state.empty())
+					return fail("layout node graph state capture");
 
 				auto find_panel = [&saved](const char* id)
 					-> const editor_dock_panel_layout* {
@@ -496,7 +548,8 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					parsed.bottom_tab_order != saved.bottom_tab_order ||
 					parsed.bottom_active_tab != saved.bottom_active_tab ||
 					parsed.table_state != saved.table_state ||
-					parsed.timeline_state != saved.timeline_state)
+					parsed.timeline_state != saved.timeline_state ||
+					parsed.node_graph_state != saved.node_graph_state)
 					return fail("layout json round trip");
 			}	vgui_destroy(ui);
 		}
@@ -548,6 +601,44 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				if (timeline.add_track(timeline_track) != 42)
 					return fail("layout restored timeline setup");
 
+				node_graph_view& node_graph = shell.node_graph();
+				node_node source_node;
+				source_node.id = 101;
+				source_node.title = "Source";
+				source_node.category = "Flow";
+				source_node.x = 48.0;
+				source_node.y = 72.5;
+				source_node.width = 220.0;
+				node_port source_output;
+				source_output.id = 201;
+				source_output.name = "Out";
+				source_output.direction = node_port_direction::output;
+				source_output.type = node_port_type::flow;
+				source_node.outputs.push_back(source_output);
+				node_node sink_node;
+				sink_node.id = 102;
+				sink_node.title = "Sink";
+				sink_node.category = "Flow";
+				sink_node.x = 360.0;
+				sink_node.y = 140.0;
+				sink_node.width = 200.0;
+				node_port sink_input;
+				sink_input.id = 202;
+				sink_input.name = "In";
+				sink_input.direction = node_port_direction::input;
+				sink_input.type = node_port_type::flow;
+				sink_node.inputs.push_back(sink_input);
+				node_connection graph_link;
+				graph_link.id = 301;
+				graph_link.from_node = 101;
+				graph_link.from_port = 201;
+				graph_link.to_node = 102;
+				graph_link.to_port = 202;
+				if (node_graph.add_node(std::move(source_node)) != 101 ||
+					node_graph.add_node(std::move(sink_node)) != 102 ||
+					node_graph.add_connection(graph_link) != 301)
+					return fail("layout restored node graph setup");
+
 				std::string error;
 				if (!shell.load_layout(layout_path.string(), &error))
 					return fail("layout load");
@@ -563,6 +654,42 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!timeline.loop() || !timeline.snap_enabled() ||
 					std::fabs(timeline.view_state().view_start - 0.5) > 1e-9)
 					return fail("layout restored timeline state");
+				const node_graph_view_state graph_view = node_graph.view_state();
+				if (!node_graph.find_node(101) || !node_graph.find_node(102) ||
+					!node_graph.find_connection(301) ||
+					std::fabs(graph_view.offset_x + 35.5) > 1e-9 ||
+					std::fabs(graph_view.offset_y - 42.25) > 1e-9 ||
+					std::fabs(graph_view.zoom - 1.75) > 1e-9 ||
+					node_graph.grid_visible() ||
+					std::fabs(node_graph.grid_step() - 16.0) > 1e-9 ||
+					node_graph.snap_to_grid() || node_graph.minimap_visible() ||
+					node_graph.selection_ids().size() != 2 ||
+					!node_graph.is_selected(101) ||
+					!node_graph.is_selected(301) ||
+					node_graph.primary_selection() != 101)
+					return fail("layout restored node graph state");
+
+				/* A malformed node graph payload is rejected by apply_layout()
+				 * before any graph or dock state changes.  Calling apply_layout
+				 * directly (instead of load_layout) avoids the default-layout
+				 * fallback that load_layout performs for broken files. */
+				editor_layout bad_graph_layout = shell.capture_layout();
+				bad_graph_layout.node_graph_state = "{\"version\": 99}";
+				if (shell.apply_layout(bad_graph_layout, &error))
+					return fail("layout malformed node graph accepted");
+				const node_graph_view_state kept_graph_view =
+					node_graph.view_state();
+				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f) ||
+					std::fabs(kept_graph_view.offset_x + 35.5) > 1e-9 ||
+					std::fabs(kept_graph_view.offset_y - 42.25) > 1e-9 ||
+					std::fabs(kept_graph_view.zoom - 1.75) > 1e-9 ||
+					node_graph.grid_visible() ||
+					std::fabs(node_graph.grid_step() - 16.0) > 1e-9 ||
+					node_graph.snap_to_grid() || node_graph.minimap_visible() ||
+					node_graph.selection_ids().size() != 2 ||
+					!node_graph.is_selected(101) ||
+					!node_graph.is_selected(301))
+					return fail("layout malformed node graph fallback");
 				if (!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 260.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 340.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 150.0f))
@@ -599,7 +726,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 5)
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 6)
 					return fail("layout restored tab count");
 				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
@@ -10728,6 +10855,909 @@ static int test_timeline_view()
 	return 0;
 }
 
+/* T03: node graph model, precise hit testing, gestures, commands, search,
+ * minimap, context actions and state persistence. */
+static int test_node_graph_view()
+{
+	using namespace vgui_editor_kit;
+	auto close_to = [](double a, double b, double eps = 1e-9) {
+		return std::fabs(a - b) <= eps;
+	};
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("t03 node graph context");
+	vgui_context_set_size(ui, 1000, 700);
+
+	{
+		command_stack commands;
+		node_graph_view graph;
+		graph.build(vgui_root(ui));
+		vgui_widget_set_pos(graph.widget(), 40.0f, 30.0f);
+		vgui_widget_set_size(graph.widget(), 800.0f, 320.0f);
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON,
+			"other");
+		vgui_widget_set_pos(other, 900.0f, 640.0f);
+		vgui_widget_set_size(other, 70.0f, 30.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		if (!graph.built() || !graph.widget() ||
+			vgui_widget_get_kind(graph.widget()) != VGUI_CUSTOM ||
+			!graph.search_widget() || !graph.menu() ||
+			find_widget(vgui_root(ui), "node_graph_view", VGUI_CUSTOM) !=
+				graph.widget() ||
+			find_widget(vgui_root(ui), "node_graph_search", VGUI_EDIT) !=
+				graph.search_widget())
+			return fail("t03 node graph build");
+		graph.set_drag_threshold(3.0f);
+		graph.set_command_stack(&commands);
+
+		/* Defaults, adaptive grid density and snapping. */
+		if (!close_to(graph.zoom(), 1.0) ||
+			!close_to(graph.view_state().offset_x, 0.0) ||
+			!close_to(graph.view_state().offset_y, 0.0) ||
+			!graph.grid_visible() || !graph.minimap_visible() ||
+			!graph.snap_to_grid() || !close_to(graph.grid_step(), 24.0) ||
+			!close_to(graph.effective_grid_step(), 24.0))
+			return fail("t03 node graph defaults");
+		const node_graph_point snapped = graph.snap_point({ 13.0, 25.0 });
+		if (!close_to(snapped.x, 24.0) || !close_to(snapped.y, 24.0))
+			return fail("t03 node graph snap point");
+		graph.set_view_state({ 0.0, 0.0, 0.01 });
+		const double dense_step = graph.effective_grid_step();
+		if (!(dense_step >= 12.0 / 0.01) ||
+			std::fmod(dense_step, 24.0) != 0.0)
+			return fail("t03 node graph adaptive grid");
+		const node_graph_point dense_snap = graph.snap_point({ 1000.0,
+			1000.0 });
+		if (!close_to(dense_snap.x, std::round(1000.0 / dense_step) *
+				dense_step))
+			return fail("t03 node graph dense snap");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		graph.set_snap_to_grid(false);
+
+		int changes = 0;
+		int selection_events = 0;
+		std::vector<object_id> notified;
+		graph.set_change_listener([&changes]() { ++changes; });
+		graph.set_selection_listener(
+			[&](const std::vector<object_id>& ids) {
+				notified = ids;
+				++selection_events;
+			});
+
+		/* Model: explicit ids, one global id space, typed ports. */
+		node_node alpha;
+		alpha.title = "Alpha";
+		alpha.category = "Math";
+		alpha.x = 100.0;
+		alpha.y = 80.0;
+		alpha.width = 180.0;
+		node_port alpha_in_number;
+		alpha_in_number.name = "A";
+		alpha_in_number.direction = node_port_direction::input;
+		alpha_in_number.type = node_port_type::number;
+		node_port alpha_in_color;
+		alpha_in_color.name = "Tint";
+		alpha_in_color.direction = node_port_direction::input;
+		alpha_in_color.type = node_port_type::color;
+		alpha.inputs.push_back(alpha_in_number);
+		alpha.inputs.push_back(alpha_in_color);
+		node_port alpha_out_number;
+		alpha_out_number.name = "Out";
+		alpha_out_number.direction = node_port_direction::output;
+		alpha_out_number.type = node_port_type::number;
+		node_port alpha_out_color;
+		alpha_out_color.name = "Color";
+		alpha_out_color.direction = node_port_direction::output;
+		alpha_out_color.type = node_port_type::color;
+		alpha.outputs.push_back(alpha_out_number);
+		alpha.outputs.push_back(alpha_out_color);
+		const object_id n1 = graph.add_node(alpha);
+		node_node beta;
+		beta.title = "Beta";
+		beta.category = "Render";
+		beta.x = 400.0;
+		beta.y = 180.0;
+		beta.width = 180.0;
+		node_port beta_in_number;
+		beta_in_number.name = "Value";
+		beta_in_number.direction = node_port_direction::input;
+		beta_in_number.type = node_port_type::number;
+		node_port beta_in_color;
+		beta_in_color.name = "Tint";
+		beta_in_color.direction = node_port_direction::input;
+		beta_in_color.type = node_port_type::color;
+		beta.inputs.push_back(beta_in_number);
+		beta.inputs.push_back(beta_in_color);
+		node_port beta_out;
+		beta_out.name = "Result";
+		beta_out.direction = node_port_direction::output;
+		beta_out.type = node_port_type::number;
+		beta.outputs.push_back(beta_out);
+		const object_id n2 = graph.add_node(beta);
+		node_node gamma;
+		gamma.title = "Locked";
+		gamma.category = "Utility";
+		gamma.x = 600.0;
+		gamma.y = 60.0;
+		gamma.width = 180.0;
+		gamma.locked = true;
+		const object_id n3 = graph.add_node(gamma);
+		if (n1 == invalid_object || n2 == invalid_object ||
+			n3 == invalid_object || graph.node_count() != 3 || changes == 0)
+			return fail("t03 node graph add nodes");
+		node_node conflicting = alpha;
+		conflicting.id = n1;
+		if (graph.add_node(conflicting) != invalid_object)
+			return fail("t03 node graph duplicate node id");
+
+		object_id n1_in0 = invalid_object;
+		object_id n1_in1 = invalid_object;
+		object_id n1_out0 = invalid_object;
+		object_id n1_out1 = invalid_object;
+		object_id n2_in0 = invalid_object;
+		object_id n2_in1 = invalid_object;
+		graph.find_port(graph.find_node(n1)->inputs[0].id);
+		n1_in0 = graph.find_node(n1)->inputs[0].id;
+		n1_in1 = graph.find_node(n1)->inputs[1].id;
+		n1_out0 = graph.find_node(n1)->outputs[0].id;
+		n1_out1 = graph.find_node(n1)->outputs[1].id;
+		n2_in0 = graph.find_node(n2)->inputs[0].id;
+		n2_in1 = graph.find_node(n2)->inputs[1].id;
+		if (n1_in0 == n1_out0 || n1_in0 == n2_in0 ||
+			graph.find_port(n1_in0) == nullptr)
+			return fail("t03 node graph global ids");
+		object_id found_node = invalid_object;
+		node_port_direction found_direction = node_port_direction::input;
+		const node_port* found_port = graph.find_port(n2_in1, &found_node,
+			&found_direction);
+		if (!found_port || found_node != n2 ||
+			found_direction != node_port_direction::input)
+			return fail("t03 node graph find port");
+
+		node_port duplicate_port;
+		duplicate_port.id = n1_in0;
+		duplicate_port.name = "Duplicate";
+		if (graph.add_port(n1, duplicate_port,
+				node_port_direction::input) != invalid_object)
+			return fail("t03 node graph duplicate port id");
+
+		/* Connection validation and canonical output -> input ordering. */
+		node_connection link;
+		link.from_node = n1;
+		link.from_port = n1_out0;
+		link.to_node = n2;
+		link.to_port = n2_in0;
+		const object_id c0 = graph.add_connection(link);
+		if (c0 == invalid_object || graph.connection_count() != 1)
+			return fail("t03 node graph add connection");
+		if (graph.add_connection(link) != invalid_object)
+			return fail("t03 node graph duplicate connection");
+		node_connection wrong_direction;
+		wrong_direction.from_port = n1_out0;
+		wrong_direction.to_port = n1_out1;
+		if (graph.add_connection(wrong_direction) != invalid_object)
+			return fail("t03 node graph direction validation");
+		node_connection incompatible;
+		incompatible.from_port = n1_out0;
+		incompatible.to_port = n2_in1;
+		if (graph.add_connection(incompatible) != invalid_object)
+			return fail("t03 node graph type validation");
+		node_connection reversed;
+		reversed.from_port = n2_in0;
+		reversed.to_port = n1_out0;
+		if (graph.add_connection(reversed) != invalid_object)
+			return fail("t03 node graph duplicate reversed");
+
+		node_port extra_number;
+		extra_number.name = "Out 2";
+		extra_number.direction = node_port_direction::output;
+		extra_number.type = node_port_type::number;
+		const object_id n1_out2 = graph.add_port(n1, extra_number,
+			node_port_direction::output);
+		if (n1_out2 == invalid_object)
+			return fail("t03 node graph add port");
+		node_connection replacement;
+		replacement.from_port = n1_out2;
+		replacement.to_port = n2_in0;
+		const object_id c_replacement = graph.add_connection(replacement);
+		if (c_replacement == invalid_object ||
+			graph.connection_count() != 1 ||
+			graph.find_connection(c0) != nullptr ||
+			graph.find_connection(c_replacement) == nullptr)
+			return fail("t03 node graph single input replacement");
+		if (!graph.remove_connection(c_replacement) ||
+			graph.connection_count() != 0)
+			return fail("t03 node graph remove connection");
+		graph.remove_port(n1_out2);
+		const object_id c1 = graph.add_connection(link);
+		if (c1 == invalid_object)
+			return fail("t03 node graph reconnect after replacement");
+
+		/* Geometry is exact in graph coordinates and content-local hit
+		 * testing resolves ports before nodes and connections. */
+		const node_graph_rect n1_rect = graph.node_rect(n1);
+		if (!close_to(n1_rect.x, 100.0) ||
+			!close_to(n1_rect.y, 80.0) ||
+			!close_to(n1_rect.width, 180.0) ||
+			!close_to(n1_rect.height, 70.0))
+			return fail("t03 node graph node rect");
+		node_graph_point port_graph;
+		if (!graph.port_position(n1_out0, &port_graph) ||
+			!close_to(port_graph.x, 271.0) ||
+			!close_to(port_graph.y, 114.0))
+			return fail("t03 node graph port position");
+		const node_graph_rect port_bounds = graph.port_rect(n1_out0);
+		if (!close_to(port_bounds.x, 267.0) ||
+			!close_to(port_bounds.y, 110.0) ||
+			!close_to(port_bounds.width, 8.0) ||
+			!close_to(port_bounds.height, 8.0))
+			return fail("t03 node graph port rect");
+		if (graph.node_at(190.0f, 115.0f) != n1 ||
+			graph.node_at(490.0f, 215.0f) != n2 ||
+			graph.port_at(271.0f, 114.0f) != n1_out0 ||
+			graph.port_at(409.0f, 214.0f) != n2_in0 ||
+			graph.hit_test(271.0f, 114.0f) != n1_out0 ||
+			graph.connection_at(340.0f, 164.0f) == invalid_object ||
+			graph.connection_at(700.0f, 300.0f) != invalid_object)
+			return fail("t03 node graph hit testing");
+		const node_graph_point screen_roundtrip = graph.graph_to_screen(271.0,
+			114.0);
+		if (!close_to(screen_roundtrip.x, 271.0) ||
+			!close_to(screen_roundtrip.y, 114.0))
+			return fail("t03 node graph coordinate transform");
+
+		/* Real input: click, Ctrl toggle, Shift append, blank clear and
+		 * marquee across nodes and the curve. */
+		float wx = 0.0f, wy = 0.0f, ww = 0.0f, wh = 0.0f;
+		vgui_widget_get_rect(graph.widget(), &wx, &wy, &ww, &wh);
+		auto screen = [&](float x, float y) {
+			return std::pair<float, float>(wx + 1.0f + x, wy + 1.0f + y);
+		};
+		auto move_to = [&](float x, float y) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_move(ui, p.first, p.second);
+		};
+		auto down_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_down(ui, button, p.first, p.second, 1);
+		};
+		auto up_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_up(ui, button, p.first, p.second, 1);
+		};
+		auto click_at = [&](float x, float y, int button = 1) {
+			move_to(x, y);
+			down_at(x, y, button);
+			up_at(x, y, button);
+		};
+
+		graph.clear_selection();
+		click_at(190.0f, 115.0f);
+		if (!graph.focused() || graph.selection_ids().size() != 1 ||
+			!graph.is_selected(n1) || graph.primary_selection() != n1 ||
+			graph.dragging() || selection_events == 0)
+			return fail("t03 node graph click selection");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(490.0f, 215.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (graph.selection_ids().size() != 2 ||
+			!graph.is_selected(n1) || !graph.is_selected(n2))
+			return fail("t03 node graph ctrl selection");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(490.0f, 215.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (graph.selection_ids().size() != 1 || !graph.is_selected(n1))
+			return fail("t03 node graph ctrl toggle");
+		vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+		click_at(490.0f, 215.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (graph.selection_ids().size() != 2 || !graph.is_selected(n2) ||
+			graph.primary_selection() != n2)
+			return fail("t03 node graph shift append");
+		click_at(700.0f, 40.0f);
+		if (!graph.selection_ids().empty() ||
+			graph.primary_selection() != invalid_object)
+			return fail("t03 node graph blank clear");
+
+		move_to(50.0f, 40.0f);
+		down_at(50.0f, 40.0f);
+		move_to(800.0f, 300.0f);
+		if (graph.gesture() != node_graph_gesture::marquee)
+			return fail("t03 node graph marquee begins");
+		up_at(800.0f, 300.0f);
+		if (graph.dragging() || graph.selection_ids().size() != 4 ||
+			!graph.is_selected(n1) || !graph.is_selected(n2) ||
+			!graph.is_selected(n3) || !graph.is_selected(c1))
+			return fail("t03 node graph marquee selection");
+		if (notified.size() != 4)
+			return fail("t03 node graph selection listener");
+
+		/* Dragging a multi-selection moves nodes, records one command, and
+		 * undo/redo restore the exact snapshot. */
+		commands.clear();
+		graph.set_selection({ n1, n2 });
+		const double n1_start_x = graph.find_node(n1)->x;
+		const double n1_start_y = graph.find_node(n1)->y;
+		move_to(190.0f, 115.0f);
+		down_at(190.0f, 115.0f);
+		if (graph.gesture() != node_graph_gesture::pending_move)
+			return fail("t03 node graph move pending");
+		move_to(220.0f, 140.0f);
+		if (graph.gesture() != node_graph_gesture::move)
+			return fail("t03 node graph move begins");
+		up_at(220.0f, 140.0f);
+		if (graph.dragging() || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Move nodes" ||
+			!close_to(graph.find_node(n1)->x, n1_start_x + 30.0) ||
+			!close_to(graph.find_node(n1)->y, n1_start_y + 25.0) ||
+			!close_to(graph.find_node(n2)->x, 430.0) ||
+			!close_to(graph.find_node(n2)->y, 205.0))
+			return fail("t03 node graph move and command");
+		if (!commands.undo() || !close_to(graph.find_node(n1)->x, 100.0) ||
+			!close_to(graph.find_node(n1)->y, 80.0) ||
+			!close_to(graph.find_node(n2)->x, 400.0) ||
+			!close_to(graph.find_node(n2)->y, 180.0))
+			return fail("t03 node graph move undo");
+		if (!commands.redo() || !close_to(graph.find_node(n1)->x, 130.0) ||
+			!close_to(graph.find_node(n2)->y, 205.0))
+			return fail("t03 node graph move redo");
+		if (!commands.undo())
+			return fail("t03 node graph move restore");
+
+		/* Locked nodes can be selected but never dragged. */
+		commands.clear();
+		graph.set_selection({ n3 });
+		move_to(690.0f, 95.0f);
+		down_at(690.0f, 95.0f);
+		move_to(730.0f, 130.0f);
+		up_at(730.0f, 130.0f);
+		if (!close_to(graph.find_node(n3)->x, 600.0) ||
+			!close_to(graph.find_node(n3)->y, 60.0) ||
+			commands.undo_count() != 0)
+			return fail("t03 node graph locked move");
+
+		/* Esc, synthetic cancel and focus loss roll a drag back without a
+		 * command. */
+		commands.clear();
+		graph.set_selection({ n1 });
+		move_to(190.0f, 115.0f);
+		down_at(190.0f, 115.0f);
+		move_to(290.0f, 155.0f);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (graph.dragging() || commands.undo_count() != 0 ||
+			!close_to(graph.find_node(n1)->x, 100.0) ||
+			!close_to(graph.find_node(n1)->y, 80.0))
+			return fail("t03 node graph esc cancel");
+		move_to(190.0f, 115.0f);
+		down_at(190.0f, 115.0f);
+		move_to(290.0f, 155.0f);
+		vgui_input_cancel(ui);
+		if (graph.dragging() || commands.undo_count() != 0 ||
+			!close_to(graph.find_node(n1)->x, 100.0))
+			return fail("t03 node graph synthetic cancel");
+		move_to(190.0f, 115.0f);
+		down_at(190.0f, 115.0f);
+		move_to(290.0f, 155.0f);
+		vgui_set_focus(ui, other);
+		if (graph.dragging() || commands.undo_count() != 0 ||
+			!close_to(graph.find_node(n1)->x, 100.0))
+			return fail("t03 node graph focus cancel");
+		graph.request_focus();
+
+		/* Zoomed-in dragging keeps sub-pixel deltas: at 4x one screen pixel
+		 * is a quarter graph unit. */
+		commands.clear();
+		graph.set_view_state({ 95.0, 75.0, 4.0 });
+		graph.set_selection({ n1 });
+		move_to(380.0f, 160.0f);
+		down_at(380.0f, 160.0f);
+		move_to(400.0f, 160.0f);
+		up_at(400.0f, 160.0f);
+		if (!close_to(graph.find_node(n1)->x, 105.0) ||
+			commands.undo_count() != 1)
+			return fail("t03 node graph high zoom drag");
+		commands.undo();
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+
+		/* Connection drag: output -> input, command, undo/redo. */
+		commands.clear();
+		graph.set_selection({});
+		move_to(271.0f, 134.0f);
+		down_at(271.0f, 134.0f);
+		if (graph.gesture() != node_graph_gesture::connect ||
+			graph.pending_connection_port() != n1_out1)
+			return fail("t03 node graph connect begins");
+		move_to(409.0f, 234.0f);
+		up_at(409.0f, 234.0f);
+		if (graph.connection_count() != 2 || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Connect nodes")
+			return fail("t03 node graph connect drag");
+		const object_id color_link =
+			graph.find_node(n1)->outputs[1].id;
+		object_id color_connection = invalid_object;
+		for (const node_connection& connection : graph.connections())
+			if (connection.from_port == n1_out1 &&
+				connection.to_port == n2_in1)
+				color_connection = connection.id;
+		if (color_connection == invalid_object)
+			return fail("t03 node graph connect lookup");
+		if (!commands.undo() || graph.connection_count() != 1 ||
+			graph.find_connection(color_connection) != nullptr)
+			return fail("t03 node graph connect undo");
+		if (!commands.redo() || graph.connection_count() != 2 ||
+			graph.find_connection(color_connection) == nullptr)
+			return fail("t03 node graph connect redo");
+		(void)color_link;
+
+		/* Incompatible types are rejected without a command. */
+		commands.clear();
+		move_to(271.0f, 114.0f);
+		down_at(271.0f, 114.0f);
+		move_to(409.0f, 234.0f);
+		up_at(409.0f, 234.0f);
+		if (graph.connection_count() != 2 || commands.undo_count() != 0)
+			return fail("t03 node graph incompatible drag");
+
+		/* A second colour output replaces the single input link. */
+		node_port extra_color;
+		extra_color.name = "Color 2";
+		extra_color.direction = node_port_direction::output;
+		extra_color.type = node_port_type::color;
+		const object_id n1_color2 = graph.add_port(n1, extra_color,
+			node_port_direction::output);
+		if (n1_color2 == invalid_object)
+			return fail("t03 node graph replacement port");
+		commands.clear();
+		move_to(271.0f, 154.0f);
+		down_at(271.0f, 154.0f);
+		move_to(409.0f, 234.0f);
+		up_at(409.0f, 234.0f);
+		if (graph.connection_count() != 2 || commands.undo_count() != 1 ||
+			graph.find_connection(color_connection) != nullptr)
+			return fail("t03 node graph single input drag replacement");
+		object_id replacement_color = invalid_object;
+		for (const node_connection& connection : graph.connections())
+			if (connection.from_port == n1_color2 &&
+				connection.to_port == n2_in1)
+				replacement_color = connection.id;
+		if (replacement_color == invalid_object)
+			return fail("t03 node graph replacement lookup");
+		if (!commands.undo() ||
+			graph.find_connection(color_connection) == nullptr ||
+			graph.find_connection(replacement_color) != nullptr)
+			return fail("t03 node graph replacement undo");
+		if (!commands.redo() ||
+			graph.find_connection(replacement_color) == nullptr)
+			return fail("t03 node graph replacement redo");
+
+		/* Clicking the curve selects the connection; Disconnect is undoable. */
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		graph.clear_selection();
+		click_at(340.0f, 164.0f);
+		if (graph.selection_ids().size() != 1 ||
+			!graph.is_selected(c1) || graph.primary_selection() != c1)
+			return fail("t03 node graph connection selection");
+		commands.clear();
+		if (!graph.perform_action(node_graph_action::disconnect) ||
+			graph.connection_count() != 1 || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Disconnect nodes")
+			return fail("t03 node graph disconnect");
+		if (!commands.undo() || graph.connection_count() != 2 ||
+			graph.find_connection(c1) == nullptr)
+			return fail("t03 node graph disconnect undo");
+		if (!commands.redo() || graph.connection_count() != 1)
+			return fail("t03 node graph disconnect redo");
+		if (!commands.undo())
+			return fail("t03 node graph disconnect restore");
+
+		/* Duplicate copies selected nodes and their internal connections as
+		 * one command, then delete removes the selection as another. */
+		commands.clear();
+		graph.set_selection({ n1, n2 });
+		if (!graph.duplicate_selection() || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Duplicate nodes" ||
+			graph.node_count() != 5 || graph.connection_count() != 4 ||
+			graph.selection_ids().size() != 4)
+			return fail("t03 node graph duplicate");
+		const std::vector<object_id> duplicate_selection = graph.selection_ids();
+		if (!commands.undo() || graph.node_count() != 3 ||
+			graph.connection_count() != 2)
+			return fail("t03 node graph duplicate undo");
+		if (!commands.redo() || graph.node_count() != 5 ||
+			graph.connection_count() != 4 ||
+			graph.selection_ids() != duplicate_selection)
+			return fail("t03 node graph duplicate redo");
+		commands.clear();
+		if (!graph.delete_selection() || graph.node_count() != 3 ||
+			graph.connection_count() != 2 || commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Delete nodes")
+			return fail("t03 node graph delete duplicates");
+		if (!commands.undo() || graph.node_count() != 5 ||
+			graph.connection_count() != 4)
+			return fail("t03 node graph delete undo");
+		if (!commands.redo() || graph.node_count() != 3 ||
+			graph.connection_count() != 2)
+			return fail("t03 node graph delete redo");
+		if (!commands.undo() || graph.node_count() != 5)
+			return fail("t03 node graph duplicate restore");
+		graph.remove_connection(replacement_color);
+		for (object_id id : duplicate_selection)
+			if (graph.find_node(id))
+				graph.remove_node(id);
+		graph.remove_port(n1_out2);
+		if (graph.node_count() != 3 || graph.connection_count() != 1)
+			return fail("t03 node graph model cleanup");
+
+		/* Select all / Delete through the public action, then undo. */
+		commands.clear();
+		if (!graph.perform_action(node_graph_action::select_all) ||
+			graph.selection_ids().size() != 4)
+			return fail("t03 node graph select all");
+		if (!graph.perform_action(node_graph_action::delete_selection) ||
+			graph.node_count() != 0 || graph.connection_count() != 0 ||
+			commands.undo_count() != 1)
+			return fail("t03 node graph delete all");
+		if (!commands.undo() || graph.node_count() != 3 ||
+			graph.connection_count() != 1)
+			return fail("t03 node graph delete all undo");
+		if (!commands.redo() || graph.node_count() != 0)
+			return fail("t03 node graph delete all redo");
+		if (!commands.undo())
+			return fail("t03 node graph delete all restore");
+
+		/* Search keeps matches bright, Enter cycles, Esc clears. */
+		int search_events = changes;
+		graph.set_search_text("a");
+		if (graph.search_match_count() != 2 ||
+			!graph.node_matches_search(n1) ||
+			!graph.node_matches_search(n2) ||
+			graph.node_matches_search(n3) ||
+			graph.search_text() != "a")
+			return fail("t03 node graph search matches");
+		graph.focus_search();
+		if (vgui_get_focus(ui) != graph.search_widget())
+			return fail("t03 node graph search focus");
+		vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		if (graph.selection_ids().size() != 1 ||
+			!graph.is_selected(n1))
+			return fail("t03 node graph search enter first");
+		vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		if (graph.selection_ids().size() != 1 ||
+			!graph.is_selected(n2))
+			return fail("t03 node graph search enter next");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (!graph.search_text().empty() ||
+			graph.search_match_count() != 0 ||
+			vgui_get_focus(ui) != graph.widget())
+			return fail("t03 node graph search escape");
+		graph.set_search_text("alpha");
+		if (graph.search_match_count() != 1 ||
+			graph.search_matches()[0] != n1 ||
+			graph.next_search_match() != n1)
+			return fail("t03 node graph search next");
+		graph.clear_search();
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		(void)search_events;
+
+		/* Minimap rectangle, navigation and visibility toggle. */
+		float mx = 0.0f, my = 0.0f, mw = 0.0f, mh = 0.0f;
+		if (!graph.minimap_rect(&mx, &my, &mw, &mh) ||
+			mx <= 0.0f || my <= 0.0f || mw < 100.0f || mh < 60.0f)
+			return fail("t03 node graph minimap rect");
+		graph.set_view_state({ 5000.0, 5000.0, 1.0 });
+		const node_graph_view_state before_minimap = graph.view_state();
+		click_at(mx + mw * 0.5f, my + mh * 0.5f);
+		if (graph.dragging() ||
+			(close_to(graph.view_state().offset_x, before_minimap.offset_x) &&
+				close_to(graph.view_state().offset_y, before_minimap.offset_y)))
+			return fail("t03 node graph minimap navigation");
+		if (!graph.perform_action(node_graph_action::toggle_minimap) ||
+			graph.minimap_visible() || graph.minimap_rect(nullptr, nullptr,
+				nullptr, nullptr))
+			return fail("t03 node graph minimap toggle");
+		if (!graph.perform_action(node_graph_action::toggle_minimap) ||
+			!graph.minimap_visible())
+			return fail("t03 node graph minimap restore");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+
+		/* Menu actions: create handler, toggles, frame and fit. */
+		int create_calls = 0;
+		graph.set_create_node_handler([&](node_node& node) {
+			++create_calls;
+			node.title = "Added";
+			node.category = "Utility";
+			node.inputs.clear();
+			node.outputs.clear();
+			node_port input;
+			input.name = "In";
+			input.direction = node_port_direction::input;
+			input.type = node_port_type::number;
+			node.inputs.push_back(input);
+			node_port output;
+			output.name = "Out";
+			output.direction = node_port_direction::output;
+			output.type = node_port_type::number;
+			node.outputs.push_back(output);
+			return true;
+		});
+		commands.clear();
+		graph.open_context_menu(300.0f, 200.0f);
+		if (!graph.perform_action(node_graph_action::add_node) ||
+			create_calls != 1 || graph.node_count() != 4 ||
+			commands.undo_count() != 1 ||
+			std::string(commands.next_undo_name()) != "Add node")
+			return fail("t03 node graph add node action");
+		const object_id added = graph.selection_ids().front();
+		const node_node* added_node = graph.find_node(added);
+		if (!added_node || added_node->title != "Added" ||
+			!close_to(added_node->x, 300.0) ||
+			!close_to(added_node->y, 200.0) || added_node->inputs.size() != 1 ||
+			added_node->outputs.size() != 1)
+			return fail("t03 node graph add node handler");
+		vgui_menu_close(graph.menu());
+		if (!commands.undo() || graph.find_node(added) != nullptr ||
+			graph.node_count() != 3)
+			return fail("t03 node graph add node undo");
+		if (!commands.redo() || graph.find_node(added) == nullptr)
+			return fail("t03 node graph add node redo");
+		commands.undo();
+		graph.set_create_node_handler([](node_node&) { return false; });
+		if (graph.perform_action(node_graph_action::add_node))
+			return fail("t03 node graph add node cancel");
+		graph.set_create_node_handler({});
+		graph.set_snap_to_grid(true);
+		if (!graph.perform_action(node_graph_action::toggle_grid) ||
+			graph.grid_visible())
+			return fail("t03 node graph grid toggle");
+		if (!graph.perform_action(node_graph_action::toggle_grid) ||
+			!graph.grid_visible())
+			return fail("t03 node graph grid restore");
+		if (!graph.perform_action(node_graph_action::toggle_snap) ||
+			graph.snap_to_grid())
+			return fail("t03 node graph snap toggle");
+		if (!graph.perform_action(node_graph_action::toggle_snap) ||
+			!graph.snap_to_grid())
+			return fail("t03 node graph snap restore");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		graph.set_selection({ n1 });
+		const node_graph_view_state before_frame = graph.view_state();
+		if (!graph.perform_action(node_graph_action::frame_selection) ||
+			(close_to(graph.zoom(), before_frame.zoom) &&
+				close_to(graph.view_state().offset_x, before_frame.offset_x) &&
+				close_to(graph.view_state().offset_y, before_frame.offset_y)))
+			return fail("t03 node graph frame selection");
+		if (!graph.perform_action(node_graph_action::fit_all))
+			return fail("t03 node graph fit all");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+
+		/* Zoom anchoring, wheel zoom/pan and middle-button pan. */
+		graph.set_view_state({ 12345.6789, -9876.5432, 0.25 });
+		const node_graph_point anchor_before = graph.screen_to_graph(321.5f,
+			87.25f);
+		graph.zoom_at(321.5f, 87.25f, 2.4);
+		const node_graph_point anchor_after = graph.screen_to_graph(321.5f,
+			87.25f);
+		if (!(graph.zoom() > 0.25) ||
+			!close_to(anchor_before.x, anchor_after.x, 1e-9) ||
+			!close_to(anchor_before.y, anchor_after.y, 1e-9))
+			return fail("t03 node graph zoom anchor");
+		graph.set_zoom_limits(0.01, 8.0);
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		move_to(350.0f, 200.0f);
+		const node_graph_point wheel_anchor = graph.screen_to_graph(350.0f,
+			200.0f);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		const node_graph_point wheel_after = graph.screen_to_graph(350.0f,
+			200.0f);
+		if (!(graph.zoom() > 1.0) ||
+			!close_to(wheel_anchor.x, wheel_after.x, 1e-9) ||
+			!close_to(wheel_anchor.y, wheel_after.y, 1e-9))
+			return fail("t03 node graph wheel zoom");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		move_to(350.0f, 200.0f);
+		vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (!close_to(graph.view_state().offset_x, 0.0) ||
+			!close_to(graph.view_state().offset_y, -40.0))
+			return fail("t03 node graph shift wheel pan");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		move_to(300.0f, 200.0f);
+		down_at(300.0f, 200.0f, 2);
+		if (graph.gesture() != node_graph_gesture::pan)
+			return fail("t03 node graph pan begins");
+		move_to(340.0f, 220.0f);
+		if (!close_to(graph.view_state().offset_x, -40.0) ||
+			!close_to(graph.view_state().offset_y, -20.0))
+			return fail("t03 node graph pan moves");
+		up_at(340.0f, 220.0f, 2);
+		if (graph.dragging())
+			return fail("t03 node graph pan ends");
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+
+		/* Extreme zoom/offset keeps double precision and connection picking
+		 * still works in screen space at 5%. */
+		graph.set_view_state({ 10000000.123456789, -10000000.987654321,
+			0.001 });
+		const double precise_graph_x = 10000000.123456789 + 123.456789;
+		const double precise_graph_y = -10000000.987654321 - 456.789123;
+		const node_graph_point precise_screen = graph.graph_to_screen(
+			precise_graph_x, precise_graph_y);
+		const node_graph_point precise_back = graph.screen_to_graph(
+			(float)precise_screen.x, (float)precise_screen.y);
+		if (std::fabs(precise_back.x - precise_graph_x) > 1e-4 ||
+			std::fabs(precise_back.y - precise_graph_y) > 1e-4)
+			return fail("t03 node graph extreme transform precision");
+		graph.set_view_state({ -7660.0, -3036.0, 0.05 });
+		if (graph.connection_at(400.0f, 160.0f) != c1 ||
+			!close_to(graph.connection_hit_tolerance(), 120.0))
+			return fail("t03 node graph low zoom connection hit");
+		graph.reset_view();
+
+		/* Selection state JSON round-trips, is validated and applied without
+		 * touching the graph model. */
+		graph.set_selection({ n1 });
+		node_graph_state saved_state = graph.capture_state();
+		saved_state.view = { 7.5, -2.25, 3.0 };
+		saved_state.grid_visible = false;
+		saved_state.minimap_visible = false;
+		saved_state.snap_to_grid = false;
+		saved_state.grid_step = 48.0;
+		saved_state.selection = { n1, c1 };
+		saved_state.primary = n1;
+		std::string state_error;
+		node_graph_state parsed_state;
+		if (!node_graph_state_from_json(node_graph_state_to_json(saved_state),
+				parsed_state, &state_error) ||
+			!close_to(parsed_state.view.offset_x, 7.5) ||
+			!close_to(parsed_state.view.offset_y, -2.25) ||
+			!close_to(parsed_state.view.zoom, 3.0) ||
+			parsed_state.grid_visible || parsed_state.minimap_visible ||
+			parsed_state.snap_to_grid ||
+			!close_to(parsed_state.grid_step, 48.0) ||
+			parsed_state.primary != n1 ||
+			parsed_state.selection.size() != 2)
+			return fail("t03 node graph state json");
+		graph.set_grid_visible(true);
+		graph.set_minimap_visible(true);
+		graph.set_snap_to_grid(true);
+		graph.set_grid_step(24.0);
+		if (!graph.apply_state(parsed_state, &state_error) ||
+			!close_to(graph.view_state().offset_x, 7.5) ||
+			!close_to(graph.view_state().offset_y, -2.25) ||
+			!close_to(graph.zoom(), 3.0) ||
+			graph.grid_visible() || graph.minimap_visible() ||
+			graph.snap_to_grid() ||
+			!close_to(graph.grid_step(), 48.0) ||
+			graph.primary_selection() != n1 ||
+			graph.selection_ids().size() != 2)
+			return fail("t03 node graph state apply");
+		node_graph_state filtered_state = saved_state;
+		filtered_state.selection = { n1, 999999 };
+		filtered_state.primary = 999999;
+		if (!graph.apply_state(filtered_state, &state_error) ||
+			graph.selection_ids().size() != 1 ||
+			graph.primary_selection() != n1)
+			return fail("t03 node graph state selection filter");
+		const node_graph_view_state before_bad = graph.view_state();
+		node_graph_state bad_state = saved_state;
+		bad_state.view.zoom = 0.0;
+		if (graph.apply_state(bad_state, &state_error) ||
+			!close_to(graph.view_state().zoom, before_bad.zoom))
+			return fail("t03 node graph state apply validation");
+		node_graph_state bad;
+		if (node_graph_state_from_json("{", bad, &state_error) ||
+			node_graph_state_from_json(R"({"version": 99})", bad) ||
+			node_graph_state_from_json(
+				R"({"version": 1, "view": {"zoom": 0}})", bad) ||
+			node_graph_state_from_json(
+				R"({"version": 1, "grid": {"step": 0}})", bad) ||
+			node_graph_state_from_json(
+				R"({"version": 1, "selection": [0]})", bad))
+			return fail("t03 node graph state validation");
+
+		/* Disabling ignores graph input. */
+		graph.set_view_state({ 0.0, 0.0, 1.0 });
+		graph.set_selection({ n1 });
+		graph.set_enabled(false);
+		click_at(490.0f, 215.0f);
+		if (!graph.is_selected(n1) || graph.selection_ids().size() != 1 ||
+			graph.dragging())
+			return fail("t03 node graph disabled");
+		graph.set_enabled(true);
+		graph.cancel_gesture();
+
+		/* Direct model edits keep ids and drop invalid links. */
+		{
+			node_graph_view scratch;
+			node_node a;
+			a.id = 1;
+			a.title = "A";
+			node_port in;
+			in.id = 2;
+			in.name = "In";
+			in.direction = node_port_direction::input;
+			in.type = node_port_type::number;
+			a.inputs.push_back(in);
+			node_port out;
+			out.id = 3;
+			out.name = "Out";
+			out.direction = node_port_direction::output;
+			out.type = node_port_type::number;
+			a.outputs.push_back(out);
+			node_node b;
+			b.id = 4;
+			b.title = "B";
+			node_port b_in;
+			b_in.id = 5;
+			b_in.name = "In";
+			b_in.direction = node_port_direction::input;
+			b_in.type = node_port_type::number;
+			b.inputs.push_back(b_in);
+			node_connection link;
+			link.id = 6;
+			link.from_node = 1;
+			link.from_port = 3;
+			link.to_node = 4;
+			link.to_port = 5;
+			if (scratch.add_node(a) != 1 || scratch.add_node(b) != 4 ||
+				scratch.add_connection(link) != 6)
+				return fail("t03 node graph model update setup");
+			node_node renamed = *scratch.find_node(1);
+			renamed.title = "A2";
+			renamed.x = 12.0;
+			if (!scratch.update_node(renamed) ||
+				scratch.find_node(1)->title != "A2" ||
+				!close_to(scratch.find_node(1)->x, 12.0) ||
+				scratch.connection_count() != 1)
+				return fail("t03 node graph update node");
+			node_port moved = *scratch.find_port(2);
+			moved.direction = node_port_direction::output;
+			moved.name = "Moved";
+			if (!scratch.update_port(2, moved) ||
+				scratch.find_node(1)->inputs.size() != 0 ||
+				scratch.find_node(1)->outputs.size() != 2 ||
+				scratch.connection_count() != 1)
+				return fail("t03 node graph update port");
+			if (!scratch.remove_port(3) || scratch.connection_count() != 0)
+				return fail("t03 node graph remove port drops links");
+			node_connection replacement;
+			replacement.id = 7;
+			replacement.from_node = 1;
+			replacement.from_port = 2;
+			replacement.to_node = 4;
+			replacement.to_port = 5;
+			if (scratch.add_connection(replacement) != 7 ||
+				!scratch.remove_connection(7) ||
+				scratch.connection_count() != 0)
+				return fail("t03 node graph remove connection");
+			if (scratch.add_connection(replacement) != 7)
+				return fail("t03 node graph reconnect before clear");
+			scratch.clear_connections();
+			if (scratch.connection_count() != 0 || scratch.node_count() != 2)
+				return fail("t03 node graph clear connections");
+			if (scratch.add_connection(replacement) != 7)
+				return fail("t03 node graph reconnect before node clear");
+			scratch.set_selection({ 1, 7 }, 7);
+			scratch.clear_nodes();
+			if (scratch.node_count() != 0 || scratch.connection_count() != 0 ||
+				!scratch.selection_ids().empty() ||
+				scratch.primary_selection() != invalid_object)
+				return fail("t03 node graph clear nodes");
+		}
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* A07: console model, filtering, stack folding, jump locations and producers. */
 static int test_console_view()
 {
@@ -11272,6 +12302,8 @@ int main()
 		return rc;
 	if (int rc = test_timeline_view())
 		return rc;
+	if (int rc = test_node_graph_view())
+		return rc;
 	if (int rc = test_property_grid_drag())
 		return rc;
 	if (int rc = test_spinbox())
@@ -11521,18 +12553,20 @@ int main()
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 5)
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 6)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
 		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
 		vgui_item_id canvas_tab = vgui_tab_get_at(shell.bottom_tabs(), 2);
 		vgui_item_id table_tab = vgui_tab_get_at(shell.bottom_tabs(), 3);
 		vgui_item_id timeline_tab = vgui_tab_get_at(shell.bottom_tabs(), 4);
+		vgui_item_id node_graph_tab = vgui_tab_get_at(shell.bottom_tabs(), 5);
 		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS" ||
 			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), timeline_tab)) != "TIMELINE")
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), timeline_tab)) != "TIMELINE" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), node_graph_tab)) != "NODEGRAPH")
 			return fail("shell bottom tab titles");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
@@ -11602,6 +12636,22 @@ int main()
 			return fail("shell timeline command");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
 			return fail("shell assets tab after timeline");
+
+		/* T03: the NODEGRAPH tab hosts the node graph editor and the command
+		 * reveals, focuses and checks it. */
+		if (!shell.node_graph().built() || !shell.node_graph().widget() ||
+			find_widget(shell.widget(), "node_graph_view", VGUI_CUSTOM) ==
+				nullptr)
+			return fail("shell node graph built");
+		if (!shell.commands().has("view.nodegraph") ||
+			!shell.run_command("view.nodegraph") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != node_graph_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.nodegraph") ||
+			!shell.node_graph().focused())
+			return fail("shell node graph command");
+		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+			return fail("shell assets tab after node graph");
 
 		/* V09: the viewport dock page hosts a second camera surface and a depth
 		 * preview surface, and the render settings are shared with the host

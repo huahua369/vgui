@@ -247,6 +247,8 @@ struct editor_state
 	/* V08: the canvas uses a fixed 20-unit grid, independent of the 3D
 	 * viewport's camera-dependent snap cell. */
 	snap_settings canvas_snap;
+	/* T03: suffix for nodes created through the NODEGRAPH context menu. */
+	int next_graph_node = 1;
 
 	bool valid_selection() const
 	{
@@ -705,6 +707,128 @@ struct editor_state
 				glm::vec3(0.0f, 1.0f, 0.0f));
 		});
 		timeline.play();
+	}
+
+	/* T03: node graph demo.  A tiny material graph shows typed ports,
+	 * bezier links, selection feedback and the host-provided Add Node
+	 * handler; dragging, connecting and editing are all undoable through the
+	 * shell command stack. */
+	void configure_node_graph()
+	{
+		if (!shell)
+			return;
+		node_graph_view& graph = shell->node_graph();
+		auto make_port = [](const std::string& name, node_port_direction direction,
+			node_port_type type) {
+			node_port port;
+			port.name = name;
+			port.direction = direction;
+			port.type = type;
+			return port;
+		};
+		auto add_node = [&](node_node node) {
+			return graph.add_node(std::move(node));
+		};
+		auto connect = [&](const node_node& from, std::size_t output,
+			const node_node& to, std::size_t input) {
+			if (output >= from.outputs.size() || input >= to.inputs.size())
+				return invalid_object;
+			node_connection connection;
+			connection.from_node = from.id;
+			connection.from_port = from.outputs[output].id;
+			connection.to_node = to.id;
+			connection.to_port = to.inputs[input].id;
+			return graph.add_connection(connection);
+		};
+
+		node_node scene_color;
+		scene_color.title = "Scene Color";
+		scene_color.category = "Input";
+		scene_color.x = 40.0;
+		scene_color.y = 72.0;
+		scene_color.width = 190.0;
+		scene_color.accent = 0xFF5FA8FFu;
+		scene_color.outputs.push_back(make_port("Color",
+			node_port_direction::output, node_port_type::color));
+		const object_id scene_color_id = add_node(scene_color);
+
+		node_node time_node;
+		time_node.title = "Time";
+		time_node.category = "Input";
+		time_node.x = 48.0;
+		time_node.y = 248.0;
+		time_node.width = 170.0;
+		time_node.accent = 0xFF8FD16Au;
+		time_node.outputs.push_back(make_port("Seconds",
+			node_port_direction::output, node_port_type::number));
+		const object_id time_id = add_node(time_node);
+
+		node_node multiply;
+		multiply.title = "Multiply";
+		multiply.category = "Math";
+		multiply.x = 336.0;
+		multiply.y = 120.0;
+		multiply.width = 200.0;
+		multiply.accent = 0xFFD9A441u;
+		multiply.inputs.push_back(make_port("Tint",
+			node_port_direction::input, node_port_type::color));
+		multiply.inputs.push_back(make_port("Factor",
+			node_port_direction::input, node_port_type::number));
+		multiply.outputs.push_back(make_port("Color",
+			node_port_direction::output, node_port_type::color));
+		const object_id multiply_id = add_node(multiply);
+
+		node_node surface;
+		surface.title = "Surface Output";
+		surface.category = "Output";
+		surface.x = 656.0;
+		surface.y = 72.0;
+		surface.width = 200.0;
+		surface.accent = 0xFFE06060u;
+		surface.inputs.push_back(make_port("Surface",
+			node_port_direction::input, node_port_type::color));
+		const object_id surface_id = add_node(surface);
+
+		const node_node* color_node = graph.find_node(scene_color_id);
+		const node_node* time_source = graph.find_node(time_id);
+		const node_node* math_node = graph.find_node(multiply_id);
+		const node_node* output_node = graph.find_node(surface_id);
+		if (!color_node || !time_source || !math_node || !output_node)
+			return;
+		connect(*color_node, 0, *math_node, 0);
+		connect(*time_source, 0, *math_node, 1);
+		connect(*math_node, 0, *output_node, 0);
+
+		/* The bottom panel starts at ~180 px, so use a demo-friendly framing;
+		 * Home / F still fit the whole graph or the current selection. */
+		graph.set_view_state({ 40.0, 32.0, 0.55 });
+		graph.set_selection({ multiply_id }, multiply_id);
+		graph.set_selection_listener([this](const std::vector<object_id>& ids) {
+			if (!shell)
+				return;
+			shell->set_status(ids.empty()
+				? "nodegraph: LMB select / drag, MMB pan, wheel zoom, RMB menu"
+				: "nodegraph: " + std::to_string(ids.size()) +
+					" object(s) selected");
+		});
+		shell->set_status("nodegraph: Scene Color / Time / Multiply / Surface Output");
+		graph.set_create_node_handler([this](node_node& node) {
+			node.title = "Utility " + std::to_string(next_graph_node++);
+			node.category = "Utility";
+			node.width = 180.0;
+			node.accent = 0xFFB07CE8u;
+			node_port input;
+			input.name = "Color";
+			input.direction = node_port_direction::input;
+			input.type = node_port_type::color;
+			node.inputs.push_back(input);
+			node_port output;
+			output.name = "Color";
+			output.direction = node_port_direction::output;
+			output.type = node_port_type::color;
+			node.outputs.push_back(output);
+			return true;
+		});
 	}
 };
 
@@ -2076,6 +2200,7 @@ static void setup_editor(vgui_context* ui)
 	g.scene.objects[cube].renderable = true;
 	g.configure_table();
 	g.configure_timeline(cube);
+	g.configure_node_graph();
 	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU

@@ -20,6 +20,7 @@
 #include "editor_shell.h"
 #include "editor_types.h"
 #include "gradient_editor.h"
+#include "node_graph_view.h"
 #include "outliner_view.h"
 #include "property_grid.h"
 #include "search_box.h"

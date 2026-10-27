@@ -13,8 +13,10 @@
  * (column widths and sort) as an opaque JSON string so the layout format does
  * not need to track the table schema.  Version 4 adds the timeline state
  * (view range, playhead, duration, snapping and looping) as another opaque
- * JSON string.  Older files are still accepted and mapped onto the current
- * format so existing user layouts keep working.
+ * JSON string.  Version 5 adds the node graph state (pan, zoom, grid, minimap,
+ * snapping and selection) as an opaque JSON string.  Older files are still
+ * accepted and mapped onto the current format so existing user layouts keep
+ * working.
  */
 #include <array>
 #include <string>
@@ -43,7 +45,7 @@ namespace vgui_editor_kit {
 
 	struct editor_layout
 	{
-		static constexpr int current_version = 4;
+		static constexpr int current_version = 5;
 
 		int version = current_version;
 
@@ -90,6 +92,10 @@ namespace vgui_editor_kit {
 		 * TIMELINE bottom tab.  An empty string leaves the current timeline
 		 * state. */
 		std::string timeline_state;
+
+		/* Version 5: opaque node_graph_state_to_json() payload owned by the
+		 * NODEGRAPH bottom tab.  An empty string leaves the current graph state. */
+		std::string node_graph_state;
 	};
 
 	std::string editor_layout_to_json(const editor_layout& layout);

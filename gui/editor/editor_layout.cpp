@@ -186,6 +186,9 @@ namespace vgui_editor_kit {
 		if (!layout.timeline_state.empty())
 			root["timeline"] = layout.timeline_state;
 
+		if (!layout.node_graph_state.empty())
+			root["node_graph"] = layout.node_graph_state;
+
 		return root.dump(2) + "\n";
 	}
 
@@ -319,6 +322,11 @@ namespace vgui_editor_kit {
 			if (root.contains("timeline"))
 			{
 				parsed.timeline_state = read_string(root, "timeline");
+			}
+
+			if (root.contains("node_graph"))
+			{
+				parsed.node_graph_state = read_string(root, "node_graph");
 			}
 
 			out = std::move(parsed);

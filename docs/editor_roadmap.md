@@ -420,9 +420,10 @@
   - 验收：关键帧拖拽/复制/删除可撤销；缩放后时间精度正确；播放头与外部时钟同步。
   - 已实现：新增独立 `timeline_view`（`gui/editor/timeline_view.*`），`editor_shell` 底部新增 TIMELINE 页并暴露 `timeline()` 与 `view.timeline` 命令。模型由 `timeline_track`/`timeline_keyframe` 组成：轨道含稳定 id、名称、颜色、行高、可见/锁定/静音，关键帧含稳定 id、`double` 秒时间、标量值和 step/linear/smooth 插值；`add_track()`/`add_keyframe()` 支持显式 id 并拒绝冲突，`evaluate()` 负责采样。视图用 `view_start` + `pixels_per_second` 描述，时间换算全程 `double`；时间尺按缩放选择 1/30 s 到 10 min 的可读步长，中键平移、Ctrl+滚轮以光标为锚缩放、Shift+滚轮水平滚动、普通滚轮纵向滚动，缩放/框选/命中在极端缩放下仍保持亚帧精度。交互支持点选、Ctrl 切换、Shift 追加、空白拖动框选、双击插入、拖动选中集合、Esc/CANCEL/失焦回滚；快捷键包括 Space 播放、Left/Right 单帧、Home/End、Delete、Ctrl+C/V/X/A。吸附默认跟随帧率（30 fps），可切换为自定义步长；拖动、插入、粘贴、删除各生成一条 `Move keyframes`/`Add keyframe`/`Paste keyframes`/`Delete keyframes` 命令，多选移动只记录一条，剪贴板保存相对时间并在播放头处粘贴。播放由宿主 `tick(delta)` 驱动，支持 play/pause/stop/toggle、单帧步进、循环与到达末尾自动停止；`set_playhead()` 始终权威，`set_playhead_listener()` 让宿主采样动画。`timeline_state`（版本 1）保存视图范围/缩放/滚动、播放头、时长、帧率、吸附开关/步长、循环和选中轨道，`timeline_state_to_json/from_json` 校验版本、有限数值、正缩放/时长/帧率/步长与播放头范围；`editor_layout` 升至版本 4，以不透明 `timeline` 字符串保存该状态并继续接受 v1/v2/v3 文件，存在但非法的 TIMELINE 状态会使加载失败而不是静默覆盖。`vgui_game_editor` 用 Cube Height/Cube Yaw 两条轨道演示关键帧编辑，主循环调用 `timeline().tick(delta)`，播放头监听器把高度和偏航写回立方体。测试 `test_timeline_view` 覆盖模型/显式 id/插值采样、几何与命中、点选/Ctrl/Shift/框选、拖拽吸附与 Esc/CANCEL/失焦回滚、复制/剪切/粘贴相对时间、插入/删除/移动的 undo/redo、键盘快捷键、播放/循环/步进/外部 tick 与监听器、缩放锚点与亚帧精度、状态 JSON 往返与非法值拒绝；布局测试覆盖 TIMELINE 页顺序、`view.timeline` 命令及 v4 时间线状态保存/恢复。
 
-- [ ] **T03 NodeGraph**（P1，L）
+- [x] **T03 NodeGraph**（P1，L）（已完成）
   - 节点、端口、连线、框选、缩放/平移、搜索、小地图、右键菜单。
   - 验收：节点拖动和连线命中准确；框选/多选/删除可撤销；大图缩放不丢失交互精度。
+  - 已实现：新增独立 `node_graph_view`（`gui/editor/node_graph_view.*`），`editor_shell` 底部新增 NODEGRAPH 页并暴露 `node_graph()` 与 `view.nodegraph` 命令。模型由 `node_node`/`node_port`/`node_connection` 组成：节点含稳定 id、标题、分类、位置、宽度（120–600 钳制）、折叠/可见/锁定、标题色和输入/输出端口；端口含方向、类型（flow/number/string/boolean/color/vector/object/custom）和 `multi`；连线含稳定 id、源/目标节点与端口、颜色和可见性。节点、端口、连线共享一个 id 空间，显式冲突会被拒绝；`connect_ports()` 统一规范化输出→输入，类型相同或任一端为 `custom` 才能连接，`multi = false` 的输入会替换旧连线。所有图坐标、偏移与缩放使用 `double`；节点/端口/连线命中、6 屏幕像素连线容差和框选均在当前缩放下精确换算，连线绘制与命中共享图空间三次贝塞尔控制点。交互支持左键点选、Ctrl 切换、Shift 追加、拖动选中集合、锁定节点可选不可移、空白拖动框选节点与连线、从端口拖出创建连线、中键平移、滚轮以光标为锚缩放、Shift+滚轮平移；Esc、`VGUI_EVENT_CANCEL` 或失焦回滚手势快照。节点拖动、连接、断开、删除和复制分别压入一条 `Move nodes`/`Connect nodes`/`Disconnect nodes`/`Delete nodes`/`Duplicate nodes` 命令，无实际变化不记录。自适应网格按屏幕密度加倍有效格距，支持吸附、`F` 框选视图、`Home` 适配全图、`Ctrl+A` 全选和 `Ctrl+D` 复制；`Ctrl+F` 聚焦内嵌搜索框，匹配节点高亮、其余变暗，Enter 循环匹配并居中。右下角小地图显示节点边界与视口矩形，可点击/拖动导航；右键菜单提供 Add Node、Duplicate、Delete、Disconnect、Frame Selection、Fit All、Select All 及网格/小地图/吸附开关，Add Node 由宿主 `set_create_node_handler()` 决定节点类型。`node_graph_state`（版本 1）保存视图偏移/缩放、网格/小地图/吸附开关、网格步长、选择集与主选，`node_graph_state_to_json/from_json` 校验版本、有限数值、缩放/步长与选中 id 格式；`editor_layout` 升至版本 5，以不透明 `node_graph` 字符串保存该状态并继续接受 v1–v4 文件，存在但非法的 NODEGRAPH 状态会使加载失败而不是静默覆盖。`vgui_game_editor` 预置 Scene Color / Time / Multiply / Surface Output 节点和颜色连线，右键 Add Node 创建带颜色端口的 Utility 节点，选择监听同步状态栏。测试 `test_node_graph_view` 覆盖模型/id/端口类型与单输入替换、几何与命中、点选/Ctrl/Shift/框选、拖动与锁定节点、Esc/CANCEL/失焦回滚、高倍与极端偏移精度、连接/断开/复制/删除的 undo/redo、搜索/小地图/上下文动作、缩放/平移和状态 JSON 往返/非法值拒绝；布局测试覆盖 NODEGRAPH 页顺序、`view.nodegraph` 命令及 v5 节点图状态保存/恢复。
 
 - [ ] **T04 CodeEditor / RichText**（P2，L）
   - 语法高亮、行号、查找替换、只读富文本日志。
@@ -531,12 +532,12 @@ MVP 验收场景：
 ### 7.3 第三批：专业编辑器与打磨
 
 - T02 Timeline / 动画编辑器（已完成）
-- T03 NodeGraph
+- T03 NodeGraph（已完成）
 - T04 CodeEditor / RichText
 - E05 无障碍
 - E06 国际化 / RTL
 
-第三批不应阻塞前两批；如果项目暂时不需要动画、节点图或脚本编辑，可以长期延后。
+第三批剩余项不应阻塞前两批；如果项目暂时不需要代码编辑，可以长期延后。
 
 ## 8. 完成定义（DoD）
 
@@ -581,8 +582,8 @@ MVP 验收场景：
 - 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
 - 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
-- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE（CONSOLE 为 A07 的 `console_view`）；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
-- `editor_layout` 版本 2：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形和底部 Tab；版本 1 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
+- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
+- `editor_layout` 版本 5：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形、底部 Tab、TABLE 列宽/排序、TIMELINE 视图/播放状态与 NODEGRAPH 视图/网格/小地图/吸附/选择；v1–v4 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
 - M2 P08：多选/混合值/复制粘贴/收藏——`set_multi_targets/getter/setter` 自动混合检测与 per-target 批量命令（一条 undo）、`copy/paste_properties` 进程内剪贴板（类型保持、shell Edit 菜单 Ctrl+Shift+C/V）、行级收藏星标与 "★" 过滤（跨重建保持）、`outliner_view::selection_objects()` 多选导出；`vgui_game_editor` Ctrl 多选混合值 dogfood。
 - M2 P09：Curve / Gradient 编辑器——`curve_editor`（linear/step/cubic、关键帧与切线拖拽、双击加点、T/V/In/Out spinbox、紧凑预览）、`gradient_editor`（渐变条/色标拖放、双击插点、内嵌 HSV 取色器、4 预设、紧凑预览）；PropertyGrid `property_type::curve/gradient` 共用 popup 会话（实时预览、单条可合并 undo、Esc 回滚、多目标事务）；`vgui_game_editor` 增加 Idle Curve / Color Ramp 可操作路径。
@@ -600,11 +601,12 @@ MVP 验收场景：
 - M5 V08 2D Canvas：`canvas_view` 自带轻量 item 模型与选择集，支持中键平移、滚轮锚点缩放、自适应网格与原点轴、点击/Ctrl/Shift/框选、锁定/不可见过滤、八个缩放手柄与旋转手柄；移动按主选包围框吸附，单选缩放保留旋转后的对角锚点，旋转按中心角吸附；Esc/CANCEL/失焦回滚快照，每次手势只压入一条 `Move`/`Resize`/`Rotate` 命令，无变化不记录。`editor_shell` 底部新增 CANVAS 页并暴露 `canvas()`，共享 `snap_settings`/`command_stack`，`view.canvas` 命令展开并聚焦；`vgui_game_editor` 用独立 20 单位吸附策略预置 UI 场景 item，并提供状态栏/选择监听反馈。
 - M5 V10 `VGUI_IMAGE` 变换：`vgui_image_state` 增加九宫格边宽、旋转角、旋转中心和可清除矩阵；公共 API 为 `vgui_image_set_nine_slice` / `vgui_image_set_rotation` / `vgui_image_set_rotation_center` / `vgui_image_set_matrix`。原生纹理把 `sliced/angle/center/matrix` 直接交给 OVG `add_texture`，vgui 矩阵按旋转枢轴共轭到绝对坐标；CPU 纹理普通绘制走 OVG `add_image`（与 `add_texture` 一样应用当前矩形裁剪），变换/九宫格走生成的四边形/九宫格 `add_geometry` 路径，实现相同的 flip → rotation → matrix 顺序、源区域钳制、目标边宽压缩、tint 与裁剪，并允许首帧在 `image.id == 0` 时先录制命令、提交时再解析纹理 id。`sample/vgui_texture_test.cpp` 扩展为 512×256 的 79 项断言，覆盖原生/CPU 首帧绘制、旋转、自定义旋转中心、flip+旋转、矩阵平移/缩放、旋转+矩阵、九宫格、source+旋转、九宫格+旋转、父级裁剪、空纹理跳过与原地更新；`vgui_demo` 图片卡片增加旋转循环、九宫格和矩阵错切入口。
 - `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知）、A07 Console（有界排空/队列与模型分离、等级+搜索独立过滤、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空/保留上限/dropped、4 线程并发追加、shell CONSOLE 页与 `view.console`），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）、`test_viewport_widget`（V01：渲染尺寸边沿触发、纹理跨 resize 保持、跨边界鼠标捕获与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）、`test_viewport_camera`（V02：派生位置、平移/旋转/缩放与钳制、左键预留、焦点取消、总开关、F 取景、状态往返、多监听器与重复 attach）、`test_editor_context_multi_selection`/`test_viewport_selection`/`test_outliner_multi_selection_sync`（V03：集合语义/通知、点击/框选/修饰键/取消/坐标、Outliner 双向同步与反选）、`test_viewport_grid`/`test_snap_settings`（V04：自适应密度与像素范围、固定格距、线段数量/对齐/平面高度、主次线与轴配色方向、隐藏；平移/旋转/缩放吸附、总开关/单通道/零步长回退、shell 网格命令与 checked 状态）、`test_viewport_gizmo`（V05/V07：三轴/平面命中、轴约束与吸附、关闭吸附自由增量、平面 Z 约束、Esc/焦点旁落/显式取消、隐藏与无效帧、45° 局部轴方向、空间状态与 detach；旋转环命中/15° 吸附/跨 ±π 展开、轴向与统一缩放/0.1 吸附、模式与空间切换取消、变换载荷 begin 快照、数值文本往返与多选共享枢轴）、`test_viewport_drop_hover`（V06：拖拽前无悬停、悬停载荷/坐标、离开清除、Escape 取消、真实释放只触发一次）、`test_canvas_view`（V08：模型/显式 id/坐标、缩放与网格自适应、点击/Ctrl/Shift/框选、锁定/不可见过滤、手柄命中、移动/缩放/旋转吸附与 undo/redo、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用、选择监听器与删除 prune；shell CANVAS 页与 `view.canvas` 命令）、`test_table_view`（T01：1 万行虚拟窗口/滚动绘制只查可见行、稳定排序与选择跟随、列宽/排序 JSON 校验与恢复、文本/整数/布尔/枚举/颜色/向量编辑、只读/非法输入/取消、undo/redo；布局与 shell 覆盖 TABLE 页、`view.table` 和 v3 表格状态保存/恢复）。
+- M6 T03 NodeGraph：`node_graph_view` 以稳定 id 管理节点/端口/连线，支持类型/方向/单输入替换校验、节点拖动、端口连线、连线点选、空白框选、Ctrl/Shift 多选、锁定节点、中键平移与光标锚点缩放；Esc/CANCEL/失焦回滚，移动/连接/断开/删除/复制各记录一条命令。自适应网格与吸附、`Ctrl+F` 搜索高亮、小地图导航、右键 Add Node 宿主处理器和 `node_graph_state` JSON 全部接通；`editor_shell` 新增 NODEGRAPH 页、`view.nodegraph` 命令与 `editor_layout` v5 持久化。`vgui_game_editor` 以材质节点图 dogfood 拖动、连线、搜索和右键创建，`test_node_graph_view` 覆盖命中/撤销/极端缩放/状态校验。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
 - 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（23 项，含 V01 附加焦点监听与 `vgui_input_cancel`）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid 已完成，下一步 E01 DPI 缩放。
-2. V08 2D Canvas 的画布/手柄/框选/吸附可被 T02 Timeline 与 T03 NodeGraph 复用；T01 的拉取式行源与类型化单元格编辑器可被后续数据视图复用。
+1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid、T02 Timeline、T03 NodeGraph 已完成，下一步 E01 DPI 缩放。
+2. V08 2D Canvas 的画布/手柄/框选/吸附已复用于 T02 Timeline 与 T03 NodeGraph；T01 的拉取式行源与类型化单元格编辑器可被后续数据视图复用。
 3. 第二批剩余条目按 E01 DPI → E02 性能/增量 → E03 截图回归推进；A07 已完成，可复用其虚拟行投影/有界消费模式处理后续大日志或长列表。
