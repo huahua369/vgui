@@ -20,10 +20,12 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
 | **高 DPI** | 统一 `ui_scale` 同步缩放字体、间距、圆角与图标；逻辑 setter + 有效像素 getter；缩放监听器；SDL3 显示器切换自动同步；布局持久化保存逻辑尺寸 |
 | **增量更新** | PropertyGrid 按 id+type 复用属性行，切换同 schema 对象不重建控件；Outliner 虚拟行源用 `scene_changed()`/`scene_row_changed()` 区分结构与单行刷新；AssetBrowser 只请求可见范围缩略图并复用内存/磁盘缓存 |
+| **国际化** | UTF-8 文案表与运行时语言切换；RTL 布局/文本/常用控件镜像；OVG 多字体回退与 bidi 文本 |
+| **视觉回归** | 9 个编辑器关键状态离屏截图基线（Dock/PropertyGrid/Outliner/AssetBrowser/Viewport），容差对比并输出差异图；CTest 可直接运行，无 Vulkan 自动 SKIP |
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
-| **工程** | CMake + vcpkg 清单，附带完整控件演示和无需窗口/GPU 的自测程序 |
+| **工程** | CMake + vcpkg 清单，附带控件演示、游戏编辑器示例、无需窗口/GPU 的模型自测与离屏截图回归（CTest） |
 
 ### 控件一览
 
@@ -792,15 +794,38 @@ Debug 输出目录为 `out/bin/x64d/`：
 
 ```text
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
+out/bin/x64d/vgui_editor.exe           # UI 文档编辑器（JSON 文档 + C++ 代码生成 + 实时预览）
+out/bin/x64d/vgui_phase0.exe           # Phase 0：3D FBO -> 原生纹理 -> VGUI_IMAGE
+out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例（操作路径见下文）
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
+out/bin/x64d/vgui_c_api_test.exe       # 纯 C API 头文件/链接与行为冒烟测试
 out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
-out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例:场景树多选混合值编辑、取色器、曲线/渐变、资产引用、目录导航/搜索、异步缩略图/LRU/磁盘缓存、资产拖放到视口/Outliner/属性栏、OS 文件导入、重命名/删除/复制/移动/重新导入、依赖查看、平移/旋转/缩放 Gizmo、2D Canvas 编辑、时间线、节点图、多视口/HDR/MSAA/深度预览、分级日志/堆栈折叠/错误跳转与命令栈
-out/bin/x64d/vgui.exe                  # OVG 场景示例
+out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Outliner/AssetBrowser/Viewport 基线对比
 ```
 
 `vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。
+
+### 游戏编辑器示例（vgui_game_editor）
+
+`sample/vgui_game_editor.cpp` 是 editor kit 的持续 dogfood 示例：窗口标题为“vgui 游戏编辑器示例”，内置一套内存中的玩具场景与资产库，覆盖首批 MVP 主路径和后续专业编辑器页签。
+
+```bash
+out/bin/x64d/vgui_game_editor.exe
+```
+
+**MVP 主路径**
+
+1. **外壳**：顶部 File/Edit/View/Help 菜单、工具栏（场景搜索、Undo/Redo、Grid/Snapping、Persp/Top/Front）和底部状态栏；Edit > Undo/Redo 与工具栏同步，`Ctrl+Z`/`Ctrl+Y` 可撤销场景与资产操作。
+2. **Outliner**：类型图标、可见性/锁定按钮、F2/双击重命名、拖放重排与改父子（多选也行）、名称过滤高亮、与视口双向选中、右键菜单与 Delete/F2/Ctrl+D。
+3. **Viewport**：中键平移、右键轨道旋转、滚轮缩放、F 取景；左键点击/框选，Ctrl 切换、Shift 追加；W/E/R 切换平移/旋转/缩放 Gizmo，View > Gizmo Space 切换世界/局部/父级/屏幕；拖动按 Grid Size 与吸附步长约束，一次拖动只记录一条命令，Esc/失焦回滚；View > HDR/MSAA/Depth 可切换渲染选项，主视口下方的第二相机视口与深度预览共享同一场景。
+4. **Properties**：选中对象后显示类型化属性（文本/布尔/枚举/颜色/Vector/资产引用/曲线/渐变），多选时显示混合值并支持批量编辑与一次撤销；资产可拖到引用行赋值。
+5. **Assets**：目录面包屑/前进后退/刷新，防抖搜索与类型过滤，可见范围异步缩略图与 LRU/磁盘缓存；双击文件夹进入，资产可拖入视口（半透明落点预览）、Outliner 和属性栏；支持 OS 文件拖入导入、F2/Delete/Ctrl+D/F5/Ctrl+I 与右键重命名/删除/复制/移动/重新导入（包含冲突/只读/占用/损坏资源的模拟错误与确认框）。
+6. **Dock**：拖动标签重排/跨区/浮出，View 菜单可显示/隐藏面板；`editor_shell` 提供布局保存/恢复 API（示例未落盘，kit 自测覆盖该路径）。
+7. **底部页签**：ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE 共享同一 Dock；可验证日志分级/堆栈/跳转、2D 画布、虚拟表格、时间线播放与关键帧、节点图连线/搜索/小地图、代码编辑器语法高亮与查找替换。
+
+示例的场景、资产库和命令历史都在内存中，File > Save 只是状态占位；文档序列化、资产数据库和文件对话框由宿主实现。`vgui_editor_kit_test.exe` 覆盖布局持久化、命令栈和各组件边界。
 
 ## 最小示例
 
@@ -875,6 +900,12 @@ vgui_draw(ui, ovg_cb, rvg);
 
 SDL3 后端把窗口点（window points）转换为渲染像素：`viewport->pixel_ratio` 是渲染像素/窗口点，`viewport->ui_scale` 是当前采用的 UI 比例（来自显示器 content scale，或 `ui_scale_override` 覆盖值）。`app_mgr::sync_ui_scale()` 在创建窗口、显示器变化和每帧 `get_event()` 时同步；宿主把 `viewport` 赋给 `vgui_context` 后应立即调用一次 `sync_ui_scale(true)`（`sample/vgui_game_editor.cpp` 即如此），保证首帧布局就使用正确的 DPI。
 
+### 国际化与 RTL
+
+- `vgui_context_set_language()` / `vgui_context_set_string()` / `vgui_widget_set_text_key()` 提供 UTF-8 文案表，查找顺序为当前语言 → `en` → key。
+- `vgui_context_set_direction(VGUI_DIRECTION_RTL)` 镜像 row/wrap 布局、column 的 START/END、文本对齐，以及按钮图标侧、复选框/单选/开关/滑杆/进度/编辑框/列表/树/菜单/菜单栏/标签页/滚动条。
+- OVG/HarfBuzz 负责 bidi shaping 与多字体回退；`vgui_demo` 内置中文/English/العربية 与 RTL 开关，也可用 `VGUI_DEMO_LANG=ar VGUI_DEMO_RTL=1` 启动。
+
 ## 项目结构
 
 ```text
@@ -882,23 +913,29 @@ gui/
   vgui.h              公共纯 C API
   vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Dock/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（兼容旧版）
-  vgui_legacy.cpp     旧版 C++ 接口适配
-  editor/             vgui_editor_kit 编辑器组件层（MVP 骨架，含菜单/命令与布局持久化）
+  editor/             vgui_editor_kit 编辑器组件层（含菜单/命令、布局持久化与专业编辑器视图）
 backends/
-  vgui_sdl3.*          SDL3 窗口、输入、IME 与 GPU 视口
+  vgui_sdl3.*          SDL3 窗口、输入、IME、DPI 与 GPU 视口
   vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
-  mapView.*           视图/地图相关后端组件
+  mapView.*            视图/地图相关后端组件
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）
 sample/
   vgui_demo.cpp             全部控件的交互演示
+  ui_editor_main.cpp         UI 文档编辑器（配合 gui/ui_editor.cpp）
+  vgui_game_editor.cpp      游戏编辑器 dogfood 示例（editor_shell + 3D 视口）
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast、按键处理器与 UI 缩放自测
   vgui_c_api_test.c         纯 C 消费者冒烟测试（含 UI 缩放、监听器与整树重算）
-  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性（含 Vector/曲线/渐变）、命令栈、菜单/快捷键、资产拖放/导入、资产操作、日志控制台、2D Canvas、时间线、节点图、多视口/HDR/MSAA/深度预览、DPI 布局与布局持久化自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、类型化属性、命令栈、资产/日志/Canvas/时间线/节点图/代码编辑器、DPI 与布局持久化自测
+  vgui_texture_test.cpp     图片纹理离屏读回测试
+  vgui_screenshot_test.cpp  E03 截图回归（离屏渲染 + 基线容差对比）
+  screenshots/              E03 基线 PNG
+  ovg_texture_test.cpp      OVG 原生纹理离屏测试
+  ovg_tools_test.cpp        OVG tools 图形离屏像素断言
   phase0_renderer.*         Phase 0 3D 渲染器：多 view、HDR/tonemap、MSAA 与深度可视化
+  vgui_phase0.cpp           Phase 0 FBO -> 原生纹理 -> VGUI_IMAGE 示例
   shaders/                  Phase 0 场景/全屏/tonemap/深度着色器与生成的 SPIR-V 头
-  main.cpp                  OVG 场景示例
 docs/
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
   editor_roadmap.md   游戏编辑器组件路线图
@@ -918,11 +955,20 @@ out/bin/x64d/vgui_model_test.exe
 out/bin/x64d/vgui_c_api_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 out/bin/x64d/vgui_texture_test.exe
+out/bin/x64d/vgui_screenshot_test.exe
 ```
 
 自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；`vgui_model_test` 的 E01 用例覆盖 UI 比例钳制/非法值回退、样式与字体缩放、逻辑 setter 在非 1.0 比例下不累积、运行时整树重算、缩放监听器增删，以及 100%/125%/150%/200% 下的列布局不重叠（共 708 项断言），`vgui_c_api_test` 另以纯 C 编译验证同一组 API（32 项）。`vgui_editor_kit_test` 的 `test_shell_ui_scale` 检查四种比例下外壳各行/停靠区不重叠、面板不越界，以及 200%→125%→100% 的布局持久化仍保存同一逻辑 Dock 尺寸；E02 的 `test_property_grid_set_properties` 断言同 schema 切换返回 0 且行 widget 身份不变，`test_virtual_outliner` 断言折叠子树不查询名称、单行/结构刷新保持选择，A05 缓存命中测试断言缩略图不重新加载；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（四个稳定面板 id、区域合并、浮出、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、资产操作（A06 重命名/删除/复制/移动/重新导入、冲突/只读/占用/非法目标/I/O 错误、整批原子失败、批量单条撤销、不可撤销标记与警告 Toast、列表/网格右键菜单、F2/Delete/Ctrl+D/F5/Ctrl+I、重命名/删除对话框、导入通知与依赖模态框）、日志控制台（A07 构建/默认值、生产者队列与模型分离、有界排空、等级+搜索独立/组合/大小写、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空、保留上限与 dropped 计数、4 线程并发追加，以及 shell CONSOLE 页、`view.console` 命令与访问器追加）、2D Canvas（V08 模型/显式 id、坐标与缩放钳制、自适应网格、点击/Ctrl/Shift/框选、锁定与不可见过滤、手柄随旋转/缩放、移动/缩放/旋转吸附与命令撤销、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用与选择监听器、shell CANVAS 页/`view.canvas` 命令）、时间线（T02 轨道/关键帧/显式 id、线性/阶梯/平滑求值、关键帧命中与框选、拖拽/复制粘贴/插入/删除命令撤销、30fps 吸附与自定义步长、缩放锚点与亚帧精度、播放/循环/步进/外部 tick 与播放头监听、状态 JSON 往返与非法值拒绝、shell TIMELINE 页/`view.timeline` 命令）、节点图（T03 节点/端口/连线模型与显式 id 冲突、端口类型/方向/单输入替换、节点与连线命中、点选/Ctrl/Shift/框选、锁定节点、拖动/连接/断开/复制/删除的 undo/redo、Esc/CANCEL/失焦回滚、极端缩放/偏移下的坐标与连线命中精度、搜索/小地图/右键动作、状态 JSON 往返与非法值拒绝、shell NODEGRAPH 页/`view.nodegraph` 命令）、代码编辑器（T04：语言识别/状态 JSON/换行归一/跨行惰性词法/手工 span/编辑与命令栈 undo/redo/自动缩进/UTF-8 光标与选区/剪贴板/只读/查找替换/富文本日志颜色与保留/分块加载含跨块 CRLF/文件失败保留/取消加载/状态应用、shell CODE 页/`view.code` 命令）、多视口与 HDR/MSAA/深度预览（V09 第二相机视口/深度视口、默认设置、`view.hdr`/`view.msaa`/`view.depth` 命令与设置 setter/重置）、Gizmo（V05/V07 三模式/四空间、旋转环 15° 吸附与跨 ±π 展开、轴向/统一缩放与 0.1 吸附、模式/空间切换取消、begin 快照、数值文本往返与多选共享枢轴）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、浮动矩形、底部 Tab 顺序与当前页）、v1–v4 兼容映射、v5 NODEGRAPH 状态保存/恢复、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
 
 `vgui_texture_test` 使用离屏 FBO + 像素回读，覆盖原生与 CPU 纹理的 source/fit/tint/flip/pixel snap，以及 V10 九宫格、旋转、自定义旋转中心、矩阵和它们的组合，并包含 CPU 图片在父级裁剪内的回归用例（79 项断言）；`vgui_demo` 的图片卡片可交互验证同一组变换。
+
+`vgui_screenshot_test` 对 9 个编辑器关键状态做离屏截图回归：默认读取 `sample/screenshots/` 下的基线，按每通道容差 2、差异像素比例上限 0.05% 对比；失败时在 `--out-dir`（CTest 默认为构建目录 `screenshots/`）写 `<scene>_actual.png` 与 `<scene>_diff.png`（差异像素标红）。`--update` 重建基线，`--filter=<name>` 只跑子集，`--list` 列出场景。CTest 注册为 `vgui_screenshots`：
+
+```bash
+ctest --test-dir out/build/x64-debug -R vgui_screenshots --output-on-failure
+```
+
+无 Vulkan 设备时测试返回 77，由 CTest 标记 SKIP，因此可直接接入 CI。
 
 ## 第三方与许可证
 

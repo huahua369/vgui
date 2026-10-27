@@ -1,13 +1,19 @@
 // sample/vgui_game_editor.cpp: 游戏编辑器 dogfood 示例
 //
-// 用 vgui_editor_kit 搭一个最小的游戏场景编辑器,持续验证 M3 Outliner 的
-// 编辑器工作流(roadmap §10:每个里程碑在示例中补一条可操作路径):
-//   * editor_shell 外壳(Dock + 菜单 + 工具栏 + 状态栏 + 布局持久化)
-//   * Outliner:类型图标、可见性/锁定行内按钮、F2/双击行内重命名、
-//     拖放重排/改父子(含多选)、名称过滤高亮、双向选中同步、右键菜单
-//   * Assets:Breadcrumb/前进后退/刷新、宿主目录、双击进入文件夹、
-//     防抖搜索与类型过滤
-//   * 命令栈:移动/重命名/删除/新建/复制全部可撤销
+// 用 vgui_editor_kit 搭一个持续 dogfood 的场景编辑器。当前覆盖：
+//   * editor_shell：Dock、菜单/快捷键、工具栏/状态栏、场景搜索与布局 API
+//   * M3 Outliner：类型图标、可见/锁定按钮、行内重命名、拖放重排/改父子、
+//     过滤高亮、多选同步、右键菜单
+//   * M4 Assets：目录导航、防抖搜索/类型过滤、异步缩略图/LRU/磁盘缓存、
+//     视口/树/属性栏落点、OS 文件导入与资产操作
+//   * M5 Viewport V01-V09：FBO resize、相机导航、点击/框选、网格/吸附、
+//     平移/旋转/缩放 Gizmo、资产落点预览、HDR/MSAA/深度预览
+//   * M6/M7 页签：Canvas、Table、Timeline、NodeGraph、CodeEditor、Console 与命令栈
+//   * E01：启动时同步 ui_scale，所有面板遵守逻辑单位
+//
+// 常用操作：MMB 平移 / RMB 轨道旋转 / 滚轮缩放 / F 取景；左键点选或框选；
+// W/E/R 切换 Gizmo；F2 重命名，Delete 删除，Ctrl+D 复制；Esc 取消手势。
+// 场景、资产库和命令历史均为内存模型，File > Save 只是状态占位。
 //
 // 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
 
