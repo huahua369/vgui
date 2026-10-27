@@ -146,6 +146,21 @@ namespace vgui_editor_kit {
 				panel_visible(editor_panel::bottom);
 		});
 
+		/* V08: reveal and focus the standalone 2D canvas. */
+		commands_.add("view.canvas", "Canvas", [this]() {
+			set_panel_visible(editor_panel::bottom, true);
+			if (canvas_tab_ && bottom_tabs_)
+				vgui_tab_set_active(bottom_tabs_, canvas_tab_);
+			if (canvas_.built())
+				canvas_.request_focus();
+			set_status("canvas");
+		});
+		commands_.set_checked("view.canvas", [this]() {
+			return canvas_tab_ && bottom_tabs_ &&
+				vgui_tab_get_active(bottom_tabs_) == canvas_tab_ &&
+				panel_visible(editor_panel::bottom);
+		});
+
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
 		commands_.add("view.grid", "Grid", [this]() {
 			grid_.set_visible(!grid_.visible());
@@ -388,6 +403,7 @@ namespace vgui_editor_kit {
 			add_menu_command(view_menu, "view.properties", true);
 			add_menu_command(view_menu, "view.bottom", true);
 			add_menu_command(view_menu, "view.console", true);
+			add_menu_command(view_menu, "view.canvas", true);
 			vgui_menu_add_separator(view_menu);
 			add_menu_command(view_menu, "view.grid", true);
 			add_menu_command(view_menu, "view.snap", true);
@@ -569,6 +585,16 @@ namespace vgui_editor_kit {
 		console_tab_ = vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
 		vgui_tab_set_closeable(bottom_tabs_, console_tab_, 0);
 
+		vgui_widget* canvas_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
+		vgui_widget_set_layout(canvas_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(canvas_page, 0, 0, 0, 0);
+		canvas_.build(canvas_page);
+		vgui_widget_set_align_self(canvas_.widget(), VGUI_ALIGN_STRETCH);
+		canvas_.set_snap_settings(&snap_);
+		canvas_.set_command_stack(&context_.commands());
+		canvas_tab_ = vgui_tab_add(bottom_tabs_, "CANVAS", canvas_page);
+		vgui_tab_set_closeable(bottom_tabs_, canvas_tab_, 0);
+
 		desc.id = "bottom";
 		desc.title = "PANELS";
 		desc.panel = bottom_panel_;
@@ -670,6 +696,16 @@ namespace vgui_editor_kit {
 	const console_view& editor_shell::console() const noexcept
 	{
 		return console_;
+	}
+
+	canvas_view& editor_shell::canvas() noexcept
+	{
+		return canvas_;
+	}
+
+	const canvas_view& editor_shell::canvas() const noexcept
+	{
+		return canvas_;
 	}
 
 	vgui_item_id editor_shell::panel_item(editor_panel panel) const noexcept

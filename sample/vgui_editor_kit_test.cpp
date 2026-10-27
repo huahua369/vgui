@@ -356,9 +356,10 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					initial.dock_panels.size() != 4 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 2 ||
+					initial.bottom_tab_order.size() != 3 ||
 					initial.bottom_tab_order[0] != "ASSETS" ||
 					initial.bottom_tab_order[1] != "CONSOLE" ||
+					initial.bottom_tab_order[2] != "CANVAS" ||
 					initial.bottom_active_tab != "ASSETS")
 					return fail("layout default capture");
 
@@ -398,8 +399,10 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					saved.dock_panels.size() != 4 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 2 ||
+					saved.bottom_tab_order.size() != 3 ||
 					saved.bottom_tab_order[0] != "CONSOLE" ||
+					saved.bottom_tab_order[1] != "ASSETS" ||
+					saved.bottom_tab_order[2] != "CANVAS" ||
 					saved.bottom_active_tab != "CONSOLE")
 					return fail("layout capture after edit");
 
@@ -493,7 +496,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
+				if (vgui_tab_get_count(shell.bottom_tabs()) != 3)
 					return fail("layout restored tab count");
 				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
 				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
@@ -9610,6 +9613,421 @@ static int test_snap_settings()
 	return 0;
 }
 
+/* V08: standalone 2D canvas model, view, selection and gesture commands. */
+static int test_canvas_view()
+{
+	using namespace vgui_editor_kit;
+	auto close_to = [](float a, float b, float eps = 1e-3f) {
+		return std::fabs(a - b) <= eps;
+	};
+	auto close_rect = [&](const canvas_rect& r, float x, float y, float w,
+		float h) {
+		return close_to(r.x, x) && close_to(r.y, y) &&
+			close_to(r.width, w) && close_to(r.height, h);
+	};
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("v08 canvas context");
+	vgui_context_set_size(ui, 900, 700);
+
+	{
+		command_stack commands;
+		canvas_view canvas;
+		canvas.build(vgui_root(ui));
+		vgui_widget_set_pos(canvas.widget(), 40.0f, 30.0f);
+		vgui_widget_set_size(canvas.widget(), 600.0f, 400.0f);
+		vgui_widget* other = vgui_widget_add(vgui_root(ui), VGUI_BUTTON,
+			"other");
+		vgui_widget_set_pos(other, 700.0f, 600.0f);
+		vgui_widget_set_size(other, 120.0f, 30.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		if (!canvas.built() || !canvas.widget() ||
+			vgui_widget_get_kind(canvas.widget()) != VGUI_CUSTOM)
+			return fail("v08 canvas build");
+		canvas.set_drag_threshold(3.0f);
+		canvas.set_command_stack(&commands);
+
+		float wx = 0.0f, wy = 0.0f, ww = 0.0f, wh = 0.0f;
+		vgui_widget_get_rect(canvas.widget(), &wx, &wy, &ww, &wh);
+		if (ww < 300.0f || wh < 200.0f)
+			return fail("v08 canvas size");
+		auto screen = [&](float x, float y) {
+			return std::pair<float, float>(wx + 1.0f + x, wy + 1.0f + y);
+		};
+		auto move_to = [&](float x, float y) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_move(ui, p.first, p.second);
+		};
+		auto down_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_down(ui, button, p.first, p.second, 1);
+		};
+		auto up_at = [&](float x, float y, int button = 1) {
+			const auto p = screen(x, y);
+			vgui_input_mouse_up(ui, button, p.first, p.second, 1);
+		};
+		auto click_at = [&](float x, float y) {
+			move_to(x, y);
+			down_at(x, y);
+			up_at(x, y);
+		};
+
+		auto make_item = [](float x, float y, float w, float h,
+			canvas_shape shape) {
+			canvas_item item;
+			item.bounds = { x, y, w, h };
+			item.shape = shape;
+			return item;
+		};
+
+		int changes = 0;
+		canvas.set_change_listener([&changes]() { ++changes; });
+		object_id a = canvas.add_item(make_item(20.0f, 20.0f, 100.0f,
+			60.0f, canvas_shape::rectangle));
+		object_id b = canvas.add_item(make_item(160.0f, 40.0f, 80.0f,
+			80.0f, canvas_shape::ellipse));
+		canvas_item locked = make_item(300.0f, 200.0f, 80.0f, 50.0f,
+			canvas_shape::diamond);
+		locked.locked = true;
+		object_id c = canvas.add_item(locked);
+		canvas_item hidden = make_item(400.0f, 60.0f, 40.0f, 40.0f,
+			canvas_shape::rectangle);
+		hidden.visible = false;
+		object_id d = canvas.add_item(hidden);
+		if (a == invalid_object || b == invalid_object ||
+			c == invalid_object || d == invalid_object ||
+			canvas.items().size() != 4 || changes == 0 ||
+			canvas.find_item(a) == nullptr || canvas.find_item(999) != nullptr)
+			return fail("v08 canvas model add");
+
+		canvas_item explicit_item = make_item(500.0f, 250.0f, 20.0f,
+			20.0f, canvas_shape::rectangle);
+		explicit_item.id = 50;
+		if (canvas.add_item(explicit_item) != 50 ||
+			canvas.add_item(explicit_item) != invalid_object ||
+			!canvas.remove_item(50) || canvas.find_item(50) != nullptr)
+			return fail("v08 canvas explicit id");
+
+		/* View transform round trip and zoom limits. */
+		canvas.set_view_state({ 10.0f, 20.0f, 2.0f });
+		canvas_point p = canvas.screen_to_canvas(20.0f, 40.0f);
+		if (!close_to(p.x, 20.0f) || !close_to(p.y, 40.0f))
+			return fail("v08 canvas screen to canvas");
+		p = canvas.canvas_to_screen(20.0f, 40.0f);
+		if (!close_to(p.x, 20.0f) || !close_to(p.y, 40.0f))
+			return fail("v08 canvas canvas to screen");
+		canvas.set_zoom_limits(0.5f, 3.0f);
+		canvas.set_view_state({ 0.0f, 0.0f, 100.0f });
+		if (!close_to(canvas.zoom(), 3.0f))
+			return fail("v08 canvas zoom clamp");
+		canvas.set_zoom_limits(0.05f, 20.0f);
+		canvas.reset_view();
+
+		/* Adaptive grid density keeps one cell inside the pixel range. */
+		canvas.set_grid_step(20.0f);
+		canvas.set_grid_pixel_range(12.0f, 96.0f);
+		if (!close_to(canvas.effective_grid_step(), 20.0f))
+			return fail("v08 canvas grid base");
+		canvas.set_view_state({ 0.0f, 0.0f, 0.1f });
+		if (!close_to(canvas.effective_grid_step(), 160.0f))
+			return fail("v08 canvas grid min density");
+		canvas.set_view_state({ 0.0f, 0.0f, 8.0f });
+		if (!close_to(canvas.effective_grid_step(), 10.0f))
+			return fail("v08 canvas grid max density");
+		canvas.reset_view();
+
+		/* Hit testing understands shapes, visibility, locking and draw order. */
+		if (canvas.hit_test(70.0f, 50.0f) != a ||
+			canvas.hit_test(200.0f, 80.0f) != b ||
+			canvas.hit_test(340.0f, 225.0f) != invalid_object ||
+			canvas.hit_test(420.0f, 80.0f) != invalid_object ||
+			canvas.hit_test(162.0f, 42.0f) != invalid_object)
+			return fail("v08 canvas hit test");
+
+		/* Click selection, Ctrl toggle, Shift append and empty click clear. */
+		click_at(70.0f, 50.0f);
+		if (!canvas.focused() || canvas.selection_ids().size() != 1 ||
+			canvas.selection_ids()[0] != a || canvas.primary_selection() != a ||
+			canvas.dragging())
+			return fail("v08 canvas click selection");
+
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(200.0f, 80.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (canvas.selection_ids().size() != 2 ||
+			!canvas.is_selected(a) || !canvas.is_selected(b))
+			return fail("v08 canvas ctrl selection");
+
+		vgui_input_key(ui, 0, 0, VGUI_MOD_CTRL);
+		click_at(200.0f, 80.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (canvas.selection_ids().size() != 1 ||
+			!canvas.is_selected(a))
+			return fail("v08 canvas ctrl toggle");
+
+		canvas.set_selection({ b });
+		vgui_input_key(ui, 0, 0, VGUI_MOD_SHIFT);
+		click_at(70.0f, 50.0f);
+		vgui_input_key(ui, 0, 0, 0);
+		if (canvas.selection_ids().size() != 2 ||
+			!canvas.is_selected(b) || canvas.primary_selection() != a)
+			return fail("v08 canvas shift append");
+
+		click_at(500.0f, 350.0f);
+		if (!canvas.selection_ids().empty() ||
+			canvas.primary_selection() != invalid_object)
+			return fail("v08 canvas empty click clears");
+
+		/* Marquee selects intersecting visible, unlocked items on release. */
+		move_to(10.0f, 10.0f);
+		down_at(10.0f, 10.0f);
+		move_to(200.0f, 130.0f);
+		if (canvas.gesture() != canvas_gesture::marquee)
+			return fail("v08 canvas marquee begins");
+		up_at(200.0f, 130.0f);
+		if (canvas.gesture() != canvas_gesture::none ||
+			canvas.selection_ids().size() != 2 ||
+			!canvas.is_selected(a) || !canvas.is_selected(b))
+			return fail("v08 canvas marquee selection");
+
+		/* Handles are content-local and stay stable under zoom. */
+		canvas.set_selection({ a });
+		move_to(70.0f, 20.0f);
+		if (canvas.hovered_handle() != canvas_handle::north)
+			return fail("v08 canvas hover handle");
+		move_to(300.0f, 350.0f);
+		if (canvas.hovered_handle() != canvas_handle::none)
+			return fail("v08 canvas leave handle");
+		if (canvas.handle_at(120.0f, 80.0f) != canvas_handle::south_east ||
+			canvas.handle_at(70.0f, 20.0f) != canvas_handle::north ||
+			canvas.handle_at(300.0f, 350.0f) != canvas_handle::none)
+			return fail("v08 canvas handle hit test");
+		canvas.set_view_state({ 0.0f, 0.0f, 2.0f });
+		if (canvas.handle_at(40.0f, 40.0f) != canvas_handle::north_west)
+			return fail("v08 canvas handle zoom");
+		canvas.reset_view();
+
+		/* Move gesture previews live, snaps the primary item and records one
+		 * command; undo/redo restore the full selection. */
+		snap_settings snap;
+		snap.translate_step = 10.0f;
+		snap.rotate_step_deg = 15.0f;
+		canvas.set_snap_settings(&snap);
+		canvas.set_selection({ a });
+		const std::size_t move_base = commands.undo_count();
+		move_to(70.0f, 50.0f);
+		down_at(70.0f, 50.0f);
+		if (canvas.gesture() != canvas_gesture::pending_move)
+			return fail("v08 canvas move pending");
+		move_to(93.0f, 66.0f);
+		if (canvas.gesture() != canvas_gesture::move ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas move snap preview");
+		up_at(93.0f, 66.0f);
+		if (canvas.dragging() || commands.undo_count() != move_base + 1 ||
+			std::string(commands.next_undo_name()) != "Move")
+			return fail("v08 canvas move command");
+		if (!commands.undo() ||
+			!close_rect(canvas.find_item(a)->bounds, 20.0f, 20.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas move undo");
+		if (!commands.redo() ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas move redo");
+
+		/* Disabling snapping falls back to free movement. */
+		snap.enabled = false;
+		move_to(90.0f, 70.0f);
+		down_at(90.0f, 70.0f);
+		move_to(103.0f, 79.0f);
+		if (!close_rect(canvas.find_item(a)->bounds, 53.0f, 49.0f, 100.0f,
+			60.0f))
+			return fail("v08 canvas move free");
+		up_at(103.0f, 79.0f);
+		if (!commands.undo() ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas move free undo");
+		snap.enabled = true;
+
+		/* Esc, synthetic cancel and focus loss restore the snapshot without
+		 * recording a command. */
+		const std::size_t cancel_base = commands.undo_count();
+		move_to(90.0f, 70.0f);
+		down_at(90.0f, 70.0f);
+		move_to(120.0f, 100.0f);
+		if (!close_rect(canvas.find_item(a)->bounds, 70.0f, 70.0f, 100.0f,
+			60.0f))
+			return fail("v08 canvas esc preview");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+		if (canvas.dragging() || commands.undo_count() != cancel_base ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas esc cancel");
+
+		move_to(90.0f, 70.0f);
+		down_at(90.0f, 70.0f);
+		move_to(110.0f, 90.0f);
+		vgui_input_cancel(ui);
+		if (canvas.dragging() || commands.undo_count() != cancel_base ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas synthetic cancel");
+
+		move_to(90.0f, 70.0f);
+		down_at(90.0f, 70.0f);
+		move_to(110.0f, 90.0f);
+		vgui_set_focus(ui, other);
+		if (canvas.dragging() || commands.undo_count() != cancel_base ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas focus cancel");
+
+		/* Resize through the south-east handle pushes one Resize command. */
+		canvas.request_focus();
+		canvas.set_selection({ a });
+		const std::size_t resize_base = commands.undo_count();
+		if (canvas.handle_at(140.0f, 100.0f) != canvas_handle::south_east)
+			return fail("v08 canvas resize handle");
+		move_to(140.0f, 100.0f);
+		down_at(140.0f, 100.0f);
+		if (canvas.gesture() != canvas_gesture::resize ||
+			canvas.active_handle() != canvas_handle::south_east)
+			return fail("v08 canvas resize begins");
+		move_to(160.0f, 121.0f);
+		if (!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 120.0f,
+			80.0f))
+			return fail("v08 canvas resize snap");
+		up_at(160.0f, 121.0f);
+		if (canvas.dragging() || commands.undo_count() != resize_base + 1 ||
+			std::string(commands.next_undo_name()) != "Resize")
+			return fail("v08 canvas resize command");
+		if (!commands.undo() ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f))
+			return fail("v08 canvas resize undo");
+
+		/* A rotated item's handles travel with the frame. */
+		canvas_item rotated = *canvas.find_item(a);
+		rotated.rotation = 1.57079632679f;
+		if (!canvas.update_item(rotated) ||
+			!close_rect(canvas.item_bounds(a), 60.0f, 20.0f, 60.0f, 100.0f) ||
+			canvas.handle_at(90.0f, 120.0f) != canvas_handle::east)
+			return fail("v08 canvas rotated handles");
+		rotated.rotation = 0.0f;
+		canvas.update_item(rotated);
+
+		/* Rotation handle snaps to 15 degrees, commits and undoes. */
+		const std::size_t rotate_base = commands.undo_count();
+		if (canvas.handle_at(90.0f, 14.0f) != canvas_handle::rotate)
+			return fail("v08 canvas rotate handle");
+		move_to(90.0f, 14.0f);
+		down_at(90.0f, 14.0f);
+		if (canvas.gesture() != canvas_gesture::rotate)
+			return fail("v08 canvas rotate begins");
+		move_to(146.0f, 70.0f);
+		if (!close_to(canvas.find_item(a)->rotation, 1.57079632679f))
+			return fail("v08 canvas rotate snap");
+		up_at(146.0f, 70.0f);
+		if (commands.undo_count() != rotate_base + 1 ||
+			std::string(commands.next_undo_name()) != "Rotate")
+			return fail("v08 canvas rotate command");
+		if (!commands.undo() ||
+			!close_to(canvas.find_item(a)->rotation, 0.0f))
+			return fail("v08 canvas rotate undo");
+
+		/* Multi-selection moves rigidly as one command. */
+		canvas.set_selection({ a, b });
+		if (!close_rect(canvas.selection_bounds(), 40.0f, 40.0f, 200.0f,
+			80.0f))
+			return fail("v08 canvas selection bounds");
+		const std::size_t multi_base = commands.undo_count();
+		move_to(90.0f, 70.0f);
+		down_at(90.0f, 70.0f);
+		move_to(110.0f, 90.0f);
+		if (!close_rect(canvas.find_item(a)->bounds, 60.0f, 60.0f, 100.0f,
+			60.0f) ||
+			!close_rect(canvas.find_item(b)->bounds, 180.0f, 60.0f, 80.0f,
+				80.0f))
+			return fail("v08 canvas multi move preview");
+		up_at(110.0f, 90.0f);
+		if (commands.undo_count() != multi_base + 1)
+			return fail("v08 canvas multi move command");
+		if (!commands.undo() ||
+			!close_rect(canvas.find_item(a)->bounds, 40.0f, 40.0f, 100.0f,
+				60.0f) ||
+			!close_rect(canvas.find_item(b)->bounds, 160.0f, 40.0f, 80.0f,
+				80.0f))
+			return fail("v08 canvas multi move undo");
+
+		/* Middle-button pan and wheel zoom keep the cursor anchor fixed. */
+		canvas.reset_view();
+		const canvas_view_state pan_before = canvas.view_state();
+		move_to(300.0f, 300.0f);
+		down_at(300.0f, 300.0f, 2);
+		if (canvas.gesture() != canvas_gesture::pan)
+			return fail("v08 canvas pan begins");
+		move_to(340.0f, 320.0f);
+		const canvas_view_state pan_after = canvas.view_state();
+		if (!close_to(pan_after.offset_x, pan_before.offset_x - 40.0f) ||
+			!close_to(pan_after.offset_y, pan_before.offset_y - 20.0f))
+			return fail("v08 canvas pan moves view");
+		up_at(340.0f, 320.0f, 2);
+		if (canvas.dragging())
+			return fail("v08 canvas pan ends");
+
+		canvas.reset_view();
+		move_to(250.0f, 150.0f);
+		const canvas_point anchor_before = canvas.screen_to_canvas(250.0f,
+			150.0f);
+		vgui_input_mouse_wheel(ui, 0.0f, 1.0f);
+		const canvas_point anchor_after = canvas.screen_to_canvas(250.0f,
+			150.0f);
+		if (!(canvas.zoom() > 1.0f) ||
+			!close_to(anchor_before.x, anchor_after.x) ||
+			!close_to(anchor_before.y, anchor_after.y))
+			return fail("v08 canvas wheel zoom");
+		canvas.reset_view();
+
+		/* Disabling the widget ignores input and cancels a live gesture. */
+		canvas.set_selection({ a });
+		canvas.set_enabled(false);
+		if (canvas.enabled())
+			return fail("v08 canvas disabled state");
+		click_at(200.0f, 80.0f);
+		if (canvas.selection_ids().size() != 1 || !canvas.is_selected(a))
+			return fail("v08 canvas disabled ignores clicks");
+		canvas.set_enabled(true);
+
+		/* Selection listener mirrors the canvas selection set. */
+		std::vector<object_id> notified;
+		int selection_events = 0;
+		canvas.set_selection_listener([&](const std::vector<object_id>& ids) {
+			notified = ids;
+			++selection_events;
+		});
+		canvas.set_selection({ b });
+		if (selection_events != 1 || notified.size() != 1 ||
+			notified[0] != b)
+			return fail("v08 canvas selection listener");
+		canvas.set_selection_listener(nullptr);
+
+		/* Removing a selected item prunes the selection. */
+		if (!canvas.remove_item(b) || canvas.is_selected(b) ||
+			canvas.find_item(b) != nullptr)
+			return fail("v08 canvas remove selected");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 /* A07: console model, filtering, stack folding, jump locations and producers. */
 static int test_console_view()
 {
@@ -9922,6 +10340,8 @@ int main()
 		return rc;
 	if (int rc = test_snap_settings())
 		return rc;
+	if (int rc = test_canvas_view())
+		return rc;
 	if (int rc = test_console_view())
 		return rc;
 
@@ -10091,12 +10511,14 @@ int main()
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 2)
+		if (vgui_tab_get_count(shell.bottom_tabs()) != 3)
 			return fail("shell bottom tab count");
 		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
 		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
+		vgui_item_id canvas_tab = vgui_tab_get_at(shell.bottom_tabs(), 2);
 		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE")
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
+			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS")
 			return fail("shell bottom tab titles");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
 			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
@@ -10121,8 +10543,21 @@ int main()
 			shell.console().visible_text().find("shell log line") ==
 				std::string::npos)
 			return fail("shell console append");
+
+		/* V08: the CANVAS tab hosts a standalone canvas_view; the command
+		 * reveals the bottom panel and focuses it. */
+		if (!shell.canvas().built() || !shell.canvas().widget() ||
+			find_widget(shell.widget(), "canvas_view", VGUI_CUSTOM) == nullptr)
+			return fail("shell canvas built");
+		if (!shell.commands().has("view.canvas") ||
+			!shell.run_command("view.canvas") ||
+			vgui_tab_get_active(shell.bottom_tabs()) != canvas_tab ||
+			!shell.panel_visible(editor_panel::bottom) ||
+			!shell.commands().is_checked("view.canvas") ||
+			!shell.canvas().focused())
+			return fail("shell canvas command");
 		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after console");
+			return fail("shell assets tab after canvas");
 
 		vgui_item_id scene_root = shell.scene().add_node("Scene");
 		vgui_item_id cube = shell.scene().add_node("Cube", scene_root, 42);

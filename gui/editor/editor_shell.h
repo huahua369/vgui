@@ -6,7 +6,7 @@
  * the bottom panel are dock panels with stable ids, so hosts and users can
  * move them between the left/right/bottom/centre zones, merge them into tab
  * groups, float them and restore the arrangement after a restart.  The bottom
- * panel keeps its ASSETS / CONSOLE TabView.
+ * panel keeps its ASSETS / CONSOLE / CANVAS TabView.
  */
 #include <memory>
 #include <string>
@@ -15,6 +15,7 @@
 #include "asset_browser.h"
 #include "asset_preview.h"
 #include "breadcrumb.h"
+#include "canvas_view.h"
 #include "command_registry.h"
 #include "console_view.h"
 #include "editor_context.h"
@@ -84,7 +85,7 @@ namespace vgui_editor_kit {
 		vgui_widget* workspace_splitter() const noexcept;
 		vgui_widget* center_splitter() const noexcept;
 
-		/* The ASSETS / CONSOLE TabView inside the bottom dock panel. */
+		/* The ASSETS / CONSOLE / CANVAS TabView inside the bottom dock panel. */
 		vgui_widget* bottom_tabs() const noexcept;
 
 		/* A07: the log console hosted by the CONSOLE tab.  Hosts append from
@@ -92,6 +93,11 @@ namespace vgui_editor_kit {
 		 * tick()/poll() if the console is not being drawn. */
 		console_view& console() noexcept;
 		const console_view& console() const noexcept;
+
+		/* V08: standalone 2D canvas hosted by the CANVAS tab.  The shell wires
+		 * its snapping policy and command stack; hosts own the item model. */
+		canvas_view& canvas() noexcept;
+		const canvas_view& canvas() const noexcept;
 
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
@@ -181,6 +187,7 @@ namespace vgui_editor_kit {
 		vgui_item_id bottom_item_ = 0;
 		vgui_widget* bottom_tabs_ = nullptr;
 		vgui_item_id console_tab_ = 0;
+		vgui_item_id canvas_tab_ = 0;
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
@@ -204,6 +211,7 @@ namespace vgui_editor_kit {
 		search_box search_;
 		breadcrumb path_;
 		console_view console_;
+		canvas_view canvas_;
 	};
 
 } /* namespace vgui_editor_kit */

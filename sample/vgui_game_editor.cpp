@@ -194,6 +194,9 @@ struct editor_state
 	camera_vec3 drop_preview_position{};
 	std::string drop_preview_asset;
 	std::string drop_preview_type;
+	/* V08: the canvas uses a fixed 20-unit grid, independent of the 3D
+	 * viewport's camera-dependent snap cell. */
+	snap_settings canvas_snap;
 
 	bool valid_selection() const
 	{
@@ -2465,7 +2468,57 @@ static void setup_editor(vgui_context* ui)
 	console.append(std::move(failure));
 	console.poll();
 
-	g.shell->set_status("V03: LMB pick / drag box, Ctrl toggle, Shift add, Esc cancel");
+	/* ---- V08: 独立 2D Canvas:UI 场景示例 ---------------------------------
+	 * 画布拥有自己的轻量 item 模型;宿主只提供展示数据并把命令栈交给 shell。
+	 * 拖动/缩放/旋转各提交一条命令,可直接用 Edit > Undo/Redo 验证。 */
+	canvas_view& canvas = g.shell->canvas();
+	g.canvas_snap.translate_step = 20.0f;
+	g.canvas_snap.rotate_step_deg = 15.0f;
+	canvas.set_snap_settings(&g.canvas_snap);
+	canvas.set_grid_step(20.0f);
+	canvas.set_zoom_limits(0.25f, 6.0f);
+	canvas.reset_view();
+	auto add_canvas_item = [&canvas](float x, float y, float w, float h,
+		canvas_shape shape, vgui_color fill, vgui_color border,
+		const char* label, float radius) {
+		canvas_item item;
+		item.bounds = { x, y, w, h };
+		item.shape = shape;
+		item.fill = fill;
+		item.border = border;
+		item.label = label;
+		item.corner_radius = radius;
+		return canvas.add_item(std::move(item));
+	};
+	const object_id canvas_backdrop = add_canvas_item(10.0f, 10.0f, 400.0f,
+		290.0f, canvas_shape::rectangle, 0xFF141C26, 0xFF2E4054, "", 6.0f);
+	canvas_item backdrop = *canvas.find_item(canvas_backdrop);
+	backdrop.locked = true;
+	canvas.update_item(backdrop);
+	const object_id canvas_panel = add_canvas_item(40.0f, 40.0f, 220.0f,
+		130.0f, canvas_shape::rectangle, 0xFF1E2A3A, 0xFF4A6A92,
+		"Scene Panel", 10.0f);
+	add_canvas_item(70.0f, 200.0f, 140.0f, 44.0f, canvas_shape::rectangle,
+		0xFF2D6CDF, 0xFF6EA8FF, "Play", 8.0f);
+	add_canvas_item(320.0f, 60.0f, 90.0f, 90.0f, canvas_shape::ellipse,
+		0xFF3A2E5A, 0xFF9A7BE0, "Avatar", 0.0f);
+	add_canvas_item(330.0f, 210.0f, 90.0f, 70.0f, canvas_shape::diamond,
+		0xFF4A3A20, 0xFFD9A441, "Badge", 0.0f);
+
+	canvas.set_selection_listener([](const std::vector<object_id>& ids) {
+		if (!g.shell)
+			return;
+		if (ids.empty())
+			g.shell->set_status("canvas: click an item or drag a marquee");
+		else if (ids.size() == 1)
+			g.shell->set_status("canvas: drag to move / handles resize / circle rotates");
+		else
+			g.shell->set_status("canvas: " + std::to_string(ids.size()) +
+				" items selected");
+	});
+	canvas.set_selection({ canvas_panel });
+
+	g.shell->set_status("V08: CANVAS tab drag/resize/rotate; V03 viewport: LMB pick / box / Esc");
 }
 
 int main()
