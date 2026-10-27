@@ -438,7 +438,7 @@ namespace vgui_editor_kit {
 		bool show_line_numbers_ = true;
 		int tab_size_ = 4;
 		float font_size_ = 13.0f;
-
+		int caret_width = 1;
 		code_position caret_{};
 		code_position anchor_{};
 		float scroll_x_ = 0.0f;

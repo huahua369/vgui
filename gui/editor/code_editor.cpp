@@ -416,17 +416,17 @@ namespace vgui_editor_kit {
 		int pos = 0;
 
 		auto find_from = [&](const char* needle, int from) -> int
-		{
-			const std::size_t found = text.find(needle, (std::size_t)from);
-			return found == std::string::npos ? -1 : (int)found;
-		};
+			{
+				const std::size_t found = text.find(needle, (std::size_t)from);
+				return found == std::string::npos ? -1 : (int)found;
+			};
 
 		auto starts_with = [&](int at, const char* value) -> bool
-		{
-			const std::size_t n = std::strlen(value);
-			return at >= 0 && (std::size_t)at + n <= text.size() &&
-				text.compare((std::size_t)at, n, value) == 0;
-		};
+			{
+				const std::size_t n = std::strlen(value);
+				return at >= 0 && (std::size_t)at + n <= text.size() &&
+					text.compare((std::size_t)at, n, value) == 0;
+			};
 
 		while (state != lex_none && pos < length)
 		{
@@ -901,8 +901,7 @@ namespace vgui_editor_kit {
 			: owner_(owner), start_(start), removed_(std::move(removed)),
 			inserted_(std::move(inserted)), merge_serial_(merge_serial),
 			name_(std::move(name))
-		{
-		}
+		{}
 
 		const char* name() const noexcept override
 		{
@@ -945,7 +944,7 @@ namespace vgui_editor_kit {
 			/* Backspace: the new deletion precedes the old one. */
 			if (inserted_.empty() && other->inserted_.empty() &&
 				other->start_.column + (int)other->removed_.size() ==
-					start_.column)
+				start_.column)
 			{
 				start_.column = other->start_.column;
 				removed_ = other->removed_ + removed_;
@@ -1050,13 +1049,13 @@ namespace vgui_editor_kit {
 		vgui_widget_set_grow(search_.widget(), 1.0f);
 		vgui_widget_set_min_size(search_.widget(), 100, 24);
 		search_.set_on_change([this](const std::string& text)
-		{
-			on_find_changed(text, this);
-		});
+			{
+				on_find_changed(text, this);
+			});
 		search_.set_on_submit([this](const std::string& text)
-		{
-			on_find_submit(text, this);
-		});
+			{
+				on_find_submit(text, this);
+			});
 
 		replace_edit_ = vgui_widget_add(find_bar_, VGUI_EDIT, nullptr);
 		vgui_widget_set_id(replace_edit_, "code_editor_replace");
@@ -1407,7 +1406,7 @@ namespace vgui_editor_kit {
 		const int index = static_cast<int>(kind);
 		if (!valid_token_kind(index) || !token_colors_[index])
 			return valid_token_kind(index) ? kDefaultTokenColors[index] :
-				kDefaultTokenColors[0];
+			kDefaultTokenColors[0];
 		return token_colors_[index];
 	}
 
@@ -1706,7 +1705,7 @@ namespace vgui_editor_kit {
 				if (last.start.line == start.line && last.removed.empty() &&
 					change.removed.empty() &&
 					last.start.column + (int)last.inserted.size() ==
-						start.column)
+					start.column)
 				{
 					last.inserted += change.inserted;
 					merged = true;
@@ -1714,7 +1713,7 @@ namespace vgui_editor_kit {
 				else if (last.start.line == start.line && last.inserted.empty() &&
 					change.inserted.empty() &&
 					start.column + (int)change.removed.size() ==
-						last.start.column)
+					last.start.column)
 				{
 					last.start.column = start.column;
 					last.removed = change.removed + last.removed;
@@ -2144,9 +2143,9 @@ namespace vgui_editor_kit {
 		if (column >= (int)text.size())
 			column = retreat_column(text, (int)text.size());
 		auto word_char = [](unsigned char c)
-		{
-			return std::isalnum(c) || c == '_' || c >= 0x80;
-		};
+			{
+				return std::isalnum(c) || c == '_' || c >= 0x80;
+			};
 		if (!word_char((unsigned char)text[(std::size_t)column]))
 		{
 			const int end = advance_column(text, column);
@@ -3721,21 +3720,21 @@ namespace vgui_editor_kit {
 			const std::vector<code_span>& spans = self->line_spans(line);
 
 			auto draw_run = [&](int start, int end, vgui_color color)
-			{
-				if (end <= start)
-					return;
-				const std::string text = self->display_segment(line, start, end);
-				if (text.empty())
-					return;
-				const float x = g.text_x +
-					self->x_for_column(line, start) - self->scroll_x_;
-				if (x >= g.text_x + g.text_width)
-					return;
-				const float width = std::max(1.0f,
-					g.text_x + g.text_width - x);
-				vgui_custom_draw_text(self->editor_, cb, vg, text.c_str(),
-					x, y, width, line_height, color, 0.0f, 0.0f);
-			};
+				{
+					if (end <= start)
+						return;
+					const std::string text = self->display_segment(line, start, end);
+					if (text.empty())
+						return;
+					const float x = g.text_x +
+						self->x_for_column(line, start) - self->scroll_x_;
+					if (x >= g.text_x + g.text_width)
+						return;
+					const float width = std::max(1.0f,
+						g.text_x + g.text_width - x);
+					vgui_custom_draw_text(self->editor_, cb, vg, text.c_str(),
+						x, y, width, line_height, color, 0.0f, 0.0f);
+				};
 
 			int cursor = 0;
 			for (const code_span& span : spans)
@@ -3840,8 +3839,7 @@ namespace vgui_editor_kit {
 					x <= g.text_x + g.text_width + 1.0f &&
 					y + line_height > g.y && y < g.y + g.text_height)
 				{
-					ovg_tools::fill_rect(cb, vg, x, y, 1.5f,
-						line_height, to_ovg(theme.text));
+					ovg_tools::fill_rect(cb, vg, x, y, self->caret_width, line_height, to_ovg(theme.text));
 				}
 			}
 		}
@@ -3872,7 +3870,7 @@ namespace vgui_editor_kit {
 		root["tab_size"] = state.tab_size;
 		root["caret"] = { { "line", state.caret.line },
 			{ "column", state.caret.column } };
-		root["scroll"] = { { "x", state.scroll_x }, { "y", state.scroll_y } };
+		root["scroll"] = { { "x", state.scroll_x },{ "y", state.scroll_y } };
 		return root.dump();
 	}
 
