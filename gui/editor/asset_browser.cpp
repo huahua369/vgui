@@ -3121,7 +3121,12 @@ namespace vgui_editor_kit {
 		if (top < scroll)
 			scroll = top;
 		else if (bottom > scroll + view_h)
-			scroll = bottom - view_h;
+		{
+			// A cell taller than the viewport can never be fully visible;
+			// aligning to its bottom would hide the top edge, so pin it to
+			// the top instead (also avoids scrolling on initial selection).
+			scroll = metrics.cell_h >= view_h ? top : bottom - view_h;
+		}
 		scroll = std::max(0.0f, scroll);
 		vgui_panel_set_scroll(scroll_, 0.0f, scroll);
 	}

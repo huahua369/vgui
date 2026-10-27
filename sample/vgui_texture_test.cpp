@@ -281,6 +281,24 @@ int main()
 	add_image(ui, cpu_quad, 448, 0, 32, 32);
 	add_image(ui, cpu_empty, 448, 32, 32, 32);
 
+	// Regression: a CPU texture larger than its parent panel must be clipped
+	// by the panel.  The CPU path goes through ovg::add_image, which used to
+	// ignore the active clip and let thumbnails escape scroll viewports.
+	vgui_widget* clip_panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(clip_panel, 384, 32);
+	vgui_widget_set_size(clip_panel, 48, 32);
+	vgui_widget_set_padding(clip_panel, 0, 0, 0, 0);
+	vgui_widget_set_background(clip_panel, 0);
+	vgui_widget_set_border(clip_panel, 0, 0);
+	vgui_widget* clip_cpu = vgui_widget_add(clip_panel, VGUI_IMAGE, nullptr);
+	vgui_widget_set_pos(clip_cpu, 0, -16);
+	vgui_widget_set_size(clip_cpu, 64, 64);
+	vgui_widget_set_background(clip_cpu, 0);
+	vgui_widget_set_border(clip_cpu, 0, 0);
+	vgui_image_set_fit(clip_cpu, VGUI_IMAGE_FIT_STRETCH);
+	vgui_image_set_pixel_snap(clip_cpu, 1);
+	vgui_image_set_texture(clip_cpu, cpu_quad);
+
 	vgui_update(ui, 0.0f);
 	vgui_layout(ui);
 	if (!render_vgui(t, ui))
@@ -311,6 +329,15 @@ int main()
 	expect_pixel(t, 452, 28, blue, "cpu first frame bl");
 	expect_pixel(t, 476, 28, yellow, "cpu first frame br");
 	expect_pixel(t, 460, 48, clear, "cpu empty skipped");
+
+	// CPU texture clipped by the 48x32 parent panel.
+	expect_pixel(t, 388, 36, red, "cpu parent clip tl");
+	expect_pixel(t, 424, 36, green, "cpu parent clip tr");
+	expect_pixel(t, 388, 52, blue, "cpu parent clip bl");
+	expect_pixel(t, 424, 52, yellow, "cpu parent clip br");
+	expect_pixel(t, 436, 36, clear, "cpu parent clip right");
+	expect_pixel(t, 388, 28, clear, "cpu parent clip above");
+	expect_pixel(t, 388, 68, clear, "cpu parent clip below");
 
 	// Rotation: source TL/TR/BL/BR -> screen BL/TL/BR/TR (90° clockwise).
 	expect_pixel(t, 16, 144, blue, "rotation top-left");

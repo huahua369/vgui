@@ -113,7 +113,7 @@ const float shear[6] = { 1, 0, 0.25f, 1, 0, 0 };
 vgui_image_set_matrix(image, shear);              /* NULL 清除 */
 ```
 
-变换顺序固定为 **flip → rotation → matrix**，在 source/fit/pixel snap 之后应用。九宫格源边宽按源区域收缩、目标过小时按比例压缩；矩阵为 `{xx,yx,xy,yy,tx,ty}`（`x' = xx*x + xy*y + tx`，`y' = yx*x + yy*y + ty`），与旋转共享枢轴。`sample/vgui_texture_test.cpp` 的 72 项离屏回读断言覆盖原生/CPU 首帧绘制、九宫格、旋转、自定义旋转中心、矩阵及与 source/flip/update 的组合。
+变换顺序固定为 **flip → rotation → matrix**，在 source/fit/pixel snap 之后应用。九宫格源边宽按源区域收缩、目标过小时按比例压缩；矩阵为 `{xx,yx,xy,yy,tx,ty}`（`x' = xx*x + xy*y + tx`，`y' = yx*x + yy*y + ty`），与旋转共享枢轴。`sample/vgui_texture_test.cpp` 的 79 项离屏回读断言覆盖原生/CPU 首帧绘制、九宫格、旋转、自定义旋转中心、矩阵及与 source/flip/update 的组合，并包含 CPU 图片的父级裁剪回归。
 
 fit 语义：
 
@@ -176,7 +176,7 @@ bool vgpu_texture_update_native(vgpu_ctx_t*, ovg_texture_t*,
 void vgpu_texture_fini_native(vgpu_ctx_t*, ovg_texture_t*);
 ```
 
-`vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时优先走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip、九宫格、旋转、矩阵和当前 clip 都由 OVG 统一处理。CPU 纹理在提交阶段才获得 OVG image id，vgui 用生成的四边形/九宫格几何（`add_geometry`）实现相同的变换语义，两条路径由 `vgui_texture_test` 逐像素对齐验证。
+`vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时优先走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip、九宫格、旋转、矩阵和当前 clip 都由 OVG 统一处理。CPU 纹理在提交阶段才获得 OVG image id，普通绘制走 `add_image`（同样应用当前 clip），变换/九宫格用生成的四边形/九宫格几何（`add_geometry`）实现相同的变换语义，两条路径由 `vgui_texture_test` 逐像素对齐验证，并包含 CPU 图片被父级面板裁剪的回归用例。
 
 ## 兼容性
 
