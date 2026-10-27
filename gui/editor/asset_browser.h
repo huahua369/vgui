@@ -210,7 +210,9 @@ namespace vgui_editor_kit {
 		 * row rect; in grid mode it is the cell rect. */
 		bool item_rect(int index, float* x, float* y, float* width, float* height) const;
 
-		/* Recomputes grid metrics and invalidates virtual row data. */
+		/* Recomputes grid metrics and signals the virtual row source.  Existing
+		 * row widgets, selection and cached thumbnails are reused (E02); only
+		 * the visible range requests missing thumbnails. */
 		void refresh();
 
 		vgui_item_id selected() const noexcept;

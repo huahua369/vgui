@@ -978,9 +978,17 @@ namespace vgui_editor_kit {
 		if (!dock_)
 			return;
 
-		layout.dock_left_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_LEFT);
-		layout.dock_right_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_RIGHT);
-		layout.dock_bottom_size = vgui_dock_get_zone_size(dock_, VGUI_DOCK_BOTTOM);
+		/* E01: layout files are DPI independent.  Dock getters report effective
+		 * pixels, so store logical values and let set_zone_size() scale them on
+		 * restore. */
+		const float scale = context_.ui()
+			? std::max(0.01f, vgui_context_get_ui_scale(context_.ui())) : 1.0f;
+		layout.dock_left_size =
+			vgui_dock_get_zone_size(dock_, VGUI_DOCK_LEFT) / scale;
+		layout.dock_right_size =
+			vgui_dock_get_zone_size(dock_, VGUI_DOCK_RIGHT) / scale;
+		layout.dock_bottom_size =
+			vgui_dock_get_zone_size(dock_, VGUI_DOCK_BOTTOM) / scale;
 		layout.dock_panels.clear();
 		layout.dock_active = {};
 
@@ -1026,10 +1034,10 @@ namespace vgui_editor_kit {
 			if (vgui_dock_get_floating_rect(dock_, item, &x, &y, &width, &height))
 			{
 				panel.has_floating_rect = width > 0.0f && height > 0.0f;
-				panel.x = x;
-				panel.y = y;
-				panel.width = width;
-				panel.height = height;
+				panel.x = x / scale;
+				panel.y = y / scale;
+				panel.width = width / scale;
+				panel.height = height / scale;
 			}
 			layout.dock_panels.push_back(std::move(panel));
 		}
@@ -1065,10 +1073,12 @@ namespace vgui_editor_kit {
 		vgui_widget_get_rect(dock_, &dx, &dy, &dw, &dh);
 		(void)dx;
 		(void)dy;
+		const float layout_scale = context_.ui()
+			? std::max(0.01f, vgui_context_get_ui_scale(context_.ui())) : 1.0f;
 		if (dw > 0.0f)
 		{
-			const float left = std::max(0.0f, layout.dock_left_size);
-			const float right = std::max(0.0f, layout.dock_right_size);
+			const float left = std::max(0.0f, layout.dock_left_size) * layout_scale;
+			const float right = std::max(0.0f, layout.dock_right_size) * layout_scale;
 			const float center = std::max(0.0f, dw - left - right);
 			layout.workspace_ratio = std::clamp(left / dw, 0.0f, 1.0f);
 			if (center + right > 0.0f)
@@ -1076,7 +1086,7 @@ namespace vgui_editor_kit {
 		}
 		if (dh > 0.0f)
 		{
-			const float bottom = std::max(0.0f, layout.dock_bottom_size);
+			const float bottom = std::max(0.0f, layout.dock_bottom_size) * layout_scale;
 			layout.body_ratio = std::clamp((dh - bottom) / dh, 0.0f, 1.0f);
 		}
 		return layout;
@@ -1157,17 +1167,23 @@ namespace vgui_editor_kit {
 			if (dh <= 0.0f) dh = (float)ch;
 		}
 
-		if (dw > 0.0f)
+		/* Ratios are applied in logical units so legacy layouts keep the same
+		 * proportions on every DPI. */
+		const float scale = context_.ui()
+			? std::max(0.01f, vgui_context_get_ui_scale(context_.ui())) : 1.0f;
+		const float logical_w = dw / scale;
+		const float logical_h = dh / scale;
+		if (logical_w > 0.0f)
 		{
-			const float left = std::clamp(layout.workspace_ratio, 0.05f, 0.60f) * dw;
+			const float left = std::clamp(layout.workspace_ratio, 0.05f, 0.60f) * logical_w;
 			const float right = (1.0f - std::clamp(layout.center_ratio, 0.10f, 0.90f))
-				* std::max(0.0f, dw - left);
+				* std::max(0.0f, logical_w - left);
 			vgui_dock_set_zone_size(dock_, VGUI_DOCK_LEFT, left);
 			vgui_dock_set_zone_size(dock_, VGUI_DOCK_RIGHT, right);
 		}
-		if (dh > 0.0f)
+		if (logical_h > 0.0f)
 		{
-			const float bottom = (1.0f - std::clamp(layout.body_ratio, 0.20f, 0.90f)) * dh;
+			const float bottom = (1.0f - std::clamp(layout.body_ratio, 0.20f, 0.90f)) * logical_h;
 			vgui_dock_set_zone_size(dock_, VGUI_DOCK_BOTTOM, bottom);
 		}
 	}

@@ -155,6 +155,15 @@ namespace vgui_editor_kit {
 		bool set_row_value(std::size_t index, std::string value);
 
 		bool add_property(property_desc desc);
+		/* E02: applies a complete property set in one pass.  Rows whose id and
+		 * type are unchanged keep their widgets and tokens; their descriptor,
+		 * value, label, vector metadata and mixed state are refreshed in
+		 * place.  New ids are appended, stale ids are released, and the row
+		 * order follows the incoming list.  Returns the number of rows that
+		 * had to be added, removed or rebuilt (0 means a pure in-place
+		 * refresh, as when the editor selection moves between objects with the
+		 * same schema).  Invalid/duplicate descriptors are skipped. */
+		std::size_t set_properties(std::vector<property_desc> properties);
 		bool remove_property(const std::string& id);
 		bool has_property(const std::string& id) const;
 
@@ -357,6 +366,12 @@ namespace vgui_editor_kit {
 			float height = 0.0f;
 			float offset = 0.0f;		// top offset inside the content panel
 		};
+
+		/* Validates/normalizes a descriptor (id/label/category defaults, type
+		 * rules, ranges) so add_property() and set_properties() share the same
+		 * acceptance rules.  Returns false when the descriptor is invalid. */
+		bool prepare_desc(property_desc& desc);
+		void refresh_row_desc(row& item);
 
 		row* find_row(const std::string& id);
 		const row* find_row(const std::string& id) const;

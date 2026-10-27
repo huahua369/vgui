@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -544,7 +545,8 @@ namespace vgui_editor_kit {
 			const canvas_point screen = canvas_to_screen(canvas.x, canvas.y);
 			return std::hypot(screen.x - content_x, screen.y - content_y);
 		};
-		const float tolerance = handle_tolerance_ + handle_size_ * 0.5f;
+		const float tolerance = (handle_tolerance_ +
+			handle_size_ * 0.5f) * ui_scale();
 		if (distance_to(rotate_handle_point(*item)) <= tolerance)
 			return canvas_handle::rotate;
 		for (int i = 0; i < 8; ++i)
@@ -641,15 +643,21 @@ namespace vgui_editor_kit {
 		}
 		float wx = 0.0f, wy = 0.0f, ww = 0.0f, wh = 0.0f;
 		vgui_widget_get_rect(widget_, &wx, &wy, &ww, &wh);
+		const float border = kBorderInset * ui_scale();
 		if (offset_x)
-			*offset_x = kBorderInset;
+			*offset_x = border;
 		if (offset_y)
-			*offset_y = kBorderInset;
+			*offset_y = border;
 		if (width)
-			*width = std::max(0.0f, ww - kBorderInset * 2.0f);
+			*width = std::max(0.0f, ww - border * 2.0f);
 		if (height)
-			*height = std::max(0.0f, wh - kBorderInset * 2.0f);
-		return ww > kBorderInset * 2.0f && wh > kBorderInset * 2.0f;
+			*height = std::max(0.0f, wh - border * 2.0f);
+		return ww > border * 2.0f && wh > border * 2.0f;
+	}
+
+	float canvas_view::ui_scale() const
+	{
+		return ui_scale_of(widget_);
 	}
 
 	float canvas_view::effective_threshold() const
@@ -731,7 +739,8 @@ namespace vgui_editor_kit {
 	{
 		const float zoom = view_.zoom > 0.0f ? view_.zoom : 1.0f;
 		return item_point(item, 0.0f,
-			-item.bounds.height * 0.5f - rotate_handle_distance_ / zoom);
+			-item.bounds.height * 0.5f -
+			rotate_handle_distance_ * ui_scale() / zoom);
 	}
 
 	bool canvas_view::item_contains(const canvas_item& item,
@@ -1407,9 +1416,9 @@ namespace vgui_editor_kit {
 		auto* self = static_cast<canvas_view*>(user);
 		if (!self || !widget || !cb || !vg)
 			return;
-		self->draw(cb, vg, widget, abs_x + kBorderInset,
-			abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
-			abs_h - kBorderInset * 2.0f, delta_time);
+		const float border = kBorderInset * self->ui_scale();
+		self->draw(cb, vg, widget, abs_x + border, abs_y + border,
+			abs_w - border * 2.0f, abs_h - border * 2.0f, delta_time);
 	}
 
 	void canvas_view::draw(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,
@@ -1444,7 +1453,8 @@ namespace vgui_editor_kit {
 
 		if (gesture_ == canvas_gesture::marquee)
 		{
-			marquee_offset_ += std::max(0.0f, delta_time) * 24.0f;
+			marquee_offset_ += std::max(0.0f, delta_time) * 24.0f *
+				ui_scale();
 			ovg_tools::marquee(cb, vg, x + press_x_, y + press_y_,
 				x + marquee_x_, y + marquee_y_,
 				to_ovg(hover_color), 1.0f, marquee_offset_);
@@ -1577,6 +1587,7 @@ namespace vgui_editor_kit {
 		if (selection_.empty())
 			return;
 
+		const float scale = ui_scale();
 		for (object_id id : selection_)
 		{
 			const canvas_item* item = find_item(id);
@@ -1599,10 +1610,10 @@ namespace vgui_editor_kit {
 					canvas.y);
 				points[i] = { x + screen.x, y + screen.y };
 			}
-			ovg_tools::stroke_polyline(cb, vg, points, 4, 0xA0000000u, 3.0f,
-				VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
-			ovg_tools::stroke_polyline(cb, vg, points, 4, color, 1.5f,
-				VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
+			ovg_tools::stroke_polyline(cb, vg, points, 4, 0xA0000000u,
+				3.0f * scale, VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
+			ovg_tools::stroke_polyline(cb, vg, points, 4, color,
+				1.5f * scale, VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
 		}
 
 		if (selection_.size() != 1)
@@ -1614,7 +1625,7 @@ namespace vgui_editor_kit {
 				const canvas_point b = canvas_to_screen(bounds.right(),
 					bounds.bottom());
 				ovg_tools::marquee(cb, vg, x + a.x, y + a.y, x + b.x,
-					y + b.y, accent, 1.0f, marquee_offset_);
+					y + b.y, accent, 1.0f * scale, marquee_offset_);
 			}
 			return;
 		}
@@ -1630,7 +1641,8 @@ namespace vgui_editor_kit {
 			const canvas_point screen = canvas_to_screen(canvas.x, canvas.y);
 			const bool hot = handle == hovered_handle_ ||
 				handle == active_handle_;
-			const float size = hot ? handle_size_ + 2.0f : handle_size_;
+			const float size = (hot ? handle_size_ + 2.0f : handle_size_) *
+				scale;
 			ovg_tools::selection_handle(cb, vg, x + screen.x, y + screen.y,
 				size, hot ? color : 0xFFF2F6FCu, color);
 		}
@@ -1642,17 +1654,17 @@ namespace vgui_editor_kit {
 		const canvas_point handle_screen = canvas_to_screen(handle.x,
 			handle.y);
 		ovg_tools::line(cb, vg, x + top_screen.x, y + top_screen.y,
-			x + handle_screen.x, y + handle_screen.y, 0xA0000000u, 3.0f,
-			VG_LINE_CAP_ROUND);
+			x + handle_screen.x, y + handle_screen.y, 0xA0000000u,
+			3.0f * scale, VG_LINE_CAP_ROUND);
 		ovg_tools::line(cb, vg, x + top_screen.x, y + top_screen.y,
-			x + handle_screen.x, y + handle_screen.y, color, 1.5f,
-			VG_LINE_CAP_ROUND);
-		const float radius = hovered_handle_ == canvas_handle::rotate ||
-			active_handle_ == canvas_handle::rotate ? 5.0f : 4.0f;
+			x + handle_screen.x, y + handle_screen.y, color,
+			1.5f * scale, VG_LINE_CAP_ROUND);
+		const float radius = (hovered_handle_ == canvas_handle::rotate ||
+			active_handle_ == canvas_handle::rotate ? 5.0f : 4.0f) * scale;
 		ovg_tools::fill_circle(cb, vg, x + handle_screen.x,
 			y + handle_screen.y, radius, 0xFF141820u);
 		ovg_tools::stroke_circle(cb, vg, x + handle_screen.x,
-			y + handle_screen.y, radius, color, 1.5f);
+			y + handle_screen.y, radius, color, 1.5f * scale);
 	}
 
 } /* namespace vgui_editor_kit */

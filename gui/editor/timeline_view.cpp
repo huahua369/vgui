@@ -1,6 +1,7 @@
 #include "timeline_view.h"
 
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1318,15 +1319,17 @@ namespace vgui_editor_kit {
 		metrics m;
 		float width = 0.0f, height = 0.0f;
 		content_geometry(nullptr, nullptr, &width, &height);
+		const float scale = ui_scale();
 		m.width = width;
 		m.height = height;
 		m.transport_y = 0.0f;
-		m.transport_height = std::min(kTransportHeight,
+		m.transport_height = std::min(kTransportHeight * scale,
 			std::max(0.0f, height));
 		m.ruler_y = m.transport_height;
-		m.ruler_height = std::min(kRulerHeight,
+		m.ruler_height = std::min(kRulerHeight * scale,
 			std::max(0.0f, height - m.ruler_y));
-		m.header_width = std::clamp(width * 0.28f, 92.0f, kHeaderWidth);
+		m.header_width = std::clamp(width * 0.28f, 92.0f * scale,
+			kHeaderWidth * scale);
 		m.lanes_x = m.header_width;
 		m.lanes_y = m.ruler_y + m.ruler_height;
 		m.lanes_width = std::max(0.0f, width - m.lanes_x);
@@ -1338,7 +1341,9 @@ namespace vgui_editor_kit {
 	{
 		if (index >= tracks_.size())
 			return 0.0f;
-		return clamp_track_height(tracks_[index].height);
+		/* Track height is a logical model value; scroll positions stay in
+		 * effective pixels like the table view. */
+		return clamp_track_height(tracks_[index].height) * ui_scale();
 	}
 
 	float timeline_view::total_track_height() const
@@ -1403,6 +1408,7 @@ namespace vgui_editor_kit {
 		float* width, float* height) const
 	{
 		const metrics m = layout_metrics();
+		const float hit = kKeyframeHit * ui_scale();
 		for (std::size_t i = 0; i < tracks_.size(); ++i)
 		{
 			const timeline_track& track = tracks_[i];
@@ -1413,13 +1419,13 @@ namespace vgui_editor_kit {
 				const float cx = (float)(m.lanes_x + time_to_x(current.time));
 				const float cy = track_center_y(m, i);
 				if (x)
-					*x = cx - kKeyframeHit;
+					*x = cx - hit;
 				if (y)
-					*y = cy - kKeyframeHit;
+					*y = cy - hit;
 				if (width)
-					*width = kKeyframeHit * 2.0f;
+					*width = hit * 2.0f;
 				if (height)
-					*height = kKeyframeHit * 2.0f;
+					*height = hit * 2.0f;
 				return true;
 			}
 		}
@@ -1430,6 +1436,7 @@ namespace vgui_editor_kit {
 		float content_y) const
 	{
 		const metrics m = layout_metrics();
+		const float hit = kKeyframeHit * ui_scale();
 		if (content_y < m.lanes_y || content_y >= m.y + m.height ||
 			content_x < m.lanes_x || content_x >= m.x + m.width)
 			return invalid_object;
@@ -1439,14 +1446,14 @@ namespace vgui_editor_kit {
 			if (!track.visible || track.locked)
 				continue;
 			const float center_y = track_center_y(m, i);
-			if (std::fabs(content_y - center_y) > kKeyframeHit)
+			if (std::fabs(content_y - center_y) > hit)
 				continue;
 			for (auto it = track.keyframes.rbegin();
 				it != track.keyframes.rend(); ++it)
 			{
 				const float center_x = (float)(m.lanes_x +
 					time_to_x(it->time));
-				if (std::fabs(content_x - center_x) <= kKeyframeHit)
+				if (std::fabs(content_x - center_x) <= hit)
 					return it->id;
 			}
 		}
@@ -1943,6 +1950,11 @@ namespace vgui_editor_kit {
 		return 4.0f;
 	}
 
+	float timeline_view::ui_scale() const
+	{
+		return ui_scale_of(widget_);
+	}
+
 	int timeline_view::transport_hit(float content_x, float content_y) const
 	{
 		const metrics m = layout_metrics();
@@ -1950,23 +1962,26 @@ namespace vgui_editor_kit {
 			content_y >= m.transport_y + m.transport_height ||
 			content_x < 0.0f || content_x >= m.width)
 			return -1;
+		const float scale = ui_scale();
 		static const float widths[5] = { 34.0f, 28.0f, 48.0f, 28.0f, 40.0f };
-		float x = 6.0f;
+		float x = 6.0f * scale;
 		for (int i = 0; i < 5; ++i)
 		{
-			if (content_x >= x && content_x < x + widths[i])
+			const float width = widths[i] * scale;
+			if (content_x >= x && content_x < x + width)
 				return i;
-			x += widths[i] + 4.0f;
+			x += width + 4.0f * scale;
 		}
 		return -1;
 	}
 
 	float timeline_view::transport_button_x(int button) const
 	{
+		const float scale = ui_scale();
 		static const float widths[5] = { 34.0f, 28.0f, 48.0f, 28.0f, 40.0f };
-		float x = 6.0f;
+		float x = 6.0f * scale;
 		for (int i = 0; i < 5 && i < button; ++i)
-			x += widths[i] + 4.0f;
+			x += widths[i] * scale + 4.0f * scale;
 		return x;
 	}
 
@@ -1976,9 +1991,10 @@ namespace vgui_editor_kit {
 			1.0 / 30.0, 1.0 / 15.0, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0,
 			10.0, 30.0, 60.0, 300.0, 600.0
 		};
+		const double min_label_width = 14.0 * (double)ui_scale();
 		for (double step : steps)
 		{
-			if (step * view_.pixels_per_second >= 14.0)
+			if (step * view_.pixels_per_second >= min_label_width)
 				return step;
 		}
 		return steps[sizeof(steps) / sizeof(steps[0]) - 1];
@@ -2006,6 +2022,7 @@ namespace vgui_editor_kit {
 		const metrics m = self->layout_metrics();
 		const int mods = self->context_
 			? vgui_context_get_mods(self->context_) : event->mods;
+		const float wheel_step = 40.0f * self->ui_scale();
 
 		switch (event->type)
 		{
@@ -2237,14 +2254,14 @@ namespace vgui_editor_kit {
 			}
 			if ((mods & VGUI_MOD_SHIFT) != 0 && event->wheel_y != 0.0f)
 			{
-				self->view_.view_start -= event->wheel_y * 40.0 /
+				self->view_.view_start -= event->wheel_y * wheel_step /
 					self->view_.pixels_per_second;
 				self->notify_change();
 				return 1;
 			}
 			if (event->wheel_x != 0.0f)
 			{
-				self->view_.view_start -= event->wheel_x * 40.0 /
+				self->view_.view_start -= event->wheel_x * wheel_step /
 					self->view_.pixels_per_second;
 				self->notify_change();
 				return 1;
@@ -2253,7 +2270,8 @@ namespace vgui_editor_kit {
 			{
 				const float maximum = self->max_scroll_y(m);
 				const float next = std::clamp(self->view_.scroll_y -
-					event->wheel_y * 30.0f, 0.0f, maximum);
+					event->wheel_y * 30.0f * self->ui_scale(), 0.0f,
+					maximum);
 				if (std::fabs(next - self->view_.scroll_y) > 1e-4f)
 				{
 					self->view_.scroll_y = next;
@@ -2403,12 +2421,13 @@ namespace vgui_editor_kit {
 		draw_ruler(cb, vg, widget, x, y, m);
 		draw_transport(cb, vg, widget, x, y, m);
 
+		const float scale = ui_scale();
 		if (m.lanes_width > 0.0f)
 		{
 			const float px = x + m.lanes_x +
 				(float)time_to_x(playhead_);
-			if (px >= x + m.lanes_x - 8.0f &&
-				px <= x + m.lanes_x + m.lanes_width + 8.0f)
+			if (px >= x + m.lanes_x - 8.0f * scale &&
+				px <= x + m.lanes_x + m.lanes_width + 8.0f * scale)
 			{
 				ovg_tools::playhead(cb, vg, px, y + m.ruler_y,
 					y + m.height, to_ovg(accent));
@@ -2417,7 +2436,7 @@ namespace vgui_editor_kit {
 
 		if (gesture_ == timeline_gesture::marquee)
 		{
-			marquee_offset_ += std::max(0.0f, delta_time) * 24.0f;
+			marquee_offset_ += std::max(0.0f, delta_time) * 24.0f * scale;
 			ovg_tools::marquee(cb, vg, x + press_x_, y + press_y_,
 				x + marquee_x_, y + marquee_y_,
 				to_ovg(accent_hover), 1.0f, marquee_offset_);
@@ -2441,6 +2460,7 @@ namespace vgui_editor_kit {
 			0xFF2A3038u);
 		const vgui_color lane0 = theme_color(theme.panel_bg, 0xFF141820u);
 		const vgui_color lane1 = theme_color(theme.button_bg, 0xFF181D25u);
+		const float scale = ui_scale();
 
 		ovg_tools::fill_rect(cb, vg, x + m.lanes_x, y + m.lanes_y,
 			m.lanes_width, m.lanes_height, to_ovg(lane0));
@@ -2505,11 +2525,12 @@ namespace vgui_editor_kit {
 				ovg_tools::fill_rect(cb, vg, x, y + row_y,
 					m.header_width, row_height,
 					to_ovg(with_alpha(accent, 0x2E)));
-				ovg_tools::fill_rect(cb, vg, x, y + row_y, 2.0f,
+				ovg_tools::fill_rect(cb, vg, x, y + row_y, 2.0f * scale,
 					row_height, to_ovg(accent));
 			}
-			ovg_tools::fill_rect(cb, vg, x + 7.0f,
-				y + row_y + row_height * 0.5f - 4.0f, 8.0f, 8.0f,
+			ovg_tools::fill_rect(cb, vg, x + 7.0f * scale,
+				y + row_y + row_height * 0.5f - 4.0f * scale,
+				8.0f * scale, 8.0f * scale,
 				to_ovg(track.visible ? track.color
 					: with_alpha(track.color, 0x60)));
 			std::string label = track.name;
@@ -2520,9 +2541,9 @@ namespace vgui_editor_kit {
 			const vgui_color row_text = track.visible
 				? text : with_alpha(text, 0x80);
 			vgui_custom_draw_text(widget, cb, vg, label.c_str(),
-				x + 19.0f, y + row_y,
-				std::max(1.0f, m.header_width - 26.0f), row_height,
-				row_text, 0.0f, 0.5f);
+				x + 19.0f * scale, y + row_y,
+				std::max(1.0f, m.header_width - 26.0f * scale),
+				row_height, row_text, 0.0f, 0.5f);
 		}
 
 		if (tracks_.empty())
@@ -2546,6 +2567,8 @@ namespace vgui_editor_kit {
 		const vgui_color accent_hover = theme_color(theme.accent_hover,
 			0xFF74B6FFu);
 		const vgui_color accent = theme_color(theme.accent, 0xFF409EFFu);
+		const float scale = ui_scale();
+		const float keyframe_size = kKeyframeSize * scale;
 		const float lane_left = x + m.lanes_x;
 		const float lane_right = lane_left + m.lanes_width;
 
@@ -2555,8 +2578,8 @@ namespace vgui_editor_kit {
 			if (!track.visible)
 				continue;
 			const float center_y = y + track_center_y(m, i);
-			if (center_y < y + m.lanes_y - 8.0f ||
-				center_y > y + m.height + 8.0f)
+			if (center_y < y + m.lanes_y - 8.0f * scale ||
+				center_y > y + m.height + 8.0f * scale)
 				continue;
 			const vgui_color base = track.locked
 				? with_alpha(track.color, 0x70) : track.color;
@@ -2584,8 +2607,8 @@ namespace vgui_editor_kit {
 				}
 				last_x = px;
 				previous_x = &last_x;
-				if (px < lane_left - kKeyframeSize ||
-					px > lane_right + kKeyframeSize)
+				if (px < lane_left - keyframe_size ||
+					px > lane_right + keyframe_size)
 					continue;
 				const bool selected = is_selected(keyframe.id);
 				const ovg_tools::kf_state state = selected
@@ -2595,7 +2618,7 @@ namespace vgui_editor_kit {
 						: ovg_tools::kf_state::solid;
 				const uint32_t color = selected ? to_ovg(accent_hover)
 					: to_ovg(base);
-				ovg_tools::keyframe(cb, vg, px, center_y, kKeyframeSize,
+				ovg_tools::keyframe(cb, vg, px, center_y, keyframe_size,
 					state, color, to_ovg(accent_hover));
 			}
 		}
@@ -2610,6 +2633,7 @@ namespace vgui_editor_kit {
 		const vgui_color text = theme_color(theme.text, 0xFFE8EEF8u);
 		const vgui_color panel_border = theme_color(theme.panel_border,
 			0xFF2A3038u);
+		const float scale = ui_scale();
 
 		ovg_tools::fill_rect(cb, vg, x + m.lanes_x, y + m.ruler_y,
 			m.lanes_width, m.ruler_height, to_ovg(theme_color(
@@ -2620,8 +2644,8 @@ namespace vgui_editor_kit {
 		ovg_tools::line(cb, vg, x, y + m.lanes_y, x + m.width,
 			y + m.lanes_y, to_ovg(panel_border), 1.0f,
 			VG_LINE_CAP_BUTT);
-		vgui_custom_draw_text(widget, cb, vg, "TRACKS", x + 8.0f,
-			y + m.ruler_y, std::max(1.0f, m.header_width - 16.0f),
+		vgui_custom_draw_text(widget, cb, vg, "TRACKS", x + 8.0f * scale,
+			y + m.ruler_y, std::max(1.0f, m.header_width - 16.0f * scale),
 			m.ruler_height, with_alpha(text, 0xA0), 0.0f, 0.5f);
 
 		if (m.lanes_width <= 0.0f)
@@ -2646,13 +2670,14 @@ namespace vgui_editor_kit {
 				continue;
 			const float px = x + m.lanes_x + (float)time_to_x(time);
 			if (px < x + m.lanes_x - 1.0f ||
-				px > x + m.lanes_x + m.lanes_width - 4.0f)
+				px > x + m.lanes_x + m.lanes_width - 4.0f * scale)
 				continue;
 			char label[48];
 			std::snprintf(label, sizeof(label), format, time);
-			vgui_custom_draw_text(widget, cb, vg, label, px + 2.0f,
-				y + m.ruler_y + 1.0f, 52.0f,
-				std::max(1.0f, m.ruler_height - 2.0f), text, 0.0f, 0.0f);
+			vgui_custom_draw_text(widget, cb, vg, label, px + 2.0f * scale,
+				y + m.ruler_y + 1.0f * scale, 52.0f * scale,
+				std::max(1.0f, m.ruler_height - 2.0f * scale), text,
+				0.0f, 0.0f);
 		}
 	}
 
@@ -2670,6 +2695,7 @@ namespace vgui_editor_kit {
 			0xFF3B4656u);
 		const vgui_color panel_border = theme_color(theme.panel_border,
 			0xFF2A3038u);
+		const float scale = ui_scale();
 
 		ovg_tools::fill_rect(cb, vg, x, y + m.transport_y, m.width,
 			m.transport_height, to_ovg(theme_color(theme.panel_bg,
@@ -2686,26 +2712,28 @@ namespace vgui_editor_kit {
 		{
 			const bool checked = i == 4 && loop_;
 			const float bx = x + transport_button_x(i);
-			const float by = y + m.transport_y + 4.0f;
-			const float bh = 18.0f;
-			ovg_tools::fill_round_rect(cb, vg, bx, by, widths[i], bh,
-				4.0f, to_ovg(checked ? with_alpha(accent, 0x50)
+			const float by = y + m.transport_y + 4.0f * scale;
+			const float bw = widths[i] * scale;
+			const float bh = 18.0f * scale;
+			ovg_tools::fill_round_rect(cb, vg, bx, by, bw, bh,
+				4.0f * scale, to_ovg(checked ? with_alpha(accent, 0x50)
 					: button_bg));
-			ovg_tools::stroke_round_rect(cb, vg, bx, by, widths[i], bh,
-				4.0f, to_ovg(checked ? accent : button_border), 1.0f);
+			ovg_tools::stroke_round_rect(cb, vg, bx, by, bw, bh,
+				4.0f * scale, to_ovg(checked ? accent : button_border),
+				1.0f);
 			vgui_custom_draw_text(widget, cb, vg, labels[i], bx, by,
-				widths[i], bh, checked ? accent : text, 0.5f, 0.5f);
+				bw, bh, checked ? accent : text, 0.5f, 0.5f);
 		}
 
-		if (m.width > 360.0f)
+		if (m.width > 360.0f * scale)
 		{
 			char buffer[64];
 			std::snprintf(buffer, sizeof(buffer), "%.3f / %.3f s",
 				playhead_, duration_);
 			vgui_custom_draw_text(widget, cb, vg, buffer,
-				x + m.width - 190.0f, y + m.transport_y,
-				182.0f, m.transport_height, with_alpha(text, 0xD0),
-				1.0f, 0.5f);
+				x + m.width - 190.0f * scale, y + m.transport_y,
+				182.0f * scale, m.transport_height,
+				with_alpha(text, 0xD0), 1.0f, 0.5f);
 		}
 	}
 

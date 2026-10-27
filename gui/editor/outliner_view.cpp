@@ -1,6 +1,7 @@
 #include "outliner_view.h"
 
 #include "drag_bridge.h"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -715,8 +716,15 @@ namespace vgui_editor_kit {
 		rename_object_ = object;
 		renaming_ = true;
 		vgui_edit_set_text(edit_, node_text(node, object).c_str());
-		vgui_widget_set_pos(edit_, rx - px + 2.0f, ry - py + 1.0f);
-		vgui_widget_set_size(edit_, std::max(40.0f, rw - 4.0f), std::max(16.0f, rh - 2.0f));
+		/* The tree reports render pixels; the editor is positioned through
+		 * logical setters. */
+		const float lx = to_logical(edit_, rx - px);
+		const float ly = to_logical(edit_, ry - py);
+		const float lw = to_logical(edit_, rw);
+		const float lh = to_logical(edit_, rh);
+		vgui_widget_set_pos(edit_, lx + 2.0f, ly + 1.0f);
+		vgui_widget_set_size(edit_, std::max(40.0f, lw - 4.0f),
+			std::max(16.0f, lh - 2.0f));
 		vgui_widget_set_visible(edit_, 1);
 		vgui_set_focus(context_->ui(), edit_);
 		vgui_edit_select_all(edit_);

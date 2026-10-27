@@ -227,6 +227,7 @@ namespace vgui_editor_kit {
 
 		bool content_geometry(float* offset_x, float* offset_y, float* width,
 			float* height) const;
+		float ui_scale() const;
 		float effective_threshold() const;
 		void notify_change();
 		void notify_selection();

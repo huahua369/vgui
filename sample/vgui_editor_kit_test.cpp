@@ -1552,6 +1552,211 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		return 0;
 	}
 
+	/* E02: switching the inspected object reuses property rows when the schema
+	 * is stable.  Only added/removed/type-changed rows report as rebuilt, and
+	 * the retained widgets keep their identity so focus, drags and scroll
+	 * state survive the switch. */
+	int test_property_grid_set_properties()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("property set context");
+		vgui_context_set_size(ui, 900, 700);
+
+		{
+			property_grid grid;
+			grid.build(vgui_root(ui));
+			vgui_widget_set_pos(grid.widget(), 10.0f, 10.0f);
+			vgui_widget_set_size(grid.widget(), 360.0f, 640.0f);
+
+			auto make = [](int revision) {
+				std::vector<property_desc> props;
+
+				property_desc name;
+				name.id = "name";
+				name.label = "Name";
+				name.value = revision == 1 ? "Cube" : "Sphere";
+				name.category = "Object";
+				name.default_value = revision == 1 ? "Cube" : "Sphere";
+				name.has_default = true;
+				props.push_back(name);
+
+				property_desc position;
+				position.id = "position";
+				position.label = "Position";
+				position.type = property_type::vector3;
+				position.semantic = revision == 1
+					? vector_semantic::position : vector_semantic::generic;
+				position.value = revision == 1 ? "1, 2, 3" : "4, 5, 6";
+				position.category = "Transform";
+				if (revision == 1)
+				{
+					position.has_range = true;
+					position.min_value = -1.0;
+					position.max_value = 10.0;
+					position.step = 0.5;
+				}
+				props.push_back(position);
+
+				property_desc visible;
+				visible.id = "visible";
+				visible.label = "Visible";
+				visible.type = property_type::boolean;
+				visible.value = revision == 1 ? "true" : "false";
+				visible.category = "Object";
+				props.push_back(visible);
+
+				property_desc tint;
+				tint.id = "tint";
+				tint.label = "Tint";
+				tint.type = property_type::color;
+				tint.value = revision == 1 ? "#FF0000" : "#00FF00";
+				tint.category = "Rendering";
+				props.push_back(tint);
+
+				property_desc quality;
+				quality.id = "quality";
+				quality.label = "Quality";
+				quality.type = property_type::enumeration;
+				quality.choices = { "Low", "High" };
+				quality.choice_values = { "low", "high" };
+				quality.value = revision == 1 ? "low" : "high";
+				quality.category = "Rendering";
+				props.push_back(quality);
+				return props;
+			};
+
+			if (grid.set_properties(make(1)) != 5)
+				return fail("property set initial rows");
+			vgui_layout(ui);
+			if (grid.row_count() != 5 ||
+				grid.property_value("name") != "Cube" ||
+				grid.property_value("position") != "1, 2, 3")
+				return fail("property set initial values");
+			vgui_widget* name_editor = grid.property_editor("name");
+			vgui_widget* position_editor = grid.property_editor("position");
+			vgui_widget* quality_editor = grid.property_editor("quality");
+			vector_editor* position_vector = grid.property_vector_editor("position");
+			if (!name_editor || !position_editor || !quality_editor ||
+				!position_vector)
+				return fail("property set materialized rows");
+
+			/* Same schema, different object: no widget churn. */
+			if (grid.set_properties(make(2)) != 0)
+				return fail("property set reused rows");
+			if (grid.property_editor("name") != name_editor ||
+				grid.property_editor("position") != position_editor ||
+				grid.property_editor("quality") != quality_editor)
+				return fail("property set widget identity");
+			if (grid.property_value("name") != "Sphere" ||
+				grid.property_value("position") != "4, 5, 6" ||
+				grid.property_value("visible") != "false" ||
+				grid.property_value("tint") != "#00FF00" ||
+				grid.property_value("quality") != "high")
+				return fail("property set values refreshed");
+			if (position_vector->semantic() != vector_semantic::generic ||
+				position_vector->has_range() ||
+				position_vector->step() != 0.1)
+				return fail("property set vector metadata");
+
+			/* Category order follows the incoming list without rebuilding. */
+			std::vector<property_desc> reordered = make(2);
+			std::reverse(reordered.begin(), reordered.end());
+			if (grid.set_properties(std::move(reordered)) != 0)
+				return fail("property set category reorder");
+			if (grid.property_editor("name") != name_editor ||
+				grid.property_editor("position") != position_editor)
+				return fail("property set reorder keeps widgets");
+
+			/* Removing one row only releases that row. */
+			std::vector<property_desc> shrunken = make(2);
+			shrunken.pop_back();	/* quality */
+			if (grid.set_properties(std::move(shrunken)) != 1)
+				return fail("property set remove count");
+			if (grid.row_count() != 4 || grid.has_property("quality") ||
+				grid.property_editor("name") != name_editor ||
+				grid.property_editor("position") != position_editor)
+				return fail("property set remove row");
+
+			/* Adding a row materializes it without touching the others. */
+			std::vector<property_desc> grown = make(2);
+			grown.pop_back();	/* quality was removed above */
+			property_desc note;
+			note.id = "note";
+			note.label = "Note";
+			note.value = "hello";
+			note.category = "Object";
+			grown.push_back(note);
+			if (grid.set_properties(grown) != 1)
+				return fail("property set add count");
+			if (grid.row_count() != 5 ||
+				grid.property_value("note") != "hello" ||
+				grid.property_editor("name") != name_editor)
+				return fail("property set add row");
+
+			/* Type changes rebuild only the affected row. */
+			std::vector<property_desc> retyped = grown;	/* copy before move */
+			for (property_desc& desc : retyped)
+			{
+				if (desc.id != "visible")
+					continue;
+				desc.type = property_type::text;
+				desc.value = "yes";
+			}
+			if (grid.set_properties(std::move(retyped)) != 1)
+				return fail("property set retype count");
+			if (grid.property_value("visible") != "yes" ||
+				grid.property_editor("name") != name_editor ||
+				grid.property_editor("position") != position_editor)
+				return fail("property set retype row");
+
+			/* Invalid descriptors are skipped without disturbing valid rows. */
+			std::vector<property_desc> invalid = grown;	/* copy before move */
+			for (property_desc& desc : invalid)
+			{
+				if (desc.id != "visible")
+					continue;
+				desc.type = property_type::text;
+				desc.value = "yes";
+			}
+			property_desc broken;
+			broken.id = "broken";
+			broken.type = property_type::enumeration;
+			invalid.push_back(std::move(broken));
+			const std::size_t before = grid.row_count();
+			if (grid.set_properties(std::move(invalid)) != 0)
+				return fail("property set invalid descriptor changed rows");
+			if (grid.row_count() != before || grid.has_property("broken"))
+				return fail("property set invalid descriptor");
+
+			/* A selection binder can use the same path end-to-end. */
+			editor_context context(ui);
+			int bind_calls = 0;
+			grid.bind_selection(context, [&](property_grid& target, object_id id) {
+				++bind_calls;
+				if (id == invalid_object)
+					(void)target.set_properties({});
+				else
+					(void)target.set_properties(make(id == 1 ? 1 : 2));
+			});
+			context.set_selection(1);
+			if (bind_calls != 2 || grid.row_count() != 5 ||
+				grid.property_value("name") != "Cube")
+				return fail("property set binder first object");
+			vgui_widget* bound_name = grid.property_editor("name");
+			context.set_selection(2);
+			if (bind_calls != 3 || grid.property_value("name") != "Sphere" ||
+				grid.property_editor("name") != bound_name)
+				return fail("property set binder reuses rows");
+			grid.unbind_selection();
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 	int test_selection_binding()
 	{
 		using namespace vgui_editor_kit;
@@ -12783,6 +12988,423 @@ int test_table_view()
 	return 0;
 }
 
+/* E01: fixed chrome in custom-drawn views must accept input in render pixels
+ * at non-100% scales (asset preview, curve keys, gradient stops, SV box). */
+static int test_custom_view_dpi_input()
+{
+	using namespace vgui_editor_kit;
+	auto close_to = [](float a, float b, float eps = 1.0f) {
+		return std::fabs(a - b) <= eps;
+	};
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("dpi input: create context");
+	vgui_context_set_size(ui, 2400, 2000);
+
+	/* Asset preview: chrome is logical and the live tree rescales. */
+	{
+		asset_preview preview;
+		preview.build(vgui_root(ui));
+		vgui_widget_set_pos(preview.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(preview.widget(), 320.0f, 260.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		float x1 = 0, y1 = 0, w1 = 0, h1 = 0;
+		vgui_widget_get_rect(preview.stage(), &x1, &y1, &w1, &h1);
+		vgui_context_set_ui_scale(ui, 2.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		float x2 = 0, y2 = 0, w2 = 0, h2 = 0;
+		vgui_widget_get_rect(preview.stage(), &x2, &y2, &w2, &h2);
+		if (w1 <= 0.0f || h1 <= 0.0f ||
+			!close_to(w2, w1 * 2.0f, 2.0f) || !close_to(h2, h1 * 2.0f, 2.0f))
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: asset preview rescales");
+		}
+	}
+
+	/* Curve editor: graph margin and key hit radius follow the UI scale. */
+	{
+		curve_editor editor;
+		editor.build(vgui_root(ui));
+		vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
+		vgui_widget_set_size(editor.widget(), 380.0f, 340.0f);
+		curve_value value;
+		value.interpolation = curve_interpolation::linear;
+		value.keys = { { 0.0f, 0.0f, 0.0f, 0.0f },
+			{ 1.0f, 1.0f, 0.0f, 0.0f } };
+		if (!editor.set_value(value))
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: curve setup");
+		}
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		float gx = 0, gy = 0, gw = 0, gh = 0;
+		vgui_widget_get_rect(editor.graph_widget(), &gx, &gy, &gw, &gh);
+		const float margin = 10.0f * 2.0f;
+		const float area_w = gw - margin * 2.0f;
+		const float area_h = gh - margin * 2.0f;
+		if (area_w <= 0.0f || area_h <= 0.0f)
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: curve graph area");
+		}
+		const float key_x = gx + margin;
+		const float key_y = gy + margin + area_h;
+		vgui_input_mouse_move(ui, key_x, key_y);
+		vgui_input_mouse_down(ui, 1, key_x, key_y, 1);
+		vgui_input_mouse_up(ui, 1, key_x, key_y, 1);
+		if (editor.selected_key() != 0)
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: curve key hit at 2x");
+		}
+		double_click_at(ui, gx + margin + area_w * 0.5f,
+			gy + margin + area_h * 0.5f);
+		if (editor.value().keys.size() != 3 ||
+			editor.selected_key() != 1 ||
+			!close_to(editor.value().keys[1].t, 0.5f, 1e-3f))
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: curve add key at 2x");
+		}
+	}
+
+	/* Gradient editor: bar padding and stop hit distance follow the scale. */
+	{
+		gradient_editor editor;
+		editor.build(vgui_root(ui));
+		vgui_widget_set_pos(editor.widget(), 20.0f, 420.0f);
+		vgui_widget_set_size(editor.widget(), 320.0f, 150.0f);
+		if (!editor.set_value_text("0,#000000;1,#FFFFFF"))
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: gradient setup");
+		}
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(editor.bar_widget(), &bx, &by, &bw, &bh);
+		const float pad = 6.0f * 2.0f;
+		const float bar_w = bw - pad * 2.0f;
+		if (bar_w <= 0.0f)
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: gradient bar area");
+		}
+		double_click_at(ui, bx + pad + bar_w * 0.5f, by + bh * 0.5f);
+		if (editor.value().stops.size() != 3 ||
+			editor.selected_stop() != 1 ||
+			!close_to(editor.value().stops[1].t, 0.5f, 1e-3f))
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: gradient stop hit at 2x");
+		}
+	}
+
+	/* Color picker: SV hit ratios stay normalized at 2x. */
+	{
+		color_picker picker;
+		picker.build(ui);
+		picker.set_value("#FF0000");
+		vgui_widget_attach(vgui_root(ui), picker.widget());
+		vgui_widget_set_pos(picker.widget(), 420.0f, 20.0f);
+		vgui_widget_set_size(picker.widget(), 260.0f, 300.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		vgui_widget* sv = find_widget_by_suffix(picker.widget(), ".sv");
+		if (!sv)
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: picker sv widget");
+		}
+		float x = 0, y = 0, w = 0, h = 0;
+		vgui_widget_get_rect(sv, &x, &y, &w, &h);
+		const float px = x + w * 0.5f;
+		const float py = y + h * 0.5f;
+		vgui_input_mouse_move(ui, px, py);
+		vgui_input_mouse_down(ui, 1, px, py, 1);
+		vgui_input_mouse_up(ui, 1, px, py, 1);
+		if (!picker.valid() ||
+			picker.value().size() < 7 ||
+			picker.value()[1] != '8' || picker.value()[3] != '4')
+		{
+			vgui_destroy(ui);
+			return fail("dpi input: picker sv hit at 2x");
+		}
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* E01: the shell must stay within the context and keep its panes disjoint at
+ * every supported DPI.  Layout persistence stores logical dock sizes, so a
+ * layout captured at one scale restores at another. */
+static int test_shell_ui_scale()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("ui scale: create context");
+	vgui_context_set_size(ui, 1280, 800);
+	vgui_style style;
+	vgui_style_default(&style);
+	style.list.row_height = 24.0f;
+	style.tree.row_height = 24.0f;
+	vgui_context_set_style(ui, &style);
+
+	{
+		editor_context context(ui);
+		editor_shell shell(context);
+		shell.build();
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		vgui_widget* dock = shell.dock();
+		if (!dock || !shell.widget() || !shell.menubar() ||
+			!shell.toolbar().widget() || !shell.statusbar().widget())
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: shell widgets");
+		}
+
+		auto rect_of = [](vgui_widget* w, float out[4]) {
+			vgui_widget_get_rect(w, &out[0], &out[1], &out[2], &out[3]);
+		};
+		auto inside = [](const float r[4], float bx, float by, float bw,
+			float bh) {
+			const float eps = 0.5f;
+			return r[0] >= bx - eps && r[1] >= by - eps &&
+				r[0] + r[2] <= bx + bw + eps &&
+				r[1] + r[3] <= by + bh + eps;
+		};
+		auto overlap = [](const float a[4], const float b[4]) {
+			const float eps = 0.01f;
+			return a[0] < b[0] + b[2] - eps &&
+				a[0] + a[2] > b[0] + eps &&
+				a[1] < b[1] + b[3] - eps &&
+				a[1] + a[3] > b[1] + eps;
+		};
+		auto close_to = [](float a, float b, float eps = 0.5f) {
+			return std::fabs(a - b) <= eps;
+		};
+		auto zone_rect = [&](vgui_dock_zone zone, float out[4]) {
+			return vgui_dock_get_zone_rect(dock, zone, &out[0], &out[1],
+				&out[2], &out[3]) != 0;
+		};
+
+		/* E01: custom-drawn editor views mix logical model values with
+		 * render-pixel chrome.  Give each one stable content to verify that
+		 * rows, keyframes and graph coordinates follow the context scale. */
+		timeline_track dpi_track;
+		dpi_track.id = 7001;
+		dpi_track.name = "DPI";
+		dpi_track.height = 26.0f;
+		const object_id dpi_track_id = shell.timeline().add_track(dpi_track);
+		const object_id dpi_keyframe = dpi_track_id != invalid_object
+			? shell.timeline().add_keyframe(dpi_track_id, { 0, 0.0, 0.0 })
+			: invalid_object;
+		if (dpi_track_id == invalid_object ||
+			dpi_keyframe == invalid_object)
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: custom view setup");
+		}
+		shell.node_graph().set_view_state({ 0.0, 0.0, 1.0 });
+		shell.code().set_font_size(12.0f);
+		float code_line_base = 0.0f;
+
+		const float scales[4] = { 1.0f, 1.25f, 1.5f, 2.0f };
+		for (float scale : scales)
+		{
+			vgui_context_set_ui_scale(ui, scale);
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			float root[4] = {};
+			rect_of(vgui_root(ui), root);
+			if (!close_to(root[2], 1280.0f) || !close_to(root[3], 800.0f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: context size changed");
+			}
+
+			float outer[4] = {};
+			float menu[4] = {};
+			float toolbar[4] = {};
+			float dock_r[4] = {};
+			float status[4] = {};
+			rect_of(shell.widget(), outer);
+			rect_of(shell.menubar(), menu);
+			rect_of(shell.toolbar().widget(), toolbar);
+			rect_of(dock, dock_r);
+			rect_of(shell.statusbar().widget(), status);
+			if (!inside(outer, 0, 0, 1280, 800) ||
+				!inside(menu, outer[0], outer[1], outer[2], outer[3]) ||
+				!inside(toolbar, outer[0], outer[1], outer[2], outer[3]) ||
+				!inside(dock_r, outer[0], outer[1], outer[2], outer[3]) ||
+				!inside(status, outer[0], outer[1], outer[2], outer[3]))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: shell part outside context");
+			}
+			if (overlap(menu, toolbar) || overlap(menu, dock_r) ||
+				overlap(toolbar, dock_r) || overlap(dock_r, status) ||
+				overlap(toolbar, status))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: shell rows overlap");
+			}
+			if (menu[1] > toolbar[1] || toolbar[1] > dock_r[1] ||
+				dock_r[1] > status[1])
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: shell row order");
+			}
+
+			float left[4] = {}, right[4] = {}, bottom[4] = {},
+				center[4] = {};
+			if (!zone_rect(VGUI_DOCK_LEFT, left) ||
+				!zone_rect(VGUI_DOCK_RIGHT, right) ||
+				!zone_rect(VGUI_DOCK_BOTTOM, bottom) ||
+				!zone_rect(VGUI_DOCK_CENTER, center))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: dock zone rects");
+			}
+			if (!inside(left, dock_r[0], dock_r[1], dock_r[2], dock_r[3]) ||
+				!inside(right, dock_r[0], dock_r[1], dock_r[2], dock_r[3]) ||
+				!inside(bottom, dock_r[0], dock_r[1], dock_r[2], dock_r[3]) ||
+				!inside(center, dock_r[0], dock_r[1], dock_r[2], dock_r[3]))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: dock zone outside dock");
+			}
+			if (overlap(left, right) || overlap(left, center) ||
+				overlap(right, center) || overlap(bottom, center) ||
+				overlap(bottom, left) || overlap(bottom, right))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: dock zones overlap");
+			}
+			if (!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT),
+				230.0f * scale, 0.5f) ||
+				!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT),
+					300.0f * scale, 0.5f) ||
+				!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM),
+					180.0f * scale, 0.5f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: dock zone size follows scale");
+			}
+
+			float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+			if (!shell.timeline().track_rect(dpi_track_id, &tx, &ty, &tw,
+				&th) || !close_to(th, 26.0f * scale, 0.5f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: timeline track height");
+			}
+			float kx = 0.0f, ky = 0.0f, kw = 0.0f, kh = 0.0f;
+			if (!shell.timeline().keyframe_rect(dpi_keyframe, &kx, &ky,
+				&kw, &kh) ||
+				!close_to(kw, 14.0f * scale, 0.5f) ||
+				!close_to(kh, 14.0f * scale, 0.5f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: timeline keyframe chrome");
+			}
+
+			const node_graph_point graph_point =
+				shell.node_graph().screen_to_graph(100.0f, 100.0f);
+			if (!close_to((float)graph_point.x, 100.0f / scale, 0.01f) ||
+				!close_to((float)graph_point.y, 100.0f / scale, 0.01f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: node graph screen mapping");
+			}
+
+			const float code_line = vgui_widget_get_line_height(
+				shell.code().editor_widget());
+			if (scale == 1.0f)
+				code_line_base = code_line;
+			else if (!close_to(code_line, code_line_base * scale, 3.0f))
+			{
+				vgui_destroy(ui);
+				return fail("ui scale: code editor line height");
+			}
+		}
+
+		/* Capture at 200%, restore at 125% and 100%: stored sizes are logical
+		 * and must not drift. */
+		vgui_context_set_ui_scale(ui, 2.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		editor_layout captured = shell.capture_layout();
+		if (!close_to(captured.dock_left_size, 230.0f, 0.5f) ||
+			!close_to(captured.dock_right_size, 300.0f, 0.5f) ||
+			!close_to(captured.dock_bottom_size, 180.0f, 0.5f))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: capture stores logical dock sizes");
+		}
+
+		vgui_context_set_ui_scale(ui, 1.25f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		std::string error;
+		if (!shell.apply_layout(captured, &error))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: apply layout at 125%");
+		}
+		vgui_layout(ui);
+		if (!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT),
+				230.0f * 1.25f, 0.5f) ||
+			!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT),
+				300.0f * 1.25f, 0.5f) ||
+			!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM),
+				180.0f * 1.25f, 0.5f))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: restore scales logical dock sizes");
+		}
+		editor_layout recaptured = shell.capture_layout();
+		if (!close_to(recaptured.dock_left_size, captured.dock_left_size, 0.5f) ||
+			!close_to(recaptured.dock_right_size, captured.dock_right_size, 0.5f) ||
+			!close_to(recaptured.dock_bottom_size, captured.dock_bottom_size, 0.5f))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: recapture keeps logical sizes");
+		}
+
+		vgui_context_set_ui_scale(ui, 1.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+		if (!shell.apply_layout(recaptured, &error))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: apply layout at 100%");
+		}
+		vgui_layout(ui);
+		if (!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 230.0f, 0.5f) ||
+			!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 300.0f, 0.5f) ||
+			!close_to(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 180.0f, 0.5f))
+		{
+			vgui_destroy(ui);
+			return fail("ui scale: restore scales back to 100%");
+		}
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -12800,6 +13422,8 @@ int main()
 	if (int rc = test_property_grid())
 		return rc;
 	if (int rc = test_property_grid_virtualization())
+		return rc;
+	if (int rc = test_property_grid_set_properties())
 		return rc;
 	if (int rc = test_table_view())
 		return rc;
@@ -12890,6 +13514,10 @@ int main()
 	if (int rc = test_canvas_view())
 		return rc;
 	if (int rc = test_console_view())
+		return rc;
+	if (int rc = test_shell_ui_scale())
+		return rc;
+	if (int rc = test_custom_view_dpi_input())
 		return rc;
 
 	vgui_context* ui = vgui_create(nullptr, 16.0f);

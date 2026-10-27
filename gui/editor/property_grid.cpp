@@ -2,6 +2,7 @@
 
 #include "drag_bridge.h"
 #include "editor_context.h"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cctype>
@@ -12,6 +13,8 @@
 #include <cstdlib>
 #include <memory>
 #include <system_error>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 
 namespace vgui_editor_kit {
@@ -644,7 +647,8 @@ namespace vgui_editor_kit {
 		if (ctx)
 			vgui_context_get_size(ctx, &cw, &ch);
 		(void)cw;
-		viewport_h_ = ch > 0 ? (float)ch - kPanelPaddingV : 0.0f;
+		viewport_h_ = ch > 0
+			? to_logical(panel_, (float)ch) - kPanelPaddingV : 0.0f;
 		if (viewport_h_ < 200.0f)
 			viewport_h_ = 200.0f;
 
@@ -717,7 +721,7 @@ namespace vgui_editor_kit {
 		add_property(std::move(desc));
 	}
 
-	bool property_grid::add_property(property_desc desc)
+	bool property_grid::prepare_desc(property_desc& desc)
 	{
 		if (desc.id.empty())
 		{
@@ -725,8 +729,6 @@ namespace vgui_editor_kit {
 			while (find_row(desc.id))
 				desc.id = "property." + std::to_string(next_row_id_++);
 		}
-		if (find_row(desc.id))
-			return false;
 		if (desc.label.empty())
 			desc.label = desc.id;
 		if (desc.category.empty())
@@ -759,6 +761,13 @@ namespace vgui_editor_kit {
 				return false;
 			desc.default_value = default_value.value;
 		}
+		return true;
+	}
+
+	bool property_grid::add_property(property_desc desc)
+	{
+		if (!prepare_desc(desc) || find_row(desc.id))
+			return false;
 
 		row item;
 		item.token = next_token_++;
@@ -771,6 +780,142 @@ namespace vgui_editor_kit {
 			category_order_.push_back(category);
 		update_visibility();
 		return true;
+	}
+
+	void property_grid::refresh_row_desc(row& item)
+	{
+		if (item.label)
+			vgui_widget_set_text(item.label, item.desc.label.c_str());
+
+		if (item.vector_ui)
+		{
+			/* E02: vector metadata is normally fixed per property id, but a
+			 * host may switch between objects with different presets.  Apply
+			 * it without rebuilding the row. */
+			item.vector_ui->set_semantic(item.desc.semantic);
+			if (!item.desc.component_labels.empty())
+				item.vector_ui->set_axis_labels(item.desc.component_labels);
+			if (!item.desc.component_colors.empty())
+				item.vector_ui->set_axis_colors(item.desc.component_colors);
+			if (item.desc.has_range)
+				item.vector_ui->set_range(item.desc.min_value,
+					item.desc.max_value);
+			else
+				item.vector_ui->clear_range();
+			item.vector_ui->set_step(item.desc.step);
+			item.vector_ui->set_read_only(read_only_ || item.desc.read_only);
+			item.vector_ui->set_enabled(!(read_only_ || item.desc.read_only));
+		}
+	}
+
+	std::size_t property_grid::set_properties(
+		std::vector<property_desc> properties)
+	{
+		if (popup_session_active_)
+		{
+			popup_session_active_ = false;
+			if (panel_)
+				vgui_popup_close(vgui_widget_get_context(panel_));
+			reset_popup_session();
+		}
+
+		std::vector<property_desc> incoming;
+		std::unordered_set<std::string> incoming_ids;
+		incoming.reserve(properties.size());
+		incoming_ids.reserve(properties.size());
+		for (property_desc& desc : properties)
+		{
+			if (!prepare_desc(desc))
+				continue;
+			if (incoming_ids.insert(desc.id).second)
+				incoming.push_back(std::move(desc));
+		}
+
+		/* E02: id lookup is expected O(1) so switching a large inspected
+		 * object does not become quadratic in the property count. */
+		std::unordered_map<std::string, std::size_t> row_index;
+		row_index.reserve(rows_.size());
+		for (std::size_t i = 0; i < rows_.size(); ++i)
+			row_index.emplace(rows_[i].desc.id, i);
+
+		std::vector<char> reused(rows_.size(), 0);
+		std::vector<row> next;
+		next.reserve(incoming.size());
+		std::size_t changed = 0;
+
+		for (property_desc& desc : incoming)
+		{
+			std::size_t match = rows_.size();
+			const auto found = row_index.find(desc.id);
+			if (found != row_index.end())
+				match = found->second;
+
+			if (match < rows_.size() && rows_[match].desc.type == desc.type)
+			{
+				reused[match] = 1;
+				row item = std::move(rows_[match]);
+				/* Enumeration menus are built lazily and cached with their
+				 * choice ids.  Rebuild the cache when the incoming descriptor
+				 * changes the menu's contents. */
+				const property_desc& old = item.desc;
+				const bool menu_stale = item.menu &&
+					old.type == property_type::enumeration &&
+					(old.choices != desc.choices ||
+						old.choice_values != desc.choice_values ||
+						old.choice_enabled != desc.choice_enabled ||
+						old.allow_empty != desc.allow_empty ||
+						old.placeholder != desc.placeholder);
+				if (menu_stale)
+				{
+					vgui_widget_destroy(item.menu);
+					item.menu = nullptr;
+					item.menu_values.clear();
+				}
+				item.desc = std::move(desc);
+				item.value = item.desc.value;
+				item.mixed = false;
+				refresh_row_desc(item);
+				sync_row_from_targets(item);
+				update_row_ui(item, true);
+				next.push_back(std::move(item));
+				continue;
+			}
+
+			if (match < rows_.size())
+			{
+				/* Same id, different widget kind: only this row is rebuilt.
+				 * The replacement below accounts for exactly one changed row. */
+				reused[match] = 1;
+				release_row(rows_[match]);
+			}
+
+			row item;
+			item.token = next_token_++;
+			item.desc = std::move(desc);
+			item.value = item.desc.value;
+			sync_row_from_targets(item);
+			next.push_back(std::move(item));
+			++changed;
+		}
+
+		for (std::size_t i = 0; i < rows_.size(); ++i)
+		{
+			if (reused[i])
+				continue;
+			release_row(rows_[i]);
+			++changed;
+		}
+
+		rows_ = std::move(next);
+		category_order_.clear();
+		for (const row& item : rows_)
+		{
+			if (std::find(category_order_.begin(), category_order_.end(),
+				item.desc.category) == category_order_.end())
+				category_order_.push_back(item.desc.category);
+		}
+		update_visibility();
+		return changed;
 	}
 
 	bool property_grid::remove_property(const std::string& id)
@@ -2080,8 +2225,10 @@ private:
 			return;
 		float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
 		vgui_widget_get_rect(panel_, &x, &y, &w, &h);
+		(void)x; (void)y; (void)w;
 		if (h > 0.0f)
-			viewport_h_ = std::max(0.0f, h - kPanelPaddingV);
+			viewport_h_ = std::max(0.0f,
+				to_logical(panel_, h) - kPanelPaddingV);
 	}
 
 	/* Filtering, collapsing and row errors change the content height without a
@@ -2095,7 +2242,8 @@ private:
 		refresh_viewport();
 		float sx = 0.0f, sy = 0.0f;
 		vgui_panel_get_scroll(panel_, &sx, &sy);
-		float clamped = std::max(0.0f, sy);
+		const float sy_logical = to_logical(panel_, std::max(0.0f, sy));
+		float clamped = sy_logical;
 		if (viewport_h_ > 0.0f)
 		{
 			const float max_scroll = std::max(0.0f,
@@ -2103,8 +2251,8 @@ private:
 			clamped = std::clamp(clamped, 0.0f, max_scroll);
 		}
 		scroll_y_ = clamped;
-		if (clamped != sy)
-			vgui_panel_set_scroll(panel_, sx, clamped);
+		if (std::fabs(clamped - sy_logical) > 0.01f)
+			vgui_panel_set_scroll(panel_, sx, to_physical(panel_, clamped));
 	}
 
 	vgui_widget* property_grid::entry_widget(const display_entry& entry)
@@ -2817,7 +2965,7 @@ private:
 		const bool parsed = !item->mixed &&
 			curve_editor::parse_value(item->value, value);
 		curve_editor::draw_preview(cb, vg, x, y, w, h, value,
-			item->mixed || !parsed);
+			item->mixed || !parsed, ui_scale_of(widget));
 	}
 
 	void property_grid::draw_gradient_preview(vgui_widget* widget,
@@ -2835,7 +2983,7 @@ private:
 		const bool parsed = !item->mixed &&
 			gradient_editor::parse_value(item->value, value);
 		gradient_editor::draw_preview(cb, vg, x, y, w, h, value,
-			item->mixed || !parsed);
+			item->mixed || !parsed, ui_scale_of(widget));
 	}
 
 	void property_grid::on_scroll(vgui_widget* widget, float x, float y, void* user)
@@ -2844,16 +2992,17 @@ private:
 		if (!self || widget != self->panel_)
 			return;
 		self->refresh_viewport();
-		float clamped = y;
+		const float y_logical = to_logical(widget, y);
+		float clamped = y_logical;
 		if (self->viewport_h_ > 0.0f)
 		{
 			const float max_scroll = std::max(0.0f,
 				self->content_height_ + kSearchLead - self->viewport_h_);
-			clamped = std::clamp(y, 0.0f, max_scroll);
+			clamped = std::clamp(y_logical, 0.0f, max_scroll);
 		}
 		self->scroll_y_ = clamped;
-		if (clamped != y)
-			vgui_panel_set_scroll(widget, x, clamped);
+		if (std::fabs(clamped - y_logical) > 0.01f)
+			vgui_panel_set_scroll(widget, x, to_physical(widget, clamped));
 		self->update_window();
 	}
 

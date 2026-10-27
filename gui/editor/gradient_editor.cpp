@@ -5,6 +5,7 @@
 
 #include "pch.h"
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cctype>
@@ -776,8 +777,9 @@ namespace vgui_editor_kit {
 			return 0.0f;
 		float rx = 0, ry = 0, rw = 0, rh = 0;
 		vgui_widget_get_rect(bar_, &rx, &ry, &rw, &rh);
-		const float left = kBarPadX;
-		const float width = std::max(1.0f, rw - kBarPadX * 2.0f);
+		const float pad = kBarPadX * ui_scale_of(bar_);
+		const float left = pad;
+		const float width = std::max(1.0f, rw - pad * 2.0f);
 		return std::clamp((x - left) / width, 0.0f, 1.0f);
 	}
 
@@ -787,12 +789,14 @@ namespace vgui_editor_kit {
 			return -1;
 		float rx = 0, ry = 0, rw = 0, rh = 0;
 		vgui_widget_get_rect(bar_, &rx, &ry, &rw, &rh);
-		const float width = std::max(1.0f, rw - kBarPadX * 2.0f);
+		const float scale = ui_scale_of(bar_);
+		const float pad = kBarPadX * scale;
+		const float width = std::max(1.0f, rw - pad * 2.0f);
 		int best = -1;
-		float best_distance = 9.0f;
+		float best_distance = 9.0f * scale;
 		for (std::size_t i = 0; i < value_.stops.size(); ++i)
 		{
-			const float sx = kBarPadX + value_.stops[i].t * width;
+			const float sx = pad + value_.stops[i].t * width;
 			const float distance = std::fabs(x - sx);
 			if (distance < best_distance)
 			{
@@ -972,58 +976,66 @@ namespace vgui_editor_kit {
 		auto* self = static_cast<gradient_editor*>(user);
 		if (!self || !cb || !vg || w <= 0.0f || h <= 0.0f)
 			return;
-		const float bar_x = x + kBarPadX;
-		const float bar_y = y + kBarPadY;
-		const float bar_w = std::max(1.0f, w - kBarPadX * 2.0f);
-		const float bar_h = kBarGradientH;
-		ovg_tools::checkerboard(cb, vg, bar_x, bar_y, bar_w, bar_h, 6.0f,
-			0xFFCCCCCCu, 0xFFF2F2F2u);
+		const float scale = ui_scale_of(widget);
+		const float pad_x = kBarPadX * scale;
+		const float pad_y = kBarPadY * scale;
+		const float bar_x = x + pad_x;
+		const float bar_y = y + pad_y;
+		const float bar_w = std::max(1.0f, w - pad_x * 2.0f);
+		const float bar_h = kBarGradientH * scale;
+		ovg_tools::checkerboard(cb, vg, bar_x, bar_y, bar_w, bar_h,
+			6.0f * scale, 0xFFCCCCCCu, 0xFFF2F2F2u);
 		std::vector<ovg_tools::gradient_stop> stops;
 		gradient_stops_ovg(self->value_, stops);
 		if (!stops.empty())
 			ovg_tools::gradient_bar(cb, vg, bar_x, bar_y, bar_w, bar_h,
 				stops.data(), stops.size());
 		ovg_tools::stroke_rect(cb, vg, bar_x, bar_y, bar_w, bar_h,
-			to_ovg(kPanelBorder), 1.0f);
+			to_ovg(kPanelBorder), 1.0f * scale);
 
-		const float handle_y = y + h - 8.0f;
+		const float handle_y = y + h - 8.0f * scale;
+		const float stop_radius = kStopRadius * scale;
 		for (std::size_t i = 0; i < self->value_.stops.size(); ++i)
 		{
 			const gradient_stop& stop = self->value_.stops[i];
 			const float sx = bar_x + stop.t * bar_w;
-			ovg_tools::line(cb, vg, sx, bar_y + bar_h, sx, handle_y - 5.0f,
-				to_ovg(kPanelBorder), 1.0f);
+			ovg_tools::line(cb, vg, sx, bar_y + bar_h, sx,
+				handle_y - 5.0f * scale, to_ovg(kPanelBorder), 1.0f * scale);
 			uint32_t argb = 0;
 			if (!parse_color(stop.color, &argb, nullptr))
 				argb = 0xFF808080u;
-			ovg_tools::fill_circle(cb, vg, sx, handle_y, kStopRadius,
+			ovg_tools::fill_circle(cb, vg, sx, handle_y, stop_radius,
 				to_ovg(argb));
 			const bool selected = (int)i == self->selected_;
-			ovg_tools::stroke_circle(cb, vg, sx, handle_y, kStopRadius,
+			ovg_tools::stroke_circle(cb, vg, sx, handle_y, stop_radius,
 				selected ? to_ovg(kHandleOutline) : to_ovg(0xFFFFFFFFu),
-				selected ? 2.0f : 1.0f);
+				(selected ? 2.0f : 1.0f) * scale);
 		}
 	}
 
 	void gradient_editor::draw_preview(ovg_ctx_cb* cb, rvg_t* vg, float x,
-		float y, float w, float h, const gradient_value& value, bool mixed)
+		float y, float w, float h, const gradient_value& value, bool mixed,
+		float ui_scale)
 	{
 		if (!cb || !vg || w <= 0.0f || h <= 0.0f)
 			return;
+		const float scale = std::isfinite(ui_scale) && ui_scale > 0.0f
+			? ui_scale : 1.0f;
 		if (mixed)
 		{
-			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f,
+			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f * scale,
 				ovg_tools::rgba(80, 86, 92));
 			return;
 		}
-		ovg_tools::checkerboard(cb, vg, x, y, w, h, 5.0f, 0xFFCCCCCCu,
-			0xFFF2F2F2u);
+		ovg_tools::checkerboard(cb, vg, x, y, w, h, 5.0f * scale,
+			0xFFCCCCCCu, 0xFFF2F2F2u);
 		std::vector<ovg_tools::gradient_stop> stops;
 		gradient_stops_ovg(value, stops);
 		if (!stops.empty())
 			ovg_tools::gradient_bar(cb, vg, x, y, w, h, stops.data(),
 				stops.size());
-		ovg_tools::stroke_rect(cb, vg, x, y, w, h, to_ovg(kPanelBorder), 1.0f);
+		ovg_tools::stroke_rect(cb, vg, x, y, w, h, to_ovg(kPanelBorder),
+			1.0f * scale);
 	}
 
 	bool gradient_editor::parse_value(const std::string& text,

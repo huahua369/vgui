@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -647,17 +648,24 @@ namespace vgui_editor_kit {
 			static_cast<asset_preview*>(user)->tick(delta_time);
 	}
 
+	float asset_preview::ui_scale() const
+	{
+		return ui_scale_of(stage_);
+	}
+
 	void asset_preview::draw_stage(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
 		float width, float height)
 	{
 		if (!cb || !vg || width <= 1.0f || height <= 1.0f)
 			return;
 
+		const float scale = ui_scale();
 		const vgui_theme theme = theme_for(stage_);
 		const uint32_t bg = mix_color(to_ovg(theme.edit_bg ? theme.edit_bg : kFallbackPanel),
 			0xFF080A0D, 0.32f);
 		const uint32_t border = to_ovg(theme.panel_border);
-		ovg_tools::fill_round_rect(cb, vg, x, y, width, height, 4.0f, bg);
+		ovg_tools::fill_round_rect(cb, vg, x, y, width, height,
+			4.0f * scale, bg);
 
 		if (item_ == 0)
 		{
@@ -670,8 +678,8 @@ namespace vgui_editor_kit {
 		else if (!error_.empty())
 		{
 			const uint32_t danger = to_ovg(theme.modal_danger);
-			ovg_tools::fill_round_rect(cb, vg, x, y, width, height, 4.0f,
-				with_alpha(danger, 0.12f));
+			ovg_tools::fill_round_rect(cb, vg, x, y, width, height,
+				4.0f * scale, with_alpha(danger, 0.12f));
 			draw_placeholder(cb, vg, x, y, width, height);
 		}
 		else
@@ -711,8 +719,9 @@ namespace vgui_editor_kit {
 			}
 		}
 
-		ovg_tools::stroke_round_rect(cb, vg, x + 0.5f, y + 0.5f,
-			width - 1.0f, height - 1.0f, 4.0f, border, 1.0f);
+		ovg_tools::stroke_round_rect(cb, vg, x + 0.5f * scale,
+			y + 0.5f * scale, std::max(1.0f, width - scale),
+			std::max(1.0f, height - scale), 4.0f * scale, border, scale);
 	}
 
 	void asset_preview::draw_info(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
@@ -722,8 +731,9 @@ namespace vgui_editor_kit {
 			return;
 
 		const vgui_theme theme = theme_for(info_);
-		const float line_h = 14.0f;
-		float cursor_y = y + 2.0f;
+		const float scale = ui_scale();
+		const float line_h = 14.0f * scale;
+		float cursor_y = y + 2.0f * scale;
 
 		if (!error_.empty())
 		{
@@ -742,17 +752,20 @@ namespace vgui_editor_kit {
 			return;
 		}
 
-		const int rows = std::max(1, (int)((height - 2.0f) / line_h));
+		const int rows = std::max(1,
+			(int)((height - 2.0f * scale) / line_h));
+		const float label_width = 72.0f * scale;
+		const float value_x = 74.0f * scale;
 		int used = 0;
 		for (const field& item : data_.fields)
 		{
 			if (used >= rows)
 				break;
 			vgui_custom_draw_text(info_, cb, vg, item.label.c_str(), x, cursor_y,
-				72.0f, line_h, theme.disabled, 0.0f, 0.5f);
-			vgui_custom_draw_text(info_, cb, vg, item.value.c_str(), x + 74.0f,
-				cursor_y, std::max(1.0f, width - 74.0f), line_h, theme.text,
-				0.0f, 0.5f);
+				label_width, line_h, theme.disabled, 0.0f, 0.5f);
+			vgui_custom_draw_text(info_, cb, vg, item.value.c_str(),
+				x + value_x, cursor_y, std::max(1.0f, width - value_x),
+				line_h, theme.text, 0.0f, 0.5f);
 			cursor_y += line_h;
 			++used;
 		}
@@ -768,12 +781,14 @@ namespace vgui_editor_kit {
 	void asset_preview::draw_image(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
 		float width, float height)
 	{
-		const float inset = 5.0f;
+		const float scale = ui_scale();
+		const float inset = 5.0f * scale;
 		const float ix = x + inset;
 		const float iy = y + inset;
 		const float iw = std::max(1.0f, width - inset * 2.0f);
 		const float ih = std::max(1.0f, height - inset * 2.0f);
-		ovg_tools::checkerboard(cb, vg, ix, iy, iw, ih, 8.0f, 0xFF3A3F46u, 0xFF4A5058u);
+		ovg_tools::checkerboard(cb, vg, ix, iy, iw, ih, 8.0f * scale,
+			0xFF3A3F46u, 0xFF4A5058u);
 		vgui_custom_draw_texture(stage_, cb, vg, texture_, ix, iy, iw, ih, 0xFFFFFFFF);
 	}
 
@@ -784,9 +799,12 @@ namespace vgui_editor_kit {
 		const uint32_t accent = to_ovg(data_.accent ? data_.accent : theme.accent);
 		const uint32_t grid_minor = with_alpha(to_ovg(theme.panel_border), 0.45f);
 		const uint32_t grid_major = with_alpha(to_ovg(theme.panel_border), 0.8f);
-		const float spacing = std::max(14.0f, height / 6.0f);
-		ovg_tools::canvas_grid(cb, vg, x + 4.0f, y + 4.0f,
-			std::max(1.0f, width - 8.0f), std::max(1.0f, height - 8.0f),
+		const float scale = ui_scale();
+		const float spacing = std::max(14.0f * scale, height / 6.0f);
+		const float grid_inset = 4.0f * scale;
+		ovg_tools::canvas_grid(cb, vg, x + grid_inset, y + grid_inset,
+			std::max(1.0f, width - grid_inset * 2.0f),
+			std::max(1.0f, height - grid_inset * 2.0f),
 			spacing, grid_minor, 4, grid_major);
 
 		const float cx = x + width * 0.5f;
@@ -813,25 +831,27 @@ namespace vgui_editor_kit {
 		ovg_tools::fill_triangle(cb, vg, cx + s, cy - s * 0.5f, cx + s,
 			cy + s * 0.5f, cx, cy + s, right);
 
-		ovg_tools::line(cb, vg, cx, cy - s, cx, cy, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx - s, cy - s * 0.5f, cx, cy, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx + s, cy - s * 0.5f, cx, cy, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx - s, cy - s * 0.5f, cx - s, cy + s * 0.5f, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx + s, cy - s * 0.5f, cx + s, cy + s * 0.5f, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx - s, cy + s * 0.5f, cx, cy + s, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx + s, cy + s * 0.5f, cx, cy + s, edge, 1.2f);
-		ovg_tools::line(cb, vg, cx, cy + s, cx, cy, edge, 1.2f);
+		ovg_tools::line(cb, vg, cx, cy - s, cx, cy, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx - s, cy - s * 0.5f, cx, cy, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx + s, cy - s * 0.5f, cx, cy, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx - s, cy - s * 0.5f, cx - s, cy + s * 0.5f, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx + s, cy - s * 0.5f, cx + s, cy + s * 0.5f, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx - s, cy + s * 0.5f, cx, cy + s, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx + s, cy + s * 0.5f, cx, cy + s, edge, 1.2f * scale);
+		ovg_tools::line(cb, vg, cx, cy + s, cx, cy, edge, 1.2f * scale);
 	}
 
 	void asset_preview::draw_material(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
 		float width, float height)
 	{
-		const float inset = 5.0f;
+		const float scale = ui_scale();
+		const float inset = 5.0f * scale;
 		const float ix = x + inset;
 		const float iy = y + inset;
 		const float iw = std::max(1.0f, width - inset * 2.0f);
 		const float ih = std::max(1.0f, height - inset * 2.0f);
-		ovg_tools::checkerboard(cb, vg, ix, iy, iw, ih, 8.0f, 0xFF3A3F46u, 0xFF4A5058u);
+		ovg_tools::checkerboard(cb, vg, ix, iy, iw, ih, 8.0f * scale,
+			0xFF3A3F46u, 0xFF4A5058u);
 
 		const vgui_theme theme = theme_for(stage_);
 		const uint32_t accent = to_ovg(data_.accent ? data_.accent : theme.accent);
@@ -848,13 +868,14 @@ namespace vgui_editor_kit {
 				r * 0.30f, r * 0.22f, with_alpha(0xFFFFFFFFu, 0.60f));
 			ovg_tools::fill_ellipse(cb, vg, cx + r * 0.22f, cy + r * 0.30f,
 				r * 0.38f, r * 0.22f, with_alpha(secondary, 0.35f));
-			ovg_tools::stroke_circle(cb, vg, cx, cy, r, with_alpha(0xFFFFFFFFu, 0.35f), 1.0f);
+			ovg_tools::stroke_circle(cb, vg, cx, cy, r,
+				with_alpha(0xFFFFFFFFu, 0.35f), 1.0f * scale);
 		}
 
 		float sx = ix + iw * 0.64f;
 		const float sy = iy + ih * 0.25f;
-		const float sw = std::min(20.0f, (iw * 0.30f) / 4.0f);
-		const float sh = std::min(20.0f, ih * 0.24f);
+		const float sw = std::min(20.0f * scale, (iw * 0.30f) / 4.0f);
+		const float sh = std::min(20.0f * scale, ih * 0.24f);
 		std::vector<vgui_color> fallback;
 		const std::vector<vgui_color>* swatches = &data_.swatches;
 		if (swatches->empty())
@@ -868,10 +889,11 @@ namespace vgui_editor_kit {
 		{
 			if (shown >= 4 || sx + sw > ix + iw)
 				break;
-			ovg_tools::fill_round_rect(cb, vg, sx, sy, sw, sh, 2.0f, to_ovg(color));
-			ovg_tools::stroke_round_rect(cb, vg, sx, sy, sw, sh, 2.0f,
-				with_alpha(0xFFFFFFFFu, 0.35f), 1.0f);
-			sx += sw + 4.0f;
+			ovg_tools::fill_round_rect(cb, vg, sx, sy, sw, sh,
+				2.0f * scale, to_ovg(color));
+			ovg_tools::stroke_round_rect(cb, vg, sx, sy, sw, sh,
+				2.0f * scale, with_alpha(0xFFFFFFFFu, 0.35f), scale);
+			sx += sw + 4.0f * scale;
 			++shown;
 		}
 	}
@@ -880,12 +902,13 @@ namespace vgui_editor_kit {
 		float width, float height)
 	{
 		const vgui_theme theme = theme_for(stage_);
-		const float inset = 6.0f;
+		const float scale = ui_scale();
+		const float inset = 6.0f * scale;
 		const float ix = x + inset;
 		const float iy = y + inset;
 		const float iw = std::max(1.0f, width - inset * 2.0f);
 		const float ih = std::max(1.0f, height - inset * 2.0f);
-		ovg_tools::fill_round_rect(cb, vg, ix, iy, iw, ih, 3.0f,
+		ovg_tools::fill_round_rect(cb, vg, ix, iy, iw, ih, 3.0f * scale,
 			with_alpha(to_ovg(theme.edit_bg), 0.85f));
 
 		if (data_.text.empty())
@@ -893,8 +916,12 @@ namespace vgui_editor_kit {
 			draw_placeholder(cb, vg, x, y, width, height);
 			return;
 		}
-		vgui_custom_draw_text(stage_, cb, vg, data_.text.c_str(), ix + 6.0f,
-			iy + 5.0f, std::max(1.0f, iw - 12.0f), std::max(1.0f, ih - 10.0f),
+		const float padding_x = 6.0f * scale;
+		const float padding_y = 5.0f * scale;
+		vgui_custom_draw_text(stage_, cb, vg, data_.text.c_str(),
+			ix + padding_x, iy + padding_y,
+			std::max(1.0f, iw - padding_x * 2.0f),
+			std::max(1.0f, ih - padding_y * 2.0f),
 			theme.text, 0.0f, 0.0f);
 	}
 
@@ -905,13 +932,15 @@ namespace vgui_editor_kit {
 		const uint32_t accent = to_ovg(data_.accent ? data_.accent : theme.accent);
 		const uint32_t muted = with_alpha(to_ovg(theme.panel_border), 0.65f);
 
-		const float inset = 7.0f;
+		const float scale = ui_scale();
+		const float inset = 7.0f * scale;
 		const float iw = std::max(1.0f, width - inset * 2.0f);
 		const float ih = std::max(1.0f, height - inset * 2.0f);
 		const float cy = y + height * 0.5f;
-		ovg_tools::line(cb, vg, x + inset, cy, x + inset + iw, cy, muted, 1.0f);
+		ovg_tools::line(cb, vg, x + inset, cy, x + inset + iw, cy, muted,
+			scale);
 
-		const int bars = std::max(16, (int)(iw / 5.0f));
+		const int bars = std::max(16, (int)(iw / (5.0f * scale)));
 		const float step = iw / (float)bars;
 		const float half = ih * 0.42f;
 		for (int i = 0; i < bars; ++i)
@@ -930,18 +959,20 @@ namespace vgui_editor_kit {
 					std::cos((float)i * 0.11f));
 			}
 			sample = clampf(sample, 0.0f, 1.0f);
-			const float bar_h = std::max(1.5f, sample * half * 2.0f);
+			const float bar_h = std::max(1.5f * scale, sample * half * 2.0f);
 			ovg_tools::fill_round_rect(cb, vg, x + inset + (float)i * step,
-				cy - bar_h * 0.5f, std::max(1.0f, step * 0.62f), bar_h, 1.0f,
-				with_alpha(accent, 0.75f));
+				cy - bar_h * 0.5f, std::max(1.0f, step * 0.62f), bar_h,
+				scale, with_alpha(accent, 0.75f));
 		}
 
-		const float cx = x + width - inset - 9.0f;
-		ovg_tools::fill_circle(cb, vg, cx, y + inset + 9.0f, 9.0f,
+		const float radius = 9.0f * scale;
+		const float cx = x + width - inset - radius;
+		ovg_tools::fill_circle(cb, vg, cx, y + inset + radius, radius,
 			with_alpha(accent, 0.85f));
-		ovg_tools::fill_triangle(cb, vg, cx - 2.5f, y + inset + 4.5f,
-			cx + 4.5f, y + inset + 9.0f, cx - 2.5f, y + inset + 13.5f,
-			with_alpha(0xFFFFFFFFu, 0.9f));
+		ovg_tools::fill_triangle(cb, vg, cx - 2.5f * scale,
+			y + inset + 4.5f * scale, cx + 4.5f * scale,
+			y + inset + 9.0f * scale, cx - 2.5f * scale,
+			y + inset + 13.5f * scale, with_alpha(0xFFFFFFFFu, 0.9f));
 	}
 
 	void asset_preview::draw_placeholder(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
@@ -950,9 +981,15 @@ namespace vgui_editor_kit {
 		const vgui_theme theme = theme_for(stage_);
 		const uint32_t muted = to_ovg(theme.disabled);
 		const uint32_t border = with_alpha(to_ovg(theme.panel_border), 0.9f);
+		const float scale = ui_scale();
 		const float cx = x + width * 0.5f;
 		const float icon_cy = y + height * 0.38f;
-		const float size = std::min(32.0f, std::min(width, height) * 0.28f);
+		const float size = std::min(32.0f * scale,
+			std::min(width, height) * 0.28f);
+
+		const float text_inset = 8.0f * scale;
+		const float text_width = std::max(1.0f, width - text_inset * 2.0f);
+		const float line_h = 18.0f * scale;
 
 		if (loading_)
 		{
@@ -961,11 +998,12 @@ namespace vgui_editor_kit {
 				const float phase = (float)i * 2.0944f;
 				const float alpha = 0.35f + 0.65f *
 					(0.5f + 0.5f * std::sin(anim_time_ * 6.0f + phase));
-				ovg_tools::fill_circle(cb, vg, cx + (float)(i - 1) * 12.0f,
-					icon_cy, 3.2f, with_alpha(to_ovg(theme.accent), alpha));
+				ovg_tools::fill_circle(cb, vg,
+					cx + (float)(i - 1) * 12.0f * scale, icon_cy,
+					3.2f * scale, with_alpha(to_ovg(theme.accent), alpha));
 			}
-			vgui_custom_draw_text(stage_, cb, vg, loading_text_.c_str(), x + 8.0f,
-				y + height * 0.58f, std::max(1.0f, width - 16.0f), 18.0f,
+			vgui_custom_draw_text(stage_, cb, vg, loading_text_.c_str(),
+				x + text_inset, y + height * 0.58f, text_width, line_h,
 				theme.disabled, 0.5f, 0.5f);
 			return;
 		}
@@ -978,35 +1016,39 @@ namespace vgui_editor_kit {
 				cx - h * 0.58f, icon_cy + h * 0.5f,
 				with_alpha(to_ovg(theme.modal_danger), 0.22f));
 			ovg_tools::line(cb, vg, cx, icon_cy - h * 0.20f, cx, icon_cy + h * 0.16f,
-				to_ovg(theme.modal_danger), 2.0f);
-			ovg_tools::fill_circle(cb, vg, cx, icon_cy + h * 0.32f, 1.6f,
-				to_ovg(theme.modal_danger));
-			vgui_custom_draw_text(stage_, cb, vg, failed_text_.c_str(), x + 8.0f,
-				y + height * 0.52f, std::max(1.0f, width - 16.0f), 18.0f,
+				to_ovg(theme.modal_danger), 2.0f * scale);
+			ovg_tools::fill_circle(cb, vg, cx, icon_cy + h * 0.32f,
+				1.6f * scale, to_ovg(theme.modal_danger));
+			vgui_custom_draw_text(stage_, cb, vg, failed_text_.c_str(),
+				x + text_inset, y + height * 0.52f, text_width, line_h,
 				theme.modal_danger, 0.5f, 0.5f);
-			vgui_custom_draw_text(stage_, cb, vg, error_.c_str(), x + 8.0f,
-				y + height * 0.52f + 18.0f, std::max(1.0f, width - 16.0f), 18.0f,
-				theme.disabled, 0.5f, 0.5f);
+			vgui_custom_draw_text(stage_, cb, vg, error_.c_str(),
+				x + text_inset, y + height * 0.52f + line_h, text_width,
+				line_h, theme.disabled, 0.5f, 0.5f);
 			return;
 		}
 
 		/* Dashed "empty" tile plus a small diamond marker. */
-		const float tile = std::min(44.0f, std::min(width, height) * 0.34f);
+		const float tile = std::min(44.0f * scale,
+			std::min(width, height) * 0.34f);
 		ovg_tools::dashed_rect(cb, vg, cx - tile * 0.5f, icon_cy - tile * 0.4f,
-			tile, tile * 0.8f, border, 1.2f, 5.0f, 4.0f, 0.0f);
-		ovg_tools::fill_triangle(cb, vg, cx, icon_cy - 8.0f, cx + 8.0f, icon_cy,
-			cx, icon_cy + 8.0f, with_alpha(muted, 0.65f));
-		ovg_tools::fill_triangle(cb, vg, cx, icon_cy - 8.0f, cx - 8.0f, icon_cy,
-			cx, icon_cy + 8.0f, with_alpha(muted, 0.45f));
+			tile, tile * 0.8f, border, 1.2f * scale, 5.0f * scale,
+			4.0f * scale, 0.0f);
+		const float diamond = 8.0f * scale;
+		ovg_tools::fill_triangle(cb, vg, cx, icon_cy - diamond, cx + diamond,
+			icon_cy, cx, icon_cy + diamond, with_alpha(muted, 0.65f));
+		ovg_tools::fill_triangle(cb, vg, cx, icon_cy - diamond, cx - diamond,
+			icon_cy, cx, icon_cy + diamond, with_alpha(muted, 0.45f));
 
 		const std::string text = status_.empty() ? empty_text_ : status_;
-		vgui_custom_draw_text(stage_, cb, vg, text.c_str(), x + 8.0f,
-			y + height * 0.55f, std::max(1.0f, width - 16.0f), 18.0f,
+		vgui_custom_draw_text(stage_, cb, vg, text.c_str(),
+			x + text_inset, y + height * 0.55f, text_width, line_h,
 			theme.disabled, 0.5f, 0.5f);
 		if (!data_.type.empty())
-			vgui_custom_draw_text(stage_, cb, vg, data_.type.c_str(), x + 8.0f,
-				y + height * 0.55f + 17.0f, std::max(1.0f, width - 16.0f), 16.0f,
-				with_alpha(muted, 0.75f), 0.5f, 0.5f);
+			vgui_custom_draw_text(stage_, cb, vg, data_.type.c_str(),
+				x + text_inset, y + height * 0.55f + 17.0f * scale,
+				text_width, 16.0f * scale, with_alpha(muted, 0.75f),
+				0.5f, 0.5f);
 	}
 
 } /* namespace vgui_editor_kit */

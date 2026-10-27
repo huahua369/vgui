@@ -4,6 +4,7 @@
 
 #include "pch.h"
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cctype>
@@ -680,10 +681,11 @@ namespace vgui_editor_kit {
 	curve_editor::graph_rect curve_editor::graph_area_from_size(float w, float h) const
 	{
 		graph_rect area;
-		area.x = kGraphMargin;
-		area.y = kGraphMargin;
-		area.w = std::max(1.0f, w - kGraphMargin * 2.0f);
-		area.h = std::max(1.0f, h - kGraphMargin * 2.0f);
+		const float margin = kGraphMargin * ui_scale_of(graph_);
+		area.x = margin;
+		area.y = margin;
+		area.w = std::max(1.0f, w - margin * 2.0f);
+		area.h = std::max(1.0f, h - margin * 2.0f);
 		return area;
 	}
 
@@ -707,13 +709,14 @@ namespace vgui_editor_kit {
 
 	int curve_editor::key_at(const graph_rect& area, float x, float y) const
 	{
+		const float radius = 7.0f * ui_scale_of(graph_);
 		for (std::size_t i = 0; i < value_.keys.size(); ++i)
 		{
 			float kx = 0.0f, ky = 0.0f;
 			key_to_local(area, value_.keys[i], &kx, &ky);
 			const float dx = x - kx;
 			const float dy = y - ky;
-			if (dx * dx + dy * dy <= 7.0f * 7.0f)
+			if (dx * dx + dy * dy <= radius * radius)
 				return (int)i;
 		}
 		return -1;
@@ -756,7 +759,7 @@ namespace vgui_editor_kit {
 			return -1;
 		float ix = 0, iy = 0, ox = 0, oy = 0;
 		tangent_points(area, selected_, &ix, &iy, &ox, &oy);
-		const float radius = 7.0f;
+		const float radius = 7.0f * ui_scale_of(graph_);
 		if (ox >= 0.0f)
 		{
 			const float dx = x - ox, dy = y - oy;
@@ -1055,6 +1058,7 @@ namespace vgui_editor_kit {
 		if (!self || !cb || !vg || w <= 0.0f || h <= 0.0f)
 			return;
 		ovg_tools::fill_rect(cb, vg, x, y, w, h, to_ovg(kGraphBg));
+		const float scale = ui_scale_of(widget);
 		const graph_rect area = self->graph_area_from_size(w, h);
 		const float gx = x;
 		const float gy = y;
@@ -1063,28 +1067,29 @@ namespace vgui_editor_kit {
 			const float t = (float)i / 4.0f;
 			ovg_tools::line(cb, vg, gx + area.x + area.w * t, gy + area.y,
 				gx + area.x + area.w * t, gy + area.y + area.h,
-				to_ovg(kGrid), 1.0f);
+				to_ovg(kGrid), 1.0f * scale);
 			ovg_tools::line(cb, vg, gx + area.x, gy + area.y + area.h * t,
 				gx + area.x + area.w, gy + area.y + area.h * t,
-				to_ovg(kGrid), 1.0f);
+				to_ovg(kGrid), 1.0f * scale);
 		}
 		ovg_tools::stroke_rect(cb, vg, gx + area.x, gy + area.y, area.w,
-			area.h, to_ovg(kPanelBorder), 1.0f);
+			area.h, to_ovg(kPanelBorder), 1.0f * scale);
 		draw_curve_path(cb, vg, self->value_, gx + area.x, gy + area.y,
-			area.w, area.h, ovg_tools::rgba(230, 180, 90), 1.75f);
+			area.w, area.h, ovg_tools::rgba(230, 180, 90), 1.75f * scale);
 
 		for (std::size_t i = 0; i < self->value_.keys.size(); ++i)
 		{
 			float kx = 0.0f, ky = 0.0f;
 			self->key_to_local(area, self->value_.keys[i], &kx, &ky);
-			const float size = (int)i == self->selected_ ? 9.0f : 7.0f;
+			const float size = ((int)i == self->selected_ ? 9.0f : 7.0f) *
+				scale;
 			ovg_tools::fill_rect(cb, vg, gx + kx - size * 0.5f,
 				gy + ky - size * 0.5f, size, size,
 				ovg_tools::rgba(235, 235, 235));
 			if ((int)i == self->selected_)
 				ovg_tools::stroke_rect(cb, vg, gx + kx - size * 0.5f,
 					gy + ky - size * 0.5f, size, size,
-					ovg_tools::rgba(245, 190, 80), 1.0f);
+					ovg_tools::rgba(245, 190, 80), 1.0f * scale);
 		}
 
 		if (self->value_.interpolation == curve_interpolation::cubic &&
@@ -1101,45 +1106,50 @@ namespace vgui_editor_kit {
 			if (ix >= 0.0f)
 			{
 				ovg_tools::dashed_line(cb, vg, gx + kx, gy + ky,
-					gx + ix, gy + iy, line_color, 1.0f, 3.0f, 2.0f);
-				ovg_tools::fill_circle(cb, vg, gx + ix, gy + iy, 4.0f,
-					handle_color);
+					gx + ix, gy + iy, line_color, 1.0f * scale,
+					3.0f * scale, 2.0f * scale);
+				ovg_tools::fill_circle(cb, vg, gx + ix, gy + iy,
+					4.0f * scale, handle_color);
 			}
 			if (ox >= 0.0f)
 			{
 				ovg_tools::dashed_line(cb, vg, gx + kx, gy + ky,
-					gx + ox, gy + oy, line_color, 1.0f, 3.0f, 2.0f);
-				ovg_tools::fill_circle(cb, vg, gx + ox, gy + oy, 4.0f,
-					handle_color);
+					gx + ox, gy + oy, line_color, 1.0f * scale,
+					3.0f * scale, 2.0f * scale);
+				ovg_tools::fill_circle(cb, vg, gx + ox, gy + oy,
+					4.0f * scale, handle_color);
 			}
 		}
 	}
 
 	void curve_editor::draw_preview(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
-		float w, float h, const curve_value& value, bool mixed)
+		float w, float h, const curve_value& value, bool mixed,
+		float ui_scale)
 	{
 		if (!cb || !vg || w <= 0.0f || h <= 0.0f)
 			return;
+		const float scale = std::isfinite(ui_scale) && ui_scale > 0.0f
+			? ui_scale : 1.0f;
 		if (mixed)
 		{
-			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f,
+			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f * scale,
 				ovg_tools::rgba(80, 86, 92));
 			return;
 		}
-		ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f,
+		ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 3.0f * scale,
 			to_ovg(kGraphBg));
-		const float inset = std::min(4.0f, h * 0.2f);
+		const float inset = std::min(4.0f * scale, h * 0.2f);
 		draw_curve_path(cb, vg, value, x + inset, y + inset,
 			std::max(1.0f, w - inset * 2.0f),
 			std::max(1.0f, h - inset * 2.0f),
-			ovg_tools::rgba(230, 180, 90), 1.5f);
+			ovg_tools::rgba(230, 180, 90), 1.5f * scale);
 		for (const curve_key& key : value.keys)
 		{
 			const float kx = x + inset + key.t *
 				std::max(1.0f, w - inset * 2.0f);
 			const float ky = y + inset + (1.0f - key.value) *
 				std::max(1.0f, h - inset * 2.0f);
-			ovg_tools::fill_circle(cb, vg, kx, ky, 1.8f,
+			ovg_tools::fill_circle(cb, vg, kx, ky, 1.8f * scale,
 				ovg_tools::rgba(235, 235, 235));
 		}
 	}

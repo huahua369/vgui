@@ -1,6 +1,7 @@
 #include "code_editor.h"
 
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cctype>
@@ -3097,10 +3098,11 @@ namespace vgui_editor_kit {
 			scroll_y_ = bottom - g.text_height;
 
 		const float x = x_for_column(caret_.line, caret_.column);
+		const float margin = 2.0f * ui_scale();
 		if (x < scroll_x_)
 			scroll_x_ = x;
-		else if (x > scroll_x_ + g.text_width - 2.0f)
-			scroll_x_ = x - g.text_width + 2.0f;
+		else if (x > scroll_x_ + g.text_width - margin)
+			scroll_x_ = x - g.text_width + margin;
 		clamp_scroll();
 		update_text_input_rect();
 	}
@@ -3120,17 +3122,24 @@ namespace vgui_editor_kit {
 	/* geometry                                                                  */
 	/* ------------------------------------------------------------------------- */
 
+	float code_editor::ui_scale() const
+	{
+		return ui_scale_of(editor_);
+	}
+
 	code_editor::geometry code_editor::editor_geometry() const
 	{
 		geometry g;
 		if (!editor_)
 			return g;
+		const float scale = ui_scale();
 		vgui_widget_get_rect(editor_, &g.x, &g.y, &g.width, &g.height);
 		g.width = std::max(1.0f, g.width);
 		g.height = std::max(1.0f, g.height);
 		g.line_height = vgui_widget_get_line_height(editor_);
 		if (g.line_height <= 0.0f)
-			g.line_height = std::max(10.0f, font_size_ * 1.35f);
+			g.line_height = std::max(10.0f * scale,
+				font_size_ * scale * 1.35f);
 
 		int digits = 1;
 		if (!lines_.empty())
@@ -3145,16 +3154,17 @@ namespace vgui_editor_kit {
 		if (show_line_numbers_)
 		{
 			const float digit_width = vgui_widget_measure_text(editor_, "0");
-			g.gutter = (digit_width > 0.0f ? digit_width : font_size_ * 0.6f) *
-				(float)digits + 14.0f;
+			g.gutter = (digit_width > 0.0f ? digit_width :
+				font_size_ * scale * 0.6f) * (float)digits +
+				14.0f * scale;
 		}
 		else
 		{
-			g.gutter = 6.0f;
+			g.gutter = 6.0f * scale;
 		}
 		g.gutter = std::min(g.gutter, g.width * 0.4f);
 
-		const float bar = 10.0f;
+		const float bar = 10.0f * scale;
 		const float content_height = (float)lines_.size() * g.line_height;
 		bool vertical = content_height > g.height;
 		float text_width = g.width - g.gutter - (vertical ? bar : 0.0f);
@@ -3188,7 +3198,8 @@ namespace vgui_editor_kit {
 			return width;
 		}
 		const float character = vgui_widget_measure_text(editor_, "M");
-		const float unit = character > 0.0f ? character : font_size_ * 0.6f;
+		const float unit = character > 0.0f ? character :
+			font_size_ * ui_scale() * 0.6f;
 		return (float)max_line_bytes_ * unit;
 	}
 
@@ -3307,7 +3318,8 @@ namespace vgui_editor_kit {
 			0.0f, std::max(0.0f, g.text_width - 2.0f));
 		const float y = std::clamp((float)caret_.line * g.line_height -
 			scroll_y_, 0.0f, std::max(0.0f, g.text_height - g.line_height));
-		vgui_widget_set_text_input_rect(editor_, x, y, 2.0f, g.line_height);
+		vgui_widget_set_text_input_rect(editor_, x, y, 2.0f * ui_scale(),
+			g.line_height);
 	}
 
 	/* ------------------------------------------------------------------------- */

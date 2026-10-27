@@ -15926,7 +15926,9 @@ extern "C" {
 	int vgui_dock_float(vgui_widget* dock, vgui_item_id panel_id, float x, float y,
 		float width, float height)
 	{
-		return vgui_dock_float_internal(dock, panel_id, x, y, width, height, true, true) ? 1 : 0;
+		const float scale = (dock && dock->ctx) ? dock->ctx->ui_scale : 1.0f;
+		return vgui_dock_float_internal(dock, panel_id, x * scale, y * scale,
+			width * scale, height * scale, true, true) ? 1 : 0;
 	}
 
 	int vgui_dock_is_floating(vgui_widget* dock, vgui_item_id panel_id)
@@ -15949,7 +15951,9 @@ extern "C" {
 	{
 		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
 		if (!panel || panel->zone != VGUI_DOCK_FLOATING) return 0;
-		vgui_dock_clamp_rect(dock, panel, x, y, width, height, true);
+		const float scale = (dock && dock->ctx) ? dock->ctx->ui_scale : 1.0f;
+		vgui_dock_clamp_rect(dock, panel, x * scale, y * scale,
+			width * scale, height * scale, true);
 		bool raised = vgui_dock_raise_float_internal(dock, panel_id);
 		vgui_mark_dirty(dock);
 		if (raised && vgui_dock_alive(dock)) vgui_dock_notify_activate(dock, panel_id);

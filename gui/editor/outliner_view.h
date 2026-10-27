@@ -192,7 +192,11 @@ namespace vgui_editor_kit {
 
 		/* ---- O05 virtual mode ----------------------------------------------- */
 		/* Switches the tree to a virtual row source backed by the adapter.
-		 * Full-model mirroring calls become no-ops; expansion lives here. */
+		 * Full-model mirroring calls become no-ops; expansion lives here.
+		 * E02 incremental contract: scene_changed() rebuilds the visible-row
+		 * projection after add/remove/reorder while keeping stable ids and
+		 * selection; scene_row_changed() invalidates one projected row for
+		 * name/icon/flag edits without clearing the tree. */
 		void set_scene_source(scene_source source);
 		void scene_changed();				// structural host change
 		void scene_row_changed(object_id object);	// single row content

@@ -311,6 +311,8 @@ namespace vgui_editor_kit {
 		bool content_geometry(float* offset_x, float* offset_y, float* width,
 			float* height) const;
 		float effective_drag_threshold() const;
+		/* E01: chrome metrics are logical and converted to render pixels. */
+		float ui_scale() const;
 		metrics layout_metrics() const;
 		float total_track_height() const;
 		float max_scroll_y(const metrics& m) const;

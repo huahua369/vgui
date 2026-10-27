@@ -271,6 +271,9 @@ namespace vgui_editor_kit {
 			const layout_metrics& metrics);
 
 		layout_metrics metrics() const;
+		float ui_scale() const;
+		float column_width_px(std::size_t column) const;
+		float row_height_px() const;
 		float column_offset(std::size_t column) const;
 		int column_at(float content_x) const;
 		std::size_t row_at(float content_y) const;

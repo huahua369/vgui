@@ -226,6 +226,12 @@ struct editor_state
 	std::map<vgui_item_id, std::string> browse_assets;
 	/* T01: stable object ids backing the TABLE tab rows. */
 	std::vector<object_id> table_rows;
+	/* E02: row icons are created once and shared by the virtual outliner
+	 * source; the tree never owns per-row icon copies in this mode. */
+	vgui_texture* outliner_icon_scene = nullptr;
+	vgui_texture* outliner_icon_group = nullptr;
+	vgui_texture* outliner_icon_object = nullptr;
+	object_id outliner_scene_root = invalid_object;
 	/* V01/V09: 共享 3D 渲染器、每个相机视口独立的 view 与 UI 原生纹理。 */
 	phase0_renderer* renderer = nullptr;
 	phase0_view* main_view = nullptr;
@@ -452,26 +458,71 @@ struct editor_state
 	static vgui_color asset_base_color(const std::string& type);
 	static vgui_color asset_accent_color(const std::string& type);
 
+	/* E02: the virtual tree pulls rows from the model on demand.  Only the
+	 * outliner's own flag mirror is pushed back, and only for objects whose
+	 * value actually differs, so a structural change does not restamp every
+	 * row button. */
+	void sync_outliner_flags()
+	{
+		if (!shell)
+			return;
+		outliner_view& outliner = shell->scene();
+		for (const auto& entry : scene.objects)
+		{
+			const scene_object& object = entry.second;
+			if (outliner.object_visibility(entry.first) != object.visible)
+				outliner.set_object_visibility(entry.first, object.visible);
+			if (outliner.object_locked(entry.first) != object.locked)
+				outliner.set_object_locked(entry.first, object.locked);
+		}
+	}
+
+	/* T01: refresh the single table row backed by this object. */
+	void refresh_table_row(object_id id)
+	{
+		if (!shell || id == invalid_object)
+			return;
+		const auto it = std::find(table_rows.begin(), table_rows.end(), id);
+		if (it != table_rows.end())
+			shell->table().refresh_row(
+				(std::size_t)(it - table_rows.begin()));
+	}
+
+	/* E02: name/flag edits refresh one projected row instead of clearing and
+	 * rebuilding the whole tree.  Structural changes use rebuild_outliner(). */
+	void refresh_outliner_row(object_id id)
+	{
+		if (!shell || id == invalid_object)
+			return;
+		outliner_view& outliner = shell->scene();
+		if (outliner.is_virtual())
+			outliner.scene_row_changed(id);
+		else
+			rebuild_outliner();
+		refresh_table_row(id);
+	}
+
 	void rebuild_outliner()
 	{
 		outliner_view& outliner = shell->scene();
-		outliner.clear();
-		std::function<void(object_id, vgui_item_id)> add = [&](object_id id,
-			vgui_item_id parent_item)
+		if (outliner.is_virtual())
+			outliner.scene_changed();
+		else
 		{
-			const scene_object& o = scene.objects[id];
-			const vgui_item_id item = outliner.add_node(o.name.c_str(),
-				parent_item, id);
-			outliner.set_object_visibility(id, o.visible);
-			outliner.set_object_locked(id, o.locked);
-			for (object_id c : o.children)
-				add(c, item);
-		};
-		for (object_id id : scene.roots)
-			add(id, 0);
-		/* 恢复选择与展开 */
-		if (context->selection() != invalid_object)
-			context->set_selection(context->selection());
+			outliner.clear();
+			std::function<void(object_id, vgui_item_id)> add = [&](object_id id,
+				vgui_item_id parent_item)
+			{
+				const scene_object& o = scene.objects[id];
+				const vgui_item_id item = outliner.add_node(o.name.c_str(),
+					parent_item, id);
+				for (object_id c : o.children)
+					add(c, item);
+			};
+			for (object_id id : scene.roots)
+				add(id, 0);
+		}
+		sync_outliner_flags();
 		refresh_table_rows();
 	}
 
@@ -561,7 +612,7 @@ struct editor_state
 			if (!object || value.empty())
 				return false;
 			object->name = value;
-			rebuild_outliner();
+			refresh_outliner_row(object->id);
 			return true;
 		};
 
@@ -581,7 +632,7 @@ struct editor_state
 			if (!object)
 				return false;
 			object->visible = value == "true";
-			rebuild_outliner();
+			sync_outliner_flags();
 			return true;
 		};
 
@@ -595,7 +646,7 @@ struct editor_state
 			if (!object)
 				return false;
 			object->locked = value == "true";
-			rebuild_outliner();
+			sync_outliner_flags();
 			return true;
 		};
 
@@ -1533,29 +1584,6 @@ static bool load_demo_preview(const asset_preview::request& req,
 	return true;
 }
 
-/* item_for:遍历树把 object_id 映射回 vgui_item_id(图标等行级设置用)。 */
-static vgui_item_id item_for(outliner_view& outliner, object_id id)
-{
-	/* kit 的 add_node 把 object 存进 item user;通过树 API 遍历。 */
-	vgui_widget* tree = outliner.widget();
-	if (!tree)
-		return 0;
-	std::vector<vgui_item_id> stack;
-	for (int i = vgui_tree_get_root_count(tree) - 1; i >= 0; --i)
-		stack.push_back(vgui_tree_get_root(tree, i));
-	while (!stack.empty())
-	{
-		const vgui_item_id item = stack.back();
-		stack.pop_back();
-		const void* user = vgui_tree_get_item_user(tree, item);
-		if ((object_id)(std::uintptr_t)user == id)
-			return item;
-		for (int i = vgui_tree_get_child_count(tree, item) - 1; i >= 0; --i)
-			stack.push_back(vgui_tree_get_child(tree, item, i));
-	}
-	return 0;
-}
-
 //---------------------------------------------------------------------------
 // V03: 示例级拾取——射线/AABB/投影数学留在宿主，kit 只负责手势与选择同步
 //---------------------------------------------------------------------------
@@ -2244,22 +2272,49 @@ static void setup_editor(vgui_context* ui)
 	g.configure_timeline(cube);
 	g.configure_node_graph();
 	g.configure_code();
-	g.rebuild_outliner();
 
 	/* 类型图标:场景根(青)、容器组(红)、普通对象(灰蓝),2x2 纯色 CPU
-	 * 纹理,不依赖外部资源。 */
-	vgui_texture* tex_scene = make_type_texture(ui, 0xFF40E0D0u);
-	vgui_texture* tex_group = make_type_texture(ui, 0xFFE06060u);
-	vgui_texture* tex_object = make_type_texture(ui, 0xFF7090C0u);
-	for (const auto& entry : g.scene.objects)
-	{
-		const scene_object& o = entry.second;
-		vgui_texture* icon = o.parent == invalid_object && o.children.empty()
-			? tex_object
-			: entry.first == world ? tex_scene
-			: !o.children.empty() ? tex_group : tex_object;
-		outliner.set_node_icon(item_for(outliner, entry.first), icon);
-	}
+	 * 纹理,不依赖外部资源。E02:虚拟 scene_source 按需返回图标,树不再为
+	 * 每个节点保存一份行级图标。 */
+	g.outliner_icon_scene = make_type_texture(ui, 0xFF40E0D0u);
+	g.outliner_icon_group = make_type_texture(ui, 0xFFE06060u);
+	g.outliner_icon_object = make_type_texture(ui, 0xFF7090C0u);
+	g.outliner_scene_root = world;
+
+	outliner_view::scene_source source;
+	source.root_count = []() { return g.scene.roots.size(); };
+	source.root_at = [](std::size_t index) {
+		return index < g.scene.roots.size() ? g.scene.roots[index]
+			: invalid_object;
+	};
+	source.child_count = [](object_id id) -> std::size_t {
+		const auto it = g.scene.objects.find(id);
+		return it == g.scene.objects.end() ? 0 : it->second.children.size();
+	};
+	source.child_at = [](object_id id, std::size_t index) -> object_id {
+		const auto it = g.scene.objects.find(id);
+		return it == g.scene.objects.end() ||
+			index >= it->second.children.size()
+			? invalid_object : it->second.children[index];
+	};
+	source.name = [](object_id id) {
+		const auto it = g.scene.objects.find(id);
+		return it == g.scene.objects.end() ? std::string() : it->second.name;
+	};
+	source.parent_of = [](object_id id) { return g.scene.parent_of(id); };
+	source.icon = [](object_id id) -> vgui_texture* {
+		const auto it = g.scene.objects.find(id);
+		if (it == g.scene.objects.end())
+			return nullptr;
+		if (id == g.outliner_scene_root && !it->second.children.empty())
+			return g.outliner_icon_scene;
+		return it->second.children.empty() ? g.outliner_icon_object
+			: g.outliner_icon_group;
+	};
+	outliner.set_scene_source(std::move(source));
+	/* 初始结构只投影一次;之后移动/新建/删除走 scene_changed(),名称与
+	 * 可见性/锁定编辑走 scene_row_changed()。 */
+	g.rebuild_outliner();
 
 	/* 移动:拒绝放进自己的子树。 */
 	outliner.set_move_handler([&](object_id node, object_id parent,
@@ -2280,7 +2335,7 @@ static void setup_editor(vgui_context* ui)
 		if (name.empty() || name.size() > 64)
 			return false;
 		g.scene.objects[node].name = name;
-		g.rebuild_outliner();
+		g.refresh_outliner_row(node);
 		return true;
 	});
 
@@ -2342,15 +2397,24 @@ static void setup_editor(vgui_context* ui)
 		}
 	});
 
-	/* 可见性/锁定反馈到状态栏。 */
+	/* 可见性/锁定反馈到状态栏,并写回宿主模型;行按钮由 outliner 就地
+	 * 刷新(scene_row_changed),不重建整棵树。 */
 	outliner.set_visibility_listener([](object_id id, bool visible) {
+		auto it = g.scene.objects.find(id);
+		if (it != g.scene.objects.end())
+			it->second.visible = visible;
+		g.refresh_table_row(id);
 		g.shell->set_status(std::string(visible ? "show " : "hide ") +
-			(g.scene.objects.count(id) ? g.scene.objects[id].name
+			(it != g.scene.objects.end() ? it->second.name
 				: std::to_string(id)));
 	});
 	outliner.set_lock_listener([](object_id id, bool locked) {
+		auto it = g.scene.objects.find(id);
+		if (it != g.scene.objects.end())
+			it->second.locked = locked;
+		g.refresh_table_row(id);
 		g.shell->set_status(std::string(locked ? "lock " : "unlock ") +
-			(g.scene.objects.count(id) ? g.scene.objects[id].name
+			(it != g.scene.objects.end() ? it->second.name
 				: std::to_string(id)));
 	});
 
@@ -2419,14 +2483,88 @@ static void setup_editor(vgui_context* ui)
 		g.shell->set_status("missing asset on " + id);
 	});
 
+	/* 多目标 getter/setter:Transform 读场景字段,其余值存在对象 props
+	 * 里(name 特殊)。E02:只安装一次,选择切换时由 set_properties() 内联
+	 * 读取,避免每次重建行时重新挂接回调。 */
+	property_grid& props_grid = g.shell->properties();
+	props_grid.set_multi_getter([](const std::string& pid, object_id obj)
+		-> std::string
+	{
+		auto it = g.scene.objects.find(obj);
+		if (it == g.scene.objects.end())
+			return "";
+		if (pid == "name")
+			return it->second.name;
+		if (pid == "position")
+			return editor_transform::vec3_text(it->second.position);
+		if (pid == "rotation")
+			return editor_transform::euler_text(it->second.rotation);
+		if (pid == "scale")
+			return editor_transform::vec3_text(it->second.scale);
+		auto pit = it->second.props.find(pid);
+		return pit == it->second.props.end() ? "" : pit->second;
+	});
+	props_grid.set_multi_setter([](const std::string& pid, object_id obj,
+		const std::string& value)
+	{
+		auto it = g.scene.objects.find(obj);
+		if (it == g.scene.objects.end())
+			return;
+		if (pid == "position" || pid == "rotation" || pid == "scale")
+		{
+			camera_vec3 parsed;
+			if (!editor_transform::parse_vec3(value, &parsed))
+				return;
+			if (pid == "position")
+				it->second.position = parsed;
+			else if (pid == "rotation")
+				it->second.rotation =
+					editor_transform::from_euler_degrees(parsed);
+			else
+				it->second.scale = {
+					editor_transform::clamp_scale(parsed.x),
+					editor_transform::clamp_scale(parsed.y),
+					editor_transform::clamp_scale(parsed.z) };
+			return;
+		}
+		if (pid == "name")
+		{
+			it->second.name = value;
+			/* E02:批量重命名只刷新被改的行,树结构不变。 */
+			g.refresh_outliner_row(it->first);
+		}
+		else
+		{
+			it->second.props[pid] = value;
+		}
+	});
+	/* E02:change listener 同样只安装一次,选择切换不重新挂接。 */
+	props_grid.set_change_listener([](const std::string& pid,
+		const std::string& value)
+	{
+		/* 多目标模式写入走 multi_setter;这里只做状态反馈与
+		 * 单选时的模型写回。 */
+		object_id sel = g.context->selection();
+		if (sel == invalid_object || !g.scene.objects.count(sel))
+			return;
+		if (pid == "position" || pid == "rotation" || pid == "scale" ||
+			pid == "mesh" || pid == "target" || pid == "tint" ||
+			pid == "idle_curve" || pid == "color_ramp")
+		{
+			g.shell->set_status(pid + " = " + (value.empty()
+				? std::string("(none)") : value));
+		}
+	});
+
 	/* 选中变化 → 重建属性行(名称/颜色/网格/目标)。 */
 	/* 选中变化 → 重建属性行;Outliner 多选(P08)时进入多目标模式,
 	 * 值不同的行显示混合态,提交批量写入所有选中对象。 */
-	/* V03: 监听完整选择集——视口框选/Outliner 多选都走同一条路径。 */
+	/* V03: 监听完整选择集——视口框选/Outliner 多选都走同一条路径。
+	 * E02:set_properties() 按 id+type 复用行 widget,同 schema 的对象切换
+	 * 不再 clear/add,滚动位置、分类折叠与正在编辑的输入框都保持。 */
 	g.context->add_selection_set_listener([](const std::vector<object_id>& selection)
 	{
 		property_grid& grid = g.shell->properties();
-		grid.clear();
 		const object_id id = g.context->selection();
 
 		std::vector<object_id> targets = selection;
@@ -2434,235 +2572,170 @@ static void setup_editor(vgui_context* ui)
 			targets.clear();
 		grid.set_multi_targets(targets);
 
-		if (id == invalid_object || !g.scene.objects.count(id))
-			return;
-		const scene_object& o = g.scene.objects[id];
-
-		auto prop_of = [&](const std::string& pid,
-			const std::string& fallback) -> std::string
+		std::vector<property_desc> rows;
+		if (id != invalid_object && g.scene.objects.count(id))
 		{
-			auto it = g.scene.objects[id].props.find(pid);
-			return it == g.scene.objects[id].props.end() ? fallback
-				: it->second;
-		};
+			const scene_object& o = g.scene.objects[id];
 
-		property_desc name;
-		name.id = "name";
-		name.label = "Name";
-		name.type = property_type::text;
-		name.value = o.name;
-		name.category = "Object";
-		name.default_value = o.name;
-		name.has_default = true;
-		grid.add_property(name);
-
-		/* V07: Transform rows read the same scene state the gizmo writes, so a
-		 * gizmo drag and a numeric edit converge on identical values. */
-		property_desc position;
-		position.id = "position";
-		position.label = "Position";
-		position.type = property_type::vector3;
-		position.semantic = vector_semantic::position;
-		position.value = editor_transform::vec3_text(o.position);
-		position.category = "Transform";
-		position.get_value = [oid = id]() -> std::string {
-			auto it = g.scene.objects.find(oid);
-			return it == g.scene.objects.end() ? std::string()
-				: editor_transform::vec3_text(it->second.position);
-		};
-		position.set_value = [oid = id](const std::string& value) {
-			camera_vec3 parsed;
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end() &&
-				editor_transform::parse_vec3(value, &parsed))
-				it->second.position = parsed;
-		};
-		grid.add_property(position);
-
-		property_desc rotation;
-		rotation.id = "rotation";
-		rotation.label = "Rotation";
-		rotation.type = property_type::vector3;
-		rotation.value = editor_transform::euler_text(o.rotation);
-		rotation.category = "Transform";
-		rotation.tooltip = "Euler degrees (XYZ)";
-		rotation.get_value = [oid = id]() -> std::string {
-			auto it = g.scene.objects.find(oid);
-			return it == g.scene.objects.end() ? std::string()
-				: editor_transform::euler_text(it->second.rotation);
-		};
-		rotation.set_value = [oid = id](const std::string& value) {
-			camera_vec3 parsed;
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end() &&
-				editor_transform::parse_vec3(value, &parsed))
-				it->second.rotation =
-					editor_transform::from_euler_degrees(parsed);
-		};
-		grid.add_property(rotation);
-
-		property_desc scale;
-		scale.id = "scale";
-		scale.label = "Scale";
-		scale.type = property_type::vector3;
-		scale.value = editor_transform::vec3_text(o.scale);
-		scale.category = "Transform";
-		scale.tooltip = "Per-axis scale";
-		scale.get_value = [oid = id]() -> std::string {
-			auto it = g.scene.objects.find(oid);
-			return it == g.scene.objects.end() ? std::string()
-				: editor_transform::vec3_text(it->second.scale);
-		};
-		scale.set_value = [oid = id](const std::string& value) {
-			camera_vec3 parsed;
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end() &&
-				editor_transform::parse_vec3(value, &parsed))
+			auto prop_of = [&](const std::string& pid,
+				const std::string& fallback) -> std::string
 			{
-				it->second.scale = { editor_transform::clamp_scale(parsed.x),
-					editor_transform::clamp_scale(parsed.y),
-					editor_transform::clamp_scale(parsed.z) };
-			}
-		};
-		grid.add_property(scale);
+				auto it = g.scene.objects[id].props.find(pid);
+				return it == g.scene.objects[id].props.end() ? fallback
+					: it->second;
+			};
 
-		property_desc color;
-		color.id = "tint";
-		color.label = "Tint";
-		color.type = property_type::color;
-		color.value = prop_of("tint", "#FFFFFFFF");
-		color.category = "Rendering";
-		color.tooltip = "Light tint (HSV picker)";
-		grid.add_property(color);
+			property_desc name;
+			name.id = "name";
+			name.label = "Name";
+			name.type = property_type::text;
+			name.value = o.name;
+			name.category = "Object";
+			name.default_value = o.name;
+			name.has_default = true;
+			rows.push_back(std::move(name));
 
-		property_desc mesh;
-		mesh.id = "mesh";
-		mesh.label = "Mesh";
-		mesh.type = property_type::asset;
-		mesh.value = prop_of("mesh", "");
-		mesh.asset_filter = "mesh";
-		mesh.category = "Rendering";
-		mesh.tooltip = "Drag from ASSETS or use ...";
-		/* A04:拖放/浏览提交写回宿主模型;undo/redo 经同一 setter 同步。 */
-		mesh.set_value = [oid = id](const std::string& value) {
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end())
-				it->second.props["mesh"] = value;
-		};
-		grid.add_property(mesh);
-
-		property_desc target;
-		target.id = "target";
-		target.label = "Target";
-		target.type = property_type::object_ref;
-		target.value = prop_of("target", "");
-		target.category = "AI";
-		target.tooltip = "Click the name to select";
-		grid.add_property(target);
-
-		/* P09:曲线 / 渐变自定义编辑器。行内显示紧凑预览,点击打开
-		 * popup;预览与 popup 共用同一撤销记录。 */
-		property_desc idle_curve;
-		idle_curve.id = "idle_curve";
-		idle_curve.label = "Idle Curve";
-		idle_curve.type = property_type::curve;
-		idle_curve.value = prop_of("idle_curve",
-			"cubic;0,0,0,0;0.5,1,0,0;1,0,0,0");
-		idle_curve.category = "Animation";
-		idle_curve.tooltip = "Double-click the graph to add keys; edit tangents";
-		idle_curve.set_value = [oid = id](const std::string& value) {
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end())
-				it->second.props["idle_curve"] = value;
-		};
-		grid.add_property(idle_curve);
-
-		property_desc color_ramp;
-		color_ramp.id = "color_ramp";
-		color_ramp.label = "Color Ramp";
-		color_ramp.type = property_type::gradient;
-		color_ramp.value = prop_of("color_ramp",
-			"0,#FF6A00;0.5,#FFD000;1,#FFFFFF");
-		color_ramp.category = "Rendering";
-		color_ramp.tooltip = "Drag stops, double-click to add, apply presets";
-		color_ramp.set_value = [oid = id](const std::string& value) {
-			auto it = g.scene.objects.find(oid);
-			if (it != g.scene.objects.end())
-				it->second.props["color_ramp"] = value;
-		};
-		grid.add_property(color_ramp);
-
-		/* 多目标 getter/setter:Transform 读场景字段,其余值存在对象 props
-		 * 里(name 特殊)。 */
-		grid.set_multi_getter([](const std::string& pid, object_id obj)
-			-> std::string
-		{
-			auto it = g.scene.objects.find(obj);
-			if (it == g.scene.objects.end())
-				return "";
-			if (pid == "name")
-				return it->second.name;
-			if (pid == "position")
-				return editor_transform::vec3_text(it->second.position);
-			if (pid == "rotation")
-				return editor_transform::euler_text(it->second.rotation);
-			if (pid == "scale")
-				return editor_transform::vec3_text(it->second.scale);
-			auto pit = it->second.props.find(pid);
-			return pit == it->second.props.end() ? "" : pit->second;
-		});
-		grid.set_multi_setter([](const std::string& pid, object_id obj,
-			const std::string& value)
-		{
-			auto it = g.scene.objects.find(obj);
-			if (it == g.scene.objects.end())
-				return;
-			if (pid == "position" || pid == "rotation" || pid == "scale")
-			{
+			/* V07: Transform rows read the same scene state the gizmo writes, so a
+			 * gizmo drag and a numeric edit converge on identical values. */
+			property_desc position;
+			position.id = "position";
+			position.label = "Position";
+			position.type = property_type::vector3;
+			position.semantic = vector_semantic::position;
+			position.value = editor_transform::vec3_text(o.position);
+			position.category = "Transform";
+			position.get_value = [oid = id]() -> std::string {
+				auto it = g.scene.objects.find(oid);
+				return it == g.scene.objects.end() ? std::string()
+					: editor_transform::vec3_text(it->second.position);
+			};
+			position.set_value = [oid = id](const std::string& value) {
 				camera_vec3 parsed;
-				if (!editor_transform::parse_vec3(value, &parsed))
-					return;
-				if (pid == "position")
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end() &&
+					editor_transform::parse_vec3(value, &parsed))
 					it->second.position = parsed;
-				else if (pid == "rotation")
+			};
+			rows.push_back(std::move(position));
+
+			property_desc rotation;
+			rotation.id = "rotation";
+			rotation.label = "Rotation";
+			rotation.type = property_type::vector3;
+			rotation.value = editor_transform::euler_text(o.rotation);
+			rotation.category = "Transform";
+			rotation.tooltip = "Euler degrees (XYZ)";
+			rotation.get_value = [oid = id]() -> std::string {
+				auto it = g.scene.objects.find(oid);
+				return it == g.scene.objects.end() ? std::string()
+					: editor_transform::euler_text(it->second.rotation);
+			};
+			rotation.set_value = [oid = id](const std::string& value) {
+				camera_vec3 parsed;
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end() &&
+					editor_transform::parse_vec3(value, &parsed))
 					it->second.rotation =
 						editor_transform::from_euler_degrees(parsed);
-				else
-					it->second.scale = {
-						editor_transform::clamp_scale(parsed.x),
+			};
+			rows.push_back(std::move(rotation));
+
+			property_desc scale;
+			scale.id = "scale";
+			scale.label = "Scale";
+			scale.type = property_type::vector3;
+			scale.value = editor_transform::vec3_text(o.scale);
+			scale.category = "Transform";
+			scale.tooltip = "Per-axis scale";
+			scale.get_value = [oid = id]() -> std::string {
+				auto it = g.scene.objects.find(oid);
+				return it == g.scene.objects.end() ? std::string()
+					: editor_transform::vec3_text(it->second.scale);
+			};
+			scale.set_value = [oid = id](const std::string& value) {
+				camera_vec3 parsed;
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end() &&
+					editor_transform::parse_vec3(value, &parsed))
+				{
+					it->second.scale = { editor_transform::clamp_scale(parsed.x),
 						editor_transform::clamp_scale(parsed.y),
 						editor_transform::clamp_scale(parsed.z) };
-				return;
-			}
-			if (pid == "name")
-			{
-				it->second.name = value;
-				g.rebuild_outliner();
-			}
-			else
-			{
-				it->second.props[pid] = value;
-			}
-		});
-		/* 多目标模式下重建后立即检测混合态。 */
-		grid.refresh();
+				}
+			};
+			rows.push_back(std::move(scale));
 
-		grid.set_change_listener([](const std::string& pid,
-			const std::string& value)
-		{
-			/* 多目标模式写入走 multi_setter;这里只做状态反馈与
-			 * 单选时的模型写回。 */
-			object_id sel = g.context->selection();
-			if (sel == invalid_object || !g.scene.objects.count(sel))
-				return;
-			if (pid == "position" || pid == "rotation" || pid == "scale" ||
-				pid == "mesh" || pid == "target" || pid == "tint" ||
-				pid == "idle_curve" || pid == "color_ramp")
-			{
-				g.shell->set_status(pid + " = " + (value.empty()
-					? std::string("(none)") : value));
-			}
-		});
+			property_desc color;
+			color.id = "tint";
+			color.label = "Tint";
+			color.type = property_type::color;
+			color.value = prop_of("tint", "#FFFFFFFF");
+			color.category = "Rendering";
+			color.tooltip = "Light tint (HSV picker)";
+			rows.push_back(std::move(color));
+
+			property_desc mesh;
+			mesh.id = "mesh";
+			mesh.label = "Mesh";
+			mesh.type = property_type::asset;
+			mesh.value = prop_of("mesh", "");
+			mesh.asset_filter = "mesh";
+			mesh.category = "Rendering";
+			mesh.tooltip = "Drag from ASSETS or use ...";
+			/* A04:拖放/浏览提交写回宿主模型;undo/redo 经同一 setter 同步。 */
+			mesh.set_value = [oid = id](const std::string& value) {
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end())
+					it->second.props["mesh"] = value;
+			};
+			rows.push_back(std::move(mesh));
+
+			property_desc target;
+			target.id = "target";
+			target.label = "Target";
+			target.type = property_type::object_ref;
+			target.value = prop_of("target", "");
+			target.category = "AI";
+			target.tooltip = "Click the name to select";
+			rows.push_back(std::move(target));
+
+			/* P09:曲线 / 渐变自定义编辑器。行内显示紧凑预览,点击打开
+			 * popup;预览与 popup 共用同一撤销记录。 */
+			property_desc idle_curve;
+			idle_curve.id = "idle_curve";
+			idle_curve.label = "Idle Curve";
+			idle_curve.type = property_type::curve;
+			idle_curve.value = prop_of("idle_curve",
+				"cubic;0,0,0,0;0.5,1,0,0;1,0,0,0");
+			idle_curve.category = "Animation";
+			idle_curve.tooltip = "Double-click the graph to add keys; edit tangents";
+			idle_curve.set_value = [oid = id](const std::string& value) {
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end())
+					it->second.props["idle_curve"] = value;
+			};
+			rows.push_back(std::move(idle_curve));
+
+			property_desc color_ramp;
+			color_ramp.id = "color_ramp";
+			color_ramp.label = "Color Ramp";
+			color_ramp.type = property_type::gradient;
+			color_ramp.value = prop_of("color_ramp",
+				"0,#FF6A00;0.5,#FFD000;1,#FFFFFF");
+			color_ramp.category = "Rendering";
+			color_ramp.tooltip = "Drag stops, double-click to add, apply presets";
+			color_ramp.set_value = [oid = id](const std::string& value) {
+				auto it = g.scene.objects.find(oid);
+				if (it != g.scene.objects.end())
+					it->second.props["color_ramp"] = value;
+			};
+			rows.push_back(std::move(color_ramp));
+		}
+
+		/* 同 schema 时 set_properties 返回 0:行 widget、滚动与折叠状态
+		 * 全部保留;多目标混合态在函数内即时同步。 */
+		grid.set_properties(std::move(rows));
+		grid.refresh();
 	});
 
 	/* A02 资产浏览器:宿主按 path id 提供面包屑与目录内容,双击文件夹进入;
@@ -3035,6 +3108,9 @@ int main()
 	vgui_context_set_size(ui, win_w, win_h);
 	setup_editor(ui);
 	form->viewport->ui = ui;
+	// E01: adopt the monitor/DPI scale before the first frame.  The backend
+	// re-syncs on monitor changes; this only avoids a one-frame flash.
+	form->sync_ui_scale(true);
 
 	// ---- 主循环 ----
 	vg_fbo_t* fbo = &form->fbo;

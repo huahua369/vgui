@@ -5,6 +5,7 @@
 #include "drag_bridge.h"
 #include "search_box.h"
 #include "toolbar.h"
+#include "ui_scale.h"
 
 #include "pch.h"
 #include "tools/tools.hpp"
@@ -1105,7 +1106,7 @@ namespace vgui_editor_kit {
 		{
 			const float w = std::max(1.0f, last_grid_width_);
 			const float h = std::max(1.0f, grid_content_h_);
-			vgui_widget_set_size(grid_, w, h);
+			vgui_widget_set_size(grid_, to_logical(grid_, w), to_logical(grid_, h));
 		}
 		if (list_)
 			vgui_list_source_changed(list_);
@@ -2776,40 +2777,42 @@ namespace vgui_editor_kit {
 		last_grid_width_ = width;
 		grid_content_h_ = content_h;
 		if (width_changed || height_changed)
-			vgui_widget_set_size(grid_, width, std::max(1.0f, content_h));
+			vgui_widget_set_size(grid_, to_logical(grid_, width),
+				to_logical(grid_, std::max(1.0f, content_h)));
 	}
 
 	asset_browser::grid_metrics asset_browser::metrics_for_width(float width) const
 	{
 		grid_metrics metrics;
-		metrics.pad = 8.0f;
-		metrics.gap = 8.0f;
+		const float scale = ui_scale_of(scroll_ ? scroll_ : grid_);
+		metrics.pad = 8.0f * scale;
+		metrics.gap = 8.0f * scale;
 		const float avail = std::max(1.0f, width - metrics.pad * 2.0f);
-		const float target = 112.0f;
+		const float target = 112.0f * scale;
 		metrics.columns = std::max(1, (int)std::floor((avail + metrics.gap) / (target + metrics.gap)));
 		metrics.cell_w = std::max(1.0f, (avail - (float)(metrics.columns - 1) * metrics.gap) / (float)metrics.columns);
-		metrics.cell_h = clampf(metrics.cell_w * 1.16f, 112.0f, 168.0f);
+		metrics.cell_h = clampf(metrics.cell_w * 1.16f, 112.0f * scale, 168.0f * scale);
 		return metrics;
 	}
 
 	float asset_browser::available_width() const
 	{
 		if (!scroll_)
-			return 320.0f;
+			return 320.0f * ui_scale_of(grid_);
 		float w = 0.0f, h = 0.0f;
 		vgui_widget_get_rect(scroll_, nullptr, nullptr, &w, &h);
 		(void)h;
 		if (w <= 0.0f)
-			return 320.0f;
+			return 320.0f * ui_scale_of(scroll_);
 		const vgui_style style = style_for(scroll_);
 		w -= style.panel.scrollbar_width + style.panel.scrollbar_inset;
-		return std::max(32.0f, w);
+		return std::max(32.0f * ui_scale_of(scroll_), w);
 	}
 
 	float asset_browser::available_height() const
 	{
 		if (!scroll_)
-			return 180.0f;
+			return 180.0f * ui_scale_of(grid_);
 		float w = 0.0f, h = 0.0f;
 		vgui_widget_get_rect(scroll_, nullptr, nullptr, &w, &h);
 		(void)w;
@@ -2900,6 +2903,7 @@ namespace vgui_editor_kit {
 	void asset_browser::draw_cell(ovg_ctx_cb* cb, rvg_t* vg, const grid_metrics& metrics, int index, const asset_info& info, float abs_x, float abs_y)
 	{
 		const vgui_theme theme = theme_for(grid_);
+		const float scale = ui_scale_of(grid_);
 		float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
 		cell_rect(metrics, index, &x, &y, &w, &h);
 		if (w <= 1.0f || h <= 1.0f)
@@ -2910,17 +2914,17 @@ namespace vgui_editor_kit {
 		const bool selected = is_selected(info.id);
 		const bool hovered = hover_index_ == index;
 		if (selected)
-			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 5.0f, to_ovg(theme.row_selected ? theme.row_selected : 0x55409EFF));
+			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.row_selected ? theme.row_selected : 0x55409EFF));
 		else if (hovered)
-			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 5.0f, to_ovg(theme.row_hover ? theme.row_hover : 0x334A4A4A));
+			ovg_tools::fill_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.row_hover ? theme.row_hover : 0x334A4A4A));
 
-		const float thumb_x = x + 5.0f;
-		const float thumb_y = y + 5.0f;
-		const float thumb_w = std::max(1.0f, w - 10.0f);
-		const float thumb_h = std::max(20.0f, h - 36.0f);
+		const float thumb_x = x + 5.0f * scale;
+		const float thumb_y = y + 5.0f * scale;
+		const float thumb_w = std::max(1.0f, w - 10.0f * scale);
+		const float thumb_h = std::max(20.0f * scale, h - 36.0f * scale);
 		const vgui_color thumb_bg = theme.edit_bg ? theme.edit_bg : theme.track;
 		if (thumb_bg)
-			ovg_tools::fill_round_rect(cb, vg, thumb_x, thumb_y, thumb_w, thumb_h, 4.0f, to_ovg(thumb_bg));
+			ovg_tools::fill_round_rect(cb, vg, thumb_x, thumb_y, thumb_w, thumb_h, 4.0f * scale, to_ovg(thumb_bg));
 		if (info.thumbnail)
 			vgui_custom_draw_texture(grid_, cb, vg, info.thumbnail, thumb_x, thumb_y, thumb_w, thumb_h, 0xFFFFFFFF);
 		else
@@ -2955,14 +2959,14 @@ namespace vgui_editor_kit {
 		}
 
 		const vgui_color text_color = selected ? selected_text_color_of(theme) : text_color_of(theme);
-		vgui_custom_draw_text(grid_, cb, vg, info.name.c_str(), x + 6.0f, y + h - 30.0f, std::max(1.0f, w - 12.0f), 16.0f, text_color, 0.5f, 0.5f);
+		vgui_custom_draw_text(grid_, cb, vg, info.name.c_str(), x + 6.0f * scale, y + h - 30.0f * scale, std::max(1.0f, w - 12.0f * scale), 16.0f * scale, text_color, 0.5f, 0.5f);
 		if (!info.type.empty())
-			vgui_custom_draw_text(grid_, cb, vg, info.type.c_str(), x + 6.0f, y + h - 15.0f, std::max(1.0f, w - 12.0f), 12.0f, theme.disabled ? theme.disabled : text_color_of(theme), 0.5f, 0.5f);
+			vgui_custom_draw_text(grid_, cb, vg, info.type.c_str(), x + 6.0f * scale, y + h - 15.0f * scale, std::max(1.0f, w - 12.0f * scale), 12.0f * scale, theme.disabled ? theme.disabled : text_color_of(theme), 0.5f, 0.5f);
 
 		if (selected)
-			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f, to_ovg(theme.accent ? theme.accent : 0xFF409EFF), 1.5f);
+			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.accent ? theme.accent : 0xFF409EFF), 1.5f);
 		else if (hovered)
-			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f, to_ovg(theme.panel_border), 1.0f);
+			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.panel_border), 1.0f);
 	}
 
 	void asset_browser::update_hover(float local_x, float local_y)

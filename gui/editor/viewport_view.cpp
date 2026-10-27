@@ -1,6 +1,7 @@
 #include "viewport_view.h"
 
 #include "drag_bridge.h"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -38,7 +39,8 @@ namespace vgui_editor_kit {
 				float wx = 0, wy = 0, ww = 0, wh = 0;
 				if (owner_->widget())
 					vgui_widget_get_rect(owner_->widget(), &wx, &wy, &ww, &wh);
-				const float w = 80.0f, h = 48.0f;
+				const float scale = ui_scale_of(owner_->widget());
+				const float w = 80.0f * scale, h = 48.0f * scale;
 				hint->kind = VGUI_DROP_HINT_RECT;
 				hint->x = x - w * 0.5f;
 				hint->y = y - h * 0.5f;
@@ -123,8 +125,9 @@ namespace vgui_editor_kit {
 			return false;
 		float x = 0, y = 0, w = 0, h = 0;
 		vgui_widget_get_rect(surface_, &x, &y, &w, &h);
-		const float inner_w = w - kBorderInset * 2.0f;
-		const float inner_h = h - kBorderInset * 2.0f;
+		const float border = kBorderInset * ui_scale_of(surface_);
+		const float inner_w = w - border * 2.0f;
+		const float inner_h = h - border * 2.0f;
 		if (inner_w <= 0.0f || inner_h <= 0.0f)
 			return false;
 		const int width = (int)std::lround(inner_w);
@@ -162,14 +165,15 @@ namespace vgui_editor_kit {
 		float wx = 0, wy = 0, ww = 0, wh = 0;
 		if (surface_)
 			vgui_widget_get_rect(surface_, &wx, &wy, &ww, &wh);
+		const float border = kBorderInset * ui_scale_of(surface_);
 		if (x)
-			*x = kBorderInset;
+			*x = border;
 		if (y)
-			*y = kBorderInset;
+			*y = border;
 		if (width)
-			*width = std::max(0.0f, ww - kBorderInset * 2.0f);
+			*width = std::max(0.0f, ww - border * 2.0f);
 		if (height)
-			*height = std::max(0.0f, wh - kBorderInset * 2.0f);
+			*height = std::max(0.0f, wh - border * 2.0f);
 	}
 
 	void viewport_view::set_resize_listener(resize_listener listener)
@@ -336,10 +340,11 @@ namespace vgui_editor_kit {
 		if (!self || !widget || !cb || !vg)
 			return;
 
-		const float x = abs_x + kBorderInset;
-		const float y = abs_y + kBorderInset;
-		const float width = abs_w - kBorderInset * 2.0f;
-		const float height = abs_h - kBorderInset * 2.0f;
+		const float border = kBorderInset * ui_scale_of(widget);
+		const float x = abs_x + border;
+		const float y = abs_y + border;
+		const float width = abs_w - border * 2.0f;
+		const float height = abs_h - border * 2.0f;
 		if (width <= 0.0f || height <= 0.0f)
 			return;
 

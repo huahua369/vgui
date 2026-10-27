@@ -1,6 +1,7 @@
 #include "node_graph_view.h"
 
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cctype>
@@ -1381,6 +1382,16 @@ namespace vgui_editor_kit {
 		return view_.zoom;
 	}
 
+	float node_graph_view::ui_scale() const noexcept
+	{
+		return ui_scale_of(widget_);
+	}
+
+	double node_graph_view::effective_zoom() const noexcept
+	{
+		return view_.zoom * (double)ui_scale();
+	}
+
 	void node_graph_view::set_zoom_limits(double minimum, double maximum)
 	{
 		if (!finite(minimum) || minimum <= 0.0)
@@ -1410,8 +1421,9 @@ namespace vgui_editor_kit {
 		if (std::fabs(next - view_.zoom) <= kEpsilon)
 			return;
 		view_.zoom = next;
-		view_.offset_x = anchor.x - (double)content_x / view_.zoom;
-		view_.offset_y = anchor.y - (double)content_y / view_.zoom;
+		const double zoom = effective_zoom();
+		view_.offset_x = anchor.x - (double)content_x / zoom;
+		view_.offset_y = anchor.y - (double)content_y / zoom;
 		notify_change();
 	}
 
@@ -1423,8 +1435,9 @@ namespace vgui_editor_kit {
 			return;
 		if (gesture_ != node_graph_gesture::none)
 			cancel_gesture();
-		view_.offset_x -= (double)delta_x / view_.zoom;
-		view_.offset_y -= (double)delta_y / view_.zoom;
+		const double zoom = effective_zoom();
+		view_.offset_x -= (double)delta_x / zoom;
+		view_.offset_y -= (double)delta_y / zoom;
 		notify_change();
 	}
 
@@ -1468,23 +1481,26 @@ namespace vgui_editor_kit {
 			return;
 		float width = 0.0f, height = 0.0f;
 		content_geometry(nullptr, nullptr, &width, &height);
-		const double margin = std::max(8.0, (double)margin_pixels);
+		const double scale = (double)ui_scale();
+		const double margin = std::max(8.0, (double)margin_pixels) * scale;
 		double zoom = view_.zoom;
 		if (width > margin * 2.0f && height > margin * 2.0f &&
 			bounds.width > 0.0 && bounds.height > 0.0)
 		{
+			/* Fit into render pixels, then store the logical zoom. */
 			zoom = std::min((double)(width - margin * 2.0f) / bounds.width,
-				(double)(height - margin * 2.0f) / bounds.height);
+				(double)(height - margin * 2.0f) / bounds.height) / scale;
 		}
 		zoom = std::clamp(zoom, min_zoom_, max_zoom_);
-		const double content_width = width > 0.0f ? width : 640.0;
-		const double content_height = height > 0.0f ? height : 360.0;
+		const double content_width = width > 0.0f ? width : 640.0 * scale;
+		const double content_height = height > 0.0f ? height : 360.0 * scale;
+		const double effective = zoom * scale;
 		node_graph_view_state next;
 		next.zoom = zoom;
 		next.offset_x = bounds.x + bounds.width * 0.5 -
-			content_width * 0.5 / zoom;
+			content_width * 0.5 / effective;
 		next.offset_y = bounds.y + bounds.height * 0.5 -
-			content_height * 0.5 / zoom;
+			content_height * 0.5 / effective;
 		set_view_state(next);
 	}
 
@@ -1580,17 +1596,18 @@ namespace vgui_editor_kit {
 		float width = 0.0f, height = 0.0f;
 		if (!content_geometry(nullptr, nullptr, &width, &height))
 			return empty;
-		if (width < 220.0f || height < 130.0f)
+		const double scale = (double)ui_scale();
+		if (width < 220.0f * scale || height < 130.0f * scale)
 			return empty;
-		const double mini_width = std::clamp((double)width * 0.19, 110.0,
-			200.0);
-		const double mini_height = std::clamp((double)height * 0.26, 70.0,
-			140.0);
+		const double mini_width = std::clamp((double)width * 0.19,
+			110.0 * scale, 200.0 * scale);
+		const double mini_height = std::clamp((double)height * 0.26,
+			70.0 * scale, 140.0 * scale);
 		node_graph_rect rect;
 		rect.width = mini_width;
 		rect.height = mini_height;
-		rect.x = (double)width - mini_width - kMinimapMargin;
-		rect.y = (double)height - mini_height - kMinimapMargin;
+		rect.x = (double)width - mini_width - kMinimapMargin * scale;
+		rect.y = (double)height - mini_height - kMinimapMargin * scale;
 		if (rect.x < 0.0 || rect.y < 0.0)
 			return empty;
 		return rect;
@@ -1618,9 +1635,10 @@ namespace vgui_editor_kit {
 		node_graph_rect bounds = content_bounds();
 		float width = 0.0f, height = 0.0f;
 		content_geometry(nullptr, nullptr, &width, &height);
+		const double zoom = effective_zoom();
 		const node_graph_rect viewport = {
 			view_.offset_x, view_.offset_y,
-			(double)width / view_.zoom, (double)height / view_.zoom
+			(double)width / zoom, (double)height / zoom
 		};
 		if (bounds.empty())
 		{
@@ -1655,10 +1673,11 @@ namespace vgui_editor_kit {
 		float width = 0.0f, height = 0.0f;
 		if (!content_geometry(nullptr, nullptr, &width, &height))
 			return;
-		const double inner_x = rect.x + kMinimapInset;
-		const double inner_y = rect.y + kMinimapInset;
-		const double inner_w = std::max(1.0, rect.width - kMinimapInset * 2.0);
-		const double inner_h = std::max(1.0, rect.height - kMinimapInset * 2.0);
+		const double inset = kMinimapInset * (double)ui_scale();
+		const double inner_x = rect.x + inset;
+		const double inner_y = rect.y + inset;
+		const double inner_w = std::max(1.0, rect.width - inset * 2.0);
+		const double inner_h = std::max(1.0, rect.height - inset * 2.0);
 		const double u = std::clamp(((double)content_x - inner_x) / inner_w,
 			0.0, 1.0);
 		const double v = std::clamp(((double)content_y - inner_y) / inner_h,
@@ -1666,8 +1685,9 @@ namespace vgui_editor_kit {
 		const node_graph_rect bounds = minimap_graph_bounds();
 		const double graph_x = bounds.x + bounds.width * u;
 		const double graph_y = bounds.y + bounds.height * v;
-		view_.offset_x = graph_x - (double)width * 0.5 / view_.zoom;
-		view_.offset_y = graph_y - (double)height * 0.5 / view_.zoom;
+		const double zoom = effective_zoom();
+		view_.offset_x = graph_x - (double)width * 0.5 / zoom;
+		view_.offset_y = graph_y - (double)height * 0.5 / zoom;
 		notify_change();
 	}
 
@@ -1704,15 +1724,17 @@ namespace vgui_editor_kit {
 	node_graph_point node_graph_view::screen_to_graph(float content_x,
 		float content_y) const noexcept
 	{
-		return { view_.offset_x + (double)content_x / view_.zoom,
-			view_.offset_y + (double)content_y / view_.zoom };
+		const double zoom = effective_zoom();
+		return { view_.offset_x + (double)content_x / zoom,
+			view_.offset_y + (double)content_y / zoom };
 	}
 
 	node_graph_point node_graph_view::graph_to_screen(double graph_x,
 		double graph_y) const noexcept
 	{
-		return { (graph_x - view_.offset_x) * view_.zoom,
-			(graph_y - view_.offset_y) * view_.zoom };
+		const double zoom = effective_zoom();
+		return { (graph_x - view_.offset_x) * zoom,
+			(graph_y - view_.offset_y) * zoom };
 	}
 
 	double node_graph_view::node_header_height() const noexcept
@@ -1887,7 +1909,7 @@ namespace vgui_editor_kit {
 
 	double node_graph_view::connection_hit_tolerance() const noexcept
 	{
-		return 6.0 / view_.zoom;
+		return 6.0 * (double)ui_scale() / effective_zoom();
 	}
 
 	object_id node_graph_view::node_at(float content_x,
@@ -1908,8 +1930,9 @@ namespace vgui_editor_kit {
 	object_id node_graph_view::port_at(float content_x,
 		float content_y) const
 	{
-		const double threshold = std::max(6.0,
-			port_radius() * view_.zoom + 2.0);
+		const double scale = (double)ui_scale();
+		const double threshold = std::max(6.0 * scale,
+			port_radius() * effective_zoom() + 2.0 * scale);
 		for (auto it = nodes_.rbegin(); it != nodes_.rend(); ++it)
 		{
 			if (!it->visible || it->collapsed)
@@ -3030,10 +3053,11 @@ namespace vgui_editor_kit {
 		case VGUI_EVENT_MOUSE_MOVE:
 			if (self->gesture_ == node_graph_gesture::pan)
 			{
+				const double zoom = self->effective_zoom();
 				self->view_.offset_x = self->gesture_view_.offset_x -
-					(double)(x - self->press_x_) / self->view_.zoom;
+					(double)(x - self->press_x_) / zoom;
 				self->view_.offset_y = self->gesture_view_.offset_y -
-					(double)(y - self->press_y_) / self->view_.zoom;
+					(double)(y - self->press_y_) / zoom;
 				self->notify_change();
 				return 1;
 			}
@@ -3313,18 +3337,18 @@ namespace vgui_editor_kit {
 		const double step = effective_grid_step();
 		if (!(step > 0.0) || !finite(step))
 			return;
+		const double zoom = effective_zoom();
 		const double left = view_.offset_x;
 		const double top = view_.offset_y;
-		const double right = view_.offset_x + (double)width / view_.zoom;
-		const double bottom = view_.offset_y + (double)height / view_.zoom;
+		const double right = view_.offset_x + (double)width / zoom;
+		const double bottom = view_.offset_y + (double)height / zoom;
 
 		double gx = std::floor(left / step) * step;
 		long long index = (long long)std::llround(gx / step);
 		for (int guard = 0; guard < kMaxGridLines && gx <= right + step;
 			++guard, gx += step, ++index)
 		{
-			const float px = x + (float)((gx - view_.offset_x) *
-				view_.zoom);
+			const float px = x + (float)((gx - view_.offset_x) * zoom);
 			if (px < x - 1.0f || px > x + width + 1.0f)
 				continue;
 			ovg_tools::line(cb, vg, px, y, px, y + height,
@@ -3337,8 +3361,7 @@ namespace vgui_editor_kit {
 		for (int guard = 0; guard < kMaxGridLines && gy <= bottom + step;
 			++guard, gy += step, ++index)
 		{
-			const float py = y + (float)((gy - view_.offset_y) *
-				view_.zoom);
+			const float py = y + (float)((gy - view_.offset_y) * zoom);
 			if (py < y - 1.0f || py > y + height + 1.0f)
 				continue;
 			ovg_tools::line(cb, vg, x, py, x + width, py,
@@ -3367,6 +3390,7 @@ namespace vgui_editor_kit {
 			vgui_context_get_theme(context_, &theme);
 		const vgui_color accent_hover = theme_color(theme.accent_hover,
 			0xFF74B6FFu);
+		const float scale = ui_scale();
 
 		for (const node_connection& connection : connections_)
 		{
@@ -3413,10 +3437,10 @@ namespace vgui_editor_kit {
 				y + (float)to_screen.y };
 			if (selected)
 				ovg_tools::bezier3(cb, vg, curve,
-					to_ovg(with_alpha(accent_hover, 0x50)), 5.0f);
+					to_ovg(with_alpha(accent_hover, 0x50)), 5.0f * scale);
 			ovg_tools::bezier3(cb, vg, curve,
 				to_ovg(with_alpha(color, selected ? 0xFF : 0xCC)),
-				selected ? 2.5f : 1.8f);
+				(selected ? 2.5f : 1.8f) * scale);
 		}
 		(void)width;
 		(void)height;
@@ -3437,6 +3461,8 @@ namespace vgui_editor_kit {
 			0xFF1B222Cu);
 		const vgui_color panel_border = theme_color(theme.panel_border,
 			0xFF2A3038u);
+		const float scale = ui_scale();
+		const double zoom = effective_zoom();
 
 		for (const node_node& node : nodes_)
 		{
@@ -3446,10 +3472,12 @@ namespace vgui_editor_kit {
 			const node_graph_point top_left = graph_to_screen(rect.x, rect.y);
 			const float nx = x + (float)top_left.x;
 			const float ny = y + (float)top_left.y;
-			const float nw = (float)(rect.width * view_.zoom);
-			const float nh = (float)(rect.height * view_.zoom);
-			if (nx + nw < x - 8.0f || nx > x + width + 8.0f ||
-				ny + nh < y - 8.0f || ny > y + height + 8.0f)
+			const float nw = (float)(rect.width * zoom);
+			const float nh = (float)(rect.height * zoom);
+			if (nx + nw < x - 8.0f * scale ||
+				nx > x + width + 8.0f * scale ||
+				ny + nh < y - 8.0f * scale ||
+				ny > y + height + 8.0f * scale)
 				continue;
 
 			const bool searched = !search_text_.empty() &&
@@ -3457,10 +3485,10 @@ namespace vgui_editor_kit {
 			const uint32_t dim = searched ? 0x55 : 0xFF;
 			const vgui_color node_accent = node.accent
 				? node.accent : accent;
-			const float radius = (float)std::clamp(6.0 * view_.zoom, 2.0,
-				8.0);
+			const float radius = (float)std::clamp(6.0 * zoom,
+				2.0 * scale, 8.0 * scale);
 			const float header_height = node.collapsed
-				? nh : (float)(kNodeHeaderHeight * view_.zoom);
+				? nh : (float)(kNodeHeaderHeight * zoom);
 
 			ovg_tools::fill_round_rect(cb, vg, nx, ny, nw, nh, radius,
 				to_ovg(with_alpha(body_color, dim)));
@@ -3474,29 +3502,29 @@ namespace vgui_editor_kit {
 			ovg_tools::stroke_round_rect(cb, vg, nx, ny, nw, nh, radius,
 				to_ovg(with_alpha(is_selected(node.id) ? accent_hover
 					: panel_border, is_selected(node.id) ? 0xFF : 0xAA)),
-				is_selected(node.id) ? 2.0f : 1.0f);
+				(is_selected(node.id) ? 2.0f : 1.0f) * scale);
 
-			if (header_height >= 11.0f && nw > 36.0f)
+			if (header_height >= 11.0f * scale && nw > 36.0f * scale)
 			{
 				vgui_custom_draw_text(widget, cb, vg,
-					node.title.c_str(), nx + 8.0f, ny,
-					std::max(1.0f, nw - 16.0f), header_height,
+					node.title.c_str(), nx + 8.0f * scale, ny,
+					std::max(1.0f, nw - 16.0f * scale), header_height,
 					with_alpha(text, dim), 0.0f, 0.5f);
 				if (node.locked)
 					vgui_custom_draw_text(widget, cb, vg, "LOCK",
-						nx, ny, std::max(1.0f, nw - 6.0f),
+						nx, ny, std::max(1.0f, nw - 6.0f * scale),
 						header_height,
 						with_alpha(text, searched ? 0x40 : 0x90),
 						1.0f, 0.5f);
 			}
 
-			if (node.collapsed || view_.zoom < 0.22)
+			if (node.collapsed || zoom < 0.22)
 				continue;
 
-			const float row_height = (float)(kNodeRowHeight * view_.zoom);
+			const float row_height = (float)(kNodeRowHeight * zoom);
 			const float port_radius = (float)std::clamp(kPortRadius *
-				view_.zoom, 1.6, 7.0);
-			const float name_size = (float)(kNodeRowHeight * view_.zoom);
+				zoom, 1.6 * scale, 7.0 * scale);
+			const float name_size = row_height;
 			auto draw_port_row = [&](const std::vector<node_port>& ports,
 				node_port_direction direction) {
 				for (std::size_t i = 0; i < ports.size(); ++i)
@@ -3518,16 +3546,17 @@ namespace vgui_editor_kit {
 					if (!port.multi &&
 						direction == node_port_direction::input)
 						ovg_tools::stroke_circle(cb, vg, px, py,
-							port_radius + 1.5f,
-							to_ovg(with_alpha(panel_border, 0xC0)), 1.0f);
-					if (name_size >= 7.0f)
+							port_radius + 1.5f * scale,
+							to_ovg(with_alpha(panel_border, 0xC0)),
+							1.0f * scale);
+					if (name_size >= 7.0f * scale)
 					{
 						const float label_x = direction ==
 							node_port_direction::input
-							? nx + port_radius + 6.0f
-							: nx + 6.0f;
+							? nx + port_radius + 6.0f * scale
+							: nx + 6.0f * scale;
 						const float label_w = std::max(1.0f,
-							nw - port_radius * 2.0f - 18.0f);
+							nw - port_radius * 2.0f - 18.0f * scale);
 						vgui_custom_draw_text(widget, cb, vg,
 							port.name.c_str(), label_x,
 							py - row_height * 0.5f, label_w,
@@ -3578,10 +3607,11 @@ namespace vgui_editor_kit {
 		curve.p1 = { x + (float)c1.x, y + (float)c1.y };
 		curve.p2 = { x + (float)c2.x, y + (float)c2.y };
 		curve.p3 = { x + (float)to_screen.x, y + (float)to_screen.y };
+		const float scale = ui_scale();
 		ovg_tools::bezier3(cb, vg, curve,
-			to_ovg(with_alpha(accent_hover, 0xCC)), 2.0f);
-		ovg_tools::fill_circle(cb, vg, curve.p3.x, curve.p3.y, 3.0f,
-			to_ovg(accent_hover));
+			to_ovg(with_alpha(accent_hover, 0xCC)), 2.0f * scale);
+		ovg_tools::fill_circle(cb, vg, curve.p3.x, curve.p3.y,
+			3.0f * scale, to_ovg(accent_hover));
 	}
 
 	void node_graph_view::draw_minimap(ovg_ctx_cb* cb, rvg_t* vg, float x,
@@ -3607,16 +3637,19 @@ namespace vgui_editor_kit {
 		const float my = y + (float)rect.y;
 		const float mw = (float)rect.width;
 		const float mh = (float)rect.height;
-		ovg_tools::fill_round_rect(cb, vg, mx, my, mw, mh, 4.0f,
+		const float scale = ui_scale();
+		ovg_tools::fill_round_rect(cb, vg, mx, my, mw, mh, 4.0f * scale,
 			to_ovg(with_alpha(panel_bg, 0xE8)));
-		ovg_tools::stroke_round_rect(cb, vg, mx, my, mw, mh, 4.0f,
-			to_ovg(with_alpha(panel_border, 0xE0)), 1.0f);
+		ovg_tools::stroke_round_rect(cb, vg, mx, my, mw, mh,
+			4.0f * scale, to_ovg(with_alpha(panel_border, 0xE0)),
+			1.0f * scale);
 
 		const node_graph_rect bounds = minimap_graph_bounds();
-		const double inner_x = mx + kMinimapInset;
-		const double inner_y = my + kMinimapInset;
-		const double inner_w = std::max(1.0, (double)mw - kMinimapInset * 2.0);
-		const double inner_h = std::max(1.0, (double)mh - kMinimapInset * 2.0);
+		const double inset = kMinimapInset * (double)scale;
+		const double inner_x = mx + inset;
+		const double inner_y = my + inset;
+		const double inner_w = std::max(1.0, (double)mw - inset * 2.0);
+		const double inner_h = std::max(1.0, (double)mh - inset * 2.0);
 		auto map = [&](double gx, double gy) {
 			return node_graph_point{
 				inner_x + (gx - bounds.x) / bounds.width * inner_w,
@@ -3639,7 +3672,7 @@ namespace vgui_editor_kit {
 			const node_graph_point p1 = map(to.x, to.y);
 			ovg_tools::line(cb, vg, (float)p0.x, (float)p0.y,
 				(float)p1.x, (float)p1.y,
-				to_ovg(with_alpha(accent, 0x38)), 1.0f,
+				to_ovg(with_alpha(accent, 0x38)), 1.0f * scale,
 				VG_LINE_CAP_BUTT);
 		}
 
@@ -3662,14 +3695,14 @@ namespace vgui_editor_kit {
 		float cw = 0.0f, ch = 0.0f;
 		if (!content_geometry(nullptr, nullptr, &cw, &ch))
 			return;
+		const double zoom = effective_zoom();
 		const node_graph_point view0 = map(view_.offset_x, view_.offset_y);
 		const node_graph_point viewport1 = map(view_.offset_x +
-			(double)cw / view_.zoom, view_.offset_y +
-			(double)ch / view_.zoom);
+			(double)cw / zoom, view_.offset_y + (double)ch / zoom);
 		ovg_tools::stroke_rect(cb, vg, (float)view0.x, (float)view0.y,
 			std::max(1.0f, (float)(viewport1.x - view0.x)),
 			std::max(1.0f, (float)(viewport1.y - view0.y)),
-			to_ovg(accent_hover), 1.0f);
+			to_ovg(accent_hover), 1.0f * scale);
 	}
 
 } /* namespace vgui_editor_kit */

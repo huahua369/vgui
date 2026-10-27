@@ -3911,7 +3911,170 @@ static void test_popup(vgui_context* ui)
 	vgui_widget_destroy(content);
 }
 
-int main()
+	/* E01: UI scale keeps logical inputs stable while effective geometry, style
+	 * and fonts scale with the monitor DPI. */
+	struct ui_scale_state
+	{
+		int calls = 0;
+		float last = 0.0f;
+	};
+
+	static void on_ui_scale(vgui_context*, float scale, void* user)
+	{
+		auto* state = static_cast<ui_scale_state*>(user);
+		if (!state)
+			return;
+		state->calls++;
+		state->last = scale;
+	}
+
+	static void test_ui_scale(vgui_context* ui)
+	{
+		vgui_context_set_ui_scale(ui, 1.0f);
+
+		vgui_widget* box = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+		vgui_widget_set_pos(box, 10.0f, 20.0f);
+		vgui_widget_set_size(box, 100.0f, 40.0f);
+		vgui_widget_set_padding(box, 5.0f, 6.0f, 7.0f, 8.0f);
+		vgui_widget_set_font_size(box, 20.0f);
+		vgui_layout(ui);
+
+		float x = 0, y = 0, w = 0, h = 0;
+		vgui_widget_get_rect(box, &x, &y, &w, &h);
+		check(near(x, 10.0f) && near(y, 20.0f) && near(w, 100.0f) &&
+			near(h, 40.0f), "ui_scale: 100% keeps logical geometry");
+		check(near(vgui_widget_get_font_size(box), 20.0f),
+			"ui_scale: widget font at 100%");
+
+		vgui_style base_style;
+		vgui_style_default(&base_style);
+
+		vgui_context_set_ui_scale(ui, 2.0f);
+		vgui_layout(ui);
+		check(near(vgui_context_get_ui_scale(ui), 2.0f),
+			"ui_scale: context reports 200%");
+		check(near(vgui_context_get_font_size(ui), 32.0f),
+			"ui_scale: context font doubles");
+		check(near(vgui_widget_get_font_size(box), 40.0f),
+			"ui_scale: widget font follows scale");
+
+		vgui_style effective;
+		vgui_context_get_style(ui, &effective);
+		check(near(effective.panel.padding, base_style.panel.padding * 2.0f),
+			"ui_scale: effective style doubles");
+		check(near(effective.animation_speed, base_style.animation_speed),
+			"ui_scale: timing style is unchanged");
+
+		vgui_widget_get_rect(box, &x, &y, &w, &h);
+		check(near(x, 20.0f) && near(y, 40.0f) && near(w, 200.0f) &&
+			near(h, 80.0f), "ui_scale: live tree rescales to 200%");
+
+		/* Logical setters at a non-1.0 scale must not compound. */
+		vgui_widget_set_pos(box, 15.0f, 25.0f);
+		vgui_widget_set_size(box, 50.0f, 30.0f);
+		vgui_layout(ui);
+		vgui_widget_get_rect(box, &x, &y, &w, &h);
+		check(near(x, 30.0f) && near(y, 50.0f) && near(w, 100.0f) &&
+			near(h, 60.0f), "ui_scale: setters take logical units");
+
+		vgui_context_set_ui_scale(ui, 1.25f);
+		vgui_layout(ui);
+		vgui_widget_get_rect(box, &x, &y, &w, &h);
+		check(near(x, 18.75f) && near(y, 31.25f) && near(w, 62.5f) &&
+			near(h, 37.5f), "ui_scale: rescale keeps logical size at 125%");
+
+		vgui_context_set_ui_scale(ui, 1.0f);
+		vgui_layout(ui);
+		vgui_widget_get_rect(box, &x, &y, &w, &h);
+		check(near(x, 15.0f) && near(y, 25.0f) && near(w, 50.0f) &&
+			near(h, 30.0f), "ui_scale: returning to 100% restores geometry");
+		check(near(vgui_widget_get_font_size(box), 20.0f),
+			"ui_scale: explicit font base survives rescaling");
+
+		/* Listener add/remove. */
+		ui_scale_state state;
+		const int token = vgui_context_add_ui_scale_listener(ui,
+			&on_ui_scale, &state);
+		check(token > 0, "ui_scale: listener token");
+		vgui_context_set_ui_scale(ui, 1.5f);
+		check(state.calls == 1 && near(state.last, 1.5f),
+			"ui_scale: listener sees new scale");
+		vgui_context_remove_ui_scale_listener(ui, token);
+		vgui_context_set_ui_scale(ui, 1.0f);
+		check(state.calls == 1, "ui_scale: removed listener is silent");
+
+		/* Clamp and invalid handling. */
+		vgui_context_set_ui_scale(ui, 10.0f);
+		check(near(vgui_context_get_ui_scale(ui), 4.0f),
+			"ui_scale: clamps above 400%");
+		vgui_context_set_ui_scale(ui, 0.1f);
+		check(near(vgui_context_get_ui_scale(ui), 0.25f),
+			"ui_scale: clamps below 25%");
+		vgui_context_set_ui_scale(ui, 0.0f);
+		check(near(vgui_context_get_ui_scale(ui), 1.0f),
+			"ui_scale: zero falls back to 100%");
+		vgui_context_set_ui_scale(ui, std::nanf(""));
+		check(near(vgui_context_get_ui_scale(ui), 1.0f),
+			"ui_scale: non-finite falls back to 100%");
+
+		/* A stack layout must not overlap at any supported scale. */
+		vgui_widget* column = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+			nullptr);
+		vgui_widget_set_pos(column, 40.0f, 40.0f);
+		vgui_widget_set_size(column, 200.0f, 100.0f);
+		vgui_widget_set_layout(column, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(column, 0, 0, 0, 0);
+		vgui_widget_set_gap(column, 0);
+		vgui_widget* rows[3] = {};
+		for (int i = 0; i < 3; ++i)
+		{
+			rows[i] = vgui_widget_add(column, VGUI_PANEL, nullptr);
+			vgui_widget_set_size(rows[i], 0.0f, 20.0f);
+			vgui_widget_set_align_self(rows[i], VGUI_ALIGN_STRETCH);
+		}
+
+		const float scales[4] = { 1.0f, 1.25f, 1.5f, 2.0f };
+		for (float scale : scales)
+		{
+			vgui_context_set_ui_scale(ui, scale);
+			vgui_layout(ui);
+			float cx = 0, cy = 0, cw = 0, ch = 0;
+			vgui_widget_get_rect(column, &cx, &cy, &cw, &ch);
+			check(near(cw, 200.0f * scale) && near(ch, 100.0f * scale),
+				"ui_scale: stack keeps its logical box");
+			float prev_bottom = cy;
+			for (int i = 0; i < 3; ++i)
+			{
+				float rx = 0, ry = 0, rw = 0, rh = 0;
+				vgui_widget_get_rect(rows[i], &rx, &ry, &rw, &rh);
+				check(near(rh, 20.0f * scale),
+					"ui_scale: stack rows scale their height");
+				check(ry >= prev_bottom - 0.01f &&
+					ry + rh <= cy + ch + 0.01f &&
+					rx >= cx - 0.01f && rx + rw <= cx + cw + 0.01f,
+					"ui_scale: stack rows stay inside and do not overlap");
+				prev_bottom = ry + rh;
+			}
+		}
+
+		vgui_context_set_ui_scale(ui, 1.0f);
+		vgui_layout(ui);
+		vgui_widget_destroy(column);
+		vgui_widget_destroy(box);
+
+		vgui_style scaled;
+		vgui_style_default(&scaled);
+		const float padding = scaled.panel.padding;
+		const float rounding = scaled.button.rounding;
+		vgui_style_scale(&scaled, 2.0f);
+		check(near(scaled.panel.padding, padding * 2.0f) &&
+			near(scaled.button.rounding, rounding * 2.0f),
+			"ui_scale: style_scale scales geometry");
+		check(scaled.animation_speed == base_style.animation_speed,
+			"ui_scale: style_scale leaves timing alone");
+	}
+
+	int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
 	auto* wg = new app_mgr();
@@ -3955,6 +4118,7 @@ int main()
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
 	test_popup(ui);
+	test_ui_scale(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

@@ -57,7 +57,7 @@
 | 撤销 | 编辑器级命令栈、事务（嵌套）/回滚、命令合并、失败命令协议；PropertyGrid 与 Outliner 移动/重命名、多选拖动事务、资产批量操作、V05 平移 Gizmo、V06 拖放创建、V07 旋转/缩放 Gizmo 已接入 | 连续拖拽聚合依赖 P07 的批量编辑事务 |
 | 图片 | source/fit/tint/flip/pixel snap；V10 九宫格、旋转、自定义旋转中心与任意 2D 矩阵，原生/CPU 纹理共用同一变换语义 | 九宫格边宽按纹理像素；矩阵与旋转共享枢轴；不支持透视/3D 变换 |
 | 视口 | Phase 0 单视口、LDR RGBA8 离屏纹理；V01 表面支持 FBO 尺寸通知、跨边界输入与失焦取消；V02 轨道相机（中键平移、右键旋转、滚轮缩放、F 取景、状态保存/恢复）；V03 左键点击/框选、多选集合与 Outliner 双向同步、屏幕空间选中高亮；V04 世界网格/原点轴生成、自适应密度与平移/旋转/缩放吸附；V05 世界/局部空间平移 Gizmo（三轴 + 平面手柄、多选中心、吸附、begin/preview/commit/cancel 命令栈接入）；V06 资产拖入落点求交、半透明幽灵预览/地面标记、多实例渲染与新建对象选中；V07 旋转环/缩放轴/统一缩放、世界/局部/父级/屏幕空间、数值面板联动与旋转/缩放吸附；V08 独立 2D Canvas；V09 多相机 view 共享管线、HDR（RGBA16F + tonemap）、MSAA resolve 与深度可视化纹理 | 深度纹理在 MSAA 开启时通过额外单采样深度通道生成，不支持直接解析 MSAA 深度；3D 描边、射线求交与网格 GPU 绘制由宿主提供 |
-| DPI | SDL3 后端可获取 monitor 信息 | vgui 没有统一 UI 缩放 API |
+| DPI | 统一 `ui_scale` 贯通核心/editor kit/SDL3；逻辑 setter 与有效像素 getter 分离，字体/间距/圆角/图标同步缩放；显示器切换自动同步；布局持久化保存逻辑尺寸 | 截图基线由 E03 建立；自定义宿主控件需自行遵守逻辑单位约定 |
 | 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
 | shader要求使用slang来写 | 函数名不要分成多行写 |
 ## 3. 分层方案
@@ -434,14 +434,16 @@
 
 目标：让编辑器在 DPI、性能、可访问性和测试上达到可持续交付水平。
 
-- [ ] **E01 DPI 缩放**（P1，M）
+- [x] **E01 DPI 缩放**（P1，M）
   - 统一 `ui_scale`，字体、间距、圆角、图标一起缩放。
   - 验收：100%/125%/150%/200% 缩放下布局不重叠；切换显示器后自动更新；截图基准可复现。
+  - 已实现：核心新增 `vgui_context_set_ui_scale/get_ui_scale`、`vgui_context_get_font_size`、`vgui_widget_get_font_size`、`vgui_style_scale` 与 `vgui_ui_scale_fn` 监听器。公共几何/字体/样式 setter 接收逻辑单位并乘以 `ui_scale`；`vgui_widget_get_rect`、`vgui_context_get_style` 和字体 getter 返回有效像素。上下文保存 `base_style`/`base_font_size`，比例变化时按新旧比值重算整棵控件树（Splitter/Tab/Dock 分区尺寸、浮动矩形、滚动偏移与文本缓存一并处理），重复切换不累积误差；比例钳制在 `[0.25, 4.0]`，非有限值/0/负数回退 `1.0`。`vgui_style_scale` 只缩放几何字段，动画速度、透明度、混合系数保持不变。SDL3 后端新增 `content_scale()`/`pixel_ratio()`/`sync_ui_scale()`，在创建窗口、显示器变化和每帧 `get_event()` 时同步；鼠标/按钮/文件 drop 坐标从窗口点换算到渲染像素，IME 矩形再换算回窗口点。editor kit 通过 `gui/editor/ui_scale.h` 在逻辑/像素边界换算：Table 的模型列宽/行高保持逻辑、滚动偏移保持像素，PropertyGrid 视口/滚动、AssetBrowser 网格、Outliner 行内重命名及编辑器布局持久化（Dock 分区尺寸/浮动矩形）均按逻辑单位存取。Timeline 轨道高度、NodeGraph 图坐标、Table 模型列宽保持逻辑，绘制/命中测试使用有效像素；Canvas 文档坐标不变而边框/手柄/选择线框按比例缩放；AssetPreview、Curve/Gradient/ColorPicker、Viewport、CodeEditor 的固定 chrome 与命中半径随 `ui_scale` 缩放，曲线/渐变值等内容语义不变。测试：`vgui_model_test` 708 项、`vgui_c_api_test` 32 项；`vgui_editor_kit_test` 的 `test_shell_ui_scale` 覆盖 100%/125%/150%/200% 外壳与停靠区不重叠、面板不越界，以及 200%→125%→100% 的布局往返；`test_custom_view_dpi_input` 在 200% 下验证 AssetPreview 整树缩放、Curve/Gradient 命中半径和 ColorPicker 的 SV 归一化坐标。布局/几何结果确定，截图基线将在 E03 基于同一逻辑尺寸建立。
 
-- [ ] **E02 性能与增量更新**（P1，M）
+- [x] **E02 性能与增量更新**（P1，M）（已完成）
   - 属性行、树节点、资产缩略图的增量刷新和缓存。
   - 避免属性面板每次选中都清空重建。
   - 验收：选择切换、滚动、拖拽时无明显卡顿；性能基准纳入 CI 或固定测试场景。
+  - 已实现：PropertyGrid 新增 `set_properties()`，按 `id + type` 复用行：仅新增、删除和类型变化的行创建/释放控件，其余行原位刷新描述、值、标签、向量语义/轴标签/范围/步进/只读与多目标混合态；返回值就是需要重建的行数（同 schema 对象切换为 `0`），行顺序跟随输入，滚动位置、分类折叠、过滤和收藏状态保持不变。`add_property()` 的校验/默认值逻辑抽到 `prepare_desc()`，两条入口使用同一套接受规则；非法或重复 id 被跳过。Outliner 的虚拟 `scene_source` 原已按可见行投影，E02 在 `vgui_game_editor` 中完成 dogfood：结构变化走 `scene_changed()`，重命名/可见性/锁定走 `scene_row_changed()`，图标由 source 回调提供，flag 镜像按差异回写，表格只刷新对应行，不再为选择或名称变化 clear/add 整棵树。AssetBrowser 沿用虚拟列表/网格行源与 A05 缩略图缓存：`refresh()` 只重建视图索引并通知行源变化，可见范围缺图才入队，内存/磁盘命中不重新加载。测试：`test_property_grid_set_properties` 覆盖 5→0→0→1→1→1→0 的重建计数、行 widget 身份、向量元数据、分类重排、非法描述拒绝与 `bind_selection()` 端到端复用；`test_virtual_outliner` 断言折叠子树不查询名称、单行刷新/结构变化后选择保持；A05 的浏览器缓存命中测试断言缩略图复用；全部为固定计数/身份断言，不依赖墙钟时间。
 
 - [ ] **E03 截图回归测试**（P1，M）
   - Dock、PropertyGrid、Outliner、AssetBrowser、Viewport 的关键状态截图对比。
@@ -526,8 +528,8 @@ MVP 验收场景：
 - V08 2D Canvas（已完成）
 - V09 多视口/HDR/MSAA/深度纹理（已完成）
 - V10 `VGUI_IMAGE` 变换扩展（已完成）
-- E01 DPI 缩放
-- E02 性能与增量更新
+- E01 DPI 缩放（已完成）
+- E02 性能与增量更新（已完成）
 - E03 截图回归测试
 
 ### 7.3 第三批：专业编辑器与打磨
@@ -605,10 +607,10 @@ MVP 验收场景：
 - M6 T03 NodeGraph：`node_graph_view` 以稳定 id 管理节点/端口/连线，支持类型/方向/单输入替换校验、节点拖动、端口连线、连线点选、空白框选、Ctrl/Shift 多选、锁定节点、中键平移与光标锚点缩放；Esc/CANCEL/失焦回滚，移动/连接/断开/删除/复制各记录一条命令。自适应网格与吸附、`Ctrl+F` 搜索高亮、小地图导航、右键 Add Node 宿主处理器和 `node_graph_state` JSON 全部接通；`editor_shell` 新增 NODEGRAPH 页、`view.nodegraph` 命令与 `editor_layout` v5 持久化。`vgui_game_editor` 以材质节点图 dogfood 拖动、连线、搜索和右键创建，`test_node_graph_view` 覆盖命中/撤销/极端缩放/状态校验。
 - M6 T04 CodeEditor：`code_editor` 以按行 UTF-8 模型和惰性 token span 提供 C++/C#/GLSL/JSON/Lua/Python/INI/Markdown 语法高亮、行号、光标/选区/鼠标/键盘编辑、自动缩进、命令栈 undo/redo、系统剪贴板桥接与 `Ctrl+F`/`Ctrl+H` 查找替换；同一控件在只读模式下以 `append_log()` 提供带时间戳/等级颜色/保留上限/自动滚动的富文本日志。`open_file()`/`begin_incremental_load()` 分块加载并通过 `tick()` 推进，不阻塞 UI；`code_editor_state` JSON 由 `editor_layout` v6 持久化。`editor_shell` 新增 CODE 页与 `view.code` 命令，`vgui_game_editor` 预置 C++ 脚本示例，`test_code_editor` 覆盖词法/编辑/查找/日志/分块加载/状态校验。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06)。
-- 现有 `vgui_model_test`（659 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥）、`vgui_c_api_test`（23 项，含 V01 附加焦点监听与 `vgui_input_cancel`）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）保持通过；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（708 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥、E01 样式/字体/几何缩放与 100%/125%/150%/200% 列布局不重叠）、`vgui_c_api_test`（32 项，含 V01 附加焦点监听与 `vgui_input_cancel`、E01 纯 C UI 缩放/监听器/整树重算）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）保持通过；`vgui_editor_kit_test` 另覆盖 `test_shell_ui_scale` 的四档 DPI 外壳/停靠区布局与逻辑尺寸持久化往返；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid、T02 Timeline、T03 NodeGraph、T04 CodeEditor 已完成，下一步 E01 DPI 缩放。
+1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid、T02 Timeline、T03 NodeGraph、T04 CodeEditor 与 E01 DPI 缩放已完成，下一步 E02 性能与增量更新。
 2. V08 2D Canvas 的画布/手柄/框选/吸附已复用于 T02 Timeline 与 T03 NodeGraph；T01 的拉取式行源与类型化单元格编辑器可被后续数据视图复用。
-3. 第二批剩余条目按 E01 DPI → E02 性能/增量 → E03 截图回归推进；A07 已完成，可复用其虚拟行投影/有界消费模式处理后续大日志或长列表。
+3. 第二批剩余条目按 E02 性能/增量 → E03 截图回归推进；E01 已完成，可复用 `gui/editor/ui_scale.h` 的逻辑/像素换算约定和 `test_shell_ui_scale` 的多 DPI 布局断言；A07 的虚拟行投影/有界消费模式可用于后续大日志或长列表。

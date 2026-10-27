@@ -3,6 +3,7 @@
 #include "curve_editor.h"
 #include "gradient_editor.h"
 #include "spinbox.h"
+#include "ui_scale.h"
 #include "vector_editor.h"
 
 #include "tools/tools.hpp"
@@ -210,8 +211,9 @@ namespace vgui_editor_kit {
 				align = 0.5f;
 			else if (alignment == table_alignment::right)
 				align = 1.0f;
+			const float padding = kCellPaddingX * ui_scale_of(widget);
 			vgui_custom_draw_text(widget, cb, vg, text.c_str(),
-				x + kCellPaddingX, y, std::max(1.0f, width - kCellPaddingX * 2.0f),
+				x + padding, y, std::max(1.0f, width - padding * 2.0f),
 				height, color, align, 0.5f);
 		}
 	}
@@ -587,15 +589,16 @@ namespace vgui_editor_kit {
 	table_row_range table_view::visible_row_range() const noexcept
 	{
 		layout_metrics m = metrics();
-		if (m.body_height <= 0.0f || row_height_ <= 0.0f || row_count_ == 0)
+		const float row_height = row_height_px();
+		if (m.body_height <= 0.0f || row_height <= 0.0f || row_count_ == 0)
 			return {};
 		const std::size_t first = (std::size_t)std::max(0.0f,
-			std::floor(scroll_y_ / row_height_));
+			std::floor(scroll_y_ / row_height));
 		if (first >= row_count_)
 			return {};
 		const float visible_height = std::max(0.0f, m.body_height);
 		std::size_t count = (std::size_t)std::max(1.0f,
-			std::ceil((scroll_y_ + visible_height) / row_height_)) - first;
+			std::ceil((scroll_y_ + visible_height) / row_height)) - first;
 		count = std::min(count, row_count_ - first);
 		return { first, count };
 	}
@@ -781,36 +784,55 @@ namespace vgui_editor_kit {
 	/* Geometry / scrolling                                                  */
 	/* --------------------------------------------------------------------- */
 
+	float table_view::ui_scale() const
+	{
+		return context_ ? vgui_editor_kit::ui_scale_of(context_)
+			: vgui_editor_kit::ui_scale_of(widget_);
+	}
+
+	float table_view::column_width_px(std::size_t column) const
+	{
+		if (column >= columns_.size())
+			return 0.0f;
+		return std::max(0.0f, columns_[column].width * ui_scale());
+	}
+
+	float table_view::row_height_px() const
+	{
+		return std::max(1.0f, row_height_ * ui_scale());
+	}
+
 	table_view::layout_metrics table_view::metrics() const
 	{
 		layout_metrics m;
 		if (!widget_)
 			return m;
 
+		const float scale = ui_scale();
 		float wx = 0.0f, wy = 0.0f, ww = 0.0f, wh = 0.0f;
 		vgui_widget_get_rect(widget_, &wx, &wy, &ww, &wh);
-		m.x = wx + kBorderInset;
-		m.y = wy + kBorderInset;
-		m.width = std::max(0.0f, ww - kBorderInset * 2.0f);
-		m.height = std::max(0.0f, wh - kBorderInset * 2.0f);
+		m.x = wx + kBorderInset * scale;
+		m.y = wy + kBorderInset * scale;
+		m.width = std::max(0.0f, ww - kBorderInset * 2.0f * scale);
+		m.height = std::max(0.0f, wh - kBorderInset * 2.0f * scale);
 		if (m.width <= 0.0f || m.height <= 0.0f)
 			return m;
 
 		m.header_x = m.x;
 		m.header_y = m.y;
 		m.header_width = m.width;
-		m.header_height = std::min(kHeaderHeight, m.height);
+		m.header_height = std::min(kHeaderHeight * scale, m.height);
 		m.body_x = m.x;
 		m.body_y = m.y + m.header_height;
 		m.body_width = m.width;
 		m.body_height = std::max(0.0f, m.height - m.header_height);
 
 		m.columns_width = 0.0f;
-		for (const table_column& column : columns_)
-			m.columns_width += column.width;
-		m.rows_height = (float)row_count_ * row_height_;
+		for (std::size_t i = 0; i < columns_.size(); ++i)
+			m.columns_width += column_width_px(i);
+		m.rows_height = (float)row_count_ * row_height_px();
 
-		const float thickness = kScrollbarThickness;
+		const float thickness = kScrollbarThickness * scale;
 		bool vbar = m.rows_height > m.body_height + 0.5f;
 		if (vbar)
 			m.body_width = std::max(0.0f, m.body_width - thickness);
@@ -850,7 +872,7 @@ namespace vgui_editor_kit {
 		float offset = 0.0f;
 		const std::size_t count = std::min(column, columns_.size());
 		for (std::size_t i = 0; i < count; ++i)
-			offset += columns_[i].width;
+			offset += column_width_px(i);
 		return offset;
 	}
 
@@ -859,7 +881,7 @@ namespace vgui_editor_kit {
 		float offset = 0.0f;
 		for (std::size_t i = 0; i < columns_.size(); ++i)
 		{
-			const float width = columns_[i].width;
+			const float width = column_width_px(i);
 			if (content_x >= offset && content_x < offset + width)
 				return (int)i;
 			offset += width;
@@ -869,9 +891,10 @@ namespace vgui_editor_kit {
 
 	std::size_t table_view::row_at(float content_y) const
 	{
-		if (row_height_ <= 0.0f || content_y < 0.0f)
+		const float row_height = row_height_px();
+		if (row_height <= 0.0f || content_y < 0.0f)
 			return kNoRow;
-		const std::size_t row = (std::size_t)std::floor(content_y / row_height_);
+		const std::size_t row = (std::size_t)std::floor(content_y / row_height);
 		return row < row_count_ ? row : kNoRow;
 	}
 
@@ -888,11 +911,11 @@ namespace vgui_editor_kit {
 		if (x)
 			*x = m.body_x + column_offset((std::size_t)column) - scroll_x_;
 		if (y)
-			*y = m.body_y + (float)display * row_height_ - scroll_y_;
+			*y = m.body_y + (float)display * row_height_px() - scroll_y_;
 		if (width)
-			*width = columns_[(std::size_t)column].width;
+			*width = column_width_px((std::size_t)column);
 		if (height)
-			*height = row_height_;
+			*height = row_height_px();
 		return true;
 	}
 
@@ -907,7 +930,7 @@ namespace vgui_editor_kit {
 		if (y)
 			*y = m.header_y;
 		if (width)
-			*width = columns_[(std::size_t)column].width;
+			*width = column_width_px((std::size_t)column);
 		if (height)
 			*height = m.header_height;
 		return true;
@@ -958,8 +981,9 @@ namespace vgui_editor_kit {
 		if (display < 0)
 			return;
 		const layout_metrics m = metrics();
-		const float top = (float)display * row_height_;
-		const float bottom = top + row_height_;
+		const float row_height = row_height_px();
+		const float top = (float)display * row_height;
+		const float bottom = top + row_height;
 		if (top < scroll_y_)
 			scroll_y_ = top;
 		else if (bottom > scroll_y_ + m.body_height)
@@ -1056,7 +1080,8 @@ namespace vgui_editor_kit {
 			(void)parse_bool_text(edit_original_, checked);
 			vgui_widget_set_checked(edit_bool_, checked ? 1 : 0);
 			vgui_widget_set_text(edit_bool_, checked ? "true" : "false");
-			vgui_widget_set_size(edit_bool_, std::max(110.0f, cw), 30.0f);
+			vgui_widget_set_size(edit_bool_,
+				std::max(110.0f, to_logical(widget_, cw)), 30.0f);
 			edit_kind_ = edit_kind::boolean;
 			popup_content_ = edit_bool_;
 			if (!begin_popup_edit(popup_content_, edit_cell_, cx,
@@ -1186,7 +1211,8 @@ namespace vgui_editor_kit {
 			edit_kind_ = edit_kind::text;
 			vgui_edit_set_text(edit_text_, edit_original_.c_str());
 			vgui_edit_set_readonly(edit_text_, 0);
-			vgui_widget_set_size(edit_text_, std::max(140.0f, cw), 28.0f);
+			vgui_widget_set_size(edit_text_,
+				std::max(140.0f, to_logical(widget_, cw)), 28.0f);
 			popup_content_ = edit_text_;
 			if (!begin_popup_edit(popup_content_, edit_cell_, cx,
 				cy + ch + 2.0f))
@@ -1912,9 +1938,10 @@ namespace vgui_editor_kit {
 		auto* self = static_cast<table_view*>(user);
 		if (!self || !widget || !cb || !vg)
 			return;
-		self->draw(cb, vg, widget, abs_x + kBorderInset,
-			abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
-			abs_h - kBorderInset * 2.0f);
+		const float scale = self->ui_scale();
+		self->draw(cb, vg, widget, abs_x + kBorderInset * scale,
+			abs_y + kBorderInset * scale, abs_w - kBorderInset * 2.0f * scale,
+			abs_h - kBorderInset * 2.0f * scale);
 	}
 
 	void table_view::draw(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,
@@ -1968,39 +1995,41 @@ namespace vgui_editor_kit {
 
 		clip_guard clip(cb, vg, m.header_x, m.header_y, m.body_width,
 			m.header_height);
+		const float scale = ui_scale();
 		float offset = -scroll_x_;
 		for (std::size_t i = 0; i < columns_.size(); ++i)
 		{
 			const table_column& column = columns_[i];
+			const float column_width = column_width_px(i);
 			const float column_x = m.header_x + offset;
-			if (column_x + column.width < m.header_x)
+			if (column_x + column_width < m.header_x)
 			{
-				offset += column.width;
+				offset += column_width;
 				continue;
 			}
 			if (column_x > m.header_x + m.body_width)
 				break;
 
 			const bool sorted = (int)i == sort_column_;
-			const float arrow_space = column.sortable ? 16.0f : 0.0f;
+			const float arrow_space = column.sortable ? 16.0f * scale : 0.0f;
 			draw_cell_text(widget, cb, vg, column.label, column_x,
-				m.header_y, column.width - arrow_space - kCellPaddingX,
+				m.header_y, column_width - arrow_space - kCellPaddingX * scale,
 				m.header_height, text_color, table_alignment::left);
 			if (sorted)
 			{
-				const float cx = column_x + column.width - 11.0f;
+				const float cx = column_x + column_width - 11.0f * scale;
 				const float cy = m.header_y + m.header_height * 0.5f;
-				ovg_tools::tri_glyph(cb, vg, cx, cy, 4.0f,
+				ovg_tools::tri_glyph(cb, vg, cx, cy, 4.0f * scale,
 					sort_ascending_ ? 3 : 1, to_ovg(accent));
 			}
 			if (i + 1 < columns_.size())
 			{
-				ovg_tools::line(cb, vg, column_x + column.width,
-					m.header_y + 3.0f, column_x + column.width,
-					m.header_y + m.header_height - 3.0f, to_ovg(border),
+				ovg_tools::line(cb, vg, column_x + column_width,
+					m.header_y + 3.0f * scale, column_x + column_width,
+					m.header_y + m.header_height - 3.0f * scale, to_ovg(border),
 					1.0f, VG_LINE_CAP_BUTT);
 			}
-			offset += column.width;
+			offset += column_width;
 		}
 	}
 
@@ -2031,34 +2060,36 @@ namespace vgui_editor_kit {
 			m.body_height, to_ovg(background));
 
 		const table_row_range visible = visible_row_range();
-		const float first_top = m.body_y + (float)visible.first * row_height_ -
+		const float row_height = row_height_px();
+		const float scale = ui_scale();
+		const float first_top = m.body_y + (float)visible.first * row_height -
 			scroll_y_;
 		for (std::size_t i = 0; i < visible.count; ++i)
 		{
 			const std::size_t display = visible.first + i;
 			const std::size_t row = source_row_at(display);
-			const float top = first_top + (float)i * row_height_;
+			const float top = first_top + (float)i * row_height;
 			const bool selected_row = selected_.valid() &&
 				selected_.row == row;
 			const bool hovered_row = hover_row_ == row && hover_column_ >= 0;
 
 			if (selected_row)
 				ovg_tools::fill_rect(cb, vg, m.body_x, top, m.body_width,
-					row_height_, to_ovg(selection));
+					row_height, to_ovg(selection));
 			else if (hovered_row)
 				ovg_tools::fill_rect(cb, vg, m.body_x, top, m.body_width,
-					row_height_, to_ovg(with_alpha(row_hover, 0x66)));
+					row_height, to_ovg(with_alpha(row_hover, 0x66)));
 			else if (display % 2 == 1)
 				ovg_tools::fill_rect(cb, vg, m.body_x, top, m.body_width,
-					row_height_, to_ovg(with_alpha(border, 0x12)));
+					row_height, to_ovg(with_alpha(border, 0x12)));
 
 			if (selected_row && selected_.column >= 0 &&
 				selected_.column < (int)columns_.size())
 			{
 				const float sx = m.body_x +
 					column_offset((std::size_t)selected_.column) - scroll_x_;
-				const float sw = columns_[(std::size_t)selected_.column].width;
-				ovg_tools::stroke_rect(cb, vg, sx, top, sw, row_height_,
+				const float sw = column_width_px((std::size_t)selected_.column);
+				ovg_tools::stroke_rect(cb, vg, sx, top, sw, row_height,
 					to_ovg(accent), 1.0f);
 			}
 
@@ -2067,9 +2098,10 @@ namespace vgui_editor_kit {
 				column_index < columns_.size(); ++column_index)
 			{
 				const table_column& column = columns_[column_index];
+				const float column_width = column_width_px(column_index);
 				const float cell_x = m.body_x + offset;
-				offset += column.width;
-				if (cell_x + column.width <= m.body_x ||
+				offset += column_width;
+				if (cell_x + column_width <= m.body_x ||
 					cell_x >= m.body_x + m.body_width)
 					continue;
 
@@ -2099,8 +2131,8 @@ namespace vgui_editor_kit {
 						cell_text_color = style.text_color;
 				}
 				if (cell_bg)
-					ovg_tools::fill_rect(cb, vg, cell_x, top, column.width,
-						row_height_, to_ovg(cell_bg));
+					ovg_tools::fill_rect(cb, vg, cell_x, top, column_width,
+						row_height, to_ovg(cell_bg));
 
 				const property_type type = column.editor.type;
 				if (type == property_type::color)
@@ -2108,18 +2140,19 @@ namespace vgui_editor_kit {
 					vgui_color color = 0;
 					if (parse_hex_color(text, color))
 					{
-						const float swatch = std::max(8.0f,
-							std::min(14.0f, row_height_ - 8.0f));
-						const float sy = top + (row_height_ - swatch) * 0.5f;
+						const float swatch = std::max(8.0f * scale,
+							std::min(14.0f * scale, row_height - 8.0f * scale));
+						const float sy = top + (row_height - swatch) * 0.5f;
 						ovg_tools::fill_round_rect(cb, vg,
-							cell_x + kCellPaddingX, sy, swatch, swatch, 2.0f,
-							to_ovg(color));
+							cell_x + kCellPaddingX * scale, sy, swatch, swatch,
+							2.0f * scale, to_ovg(color));
 						ovg_tools::stroke_round_rect(cb, vg,
-							cell_x + kCellPaddingX, sy, swatch, swatch, 2.0f,
-							to_ovg(with_alpha(border, 0xCC)), 1.0f);
+							cell_x + kCellPaddingX * scale, sy, swatch, swatch,
+							2.0f * scale, to_ovg(with_alpha(border, 0xCC)), 1.0f);
 						draw_cell_text(widget, cb, vg, text,
-							cell_x + kCellPaddingX + swatch + 4.0f, top,
-							column.width - swatch - 4.0f, row_height_,
+							cell_x + kCellPaddingX * scale + swatch + 4.0f * scale,
+							top,
+							column_width - swatch - 4.0f * scale, row_height,
 							cell_text_color, column.alignment);
 						continue;
 					}
@@ -2130,9 +2163,10 @@ namespace vgui_editor_kit {
 					if (curve_editor::parse_value(text, value))
 					{
 						curve_editor::draw_preview(cb, vg,
-							cell_x + 2.0f, top + 3.0f,
-							std::max(1.0f, column.width - 4.0f),
-							std::max(1.0f, row_height_ - 6.0f), value, false);
+							cell_x + 2.0f * scale, top + 3.0f * scale,
+							std::max(1.0f, column_width - 4.0f * scale),
+							std::max(1.0f, row_height - 6.0f * scale), value,
+							false, scale);
 						continue;
 					}
 				}
@@ -2142,20 +2176,21 @@ namespace vgui_editor_kit {
 					if (gradient_editor::parse_value(text, value))
 					{
 						gradient_editor::draw_preview(cb, vg,
-							cell_x + 2.0f, top + 3.0f,
-							std::max(1.0f, column.width - 4.0f),
-							std::max(1.0f, row_height_ - 6.0f), value, false);
+							cell_x + 2.0f * scale, top + 3.0f * scale,
+							std::max(1.0f, column_width - 4.0f * scale),
+							std::max(1.0f, row_height - 6.0f * scale), value,
+							false, scale);
 						continue;
 					}
 				}
 
 				draw_cell_text(widget, cb, vg, text, cell_x, top,
-					column.width, row_height_, cell_text_color,
+					column_width, row_height, cell_text_color,
 					column.alignment);
 			}
 
-			ovg_tools::line(cb, vg, m.body_x, top + row_height_ - 0.5f,
-				m.body_x + m.body_width, top + row_height_ - 0.5f, grid_color,
+			ovg_tools::line(cb, vg, m.body_x, top + row_height - 0.5f,
+				m.body_x + m.body_width, top + row_height - 0.5f, grid_color,
 				1.0f, VG_LINE_CAP_BUTT);
 		}
 
@@ -2164,7 +2199,7 @@ namespace vgui_editor_kit {
 		float offset = -scroll_x_;
 		for (std::size_t i = 0; i + 1 < columns_.size(); ++i)
 		{
-			offset += columns_[i].width;
+			offset += column_width_px(i);
 			const float sx = m.body_x + offset;
 			if (sx <= m.body_x || sx >= m.body_x + m.body_width)
 				continue;
@@ -2183,55 +2218,59 @@ namespace vgui_editor_kit {
 		const vgui_color track = theme.track ? theme.track : 0xFF15181Eu;
 		const vgui_color thumb = theme.scrollbar ? theme.scrollbar
 			: 0xFF4A5568u;
+		const float scale = ui_scale();
+		const float inset = kScrollbarInset * scale;
+		const float radius = 3.0f * scale;
+		const float min_thumb = kScrollbarMinThumb * scale;
 
 		if (m.vertical_scrollbar && m.vbar_height > 0.0f)
 		{
-			ovg_tools::fill_round_rect(cb, vg, m.vbar_x + kScrollbarInset,
-				m.vbar_y + kScrollbarInset,
-				std::max(1.0f, m.vbar_width - kScrollbarInset * 2.0f),
-				std::max(1.0f, m.vbar_height - kScrollbarInset * 2.0f),
-				3.0f, to_ovg(track));
+			ovg_tools::fill_round_rect(cb, vg, m.vbar_x + inset,
+				m.vbar_y + inset,
+				std::max(1.0f, m.vbar_width - inset * 2.0f),
+				std::max(1.0f, m.vbar_height - inset * 2.0f),
+				radius, to_ovg(track));
 			const float range = max_scroll_y();
 			if (range > 0.0f)
 			{
-				const float track_h = m.vbar_height - kScrollbarInset * 2.0f;
+				const float track_h = m.vbar_height - inset * 2.0f;
 				const float ratio = std::clamp(m.body_height /
 					std::max(1.0f, m.rows_height), 0.0f, 1.0f);
-				const float thumb_h = std::max(kScrollbarMinThumb,
+				const float thumb_h = std::max(min_thumb,
 					track_h * ratio);
 				const float travel = std::max(0.0f, track_h - thumb_h);
-				const float thumb_y = m.vbar_y + kScrollbarInset +
+				const float thumb_y = m.vbar_y + inset +
 					travel * std::clamp(scroll_y_ / range, 0.0f, 1.0f);
 				ovg_tools::fill_round_rect(cb, vg,
-					m.vbar_x + kScrollbarInset, thumb_y,
-					std::max(1.0f, m.vbar_width - kScrollbarInset * 2.0f),
-					std::min(thumb_h, track_h), 3.0f, to_ovg(thumb));
+					m.vbar_x + inset, thumb_y,
+					std::max(1.0f, m.vbar_width - inset * 2.0f),
+					std::min(thumb_h, track_h), radius, to_ovg(thumb));
 			}
 		}
 
 		if (m.horizontal_scrollbar && m.hbar_width > 0.0f)
 		{
-			ovg_tools::fill_round_rect(cb, vg, m.hbar_x + kScrollbarInset,
-				m.hbar_y + kScrollbarInset,
-				std::max(1.0f, m.hbar_width - kScrollbarInset * 2.0f),
-				std::max(1.0f, m.hbar_height - kScrollbarInset * 2.0f),
-				3.0f, to_ovg(track));
+			ovg_tools::fill_round_rect(cb, vg, m.hbar_x + inset,
+				m.hbar_y + inset,
+				std::max(1.0f, m.hbar_width - inset * 2.0f),
+				std::max(1.0f, m.hbar_height - inset * 2.0f),
+				radius, to_ovg(track));
 			const float range = max_scroll_x();
 			if (range > 0.0f)
 			{
-				const float track_w = m.hbar_width - kScrollbarInset * 2.0f;
+				const float track_w = m.hbar_width - inset * 2.0f;
 				const float ratio = std::clamp(m.body_width /
 					std::max(1.0f, m.columns_width), 0.0f, 1.0f);
-				const float thumb_w = std::max(kScrollbarMinThumb,
+				const float thumb_w = std::max(min_thumb,
 					track_w * ratio);
 				const float travel = std::max(0.0f, track_w - thumb_w);
-				const float thumb_x = m.hbar_x + kScrollbarInset +
+				const float thumb_x = m.hbar_x + inset +
 					travel * std::clamp(scroll_x_ / range, 0.0f, 1.0f);
 				ovg_tools::fill_round_rect(cb, vg, thumb_x,
-					m.hbar_y + kScrollbarInset,
+					m.hbar_y + inset,
 					std::min(thumb_w, track_w),
-					std::max(1.0f, m.hbar_height - kScrollbarInset * 2.0f),
-					3.0f, to_ovg(thumb));
+					std::max(1.0f, m.hbar_height - inset * 2.0f),
+					radius, to_ovg(thumb));
 			}
 		}
 	}
@@ -2253,8 +2292,12 @@ namespace vgui_editor_kit {
 		if (!self || !event || !widget)
 			return 0;
 
-		const float x = event->x - kBorderInset;
-		const float y = event->y - kBorderInset;
+		const float scale = self->ui_scale();
+		const float inset = kScrollbarInset * scale;
+		const float min_thumb = kScrollbarMinThumb * scale;
+		const float resize_grab = kResizeGrab * scale;
+		const float x = event->x - kBorderInset * scale;
+		const float y = event->y - kBorderInset * scale;
 		layout_metrics m = self->metrics();
 		const bool inside = x >= 0.0f && y >= 0.0f &&
 			x < m.width && y < m.height;
@@ -2271,13 +2314,13 @@ namespace vgui_editor_kit {
 			const float range = self->max_scroll_y();
 			if (range <= 0.0f)
 				return false;
-			const float track_h = m.vbar_height - kScrollbarInset * 2.0f;
+			const float track_h = m.vbar_height - inset * 2.0f;
 			const float ratio = std::clamp(m.body_height /
 				std::max(1.0f, m.rows_height), 0.0f, 1.0f);
-			const float h = std::min(track_h, std::max(kScrollbarMinThumb,
+			const float h = std::min(track_h, std::max(min_thumb,
 				track_h * ratio));
 			const float travel = std::max(0.0f, track_h - h);
-			*thumb_y = vbar_y + kScrollbarInset +
+			*thumb_y = vbar_y + inset +
 				travel * std::clamp(self->scroll_y_ / range, 0.0f, 1.0f);
 			*thumb_h = h;
 			return true;
@@ -2290,13 +2333,13 @@ namespace vgui_editor_kit {
 			const float range = self->max_scroll_x();
 			if (range <= 0.0f)
 				return false;
-			const float track_w = m.hbar_width - kScrollbarInset * 2.0f;
+			const float track_w = m.hbar_width - inset * 2.0f;
 			const float ratio = std::clamp(m.body_width /
 				std::max(1.0f, m.columns_width), 0.0f, 1.0f);
-			const float w = std::min(track_w, std::max(kScrollbarMinThumb,
+			const float w = std::min(track_w, std::max(min_thumb,
 				track_w * ratio));
 			const float travel = std::max(0.0f, track_w - w);
-			*thumb_x = hbar_x + kScrollbarInset +
+			*thumb_x = hbar_x + inset +
 				travel * std::clamp(self->scroll_x_ / range, 0.0f, 1.0f);
 			*thumb_w = w;
 			return true;
@@ -2321,12 +2364,12 @@ namespace vgui_editor_kit {
 					self->drag_thumb_offset_ = thumb_h * 0.5f;
 				self->dragging_vbar_ = true;
 				self->dragging_hbar_ = false;
-				const float track_h = m.vbar_height - kScrollbarInset * 2.0f;
+				const float track_h = m.vbar_height - inset * 2.0f;
 				const float travel = std::max(0.0f, track_h - thumb_h);
 				if (travel > 0.0f)
 				{
 					const float pos = std::clamp(y - vbar_y -
-						kScrollbarInset - self->drag_thumb_offset_,
+						inset - self->drag_thumb_offset_,
 						0.0f, travel);
 					self->set_scroll(self->scroll_x_,
 						pos / travel * self->max_scroll_y());
@@ -2346,12 +2389,12 @@ namespace vgui_editor_kit {
 					self->drag_thumb_offset_ = thumb_w * 0.5f;
 				self->dragging_hbar_ = true;
 				self->dragging_vbar_ = false;
-				const float track_w = m.hbar_width - kScrollbarInset * 2.0f;
+				const float track_w = m.hbar_width - inset * 2.0f;
 				const float travel = std::max(0.0f, track_w - thumb_w);
 				if (travel > 0.0f)
 				{
 					const float pos = std::clamp(x - hbar_x -
-						kScrollbarInset - self->drag_thumb_offset_,
+						inset - self->drag_thumb_offset_,
 						0.0f, travel);
 					self->set_scroll(pos / travel * self->max_scroll_x(),
 						self->scroll_y_);
@@ -2364,8 +2407,8 @@ namespace vgui_editor_kit {
 				if (column < 0)
 					return 1;
 				const float right = self->column_offset((std::size_t)column) +
-					self->columns_[(std::size_t)column].width;
-				if (std::fabs((x + self->scroll_x_) - right) <= kResizeGrab)
+					self->column_width_px((std::size_t)column);
+				if (std::fabs((x + self->scroll_x_) - right) <= resize_grab)
 				{
 					self->resizing_ = true;
 					self->resize_column_ = column;
@@ -2410,7 +2453,7 @@ namespace vgui_editor_kit {
 				{
 					self->set_column_width((std::size_t)self->resize_column_,
 						self->resize_start_width_ +
-						(x - self->resize_start_x_));
+						to_logical(widget, x - self->resize_start_x_));
 				}
 				return 1;
 			}
@@ -2420,12 +2463,12 @@ namespace vgui_editor_kit {
 				if (vbar_thumb(&thumb_y, &thumb_h))
 				{
 					const float track_h = m.vbar_height -
-						kScrollbarInset * 2.0f;
+						inset * 2.0f;
 					const float travel = std::max(0.0f, track_h - thumb_h);
 					if (travel > 0.0f)
 					{
 						const float pos = std::clamp(y - vbar_y -
-							kScrollbarInset - self->drag_thumb_offset_,
+							inset - self->drag_thumb_offset_,
 							0.0f, travel);
 						self->set_scroll(self->scroll_x_,
 							pos / travel * self->max_scroll_y());
@@ -2439,12 +2482,12 @@ namespace vgui_editor_kit {
 				if (hbar_thumb(&thumb_x, &thumb_w))
 				{
 					const float track_w = m.hbar_width -
-						kScrollbarInset * 2.0f;
+						inset * 2.0f;
 					const float travel = std::max(0.0f, track_w - thumb_w);
 					if (travel > 0.0f)
 					{
 						const float pos = std::clamp(x - hbar_x -
-							kScrollbarInset - self->drag_thumb_offset_,
+							inset - self->drag_thumb_offset_,
 							0.0f, travel);
 						self->set_scroll(pos / travel * self->max_scroll_x(),
 							self->scroll_y_);
@@ -2468,9 +2511,9 @@ namespace vgui_editor_kit {
 				{
 					const float right = self->column_offset(
 						(std::size_t)column) +
-						self->columns_[(std::size_t)column].width;
+						self->column_width_px((std::size_t)column);
 					near_edge = std::fabs((x + self->scroll_x_) - right) <=
-						kResizeGrab;
+						resize_grab;
 				}
 				vgui_widget_set_cursor(widget, near_edge
 					? VGUI_CURSOR_SIZE_H : VGUI_CURSOR_ARROW);
@@ -2523,14 +2566,14 @@ namespace vgui_editor_kit {
 			{
 				const float delta = event->wheel_x != 0.0f
 					? event->wheel_x : event->wheel_y;
-				self->set_scroll(self->scroll_x_ - delta * 48.0f,
+				self->set_scroll(self->scroll_x_ - delta * 48.0f * scale,
 					self->scroll_y_);
 			}
 			else
 			{
 				self->set_scroll(self->scroll_x_,
 					self->scroll_y_ - event->wheel_y *
-					self->row_height_ * 3.0f);
+					self->row_height_px() * 3.0f);
 			}
 			return 1;
 
@@ -2559,7 +2602,7 @@ namespace vgui_editor_kit {
 				column = 0;
 			const std::size_t page = std::max<std::size_t>(1,
 				(std::size_t)std::max(1.0f,
-					(self->metrics().body_height / self->row_height_)));
+					(self->metrics().body_height / self->row_height_px())));
 			switch (event->key)
 			{
 			case VGUI_KEY_UP:

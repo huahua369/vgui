@@ -2,6 +2,7 @@
 
 #include "pch.h"
 #include "tools/tools.hpp"
+#include "ui_scale.h"
 
 #include <algorithm>
 #include <cmath>
@@ -523,7 +524,7 @@ namespace vgui_editor_kit {
 		ovg_tools::sv_box(cb, vg, x, y, w, h, self->h_deg_);
 		const float cx = x + self->s_ * w;
 		const float cy = y + (1.0f - self->v_) * h;
-		ovg_tools::sv_cursor(cb, vg, cx, cy, 5.0f);
+		ovg_tools::sv_cursor(cb, vg, cx, cy, 5.0f * ui_scale_of(widget));
 	}
 
 	void color_picker::draw_hue(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
@@ -534,7 +535,8 @@ namespace vgui_editor_kit {
 		if (!self || !cb || !vg)
 			return;
 		ovg_tools::hue_bar(cb, vg, x, y, w, h);
-		ovg_tools::bar_thumb(cb, vg, x + self->h_deg_ / 360.0f * w, y + h * 0.5f, 6.0f);
+		ovg_tools::bar_thumb(cb, vg, x + self->h_deg_ / 360.0f * w,
+			y + h * 0.5f, 6.0f * ui_scale_of(widget));
 	}
 
 	void color_picker::draw_alpha(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
@@ -550,7 +552,8 @@ namespace vgui_editor_kit {
 			((uint32_t)std::lround(std::clamp(self->edit_rgb_.g, 0.0f, 1.0f) * 255.0f) << 8) |
 			(uint32_t)std::lround(std::clamp(self->edit_rgb_.b, 0.0f, 1.0f) * 255.0f));
 		ovg_tools::alpha_bar(cb, vg, x, y, w, h, opaque);
-		ovg_tools::bar_thumb(cb, vg, x + self->a_ * w, y + h * 0.5f, 6.0f);
+		ovg_tools::bar_thumb(cb, vg, x + self->a_ * w, y + h * 0.5f,
+			6.0f * ui_scale_of(widget));
 	}
 
 } /* namespace vgui_editor_kit */

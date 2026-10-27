@@ -393,6 +393,7 @@ namespace vgui_editor_kit {
 		void update_text_input_rect();
 		void toggle_find_case();
 
+		float ui_scale() const;
 		geometry editor_geometry() const;
 		float content_width() const;
 		float x_for_column(int line, int column) const;

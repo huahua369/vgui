@@ -11,6 +11,7 @@
 static int g_pass;
 static int g_fail;
 static int g_focus_calls;
+static int g_scale_calls;
 
 static void c_focus_listener(vgui_context* ctx, vgui_widget* old_focus,
 	vgui_widget* new_focus, void* user)
@@ -20,6 +21,14 @@ static void c_focus_listener(vgui_context* ctx, vgui_widget* old_focus,
 	(void)new_focus;
 	(void)user;
 	++g_focus_calls;
+}
+
+static void c_scale_listener(vgui_context* ctx, float scale, void* user)
+{
+	(void)ctx;
+	(void)scale;
+	(void)user;
+	++g_scale_calls;
 }
 
 static void check(int ok, const char* what)
@@ -108,6 +117,42 @@ int main(void)
 	float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
 	vgui_widget_get_rect(image, &x, &y, &w, &h);
 	check(w == 120.0f && h == 80.0f, "C API: layout rect");
+
+	/* E01: UI scale is a pure C API and setters/geometry use logical units. */
+	{
+		vgui_style style;
+		vgui_style_default(&style);
+		const float padding = style.panel.padding;
+		vgui_style_scale(&style, 2.0f);
+		check(style.panel.padding == padding * 2.0f,
+			"C API: style scale");
+
+		vgui_context_set_ui_scale(ui, 2.0f);
+		check(vgui_context_get_ui_scale(ui) == 2.0f,
+			"C API: ui scale getter");
+		check(vgui_context_get_font_size(ui) == 32.0f,
+			"C API: context font follows ui scale");
+		vgui_layout(ui);
+		vgui_widget_get_rect(image, &x, &y, &w, &h);
+		check(w == 240.0f && h == 160.0f,
+			"C API: live tree follows ui scale");
+
+		int token = vgui_context_add_ui_scale_listener(ui,
+			c_scale_listener, NULL);
+		check(token != 0, "C API: ui scale listener token");
+		vgui_context_set_ui_scale(ui, 1.25f);
+		check(g_scale_calls == 1, "C API: ui scale listener fires");
+		vgui_context_remove_ui_scale_listener(ui, token);
+		vgui_context_set_ui_scale(ui, 1.0f);
+		check(g_scale_calls == 1, "C API: ui scale listener removal");
+
+		check(vgui_context_get_font_size(ui) == 16.0f,
+			"C API: context font restores");
+		vgui_layout(ui);
+		vgui_widget_get_rect(image, &x, &y, &w, &h);
+		check(w == 120.0f && h == 80.0f,
+			"C API: ui scale restores logical geometry");
+	}
 
 	/* F04 row extensions through the plain C API. */
 	{

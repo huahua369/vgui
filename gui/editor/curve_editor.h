@@ -115,7 +115,8 @@ namespace vgui_editor_kit {
 		/* PropertyGrid row preview: compact curve without controls or
 		 * handles.  mixed draws a neutral placeholder. */
 		static void draw_preview(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
-			float w, float h, const curve_value& value, bool mixed);
+			float w, float h, const curve_value& value, bool mixed,
+			float ui_scale = 1.0f);
 
 		/* Canonical text form shared with PropertyGrid. */
 		static bool parse_value(const std::string& text, curve_value& out,

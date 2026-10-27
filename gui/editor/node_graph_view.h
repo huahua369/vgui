@@ -424,6 +424,10 @@ namespace vgui_editor_kit {
 		void apply_view_to_bounds(const node_graph_rect& bounds,
 			float margin_pixels);
 
+		/* E01: graph coordinates are logical; screen mapping applies the
+		 * context UI scale on top of the user zoom. */
+		float ui_scale() const noexcept;
+		double effective_zoom() const noexcept;
 		double node_header_height() const noexcept;
 		double node_row_height() const noexcept;
 		double node_height(const node_node& node) const noexcept;

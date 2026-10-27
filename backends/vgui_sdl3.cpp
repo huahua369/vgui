@@ -209,7 +209,7 @@ bool point_in_popup(os_window* popup, SDL_Window* target_win, const glm::ivec2& 
 	if (!popup || !popup->window) return false;
 	if (popup->window != target_win) return false;
 	int w, h;
-	SDL_GetWindowSize(popup->window, &w, &h);
+	SDL_GetWindowSizeInPixels(popup->window, &w, &h);
 	return pos.x >= 0 && pos.x < w && pos.y >= 0 && pos.y < h;
 }
 bool is_child_popup(os_window* child, os_window* ancestor) {
@@ -352,10 +352,11 @@ void os_window::enable_window(bool bEnable)
 	//#endif
 	SDL_SetWindowModal(window, bEnable);
 }
-// 移动鼠标到窗口指定位置
+// 移动鼠标到窗口指定位置（渲染像素）
 void os_window::set_mouse_pos(const glm::ivec2& pos)
 {
-	SDL_WarpMouseInWindow(window, pos.x, pos.y);
+	const float ratio = pixel_ratio();
+	SDL_WarpMouseInWindow(window, (float)pos.x / ratio, (float)pos.y / ratio);
 }
 void os_window::set_mouse_pos_global(const glm::ivec2& pos)
 {
@@ -562,6 +563,7 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
+		p->sync_ui_scale(true);
 	}
 	return p;
 }
@@ -605,6 +607,7 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
+		p->sync_ui_scale(true);
 	}
 	return p;
 }
@@ -656,8 +659,11 @@ std::vector<std::unique_ptr<os_window>>& app_mgr::windows() { return windows_; }
 void app_mgr::UpdateMonitors()
 {
 	WantUpdateMonitors = false;
-	int display_count;
+	monitors.clear();
+	int display_count = 0;
 	SDL_DisplayID* displays = SDL_GetDisplays(&display_count);
+	if (!displays)
+		return;
 	for (int n = 0; n < display_count; n++)
 	{
 		// Warning: the validity of monitor DPI information on Windows depends on the application DPI awareness settings, which generally needs to be set in the manifest or at runtime.
@@ -679,6 +685,18 @@ void app_mgr::UpdateMonitors()
 		monitors.push_back(monitor);
 	}
 	SDL_free(displays);
+
+	// A monitor move/scale change can alter every window's content scale.
+	sync_ui_scales();
+}
+
+void app_mgr::sync_ui_scales()
+{
+	for (std::unique_ptr<os_window>& window : windows_)
+	{
+		if (window)
+			window->sync_ui_scale();
+	}
 }
 // todo event
 
@@ -745,29 +763,36 @@ void app_mgr::process_event(const SDL_Event* e)
 	auto pw = find(e->window.windowID);
 	if (pw) {
 		active_viewport_ = pw->viewport;
+		// Keep the retained UI in sync before converting input coordinates.
+		pw->sync_ui_scale();
 	}
 	auto pwio = io();
 	bool viewports_enabled = docking().viewports_enabled;
 	auto viewport = active_viewport_;
 	if (!viewport || !pwio)
 		return;
+	const float pixel_ratio = viewport->pixel_ratio > 0.0f
+		? viewport->pixel_ratio : 1.0f;
 	dev.io = pwio;
 	switch (e->type) {
 	case SDL_EVENT_MOUSE_MOTION:
 	{
 		mouse_move_et mt = {};
-		glm::ivec2 mouse_pos = { e->motion.x,e->motion.y };
-		mt.xrel = e->motion.xrel;
-		mt.yrel = e->motion.yrel;		// The relative motion in the XY direction 
+		glm::vec2 window_pos = { e->motion.x,e->motion.y };
+		mt.xrel = e->motion.xrel * pixel_ratio;
+		mt.yrel = e->motion.yrel * pixel_ratio;	// The relative motion in the XY direction
 		mt.which = e->motion.which;		// 鼠标实例 
 		dev.type = dev_event_type_e::mouse_move_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;
 			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			mouse_pos.x += window_x;
-			mouse_pos.y += window_y;
+			window_pos.x += (float)window_x;
+			window_pos.y += (float)window_y;
 		}
+		glm::ivec2 mouse_pos = {
+			(int)std::lround(window_pos.x * pixel_ratio),
+			(int)std::lround(window_pos.y * pixel_ratio) };
 		mt.x = mouse_pos.x;
 		mt.y = mouse_pos.y;			// 鼠标移动坐标
 		//pw->hittest(mouse_pos);
@@ -836,8 +861,8 @@ void app_mgr::process_event(const SDL_Event* e)
 		t.button = e->button.button;
 		t.down = e->button.down; //SDL_PRESSED; SDL_RELEASED;
 		t.clicks = e->button.clicks;
-		t.x = e->button.x;
-		t.y = e->button.y;
+		t.x = (int)std::lround(e->button.x * pixel_ratio);
+		t.y = (int)std::lround(e->button.y * pixel_ratio);
 		if (t.down)
 		{
 			pwio->clicks = 0;
@@ -914,16 +939,17 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_DROP_POSITION:
 	{
 		ole_drop_et t = {};
-		t.x = e->drop.x;
-		t.y = e->drop.y;
+		glm::vec2 window_pos = { e->drop.x, e->drop.y };
 		dev.type = dev_event_type_e::ole_drop_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;
 			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			t.x += window_x;
-			t.y += window_y;
+			window_pos.x += (float)window_x;
+			window_pos.y += (float)window_y;
 		}
+		t.x = (int)std::lround(window_pos.x * pixel_ratio);
+		t.y = (int)std::lround(window_pos.y * pixel_ratio);
 		dev.v.d = &t;
 		viewport->trigger(&dev);
 		//printf("pos\n");
@@ -931,17 +957,18 @@ void app_mgr::process_event(const SDL_Event* e)
 	case SDL_EVENT_DROP_COMPLETE:
 	{
 		ole_drop_et t = {};
-		t.x = e->drop.x;
-		t.y = e->drop.y;//结束
+		glm::vec2 window_pos = { e->drop.x, e->drop.y };
 
 		dev.type = dev_event_type_e::ole_drop_e;
 		if (viewports_enabled)
 		{
 			int window_x = 0, window_y = 0;
 			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			t.x += window_x;
-			t.y += window_y;
+			window_pos.x += (float)window_x;
+			window_pos.y += (float)window_y;
 		}
+		t.x = (int)std::lround(window_pos.x * pixel_ratio);
+		t.y = (int)std::lround(window_pos.y * pixel_ratio);
 		// F03: 文件列表走通用拖放路由（fmt==1）。
 		if (!viewport->drop_files.empty())
 		{
@@ -1020,6 +1047,9 @@ int app_mgr::get_event()
 		}
 		process_event(&e);
 	}
+	// Hosts normally call get_event() once per frame.  Re-syncing here also
+	// covers content-scale changes delivered without a window event.
+	sync_ui_scales();
 	return ts;
 }
 

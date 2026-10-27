@@ -158,6 +158,9 @@ namespace vgui_editor_kit {
 			float width, float height);
 		void draw_audio(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
 			float width, float height);
+		/* E01: fixed preview chrome metrics are logical and scaled to
+		 * render pixels; preview content keeps its own aspect/zoom rules. */
+		float ui_scale() const;
 		void draw_placeholder(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
 			float width, float height);
 
