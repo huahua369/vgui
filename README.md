@@ -22,7 +22,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **增量更新** | PropertyGrid 按 id+type 复用属性行，切换同 schema 对象不重建控件；Outliner 虚拟行源用 `scene_changed()`/`scene_row_changed()` 区分结构与单行刷新；AssetBrowser 只请求可见范围缩略图并复用内存/磁盘缓存 |
 | **国际化** | UTF-8 文案表与运行时语言切换；RTL 布局/文本/常用控件镜像；OVG 多字体回退与 bidi 文本 |
 | **无障碍** | 语义角色/名称/值/状态查询与可见控件树的预序遍历，供宿主桥接 UIA/AT-SPI/AccessKit；焦点陷阱、Tab 循环、F6 面板切换、F10 菜单、焦点/值/状态/选中/公告事件；高对比度主题 |
-| **视觉回归** | 9 个编辑器关键状态离屏截图基线（Dock/PropertyGrid/Outliner/AssetBrowser/Viewport），容差对比并输出差异图；CTest 可直接运行，无 Vulkan 自动 SKIP |
+| **视觉回归** | 10 个编辑器关键状态离屏截图基线（Dock/PropertyGrid/Outliner/AssetBrowser/Viewport），容差对比并输出差异图；CTest 可直接运行，无 Vulkan 自动 SKIP |
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
@@ -986,7 +986,7 @@ out/bin/x64d/vgui_screenshot_test.exe
 
 `vgui_texture_test` 使用离屏 FBO + 像素回读，覆盖原生与 CPU 纹理的 source/fit/tint/flip/pixel snap，以及 V10 九宫格、旋转、自定义旋转中心、矩阵和它们的组合，并包含 CPU 图片在父级裁剪内的回归用例（79 项断言）；`vgui_demo` 的图片卡片可交互验证同一组变换。
 
-`vgui_screenshot_test` 对 9 个编辑器关键状态做离屏截图回归：默认读取 `sample/screenshots/` 下的基线，按每通道容差 2、差异像素比例上限 0.05% 对比；失败时在 `--out-dir`（CTest 默认为构建目录 `screenshots/`）写 `<scene>_actual.png` 与 `<scene>_diff.png`（差异像素标红）。`--update` 重建基线，`--filter=<name>` 只跑子集，`--list` 列出场景。CTest 注册为 `vgui_screenshots`：
+`vgui_screenshot_test` 对 10 个编辑器关键状态做离屏截图回归：默认读取 `sample/screenshots/` 下的基线，按每通道容差 2、差异像素比例上限 0.05% 对比；失败时在 `--out-dir`（CTest 默认为构建目录 `screenshots/`）写 `<scene>_actual.png` 与 `<scene>_diff.png`（差异像素标红）。`--update` 重建基线，`--filter=<name>` 只跑子集，`--list` 列出场景。CTest 注册为 `vgui_screenshots`：
 
 ```bash
 ctest --test-dir out/build/x64-debug -R vgui_screenshots --output-on-failure

@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <utility>
 #include <vector>
 
@@ -27,6 +29,155 @@ namespace vgui_editor_kit {
 		float finite_or(float value, float fallback)
 		{
 			return std::isfinite(value) ? value : fallback;
+		}
+
+		/* O01: the shell enables the outliner row buttons, so it also supplies
+		 * default eye/lock glyphs.  The textures are white and get tinted by
+		 * the row text colour at draw time, so one set works for both dark and
+		 * light themes.  Hosts may still replace them through
+		 * outliner_view::set_row_button_icons(). */
+		enum class row_icon_kind
+		{
+			visible_on,
+			visible_off,
+			locked_on,
+			locked_off
+		};
+
+		struct row_icon_canvas
+		{
+			static constexpr int kSize = 16;
+			uint8_t pixels[kSize * kSize * 4] = {};
+
+			void blend(int x, int y, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
+			{
+				if (x < 0 || y < 0 || x >= kSize || y >= kSize || a == 0)
+					return;
+				uint8_t* p = &pixels[(static_cast<std::size_t>(y) * kSize + x) * 4];
+				if (a == 255)
+				{
+					p[0] = r;
+					p[1] = g;
+					p[2] = b;
+					p[3] = 255;
+					return;
+				}
+				const uint32_t ia = 255u - a;
+				p[0] = static_cast<uint8_t>((r * a + p[0] * ia) / 255u);
+				p[1] = static_cast<uint8_t>((g * a + p[1] * ia) / 255u);
+				p[2] = static_cast<uint8_t>((b * a + p[2] * ia) / 255u);
+				p[3] = static_cast<uint8_t>(std::min<uint32_t>(255u,
+					static_cast<uint32_t>(p[3]) + a));
+			}
+
+			void rect(int x0, int y0, int x1, int y1,
+				uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+			{
+				for (int y = std::max(0, y0); y <= std::min(kSize - 1, y1); ++y)
+					for (int x = std::max(0, x0); x <= std::min(kSize - 1, x1); ++x)
+						blend(x, y, r, g, b, a);
+			}
+
+			void circle(float cx, float cy, float radius,
+				uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+			{
+				const int x0 = static_cast<int>(std::floor(cx - radius));
+				const int x1 = static_cast<int>(std::ceil(cx + radius));
+				const int y0 = static_cast<int>(std::floor(cy - radius));
+				const int y1 = static_cast<int>(std::ceil(cy + radius));
+				const float rr = radius * radius;
+				for (int y = y0; y <= y1; ++y)
+					for (int x = x0; x <= x1; ++x)
+					{
+						const float dx = static_cast<float>(x) + 0.5f - cx;
+						const float dy = static_cast<float>(y) + 0.5f - cy;
+						if (dx * dx + dy * dy <= rr)
+							blend(x, y, r, g, b, a);
+					}
+			}
+
+			void ring(float cx, float cy, float outer, float inner,
+				uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+			{
+				const int x0 = static_cast<int>(std::floor(cx - outer));
+				const int x1 = static_cast<int>(std::ceil(cx + outer));
+				const int y0 = static_cast<int>(std::floor(cy - outer));
+				const int y1 = static_cast<int>(std::ceil(cy + outer));
+				const float ro = outer * outer;
+				const float ri = inner * inner;
+				for (int y = y0; y <= y1; ++y)
+					for (int x = x0; x <= x1; ++x)
+					{
+						const float dx = static_cast<float>(x) + 0.5f - cx;
+						const float dy = static_cast<float>(y) + 0.5f - cy;
+						const float d = dx * dx + dy * dy;
+						if (d <= ro && d >= ri)
+							blend(x, y, r, g, b, a);
+					}
+			}
+
+			void line(float x0, float y0, float x1, float y1, float thickness,
+				uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255)
+			{
+				const float dx = x1 - x0;
+				const float dy = y1 - y0;
+				const int steps = std::max(1,
+					static_cast<int>(std::ceil(std::sqrt(dx * dx + dy * dy) * 2.0f)));
+				const float radius = std::max(0.5f, thickness * 0.5f);
+				for (int i = 0; i <= steps; ++i)
+				{
+					const float t = static_cast<float>(i) / static_cast<float>(steps);
+					circle(x0 + dx * t, y0 + dy * t, radius, r, g, b, a);
+				}
+			}
+		};
+
+		vgui_texture* make_row_button_icon(vgui_context* ui, row_icon_kind kind)
+		{
+			if (!ui)
+				return nullptr;
+			row_icon_canvas canvas;
+			const bool off = kind == row_icon_kind::visible_off ||
+				kind == row_icon_kind::locked_off;
+			const uint8_t alpha = off ? 150 : 235;
+			if (kind == row_icon_kind::visible_on ||
+				kind == row_icon_kind::visible_off)
+			{
+				/* 杏仁形眼眶 = 外椭圆减内椭圆;off 状态加一条斜线。 */
+				for (int y = 0; y < row_icon_canvas::kSize; ++y)
+					for (int x = 0; x < row_icon_canvas::kSize; ++x)
+					{
+						const float dx =
+							(static_cast<float>(x) + 0.5f - 8.0f) / 7.0f;
+						const float dy =
+							(static_cast<float>(y) + 0.5f - 8.0f) / 4.0f;
+						const float d = dx * dx + dy * dy;
+						if (d <= 1.0f && d >= 0.42f)
+							canvas.blend(x, y, 255, 255, 255, alpha);
+					}
+				canvas.circle(8.0f, 8.0f, 2.3f, 255, 255, 255,
+					off ? 170 : 255);
+				if (off)
+					canvas.line(2.5f, 13.5f, 13.5f, 2.5f, 1.6f,
+						255, 255, 255, 255);
+			}
+			else
+			{
+				/* 锁体 + 上方锁梁;off 状态锁梁向右开口。 */
+				canvas.rect(3, 7, 12, 14, 255, 255, 255, alpha);
+				canvas.rect(4, 8, 11, 13, 30, 34, 40, off ? 120 : 200);
+				const float cx = kind == row_icon_kind::locked_on ? 7.5f : 9.5f;
+				canvas.ring(cx, 6.0f, 3.4f, 2.1f, 255, 255, 255, alpha);
+				canvas.rect(static_cast<int>(cx) - 1, 5,
+					static_cast<int>(cx) + 1, 11, 255, 255, 255, alpha);
+			}
+			vgui_texture_desc desc = {};
+			desc.width = row_icon_canvas::kSize;
+			desc.height = row_icon_canvas::kSize;
+			desc.stride = row_icon_canvas::kSize * 4;
+			desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+			desc.pixels = canvas.pixels;
+			return vgui_texture_create(ui, &desc);
 		}
 
 		// E05: first focusable, visible and enabled descendant (pre-order).
@@ -74,6 +225,7 @@ namespace vgui_editor_kit {
 
 	editor_shell::~editor_shell()
 	{
+		release_row_button_icons();
 		if (selection_listener_)
 			context_.remove_selection_listener(selection_listener_);
 		selection_listener_ = 0;
@@ -836,6 +988,7 @@ namespace vgui_editor_kit {
 		scene_.enable_inline_rename();
 		scene_.enable_context_menu();
 		scene_.enable_row_buttons();
+		build_row_button_icons();
 		assets_.enable_row_drag();
 		/* A03: keep the preview in sync with the asset selection.  A separate
 		 * listener leaves the host's legacy selection callback untouched. */
@@ -1663,6 +1816,42 @@ namespace vgui_editor_kit {
 		}
 		if (view_strip_) vgui_widget_set_background(view_strip_, section_bg);
 		if (title_label_) vgui_widget_set_text_color(title_label_, title_text);
+	}
+
+	void editor_shell::build_row_button_icons()
+	{
+		release_row_button_icons();
+		vgui_context* ui = context_.ui();
+		if (!ui)
+			return;
+		row_icon_visible_on_ = make_row_button_icon(ui,
+			row_icon_kind::visible_on);
+		row_icon_visible_off_ = make_row_button_icon(ui,
+			row_icon_kind::visible_off);
+		row_icon_locked_on_ = make_row_button_icon(ui,
+			row_icon_kind::locked_on);
+		row_icon_locked_off_ = make_row_button_icon(ui,
+			row_icon_kind::locked_off);
+		scene_.set_row_button_icons(row_icon_visible_on_,
+			row_icon_visible_off_, row_icon_locked_on_, row_icon_locked_off_);
+	}
+
+	void editor_shell::release_row_button_icons()
+	{
+		/* 先让树丢掉纹理指针,再销毁纹理,避免销毁顺序造成悬空引用。 */
+		scene_.set_row_button_icons(nullptr, nullptr, nullptr, nullptr);
+		vgui_texture* icons[] = { row_icon_visible_on_,
+			row_icon_visible_off_, row_icon_locked_on_, row_icon_locked_off_ };
+		if (vgui_context* ui = context_.ui())
+		{
+			for (vgui_texture* icon : icons)
+				if (icon)
+					vgui_texture_destroy(icon);
+		}
+		row_icon_visible_on_ = nullptr;
+		row_icon_visible_off_ = nullptr;
+		row_icon_locked_on_ = nullptr;
+		row_icon_locked_off_ = nullptr;
 	}
 
 	void editor_shell::focus_next_panel(int direction)

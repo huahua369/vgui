@@ -86,6 +86,7 @@ namespace {
 		int width = 0;
 		int height = 0;
 		bool light = false;
+		bool virtual_rows = false;
 	};
 
 	const scene_spec kScenes[] = {
@@ -94,6 +95,7 @@ namespace {
 		{ "property_grid_dark", 560, 720, false },
 		{ "property_grid_states_dark", 560, 720, false },
 		{ "outliner_selected_dark", 400, 560, false },
+		{ "outliner_virtual_dark", 400, 560, false, true },
 		{ "outliner_filtered_light", 400, 560, true },
 		{ "asset_browser_grid_light", 700, 520, true },
 		{ "asset_browser_list_dark", 700, 520, false },
@@ -868,6 +870,91 @@ namespace {
 		context.set_selection({ 106, 109 }, 106);
 	}
 
+	/* Virtual-mode outliner: the same scene content without a per-node mirror.
+	 * E02 rows are pulled from the host on demand; the tree must still render
+	 * the standard icon/text because this source does not install row_draw. */
+	void populate_virtual_outliner(outliner_view& outliner, editor_context& context,
+		vgui_texture* folder_icon, vgui_texture* mesh_icon,
+		vgui_texture* light_icon, vgui_texture* camera_icon,
+		vgui_texture* eye_on, vgui_texture* eye_off,
+		vgui_texture* lock_on, vgui_texture* lock_off)
+	{
+		outliner.clear();
+		vgui_widget_set_size(outliner.widget(), 0, 0);
+		vgui_widget_set_align_self(outliner.widget(), VGUI_ALIGN_STRETCH);
+		outliner.enable_row_buttons();
+		outliner.set_row_button_icons(eye_on, eye_off, lock_on, lock_off);
+		outliner.set_multi_select(true);
+		outliner.enable_selection_sync();
+
+		struct demo_scene
+		{
+			std::vector<object_id> roots{ 100 };
+			std::map<object_id, std::vector<object_id>> children;
+			std::map<object_id, std::string> names;
+		};
+		static const demo_scene scene = []
+		{
+			demo_scene s;
+			s.children[100] = { 101, 102, 103, 111 };
+			s.children[101] = { 104, 105 };
+			s.children[102] = { 106, 107, 108 };
+			s.children[103] = { 109, 110 };
+			s.names[100] = "World";
+			s.names[101] = "Environment";
+			s.names[102] = "Props";
+			s.names[103] = "Lights";
+			s.names[104] = "Ground Plane";
+			s.names[105] = "Sky Dome";
+			s.names[106] = "Crate_A";
+			s.names[107] = "Crate_B";
+			s.names[108] = "Player Start";
+			s.names[109] = "Key Light";
+			s.names[110] = "Fill Light";
+			s.names[111] = "Main Camera";
+			return s;
+		}();
+
+		outliner_view::scene_source source;
+		source.root_count = [] { return scene.roots.size(); };
+		source.root_at = [](std::size_t index) {
+			return index < scene.roots.size() ? scene.roots[index] : invalid_object;
+		};
+		source.child_count = [](object_id object) -> std::size_t {
+			const auto it = scene.children.find(object);
+			return it == scene.children.end() ? 0 : it->second.size();
+		};
+		source.child_at = [](object_id object, std::size_t index) -> object_id {
+			const auto it = scene.children.find(object);
+			return it == scene.children.end() || index >= it->second.size()
+				? invalid_object : it->second[index];
+		};
+		source.name = [](object_id object) {
+			const auto it = scene.names.find(object);
+			return it == scene.names.end() ? std::string() : it->second;
+		};
+		source.icon = [folder_icon, mesh_icon, light_icon, camera_icon](
+			object_id object) -> vgui_texture* {
+			if (object == 105 || object == 108)
+				return nullptr;
+			if (object == 109 || object == 110)
+				return light_icon;
+			if (object == 111)
+				return camera_icon;
+			return object >= 104 ? mesh_icon : folder_icon;
+		};
+		outliner.set_scene_source(std::move(source));
+
+		outliner.expand(100);
+		outliner.expand(101);
+		outliner.expand(102);
+		outliner.expand(103);
+		outliner.set_object_visibility(105, false);
+		outliner.set_object_locked(107, true);
+
+		context.set_selection({ 106, 109 }, 106);
+	}
+
 	std::vector<vgui_item_id> populate_assets(asset_browser& browser, vgui_context* ui,
 		bool grid, bool filtered)
 	{
@@ -1176,8 +1263,12 @@ namespace {
 		vgui_texture* lock_on = make_icon(st.ui, icon_kind::lock_on, light_theme);
 		vgui_texture* lock_off = make_icon(st.ui, icon_kind::lock_off, light_theme);
 
-		populate_outliner(out, *st.context, folder, mesh, light, camera,
-			eye_on, eye_off, lock_on, lock_off);
+		if (spec.virtual_rows)
+			populate_virtual_outliner(out, *st.context, folder, mesh, light, camera,
+				eye_on, eye_off, lock_on, lock_off);
+		else
+			populate_outliner(out, *st.context, folder, mesh, light, camera,
+				eye_on, eye_off, lock_on, lock_off);
 		if (filtered)
 		{
 			out.set_filter("light");
@@ -1412,6 +1503,8 @@ namespace {
 			else if (std::strcmp(spec.name, "property_grid_states_dark") == 0)
 				build_property_grid(st, spec, true);
 			else if (std::strcmp(spec.name, "outliner_selected_dark") == 0)
+				build_outliner(st, spec, false);
+			else if (std::strcmp(spec.name, "outliner_virtual_dark") == 0)
 				build_outliner(st, spec, false);
 			else if (std::strcmp(spec.name, "outliner_filtered_light") == 0)
 				build_outliner(st, spec, true);

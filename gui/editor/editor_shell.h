@@ -157,6 +157,9 @@ namespace vgui_editor_kit {
 		bool load_layout(const std::string& path, std::string* error = nullptr);
 		bool reset_layout();
 
+		/* The shell enables the outliner row buttons and installs default
+		 * visibility/lock icons; call scene().set_row_button_icons() to
+		 * replace them. */
 		outliner_view& scene() noexcept;
 		property_grid& properties() noexcept;
 		asset_browser& assets() noexcept;
@@ -232,6 +235,9 @@ namespace vgui_editor_kit {
 		void focus_next_panel(int direction);
 		void apply_shell_palette();
 		void install_accessibility_names();
+		/* O01: default 16x16 eye/lock textures for the outliner row buttons. */
+		void build_row_button_icons();
+		void release_row_button_icons();
 
 		vgui_item_id panel_item(editor_panel panel) const noexcept;
 
@@ -276,6 +282,10 @@ namespace vgui_editor_kit {
 		editor_layout default_layout_;
 
 		outliner_view scene_;
+		vgui_texture* row_icon_visible_on_ = nullptr;
+		vgui_texture* row_icon_visible_off_ = nullptr;
+		vgui_texture* row_icon_locked_on_ = nullptr;
+		vgui_texture* row_icon_locked_off_ = nullptr;
 		property_grid properties_;
 		asset_browser assets_;
 		asset_preview preview_;

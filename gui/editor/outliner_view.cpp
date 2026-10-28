@@ -1427,7 +1427,12 @@ namespace vgui_editor_kit {
 		row_source.row_buttons = &outliner_view::vs_row_buttons;
 		row_source.row_button_icon = &outliner_view::vs_row_button_icon;
 		row_source.row_button_click = &outliner_view::vs_row_button_click;
-		row_source.row_draw = &outliner_view::vs_row_draw;
+		/* Only install the custom row painter when the host actually provides
+		 * one: the core replaces its standard icon/text rendering whenever
+		 * row_draw is non-null, so an unconditional trampoline would blank
+		 * ordinary virtual rows. */
+		if (source_.row_draw)
+			row_source.row_draw = &outliner_view::vs_row_draw;
 		vgui_tree_set_row_source(tree_, &row_source);
 		selected_ = 0;
 		invalidate_vrows();
@@ -1465,9 +1470,11 @@ namespace vgui_editor_kit {
 		const char** detail, void** item_user)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		const vrow& row = self->vrows_[(std::size_t)index];
 		self->vs_scratch_text_ = self->source_.name
 			? self->source_.name(row.object) : std::string();
@@ -1484,9 +1491,11 @@ namespace vgui_editor_kit {
 	vgui_item_id outliner_view::vs_row_id(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		return static_cast<vgui_item_id>(self->vrows_[(std::size_t)index].object);
 	}
 
@@ -1503,18 +1512,22 @@ namespace vgui_editor_kit {
 	int outliner_view::vs_row_depth(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		return self->vrows_[(std::size_t)index].depth;
 	}
 
 	int outliner_view::vs_row_has_children(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		const object_id object = self->vrows_[(std::size_t)index].object;
 		return self->source_.child_count &&
 			self->source_.child_count(object) > 0 ? 1 : 0;
@@ -1523,9 +1536,11 @@ namespace vgui_editor_kit {
 	int outliner_view::vs_row_expanded(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		return self->expanded_.find(self->vrows_[(std::size_t)index].object)
 			!= self->expanded_.end() ? 1 : 0;
 	}
@@ -1533,9 +1548,11 @@ namespace vgui_editor_kit {
 	void outliner_view::vs_row_toggle(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return;
 		const object_id object = self->vrows_[(std::size_t)index].object;
 		if (self->expanded_.find(object) != self->expanded_.end())
 			self->expanded_.erase(object);
@@ -1548,9 +1565,11 @@ namespace vgui_editor_kit {
 	int outliner_view::vs_row_enabled(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return 1;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 1;
 		return self->source_.enabled
 			? (self->source_.enabled(self->vrows_[(std::size_t)index].object)
 				? 1 : 0) : 1;
@@ -1559,9 +1578,11 @@ namespace vgui_editor_kit {
 	const char* outliner_view::vs_row_tooltip(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return nullptr;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return nullptr;
 		return self->source_.tooltip
 			? self->source_.tooltip(self->vrows_[(std::size_t)index].object)
 			: nullptr;
@@ -1570,10 +1591,11 @@ namespace vgui_editor_kit {
 	int outliner_view::vs_row_icon(void* user, int index, vgui_texture** out_texture)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || !out_texture || index < 0 ||
-			(std::size_t)index >= self->vrows_.size())
+		if (!self || !out_texture || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		if (!self->source_.icon)
 			return 0;
 		*out_texture = self->source_.icon(self->vrows_[(std::size_t)index].object);
@@ -1583,10 +1605,11 @@ namespace vgui_editor_kit {
 	vgui_color outliner_view::vs_row_text_color(void* user, int index)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || !self->source_.text_color || index < 0 ||
-			(std::size_t)index >= self->vrows_.size())
+		if (!self || !self->source_.text_color || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		return self->source_.text_color(self->vrows_[(std::size_t)index].object);
 	}
 
@@ -1601,10 +1624,11 @@ namespace vgui_editor_kit {
 		vgui_texture** out_texture)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || !out_texture || index < 0 ||
-			(std::size_t)index >= self->vrows_.size())
+		if (!self || !out_texture || index < 0)
 			return 0;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return 0;
 		const object_id object = self->vrows_[(std::size_t)index].object;
 		if (button == 0)
 			*out_texture = self->object_visibility(object)
@@ -1620,9 +1644,11 @@ namespace vgui_editor_kit {
 	void outliner_view::vs_row_button_click(void* user, int index, int button)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || index < 0 || (std::size_t)index >= self->vrows_.size())
+		if (!self || index < 0)
 			return;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return;
 		self->flag_changed(self->vrows_[(std::size_t)index].object, button);
 	}
 
@@ -1630,10 +1656,11 @@ namespace vgui_editor_kit {
 		rvg_t* vg, float x, float y, float w, float h)
 	{
 		auto* self = static_cast<outliner_view*>(user);
-		if (!self || !self->source_.row_draw || index < 0 ||
-			(std::size_t)index >= self->vrows_.size())
+		if (!self || !self->source_.row_draw || index < 0)
 			return;
 		self->ensure_vrows();
+		if ((std::size_t)index >= self->vrows_.size())
+			return;
 		self->source_.row_draw(self->vrows_[(std::size_t)index].object, cb, vg,
 			x, y, w, h);
 	}

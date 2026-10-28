@@ -14292,6 +14292,18 @@ int main()
 
 		shell.scene().expand(scene_root);
 		vgui_tree_select(shell.scene().widget(), cube, 1);
+		/* O01: the shell installs default visibility/lock icons, so hosts that
+		 * only build the shell do not get empty row buttons. */
+		vgui_texture* visible_on = vgui_tree_get_item_button_icon(
+			shell.scene().widget(), cube, 0);
+		if (!visible_on ||
+			!vgui_tree_get_item_button_icon(shell.scene().widget(), cube, 1))
+			return fail("shell outliner row button icons");
+		shell.scene().set_object_visibility(42, false);
+		if (vgui_tree_get_item_button_icon(shell.scene().widget(), cube, 0) ==
+			visible_on)
+			return fail("shell outliner visibility icon state");
+		shell.scene().set_object_visibility(42, true);
 		if (context.selection() != 42 || selected != 42)
 			return fail("outliner selection mapping");
 		if (shell.statusbar().selection_text() != "Selected: 42" ||
