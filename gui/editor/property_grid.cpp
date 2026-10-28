@@ -32,12 +32,14 @@ namespace vgui_editor_kit {
 		constexpr float kCategoryHeight = 24.0f;
 		constexpr float kItemGap = 4.0f;
 		constexpr float kPanelPadding = 6.0f;
-		constexpr float kScrollbarThickness = 10.0f;
+		constexpr float kScrollbarThickness = 10.0f;	// horizontal bar height
+		constexpr float kScrollbarThicknessV = 5.0f;	// vertical bar width
 		constexpr float kScrollbarInset = 2.0f;
-		/* The horizontal bar is painted over the panel's padding box, so the
-		 * rows must stop above its band; otherwise the bar covers the bottom
-		 * edge of the last visible row. */
 		constexpr float kScrollbarGap = 4.0f;
+		/* Bars are painted over the panel's padding box, so the right and bottom
+		 * padding reserve their bands; otherwise a bar covers the row edge. */
+		constexpr float kPanelPaddingRight =
+			kScrollbarGap + kScrollbarThicknessV + kScrollbarInset;
 		constexpr float kPanelPaddingBottom =
 			kScrollbarGap + kScrollbarThickness + kScrollbarInset;
 		constexpr float kPanelPaddingV = kPanelPadding + kPanelPaddingBottom;
@@ -595,18 +597,17 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(panel_, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(panel_, kPanelPadding, kPanelPadding,
-			kPanelPadding, kPanelPaddingBottom);
+			kPanelPaddingRight, kPanelPaddingBottom);
 		vgui_widget_set_gap(panel_, kItemGap);
 		vgui_widget_set_background(panel_, kPanelBg);
 		vgui_widget_set_border(panel_, kBorder, 1);
 		/* Narrow hosts keep rows usable: below this width the panel scrolls
 		 * horizontally instead of squeezing the editor fields to nothing. */
 		vgui_panel_set_scrollable(panel_, 1, 1);
-		/* The stock 5px bar is hard to grab with a pointer; the horizontal bar
-		 * (the one a narrow dock shows) uses a thicker body and hit area.  The
-		 * bottom padding above reserves the matching band. */
-		vgui_panel_set_scrollbar_size(panel_, kScrollbarThickness, 0,
-			kScrollbarInset);
+		/* The stock horizontal bar is hard to grab with a pointer, so the grid
+		 * uses a thicker one; both bar bands are reserved by the padding above. */
+		vgui_panel_set_scrollbar_size(panel_, kScrollbarThickness,
+			kScrollbarThicknessV, kScrollbarInset);
 
 		/* 搜索行 = 搜索框 + P08 收藏过滤开关(高度保持 24,kSearchLead
 		 * 不变)。 */
@@ -1789,6 +1790,9 @@ private:
 			vgui_widget_set_size(ui.header, 0, kCategoryHeight);
 			vgui_widget_set_align_self(ui.header, VGUI_ALIGN_STRETCH);
 			vgui_widget_set_font_size(ui.header, 12);
+			/* Collapse arrows and names read as a column label, not a button
+			 * caption, so the header text hugs the left edge like the row labels. */
+			vgui_widget_set_text_align(ui.header, 0.0f, 0.5f);
 			vgui_widget_set_background(ui.header, kCategoryBg);
 			vgui_widget_set_id(ui.header, category_widget_id(name).c_str());
 			vgui_widget_on_event(ui.header, &property_grid::on_category_click, this);
