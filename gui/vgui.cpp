@@ -526,6 +526,7 @@ struct vgui_widget
 	int multiline = 0;
 	int password = 0;
 	int readonly = 0;
+	int background_transparent = 0;	// 1 = skip the background fill, show the parent
 	char password_char = '*';
 	float edit_scroll_x = 0;
 	float edit_scroll_y = 0;
@@ -11193,14 +11194,16 @@ namespace {
 	{
 		vgui_context* ctx = w->ctx;
 		const vgui_style& st = ctx->style;
-		uint32_t bg = w->bg ? w->bg : ctx->theme.edit_bg;
 		uint32_t base_border = w->border ? w->border : ctx->theme.button_border;
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(base_border, ctx->theme.accent, vgui_focus_alpha(w)) : base_border)
 			: ctx->theme.disabled;
-		if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, st.edit.disabled_bg_mix);
-
-		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+		if (!w->background_transparent)
+		{
+			uint32_t bg = w->bg ? w->bg : ctx->theme.edit_bg;
+			if (!w->enabled) bg = vgui_mix_color(bg, ctx->theme.disabled, st.edit.disabled_bg_mix);
+			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+		}
 		if (w->border_width > 0)
 		{
 			float bi = w->border_width * 0.5f;
@@ -16123,6 +16126,13 @@ extern "C" {
 		}
 		if (edit->ctx && edit->ctx->focus == edit)
 			edit->ctx->want_text = !edit->readonly;
+	}
+
+	void vgui_edit_set_background_transparent(vgui_widget* edit, int transparent)
+	{
+		if (!edit) return;
+		edit->background_transparent = transparent ? 1 : 0;
+		vgui_mark_dirty(edit);
 	}
 
 	void vgui_edit_set_cursor(vgui_widget* edit, int byte_index)

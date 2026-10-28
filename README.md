@@ -93,6 +93,7 @@ vgui_image_set_matrix(image, shear);
 - 多行编辑框内容滚动与内部滚动条，支持滚轮和拖动；内容宽度超出时自动显示水平滚动条。
 - IME 组合文本显示、光标位置查询和输入框矩形上报。
 - 文本光标宽度可配置，默认 1 像素；`vgui_edit_set_caret_width(edit, 2.0f)` 可加宽，设为 0 可隐藏。
+- 背景默认使用主题的 `edit_bg`；`vgui_edit_set_background_transparent(edit, 1)` 可关闭背景填充，让父面板透出，边框、文字、选区和焦点环仍正常绘制。
 - 选区高亮颜色与圆角可配置。多行选区按整体轮廓填充，共享边保持连续，所有外露拐角（包括行宽变化处的台阶/凹角）都会倒圆；`vgui_edit_set_selection_rounding(edit, 0)` 可关闭圆角。
 
 ### 列表、树与菜单

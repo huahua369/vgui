@@ -1337,6 +1337,10 @@ extern "C" {
 	VGUI_API void vgui_edit_set_password(vgui_widget* edit, char mask);
 	VGUI_API void vgui_edit_set_multiline(vgui_widget* edit, int multiline);
 	VGUI_API void vgui_edit_set_readonly(vgui_widget* edit, int readonly);
+	/* Non-zero skips the filled background so the parent panel shows through;
+	 * the border, text, selection and focus ring still draw.  Zero restores
+	 * the widget/theme background. */
+	VGUI_API void vgui_edit_set_background_transparent(vgui_widget* edit, int transparent);
 	VGUI_API void vgui_edit_set_cursor(vgui_widget* edit, int byte_index);
 	VGUI_API int vgui_edit_get_cursor(vgui_widget* edit);
 	VGUI_API void vgui_edit_select_all(vgui_widget* edit);

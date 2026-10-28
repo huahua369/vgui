@@ -606,6 +606,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_id(search_, "__property_search");
 		vgui_widget_set_a11y_name(search_, "Search properties");
 		vgui_edit_set_placeholder(search_, "Search properties");
+		vgui_edit_set_background_transparent(search_, 1);
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
 
 		fav_filter_ = vgui_widget_add(search_row, VGUI_BUTTON, "*");
@@ -1928,6 +1929,14 @@ private:
 				vgui_widget_set_grow(item.vector_ui->widget(), 1.0f);
 				vgui_widget_set_size(item.vector_ui->widget(), 0, 24);
 				vgui_widget_set_min_size(item.vector_ui->widget(), 80, 24);
+				/* Let the row background show through the value fields. */
+				for (int i = 0; i < item.vector_ui->dimension(); ++i)
+				{
+					vgui_widget* edit =
+						item.vector_ui->component_edit_widget(i);
+					if (edit)
+						vgui_edit_set_background_transparent(edit, 1);
+				}
 				vector_editor::vector_value values{};
 				std::string error;
 				if (vector_editor::parse_value(item.value, dimension,
@@ -1981,6 +1990,7 @@ private:
 			vgui_widget_set_grow(item.editor, 1.0f);
 			vgui_widget_set_size(item.editor, 0, 24);
 			vgui_widget_set_font_size(item.editor, 13);
+			vgui_edit_set_background_transparent(item.editor, 1);
 			if (!item.desc.placeholder.empty())
 				vgui_edit_set_placeholder(item.editor, item.desc.placeholder.c_str());
 			vgui_widget_on_event(item.editor, &property_grid::on_edit_event, this);
