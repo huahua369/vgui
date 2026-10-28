@@ -3180,6 +3180,53 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				return fail("vector property filter rematerialize");
 		}
 
+		/* In a narrow column parent the grid must stretch to the host
+		 * instead of sizing itself from its widest row (which clipped every
+		 * vector component after X). */
+		{
+			vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+				nullptr);
+			vgui_widget_set_size(host, 300, 400);
+			vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(host, 0, 0, 0, 0);
+
+			property_grid narrow;
+			narrow.build(host);
+			property_desc position;
+			position.id = "position";
+			position.label = "Position";
+			position.type = property_type::vector3;
+			position.value = "1, 2, 3";
+			position.category = "Transform";
+			position.semantic = vector_semantic::position;
+			if (!narrow.add_property(position))
+				return fail("narrow vector property");
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			float hx = 0.0f, hy = 0.0f, hw = 0.0f, hh = 0.0f;
+			vgui_widget_get_rect(host, &hx, &hy, &hw, &hh);
+			float gx = 0.0f, gy = 0.0f, gw = 0.0f, gh = 0.0f;
+			vgui_widget_get_rect(narrow.widget(), &gx, &gy, &gw, &gh);
+			if (gw > hw + 0.5f)
+				return fail("narrow property grid stretches to host");
+
+			vector_editor* vec = narrow.property_vector_editor("position");
+			if (!vec)
+				return fail("narrow vector editor");
+			for (int i = 0; i < 3; ++i)
+			{
+				vgui_widget* edit = vec->component_edit_widget(i);
+				if (!edit)
+					return fail("narrow vector components stay visible");
+				float ex = 0.0f, ey = 0.0f, ew = 0.0f, eh = 0.0f;
+				vgui_widget_get_rect(edit, &ex, &ey, &ew, &eh);
+				if (ew <= 0.0f || ex + ew > gx + gw + 0.5f)
+					return fail("narrow vector components stay visible");
+			}
+		}
+
 		vgui_destroy(ui);
 		return 0;
 	}

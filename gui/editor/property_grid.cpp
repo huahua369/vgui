@@ -578,6 +578,11 @@ namespace vgui_editor_kit {
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
 		vgui_widget_set_a11y_name(panel_, "Properties");
 		vgui_widget_set_grow(panel_, 1.0f);
+		/* GROW only takes the main axis in a column parent.  The grid used to
+		 * size itself from its widest row (vector rows) and overflow the dock
+		 * page, clipping the Y/Z fields.  Stretch across the cross axis so rows
+		 * lay out against the real panel width. */
+		vgui_widget_set_align_self(panel_, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(panel_, 6, 6, 6, 6);
 		vgui_widget_set_gap(panel_, kItemGap);
