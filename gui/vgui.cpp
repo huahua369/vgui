@@ -25,64 +25,11 @@ gui实现
 
 #include <ovg_c.h>
 #include "tools/tools.hpp"
-#include <harfbuzz/hb.h>
 
 #include <clipper2/clipper.h> 
 using namespace Clipper2Lib;
 //--------------------------------------------------------------------------------------------------------------------------------------------------
 
-// todo font_get_char_extent
-glm::ivec4 font_get_char_extent(char32_t ch, unsigned char font_size, font_familys_t* fallbacks, font_family_t** oft)
-{
-	glm::ivec4 ret = {};
-	font_family_t* rfont = nullptr;
-	//auto g = fallbacks->familys[0]->get_glyph_index0(ch, &rfont, fallbacks);
-	//if (g && rfont)
-	//{
-	//	if (oft)*oft = rfont;
-	//	double fns = font_size;
-	//	double scale = rfont->get_scale(fns);
-	//	int x0 = 0, y0 = 0, x1 = 0, y1 = 0, advance, lsb;
-	//	stb_font::buildGlyphBitmap(rfont->font, g, scale, &advance, &lsb, &x0, &y0, &x1, &y1);
-	//	double adv = scale * advance;
-	//	auto bl = rfont->get_base_line(font_size);
-	//	ret = { x1 - x0, y1 - y0, adv, bl };
-	//}
-	return ret;
-}
-
-int font_get_baseline(font_familys_t* family, int fontsize) {
-	float baseline = 0;
-	if (family)
-	{
-		int n = family->count;
-		for (int i = 0; i < n; i++) {
-			auto p = family->familys[i];
-			if (p)
-			{
-				auto ex = get_font_extents(p->font, fontsize, false);
-				baseline = std::max(baseline, ex.x);
-			}
-		}
-	}
-	return baseline;
-}
-int font_get_lineheight(font_familys_t* family, int fontsize, bool first) {
-	float h = 0;
-	if (family)
-	{
-		int n = first ? 1 : family->count;
-		for (int i = 0; i < n; i++) {
-			auto p = family->familys[i];
-			if (p)
-			{
-				auto ex = get_font_extents(p->font, fontsize, false);
-				h = std::max(h, ex.x - ex.y + ex.z);
-			}
-		}
-	}
-	return h;
-}
 gui_viewport::~gui_viewport()
 {
 	if (ui)
@@ -646,45 +593,6 @@ struct vgui_widget
 	bool destroy_pending = false;
 };
 
-// Text measurement caches.  Measuring used to call HarfBuzz for every
-// codepoint on every draw, even when neither the text nor the font had
-// changed.  The full-string cache handles the common static-label case; the
-// per-codepoint cache also helps edit boxes and other prefixes that change
-// one character at a time.
-struct vgui_text_measure_key
-{
-	const font_familys_t* font = nullptr;
-	int fontsize = 0;
-	std::string text;
-
-	bool operator<(const vgui_text_measure_key& o) const
-	{
-		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
-		if (fontsize != o.fontsize) return fontsize < o.fontsize;
-		return text < o.text;
-	}
-};
-
-struct vgui_glyph_advance_key
-{
-	const font_familys_t* font = nullptr;
-	int fontsize = 0;
-	uint32_t codepoint = 0;
-
-	bool operator<(const vgui_glyph_advance_key& o) const
-	{
-		if (font != o.font) return std::less<const font_familys_t*>()(font, o.font);
-		if (fontsize != o.fontsize) return fontsize < o.fontsize;
-		return codepoint < o.codepoint;
-	}
-};
-
-struct vgui_font_metrics
-{
-	float line_height = -1.0f;
-	float ascent = -1.0f;
-};
-
 struct vgui_tooltip_state
 {
 	vgui_widget* candidate = nullptr;	// hover target being timed
@@ -771,10 +679,6 @@ struct vgui_context
 	/* language -> key -> text.  Ordered maps keep pointers returned by
 	 * vgui_context_translate() stable until the entry is overwritten. */
 	std::map<std::string, std::map<std::string, std::string>> strings;
-
-	std::map<vgui_text_measure_key, float> text_width_cache;
-	std::map<vgui_glyph_advance_key, float> glyph_advance_cache;
-	std::map<std::pair<const font_familys_t*, int>, vgui_font_metrics> font_metrics_cache;
 
 	std::unordered_set<vgui_widget*> all_widgets;
 	std::unordered_set<vgui_widget*> alive;
@@ -1233,26 +1137,7 @@ namespace {
 	static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
 	{
 		float fs = vgui_font_size(ctx, w);
-		int fontsize = (int)(fs + 0.5f);
-		if (fontsize < 1) fontsize = 1;
-
-		vgui_font_metrics* metrics = nullptr;
-		if (ctx && ctx->font)
-		{
-			metrics = &ctx->font_metrics_cache[std::make_pair(ctx->font, fontsize)];
-			if (metrics->line_height >= 0)
-				return metrics->line_height;
-		}
-
-		int lh = 0;
-		if (ctx && ctx->font)
-			lh = font_get_lineheight(ctx->font, fontsize, true);
-		if (lh <= 0)
-			lh = (int)(fs * 1.35f + 0.5f);
-		if (lh < 1) lh = 1;
-		if (metrics)
-			metrics->line_height = (float)lh;
-		return (float)lh;
+		return vg_get_font_metrics(ctx ? ctx->font : nullptr, fs).line_height;
 	}
 
 	// ovg anchors a text run on its baseline: vg_add_text_run leaves
@@ -1262,140 +1147,29 @@ namespace {
 	static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
 	{
 		float fs = vgui_font_size(ctx, w);
-		int fontsize = (int)(fs + 0.5f);
-		if (fontsize < 1) fontsize = 1;
-
-		vgui_font_metrics* metrics = nullptr;
-		if (ctx && ctx->font)
-		{
-			metrics = &ctx->font_metrics_cache[std::make_pair(ctx->font, fontsize)];
-			if (metrics->ascent >= 0)
-				return metrics->ascent;
-		}
-
-		float a = 0;
-		if (ctx && ctx->font && ctx->font->count > 0 && ctx->font->familys[0] && ctx->font->familys[0]->font)
-			a = get_font_extents(ctx->font->familys[0]->font, fontsize, false).x;
-		if (a <= 0) a = fs * 0.8f;
-		if (metrics)
-			metrics->ascent = a;
-		return a;
+		return vg_get_font_metrics(ctx ? ctx->font : nullptr, fs).ascent;
 	}
 
-	// Real text measurement through HarfBuzz, mirroring ovg's shaping (font picked
-	// by coverage, advances taken at the shaping scale) so layout, alignment and
-	// the renderer agree.  Keeps the renderer text crisp and the auto-sized boxes
-	// exact.
-	static float vgui_measure_text_range(vgui_context* ctx, font_familys_t* ffs, int fontsize, const char* text, int len)
+	// Text measurement lives in ovg_fonts.cpp (vg_measure_text_width).  It uses
+	// the same coverage-based fallback selection and nominal advances as before,
+	// so layout and the renderer stay in sync without gui/ touching HarfBuzz.
+	static float vgui_measure_text_range(font_familys_t* ffs, int fontsize, const char* text, int len)
 	{
-		if (!ffs || ffs->count < 1 || !text || len <= 0) return 0;
-		if (fontsize < 1) fontsize = 16;
-
-		// Fast path for complete strings: most labels are measured on every draw
-		// with exactly the same font, size and contents.
-		vgui_text_measure_key text_key;
-		bool text_cached = ctx != nullptr;
-		if (text_cached)
-		{
-			text_key.font = ffs;
-			text_key.fontsize = fontsize;
-			text_key.text.assign(text, (size_t)len);
-			auto it = ctx->text_width_cache.find(text_key);
-			if (it != ctx->text_width_cache.end())
-				return it->second;
-		}
-
-		float best = 0, cur = 0;
-		for (int i = 0; i < len;)
-		{
-			unsigned char c = (unsigned char)text[i];
-			if (c == '\n')
-			{
-				best = std::max(best, cur);
-				cur = 0;
-				i++;
-				continue;
-			}
-			uint32_t cp = vgui_u8_decode(text + i);
-			int n = 1;
-			if (c >= 0xF0) n = 4;
-			else if (c >= 0xE0) n = 3;
-			else if (c >= 0xC0) n = 2;
-			i += n;
-
-			float advance = 0;
-			bool advance_cached = false;
-			vgui_glyph_advance_key glyph_key;
-			if (ctx)
-			{
-				glyph_key.font = ffs;
-				glyph_key.fontsize = fontsize;
-				glyph_key.codepoint = cp;
-				auto it = ctx->glyph_advance_cache.find(glyph_key);
-				if (it != ctx->glyph_advance_cache.end())
-				{
-					advance = it->second;
-					advance_cached = true;
-				}
-			}
-
-			if (!advance_cached)
-			{
-				// Same family selection as ovg: first family whose coverage has the
-				// codepoint, otherwise the primary family.
-				font_family_t* fam = ffs->familys[0];
-				for (int f = 0; f < ffs->count; f++)
-				{
-					font_family_t* cand = ffs->familys[f];
-					if (cand && cand->font && cand->coverage && hb_set_has(cand->coverage, cp))
-					{
-						fam = cand;
-						break;
-					}
-				}
-				if (!fam || !fam->font)
-				{
-					advance = fontsize * 0.5f;
-				}
-				else
-				{
-					hb_font_set_scale(fam->font, fontsize, fontsize);
-					hb_codepoint_t gid = 0;
-					hb_font_get_nominal_glyph(fam->font, cp, &gid);
-					advance = (float)hb_font_get_glyph_h_advance(fam->font, gid);
-				}
-				if (ctx)
-				{
-					if (ctx->glyph_advance_cache.size() >= 8192)
-						ctx->glyph_advance_cache.clear();
-					ctx->glyph_advance_cache.emplace(glyph_key, advance);
-				}
-			}
-			cur += advance;
-		}
-
-		float width = std::max(best, cur);
-		if (text_cached)
-		{
-			if (ctx->text_width_cache.size() >= 4096)
-				ctx->text_width_cache.clear();
-			ctx->text_width_cache.emplace(std::move(text_key), width);
-		}
-		return width;
+		return vg_measure_text_width(ffs, fontsize, text, len);
 	}
 
 	static float vgui_text_width(vgui_widget* w, const std::string& text)
 	{
 		vgui_context* ctx = w ? w->ctx : nullptr;
 		float fs = vgui_font_size(ctx, w);
-		return vgui_measure_text_range(ctx, ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
+		return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
 	}
 
 	static float vgui_text_width_n(vgui_widget* w, const char* text, int len)
 	{
 		vgui_context* ctx = w ? w->ctx : nullptr;
 		float fs = vgui_font_size(ctx, w);
-		return vgui_measure_text_range(ctx, ctx ? ctx->font : nullptr, (int)fs, text, len);
+		return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text, len);
 	}
 
 	// Greedy word wrapping used by dialogs and toasts.  Existing newlines are
@@ -1419,7 +1193,7 @@ namespace {
 				}
 				auto measure = [&](const char* data, int len)
 					{
-						return vgui_measure_text_range(ctx, ctx->font,
+						return vgui_measure_text_range(ctx->font,
 							(int)vgui_font_size(ctx, owner), data, len);
 					};
 				size_t start = 0;
@@ -13618,9 +13392,6 @@ extern "C" {
 		ctx->font = font;
 		if (font_size > 0) ctx->base_font_size = font_size;
 		ctx->font_size = ctx->base_font_size * ctx->ui_scale;
-		ctx->text_width_cache.clear();
-		ctx->glyph_advance_cache.clear();
-		ctx->font_metrics_cache.clear();
 		ctx->layout_dirty = true;
 	}
 
@@ -13819,9 +13590,6 @@ extern "C" {
 		ctx->font_size = ctx->base_font_size * scale;
 		vgui_rescale_widget_tree(ctx, ratio, scale);
 
-		ctx->text_width_cache.clear();
-		ctx->glyph_advance_cache.clear();
-		ctx->font_metrics_cache.clear();
 		ctx->layout_dirty = true;
 
 		// Copy first: listeners are allowed to add or remove themselves.

@@ -214,7 +214,6 @@ void do_dragdrop_file(const char** fn, int count);
 // 发起拖放文本
 void do_dragdrop_str(const char* str, int count);
 
-struct font_family_t;
 struct ovg_ctx_cb;
 struct rvg_t;
 /*
