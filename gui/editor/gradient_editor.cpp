@@ -344,9 +344,11 @@ namespace vgui_editor_kit {
 		vgui_widget_set_background(root_, kPanelBg);
 		vgui_widget_set_border(root_, kPanelBorder, 1.0f);
 		vgui_widget_set_min_size(root_, 300, 0);
-		/* Chrome follows the context font (editor_metrics.h) so the popup
-		 * matches the rest of the kit at any base font / ui_scale. */
-		const float row_h = editor_row_height(ctx);
+		/* Popups open from property rows, so the chrome matches the row
+		 * editors: 13px type in 24px rows instead of the context base size. */
+		constexpr float kChromeFont = 13.0f;
+		constexpr float kChromeRow = 24.0f;
+		const float row_h = kChromeRow;
 
 		bar_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_size(bar_, 0, 50);
@@ -367,6 +369,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(stop_row_, VGUI_ALIGN_STRETCH);
 
 		time_spin_ = std::make_unique<spinbox>();
+		time_spin_->set_font_size(kChromeFont);
 		time_spin_->build(stop_row_, "T");
 		time_spin_->set_value_type(spinbox::value_type::number);
 		time_spin_->set_range(0.0, 1.0);
@@ -385,12 +388,14 @@ namespace vgui_editor_kit {
 		vgui_widget_set_tooltip(time_spin_->edit_widget(), "Selected stop time");
 
 		add_ = vgui_widget_add(stop_row_, VGUI_BUTTON, "Add");
+		vgui_widget_set_font_size(add_, kChromeFont);
 		vgui_widget_set_size(add_, 0, row_h);
 		vgui_widget_set_min_size(add_, editor_button_min_w(add_, 20.0f), row_h);
 		vgui_widget_on_event(add_, &gradient_editor::on_add_click, this);
 		vgui_widget_set_tooltip(add_, "Add a stop with the sampled color");
 
 		remove_ = vgui_widget_add(stop_row_, VGUI_BUTTON, "Del");
+		vgui_widget_set_font_size(remove_, kChromeFont);
 		vgui_widget_set_size(remove_, 0, row_h);
 		vgui_widget_set_min_size(remove_, editor_button_min_w(remove_, 20.0f), row_h);
 		vgui_widget_on_event(remove_, &gradient_editor::on_remove_click, this);
@@ -407,6 +412,7 @@ namespace vgui_editor_kit {
 		{
 			presets_[i] = vgui_widget_add(preset_row_, VGUI_BUTTON,
 				preset_name(i));
+			vgui_widget_set_font_size(presets_[i], kChromeFont);
 			vgui_widget_set_size(presets_[i], 0, row_h);
 			vgui_widget_set_min_size(presets_[i],
 				editor_button_min_w(presets_[i], 24.0f), row_h);

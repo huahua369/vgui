@@ -170,6 +170,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(current_swatch_, row_h, row_h);
 		hex_ = vgui_widget_add(preview, VGUI_EDIT, nullptr);
 		vgui_widget_set_id(hex_, (id_ + ".hex").c_str());
+		/* Match the property-row type used by the row editors and popups. */
+		vgui_widget_set_font_size(hex_, 13.0f);
 		vgui_widget_set_grow(hex_, 1.0f);
 		/* 宽由 grow 决定,高度跟随行高。 */
 		vgui_widget_set_size(hex_, 0.0f, row_h);
