@@ -1806,13 +1806,13 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		return 0;
 	}
 
-	int test_property_grid_drag()
+	int test_property_grid_label_inert()
 	{
 		using namespace vgui_editor_kit;
 
 		vgui_context* ui = vgui_create(nullptr, 16.0f);
 		if (!ui)
-			return fail("property grid drag context");
+			return fail("property label context");
 		vgui_context_set_size(ui, 900, 700);
 
 		{
@@ -1868,29 +1868,18 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			const float start_y = ay + ah * 0.5f;
 			const float across_y = by + bh * 0.5f;
 
+			/* Dragging a row label is not a value scrub: only the numeric
+			 * controls handle drags, so the label leaves the row untouched. */
 			vgui_input_mouse_move(ui, start_x, start_y);
 			vgui_input_mouse_down(ui, 1, start_x, start_y, 1);
-			vgui_input_mouse_move(ui, start_x + 3.0f, across_y);
-			if (!grid.property_editor("a") ||
-				std::string(vgui_edit_get_text(grid.property_editor("a"))) != "8")
-				return fail("property drag crosses rows");
-			if (grid.property_value("b") != "50")
-				return fail("property drag leaves other row unchanged");
-			if (commands.undo_count() != undo_before)
-				return fail("property drag commits only on release");
-
 			vgui_input_mouse_move(ui, start_x + 25.0f, across_y);
-			if (std::string(vgui_edit_get_text(grid.property_editor("a"))) != "10")
-				return fail("property drag clamps");
-
 			vgui_input_mouse_up(ui, 1, start_x + 25.0f, across_y, 1);
-			if (grid.property_value("a") != "10" ||
-				grid.property_value("b") != "50")
-				return fail("property drag release commits");
-			if (commands.undo_count() != undo_before + 1)
-				return fail("property drag records one command");
-			if (!commands.undo() || grid.property_value("a") != "5")
-				return fail("property drag undo");
+			if (grid.property_value("a") != "5" ||
+				grid.property_value("b") != "50" ||
+				std::string(vgui_edit_get_text(grid.property_editor("a"))) != "5")
+				return fail("property label drag is inert");
+			if (commands.undo_count() != undo_before)
+				return fail("property label drag records no command");
 		}
 
 		vgui_destroy(ui);
@@ -3053,39 +3042,6 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				grid.property_value("position") != "1, 7, 3")
 				return fail("vector property enter undo");
 
-			vgui_widget* label = find_widget(grid.widget(), "property:position",
-				VGUI_LABEL);
-			if (!label)
-				return fail("vector property label");
-			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
-			vgui_widget_get_rect(label, &lx, &ly, &lw, &lh);
-			if (lw <= 0.0f || lh <= 0.0f)
-				return fail("vector property label layout");
-			const float start_x = lx + lw * 0.5f;
-			const float start_y = ly + lh * 0.5f;
-			const std::size_t undo_before_drag = commands.undo_count();
-			vgui_input_mouse_move(ui, start_x, start_y);
-			vgui_input_mouse_down(ui, 1, start_x, start_y, 1);
-			vgui_input_mouse_move(ui, start_x + 2.0f, start_y);
-			if (grid.property_value("position") != "1, 7, 3" ||
-				pos->value_text() != "3, 9, 5" ||
-				commands.undo_count() != undo_before_drag)
-				return fail("vector property drag is live");
-			vgui_input_mouse_move(ui, start_x + 20.0f, start_y);
-			if (pos->value_text() != "10, 10, 10")
-				return fail("vector property drag clamps");
-			vgui_input_mouse_up(ui, 1, start_x + 20.0f, start_y, 1);
-			if (grid.property_value("position") != "10, 10, 10" ||
-				commands.undo_count() != undo_before_drag + 1)
-				return fail("vector property drag commit");
-			if (!commands.undo() ||
-				grid.property_value("position") != "1, 7, 3" ||
-				pos->value_text() != "1, 7, 3")
-				return fail("vector property drag undo");
-			if (!commands.redo() ||
-				grid.property_value("position") != "10, 10, 10")
-				return fail("vector property drag redo");
-
 			changes = 0;
 			if (!grid.set_property_read_only("position", true) ||
 				!pos->read_only() ||
@@ -3093,7 +3049,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				return fail("vector property read-only");
 			if (pos->commit_component_text(0, "2") ||
 				pos->component_error(0) != "value is disabled" ||
-				grid.property_value("position") != "10, 10, 10" ||
+				grid.property_value("position") != "1, 7, 3" ||
 				changes != 0)
 				return fail("vector property read-only edit");
 			grid.set_property_read_only("position", false);
@@ -3106,17 +3062,17 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			const std::size_t undo_before_invalid = commands.undo_count();
 			if (pos->commit_component_text(0, "oops") ||
 				pos->component_error(0).empty() ||
-				grid.property_value("position") != "10, 10, 10" ||
+				grid.property_value("position") != "1, 7, 3" ||
 				changes != 0 ||
 				commands.undo_count() != undo_before_invalid)
 				return fail("vector property invalid component");
 			if (!pos->commit_component_text(0, "2") ||
-				grid.property_value("position") != "2, 10, 10" ||
+				grid.property_value("position") != "2, 7, 3" ||
 				changes != 1 ||
 				commands.undo_count() != undo_before_invalid + 1)
 				return fail("vector property invalid recovery");
 			if (!commands.undo() ||
-				grid.property_value("position") != "10, 10, 10")
+				grid.property_value("position") != "1, 7, 3")
 				return fail("vector property invalid recovery undo");
 
 			const std::size_t undo_before_reset = commands.undo_count();
@@ -3126,7 +3082,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				commands.undo_count() != undo_before_reset + 1)
 				return fail("vector property reset");
 			if (!commands.undo() ||
-				grid.property_value("position") != "10, 10, 10")
+				grid.property_value("position") != "1, 7, 3")
 				return fail("vector property reset undo");
 
 			changes = 0;
@@ -13967,7 +13923,7 @@ int main()
 		return rc;
 	if (int rc = test_code_editor())
 		return rc;
-	if (int rc = test_property_grid_drag())
+	if (int rc = test_property_grid_label_inert())
 		return rc;
 	if (int rc = test_spinbox())
 		return rc;

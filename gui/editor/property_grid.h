@@ -324,9 +324,6 @@ namespace vgui_editor_kit {
 			bool visible = true;
 
 			bool drag_active = false;
-			float drag_start_x = 0.0f;
-			double drag_start_value = 0.0;
-			vector_editor::vector_value drag_start_components{};
 			std::string drag_value;
 
 			std::unique_ptr<vector_editor> vector_ui;
