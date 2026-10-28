@@ -81,7 +81,10 @@ namespace vgui_editor_kit {
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_padding(panel_, 0, 0, 0, 0);
 		vgui_widget_set_gap(panel_, 2);
-		vgui_widget_set_align_items(panel_, VGUI_ALIGN_CENTER);
+		/* Components stretch to the parent row: property-grid rows are 28px
+		 * while the spinbox chrome is 24px, and the value boxes must touch the
+		 * row border on both edges instead of hanging from the top. */
+		vgui_widget_set_align_items(panel_, VGUI_ALIGN_STRETCH);
 
 		components_.clear();
 		for (int i = 0; i < dimension_; ++i)
@@ -97,13 +100,17 @@ namespace vgui_editor_kit {
 			box->set_label(labels_[(std::size_t)i]);
 			box->set_label_width(kAxisLabelWidth);
 			box->set_buttons_visible(false);
+			/* Each field only reserves room for its own digits, so short
+			 * values stay compact and longer values widen their field. */
+			box->set_auto_width(true);
 			box->set_on_change([this, i](double) { handle_change(i); });
 			box->set_on_commit([this, i](double) { handle_commit(i); });
 			box->build(panel_);
 			if (!box->widget())
 				continue;
-			vgui_widget_set_grow(box->widget(), 1.0f);
-			vgui_widget_set_size(box->widget(), 0, kRowHeight);
+			/* No grow: each component keeps the width its own text needs, so
+			 * short values do not reserve the same space as long ones. */
+			vgui_widget_set_size(box->widget(), 0, 0);
 			vgui_widget_set_min_size(box->widget(), kComponentMinWidth,
 				kRowHeight);
 			components_.push_back(std::move(box));

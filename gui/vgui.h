@@ -1183,6 +1183,11 @@ extern "C" {
 
 	/* Panels: scrolling.  Scroll offsets are clamped to the content extent. */
 	VGUI_API void vgui_panel_set_scrollable(vgui_widget* panel, int horizontal, int vertical);
+	/* Per-panel scrollbar thickness and edge inset in logical units.  A width
+	 * <= 0 keeps the style thickness for that axis; inset < 0 keeps the style
+	 * inset, so a panel only differs when it opts in. */
+	VGUI_API void vgui_panel_set_scrollbar_size(vgui_widget* panel, float horizontal,
+		float vertical, float inset);
 	VGUI_API void vgui_panel_set_scroll(vgui_widget* panel, float x, float y);
 	VGUI_API void vgui_panel_scroll_by(vgui_widget* panel, float dx, float dy);
 	VGUI_API void vgui_panel_get_scroll(vgui_widget* panel, float* x, float* y);

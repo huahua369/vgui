@@ -592,6 +592,9 @@ namespace vgui_editor_kit {
 		/* Narrow hosts keep rows usable: below this width the panel scrolls
 		 * horizontally instead of squeezing the editor fields to nothing. */
 		vgui_panel_set_scrollable(panel_, 1, 1);
+		/* The stock 5px bar is hard to grab with a pointer; the horizontal bar
+		 * (the one a narrow dock shows) uses a thicker body and hit area. */
+		vgui_panel_set_scrollbar_size(panel_, 10, 0, -1);
 
 		/* 搜索行 = 搜索框 + P08 收藏过滤开关(高度保持 24,kSearchLead
 		 * 不变)。 */
@@ -1806,6 +1809,9 @@ private:
 		vgui_widget_set_size(item.line, 0, kRowHeight);
 		vgui_widget_set_align_self(item.line, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.line, VGUI_LAYOUT_ROW);
+		/* 24px controls sit in a 28px row; centering keeps the 2px slack on
+		 * both edges so labels and values share one baseline. */
+		vgui_widget_set_align_items(item.line, VGUI_ALIGN_CENTER);
 		vgui_widget_set_gap(item.line, 6);
 		vgui_widget_set_padding(item.line, 0, 0, 0, 0);
 
@@ -1931,8 +1937,11 @@ private:
 			if (item.vector_ui->widget())
 			{
 				vgui_widget_set_grow(item.vector_ui->widget(), 1.0f);
-				vgui_widget_set_size(item.vector_ui->widget(), 0, 24);
-				vgui_widget_set_min_size(item.vector_ui->widget(), 80, 24);
+				/* Fill the row so the component borders line up with the row
+				 * border instead of leaving a gap at the bottom. */
+				vgui_widget_set_size(item.vector_ui->widget(), 0, kRowHeight);
+				vgui_widget_set_min_size(item.vector_ui->widget(), 80,
+					kRowHeight);
 				/* Let the row background show through the value fields. */
 				for (int i = 0; i < item.vector_ui->dimension(); ++i)
 				{

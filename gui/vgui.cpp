@@ -458,6 +458,9 @@ struct vgui_widget
 	float content_w = 0, content_h = 0;
 	int scroll_drag_axis = 0;	// 面板滚动条拖动: 0 无 / 1 垂直 / 2 水平
 	float scroll_drag_grab = 0;
+	/* Per-panel scrollbar override in logical units.  0 widths / negative inset
+	 * keep the context style, so only panels that opt in differ. */
+	float scrollbar_width_h = 0, scrollbar_width_v = 0, scrollbar_inset = -1;
 
 	float abs_x = 0, abs_y = 0, abs_w = 0, abs_h = 0;
 	float intrinsic_w = 0, intrinsic_h = 0;
@@ -6969,6 +6972,21 @@ namespace {
 		float scroll = 0;
 	};
 
+	// Panel scrollbar thickness/inset in effective pixels for one axis
+	// (1 = vertical, 2 = horizontal): the widget override (stored in logical
+	// units) when set, otherwise the context style.
+	static void vgui_panel_scrollbar_metrics(vgui_widget* w, int axis, float* width,
+		float* inset)
+	{
+		const vgui_panel_style& ps = w->ctx->style.panel;
+		const float scale = w->ctx->ui_scale > 0.0f ? w->ctx->ui_scale : 1.0f;
+		const float override_w = axis == 2 ? w->scrollbar_width_h
+			: w->scrollbar_width_v;
+		*width = override_w > 0.0f ? override_w * scale : ps.scrollbar_width;
+		*inset = w->scrollbar_inset >= 0.0f
+			? w->scrollbar_inset * scale : ps.scrollbar_inset;
+	}
+
 	// Computes the geometry of a visible scrollbar.  The values mirror the drawing
 	// code so what the user grabs is exactly what is painted.
 	static bool vgui_scrollbar_geom(vgui_widget* w, int axis, vgui_scrollbar_info* g)
@@ -6983,9 +7001,11 @@ namespace {
 		if (axis == 1)
 		{
 			if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= st.panel.scrollbar_min_track) return false;
+			float bar_w = 0.0f, bar_inset = 0.0f;
+			vgui_panel_scrollbar_metrics(w, 1, &bar_w, &bar_inset);
 			g->track = vgui_is_rtl(w->ctx)
 				? w->abs_x
-				: w->abs_x + w->abs_w - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
+				: w->abs_x + w->abs_w - (bar_w + bar_inset);
 			g->start = iy;
 			g->span = ih;
 			g->thumb_len = std::min(ih, std::max(st.panel.scrollbar_min_thumb, ih * ih / w->content_h));
@@ -6995,7 +7015,9 @@ namespace {
 		else if (axis == 2)
 		{
 			if (!w->scrollable_x || w->content_w <= iw + 0.5f || iw <= st.panel.scrollbar_min_track) return false;
-			g->track = w->abs_y + w->abs_h - (st.panel.scrollbar_width + st.panel.scrollbar_inset);
+			float bar_w = 0.0f, bar_inset = 0.0f;
+			vgui_panel_scrollbar_metrics(w, 2, &bar_w, &bar_inset);
+			g->track = w->abs_y + w->abs_h - (bar_w + bar_inset);
 			g->start = ix;
 			g->span = iw;
 			g->thumb_len = std::min(iw, std::max(st.panel.scrollbar_min_thumb, iw * iw / w->content_w));
@@ -7095,7 +7117,11 @@ namespace {
 			vgui_scrollbar_info g;
 			const vgui_style& st = w->ctx->style;
 			float edit_hit = st.edit.scrollbar_width + st.edit.scrollbar_inset + st.edit.scrollbar_hit_padding;
-			float panel_hit = st.panel.scrollbar_width + st.panel.scrollbar_inset + st.panel.scrollbar_hit_padding;
+			float panel_w_v = 0.0f, panel_w_h = 0.0f, panel_inset = 0.0f;
+			vgui_panel_scrollbar_metrics(w, 1, &panel_w_v, &panel_inset);
+			vgui_panel_scrollbar_metrics(w, 2, &panel_w_h, &panel_inset);
+			float panel_hit_v = panel_w_v + panel_inset + st.panel.scrollbar_hit_padding;
+			float panel_hit_h = panel_w_h + panel_inset + st.panel.scrollbar_hit_padding;
 			if (w->kind == VGUI_EDIT &&
 				x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - edit_hit) &&
 				x <= (vgui_is_rtl(w->ctx) ? w->abs_x + edit_hit : w->abs_x + w->abs_w) &&
@@ -7121,8 +7147,8 @@ namespace {
 				// Keep walking after a hit: ancestor bars are painted on top of
 				// descendant bars where the two overlap, and the horizontal bar is
 				// painted after the vertical one.
-				if (x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - panel_hit) &&
-					x <= (vgui_is_rtl(w->ctx) ? w->abs_x + panel_hit : w->abs_x + w->abs_w) &&
+				if (x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - panel_hit_v) &&
+					x <= (vgui_is_rtl(w->ctx) ? w->abs_x + panel_hit_v : w->abs_x + w->abs_w) &&
 					y >= w->abs_y && y <= w->abs_y + w->abs_h &&
 					vgui_scrollbar_geom(w, 1, &g) &&
 					y >= g.start && y <= g.start + g.span)
@@ -7130,7 +7156,7 @@ namespace {
 					found = w;
 					found_axis = 1;
 				}
-				if (y >= w->abs_y + w->abs_h - panel_hit && y <= w->abs_y + w->abs_h &&
+				if (y >= w->abs_y + w->abs_h - panel_hit_h && y <= w->abs_y + w->abs_h &&
 					x >= w->abs_x && x <= w->abs_x + w->abs_w &&
 					vgui_scrollbar_geom(w, 2, &g) &&
 					x >= g.start && x <= g.start + g.span)
@@ -7275,8 +7301,11 @@ namespace {
 		const float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
 		if (w->scrollable_y && w->content_h > ih + 0.5f &&
 			ih > st.panel.scrollbar_min_track)
-			return st.panel.scrollbar_width + st.panel.scrollbar_inset +
-				st.panel.scrollbar_hit_padding + 2.0f;
+		{
+			float bar_w = 0.0f, bar_inset = 0.0f;
+			vgui_panel_scrollbar_metrics(w, 1, &bar_w, &bar_inset);
+			return bar_w + bar_inset + st.panel.scrollbar_hit_padding + 2.0f;
+		}
 		return 0.0f;
 	}
 
@@ -11415,28 +11444,30 @@ namespace {
 		float iy = w->abs_y + w->padding[1];
 		float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
 		float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
-		float bar_w = ps.scrollbar_width;
+		float bar_w_v = 0.0f, bar_w_h = 0.0f, bar_inset = 0.0f;
+		vgui_panel_scrollbar_metrics(w, 1, &bar_w_v, &bar_inset);
+		vgui_panel_scrollbar_metrics(w, 2, &bar_w_h, &bar_inset);
 		float bar_r = ps.scrollbar_rounding;
-		float corner = bar_w + ps.scrollbar_inset;
 		if (w->scrollable_y && w->content_h > ih + 0.5f && ih > ps.scrollbar_min_track)
 		{
-			float track_x = vgui_is_rtl(ctx) ? w->abs_x : w->abs_x + w->abs_w - corner;
+			float track_x = vgui_is_rtl(ctx) ? w->abs_x
+				: w->abs_x + w->abs_w - (bar_w_v + bar_inset);
 			float th = std::min(ih, std::max(ps.scrollbar_min_thumb, ih * ih / w->content_h));
 			float max_scroll = w->content_h - ih;
 			float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
-			vgui_fill_rect(cb, vg, track_x, iy, bar_w, ih, bar_r, vgui_widget_color(w, ctx->theme.track));
-			vgui_fill_rect(cb, vg, track_x, ty, bar_w, th, bar_r, vgui_scrollbar_thumb_color(w, 1));
+			vgui_fill_rect(cb, vg, track_x, iy, bar_w_v, ih, bar_r, vgui_widget_color(w, ctx->theme.track));
+			vgui_fill_rect(cb, vg, track_x, ty, bar_w_v, th, bar_r, vgui_scrollbar_thumb_color(w, 1));
 		}
 		if (w->scrollable_x && w->content_w > iw + 0.5f && iw > ps.scrollbar_min_track)
 		{
-			float track_y = w->abs_y + w->abs_h - corner;
+			float track_y = w->abs_y + w->abs_h - (bar_w_h + bar_inset);
 			float tw = std::min(iw, std::max(ps.scrollbar_min_thumb, iw * iw / w->content_w));
 			float max_scroll = w->content_w - iw;
 			float ratio = max_scroll > 0 ? (w->scroll_x / max_scroll) : 0.0f;
 			if (vgui_is_rtl(ctx)) ratio = 1.0f - ratio;
 			float tx = ix + ratio * (iw - tw);
-			vgui_fill_rect(cb, vg, ix, track_y, iw, bar_w, bar_r, vgui_widget_color(w, ctx->theme.track));
-			vgui_fill_rect(cb, vg, tx, track_y, tw, bar_w, bar_r, vgui_scrollbar_thumb_color(w, 2));
+			vgui_fill_rect(cb, vg, ix, track_y, iw, bar_w_h, bar_r, vgui_widget_color(w, ctx->theme.track));
+			vgui_fill_rect(cb, vg, tx, track_y, tw, bar_w_h, bar_r, vgui_scrollbar_thumb_color(w, 2));
 		}
 	}
 
@@ -15245,6 +15276,16 @@ extern "C" {
 		if (!panel) return;
 		panel->scrollable_x = horizontal ? 1 : 0;
 		panel->scrollable_y = vertical ? 1 : 0;
+		vgui_mark_dirty(panel);
+	}
+
+	void vgui_panel_set_scrollbar_size(vgui_widget* panel, float horizontal,
+		float vertical, float inset)
+	{
+		if (!panel) return;
+		panel->scrollbar_width_h = horizontal > 0.0f ? horizontal : 0.0f;
+		panel->scrollbar_width_v = vertical > 0.0f ? vertical : 0.0f;
+		panel->scrollbar_inset = inset >= 0.0f ? inset : -1.0f;
 		vgui_mark_dirty(panel);
 	}
 

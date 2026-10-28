@@ -213,6 +213,18 @@ namespace vgui_editor_kit {
 		return edit_min_width_;
 	}
 
+	void spinbox::set_auto_width(bool enabled)
+	{
+		auto_width_ = enabled;
+		auto_width_applied_ = 0.0f;
+		apply_auto_width();
+	}
+
+	bool spinbox::auto_width() const noexcept
+	{
+		return auto_width_;
+	}
+
 	void spinbox::apply_font()
 	{
 		/* 0 resets to "inherit the context font". */
@@ -232,13 +244,58 @@ namespace vgui_editor_kit {
 		if (label_widget_)
 			vgui_widget_set_size(label_widget_,
 				label_.empty() ? kEmptyLabelWidth : label_width_, row_h);
+		auto_width_applied_ = 0.0f;
 		if (edit_)
-			vgui_widget_set_size(edit_,
-				edit_min_width_ > 0.0f ? edit_min_width_ : 0.0f, row_h);
+		{
+			const float width = edit_min_width_ > 0.0f ? edit_min_width_
+				: (auto_width_ ? auto_edit_width() : 0.0f);
+			if (auto_width_ && edit_min_width_ <= 0.0f)
+				auto_width_applied_ = width;
+			vgui_widget_set_size(edit_, width, row_h);
+		}
 		if (decrement_.widget())
 			vgui_widget_set_size(decrement_.widget(), row_h, row_h);
 		if (increment_.widget())
 			vgui_widget_set_size(increment_.widget(), row_h, row_h);
+	}
+
+	/* Width that fits the text currently in the edit.  Falls back to a
+	 * per-character estimate when the font is unavailable (headless tests) so
+	 * the field never collapses to bare padding. */
+	float spinbox::auto_edit_width() const
+	{
+		if (!edit_)
+			return 0.0f;
+		const char* current = vgui_edit_get_text(edit_);
+		const std::string text = current ? current : value_text();
+		vgui_context* ctx = vgui_widget_get_context(edit_);
+		float text_w = text.empty() ? 0.0f
+			: to_logical(edit_, vgui_widget_measure_text(edit_, text.c_str()));
+		if (text_w <= 0.0f)
+		{
+			const float font = font_size_ > 0.0f
+				? font_size_ : editor_font_size(ctx);
+			text_w = font * 0.62f * (float)text.size();
+		}
+		float padding = 16.0f;
+		if (ctx)
+		{
+			vgui_style style;
+			vgui_context_get_style(ctx, &style);
+			padding = style.edit.padding_x * 2.0f + 4.0f;
+		}
+		return text_w + std::max(padding, 16.0f);
+	}
+
+	void spinbox::apply_auto_width()
+	{
+		if (!edit_ || !auto_width_ || edit_min_width_ > 0.0f)
+			return;
+		const float width = std::max(auto_edit_width(), 24.0f);
+		if (std::fabs(width - auto_width_applied_) < 0.5f)
+			return;
+		auto_width_applied_ = width;
+		vgui_widget_set_size(edit_, width, chrome_row_height());
 	}
 
 	float spinbox::chrome_row_height() const
@@ -411,6 +468,7 @@ namespace vgui_editor_kit {
 		const char* current = vgui_edit_get_text(edit_);
 		if (!current || text != current)
 			vgui_edit_set_text(edit_, text.c_str());
+		apply_auto_width();
 	}
 
 	bool spinbox::commit_text(std::string text)

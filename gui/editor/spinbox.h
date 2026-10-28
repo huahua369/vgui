@@ -71,6 +71,12 @@ namespace vgui_editor_kit {
 		void set_edit_min_width(float width);
 		float edit_min_width() const noexcept;
 
+		/* Size the edit box to the current text instead of the style floor, so
+		 * a field only reserves room for the digits it shows and widens as the
+		 * value grows.  Compact vector components enable this. */
+		void set_auto_width(bool enabled);
+		bool auto_width() const noexcept;
+
 		/* Step buttons are shown by default.  Compact editors can hide them
 		 * and rely on text input plus label dragging instead. */
 		void set_buttons_visible(bool visible);
@@ -139,6 +145,8 @@ namespace vgui_editor_kit {
 		void update_error_ui();
 		void apply_font();
 		void apply_chrome();
+		float auto_edit_width() const;
+		void apply_auto_width();
 		float chrome_row_height() const;
 		double effective_step() const noexcept;
 		double normalize_value(double value, bool snap_to_step) const noexcept;
@@ -163,6 +171,8 @@ namespace vgui_editor_kit {
 		float label_width_ = 72.0f;
 		float font_size_ = 0.0f;	/* 0 = follow the context font */
 		float edit_min_width_ = 0.0f;	/* 0 = follow style.edit.min_width */
+		float auto_width_applied_ = 0.0f;	/* last text-derived edit width */
+		bool auto_width_ = false;
 		bool buttons_visible_ = true;
 		value_type type_ = value_type::number;
 		double value_ = 0.0;
