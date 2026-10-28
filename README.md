@@ -286,6 +286,7 @@ grid.commit_property_value("position.x", "1.25");
 - 行虚拟化由扁平化的“分类标题 + 属性行”显示列表驱动：滚动、过滤、折叠和增删行只重建该列表，并按视口窗口挂载/释放行控件。`materialized_row_count()` 返回当前实际创建的属性行数，可用于无窗口性能断言；未物化行的 `property_editor()` 返回 `nullptr`。
 - `set_properties()` 一次性应用完整属性集合并按 `id + type` 复用行：同 schema 的对象切换只原位刷新描述/值/向量元数据/混合态并返回 `0`，不会清空滚动、分类折叠或输入焦点；新增、删除和类型变化的行才创建/释放控件，返回值为实际重建行数。宿主可在选择监听器中直接构造 `property_desc` 列表，替代 `clear()` + 多次 `add_property()`。非法或重复描述被跳过，不会留下半应用状态；`bind_selection()` 的回调同样可以调用它。
 - 核心 `vgui_panel_set_scroll_listener()` 在程序化滚动、滚轮和滚动条拖动后通知监听器，PropertyGrid 用它驱动窗口更新；监听器内再次调整滚动位置是安全的，重入通知会被合并。
+- 宿主面板窄于可用行宽（约 280 逻辑像素）时，网格保持最小内容宽度并显示水平滚动条，避免标签和分量输入被压到不可用；正常宽度下内容随面板拉伸，不出现水平滚动条。
 - `property_desc::get_value` / `set_value`，或 `set_value_source()` + `refresh()`，可把行绑定到宿主模型。`property_vector_editor(id)` 额外暴露向量行的复合编辑器，用于把 Gizmo 等外部数值源接到分量控件；该指针在行被移除或移出物化窗口后失效。
 - `bind_selection()` 订阅 `editor_context` 的选择变化，在回调中通常调用 `set_properties()` 原位切换行；销毁 grid 前应调用 `unbind_selection()`（析构函数也会自动解绑）。PropertyGrid 必须早于 `vgui_context`、命令栈和 `editor_context` 销毁。
 

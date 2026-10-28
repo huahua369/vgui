@@ -4405,7 +4405,7 @@ namespace {
 			float inner_main = row ? iw : ih;
 			float inner_cross = row ? ih : iw;
 
-			float total_main = 0, max_cross = 0, grow_sum = 0;
+			float total_main = 0, grow_sum = 0;
 			std::vector<float> main_sizes;
 			main_sizes.reserve(visible.size());
 			for (vgui_widget* c : visible)
@@ -4413,10 +4413,8 @@ namespace {
 				float cw = vgui_child_req_w(c);
 				float ch = vgui_child_req_h(c);
 				float main = row ? cw : ch;
-				float cross = row ? ch : cw;
 				main_sizes.push_back(main);
 				total_main += main + (row ? c->margin[0] + c->margin[2] : c->margin[1] + c->margin[3]);
-				max_cross = std::max(max_cross, cross + (row ? c->margin[1] + c->margin[3] : c->margin[0] + c->margin[2]));
 				if (c->grow > 0) grow_sum += c->grow;
 			}
 			if (n > 1) total_main += w->gap * (n - 1);
@@ -4485,6 +4483,13 @@ namespace {
 			}
 
 			float cursor = start;
+			/* Cross-axis extent used for content measurement.  A stretched
+			 * child is laid out against the available cross size (or its
+			 * minimum floor), so its intrinsic size must not inflate the
+			 * scrollable content: otherwise a wide intrinsic row would show
+			 * a horizontal scrollbar even though the row already shrank to
+			 * fit the viewport. */
+			float laid_cross = 0.0f;
 			for (size_t ci = 0; ci < visible.size(); ++ci)
 			{
 				vgui_widget* c = visible[ci];
@@ -4505,8 +4510,25 @@ namespace {
 				float cross_avail = inner_cross - (row ? c->margin[1] + c->margin[3] : c->margin[0] + c->margin[2]);
 				float cross = row ? ch : cw;
 				float cross_pos = 0;
-				if (al == VGUI_ALIGN_STRETCH && (row ? c->req_h <= 0 : c->req_w <= 0))
+				bool stretched = al == VGUI_ALIGN_STRETCH &&
+					(row ? c->req_h <= 0 : c->req_w <= 0);
+				if (stretched)
+				{
 					cross = cross_avail;
+					/* A minimum size is a floor even across the cross axis.
+					 * Without this a stretched child silently shrinks below
+					 * its minimum and its panel never sees the overflow, so
+					 * no horizontal scrollbar can appear. */
+					float min_cross = row ? c->min_h : c->min_w;
+					if (min_cross > 0.0f && cross < min_cross)
+						cross = min_cross;
+				}
+				else
+				{
+					laid_cross = std::max(laid_cross, cross +
+						(row ? c->margin[1] + c->margin[3]
+							: c->margin[0] + c->margin[2]));
+				}
 				if (al == VGUI_ALIGN_CENTER) cross_pos = (cross_avail - cross) * 0.5f;
 				else if (al == VGUI_ALIGN_END) cross_pos = cross_avail - cross;
 
@@ -4541,8 +4563,8 @@ namespace {
 				content_h = std::max(content_h, py - iy + ph + c->margin[3]);
 			}
 			// Include the starting offset for centered / end aligned content.
-			content_w = std::max(content_w, (row ? start + total_main : max_cross));
-			content_h = std::max(content_h, (row ? max_cross : start + total_main));
+			content_w = std::max(content_w, (row ? start + total_main : laid_cross));
+			content_h = std::max(content_h, (row ? laid_cross : start + total_main));
 		}
 
 		w->content_w = std::max(0.0f, content_w);

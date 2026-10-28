@@ -3227,6 +3227,72 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			}
 		}
 
+		/* Below the usable row width the grid keeps a content floor and
+		 * scrolls horizontally instead of squeezing the value fields away. */
+		{
+			vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL,
+				nullptr);
+			vgui_widget_set_size(host, 220, 320);
+			vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_padding(host, 0, 0, 0, 0);
+
+			property_grid narrow;
+			narrow.build(host);
+			property_desc position;
+			position.id = "position";
+			position.label = "Position";
+			position.type = property_type::vector3;
+			position.value = "1, 2, 3";
+			position.category = "Transform";
+			position.semantic = vector_semantic::position;
+			if (!narrow.add_property(position))
+				return fail("horizontal scroll property");
+
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			vgui_widget* grid = narrow.widget();
+			float pw = 0.0f;
+			vgui_widget_get_rect(grid, nullptr, nullptr, &pw, nullptr);
+			float content_w = 0.0f, content_h = 0.0f;
+			vgui_panel_get_content_size(grid, &content_w, &content_h);
+			if (content_w <= pw - 12.0f + 0.5f)
+				return fail("narrow property grid exposes horizontal overflow");
+
+			vgui_panel_set_scroll(grid, 40.0f, 0.0f);
+			float sx = 0.0f, sy = 0.0f;
+			vgui_panel_get_scroll(grid, &sx, &sy);
+			if (sx <= 0.0f)
+				return fail("narrow property grid scrolls horizontally");
+
+			/* The bar itself must be draggable, not just programmatic. */
+			float gx = 0.0f, gy = 0.0f, gw = 0.0f, gh = 0.0f;
+			vgui_widget_get_rect(grid, &gx, &gy, &gw, &gh);
+			vgui_style style;
+			vgui_context_get_style(ui, &style);
+			const float bar = style.panel.scrollbar_width;
+			const float corner = bar + style.panel.scrollbar_inset;
+			const float bar_x = gx + 6.0f + 2.0f;
+			const float bar_y = gy + gh - corner + bar * 0.5f;
+			vgui_panel_set_scroll(grid, 0.0f, 0.0f);
+			vgui_input_mouse_move(ui, bar_x, bar_y);
+			vgui_input_mouse_down(ui, 1, bar_x, bar_y, 1);
+			vgui_input_mouse_move(ui, bar_x + 40.0f, bar_y);
+			vgui_input_mouse_up(ui, 1, bar_x + 40.0f, bar_y, 1);
+			vgui_panel_get_scroll(grid, &sx, &sy);
+			if (sx <= 0.0f)
+				return fail("horizontal scrollbar drag scrolls the grid");
+
+			vector_editor* vec = narrow.property_vector_editor("position");
+			if (!vec || !vec->component_edit_widget(2))
+				return fail("horizontal scroll vector editor");
+			float ex = 0.0f, ey = 0.0f, ew = 0.0f, eh = 0.0f;
+			vgui_widget_get_rect(vec->component_edit_widget(2),
+				&ex, &ey, &ew, &eh);
+			if (ew <= 0.0f)
+				return fail("horizontal scroll keeps component fields usable");
+		}
+
 		vgui_destroy(ui);
 		return 0;
 	}

@@ -32,6 +32,7 @@ namespace vgui_editor_kit {
 		constexpr float kCategoryHeight = 24.0f;
 		constexpr float kItemGap = 4.0f;
 		constexpr float kPanelPaddingV = 12.0f;	// build(): 6 top + 6 bottom
+		constexpr float kMinContentWidth = 280.0f;	// horizontal scroll floor
 		constexpr float kSearchLead = 28.0f;	// search 24 + gap 4
 		constexpr float kOverscan = 96.0f;
 		constexpr std::size_t kMinWindowEntries = 4;
@@ -588,7 +589,9 @@ namespace vgui_editor_kit {
 		vgui_widget_set_gap(panel_, kItemGap);
 		vgui_widget_set_background(panel_, kPanelBg);
 		vgui_widget_set_border(panel_, kBorder, 1);
-		vgui_panel_set_scrollable(panel_, 0, 1);
+		/* Narrow hosts keep rows usable: below this width the panel scrolls
+		 * horizontally instead of squeezing the editor fields to nothing. */
+		vgui_panel_set_scrollable(panel_, 1, 1);
 
 		/* 搜索行 = 搜索框 + P08 收藏过滤开关(高度保持 24,kSearchLead
 		 * 不变)。 */
@@ -625,6 +628,7 @@ namespace vgui_editor_kit {
 		 * scroll range stays exact without building every row. */
 		content_ = vgui_widget_add(panel_, VGUI_PANEL, nullptr);
 		vgui_widget_set_align_self(content_, VGUI_ALIGN_STRETCH);
+		vgui_widget_set_min_size(content_, kMinContentWidth, 0);
 		vgui_widget_set_layout(content_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_gap(content_, 0);
 		vgui_widget_set_padding(content_, 0, 0, 0, 0);
