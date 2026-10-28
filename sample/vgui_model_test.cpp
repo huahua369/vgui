@@ -3839,6 +3839,22 @@ static void test_popup(vgui_context* ui)
 	check(px + pw <= 900.0f + 0.5f && py + ph <= 700.0f + 0.5f,
 		"popup: clamped to window");
 
+	/* 内容大于窗口:框保持内容尺寸(边框穿过内容的回归),只钳位置。 */
+	vgui_widget_set_size(content, 1200.0f, 900.0f);
+	vgui_popup_open(ui, content, 100.0f, 100.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	check(near(pw, 1200.0f) && near(ph, 900.0f),
+		"popup: frame never smaller than content");
+	check(px >= 8.0f - 0.5f && py >= 8.0f - 0.5f,
+		"popup: oversized keeps position clamp");
+	vgui_widget_set_size(content, 160.0f, 90.0f);
+	vgui_popup_open(ui, content, 1200.0f, 900.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+
 	/* 内容内点击正常路由(不关闭)。 */
 	click_at(ui, px + 30.0f, py + 20.0f);
 	check(clicks == 1 && vgui_popup_active(ui) == 1,

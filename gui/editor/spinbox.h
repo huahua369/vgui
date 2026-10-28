@@ -57,6 +57,20 @@ namespace vgui_editor_kit {
 		void set_label_width(float width);
 		float label_width() const noexcept;
 
+		/* Chrome font size in logical units.  0 (default) follows the context
+		 * font; the row height derives from it (font + 10, at least 24).
+		 * Popup editors keep the context size, while property-grid and table
+		 * embeddings pin it to stay inside their fixed 24px rows. */
+		void set_font_size(float size);
+		float font_size() const noexcept;
+
+		/* Overrides the edit box's intrinsic width floor.  The context style
+		 * edit.min_width (hosts may set it large) otherwise becomes the
+		 * spinbox's measured width even for compact T/V editors.  0 (default)
+		 * follows the style; the edit keeps growing inside its row either way. */
+		void set_edit_min_width(float width);
+		float edit_min_width() const noexcept;
+
 		/* Step buttons are shown by default.  Compact editors can hide them
 		 * and rely on text input plus label dragging instead. */
 		void set_buttons_visible(bool visible);
@@ -123,6 +137,9 @@ namespace vgui_editor_kit {
 		void sync_text();
 		void update_control_state();
 		void update_error_ui();
+		void apply_font();
+		void apply_chrome();
+		float chrome_row_height() const;
 		double effective_step() const noexcept;
 		double normalize_value(double value, bool snap_to_step) const noexcept;
 		double canonicalize(double value) const;
@@ -144,6 +161,8 @@ namespace vgui_editor_kit {
 		std::string label_;
 		std::string error_;
 		float label_width_ = 72.0f;
+		float font_size_ = 0.0f;	/* 0 = follow the context font */
+		float edit_min_width_ = 0.0f;	/* 0 = follow style.edit.min_width */
 		bool buttons_visible_ = true;
 		value_type type_ = value_type::number;
 		double value_ = 0.0;

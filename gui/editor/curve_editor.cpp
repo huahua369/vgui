@@ -1,5 +1,6 @@
 #include "curve_editor.h"
 
+#include "editor_metrics.h"
 #include "spinbox.h"
 
 #include "pch.h"
@@ -237,11 +238,14 @@ namespace vgui_editor_kit {
 		vgui_widget_set_background(root_, kPanelBg);
 		vgui_widget_set_border(root_, kPanelBorder, 1.0f);
 		vgui_widget_set_min_size(root_, 320, 0);
+		/* Chrome follows the context font (editor_metrics.h) so the popup
+		 * matches the rest of the kit at any base font / ui_scale. */
+		const float row_h = editor_row_height(ctx);
 
 		mode_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(mode_row_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_gap(mode_row_, 4.0f);
-		vgui_widget_set_size(mode_row_, 0, 24);
+		vgui_widget_set_size(mode_row_, 0, row_h);
 		vgui_widget_set_align_self(mode_row_, VGUI_ALIGN_STRETCH);
 
 		for (int i = 0; i < 3; ++i)
@@ -249,8 +253,9 @@ namespace vgui_editor_kit {
 			const curve_interpolation mode = (curve_interpolation)i;
 			mode_buttons_[i] = vgui_widget_add(mode_row_, VGUI_BUTTON,
 				interpolation_label(mode));
-			vgui_widget_set_size(mode_buttons_[i], 76, 24);
-			vgui_widget_set_font_size(mode_buttons_[i], 12);
+			vgui_widget_set_size(mode_buttons_[i], 0, row_h);
+			vgui_widget_set_min_size(mode_buttons_[i],
+				editor_button_min_w(mode_buttons_[i], 28.0f), row_h);
 			vgui_widget_on_event(mode_buttons_[i], &curve_editor::on_mode_click,
 				this);
 			vgui_widget_set_tooltip(mode_buttons_[i],
@@ -269,7 +274,7 @@ namespace vgui_editor_kit {
 		key_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(key_row_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_gap(key_row_, 4.0f);
-		vgui_widget_set_size(key_row_, 0, 24);
+		vgui_widget_set_size(key_row_, 0, row_h);
 		vgui_widget_set_align_self(key_row_, VGUI_ALIGN_STRETCH);
 
 		time_spin_ = std::make_unique<spinbox>();
@@ -277,45 +282,51 @@ namespace vgui_editor_kit {
 		time_spin_->set_value_type(spinbox::value_type::number);
 		time_spin_->set_range(0.0, 1.0);
 		time_spin_->set_step(0.01);
-		time_spin_->set_label_width(24.0f);
+		time_spin_->set_label_width(
+			editor_label_width(time_spin_->label_widget(), "T"));
 		time_spin_->set_buttons_visible(false);
+		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
+		time_spin_->set_edit_min_width(48.0f);
 		time_spin_->set_on_change([this](double value) {
 			on_time_change(value);
 		});
 		time_spin_->set_on_commit([this](double) { on_time_commit(); });
 		vgui_widget_set_grow(time_spin_->widget(), 1.0f);
-		vgui_widget_set_size(time_spin_->widget(), 0, 24);
+		vgui_widget_set_size(time_spin_->widget(), 0, row_h);
 
 		value_spin_ = std::make_unique<spinbox>();
 		value_spin_->build(key_row_, "V");
 		value_spin_->set_value_type(spinbox::value_type::number);
 		value_spin_->set_range(0.0, 1.0);
 		value_spin_->set_step(0.01);
-		value_spin_->set_label_width(24.0f);
+		value_spin_->set_label_width(
+			editor_label_width(value_spin_->label_widget(), "V"));
 		value_spin_->set_buttons_visible(false);
+		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
+		value_spin_->set_edit_min_width(48.0f);
 		value_spin_->set_on_change([this](double value) {
 			on_value_change(value);
 		});
 		value_spin_->set_on_commit([this](double) { on_value_commit(); });
 		vgui_widget_set_grow(value_spin_->widget(), 1.0f);
-		vgui_widget_set_size(value_spin_->widget(), 0, 24);
+		vgui_widget_set_size(value_spin_->widget(), 0, row_h);
 
 		add_ = vgui_widget_add(key_row_, VGUI_BUTTON, "Add");
-		vgui_widget_set_size(add_, 48, 24);
-		vgui_widget_set_font_size(add_, 12);
+		vgui_widget_set_size(add_, 0, row_h);
+		vgui_widget_set_min_size(add_, editor_button_min_w(add_, 20.0f), row_h);
 		vgui_widget_on_event(add_, &curve_editor::on_add_click, this);
 		vgui_widget_set_tooltip(add_, "Add a key in the largest gap");
 
 		remove_ = vgui_widget_add(key_row_, VGUI_BUTTON, "Del");
-		vgui_widget_set_size(remove_, 48, 24);
-		vgui_widget_set_font_size(remove_, 12);
+		vgui_widget_set_size(remove_, 0, row_h);
+		vgui_widget_set_min_size(remove_, editor_button_min_w(remove_, 20.0f), row_h);
 		vgui_widget_on_event(remove_, &curve_editor::on_remove_click, this);
 		vgui_widget_set_tooltip(remove_, "Delete the selected key");
 
 		tangent_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(tangent_row_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_gap(tangent_row_, 4.0f);
-		vgui_widget_set_size(tangent_row_, 0, 24);
+		vgui_widget_set_size(tangent_row_, 0, row_h);
 		vgui_widget_set_align_self(tangent_row_, VGUI_ALIGN_STRETCH);
 
 		in_spin_ = std::make_unique<spinbox>();
@@ -323,14 +334,17 @@ namespace vgui_editor_kit {
 		in_spin_->set_value_type(spinbox::value_type::number);
 		in_spin_->set_range(-20.0, 20.0);
 		in_spin_->set_step(0.05);
-		in_spin_->set_label_width(24.0f);
+		in_spin_->set_label_width(
+			editor_label_width(in_spin_->label_widget(), "In"));
 		in_spin_->set_buttons_visible(false);
+		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
+		in_spin_->set_edit_min_width(48.0f);
 		in_spin_->set_on_change([this](double value) {
 			on_in_change(value);
 		});
 		in_spin_->set_on_commit([this](double) { on_in_commit(); });
 		vgui_widget_set_grow(in_spin_->widget(), 1.0f);
-		vgui_widget_set_size(in_spin_->widget(), 0, 24);
+		vgui_widget_set_size(in_spin_->widget(), 0, row_h);
 		vgui_widget_set_tooltip(in_spin_->edit_widget(),
 			"Incoming tangent slope");
 
@@ -339,14 +353,17 @@ namespace vgui_editor_kit {
 		out_spin_->set_value_type(spinbox::value_type::number);
 		out_spin_->set_range(-20.0, 20.0);
 		out_spin_->set_step(0.05);
-		out_spin_->set_label_width(24.0f);
+		out_spin_->set_label_width(
+			editor_label_width(out_spin_->label_widget(), "Out"));
 		out_spin_->set_buttons_visible(false);
+		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
+		out_spin_->set_edit_min_width(48.0f);
 		out_spin_->set_on_change([this](double value) {
 			on_out_change(value);
 		});
 		out_spin_->set_on_commit([this](double) { on_out_commit(); });
 		vgui_widget_set_grow(out_spin_->widget(), 1.0f);
-		vgui_widget_set_size(out_spin_->widget(), 0, 24);
+		vgui_widget_set_size(out_spin_->widget(), 0, row_h);
 		vgui_widget_set_tooltip(out_spin_->edit_widget(),
 			"Outgoing tangent slope");
 

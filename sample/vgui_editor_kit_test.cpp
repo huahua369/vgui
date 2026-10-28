@@ -4534,6 +4534,204 @@ static int test_property_grid_curve_gradient()
 }
 
 //----------------------------------------------------------------------------
+// P09 打磨:弹出编辑器几何 —— 行内控件不溢出、按钮容纳文本、popup 框完整
+//----------------------------------------------------------------------------
+
+static void collect_widget_tree(vgui_widget* root,
+	std::vector<vgui_widget*>& out)
+{
+	if (!root)
+		return;
+	out.push_back(root);
+	const size_t count = vgui_widget_get_child_count(root);
+	for (size_t i = 0; i < count; ++i)
+		collect_widget_tree(vgui_widget_get_child(root, i), out);
+}
+
+/* 可见子树的所有矩形都必须落在根矩形内。popup 的框就是内容根的矩形,
+ * 所以同一断言同时覆盖"挂在树里"与"作为 popup 打开"两种场景。 */
+static bool tree_stays_inside(vgui_widget* root)
+{
+	float rx = 0, ry = 0, rw = 0, rh = 0;
+	vgui_widget_get_rect(root, &rx, &ry, &rw, &rh);
+	std::vector<vgui_widget*> all;
+	collect_widget_tree(root, all);
+	for (vgui_widget* w : all)
+	{
+		if (!w || !vgui_widget_get_visible(w))
+			continue;
+		float x = 0, y = 0, width = 0, height = 0;
+		vgui_widget_get_rect(w, &x, &y, &width, &height);
+		if (width <= 0 || height <= 0)
+			continue;
+		if (x < rx - 0.75f || y < ry - 0.75f ||
+			x + width > rx + rw + 0.75f || y + height > ry + rh + 0.75f)
+			return false;
+	}
+	return true;
+}
+
+/* 按钮高度保底,且测量出的文本宽不超按钮宽(文本不被裁剪)。 */
+static bool button_fits_text(vgui_widget* button)
+{
+	if (!button)
+		return false;
+	float x = 0, y = 0, w = 0, h = 0;
+	vgui_widget_get_rect(button, &x, &y, &w, &h);
+	const float text_w = vgui_widget_measure_text(button,
+		vgui_widget_get_text(button));
+	/* Headless contexts have no font: text_w is 0 and the width check
+	 * degrades to the min-width floor, which still catches degenerate
+	 * padding-only buttons. */
+	(void)text_w;
+	return h >= 24.0f && w + 0.75f >= text_w;
+}
+
+static int test_popup_editor_geometry()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("editor geometry context");
+	vgui_context_set_size(ui, 640, 560);
+	vgui_style style;
+	vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- 曲线编辑器:行高跟随字体,按钮自适应文本且不溢出 ---- */
+	{
+		curve_editor editor;
+		editor.set_id("geo.curve");
+		editor.build(vgui_root(ui));
+		vgui_widget_set_pos(editor.widget(), 10.0f, 10.0f);
+		vgui_widget_set_size(editor.widget(), 380.0f, 360.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (!tree_stays_inside(editor.widget()))
+			return fail("curve editor rows stay inside");
+		const char* mode_ids[3] = { "geo.curve.mode.linear",
+			"geo.curve.mode.step", "geo.curve.mode.cubic" };
+		for (const char* id : mode_ids)
+		{
+			if (!button_fits_text(find_widget(editor.widget(), id, VGUI_BUTTON)))
+				return fail("curve mode button fits text");
+		}
+		if (!button_fits_text(editor.add_widget()) ||
+			!button_fits_text(editor.remove_widget()))
+			return fail("curve add/del fit text");
+		float gx = 0, gy = 0, gw = 0, gh = 0;
+		vgui_widget_get_rect(editor.graph_widget(), &gx, &gy, &gw, &gh);
+		if (!near_px(gh, 168.0f))
+			return fail("curve graph keeps content height");
+
+		/* popup 框(最小宽 320)完整容纳内容:右侧切 Add/Del、底部切
+		 * In/Out 行的回归断言。 */
+		curve_editor popup_curve;
+		popup_curve.set_id("geo.curve.popup");
+		popup_curve.build(ui);
+		if (!vgui_popup_open(ui, popup_curve.widget(), 40.0f, 40.0f))
+			return fail("curve popup opens");
+		const bool curve_popup_ok = tree_stays_inside(popup_curve.widget());
+		vgui_popup_close(ui);
+		if (!curve_popup_ok)
+			return fail("curve popup frame contains content");
+	}
+
+	/* ---- 渐变编辑器:预设按钮换行不溢出,popup 框完整 ---- */
+	{
+		gradient_editor editor;
+		editor.set_id("geo.gradient");
+		editor.build(vgui_root(ui));
+		vgui_widget_set_pos(editor.widget(), 10.0f, 10.0f);
+		/* 内嵌取色器随行高 chrome 增高,给足内容高度。 */
+		vgui_widget_set_size(editor.widget(), 360.0f, 520.0f);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		if (!tree_stays_inside(editor.widget()))
+			return fail("gradient editor rows stay inside");
+		if (!button_fits_text(editor.add_widget()) ||
+			!button_fits_text(editor.remove_widget()))
+			return fail("gradient add/del fit text");
+		for (int i = 0; i < 4; ++i)
+		{
+			const std::string id = "geo.gradient.preset." + std::to_string(i);
+			if (!button_fits_text(find_widget(editor.widget(), id.c_str(),
+				VGUI_BUTTON)))
+				return fail("gradient preset fits text");
+		}
+
+		gradient_editor popup_gradient;
+		popup_gradient.set_id("geo.gradient.popup");
+		popup_gradient.build(ui);
+		if (!vgui_popup_open(ui, popup_gradient.widget(), 40.0f, 40.0f))
+			return fail("gradient popup opens");
+		const bool gradient_popup_ok =
+			tree_stays_inside(popup_gradient.widget());
+		vgui_popup_close(ui);
+		if (!gradient_popup_ok)
+			return fail("gradient popup frame contains content");
+	}
+
+		/* 宿主样式变体(game_editor 设 edit.min_width=160):弹窗框仍完整
+		 * 容纳内容,紧凑数值框不被撑爆行宽。 */
+		{
+			vgui_style host_style;
+			vgui_style_default(&host_style);
+			host_style.edit.min_width = 160.0f;
+			vgui_context_set_style(ui, &host_style);
+			gradient_editor popup_host;
+			popup_host.set_id("geo.gradient.host");
+			popup_host.build(ui);
+			if (!vgui_popup_open(ui, popup_host.widget(), 40.0f, 40.0f))
+				return fail("gradient host-style popup opens");
+			const bool host_ok = tree_stays_inside(popup_host.widget());
+			vgui_popup_close(ui);
+			vgui_style default_style;
+			vgui_style_default(&default_style);
+			vgui_context_set_style(ui, &default_style);
+			if (!host_ok)
+				return fail("gradient popup contains content (host style)");
+		}
+
+	/* ---- 取色器:色条/色块命中区加大,hex 行高跟随 ---- */
+	{
+		color_picker picker;
+		picker.set_id("geo.color");
+		picker.set_presets({ "#FF0000", "#00FF00", "#0000FF", "#FFFF00" });
+		picker.build(ui);
+		if (!vgui_popup_open(ui, picker.widget(), 40.0f, 40.0f))
+			return fail("color popup opens");
+		const bool color_popup_ok = tree_stays_inside(picker.widget());
+		vgui_widget* hex = find_widget(picker.widget(), "geo.color.hex",
+			VGUI_EDIT);
+		vgui_widget* hue = find_widget(picker.widget(), "geo.color.hue",
+			VGUI_CUSTOM);
+		vgui_widget* alpha = find_widget(picker.widget(), "geo.color.alpha",
+			VGUI_CUSTOM);
+		vgui_widget* swatch = find_widget(picker.widget(),
+			"geo.color.swatch.0", VGUI_PANEL);
+		float hx = 0, hy = 0, hw = 0, hh = 0;
+		if (hex) vgui_widget_get_rect(hex, &hx, &hy, &hw, &hh);
+		float ux = 0, uy = 0, uw = 0, uh = 0;
+		if (hue) vgui_widget_get_rect(hue, &ux, &uy, &uw, &uh);
+		float ax2 = 0, ay2 = 0, aw2 = 0, ah2 = 0;
+		if (alpha) vgui_widget_get_rect(alpha, &ax2, &ay2, &aw2, &ah2);
+		float sx = 0, sy = 0, sw = 0, sh = 0;
+		if (swatch) vgui_widget_get_rect(swatch, &sx, &sy, &sw, &sh);
+		vgui_popup_close(ui);
+		if (!color_popup_ok)
+			return fail("color popup frame contains content");
+		if (!hex || !hue || !alpha || !swatch)
+			return fail("color picker widgets");
+		if (hh < 24.0f || uh < 16.0f || ah2 < 16.0f || sh < 16.0f)
+			return fail("color picker hit areas");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+//----------------------------------------------------------------------------
 // M2 P08:多选混合值 / 属性剪贴板 / 收藏
 //----------------------------------------------------------------------------
 
@@ -13665,6 +13863,8 @@ int main()
 	if (int rc = test_gradient_editor())
 		return rc;
 	if (int rc = test_property_grid_curve_gradient())
+		return rc;
+	if (int rc = test_popup_editor_geometry())
 		return rc;
 	if (int rc = test_outliner_row_extensions())
 		return rc;

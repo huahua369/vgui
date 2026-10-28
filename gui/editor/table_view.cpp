@@ -1550,6 +1550,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(edit_number_panel_, 180, 30);
 		edit_number_ = std::make_unique<spinbox>();
 		edit_number_->set_id("table_view.cell_number");
+		/* Cell popups keep the table's compact 24px chrome. */
+		edit_number_->set_font_size(13.0f);
 		edit_number_->build(edit_number_panel_, "");
 		if (!edit_number_->widget())
 		{

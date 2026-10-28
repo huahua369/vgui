@@ -1,5 +1,7 @@
 #include "color_picker.h"
 
+#include "editor_metrics.h"
+
 #include "pch.h"
 #include "tools/tools.hpp"
 #include "ui_scale.h"
@@ -160,33 +162,37 @@ namespace vgui_editor_kit {
 		vgui_widget_set_gap(preview, 6.0f);
 		new_swatch_ = vgui_widget_add(preview, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(new_swatch_, (id_ + ".new").c_str());
-		vgui_widget_set_size(new_swatch_, 44.0f, 26.0f);
+		const float row_h = editor_row_height(ctx);
+		vgui_widget_set_size(new_swatch_, 44.0f, row_h);
 		current_swatch_ = vgui_widget_add(preview, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(current_swatch_, (id_ + ".current").c_str());
-		vgui_widget_set_size(current_swatch_, 26.0f, 26.0f);
+		vgui_widget_set_size(current_swatch_, row_h, row_h);
 		hex_ = vgui_widget_add(preview, VGUI_EDIT, nullptr);
 		vgui_widget_set_id(hex_, (id_ + ".hex").c_str());
 		vgui_widget_set_grow(hex_, 1.0f);
-		/* 宽由 grow 决定,高度钉住,预览行保持 26。 */
-		vgui_widget_set_size(hex_, 0.0f, 26.0f);
-		vgui_widget_set_min_size(hex_, 80, 24);
+		/* 宽由 grow 决定,高度跟随行高。 */
+		vgui_widget_set_size(hex_, 0.0f, row_h);
+		vgui_widget_set_min_size(hex_, 80, row_h);
 		vgui_widget_on_event(hex_, &color_picker::on_hex_event, this);
 
 		sv_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_id(sv_, (id_ + ".sv").c_str());
-		vgui_widget_set_size(sv_, 194.0f, 128.0f);
+		vgui_widget_set_size(sv_, 0.0f, 128.0f);
+		vgui_widget_set_align_self(sv_, VGUI_ALIGN_STRETCH);
 		vgui_custom_set_draw(sv_, &color_picker::draw_sv, this);
 		vgui_custom_set_event(sv_, &color_picker::on_sv_event, this);
 
 		hue_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_id(hue_, (id_ + ".hue").c_str());
-		vgui_widget_set_size(hue_, 194.0f, 14.0f);
+		vgui_widget_set_size(hue_, 0.0f, editor_row_inner(ctx));
+		vgui_widget_set_align_self(hue_, VGUI_ALIGN_STRETCH);
 		vgui_custom_set_draw(hue_, &color_picker::draw_hue, this);
 		vgui_custom_set_event(hue_, &color_picker::on_hue_event, this);
 
 		alpha_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_id(alpha_, (id_ + ".alpha").c_str());
-		vgui_widget_set_size(alpha_, 194.0f, 14.0f);
+		vgui_widget_set_size(alpha_, 0.0f, editor_row_inner(ctx));
+		vgui_widget_set_align_self(alpha_, VGUI_ALIGN_STRETCH);
 		vgui_custom_set_draw(alpha_, &color_picker::draw_alpha, this);
 		vgui_custom_set_event(alpha_, &color_picker::on_alpha_event, this);
 
@@ -226,7 +232,8 @@ namespace vgui_editor_kit {
 			std::snprintf(widget_id, sizeof(widget_id), "%s.swatch.%d",
 				id_.c_str(), index);
 			vgui_widget_set_id(swatch, widget_id);
-			vgui_widget_set_size(swatch, 18.0f, 18.0f);
+			const float sw = editor_row_inner(vgui_widget_get_context(swatch_row_));
+			vgui_widget_set_size(swatch, sw, sw);
 			vgui_widget_set_background(swatch, argb);
 			vgui_widget_set_tooltip(swatch, hex.c_str());
 			vgui_widget_on_event(swatch, &color_picker::on_swatch_click, this);
@@ -236,7 +243,7 @@ namespace vgui_editor_kit {
 		if (!presets_.empty() && !recent_.empty())
 		{
 			vgui_widget* sep = vgui_widget_add(swatch_row_, VGUI_PANEL, nullptr);
-			vgui_widget_set_size(sep, 2.0f, 18.0f);
+			vgui_widget_set_size(sep, 2.0f, editor_row_inner(vgui_widget_get_context(swatch_row_)));
 			vgui_widget_set_background(sep, 0xFF3A424E);
 		}
 		for (const std::string& hex : recent_)

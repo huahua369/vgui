@@ -5388,9 +5388,13 @@ namespace {
 		ph = std::max(1.0f, ph);
 
 		const float margin = 8.0f;
+		/* The frame is never laid out smaller than its content needs: a shrunken
+		 * frame would draw its border through the content (right/bottom rows
+		 * appear cut).  When the content is larger than the window the frame
+		 * overflows the window edge instead and the position clamp below keeps
+		 * the popup's top-left visible. */
 		if (ctx->width > 0)
 		{
-			pw = std::min(pw, std::max(1.0f, (float)ctx->width - margin * 2.0f));
 			content->abs_x = vgui_clampf(ctx->popup.x, margin,
 				std::max(margin, (float)ctx->width - pw - margin));
 		}
@@ -5398,7 +5402,6 @@ namespace {
 			content->abs_x = ctx->popup.x;
 		if (ctx->height > 0)
 		{
-			ph = std::min(ph, std::max(1.0f, (float)ctx->height - margin * 2.0f));
 			content->abs_y = vgui_clampf(ctx->popup.y, margin,
 				std::max(margin, (float)ctx->height - ph - margin));
 		}

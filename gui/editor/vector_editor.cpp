@@ -87,6 +87,9 @@ namespace vgui_editor_kit {
 		for (int i = 0; i < dimension_; ++i)
 		{
 			auto box = std::make_unique<spinbox>();
+			/* Property-grid/table embeddings keep the 24px row chrome; pin the
+			 * spinbox font so it does not grow with the context font. */
+			box->set_font_size(13.0f);
 			box->set_value_type(value_type_);
 			if (has_range_)
 				box->set_range(min_value_, max_value_);

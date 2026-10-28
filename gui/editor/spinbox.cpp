@@ -1,5 +1,7 @@
 #include "spinbox.h"
 
+#include "editor_metrics.h"
+
 #include <algorithm>
 #include <cerrno>
 #include <charconv>
@@ -81,8 +83,9 @@ namespace vgui_editor_kit {
 		label_ = std::move(label);
 
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
-		vgui_widget_set_size(panel_, 220, 26);
-		vgui_widget_set_min_size(panel_, 120, 24);
+		const float row_h = chrome_row_height();
+		vgui_widget_set_size(panel_, 220, row_h);
+		vgui_widget_set_min_size(panel_, 120, row_h);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_padding(panel_, 0, 0, 0, 0);
 		vgui_widget_set_gap(panel_, 2);
@@ -90,8 +93,7 @@ namespace vgui_editor_kit {
 
 		label_widget_ = vgui_widget_add(panel_, VGUI_LABEL, label_.c_str());
 		vgui_widget_set_size(label_widget_,
-			label_.empty() ? kEmptyLabelWidth : label_width_, 24);
-		vgui_widget_set_font_size(label_widget_, 12);
+			label_.empty() ? kEmptyLabelWidth : label_width_, row_h);
 		vgui_widget_set_text_align(label_widget_, 0.0f, 0.5f);
 		vgui_widget_set_tooltip(label_widget_, "Drag to change");
 		vgui_widget_on_event(label_widget_, &spinbox::on_label_event, this);
@@ -100,20 +102,20 @@ namespace vgui_editor_kit {
 		vgui_widget_set_a11y_name(edit_, label_.empty() ? "Value" : label_.c_str());
 		vgui_widget_set_a11y_role(edit_, VGUI_A11Y_ROLE_EDIT);
 		vgui_widget_set_grow(edit_, 1.0f);
-		vgui_widget_set_size(edit_, 0, 24);
-		vgui_widget_set_font_size(edit_, 12);
+		vgui_widget_set_size(edit_, 0, row_h);
+		apply_font();
 		vgui_widget_on_event(edit_, &spinbox::on_edit_event, this);
 		vgui_widget_on_text(edit_, &spinbox::on_edit_text, this);
 
 		decrement_.build(panel_, "-");
 		decrement_.set_tooltip("Decrease");
 		decrement_.set_on_click([this]() { nudge(-1, context_mods(edit_)); });
-		vgui_widget_set_size(decrement_.widget(), 24, 24);
+		vgui_widget_set_size(decrement_.widget(), row_h, row_h);
 
 		increment_.build(panel_, "+");
 		increment_.set_tooltip("Increase");
 		increment_.set_on_click([this]() { nudge(1, context_mods(edit_)); });
-		vgui_widget_set_size(increment_.widget(), 24, 24);
+		vgui_widget_set_size(increment_.widget(), row_h, row_h);
 
 		apply_ids();
 		set_buttons_visible(buttons_visible_);
@@ -158,7 +160,7 @@ namespace vgui_editor_kit {
 			return;
 		vgui_widget_set_text(label_widget_, label_.c_str());
 		vgui_widget_set_size(label_widget_,
-			label_.empty() ? kEmptyLabelWidth : label_width_, 24);
+			label_.empty() ? kEmptyLabelWidth : label_width_, chrome_row_height());
 	}
 
 	const std::string& spinbox::label() const noexcept
@@ -174,13 +176,76 @@ namespace vgui_editor_kit {
 		if (label_widget_)
 		{
 			vgui_widget_set_size(label_widget_,
-				label_.empty() ? kEmptyLabelWidth : label_width_, 24);
+				label_.empty() ? kEmptyLabelWidth : label_width_,
+				chrome_row_height());
 		}
 	}
 
 	float spinbox::label_width() const noexcept
 	{
 		return label_width_;
+	}
+
+	void spinbox::set_font_size(float size)
+	{
+		font_size_ = std::isfinite(size) && size > 0.0f ? size : 0.0f;
+		if (panel_)
+		{
+			apply_font();
+			apply_chrome();
+		}
+	}
+
+	float spinbox::font_size() const noexcept
+	{
+		return font_size_;
+	}
+
+	void spinbox::set_edit_min_width(float width)
+	{
+		edit_min_width_ = std::isfinite(width) && width > 0.0f ? width : 0.0f;
+		if (edit_)
+			apply_chrome();
+	}
+
+	float spinbox::edit_min_width() const noexcept
+	{
+		return edit_min_width_;
+	}
+
+	void spinbox::apply_font()
+	{
+		/* 0 resets to "inherit the context font". */
+		if (label_widget_)
+			vgui_widget_set_font_size(label_widget_, font_size_);
+		if (edit_)
+			vgui_widget_set_font_size(edit_, font_size_);
+	}
+
+	void spinbox::apply_chrome()
+	{
+		if (!panel_)
+			return;
+		const float row_h = chrome_row_height();
+		vgui_widget_set_size(panel_, 220, row_h);
+		vgui_widget_set_min_size(panel_, buttons_visible_ ? 120 : 60, row_h);
+		if (label_widget_)
+			vgui_widget_set_size(label_widget_,
+				label_.empty() ? kEmptyLabelWidth : label_width_, row_h);
+		if (edit_)
+			vgui_widget_set_size(edit_,
+				edit_min_width_ > 0.0f ? edit_min_width_ : 0.0f, row_h);
+		if (decrement_.widget())
+			vgui_widget_set_size(decrement_.widget(), row_h, row_h);
+		if (increment_.widget())
+			vgui_widget_set_size(increment_.widget(), row_h, row_h);
+	}
+
+	float spinbox::chrome_row_height() const
+	{
+		vgui_context* ctx = panel_ ? vgui_widget_get_context(panel_) : nullptr;
+		const float font = font_size_ > 0.0f ? font_size_ : editor_font_size(ctx);
+		return std::max(24.0f, font + 10.0f);
 	}
 
 	void spinbox::set_buttons_visible(bool visible)
@@ -191,7 +256,7 @@ namespace vgui_editor_kit {
 		if (increment_.widget())
 			vgui_widget_set_visible(increment_.widget(), visible ? 1 : 0);
 		if (panel_)
-			vgui_widget_set_min_size(panel_, visible ? 120 : 60, 24);
+			apply_chrome();
 	}
 
 	bool spinbox::buttons_visible() const noexcept

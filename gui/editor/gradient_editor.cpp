@@ -1,6 +1,7 @@
 #include "gradient_editor.h"
 
 #include "color_picker.h"
+#include "editor_metrics.h"
 #include "spinbox.h"
 
 #include "pch.h"
@@ -343,6 +344,9 @@ namespace vgui_editor_kit {
 		vgui_widget_set_background(root_, kPanelBg);
 		vgui_widget_set_border(root_, kPanelBorder, 1.0f);
 		vgui_widget_set_min_size(root_, 300, 0);
+		/* Chrome follows the context font (editor_metrics.h) so the popup
+		 * matches the rest of the kit at any base font / ui_scale. */
+		const float row_h = editor_row_height(ctx);
 
 		bar_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_size(bar_, 0, 50);
@@ -356,7 +360,7 @@ namespace vgui_editor_kit {
 		stop_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(stop_row_, VGUI_LAYOUT_ROW);
 		vgui_widget_set_gap(stop_row_, 4.0f);
-		vgui_widget_set_size(stop_row_, 0, 24);
+		vgui_widget_set_size(stop_row_, 0, row_h);
 		vgui_widget_set_align_self(stop_row_, VGUI_ALIGN_STRETCH);
 
 		time_spin_ = std::make_unique<spinbox>();
@@ -364,25 +368,28 @@ namespace vgui_editor_kit {
 		time_spin_->set_value_type(spinbox::value_type::number);
 		time_spin_->set_range(0.0, 1.0);
 		time_spin_->set_step(0.01);
-		time_spin_->set_label_width(24.0f);
+		time_spin_->set_label_width(
+			editor_label_width(time_spin_->label_widget(), "T"));
 		time_spin_->set_buttons_visible(false);
+		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
+		time_spin_->set_edit_min_width(48.0f);
 		time_spin_->set_on_change([this](double value) {
 			on_time_change(value);
 		});
 		time_spin_->set_on_commit([this](double) { on_time_commit(); });
 		vgui_widget_set_grow(time_spin_->widget(), 1.0f);
-		vgui_widget_set_size(time_spin_->widget(), 0, 24);
+		vgui_widget_set_size(time_spin_->widget(), 0, row_h);
 		vgui_widget_set_tooltip(time_spin_->edit_widget(), "Selected stop time");
 
 		add_ = vgui_widget_add(stop_row_, VGUI_BUTTON, "Add");
-		vgui_widget_set_size(add_, 48, 24);
-		vgui_widget_set_font_size(add_, 12);
+		vgui_widget_set_size(add_, 0, row_h);
+		vgui_widget_set_min_size(add_, editor_button_min_w(add_, 20.0f), row_h);
 		vgui_widget_on_event(add_, &gradient_editor::on_add_click, this);
 		vgui_widget_set_tooltip(add_, "Add a stop with the sampled color");
 
 		remove_ = vgui_widget_add(stop_row_, VGUI_BUTTON, "Del");
-		vgui_widget_set_size(remove_, 48, 24);
-		vgui_widget_set_font_size(remove_, 12);
+		vgui_widget_set_size(remove_, 0, row_h);
+		vgui_widget_set_min_size(remove_, editor_button_min_w(remove_, 20.0f), row_h);
 		vgui_widget_on_event(remove_, &gradient_editor::on_remove_click, this);
 		vgui_widget_set_tooltip(remove_, "Delete the selected stop");
 
@@ -394,8 +401,9 @@ namespace vgui_editor_kit {
 		{
 			presets_[i] = vgui_widget_add(preset_row_, VGUI_BUTTON,
 				preset_name(i));
-			vgui_widget_set_size(presets_[i], 68, 22);
-			vgui_widget_set_font_size(presets_[i], 11);
+			vgui_widget_set_size(presets_[i], 0, row_h);
+			vgui_widget_set_min_size(presets_[i],
+				editor_button_min_w(presets_[i], 24.0f), row_h);
 			vgui_widget_on_event(presets_[i], &gradient_editor::on_preset_click,
 				this);
 		}
