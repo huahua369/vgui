@@ -28,6 +28,19 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
 | **工程** | CMake + vcpkg 清单，附带控件演示、游戏编辑器示例、无需窗口/GPU 的模型自测与离屏截图回归（CTest） |
 
+### 界面截图
+
+以下截图由 `vgui_screenshot_test` 离屏渲染生成，同时作为 E03 视觉回归基线保存在 `sample/screenshots/`。
+
+| | |
+|---|---|
+| ![Dock 默认停靠布局（深色）](sample/screenshots/dock_default_dark.png)<br>默认停靠布局：Outliner、Viewport、Properties 与多标签 Panels | ![Dock 浮动面板（深色）](sample/screenshots/dock_floating_dark.png)<br>Properties 浮出为浮动面板，Console 日志位于 Panels 标签组 |
+| ![Dock 局部裁剪](sample/screenshots/dock_crop.png)<br>Dock 面板局部裁剪 | ![3D 视口 Gizmo（深色）](sample/screenshots/viewport_gizmo_dark.png)<br>世界网格、选中包围盒与三轴平移 Gizmo |
+| ![属性网格（深色）](sample/screenshots/property_grid_dark.png)<br>属性网格：向量分量、引用行、曲线与渐变编辑器 | ![属性网格状态（深色）](sample/screenshots/property_grid_states_dark.png)<br>属性网格：多选混合值、校验提示与重置按钮 |
+| ![Outliner 多选（深色）](sample/screenshots/outliner_selected_dark.png)<br>Outliner 多选高亮 | ![Outliner 虚拟行（深色）](sample/screenshots/outliner_virtual_dark.png)<br>Outliner 虚拟行源与类型图标 |
+| ![Outliner 过滤（浅色）](sample/screenshots/outliner_filtered_light.png)<br>Outliner 关键词过滤（浅色主题） | ![资产浏览器网格（浅色）](sample/screenshots/asset_browser_grid_light.png)<br>资产浏览器网格视图与缩略图 |
+| ![资产浏览器列表（深色）](sample/screenshots/asset_browser_list_dark.png)<br>资产浏览器列表视图与搜索 | |
+
 ### 控件一览
 
 | 控件 | 主要能力 |
