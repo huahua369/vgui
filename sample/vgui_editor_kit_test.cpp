@@ -4548,8 +4548,10 @@ static void collect_widget_tree(vgui_widget* root,
 		collect_widget_tree(vgui_widget_get_child(root, i), out);
 }
 
-/* 可见子树的所有矩形都必须落在根矩形内。popup 的框就是内容根的矩形,
- * 所以同一断言同时覆盖"挂在树里"与"作为 popup 打开"两种场景。 */
+/* 可见子树的所有矩形都必须落在根矩形内,且每个子项落在其父面板矩形内
+ * (面板默认 clip_children,子项越过父矩形会被裁掉——行面板漏清 padding
+ * 时按钮只剩一半高度的回归)。popup 的框就是内容根的矩形,所以同一断言
+ * 同时覆盖"挂在树里"与"作为 popup 打开"两种场景。 */
 static bool tree_stays_inside(vgui_widget* root)
 {
 	float rx = 0, ry = 0, rw = 0, rh = 0;
@@ -4567,6 +4569,17 @@ static bool tree_stays_inside(vgui_widget* root)
 		if (x < rx - 0.75f || y < ry - 0.75f ||
 			x + width > rx + rw + 0.75f || y + height > ry + rh + 0.75f)
 			return false;
+		vgui_widget* parent = vgui_widget_get_parent(w);
+		if (parent && vgui_widget_get_visible(parent))
+		{
+			float px = 0, py = 0, pw = 0, ph = 0;
+			vgui_widget_get_rect(parent, &px, &py, &pw, &ph);
+			if (pw > 0 && ph > 0 &&
+				(x < px - 0.75f || y < py - 0.75f ||
+					x + width > px + pw + 0.75f ||
+					y + height > py + ph + 0.75f))
+				return false;
+		}
 	}
 	return true;
 }

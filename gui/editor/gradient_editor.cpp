@@ -359,6 +359,9 @@ namespace vgui_editor_kit {
 
 		stop_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(stop_row_, VGUI_LAYOUT_ROW);
+		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
+		 * 子项上下各裁 8px。 */
+		vgui_widget_set_padding(stop_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(stop_row_, 4.0f);
 		vgui_widget_set_size(stop_row_, 0, row_h);
 		vgui_widget_set_align_self(stop_row_, VGUI_ALIGN_STRETCH);
@@ -395,6 +398,9 @@ namespace vgui_editor_kit {
 
 		preset_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(preset_row_, VGUI_LAYOUT_WRAP);
+		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
+		 * 子项上下各裁 8px。 */
+		vgui_widget_set_padding(preset_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(preset_row_, 4.0f);
 		vgui_widget_set_align_self(preset_row_, VGUI_ALIGN_STRETCH);
 		for (std::size_t i = 0; i < preset_count(); ++i)

@@ -159,6 +159,7 @@ namespace vgui_editor_kit {
 		/* 预览行:new / current / hex。 */
 		vgui_widget* preview = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(preview, VGUI_LAYOUT_ROW);
+		vgui_widget_set_padding(preview, 0, 0, 0, 0);
 		vgui_widget_set_gap(preview, 6.0f);
 		new_swatch_ = vgui_widget_add(preview, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(new_swatch_, (id_ + ".new").c_str());
@@ -199,6 +200,7 @@ namespace vgui_editor_kit {
 		swatch_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(swatch_row_, (id_ + ".swatches").c_str());
 		vgui_widget_set_layout(swatch_row_, VGUI_LAYOUT_WRAP);
+		vgui_widget_set_padding(swatch_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(swatch_row_, 4.0f);
 		build_swatch_row();
 	}

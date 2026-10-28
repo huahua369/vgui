@@ -244,6 +244,9 @@ namespace vgui_editor_kit {
 
 		mode_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(mode_row_, VGUI_LAYOUT_ROW);
+		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
+		 * 子项上下各裁 8px。 */
+		vgui_widget_set_padding(mode_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(mode_row_, 4.0f);
 		vgui_widget_set_size(mode_row_, 0, row_h);
 		vgui_widget_set_align_self(mode_row_, VGUI_ALIGN_STRETCH);
@@ -273,6 +276,9 @@ namespace vgui_editor_kit {
 
 		key_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(key_row_, VGUI_LAYOUT_ROW);
+		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
+		 * 子项上下各裁 8px。 */
+		vgui_widget_set_padding(key_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(key_row_, 4.0f);
 		vgui_widget_set_size(key_row_, 0, row_h);
 		vgui_widget_set_align_self(key_row_, VGUI_ALIGN_STRETCH);
@@ -325,6 +331,9 @@ namespace vgui_editor_kit {
 
 		tangent_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(tangent_row_, VGUI_LAYOUT_ROW);
+		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
+		 * 子项上下各裁 8px。 */
+		vgui_widget_set_padding(tangent_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(tangent_row_, 4.0f);
 		vgui_widget_set_size(tangent_row_, 0, row_h);
 		vgui_widget_set_align_self(tangent_row_, VGUI_ALIGN_STRETCH);
