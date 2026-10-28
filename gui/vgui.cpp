@@ -18734,6 +18734,17 @@ extern "C" {
 		return vgui_line_height(widget->ctx, widget);
 	}
 
+	void vgui_widget_get_intrinsic_size(vgui_widget* widget, float* width,
+		float* height)
+	{
+		if (width) *width = 0.0f;
+		if (height) *height = 0.0f;
+		if (!widget || !widget->ctx) return;
+		vgui_measure_widget(widget, widget->ctx);
+		if (width) *width = widget->intrinsic_w;
+		if (height) *height = widget->intrinsic_h;
+	}
+
 	void vgui_widget_set_wants_text_input(vgui_widget* widget, int wants)
 	{
 		if (!widget) return;

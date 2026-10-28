@@ -1034,6 +1034,12 @@ extern "C" {
 	 * when a font is available and a size-derived fallback otherwise. */
 	VGUI_API float vgui_widget_measure_text(vgui_widget* widget, const char* text);
 	VGUI_API float vgui_widget_get_line_height(vgui_widget* widget);
+	/* Natural size of the widget subtree in effective pixels: the size it
+	 * would take without a forced width/height (panels sum/max their children).
+	 * Layout runs this every frame, so reading it is cheap and side-effect free;
+	 * hosts use it to give scrollable containers a content-based floor. */
+	VGUI_API void vgui_widget_get_intrinsic_size(vgui_widget* widget, float* width,
+		float* height);
 	VGUI_API void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);

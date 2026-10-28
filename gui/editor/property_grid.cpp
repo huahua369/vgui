@@ -721,7 +721,10 @@ namespace vgui_editor_kit {
 			vgui_widget_set_visible(bottom_spacer_, 0);
 		}
 		if (content_)
+		{
 			vgui_widget_set_size(content_, 0, 0);
+			vgui_widget_set_min_size(content_, kMinContentWidth, 0);
+		}
 		if (panel_)
 			vgui_panel_set_scroll(panel_, 0.0f, 0.0f);
 	}
@@ -1974,6 +1977,7 @@ private:
 					}
 					target->value = text;
 					notify_change(*target);
+					refresh_content_width();
 				});
 			item.vector_ui->set_on_commit(
 				[this, property_id](const vector_editor::vector_value& values) {
@@ -1990,6 +1994,7 @@ private:
 					target->drag_value.clear();
 					target->value = text;
 					update_row_ui(*target, true);
+					refresh_content_width();
 					const std::string label = target->desc.label.empty()
 						? target->desc.id : target->desc.label;
 					push_value_command(token, old_value, text,
@@ -2274,6 +2279,35 @@ private:
 			vgui_widget_set_size(content_, 0, content_height_);
 	}
 
+	/* Vector rows size their value fields from the value text, so a long
+	 * number can need more room than the host gives the grid.  Feed the widest
+	 * visible row back as content_ min width: the stretch floor then widens the
+	 * scrollable content and the horizontal scrollbar appears instead of the
+	 * row being clipped.  Rows scrolled out of the window keep their last
+	 * measurement until they materialize again. */
+	void property_grid::refresh_content_width()
+	{
+		if (!content_)
+			return;
+		float required = kMinContentWidth;
+		for (row& item : rows_)
+		{
+			if (!item.visible || !is_vector_type(item.desc.type))
+				continue;
+			/* Measure the row line, not the whole row: the error label under the
+			 * line must not widen the scroll range with its message. */
+			vgui_widget* content = item.line ? item.line : item.panel;
+			if (content)
+			{
+				float width = 0.0f, height = 0.0f;
+				vgui_widget_get_intrinsic_size(content, &width, &height);
+				item.required_width = to_logical(content, width);
+			}
+			required = std::max(required, item.required_width);
+		}
+		vgui_widget_set_min_size(content_, required, 0);
+	}
+
 	void property_grid::refresh_viewport()
 	{
 		if (!panel_)
@@ -2493,6 +2527,7 @@ private:
 		vgui_widget_set_size(content_, 0, content_height_);
 
 		updating_window_ = false;
+		refresh_content_width();
 	}
 
 	void property_grid::update_visibility()

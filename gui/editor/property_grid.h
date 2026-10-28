@@ -351,6 +351,9 @@ namespace vgui_editor_kit {
 			vgui_widget* error_label = nullptr;
 			vgui_widget* menu = nullptr;
 			std::map<vgui_item_id, std::string> menu_values;
+			/* Last measured natural row width (logical); kept while the row is
+			 * scrolled out of the materialized window. */
+			float required_width = 0.0f;
 		};
 
 		struct category_ui
@@ -388,6 +391,7 @@ namespace vgui_editor_kit {
 		void rebuild_display();
 		void recompute_display_layout();
 		void update_window();
+		void refresh_content_width();
 		void refresh_viewport();
 		void sync_scroll_to_content();
 		vgui_widget* entry_widget(const display_entry& entry);

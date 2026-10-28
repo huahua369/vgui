@@ -3225,6 +3225,19 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				if (ew <= 0.0f || ex + ew > gx + gw + 0.5f)
 					return fail("narrow vector components stay visible");
 			}
+
+			/* Content-sized fields widen with a long value; the row must push
+			 * the scrollable content instead of being clipped inside a panel
+			 * that stays at the host width. */
+			if (!narrow.set_property_value("position",
+				"123456.789, -9876.54321, 0.125"))
+				return fail("wide vector value");
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+			float cw = 0.0f, ch = 0.0f;
+			vgui_panel_get_content_size(narrow.widget(), &cw, &ch);
+			if (cw <= gw - 12.0f + 0.5f)
+				return fail("wide vector row exposes horizontal overflow");
 		}
 
 		/* Below the usable row width the grid keeps a content floor and
