@@ -31,7 +31,16 @@ namespace vgui_editor_kit {
 		constexpr float kResetWidth = 24.0f;
 		constexpr float kCategoryHeight = 24.0f;
 		constexpr float kItemGap = 4.0f;
-		constexpr float kPanelPaddingV = 12.0f;	// build(): 6 top + 6 bottom
+		constexpr float kPanelPadding = 6.0f;
+		constexpr float kScrollbarThickness = 10.0f;
+		constexpr float kScrollbarInset = 2.0f;
+		/* The horizontal bar is painted over the panel's padding box, so the
+		 * rows must stop above its band; otherwise the bar covers the bottom
+		 * edge of the last visible row. */
+		constexpr float kScrollbarGap = 4.0f;
+		constexpr float kPanelPaddingBottom =
+			kScrollbarGap + kScrollbarThickness + kScrollbarInset;
+		constexpr float kPanelPaddingV = kPanelPadding + kPanelPaddingBottom;
 		constexpr float kMinContentWidth = 280.0f;	// horizontal scroll floor
 		constexpr float kSearchLead = 28.0f;	// search 24 + gap 4
 		constexpr float kOverscan = 96.0f;
@@ -585,7 +594,8 @@ namespace vgui_editor_kit {
 		 * lay out against the real panel width. */
 		vgui_widget_set_align_self(panel_, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(panel_, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_padding(panel_, 6, 6, 6, 6);
+		vgui_widget_set_padding(panel_, kPanelPadding, kPanelPadding,
+			kPanelPadding, kPanelPaddingBottom);
 		vgui_widget_set_gap(panel_, kItemGap);
 		vgui_widget_set_background(panel_, kPanelBg);
 		vgui_widget_set_border(panel_, kBorder, 1);
@@ -593,8 +603,10 @@ namespace vgui_editor_kit {
 		 * horizontally instead of squeezing the editor fields to nothing. */
 		vgui_panel_set_scrollable(panel_, 1, 1);
 		/* The stock 5px bar is hard to grab with a pointer; the horizontal bar
-		 * (the one a narrow dock shows) uses a thicker body and hit area. */
-		vgui_panel_set_scrollbar_size(panel_, 10, 0, -1);
+		 * (the one a narrow dock shows) uses a thicker body and hit area.  The
+		 * bottom padding above reserves the matching band. */
+		vgui_panel_set_scrollbar_size(panel_, kScrollbarThickness, 0,
+			kScrollbarInset);
 
 		/* 搜索行 = 搜索框 + P08 收藏过滤开关(高度保持 24,kSearchLead
 		 * 不变)。 */
