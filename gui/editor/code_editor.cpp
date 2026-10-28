@@ -3336,6 +3336,25 @@ namespace vgui_editor_kit {
 			return 0;
 		const int type = event->type;
 
+		/* The scrollbars share the editor surface, so the I-beam cursor must be
+		 * swapped for the normal arrow while the pointer is over them. */
+		const auto over_scrollbar = [](const geometry& g, float x, float y)
+			{
+				if (g.vertical_scroll && g.vertical_bar > 0.0f &&
+					x >= g.width - g.vertical_bar && y < g.text_height)
+					return true;
+				if (g.horizontal_scroll && g.horizontal_bar > 0.0f &&
+					y >= g.height - g.horizontal_bar)
+					return true;
+				return false;
+			};
+		const auto update_cursor = [self, &over_scrollbar](float x, float y)
+			{
+				vgui_widget_set_cursor(self->editor_,
+					over_scrollbar(self->editor_geometry(), x, y) ?
+					VGUI_CURSOR_ARROW : VGUI_CURSOR_IBEAM);
+			};
+
 		if (type == VGUI_EVENT_MOUSE_WHEEL)
 		{
 			const geometry g = self->editor_geometry();
@@ -3396,6 +3415,7 @@ namespace vgui_editor_kit {
 			if (g.vertical_scroll && local_x >= g.width - g.vertical_bar &&
 				local_y < g.text_height)
 			{
+				vgui_widget_set_cursor(self->editor_, VGUI_CURSOR_ARROW);
 				self->drag_mode_ = 2;
 				const float content = (float)self->lines_.size() * g.line_height;
 				const float max_y = std::max(1.0f,
@@ -3407,6 +3427,7 @@ namespace vgui_editor_kit {
 			}
 			if (g.horizontal_scroll && local_y >= g.height - g.horizontal_bar)
 			{
+				vgui_widget_set_cursor(self->editor_, VGUI_CURSOR_ARROW);
 				self->drag_mode_ = 3;
 				const float max_x = std::max(1.0f,
 					self->content_width() - g.text_width);
@@ -3433,7 +3454,10 @@ namespace vgui_editor_kit {
 		if (type == VGUI_EVENT_MOUSE_MOVE)
 		{
 			if (self->drag_mode_ == 0)
+			{
+				update_cursor(event->x, event->y);
 				return 0;
+			}
 			const geometry g = self->editor_geometry();
 			if (self->drag_mode_ == 1)
 			{
@@ -3468,6 +3492,7 @@ namespace vgui_editor_kit {
 			if (self->drag_mode_ != 0)
 			{
 				self->drag_mode_ = 0;
+				update_cursor(event->x, event->y);
 				return 1;
 			}
 			return 0;
@@ -3826,6 +3851,13 @@ namespace vgui_editor_kit {
 			ovg_tools::fill_rect(cb, vg, thumb_x, track_y + 2.0f, thumb,
 				std::max(1.0f, g.horizontal_bar - 4.0f),
 				to_ovg(theme.scrollbar));
+		}
+		/* Bottom-right corner where the two bars meet. */
+		if (g.vertical_bar > 0.0f && g.horizontal_bar > 0.0f)
+		{
+			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
+				g.y + g.height - g.horizontal_bar, g.vertical_bar,
+				g.horizontal_bar, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
 		}
 
 		if (self->loading_)
