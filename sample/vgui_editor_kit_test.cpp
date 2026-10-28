@@ -1409,28 +1409,41 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 
 			vgui_widget* mode_label = find_widget(grid.widget(), "property:mode",
 				VGUI_LABEL);
-			if (!mode_label)
+			vgui_widget* mode_editor = grid.property_editor("mode");
+			if (!mode_label || !mode_editor)
 				return fail("enum label widget");
-			if (!grid.set_property_read_only("mode", true))
-				return fail("enum read-only set");
 			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
 			vgui_widget_get_rect(mode_label, &lx, &ly, &lw, &lh);
 			if (lw <= 0.0f || lh <= 0.0f)
 				return fail("enum label layout size");
+			float ex = 0.0f, ey = 0.0f, ew = 0.0f, eh = 0.0f;
+			vgui_widget_get_rect(mode_editor, &ex, &ey, &ew, &eh);
+			if (ew <= 0.0f || eh <= 0.0f)
+				return fail("enum editor layout size");
 			const float mx = lx + lw * 0.5f;
 			const float my = ly + lh * 0.5f;
+			const float emx = ex + ew * 0.5f;
+			const float emy = ey + eh * 0.5f;
 			if (vgui_hit_test(ui, mx, my) != mode_label)
 				return fail("enum label hit test");
+			if (!grid.set_property_read_only("mode", true))
+				return fail("enum read-only set");
+			/* Row labels are inert: clicking one never opens the menu. */
 			vgui_input_mouse_move(ui, mx, my);
 			vgui_input_mouse_down(ui, 1, mx, my, 1);
 			vgui_input_mouse_up(ui, 1, mx, my, 1);
 			if (vgui_context_get_open_menu(ui))
+				return fail("enum label click stays inert");
+			vgui_input_mouse_move(ui, emx, emy);
+			vgui_input_mouse_down(ui, 1, emx, emy, 1);
+			vgui_input_mouse_up(ui, 1, emx, emy, 1);
+			if (vgui_context_get_open_menu(ui))
 				return fail("read-only enum menu stays closed");
 			if (!grid.set_property_read_only("mode", false))
 				return fail("enum read-only clear");
-			vgui_input_mouse_move(ui, mx, my);
-			vgui_input_mouse_down(ui, 1, mx, my, 1);
-			vgui_input_mouse_up(ui, 1, mx, my, 1);
+			vgui_input_mouse_move(ui, emx, emy);
+			vgui_input_mouse_down(ui, 1, emx, emy, 1);
+			vgui_input_mouse_up(ui, 1, emx, emy, 1);
 			vgui_widget* open_menu = vgui_context_get_open_menu(ui);
 			if (!open_menu)
 				return fail("enum menu opens");
@@ -2806,14 +2819,12 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			changes = 0;
 
 			vgui_layout(ui);
-			vgui_widget* label = find_widget(grid.widget(), "property:mode",
-				VGUI_LABEL);
-			if (!label)
-				return fail("enum label widget");
+			if (!editor)
+				return fail("enum editor widget");
 			float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
-			vgui_widget_get_rect(label, &lx, &ly, &lw, &lh);
+			vgui_widget_get_rect(editor, &lx, &ly, &lw, &lh);
 			if (lw <= 0.0f || lh <= 0.0f)
-				return fail("enum label layout size");
+				return fail("enum editor layout size");
 			const float mx = lx + lw * 0.5f;
 			const float my = ly + lh * 0.5f;
 			vgui_set_focus(ui, nullptr);
@@ -2822,7 +2833,7 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			vgui_input_mouse_up(ui, 1, mx, my, 1);
 			vgui_widget* menu = vgui_context_get_open_menu(ui);
 			if (!menu || vgui_get_focus(ui) != editor)
-				return fail("enum label click opens and keeps focus");
+				return fail("enum click opens and keeps focus");
 			if (vgui_menu_get_count(menu) != 4)
 				return fail("enum empty menu count");
 			vgui_item_id none_item = vgui_menu_get_item_at(menu, 0);

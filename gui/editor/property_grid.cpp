@@ -1840,7 +1840,6 @@ private:
 		vgui_widget_set_text_color(item.label, kLabelText);
 		vgui_widget_set_text_align(item.label, 0.0f, 0.5f);
 		vgui_widget_set_id(item.label, property_widget_id(item.desc.id).c_str());
-		vgui_widget_on_event(item.label, &property_grid::on_row_event, this);
 
 		if (item.desc.type == property_type::color)
 		{
@@ -3248,50 +3247,6 @@ private:
 			{
 				self->open_enum_menu(*item);
 				return;
-			}
-			if (widget == item->label)
-			{
-				if (item->desc.type == property_type::boolean)
-				{
-					const std::string label = item->desc.label.empty()
-						? item->desc.id : item->desc.label;
-					self->commit_value(*item,
-						item->value == "true" ? "false" : "true", "Set " + label);
-					return;
-				}
-				if (item->desc.type == property_type::enumeration)
-				{
-					/* Labels are not focusable.  Move focus to the enum
-					 * button first so closing the popup leaves focus in the
-					 * editor instead of clearing it. */
-					if (item->editor && !self->read_only_ &&
-						!item->desc.read_only)
-						vgui_set_focus(vgui_widget_get_context(widget),
-							item->editor);
-					self->open_enum_menu(*item);
-					return;
-				}
-				if (item->desc.type == property_type::curve)
-				{
-					self->open_curve_editor(*item);
-					return;
-				}
-				if (item->desc.type == property_type::gradient)
-				{
-					self->open_gradient_editor(*item);
-					return;
-				}
-				if (item->editor && item->desc.type != property_type::color)
-				{
-					if (is_vector_type(item->desc.type))
-					{
-						if (item->vector_ui)
-							item->vector_ui->focus_component(0);
-					}
-					else
-						vgui_set_focus(vgui_widget_get_context(widget),
-							item->editor);
-				}
 			}
 		}
 	}
