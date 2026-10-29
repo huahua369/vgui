@@ -472,7 +472,7 @@ namespace vgui_editor_kit {
 
 		vgui_widget* panel_ = nullptr;
 		vgui_widget* search_ = nullptr;
-		vgui_widget* fav_filter_ = nullptr;	// P08 收藏过滤开关
+		vgui_widget* fav_filter_ = nullptr;	// P08 favorites filter toggle
 		vgui_widget* content_ = nullptr;
 		vgui_widget* top_spacer_ = nullptr;
 		vgui_widget* window_ = nullptr;
@@ -515,7 +515,7 @@ namespace vgui_editor_kit {
 		selection_bind_fn selection_bind_;
 
 		asset_drop_handler asset_drop_;
-		std::unique_ptr<drop_target> drop_target_;	// F03 资产赋值 drop target
+		std::unique_ptr<drop_target> drop_target_;	// F03 asset assignment drop target
 
 		/* P06 reference-row host bindings. */
 		asset_query_fn asset_query_;
@@ -530,7 +530,7 @@ namespace vgui_editor_kit {
 		multi_getter_fn multi_getter_;
 		multi_setter_fn multi_setter_;
 		bool favorites_only_ = false;
-		/* 收藏按属性 id 存,clear()/重建后保持。 */
+		/* Favorites are keyed by property id and survive clear()/rebuild. */
 		std::map<std::string, bool> favorites_;
 	};
 

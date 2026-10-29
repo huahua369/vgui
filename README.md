@@ -858,7 +858,7 @@ C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`。旧的 `<vgui.h>` 
 
 直接使用 SDL3 后端时包含 `<vgui/backend/vgui_sdl3.h>`（窗口、输入、DPI 与 `gui_viewport`）和/或 `<vgui/backend/vgui_renderer_sdl3.h>`（`vgpu_*` 渲染器、FBO 与原生纹理桥）；共享事件类型在 `<vgui/backend/vgui_backend_types.h>`。
 
-Stage B 的安装树包含 SDL3 后端公共头与 OVG 公共头，`vgui::ovg` 目标带有安装后的 include 目录。OVG 的 `ovg_renderer_sdl3.h` 不安装，因为其中的 `vg_fbo_t` 与 vgui 自己的定义冲突；`backends/vgui_sdl3.h`、`backends/vgui_renderer_sdl3.h` 仅作为源码树兼容 shim 保留。公共头包含 UTF-8 中文注释，链接 `vgui::vgui` 或 `vgui::ovg` 的 MSVC 消费者会通过导出接口自动获得 `/utf-8`。OVG 的 `ovg_c.h` / `ovg_fonts.h` 沿用 OVG 的约定，使用前需先包含 `<glm/glm.hpp>`；vgui 的后端公共头已代为包含。
+Stage B 的安装树包含 SDL3 后端公共头与 OVG 公共头，`vgui::ovg` 目标带有安装后的 include 目录。OVG 的 `ovg_renderer_sdl3.h` 不安装，因为其中的 `vg_fbo_t` 与 vgui 自己的定义冲突；`backends/vgui_sdl3.h`、`backends/vgui_renderer_sdl3.h` 仅作为源码树兼容 shim 保留。vgui 自身的公共头使用英文注释；安装的 OVG 上游头仍保留其中文注释并以 UTF-8 保存，链接 `vgui::vgui` 或 `vgui::ovg` 的 MSVC 消费者会通过导出接口自动获得 `/utf-8`。OVG 的 `ovg_c.h` / `ovg_fonts.h` 沿用 OVG 的约定，使用前需先包含 `<glm/glm.hpp>`；vgui 的后端公共头已代为包含。
 
 包配置会通过 `find_dependency` 查找 SDL3、glm、HarfBuzz、Fontconfig、pkg-config（Clipper2、Clipper2Z、harfbuzz-raster），以及 editor kit 需要的 nlohmann_json；这些依赖仍需由 vcpkg 工具链或 `CMAKE_PREFIX_PATH` 提供。可用选项：`VGUI_BUILD_SAMPLES`（默认仅顶层 ON）、`VGUI_BUILD_EDITOR_KIT`（默认 ON）、`VGUI_INSTALL`（默认仅顶层 ON）。作为子目录集成时可关闭示例和安装：
 

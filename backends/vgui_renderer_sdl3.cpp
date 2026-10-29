@@ -11,7 +11,8 @@
  * 与 third_party/ovg/ovg/ovg_renderer_sdl3.cpp 的差异：
  *   - 去掉了 3D、实例化、compute、路径模板裁剪和管线状态缓存中的
  *     depth/stencil 分支；
- *   - 保留 vgui 需要的填充/描边、渐变、文本图集、图片、矩形裁剪；
+ *   - 保留 vgui 需要的填充/描边、渐变、文本图集、图片、矩形裁剪、MSAA
+ *     和多 FBO/窗口交换链；
  *   - 使用独立前缀 vgpu_，不会和 OVG 自带渲染器产生符号冲突。
  */
 

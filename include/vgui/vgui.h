@@ -321,11 +321,13 @@ extern "C" {
 	/* ------------------------------------------------------------------------- */
 
 	/*
-	 * VGUI_CUSTOM 控件直接暴露 ovg_ctx_cb* / rvg_t* 给用户回调，允许任意
-	 * OVG 矢量、图案、几何命令。draw 回调每帧在 vgui_draw() 里被调用；
-	 * abs_x/y/w/h 是布局后算好的绝对坐标，delta_time 是自上一帧以来的秒数。
-	 * 用户可以在回调里调用 ovg 的 save/restore/fill/stroke/clip/new_pattern
-	 * 等全部接口。pattern 需要自己 destroy。
+	 * VGUI_CUSTOM widgets expose ovg_ctx_cb* / rvg_t* directly to the user
+	 * callback, allowing arbitrary OVG vector, pattern and geometry commands.
+	 * The draw callback runs every frame from vgui_draw(); abs_x/y/w/h are the
+	 * absolute layout rectangle and delta_time is the time since the previous
+	 * frame in seconds.  The callback may call any OVG entry point such as
+	 * save/restore/fill/stroke/clip/new_pattern.  Patterns created by the
+	 * callback are owned by the callback and must be destroyed by it.
 	 */
 	typedef void (*vgui_custom_draw_fn)(vgui_widget* widget,
 		struct ovg_ctx_cb* cb, struct rvg_t* vg,
@@ -335,7 +337,7 @@ extern "C" {
 		void* user);
 
 	/*
-	 * 尺寸查询：填充 intrinsic_w/h（0=走常规 flex 规则）。
+	 * Size query: fill intrinsic_w/h (0 = use the regular flex rules).
 	 */
 	typedef void (*vgui_custom_size_fn)(vgui_widget* widget,
 		float* out_intrinsic_w,
@@ -343,9 +345,10 @@ extern "C" {
 		void* user);
 
 	/*
-	 * 事件回调：返回 1 表示事件已消费（不再向父/兄弟分发）。
-	 * 如果只需要命中测试过滤，在回调里判断坐标即可，hit test 本身
-	 * 仍按 abs_x/abs_y/abs_w/abs_h 的矩形进行。
+	 * Event callback: return 1 when the event is consumed (it is no longer
+	 * dispatched to parents or siblings).  To filter hit testing only,
+	 * inspect the coordinates here; hit testing itself still uses the
+	 * abs_x/abs_y/abs_w/abs_h rectangle.
 	 */
 	typedef int (*vgui_custom_event_fn)(vgui_widget* widget,
 		const vgui_event* event,
@@ -647,8 +650,9 @@ extern "C" {
 		float icon_gap;			/* 6: icon-to-text gap when both are present */
 	} vgui_button_style;
 
-	/* 按钮 icon 位置。VERTICAL 只对 VGUI_BUTTON，其他控件忽略。
-	 * LEFT / RIGHT 横排 icon+text，TOP / BOTTOM 竖排 icon+text。 */
+	/* Button icon position.  VERTICAL layouts apply to VGUI_BUTTON only;
+	 * other widgets ignore them.  LEFT / RIGHT lay out icon+text horizontally,
+	 * TOP / BOTTOM vertically. */
 	typedef enum vgui_button_icon_pos {
 		VGUI_BUTTON_ICON_LEFT = 0,
 		VGUI_BUTTON_ICON_RIGHT,
@@ -1118,15 +1122,18 @@ extern "C" {
 	/* ------------------------------------------------------------------------- */
 
 	/*
-	 * 给 VGUI_BUTTON 设置一个 icon 纹理。tex 为 NULL 时清除。
-	 * icon_w/icon_h 指定在按钮内绘制时的显示尺寸（<= 0 时使用纹理本身尺寸）。
-	 * pos = LEFT(默认) / RIGHT / TOP / BOTTOM。
-	 * 设置后按钮 intrinsic size 会包含 icon 尺寸（与 text 之间自动留 icon_gap）。
+	 * Assigns an icon texture to a VGUI_BUTTON.  NULL clears it.
+	 * icon_w/icon_h set the display size inside the button (<= 0 uses the
+	 * texture's own size).  pos = LEFT (default) / RIGHT / TOP / BOTTOM.
+	 * The button's intrinsic size then includes the icon, with an automatic
+	 * icon_gap between icon and text.
 	 */
 	VGUI_API void vgui_button_set_icon(vgui_widget* widget, vgui_texture* tex, int icon_w, int icon_h, vgui_button_icon_pos pos);
-	/* 覆盖默认 icon-to-text gap（默认取 style.button.icon_gap）。<=0 则回退到 style。 */
+	/* Overrides the default icon-to-text gap (style.button.icon_gap).
+	 * <= 0 falls back to the style value. */
 	VGUI_API void vgui_button_set_icon_gap(vgui_widget* widget, float gap);
-	/* tint 用 0 恢复默认（不染色）；disabled 态会自动混入 disabled_mix。 */
+	/* tint 0 restores the default (no tint); the disabled state blends in
+	 * disabled_mix automatically. */
 	VGUI_API void vgui_button_set_icon_tint(vgui_widget* widget, vgui_color tint);
 
 	/* ------------------------------------------------------------------------- */
@@ -1134,21 +1141,22 @@ extern "C" {
 	/* ------------------------------------------------------------------------- */
 
 	typedef enum vgui_button_style_kind {
-		VGUI_BUTTON_STYLE_SOLID = 0,	/* 默认：纯色填充 + 纯色边框，主题色驱动 */
-		VGUI_BUTTON_STYLE_GRADIENT	/* 渐变填充 + 双层高光/阴影边框（legacy 风格） */
+		VGUI_BUTTON_STYLE_SOLID = 0,	/* default: solid fill + solid border, theme-driven */
+		VGUI_BUTTON_STYLE_GRADIENT	/* gradient fill + double highlight/shadow border (legacy) */
 	} vgui_button_style_kind;
 
-	/* 设置按钮风格。kind 默认 SOLID，与现有行为一致。*/
+	/* Sets the button style.  kind defaults to SOLID, matching existing behavior. */
 	VGUI_API void vgui_button_set_style(vgui_widget* widget, vgui_button_style_kind kind);
 	VGUI_API vgui_button_style_kind vgui_button_get_style(vgui_widget* widget);
 
 	/*
-	 * 为 GRADIENT 风格设置三组独立的渐变起止色（均为 0xAARRGGBB 格式）：
-	 *   grad_top_default / grad_bot_default — 默认态
-	 *   grad_top_hover   / grad_bot_hover   — 鼠标悬停态
-	 *   grad_top_active  / grad_bot_active  — 按下态
-	 *   border_light / border_dark          — 双层高光/阴影边框颜色
-	 * 不调用则使用内置默认渐变（深灰系）。
+	 * Sets the three independent gradient color pairs for the GRADIENT style
+	 * (all in 0xAARRGGBB format):
+	 *   grad_top_default / grad_bot_default - default state
+	 *   grad_top_hover   / grad_bot_hover   - hover state
+	 *   grad_top_active  / grad_bot_active  - pressed state
+	 *   border_light / border_dark          - double highlight/shadow border
+	 * Built-in dark-grey gradients are used when this is not called.
 	 */
 	VGUI_API void vgui_button_set_gradient(vgui_widget* widget, vgui_color grad_top_default, vgui_color grad_bot_default, vgui_color grad_top_hover, vgui_color grad_bot_hover, vgui_color grad_top_active, vgui_color grad_bot_active, vgui_color border_light, vgui_color border_dark);
 
@@ -1959,7 +1967,8 @@ extern "C" {
 	VGUI_API void vgui_custom_set_draw(vgui_widget* widget, vgui_custom_draw_fn draw, void* user);
 	VGUI_API void vgui_custom_set_size(vgui_widget* widget, vgui_custom_size_fn size, void* user);
 	VGUI_API void vgui_custom_set_event(vgui_widget* widget, vgui_custom_event_fn event, void* user);
-	/* 1=裁剪到控件边界（默认），0=允许超出（发光/阴影等效果）。 */
+	/* 1 = clip to the widget bounds (default), 0 = allow overflow
+	 * (glow/shadow effects). */
 	VGUI_API void vgui_custom_set_clip_content(vgui_widget* widget, int clip);
 
 	/* Helpers for VGUI_CUSTOM draw callbacks.  Text is clipped to the supplied

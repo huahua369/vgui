@@ -201,8 +201,9 @@ namespace vgui_editor_kit {
 		void scene_changed();				// structural host change
 		void scene_row_changed(object_id object);	// single row content
 		bool is_virtual() const noexcept { return virtual_; }
-		/* P08:当前选中的对象集合(视觉顺序,全量/虚拟模式通用)。宿主
-		 * 把它交给 property_grid::set_multi_targets 做多对象编辑。 */
+		/* P08: currently selected objects in visual order (works in both
+		 * full and virtual mode).  Hosts pass this to
+		 * property_grid::set_multi_targets for multi-object editing. */
 		std::vector<object_id> selection_objects() const;
 		/* Test/debug helper: number of currently projected visible rows. */
 		std::size_t projected_row_count() const;
@@ -380,8 +381,9 @@ namespace vgui_editor_kit {
 		bool context_menu_ = false;
 		action_handler action_handler_;
 		vgui_widget* menu_ = nullptr;
-		/* context 级注册块(泄漏式,同 drag_bridge):thunk 经 weak 存活令牌
-		 * 校验,析构不回触 vgui_context——后者可能已被销毁(测试顺序)。 */
+		/* Context-level registration blocks (intentionally leaked, like
+		 * drag_bridge).  Thunks validate a weak liveness token and never touch
+		 * a destroyed vgui_context during teardown. */
 		void* key_entry_ = nullptr;
 		void* focus_entry_ = nullptr;
 		bool tree_event_installed_ = false;

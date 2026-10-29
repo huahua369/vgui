@@ -23,7 +23,7 @@
 
 namespace vgui_editor_kit {
 
-	/* 线性 0~1 RGBA(编辑域)。 */
+	/* Linear 0..1 RGBA in the edit domain. */
 	struct picker_rgb
 	{
 		float r = 1.0f, g = 1.0f, b = 1.0f, a = 1.0f;
@@ -68,7 +68,7 @@ namespace vgui_editor_kit {
 		/* True when the current edit-domain color parses. */
 		bool valid() const noexcept;
 		/* Current hue in degrees (0~360).  Kept at the position set by the hue
-		 * bar even at the wrap-around end, where the RGB is identical to 0°. */
+		 * bar even at the wrap-around end, where the RGB is identical to 0 deg. */
 		float hue_degrees() const noexcept;
 
 	private:
@@ -112,7 +112,7 @@ namespace vgui_editor_kit {
 		vgui_widget* swatch_row_ = nullptr;
 		std::string id_;
 
-		/* Edit-domain state。h 单位度,s/v/a 0~1。 */
+		/* Edit-domain state.  h is in degrees; s/v/a are 0..1. */
 		float h_deg_ = 0.0f, s_ = 1.0f, v_ = 1.0f, a_ = 1.0f;
 		std::string value_;			/* value domain, canonical */
 		std::string current_;		/* session start, value domain */

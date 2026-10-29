@@ -1,9 +1,9 @@
 #pragma once
 /*
-vgui sdl3
-
-创建日期：2026-9-12
-*/
+ * vgui SDL3 backend: windows, input, IME, DPI and GPU viewports.
+ *
+ * Created: 2026-09-12
+ */
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -23,9 +23,9 @@ vgui sdl3
 #include <vgui/backend/vgui_renderer_sdl3.h>
 
 namespace hz {
-	// 获取监视器缩放比例,glm::ivec2*
+	// Returns the monitor scale; pels is a glm::ivec2*.
 	float get_monitor_scale(void* pels);
-	// 获取打印机名称
+	// Returns the installed printer names.
 	std::vector<std::string> get_print_devname();
 	std::string get_temp_path();
 	class drop_info_cx;
@@ -35,16 +35,16 @@ namespace hz {
 enum form_flags_e
 {
 	ef_null = 0,					// ef_default
-	ef_fullscreen = BIT_INC(0),		// 全屏
-	ef_utility = BIT_INC(1),		// 不出现在任务栏
-	ef_resizable = BIT_INC(2),		// 可以拉伸大小
-	ef_transparent = BIT_INC(3),	// 透明窗口
-	ef_borderless = BIT_INC(4),		// 无系统边框
-	ef_popup = BIT_INC(5),			// 弹出式窗口，需要有父窗口
-	ef_tooltip = BIT_INC(6),		// 工具提示窗口，需要有父窗口 
-	ef_gpu = BIT_INC(7),			// gpu渲染 
-	ef_vulkan = BIT_INC(8),			// vk渲染
-	ef_dx11 = BIT_INC(11), 			// dx11渲染
+	ef_fullscreen = BIT_INC(0),		// fullscreen
+	ef_utility = BIT_INC(1),		// hidden from the taskbar
+	ef_resizable = BIT_INC(2),		// resizable
+	ef_transparent = BIT_INC(3),	// transparent window
+	ef_borderless = BIT_INC(4),		// no system border
+	ef_popup = BIT_INC(5),			// popup window; requires a parent
+	ef_tooltip = BIT_INC(6),		// tooltip window; requires a parent
+	ef_gpu = BIT_INC(7),			// GPU rendering
+	ef_vulkan = BIT_INC(8),			// Vulkan rendering
+	ef_dx11 = BIT_INC(11), 			// D3D11 rendering
 	ef_vsync = BIT_INC(13),
 	ef_minimized = BIT_INC(14),
 	ef_maximized = BIT_INC(15),
@@ -88,7 +88,8 @@ struct gui_viewport {
 	// Rectangle used by the SDL IME.  io.ime_rect points here.
 	glm::ivec4 ime_rect = {};
 	std::string drop_text;
-	// F03: 当前 OS 拖入批次的文件路径（DROP_FILE 聚合，COMPLETE 交付）。
+	// F03: file paths from the current OS drag batch (aggregated from
+	// DROP_FILE events and delivered on COMPLETE).
 	std::vector<std::string> drop_files;
 	std::vector<const char*> drop_file_ptrs;
 	glm::ivec2 _last_pos = {};
@@ -103,20 +104,20 @@ public:
 
 struct os_window {
 	SDL_Window* window = nullptr;
-	os_window* parent = 0;      // 0 = 顶级窗口
+	os_window* parent = 0;      // 0 = top-level window
 	vg_fbo_t fbo = {};
 	gui_viewport* viewport = nullptr;
 	uint32_t id = 0;
 	WindowType type = WindowType::Regular;
 	bool close_with_parent = true;
-	bool pending_close = false;          // ★ 新增
-	bool mouse_in_client = false;        // ★ 新增（可选）
+	bool pending_close = false;
+	bool mouse_in_client = false;        // optional pointer-in-client tracking
 
-	// UI 回调
+	// UI callbacks.
 	std::function<void()> on_close;
 	std::vector<os_window*> children;
 	~os_window();
-	// 锁定/释放鼠标
+	// Mouse capture.
 	void set_capture();
 	void release_capture();
 	// DPI helpers.  SDL window coordinates are in points; vgui lays out and
@@ -128,18 +129,18 @@ struct os_window {
 	// when the effective scale or pixel ratio changed.  Safe to call every
 	// frame; a no-op when nothing changed.
 	bool sync_ui_scale(bool force = false);
-	// 开始输入法
+	// Text input / IME.
 	void start_text_input();
 	void stop_text_input();
 	bool text_input_active();
-	// 设置输入法坐标
+	// Sets the IME candidate rectangle.
 	void set_ime_pos(const glm::ivec4& r);
-	// 禁用窗口鼠标键盘操作。模态窗口用
+	// Enables/disables mouse and keyboard input for this window; used by modals.
 	void enable_window(bool bEnable);
-	// 移动鼠标到窗口指定位置
+	// Moves the mouse to a window-relative/global position.
 	void set_mouse_pos(const glm::ivec2& pos);
 	void set_mouse_pos_global(const glm::ivec2& pos);
-	// 显示/隐藏鼠标
+	// Shows/hides the cursor.
 	void show_cursor();
 	void hide_cursor();
 };
@@ -150,7 +151,7 @@ struct PointerState {
 };
 class docking_mgr {
 public:
-	bool viewports_enabled = false; // 默认关闭，Docking 才开
+	bool viewports_enabled = false; // off by default; enabled for docking
 public:
 	void set_viewports_enabled(bool v) { viewports_enabled = v; }
 
@@ -163,11 +164,11 @@ public:
 	SDL_Cursor* system_cursor[SDL_SYSTEM_CURSOR_COUNT] = {};
 	std::vector<PlatformMonitor> monitors;
 	os_window* main_window = 0;
-	vgpu_device_t* vgdev = 0;		// vg渲染设备
+	vgpu_device_t* vgdev = 0;		// vgpu render device
 	font_cache_cx* font_ctx = 0;
 	vgpu_ctx_t* vgctx = 0;
 
-	SDL_GPUSampleCount samplecount = SDL_GPU_SAMPLECOUNT_1; // 默认samplecount
+	SDL_GPUSampleCount samplecount = SDL_GPU_SAMPLECOUNT_1; // default sample count
 	gui_io_mk_state _mouse_key = {};
 	gui_viewport* active_viewport_ = 0;
 	docking_mgr docking_ = {};
@@ -181,9 +182,9 @@ public:
 	~app_mgr();
 
 	bool init_gpu(bool is_vulkan);
-	// 创建主窗口、普通窗口
+	// Creates the main/regular window.
 	os_window* create(const char* title, int w, int h, uint32_t flags, bool vsync);
-	// 创建普通窗口、菜单、工具提示、实用窗口、可指定父级的窗口
+	// Creates a regular, menu, tooltip or utility window with an optional parent.
 	os_window* create2(const char* title, int x, int y, int w, int h, uint32_t flags, os_window* parent);
 	os_window* find(uint32_t id);
 	void destroy(uint32_t id);
@@ -208,9 +209,9 @@ private:
 	void set_syscursor(int type);
 };
 
-// 获取粘贴板文本
+// Returns the clipboard text.
 std::string get_clipboard();
-// 设置粘贴板文本
+// Sets the clipboard text.
 void set_clipboard(const char* str);
 
 struct vg_pattern_data {
@@ -222,10 +223,10 @@ struct vg_pattern_data {
 	int count;
 	glm::vec4 colors[32];
 	float stops[32];
-	glm::mat3x2 matrix;	// 
+	glm::mat3x2 matrix;	//
 	int extend;
 	int filter;
-	bool is_ellipse;	// radial用
+	bool is_ellipse;	// radial gradients only
 };
 struct vg_types_data
 {
@@ -259,7 +260,7 @@ public:
 private:
 	uint32_t prev_time = 0;
 	float avg_delta = 0.0f;
-	float talpha = 0.05f;  // 采样系数（调整平滑度）
+	float talpha = 0.05f;  // sampling factor (smoothing)
 	int cfps = 0;
 	int cfps1 = 0;
 	std::string str;
@@ -282,11 +283,12 @@ private:
 };
 
 //----------------------------------------------------------------------------
-// 原生 GPU 纹理桥
+// Native GPU texture bridge
 //----------------------------------------------------------------------------
-// 把应用自己创建的 SDL_GPUTexture（例如 3D 离屏 FBO 的颜色附件）绑定到
-// vgui_texture。纹理必须具有 SDL_GPU_TEXTUREUSAGE_SAMPLER 用途；vgui 只借用
-// 它，不会释放。更新时传入新的 SDL_GPUTexture 指针（FBO 重建后使用）。
+// Binds an application-owned SDL_GPUTexture (for example the color attachment
+// of a 3D offscreen FBO) to a vgui_texture.  The texture must have
+// SDL_GPU_TEXTUREUSAGE_SAMPLER; vgui only borrows it and never releases it.
+// Pass the new SDL_GPUTexture pointer when the FBO is recreated.
 vgui_texture* vgui_sdl3_texture_create_native(vgui_context* ui, vgpu_ctx_t* gpu_ctx,
 	SDL_GPUTexture* native_texture, int width, int height, vgui_texture_format format);
 int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
