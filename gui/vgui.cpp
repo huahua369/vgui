@@ -9,7 +9,7 @@ gui实现
 #include "vgui_internal.h"
 #include <vgui/vgui.h>
 
-#include <vgui_sdl3.h>
+#include <vgui/backend/vgui_sdl3.h>
 
 #include <algorithm>
 #include <cmath>

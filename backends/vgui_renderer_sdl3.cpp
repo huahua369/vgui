@@ -15,7 +15,7 @@
  *   - 使用独立前缀 vgpu_，不会和 OVG 自带渲染器产生符号冲突。
  */
 
-#include "vgui_renderer_sdl3.h"
+#include <vgui/backend/vgui_renderer_sdl3.h>
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>

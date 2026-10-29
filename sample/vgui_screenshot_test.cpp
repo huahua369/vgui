@@ -43,7 +43,7 @@
 #include "ovg_fonts.h"
 #include "tools/tools.hpp"
 #include <vgui/vgui.h>
-#include "vgui_renderer_sdl3.h"
+#include <vgui/backend/vgui_renderer_sdl3.h>
 
 #include <vgui/editor/asset_browser.h>
 #include <vgui/editor/editor_context.h>

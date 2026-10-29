@@ -93,7 +93,7 @@
 |---|---|
 | `include/vgui/vgui.h`、`gui/vgui.cpp`、`gui/vgui_internal.h` | 核心控件、布局、输入、拖放、虚拟模型、命令基础设施 |
 | `include/vgui/editor/`、`gui/editor/` | `vgui_editor_kit` 公共头、源码与独立 CMake 目标（已完成，含完整编辑器组件） |
-| `backends/vgui_sdl3.*` | DPI、OS 文件 drop、原生弹窗、视口输入桥接 |
+| `include/vgui/backend/vgui_sdl3.h`、`backends/vgui_sdl3.cpp` | DPI、OS 文件 drop、原生弹窗、视口输入桥接 |
 | `sample/vgui_editor_kit_test.cpp` | editor kit 无窗口自测（已覆盖全组件） |
 | `sample/vgui_game_editor.cpp` | 游戏编辑器 dogfood 示例（已实现，覆盖 MVP 主路径与专业编辑器页签） |
 | `sample/*_test.*` | 模型、C API、像素/截图回归测试 |

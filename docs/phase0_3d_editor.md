@@ -178,7 +178,7 @@ vgui_sdl3_texture_update_native(tex, wg->vgctx,
 - 纹理格式当前支持 RGBA8/BGRA8 及 sRGB 变体，映射到对应的 `SDL_GPUTextureFormat`。
 - 若 `vgpu_ctx_t` 先于 `vgui_destroy` 销毁，native 注销会访问失效上下文；应用必须保证先销毁 UI，再销毁渲染上下文。
 
-底层接口在 `backends/vgui_renderer_sdl3.h`，与 OVG 的 `ovg_texture_*_native` 同形：
+底层接口在 `include/vgui/backend/vgui_renderer_sdl3.h`，与 OVG 的 `ovg_texture_*_native` 同形：
 
 ```c
 bool vgpu_texture_init_native(vgpu_ctx_t*, ovg_texture_t*,

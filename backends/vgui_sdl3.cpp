@@ -22,7 +22,8 @@ vgui sdl3实现
 #include <array>
 #include <cmath>
 #include <ovg_c.h>
-#include "vgui_sdl3.h"
+#include <vgui_internal.h>
+#include <vgui/backend/vgui_sdl3.h>
 #include <stb_image.h>
 
 #include <vulkan/vulkan.h>

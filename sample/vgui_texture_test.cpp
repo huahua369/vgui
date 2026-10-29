@@ -16,8 +16,8 @@
 
 #include "ovg.h"
 #include <vgui/vgui.h>
-#include "vgui_sdl3.h"
-#include "vgui_renderer_sdl3.h"
+#include <vgui/backend/vgui_sdl3.h>
+#include <vgui/backend/vgui_renderer_sdl3.h>
 #include "gpu_test_util.h"
 
 #include <cstdio>

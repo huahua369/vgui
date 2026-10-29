@@ -19,7 +19,7 @@
 
 #include "pch.h"		// glm etc. (required by ovg_c.h)
 #include <ovg_c.h>		// font_familys_t
-#include <vgui_sdl3.h>	// app_mgr / new_font_family
+#include <vgui/backend/vgui_sdl3.h>	// app_mgr / new_font_family
 #include <vgui/vgui.h>		// public C API
 
 static int g_fail = 0;

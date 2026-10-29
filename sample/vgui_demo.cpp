@@ -6,7 +6,7 @@
 // 以及：行列布局、对齐、间距、grow、justify、滚动面板、主题切换、焦点、
 //       文本编辑辅助、动态增删控件、可见性与禁用状态。
 //
-// 窗口与事件由 SDL3 后端（backends/vgui_sdl3.h）提供。
+// 窗口与事件由 SDL3 后端（include/vgui/backend/vgui_sdl3.h）提供。
 
 #include <cmath>
 #include <cstdarg>
@@ -17,7 +17,7 @@
 #include <vector>
 
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
-#include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
+#include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>		// 公共 C API
 #include "ovg_main.h"
 //---------------------------------------------------------------------------

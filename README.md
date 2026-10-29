@@ -834,9 +834,9 @@ cmake --install out/build/x64-debug --prefix out/install/x64-debug
 
 | 目标 | 内容 |
 |---|---|
-| `vgui::vgui` | 核心 C API 静态库 |
+| `vgui::vgui` | 核心 C API + SDL3 后端静态库 |
 | `vgui::editor_kit` | 编辑器组件层（`VGUI_BUILD_EDITOR_KIT=ON` 时） |
-| `vgui::ovg` | OVG 依赖目标，随 vgui 一起导出 |
+| `vgui::ovg` | OVG 静态库与公共头（`ovg_c.h` / `ovg.h` / `ovg_fonts.h`），随 vgui 一起导出 |
 
 消费者项目：
 
@@ -856,7 +856,9 @@ target_link_libraries(my_app PRIVATE vgui::vgui)
 
 C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`。旧的 `<vgui.h>` / `<vgui_editor_kit.h>` 路径保留为兼容 shim，新代码应使用 `vgui/` 前缀。
 
-阶段 A 只安装核心 C API 与 editor kit 的公共头文件。`vgui_sdl3.h`、`vgui_renderer_sdl3.h` 和 OVG 头文件仍是后端私有接口，暂不进入安装树；直接使用 SDL3 后端的宿主目前仍需引用源码树。`vgui::ovg` 已作为依赖导出，供后续阶段和需要直接链接 OVG 的消费者使用。
+直接使用 SDL3 后端时包含 `<vgui/backend/vgui_sdl3.h>`（窗口、输入、DPI 与 `gui_viewport`）和/或 `<vgui/backend/vgui_renderer_sdl3.h>`（`vgpu_*` 渲染器、FBO 与原生纹理桥）；共享事件类型在 `<vgui/backend/vgui_backend_types.h>`。
+
+Stage B 的安装树包含 SDL3 后端公共头与 OVG 公共头，`vgui::ovg` 目标带有安装后的 include 目录。OVG 的 `ovg_renderer_sdl3.h` 不安装，因为其中的 `vg_fbo_t` 与 vgui 自己的定义冲突；`backends/vgui_sdl3.h`、`backends/vgui_renderer_sdl3.h` 仅作为源码树兼容 shim 保留。公共头包含 UTF-8 中文注释，链接 `vgui::vgui` 或 `vgui::ovg` 的 MSVC 消费者会通过导出接口自动获得 `/utf-8`。OVG 的 `ovg_c.h` / `ovg_fonts.h` 沿用 OVG 的约定，使用前需先包含 `<glm/glm.hpp>`；vgui 的后端公共头已代为包含。
 
 包配置会通过 `find_dependency` 查找 SDL3、glm、HarfBuzz、Fontconfig、pkg-config（Clipper2、Clipper2Z、harfbuzz-raster），以及 editor kit 需要的 nlohmann_json；这些依赖仍需由 vcpkg 工具链或 `CMAKE_PREFIX_PATH` 提供。可用选项：`VGUI_BUILD_SAMPLES`（默认仅顶层 ON）、`VGUI_BUILD_EDITOR_KIT`（默认 ON）、`VGUI_INSTALL`（默认仅顶层 ON）。作为子目录集成时可关闭示例和安装：
 
@@ -1022,6 +1024,7 @@ vgui_context_announce(ui, "已保存");
 ```text
 include/
   vgui/vgui.h         公共纯 C API
+  vgui/backend/       SDL3 后端公共头（窗口/输入/事件、vgpu 渲染器）
   vgui/editor/        vgui_editor_kit 公共头（菜单/命令、布局持久化、专业编辑器视图）
   vgui.h              旧路径兼容 shim
   vgui_editor_kit.h   旧路径兼容 shim
@@ -1030,8 +1033,10 @@ gui/
   vgui_internal.h     内部 C++ 接口（不安装）
   editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)
 backends/
-  vgui_sdl3.*          SDL3 窗口、输入、IME、DPI 与 GPU 视口
-  vgui_renderer_sdl3.* vgui 专用 SDL3 GPU 2D 矢量后端
+  vgui_sdl3.cpp       SDL3 窗口、输入、IME、DPI 与 GPU 视口实现
+  vgui_renderer_sdl3.cpp vgui 专用 SDL3 GPU 2D 矢量后端实现
+  vgui_sdl3.h         旧路径兼容 shim
+  vgui_renderer_sdl3.h 旧路径兼容 shim
   mapView.*            视图/地图相关后端组件
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）
@@ -1057,7 +1062,7 @@ docs/
   editor_roadmap.md   游戏编辑器组件路线图
 ```
 
-公共 API 和控件相关说明集中在 `include/vgui/vgui.h`；editor kit 公共头位于 `include/vgui/editor/`，内部 C++ 声明在 `gui/vgui_internal.h`。
+公共 API 和控件相关说明集中在 `include/vgui/vgui.h`；SDL3 后端公共头位于 `include/vgui/backend/`，editor kit 公共头位于 `include/vgui/editor/`，内部 C++ 声明在 `gui/vgui_internal.h`。
 
 ## 路线图
 

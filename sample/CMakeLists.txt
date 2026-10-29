@@ -85,6 +85,9 @@ target_include_directories(vgui_sample_common INTERFACE
 set(VGUI_PUBLIC_HEADERS
     "${VGUI_SOURCE_DIR}/include/vgui/vgui.h"
     "${VGUI_SOURCE_DIR}/include/vgui.h")
+file(GLOB VGUI_PUBLIC_BACKEND_HEADERS CONFIGURE_DEPENDS
+    "${VGUI_SOURCE_DIR}/include/vgui/backend/*.h")
+list(APPEND VGUI_PUBLIC_HEADERS ${VGUI_PUBLIC_BACKEND_HEADERS})
 if(VGUI_BUILD_EDITOR_KIT)
     file(GLOB VGUI_PUBLIC_EDITOR_HEADERS CONFIGURE_DEPENDS
         "${VGUI_SOURCE_DIR}/include/vgui/editor/*.h")

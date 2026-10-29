@@ -80,15 +80,24 @@ endif()
 # 包含子项目。
 add_subdirectory(third_party/ovg)
 
-# libovg 由 third_party/ovg 定义；这里补齐供 vgui 构建树和导出使用的
-# 公开 include 目录与导出名。安装后的 C API/editor kit 公共头不依赖 OVG
-# 头文件，因此阶段 A 不安装 OVG 头文件。
+# libovg 由 third_party/ovg 定义；这里补齐供 vgui 构建树和安装包使用的
+# 公开 include 目录与导出名。Stage B 起 vgui 的 SDL3 后端公共头会直接
+# 暴露 OVG 类型，因此 OVG 公共头也随 vgui 一起安装。
 add_library(vgui::ovg ALIAS libovg)
 set_target_properties(libovg PROPERTIES EXPORT_NAME ovg)
 target_include_directories(libovg PUBLIC
-    $<BUILD_INTERFACE:${VGUI_SOURCE_DIR}/third_party/ovg/ovg>)
+    $<BUILD_INTERFACE:${VGUI_SOURCE_DIR}/third_party/ovg/ovg>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>)
 
 add_subdirectory(backends)
+
+# 公共头包含 UTF-8 中文注释；把 /utf-8 传给消费者，避免 MSVC 在非 UTF-8
+# 代码页下按本地编码解析头文件。C 和 C++ 目标都接受该选项。
+if(MSVC)
+    target_compile_options(libvgui INTERFACE /utf-8)
+    target_compile_options(libovg INTERFACE /utf-8)
+endif()
+
 if(VGUI_BUILD_EDITOR_KIT)
     add_subdirectory(gui/editor)
 endif()
@@ -112,10 +121,22 @@ if(VGUI_INSTALL)
     install(FILES include/vgui/vgui.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
 
+    # Stage B: SDL3 后端公共头（app_mgr / gui_viewport / 渲染器 / 事件类型）。
+    install(DIRECTORY include/vgui/backend
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
+
     if(VGUI_BUILD_EDITOR_KIT)
         install(DIRECTORY include/vgui/editor
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
     endif()
+
+    # vgui 的 SDL3 后端公共头暴露 OVG 类型；安装 OVG 的公共 C/C++ 头。
+    # ovg_renderer_sdl3.h 不安装：它定义了与 vgui vg_fbo_t 冲突的同名结构。
+    install(FILES
+        third_party/ovg/ovg/ovg_c.h
+        third_party/ovg/ovg/ovg.h
+        third_party/ovg/ovg/ovg_fonts.h
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
     # 旧 include 路径的兼容 shim。editor shim 只在 editor kit 实际构建时安装。
     install(FILES include/vgui.h

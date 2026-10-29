@@ -16,7 +16,7 @@
 // W/E/R 切换 Gizmo；F2 重命名，Delete 删除，Ctrl+D 复制；Esc 取消手势；
 // Ctrl+N/O/S/Shift+S 新建/打开/保存/另存为。资产库和命令历史仍在内存中。
 //
-// 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
+// 窗口与事件由 SDL3 后端(include/vgui/backend/vgui_sdl3.h)提供。
 
 #include <algorithm>
 #include <cctype>
@@ -38,7 +38,7 @@
 #include <nlohmann/json.hpp>
 
 #include "pch.h"		// glm 等基础类型(ovg_c.h 依赖)
-#include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
+#include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>
 #include <vgui/editor/vgui_editor_kit.h>
 #include "ovg_main.h"
