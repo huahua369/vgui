@@ -1,7 +1,7 @@
-#include "property_grid.h"
+#include <vgui/editor/property_grid.h>
 
-#include "drag_bridge.h"
-#include "editor_context.h"
+#include <vgui/editor/drag_bridge.h>
+#include <vgui/editor/editor_context.h>
 #include "ui_scale.h"
 
 #include <algorithm>

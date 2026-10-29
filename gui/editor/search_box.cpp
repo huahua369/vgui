@@ -1,4 +1,4 @@
-#include "search_box.h"
+#include <vgui/editor/search_box.h>
 
 #include <utility>
 

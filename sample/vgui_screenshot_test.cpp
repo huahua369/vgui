@@ -42,18 +42,18 @@
 #include "ovg.h"
 #include "ovg_fonts.h"
 #include "tools/tools.hpp"
-#include "vgui.h"
+#include <vgui/vgui.h>
 #include "vgui_renderer_sdl3.h"
 
-#include "asset_browser.h"
-#include "editor_context.h"
-#include "editor_shell.h"
-#include "outliner_view.h"
-#include "property_grid.h"
-#include "viewport_camera.h"
-#include "viewport_gizmo.h"
-#include "viewport_grid.h"
-#include "viewport_view.h"
+#include <vgui/editor/asset_browser.h>
+#include <vgui/editor/editor_context.h>
+#include <vgui/editor/editor_shell.h>
+#include <vgui/editor/outliner_view.h>
+#include <vgui/editor/property_grid.h>
+#include <vgui/editor/viewport_camera.h>
+#include <vgui/editor/viewport_gizmo.h>
+#include <vgui/editor/viewport_grid.h>
+#include <vgui/editor/viewport_view.h>
 
 bool write_png_bgra(const char* path, const uint8_t* bgra, int w, int h);
 

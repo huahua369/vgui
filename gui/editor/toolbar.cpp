@@ -1,6 +1,6 @@
-#include "toolbar.h"
+#include <vgui/editor/toolbar.h>
 
-#include "command_registry.h"
+#include <vgui/editor/command_registry.h>
 
 #include <utility>
 

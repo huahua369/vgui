@@ -1,4 +1,4 @@
-#include "node_graph_view.h"
+#include <vgui/editor/node_graph_view.h>
 
 #include "tools/tools.hpp"
 #include "ui_scale.h"

@@ -1,10 +1,10 @@
-#include "asset_browser.h"
+#include <vgui/editor/asset_browser.h>
 
-#include "breadcrumb.h"
-#include "combo_box.h"
-#include "drag_bridge.h"
-#include "search_box.h"
-#include "toolbar.h"
+#include <vgui/editor/breadcrumb.h>
+#include <vgui/editor/combo_box.h>
+#include <vgui/editor/drag_bridge.h>
+#include <vgui/editor/search_box.h>
+#include <vgui/editor/toolbar.h>
 #include "ui_scale.h"
 
 #include "pch.h"

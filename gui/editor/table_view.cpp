@@ -1,10 +1,10 @@
-#include "table_view.h"
+#include <vgui/editor/table_view.h>
 
-#include "curve_editor.h"
-#include "gradient_editor.h"
-#include "spinbox.h"
+#include <vgui/editor/curve_editor.h>
+#include <vgui/editor/gradient_editor.h>
+#include <vgui/editor/spinbox.h>
 #include "ui_scale.h"
-#include "vector_editor.h"
+#include <vgui/editor/vector_editor.h>
 
 #include "tools/tools.hpp"
 

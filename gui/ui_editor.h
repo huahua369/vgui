@@ -17,7 +17,7 @@
 #include <string>
 #include <vector>
 
-#include "vgui.h"
+#include <vgui/vgui.h>
 
 namespace vgui_editor {
 

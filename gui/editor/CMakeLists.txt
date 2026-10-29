@@ -34,11 +34,20 @@ set(VGUI_EDITOR_KIT_SOURCES
 )
 
 add_library(vgui_editor_kit STATIC ${VGUI_EDITOR_KIT_SOURCES})
+add_library(vgui::editor_kit ALIAS vgui_editor_kit)
+set_target_properties(vgui_editor_kit PROPERTIES EXPORT_NAME editor_kit)
+
+target_compile_features(vgui_editor_kit PUBLIC cxx_std_17)
 
 target_include_directories(vgui_editor_kit
     PUBLIC
+        $<BUILD_INTERFACE:${VGUI_SOURCE_DIR}/include>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    PRIVATE
+        ${VGUI_SOURCE_DIR}/gui
         ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_SOURCE_DIR}/gui
-)
+        ${VGUI_SOURCE_DIR}/third_party/ovg/ovg)
 
-target_link_libraries(vgui_editor_kit PUBLIC libvgui PRIVATE nlohmann_json::nlohmann_json)
+target_link_libraries(vgui_editor_kit
+    PUBLIC vgui::vgui
+    PRIVATE nlohmann_json::nlohmann_json)

@@ -1,4 +1,4 @@
-#include "canvas_view.h"
+#include <vgui/editor/canvas_view.h>
 
 #include "pch.h"
 #include "tools/tools.hpp"

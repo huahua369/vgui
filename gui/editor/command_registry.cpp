@@ -1,4 +1,4 @@
-#include "command_registry.h"
+#include <vgui/editor/command_registry.h>
 
 #include <algorithm>
 #include <cctype>

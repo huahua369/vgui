@@ -1,4 +1,4 @@
-#include "console_view.h"
+#include <vgui/editor/console_view.h>
 
 #include <algorithm>
 #include <cctype>

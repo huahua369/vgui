@@ -9,7 +9,7 @@ vgui sdl3
 #include <string>
 #include <ovg_c.h>
 #include <vgui_internal.h>
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 #include "vgui_renderer_sdl3.h"
 

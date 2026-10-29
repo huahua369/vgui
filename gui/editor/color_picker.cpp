@@ -1,4 +1,4 @@
-#include "color_picker.h"
+#include <vgui/editor/color_picker.h>
 
 #include "editor_metrics.h"
 

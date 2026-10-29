@@ -8,7 +8,7 @@
  * back into a logical setter (or vice versa).  Drawing and hit testing can
  * keep using pixels directly.
  */
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 #include <algorithm>
 #include <cmath>

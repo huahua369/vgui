@@ -1,4 +1,4 @@
-#include "breadcrumb.h"
+#include <vgui/editor/breadcrumb.h>
 
 #include <utility>
 

@@ -1,6 +1,6 @@
-#include "viewport_view.h"
+#include <vgui/editor/viewport_view.h>
 
-#include "drag_bridge.h"
+#include <vgui/editor/drag_bridge.h>
 #include "ui_scale.h"
 
 #include <algorithm>

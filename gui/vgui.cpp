@@ -7,7 +7,7 @@ gui实现
 #include "pch.h"
 #include <SDL3/SDL.h>
 #include "vgui_internal.h"
-#include "vgui.h"
+#include <vgui/vgui.h>
 
 #include <vgui_sdl3.h>
 

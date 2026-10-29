@@ -1,4 +1,4 @@
-#include "code_editor.h"
+#include <vgui/editor/code_editor.h>
 
 #include "tools/tools.hpp"
 #include "ui_scale.h"

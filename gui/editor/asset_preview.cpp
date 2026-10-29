@@ -1,4 +1,4 @@
-#include "asset_preview.h"
+#include <vgui/editor/asset_preview.h>
 
 #include "pch.h"
 #include "tools/tools.hpp"

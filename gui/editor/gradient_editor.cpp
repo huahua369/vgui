@@ -1,8 +1,8 @@
-#include "gradient_editor.h"
+#include <vgui/editor/gradient_editor.h>
 
-#include "color_picker.h"
+#include <vgui/editor/color_picker.h>
 #include "editor_metrics.h"
-#include "spinbox.h"
+#include <vgui/editor/spinbox.h>
 
 #include "pch.h"
 #include "tools/tools.hpp"

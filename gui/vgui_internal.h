@@ -25,7 +25,7 @@ gui结构：
 
 #include <glm/glm.hpp>
 #include <ovg_c.h>
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 
 #ifndef BIT_INC

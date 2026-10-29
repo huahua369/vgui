@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 static int g_pass;
 static int g_fail;

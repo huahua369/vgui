@@ -1,4 +1,4 @@
-#include "spinbox.h"
+#include <vgui/editor/spinbox.h>
 
 #include "editor_metrics.h"
 

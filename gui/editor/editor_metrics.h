@@ -9,7 +9,7 @@
  */
 #include "ui_scale.h"
 
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 #include <algorithm>
 #include <cstring>

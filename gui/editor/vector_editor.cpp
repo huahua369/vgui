@@ -1,4 +1,4 @@
-#include "vector_editor.h"
+#include <vgui/editor/vector_editor.h>
 
 #include <algorithm>
 #include <cctype>

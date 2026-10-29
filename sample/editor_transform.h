@@ -25,8 +25,8 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
 
-#include "vector_editor.h"
-#include "viewport_gizmo.h"
+#include <vgui/editor/vector_editor.h>
+#include <vgui/editor/viewport_gizmo.h>
 
 namespace editor_transform {
 

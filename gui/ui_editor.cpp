@@ -19,7 +19,7 @@
 
 #include <nlohmann/json.hpp>
 
-#include "property_grid.h"
+#include <vgui/editor/property_grid.h>
 
 namespace vgui_editor {
 

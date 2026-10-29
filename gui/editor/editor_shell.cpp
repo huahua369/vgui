@@ -1,4 +1,4 @@
-#include "editor_shell.h"
+#include <vgui/editor/editor_shell.h>
 
 #include <algorithm>
 #include <cmath>

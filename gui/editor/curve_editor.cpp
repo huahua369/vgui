@@ -1,7 +1,7 @@
-#include "curve_editor.h"
+#include <vgui/editor/curve_editor.h>
 
 #include "editor_metrics.h"
-#include "spinbox.h"
+#include <vgui/editor/spinbox.h>
 
 #include "pch.h"
 #include "tools/tools.hpp"

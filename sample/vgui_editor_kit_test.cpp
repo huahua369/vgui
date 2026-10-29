@@ -32,8 +32,8 @@
 #pragma comment(lib, "dbghelp.lib")
 #include <crtdbg.h>
 
-#include "vgui.h"
-#include "vgui_editor_kit.h"
+#include <vgui/vgui.h>
+#include <vgui/editor/vgui_editor_kit.h>
 #include "editor_transform.h"
 
 namespace {

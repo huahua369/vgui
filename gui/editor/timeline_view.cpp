@@ -1,4 +1,4 @@
-#include "timeline_view.h"
+#include <vgui/editor/timeline_view.h>
 
 #include "tools/tools.hpp"
 #include "ui_scale.h"

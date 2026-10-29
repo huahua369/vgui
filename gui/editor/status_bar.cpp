@@ -1,4 +1,4 @@
-#include "status_bar.h"
+#include <vgui/editor/status_bar.h>
 
 #include <cstdio>
 #include <utility>

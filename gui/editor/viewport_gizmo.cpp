@@ -1,4 +1,4 @@
-#include "viewport_gizmo.h"
+#include <vgui/editor/viewport_gizmo.h>
 
 #include "pch.h"
 #include "tools/tools.hpp"

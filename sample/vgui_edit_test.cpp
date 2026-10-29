@@ -16,7 +16,7 @@
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <ovg_c.h>		// font_familys_t
 #include <vgui_sdl3.h>	// app_mgr / new_font_family / set_clipboard / get_clipboard
-#include <vgui.h>		// 公共 C API
+#include <vgui/vgui.h>		// 公共 C API
 
 static int g_fail = 0;
 

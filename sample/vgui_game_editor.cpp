@@ -39,8 +39,8 @@
 
 #include "pch.h"		// glm 等基础类型(ovg_c.h 依赖)
 #include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
-#include <vgui.h>
-#include <vgui_editor_kit.h>
+#include <vgui/vgui.h>
+#include <vgui/editor/vgui_editor_kit.h>
 #include "ovg_main.h"
 #include "phase0_renderer.h"
 #include "editor_transform.h"

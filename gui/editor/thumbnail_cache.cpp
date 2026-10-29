@@ -1,4 +1,4 @@
-#include "thumbnail_cache.h"
+#include <vgui/editor/thumbnail_cache.h>
 
 #include "pch.h"
 

@@ -18,7 +18,7 @@
 #include "pch.h"
 #include <SDL3/SDL.h>
 #include <vgui_sdl3.h>
-#include <vgui.h>
+#include <vgui/vgui.h>
 
 #include "phase0_renderer.h"
 
