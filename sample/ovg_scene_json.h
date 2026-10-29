@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <fstream>
+#include <limits>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -859,15 +860,96 @@ namespace ovg {
 		rvg_t* rvg = nullptr;
 		Scene* scene = nullptr;
 		std::unordered_map<std::string, vg_pattern_t*> pattern_cache;
+		/* A08: uploaded image resources keyed by the resource name without
+		 * its '@' prefix.  vg_image_t is caller-owned, so the renderer keeps
+		 * the handles alive and destroys them in clear_image_cache(). */
+		std::unordered_map<std::string, vg_image_t*> image_cache;
 
 		SceneRenderer(ovg_ctx_cb* c) : cb(c) {}
-		~SceneRenderer() { clear_pattern_cache(); }
+		~SceneRenderer() { clear_image_cache(); clear_pattern_cache(); }
 
 		void clear_pattern_cache() {
 			for (auto& kv : pattern_cache) {
 				// pattern 生命周期由调用方管理；这里不主动销毁
 			}
 			pattern_cache.clear();
+		}
+
+		void clear_image_cache() {
+			for (auto& kv : image_cache) {
+				if (rvg && cb && cb->image_destroy)
+					cb->image_destroy(rvg, kv.second);
+				delete kv.second;
+			}
+			image_cache.clear();
+		}
+
+		/* A08: resolve "@name" (or "name") against Scene::resources and upload
+		 * the TextureRes on first use.  The cache is keyed by resource name so
+		 * repeated draws share one vg_image_t; a missing/wrong resource simply
+		 * yields nullptr and the image node is skipped. */
+		vg_image_t* get_image(rvg_t* vg, const std::string& ref) {
+			if (!cb || ref.empty() || !scene)
+				return nullptr;
+			std::string key = ref[0] == '@' ? ref.substr(1) : ref;
+			auto cached = image_cache.find(key);
+			if (cached != image_cache.end())
+				return cached->second;
+
+			auto resource = scene->resources.find(key);
+			if (resource == scene->resources.end())
+				return nullptr;
+			auto* texture = std::get_if<TextureRes>(&resource->second);
+			if (!texture || texture->width == 0 || texture->height == 0 ||
+				texture->pixels.empty())
+				return nullptr;
+
+			const uint32_t bytes_per_pixel = format_bytes(texture->format);
+			const uint64_t min_stride =
+				(uint64_t)texture->width * bytes_per_pixel;
+			const uint64_t stride = texture->stride ? texture->stride
+				: min_stride;
+			const uint64_t required = stride * texture->height;
+			if (stride < min_stride || stride > UINT32_MAX ||
+				required > texture->pixels.size() || required > UINT32_MAX ||
+				texture->width > (uint32_t)std::numeric_limits<int>::max() ||
+				texture->height > (uint32_t)std::numeric_limits<int>::max())
+				return nullptr;
+
+			auto* image = new vg_image_t{};
+			image->width = (int)texture->width;
+			image->height = (int)texture->height;
+
+			vg_image_desc_t desc{};
+			desc.img = image;
+			desc.width = texture->width;
+			desc.height = texture->height;
+			desc.format = (uint32_t)texture->format;
+			desc.stride = (uint32_t)stride;
+			desc.pixels = texture->pixels.data();
+			desc.x = 0;
+			desc.y = 0;
+			desc.w = texture->width;
+			desc.h = texture->height;
+			desc.idx = 0;
+			desc.px_size = (uint32_t)required;
+			desc.is_copy = true;
+			if (cb->image_update)
+				cb->image_update(vg, image, &desc);
+			else {
+				delete image;
+				return nullptr;
+			}
+			image_cache[key] = image;
+			return image;
+		}
+
+		static uint32_t format_bytes(vg_format_t format) {
+			switch (format) {
+			case VG_FORMAT_RGBA16F: return 8;
+			case VG_FORMAT_RGBA32F: return 16;
+			default: return 4;
+			}
 		}
 
 		vg_pattern_t* get_pattern(rvg_t* vg, const std::string& ref) {
@@ -920,6 +1002,10 @@ namespace ovg {
 		}
 
 		void render(rvg_t* vg, Scene& sc) {
+			if (scene != &sc) {
+				clear_image_cache();
+				clear_pattern_cache();
+			}
 			scene = &sc;
 			rvg = vg;
 			rvg->width = scene->width;
@@ -1025,12 +1111,22 @@ namespace ovg {
 
 		void render_impl(ImageNode& im) {
 #ifndef OVG_STUB_TYPES
-			// 图片资源需已由上层上传；此处通过 add_image 绘制
+			// A08: image_ref -> vg_image_t* through the renderer's upload cache.
+			vg_image_t* image = get_image(rvg, im.image_ref);
+			if (!image) return;
+
 			ovg_image_r r{};
-			// image_ref -> vg_image_t* 需要资源映射，由调用方填充 r.img
-			r.rc = im.src_rect; r.sliced = im.sliced; r.dst = im.dst_rect; r.color = im.color; r.type = im.flip;
-			// TODO: 需要把 image_ref 解析为 vg_image_t*（资源上传由调用方负责）
-			if (r.img) cb->add_image(rvg, &r);
+			r.img = image;
+			r.rc = im.src_rect;
+			if (r.rc.z <= 0 || r.rc.w <= 0)
+				r.rc = { 0, 0, image->width, image->height };
+			r.sliced = im.sliced;
+			r.dst = im.dst_rect;
+			if (r.dst.z <= 0 || r.dst.w <= 0)
+				r.dst = { r.dst.x, r.dst.y, r.rc.z, r.rc.w };
+			r.color = im.color;
+			r.type = (int8_t)im.flip;
+			cb->add_image(rvg, &r);
 #endif
 		}
 

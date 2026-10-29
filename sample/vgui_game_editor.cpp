@@ -10,10 +10,11 @@
 //     平移/旋转/缩放 Gizmo、资产落点预览、HDR/MSAA/深度预览
 //   * M6/M7 页签：Canvas、Table、Timeline、NodeGraph、CodeEditor、Console 与命令栈
 //   * E01：启动时同步 ui_scale，所有面板遵守逻辑单位
+//   * S08：File New/Open/Save/Save As/Exit 操作真实场景 JSON 文档
 //
 // 常用操作：MMB 平移 / RMB 轨道旋转 / 滚轮缩放 / F 取景；左键点选或框选；
-// W/E/R 切换 Gizmo；F2 重命名，Delete 删除，Ctrl+D 复制；Esc 取消手势。
-// 场景、资产库和命令历史均为内存模型，File > Save 只是状态占位。
+// W/E/R 切换 Gizmo；F2 重命名，Delete 删除，Ctrl+D 复制；Esc 取消手势；
+// Ctrl+N/O/S/Shift+S 新建/打开/保存/另存为。资产库和命令历史仍在内存中。
 //
 // 窗口与事件由 SDL3 后端(backends/vgui_sdl3.h)提供。
 
@@ -29,9 +30,12 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
+
+#include <nlohmann/json.hpp>
 
 #include "pch.h"		// glm 等基础类型(ovg_c.h 依赖)
 #include <vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
@@ -261,6 +265,20 @@ struct editor_state
 	snap_settings canvas_snap;
 	/* T03: suffix for nodes created through the NODEGRAPH context menu. */
 	int next_graph_node = 1;
+	/* S08: the scene doubles as a real in-memory document.  document_path is
+	 * empty until the first Save As; New/Open reset it. */
+	std::string document_path;
+	std::string document_name = "Untitled.scene";
+	bool exit_requested = false;
+
+	void new_document();
+	void open_document();
+	void save_document();
+	void save_document_as();
+	bool save_document_to(const std::string& path, std::string* error = nullptr);
+	bool load_document_from(const std::string& path, std::string* error = nullptr);
+	/* S08: delete whole subtrees through one undoable command. */
+	bool delete_objects(const std::vector<object_id>& ids);
 
 	bool valid_selection() const
 	{
@@ -932,6 +950,440 @@ struct editor_state
 };
 
 static editor_state g;
+
+//---------------------------------------------------------------------------
+// S08: scene document serialization
+//---------------------------------------------------------------------------
+
+static njson vec3_to_json(const camera_vec3& value)
+{
+	return { value.x, value.y, value.z };
+}
+
+static camera_vec3 vec3_from_json(const njson& value,
+	const camera_vec3& fallback = {})
+{
+	if (!value.is_array() || value.size() < 3)
+		return fallback;
+	return { value[0].get<float>(), value[1].get<float>(),
+		value[2].get<float>() };
+}
+
+static njson quat_to_json(const glm::quat& value)
+{
+	return { value.w, value.x, value.y, value.z };
+}
+
+static glm::quat quat_from_json(const njson& value)
+{
+	if (!value.is_array() || value.size() < 4)
+		return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	glm::quat result(value[3].get<float>(), value[0].get<float>(),
+		value[1].get<float>(), value[2].get<float>());
+	const float length = glm::length(result);
+	if (!(length > 0.0f) || !std::isfinite(length))
+		return glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+	return result / length;
+}
+
+static njson scene_to_json(const game_scene& scene)
+{
+	njson root;
+	root["format"] = "vgui-game-scene";
+	root["version"] = 1;
+	root["next_id"] = scene.next_id;
+	root["roots"] = scene.roots;
+
+	njson objects = njson::array();
+	for (const auto& entry : scene.objects)
+	{
+		const scene_object& object = entry.second;
+		njson item;
+		item["id"] = object.id;
+		item["name"] = object.name;
+		item["parent"] = object.parent;
+		item["children"] = object.children;
+		item["visible"] = object.visible;
+		item["locked"] = object.locked;
+		item["renderable"] = object.renderable;
+		item["position"] = vec3_to_json(object.position);
+		item["rotation"] = quat_to_json(object.rotation);
+		item["scale"] = vec3_to_json(object.scale);
+		item["props"] = object.props;
+		objects.push_back(std::move(item));
+	}
+	root["objects"] = std::move(objects);
+	return root;
+}
+
+static bool scene_from_json(const njson& root, game_scene* out)
+{
+	if (!out || !root.is_object() ||
+		root.value("format", std::string()) != "vgui-game-scene")
+		return false;
+	if (root.value("version", 0) > 1)
+		return false;
+
+	const auto objects = root.find("objects");
+	if (objects == root.end() || !objects->is_array())
+		return false;
+
+	game_scene scene;
+	object_id max_id = invalid_object;
+	std::vector<object_id> serialized_roots;
+	std::map<object_id, std::vector<object_id>> serialized_children;
+	for (const njson& item : *objects)
+	{
+		if (!item.is_object())
+			return false;
+		const object_id id = item.value("id", invalid_object);
+		if (id == invalid_object || scene.objects.count(id))
+			return false;
+
+		scene_object object;
+		object.id = id;
+		object.name = item.value("name", std::string("Object"));
+		object.parent = item.value("parent", invalid_object);
+		object.visible = item.value("visible", true);
+		object.locked = item.value("locked", false);
+		object.renderable = item.value("renderable", false);
+		if (item.contains("position"))
+			object.position = vec3_from_json(item["position"]);
+		if (item.contains("rotation"))
+			object.rotation = quat_from_json(item["rotation"]);
+		if (item.contains("scale"))
+			object.scale = vec3_from_json(item["scale"],
+				{ 1.0f, 1.0f, 1.0f });
+		if (item.contains("props") && item["props"].is_object())
+		{
+			for (const auto& prop : item["props"].items())
+			{
+				if (prop.value().is_string())
+					object.props[prop.key()] = prop.value().get<std::string>();
+			}
+		}
+		if (item.contains("children") && item["children"].is_array())
+		{
+			auto& children = serialized_children[id];
+			for (const njson& child : item["children"])
+				if (child.is_number_unsigned())
+					children.push_back(child.get<object_id>());
+		}
+		scene.objects[id] = std::move(object);
+		max_id = std::max(max_id, id);
+	}
+
+	if (root.contains("roots") && root["roots"].is_array())
+	{
+		for (const njson& item : root["roots"])
+			if (item.is_number_unsigned())
+				serialized_roots.push_back(item.get<object_id>());
+	}
+
+	/* Validate parent links, then rebuild roots/children from the parent
+	 * field so a hand-edited or truncated file cannot leave dangling ids.
+	 * Serialized roots/children order is preserved; objects missing from
+	 * those arrays are appended in stable id order. */
+	for (auto& entry : scene.objects)
+	{
+		scene_object& object = entry.second;
+		if (object.parent != invalid_object &&
+			!scene.objects.count(object.parent))
+			object.parent = invalid_object;
+	}
+
+	for (auto& entry : scene.objects)
+	{
+		std::set<object_id> visited;
+		for (object_id id = entry.first; id != invalid_object;)
+		{
+			if (!visited.insert(id).second)
+				return false;
+			auto found = scene.objects.find(id);
+			if (found == scene.objects.end())
+				break;
+			id = found->second.parent;
+		}
+	}
+
+	std::set<object_id> attached;
+	auto attach = [&](object_id parent, object_id child) {
+		auto found = scene.objects.find(child);
+		if (found == scene.objects.end() || found->second.parent != parent ||
+			!attached.insert(child).second)
+			return;
+		if (parent == invalid_object)
+			scene.roots.push_back(child);
+		else
+			scene.objects[parent].children.push_back(child);
+	};
+	for (object_id id : serialized_roots)
+		attach(invalid_object, id);
+	for (const auto& entry : serialized_children)
+		for (object_id child : entry.second)
+			attach(entry.first, child);
+	for (const auto& entry : scene.objects)
+		attach(entry.second.parent, entry.first);
+
+	const object_id next = root.value("next_id", invalid_object);
+	scene.next_id = std::max(next, max_id + 1);
+	*out = std::move(scene);
+	return true;
+}
+
+bool editor_state::save_document_to(const std::string& path, std::string* error)
+{
+	if (path.empty())
+	{
+		if (error)
+			*error = "empty document path";
+		return false;
+	}
+
+	std::ofstream file(path, std::ios::binary | std::ios::trunc);
+	if (!file)
+	{
+		if (error)
+			*error = "cannot open " + path;
+		return false;
+	}
+	try
+	{
+		file << scene_to_json(scene).dump(2) << '\n';
+	}
+	catch (const std::exception& exception)
+	{
+		if (error)
+			*error = std::string("serialize failed: ") + exception.what();
+		return false;
+	}
+	if (!file.good())
+	{
+		if (error)
+			*error = "write failed for " + path;
+		return false;
+	}
+
+	document_path = path;
+	document_name = file_basename(path);
+	if (shell)
+	{
+		shell->set_status("saved " + document_name);
+		shell->console().append(console_view::level::info,
+			"saved document: " + path, "document");
+	}
+	return true;
+}
+
+bool editor_state::load_document_from(const std::string& path,
+	std::string* error)
+{
+	std::ifstream file(path, std::ios::binary);
+	if (!file)
+	{
+		if (error)
+			*error = "cannot open " + path;
+		return false;
+	}
+
+	njson root;
+	try
+	{
+		file >> root;
+	}
+	catch (const std::exception& exception)
+	{
+		if (error)
+			*error = std::string("invalid JSON: ") + exception.what();
+		return false;
+	}
+
+	game_scene loaded;
+	bool valid = false;
+	try
+	{
+		valid = scene_from_json(root, &loaded);
+	}
+	catch (const std::exception& exception)
+	{
+		if (error)
+			*error = std::string("invalid scene: ") + exception.what();
+		return false;
+	}
+	if (!valid)
+	{
+		if (error)
+			*error = "not a vgui-game-scene document";
+		return false;
+	}
+
+	scene = std::move(loaded);
+	outliner_scene_root = scene.roots.empty() ? invalid_object : scene.roots.front();
+	document_path = path;
+	document_name = file_basename(path);
+	if (context)
+	{
+		context->commands().clear();
+		context->clear_selection();
+	}
+	if (shell)
+	{
+		rebuild_outliner();
+		shell->properties().refresh();
+		shell->refresh_commands();
+		shell->set_status("opened " + document_name);
+		shell->console().append(console_view::level::info,
+			"opened document: " + path, "document");
+	}
+	return true;
+}
+
+void editor_state::new_document()
+{
+	scene = game_scene{};
+	const object_id world = scene.add("World", invalid_object);
+	scene.add("Camera", world);
+	scene.add("Light", world);
+	outliner_scene_root = world;
+	document_path.clear();
+	document_name = "Untitled.scene";
+	if (context)
+	{
+		context->commands().clear();
+		context->clear_selection();
+	}
+	if (shell)
+	{
+		rebuild_outliner();
+		shell->properties().refresh();
+		shell->refresh_commands();
+		shell->set_status("new document");
+		shell->console().append(console_view::level::info,
+			"new document: Untitled.scene", "document");
+	}
+}
+
+void editor_state::open_document()
+{
+	if (!ui || !shell)
+		return;
+	vgui_dialog_prompt(ui, "Open Scene",
+		"Enter a vgui-game-scene JSON path", document_path.c_str(),
+		[](vgui_context*, int result, const char* text, void*) {
+			if (result != VGUI_MODAL_RESULT_CONFIRM || !text || !*text ||
+				!g.shell)
+				return;
+			std::string error;
+			if (!g.load_document_from(text, &error))
+				g.shell->set_status("open failed: " + error);
+		}, nullptr);
+}
+
+void editor_state::save_document()
+{
+	if (document_path.empty())
+	{
+		save_document_as();
+		return;
+	}
+	std::string error;
+	if (!save_document_to(document_path, &error) && shell)
+		shell->set_status("save failed: " + error);
+}
+
+void editor_state::save_document_as()
+{
+	if (!ui || !shell)
+		return;
+	const std::string initial = document_path.empty()
+		? std::string("scene.vgui.json") : document_path;
+	vgui_dialog_prompt(ui, "Save Scene As",
+		"Enter a vgui-game-scene JSON path", initial.c_str(),
+		[](vgui_context*, int result, const char* text, void*) {
+			if (result != VGUI_MODAL_RESULT_CONFIRM || !text || !*text ||
+				!g.shell)
+				return;
+			std::string error;
+			if (!g.save_document_to(text, &error))
+				g.shell->set_status("save failed: " + error);
+		}, nullptr);
+}
+
+bool editor_state::delete_objects(const std::vector<object_id>& ids)
+{
+	if (!context || !shell || ids.empty())
+		return false;
+
+	std::set<object_id> remove;
+	std::function<void(object_id)> collect = [&](object_id id) {
+		auto found = scene.objects.find(id);
+		if (found == scene.objects.end() || !remove.insert(id).second)
+			return;
+		for (object_id child : found->second.children)
+			collect(child);
+	};
+	for (object_id id : ids)
+		collect(id);
+	if (remove.empty())
+		return false;
+
+	const game_scene before = scene;
+	const std::vector<object_id> before_selection = context->selection_ids();
+	const object_id before_primary = context->selection();
+
+	for (object_id id : remove)
+	{
+		auto found = scene.objects.find(id);
+		if (found == scene.objects.end())
+			continue;
+		std::vector<object_id>& siblings = found->second.parent == invalid_object
+			? scene.roots : scene.objects[found->second.parent].children;
+		auto sibling = std::find(siblings.begin(), siblings.end(), id);
+		if (sibling != siblings.end())
+			siblings.erase(sibling);
+	}
+	for (object_id id : remove)
+		scene.objects.erase(id);
+
+	const game_scene after = scene;
+	const std::size_t count = remove.size();
+	context->clear_selection();
+	rebuild_outliner();
+	shell->set_status("deleted " + std::to_string(count) + " object(s)");
+
+	context->commands().push(std::make_unique<function_command>(
+		"Delete " + std::to_string(count) + " object(s)",
+		[after, count]() {
+			g.scene = after;
+			if (g.context)
+				g.context->clear_selection();
+			if (g.shell)
+			{
+				g.rebuild_outliner();
+				g.shell->set_status("deleted " + std::to_string(count) +
+					" object(s)");
+			}
+		},
+		[before, before_selection, before_primary, count]() {
+			g.scene = before;
+			if (g.context)
+			{
+				std::vector<object_id> restored;
+				for (object_id id : before_selection)
+					if (g.scene.objects.count(id))
+						restored.push_back(id);
+				g.context->set_selection(restored, before_primary);
+			}
+			if (g.shell)
+			{
+				g.rebuild_outliner();
+				g.shell->set_status("restored " + std::to_string(count) +
+					" object(s)");
+			}
+		}));
+	shell->refresh_commands();
+	return true;
+}
 
 /* A06 Import...: 宿主负责文件对话框;这里用一个路径输入框模拟,确认后走
  * 与 OS 拖入完全相同的 import_files() 入口。 */
@@ -2374,25 +2826,9 @@ static void setup_editor(vgui_context* ui)
 			return true;
 		}
 		case outliner_view::action::remove:
-		{
-			if (nodes.empty())
-				return false;
-			for (object_id node : nodes)
-			{
-				const object_id parent = g.scene.parent_of(node);
-				auto& src_list = parent == invalid_object
-					? g.scene.roots : g.scene.objects[parent].children;
-				auto it = std::find(src_list.begin(), src_list.end(), node);
-				if (it != src_list.end())
-					src_list.erase(it);
-				g.scene.objects.erase(node);
-			}
-			g.context->clear_selection();
-			g.rebuild_outliner();
-			g.shell->set_status("deleted " +
-				std::to_string(nodes.size()) + " object(s)");
-			return true;
-		}
+			/* S08: route Outliner deletes through the same undoable command
+			 * used by Edit > Delete. */
+			return g.delete_objects(nodes);
 		case outliner_view::action::focus:
 			g.shell->set_status("focus object " +
 				(nodes.empty() ? std::string("-")
@@ -3071,6 +3507,24 @@ static void setup_editor(vgui_context* ui)
 	});
 	canvas.set_selection({ canvas_panel });
 
+	/* S08: connect the shell's File menu/shortcuts to the in-memory document.
+	 * New/Open/Save/Save As/Exit now operate on real scene JSON; Edit > Delete
+	 * removes the selected subtrees through one undoable command. */
+	document_handlers handlers;
+	handlers.new_document = []() { g.new_document(); };
+	handlers.open_document = []() { g.open_document(); };
+	handlers.save_document = []() { g.save_document(); };
+	handlers.save_document_as = []() { g.save_document_as(); };
+	handlers.exit_editor = []() {
+		g.exit_requested = true;
+		if (g.shell)
+			g.shell->set_status("exit requested");
+	};
+	handlers.delete_selection = [](const std::vector<object_id>& ids) {
+		return g.delete_objects(ids);
+	};
+	g.shell->set_document_handlers(std::move(handlers));
+
 	g.shell->set_status("V08: CANVAS tab drag/resize/rotate; V03 viewport: LMB pick / box / Esc");
 }
 
@@ -3124,7 +3578,7 @@ int main()
 	runtime_cx rtc = {};
 	bool running = true;
 	int last_w = win_w, last_h = win_h;
-	while (running)
+	while (running && !g.exit_requested)
 	{
 		float delta = fps.tick();
 		if (wg->get_event() < 0)

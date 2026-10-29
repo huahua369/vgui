@@ -9,6 +9,7 @@
  * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH /
  * CODE TabView.
  */
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -58,6 +59,24 @@ namespace vgui_editor_kit {
 		bool depth_preview = true;
 	};
 
+	/* S08: document lifecycle hooks.  The File menu and shortcuts dispatch
+	 * through these callbacks, so a host can connect the shell to its own
+	 * document model without replacing individual commands.  Unset
+	 * callbacks keep the shell's status-only fallback, which also preserves
+	 * hosts that only override command ids through commands().add(). */
+	struct document_handlers
+	{
+		std::function<void()> new_document;
+		std::function<void()> open_document;
+		std::function<void()> save_document;
+		std::function<void()> save_document_as;
+		std::function<void()> exit_editor;
+		/* Return true when the host deleted (or otherwise handled) the
+		 * selection.  Returning false lets the shell fall back to clearing the
+		 * selection, which keeps the default edit.delete behaviour. */
+		std::function<bool(const std::vector<object_id>&)> delete_selection;
+	};
+
 	class editor_shell
 	{
 	public:
@@ -81,6 +100,11 @@ namespace vgui_editor_kit {
 		const command_registry& commands() const noexcept;
 		bool run_command(const char* id);
 		void refresh_commands();
+
+		/* S08: install/replace document lifecycle callbacks.  Passing an empty
+		 * struct restores the status-only defaults. */
+		void set_document_handlers(document_handlers handlers);
+		const document_handlers& document_handler_state() const noexcept;
 
 		/* Toolbar and status strip.  The toolbar is bound to the shell's
 		 * command registry; the status bar mirrors set_status() and the current
@@ -250,6 +274,7 @@ namespace vgui_editor_kit {
 
 		editor_context& context_;
 		command_registry commands_;
+		document_handlers document_handlers_;
 		std::vector<std::unique_ptr<menu_binding>> menu_bindings_;
 		vgui_widget* menubar_ = nullptr;
 		editor_context::selection_listener_id selection_listener_ = 0;

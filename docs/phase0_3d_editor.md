@@ -68,6 +68,18 @@ drawable.add(vg);
 drawable.render(wg->vgctx);
 ```
 
+## 着色器构建（Slang）
+
+Phase 0 的场景、全屏三角形、tonemap、深度预览和深度专用片元着色器以 Slang 编写，源文件位于 `sample/shaders/*.slang`。`sample/phase0_renderer.cpp` 只包含 `sample/shaders/spv_c/*.h` 中签入的 SPIR-V 数组，因此普通 CMake 构建不需要着色器编译器。
+
+修改 Slang 源后，在仓库根目录运行：
+
+```powershell
+pwsh sample/shaders/compile.ps1
+```
+
+`compile.ps1` 依次从 `SLANGC` 环境变量、PATH 和 `%VULKAN_SDK%\Bin\slangc.exe` 查找 Vulkan SDK 自带的 `slangc`，对每个源执行 `-target spirv -entry main -stage <stage> -emit-spirv-via-glsl`，校验输出字长与 SPIR-V 1.0 模块头后写回原有数组名的头文件。经 Slang 的 GLSL 路径输出可保持 SPIR-V 1.0（模块头 `0x00010000`），与示例创建的 Vulkan 1.0 管线兼容。根 `vcpkg.json` 不再依赖 `glslang`；只有重新生成着色器时才需要 Vulkan SDK。
+
 ## CPU 纹理
 
 ```c

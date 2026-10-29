@@ -116,6 +116,8 @@
 
 `src_rect / dst_rect` 均为 `[x,y,w,h]`；`sliced` 为九宫格 `[l,t,r,b]`。
 
+`image` 指向 `resources` 中的纹理键，`@` 前缀可省略。`SceneRenderer` 在首次绘制时把对应 `TextureRes` 经 `image_update()` 上传为 `vg_image_t*` 并按资源名缓存，后续图片节点复用同一句柄；`src_rect` 或 `dst_rect` 的宽/高为 0 时分别回退到图片尺寸。缺失资源、非纹理资源、`stride` 小于 `width * 每像素字节数`，或 `pixels` 小于 `stride * height` 的损坏纹理会跳过该图片节点。`clear_image_cache()`、渲染器析构以及 `render()` 切换到另一 `Scene` 时会调用 `image_destroy()` 释放缓存句柄。
+
 ### 3.4 文本节点（text）
 
 ```json

@@ -1,6 +1,6 @@
 # vgui 游戏编辑器组件路线图
 
-> 状态：MVP、完整编辑器组件与工程化打磨（E01～E06）均已完成
+> 状态：MVP、完整编辑器组件、工程化打磨（E01～E07）以及 S08/A08 增补均已完成
 >
 > 适用版本：vgui 0.3.x
 >
@@ -209,6 +209,11 @@
   - 验收：图标按钮有 hover/active/disabled 状态；StatusBar 可显示选中对象、坐标和错误信息。
   - 已实现：editor kit 新增 `icon_button`、`toggle_button`、`segmented_control`、`toolbar_view`、`status_bar`、`search_box` 和 `breadcrumb`；核心按钮 checked 状态绘制激活底色并触发重绘；工具栏可绑定 `command_registry` 同步标题/禁用/复选状态；状态栏支持消息、选中对象、坐标和错误；`editor_shell` 顶部工具栏（场景搜索、Undo/Redo、Grid、视图分段）和底部状态栏已接入，Properties 面板显示选择路径面包屑；headless 测试覆盖状态切换、命令刷新、搜索回调和面包屑导航。
 
+- [x] **S08 文件菜单 / 文档生命周期**（P1，M）（已完成）
+  - New/Open/Save/Save As/Exit 宿主回调与快捷键；Edit > Delete 删除当前选择。
+  - 验收：File 菜单与快捷键统一走文档回调；未安装回调时保持旧行为；删除进入命令栈。
+  - 已实现：`editor_shell` 新增 `document_handlers`（new/open/save/save_as/exit + delete_selection）和 `set_document_handlers()`/`document_handler_state()`；File 菜单顺序为 New、Open...、分隔线、Save、Save As...、分隔线、Exit，对应 `Ctrl+N`/`Ctrl+O`/`Ctrl+S`/`Ctrl+Shift+S`。默认动作在未安装回调时仍只更新状态栏，宿主用 `commands().add()` 覆盖单个命令 ID 的旧用法保持兼容；`edit.delete` 把当前多选集合交给宿主，处理器返回 `false` 时回退为清除选择。`vgui_game_editor` 把内存场景变成真实文档：Save/Save As 写 `format: "vgui-game-scene"`、`version: 1` 的 JSON（对象 id/父子/可见/锁定/可渲染/TRS/字符串属性），Open 校验格式、修复悬空父引用、拒绝父链环并按序列化顺序恢复 roots/children，New 重建 World/Camera/Light，Exit 结束主循环；Outliner 删除复用同一个可撤销 `function_command`。`test_document_handlers` 覆盖菜单顺序、快捷键、回调转发、空处理器回退和删除回退。
+
 ### M2 属性编辑（P）
 
 目标：把当前手工拼装的属性面板升级为可复用的 PropertyGrid 和类型化编辑器。
@@ -345,6 +350,11 @@
   - 验收：大量日志追加不阻塞 UI；过滤和自动滚动可独立开关；错误可跳转到相关资产或脚本。
   - 已实现：新增独立 `console_view`（`gui/editor/console_view.*`）。生产者可在任意线程调用 `append(level, message, source)` / `append(entry)` / `append_batch()`，记录进入互斥保护的待处理队列并分配稳定 id；UI 线程通过 `poll()`/`tick()` 每次最多消费 `drain_batch()` 条（默认 256），因此突发大日志不会一次性重建模型或阻塞绘制。`set_max_entries()` 同时约束队列与可见记录，超限丢最旧记录并累计 `dropped_count()`；`pending_count()`/`idle()`/`last_entry_id()`/`entry_at()` 便于宿主观察。可见日志是虚拟树投影：只有当前行窗口会调用 `row_info` 等回调，每个错误默认只占一行，堆栈帧在 `set_stack_expanded()`/`toggle_stack()` 后才加入投影，展开状态按 entry 独立保存。等级复选框与搜索框相互独立，搜索大小写不敏感地匹配消息、来源、时间戳、等级名、位置路径及堆栈函数/路径；`filter_active()` 只在有等级关闭或搜索非空时为真。`set_auto_scroll()` 与过滤完全解耦，勾选状态同步，启用时滚动到最新行。复制支持选中行优先、否则全部可见行，`selected_text()`/`visible_text()` 可直接取文本，`copy_selection()` 经隐藏只读编辑控件写入系统剪贴板；树内 `Ctrl+C` 复制、`Ctrl+A` 全选。行激活（双击/Enter）优先调用宿主 `set_jump_handler()` 给出的资产 id 或脚本路径+行列，未安装处理器时错误行会切换堆栈折叠。每级默认色可通过 `set_level_color()` 覆盖，主题切换/未覆盖等级回退当前主题。`editor_shell` 在底部 CONSOLE 页托管一个 `console_view` 并暴露 `console()`；新增 View 菜单命令 `view.console`，可展开底部面板、切到 CONSOLE 并聚焦日志树。`vgui_game_editor` 启动时写入 trace/debug/info/warning/error 与带堆栈的错误，安装跳转处理器（资产定位/选中、脚本行列状态反馈），并在每帧 `tick()` 排空队列；资产通知、导入和视口落点也追加日志。测试 `test_console_view` 覆盖构建/默认值、生产队列与有界消费、等级与搜索独立/组合/大小写、堆栈折叠与帧/条目跳转、可见/选中文本、等级颜色、自动滚动、清空、保留上限与 dropped 计数，以及 4 线程并发 400 条追加；shell 集成断言 CONSOLE 为真实控件、`view.console` 切换与访问器追加可见。
 
+- [x] **A08 OVGS 图片节点资源解析**（P1，M）（已完成）
+  - `image_ref` 解析为 `vg_image_t*`；纹理上传缓存、缺失资源跳过、句柄释放。
+  - 验收：有效图片节点可绘制；重复绘制复用上传；缺失/错误资源不崩溃；切换场景或清缓存时释放句柄。
+  - 已实现：`sample/ovg_scene_json.h` 的 `SceneRenderer` 新增按资源名（去掉可选 `@`）索引的 `image_cache` 与 `get_image()`；首次引用 `TextureRes` 时校验宽高/格式/stride/像素长度，填充 `vg_image_desc_t`（`is_copy=true`）并调用 `image_update()` 上传，后续绘制复用同一句柄。`render_impl(ImageNode&)` 解析 `image_ref`，`src_rect`/`dst_rect` 为 0 时回退到图片尺寸，九宫格、颜色与 flip 原样传给 `add_image()`；缺失资源、纯色资源或像素不足的纹理直接跳过。`clear_image_cache()` 调用 `image_destroy()` 并释放句柄，析构和 `render()` 切换到另一场景时自动清理；新增 `sample/ovg_scene_json_test.cpp`/`ovg_scene_json_test` 目标，用 mock `ovg_ctx_cb` 覆盖上传描述、缓存复用、默认矩形、参数透传、错误资源跳过、场景切换与句柄释放。
+
 ### M5 Viewport 与 Gizmo（V）
 
 目标：从“显示 FBO 的图片”升级为可交互的场景视口。
@@ -454,7 +464,7 @@
   - 新增 `sample/vgui_game_editor.cpp`，持续 dogfood。
   - 更新 README、示例/API 注释和本路线图状态。
   - 验收：新用户能按文档构建并运行编辑器示例；示例覆盖首批 MVP 主路径。
-  - 已实现：`sample/vgui_game_editor.cpp` 已作为 editor_shell 的持续 dogfood 示例，覆盖外壳菜单/工具栏/状态栏、Outliner 行扩展/重命名/拖放/过滤/多选同步、Viewport 相机/拾取/框选/网格/吸附/平移旋转缩放 Gizmo/资产落点预览/HDR/MSAA/深度预览、Properties 类型化与多选混合值、Assets 目录导航/搜索/异步缩略图/导入与资产操作、Dock 重排/浮出，以及 CONSOLE/CANVAS/TABLE/TIMELINE/NODEGRAPH/CODE 页签和命令栈。README 新增“游戏编辑器示例”操作路径、控件说明与构建/运行命令，补充国际化/RTL、截图回归与 CTest 段落，并修正运行列表与项目结构（移除不存在的 `vgui.exe`/`vgui_legacy.cpp`，加入 `vgui_editor`、`vgui_phase0`、`vgui_screenshot_test`、`sample/screenshots/`）。`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围与常用操作。示例中的场景、资产库和命令历史均为内存模型，File > Save 只是状态占位；文档序列化、资产数据库和文件对话框由宿主实现，布局保存/恢复由 `editor_shell` API 提供并在 `vgui_editor_kit_test` 覆盖。新用户可按 README 的 vcpkg + CMake 命令构建并运行 `out/bin/x64d/vgui_game_editor.exe`；公共头注释已在各里程碑同步，本次补充示例顶部注释与 README 操作说明。
+  - 已实现：`sample/vgui_game_editor.cpp` 已作为 editor_shell 的持续 dogfood 示例，覆盖外壳菜单/工具栏/状态栏、Outliner 行扩展/重命名/拖放/过滤/多选同步、Viewport 相机/拾取/框选/网格/吸附/平移旋转缩放 Gizmo/资产落点预览/HDR/MSAA/深度预览、Properties 类型化与多选混合值、Assets 目录导航/搜索/异步缩略图/导入与资产操作、Dock 重排/浮出，以及 CONSOLE/CANVAS/TABLE/TIMELINE/NODEGRAPH/CODE 页签和命令栈。README 新增“游戏编辑器示例”操作路径、控件说明与构建/运行命令，补充国际化/RTL、截图回归与 CTest 段落，并修正运行列表与项目结构（移除不存在的 `vgui.exe`/`vgui_legacy.cpp`，加入 `vgui_editor`、`vgui_phase0`、`vgui_screenshot_test`、`sample/screenshots/`）。`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围与常用操作。示例中的场景、资产库和命令历史均为内存模型；S08 后续已把场景接入真实 `vgui-game-scene` JSON 文档（New/Open/Save/Save As/Exit），资产数据库和平台文件对话框仍由宿主实现，布局保存/恢复由 `editor_shell` API 提供并在 `vgui_editor_kit_test` 覆盖。新用户可按 README 的 vcpkg + CMake 命令构建并运行 `out/bin/x64d/vgui_game_editor.exe`；公共头注释已在各里程碑同步，本次补充示例顶部注释与 README 操作说明。
 
 - [x] **E05 无障碍**（P2，L）（已完成）
   - 完整键盘导航、焦点陷阱、屏幕阅读器、高对比度主题。
@@ -465,6 +475,11 @@
   - 文案表、RTL 布局、字体回退。
   - 验收：切换语言不破坏布局；RTL 下文本、图标和控件排列正确。
   - 已实现：`vgui_context_set_language/get_language/set_string/translate` 与 `vgui_widget_set_text_key/get_text_key` 提供 UTF-8 文案表（当前语言 → `en` → key 回退，空语言显示 key）；`vgui_context_set_direction` 切换 RTL 后 row/wrap 布局从右起排、column START/END 与文本对齐翻转，按钮（含图标侧）、复选框/单选、开关、滑杆、进度、编辑框（光标/选区/IME/滚动条）、列表、树（缩进/箭头）、菜单、菜单栏、标签页和滚动条同步镜像；底层 OVG 继续负责 Unicode bidi shaping 与多字体回退。`vgui_demo` 新增国际化/RTL 演示区块（中文/English/العربية 切换 + RTL 开关 + bidi 混排样例），`vgui_model_test` 新增 17 项 i18n/RTL 用例（现 551 项）。
+
+- [x] **E07 Slang 着色器管线**（P2，S/M）（已完成）
+  - 把 Phase 0 GLSL 着色器迁移到 Slang，统一生成脚本并移除 `glslang` 依赖。
+  - 验收：签入的 SPIR-V 头可重新生成；输出保持 SPIR-V 1.0；普通构建不需要着色器编译器。
+  - 已实现：`sample/shaders/*.glsl` 全部替换为五个 `.slang` 源（场景片元、全屏顶点、tonemap、深度预览、深度专用）；`compile.ps1` 通过 `SLANGC`、PATH 或 `%VULKAN_SDK%\Bin\slangc.exe` 查找编译器，使用 `-target spirv -emit-spirv-via-glsl` 经 GLSL 路径输出 SPIR-V 1.0，校验字长与 SPIR-V 1.0 模块头后写成原有数组名的 `spv_c/*.h`。生成头已签入，CMake 构建不调用 Slang；根 `vcpkg.json` 移除 `glslang`，只在重新生成着色器时需要 Vulkan SDK。README 与 Phase 0 文档补充了生成命令和依赖说明。
 
 ## 6. 关键依赖关系
 
@@ -522,11 +537,13 @@ MVP 验收场景：
 
 - S06 Dock / 浮动面板（核心与 editor_shell 接入均已完成）
 - S07 工具栏辅助组件（已完成）
+- S08 文件菜单 / 文档生命周期（已完成）
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient（已完成）
 - T01 Table/DataGrid（已完成）
 - A06 资产操作（已完成）
 - A07 Console/Log（已完成）
+- A08 OVGS 图片节点资源解析（已完成）
 - V07 旋转/缩放 Gizmo（已完成）
 - V08 2D Canvas（已完成）
 - V09 多视口/HDR/MSAA/深度纹理（已完成）
@@ -543,6 +560,7 @@ MVP 验收场景：
 - T04 CodeEditor / RichText（已完成）
 - E05 无障碍（已完成）
 - E06 国际化 / RTL（已完成）
+- E07 Slang 着色器管线（已完成）
 
 第三批剩余项不应阻塞前两批；如果项目暂时不需要代码编辑，可以长期延后。
 
@@ -589,15 +607,17 @@ MVP 验收场景：
 - 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
 - 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
 - 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
-- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变。
-- `editor_layout` 版本 5：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形、底部 Tab、TABLE 列宽/排序、TIMELINE 视图/播放状态与 NODEGRAPH 视图/网格/小地图/吸附/选择；v1–v4 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
+- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；File 菜单通过 `document_handlers` 提供 New/Open/Save/Save As/Exit 生命周期，Edit > Delete 把选中集合交给宿主；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变 (S08)。
+- `editor_layout` 版本 6：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形、底部 Tab、TABLE 列宽/排序、TIMELINE 视图/播放状态、NODEGRAPH 视图/网格/小地图/吸附/选择与 CODE 编辑器状态；v1–v5 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
 - M2 P08：多选/混合值/复制粘贴/收藏——`set_multi_targets/getter/setter` 自动混合检测与 per-target 批量命令（一条 undo）、`copy/paste_properties` 进程内剪贴板（类型保持、shell Edit 菜单 Ctrl+Shift+C/V）、行级收藏星标与 "★" 过滤（跨重建保持）、`outliner_view::selection_objects()` 多选导出；`vgui_game_editor` Ctrl 多选混合值 dogfood。
 - M2 P09：Curve / Gradient 编辑器——`curve_editor`（linear/step/cubic、关键帧与切线拖拽、双击加点、T/V/In/Out spinbox、紧凑预览）、`gradient_editor`（渐变条/色标拖放、双击插点、内嵌 HSV 取色器、4 预设、紧凑预览）；PropertyGrid `property_type::curve/gradient` 共用 popup 会话（实时预览、单条可合并 undo、Esc 回滚、多目标事务）；`vgui_game_editor` 增加 Idle Curve / Color Ramp 可操作路径。
 - M2 收口（P05～P07）：核心 context 级通用弹出面板 `vgui_popup_*`（外点/Esc/滚轮点外关闭并区分原因、菜单/模态互斥、边缘钳制、焦点陷阱、close 回调）；kit `color_picker`（ovg tools 取色器原语 + press/change/commit 手势协议 + `set_color_transform` 颜色空间策略）；PropertyGrid 颜色行经 popup 取色（实时预览、会话单条 undo、Esc 回滚）、`asset`/`object_ref` 引用行（asset_query/browse/filter_check/object_activated/missing 五个宿主接口、行级 drop、清空、丢失态）、`begin_batch/end_batch` 批量事务（`reset_all` 改用）；`vgui_game_editor` 属性面板按选择重建（Name/Tint/颜色/网格/目标行）、资产拖到属性行赋值、丢失资产演示。
 - M3 Outliner（O01～O06）：`outliner_view` 完整编辑器语义——行图标/可见性锁定按钮（O01）、F2/双击行内重命名 + Enter/Esc/失焦与命令栈（O02，依赖核心 `VGUI_EVENT_CANCEL`、`vgui_context_set_focus_listener`、`VGUI_KEY_F*`、`vgui_tree_get_item_rect`）、插入线/onto/roots 拖放语义 + RECT 提示 + 循环拒绝 + 多选事务（O03，kit `drop_target` 增可选 hover 虚函数；核心按在已选行且挂拖源时延迟改选）、名称过滤 + 匹配高亮 + 选择同步（O04，核心 `vgui_tree_set_filter/set_match_text`；editor_shell 场景搜索框已接）、虚拟场景源 + 稳定 id + 增量刷新（O05）、右键菜单与 Delete/F2/Ctrl+D 共用 dispatch（O06）；`sample/vgui_game_editor.cpp` dogfood 示例（editor_shell + 玩具场景全流程接线）。
 - M4 A06 资产操作：`asset_browser` 统一 `operation_handler` 处理重命名/删除/复制/移动/重新导入，结构化错误覆盖冲突/只读/占用/非法目标/I/O；整批请求只有在宿主提供 `undo`/`redo` 时记录为一条命令，否则明确标记 `(not undoable)` 并警告；右键菜单覆盖列表/网格，F2/Delete/Ctrl+D/F5/Ctrl+I 与菜单共用 dispatch，Move To 子菜单、依赖模态框、Import... 提示框与通知/Toast 全部接通；旧 `rename_handler` 路径保留。`vgui_game_editor` 演示宿主数据库原子事务、快照撤销/重做、只读/占用/冲突/损坏资源与不可撤销重导入。
+- M1 S08 文档生命周期：`editor_shell::document_handlers` 统一 New/Open/Save/Save As/Exit 与删除选择回调；File 菜单、`Ctrl+N/O/S/Shift+S` 和命令注册表共用同一入口，未安装回调时保持状态栏回退，`commands().add()` 覆盖仍兼容；`edit.delete` 接收多选集合并可回退为清除选择。`vgui_game_editor` 用 `vgui-game-scene` v1 JSON 实现真实 New/Open/Save/Save As/Exit，Open 修复悬空父引用、拒绝父链环并保持 roots/children 顺序，删除子树以单条命令撤销。
 - M4 A07 日志控制台：`console_view` 任意线程生产者队列 + UI 线程有界 `poll/tick`、稳定 entry id、保留上限与 dropped 计数；虚拟树行投影只查询可见行，堆栈按 entry 折叠；等级复选框与大小写不敏感搜索（消息/来源/时间/等级/位置/堆栈）独立过滤，自动滚动独立开关；选中/可见文本复制经隐藏编辑控件写系统剪贴板，Ctrl+C/Ctrl+A；错误行/堆栈帧激活调用宿主 `jump_handler`（资产 id 或脚本路径+行列），无处理器时切换折叠。`editor_shell` 在底部 CONSOLE 页托管并暴露 `console()`，View 菜单 `view.console` 展开/切换/聚焦；`vgui_game_editor` 启动分级日志、带堆栈错误、资产/脚本跳转、每帧排空，并把导入/落点/资产通知写入日志。
+- M4 A08 OVGS 图片资源：`SceneRenderer` 按资源名缓存 `vg_image_t*`，首次引用 `TextureRes` 时经 `image_update()` 上传并校验尺寸/格式/stride/像素长度；`ImageNode` 解析 `image_ref`，默认源/目标矩形使用图片尺寸，缺失/非纹理/损坏资源跳过；`clear_image_cache()`、析构与场景切换调用 `image_destroy()` 释放句柄。`ovg_scene_json_test` 用 mock `ovg_ctx_cb` 覆盖上传、复用、参数透传、错误跳过与释放。
 - M5 V01 Viewport 表面：`viewport_view` 改为可聚焦 `VGUI_CUSTOM`，`poll_resize()` + `resize_listener` 驱动宿主原地重建 FBO/native texture，跨边界鼠标捕获、`vgui_context_add_focus_listener` 焦点取消、`vgui_input_cancel()` 与 SDL3 窗口失焦接线；`vgui_game_editor` 用 `phase0_renderer` 接入真实 3D 视口。
 - M5 V02 相机导航：`viewport_camera` 轨道相机（中键平移/右键旋转/滚轮缩放/F 取景、pitch 与距离钳制、左键预留、`set_navigation_enabled`/`cancel_navigation`、`get_state/set_state` 保存恢复）；`viewport_view` 支持附加事件监听器，`editor_shell` 默认挂载并暴露 `camera()`，视口横向拉伸铺满中心区；`phase0_renderer_set_camera` 让示例按相机出图，状态栏反馈 yaw/pitch/dist。
 - M5 V03 拾取与选中：`editor_context` 有序多选集合与集合监听器；`viewport_selection` 左键点击/框选、Ctrl 切换/Shift 追加/空白清空、Esc/CANCEL 取消、宿主 point/box picker 与屏幕高亮 provider；`viewport_view` 三段 overlay（selection/interaction/foreground）与内容区坐标；`outliner_view` 多选双向同步；`editor_shell` 默认挂载 `picking()` 并显示选择数量；`vgui_game_editor` 用宿主射线/AABB/投影演示点击、框选、高亮与属性面板多目标。
@@ -608,16 +628,17 @@ MVP 验收场景：
 - M5 V08 2D Canvas：`canvas_view` 自带轻量 item 模型与选择集，支持中键平移、滚轮锚点缩放、自适应网格与原点轴、点击/Ctrl/Shift/框选、锁定/不可见过滤、八个缩放手柄与旋转手柄；移动按主选包围框吸附，单选缩放保留旋转后的对角锚点，旋转按中心角吸附；Esc/CANCEL/失焦回滚快照，每次手势只压入一条 `Move`/`Resize`/`Rotate` 命令，无变化不记录。`editor_shell` 底部新增 CANVAS 页并暴露 `canvas()`，共享 `snap_settings`/`command_stack`，`view.canvas` 命令展开并聚焦；`vgui_game_editor` 用独立 20 单位吸附策略预置 UI 场景 item，并提供状态栏/选择监听反馈。
 - M5 V10 `VGUI_IMAGE` 变换：`vgui_image_state` 增加九宫格边宽、旋转角、旋转中心和可清除矩阵；公共 API 为 `vgui_image_set_nine_slice` / `vgui_image_set_rotation` / `vgui_image_set_rotation_center` / `vgui_image_set_matrix`。原生纹理把 `sliced/angle/center/matrix` 直接交给 OVG `add_texture`，vgui 矩阵按旋转枢轴共轭到绝对坐标；CPU 纹理普通绘制走 OVG `add_image`（与 `add_texture` 一样应用当前矩形裁剪），变换/九宫格走生成的四边形/九宫格 `add_geometry` 路径，实现相同的 flip → rotation → matrix 顺序、源区域钳制、目标边宽压缩、tint 与裁剪，并允许首帧在 `image.id == 0` 时先录制命令、提交时再解析纹理 id。`sample/vgui_texture_test.cpp` 扩展为 512×256 的 79 项断言，覆盖原生/CPU 首帧绘制、旋转、自定义旋转中心、flip+旋转、矩阵平移/缩放、旋转+矩阵、九宫格、source+旋转、九宫格+旋转、父级裁剪、空纹理跳过与原地更新；`vgui_demo` 图片卡片增加旋转循环、九宫格和矩阵错切入口。
 - `sample/vgui_editor_kit_test.cpp`：无窗口自测通过，覆盖命令栈（合并/嵌套事务/失败协议）、选择同步、Dock 外壳（合并/浮出/关闭/区域尺寸）、菜单/快捷键、组件边界、行扩展、拖放、布局持久化、PropertyGrid 虚拟化窗口（物化有界/滚动释放/滚回恢复）、VectorEditor（语义/自定义轴、分量编辑、统一拖拽、值源双向绑定）、PropertyGrid 向量行、S07 工具栏/状态栏/搜索框/面包屑状态与回调、M3 Outliner 六项（行扩展按钮、行内重命名、拖放语义/多选/循环、过滤/同步、虚拟万级场景、右键菜单/快捷键）、M4 AssetBrowser A01/A02（双视图与十万级虚拟源、目录提供者、Breadcrumb/前进后退、选择与滚动恢复、reload、防抖搜索、类型过滤与空状态）与 A03 AssetPreview（后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、多监听器/过滤外查找与 shell 选择同步）、A04/A05 拖放导入与异步缩略图、A06 资产操作（宿主事务与结构化错误、批量单条 undo/redo、不可撤销标记、列表/网格右键、快捷键、重命名/删除对话框、依赖与导入通知）、A07 Console（有界排空/队列与模型分离、等级+搜索独立过滤、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空/保留上限/dropped、4 线程并发追加、shell CONSOLE 页与 `view.console`），以及 M2 收口四项——`test_color_picker`（HSV 取色器 hex/alpha/策略往返、SV 手势 commit、popup 集成实时预览/命令合并/Esc 回滚）、`test_property_reference`（asset/object_ref 解析与丢失切换、拖放赋值/undo、filter 拒绝、清空+undo、browse、对象激活、批量事务嵌套与单条 undo、reset_all 单记录）、`test_property_multi/clipboard/favorites`（P08：混合检测与恢复、per-target 单条 undo、单选退化、剪贴板类型保持与一条 undo、收藏过滤叠加与重建保持）、`test_curve_editor`/`test_gradient_editor`/`test_property_grid_curve_gradient`（P09：文本归一、模式/切线/色标/预设手势、缩放预览 popup 实时预览、合并 undo、Esc 回滚、多目标事务）、`test_viewport_widget`（V01：渲染尺寸边沿触发、纹理跨 resize 保持、跨边界鼠标捕获与本地坐标、键盘、焦点取消、`vgui_input_cancel`、隐藏页不重建）、`test_viewport_camera`（V02：派生位置、平移/旋转/缩放与钳制、左键预留、焦点取消、总开关、F 取景、状态往返、多监听器与重复 attach）、`test_editor_context_multi_selection`/`test_viewport_selection`/`test_outliner_multi_selection_sync`（V03：集合语义/通知、点击/框选/修饰键/取消/坐标、Outliner 双向同步与反选）、`test_viewport_grid`/`test_snap_settings`（V04：自适应密度与像素范围、固定格距、线段数量/对齐/平面高度、主次线与轴配色方向、隐藏；平移/旋转/缩放吸附、总开关/单通道/零步长回退、shell 网格命令与 checked 状态）、`test_viewport_gizmo`（V05/V07：三轴/平面命中、轴约束与吸附、关闭吸附自由增量、平面 Z 约束、Esc/焦点旁落/显式取消、隐藏与无效帧、45° 局部轴方向、空间状态与 detach；旋转环命中/15° 吸附/跨 ±π 展开、轴向与统一缩放/0.1 吸附、模式与空间切换取消、变换载荷 begin 快照、数值文本往返与多选共享枢轴）、`test_viewport_drop_hover`（V06：拖拽前无悬停、悬停载荷/坐标、离开清除、Escape 取消、真实释放只触发一次）、`test_canvas_view`（V08：模型/显式 id/坐标、缩放与网格自适应、点击/Ctrl/Shift/框选、锁定/不可见过滤、手柄命中、移动/缩放/旋转吸附与 undo/redo、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用、选择监听器与删除 prune；shell CANVAS 页与 `view.canvas` 命令）、`test_table_view`（T01：1 万行虚拟窗口/滚动绘制只查可见行、稳定排序与选择跟随、列宽/排序 JSON 校验与恢复、文本/整数/布尔/枚举/颜色/向量编辑、只读/非法输入/取消、undo/redo；布局与 shell 覆盖 TABLE 页、`view.table` 和 v3 表格状态保存/恢复）。
-- M6 T03 NodeGraph：`node_graph_view` 以稳定 id 管理节点/端口/连线，支持类型/方向/单输入替换校验、节点拖动、端口连线、连线点选、空白框选、Ctrl/Shift 多选、锁定节点、中键平移与光标锚点缩放；Esc/CANCEL/失焦回滚，移动/连接/断开/删除/复制各记录一条命令。自适应网格与吸附、`Ctrl+F` 搜索高亮、小地图导航、右键 Add Node 宿主处理器和 `node_graph_state` JSON 全部接通；`editor_shell` 新增 NODEGRAPH 页、`view.nodegraph` 命令与 `editor_layout` v5 持久化。`vgui_game_editor` 以材质节点图 dogfood 拖动、连线、搜索和右键创建，`test_node_graph_view` 覆盖命中/撤销/极端缩放/状态校验。
+- M6 T03 NodeGraph：`node_graph_view` 以稳定 id 管理节点/端口/连线，支持类型/方向/单输入替换校验、节点拖动、端口连线、连线点选、空白框选、Ctrl/Shift 多选、锁定节点、中键平移与光标锚点缩放；Esc/CANCEL/失焦回滚，移动/连接/断开/删除/复制各记录一条命令。自适应网格与吸附、`Ctrl+F` 搜索高亮、小地图导航、右键 Add Node 宿主处理器和 `node_graph_state` JSON 全部接通；`editor_shell` 新增 NODEGRAPH 页、`view.nodegraph` 命令，NODEGRAPH 状态自 `editor_layout` v5 起持久化，当前文件版本为 v6。`vgui_game_editor` 以材质节点图 dogfood 拖动、连线、搜索和右键创建，`test_node_graph_view` 覆盖命中/撤销/极端缩放/状态校验。
 - M6 T04 CodeEditor：`code_editor` 以按行 UTF-8 模型和惰性 token span 提供 C++/C#/GLSL/JSON/Lua/Python/INI/Markdown 语法高亮、行号、光标/选区/鼠标/键盘编辑、自动缩进、命令栈 undo/redo、系统剪贴板桥接与 `Ctrl+F`/`Ctrl+H` 查找替换；同一控件在只读模式下以 `append_log()` 提供带时间戳/等级颜色/保留上限/自动滚动的富文本日志。`open_file()`/`begin_incremental_load()` 分块加载并通过 `tick()` 推进，不阻塞 UI；`code_editor_state` JSON 由 `editor_layout` v6 持久化。`editor_shell` 新增 CODE 页与 `view.code` 命令，`vgui_game_editor` 预置 C++ 脚本示例，`test_code_editor` 覆盖词法/编辑/查找/日志/分块加载/状态校验。
 - 国际化 / RTL：context 级文案表与语言切换、`vgui_direction` 方向切换（布局/文本/常用控件镜像）；`vgui_demo` 有可操作入口，`vgui_model_test` 覆盖切换与镜像布局 (E06，模型测试现 708 项)。
 - M7 E05 无障碍：核心语义树（角色/名称/值/状态 + 预序可见遍历）、显式名称/角色覆盖、焦点陷阱与自动陷阱、F10 菜单、F1～F12 快捷键、焦点/值/状态/选中/公告事件与公告 API、高对比度主题；`editor_shell` 为外壳与各组件设置语义名称，新增 `F6`/`Shift+F6` 面板循环与 `Ctrl+Shift+H` 高对比度命令。`vgui_model_test` 的 `test_accessibility_e05` 与 `vgui_editor_kit_test` 的 `test_shell_accessibility_e05` 覆盖上述行为及 WCAG 对比度。
+- M7 E07 Slang 着色器：`sample/shaders/*.slang` 取代原 GLSL 源，`compile.ps1` 从 `SLANGC`/PATH/Vulkan SDK 定位 `slangc`，用 `-target spirv -emit-spirv-via-glsl` 生成 SPIR-V 1.0 并写入签入的 `spv_c/*.h`；普通 CMake 构建不依赖着色器编译器，根 `vcpkg.json` 已移除 `glslang`。
 - M7 E03 截图回归：`sample/vgui_screenshot_test.cpp` 用无窗口 SDL_GPU/OVG 离屏管线渲染 10 个关键状态（Dock 默认/浮动、PropertyGrid 混合值/错误折叠只读、Outliner 深色选中/虚拟行源/浅色过滤、AssetBrowser 网格/列表、Viewport 网格+Gizmo），基线保存在 `sample/screenshots/`；默认每通道容差 2、差异像素比例上限 0.05%，`--update` 重建基线，`--filter`/`--list` 便于本地调试，失败输出 `_actual.png` 与 `_diff.png`。根 CMake 启用 CTest，`vgui_screenshots` 可直接在 CI 运行，无 Vulkan 时返回 77 标记 SKIP。
 - M7 E04 文档与示例：README 新增“游戏编辑器示例”的 MVP 主路径与常用操作、构建/运行/测试命令、国际化/RTL 与截图回归说明，并修正运行列表和项目结构；`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围。新用户可按 README 使用 vcpkg + CMake 构建并运行 `vgui_game_editor`。
-- 现有 `vgui_model_test`（757 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥、E01 样式/字体/几何缩放与 100%/125%/150%/200% 列布局不重叠、E05 语义树/焦点陷阱/公告事件/高对比度对比度）、`vgui_c_api_test`（32 项，含 V01 附加焦点监听与 `vgui_input_cancel`、E01 纯 C UI 缩放/监听器/整树重算）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）、`vgui_screenshot_test`（E03：10 个场景对比，同机 `diff=0`）保持通过；`vgui_editor_kit_test` 另覆盖 `test_shell_ui_scale` 的四档 DPI 外壳/停靠区布局与逻辑尺寸持久化往返；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（757 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥、E01 样式/字体/几何缩放与 100%/125%/150%/200% 列布局不重叠、E05 语义树/焦点陷阱/公告事件/高对比度对比度）、`vgui_c_api_test`（32 项，含 V01 附加焦点监听与 `vgui_input_cancel`、E01 纯 C UI 缩放/监听器/整树重算）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）、`vgui_screenshot_test`（E03：10 个场景对比，同机 `diff=0`）、`ovg_scene_json_test`（A08：图片上传/缓存/释放）保持通过；`vgui_editor_kit_test` 另覆盖 `test_document_handlers`（S08 菜单/快捷键/回调回退）与 `test_shell_ui_scale` 的四档 DPI 外壳/停靠区布局与逻辑尺寸持久化往返；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
 
 下一步优先项：
 
-1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid、T02 Timeline、T03 NodeGraph、T04 CodeEditor、E01 DPI 缩放、E02 性能与增量更新、E03 截图回归、E04 文档与示例、E05 无障碍均已完成；当前路线图条目已全部收口，后续需求按新条目追加。
+1. V01～V10 已完成（真实 native texture 视口、resize/FBO 重建、跨边界输入、相机导航、点击/框选与多选同步、世界网格与吸附、平移/旋转/缩放 Gizmo 与撤销、资产拖入落点预览与创建、独立 2D Canvas 与命令栈/网格吸附、多视口/HDR/MSAA/深度纹理、`VGUI_IMAGE` 九宫格/旋转/矩阵），T01 Table/DataGrid、T02 Timeline、T03 NodeGraph、T04 CodeEditor、E01 DPI 缩放、E02 性能与增量更新、E03 截图回归、E04 文档与示例、E05 无障碍、E06 国际化/RTL、E07 Slang 着色器、S08 文档生命周期、A08 OVGS 图片资源均已完成；当前路线图条目已全部收口，后续需求按新条目追加。
 2. V08 2D Canvas 的画布/手柄/框选/吸附已复用于 T02 Timeline 与 T03 NodeGraph；T01 的拉取式行源与类型化单元格编辑器可被后续数据视图复用。
-3. 第三批专业编辑器与打磨 E05 无障碍已完成；E03 的 10 张基线可作为后续 UI 改动的视觉回归入口，新增组件时按同目录约定补充 `sample/screenshots/<scene>.png` 并用 `--update` 生成。
+3. 第三批专业编辑器与打磨 E05 无障碍、E06 国际化/RTL、E07 Slang 着色器已完成；E03 的 10 张基线可作为后续 UI 改动的视觉回归入口，新增组件时按同目录约定补充 `sample/screenshots/<scene>.png` 并用 `--update` 生成。

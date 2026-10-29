@@ -1048,6 +1048,114 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		return 0;
 	}
 
+	int test_document_handlers()
+	{
+		using namespace vgui_editor_kit;
+
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("document handlers context");
+		vgui_context_set_size(ui, 1280, 800);
+
+		{
+			editor_context context(ui);
+			editor_shell shell(context);
+			shell.build();
+			vgui_update(ui, 1.0f / 60.0f);
+			vgui_layout(ui);
+
+			int created = 0, opened = 0, saved = 0, saved_as = 0, exited = 0;
+			std::vector<object_id> deleted;
+			document_handlers handlers;
+			handlers.new_document = [&]() { ++created; };
+			handlers.open_document = [&]() { ++opened; };
+			handlers.save_document = [&]() { ++saved; };
+			handlers.save_document_as = [&]() { ++saved_as; };
+			handlers.exit_editor = [&]() { ++exited; };
+			handlers.delete_selection = [&](const std::vector<object_id>& ids) {
+				deleted = ids;
+				return true;
+			};
+			shell.set_document_handlers(handlers);
+
+			if (!shell.commands().has("file.new") ||
+				!shell.commands().has("file.open") ||
+				!shell.commands().has("file.save_as") ||
+				shell.commands().find("file.new")->shortcut.to_string() !=
+					"Ctrl+N" ||
+				shell.commands().find("file.open")->shortcut.to_string() !=
+					"Ctrl+O" ||
+				shell.commands().find("file.save_as")->shortcut.to_string() !=
+					"Ctrl+Shift+S")
+				return fail("document commands registered");
+
+			vgui_widget* bar = shell.menubar();
+			vgui_item_id file_id = vgui_menubar_get_item_at(bar, 0);
+			vgui_widget* file_menu = vgui_menubar_get_menu(bar, file_id);
+			if (!file_menu || vgui_menu_get_count(file_menu) != 7)
+				return fail("file menu layout");
+			const char* file_titles[] = { "New", "Open...", "Save", "Save As...",
+				"Exit" };
+			const int file_rows[] = { 0, 1, 3, 4, 6 };
+			for (int i = 0; i < 5; ++i)
+			{
+				vgui_item_id item = vgui_menu_get_item_at(file_menu, file_rows[i]);
+				if (!item || std::string(vgui_menu_get_item_text(file_menu,
+					item)) != file_titles[i])
+					return fail("file menu item order");
+			}
+
+			if (!shell.run_command("file.new") || created != 1 ||
+				!shell.run_command("file.open") || opened != 1 ||
+				!shell.run_command("file.save") || saved != 1 ||
+				!shell.run_command("file.save_as") || saved_as != 1 ||
+				!shell.run_command("file.exit") || exited != 1)
+				return fail("document handlers invoked");
+
+			if (vgui_input_key(ui, 'N', 1, VGUI_MOD_CTRL) != 1 || created != 2)
+				return fail("new document shortcut");
+			vgui_input_key(ui, 'N', 0, VGUI_MOD_CTRL);
+			if (vgui_input_key(ui, 'O', 1, VGUI_MOD_CTRL) != 1 || opened != 2)
+				return fail("open document shortcut");
+			vgui_input_key(ui, 'O', 0, VGUI_MOD_CTRL);
+			if (vgui_input_key(ui, 'S', 1, VGUI_MOD_CTRL) != 1 || saved != 2)
+				return fail("save document shortcut");
+			vgui_input_key(ui, 'S', 0, VGUI_MOD_CTRL);
+			if (vgui_input_key(ui, 'S', 1, VGUI_MOD_CTRL | VGUI_MOD_SHIFT) != 1 ||
+				saved_as != 2)
+				return fail("save as shortcut");
+			vgui_input_key(ui, 'S', 0, VGUI_MOD_CTRL | VGUI_MOD_SHIFT);
+
+			context.set_selection({ 11, 12 }, 12);
+			shell.refresh_commands();
+			if (vgui_input_key(ui, VGUI_KEY_DELETE, 1, 0) != 1 ||
+				deleted.size() != 2 || deleted[0] != 11 || deleted[1] != 12 ||
+				context.selection() != 12)
+				return fail("delete handler receives selection");
+			vgui_input_key(ui, VGUI_KEY_DELETE, 0, 0);
+
+			// A handler returning false keeps the default selection-clearing
+			// fallback for hosts that only want to observe the action.
+			handlers.delete_selection = [](const std::vector<object_id>&) {
+				return false;
+			};
+			shell.set_document_handlers(handlers);
+			context.set_selection(21);
+			if (!shell.run_command("edit.delete") ||
+				context.selection() != invalid_object)
+				return fail("delete fallback clears selection");
+
+			// Empty handlers restore the status-only defaults.
+			shell.set_document_handlers({});
+			if (shell.document_handler_state().new_document ||
+				!shell.run_command("file.save"))
+				return fail("document handlers cleared");
+		}
+
+		vgui_destroy(ui);
+		return 0;
+	}
+
 	int test_selection_subscriptions()
 	{
 		using namespace vgui_editor_kit;
@@ -13917,6 +14025,8 @@ int main()
 	if (int rc = test_layout_persistence())
 		return rc;
 	if (int rc = test_commands_and_menus())
+		return rc;
+	if (int rc = test_document_handlers())
 		return rc;
 	if (int rc = test_selection_subscriptions())
 		return rc;

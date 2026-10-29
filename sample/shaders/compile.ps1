@@ -1,35 +1,71 @@
 # Rebuilds the SPIR-V C headers used by sample/phase0_renderer.cpp.
 #
-# Requires glslangValidator on PATH (Vulkan SDK).  Generated headers are
-# checked in so the normal CMake build does not need a shader compiler.
+# Requires slangc from the Vulkan SDK.  Generated headers are checked in so the
+# normal CMake build does not need a shader compiler.  Slang is emitted through
+# its GLSL path so the resulting SPIR-V stays at version 1.0, matching the
+# pipelines created by the sample (Vulkan 1.0 target environment).
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $outDir = Join-Path $root 'spv_c'
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
+$slangc = $env:SLANGC
+if (-not $slangc)
+{
+    $command = Get-Command slangc -ErrorAction SilentlyContinue
+    if ($command)
+    {
+        $slangc = $command.Source
+    }
+}
+if (-not $slangc -and $env:VULKAN_SDK)
+{
+    $candidate = Join-Path $env:VULKAN_SDK 'Bin\slangc.exe'
+    if (Test-Path $candidate)
+    {
+        $slangc = $candidate
+    }
+}
+if (-not $slangc)
+{
+    throw 'slangc was not found. Install the Vulkan SDK, add slangc to PATH, or set SLANGC.'
+}
+
 $shaders = @(
-    @{ Source = 'p0_scene.frag.glsl';         Array = 'p0_scene_frag' },
-    @{ Source = 'p0_fullscreen.vert.glsl';    Array = 'p0_fullscreen_vert' },
-    @{ Source = 'p0_tonemap.frag.glsl';       Array = 'p0_tonemap_frag' },
-    @{ Source = 'p0_depth_preview.frag.glsl'; Array = 'p0_depth_preview_frag' },
-    @{ Source = 'p0_depth_only.frag.glsl';    Array = 'p0_depth_only_frag' }
+    @{ Source = 'p0_scene.frag.slang';         Array = 'p0_scene_frag';         Stage = 'fragment' },
+    @{ Source = 'p0_fullscreen.vert.slang';    Array = 'p0_fullscreen_vert';    Stage = 'vertex' },
+    @{ Source = 'p0_tonemap.frag.slang';       Array = 'p0_tonemap_frag';       Stage = 'fragment' },
+    @{ Source = 'p0_depth_preview.frag.slang'; Array = 'p0_depth_preview_frag'; Stage = 'fragment' },
+    @{ Source = 'p0_depth_only.frag.slang';    Array = 'p0_depth_only_frag';    Stage = 'fragment' }
 )
 
 foreach ($shader in $shaders)
 {
     $source = Join-Path $root $shader.Source
     $spv = Join-Path $outDir ($shader.Source + '.spv')
-    & glslangValidator -V --target-env vulkan1.0 -o $spv $source
+    & $slangc $source -target spirv -entry main -stage $shader.Stage `
+        -emit-spirv-via-glsl -o $spv
     if ($LASTEXITCODE -ne 0)
     {
-        throw "glslangValidator failed for $($shader.Source)"
+        throw "slangc failed for $($shader.Source)"
     }
 
     $bytes = [System.IO.File]::ReadAllBytes($spv)
     if (($bytes.Length % 4) -ne 0)
     {
         throw "SPIR-V size is not a multiple of 4: $spv"
+    }
+    if ($bytes.Length -lt 20 -or
+        [BitConverter]::ToUInt32($bytes, 0) -ne 0x07230203)
+    {
+        throw "not a SPIR-V module: $spv"
+    }
+    $version = [BitConverter]::ToUInt32($bytes, 4)
+    if ($version -ne 0x00010000)
+    {
+        throw ("{0} emitted SPIR-V 0x{1:x8}; expected 0x00010000 (1.0)" -f
+            $shader.Source, $version)
     }
 
     $words = New-Object System.Collections.Generic.List[string]
@@ -55,7 +91,8 @@ foreach ($shader in $shaders)
         $lines.Add("`t" + (($words[$i..($end - 1)]) -join ',') + ',')
     }
     $lines.Add('};')
-    [System.IO.File]::WriteAllLines($header, $lines)
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($header, ($lines -join "`n") + "`n", $utf8)
     Remove-Item $spv
     Write-Host "wrote $header"
 }

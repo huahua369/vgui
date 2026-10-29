@@ -246,12 +246,42 @@ namespace vgui_editor_kit {
 			return command_shortcut::parse(text);
 		};
 
+		/* S08: document lifecycle.  Each default action forwards to the host
+		 * handler when installed and otherwise keeps the old status-only
+		 * behaviour, so existing hosts continue to work unchanged. */
+		commands_.add("file.new", "New", [this]() {
+			if (document_handlers_.new_document)
+				document_handlers_.new_document();
+			else
+				set_status("new document");
+		}).shortcut = shortcut("Ctrl+N");
+
+		commands_.add("file.open", "Open...", [this]() {
+			if (document_handlers_.open_document)
+				document_handlers_.open_document();
+			else
+				set_status("open document");
+		}).shortcut = shortcut("Ctrl+O");
+
 		commands_.add("file.save", "Save", [this]() {
-			set_status("saved");
+			if (document_handlers_.save_document)
+				document_handlers_.save_document();
+			else
+				set_status("saved");
 		}).shortcut = shortcut("Ctrl+S");
 
+		commands_.add("file.save_as", "Save As...", [this]() {
+			if (document_handlers_.save_document_as)
+				document_handlers_.save_document_as();
+			else
+				set_status("saved as");
+		}).shortcut = shortcut("Ctrl+Shift+S");
+
 		commands_.add("file.exit", "Exit", [this]() {
-			set_status("exit requested");
+			if (document_handlers_.exit_editor)
+				document_handlers_.exit_editor();
+			else
+				set_status("exit requested");
 		});
 
 		commands_.add("edit.undo", "Undo", [this]() {
@@ -269,11 +299,15 @@ namespace vgui_editor_kit {
 		});
 
 		commands_.add("edit.delete", "Delete", [this]() {
+			const std::vector<object_id> ids = context_.selection_ids();
+			if (document_handlers_.delete_selection &&
+				document_handlers_.delete_selection(ids))
+				return;
 			context_.clear_selection();
 			set_status("delete selection");
 		}).shortcut = shortcut("Delete");
 		commands_.set_enabled("edit.delete", [this]() {
-			return context_.selection() != invalid_object;
+			return context_.selection_count() > 0;
 		});
 
 		/* P08:属性复制/粘贴(作用于属性面板当前行集)。 */
@@ -597,6 +631,16 @@ namespace vgui_editor_kit {
 		return ran;
 	}
 
+	void editor_shell::set_document_handlers(document_handlers handlers)
+	{
+		document_handlers_ = std::move(handlers);
+	}
+
+	const document_handlers& editor_shell::document_handler_state() const noexcept
+	{
+		return document_handlers_;
+	}
+
 	void editor_shell::refresh_commands()
 	{
 		toolbar_.refresh_commands();
@@ -661,7 +705,11 @@ namespace vgui_editor_kit {
 		if (file_menu)
 		{
 			wire_menu(file_menu);
+			add_menu_command(file_menu, "file.new", false);
+			add_menu_command(file_menu, "file.open", false);
+			vgui_menu_add_separator(file_menu);
 			add_menu_command(file_menu, "file.save", false);
+			add_menu_command(file_menu, "file.save_as", false);
 			vgui_menu_add_separator(file_menu);
 			add_menu_command(file_menu, "file.exit", false);
 			vgui_menubar_add_menu(menubar_, "File", file_menu);

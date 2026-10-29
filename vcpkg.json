@@ -24,9 +24,6 @@
       "name": "nlohmann-json"
     },
     {
-      "name": "glslang"
-    },
-    {
       "name": "vulkan"
     },
     {

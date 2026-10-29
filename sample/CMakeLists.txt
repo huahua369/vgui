@@ -50,6 +50,11 @@ set(SRC_OVG_TOOLS_TEST
     ovg_tools_test.cpp
 )
 
+# A08 OVGS 图片节点资源解析/上传缓存测试（mock ovg_ctx_cb，无需 GPU）
+set(SRC_OVG_SCENE_JSON_TEST
+    ovg_scene_json_test.cpp
+)
+
 # vgui 原生纹理离屏读回测试（create/crop/tint/flip/update/release）
 set(SRC_VGUI_TEXTURE_TEST
     vgui_texture_test.cpp
@@ -95,6 +100,9 @@ target_link_libraries(ovg_texture_test PRIVATE libovg SDL3::SDL3 glm::glm-header
 
 add_executable(ovg_tools_test ${SRC_OVG_TOOLS_TEST})
 target_link_libraries(ovg_tools_test PRIVATE libovg SDL3::SDL3 glm::glm-header-only)
+
+add_executable(ovg_scene_json_test ${SRC_OVG_SCENE_JSON_TEST})
+target_link_libraries(ovg_scene_json_test PRIVATE libovg nlohmann_json::nlohmann_json)
 
 add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
 target_link_libraries(vgui_texture_test PRIVATE libovg libvgui SDL3::SDL3 glm::glm-header-only)
