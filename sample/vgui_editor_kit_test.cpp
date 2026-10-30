@@ -12836,6 +12836,38 @@ static int test_code_editor()
 			editor.selection_anchor() != code_position{ 0, 0 })
 			return fail("t04 utf8 selection");
 
+		/* Hosts mirror caret movement through the caret listener. */
+		{
+			editor.set_text("one\ntwo");
+			editor.set_caret(1, 2);
+			int notifications = 0;
+			code_position notified{ -1, -1 };
+			editor.set_caret_listener([&](code_position position)
+				{
+					++notifications;
+					notified = position;
+				});
+			editor.set_caret(1, 2);
+			if (notifications != 1 || notified != code_position{ 1, 2 })
+				return fail("t04 caret listener");
+			editor.set_caret(1, 2);
+			if (notifications != 1)
+				return fail("t04 caret listener dedup");
+			editor.set_selection({ 0, 0 }, { 1, 1 });
+			if (notifications != 2 || notified != code_position{ 1, 1 })
+				return fail("t04 caret listener selection");
+			editor.set_caret(0, 0);
+			if (!editor.insert_text("ab") || notifications != 4 ||
+				notified != code_position{ 0, 2 })
+				return fail("t04 caret listener edit");
+			editor.set_caret_listener(nullptr);
+			editor.set_caret(1, 0);
+			if (notifications != 4)
+				return fail("t04 caret listener cleared");
+			editor.set_text("a\xC3\xA9z");
+			editor.set_selection({ 0, 0 }, { 0, 3 });
+		}
+
 		/* Clipboard bridge is injectable for tests and hosts. */
 		std::string clipboard;
 		editor.set_clipboard_handlers(
@@ -13018,6 +13050,250 @@ static int test_code_editor()
 			return fail("t04 reject state version");
 	}
 
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* T05: read-only Markdown preview, selection/copy, source mapping and
+ * host-supplied media reservations. */
+static int test_markdown_view()
+{
+	using namespace vgui_editor_kit;
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("t05 markdown context");
+	vgui_context_set_size(ui, 900, 600);
+
+	vgui_texture_desc media_desc = {};
+	media_desc.width = 40;
+	media_desc.height = 20;
+	media_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	std::vector<unsigned char> media_pixels(40 * 20 * 4, 255);
+	media_desc.pixels = media_pixels.data();
+	vgui_texture* media_texture = vgui_texture_create(ui, &media_desc);
+	if (!media_texture)
+		return fail("t05 media texture");
+
+	{
+		markdown_view view;
+		view.build(vgui_root(ui));
+		if (!view.built() || !view.widget() ||
+			vgui_widget_get_kind(view.widget()) != VGUI_PANEL ||
+			find_widget(vgui_root(ui), "markdown_view", VGUI_PANEL) !=
+				view.widget() ||
+			!find_widget(vgui_root(ui), "markdown_view_surface", VGUI_CUSTOM) ||
+			!find_widget(vgui_root(ui), "markdown_view_clipboard", VGUI_EDIT))
+			return fail("t05 view build");
+
+		vgui_widget_set_pos(view.widget(), 0.0f, 0.0f);
+		vgui_widget_set_size(view.widget(), 640.0f, 480.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		const std::string doc = R"(# Title
+First **bold** and `code` paragraph with [link](https://x).
+> quoted line
+- [x] done item
+1. ordered item
+
+```cpp
+int x = 1;
+```
+
+| A | B |
+|---|---|
+| 1 | 2 |
+
+![Alt text](poster.png)
+
+<video src="clip.mp4"></video>
+
+---
+)";
+		view.set_markdown(doc);
+		if (view.markdown() != doc || view.truncated())
+			return fail("t05 markdown text");
+		if (view.block_count() != 10)
+			return fail("t05 block count");
+		const int source_lines[10] = { 0, 1, 2, 3, 4, 6, 10, 14, 16, 18 };
+		for (int i = 0; i < 10; ++i)
+		{
+			if (view.block_source_line(i) != source_lines[i])
+				return fail("t05 block source line");
+		}
+		if (view.block_source_end_line(5) != 8 ||
+			view.block_source_end_line(6) != 12 ||
+			view.block_for_source_line(1) != 1 ||
+			view.block_for_source_line(18) != 9 ||
+			view.block_for_source_line(99) != -1)
+			return fail("t05 block lookup");
+		const std::string expected =
+			"Title\n"
+			"First bold and code paragraph with link.\n"
+			"quoted line\n"
+			"done item\n"
+			"ordered item\n"
+			"int x = 1;\n"
+			"A\tB\n"
+			"1\t2\n"
+			"Alt text\n"
+			"clip.mp4";
+		if (view.rendered_text() != expected)
+			return fail("t05 rendered text");
+
+		/* Selection and the copy bridge. */
+		view.select_all();
+		if (!view.has_selection() || view.selected_text() != expected)
+			return fail("t05 select all");
+		std::string copied;
+		view.set_clipboard_setter([&copied](const std::string& text)
+			{
+				copied = text;
+			});
+		if (!view.copy() || copied != expected)
+			return fail("t05 copy");
+		view.clear_selection();
+		if (view.has_selection() || !view.selected_text().empty() || view.copy())
+			return fail("t05 clear selection");
+
+		/* Source-line mapping and the active-block tint. */
+		if (view.source_line_at(20.0f, 0.0f) != 0)
+			return fail("t05 source line at");
+		view.set_active_source_line(14);
+		if (view.active_source_line() != 14)
+			return fail("t05 active line");
+		view.set_active_source_line(-1);
+
+		/* Scrolling clamps and jumps to source lines. */
+		const float content = view.content_height();
+		if (!(content > 480.0f))
+			return fail("t05 content height");
+		view.set_scroll(-100.0f);
+		if (view.scroll_y() != 0.0f)
+			return fail("t05 scroll clamp low");
+		view.set_scroll(content * 10.0f);
+		const float max_scroll = std::max(0.0f, content - 480.0f);
+		if (std::fabs(view.scroll_y() - max_scroll) > 1.0f)
+			return fail("t05 scroll clamp high");
+		view.scroll_to_source_line(18);
+		if (!(view.scroll_y() > 0.0f))
+			return fail("t05 scroll to line");
+		view.scroll_to_source_line(0);
+		if (view.scroll_y() != 0.0f)
+			return fail("t05 scroll to top");
+
+		/* Double-click selects a word; triple-click selects the block. */
+		int paragraph_y = -1;
+		for (int y = 0; y < 200; ++y)
+		{
+			if (view.source_line_at(40.0f, (float)y) == 1)
+			{
+				paragraph_y = y;
+				break;
+			}
+		}
+		if (paragraph_y < 0)
+			return fail("t05 paragraph position");
+		vgui_input_mouse_down(ui, 1, 1.0f, 1.0f, 2);
+		vgui_input_mouse_up(ui, 1, 1.0f, 1.0f, 2);
+		if (view.selected_text() != "Title")
+			return fail("t05 double click word");
+		vgui_input_mouse_down(ui, 1, 20.0f, (float)paragraph_y, 3);
+		vgui_input_mouse_up(ui, 1, 20.0f, (float)paragraph_y, 3);
+		if (view.selected_text() !=
+			"First bold and code paragraph with link.")
+			return fail("t05 triple click block");
+
+		/* The focused preview handles Ctrl+A / Ctrl+C. */
+		copied.clear();
+		vgui_input_key(ui, 'a', 1, VGUI_MOD_CTRL);
+		if (view.selected_text() != expected)
+			return fail("t05 ctrl a");
+		vgui_input_key(ui, 'c', 1, VGUI_MOD_CTRL);
+		if (copied != expected)
+			return fail("t05 ctrl c");
+
+		/* Media reservations are re-resolved on demand; the host owns the
+		 * texture and the resolved aspect feeds layout. */
+		int resolver_calls = 0;
+		std::vector<std::string> resolved_sources;
+		std::vector<md_media_kind> resolved_kinds;
+		view.set_media_resolver([&](const std::string& source,
+			md_media_kind kind) {
+			++resolver_calls;
+			resolved_sources.push_back(source);
+			resolved_kinds.push_back(kind);
+			md_media_info info;
+			if (kind == md_media_kind::video)
+			{
+				info.status = md_media_status::ready;
+				info.texture = media_texture;
+			}
+			else
+			{
+				info.status = md_media_status::pending;
+				info.pixel_width = 400;
+				info.pixel_height = 200;
+			}
+			return info;
+		});
+		if (resolver_calls != 2 || resolved_sources.size() != 2 ||
+			resolved_sources[0] != "poster.png" ||
+			resolved_sources[1] != "clip.mp4" ||
+			resolved_kinds[0] != md_media_kind::image ||
+			resolved_kinds[1] != md_media_kind::video)
+			return fail("t05 media resolver");
+		const float media_content = view.content_height();
+		view.set_max_media_height(120.0f);
+		if (view.max_media_height() != 120.0f ||
+			!(view.content_height() < media_content - 300.0f))
+			return fail("t05 media height layout");
+		view.set_max_media_height(320.0f);
+		if (view.max_media_height() != 320.0f ||
+			std::fabs(view.content_height() - media_content) > 1.0f)
+			return fail("t05 media height restore");
+		view.invalidate_media("poster.png");
+		if (resolver_calls != 3)
+			return fail("t05 invalidate media");
+		view.invalidate_media();
+		if (resolver_calls != 5)
+			return fail("t05 invalidate all media");
+		view.invalidate_media("missing.png");
+		if (resolver_calls != 5)
+			return fail("t05 invalidate missing media");
+
+		/* Font scaling keeps the scroll anchor near the media block. */
+		view.scroll_to_source_line(14);
+		if (!(view.scroll_y() > 0.0f))
+			return fail("t05 font scroll setup");
+		view.set_font_size(20.0f);
+		if (view.font_size() != 20.0f || !(view.content_height() > media_content))
+			return fail("t05 font size");
+		if (!(view.scroll_y() > 0.0f))
+			return fail("t05 font size anchor");
+
+		/* Palette presets reuse the editor highlight theme. */
+		if (!view.set_highlight_preset("light") ||
+			view.highlight_theme().name != "light" ||
+			view.set_highlight_preset("bogus"))
+			return fail("t05 highlight preset");
+
+		/* Oversized documents truncate on a UTF-8 boundary. */
+		std::string huge(1024 * 1024 + 64, 'a');
+		view.set_markdown(huge);
+		if (!view.truncated() || view.markdown().size() != 1024u * 1024u ||
+			view.block_count() != 1)
+			return fail("t05 truncation");
+
+		view.set_markdown(std::string());
+		if (!view.markdown().empty() || view.truncated() ||
+			view.block_count() != 0 || view.has_selection() ||
+			!view.rendered_text().empty() || !view.selected_text().empty())
+			return fail("t05 empty document");
+	}
+
+	vgui_texture_destroy(media_texture);
 	vgui_destroy(ui);
 	return 0;
 }
@@ -14187,6 +14463,8 @@ int main()
 	if (int rc = test_node_graph_view())
 		return rc;
 	if (int rc = test_code_editor())
+		return rc;
+	if (int rc = test_markdown_view())
 		return rc;
 	if (int rc = test_property_grid_label_inert())
 		return rc;

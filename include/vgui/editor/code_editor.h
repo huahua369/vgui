@@ -295,6 +295,9 @@ namespace vgui_editor_kit {
 		void select_all();
 		void clear_selection();
 		std::string selected_text() const;
+		/* Fires after the caret moves (typing, mouse, find, programmatic).
+		 * Used by hosts to keep a preview scrolled to the active block. */
+		void set_caret_listener(std::function<void(code_position)> listener);
 
 		/* ---- clipboard ------------------------------------------------ */
 		/* The default bridge uses a hidden VGUI_EDIT so copy/paste goes through
@@ -537,6 +540,11 @@ namespace vgui_editor_kit {
 
 		float tick_time_ = 0.0f;
 		change_listener change_listener_;
+		std::function<void(code_position)> caret_listener_;
+		code_position last_notified_caret_{};
+		bool has_notified_caret_ = false;
+		bool notifying_caret_ = false;
+		void notify_caret();
 	};
 
 } /* namespace vgui_editor_kit */

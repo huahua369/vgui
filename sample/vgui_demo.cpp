@@ -8,7 +8,9 @@
 //
 // 启用 VGUI_BUILD_EDITOR_KIT 时，末尾的代码编辑器卡片用
 // vgui_editor_kit::code_editor 演示语法高亮编辑、查找替换、撤销重做和
-// 只读富文本日志；该组件同样构建在公共 C API 之上。
+// 只读富文本日志；右侧的 markdown_view 只读预览与编辑器共享高亮配色，
+// 编辑内容与光标联动，图片/视频由宿主纹理供给。两个组件同样构建在公共
+// C API 之上。
 //
 // 窗口与事件由 SDL3 后端（include/vgui/backend/vgui_sdl3.h）提供。
 
@@ -25,6 +27,7 @@
 #include <vgui/vgui.h>		// 公共 C API
 #ifdef VGUI_DEMO_HAS_EDITOR_KIT
 #include <vgui/editor/code_editor.h>
+#include <vgui/editor/markdown_view.h>
 #endif
 #include "ovg_main.h"
 //---------------------------------------------------------------------------
@@ -195,6 +198,14 @@ struct demo_state
 	vgui_widget* code_log_toggle = nullptr;
 	int code_language = 0;
 	bool code_log_mode = false;
+
+	// 只读 Markdown 预览：宿主驱动联动，与编辑器共享高亮配色。
+	vgui_editor_kit::markdown_view preview;
+	vgui_widget* preview_host = nullptr;
+	vgui_widget* preview_toggle = nullptr;
+	vgui_widget* follow_toggle = nullptr;
+	bool preview_visible = true;
+	bool follow_caret = true;
 #endif
 
 	// 数值状态
@@ -766,6 +777,10 @@ static const code_sample k_code_samples[] =
 		"| Find    | Ctrl+F   |\n"
 		"| Replace | Ctrl+H   |\n"
 		"\n"
+		"![poster.png](poster.png)\n"
+		"\n"
+		"<video src=\"clip.mp4\"></video>\n"
+		"\n"
 		"---\n"
 	},
 };
@@ -776,11 +791,18 @@ static void update_code_info(demo_state* st)
 		return;
 	const vgui_editor_kit::code_position caret = st->code.caret();
 	char buf[256] = {};
-	snprintf(buf, sizeof(buf), "%s · %s · 第 %d 行 第 %d 列 · 共 %zu 行%s",
+	const int written = snprintf(buf, sizeof(buf),
+		"%s · %s · 第 %d 行 第 %d 列 · 共 %zu 行%s",
 		st->code_log_mode ? "只读日志" : "编辑",
 		vgui_editor_kit::code_language_name(st->code.language()),
 		caret.line + 1, caret.column + 1, st->code.line_count(),
 		st->code.has_selection() ? " · 有选区" : "");
+	if (written > 0 && (size_t)written < sizeof(buf) && st->preview.built())
+	{
+		snprintf(buf + written, sizeof(buf) - (size_t)written,
+			" · 预览 %d 块%s", st->preview.block_count(),
+			st->preview_visible ? "" : "（已隐藏）");
+	}
 	const char* current = vgui_widget_get_text(st->code_info);
 	if (!current || strcmp(current, buf) != 0)
 		vgui_widget_set_text(st->code_info, buf);
@@ -801,6 +823,19 @@ static void code_set_document(demo_state* st, int index)
 	update_code_info(st);
 	statusf(st, "代码编辑器: 已载入 %s 示例（%zu 行；Ctrl+F 查找 / Ctrl+H 替换）",
 		k_code_samples[index].name, st->code.line_count());
+}
+
+static void preview_sync(demo_state* st)
+{
+	if (!st->preview_visible || !st->preview.built())
+		return;
+	st->preview.set_markdown(st->code.text());
+	if (st->follow_caret)
+	{
+		st->preview.set_active_source_line(st->code.caret_line());
+		st->preview.scroll_to_source_line(st->code.caret_line(), true);
+	}
+	update_code_info(st);
 }
 
 static void on_code_lang_cpp(vgui_widget* w, const vgui_event* e, void* user)
@@ -834,8 +869,12 @@ static void on_code_lang_markdown(vgui_widget* w, const vgui_event* e, void* use
 static void code_set_theme(demo_state* st, const char* preset, const char* label)
 {
 	if (st->code.set_highlight_preset(preset))
+	{
+		if (st->preview.built())
+			st->preview.set_highlight_theme(st->code.highlight_theme());
 		statusf(st, "代码编辑器: 配色 %s（内置调色板，切换配色不会重新分词）",
 			label);
+	}
 }
 
 static void on_code_theme_dark(vgui_widget* w, const vgui_event* e, void* user)
@@ -955,9 +994,49 @@ static void on_code_log_toggle(vgui_widget* w, const vgui_event* e, void* user)
 	}
 	update_code_info(st);
 }
-#endif
+static void on_preview_toggle(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->preview_visible = !st->preview_visible;
+	if (st->preview_host)
+		vgui_widget_set_visible(st->preview_host, st->preview_visible ? 1 : 0);
+	if (st->preview_toggle)
+		vgui_widget_set_text(st->preview_toggle,
+			st->preview_visible ? "隐藏预览" : "显示预览");
+	if (st->preview_visible)
+		preview_sync(st);
+	update_code_info(st);
+	statusf(st, st->preview_visible ?
+		"Markdown 预览: 已显示（选择文本后 Ctrl+C 复制）" :
+		"Markdown 预览: 已隐藏，编辑区占满");
+}
 
-// 动态增删
+static void on_follow_toggle(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->follow_caret = !st->follow_caret;
+	if (st->follow_toggle)
+		vgui_widget_set_text(st->follow_toggle,
+			st->follow_caret ? "跟随光标: 开" : "跟随光标: 关");
+	if (st->preview.built())
+	{
+		if (st->follow_caret)
+		{
+			st->preview.set_active_source_line(st->code.caret_line());
+			st->preview.scroll_to_source_line(st->code.caret_line(), true);
+		}
+		else
+			st->preview.set_active_source_line(-1);
+	}
+	statusf(st, st->follow_caret ?
+		"Markdown 预览: 光标移动时滚动并高亮对应块" :
+		"Markdown 预览: 停止跟随光标（仅手动滚动）");
+}
+#endif
 static void on_dynamic_click(vgui_widget* w, const vgui_event* e, void* user)
 {
 	if (e->type != VGUI_EVENT_CLICK) return;
@@ -2076,17 +2155,108 @@ static void build_code_editor(demo_state* st, vgui_widget* root)
 		"code-theme-contrast");
 	label(r3, "← 内置调色板 / JSON 自定义配色", 12, 0xFF9A9A9A);
 
+	vgui_widget* r4 = row(c, 8);
+	label(r4, "预览:", 14, 0xFFB0B0B0);
+	st->preview_toggle = button(r4, "隐藏预览", on_preview_toggle, st);
+	vgui_widget_set_id(st->preview_toggle, "code-preview-toggle");
+	st->follow_toggle = button(r4, "跟随光标: 开", on_follow_toggle, st);
+	vgui_widget_set_id(st->follow_toggle, "code-follow-toggle");
+	label(r4, "← 只读 Markdown：选择/复制文本；图片与视频使用宿主纹理",
+		12, 0xFF9A9A9A);
+
 	vgui_widget* host = plain(c, VGUI_LAYOUT_COLUMN, 0);
 	vgui_widget_set_id(host, "code-editor-host");
-	vgui_widget_set_size(host, 0, 320);
-	vgui_widget_set_min_size(host, 320, 220);
-	st->code.build(host);
+	vgui_widget_set_size(host, 0, 420);
+	vgui_widget_set_min_size(host, 420, 260);
+
+	vgui_widget* split = vgui_widget_add(host, VGUI_SPLITTER, nullptr);
+	vgui_widget_set_id(split, "code-preview-splitter");
+	vgui_widget_set_grow(split, 1.0f);
+	vgui_widget_set_align_self(split, VGUI_ALIGN_STRETCH);
+	vgui_splitter_set_sash_size(split, 6);
+	vgui_splitter_set_ratio(split, 0.52f);
+
+	vgui_widget* editor_pane = plain(split, VGUI_LAYOUT_COLUMN, 0);
+	vgui_widget_set_id(editor_pane, "code-editor-pane");
+	vgui_widget_set_min_size(editor_pane, 240, 180);
+	st->code.build(editor_pane);
 	vgui_widget_set_align_self(st->code.widget(), VGUI_ALIGN_STRETCH);
+	vgui_widget_set_grow(st->code.widget(), 1.0f);
+
+	st->preview_host = plain(split, VGUI_LAYOUT_COLUMN, 0);
+	vgui_widget_set_id(st->preview_host, "markdown-preview-host");
+	vgui_widget_set_min_size(st->preview_host, 240, 180);
+	st->preview.build(st->preview_host);
+	vgui_widget_set_align_self(st->preview.widget(), VGUI_ALIGN_STRETCH);
+	vgui_widget_set_grow(st->preview.widget(), 1.0f);
+	st->preview.set_highlight_theme(st->code.highlight_theme());
+
+	/* 宿主供给的纹理：预览组件只绘制，不加载/解码任何资源。 */
+	auto make_media_texture = [st](bool video) -> vgui_texture* {
+		const int w = 96;
+		const int h = 54;
+		std::vector<uint32_t> pixels((size_t)w * h);
+		for (int y = 0; y < h; ++y)
+		{
+			for (int x = 0; x < w; ++x)
+			{
+				pixels[(size_t)y * w + x] = video
+					? demo_rgba((uint8_t)(70 + x * 2), 70,
+						(uint8_t)(150 - y))
+					: (((x / 12) + (y / 12)) % 2
+						? demo_rgba(60, 130, 190)
+						: demo_rgba(35, 60, 95));
+			}
+		}
+		vgui_texture_desc desc = {};
+		desc.width = w;
+		desc.height = h;
+		desc.stride = w * 4;
+		desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+		desc.pixels = pixels.data();
+		return vgui_texture_create(st->ui, &desc);
+	};
+	vgui_texture* poster = make_media_texture(false);
+	vgui_texture* clip = make_media_texture(true);
+	st->preview.set_media_resolver(
+		[poster, clip](const std::string& source,
+			vgui_editor_kit::md_media_kind kind) {
+			using namespace vgui_editor_kit;
+			(void)kind;
+			md_media_info info;
+			if (source == "poster.png" && poster)
+			{
+				info.status = md_media_status::ready;
+				info.texture = poster;
+			}
+			else if (source == "clip.mp4" && clip)
+			{
+				info.status = md_media_status::ready;
+				info.texture = clip;
+			}
+			else
+			{
+				info.status = md_media_status::failed;
+				info.error = "demo: no texture for " + source;
+			}
+			return info;
+		});
 
 	st->code_info = label(c, "就绪", 13, 0xFF9A9A9A);
 	vgui_widget_set_id(st->code_info, "code-editor-info");
-	st->code.set_change_listener([st]() { update_code_info(st); });
+	st->code.set_change_listener([st]() {
+		update_code_info(st);
+		preview_sync(st);
+	});
+	st->code.set_caret_listener([st](vgui_editor_kit::code_position caret) {
+		if (!st->follow_caret || !st->preview_visible ||
+			!st->preview.built())
+			return;
+		st->preview.set_active_source_line(caret.line);
+		st->preview.scroll_to_source_line(caret.line, true);
+	});
 	code_set_document(st, 0);
+	preview_sync(st);
 	update_code_info(st);
 }
 #endif

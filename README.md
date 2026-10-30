@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `<vgui/vgui.h>`（兼容旧路径 `<vgui.h>`），不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView、NodeGraphView（`vgui_editor_kit`，基于公共 C API） |
+| **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView、NodeGraphView、CodeEditor、MarkdownView（`vgui_editor_kit`，基于公共 C API） |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
@@ -471,6 +471,34 @@ code.append_log(vgui_editor_kit::code_log_level::info,
 - `code_editor_state`（版本 1）保存语言、只读/行号开关、Tab 宽度、光标和滚动位置；`code_editor_state_to_json()` / `code_editor_state_from_json()` 可单独持久化或校验（拒绝未知语言、负光标、非有限滚动和未知版本）。`editor_shell` 将其放入 `editor_layout`（版本 6），暴露 `code()` 与 `view.code` 命令，CODE 页默认追加在底部标签最后。
 - `vgui_game_editor` 在 CODE 页预置 C++ 示例脚本，主循环调用 `code().tick(delta)`；`Ctrl+F`、Tab 缩进、拖动选择和 Edit > Undo/Redo 可直接验证。`vgui_demo` 在启用 editor kit 构建时也提供“代码编辑器 CodeEditor”卡片，可切换 C++/Lua/JSON/Markdown 示例、查找/替换、撤销/重做、只读日志模式和深色/浅色/护眼/高对比内置调色板。`test_code_editor` 覆盖语言识别、状态 JSON、换行归一、各语言与跨行词法、Markdown 块级/行内规则与围栏内嵌语言、主题 JSON 与调色板应用、惰性高亮、手工 span、编辑/缩进/undo/redo、UTF-8 光标与选区、剪贴板、只读、查找/替换、富文本日志颜色与保留、分块加载（含跨块 CRLF）、文件失败保留、取消加载和状态应用。
 
+### Markdown 预览与代码编辑器联动（markdown_view）
+
+`vgui_editor_kit::markdown_view` 是只读预览组件：渲染 Markdown、鼠标选择、`Ctrl+A` / `Ctrl+C` 复制文本；不编辑文档、不跟随链接、不在组件内加载或解码任何图片/视频，任务列表复选框也只显示不响应点击。
+
+```cpp
+vgui_editor_kit::markdown_view preview;
+preview.build(preview_host);
+preview.set_highlight_theme(code.highlight_theme());   // 与编辑器共享配色
+preview.set_media_resolver([&](const std::string& source,
+    vgui_editor_kit::md_media_kind kind) {
+    return host_lookup_media(source, kind);            // 只返回宿主纹理/状态
+});
+code.set_change_listener([&] { preview.set_markdown(code.text()); });
+code.set_caret_listener([&](vgui_editor_kit::code_position caret) {
+    preview.set_active_source_line(caret.line);
+    preview.scroll_to_source_line(caret.line, true);   // 光标 → 预览滚动
+});
+```
+
+- 与 `code_editor` 共用 `gui/editor/markdown_lex.*` 词法，避免编辑器高亮与预览规则漂移；覆盖标题、段落、引用、有序/无序与任务列表、围栏代码（按 info string 内嵌着色）、表格、分隔线以及行内代码、强调、删除线、链接。P0 同时补充了 `vgui_widget_measure_text_sized()`、`vgui_widget_get_line_height_sized()` 与 `vgui_custom_draw_text_sized()`，自定义绘制可按逻辑字号测量、换行和绘制。
+- 联动由宿主驱动：`set_markdown()` 刷新文档；`set_caret_listener()` 在光标移动、编辑、查找和程序化定位后通知宿主；`block_count()` / `block_source_line()` / `block_source_end_line()` / `block_for_source_line()` / `source_line_at()` 提供源码行映射；`scroll_to_block()` / `scroll_to_source_line()` 与 `set_active_source_line()` 实现跟随光标和当前块高亮。组件不提供点击跳转，也不会反向修改编辑器。
+- 文本选择支持拖动、双击选词、三击选块、`Ctrl+A`、`Ctrl+C`，以及滚轮、PageUp/PageDown、Home/End 滚动；`rendered_text()` 返回与复制一致的纯文本（标记已去除，表格单元格以 Tab 分隔，块之间换行）。
+- 图片/视频只做显示预留：解析 `![alt](src "title")`、`![alt][ref]`、`<img>` 与 `<video>`，由宿主 `set_media_resolver()` 返回 `md_media_info`（pending/ready/failed、借用纹理、像素尺寸或 aspect）。组件只绘制宿主提供的 `vgui_texture*`，绝不创建、更新或销毁纹理；异步加载完成后宿主调用 `invalidate_media()` 重新查询并按需重排。
+- 无纹理时显示 16:9 占位，最大高度由 `set_max_media_height()` 控制（默认 320 逻辑像素）；有纹理时按 resolver 的 aspect → 纹理尺寸 → 16:9 的顺序布局。媒体说明文字取 alt，缺省时用文件名；status 为 ready 却没有纹理时按 failed 处理。
+- `set_font_size()` / `set_max_media_height()` 使用逻辑单位并随 `ui_scale` 缩放；文档超过 1 MiB 时在 UTF-8 边界截断并置 `truncated()`。公共几何与坐标均为有效像素。
+- `set_highlight_preset()` 复用编辑器的 dark/light/solarized/high_contrast 调色板；选区、滚动条、焦点环等界面色来自 `vgui_theme`，因此跟随宿主主题。预览与编辑器可共享同一个 `code_highlight_theme` 实例。
+- `vgui_demo` 的 CodeEditor 卡片在编辑器右侧加入可拖动分栏的预览面板：编辑内容实时刷新、跟随光标可开关，Markdown 示例内的图片/视频由卡片创建的两张宿主纹理提供；`test_markdown_view`（T05）覆盖构建、块/源码行映射、纯文本与选择复制、双击/三击、`Ctrl+A`/`Ctrl+C`、滚动钳制、字体与媒体高度重排、resolver 调用/失效、配色和截断。
+
 ### 工具栏与状态栏组件（vgui_editor_kit）
 
 S07 组件的公共头位于 `include/vgui/editor/`，实现位于 `gui/editor/`，全部构建在公共 C API 之上：
@@ -900,13 +928,13 @@ out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例（操作路径见
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
 out/bin/x64d/vgui_c_api_test.exe       # 纯 C API 头文件/链接与行为冒烟测试
-out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文档生命周期(S08)、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
+out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文档生命周期(S08)、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、代码编辑器(T04)、Markdown 预览(T05)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
 out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Outliner/AssetBrowser/Viewport 基线对比
 out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/上传缓存测试（mock OVG 回调）
 ```
 
-`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例（Markdown 示例覆盖标题、引用、任务列表、表格、分隔线和 cpp 围栏内嵌高亮）、打开查找/替换、撤销/重做，切换为带等级颜色的只读富文本日志，并在深色/浅色/护眼/高对比四套内置调色板之间切换。
+`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例（Markdown 示例覆盖标题、引用、任务列表、表格、分隔线和 cpp 围栏内嵌高亮）、打开查找/替换、撤销/重做，切换为带等级颜色的只读富文本日志，并在深色/浅色/护眼/高对比四套内置调色板之间切换；卡片右侧还有可拖动分栏的 Markdown 预览，编辑内容实时联动、可切换跟随光标，示例图片/视频由卡片创建的宿主纹理提供。
 
 ### 游戏编辑器示例（vgui_game_editor）
 
@@ -1040,7 +1068,7 @@ include/
 gui/
   vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Dock/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（不安装）
-  editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)
+  editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)，含编辑/预览共享的 Markdown 词法 markdown_lex
 backends/
   vgui_sdl3.cpp       SDL3 窗口、输入、IME、DPI 与 GPU 视口实现
   vgui_renderer_sdl3.cpp vgui 专用 SDL3 GPU 2D 矢量后端实现
@@ -1050,13 +1078,13 @@ backends/
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）
 sample/
-  vgui_demo.cpp             全部控件的交互演示（editor kit 构建时含 CodeEditor 卡片）
+  vgui_demo.cpp             全部控件的交互演示（editor kit 构建时含 CodeEditor 卡片与 Markdown 预览分栏）
   ui_editor_main.cpp         UI 文档编辑器（配合 gui/ui_editor.cpp）
   vgui_game_editor.cpp      游戏编辑器 dogfood 示例（editor_shell + 3D 视口）
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast、按键处理器与 UI 缩放自测
   vgui_c_api_test.c         纯 C 消费者冒烟测试（含 UI 缩放、监听器与整树重算）
-  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、文档生命周期、类型化属性、命令栈、资产/日志/Canvas/时间线/节点图/代码编辑器、DPI 与布局持久化自测
+  vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、文档生命周期、类型化属性、命令栈、资产/日志/Canvas/时间线/节点图/代码编辑器/Markdown 预览、DPI 与布局持久化自测
   vgui_texture_test.cpp     图片纹理离屏读回测试
   vgui_screenshot_test.cpp  E03 截图回归（离屏渲染 + 基线容差对比）
   screenshots/              E03 基线 PNG
