@@ -1,10 +1,14 @@
 // sample/vgui_demo.cpp: vgui C API 控件演示程序
 //
-// 演示 gui/vgui.h 公开的纯 C API（注意：本文件除窗口/渲染后端外，
-// 全部通过 C 接口操作 UI，没有任何 C++ 控件类参与）：
+// 演示 gui/vgui.h 公开的纯 C API（注意：除窗口/渲染后端和可选的代码
+// 编辑器卡片外，全部通过 C 接口操作 UI，没有其他 C++ 控件类参与）：
 //   面板 / 标签 / 按钮 / 复选框 / 单选 / 开关 / 滑杆 / 进度条 / 图片 / 编辑框 / 分隔线
 // 以及：行列布局、对齐、间距、grow、justify、滚动面板、主题切换、焦点、
 //       文本编辑辅助、动态增删控件、可见性与禁用状态。
+//
+// 启用 VGUI_BUILD_EDITOR_KIT 时，末尾的代码编辑器卡片用
+// vgui_editor_kit::code_editor 演示语法高亮编辑、查找替换、撤销重做和
+// 只读富文本日志；该组件同样构建在公共 C API 之上。
 //
 // 窗口与事件由 SDL3 后端（include/vgui/backend/vgui_sdl3.h）提供。
 
@@ -19,6 +23,9 @@
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>		// 公共 C API
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+#include <vgui/editor/code_editor.h>
+#endif
 #include "ovg_main.h"
 //---------------------------------------------------------------------------
 // 主题预设
@@ -180,6 +187,15 @@ struct demo_state
 	vgui_widget* tabs_demo = nullptr;
 	vgui_widget* tab_info = nullptr;
 	int tab_added = 0;
+
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+	// 代码编辑器（vgui_editor_kit，构建在公共 C API 之上）
+	vgui_editor_kit::code_editor code;
+	vgui_widget* code_info = nullptr;
+	vgui_widget* code_log_toggle = nullptr;
+	int code_language = 0;
+	bool code_log_mode = false;
+#endif
 
 	// 数值状态
 	int clicks = 0;
@@ -664,6 +680,234 @@ static void on_focus_alpha(vgui_widget* w, float v, void* user)
 	if (st->ui) vgui_context_set_focus_alpha(st->ui, v);
 	statusf(st, "焦点环透明度: %.0f%%（0%% 时不渲染焦点）", v * 100.0f);
 }
+
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+//---------------------------------------------------------------------------
+// 代码编辑器（vgui_editor_kit::code_editor）
+//---------------------------------------------------------------------------
+
+struct code_sample
+{
+	const char* name;
+	vgui_editor_kit::code_language language;
+	const char* text;
+};
+
+static const code_sample k_code_samples[] =
+{
+	{
+		"C++",
+		vgui_editor_kit::code_language::cpp,
+		"// vgui code_editor demo - C++\n"
+		"#include <cstdio>\n"
+		"\n"
+		"namespace demo {\n"
+		"\n"
+		"struct frame_stats\n"
+		"{\n"
+		"\tfloat delta = 0.0f;\n"
+		"\tint draw_calls = 0;\n"
+		"};\n"
+		"\n"
+		"void tick(frame_stats& stats)\n"
+		"{\n"
+		"\tif (stats.draw_calls > 0)\n"
+		"\t\tstd::printf(\"frames: %d\\n\", stats.draw_calls);\n"
+		"}\n"
+		"\n"
+		"} // namespace demo\n"
+	},
+	{
+		"Lua",
+		vgui_editor_kit::code_language::lua,
+		"-- vgui code_editor demo - Lua\n"
+		"local speed = 2.5\n"
+		"local function tick(dt)\n"
+		"    player.yaw = player.yaw + speed * dt\n"
+		"    if player.yaw > math.pi * 2 then\n"
+		"        player.yaw = player.yaw - math.pi * 2\n"
+		"    end\n"
+		"    print(string.format(\"yaw: %.3f\", player.yaw))\n"
+		"end\n"
+		"\n"
+		"return { tick = tick }\n"
+	},
+	{
+		"JSON",
+		vgui_editor_kit::code_language::json,
+		"{\n"
+		"  \"name\": \"vgui code_editor\",\n"
+		"  \"version\": 1,\n"
+		"  \"features\": [\"highlight\", \"line numbers\", \"find\"],\n"
+		"  \"editor\": { \"tab_size\": 4, \"read_only\": false }\n"
+		"}\n"
+	},
+	{
+		"Markdown",
+		vgui_editor_kit::code_language::markdown,
+		"# vgui code editor\n"
+		"\n"
+		"Syntax highlighted **Markdown** document.\n"
+		"\n"
+		"- C++, Lua, JSON and Markdown\n"
+		"- Ctrl+F find, Ctrl+H replace\n"
+		"- Tab indent, Ctrl+Z undo\n"
+		"\n"
+		"```cpp\n"
+		"int main() { return 0; }\n"
+		"```\n"
+	},
+};
+
+static void update_code_info(demo_state* st)
+{
+	if (!st->code_info || !st->code.built())
+		return;
+	const vgui_editor_kit::code_position caret = st->code.caret();
+	char buf[256] = {};
+	snprintf(buf, sizeof(buf), "%s · %s · 第 %d 行 第 %d 列 · 共 %zu 行%s",
+		st->code_log_mode ? "只读日志" : "编辑",
+		vgui_editor_kit::code_language_name(st->code.language()),
+		caret.line + 1, caret.column + 1, st->code.line_count(),
+		st->code.has_selection() ? " · 有选区" : "");
+	const char* current = vgui_widget_get_text(st->code_info);
+	if (!current || strcmp(current, buf) != 0)
+		vgui_widget_set_text(st->code_info, buf);
+}
+
+static void code_set_document(demo_state* st, int index)
+{
+	const int count = (int)(sizeof(k_code_samples) / sizeof(k_code_samples[0]));
+	if (index < 0 || index >= count)
+		return;
+	st->code_language = index;
+	st->code_log_mode = false;
+	st->code.set_read_only(false);
+	st->code.set_language(k_code_samples[index].language);
+	st->code.set_text(k_code_samples[index].text);
+	if (st->code_log_toggle)
+		vgui_widget_set_text(st->code_log_toggle, "只读日志");
+	update_code_info(st);
+	statusf(st, "代码编辑器: 已载入 %s 示例（%zu 行；Ctrl+F 查找 / Ctrl+H 替换）",
+		k_code_samples[index].name, st->code.line_count());
+}
+
+static void on_code_lang_cpp(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_document((demo_state*)user, 0);
+}
+
+static void on_code_lang_lua(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_document((demo_state*)user, 1);
+}
+
+static void on_code_lang_json(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_document((demo_state*)user, 2);
+}
+
+static void on_code_lang_markdown(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_document((demo_state*)user, 3);
+}
+
+static void on_code_find(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	if (st->code.read_only())
+	{
+		statusf(st, "代码编辑器: 只读日志模式不能查找，先切回编辑模式");
+		return;
+	}
+	st->code.open_find();
+	statusf(st, "代码编辑器: Ctrl+F 查找 / Ctrl+H 替换 / Enter 下一个 / Shift+Enter 上一个");
+}
+
+static void on_code_replace(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	if (st->code.read_only())
+	{
+		statusf(st, "代码编辑器: 只读日志模式不能替换，先切回编辑模式");
+		return;
+	}
+	st->code.open_find(true);
+	statusf(st, "代码编辑器: 替换栏已打开（Ctrl+H）");
+}
+
+static void on_code_undo(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	if (st->code.read_only())
+	{
+		statusf(st, "代码编辑器: 只读日志模式没有编辑历史");
+		return;
+	}
+	statusf(st, st->code.undo() ? "代码编辑器: 已撤销" : "代码编辑器: 没有可撤销的编辑");
+	update_code_info(st);
+}
+
+static void on_code_redo(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	if (st->code.read_only())
+	{
+		statusf(st, "代码编辑器: 只读日志模式没有编辑历史");
+		return;
+	}
+	statusf(st, st->code.redo() ? "代码编辑器: 已重做" : "代码编辑器: 没有可重做的编辑");
+	update_code_info(st);
+}
+
+static void on_code_log_toggle(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	st->code_log_mode = !st->code_log_mode;
+	if (st->code_log_mode)
+	{
+		st->code.set_read_only(true);
+		st->code.set_language(vgui_editor_kit::code_language::plain);
+		st->code.set_text("");
+		st->code.append_log(vgui_editor_kit::code_log_level::info,
+			"asset loaded: player.mesh", "12:00:01");
+		st->code.append_log(vgui_editor_kit::code_log_level::debug,
+			"pipeline compiled in 18 ms", "12:00:02");
+		st->code.append_log(vgui_editor_kit::code_log_level::warning,
+			"vertex attribute 'uv1' unused", "12:00:03");
+		st->code.append_log(vgui_editor_kit::code_log_level::error,
+			"texture decode failed: broken.ktx2", "12:00:04");
+		st->code.append_log(vgui_editor_kit::code_log_level::trace,
+			"frame 1024 submitted", "12:00:05");
+		if (st->code_log_toggle)
+			vgui_widget_set_text(st->code_log_toggle, "编辑模式");
+		statusf(st, "代码编辑器: 只读富文本日志（append_log + 等级颜色 + 自动滚动）");
+	}
+	else
+	{
+		code_set_document(st, st->code_language);
+	}
+	update_code_info(st);
+}
+#endif
 
 // 动态增删
 static void on_dynamic_click(vgui_widget* w, const vgui_event* e, void* user)
@@ -1750,6 +1994,43 @@ static void build_edits(demo_state* st, vgui_widget* root)
 	apply_edit_style(st);
 }
 
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+static void build_code_editor(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "代码编辑器 CodeEditor");
+
+	vgui_widget* r1 = row(c, 8);
+	label(r1, "语言:", 14, 0xFFB0B0B0);
+	vgui_widget_set_id(button(r1, "C++", on_code_lang_cpp, st), "code-lang-cpp");
+	vgui_widget_set_id(button(r1, "Lua", on_code_lang_lua, st), "code-lang-lua");
+	vgui_widget_set_id(button(r1, "JSON", on_code_lang_json, st), "code-lang-json");
+	vgui_widget_set_id(button(r1, "Markdown", on_code_lang_markdown, st), "code-lang-markdown");
+	label(r1, "← 语法高亮 / 行号 / 惰性 token 着色", 12, 0xFF9A9A9A);
+
+	vgui_widget* r2 = row(c, 8);
+	vgui_widget_set_id(button(r2, "查找", on_code_find, st), "code-find");
+	vgui_widget_set_id(button(r2, "替换", on_code_replace, st), "code-replace");
+	vgui_widget_set_id(button(r2, "撤销", on_code_undo, st), "code-undo");
+	vgui_widget_set_id(button(r2, "重做", on_code_redo, st), "code-redo");
+	st->code_log_toggle = button(r2, "只读日志", on_code_log_toggle, st);
+	vgui_widget_set_id(st->code_log_toggle, "code-log-mode");
+	label(r2, "Tab 缩进 · Ctrl+Z/Y 撤销重做 · 拖动选择 · 双击选词", 12, 0xFF9A9A9A);
+
+	vgui_widget* host = plain(c, VGUI_LAYOUT_COLUMN, 0);
+	vgui_widget_set_id(host, "code-editor-host");
+	vgui_widget_set_size(host, 0, 320);
+	vgui_widget_set_min_size(host, 320, 220);
+	st->code.build(host);
+	vgui_widget_set_align_self(st->code.widget(), VGUI_ALIGN_STRETCH);
+
+	st->code_info = label(c, "就绪", 13, 0xFF9A9A9A);
+	vgui_widget_set_id(st->code_info, "code-editor-info");
+	st->code.set_change_listener([st]() { update_code_info(st); });
+	code_set_document(st, 0);
+	update_code_info(st);
+}
+#endif
+
 static void build_scroll(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "滚动面板 Panel + Scroll");
@@ -2295,6 +2576,9 @@ static void build_ui(demo_state* st)
 	build_sliders(st, root);
 	build_progress(st, root);
 	build_edits(st, root);
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+	build_code_editor(st, root);
+#endif
 	build_models(st, root);
 	build_drag_drop(st, root);
 	build_tabs_splitter(st, root);
@@ -2334,6 +2618,11 @@ static void tick(demo_state* st, float delta)
 		}
 		vgui_widget_set_value(st->progress_auto, st->anim * 100.0f);
 	}
+
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+	st->code.tick(delta);
+	update_code_info(st);
+#endif
 }
 
 //---------------------------------------------------------------------------

@@ -117,6 +117,12 @@ endif()
 
 add_executable(vgui_demo ${SRC_DEMO})
 target_link_libraries(vgui_demo PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+if(VGUI_BUILD_EDITOR_KIT)
+    # 代码编辑器卡片直接复用 editor kit 的 code_editor；未构建 kit 时
+    # 该卡片整体被编译宏裁掉，demo 仍是纯 C API 示例。
+    target_link_libraries(vgui_demo PRIVATE vgui::editor_kit)
+    target_compile_definitions(vgui_demo PRIVATE VGUI_DEMO_HAS_EDITOR_KIT=1)
+endif()
 
 add_executable(vgui_edit_test ${SRC_EDIT_TEST})
 target_link_libraries(vgui_edit_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)

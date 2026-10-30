@@ -460,7 +460,7 @@ code.append_log(vgui_editor_kit::code_log_level::info,
 - 富文本日志使用 `append_log(level, text, timestamp)`：时间戳以弱化色绘制，消息按 trace/debug/info/warning/error 等级着色，`set_log_level_color()` 可覆盖；`set_max_lines()` 限制保留行数并累加 `dropped_lines()`，`set_auto_scroll(false)` 暂停自动跟随。`set_line_spans()` 可直接写入手工 span，适合高亮搜索结果或宿主自定义富文本。
 - `open_file()` / `begin_incremental_load()` 以流式方式打开大文件；`process_load_step()` 每次最多读取 `load_chunk_size()` 字节，`tick(delta)` 在宿主主循环推进加载和日志自动滚动，`load_progress()` / `cancel_load()` 提供进度与取消。CRLF/CR 在分块边界也会正确归一为 LF。
 - `code_editor_state`（版本 1）保存语言、只读/行号开关、Tab 宽度、光标和滚动位置；`code_editor_state_to_json()` / `code_editor_state_from_json()` 可单独持久化或校验（拒绝未知语言、负光标、非有限滚动和未知版本）。`editor_shell` 将其放入 `editor_layout`（版本 6），暴露 `code()` 与 `view.code` 命令，CODE 页默认追加在底部标签最后。
-- `vgui_game_editor` 在 CODE 页预置 C++ 示例脚本，主循环调用 `code().tick(delta)`；`Ctrl+F`、Tab 缩进、拖动选择和 Edit > Undo/Redo 可直接验证。`test_code_editor` 覆盖语言识别、状态 JSON、换行归一、各语言与跨行词法、惰性高亮、手工 span、编辑/缩进/undo/redo、UTF-8 光标与选区、剪贴板、只读、查找/替换、富文本日志颜色与保留、分块加载（含跨块 CRLF）、文件失败保留、取消加载和状态应用。
+- `vgui_game_editor` 在 CODE 页预置 C++ 示例脚本，主循环调用 `code().tick(delta)`；`Ctrl+F`、Tab 缩进、拖动选择和 Edit > Undo/Redo 可直接验证。`vgui_demo` 在启用 editor kit 构建时也提供“代码编辑器 CodeEditor”卡片，可切换 C++/Lua/JSON/Markdown 示例、查找/替换、撤销/重做和只读日志模式。`test_code_editor` 覆盖语言识别、状态 JSON、换行归一、各语言与跨行词法、惰性高亮、手工 span、编辑/缩进/undo/redo、UTF-8 光标与选区、剪贴板、只读、查找/替换、富文本日志颜色与保留、分块加载（含跨块 CRLF）、文件失败保留、取消加载和状态应用。
 
 ### 工具栏与状态栏组件（vgui_editor_kit）
 
@@ -897,7 +897,7 @@ out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Ou
 out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/上传缓存测试（mock OVG 回调）
 ```
 
-`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。
+`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例、打开查找/替换、撤销/重做，并切换为带等级颜色的只读富文本日志。
 
 ### 游戏编辑器示例（vgui_game_editor）
 
@@ -1041,7 +1041,7 @@ backends/
 third_party/
   ovg/                OVG 矢量渲染器（git submodule）
 sample/
-  vgui_demo.cpp             全部控件的交互演示
+  vgui_demo.cpp             全部控件的交互演示（editor kit 构建时含 CodeEditor 卡片）
   ui_editor_main.cpp         UI 文档编辑器（配合 gui/ui_editor.cpp）
   vgui_game_editor.cpp      游戏编辑器 dogfood 示例（editor_shell + 3D 视口）
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
