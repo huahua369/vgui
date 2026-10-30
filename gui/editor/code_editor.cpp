@@ -38,6 +38,58 @@ namespace vgui_editor_kit {
 			return (color & 0x00FFFFFFu) | ((alpha & 0xFFu) << 24);
 		}
 
+		/* Scissor rectangles do not participate in the OVG save/restore stack,
+		 * so custom painting intersects the active clip and restores it. */
+		class clip_guard
+		{
+		public:
+			clip_guard(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w,
+				float h) : cb_(cb), vg_(vg)
+			{
+				if (!cb_ || !vg_ || !cb_->clip_rect)
+					return;
+				if (cb_->get_clip_rect)
+				{
+					cb_->get_clip_rect(vg_, saved_);
+					has_saved_ = true;
+				}
+				int x0 = (int)std::floor(x);
+				int y0 = (int)std::floor(y);
+				int x1 = (int)std::ceil(x + w);
+				int y1 = (int)std::ceil(y + h);
+				if (has_saved_ && saved_[2] > 0 && saved_[3] > 0)
+				{
+					x0 = std::max(x0, saved_[0]);
+					y0 = std::max(y0, saved_[1]);
+					x1 = std::min(x1, saved_[0] + saved_[2]);
+					y1 = std::min(y1, saved_[1] + saved_[3]);
+				}
+				cb_->clip_rect(vg_, x0, y0, std::max(0, x1 - x0),
+					std::max(0, y1 - y0));
+				active_ = true;
+			}
+
+			~clip_guard()
+			{
+				if (!active_ || !cb_ || !vg_)
+					return;
+				if (has_saved_ && cb_->set_clip_rect)
+					cb_->set_clip_rect(vg_, saved_);
+				else if (cb_->clip_rect)
+					cb_->clip_rect(vg_, 0, 0, -1, -1);
+			}
+
+			clip_guard(const clip_guard&) = delete;
+			clip_guard& operator=(const clip_guard&) = delete;
+
+		private:
+			ovg_ctx_cb* cb_ = nullptr;
+			rvg_t* vg_ = nullptr;
+			int saved_[4] = { 0, 0, 0, 0 };
+			bool has_saved_ = false;
+			bool active_ = false;
+		};
+
 		vgui_color theme_color(vgui_color color, vgui_color fallback)
 		{
 			return color ? color : fallback;
@@ -3748,55 +3800,68 @@ namespace vgui_editor_kit {
 			}
 		}
 
-		/* Text runs.  Gutter and scrollbars are painted afterwards so text
-		 * scrolled under them is covered. */
-		for (int line = first_line; line <= last_line; ++line)
+		/* Text runs live inside the text viewport.  Horizontal scrolling moves
+		 * runs to the left of the gutter, so they are scissored to the
+		 * viewport instead of relying on later fills to cover them. */
 		{
-			const float y = g.y + (float)line * line_height - self->scroll_y_;
-			const std::string& source = self->lines_[(std::size_t)line].text;
-			const int length = (int)source.size();
-			const std::vector<code_span>& spans = self->line_spans(line);
-
-			auto draw_run = [&](int start, int end, vgui_color color)
-				{
-					if (end <= start)
-						return;
-					const std::string text = self->display_segment(line, start, end);
-					if (text.empty())
-						return;
-					const float x = g.text_x +
-						self->x_for_column(line, start) - self->scroll_x_;
-					if (x >= g.text_x + g.text_width)
-						return;
-					const float width = std::max(1.0f,
-						g.text_x + g.text_width - x);
-					vgui_custom_draw_text(self->editor_, cb, vg, text.c_str(),
-						x, y, width, line_height, color, 0.0f, 0.0f);
-				};
-
-			int cursor = 0;
-			for (const code_span& span : spans)
+			clip_guard clip(cb, vg, g.text_x, g.y, g.text_width,
+				g.text_height);
+			for (int line = first_line; line <= last_line; ++line)
 			{
-				const int start = std::clamp(span.start, 0, length);
-				const int end = std::clamp(span.start + span.length, start,
-					length);
-				if (start > cursor)
-					draw_run(cursor, start, theme.text);
-				vgui_color color = theme.text;
-				if (span.color)
-					color = span.color;
-				else if (span.kind != code_token_kind::text)
-					color = self->token_color(span.kind);
-				draw_run(start, end, color);
-				cursor = std::max(cursor, end);
+				const float y = g.y + (float)line * line_height -
+					self->scroll_y_;
+				const std::string& source =
+					self->lines_[(std::size_t)line].text;
+				const int length = (int)source.size();
+				const std::vector<code_span>& spans = self->line_spans(line);
+
+				auto draw_run = [&](int start, int end, vgui_color color)
+					{
+						if (end <= start)
+							return;
+						const std::string text =
+							self->display_segment(line, start, end);
+						if (text.empty())
+							return;
+						const float x = g.text_x +
+							self->x_for_column(line, start) - self->scroll_x_;
+						if (x >= g.text_x + g.text_width)
+							return;
+						const float width = std::max(1.0f,
+							g.text_x + g.text_width - x);
+						vgui_custom_draw_text(self->editor_, cb, vg,
+							text.c_str(), x, y, width, line_height, color,
+							0.0f, 0.0f);
+					};
+
+				int cursor = 0;
+				for (const code_span& span : spans)
+				{
+					const int start = std::clamp(span.start, 0, length);
+					const int end = std::clamp(span.start + span.length,
+						start, length);
+					if (start > cursor)
+						draw_run(cursor, start, theme.text);
+					vgui_color color = theme.text;
+					if (span.color)
+						color = span.color;
+					else if (span.kind != code_token_kind::text)
+						color = self->token_color(span.kind);
+					draw_run(start, end, color);
+					cursor = std::max(cursor, end);
+				}
+				if (cursor < length)
+					draw_run(cursor, length, theme.text);
 			}
-			if (cursor < length)
-				draw_run(cursor, length, theme.text);
 		}
 
-		/* Gutter overlay and line numbers. */
+		/* Gutter overlay and line numbers.  The tint is composited over an
+		 * opaque background so glyph edges from the clipped text viewport
+		 * cannot show through it. */
 		if (g.gutter > 0.0f)
 		{
+			ovg_tools::fill_rect(cb, vg, g.x, g.y, g.gutter, g.height,
+				to_ovg(theme.edit_bg));
 			ovg_tools::fill_rect(cb, vg, g.x, g.y, g.gutter, g.height,
 				to_ovg(with_alpha(theme.text, 0x0A)));
 			ovg_tools::fill_rect(cb, vg, g.text_x - 1.0f, g.y, 1.0f,
@@ -3822,6 +3887,8 @@ namespace vgui_editor_kit {
 		{
 			const float track_x = g.x + g.width - g.vertical_bar;
 			ovg_tools::fill_rect(cb, vg, track_x, g.y, g.vertical_bar,
+				g.text_height, to_ovg(theme.edit_bg));
+			ovg_tools::fill_rect(cb, vg, track_x, g.y, g.vertical_bar,
 				g.text_height, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
 			const float content = (float)self->lines_.size() * line_height;
 			const float thumb = std::max(20.0f, g.text_height * g.text_height /
@@ -3839,6 +3906,8 @@ namespace vgui_editor_kit {
 		{
 			const float track_y = g.y + g.height - g.horizontal_bar;
 			ovg_tools::fill_rect(cb, vg, g.text_x, track_y, g.text_width,
+				g.horizontal_bar, to_ovg(theme.edit_bg));
+			ovg_tools::fill_rect(cb, vg, g.text_x, track_y, g.text_width,
 				g.horizontal_bar, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
 			const float content = self->content_width();
 			const float thumb = std::max(20.0f, g.text_width * g.text_width /
@@ -3855,6 +3924,9 @@ namespace vgui_editor_kit {
 		/* Bottom-right corner where the two bars meet. */
 		if (g.vertical_bar > 0.0f && g.horizontal_bar > 0.0f)
 		{
+			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
+				g.y + g.height - g.horizontal_bar, g.vertical_bar,
+				g.horizontal_bar, to_ovg(theme.edit_bg));
 			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
 				g.y + g.height - g.horizontal_bar, g.vertical_bar,
 				g.horizontal_bar, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
