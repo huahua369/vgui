@@ -1127,6 +1127,18 @@ namespace {
 		return fs;
 	}
 
+	/* Explicit logical size scaled to effective pixels; 0 keeps the widget font. */
+	static float vgui_font_size_for(vgui_context* ctx, vgui_widget* w, float logical)
+	{
+		if (logical > 0.0f)
+		{
+			const float scale = ctx ? ctx->ui_scale : 1.0f;
+			const float fs = logical * (scale > 0.0f ? scale : 1.0f);
+			if (fs >= 1.0f) return fs;
+		}
+		return vgui_font_size(ctx, w);
+	}
+
 	/* A widget that consumes printable text: either a writable edit box or a
 	 * custom widget that edits text itself. */
 	static bool vgui_wants_text(vgui_widget* w)
@@ -10550,32 +10562,42 @@ namespace {
 	/* Physical text drawing.  ax/ay are used exactly as supplied, so compound
 	 * controls that already placed every sub-region themselves can avoid the
 	 * automatic RTL mirroring done by vgui_draw_text(). */
-	static void vgui_draw_text_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+	static void vgui_draw_text_sized_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
 		const std::string& text, float x, float y, float width, float height,
-		uint32_t color, float ax, float ay)
+		uint32_t color, float ax, float ay, float fs)
 	{
 		if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
-		float lh = vgui_line_height(ctx, w);
-		float tw = std::max(width, vgui_text_width(w, text));
+		if (fs < 1.0f) fs = vgui_font_size(ctx, w);
+		const float lh = vg_get_font_metrics(ctx->font, fs).line_height;
+		const float tw = std::max(width,
+			vgui_measure_text_range(ctx->font, (int)fs, text.c_str(), (int)text.size()));
 		int count = vgui_text_lines(text);
 		float th = std::max(height, lh);
 		if (count > 1)
 			th = lh * (float)count;
 		text_style_t st = {};
 		st.family = ctx->font;
-		st.fontsize = vgui_font_size(ctx, w);
+		st.fontsize = fs;
 		st.color = vgui_ovg_color(color);
 		st.min_subpixel = ctx->style.text_min_subpixel;
 		text_box_rt box = {};
 		box.text_align = { ax, ay };
 		box.rc = { x,y,tw, th };
-		box.baseline = vgui_text_ascent(ctx, w);
+		box.baseline = vg_get_font_metrics(ctx->font, fs).ascent;
 		text_st_t t = {};
 		t.pos = { x, y };
 		t.size = { tw, height };
 		t.text = text.c_str();
 		t.text_len = (int)text.size();
 		cb->add_text(vg, &t, &st, &box);
+	}
+
+	static void vgui_draw_text_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+		const std::string& text, float x, float y, float width, float height,
+		uint32_t color, float ax, float ay)
+	{
+		vgui_draw_text_sized_raw(ctx, cb, vg, w, text, x, y, width, height,
+			color, ax, ay, vgui_font_size(ctx, w));
 	}
 
 	/* Direction-aware text drawing: 0/1 alignment means start/end, so it swaps
@@ -18734,6 +18756,22 @@ extern "C" {
 		return vgui_line_height(widget->ctx, widget);
 	}
 
+	float vgui_widget_measure_text_sized(vgui_widget* widget, const char* text,
+		float font_size)
+	{
+		if (!widget || !widget->ctx || !text || !*text) return 0.0f;
+		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
+		return vgui_measure_text_range(widget->ctx->font, (int)fs, text,
+			(int)std::strlen(text));
+	}
+
+	float vgui_widget_get_line_height_sized(vgui_widget* widget, float font_size)
+	{
+		if (!widget || !widget->ctx) return 0.0f;
+		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
+		return vg_get_font_metrics(widget->ctx->font, fs).line_height;
+	}
+
 	void vgui_widget_get_intrinsic_size(vgui_widget* widget, float* width,
 		float* height)
 	{
@@ -18776,6 +18814,18 @@ extern "C" {
 		int has_saved = 0;
 		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
 		vgui_draw_text(widget->ctx, cb, vg, widget, text, x, y, width, height, vgui_widget_color(widget, color), align_x, align_y);
+		vgui_custom_clip_end(cb, vg, saved, has_saved);
+	}
+
+	void vgui_custom_draw_text_sized(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size)
+	{
+		if (!widget || !widget->ctx || !cb || !vg || !text || !*text || width <= 0.0f || height <= 0.0f || color == 0) return;
+		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
+		glm::ivec4 saved = {};
+		int has_saved = 0;
+		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
+		vgui_draw_text_sized_raw(widget->ctx, cb, vg, widget, text, x, y, width,
+			height, vgui_widget_color(widget, color), align_x, align_y, fs);
 		vgui_custom_clip_end(cb, vg, saved, has_saved);
 	}
 

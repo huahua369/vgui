@@ -1038,6 +1038,11 @@ extern "C" {
 	 * when a font is available and a size-derived fallback otherwise. */
 	VGUI_API float vgui_widget_measure_text(vgui_widget* widget, const char* text);
 	VGUI_API float vgui_widget_get_line_height(vgui_widget* widget);
+	/* Same metrics with an explicit logical font size (0 = widget font).
+	 * Returned values stay in effective pixels like their unsized peers. */
+	VGUI_API float vgui_widget_measure_text_sized(vgui_widget* widget, const char* text,
+		float font_size);
+	VGUI_API float vgui_widget_get_line_height_sized(vgui_widget* widget, float font_size);
 	/* Natural size of the widget subtree in effective pixels: the size it
 	 * would take without a forced width/height (panels sum/max their children).
 	 * Layout runs this every frame, so reading it is cheap and side-effect free;
@@ -1977,6 +1982,10 @@ extern "C" {
 	 * textures plus lazy upload.  Coordinates are absolute window coordinates,
 	 * matching the abs_x/abs_y passed to the draw callback. */
 	VGUI_API void vgui_custom_draw_text(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y);
+	/* vgui_custom_draw_text() with an explicit logical font size (0 = widget
+	 * font).  Alignment is physical: 0/1 do not swap in RTL, so callers that
+	 * place each run themselves keep full control. */
+	VGUI_API void vgui_custom_draw_text_sized(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size);
 	VGUI_API void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint);
 
 	/* ------------------------------------------------------------------------- */
