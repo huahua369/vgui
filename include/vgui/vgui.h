@@ -1836,6 +1836,9 @@ extern "C" {
 	VGUI_API int vgui_input_mouse_move(vgui_context* ctx, float x, float y);
 	VGUI_API int vgui_input_mouse_down(vgui_context* ctx, int button, float x, float y, int clicks);
 	VGUI_API int vgui_input_mouse_up(vgui_context* ctx, int button, float x, float y, int clicks);
+	/* The wheel goes to the hit custom widget before the enclosing scroll
+	 * panel.  Its event callback returning 1 keeps the wheel from scrolling
+	 * that panel (used by embedded editors and previews). */
 	VGUI_API int vgui_input_mouse_wheel(vgui_context* ctx, float wheel_x, float wheel_y);
 	VGUI_API int vgui_input_key(vgui_context* ctx, int key, int down, int mods);
 	VGUI_API int vgui_input_text(vgui_context* ctx, const char* utf8);

@@ -9915,8 +9915,26 @@ namespace {
 		}
 		vgui_widget* h = ctx->hot ? ctx->hot : vgui_hit_rec(vgui_active_root(ctx), ctx->mouse_x, ctx->mouse_y);
 		int consumed = 0;
+		bool custom_wheel_delivered = false;
+		/* Custom surfaces (editor, markdown preview, canvas, ...) see the wheel
+		 * before the built-in ancestor scrolling so a consumed wheel does not
+		 * also scroll the surrounding panel. */
+		if (h && (wx != 0.0f || wy != 0.0f) && h->enabled &&
+			h->kind == VGUI_CUSTOM && h->custom_event)
+		{
+			vgui_event e = {};
+			e.type = VGUI_EVENT_MOUSE_WHEEL;
+			e.x = ctx->mouse_x - h->abs_x;
+			e.y = ctx->mouse_y - h->abs_y;
+			e.wheel_x = wx;
+			e.wheel_y = wy;
+			custom_wheel_delivered = true;
+			consumed = h->custom_event(h, &e, h->custom_event_user) ? 1 : 0;
+			if (!ctx->alive.count(h))
+				h = nullptr;
+		}
 		vgui_widget* edit = vgui_find_edit(h);
-		if (edit && (wx != 0 || wy != 0))
+		if (!consumed && edit && (wx != 0 || wy != 0))
 			consumed = vgui_edit_wheel(ctx, edit, wx, wy) ? 1 : 0;
 		if ((wx != 0 || wy != 0) && !consumed)
 		{
@@ -9973,7 +9991,7 @@ namespace {
 				consumed = 1;
 			}
 		}
-		if (h && ctx->alive.count(h))
+		if (h && ctx->alive.count(h) && !(custom_wheel_delivered && consumed))
 		{
 			vgui_event e = {};
 			e.type = VGUI_EVENT_MOUSE_WHEEL;
@@ -9981,7 +9999,17 @@ namespace {
 			e.y = ctx->mouse_y - h->abs_y;
 			e.wheel_x = wx;
 			e.wheel_y = wy;
-			vgui_emit_full(h, e);
+			/* The custom callback already ran; forward only to event_fn so a
+			 * custom widget is not notified twice. */
+			if (custom_wheel_delivered)
+			{
+				if (h->event_fn)
+					h->event_fn(h, &e, h->user);
+			}
+			else
+			{
+				vgui_emit_full(h, e);
+			}
 		}
 		ctx->want_mouse = consumed || h != nullptr;
 		vgui_end_input(ctx);

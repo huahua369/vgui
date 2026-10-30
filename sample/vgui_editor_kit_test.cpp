@@ -13298,6 +13298,96 @@ int x = 1;
 	return 0;
 }
 
+/* Wheel over the embedded editor and preview is consumed by the inner view
+ * and must not also scroll the surrounding page. */
+static int test_wheel_scroll_isolation()
+{
+	using namespace vgui_editor_kit;
+
+	const auto scroll_host = [](vgui_context* ui) {
+		vgui_widget* host = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+		vgui_widget_set_pos(host, 0.0f, 0.0f);
+		vgui_widget_set_size(host, 700.0f, 480.0f);
+		vgui_panel_set_scrollable(host, 0, 1);
+		vgui_widget* spacer = vgui_widget_add(host, VGUI_PANEL, nullptr);
+		vgui_widget_set_pos(spacer, 0.0f, 1200.0f);
+		vgui_widget_set_size(spacer, 100.0f, 100.0f);
+		return host;
+	};
+
+	{
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("wheel isolation md context");
+		vgui_context_set_size(ui, 900, 600);
+		vgui_widget* host = scroll_host(ui);
+
+		markdown_view view;
+		view.build(host);
+		vgui_widget_set_pos(view.widget(), 0.0f, 0.0f);
+		vgui_widget_set_size(view.widget(), 680.0f, 460.0f);
+		std::string doc;
+		for (int i = 0; i < 120; ++i)
+			doc += "paragraph " + std::to_string(i) + "\n\n";
+		view.set_markdown(doc);
+		view.set_scroll(0.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		float cw = 0.0f, ch = 0.0f;
+		vgui_panel_get_content_size(host, &cw, &ch);
+		if (!(ch > 480.0f))
+			return fail("wheel isolation markdown host content");
+
+		vgui_input_mouse_move(ui, 300.0f, 200.0f);
+		vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+		float hx = 0.0f, hy = 0.0f;
+		vgui_panel_get_scroll(host, &hx, &hy);
+		if (!(view.scroll_y() > 0.0f))
+			return fail("wheel isolation markdown inner");
+		if (hy != 0.0f)
+			return fail("wheel isolation markdown outer");
+		vgui_destroy(ui);
+	}
+
+	{
+		vgui_context* ui = vgui_create(nullptr, 16.0f);
+		if (!ui)
+			return fail("wheel isolation editor context");
+		vgui_context_set_size(ui, 900, 600);
+		vgui_widget* host = scroll_host(ui);
+
+		code_editor editor;
+		editor.build(host);
+		vgui_widget_set_pos(editor.widget(), 0.0f, 0.0f);
+		vgui_widget_set_size(editor.widget(), 680.0f, 460.0f);
+		std::string text;
+		for (int i = 0; i < 200; ++i)
+			text += "line " + std::to_string(i) + "\n";
+		editor.set_text(text);
+		editor.set_scroll(0.0f, 0.0f);
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		float cw = 0.0f, ch = 0.0f;
+		vgui_panel_get_content_size(host, &cw, &ch);
+		if (!(ch > 480.0f))
+			return fail("wheel isolation editor host content");
+
+		vgui_input_mouse_move(ui, 300.0f, 200.0f);
+		vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+		float hx = 0.0f, hy = 0.0f;
+		vgui_panel_get_scroll(host, &hx, &hy);
+		if (!(editor.scroll_y() > 0.0f))
+			return fail("wheel isolation editor inner");
+		if (hy != 0.0f)
+			return fail("wheel isolation editor outer");
+		vgui_destroy(ui);
+	}
+
+	return 0;
+}
+
 /* A07: console model, filtering, stack folding, jump locations and producers. */
 static int test_console_view()
 {
@@ -14465,6 +14555,8 @@ int main()
 	if (int rc = test_code_editor())
 		return rc;
 	if (int rc = test_markdown_view())
+		return rc;
+	if (int rc = test_wheel_scroll_isolation())
 		return rc;
 	if (int rc = test_property_grid_label_inert())
 		return rc;

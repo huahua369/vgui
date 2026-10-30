@@ -2601,7 +2601,7 @@ namespace vgui_editor_kit {
 		md_block& block, const md_line& line, float ox, float oy,
 		float content_w, float s)
 	{
-		const float y = oy + line.y;
+		const float y = oy + block.top + line.y;
 		const float x0 = ox + line.x;
 
 		if (block.kind == md_block_kind::list_item &&
