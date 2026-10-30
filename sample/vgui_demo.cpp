@@ -747,15 +747,26 @@ static const code_sample k_code_samples[] =
 		vgui_editor_kit::code_language::markdown,
 		"# vgui code editor\n"
 		"\n"
-		"Syntax highlighted **Markdown** document.\n"
+		"Syntax highlighted **Markdown** with *inline emphasis*,\n"
+		"`inline code`, ~~strikethrough~~ and [links](https://example.com).\n"
 		"\n"
-		"- C++, Lua, JSON and Markdown\n"
+		"> Blockquotes are tinted, and **inline rules** still apply.\n"
+		"\n"
+		"- C++, Lua, JSON and Markdown fences\n"
 		"- Ctrl+F find, Ctrl+H replace\n"
-		"- Tab indent, Ctrl+Z undo\n"
+		"- [x] Tab indent, Ctrl+Z undo\n"
+		"- [ ] Switch the colour palette below\n"
 		"\n"
 		"```cpp\n"
 		"int main() { return 0; }\n"
 		"```\n"
+		"\n"
+		"| Feature | Shortcut |\n"
+		"|---------|----------|\n"
+		"| Find    | Ctrl+F   |\n"
+		"| Replace | Ctrl+H   |\n"
+		"\n"
+		"---\n"
 	},
 };
 
@@ -818,6 +829,43 @@ static void on_code_lang_markdown(vgui_widget* w, const vgui_event* e, void* use
 	(void)w;
 	if (e->type != VGUI_EVENT_CLICK) return;
 	code_set_document((demo_state*)user, 3);
+}
+
+static void code_set_theme(demo_state* st, const char* preset, const char* label)
+{
+	if (st->code.set_highlight_preset(preset))
+		statusf(st, "代码编辑器: 配色 %s（内置调色板，切换配色不会重新分词）",
+			label);
+}
+
+static void on_code_theme_dark(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_theme((demo_state*)user, "dark", "深色");
+}
+
+static void on_code_theme_light(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_theme((demo_state*)user, "light", "浅色");
+}
+
+static void on_code_theme_solarized(vgui_widget* w, const vgui_event* e,
+	void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_theme((demo_state*)user, "solarized", "护眼");
+}
+
+static void on_code_theme_contrast(vgui_widget* w, const vgui_event* e,
+	void* user)
+{
+	(void)w;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	code_set_theme((demo_state*)user, "high_contrast", "高对比");
 }
 
 static void on_code_find(vgui_widget* w, const vgui_event* e, void* user)
@@ -2015,6 +2063,18 @@ static void build_code_editor(demo_state* st, vgui_widget* root)
 	st->code_log_toggle = button(r2, "只读日志", on_code_log_toggle, st);
 	vgui_widget_set_id(st->code_log_toggle, "code-log-mode");
 	label(r2, "Tab 缩进 · Ctrl+Z/Y 撤销重做 · 拖动选择 · 双击选词", 12, 0xFF9A9A9A);
+
+	vgui_widget* r3 = row(c, 8);
+	label(r3, "配色:", 14, 0xFFB0B0B0);
+	vgui_widget_set_id(button(r3, "深色", on_code_theme_dark, st),
+		"code-theme-dark");
+	vgui_widget_set_id(button(r3, "浅色", on_code_theme_light, st),
+		"code-theme-light");
+	vgui_widget_set_id(button(r3, "护眼", on_code_theme_solarized, st),
+		"code-theme-solarized");
+	vgui_widget_set_id(button(r3, "高对比", on_code_theme_contrast, st),
+		"code-theme-contrast");
+	label(r3, "← 内置调色板 / JSON 自定义配色", 12, 0xFF9A9A9A);
 
 	vgui_widget* host = plain(c, VGUI_LAYOUT_COLUMN, 0);
 	vgui_widget_set_id(host, "code-editor-host");

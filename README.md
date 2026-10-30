@@ -446,6 +446,13 @@ code.set_clipboard_handlers(get_clipboard, set_clipboard); // 可选
 code.open_find();                                   // Ctrl+F，Ctrl+H 打开替换
 // 主循环：code.tick(delta);
 
+// 可选：加载用户配色（宿主 settings.json 等），或直接用内置调色板：
+vgui_editor_kit::code_highlight_theme theme;
+if (vgui_editor_kit::code_highlight_theme_from_json(theme_json, theme, &error))
+    code.set_highlight_theme(theme);
+else
+    code.set_highlight_preset("light");             // dark / light / solarized / high_contrast
+
 // 同一控件作为只读富文本日志：
 code.set_read_only(true);
 code.set_max_lines(5000);
@@ -454,13 +461,15 @@ code.append_log(vgui_editor_kit::code_log_level::info,
 ```
 
 - 支持 plain/C++/C#/GLSL/JSON/Lua/Python/INI/Markdown；`code_language_from_name()` / `code_language_from_path()` 负责识别，`set_token_color()` 可覆盖 token 颜色。C 块注释、Python 三引号、Lua 长注释/长字符串和 Markdown 围栏在跨行时保持词法状态，`highlight_valid_upto()` 可查询已计算的惰性高亮范围。
+- Markdown 词法覆盖 ATX/setext 标题、块引用、有序/无序与任务列表、表格、分隔线、围栏及 info string、行内代码、`*`/`_` 强调、`~~` 删除线、链接/图片（文本与 URL 分色）和行内 HTML；列表 `[ ]`/`[x]` 复选框单独着色。围栏可标注 `cpp`/`lua`/`json`/`glsl` 等语言，围栏内按该语言着色并保持跨行状态，未知语言按普通字符串处理。Markdown 专属 token 追加在 `code_token_kind` 尾部，`code_token_kind_name()` / `code_token_kind_from_name()` 提供名称与枚举的双向映射。
+- `code_highlight_theme`（版本 1）是可序列化的完整配色：`code_highlight_theme_to_json()` / `code_highlight_theme_from_json()` 校验版本、颜色格式和未知 token 名称；`code_highlight_theme_preset()` / `code_highlight_theme_preset_names()` 提供 dark、light、solarized（护眼）、high_contrast 四套内置调色板；`set_highlight_theme()` / `set_highlight_preset()` 应用到编辑器，`highlight_theme()` 返回当前配色。JSON 形如 `{"version":1,"name":"my-theme","background":"#FFFFFF","colors":{"keyword":"#C678DD","comment":0xFF7F848E}}`，颜色接受 `#RGB`、`#RRGGBB`、`#AARRGGBB` 和整数，0 表示沿用默认。`background` 为 0 时沿用宿主主题的 `edit_bg`，设置背景后正文、行号、滚动条和光标颜色自动适配。该配置属于宿主设置（如 Host `settings.json`），不写入 `editor_layout`；`set_token_color()` 会把主题名切换为 `custom`，`reset_token_colors()` 恢复 dark 默认。
 - 编辑支持插入/删除、回车自动缩进、Tab/Shift+Tab、全选、鼠标点选/拖动/双击选词/三击选行、方向键/Home/End/PageUp/PageDown、UTF-8 边界钳制和 IME。未绑定 `set_command_stack()` 时使用本地历史；绑定后每次编辑压入可合并的单条命令（`Insert`、`Backspace`、`Delete`、`New Line`、`Indent`、`Outdent`、`Replace`）。
 - 复制/剪切/粘贴默认通过隐藏 `VGUI_EDIT` 使用系统剪贴板；`set_clipboard_handlers()` 可注入宿主实现，便于测试或无窗口环境。`set_read_only(true)` 只禁止修改，选择和复制仍然可用。
 - `Ctrl+F` 打开查找栏，`Ctrl+H` 打开替换栏；支持大小写切换、上一个/下一个、当前替换和全部替换。`set_find_query()` / `find_all()` / `matches()` / `active_match()` 可用于宿主搜索 UI。
 - 富文本日志使用 `append_log(level, text, timestamp)`：时间戳以弱化色绘制，消息按 trace/debug/info/warning/error 等级着色，`set_log_level_color()` 可覆盖；`set_max_lines()` 限制保留行数并累加 `dropped_lines()`，`set_auto_scroll(false)` 暂停自动跟随。`set_line_spans()` 可直接写入手工 span，适合高亮搜索结果或宿主自定义富文本。
 - `open_file()` / `begin_incremental_load()` 以流式方式打开大文件；`process_load_step()` 每次最多读取 `load_chunk_size()` 字节，`tick(delta)` 在宿主主循环推进加载和日志自动滚动，`load_progress()` / `cancel_load()` 提供进度与取消。CRLF/CR 在分块边界也会正确归一为 LF。
 - `code_editor_state`（版本 1）保存语言、只读/行号开关、Tab 宽度、光标和滚动位置；`code_editor_state_to_json()` / `code_editor_state_from_json()` 可单独持久化或校验（拒绝未知语言、负光标、非有限滚动和未知版本）。`editor_shell` 将其放入 `editor_layout`（版本 6），暴露 `code()` 与 `view.code` 命令，CODE 页默认追加在底部标签最后。
-- `vgui_game_editor` 在 CODE 页预置 C++ 示例脚本，主循环调用 `code().tick(delta)`；`Ctrl+F`、Tab 缩进、拖动选择和 Edit > Undo/Redo 可直接验证。`vgui_demo` 在启用 editor kit 构建时也提供“代码编辑器 CodeEditor”卡片，可切换 C++/Lua/JSON/Markdown 示例、查找/替换、撤销/重做和只读日志模式。`test_code_editor` 覆盖语言识别、状态 JSON、换行归一、各语言与跨行词法、惰性高亮、手工 span、编辑/缩进/undo/redo、UTF-8 光标与选区、剪贴板、只读、查找/替换、富文本日志颜色与保留、分块加载（含跨块 CRLF）、文件失败保留、取消加载和状态应用。
+- `vgui_game_editor` 在 CODE 页预置 C++ 示例脚本，主循环调用 `code().tick(delta)`；`Ctrl+F`、Tab 缩进、拖动选择和 Edit > Undo/Redo 可直接验证。`vgui_demo` 在启用 editor kit 构建时也提供“代码编辑器 CodeEditor”卡片，可切换 C++/Lua/JSON/Markdown 示例、查找/替换、撤销/重做、只读日志模式和深色/浅色/护眼/高对比内置调色板。`test_code_editor` 覆盖语言识别、状态 JSON、换行归一、各语言与跨行词法、Markdown 块级/行内规则与围栏内嵌语言、主题 JSON 与调色板应用、惰性高亮、手工 span、编辑/缩进/undo/redo、UTF-8 光标与选区、剪贴板、只读、查找/替换、富文本日志颜色与保留、分块加载（含跨块 CRLF）、文件失败保留、取消加载和状态应用。
 
 ### 工具栏与状态栏组件（vgui_editor_kit）
 
@@ -897,7 +906,7 @@ out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Ou
 out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/上传缓存测试（mock OVG 回调）
 ```
 
-`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例、打开查找/替换、撤销/重做，并切换为带等级颜色的只读富文本日志。
+`vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例（Markdown 示例覆盖标题、引用、任务列表、表格、分隔线和 cpp 围栏内嵌高亮）、打开查找/替换、撤销/重做，切换为带等级颜色的只读富文本日志，并在深色/浅色/护眼/高对比四套内置调色板之间切换。
 
 ### 游戏编辑器示例（vgui_game_editor）
 

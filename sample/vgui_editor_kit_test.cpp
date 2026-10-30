@@ -12455,6 +12455,69 @@ static int test_code_editor()
 		code_language_from_path("noext") != code_language::plain)
 		return fail("t04 language from path");
 
+	/* Token kind names, built-in palettes and highlight-theme JSON. */
+	if (std::string(code_token_kind_name(code_token_kind::heading)) !=
+		"heading" ||
+		std::string(code_token_kind_name(
+			code_token_kind::horizontal_rule)) != "horizontal_rule")
+		return fail("t04 token kind names");
+	for (int i = 0; i < code_token_kind_count; ++i)
+	{
+		const code_token_kind kind = static_cast<code_token_kind>(i);
+		code_token_kind decoded_kind = code_token_kind::text;
+		if (!code_token_kind_from_name(code_token_kind_name(kind),
+			&decoded_kind) || decoded_kind != kind)
+			return fail("t04 token kind name round trip");
+	}
+	if (code_token_kind_from_name("bogus", nullptr) ||
+		code_highlight_theme_preset_names().size() != 4)
+		return fail("t04 token kind lookup");
+	code_highlight_theme theme;
+	if (!code_highlight_theme_preset("light", theme) ||
+		theme.name != "light" ||
+		theme.background != 0xFFFFFFFF ||
+		theme.colors[static_cast<std::size_t>(
+			static_cast<int>(code_token_kind::keyword))] != 0xFFCF222E ||
+		!code_highlight_theme_preset("high_contrast", theme))
+		return fail("t04 highlight preset");
+	code_highlight_theme theme_copy;
+	if (!code_highlight_theme_from_json(code_highlight_theme_to_json(theme),
+		theme_copy) || theme_copy.name != theme.name ||
+		theme_copy.background != theme.background)
+		return fail("t04 highlight theme json");
+	for (int i = 0; i < code_token_kind_count; ++i)
+	{
+		if (theme_copy.colors[static_cast<std::size_t>(i)] !=
+			theme.colors[static_cast<std::size_t>(i)])
+			return fail("t04 highlight theme json colors");
+	}
+	if (code_highlight_theme_from_json("{\"version\": 99}", theme_copy) ||
+		code_highlight_theme_from_json(
+			"{\"colors\": {\"bogus\": \"#FFFFFF\"}}", theme_copy) ||
+		code_highlight_theme_from_json(
+			"{\"colors\": {\"keyword\": \"red\"}}", theme_copy) ||
+		code_highlight_theme_from_json(
+			"{\"colors\": {\"keyword\": \"#00000000\"}}", theme_copy) ||
+		code_highlight_theme_from_json("[]", theme_copy))
+		return fail("t04 highlight theme validation");
+	code_highlight_theme partial;
+	if (!code_highlight_theme_from_json(
+		"{\"version\": 1, \"name\": \"paper\", \"background\": \"#FDF6E3\","
+		"\"colors\": {\"keyword\": \"#123\", \"comment\": 4294901760}}",
+		partial) ||
+		partial.name != "paper" ||
+		partial.background != 0xFFFDF6E3 ||
+		partial.colors[static_cast<std::size_t>(
+			static_cast<int>(code_token_kind::keyword))] != 0xFF112233 ||
+		partial.colors[static_cast<std::size_t>(
+			static_cast<int>(code_token_kind::comment))] != 0xFFFF0000 ||
+		partial.colors[static_cast<std::size_t>(
+			static_cast<int>(code_token_kind::text))] != 0)
+		return fail("t04 highlight theme partial");
+	if (code_highlight_theme_from_json(
+		"{\"background\": \"#00000000\"}", theme_copy))
+		return fail("t04 highlight background validation");
+
 	/* Persisted state round-trip and validation. */
 	code_editor_state state;
 	state.language = code_language::lua;
@@ -12504,6 +12567,38 @@ static int test_code_editor()
 
 		int changes = 0;
 		editor.set_change_listener([&changes]() { ++changes; });
+
+		/* Palettes recolour without invalidating cached spans. */
+		editor.set_language(code_language::markdown);
+		editor.set_text("# H\n**b**");
+		(void)editor.line_spans(1);
+		std::size_t theme_highlighted = 0;
+		editor.highlight_valid_upto(&theme_highlighted);
+		if (theme_highlighted != 2)
+			return fail("t04 highlight before recolor");
+		if (!editor.set_highlight_preset("light") ||
+			editor.set_highlight_preset("bogus") ||
+			editor.token_color(code_token_kind::keyword) != 0xFFCF222E ||
+			editor.highlight_theme().background != 0xFFFFFFFF)
+			return fail("t04 editor highlight preset");
+		editor.highlight_valid_upto(&theme_highlighted);
+		if (theme_highlighted != 2)
+			return fail("t04 recolor retokenized");
+		code_highlight_theme custom = editor.highlight_theme();
+		custom.name = "custom";
+		custom.colors[static_cast<std::size_t>(
+			static_cast<int>(code_token_kind::keyword))] = 0xFF00FF00;
+		editor.set_highlight_theme(custom);
+		editor.set_language(code_language::cpp);
+		editor.set_text("int x;");
+		(void)editor.line_spans(0);
+		editor.set_token_color(code_token_kind::keyword, 0xFFAA0000);
+		if (editor.token_color(code_token_kind::keyword) != 0xFFAA0000 ||
+			editor.token_color(code_token_kind::string_literal) != 0xFF0A3069)
+			return fail("t04 token color precedence");
+		editor.reset_token_colors();
+		if (editor.token_color(code_token_kind::keyword) != 0xFFC678DD)
+			return fail("t04 token colors reset");
 
 		/* Document model: newline normalization and line access. */
 		editor.set_text("alpha\r\nbeta\rgamma\n");
@@ -12578,12 +12673,61 @@ static int test_code_editor()
 
 		editor.set_language(code_language::markdown);
 		editor.set_text("# Title\n```cpp\nint x;\n```\n");
-		if (!span_has(editor.line_spans(0), code_token_kind::attribute) ||
+		if (!span_has(editor.line_spans(0), code_token_kind::heading) ||
+			!span_has(editor.line_spans(0),
+				code_token_kind::heading_marker) ||
 			!span_has(editor.line_spans(1), code_token_kind::comment) ||
-			!span_has(editor.line_spans(2),
-				code_token_kind::string_literal) ||
+			!span_has(editor.line_spans(1), code_token_kind::attribute) ||
+			!span_has(editor.line_spans(2), code_token_kind::type) ||
+			!span_has(editor.line_spans(2), code_token_kind::punctuation) ||
 			!span_has(editor.line_spans(3), code_token_kind::comment))
 			return fail("t04 markdown tokenizer");
+
+		/* Markdown inline rules: emphasis, strike, code, links and HTML. */
+		editor.set_text("plain **bold** *italic* ~~gone~~ `code` "
+			"[text](https://example.com) ![alt](img.png) <b>x</b>\n"
+			"> quoted **note**\n"
+			"- [x] done\n"
+			"1. first\n");
+		const std::vector<code_span>& inline_spans = editor.line_spans(0);
+		if (!span_has(inline_spans, code_token_kind::strong) ||
+			!span_has(inline_spans, code_token_kind::emphasis) ||
+			!span_has(inline_spans, code_token_kind::strike) ||
+			!span_has(inline_spans, code_token_kind::inline_code) ||
+			!span_has(inline_spans, code_token_kind::link) ||
+			!span_has(inline_spans, code_token_kind::link_url) ||
+			!span_has(inline_spans, code_token_kind::tag) ||
+			!span_has(editor.line_spans(1), code_token_kind::quote) ||
+			!span_has(editor.line_spans(2), code_token_kind::list_marker) ||
+			!span_has(editor.line_spans(2), code_token_kind::attribute) ||
+			!span_has(editor.line_spans(3), code_token_kind::list_marker))
+			return fail("t04 markdown inline");
+
+		/* Setext headings, tables and thematic breaks. */
+		editor.set_text("Heading\n=======\n| a | b |\n|---|---|\n---\n");
+		if (!span_has(editor.line_spans(0), code_token_kind::heading) ||
+			!span_has(editor.line_spans(1),
+				code_token_kind::heading_marker) ||
+			!span_has(editor.line_spans(2), code_token_kind::table) ||
+			!span_has(editor.line_spans(3), code_token_kind::table) ||
+			!span_has(editor.line_spans(4),
+				code_token_kind::horizontal_rule))
+			return fail("t04 markdown blocks");
+
+		/* Fenced blocks keep the embedded language state across lines. */
+		editor.set_text("```cpp\n/* note\nstill */\nint y = 1;\n```\n"
+			"```\nplain fence\n```\n");
+		if (!span_has(editor.line_spans(1), code_token_kind::comment) ||
+			!span_has(editor.line_spans(2), code_token_kind::comment) ||
+			!span_has(editor.line_spans(3), code_token_kind::type) ||
+			!span_has(editor.line_spans(3), code_token_kind::number) ||
+			!span_has(editor.line_spans(6),
+				code_token_kind::string_literal))
+			return fail("t04 markdown fences");
+		editor.set_text("```unknownlang\nabc\n```\n");
+		if (!span_has(editor.line_spans(1),
+			code_token_kind::string_literal))
+			return fail("t04 markdown unknown fence");
 
 		editor.set_language(code_language::json);
 		editor.set_text("{\"on\": true, \"n\": 1}");

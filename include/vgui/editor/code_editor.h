@@ -64,10 +64,53 @@ namespace vgui_editor_kit {
 		operator_token,
 		punctuation,
 		attribute,
-		tag
+		tag,
+		/* Markdown-specific kinds (appended to keep the old numbering). */
+		heading,
+		heading_marker,
+		emphasis,
+		strong,
+		strike,
+		link,
+		link_url,
+		inline_code,
+		quote,
+		list_marker,
+		table,
+		horizontal_rule
 	};
 
-	static constexpr int code_token_kind_count = 12;
+	static constexpr int code_token_kind_count = 24;
+
+	/* Stable names used by the highlight-theme JSON (e.g. "string_literal"). */
+	const char* code_token_kind_name(code_token_kind kind) noexcept;
+	bool code_token_kind_from_name(const std::string& name,
+		code_token_kind* kind) noexcept;
+
+	/* A colour palette for token kinds.  A zero entry keeps the built-in
+	 * colour for that kind, so partial themes are valid.  `background` is
+	 * optional: zero keeps the host theme background, otherwise the editor
+	 * paints it (required by light palettes).  JSON format:
+	 *   { "version": 1, "name": "my-theme", "background": "#FFFFFF",
+	 *     "colors": { "keyword": "#C678DD", "comment": 0xFF7F848E } }
+	 * Colour strings accept "#RRGGBB", "#AARRGGBB", "#RGB" or integers. */
+	struct code_highlight_theme
+	{
+		static constexpr int current_version = 1;
+
+		int version = current_version;
+		std::string name = "custom";
+		vgui_color background = 0;
+		std::array<vgui_color, code_token_kind_count> colors{};
+	};
+
+	std::string code_highlight_theme_to_json(const code_highlight_theme& theme);
+	bool code_highlight_theme_from_json(const std::string& text,
+		code_highlight_theme& out, std::string* error = nullptr);
+	/* Built-in palettes: "dark", "light", "solarized", "high_contrast". */
+	std::vector<std::string> code_highlight_theme_preset_names();
+	bool code_highlight_theme_preset(const std::string& name,
+		code_highlight_theme& out);
 
 	struct code_span
 	{
@@ -215,6 +258,13 @@ namespace vgui_editor_kit {
 		vgui_color token_color(code_token_kind kind) const noexcept;
 		void reset_token_colors();
 
+		/* Applies a palette; zero theme entries keep the built-in colour.
+		 * Recolouring never invalidates cached token spans. */
+		void set_highlight_theme(const code_highlight_theme& theme);
+		code_highlight_theme highlight_theme() const;
+		/* Convenience wrapper around code_highlight_theme_preset(). */
+		bool set_highlight_preset(const std::string& name);
+
 		/* ---- editing -------------------------------------------------- */
 		bool insert_text(std::string text);
 		bool backspace();
@@ -353,7 +403,8 @@ namespace vgui_editor_kit {
 		void set_document_raw(std::string text);
 		void normalize_after_change(int first_line);
 		void ensure_highlight(int line);
-		void tokenize_line(const std::string& text, int lex_in,
+		void tokenize_line(const std::string& text, const std::string* prev_line,
+			const std::string* next_line, int lex_in,
 			std::vector<code_span>& spans, int* lex_out) const;
 
 		code_position clamp_position(code_position value) const;
@@ -463,6 +514,8 @@ namespace vgui_editor_kit {
 		bool auto_scroll_ = true;
 		vgui_color log_colors_[code_log_level_count] = {};
 		vgui_color token_colors_[code_token_kind_count] = {};
+		vgui_color highlight_bg_ = 0;
+		std::string highlight_name_ = "dark";
 
 		class command_stack* command_stack_ = nullptr;
 		std::vector<text_change> local_history_;

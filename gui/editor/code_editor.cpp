@@ -136,7 +136,56 @@ namespace vgui_editor_kit {
 			0xFF56B6C2,	/* operator_token */
 			0xFFABB2BF,	/* punctuation */
 			0xFFE06C75,	/* attribute */
-			0xFFE06C75	/* tag */
+			0xFFE06C75,	/* tag */
+			0xFFE06C75,	/* heading */
+			0xFFC678DD,	/* heading_marker */
+			0xFFD19A66,	/* emphasis */
+			0xFFE5C07B,	/* strong */
+			0xFF7F848E,	/* strike */
+			0xFF61AFEF,	/* link */
+			0xFF56B6C2,	/* link_url */
+			0xFF98C379,	/* inline_code */
+			0xFF7F848E,	/* quote */
+			0xFFC678DD,	/* list_marker */
+			0xFF56B6C2,	/* table */
+			0xFF7F848E	/* horizontal_rule */
+		};
+
+		/* The remaining built-in palettes follow the One Dark colour language of
+		 * the default so a theme switch only changes hues, not token spans. */
+		constexpr vgui_color kLightTokenColors[code_token_kind_count] = {
+			0xFF24292F, 0xFFCF222E, 0xFF953800, 0xFF0A3069,
+			0xFF0550AE, 0xFF6E7781, 0xFF0550AE, 0xFF8250DF,
+			0xFFCF222E, 0xFF57606A, 0xFF0550AE, 0xFF116329,
+			0xFF0550AE, 0xFF8250DF, 0xFF953800, 0xFF24292F,
+			0xFF6E7781, 0xFF0969DA, 0xFF0A3069, 0xFF0A3069,
+			0xFF6E7781, 0xFF8250DF, 0xFF0A3069, 0xFF6E7781
+		};
+
+		constexpr vgui_color kSolarizedTokenColors[code_token_kind_count] = {
+			0xFF657B83, 0xFF859900, 0xFFB58900, 0xFF2AA198,
+			0xFFD33682, 0xFF93A1A1, 0xFFCB4B16, 0xFF268BD2,
+			0xFF859900, 0xFF657B83, 0xFFCB4B16, 0xFF268BD2,
+			0xFF268BD2, 0xFFB58900, 0xFFD33682, 0xFFB58900,
+			0xFF93A1A1, 0xFF268BD2, 0xFF2AA198, 0xFF2AA198,
+			0xFF93A1A1, 0xFF859900, 0xFF657B83, 0xFF93A1A1
+		};
+
+		constexpr vgui_color kContrastTokenColors[code_token_kind_count] = {
+			0xFFFFFFFF, 0xFFFF79C6, 0xFFF1FA8C, 0xFF50FA7B,
+			0xFFBD93F9, 0xFF9AA3B5, 0xFF8BE9FD, 0xFF8BE9FD,
+			0xFFFF79C6, 0xFFF8F8F2, 0xFFFFB86C, 0xFFFF5555,
+			0xFFFFB86C, 0xFFFF79C6, 0xFFFFB86C, 0xFFF1FA8C,
+			0xFF9AA3B5, 0xFF8BE9FD, 0xFF50FA7B, 0xFF50FA7B,
+			0xFF9AA3B5, 0xFFFF79C6, 0xFF8BE9FD, 0xFF9AA3B5
+		};
+
+		const char* const kTokenKindNames[code_token_kind_count] = {
+			"text", "keyword", "type", "string_literal", "number", "comment",
+			"preprocessor", "function", "operator_token", "punctuation",
+			"attribute", "tag", "heading", "heading_marker", "emphasis",
+			"strong", "strike", "link", "link_url", "inline_code", "quote",
+			"list_marker", "table", "horizontal_rule"
 		};
 
 		constexpr vgui_color kDefaultLogColors[code_log_level_count] = {
@@ -180,6 +229,98 @@ namespace vgui_editor_kit {
 			for (char& c : text)
 				c = (char)std::tolower((unsigned char)c);
 			return text;
+		}
+
+		int hex_digit(char c)
+		{
+			if (c >= '0' && c <= '9')
+				return c - '0';
+			if (c >= 'a' && c <= 'f')
+				return c - 'a' + 10;
+			if (c >= 'A' && c <= 'F')
+				return c - 'A' + 10;
+			return -1;
+		}
+
+		bool parse_hex_color(const std::string& text, vgui_color* out)
+		{
+			if (text.empty() || text[0] != '#')
+				return false;
+			const std::size_t digits = text.size() - 1;
+			if (digits != 3 && digits != 6 && digits != 8)
+				return false;
+			uint32_t value = 0;
+			for (std::size_t i = 1; i < text.size(); ++i)
+			{
+				const int digit = hex_digit(text[i]);
+				if (digit < 0)
+					return false;
+				value = (value << 4) | (uint32_t)digit;
+			}
+			if (digits == 3)
+			{
+				const uint32_t r = ((value >> 8) & 0xF) * 0x11;
+				const uint32_t g = ((value >> 4) & 0xF) * 0x11;
+				const uint32_t b = (value & 0xF) * 0x11;
+				value = 0xFF000000u | (r << 16) | (g << 8) | b;
+			}
+			else if (digits == 6)
+			{
+				value |= 0xFF000000u;
+			}
+			if (!value)
+				return false;
+			if (out)
+				*out = value;
+			return true;
+		}
+
+		std::string format_color(vgui_color color)
+		{
+			static const char* const digits = "0123456789ABCDEF";
+			auto push = [](std::string& out, uint32_t value)
+				{
+					out.push_back(digits[(value >> 4) & 0xF]);
+					out.push_back(digits[value & 0xF]);
+				};
+			std::string out = "#";
+			if ((color >> 24) != 0xFF)
+				push(out, (color >> 24) & 0xFF);
+			push(out, (color >> 16) & 0xFF);
+			push(out, (color >> 8) & 0xFF);
+			push(out, color & 0xFF);
+			return out;
+		}
+
+		bool theme_color_from_json(const nlohmann::json& value,
+			vgui_color* color)
+		{
+			vgui_color parsed = 0;
+			if (value.is_string())
+			{
+				if (!parse_hex_color(value.get<std::string>(), &parsed))
+					return false;
+			}
+			else if (value.is_number_unsigned())
+			{
+				parsed = value.get<vgui_color>();
+			}
+			else if (value.is_number_integer())
+			{
+				const long long signed_value = value.get<long long>();
+				if (signed_value < 0 || signed_value > 0xFFFFFFFFll)
+					return false;
+				parsed = (vgui_color)signed_value;
+			}
+			else
+			{
+				return false;
+			}
+			if (!parsed)
+				return false;
+			if (color)
+				*color = parsed;
+			return true;
 		}
 
 		std::size_t utf8_char_len(unsigned char c)
@@ -356,8 +497,42 @@ namespace vgui_editor_kit {
 			lex_python_double = 3,
 			lex_lua_comment = 4,
 			lex_lua_string = 5,
-			lex_markdown_fence = 6
+			lex_markdown_fence = 6,
+			/* A fenced Markdown block with an embedded language packs the
+			 * language id and that language's cross-line state:
+			 * base + language * stride + state. */
+			lex_markdown_fence_base = 64,
+			lex_markdown_fence_stride = 16
 		};
+
+		bool is_fence_state(int state)
+		{
+			return state == lex_markdown_fence ||
+				state >= lex_markdown_fence_base;
+		}
+
+		int fence_state(code_language language, int inner)
+		{
+			return lex_markdown_fence_base +
+				static_cast<int>(language) * lex_markdown_fence_stride +
+				inner % lex_markdown_fence_stride;
+		}
+
+		code_language fence_language(int state)
+		{
+			if (state < lex_markdown_fence_base)
+				return code_language::plain;
+			return static_cast<code_language>((state -
+				lex_markdown_fence_base) / lex_markdown_fence_stride);
+		}
+
+		int fence_inner_state(int state)
+		{
+			if (state < lex_markdown_fence_base)
+				return lex_none;
+			return (state - lex_markdown_fence_base) %
+				lex_markdown_fence_stride;
+		}
 
 		void append_span(std::vector<code_span>& spans, int start, int end,
 			code_token_kind kind)
@@ -454,15 +629,188 @@ namespace vgui_editor_kit {
 	}
 
 	/* ------------------------------------------------------------------------- */
+	/* token kinds and highlight themes                                         */
+	/* ------------------------------------------------------------------------- */
+
+	const char* code_token_kind_name(code_token_kind kind) noexcept
+	{
+		const int index = static_cast<int>(kind);
+		if (index < 0 || index >= code_token_kind_count)
+			return "text";
+		return kTokenKindNames[index];
+	}
+
+	bool code_token_kind_from_name(const std::string& name,
+		code_token_kind* kind) noexcept
+	{
+		const std::string lower = ascii_lower(name);
+		for (int i = 0; i < code_token_kind_count; ++i)
+		{
+			if (lower == kTokenKindNames[i])
+			{
+				if (kind)
+					*kind = static_cast<code_token_kind>(i);
+				return true;
+			}
+		}
+		struct alias
+		{
+			const char* name;
+			code_token_kind kind;
+		};
+		static const alias aliases[] = {
+			{ "operator", code_token_kind::operator_token },
+			{ "string", code_token_kind::string_literal },
+			{ "code", code_token_kind::inline_code },
+			{ "inlinecode", code_token_kind::inline_code },
+			{ "url", code_token_kind::link_url },
+			{ "bold", code_token_kind::strong },
+			{ "italic", code_token_kind::emphasis },
+			{ "hr", code_token_kind::horizontal_rule },
+			{ "list", code_token_kind::list_marker },
+			{ "title", code_token_kind::heading }
+		};
+		for (const alias& entry : aliases)
+		{
+			if (lower == entry.name)
+			{
+				if (kind)
+					*kind = entry.kind;
+				return true;
+			}
+		}
+		return false;
+	}
+
+	std::vector<std::string> code_highlight_theme_preset_names()
+	{
+		return { "dark", "light", "solarized", "high_contrast" };
+	}
+
+	bool code_highlight_theme_preset(const std::string& name,
+		code_highlight_theme& out)
+	{
+		const std::string lower = ascii_lower(name);
+		const vgui_color* colors = nullptr;
+		vgui_color background = 0;
+		const char* canonical = nullptr;
+		if (lower == "dark" || lower == "one_dark" || lower == "onedark")
+		{
+			colors = kDefaultTokenColors;
+			background = 0xFF1E2229;
+			canonical = "dark";
+		}
+		else if (lower == "light" || lower == "github_light")
+		{
+			colors = kLightTokenColors;
+			background = 0xFFFFFFFF;
+			canonical = "light";
+		}
+		else if (lower == "solarized" || lower == "solarized_light" ||
+			lower == "eye_care")
+		{
+			colors = kSolarizedTokenColors;
+			background = 0xFFFDF6E3;
+			canonical = "solarized";
+		}
+		else if (lower == "high_contrast" || lower == "high-contrast" ||
+			lower == "contrast")
+		{
+			colors = kContrastTokenColors;
+			background = 0xFF000000;
+			canonical = "high_contrast";
+		}
+		if (!colors)
+			return false;
+
+		code_highlight_theme theme;
+		theme.name = canonical;
+		theme.background = background;
+		for (int i = 0; i < code_token_kind_count; ++i)
+			theme.colors[(std::size_t)i] = colors[i];
+		out = theme;
+		return true;
+	}
+
+	std::string code_highlight_theme_to_json(const code_highlight_theme& theme)
+	{
+		nlohmann::json root;
+		root["version"] = theme.version;
+		root["name"] = theme.name;
+		if (theme.background)
+			root["background"] = format_color(theme.background);
+		nlohmann::json colors = nlohmann::json::object();
+		for (int i = 0; i < code_token_kind_count; ++i)
+		{
+			if (theme.colors[(std::size_t)i])
+				colors[kTokenKindNames[i]] =
+					format_color(theme.colors[(std::size_t)i]);
+		}
+		root["colors"] = colors;
+		return root.dump();
+	}
+
+	bool code_highlight_theme_from_json(const std::string& text,
+		code_highlight_theme& out, std::string* error)
+	{
+		try
+		{
+			const nlohmann::json root = nlohmann::json::parse(text);
+			if (!root.is_object())
+				throw std::runtime_error("expected object");
+			code_highlight_theme theme;
+			theme.version = root.value("version", 1);
+			if (theme.version < 1 ||
+				theme.version > code_highlight_theme::current_version)
+				throw std::runtime_error("unsupported highlight theme version");
+			theme.name = root.value("name", std::string("custom"));
+			if (root.contains("background"))
+			{
+				vgui_color background = 0;
+				if (!theme_color_from_json(root.at("background"),
+					&background))
+					throw std::runtime_error("invalid theme background");
+				theme.background = background;
+			}
+			if (root.contains("colors"))
+			{
+				const nlohmann::json& colors = root.at("colors");
+				if (!colors.is_object())
+					throw std::runtime_error("expected colors object");
+				for (auto it = colors.begin(); it != colors.end(); ++it)
+				{
+					code_token_kind kind = code_token_kind::text;
+					if (!code_token_kind_from_name(it.key(), &kind))
+						throw std::runtime_error("unknown token kind: " +
+							it.key());
+					vgui_color color = 0;
+					if (!theme_color_from_json(it.value(), &color))
+						throw std::runtime_error("invalid color for " +
+							it.key());
+					theme.colors[(std::size_t)static_cast<int>(kind)] = color;
+				}
+			}
+			out = theme;
+			return true;
+		}
+		catch (const std::exception& exception)
+		{
+			if (error)
+				*error = exception.what();
+			return false;
+		}
+	}
+
+	/* ------------------------------------------------------------------------- */
 	/* tokenizer                                                                 */
 	/* ------------------------------------------------------------------------- */
 
-	void code_editor::tokenize_line(const std::string& text, int lex_in,
-		std::vector<code_span>& spans, int* lex_out) const
+	void tokenize_code_line(code_language language, const std::string& text,
+		int lex_in, std::vector<code_span>& spans, int* lex_out)
 	{
 		spans.clear();
 		int state = lex_in;
-		if (state < lex_none || state > lex_markdown_fence)
+		if (state < lex_none || state > lex_lua_string)
 			state = lex_none;
 
 		const int length = (int)text.size();
@@ -532,100 +880,7 @@ namespace vgui_editor_kit {
 				state = lex_none;
 				break;
 			}
-			if (state == lex_markdown_fence)
-			{
-				int first = 0;
-				while (first < length && is_space(text[(std::size_t)first]))
-					++first;
-				const bool closing = starts_with(first, "```") ||
-					starts_with(first, "~~~");
-				append_span(spans, 0, length,
-					closing ? code_token_kind::comment :
-					code_token_kind::string_literal);
-				pos = length;
-				state = closing ? lex_none : lex_markdown_fence;
-				break;
-			}
 			break;
-		}
-
-		if (language_ == code_language::markdown)
-		{
-			if (state == lex_markdown_fence)
-			{
-				*lex_out = state;
-				return;
-			}
-			while (pos < length)
-			{
-				const char c = text[(std::size_t)pos];
-				if (is_space(c))
-				{
-					++pos;
-					continue;
-				}
-				bool line_start = true;
-				for (int i = pos - 1; i >= 0; --i)
-				{
-					if (!is_space(text[(std::size_t)i]))
-					{
-						line_start = false;
-						break;
-					}
-				}
-				if (line_start && (c == '#' || c == '>'))
-				{
-					append_span(spans, pos, length, code_token_kind::attribute);
-					pos = length;
-					break;
-				}
-				if (starts_with(pos, "```") || starts_with(pos, "~~~"))
-				{
-					append_span(spans, pos, length, code_token_kind::comment);
-					pos = length;
-					state = lex_markdown_fence;
-					break;
-				}
-				if (c == '`')
-				{
-					const int close = find_from("`", pos + 1);
-					if (close > pos)
-					{
-						append_span(spans, pos, close + 1,
-							code_token_kind::string_literal);
-						pos = close + 1;
-						continue;
-					}
-				}
-				if (c == '*' || c == '_')
-				{
-					const char pair[3] = { c, c, 0 };
-					const int close = text.find(pair, (std::size_t)pos + 1) ==
-						std::string::npos ? -1 :
-						(int)text.find(pair, (std::size_t)pos + 1);
-					if (close > pos + 1)
-					{
-						append_span(spans, pos, close + 2,
-							code_token_kind::keyword);
-						pos = close + 2;
-						continue;
-					}
-				}
-				if (c == '[')
-				{
-					const int close = find_from("](", pos + 1);
-					const int end = close < 0 ? -1 : find_from(")", close + 2);
-					if (close > pos && end > close)
-					{
-						append_span(spans, pos, end + 1, code_token_kind::tag);
-						pos = end + 1;
-						continue;
-					}
-				}
-				++pos;
-			}
-			*lex_out = state;
-			return;
 		}
 
 		if (pos >= length)
@@ -634,15 +889,15 @@ namespace vgui_editor_kit {
 			return;
 		}
 
-		const bool c_family = has_c_block_comments(language_);
-		const bool slash_comments = has_slash_line_comments(language_);
-		const bool hash_comments = language_ == code_language::python ||
-			language_ == code_language::ini;
-		const bool semi_comments = language_ == code_language::ini;
-		const bool json = language_ == code_language::json;
-		const bool lua = language_ == code_language::lua;
-		const bool python = language_ == code_language::python;
-		const bool glsl = language_ == code_language::glsl;
+		const bool c_family = has_c_block_comments(language);
+		const bool slash_comments = has_slash_line_comments(language);
+		const bool hash_comments = language == code_language::python ||
+			language == code_language::ini;
+		const bool semi_comments = language == code_language::ini;
+		const bool json = language == code_language::json;
+		const bool lua = language == code_language::lua;
+		const bool python = language == code_language::python;
+		const bool glsl = language == code_language::glsl;
 
 		/* A preprocessor directive owns the whole line in C-family languages. */
 		if (c_family)
@@ -658,8 +913,8 @@ namespace vgui_editor_kit {
 			}
 		}
 
-		const auto& keywords = keyword_set(language_);
-		const auto& types = type_set(language_);
+		const auto& keywords = keyword_set(language);
+		const auto& types = type_set(language);
 
 		while (pos < length)
 		{
@@ -828,12 +1083,12 @@ namespace vgui_editor_kit {
 				continue;
 			}
 
-			if (c == '#' && (language_ == code_language::ini))
+			if (c == '#' && (language == code_language::ini))
 			{
 				append_span(spans, pos, length, code_token_kind::comment);
 				break;
 			}
-			if (language_ == code_language::ini)
+			if (language == code_language::ini)
 			{
 				if (c == '[')
 				{
@@ -943,6 +1198,768 @@ namespace vgui_editor_kit {
 		}
 
 		*lex_out = state;
+	}
+
+	/* ------------------------------------------------------------------------- */
+	/* markdown tokenizer                                                        */
+	/* ------------------------------------------------------------------------- */
+
+	namespace
+	{
+		bool markdown_blank(const std::string& text)
+		{
+			for (char c : text)
+			{
+				if (!is_space(c))
+					return false;
+			}
+			return true;
+		}
+
+		int markdown_first_nonspace(const std::string& text)
+		{
+			int pos = 0;
+			while (pos < (int)text.size() && is_space(text[(std::size_t)pos]))
+				++pos;
+			return pos;
+		}
+
+		bool markdown_starts_with(const std::string& text, int at,
+			const char* value)
+		{
+			const std::size_t n = std::strlen(value);
+			return at >= 0 && (std::size_t)at + n <= text.size() &&
+				text.compare((std::size_t)at, n, value) == 0;
+		}
+
+		int markdown_run(const std::string& text, int at, char c, int end)
+		{
+			int count = 0;
+			while (at + count < end &&
+				text[(std::size_t)(at + count)] == c)
+				++count;
+			return count;
+		}
+
+		int markdown_find_backtick_close(const std::string& text, int from,
+			int count, int end)
+		{
+			int pos = from;
+			while (pos < end)
+			{
+				if (text[(std::size_t)pos] != '`')
+				{
+					++pos;
+					continue;
+				}
+				const int run = markdown_run(text, pos, '`', end);
+				if (run == count)
+					return pos;
+				pos += run;
+			}
+			return -1;
+		}
+
+		int markdown_find_close_bracket(const std::string& text, int open,
+			int end)
+		{
+			int depth = 0;
+			for (int i = open; i < end; ++i)
+			{
+				const char c = text[(std::size_t)i];
+				if (c == '\\')
+				{
+					++i;
+					continue;
+				}
+				if (c == '[')
+					++depth;
+				else if (c == ']')
+				{
+					--depth;
+					if (depth == 0)
+						return i;
+				}
+			}
+			return -1;
+		}
+
+		int markdown_find_close_paren(const std::string& text, int open,
+			int end)
+		{
+			int depth = 0;
+			for (int i = open; i < end; ++i)
+			{
+				const char c = text[(std::size_t)i];
+				if (c == '\\')
+				{
+					++i;
+					continue;
+				}
+				if (c == '(')
+					++depth;
+				else if (c == ')')
+				{
+					--depth;
+					if (depth == 0)
+						return i;
+				}
+			}
+			return -1;
+		}
+
+		bool markdown_thematic_break(const std::string& text, int begin,
+			char* marker)
+		{
+			char kind = 0;
+			int count = 0;
+			for (int i = begin; i < (int)text.size(); ++i)
+			{
+				const char c = text[(std::size_t)i];
+				if (is_space(c))
+					continue;
+				if (c != '-' && c != '*' && c != '_')
+					return false;
+				if (kind == 0)
+					kind = c;
+				else if (kind != c)
+					return false;
+				++count;
+			}
+			if (count < 3)
+				return false;
+			if (marker)
+				*marker = kind;
+			return true;
+		}
+
+		bool markdown_setext_underline(const std::string& text, int begin,
+			char* marker)
+		{
+			char kind = 0;
+			int count = 0;
+			for (int i = begin; i < (int)text.size(); ++i)
+			{
+				const char c = text[(std::size_t)i];
+				if (is_space(c))
+					continue;
+				if (c != '=' && c != '-')
+					return false;
+				if (kind == 0)
+					kind = c;
+				else if (kind != c)
+					return false;
+				++count;
+			}
+			if (count < 2)
+				return false;
+			if (marker)
+				*marker = kind;
+			return true;
+		}
+
+		bool markdown_table_separator(const std::string& text, int begin)
+		{
+			bool dash = false;
+			bool pipe = false;
+			for (int i = begin; i < (int)text.size(); ++i)
+			{
+				const char c = text[(std::size_t)i];
+				if (c == '-')
+					dash = true;
+				else if (c == '|')
+					pipe = true;
+				else if (c != ':' && c != ' ' && c != '\t')
+					return false;
+			}
+			return dash && pipe;
+		}
+
+		/* True when the line can be the paragraph above a setext underline. */
+		bool markdown_paragraph(const std::string& text)
+		{
+			if (markdown_blank(text))
+				return false;
+			const int begin = markdown_first_nonspace(text);
+			const char first = text[(std::size_t)begin];
+			if (first == '#' || first == '>' || first == '|')
+				return false;
+			if (markdown_table_separator(text, begin))
+				return false;
+			if (markdown_starts_with(text, begin, "```") ||
+				markdown_starts_with(text, begin, "~~~"))
+				return false;
+			if ((first == '-' || first == '*' || first == '+') &&
+				begin + 1 < (int)text.size() &&
+				is_space(text[(std::size_t)begin + 1]))
+				return false;
+			if (std::isdigit((unsigned char)first))
+			{
+				int i = begin;
+				while (i < (int)text.size() &&
+					std::isdigit((unsigned char)text[(std::size_t)i]))
+					++i;
+				if (i < (int)text.size() &&
+					(text[(std::size_t)i] == '.' ||
+						text[(std::size_t)i] == ')') &&
+					i + 1 < (int)text.size() &&
+					is_space(text[(std::size_t)i + 1]))
+					return false;
+			}
+			if (markdown_thematic_break(text, begin, nullptr))
+				return false;
+			return true;
+		}
+
+		code_language markdown_fence_language(std::string info)
+		{
+			if (info.size() >= 2 && info.front() == '{' && info.back() == '}')
+				info = info.substr(1, info.size() - 2);
+			const std::size_t start = info.find_first_not_of(".#");
+			if (start == std::string::npos)
+				return code_language::plain;
+			info = info.substr(start);
+			while (!info.empty() && (info.back() == '}' || info.back() == ',' ||
+				info.back() == ';'))
+				info.pop_back();
+
+			const std::string lower = ascii_lower(info);
+			if (lower == "c" || lower == "h" || lower == "hpp" ||
+				lower == "cc" || lower == "cxx")
+				return code_language::cpp;
+			if (lower == "jsonc")
+				return code_language::json;
+			if (lower == "frag" || lower == "vert" || lower == "geom" ||
+				lower == "shader")
+				return code_language::glsl;
+			if (lower == "toml" || lower == "cfg" || lower == "conf")
+				return code_language::ini;
+
+			code_language language = code_language::plain;
+			if (!code_language_from_name(lower, &language))
+				return code_language::plain;
+			if (language == code_language::markdown)
+				return code_language::plain;
+			return language;
+		}
+
+		void markdown_inline(const std::string& text, int begin, int end,
+			code_token_kind base, std::vector<code_span>& spans)
+		{
+			if (begin >= end)
+				return;
+			int pos = begin;
+			int plain_start = begin;
+			auto flush = [&](int upto)
+				{
+					if (base != code_token_kind::text)
+						append_span(spans, plain_start, upto, base);
+				};
+
+			while (pos < end)
+			{
+				const char c = text[(std::size_t)pos];
+				if (c == '\\' && pos + 1 < end)
+				{
+					pos += 2;
+					continue;
+				}
+				if (c == '`')
+				{
+					int run = markdown_run(text, pos, '`', end);
+					if (run <= 0)
+					{
+						++pos;
+						continue;
+					}
+					const int close = markdown_find_backtick_close(text,
+						pos + run, run, end);
+					if (close > pos + run)
+					{
+						flush(pos);
+						append_span(spans, pos, close + run,
+							code_token_kind::inline_code);
+						pos = close + run;
+						plain_start = pos;
+						continue;
+					}
+					pos += run;
+					continue;
+				}
+				if (c == '~' && pos + 1 < end &&
+					text[(std::size_t)pos + 1] == '~')
+				{
+					int close = -1;
+					for (int i = pos + 2; i + 1 < end; ++i)
+					{
+						if (text[(std::size_t)i] == '~' &&
+							text[(std::size_t)i + 1] == '~')
+						{
+							close = i;
+							break;
+						}
+					}
+					if (close > pos + 2)
+					{
+						flush(pos);
+						append_span(spans, pos, close + 2,
+							code_token_kind::strike);
+						pos = close + 2;
+						plain_start = pos;
+						continue;
+					}
+					++pos;
+					continue;
+				}
+				if (c == '*' || c == '_')
+				{
+					int run = markdown_run(text, pos, c, end);
+					const int marker = run >= 3 ? 3 : (run >= 2 ? 2 : 1);
+					const bool word_left = c == '_' && pos > begin &&
+						is_ident_continue((unsigned char)
+							text[(std::size_t)pos - 1]);
+					int close = -1;
+					if (!word_left)
+					{
+						int i = pos + marker;
+						while (i < end)
+						{
+							if (text[(std::size_t)i] != c)
+							{
+								++i;
+								continue;
+							}
+							int close_run = markdown_run(text, i, c, end);
+							if (close_run >= marker)
+							{
+								const bool right_ok = c != '_' ||
+									i + marker >= end ||
+									!is_ident_continue((unsigned char)
+										text[(std::size_t)(i + marker)]);
+								const bool left_ok = !is_space(
+									text[(std::size_t)(pos + marker)]);
+								const bool inner_ok = i > pos + marker &&
+									!is_space(text[(std::size_t)(i - 1)]);
+								if (right_ok && left_ok && inner_ok)
+								{
+									close = i;
+									break;
+								}
+							}
+							i += close_run;
+						}
+					}
+					if (close > pos + marker)
+					{
+						flush(pos);
+						append_span(spans, pos, close + marker,
+							marker >= 2 ? code_token_kind::strong :
+							code_token_kind::emphasis);
+						pos = close + marker;
+						plain_start = pos;
+						continue;
+					}
+					pos += marker;
+					continue;
+				}
+				if (c == '[' || (c == '!' && pos + 1 < end &&
+					text[(std::size_t)pos + 1] == '['))
+				{
+					const int open = c == '!' ? pos + 1 : pos;
+					const int close = markdown_find_close_bracket(text, open,
+						end);
+					if (close > open)
+					{
+						int url_end = -1;
+						if (close + 1 < end &&
+							text[(std::size_t)close + 1] == '(')
+							url_end = markdown_find_close_paren(text,
+								close + 1, end);
+						else if (close + 1 < end &&
+							text[(std::size_t)close + 1] == '[')
+						{
+							url_end = markdown_find_close_bracket(text,
+								close + 1, end);
+						}
+						if (url_end > close + 1)
+						{
+							flush(pos);
+							append_span(spans, pos, close + 1,
+								code_token_kind::link);
+							append_span(spans, close + 1, url_end + 1,
+								code_token_kind::link_url);
+							pos = url_end + 1;
+							plain_start = pos;
+							continue;
+						}
+					}
+					++pos;
+					continue;
+				}
+				if (c == '<')
+				{
+					int close = -1;
+					for (int i = pos + 1; i < end; ++i)
+					{
+						if (text[(std::size_t)i] == '>')
+						{
+							close = i;
+							break;
+						}
+					}
+					if (close > pos + 1)
+					{
+						if (markdown_starts_with(text, pos, "<!--"))
+						{
+							int comment_end = -1;
+							for (int i = pos + 4; i + 2 < end; ++i)
+							{
+								if (text.compare((std::size_t)i, 3, "-->") == 0)
+								{
+									comment_end = i + 3;
+									break;
+								}
+							}
+							if (comment_end > 0)
+							{
+								flush(pos);
+								append_span(spans, pos, comment_end,
+									code_token_kind::comment);
+								pos = comment_end;
+								plain_start = pos;
+								continue;
+							}
+						}
+						else
+						{
+							const std::size_t scheme =
+								text.find("://", (std::size_t)pos + 1);
+							const bool url = (scheme != std::string::npos &&
+								(int)scheme < close) ||
+								markdown_starts_with(text, pos + 1, "mailto:");
+							const char next = text[(std::size_t)pos + 1];
+							const bool tag = std::isalpha((unsigned char)next) ||
+								next == '/' || next == '!' || next == '?';
+							if (url || tag)
+							{
+								flush(pos);
+								append_span(spans, pos, close + 1,
+									url ? code_token_kind::link_url :
+									code_token_kind::tag);
+								pos = close + 1;
+								plain_start = pos;
+								continue;
+							}
+						}
+					}
+					++pos;
+					continue;
+				}
+				++pos;
+			}
+			flush(end);
+		}
+
+		void tokenize_markdown_line(const std::string& text,
+			const std::string* prev_line, const std::string* next_line,
+			int lex_in, std::vector<code_span>& spans, int* lex_out)
+		{
+			spans.clear();
+			const int length = (int)text.size();
+
+			if (is_fence_state(lex_in))
+			{
+				const int first = markdown_first_nonspace(text);
+				const bool closing = markdown_starts_with(text, first, "```") ||
+					markdown_starts_with(text, first, "~~~");
+				if (closing)
+				{
+					append_span(spans, 0, length, code_token_kind::comment);
+					*lex_out = lex_none;
+					return;
+				}
+				const code_language language = fence_language(lex_in);
+				if (language == code_language::plain)
+				{
+					append_span(spans, first, length,
+						code_token_kind::string_literal);
+					*lex_out = lex_in;
+					return;
+				}
+				int inner = lex_none;
+				tokenize_code_line(language, text, fence_inner_state(lex_in),
+					spans, &inner);
+				*lex_out = fence_state(language, inner);
+				return;
+			}
+
+			*lex_out = lex_none;
+			if (markdown_blank(text))
+				return;
+
+			int indent = 0;
+			int begin = 0;
+			while (begin < length && is_space(text[(std::size_t)begin]))
+			{
+				indent += text[(std::size_t)begin] == '\t' ? 4 : 1;
+				++begin;
+			}
+			/* Four-space indents are indented code or nested list content; leave
+			 * them to the inline scanner to avoid mis-colouring list bodies. */
+			if (indent >= 4)
+			{
+				markdown_inline(text, begin, length, code_token_kind::text,
+					spans);
+				return;
+			}
+
+			/* Fenced code block. */
+			if (markdown_starts_with(text, begin, "```") ||
+				markdown_starts_with(text, begin, "~~~"))
+			{
+				const char fence_char = text[(std::size_t)begin];
+				const int fence_len = markdown_run(text, begin, fence_char,
+					length);
+				if (fence_len >= 3)
+				{
+					const int info_from = markdown_first_nonspace(
+						text.substr((std::size_t)(begin + fence_len))) +
+						begin + fence_len;
+					int info_to = info_from;
+					while (info_to < length &&
+						!is_space(text[(std::size_t)info_to]))
+						++info_to;
+					const code_language language = markdown_fence_language(
+						text.substr((std::size_t)info_from,
+							(std::size_t)(info_to - info_from)));
+					append_span(spans, begin, begin + fence_len,
+						code_token_kind::comment);
+					append_span(spans, info_from, info_to,
+						code_token_kind::attribute);
+					append_span(spans, info_to, length,
+						code_token_kind::comment);
+					*lex_out = language == code_language::plain ?
+						lex_markdown_fence :
+						fence_state(language, lex_none);
+					return;
+				}
+			}
+
+			char underline = 0;
+			if (markdown_setext_underline(text, begin, &underline))
+			{
+				const bool prev_paragraph = prev_line &&
+					markdown_paragraph(*prev_line) &&
+					!markdown_setext_underline(*prev_line, 0, nullptr);
+				if (prev_paragraph)
+				{
+					append_span(spans, begin, length,
+						code_token_kind::heading_marker);
+					return;
+				}
+				if (underline == '-' &&
+					markdown_thematic_break(text, begin, nullptr))
+				{
+					append_span(spans, begin, length,
+						code_token_kind::horizontal_rule);
+					return;
+				}
+				if (underline == '=')
+					append_span(spans, begin, length,
+						code_token_kind::heading_marker);
+				return;
+			}
+
+			/* ATX heading. */
+			if (text[(std::size_t)begin] == '#')
+			{
+				const int hashes = markdown_run(text, begin, '#', length);
+				if (hashes >= 1 && hashes <= 6 &&
+					(begin + hashes >= length ||
+						is_space(text[(std::size_t)(begin + hashes)])))
+				{
+					const int content_start = begin + hashes;
+					int content_end = length;
+					int tail_marker_start = -1;
+					int tail = length;
+					while (tail > content_start &&
+						is_space(text[(std::size_t)tail - 1]))
+						--tail;
+					int tail_hashes = 0;
+					while (tail - tail_hashes - 1 >= content_start &&
+						text[(std::size_t)(tail - tail_hashes - 1)] == '#')
+						++tail_hashes;
+					if (tail_hashes > 0)
+					{
+						const int before = tail - tail_hashes - 1;
+						if (before >= content_start &&
+							is_space(text[(std::size_t)before]))
+						{
+							content_end = before;
+							tail_marker_start = tail - tail_hashes;
+						}
+					}
+					append_span(spans, begin, content_start,
+						code_token_kind::heading_marker);
+					markdown_inline(text, content_start, content_end,
+						code_token_kind::heading, spans);
+					if (tail_marker_start >= 0)
+						append_span(spans, tail_marker_start, tail,
+							code_token_kind::heading_marker);
+					return;
+				}
+			}
+
+			/* Setext heading: a paragraph line whose next line underlines it. */
+			char next_underline = 0;
+			if (next_line && markdown_paragraph(text))
+			{
+				const int next_begin = markdown_first_nonspace(*next_line);
+				if (markdown_setext_underline(*next_line, next_begin,
+					&next_underline))
+				{
+					markdown_inline(text, begin, length,
+						code_token_kind::heading, spans);
+					return;
+				}
+			}
+
+			if (markdown_thematic_break(text, begin, nullptr))
+			{
+				append_span(spans, begin, length,
+					code_token_kind::horizontal_rule);
+				return;
+			}
+
+			if (markdown_table_separator(text, begin))
+			{
+				append_span(spans, begin, length, code_token_kind::table);
+				return;
+			}
+
+			/* Blockquote: colour the markers, then the inline content. */
+			if (text[(std::size_t)begin] == '>')
+			{
+				int pos = begin;
+				while (pos < length && text[(std::size_t)pos] == '>')
+				{
+					append_span(spans, pos, pos + 1, code_token_kind::quote);
+					++pos;
+					if (pos < length &&
+						is_space(text[(std::size_t)pos]))
+						++pos;
+				}
+				markdown_inline(text, pos, length, code_token_kind::text,
+					spans);
+				return;
+			}
+
+			/* List item marker and optional task checkbox. */
+			int marker_end = -1;
+			const char first = text[(std::size_t)begin];
+			if ((first == '-' || first == '*' || first == '+') &&
+				begin + 1 < length &&
+				is_space(text[(std::size_t)begin + 1]))
+			{
+				marker_end = begin + 1;
+			}
+			else if (std::isdigit((unsigned char)first))
+			{
+				int i = begin;
+				while (i < length &&
+					std::isdigit((unsigned char)text[(std::size_t)i]))
+					++i;
+				if (i < length && (text[(std::size_t)i] == '.' ||
+					text[(std::size_t)i] == ')') && i + 1 < length &&
+					is_space(text[(std::size_t)i + 1]))
+					marker_end = i + 1;
+			}
+			if (marker_end > begin)
+			{
+				append_span(spans, begin, marker_end,
+					code_token_kind::list_marker);
+				int content = marker_end;
+				while (content < length &&
+					is_space(text[(std::size_t)content]))
+					++content;
+				if (content + 2 < length &&
+					text[(std::size_t)content] == '[' &&
+					(text[(std::size_t)content + 1] == ' ' ||
+						text[(std::size_t)content + 1] == 'x' ||
+						text[(std::size_t)content + 1] == 'X') &&
+					text[(std::size_t)content + 2] == ']')
+				{
+					append_span(spans, content, content + 3,
+						code_token_kind::attribute);
+					content += 3;
+				}
+				markdown_inline(text, content, length,
+					code_token_kind::text, spans);
+				return;
+			}
+
+			/* Table row: split cells at pipes and inline-scan the content. */
+			int pipes = 0;
+			for (int i = begin; i < length; ++i)
+			{
+				if (text[(std::size_t)i] == '\\')
+					++i;
+				else if (text[(std::size_t)i] == '|')
+					++pipes;
+			}
+			if (pipes > 0)
+			{
+				bool table_row = pipes >= 2;
+				if (!table_row && next_line)
+				{
+					const int next_begin = markdown_first_nonspace(*next_line);
+					table_row = markdown_table_separator(*next_line,
+						next_begin);
+				}
+				if (!table_row && prev_line)
+				{
+					const int prev_begin = markdown_first_nonspace(*prev_line);
+					table_row = markdown_table_separator(*prev_line,
+						prev_begin);
+				}
+				if (table_row)
+				{
+					int cell_start = begin;
+					for (int i = begin; i < length; ++i)
+					{
+						if (text[(std::size_t)i] == '\\')
+						{
+							++i;
+							continue;
+						}
+						if (text[(std::size_t)i] != '|')
+							continue;
+						markdown_inline(text, cell_start, i,
+							code_token_kind::text, spans);
+						append_span(spans, i, i + 1, code_token_kind::table);
+						cell_start = i + 1;
+					}
+					markdown_inline(text, cell_start, length,
+						code_token_kind::text, spans);
+					return;
+				}
+			}
+
+			markdown_inline(text, begin, length, code_token_kind::text, spans);
+		}
+	} /* namespace */
+
+	void code_editor::tokenize_line(const std::string& text,
+		const std::string* prev_line, const std::string* next_line, int lex_in,
+		std::vector<code_span>& spans, int* lex_out) const
+	{
+		if (language_ == code_language::markdown)
+		{
+			tokenize_markdown_line(text, prev_line, next_line, lex_in, spans,
+				lex_out);
+			return;
+		}
+		tokenize_code_line(language_, text, lex_in, spans, lex_out);
 	}
 
 	class code_edit_command final : public command
@@ -1451,8 +2468,10 @@ namespace vgui_editor_kit {
 	void code_editor::set_token_color(code_token_kind kind, vgui_color color)
 	{
 		const int index = static_cast<int>(kind);
-		if (valid_token_kind(index))
-			token_colors_[index] = color;
+		if (!valid_token_kind(index))
+			return;
+		token_colors_[index] = color;
+		highlight_name_ = "custom";
 	}
 
 	vgui_color code_editor::token_color(code_token_kind kind) const noexcept
@@ -1468,6 +2487,36 @@ namespace vgui_editor_kit {
 	{
 		for (int i = 0; i < code_token_kind_count; ++i)
 			token_colors_[i] = kDefaultTokenColors[i];
+		highlight_bg_ = 0;
+		highlight_name_ = "dark";
+	}
+
+	void code_editor::set_highlight_theme(const code_highlight_theme& theme)
+	{
+		for (int i = 0; i < code_token_kind_count; ++i)
+			token_colors_[i] = theme.colors[(std::size_t)i] ?
+			theme.colors[(std::size_t)i] : kDefaultTokenColors[i];
+		highlight_bg_ = theme.background;
+		highlight_name_ = theme.name.empty() ? "custom" : theme.name;
+	}
+
+	code_highlight_theme code_editor::highlight_theme() const
+	{
+		code_highlight_theme theme;
+		theme.name = highlight_name_;
+		theme.background = highlight_bg_;
+		for (int i = 0; i < code_token_kind_count; ++i)
+			theme.colors[(std::size_t)i] = token_colors_[i];
+		return theme;
+	}
+
+	bool code_editor::set_highlight_preset(const std::string& name)
+	{
+		code_highlight_theme theme;
+		if (!code_highlight_theme_preset(name, theme))
+			return false;
+		set_highlight_theme(theme);
+		return true;
 	}
 
 	/* ------------------------------------------------------------------------- */
@@ -1500,6 +2549,10 @@ namespace vgui_editor_kit {
 			first_line = (int)lines_.size() - 1;
 		if (highlight_valid_ > (std::size_t)first_line)
 			highlight_valid_ = (std::size_t)first_line;
+		/* Markdown setext headings and tables depend on the neighbouring line. */
+		if (language_ == code_language::markdown && first_line > 0)
+			highlight_valid_ = std::min(highlight_valid_,
+				(std::size_t)first_line - 1);
 		for (std::size_t i = (std::size_t)first_line; i < lines_.size(); ++i)
 		{
 			lines_[i].spans.clear();
@@ -1527,7 +2580,12 @@ namespace vgui_editor_kit {
 				if (i > 0)
 					lex_in = lines_[i - 1].lex_after;
 				int lex_out = lex_none;
-				tokenize_line(record.text, lex_in, record.spans, &lex_out);
+				const std::string* prev = i > 0 ?
+					&lines_[i - 1].text : nullptr;
+				const std::string* next = i + 1 < lines_.size() ?
+					&lines_[i + 1].text : nullptr;
+				tokenize_line(record.text, prev, next, lex_in, record.spans,
+					&lex_out);
 				record.lex_after = lex_out;
 			}
 			if (i + 1 > highlight_valid_)
@@ -3735,6 +4793,12 @@ namespace vgui_editor_kit {
 			return;
 
 		const vgui_theme theme = theme_for(self->editor_);
+		/* A palette with its own background also supplies the default text
+		 * colour; without one the host edit theme stays authoritative. */
+		const vgui_color edit_bg = self->highlight_bg_ ?
+			self->highlight_bg_ : theme.edit_bg;
+		const vgui_color plain_text = self->highlight_bg_ ?
+			self->token_color(code_token_kind::text) : theme.text;
 		geometry g = self->editor_geometry();
 		g.x = abs_x;
 		g.y = abs_y;
@@ -3742,7 +4806,7 @@ namespace vgui_editor_kit {
 		g.height = std::max(1.0f, abs_h);
 
 		ovg_tools::fill_rect(cb, vg, g.x, g.y, g.width, g.height,
-			to_ovg(theme.edit_bg));
+			to_ovg(edit_bg));
 
 		if (self->lines_.empty())
 			return;
@@ -3841,8 +4905,8 @@ namespace vgui_editor_kit {
 					const int end = std::clamp(span.start + span.length,
 						start, length);
 					if (start > cursor)
-						draw_run(cursor, start, theme.text);
-					vgui_color color = theme.text;
+						draw_run(cursor, start, plain_text);
+					vgui_color color = plain_text;
 					if (span.color)
 						color = span.color;
 					else if (span.kind != code_token_kind::text)
@@ -3851,7 +4915,7 @@ namespace vgui_editor_kit {
 					cursor = std::max(cursor, end);
 				}
 				if (cursor < length)
-					draw_run(cursor, length, theme.text);
+					draw_run(cursor, length, plain_text);
 			}
 		}
 
@@ -3861,9 +4925,9 @@ namespace vgui_editor_kit {
 		if (g.gutter > 0.0f)
 		{
 			ovg_tools::fill_rect(cb, vg, g.x, g.y, g.gutter, g.height,
-				to_ovg(theme.edit_bg));
+				to_ovg(edit_bg));
 			ovg_tools::fill_rect(cb, vg, g.x, g.y, g.gutter, g.height,
-				to_ovg(with_alpha(theme.text, 0x0A)));
+				to_ovg(with_alpha(plain_text, 0x0A)));
 			ovg_tools::fill_rect(cb, vg, g.text_x - 1.0f, g.y, 1.0f,
 				g.height, to_ovg(with_alpha(theme.panel_border, 0xB0)));
 			if (self->show_line_numbers_)
@@ -3872,7 +4936,9 @@ namespace vgui_editor_kit {
 				{
 					const std::string number = std::to_string(line + 1);
 					const vgui_color color = line == self->caret_.line &&
-						self->focused() ? theme.text : theme.disabled;
+						self->focused() ? plain_text :
+						(self->highlight_bg_ ?
+							with_alpha(plain_text, 0x99) : theme.disabled);
 					const float y = g.y + (float)line * line_height -
 						self->scroll_y_;
 					vgui_custom_draw_text(self->editor_, cb, vg,
@@ -3883,13 +4949,15 @@ namespace vgui_editor_kit {
 		}
 
 		/* Scrollbars. */
+		const vgui_color track_tint = self->highlight_bg_ ?
+			with_alpha(plain_text, 0x18) : with_alpha(theme.panel_bg, 0xB0);
 		if (g.vertical_scroll && g.vertical_bar > 0.0f)
 		{
 			const float track_x = g.x + g.width - g.vertical_bar;
 			ovg_tools::fill_rect(cb, vg, track_x, g.y, g.vertical_bar,
-				g.text_height, to_ovg(theme.edit_bg));
+				g.text_height, to_ovg(edit_bg));
 			ovg_tools::fill_rect(cb, vg, track_x, g.y, g.vertical_bar,
-				g.text_height, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
+				g.text_height, to_ovg(track_tint));
 			const float content = (float)self->lines_.size() * line_height;
 			const float thumb = std::max(20.0f, g.text_height * g.text_height /
 				std::max(1.0f, content));
@@ -3906,9 +4974,9 @@ namespace vgui_editor_kit {
 		{
 			const float track_y = g.y + g.height - g.horizontal_bar;
 			ovg_tools::fill_rect(cb, vg, g.text_x, track_y, g.text_width,
-				g.horizontal_bar, to_ovg(theme.edit_bg));
+				g.horizontal_bar, to_ovg(edit_bg));
 			ovg_tools::fill_rect(cb, vg, g.text_x, track_y, g.text_width,
-				g.horizontal_bar, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
+				g.horizontal_bar, to_ovg(track_tint));
 			const float content = self->content_width();
 			const float thumb = std::max(20.0f, g.text_width * g.text_width /
 				std::max(1.0f, content));
@@ -3926,10 +4994,10 @@ namespace vgui_editor_kit {
 		{
 			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
 				g.y + g.height - g.horizontal_bar, g.vertical_bar,
-				g.horizontal_bar, to_ovg(theme.edit_bg));
+				g.horizontal_bar, to_ovg(edit_bg));
 			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
 				g.y + g.height - g.horizontal_bar, g.vertical_bar,
-				g.horizontal_bar, to_ovg(with_alpha(theme.panel_bg, 0xB0)));
+				g.horizontal_bar, to_ovg(track_tint));
 		}
 
 		if (self->loading_)
@@ -3956,7 +5024,8 @@ namespace vgui_editor_kit {
 					x <= g.text_x + g.text_width + 1.0f &&
 					y + line_height > g.y && y < g.y + g.text_height)
 				{
-					ovg_tools::fill_rect(cb, vg, x, y, self->caret_width, line_height, to_ovg(theme.text));
+					ovg_tools::fill_rect(cb, vg, x, y, self->caret_width,
+						line_height, to_ovg(plain_text));
 				}
 			}
 		}
