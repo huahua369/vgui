@@ -3816,7 +3816,7 @@ namespace {
 		const float inner_h = std::max(avail_h, 0.0f);
 		const float gap = std::max(0.0f, w->gap);
 		if (!ctx->flex)
-			ctx->flex = new_flex_run(nullptr);
+			ctx->flex = new_flex_run();
 
 		std::vector<node_dt> nodes(count + 1);
 		std::vector<flex_data> styles(count + 1);
