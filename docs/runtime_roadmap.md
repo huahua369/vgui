@@ -39,6 +39,7 @@
 - [x] **R0-1 时间源注入**：`vgui_context_set_time_fn(ctx, fn, user)` 注入单调时钟（秒），双击计时不再触碰 OS API；缺省回退 `std::chrono::steady_clock`。实现于 `gui/vgui.cpp`（`context_now_seconds`）。
 - [x] **R0-2 核心去 SDL 化**：`gui/vgui.cpp` 不再包含 SDL/后端头；`gui_viewport::trigger`、`vgui_dispatch_dev_event`、SDL 键码翻译搬入 `backends/vgui_sdl3.cpp`；剪贴板经 `vgui_internal.h` 的函数指针桥接（core-only 下复制/粘贴为空操作）。
 - [x] **R0-3 VGUI_CORE_ONLY 构建**：CMake 选项 `VGUI_CORE_ONLY=ON` 时 `libvgui` 仅编 core（anim/vgui/mapView），不编 SDL3 后端与 win_core，不链 SDL3，且 ovg 自带的 SDL3 渲染器一并关闭；headless 测试（embed/c_api/scene_json/chart/kit）在该配置下照常构建运行。见 `backends/CMakeLists.txt`、`CMakeLists.txt`、`bld_core.bat`。
+- [x] **R0-5 字体说明**：示例统一走系统 fontconfig 查找（`new_font_family(wg->font_ctx, "微软雅黑,Tahoma,...")`）。打包字体文件（`load_font_from_path` + `new_font_family("DejaVu Sans")`）能加载 face（count>0）但在窗口模式下不出字形（离屏正常）——R0 后续跟进项；运行时字体打包前不要切换。
 - [x] **R0-4 无窗口嵌入验证**：`sample/vgui_runtime_embed_test.cpp`——无窗口/无 GPU/无字体/无 SDL，跑通"建树→注入事件→update→draw→消费 `ovg_draw_data_t`"最小嵌入循环（含注入时钟驱动的双击、取消按下状态、绘制命令数断言）。
 
 验收：`VGUI_CORE_ONLY=ON` 与 OFF 两种配置构建通过；`vgui_runtime_embed_test` 全绿；既有测试基线不回归。
@@ -53,6 +54,10 @@
 ### 4.1 帧顺序约束（运行时集成必读）
 
 - 3D 与 UI 共用一个 `SDL_GPUDevice`，各自提交命令缓冲；帧内顺序：3D pass → （blit/合成）→ UI pass。
+- **一帧内的所有 vgpu pass 走一次 `vgpu_render_frame()` 调用**（每个 pass 目标一个 `ovg_draw_data_t` 条目，按渲染顺序排列）。SDL3 不保证多次提交之间的执行串行——把一帧的 pass 拆成多次提交，会在共享顶点缓冲（每次上传都从偏移 0 开始）和"上一提交写入、下一提交采样"的渲染目标上产生竞态（表现为错位乱块/闪烁）。单次提交内 SDL3 的自动屏障会正确排序（离屏写入→采样、blit→LOAD）。
+- 每帧重写并在同帧采样的离屏 FBO，设置 `vg_fbo_t::cycle_target = true`（SDL3 在目标仍被上一帧占用时自动轮换后备存储）。
+- **MSAA 下 LOAD 的实现细节**：窗口 FBO 带 MSAA 时 UI 渲进 `color_msaa_tex`、pass 结束 resolve 整体覆盖 swapchain——若引擎先 blit/渲染场景进 swapchain，UI pass 必须先把它 preload 进 MSAA 纹理，否则每帧背景为未定义内容（闪烁）。vgpu 的 `begin_pass` 已内置该 preload（MSAA + LOAD 时自动 blit swapchain→MSAA 纹理），无需宿主操作。
+- **不要用 `SDL_UploadToGPUBuffer(..., cycle=true)` 修顶点上传竞态**：实测本机/驱动上 cycling 会把窗口内容整体清黑（机制未查明）；顶点/索引上传保持 offset-0 + cycle=false，依赖 vsync 帧排空；若未来需要一帧多次提交，改用 vgpu 侧环形缓冲。
 - **UI pass 以 LOAD 打开时不得 CLEAR**：`vg_fbo_t::clear = false` 后，该 FBO 的既有内容由宿主负责（模式 A 下 = 引擎 blit 进 swapchain 的场景）。
 - 模式 B 下离屏 HUD FBO 每帧 `clear=true`（清成透明黑），由合成 pass 混合。
 - 纹理创建/更新与绘制保持在同一线程；native 纹理句柄地址在其 draw data 被消费前保持稳定（见 `ovg_c.h` `ovg_texture_t` 注释）。

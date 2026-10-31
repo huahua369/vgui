@@ -610,7 +610,7 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		}
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 		p->sync_ui_scale(true);
@@ -654,7 +654,7 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		windows_.push_back(std::move(win));
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_8);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 		p->sync_ui_scale(true);

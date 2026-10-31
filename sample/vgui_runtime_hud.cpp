@@ -6,19 +6,25 @@
 // vitals (progress), a minimap and crosshair (VGUI_CUSTOM), a hotbar with
 // per-frame cooldown bars, all bound to simulated game state each frame.
 //
-// Two HUD compositing modes, toggled with TAB (see docs/runtime_roadmap.md R1):
+// Two HUD compositing modes, toggled with M (see docs/runtime_roadmap.md R1):
 //   A "load-op": the engine blits the scene into the swapchain inside vgpu's
 //                command buffer, then the HUD pass runs with
 //                vg_fbo_t::clear = false and blends on top.
-//   B "offscreen": the HUD renders into its own FBO; the engine then blits
-//                the scene and samples the HUD color texture as a full-screen
-//                image in a composite pass (the "UI as engine texture" path).
+//   B "offscreen": the HUD renders into its own FBO in the same submission;
+//                the engine then samples the HUD color texture as a
+//                full-screen image in a composite pass (the "UI as engine
+//                texture" path).
+//
+// All vgpu passes of a frame go through ONE vgpu_render_frame call so they
+// share a single submission (SDL3 does not serialize submissions; separate
+// ones would race on the shared vertex buffers).
 //
 // Run with --smoke to render both modes for a few frames and exit.
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -27,6 +33,7 @@
 #include <SDL3/SDL.h>
 #include <vgui/backend/vgui_sdl3.h>
 #include <vgui/vgui.h>
+#include <ovg_fonts.h>
 
 #include "phase0_renderer.h"
 
@@ -132,14 +139,16 @@ static void draw_crosshair(vgui_widget*, ovg_ctx_cb* cb, rvg_t* vg,
 }
 
 // ---------------------------------------------------------------------------
-// Input: TAB toggles the compositing mode, 1-6 use hotbar skills
+// Input: M toggles the compositing mode, 1-6 use hotbar skills
+// (TAB itself is consumed by the core as the focus-traversal key, so app key
+// handlers never see it.)
 // ---------------------------------------------------------------------------
 
 static int on_key(vgui_context*, int key, int down, int, void* user)
 {
 	hud_state* st = static_cast<hud_state*>(user);
 	if (!down) return 0;
-	if (key == VGUI_KEY_TAB)
+	if (key == 'M')
 	{
 		st->mode = st->mode ? 0 : 1;
 		return 1;
@@ -158,15 +167,16 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 
 static void layout_anchors(hud_state* st, int width, int height);
 
-static void build_hud(hud_state* st, int width, int height)
+static void build_hud(hud_state* st, font_familys_t* familys, int width, int height)
 {
-	st->ui = vgui_create(nullptr, 16.0f);
+	st->ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(st->ui, width, height);
 	// The root never paints and never takes mouse input away from the game;
 	// widgets are placed absolutely like a real HUD layer.
 	vgui_widget* root = vgui_root(st->ui);
 	vgui_widget_set_layout(root, VGUI_LAYOUT_ABSOLUTE);
 	vgui_widget_set_background(root, 0);
+
 
 	// Top-left vitals plate.
 	vgui_widget* vitals = vgui_widget_add(root, VGUI_PANEL, nullptr);
@@ -204,7 +214,7 @@ static void build_hud(hud_state* st, int width, int height)
 	vgui_widget_set_padding(st->status_plate, 10, 8, 10, 8);
 	vgui_widget_set_background(st->status_plate, 0x98101418);
 	st->status = vgui_widget_add(st->status_plate, VGUI_LABEL,
-		"TAB: compositing mode");
+		"M: compositing mode");
 	vgui_widget_set_id(st->status, "hud.status");
 
 	// Bottom-left minimap.
@@ -322,9 +332,18 @@ static void blit_scene_to_swapchain(vgpu_ctx_t* vgctx, vg_fbo_t* fbo,
 static void sync_ui_fbo(vgpu_ctx_t* vgctx, hud_state* st, int w, int h)
 {
 	if (!st->ui_fbo.ctx)
+	{
 		st->ui_fbo = vgpu_create_fbo(vgctx, w, h, nullptr);
+		// Rewritten every frame and sampled later in the same command buffer;
+		// cycling avoids a write/write race against the still pending
+		// previous frame.
+		st->ui_fbo.cycle_target = true;
+	}
 	else if (st->ui_fbo.width != (uint32_t)w || st->ui_fbo.height != (uint32_t)h)
+	{
 		vgpu_reset_fbo(&st->ui_fbo, w, h);
+		st->ui_fbo.cycle_target = true;
+	}
 	else
 		return;
 
@@ -360,8 +379,14 @@ int main(int argc, char** argv)
 			smoke = true;
 
 	auto* wg = new app_mgr();
+	// Same system-font lookup as the other samples.  NOTE: bundling a font
+	// file via load_font_from_path + new_font_family("DejaVu Sans") loads
+	// the face but renders no glyphs in window mode (works offscreen) --
+	// tracked as a runtime_roadmap R0 follow-up, do not switch to it yet.
 	font_familys_t* familys = new_font_family(wg->font_ctx,
-		"Consolas,\xE5\xBE\xAE\xE8\xBD\xAF\xE9\x9B\x85\xE9\xBB\x91", 0);
+		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
+	if (!familys || familys->count <= 0)
+		std::fprintf(stderr, "hud: font family has no faces, text is disabled\n");
 	auto* cb = new_ctx_cb();
 	rvg_t* vg = cb->new_rvg(cb->ac);
 	rvg_t* vg_composite = cb->new_rvg(cb->ac);	// mode B composite recording
@@ -374,7 +399,7 @@ int main(int argc, char** argv)
 
 	const int win_w = 1280;
 	const int win_h = 800;
-	os_window* form = wg->create("vgui runtime HUD (TAB toggles compositing)",
+	os_window* form = wg->create("vgui runtime HUD (M toggles compositing)",
 		win_w, win_h, 0, true);
 	if (!form || !form->viewport)
 	{
@@ -383,7 +408,7 @@ int main(int argc, char** argv)
 	}
 
 	hud_state st;
-	build_hud(&st, win_w, win_h);
+	build_hud(&st, familys, win_w, win_h);
 	form->viewport->ui = st.ui;
 
 	st.renderer = phase0_renderer_create(wg->device);
@@ -412,6 +437,15 @@ int main(int argc, char** argv)
 	int last_h = win_h;
 	int smoke_frames = 0;
 	float upms = 0.0f, drawms = 0.0f;
+
+	// Startup mode can be pinned with VGUI_HUD_MODE=0/1; with it set the smoke
+	// run stays on one compositing path (handy for regression tests).
+	bool mode_pinned = false;
+	if (const char* m = std::getenv("VGUI_HUD_MODE"); m && *m)
+	{
+		st.mode = (*m == '1') ? 1 : 0;
+		mode_pinned = true;
+	}
 
 	while (!st.quit)
 	{
@@ -452,17 +486,27 @@ int main(int argc, char** argv)
 		phase0_renderer_resize(st.renderer, cw, ch);
 		phase0_renderer_render(st.renderer, st.time);
 
+		// Record the HUD.
 		rtc.begin();
 		cb->clear(vg);
 		cb->reset_clip(vg, 1);
 		vgui_draw(st.ui, cb, vg);
 		drawms = (float)rtc.end();
 
+		// The engine composites first: scene into the swapchain inside vgpu's
+		// pending command buffer, then the HUD pass(es) with load-op LOAD.
+		// Every vgpu pass of the frame goes through ONE vgpu_render_frame call
+		// so all passes share one submission and SDL3's automatic barriers
+		// order them (offscreen write -> sampled, blit -> LOAD).  Never split a
+		// frame's passes across submissions: SDL3 does not serialize submits,
+		// and uploads to the shared vertex buffers from a later submission can
+		// clobber the previous one's in-flight geometry.
+		fbo->clear = false;
+		blit_scene_to_swapchain(wg->vgctx, fbo, &st);
+
 		if (st.mode == 0)
 		{
-			// Mode A: scene blit, then HUD pass with load-op LOAD.
-			fbo->clear = false;
-			blit_scene_to_swapchain(wg->vgctx, fbo, &st);
+			// Mode A: HUD pass blends directly over the scene.
 			draw_datas_cx drawable;
 			drawable.set(fbo);
 			drawable.add(vg);
@@ -470,16 +514,9 @@ int main(int argc, char** argv)
 		}
 		else
 		{
-			// Mode B: HUD into its own FBO, then scene blit, then an engine
-			// composite pass that samples the HUD texture over the scene.
-			fbo->clear = false;
-			draw_datas_cx hud_drawable;
-			hud_drawable.set(&st.ui_fbo);
-			hud_drawable.add(vg);
-			hud_drawable.render(wg->vgctx);
-
-			blit_scene_to_swapchain(wg->vgctx, fbo, &st);
-
+			// Mode B: item 0 renders the HUD into the offscreen FBO, item 1
+			// composites that texture over the scene -- one submission, two
+			// passes ("HUD as engine texture" path).
 			ovg_texture_r composite = {};
 			composite.tex = &st.ui_tex;
 			composite.rc = { -1, 0, 0, 0 };		// whole texture
@@ -490,10 +527,12 @@ int main(int argc, char** argv)
 			cb->reset_clip(vg_composite, 1);
 			cb->add_texture(vg_composite, &composite);
 
-			draw_datas_cx comp_drawable;
-			comp_drawable.set(fbo);
-			comp_drawable.add(vg_composite);
-			comp_drawable.render(wg->vgctx);
+			ovg_draw_data_t items[2] = {};
+			items[0] = get_draw_list(vg);
+			items[0].fbo = &st.ui_fbo;
+			items[1] = get_draw_list(vg_composite);
+			items[1].fbo = fbo;
+			vgpu_render_frame(wg->vgctx, items, 2);
 		}
 
 		++st.frames;
@@ -502,9 +541,13 @@ int main(int argc, char** argv)
 
 		if (smoke)
 		{
-			// Exercise both modes before exiting.
-			if (st.frames == 15) st.mode = 1;
-			if (++smoke_frames >= 30)
+			// Mid-run window resize exercises the swapchain-recreate path
+			// (vg->width, ui_fbo reset, native texture rebind).
+			if (smoke_frames == 10)
+				SDL_SetWindowSize(form->window, 1000, 700);
+			// Exercise both modes before exiting (unless pinned).
+			if (!mode_pinned && st.frames == 20) st.mode = 1;
+			if (++smoke_frames >= 40)
 				break;
 		}
 	}

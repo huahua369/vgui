@@ -185,6 +185,8 @@ target_link_libraries(vgui_phase0 PRIVATE vgui_sample_common vgui::vgui EnTT::En
 
 add_executable(vgui_runtime_hud ${SRC_RUNTIME_HUD})
 target_link_libraries(vgui_runtime_hud PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+target_compile_definitions(vgui_runtime_hud PRIVATE
+    VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
 add_executable(ovg_texture_test ${SRC_OVG_TEXTURE_TEST})
 target_link_libraries(ovg_texture_test PRIVATE vgui_sample_common libovg SDL3::SDL3 glm::glm-header-only)

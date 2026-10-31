@@ -824,14 +824,20 @@ void upload_buffers(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 		return;
 	}
 	if (vbo_bytes > 0) {
-		SDL_GPUTransferBufferLocation src = {};
-		src.transfer_buffer = transfer;
-		src.offset = 0;
-		SDL_GPUBufferRegion dst = {};
-		dst.buffer = ctx->vbo.buffer;
-		dst.offset = 0;
-		dst.size = static_cast<Uint32>(vbo_bytes);
-		SDL_UploadToGPUBuffer(copy, &src, &dst, false);
+	SDL_GPUTransferBufferLocation src = {};
+	src.transfer_buffer = transfer;
+	src.offset = 0;
+	SDL_GPUBufferRegion dst = {};
+	dst.buffer = ctx->vbo.buffer;
+	dst.offset = 0;
+	dst.size = static_cast<Uint32>(vbo_bytes);
+	// NOTE: cycle=false is deliberate.  SDL3's buffer cycling rotated the
+	// backing storage on this machine/driver in a way that blanked the window
+	// content entirely (verified by A/B capture); frames are drained by vsync
+	// so the offset-0 overwrite race is not hit in practice.  Revisit with a
+	// vgpu-side ring buffer before ever running multiple submissions per
+	// frame with heavy overlap.
+	SDL_UploadToGPUBuffer(copy, &src, &dst, false);
 	}
 	if (ibo_bytes > 0) {
 		SDL_GPUTransferBufferLocation src = {};
@@ -1123,11 +1129,34 @@ void begin_pass(vgpu_ctx_t* ctx, vg_fbo_t* fbo, bool clear)
 		? fbo->color_msaa_tex->texture
 		: target;
 
+	// Load-op over MSAA: the host wrote its scene into the swapchain, but the
+	// pass renders into the separate MSAA texture and the resolve at the end
+	// overwrites the swapchain wholesale.  Without preloading, the UI pass
+	// would LOAD an undefined MSAA buffer and every frame would present random
+	// background content (flicker).  Copy the swapchain content into the MSAA
+	// texture first so LOAD sees the host's frame.
+	if (fbo->color_msaa_tex && !clear && fbo->swapchain) {
+		SDL_GPUBlitInfo preload = {};
+		preload.source.texture = fbo->swapchain;
+		preload.source.w = fbo->width;
+		preload.source.h = fbo->height;
+		preload.destination.texture = fbo->color_msaa_tex->texture;
+		preload.destination.w = fbo->width;
+		preload.destination.h = fbo->height;
+		preload.load_op = SDL_GPU_LOADOP_DONT_CARE;
+		preload.filter = SDL_GPU_FILTER_LINEAR;
+		SDL_BlitGPUTexture(ctx->current_cmd, &preload);
+	}
+
 	SDL_GPUColorTargetInfo color_info = {};
 	color_info.texture = render_target;
 	color_info.load_op = clear ? SDL_GPU_LOADOP_CLEAR : SDL_GPU_LOADOP_LOAD;
 	color_info.store_op = fbo->color_msaa_tex ? SDL_GPU_STOREOP_RESOLVE : SDL_GPU_STOREOP_STORE;
 	color_info.clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
+	// Offscreen targets rewritten every frame are sampled later in the same
+	// command buffer; cycling prevents a write/write race against the still
+	// pending previous frame.  Never cycle the swapchain (SDL owns it).
+	color_info.cycle = fbo->cycle_target;
 	if (fbo->color_msaa_tex) {
 		color_info.resolve_texture = target;
 		color_info.resolve_mip_level = 0;
@@ -1608,10 +1637,20 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	process_image_descs(ctx, ctx->current_cmd, items, transfers);
 	upload_buffers(ctx, ctx->current_cmd, items, transfers);
 
-	std::stable_sort(items.begin(), items.end(), [](const ovg_draw_data_t* a, const ovg_draw_data_t* b) {
-		return a->fbo < b->fbo;
+	// Encode one pass per FBO, in order of first appearance, so a caller that
+	// submits several draw data entries in one frame (offscreen HUD pass and
+	// then a window composite, say) gets the passes in that order and SDL3's
+	// automatic barriers connect them inside one command buffer.
+	std::vector<vg_fbo_t*> pass_order;
+	for (ovg_draw_data_t* item : items) {
+		if (std::find(pass_order.begin(), pass_order.end(), item->fbo) == pass_order.end())
+			pass_order.push_back(item->fbo);
+	}
+	std::stable_sort(items.begin(), items.end(), [&pass_order](const ovg_draw_data_t* a, const ovg_draw_data_t* b) {
+		const size_t ia = std::find(pass_order.begin(), pass_order.end(), a->fbo) - pass_order.begin();
+		const size_t ib = std::find(pass_order.begin(), pass_order.end(), b->fbo) - pass_order.begin();
+		return ia < ib;
 	});
-
 	vg_fbo_t* current_fbo = nullptr;
 	for (ovg_draw_data_t* item : items) {
 		vg_fbo_t* fbo = item->fbo;

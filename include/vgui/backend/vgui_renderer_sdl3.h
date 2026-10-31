@@ -48,6 +48,11 @@ struct vg_fbo_t {
 	// Must be set before vgpu_render_frame(); within a frame each FBO is
 	// rendered by exactly one pass.
 	bool clear = true;
+	// Cycle the color target when it is still bound by a pending command
+	// buffer (SDL_GPUColorTargetInfo::cycle).  Set this on offscreen FBOs that
+	// are rewritten every frame and sampled later in the same frame; never on
+	// window FBOs (SDL3 cycles the swapchain itself).
+	bool cycle_target = false;
 };
 
 // Device: owns shaders and the default white texture; follows the
@@ -103,5 +108,15 @@ void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex);
 // Submits one frame.  The fbo in data must already have a swapchain from
 // vgpu_acquire_swapchain, or this function acquires one; the command buffer is
 // submitted when the function returns.
+//
+// Frame-order rule: put ALL vgpu passes of a frame into ONE
+// vgpu_render_frame call (one ovg_draw_data_t per pass target, ordered) so
+// they encode into a single submission.  SDL3 does not serialize separate
+// submissions against each other -- splitting a frame's passes across
+// submissions races on the shared vertex/index buffers and on render targets
+// written in one submission and sampled in the next.  Within one submission
+// SDL3's automatic barriers order everything (offscreen write -> sampled,
+// blit -> LOAD); offscreen FBOs rewritten every frame should set
+// vg_fbo_t::cycle_target.
 void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count);
 void vgpu_wait_idle(vgpu_ctx_t* ctx);
