@@ -99,8 +99,9 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 - [ ] **R4-2 HUD 型控件**：冷却环（径向进度）、飘字（有限生命周期标签池）、安全区 inset 支持。
 - [ ] **R4-3 多点触摸**：当前仅单指映射，多指手势（双指缩放/拖动）按需补。
 
-## 8. R5 世界空间 UI（待规划）
+## 8. R5 世界空间 UI（部分完成）
 
+- [x] **R5-0 屏幕空间名牌（世界锚点投影）**：宿主每帧用与 3D 相机一致的投影矩阵把世界锚点投到屏幕坐标，`vgui_widget_set_pos` 移动对应控件组，背面/出屏用 `vgui_widget_set_visible` 隐藏。配套新增 `vgui_widget_set_accent / set_track`（每控件条形图配色，0=继承主题）。参考实现：`sample/vgui_runtime_hud.cpp`（12 个 Unit 名牌 + 血条/蓝条跟随方块公转，投影参数与 phase0 相机一致：RH_ZO + Y 翻转）。
 - [ ] **R5-1 UI→3D 面板**：离屏 HUD 纹理贴到世界空间四边形（R1-3 的纹理路径延伸），含 3D 采样参数。
 - [ ] **R5-2 世界拾取**：引擎射线命中面板后把命中点换算为 UI 坐标并注入 `vgui_input_mouse_*`。
 

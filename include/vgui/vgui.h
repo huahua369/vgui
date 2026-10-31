@@ -1060,6 +1060,11 @@ extern "C" {
 	VGUI_API void vgui_widget_get_intrinsic_size(vgui_widget* widget, float* width,
 		float* height);
 	VGUI_API void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color);
+	/* Per-widget accent/track overrides for value controls (progress, slider,
+	 * switch, checkbox...).  0 = follow the theme colour.  HUD nameplates use
+	 * them to tint health/mana bars independently of the theme. */
+	VGUI_API void vgui_widget_set_accent(vgui_widget* widget, vgui_color color);
+	VGUI_API void vgui_widget_set_track(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);

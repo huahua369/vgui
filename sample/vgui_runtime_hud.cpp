@@ -54,6 +54,17 @@ struct hud_state
 	vgui_widget* hotbar = nullptr;
 	vgui_widget* cooldown[6] = {};
 
+	// World-anchored nameplates: name + health bar + mana bar per entity,
+	// projected from world space onto the screen every frame.
+	vgui_widget* plates[kEntityCount] = {};
+	vgui_widget* plate_hp[kEntityCount] = {};
+	vgui_widget* plate_mp[kEntityCount] = {};
+	float ent_hp[kEntityCount] = {};
+	float ent_mp[kEntityCount] = {};
+	float cam_eye[3] = { 0.0f, 6.5f, 9.0f };
+	float cam_target[3] = { 0.0f, 0.0f, 0.0f };
+	float cam_fov = 50.0f;
+
 	// Simulation state (stands in for the game).
 	float time = 0.0f;
 	float hp_value = 1.0f;
@@ -151,6 +162,9 @@ static void draw_crosshair(vgui_widget*, ovg_ctx_cb* cb, rvg_t* vg,
 // handlers never see it.)
 // ---------------------------------------------------------------------------
 
+static const char kSkillKeys[6] = { 'Q', 'W', 'E', 'R', 'T', 'Y' };
+static const char* kSkillNames[6] = { "Q", "W", "E", "R", "T", "Y" };
+
 static int on_key(vgui_context*, int key, int down, int, void* user)
 {
 	hud_state* st = static_cast<hud_state*>(user);
@@ -160,10 +174,14 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 		st->mode = st->mode ? 0 : 1;
 		return 1;
 	}
-	if (key >= '1' && key <= '6')
+	// vgui_input_key uppercases a-z, so the handler sees 'Q'..'Y'.
+	for (int i = 0; i < 6; ++i)
 	{
-		st->skill_cd[key - '1'] = 3.0f;
-		return 1;
+		if (key == (int)(unsigned char)kSkillKeys[i])
+		{
+			st->skill_cd[i] = 3.0f;
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -243,9 +261,7 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 		vgui_widget_set_layout(slot, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_gap(slot, 4.0f);
 		vgui_widget_set_background(slot, 0);
-		char label[8] = {};
-		std::snprintf(label, sizeof(label), "%d", i + 1);
-		vgui_widget* key = vgui_widget_add(slot, VGUI_BUTTON, label);
+		vgui_widget* key = vgui_widget_add(slot, VGUI_BUTTON, kSkillNames[i]);
 		vgui_widget_set_size(key, 56.0f, 36.0f);
 		st->cooldown[i] = vgui_widget_add(slot, VGUI_PROGRESS, nullptr);
 		// 16px tall: the built-in percentage label fits inside the bar
@@ -259,9 +275,87 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 	vgui_widget_set_size(st->crosshair, 32.0f, 32.0f);
 	vgui_custom_set_draw(st->crosshair, draw_crosshair, st);
 
+	// World-anchored nameplates: name + health bar + mana bar, one group per
+	// entity, repositioned every frame from the projected world position.
+	char plate_name[24] = {};
+	for (int i = 0; i < kEntityCount; ++i)
+	{
+		std::snprintf(plate_name, sizeof(plate_name), "Unit %02d", i + 1);
+		vgui_widget* plate = vgui_widget_add(root, VGUI_PANEL, nullptr);
+		vgui_widget_set_size(plate, 76.0f, 26.0f);
+		vgui_widget_set_layout(plate, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_gap(plate, 1.0f);
+		vgui_widget_set_padding(plate, 1, 1, 1, 1);
+		vgui_widget_set_background(plate, 0x70101418);
+
+		vgui_widget* name = vgui_widget_add(plate, VGUI_LABEL, plate_name);
+		vgui_widget_set_font_size(name, 10.0f);
+		vgui_widget_set_text_align(name, 0.5f, 0.5f);
+
+		// Health (red) / mana (blue) bars; the 5px bars carry no percentage
+		// label (a single space replaces the auto-generated "NN%").
+		st->plate_hp[i] = vgui_widget_add(plate, VGUI_PROGRESS, nullptr);
+		vgui_widget_set_size(st->plate_hp[i], 0.0f, 5.0f);
+		vgui_widget_set_grow(st->plate_hp[i], 1.0f);
+		vgui_widget_set_accent(st->plate_hp[i], 0xFFE04040);
+		vgui_widget_set_track(st->plate_hp[i], 0xFF402024);
+		vgui_widget_set_text(st->plate_hp[i], " ");
+
+		st->plate_mp[i] = vgui_widget_add(plate, VGUI_PROGRESS, nullptr);
+		vgui_widget_set_size(st->plate_mp[i], 0.0f, 5.0f);
+		vgui_widget_set_grow(st->plate_mp[i], 1.0f);
+		vgui_widget_set_accent(st->plate_mp[i], 0xFF4070E0);
+		vgui_widget_set_track(st->plate_mp[i], 0xFF202840);
+		vgui_widget_set_text(st->plate_mp[i], " ");
+
+		st->plates[i] = plate;
+	}
+
 	vgui_context_add_key_handler(st->ui, on_key, st);
 	layout_anchors(st, width, height);
 	vgui_update(st->ui, 0.0f);
+}
+
+// Projects each entity's world anchor (above the cube) into screen space and
+// repositions its nameplate; mirrors the phase0 camera (RH_ZO projection with
+// a Y flip, see phase0_renderer.cpp camera_matrices).  Plates behind the
+// camera or far offscreen are hidden.
+static void update_nameplates(hud_state* st, int cw, int ch)
+{
+	glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(st->cam_fov),
+		ch > 0 ? (float)cw / (float)ch : 1.0f, 0.1f, 100.0f)
+		* glm::scale(glm::mat4(1.0f), glm::vec3(1.0f, -1.0f, 1.0f));
+	glm::mat4 view = glm::lookAt(
+		glm::vec3(st->cam_eye[0], st->cam_eye[1], st->cam_eye[2]),
+		glm::vec3(st->cam_target[0], st->cam_target[1], st->cam_target[2]),
+		glm::vec3(0.0f, 1.0f, 0.0f));
+	const glm::mat4 vp = proj * view;
+
+	for (int i = 0; i < kEntityCount; ++i)
+	{
+		glm::vec4 clip = vp * glm::vec4(st->ent_x[i], 1.35f, st->ent_z[i], 1.0f);
+		bool visible = clip.w > 0.05f;
+		float sx = 0.0f, sy = 0.0f;
+		if (visible)
+		{
+			const float ndc_x = clip.x / clip.w;
+			const float ndc_y = clip.y / clip.w;
+			if (ndc_x < -1.3f || ndc_x > 1.3f || ndc_y < -1.3f || ndc_y > 1.3f)
+			{
+				visible = false;
+			}
+			else
+			{
+				sx = (ndc_x * 0.5f + 0.5f) * (float)cw;
+				sy = (ndc_y * 0.5f + 0.5f) * (float)ch;
+			}
+		}
+		vgui_widget_set_visible(st->plates[i], visible ? 1 : 0);
+		if (visible)
+			vgui_widget_set_pos(st->plates[i], sx - 38.0f, sy - 30.0f);
+		vgui_widget_set_value(st->plate_hp[i], st->ent_hp[i]);
+		vgui_widget_set_value(st->plate_mp[i], st->ent_mp[i]);
+	}
 }
 
 // Edge/centre anchors for the absolutely-positioned HUD plates; called on
@@ -303,6 +397,8 @@ static void simulate(hud_state* st, float delta)
 		const float radius = 4.5f + 2.0f * std::sin(st->time * 0.23f + (float)i);
 		st->ent_x[i] = std::cos(angle) * radius;
 		st->ent_z[i] = std::sin(angle) * radius;
+		st->ent_hp[i] = 0.5f + 0.45f * std::sin(st->time * 0.7f + (float)i * 0.9f);
+		st->ent_mp[i] = 0.5f + 0.45f * std::sin(st->time * 0.45f + (float)i * 1.7f);
 	}
 }
 
@@ -468,9 +564,13 @@ int main(int argc, char** argv)
 		delete wg;
 		return 2;
 	}
-	// Player camera: slightly above the arena looking at the centre.
+	// Player camera: slightly above the arena looking at the centre.  The
+	// nameplate projection uses the same parameters.
 	phase0_camera cam;
-	cam.eye[0] = 0.0f; cam.eye[1] = 6.5f; cam.eye[2] = 9.0f;
+	cam.eye[0] = st.cam_eye[0]; cam.eye[1] = st.cam_eye[1]; cam.eye[2] = st.cam_eye[2];
+	cam.target[0] = st.cam_target[0]; cam.target[1] = st.cam_target[1];
+	cam.target[2] = st.cam_target[2];
+	cam.fov_deg = st.cam_fov;
 	phase0_renderer_set_camera(st.renderer, &cam);
 
 	vg_fbo_t* fbo = &form->fbo;
@@ -520,6 +620,7 @@ int main(int argc, char** argv)
 			sync_ui_fbo(wg->vgctx, &st, cw, ch);
 
 		simulate(&st, delta);
+		update_nameplates(&st, cw, ch);
 		rtc.begin();
 		vgui_update(st.ui, delta);
 		upms = (float)rtc.end();

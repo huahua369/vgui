@@ -14253,6 +14253,17 @@ extern "C" {
 		if (widget) widget->text_color = color;
 	}
 
+	void vgui_widget_set_accent(vgui_widget* widget, vgui_color color)
+	{
+		// 0 = follow the theme accent (draw code falls back per widget kind).
+		if (widget) widget->accent = color;
+	}
+
+	void vgui_widget_set_track(vgui_widget* widget, vgui_color color)
+	{
+		if (widget) widget->track = color;
+	}
+
 	void vgui_widget_set_background(vgui_widget* widget, vgui_color color)
 	{
 		if (widget) widget->bg = color;
