@@ -22,6 +22,10 @@
  *
  * P0 scope: line/area/bar charts, radial gauge, JSON dashboard configuration,
  * JSON persistence and CSV data export.
+ * P1 scope: wrap/grid/columns dashboard layouts with card span, epoch datetime
+ * axes with calendar ticks and UTC/local zones, PNG export through a
+ * host-installed renderer hook, and JSON data snapshots (config + points +
+ * runtime values).
  */
 #include <stddef.h>
 #include <stdint.h>
@@ -54,7 +58,11 @@ extern "C" {
 	typedef enum vgui_chart_scale {
 		VGUI_CHART_SCALE_LINEAR = 0,
 		/* x is elapsed seconds; labels are durations ("30s", "1m30s"). */
-		VGUI_CHART_SCALE_TIME
+		VGUI_CHART_SCALE_TIME,
+		/* x is Unix epoch seconds (1970-01-01T00:00:00Z).  Ticks align to
+		 * calendar boundaries (minutes, hours, days, months) in the axis
+		 * time_zone; labels are calendar timestamps. */
+		VGUI_CHART_SCALE_DATETIME
 	} vgui_chart_scale;
 
 	typedef enum vgui_chart_decimation {
@@ -114,6 +122,10 @@ extern "C" {
 		const char* format_pattern;
 		vgui_chart_format_fn format;
 		void* format_user;
+		/* Appended for VGUI_CHART_SCALE_DATETIME.  0 = UTC (default),
+		 * 1 = host local timezone.  Hosts built against the P0 header pass a
+		 * smaller struct_size and get UTC. */
+		int time_zone;
 	} vgui_chart_axis_desc;
 
 	typedef struct vgui_chart_options {
@@ -171,6 +183,21 @@ extern "C" {
 	VGUI_API void vgui_chart_options_default(vgui_chart_options* options);
 	VGUI_API void vgui_chart_axis_desc_default(vgui_chart_axis_desc* desc);
 	VGUI_API void vgui_chart_series_desc_default(vgui_chart_series_desc* desc);
+
+	/* One labelled axis tick from the last draw.  text stays valid until the
+	 * chart is drawn again or destroyed.  Output struct: fill struct_size
+	 * (or 0) before the call. */
+	typedef struct vgui_chart_tick {
+		uint32_t struct_size;
+		double value;
+		const char* text;
+	} vgui_chart_tick;
+
+	/* Copies up to cap labelled ticks of axis 0 (x) or 1 (y) that the last
+	 * draw produced.  Returns the total tick count; 0 when nothing has been
+	 * drawn yet.  Handy for custom overlays and tests. */
+	VGUI_API int vgui_chart_get_axis_ticks(vgui_chart* chart, int axis,
+		vgui_chart_tick* out, size_t cap);
 
 	/* Fills a chart theme derived from the current vgui theme. */
 	VGUI_API void vgui_chart_theme_from_theme(const vgui_theme* theme,
@@ -247,6 +274,42 @@ extern "C" {
 	VGUI_API int vgui_chart_export_csv(vgui_chart* chart, uint32_t flags,
 		vgui_chart_write_fn write, void* user);
 
+	/* ---------------------------------------------------------------------- */
+	/* PNG export                                                              */
+	/* ---------------------------------------------------------------------- */
+
+	/* The chart module is renderer-agnostic: the host installs one renderer
+	 * hook per process and the module drives it.  The hook renders the given
+	 * widget subtree at width x height pixels and returns 8-bit RGBA,
+	 * top-down, out_stride bytes per row (usually width * 4).  The returned
+	 * buffer must stay valid until the next hook call.  Return 0 on failure
+	 * or when no GPU device is available. */
+	typedef int (*vgui_chart_png_render_fn)(void* user, vgui_widget* widget,
+		int width, int height, vgui_color background,
+		const uint8_t** out_rgba, int* out_stride);
+
+	/* Installs the process-wide PNG renderer.  Pass render = NULL to remove
+	 * it.  Export fails with an error until a renderer is installed. */
+	VGUI_API int vgui_chart_set_png_renderer(vgui_chart_png_render_fn render,
+		void* user);
+
+	typedef struct vgui_chart_png_desc {
+		uint32_t struct_size;
+		int width;			/* output pixels; clamped to 1..16384 */
+		int height;
+		vgui_color background;	/* 0 = transparent */
+	} vgui_chart_png_desc;
+
+	VGUI_API void vgui_chart_png_desc_default(vgui_chart_png_desc* desc);
+
+	/* Renders the chart and streams a binary PNG through write.  The host
+	 * renderer must be able to show the whole chart widget. */
+	VGUI_API int vgui_chart_export_png(vgui_chart* chart,
+		const vgui_chart_png_desc* desc, vgui_chart_write_fn write, void* user);
+	/* Renders the dashboard root panel; same contract as export_png. */
+	VGUI_API int vgui_dashboard_export_png(vgui_dashboard* dashboard,
+		const vgui_chart_png_desc* desc, vgui_chart_write_fn write, void* user);
+
 	VGUI_API const char* vgui_chart_last_error(vgui_chart* chart);
 
 	/* ---------------------------------------------------------------------- */
@@ -300,12 +363,29 @@ extern "C" {
 
 	/* Parses schema version 1 and rebuilds the dashboard.  On failure the
 	 * previous dashboard is kept intact and error receives a path-qualified
-	 * message.  error may be NULL. */
+	 * message.  error may be NULL.  When the JSON contains optional "data" /
+	 * "runtime" sections (written by save_json_ex) they are applied after the
+	 * cards are built. */
 	VGUI_API int vgui_dashboard_load_json(vgui_dashboard* dashboard,
 		const char* json, size_t len, char* error, size_t error_cap);
 	/* Serialises the current configuration and view state. */
 	VGUI_API int vgui_dashboard_save_json(vgui_dashboard* dashboard,
 		vgui_chart_write_fn write, void* user);
+
+	/* Optional sections for save_json_ex.  VGUI_CHART_SAVE_DATA embeds the
+	 * chart point data per card and series (ring buffers in old-to-new
+	 * order; non-finite values encoded as null / "nan" / "inf" / "-inf").
+	 * VGUI_CHART_SAVE_RUNTIME embeds KPI values/texts and gauge values. */
+	typedef enum vgui_chart_save_flags {
+		VGUI_CHART_SAVE_DEFAULT = 0,
+		VGUI_CHART_SAVE_DATA = 1u << 0,
+		VGUI_CHART_SAVE_RUNTIME = 1u << 1
+	} vgui_chart_save_flags;
+
+	/* save_json with optional data/runtime sections.  The output still
+	 * parses with vgui_dashboard_load_json (schema version stays 1). */
+	VGUI_API int vgui_dashboard_save_json_ex(vgui_dashboard* dashboard,
+		uint32_t flags, vgui_chart_write_fn write, void* user);
 
 	/* Global runtime data keys.  set_number updates KPI values and gauges whose
 	 * value_key matches.  set_text updates KPI delta/subtitle text.  status

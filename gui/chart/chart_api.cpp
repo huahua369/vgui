@@ -694,6 +694,33 @@ extern "C" {
 		return 1;
 	}
 
+	int vgui_chart_get_axis_ticks(vgui_chart* chart, int axis,
+		vgui_chart_tick* out, size_t cap)
+	{
+		if (!chart || axis < 0 || axis > 1)
+			return 0;
+		if (!chart->layout.valid)
+			return 0;
+		const std::vector<vgchart::tick_value>& source = axis == 0
+			? chart->layout.xticks : chart->layout.yticks;
+		if (out)
+		{
+			const size_t count = std::min(cap, source.size());
+			for (size_t i = 0; i < count; ++i)
+			{
+				vgui_chart_tick copy = {};
+				copy.struct_size = (uint32_t)sizeof(copy);
+				copy.value = source[i].value;
+				copy.text = source[i].text.c_str();
+				size_t bytes = sizeof(copy);
+				if (out[i].struct_size && out[i].struct_size < bytes)
+					bytes = out[i].struct_size;
+				std::memcpy(&out[i], &copy, bytes);
+			}
+		}
+		return (int)source.size();
+	}
+
 	int vgui_chart_export_csv(vgui_chart* chart, uint32_t flags,
 		vgui_chart_write_fn write, void* user)
 	{

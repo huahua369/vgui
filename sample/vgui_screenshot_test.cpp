@@ -1439,7 +1439,7 @@ namespace {
 		r.vgpu_ctx = vgpu_create_context(r.vgpu_device,
 			SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
 			SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
-			SDL_GPU_SAMPLECOUNT_1);
+			SDL_GPU_SAMPLECOUNT_8);
 		if (!r.vgpu_ctx)
 		{
 			std::fprintf(stderr, "vgpu_create_context failed\n");

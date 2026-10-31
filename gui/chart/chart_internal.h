@@ -81,11 +81,23 @@ namespace vgchart {
 		std::string pattern;
 		vgui_chart_format_fn format = nullptr;
 		void* format_user = nullptr;
+		/* 0 = UTC, 1 = host local; only used by VGUI_CHART_SCALE_DATETIME. */
+		int time_zone = 0;
 	};
 
 	void axis_from_desc(axis_config& out, const vgui_chart_axis_desc* desc);
 	void format_value(const axis_config& axis, double value, std::string& out);
 	void format_duration(double seconds, std::string& out);
+	/* Calendar timestamps for VGUI_CHART_SCALE_DATETIME.  value is Unix epoch
+	 * seconds.  full selects "YYYY-MM-DD HH:mm:ss", otherwise a compact
+	 * "MM-DD HH:mm" style.  time_zone: 0 = UTC, 1 = host local. */
+	void format_datetime(double value, int time_zone, bool full,
+		std::string& out);
+	/* Local UTC offset in seconds at the given epoch (for zone = 1). */
+	double local_utc_offset(double epoch);
+	/* Proleptic Gregorian civil date <-> days since 1970-01-01. */
+	long long days_from_civil(long long y, unsigned m, unsigned d);
+	void civil_from_days(long long z, long long& y, unsigned& m, unsigned& d);
 	/* Returns true when pattern contains exactly one floating point conversion. */
 	bool format_pattern_safe(const char* pattern);
 	/* Applies a validated printf-style pattern to value. */
@@ -303,7 +315,11 @@ namespace vgchart {
 		std::string text_key;
 		std::string format;
 		std::string unit;
+		std::string status_text;
+		std::string delta_text;
+		std::string subtitle_text;
 		size_t json_index = 0;
+		int span = 1;			/* grid cells occupied; 1 unless layout = grid */
 		vgui_widget* panel = nullptr;
 		vgui_widget* title_label = nullptr;
 		vgui_widget* value_label = nullptr;
@@ -326,6 +342,7 @@ namespace vgchart {
 	std::string sanitize_utf8(const char* text);
 	void set_chart_error(chart_impl* chart, const char* text);
 	void set_gauge_error(gauge_impl* gauge, const char* text);
+	void set_dashboard_error(vgui_dashboard* dashboard, const char* text);
 
 	void chart_draw(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 		float x, float y, float w, float h, float dt, void* user);
@@ -364,6 +381,8 @@ struct vgui_dashboard {
 	std::string title;
 	std::string config_json;
 	std::string last_error;
+	std::string layout_mode = "stack";	/* stack | wrap | grid | columns */
+	int layout_columns = 2;		/* grid/columns cell count, 1..12 */
 	float layout_gap = 10.0f;
 	float layout_padding = 12.0f;
 };

@@ -434,7 +434,7 @@ static void test_dashboard(vgui_widget* root)
 
 	{
 		const char* invalid =
-			"{\"version\":1,\"layout\":{\"mode\":\"grid\"},\"cards\":[]}";
+			"{\"version\":1,\"layout\":{\"mode\":\"freeform\"},\"cards\":[]}";
 		vgui_chart* before = vgui_dashboard_chart(dashboard, "load");
 		memset(error, 0, sizeof(error));
 		check(vgui_dashboard_load_json(dashboard, invalid, strlen(invalid),
@@ -447,6 +447,546 @@ static void test_dashboard(vgui_widget* root)
 	}
 
 	vgui_dashboard_destroy(dashboard);
+}
+
+/* P1: wrap/grid/columns layouts, card span, snapshot data and runtime
+ * sections, PNG export through the host renderer hook. */
+
+static void test_dashboard_layouts(vgui_widget* root)
+{
+	const char* grid_json =
+		"{"
+		"\"version\":1,"
+		"\"layout\":{\"mode\":\"grid\",\"columns\":3,\"gap\":6,\"padding\":8},"
+		"\"cards\":["
+		"{\"type\":\"kpi\",\"id\":\"a\",\"title\":\"A\"},"
+		"{\"type\":\"kpi\",\"id\":\"b\",\"title\":\"B\"},"
+		"{\"type\":\"kpi\",\"id\":\"c\",\"title\":\"C\"},"
+		"{\"type\":\"chart\",\"id\":\"g\",\"title\":\"G\","
+		"\"series\":[{\"key\":\"v\",\"kind\":\"line\"}],\"span\":2},"
+		"{\"type\":\"gauge\",\"id\":\"d\",\"title\":\"D\"}"
+		"]"
+		"}";
+
+	vgui_dashboard* dashboard = vgui_dashboard_create(root);
+	check(dashboard != NULL, "grid: create");
+	if (!dashboard)
+		return;
+
+	vgui_widget_set_pos(vgui_dashboard_widget(dashboard), 4, 4);
+	vgui_widget_set_size(vgui_dashboard_widget(dashboard), 900, 600);
+
+	char error[256];
+	memset(error, 0, sizeof(error));
+	check(vgui_dashboard_load_json(dashboard, grid_json, strlen(grid_json),
+		error, sizeof(error)) == 1, "grid: load layout");
+	check(error[0] == '\0', "grid: no load error");
+	check(vgui_dashboard_chart(dashboard, "g") != NULL,
+		"grid: chart card lookup");
+	check(vgui_dashboard_gauge(dashboard, "d") != NULL,
+		"grid: gauge card lookup");
+
+	{
+		text_buffer json;
+		memset(&json, 0, sizeof(json));
+		check(vgui_dashboard_save_json(dashboard, buffer_write, &json) == 1,
+			"grid: save");
+		check(strstr(json.data, "\"mode\": \"grid\"") != NULL,
+			"grid: saved layout mode");
+		check(strstr(json.data, "\"columns\": 3") != NULL,
+			"grid: saved column count");
+		check(strstr(json.data, "\"span\": 2") != NULL,
+			"grid: saved card span");
+		check(vgui_dashboard_load_json(dashboard, json.data, json.size,
+			error, sizeof(error)) == 1, "grid: reload saved JSON");
+		check(error[0] == '\0', "grid: reload no error");
+		buffer_reset(&json);
+	}
+
+	{
+		/* span wider than the grid is clamped to the column count */
+		const char* wide_span =
+			"{\"version\":1,\"layout\":{\"mode\":\"grid\",\"columns\":2},"
+			"\"cards\":[{\"type\":\"chart\",\"id\":\"x\","
+			"\"series\":[{\"key\":\"v\"}],\"span\":9}]}";
+		memset(error, 0, sizeof(error));
+		check(vgui_dashboard_load_json(dashboard, wide_span,
+			strlen(wide_span), error, sizeof(error)) == 1,
+			"grid: clamps oversized span");
+		{
+			text_buffer json;
+			memset(&json, 0, sizeof(json));
+			check(vgui_dashboard_save_json(dashboard, buffer_write, &json)
+				== 1, "grid: save clamped span");
+			check(strstr(json.data, "\"span\": 2") != NULL,
+				"grid: saved span clamped to columns");
+			buffer_reset(&json);
+		}
+	}
+	vgui_dashboard_destroy(dashboard);
+
+	{
+		const char* wrap_json =
+			"{\"version\":1,\"layout\":{\"mode\":\"wrap\",\"gap\":4},"
+			"\"cards\":[{\"type\":\"kpi\",\"id\":\"w1\"},"
+			"{\"type\":\"kpi\",\"id\":\"w2\"},{\"type\":\"kpi\",\"id\":\"w3\"}]}";
+		vgui_dashboard* wrap = vgui_dashboard_create(root);
+		check(wrap != NULL, "wrap: create");
+		if (wrap)
+		{
+			check(vgui_dashboard_load_json(wrap, wrap_json,
+				strlen(wrap_json), error, sizeof(error)) == 1,
+				"wrap: load layout");
+			check(vgui_dashboard_load_json(wrap, grid_json, strlen(grid_json),
+				error, sizeof(error)) == 1, "wrap: reload grid over wrap");
+			vgui_dashboard_destroy(wrap);
+		}
+
+		const char* columns_json =
+			"{\"version\":1,\"layout\":{\"mode\":\"columns\",\"columns\":2},"
+			"\"cards\":[{\"type\":\"kpi\",\"id\":\"c1\"},"
+			"{\"type\":\"chart\",\"id\":\"c2\",\"series\":[{\"key\":\"v\"}]},"
+			"{\"type\":\"gauge\",\"id\":\"c3\"}]}";
+		vgui_dashboard* columns = vgui_dashboard_create(root);
+		check(columns != NULL, "columns: create");
+		if (columns)
+		{
+			check(vgui_dashboard_load_json(columns, columns_json,
+				strlen(columns_json), error, sizeof(error)) == 1,
+				"columns: load layout");
+			{
+				text_buffer json;
+				memset(&json, 0, sizeof(json));
+				check(vgui_dashboard_save_json(columns, buffer_write, &json)
+					== 1, "columns: save");
+				check(strstr(json.data, "\"mode\": \"columns\"") != NULL,
+					"columns: saved layout mode");
+				check(strstr(json.data, "\"columns\": 2") != NULL,
+					"columns: saved column count");
+				buffer_reset(&json);
+			}
+			vgui_dashboard_destroy(columns);
+		}
+	}
+
+	{
+		vgui_dashboard* keep = vgui_dashboard_create(root);
+		if (keep)
+		{
+			vgui_chart* before = NULL;
+			vgui_chart* after = NULL;
+			check(vgui_dashboard_load_json(keep, grid_json, strlen(grid_json),
+				error, sizeof(error)) == 1, "keep: load grid");
+			before = vgui_dashboard_chart(keep, "g");
+			const char* bad_mode =
+				"{\"version\":1,\"layout\":{\"mode\":\"masonry\"},\"cards\":[]}";
+			memset(error, 0, sizeof(error));
+			check(vgui_dashboard_load_json(keep, bad_mode, strlen(bad_mode),
+				error, sizeof(error)) == 0, "keep: rejects unknown mode");
+			check(strstr(error, "layout.mode") != NULL,
+				"keep: path-qualified mode error");
+			after = vgui_dashboard_chart(keep, "g");
+			check(before != NULL && after == before,
+				"keep: failed load keeps previous tree");
+			vgui_dashboard_destroy(keep);
+		}
+	}
+}
+
+/* 2026-03-17 00:00:00 UTC, expressed without OS time functions. */
+#define K_EPOCH_2026_03_17 1773705600.0
+
+static void test_datetime_axis(vgui_widget* root)
+{
+	const char* datetime_json =
+		"{"
+		"\"version\":1,"
+		"\"cards\":[{"
+		"\"type\":\"chart\",\"id\":\"t\",\"title\":\"Timeline\","
+		"\"axes\":{\"x\":{\"scale\":\"datetime\",\"timezone\":\"utc\","
+		"\"ticks\":6},\"y\":{\"min\":0,\"max\":10}},"
+		"\"series\":[{\"key\":\"s\",\"kind\":\"line\"}]"
+		"}]}";
+
+	vgui_chart* chart = vgui_chart_create(root);
+	check(chart != NULL, "datetime: create chart");
+	if (!chart)
+		return;
+	/* No draw has happened yet: the tick query reports nothing. */
+	check(vgui_chart_get_axis_ticks(chart, 0, NULL, 0) == 0,
+		"datetime: no ticks before first draw");
+	vgui_chart_destroy(chart);
+
+	vgui_dashboard* dashboard = vgui_dashboard_create(root);
+	check(dashboard != NULL, "datetime: create dashboard");
+	if (!dashboard)
+		return;
+
+	char error[256];
+	memset(error, 0, sizeof(error));
+	check(vgui_dashboard_load_json(dashboard, datetime_json,
+		strlen(datetime_json), error, sizeof(error)) == 1,
+		"datetime: load dashboard");
+	check(error[0] == '\0', "datetime: no load error");
+
+	vgui_chart* timed = vgui_dashboard_chart(dashboard, "t");
+	check(timed != NULL, "datetime: chart card lookup");
+	if (timed)
+	{
+		vgui_series_id series = vgui_chart_find_series(timed, "s");
+		vgui_chart_point points[8];
+		size_t i = 0;
+		for (i = 0; i < 8; ++i)
+		{
+			points[i].x = K_EPOCH_2026_03_17 + (double)i * 43200.0;
+			points[i].y = (double)i;
+		}
+		check(vgui_chart_append_points(timed, series, points, 8) == 1,
+			"datetime: append epoch points");
+	}
+
+	{
+		text_buffer json;
+		memset(&json, 0, sizeof(json));
+		check(vgui_dashboard_save_json(dashboard, buffer_write, &json) == 1,
+			"datetime: save");
+		check(strstr(json.data, "\"scale\": \"datetime\"") != NULL,
+			"datetime: saved scale");
+		check(strstr(json.data, "\"timezone\": \"local\"") == NULL,
+			"datetime: utc zone omitted");
+		check(vgui_dashboard_load_json(dashboard, json.data, json.size,
+			error, sizeof(error)) == 1, "datetime: reload saved JSON");
+		buffer_reset(&json);
+	}
+
+	{
+		const char* local_json =
+			"{\"version\":1,\"cards\":[{\"type\":\"chart\",\"id\":\"l\","
+			"\"axes\":{\"x\":{\"scale\":\"datetime\","
+			"\"timezone\":\"local\"}},\"series\":[{\"key\":\"s\"}]}]}";
+		memset(error, 0, sizeof(error));
+		check(vgui_dashboard_load_json(dashboard, local_json,
+			strlen(local_json), error, sizeof(error)) == 1,
+			"datetime: load local zone");
+		{
+			text_buffer json;
+			memset(&json, 0, sizeof(json));
+			check(vgui_dashboard_save_json(dashboard, buffer_write, &json)
+				== 1, "datetime: save local zone");
+			check(strstr(json.data, "\"timezone\": \"local\"") != NULL,
+				"datetime: saved local zone");
+			buffer_reset(&json);
+		}
+	}
+
+	{
+		const char* bad_zone =
+			"{\"version\":1,\"cards\":[{\"type\":\"chart\",\"id\":\"l\","
+			"\"axes\":{\"x\":{\"scale\":\"datetime\","
+			"\"timezone\":\"mars\"}},\"series\":[{\"key\":\"s\"}]}]}";
+		memset(error, 0, sizeof(error));
+		check(vgui_dashboard_load_json(dashboard, bad_zone, strlen(bad_zone),
+			error, sizeof(error)) == 0, "datetime: rejects unknown zone");
+		check(strstr(error, "timezone") != NULL,
+			"datetime: path-qualified zone error");
+	}
+
+	vgui_dashboard_destroy(dashboard);
+}
+
+static void test_snapshot(vgui_widget* root)
+{
+	vgui_dashboard* dashboard = vgui_dashboard_create(root);
+	check(dashboard != NULL, "snapshot: create");
+	if (!dashboard)
+		return;
+	vgui_widget_set_pos(vgui_dashboard_widget(dashboard), 6, 6);
+	vgui_widget_set_size(vgui_dashboard_widget(dashboard), 820, 560);
+
+	char error[256];
+	memset(error, 0, sizeof(error));
+	check(vgui_dashboard_load_json(dashboard, k_dashboard_json,
+		strlen(k_dashboard_json), error, sizeof(error)) == 1,
+		"snapshot: load base dashboard");
+
+	vgui_chart* chart = vgui_dashboard_chart(dashboard, "load");
+	check(chart != NULL, "snapshot: chart lookup");
+	if (chart)
+	{
+		vgui_series_id rps = vgui_chart_find_series(chart, "rps");
+		vgui_series_id errors = vgui_chart_find_series(chart, "errors");
+		vgui_chart_point points[12];
+		size_t i = 0;
+		for (i = 0; i < 12; ++i)
+		{
+			points[i].x = (double)i * 0.5;
+			points[i].y = (i == 3) ? NAN
+				: (i == 5) ? INFINITY
+				: (i == 7) ? -INFINITY
+				: (double)i * 1.5;
+		}
+		check(vgui_chart_append_points(chart, rps, points, 12) == 1,
+			"snapshot: append rps with non-finite y");
+
+		check(vgui_chart_set_ring_capacity(chart, errors, 5) == 1,
+			"snapshot: enable ring on errors");
+		{
+			vgui_chart_point ring[8];
+			for (i = 0; i < 8; ++i)
+			{
+				ring[i].x = (double)i;
+				ring[i].y = (double)(i * 10);
+			}
+			check(vgui_chart_append_points(chart, errors, ring, 8) == 1,
+				"snapshot: fill ring series");
+			check(vgui_chart_point_count(chart, errors) == 5,
+				"snapshot: ring keeps newest 5");
+		}
+	}
+
+	check(vgui_dashboard_set_number(dashboard, "cpu.value", 42.5) == 1,
+		"snapshot: KPI value");
+	check(vgui_dashboard_set_text(dashboard, "cpu.delta", "+1.2%") == 1,
+		"snapshot: KPI delta");
+	check(vgui_dashboard_set_text(dashboard, "cpu.text", "8 cores") == 1,
+		"snapshot: KPI subtitle");
+	check(vgui_dashboard_set_status(dashboard, "cpu.status",
+		VGUI_CHART_STATUS_WARNING, "warm") == 1, "snapshot: KPI status");
+	check(vgui_dashboard_set_number(dashboard, "disk.value", 78.0) == 1,
+		"snapshot: gauge value");
+
+	{
+		text_buffer json;
+		memset(&json, 0, sizeof(json));
+		check(vgui_dashboard_save_json_ex(dashboard,
+			VGUI_CHART_SAVE_DATA | VGUI_CHART_SAVE_RUNTIME, buffer_write,
+			&json) == 1, "snapshot: save with data");
+		check(strstr(json.data, "\"data\"") != NULL,
+			"snapshot: JSON contains data section");
+		check(strstr(json.data, "\"runtime\"") != NULL,
+			"snapshot: JSON contains runtime section");
+		check(strstr(json.data, "\"cpu.value\": 42.5") != NULL,
+			"snapshot: runtime keeps KPI value");
+		check(strstr(json.data, "\"disk.value\": 78") != NULL,
+			"snapshot: runtime keeps gauge value");
+
+		check(vgui_dashboard_load_json(dashboard, json.data, json.size,
+			error, sizeof(error)) == 1, "snapshot: reload with data");
+		check(error[0] == '\0', "snapshot: reload no error");
+		buffer_reset(&json);
+	}
+
+	vgui_chart* reloaded = vgui_dashboard_chart(dashboard, "load");
+	check(reloaded != NULL, "snapshot: reloaded chart");
+	if (reloaded)
+	{
+		vgui_series_id rps = vgui_chart_find_series(reloaded, "rps");
+		vgui_series_id errors = vgui_chart_find_series(reloaded, "errors");
+		check(vgui_chart_point_count(reloaded, rps) == 12,
+			"snapshot: rps points restored");
+		check(vgui_chart_point_count(reloaded, errors) == 5,
+			"snapshot: ring trimmed to capacity again");
+		{
+			text_buffer csv;
+			memset(&csv, 0, sizeof(csv));
+			check(vgui_dashboard_export_csv(dashboard,
+				VGUI_CHART_EXPORT_HEADER, buffer_write, &csv) == 1,
+				"snapshot: CSV of restored data");
+			check(strstr(csv.data, "\"load\",\"rps\",1.5,") != NULL,
+				"snapshot: CSV has restored rps row");
+			check(strstr(csv.data, ",nan\n") != NULL,
+				"snapshot: NaN survived the round trip");
+			check(strstr(csv.data, ",inf\n") != NULL,
+				"snapshot: +inf survived the round trip");
+			check(strstr(csv.data, ",-inf\n") != NULL,
+				"snapshot: -inf survived the round trip");
+			check(strstr(csv.data, "\"load\",\"errors\",3,") != NULL,
+				"snapshot: ring restored in old-to-new order");
+			check(strstr(csv.data, "\"load\",\"errors\",2,") == NULL,
+				"snapshot: dropped oldest ring points stay dropped");
+			buffer_reset(&csv);
+		}
+	}
+
+	{
+		vgui_gauge* gauge = vgui_dashboard_gauge(dashboard, "disk");
+		check(gauge != NULL, "snapshot: reloaded gauge");
+		if (gauge)
+			check(fabs(vgui_gauge_get_value(gauge) - 78.0) < 1e-9,
+				"snapshot: gauge value restored from runtime");
+	}
+
+	{
+		text_buffer json;
+		memset(&json, 0, sizeof(json));
+		check(vgui_dashboard_save_json_ex(dashboard,
+			VGUI_CHART_SAVE_DATA | VGUI_CHART_SAVE_RUNTIME, buffer_write,
+			&json) == 1, "snapshot: re-save reloaded dashboard");
+		check(strstr(json.data, "\"cpu.value\": 42.5") != NULL,
+			"snapshot: runtime survived reload");
+		check(strstr(json.data, "\"cpu.delta\": \"+1.2%\"") != NULL,
+			"snapshot: runtime text survived reload");
+		check(strstr(json.data, "\"cpu.status\"") != NULL
+			&& strstr(json.data, "\"warm\"") != NULL,
+			"snapshot: runtime status survived reload");
+		buffer_reset(&json);
+	}
+
+	{
+		const char* bad_data =
+			"{\"version\":1,\"cards\":[{\"type\":\"chart\",\"id\":\"c\","
+			"\"series\":[{\"key\":\"v\"}]}],"
+			"\"data\":{\"c\":{\"v\":[[1,2],[0,3]]}}}";
+		vgui_chart* before = vgui_dashboard_chart(dashboard, "load");
+		memset(error, 0, sizeof(error));
+		check(vgui_dashboard_load_json(dashboard, bad_data, strlen(bad_data),
+			error, sizeof(error)) == 0,
+			"snapshot: rejects non-monotonic data");
+		check(strstr(error, "data.c.v") != NULL,
+			"snapshot: path-qualified data error");
+		check(vgui_dashboard_chart(dashboard, "load") == before,
+			"snapshot: failed data load keeps previous tree");
+	}
+
+	vgui_dashboard_destroy(dashboard);
+}
+
+static uint8_t* g_png_pixels;
+static int g_png_size;
+
+static int fake_png_render(void* user, vgui_widget* widget,
+	int width, int height, vgui_color background,
+	const uint8_t** out_rgba, int* out_stride)
+{
+	(void)user;
+	(void)widget;
+	uint8_t* pixels = (uint8_t*)malloc((size_t)width * (size_t)height * 4);
+	if (!pixels)
+		return 0;
+	const uint8_t bg_r = (uint8_t)((background >> 16) & 0xFFu);
+	const uint8_t bg_g = (uint8_t)((background >> 8) & 0xFFu);
+	const uint8_t bg_b = (uint8_t)(background & 0xFFu);
+	for (int y = 0; y < height; ++y)
+	{
+		for (int x = 0; x < width; ++x)
+		{
+			uint8_t* px = pixels + ((size_t)y * (size_t)width + (size_t)x) * 4;
+			px[0] = (uint8_t)(bg_r ^ (uint8_t)(x * 7));
+			px[1] = (uint8_t)(bg_g ^ (uint8_t)(y * 5));
+			px[2] = (uint8_t)(bg_b ^ (uint8_t)((x + y) * 3));
+			px[3] = 255;
+		}
+	}
+	free(g_png_pixels);
+	g_png_pixels = pixels;
+	g_png_size = width * height * 4;
+	*out_rgba = pixels;
+	*out_stride = width * 4;
+	return 1;
+}
+
+static void test_png_export(vgui_widget* root)
+{
+	vgui_chart* chart = vgui_chart_create(root);
+	check(chart != NULL, "png: create chart");
+	if (!chart)
+		return;
+
+	vgui_chart_png_desc desc;
+	vgui_chart_png_desc_default(&desc);
+
+	{
+		text_buffer png;
+		memset(&png, 0, sizeof(png));
+		check(vgui_chart_export_png(chart, &desc, buffer_write, &png) == 0,
+			"png: export without renderer fails");
+		check(strstr(vgui_chart_last_error(chart), "renderer") != NULL,
+			"png: explains missing renderer");
+		check(png.data == NULL, "png: nothing written without renderer");
+	}
+
+	check(vgui_chart_set_png_renderer(fake_png_render, NULL) == 1,
+		"png: install renderer hook");
+
+	{
+		vgui_series_id series;
+		vgui_chart_series_desc sd;
+		vgui_chart_series_desc_default(&sd);
+		sd.key = "s";
+		vgui_chart_point points[4];
+		size_t i = 0;
+		series = vgui_chart_add_series(chart, &sd);
+		for (i = 0; i < 4; ++i)
+		{
+			points[i].x = (double)i;
+			points[i].y = (double)(i * i);
+		}
+		vgui_chart_append_points(chart, series, points, 4);
+	}
+
+	desc.width = 320;
+	desc.height = 200;
+	desc.background = 0xFF202830;
+	{
+		text_buffer png;
+		memset(&png, 0, sizeof(png));
+		check(vgui_chart_export_png(chart, &desc, buffer_write, &png) == 1,
+			"png: export chart");
+		check(png.size > 100, "png: output has content");
+		check(png.size >= 8 && memcmp(png.data,
+			"\x89PNG\r\n\x1a\n", 8) == 0, "png: signature");
+		{
+			/* IHDR chunk: 00 00 00 0D "IHDR" then big-endian width/height */
+			const unsigned char expect_header[16] = {
+				0, 0, 0, 13, 'I', 'H', 'D', 'R',
+				0, 0, 1, 64,	/* 320 */
+				0, 0, 0, 200	/* 200 */
+			};
+			check(png.size >= 24 && memcmp(png.data + 8, expect_header, 16)
+				== 0, "png: IHDR dimensions");
+		}
+		check(png.size >= 12 && memcmp(png.data + png.size - 8, "IEND", 4)
+			== 0, "png: IEND trailer");
+		buffer_reset(&png);
+	}
+
+	{
+		text_buffer png;
+		memset(&png, 0, sizeof(png));
+		check(vgui_chart_export_png(chart, &desc, NULL, NULL) == 0,
+			"png: rejects null writer");
+		buffer_reset(&png);
+	}
+
+	vgui_chart_destroy(chart);
+
+	{
+		vgui_dashboard* dashboard = vgui_dashboard_create(root);
+		check(dashboard != NULL, "png: create dashboard");
+		if (dashboard)
+		{
+			char error[256];
+			memset(error, 0, sizeof(error));
+			check(vgui_dashboard_load_json(dashboard, k_dashboard_json,
+				strlen(k_dashboard_json), error, sizeof(error)) == 1,
+				"png: load dashboard");
+			desc.width = 480;
+			desc.height = 360;
+			{
+				text_buffer png;
+				memset(&png, 0, sizeof(png));
+				check(vgui_dashboard_export_png(dashboard, &desc,
+					buffer_write, &png) == 1, "png: export dashboard");
+				check(png.size >= 8 && memcmp(png.data,
+					"\x89PNG\r\n\x1a\n", 8) == 0, "png: dashboard signature");
+				buffer_reset(&png);
+			}
+			vgui_dashboard_destroy(dashboard);
+		}
+	}
+
+	check(vgui_chart_set_png_renderer(NULL, NULL) == 1,
+		"png: uninstall renderer hook");
 }
 
 int main(void)
@@ -475,6 +1015,10 @@ int main(void)
 	test_chart_data(root);
 	test_chart_export_ranges(root);
 	test_dashboard(root);
+	test_dashboard_layouts(root);
+	test_datetime_axis(root);
+	test_snapshot(root);
+	test_png_export(root);
 
 	vgui_destroy(ui);
 	printf("%d passed, %d failed\n", g_pass, g_fail);

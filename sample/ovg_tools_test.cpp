@@ -121,7 +121,7 @@ int main(int argc, char** argv)
 	ovg_ctx_t* ctx = new_ovgctx_sdl3(ovg_device,
 		SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
 		SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
-		SDL_GPU_SAMPLECOUNT_1);
+		SDL_GPU_SAMPLECOUNT_8);
 	if (!ctx)
 	{
 		std::fprintf(stderr, "new_ovgctx_sdl3 failed\n");

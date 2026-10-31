@@ -4,6 +4,12 @@
 #include <cstdio>
 #include <cstring>
 
+#ifdef _WIN32
+#include <time.h>
+#else
+#include <ctime>
+#endif
+
 namespace vgchart {
 
 	namespace {
@@ -140,8 +146,9 @@ namespace vgchart {
 			bytes = desc->struct_size;
 		std::memcpy(&d, desc, bytes);
 
-		out.scale = (d.scale == VGUI_CHART_SCALE_TIME)
-			? VGUI_CHART_SCALE_TIME : VGUI_CHART_SCALE_LINEAR;
+		out.scale = (d.scale == VGUI_CHART_SCALE_TIME
+			|| d.scale == VGUI_CHART_SCALE_DATETIME)
+			? d.scale : VGUI_CHART_SCALE_LINEAR;
 		out.min = d.min;
 		out.max = d.max;
 		out.tick_count = d.tick_count > 0 ? d.tick_count : 5;
@@ -153,6 +160,9 @@ namespace vgchart {
 		out.pattern = d.format_pattern ? d.format_pattern : "";
 		out.format = d.format;
 		out.format_user = d.format_user;
+		/* time_zone sits at the tail of the struct; hosts compiled against the
+		 * P0 layout pass a smaller struct_size and keep the default UTC. */
+		out.time_zone = d.time_zone ? 1 : 0;
 	}
 
 	void format_value(const axis_config& axis, double value, std::string& out)
@@ -165,6 +175,11 @@ namespace vgchart {
 		if (axis.scale == VGUI_CHART_SCALE_TIME)
 		{
 			format_duration(value, out);
+			return;
+		}
+		if (axis.scale == VGUI_CHART_SCALE_DATETIME)
+		{
+			format_datetime(value, axis.time_zone, true, out);
 			return;
 		}
 
@@ -232,6 +247,91 @@ namespace vgchart {
 			const int total = (int)std::round(s / 86400.0);
 			std::snprintf(buffer, sizeof(buffer), "%s%dd", sign < 0 ? "-" : "", total);
 		}
+		out = buffer;
+	}
+
+	/* ---------------------------------------------------------- civil time */
+	/* Days since 1970-01-01 <-> proleptic Gregorian civil date
+	 * (Howard Hinnant's algorithms; no OS dependency, handles year < 1970). */
+
+	long long days_from_civil(long long y, unsigned m, unsigned d)
+	{
+		y -= m <= 2;
+		const long long era = (y >= 0 ? y : y - 399) / 400;
+		const unsigned yoe = (unsigned)(y - era * 400);
+		const unsigned doy = (153u * (m + (m > 2 ? -3u : 9u)) + 2u) / 5u + d - 1u;
+		const unsigned doe = yoe * 365u + yoe / 4u - yoe / 100u + doy;
+		return era * 146097LL + (long long)doe - 719468LL;
+	}
+
+	void civil_from_days(long long z, long long& y, unsigned& m, unsigned& d)
+	{
+		z += 719468;
+		const long long era = (z >= 0 ? z : z - 146096) / 146097;
+		const unsigned doe = (unsigned)(z - era * 146097);
+		const unsigned yoe = (doe - doe / 1460u + doe / 36524u
+			- doe / 146096u) / 365u;
+		y = (long long)yoe + era * 400;
+		const unsigned doy = doe - (365u * yoe + yoe / 4u - yoe / 100u);
+		const unsigned mp = (5u * doy + 2u) / 153u;
+		d = doy - (153u * mp + 2u) / 5u + 1u;
+		m = mp < 10u ? mp + 3u : mp - 9u;
+		y += (m <= 2);
+	}
+
+	double local_utc_offset(double epoch)
+	{
+		const time_t tt = (time_t)std::floor(epoch);
+		std::tm tm_value{};
+#ifdef _WIN32
+		if (localtime_s(&tm_value, &tt) != 0)
+			return 0.0;
+#else
+		if (!localtime_r(&tt, &tm_value))
+			return 0.0;
+#endif
+		const long long days = days_from_civil(
+			tm_value.tm_year + 1900, (unsigned)(tm_value.tm_mon + 1),
+			(unsigned)tm_value.tm_mday);
+		const double as_utc = (double)days * 86400.0
+			+ (double)tm_value.tm_hour * 3600.0
+			+ (double)tm_value.tm_min * 60.0
+			+ (double)tm_value.tm_sec;
+		return as_utc - std::floor(epoch);
+	}
+
+	void format_datetime(double value, int time_zone, bool full, std::string& out)
+	{
+		if (!std::isfinite(value))
+		{
+			out = "--";
+			return;
+		}
+		const double shifted = value
+			+ (time_zone ? local_utc_offset(value) : 0.0);
+		const double floored = std::floor(shifted);
+		long long days = (long long)std::floor(floored / 86400.0);
+		double rem = floored - (double)days * 86400.0;
+		int sec_of_day = (int)(rem + 0.5);
+		if (sec_of_day >= 86400)
+		{
+			sec_of_day -= 86400;
+			days += 1;
+		}
+		long long y = 0;
+		unsigned m = 0;
+		unsigned d = 0;
+		civil_from_days(days, y, m, d);
+		const int hh = sec_of_day / 3600;
+		const int mm = (sec_of_day % 3600) / 60;
+		const int ss = sec_of_day % 60;
+		char buffer[64] = {};
+		if (full)
+			std::snprintf(buffer, sizeof(buffer),
+				"%04lld-%02u-%02u %02d:%02d:%02d", y, m, d, hh, mm, ss);
+		else
+			std::snprintf(buffer, sizeof(buffer), "%02u-%02u %02d:%02d",
+				m, d, hh, mm);
 		out = buffer;
 	}
 

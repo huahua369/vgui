@@ -104,12 +104,239 @@ namespace vgchart {
 			return steps[sizeof(steps) / sizeof(steps[0]) - 1];
 		}
 
+		/* ---------------------------------------------------- datetime axis */
+
+		enum class datetime_unit {
+			second,
+			minute,
+			hour,
+			day,
+			month,
+			year
+		};
+
+		struct datetime_step {
+			datetime_unit unit = datetime_unit::second;
+			int count = 1;
+			double seconds = 1.0;	/* nominal length, used for the choice */
+		};
+
+		const datetime_step* pick_datetime_step(double raw)
+		{
+			static const datetime_step steps[] = {
+				{ datetime_unit::second, 1, 1.0 },
+				{ datetime_unit::second, 2, 2.0 },
+				{ datetime_unit::second, 5, 5.0 },
+				{ datetime_unit::second, 10, 10.0 },
+				{ datetime_unit::second, 15, 15.0 },
+				{ datetime_unit::second, 30, 30.0 },
+				{ datetime_unit::minute, 1, 60.0 },
+				{ datetime_unit::minute, 2, 120.0 },
+				{ datetime_unit::minute, 5, 300.0 },
+				{ datetime_unit::minute, 10, 600.0 },
+				{ datetime_unit::minute, 15, 900.0 },
+				{ datetime_unit::minute, 30, 1800.0 },
+				{ datetime_unit::hour, 1, 3600.0 },
+				{ datetime_unit::hour, 2, 7200.0 },
+				{ datetime_unit::hour, 3, 10800.0 },
+				{ datetime_unit::hour, 6, 21600.0 },
+				{ datetime_unit::hour, 12, 43200.0 },
+				{ datetime_unit::day, 1, 86400.0 },
+				{ datetime_unit::day, 2, 172800.0 },
+				{ datetime_unit::day, 7, 604800.0 },
+				{ datetime_unit::day, 14, 1209600.0 },
+				{ datetime_unit::month, 1, 2678400.0 },
+				{ datetime_unit::month, 3, 8035200.0 },
+				{ datetime_unit::month, 6, 16070400.0 },
+				{ datetime_unit::year, 1, 31536000.0 },
+				{ datetime_unit::year, 2, 63072000.0 },
+				{ datetime_unit::year, 5, 157680000.0 },
+				{ datetime_unit::year, 10, 315360000.0 },
+				{ datetime_unit::year, 20, 630720000.0 },
+				{ datetime_unit::year, 25, 788400000.0 },
+				{ datetime_unit::year, 50, 1576800000.0 },
+				{ datetime_unit::year, 100, 3153600000.0 },
+			};
+			for (const datetime_step& step : steps)
+			{
+				if (step.seconds >= raw)
+					return &step;
+			}
+			return &steps[sizeof(steps) / sizeof(steps[0]) - 1];
+		}
+
+		/* Epoch seconds of the first calendar instant of (y, m) in UTC,
+		 * corrected to the axis timezone. */
+		double month_start_epoch(long long y, unsigned m, int time_zone)
+		{
+			const double utc = (double)days_from_civil(y, m, 1) * 86400.0;
+			if (!time_zone) return utc;
+			return utc - local_utc_offset(utc);
+		}
+
+		void push_datetime_tick(const axis_config& axis, double value,
+			datetime_unit unit, std::vector<tick_value>& out)
+		{
+			tick_value tick;
+			tick.value = value;
+			if (axis.format || !axis.pattern.empty())
+			{
+				format_value(axis, value, tick.text);
+			}
+			else
+			{
+				const double shifted = value
+					+ (axis.time_zone ? local_utc_offset(value) : 0.0);
+				const double floored = std::floor(shifted);
+				long long days = (long long)std::floor(floored / 86400.0);
+				double rem = floored - (double)days * 86400.0;
+				int sec_of_day = (int)(rem + 0.5);
+				if (sec_of_day >= 86400)
+				{
+					sec_of_day -= 86400;
+					days += 1;
+				}
+				long long y = 0;
+				unsigned mo = 0;
+				unsigned d = 0;
+				civil_from_days(days, y, mo, d);
+				const int hh = sec_of_day / 3600;
+				const int mm = (sec_of_day % 3600) / 60;
+				const int ss = sec_of_day % 60;
+				char buffer[64] = {};
+				switch (unit)
+				{
+				case datetime_unit::second:
+					std::snprintf(buffer, sizeof(buffer), "%02d:%02d:%02d",
+						hh, mm, ss);
+					break;
+				case datetime_unit::minute:
+					std::snprintf(buffer, sizeof(buffer), "%02d:%02d", hh, mm);
+					break;
+				case datetime_unit::hour:
+					std::snprintf(buffer, sizeof(buffer), "%02u-%02u %02d:%02d",
+						mo, d, hh, mm);
+					break;
+				case datetime_unit::day:
+					std::snprintf(buffer, sizeof(buffer), "%02u-%02u", mo, d);
+					break;
+				case datetime_unit::month:
+					std::snprintf(buffer, sizeof(buffer), "%04lld-%02u", y, mo);
+					break;
+				default:
+					std::snprintf(buffer, sizeof(buffer), "%04lld", y);
+					break;
+				}
+				tick.text = buffer;
+			}
+			out.push_back(std::move(tick));
+		}
+
+		void build_datetime_ticks(const axis_config& axis, double lo, double hi,
+			int requested, std::vector<tick_value>& out)
+		{
+			const int want = std::clamp(requested > 0 ? requested : 5, 2, 16);
+			const double raw = (hi - lo) / (double)want;
+			const datetime_step& step = *pick_datetime_step(raw);
+			/* Local ticks are anchored at the range start; per-tick DST is
+			 * recomputed so local midnights stay exact. */
+			const double shift = axis.time_zone ? local_utc_offset(lo) : 0.0;
+
+			switch (step.unit)
+			{
+			case datetime_unit::second:
+			case datetime_unit::minute:
+			case datetime_unit::hour:
+			{
+				const double span = step.seconds;
+				double value = std::ceil((lo + shift - 1e-9) / span) * span
+					- shift;
+				for (int i = 0; i < 64; ++i)
+				{
+					if (value > hi + 1e-9) break;
+					if (value >= lo - 1e-9)
+						push_datetime_tick(axis, value, step.unit, out);
+					value += span;
+				}
+				break;
+			}
+			case datetime_unit::day:
+			{
+				long long day = (long long)std::floor((lo + shift) / 86400.0);
+				day = ((day % step.count) + step.count) % step.count == 0
+					? day
+					: day + (step.count - day % step.count);
+				for (int i = 0; i < 64; ++i)
+				{
+					const double utc = (double)day * 86400.0;
+					const double value = utc - (axis.time_zone
+						? local_utc_offset(utc) : 0.0);
+					if (value > hi + 1e-9) break;
+					if (value >= lo - 1e-9)
+						push_datetime_tick(axis, value, step.unit, out);
+					day += step.count;
+				}
+				break;
+			}
+			case datetime_unit::month:
+			case datetime_unit::year:
+			{
+				const bool years = step.unit == datetime_unit::year;
+				const long long base_days = (long long)std::floor(
+					(lo + shift) / 86400.0);
+				long long y = 0;
+				unsigned m = 0;
+				unsigned d = 0;
+				civil_from_days(base_days, y, m, d);
+				if (years)
+				{
+					const long long r = y % step.count;
+					if (r != 0) y += step.count - r;
+				}
+				else
+				{
+					const long long total = y * 12 + (m - 1);
+					const long long r = total % step.count;
+					if (r != 0)
+					{
+						long long next = total + (step.count - r);
+						y = next / 12;
+						m = (unsigned)(next % 12 + 1);
+					}
+				}
+				for (int i = 0; i < 64; ++i)
+				{
+					const double value = month_start_epoch(y, m, axis.time_zone);
+					if (value > hi + 1e-9) break;
+					if (value >= lo - 1e-9)
+						push_datetime_tick(axis, value, step.unit, out);
+					if (years)
+					{
+						y += step.count;
+					}
+					else
+					{
+						long long total = y * 12 + (m - 1) + step.count;
+						y = total / 12;
+						m = (unsigned)(total % 12 + 1);
+					}
+				}
+				break;
+			}
+			}
+		}
+
 		void build_ticks(const axis_config& axis, double lo, double hi,
 			int requested, std::vector<tick_value>& out)
 		{
 			out.clear();
 			if (!std::isfinite(lo) || !std::isfinite(hi) || !(hi > lo))
 				return;
+			if (axis.scale == VGUI_CHART_SCALE_DATETIME)
+			{
+				build_datetime_ticks(axis, lo, hi, requested, out);
+				return;
+			}
 			const int want = std::clamp(requested > 0 ? requested : 5, 2, 16);
 			const double raw = (hi - lo) / (double)want;
 			const bool time_axis = axis.scale == VGUI_CHART_SCALE_TIME;

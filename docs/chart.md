@@ -1,6 +1,6 @@
-# vgui_chart：图表、仪表盘与 JSON 仪表板（P0）
+# vgui_chart：图表、仪表盘与 JSON 仪表板（P0/P1）
 
-`vgui_chart` 是 vgui 的可选图表模块。公共接口是纯 C（C99/C11），实现使用 C++17；C++ 类型、模板、异常和 `std::` 容器不会出现在公共头中。P0 提供折线图、面积图、柱状图、径向仪表盘和 JSON 仪表板，并覆盖十万点级序列、配置持久化与 CSV 导出。
+`vgui_chart` 是 vgui 的可选图表模块。公共接口是纯 C（C99/C11），实现使用 C++17；C++ 类型、模板、异常和 `std::` 容器不会出现在公共头中。P0 提供折线图、面积图、柱状图、径向仪表盘和 JSON 仪表板，并覆盖十万点级序列、配置持久化与 CSV 导出。P1 在保持 P0 API 与 schema version 1 兼容的前提下，增加响应式仪表板布局、日期时间轴、PNG 导出和 JSON 数据快照。
 
 公共头：
 
@@ -23,12 +23,12 @@
 - JSON 配置保存与重新加载；失败加载保留加载前的仪表板。
 - CSV 长格式导出。
 
-P0 不包含（属于 P1）：
+P1 在同一 schema version 1 上追加（详见各章节）：
 
-- `wrap` / `grid` / `columns` / span 等响应式布局。
-- 真正的日期时间轴、时区和日历刻度；P0 的 `time` 只表示“经过的秒数”。
-- PNG 截图导出。
-- JSON 数据快照；P0 只保存配置和图表视图状态，不保存运行时点数据。
+- `wrap` / `grid` / `columns` / `span` 响应式仪表板布局。
+- 真正的日期时间轴（`VGUI_CHART_SCALE_DATETIME`）：epoch 语义、UTC/本地时区、日历刻度。
+- PNG 导出：宿主安装渲染钩子，模块负责编码与流式输出。
+- JSON 数据快照：配置 + 点数据 + KPI/仪表运行时值。
 
 ## 构建与链接
 
@@ -142,7 +142,27 @@ vgui_chart_set_axis(chart, 1, &y_axis);
 - `min >= max` 表示自动范围。柱状图始终包含 0；折线/面积图设置 `include_zero = 1` 后也包含 0。
 - `format_pattern` 必须是恰好包含一个浮点转换的 printf 风格模式（如 `%.1f`、`%g ms`）。为了安全，`%n`、字符串转换和多个转换会被拒绝。
 - `format` 回调优先级高于格式模式；默认格式为 `%.6g`。
-- X 轴 `VGUI_CHART_SCALE_TIME` 只把数值解释为经过的秒数，不处理 epoch、日期、时区或月份。真正的日期时间轴属于 P1。
+- X 轴 `VGUI_CHART_SCALE_TIME` 只把数值解释为经过的秒数，不处理 epoch、日期、时区或月份。
+
+### 日期时间轴（P1）
+
+`VGUI_CHART_SCALE_DATETIME` 把 X 解释为 Unix epoch 秒（1970-01-01T00:00:00Z 起），与表示“经过秒数”的 `VGUI_CHART_SCALE_TIME` 互相独立：
+
+```c
+vgui_chart_axis_desc x_axis;
+vgui_chart_axis_desc_default(&x_axis);
+x_axis.scale = VGUI_CHART_SCALE_DATETIME;
+x_axis.time_zone = 0;   /* 0 = UTC（默认），1 = 宿主本地时区 */
+x_axis.tick_count = 6;
+vgui_chart_set_axis(chart, 0, &x_axis);
+```
+
+- 刻度对齐日历边界：秒/分/时/天/周/月/年；月和年刻度落在当月 1 日、当年 1 月 1 日的零点。选择哪一档由视图跨度与 `tick_count` 决定。
+- 本地时区（`time_zone = 1`）的午夜与月末边界按宿主时区换算，夏令时切换期间的偏移逐刻度重算。
+- 刻度标签按档位选择格式：`HH:mm:ss`、`HH:mm`、`MM-DD HH:mm`、`MM-DD`、`YYYY-MM`、`YYYY`。设置 `format` 回调或 `format_pattern` 时优先使用宿主格式（收到的是 epoch 原始值）。
+- 悬浮提示、十字准线和键盘公告中的值也按该轴的时区显示完整时间 `YYYY-MM-DD HH:mm:ss`。
+- JSON 中写作 `"scale": "datetime"`，时区写作 `"timezone": "utc"`（默认，可省略）或 `"local"`。
+- 刻度值与文本可以通过 `vgui_chart_get_axis_ticks()` 读取（见下）。它反映最近一次绘制的结果，绘制前返回 0。
 
 视图与跟随：
 
@@ -181,6 +201,7 @@ vgui_chart_set_options(chart, &options);
 - 双击图表：恢复自动视图。
 - 键盘：`+` / `-` 缩放，`0` 恢复视图，`Home` / `End` 跳到首/末点，左右方向键逐点移动，上下方向键切换可见序列，`Enter` 通过 `vgui_context_announce()` 朗读当前点，`Esc` 清除悬浮/取消平移。
 - `vgui_chart_get_stats()` 不参与交互，只反映最近一次绘制的缓存结果。
+- `vgui_chart_get_axis_ticks(chart, axis, out, cap)` 复制最近一次绘制产生的刻度（值 + 标签文本，文本在下一次绘制前有效）；返回总刻度数，绘制前返回 0。可用于自定义覆盖层与测试。
 
 ## 仪表盘
 
@@ -249,10 +270,18 @@ if (!vgui_dashboard_load_json(dashboard, json_text, json_len,
 |---|---|---|
 | `version` | 是 | 必须是整数 `1`。 |
 | `title` | 否 | 顶部标题。 |
-| `layout.mode` | 否 | P0 只接受 `"stack"`，其他值报错。 |
+| `layout.mode` | 否 | `"stack"`（默认，单列）、`"wrap"`（自动换行）、`"grid"`（行优先网格）或 `"columns"`（轮转分列）。 |
+| `layout.columns` | 否 | `grid` / `columns` 的列数，默认 2，钳制到 1..12。 |
 | `layout.gap` | 否 | 卡片间距，默认 10，钳制到 0..128。 |
 | `layout.padding` | 否 | 内边距，默认 12，钳制到 0..128。 |
-| `cards` | 是 | 卡片数组；卡片垂直堆叠。 |
+| `cards` | 是 | 卡片数组。 |
+
+布局模式语义：
+
+- `stack`：所有卡片在单列中垂直堆叠，行为与 P0 完全一致。
+- `wrap`：卡片按各自首选尺寸从左到右排列，放不下时换行；`span` 被忽略。
+- `grid`：`columns` 列的行优先网格。卡片 `span`（默认 1，钳制到列数）表示占据的单元格数；放不下时整卡移到下一行。跨列卡片的最小宽度按 `span` 放大。
+- `columns`：卡片按顺序轮转放入 `columns` 个等宽纵向栏；`span` 被忽略。
 
 卡片 `id` 在仪表板内唯一，是数据绑定和 CSV 中 `card` 列使用的稳定字符串。未知卡片类型、重复 id、非对象卡片都会导致整次加载失败。
 
@@ -309,11 +338,12 @@ if (!vgui_dashboard_load_json(dashboard, json_text, json_len,
 
 - `options` 字段对应 `vgui_chart_options`；`decimation` 接受 `"none"`、`"min_max"`（也接受 `"minmax"`）或对应整数。
 - `axes.x` / `axes.y` 字段对应 `vgui_chart_axis_desc`：
-  - `scale`: `"linear"` 或 `"time"`（`"duration"` 也接受）；
+  - `scale`: `"linear"`、`"time"`（`"duration"` 也接受，经过秒数）或 `"datetime"`（`"epoch"` 也接受，Unix epoch 秒）；
+  - `timezone`: `"utc"`（默认，可省略）或 `"local"`，仅对 `"datetime"` 有效；
   - `min` / `max`: 两者都有效且 `min < max` 时为固定范围；否则自动；
   - `ticks` 或 `tick_count`: 2..32，默认 5；
   - `include_zero`、`grid`、`label`、`unit`、`format` / `format_pattern`。
-  - 图表卡片的 Y 轴在 P0 始终按 linear 解释；X 轴可设为 time（经过秒数）。
+  - 图表卡片的 Y 轴始终按 linear 解释；X 轴可设为 time（经过秒数）或 datetime（epoch 秒）。
 - `series` 中 `key` 必填且同卡片内唯一；`kind` 为 `"line"`、`"bar"`、`"area"` 或对应整数；`axis` 只支持 0。
 - 序列的可选字段：`name`、`unit`、`color`、`line_width`（0.5..16）、`fill_alpha`（0..1）、`visible`、`stacked`、`stack_group`。
 - 颜色接受 `"#RGB"`、`"#RRGGBB"`、`"#AARRGGBB"`，或 32 位整数；保存时统一写成 `#AARRGGBB`。
@@ -365,12 +395,45 @@ int write_file(void* user, const char* data, size_t size) {
 }
 
 vgui_dashboard_save_json(dashboard, write_file, file);
+
+/* 带数据快照的版本 */
+vgui_dashboard_save_json_ex(dashboard,
+    VGUI_CHART_SAVE_DATA | VGUI_CHART_SAVE_RUNTIME, write_file, file);
 ```
 
 - `vgui_dashboard_save_json()` 输出缩进后的 schema version 1 JSON，通过 `vgui_chart_write_fn` 流式写出，回调可能被调用多次；任一次返回 0 都会终止并返回失败。
-- 保存内容：标题、布局 gap/padding、卡片 id/标题/绑定键/格式/单位、图表选项、轴配置、序列配置、图表手动视图或 follow、仪表盘范围/角度/刻度/单位/色带。
-- 不保存：图表点数据、KPI 当前值、仪表当前值、临时主题、运行时 tooltip/悬浮状态。需要在重启后恢复数据时，由宿主重新调用 `append_points()` / `set_points()`。
+- 保存内容：标题、布局 mode/columns/gap/padding、卡片 id/标题/绑定键/格式/单位/span、图表选项、轴配置（含 datetime 时区）、序列配置、图表手动视图或 follow、仪表盘范围/角度/刻度/单位/色带。
+- 不保存：图表点数据、KPI 当前值、仪表当前值、临时主题、运行时 tooltip/悬浮状态。需要在重启后恢复数据时，由宿主重新调用 `append_points()` / `set_points()`，或改用下面的数据快照。
 - 保存成功后 `vgui_dashboard_last_error()` 为空；加载成功后也会清空错误。
+
+### 数据快照（P1）
+
+`vgui_dashboard_save_json_ex()` 通过标志位在配置之外追加可选段，输出仍是 schema version 1，普通 `vgui_dashboard_load_json()` 会自动识别并应用：
+
+| 标志 | 追加段 | 内容 |
+|---|---|---|
+| `VGUI_CHART_SAVE_DATA` | `"data"` | 每个图表卡片的每条序列的点数组 `[[x, y], ...]`；环形缓冲按从旧到新的逻辑顺序；`y` 为 `null` / `"nan"` / `"inf"` / `"-inf"` 表示非有限值。 |
+| `VGUI_CHART_SAVE_RUNTIME` | `"runtime"` | KPI 当前值、delta/副标题文本、状态；仪表当前值。键为对应的绑定键。 |
+
+```json
+{
+  "version": 1,
+  "cards": [ "...同配置保存..." ],
+  "data": {
+    "load": { "rps": [[0, 42.5], [0.5, null], [1, 43.1]] }
+  },
+  "runtime": {
+    "cpu.value": 42.5,
+    "cpu.delta": "+1.2%",
+    "cpu.status": [2, "warm"],
+    "disk.value": 78.0
+  }
+}
+```
+
+- 加载时 `"data"` 先按 schema 校验：引用不存在的卡片/序列、非单调 `x`、非法值都会让整次加载失败并回滚（配置与数据是原子的）。
+- 恢复环形缓冲容量不在快照内：宿主在重新加载后按需调用 `vgui_chart_set_ring_capacity()`；数据超过容量时保留最新点。
+- `"runtime"` 在卡片树重建后通过 `vgui_dashboard_set_number()` / `set_text()` / `set_status()` 应用。
 
 ## CSV 导出
 
@@ -420,6 +483,37 @@ vgui_dashboard_export_csv(dashboard,
 - 如果没有任何可导出的序列，返回 0 并设置错误。写入回调失败同样返回 0。
 - 仪表板导出复用同一套逐图表导出，自动附加卡片 id 列。
 
+## PNG 导出（P1）
+
+图表模块本身不接触渲染器。宿主进程安装一次渲染钩子，模块在导出时驱动它取回像素并用内置编码器输出 PNG：
+
+```c
+int host_png_render(void* user, vgui_widget* widget,
+    int width, int height, vgui_color background,
+    const uint8_t** out_rgba, int* out_stride) {
+    /* 离屏渲染 widget 所在界面，返回 8 位 RGBA、自上而下、
+     * out_stride 字节每行；缓冲保持有效直到下一次调用。 */
+    return render_offscreen(user, widget, width, height, background,
+        out_rgba, out_stride);
+}
+
+vgui_chart_set_png_renderer(host_png_render, &renderer);
+
+vgui_chart_png_desc desc;
+vgui_chart_png_desc_default(&desc);
+desc.width = 1280;
+desc.height = 720;
+desc.background = 0xFF1E232B;   /* 0 = 透明 */
+vgui_chart_export_png(chart, &desc, write_file, file);
+vgui_dashboard_export_png(dashboard, &desc, write_file, file);
+```
+
+- 未安装钩子时导出失败，`last_error` 提示 `no PNG renderer installed`。钩子返回 0（如无 GPU 设备）同样以失败收场。
+- 钩子负责把 `widget` 子树渲染到 `width x height`；宿主可以裁剪自己的帧缓冲，也可以临时调整界面尺寸。`background` 是模块传入的底色，应绘制在子树之下。
+- `width` / `height` 钳制到 1..16384；输出为二进制 PNG（RGBA，8 位），经 `vgui_chart_write_fn` 流式写出。
+- 导出的图像是普通位图，不包含运行时 tooltip / 十字准线状态。
+- 钩子是进程级单例，属于 UI 线程；传 `NULL` 卸载。
+
 ## 生命周期、线程与错误处理
 
 - 所有对象都属于 UI 线程，不能跨线程调用。
@@ -440,8 +534,8 @@ vgui_dashboard_export_csv(dashboard,
 
 ## 测试与示例
 
-- `sample/vgui_chart_test.c`：纯 C 无窗口测试，覆盖十万点追加/读取、环形缓冲、CSV、JSON schema v1、加载失败回滚、几何保持和保存/重载。
-- `sample/vgui_chart_render_test.cpp`：离屏 FBO 回读，覆盖折线/柱状/仪表盘像素和 PNG 输出；无 Vulkan 设备时返回 77，CTest 标记 SKIP。
+- `sample/vgui_chart_test.c`：纯 C 无窗口测试，覆盖十万点追加/读取、环形缓冲、CSV、JSON schema v1、加载失败回滚、几何保持和保存/重载；P1 部分覆盖 wrap/grid/columns 布局与 span、日期时间轴 JSON 往返、数据快照（含 NaN/Inf 与环形顺序）和 PNG 导出（合成渲染器）。
+- `sample/vgui_chart_render_test.cpp`：离屏 FBO 回读，覆盖折线/柱状/仪表盘像素、PNG 输出；P1 部分覆盖 datetime 轴 UTC 午夜刻度值与标签、grid 布局渲染和真实 FBO 渲染器的 PNG 导出；无 Vulkan 设备时返回 77，CTest 标记 SKIP。
 
 ```bash
 ctest --test-dir out/build/x64-debug -R vgui_chart --output-on-failure
@@ -454,13 +548,13 @@ out/bin/x64d/vgui_chart_test.exe
 out/bin/x64d/vgui_chart_render_test.exe
 ```
 
-## P1 边界
+## P1 已交付
 
-P1 计划在保持 P0 API 兼容的前提下增加：
+P1 四项能力均已落地，且保持 P0 API 与 schema version 1 兼容（只新增可选字段与枚举值）：
 
 - `wrap` / `grid` / `columns` / `span` 响应式仪表板布局。
-- 日期时间轴：epoch 语义、时区、日历刻度和宿主格式化。
-- PNG 导出。
-- JSON 数据快照（配置 + 点数据）。
+- 日期时间轴：epoch 语义、UTC/本地时区、日历刻度与宿主格式化（`vgui_chart_get_axis_ticks()`）。
+- PNG 导出（`vgui_chart_set_png_renderer()` + `vgui_chart_export_png()` / `vgui_dashboard_export_png()`）。
+- JSON 数据快照（`vgui_dashboard_save_json_ex()` + `VGUI_CHART_SAVE_DATA` / `VGUI_CHART_SAVE_RUNTIME`）。
 
-P0 不会为这些能力预留核心控件枚举或改变现有 JSON 的必填字段；schema 版本会随不兼容变更递增。
+后续不兼容变更会使 schema 版本递增。

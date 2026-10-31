@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -55,10 +56,13 @@ namespace vgchart {
 			std::string status_key;
 			std::string format;
 			std::string unit;
+			int span = 1;
 			bool has_value = false;
 			double value = 0.0;
 			int status = VGUI_CHART_STATUS_NORMAL;
 			std::string status_text;
+			/* Snapshot data section, validated while parsing. */
+			std::map<std::string, std::vector<vgui_chart_point>> data;
 
 			vgui_chart_options options = {};
 			axis_config x_axis;
@@ -83,9 +87,12 @@ namespace vgchart {
 
 		struct pending_dashboard {
 			std::string title;
+			std::string mode = "stack";	/* stack | wrap | grid | columns */
+			int columns = 2;
 			float gap = 10.0f;
 			float padding = 12.0f;
 			std::vector<pending_card> cards;
+			std::map<std::string, json> runtime;
 		};
 
 		struct build_result {
@@ -269,7 +276,8 @@ namespace vgchart {
 			{
 				const int scale = value.get<int>();
 				if (scale == VGUI_CHART_SCALE_LINEAR
-					|| scale == VGUI_CHART_SCALE_TIME)
+					|| scale == VGUI_CHART_SCALE_TIME
+					|| scale == VGUI_CHART_SCALE_DATETIME)
 					return scale;
 			}
 			if (value.is_string())
@@ -278,6 +286,9 @@ namespace vgchart {
 				if (text == "linear") return VGUI_CHART_SCALE_LINEAR;
 				if (text == "time" || text == "duration")
 					return VGUI_CHART_SCALE_TIME;
+				if (text == "datetime" || text == "date_time"
+					|| text == "epoch")
+					return VGUI_CHART_SCALE_DATETIME;
 			}
 			throw config_error(path + ": unknown axis scale");
 		}
@@ -324,6 +335,20 @@ namespace vgchart {
 			axis.grid = optional_bool(source, "grid", fallback.grid != 0, base) ? 1 : 0;
 			axis.label = optional_string(source, "label", fallback.label);
 			axis.unit = optional_string(source, "unit", fallback.unit);
+			{
+				auto tz = source.find("timezone");
+				if (tz == source.end() || tz->is_null())
+					axis.time_zone = fallback.time_zone;
+				else if (tz->is_string())
+				{
+					const std::string zone = tz->get<std::string>();
+					if (zone == "local") axis.time_zone = 1;
+					else if (zone == "utc" || zone.empty()) axis.time_zone = 0;
+					else throw config_error(base + ".timezone: expected \"utc\" or \"local\"");
+				}
+				else
+					throw config_error(base + ".timezone: expected string");
+			}
 			if (source.contains("format"))
 			{
 				if (!source["format"].is_string())
@@ -513,6 +538,15 @@ namespace vgchart {
 			return label;
 		}
 
+		/* Preferred logical card sizes; shared by the kind builders and the
+		 * grid span widening. */
+		constexpr float kChartCardMinW = 220.0f;
+		constexpr float kChartCardMinH = 200.0f;
+		constexpr float kGaugeCardMinW = 180.0f;
+		constexpr float kGaugeCardMinH = 220.0f;
+		constexpr float kKpiCardMinW = 160.0f;
+		constexpr float kKpiCardMinH = 110.0f;
+
 		void set_axis(vgui_chart* chart, int index, const axis_config& axis)
 		{
 			vgui_chart_axis_desc desc = {};
@@ -526,6 +560,7 @@ namespace vgchart {
 			desc.label = axis.label.c_str();
 			desc.unit = axis.unit.c_str();
 			desc.format_pattern = axis.pattern.empty() ? nullptr : axis.pattern.c_str();
+			desc.time_zone = axis.time_zone;
 			vgui_chart_set_axis(chart, index, &desc);
 		}
 
@@ -590,7 +625,7 @@ namespace vgchart {
 			if (pending.view_manual)
 				vgui_chart_set_view(card.chart, pending.view_x0, pending.view_x1);
 
-			vgui_widget_set_min_size(card.panel, 220, 200);
+			vgui_widget_set_min_size(card.panel, kChartCardMinW, kChartCardMinH);
 			vgui_widget_set_grow(card.panel, 1.0f);
 			(void)dashboard;
 			return true;
@@ -655,7 +690,7 @@ namespace vgchart {
 			if (widget)
 				vgui_widget_set_a11y_name(widget,
 					pending.title.empty() ? pending.id.c_str() : pending.title.c_str());
-			vgui_widget_set_min_size(card.panel, 180, 220);
+			vgui_widget_set_min_size(card.panel, kGaugeCardMinW, kGaugeCardMinH);
 			vgui_widget_set_grow(card.panel, 0.75f);
 			return true;
 		}
@@ -718,16 +753,17 @@ namespace vgchart {
 						}(), card.status));
 				}
 			}
-			vgui_widget_set_min_size(card.panel, 160, 110);
+			vgui_widget_set_min_size(card.panel, kKpiCardMinW, kKpiCardMinH);
 			vgui_widget_set_grow(card.panel, 0.0f);
 			(void)error;
 			return true;
 		}
 
 		bool build_card(vgui_dashboard* dashboard, const pending_card& pending,
+			vgui_widget* container, const pending_dashboard& config,
 			build_result& built, std::string& error)
 		{
-			vgui_widget* panel = vgui_widget_add(built.root, VGUI_PANEL, nullptr);
+			vgui_widget* panel = vgui_widget_add(container, VGUI_PANEL, nullptr);
 			if (!panel)
 			{
 				error = "cannot create card panel";
@@ -760,6 +796,8 @@ namespace vgchart {
 			card.status_key = pending.status_key;
 			card.format = pending.format;
 			card.unit = pending.unit;
+			card.status_text = pending.status_text;
+			card.span = pending.span;
 			card.panel = panel;
 
 			bool ok = false;
@@ -777,8 +815,43 @@ namespace vgchart {
 			}
 			if (!ok)
 				return false;
+
+			/* Grid cells: a card spanning k cells must be able to grow across
+			 * them, and its minimum width must cover the cells plus the gaps
+			 * between them so the row never under-fills. */
+			if (config.mode == "grid" && card.span > 1)
+			{
+				const float base_w = pending.kind == dashboard_card_kind::chart
+					? kChartCardMinW
+					: pending.kind == dashboard_card_kind::gauge
+					? kGaugeCardMinW : kKpiCardMinW;
+				const float base_h = pending.kind == dashboard_card_kind::chart
+					? kChartCardMinH
+					: pending.kind == dashboard_card_kind::gauge
+					? kGaugeCardMinH : kKpiCardMinH;
+				const float spanned = base_w * (float)card.span
+					+ config.gap * (float)(card.span - 1);
+				vgui_widget_set_min_size(panel, spanned, base_h);
+				vgui_widget_set_grow(panel, (float)card.span);
+			}
 			built.cards.push_back(std::move(card));
 			return true;
+		}
+
+		vgui_widget* add_row_panel(vgui_widget* parent, float gap)
+		{
+			vgui_widget* row = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+			if (!row)
+				return nullptr;
+			vgui_widget_set_id(row, "vgui_dashboard_row");
+			vgui_widget_set_layout(row, VGUI_LAYOUT_ROW);
+			vgui_widget_set_gap(row, gap);
+			vgui_widget_set_align_items(row, VGUI_ALIGN_STRETCH);
+			vgui_widget_set_align_self(row, VGUI_ALIGN_STRETCH);
+			vgui_widget_set_background(row, 0);
+			vgui_widget_set_border(row, 0, 0);
+			vgui_widget_set_padding(row, 0, 0, 0, 0);
+			return row;
 		}
 
 		bool build_dashboard(vgui_dashboard* dashboard,
@@ -798,7 +871,10 @@ namespace vgchart {
 				return false;
 			}
 			vgui_widget_set_id(built.root, "vgui_dashboard");
-			vgui_widget_set_layout(built.root, VGUI_LAYOUT_COLUMN);
+			vgui_widget_set_layout(built.root,
+				config.mode == "wrap" ? VGUI_LAYOUT_WRAP
+				: config.mode == "columns" ? VGUI_LAYOUT_ROW
+				: VGUI_LAYOUT_COLUMN);
 			vgui_widget_set_padding(built.root, config.padding, config.padding,
 				config.padding, config.padding);
 			vgui_widget_set_gap(built.root, config.gap);
@@ -813,10 +889,78 @@ namespace vgchart {
 				vgui_widget_set_a11y_name(built.root, config.title.c_str());
 			}
 
-			for (size_t i = 0; i < config.cards.size(); ++i)
+			if (config.mode == "grid")
 			{
-				if (!build_card(dashboard, config.cards[i], built, error))
-					return false;
+				/* Row-major cells; a card that does not fit in the remaining
+				 * columns of the current row starts a new row. */
+				vgui_widget* row = nullptr;
+				int cursor = 0;
+				for (const pending_card& pending : config.cards)
+				{
+					const int span = std::max(1, std::min(pending.span,
+						config.columns));
+					if (!row || cursor + span > config.columns)
+					{
+						row = add_row_panel(built.root, config.gap);
+						if (!row)
+						{
+							error = "cannot create grid row";
+							return false;
+						}
+						cursor = 0;
+					}
+					pending_card placed = pending;
+					placed.span = span;
+					if (!build_card(dashboard, placed, row, config, built,
+						error))
+						return false;
+					cursor += span;
+				}
+			}
+			else if (config.mode == "columns")
+			{
+				/* Round-robin vertical stacks; reading order runs down each
+				 * column before moving to the next one. */
+				std::vector<vgui_widget*> columns;
+				for (int i = 0; i < config.columns; ++i)
+				{
+					vgui_widget* column = vgui_widget_add(built.root,
+						VGUI_PANEL, nullptr);
+					if (!column)
+					{
+						error = "cannot create dashboard column";
+						return false;
+					}
+					vgui_widget_set_id(column, "vgui_dashboard_column");
+					vgui_widget_set_layout(column, VGUI_LAYOUT_COLUMN);
+					vgui_widget_set_gap(column, config.gap);
+					vgui_widget_set_align_items(column, VGUI_ALIGN_STRETCH);
+					vgui_widget_set_align_self(column, VGUI_ALIGN_STRETCH);
+					vgui_widget_set_grow(column, 1.0f);
+					vgui_widget_set_background(column, 0);
+					vgui_widget_set_border(column, 0, 0);
+					vgui_widget_set_padding(column, 0, 0, 0, 0);
+					columns.push_back(column);
+				}
+				size_t index = 0;
+				for (const pending_card& pending : config.cards)
+				{
+					vgui_widget* column = columns[index % columns.size()];
+					++index;
+					if (!build_card(dashboard, pending, column, config, built,
+						error))
+						return false;
+				}
+			}
+			else
+			{
+				/* stack and wrap place every card directly in the root. */
+				for (const pending_card& pending : config.cards)
+				{
+					if (!build_card(dashboard, pending, built.root, config,
+						built, error))
+						return false;
+				}
 			}
 			return true;
 		}
@@ -857,6 +1001,124 @@ namespace vgchart {
 				(int)VGUI_CHART_STATUS_NORMAL, path),
 				(int)VGUI_CHART_STATUS_NORMAL, (int)VGUI_CHART_STATUS_STALE);
 			card.status_text = optional_string(source, "status_text", "");
+		}
+
+		json point_y_json(double y)
+		{
+			/* JSON has no NaN/Inf; the loader accepts null, "nan", "inf" and
+			 * "-inf" back. */
+			if (std::isnan(y)) return json();
+			if (std::isinf(y)) return y > 0.0 ? json("inf") : json("-inf");
+			return json(y);
+		}
+
+		double parse_point_y(const json& value, const std::string& path)
+		{
+			const double nan_value = std::numeric_limits<double>::quiet_NaN();
+			if (value.is_number())
+				return value.get<double>();
+			if (value.is_null())
+				return nan_value;
+			if (value.is_string())
+			{
+				const std::string text = value.get<std::string>();
+				if (text == "nan") return nan_value;
+				if (text == "inf")
+					return std::numeric_limits<double>::infinity();
+				if (text == "-inf")
+					return -std::numeric_limits<double>::infinity();
+			}
+			throw config_error(path + ": expected number, null, \"nan\", \"inf\" or \"-inf\"");
+		}
+
+		void parse_data_section(const json& root, pending_dashboard& config)
+		{
+			auto it = root.find("data");
+			if (it == root.end() || it->is_null())
+				return;
+			if (!it->is_object())
+				throw config_error("data: expected object");
+
+			std::map<std::string, std::unordered_set<std::string>> series_by_card;
+			for (const pending_card& card : config.cards)
+			{
+				if (card.kind != dashboard_card_kind::chart) continue;
+				for (const pending_series& series : card.series)
+					series_by_card[card.id].insert(series.key);
+			}
+
+			for (auto card_it = it->begin(); card_it != it->end(); ++card_it)
+			{
+				const std::string& card_id = card_it.key();
+				const std::string card_path = "data." + card_id;
+				auto found = series_by_card.find(card_id);
+				if (found == series_by_card.end())
+					throw config_error(card_path + ": unknown chart card");
+				if (!card_it->is_object())
+					throw config_error(card_path + ": expected object");
+
+				pending_card* card = nullptr;
+				for (pending_card& candidate : config.cards)
+				{
+					if (candidate.id == card_id)
+					{
+						card = &candidate;
+						break;
+					}
+				}
+				for (auto series_it = card_it->begin();
+					series_it != card_it->end(); ++series_it)
+				{
+					const std::string series_path =
+						card_path + "." + series_it.key();
+					if (!found->second.count(series_it.key()))
+						throw config_error(series_path + ": unknown series");
+					if (!series_it->is_array())
+						throw config_error(series_path + ": expected array");
+
+					std::vector<vgui_chart_point> points;
+					points.reserve(series_it->size());
+					for (size_t i = 0; i < series_it->size(); ++i)
+					{
+						const json& pair = (*series_it)[i];
+						const std::string item_path = series_path
+							+ "[" + std::to_string(i) + "]";
+						if (!pair.is_array() || pair.size() != 2)
+							throw config_error(item_path + ": expected [x, y] pair");
+						if (!pair[0].is_number())
+							throw config_error(item_path + ".x: expected number");
+						const double x = pair[0].get<double>();
+						if (!std::isfinite(x))
+							throw config_error(item_path + ".x: must be finite");
+						const double y = parse_point_y(pair[1], item_path + ".y");
+						if (!points.empty() && x < points.back().x)
+							throw config_error(item_path
+								+ ".x: must be non-decreasing");
+						points.push_back({x, y});
+					}
+					card->data[series_it.key()] = std::move(points);
+				}
+			}
+		}
+
+		void parse_runtime_section(const json& root, pending_dashboard& config)
+		{
+			auto it = root.find("runtime");
+			if (it == root.end() || it->is_null())
+				return;
+			if (!it->is_object())
+				throw config_error("runtime: expected object");
+			for (auto entry = it->begin(); entry != it->end(); ++entry)
+			{
+				const json& value = entry.value();
+				const bool ok = value.is_number() || value.is_string()
+					|| (value.is_array() && value.size() == 2
+						&& value[0].is_number_integer() && value[1].is_string());
+				if (!ok)
+					throw config_error("runtime." + entry.key()
+						+ ": expected number, string or [status, text]");
+				config.runtime[entry.key()] = value;
+			}
 		}
 
 		void parse_gauge(const json& item, pending_card& card,
@@ -930,8 +1192,13 @@ namespace vgchart {
 				config.gap = (float)std::clamp(
 					optional_number(layout, "gap", 10.0, "layout"), 0.0, 128.0);
 				const std::string mode = optional_string(layout, "mode", "stack");
-				if (mode != "stack")
-					throw config_error("layout.mode: only 'stack' is supported in schema version 1");
+				if (mode != "stack" && mode != "wrap" && mode != "grid"
+					&& mode != "columns")
+					throw config_error(
+						"layout.mode: unknown layout mode '" + mode + "'");
+				config.mode = mode;
+				config.columns = std::clamp(
+					optional_int(layout, "columns", 2, "layout"), 1, 12);
 			}
 
 			const json& cards = require_array(root, "cards", "");
@@ -954,6 +1221,8 @@ namespace vgchart {
 				if (!ids.insert(card.id).second)
 					throw config_error(base + ".id: duplicate card id");
 				card.title = optional_string(item, "title", "");
+				card.span = std::clamp(optional_int(item, "span", 1, base),
+					1, config.columns);
 				parse_card_keys(item, card, base);
 
 				if (card.kind == dashboard_card_kind::chart)
@@ -980,13 +1249,18 @@ namespace vgchart {
 				}
 				config.cards.push_back(std::move(card));
 			}
+			parse_data_section(root, config);
+			parse_runtime_section(root, config);
 			return config;
 		}
 
 		json axis_json(const axis_config& axis)
 		{
 			json out = json::object();
-			out["scale"] = axis.scale == VGUI_CHART_SCALE_TIME ? "time" : "linear";
+			out["scale"] = axis.scale == VGUI_CHART_SCALE_DATETIME ? "datetime"
+				: axis.scale == VGUI_CHART_SCALE_TIME ? "time" : "linear";
+			if (axis.scale == VGUI_CHART_SCALE_DATETIME && axis.time_zone)
+				out["timezone"] = "local";
 			if (axis.min < axis.max)
 			{
 				out["min"] = axis.min;
@@ -1088,13 +1362,77 @@ namespace vgchart {
 			return out;
 		}
 
-		json dashboard_json(const vgui_dashboard* dashboard)
+		json data_json(const vgui_dashboard* dashboard)
+		{
+			json data = json::object();
+			for (const dashboard_card& card : dashboard->cards)
+			{
+				if (card.kind != dashboard_card_kind::chart || !card.chart)
+					continue;
+				json series_obj = json::object();
+				for (const auto& item : card.chart->series)
+				{
+					if (!item || item->empty()) continue;
+					json points = json::array();
+					points.get_ref<json::array_t&>().reserve(item->size());
+					for (size_t i = 0; i < item->size(); ++i)
+					{
+						const vgui_chart_point& point = item->at(i);
+						json pair = json::array();
+						pair.push_back(point.x);
+						pair.push_back(point_y_json(point.y));
+						points.push_back(std::move(pair));
+					}
+					series_obj[item->key] = std::move(points);
+				}
+				if (!series_obj.empty())
+					data[card.id] = std::move(series_obj);
+			}
+			return data;
+		}
+
+		json runtime_json(const vgui_dashboard* dashboard)
+		{
+			json runtime = json::object();
+			for (const dashboard_card& card : dashboard->cards)
+			{
+				if (card.kind == dashboard_card_kind::kpi)
+				{
+					if (card.has_value && !card.value_key.empty())
+						runtime[card.value_key] = card.last_value;
+					if (!card.delta_key.empty() && !card.delta_text.empty())
+						runtime[card.delta_key] = card.delta_text;
+					if (!card.text_key.empty() && !card.subtitle_text.empty())
+						runtime[card.text_key] = card.subtitle_text;
+					if (!card.status_key.empty()
+						&& card.status != VGUI_CHART_STATUS_NORMAL)
+					{
+						json status = json::array();
+						status.push_back(card.status);
+						status.push_back(card.status_text);
+						runtime[card.status_key] = std::move(status);
+					}
+				}
+				else if (card.kind == dashboard_card_kind::gauge
+					&& card.gauge && card.gauge->has_value
+					&& !card.value_key.empty())
+				{
+					runtime[card.value_key] = card.gauge->value;
+				}
+			}
+			return runtime;
+		}
+
+		json dashboard_json(const vgui_dashboard* dashboard, uint32_t flags)
 		{
 			json root = json::object();
 			root["version"] = 1;
 			if (!dashboard->title.empty()) root["title"] = dashboard->title;
 			json layout = json::object();
-			layout["mode"] = "stack";
+			layout["mode"] = dashboard->layout_mode.empty()
+				? "stack" : dashboard->layout_mode;
+			if (layout["mode"] == "grid" || layout["mode"] == "columns")
+				layout["columns"] = dashboard->layout_columns;
 			layout["gap"] = dashboard->layout_gap;
 			layout["padding"] = dashboard->layout_padding;
 			root["layout"] = std::move(layout);
@@ -1111,6 +1449,8 @@ namespace vgchart {
 				}
 				item["id"] = card.id;
 				if (!card.title.empty()) item["title"] = card.title;
+				if (dashboard->layout_mode == "grid" && card.span > 1)
+					item["span"] = card.span;
 				if (!card.value_key.empty()) item["value_key"] = card.value_key;
 				if (!card.delta_key.empty()) item["delta_key"] = card.delta_key;
 				if (!card.text_key.empty()) item["text_key"] = card.text_key;
@@ -1132,6 +1472,16 @@ namespace vgchart {
 				cards.push_back(std::move(item));
 			}
 			root["cards"] = std::move(cards);
+			if ((flags & (uint32_t)vgui_chart_save_flags::VGUI_CHART_SAVE_DATA) != 0)
+			{
+				json data = data_json(dashboard);
+				if (!data.empty()) root["data"] = std::move(data);
+			}
+			if ((flags & (uint32_t)vgui_chart_save_flags::VGUI_CHART_SAVE_RUNTIME) != 0)
+			{
+				json runtime = runtime_json(dashboard);
+				if (!runtime.empty()) root["runtime"] = std::move(runtime);
+			}
 			return root;
 		}
 
@@ -1246,6 +1596,36 @@ extern "C" {
 				return 0;
 			}
 
+			/* Snapshot data: validated while parsing, so these appends can
+			 * only fail on allocation problems.  They run before the swap so
+			 * a failure still leaves the previous dashboard untouched. */
+			for (size_t i = 0;
+				i < config.cards.size() && i < built.cards.size(); ++i)
+			{
+				const vgchart::pending_card& pending = config.cards[i];
+				vgchart::dashboard_card& card = built.cards[i];
+				if (pending.data.empty() || !card.chart)
+					continue;
+				for (const auto& entry : pending.data)
+				{
+					const vgui_series_id id = vgui_chart_find_series(
+						card.chart, entry.first.c_str());
+					if (!id || (entry.second.size()
+						&& !vgui_chart_append_points(card.chart, id,
+							entry.second.data(), entry.second.size())))
+					{
+						failure = "cannot restore data for card '"
+							+ pending.id + "'";
+						vgchart::destroy_build(built);
+						vgchart::set_dashboard_error(dashboard, failure.c_str());
+						if (error && error_cap)
+							std::snprintf(error, error_cap, "%s",
+								failure.c_str());
+						return 0;
+					}
+				}
+			}
+
 			/* Loading replaces the root panel.  Preserve the geometry the
 			 * caller assigned to the previous root so live dashboard reloads
 			 * do not shrink back to their preferred size. */
@@ -1284,9 +1664,33 @@ extern "C" {
 			dashboard->charts = std::move(built.charts);
 			dashboard->gauges = std::move(built.gauges);
 			dashboard->title = config.title;
+			dashboard->layout_mode = config.mode;
+			dashboard->layout_columns = config.columns;
 			dashboard->layout_gap = config.gap;
 			dashboard->layout_padding = config.padding;
 			dashboard->config_json.assign(text, len);
+
+			/* Runtime values go through the public setters after the swap;
+			 * unmatched keys only leave a note in last_error. */
+			for (const auto& entry : config.runtime)
+			{
+				const nlohmann::json& value = entry.second;
+				if (value.is_number())
+				{
+					vgui_dashboard_set_number(dashboard, entry.first.c_str(),
+						value.get<double>());
+				}
+				else if (value.is_string())
+				{
+					vgui_dashboard_set_text(dashboard, entry.first.c_str(),
+						value.get<std::string>().c_str());
+				}
+				else
+				{
+					vgui_dashboard_set_status(dashboard, entry.first.c_str(),
+						value[0].get<int>(), value[1].get<std::string>().c_str());
+				}
+			}
 			dashboard->last_error.clear();
 			vgui_layout(dashboard->ctx);
 			return 1;
@@ -1317,11 +1721,20 @@ extern "C" {
 	int vgui_dashboard_save_json(vgui_dashboard* dashboard,
 		vgui_chart_write_fn write, void* user)
 	{
+		return vgui_dashboard_save_json_ex(dashboard,
+			(uint32_t)vgui_chart_save_flags::VGUI_CHART_SAVE_DEFAULT,
+			write, user);
+	}
+
+	int vgui_dashboard_save_json_ex(vgui_dashboard* dashboard, uint32_t flags,
+		vgui_chart_write_fn write, void* user)
+	{
 		if (!dashboard || !write)
 			return 0;
 		try
 		{
-			const std::string text = vgchart::dashboard_json(dashboard).dump(2);
+			const std::string text = vgchart::dashboard_json(dashboard,
+				flags).dump(2);
 			if (!vgchart::write_text(write, user, text))
 			{
 				vgchart::set_dashboard_error(dashboard, "JSON write failed");
@@ -1382,6 +1795,7 @@ extern "C" {
 		{
 			if (!card.delta_key.empty() && card.delta_key == key)
 			{
+				card.delta_text = value;
 				if (card.delta_label)
 				{
 					vgui_widget_set_text(card.delta_label, value);
@@ -1391,6 +1805,7 @@ extern "C" {
 			}
 			if (!card.text_key.empty() && card.text_key == key)
 			{
+				card.subtitle_text = value;
 				if (card.subtitle_label)
 				{
 					vgui_widget_set_text(card.subtitle_label, value);
@@ -1417,6 +1832,7 @@ extern "C" {
 			if (!(card.status_key == key || card.id == key))
 				continue;
 			card.status = clamped;
+			card.status_text = text ? text : "";
 			if (card.status_label)
 			{
 				const char* value = text ? text : "";

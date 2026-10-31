@@ -5,6 +5,7 @@ set(VGUI_CHART_SOURCES
     chart_event.cpp
     chart_export.cpp
     chart_layout.cpp
+    chart_png.cpp
     chart_util.cpp
     gauge_core.cpp
 )

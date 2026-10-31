@@ -180,7 +180,7 @@ namespace {
 		t.vgpu_ctx = vgpu_create_context(t.vgpu_device,
 			SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
 			SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
-			SDL_GPU_SAMPLECOUNT_1);
+			SDL_GPU_SAMPLECOUNT_8);
 		if (!t.vgpu_ctx)
 		{
 			std::fprintf(stderr, "vgpu_create_context failed\n");
@@ -669,6 +669,401 @@ namespace {
 
 } /* namespace */
 
+namespace {
+
+	/* ------------------------------------------------------------- P1 ----- */
+
+	/* 2026-03-17 00:00:00 UTC. */
+	constexpr double kEpochMarch17 = 1773705600.0;
+
+	struct export_state {
+		test_context* t = nullptr;
+		std::vector<uint8_t> rgba;
+	};
+
+	export_state g_export;
+
+	/* Host-side PNG renderer: repaints the widget's own context into a fresh
+	 * FBO at the requested size, painting desc.background underneath. */
+	int test_png_render(void* user, vgui_widget* widget, int width, int height,
+		vgui_color background, const uint8_t** out_rgba, int* out_stride)
+	{
+		export_state* state = (export_state*)user;
+		test_context* t = state->t;
+		vgui_context* ui = vgui_widget_get_context(widget);
+		if (!t || !ui || width <= 0 || height <= 0)
+			return 0;
+
+		vgui_context_set_size(ui, (float)width, (float)height);
+		vgui_widget_set_pos(widget, 0.0f, 0.0f);
+		vgui_widget_set_size(widget, (float)width, (float)height);
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+
+		vg_fbo_t fbo = vgpu_create_fbo(t->vgpu_ctx, width, height, nullptr);
+		if (!fbo.ctx)
+			return 0;
+		t->vg->width = (float)width;
+		t->vg->height = (float)height;
+		for (int pass = 0; pass < 2; ++pass)
+		{
+			t->cb->clear(t->vg);
+			t->cb->reset_clip(t->vg, 1);
+			/* Backdrop: charts leave padding transparent. */
+			t->cb->set_source_color(t->vg, ((background & 0xFF00FF00u)
+				| ((background & 0x00FF0000u) >> 16)
+				| ((background & 0x000000FFu) << 16)));
+			t->cb->rectangle(t->vg, 0.0f, 0.0f, (float)width, (float)height);
+			t->cb->fill(t->vg);
+			vgui_draw(ui, t->cb, t->vg);
+
+			ovg_draw_data_t data = get_draw_list(t->vg);
+			data.fbo = &fbo;
+			vgpu_render_frame(t->vgpu_ctx, &data, 1);
+			vgpu_wait_idle(t->vgpu_ctx);
+		}
+		std::vector<uint32_t> pixels;
+		const bool ok = download_texture(t->device,
+			vgpu_fbo_color_texture(&fbo), width, height, pixels);
+		vgpu_destroy_fbo(&fbo);
+		t->vg->width = (float)kWidth;
+		t->vg->height = (float)kHeight;
+		if (!ok || pixels.size() != (size_t)width * (size_t)height)
+			return 0;
+
+		/* SDL_GPU readback words are AABBGGRR; stb PNG wants RGBA bytes. */
+		state->rgba.resize(pixels.size() * 4);
+		for (size_t i = 0; i < pixels.size(); ++i)
+		{
+			const uint32_t word = pixels[i];
+			state->rgba[i * 4 + 0] = (uint8_t)(word & 0xFFu);
+			state->rgba[i * 4 + 1] = (uint8_t)((word >> 8) & 0xFFu);
+			state->rgba[i * 4 + 2] = (uint8_t)((word >> 16) & 0xFFu);
+			state->rgba[i * 4 + 3] = (uint8_t)((word >> 24) & 0xFFu);
+		}
+		*out_rgba = state->rgba.data();
+		*out_stride = width * 4;
+		return 1;
+	}
+
+	void test_datetime_scene(test_context& t, font_familys_t* font)
+	{
+		vgui_context* ui = vgui_create(font, 15.0f);
+		check(t, ui != nullptr, "datetime scene: context");
+		if (!ui)
+			return;
+		vgui_context_set_size(ui, kWidth, kHeight);
+		vgui_context_set_ui_scale(ui, 1.0f);
+		const vgui_theme theme = make_theme();
+		vgui_context_set_theme(ui, &theme);
+		vgui_widget_set_background(vgui_root(ui), theme.panel_bg);
+
+		vgui_chart* chart = vgui_chart_create(vgui_root(ui));
+		check(t, chart != nullptr, "datetime scene: create");
+		if (!chart)
+		{
+			vgui_destroy(ui);
+			return;
+		}
+		set_rect(vgui_chart_widget(chart), 20, 20, 860, 560);
+		vgui_chart_set_title(chart, "Timeline");
+
+		vgui_chart_theme chart_theme;
+		make_chart_theme(chart_theme, 0xFFFF3B30u, 0xFF34C759u);
+		vgui_chart_set_theme(chart, &chart_theme);
+
+		vgui_chart_axis_desc x_axis;
+		vgui_chart_axis_desc_default(&x_axis);
+		x_axis.scale = VGUI_CHART_SCALE_DATETIME;
+		x_axis.time_zone = 0;	/* UTC: deterministic across machines */
+		x_axis.tick_count = 3;
+		x_axis.grid = 1;
+		vgui_chart_set_axis(chart, 0, &x_axis);
+
+		vgui_chart_axis_desc y_axis;
+		vgui_chart_axis_desc_default(&y_axis);
+		y_axis.min = 0.0;
+		y_axis.max = 10.0;
+		y_axis.tick_count = 5;
+		y_axis.grid = 1;
+		vgui_chart_set_axis(chart, 1, &y_axis);
+
+		vgui_chart_series_desc desc;
+		vgui_chart_series_desc_default(&desc);
+		desc.key = "s";
+		desc.name = "Samples";
+		desc.kind = VGUI_CHART_LINE;
+		vgui_series_id series = vgui_chart_add_series(chart, &desc);
+		check(t, series != 0, "datetime scene: series");
+
+		/* One point every 6 hours across exactly three days. */
+		std::vector<vgui_chart_point> points(13);
+		for (size_t i = 0; i < points.size(); ++i)
+		{
+			points[i].x = kEpochMarch17 + (double)i * 21600.0;
+			points[i].y = 3.0 + std::sin((double)i * 0.9) * 2.5;
+		}
+		check(t, vgui_chart_append_points(chart, series, points.data(),
+			points.size()) == 1, "datetime scene: append points");
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		check(t, render_frame(t, ui), "datetime scene: render/readback");
+
+		vgui_chart_tick ticks[8] = {};
+		const int total = vgui_chart_get_axis_ticks(chart, 0, ticks, 8);
+		check(t, total == 4, "datetime scene: midnight tick count");
+		if (total == 4)
+		{
+			bool values_ok = true;
+			bool labels_ok = true;
+			for (int i = 0; i < 4; ++i)
+			{
+				char label[16] = {};
+				std::snprintf(label, sizeof(label), "03-%02d", 17 + i);
+				if (std::fabs(ticks[i].value
+					- (kEpochMarch17 + 86400.0 * (double)i)) > 1e-6)
+					values_ok = false;
+				if (!ticks[i].text
+					|| std::strcmp(ticks[i].text, label) != 0)
+					labels_ok = false;
+			}
+			check(t, values_ok, "datetime scene: ticks align to UTC midnight");
+			check(t, labels_ok, "datetime scene: tick labels are MM-DD");
+		}
+
+		vgui_chart_tick yticks[8] = {};
+		const int ytotal = vgui_chart_get_axis_ticks(chart, 1, yticks, 8);
+		check(t, ytotal > 0, "datetime scene: y ticks available");
+		check(t, yticks[0].text != nullptr, "datetime scene: y tick text set");
+
+		vgui_chart_stats stats;
+		std::memset(&stats, 0, sizeof(stats));
+		stats.struct_size = (uint32_t)sizeof(stats);
+		check(t, vgui_chart_get_stats(chart, &stats) == 1
+			&& stats.visible_points == points.size(),
+			"datetime scene: all points visible");
+
+		vgui_chart_destroy(chart);
+		vgui_destroy(ui);
+	}
+
+	const char* k_grid_dashboard_json =
+		"{"
+		"\"version\":1,"
+		"\"title\":\"Grid\","
+		"\"layout\":{\"mode\":\"grid\",\"columns\":3,\"gap\":10,\"padding\":10},"
+		"\"cards\":["
+		"{\"type\":\"kpi\",\"id\":\"a\",\"title\":\"Alpha\","
+		"\"value_key\":\"a.value\",\"format\":\"%.0f\",\"unit\":\"%\"},"
+		"{\"type\":\"kpi\",\"id\":\"b\",\"title\":\"Beta\","
+		"\"value_key\":\"b.value\",\"format\":\"%.0f\",\"unit\":\"ms\"},"
+		"{\"type\":\"kpi\",\"id\":\"c\",\"title\":\"Gamma\","
+		"\"value_key\":\"c.value\",\"format\":\"%.0f\",\"unit\":\"n\"},"
+		"{\"type\":\"chart\",\"id\":\"load\",\"title\":\"Load\","
+		"\"series\":[{\"key\":\"rps\",\"kind\":\"line\"}],\"span\":2},"
+		"{\"type\":\"gauge\",\"id\":\"disk\",\"title\":\"Disk\","
+		"\"value_key\":\"disk.value\"}"
+		"]"
+		"}";
+
+	void test_grid_scene(test_context& t, font_familys_t* font)
+	{
+		vgui_context* ui = vgui_create(font, 15.0f);
+		check(t, ui != nullptr, "grid scene: context");
+		if (!ui)
+			return;
+		vgui_context_set_size(ui, kWidth, kHeight);
+		vgui_context_set_ui_scale(ui, 1.0f);
+		const vgui_theme theme = make_theme();
+		vgui_context_set_theme(ui, &theme);
+		vgui_widget_set_background(vgui_root(ui), theme.panel_bg);
+
+		vgui_dashboard* dashboard = vgui_dashboard_create(vgui_root(ui));
+		check(t, dashboard != nullptr, "grid scene: create");
+		if (!dashboard)
+		{
+			vgui_destroy(ui);
+			return;
+		}
+		set_rect(vgui_dashboard_widget(dashboard), 0, 0, kWidth, kHeight);
+
+		char error[256] = {};
+		check(t, vgui_dashboard_load_json(dashboard, k_grid_dashboard_json,
+			std::strlen(k_grid_dashboard_json), error, sizeof(error)) == 1,
+			"grid scene: load JSON");
+		if (error[0])
+			std::printf("      load error: %s\n", error);
+
+		vgui_chart* chart = vgui_dashboard_chart(dashboard, "load");
+		vgui_gauge* gauge = vgui_dashboard_gauge(dashboard, "disk");
+		check(t, chart != nullptr, "grid scene: chart lookup");
+		check(t, gauge != nullptr, "grid scene: gauge lookup");
+		if (!chart || !gauge)
+		{
+			vgui_dashboard_destroy(dashboard);
+			vgui_destroy(ui);
+			return;
+		}
+
+		vgui_dashboard_set_number(dashboard, "a.value", 11.0);
+		vgui_dashboard_set_number(dashboard, "b.value", 22.0);
+		vgui_dashboard_set_number(dashboard, "c.value", 33.0);
+		vgui_dashboard_set_number(dashboard, "disk.value", 64.0);
+
+		std::vector<vgui_chart_point> points(80);
+		for (size_t i = 0; i < points.size(); ++i)
+			points[i] = {(double)i, 40.0 + std::sin((double)i * 0.3) * 20.0};
+		check(t, vgui_dashboard_append_points(dashboard, "load", "rps",
+			points.data(), points.size()) == 1, "grid scene: append points");
+
+		vgui_update(ui, 0.016f);
+		vgui_layout(ui);
+		vgui_dashboard_layout(dashboard);
+		check(t, render_frame(t, ui), "grid scene: render/readback");
+
+		/* Derived series[0] colour is the theme accent. */
+		const rgb line_color = from_vgui(theme.accent);
+		const rgb card_bg = mix(from_vgui(theme.panel_bg),
+			from_vgui(theme.text), 0.035f);
+
+		check(t, count_color(t, line_color, 8) > 80,
+			"grid scene: chart line pixels");
+		check(t, count_color(t, card_bg, 3) > 2000,
+			"grid scene: card backgrounds");
+		check(t, count_color(t, from_vgui(theme.text), 24) > 200,
+			"grid scene: text pixels");
+
+		check(t, write_scene_png(t, "vgui_chart_render_grid.png"),
+			"grid scene: write PNG");
+
+		vgui_dashboard_destroy(dashboard);
+		vgui_destroy(ui);
+	}
+
+	void test_png_export_scene(test_context& t, font_familys_t* font)
+	{
+		vgui_context* ui = vgui_create(font, 15.0f);
+		check(t, ui != nullptr, "png scene: context");
+		if (!ui)
+			return;
+		vgui_context_set_size(ui, kWidth, kHeight);
+		vgui_context_set_ui_scale(ui, 1.0f);
+		const vgui_theme theme = make_theme();
+		vgui_context_set_theme(ui, &theme);
+		/* Keep the root transparent so desc.background shows through. */
+		vgui_widget_set_background(vgui_root(ui), 0);
+
+		vgui_chart* chart = vgui_chart_create(vgui_root(ui));
+		check(t, chart != nullptr, "png scene: create");
+		if (!chart)
+		{
+			vgui_destroy(ui);
+			return;
+		}
+		set_rect(vgui_chart_widget(chart), 0, 0, (float)kWidth,
+			(float)kHeight);
+		vgui_chart_set_title(chart, "Export target");
+		/* CUSTOM widgets get an opaque theme panel background by default;
+		 * clear it so desc.background shows through the padding. */
+		vgui_widget* chart_widget = vgui_chart_widget(chart);
+		vgui_widget_set_background(chart_widget, 0);
+		vgui_widget_set_border(chart_widget, 0, 0);
+
+		vgui_chart_theme chart_theme;
+		make_chart_theme(chart_theme, 0xFFFF3B30u, 0xFF34C759u);
+		vgui_chart_set_theme(chart, &chart_theme);
+
+		vgui_chart_series_desc desc;
+		vgui_chart_series_desc_default(&desc);
+		desc.key = "s";
+		desc.name = "Samples";
+		desc.kind = VGUI_CHART_LINE;
+		vgui_series_id series = vgui_chart_add_series(chart, &desc);
+		std::vector<vgui_chart_point> points(200);
+		for (size_t i = 0; i < points.size(); ++i)
+			points[i] = {(double)i * 0.5,
+				50.0 + std::sin((double)i * 0.11) * 30.0};
+		check(t, vgui_chart_append_points(chart, series, points.data(),
+			points.size()) == 1, "png scene: append points");
+
+		g_export.t = &t;
+		check(t, vgui_chart_set_png_renderer(test_png_render, &g_export) == 1,
+			"png scene: install renderer");
+
+		{
+			vgui_chart_png_desc png_desc;
+			vgui_chart_png_desc_default(&png_desc);
+			png_desc.width = 640;
+			png_desc.height = 400;
+			png_desc.background = 0xFF3366AAu;
+
+			std::vector<uint8_t> file_bytes;
+			auto file_write = [](void* user, const char* data,
+				size_t size) -> int {
+				auto* out = (std::vector<uint8_t>*)user;
+				out->insert(out->end(), data, data + size);
+				return 1;
+			};
+			check(t, vgui_chart_export_png(chart, &png_desc, file_write,
+				&file_bytes) == 1, "png scene: export PNG");
+
+			check(t, file_bytes.size() > 1000, "png scene: PNG has content");
+			const bool signature = file_bytes.size() >= 8
+				&& std::memcmp(file_bytes.data(), "\x89PNG\r\n\x1a\n", 8) == 0;
+			check(t, signature, "png scene: PNG signature");
+			if (signature)
+			{
+				const unsigned char expect_header[16] = {
+					0, 0, 0, 13, 'I', 'H', 'D', 'R',
+					0, 0, 2, 128,	/* 640 */
+					0, 0, 1, 144	/* 400 */
+				};
+				check(t, std::memcmp(file_bytes.data() + 8, expect_header, 16)
+					== 0, "png scene: IHDR dimensions");
+			}
+			check(t, file_bytes.size() >= 12
+				&& std::memcmp(file_bytes.data() + file_bytes.size() - 8,
+					"IEND", 4) == 0, "png scene: IEND trailer");
+
+			FILE* out = std::fopen("vgui_chart_export.png", "wb");
+			if (out)
+			{
+				std::fwrite(file_bytes.data(), 1, file_bytes.size(), out);
+				std::fclose(out);
+			}
+		}
+
+		{
+			/* The backdrop colour must show in the transparent padding of
+			 * the exported RGBA buffer (top-left corner). */
+			const bool backdrop_ok = g_export.rgba.size() >= 4
+				&& g_export.rgba[0] == 0x33u
+				&& g_export.rgba[1] == 0x66u
+				&& g_export.rgba[2] == 0xAAu
+				&& g_export.rgba[3] == 0xFFu;
+			check(t, backdrop_ok, "png scene: backdrop colour under padding");
+			const bool varied = [&]() {
+				if (g_export.rgba.empty())
+					return false;
+				for (size_t i = 4; i + 4 <= g_export.rgba.size(); i += 4)
+				{
+					if (std::memcmp(&g_export.rgba[i], &g_export.rgba[0], 4)
+						!= 0)
+						return true;
+				}
+				return false;
+			}();
+			check(t, varied, "png scene: exported pixels are not uniform");
+		}
+
+		vgui_chart_set_png_renderer(nullptr, nullptr);
+		vgui_chart_destroy(chart);
+		vgui_destroy(ui);
+	}
+
+} /* namespace */
+
 int main()
 {
 	font_cache_cx* font_cache = nullptr;
@@ -689,6 +1084,9 @@ int main()
 	test_chart_scene(t, font);
 	test_gauge_scene(t, font);
 	test_dashboard_scene(t, font);
+	test_datetime_scene(t, font);
+	test_grid_scene(t, font);
+	test_png_export_scene(t, font);
 
 	shutdown_renderer(t);
 
