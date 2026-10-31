@@ -1080,6 +1080,22 @@ extern "C" {
 	 * subtrees whose content the host keeps static. */
 	VGUI_API void vgui_widget_set_recording_hint(vgui_widget* widget, int hint);
 	VGUI_API void vgui_widget_invalidate_recording(vgui_widget* widget);
+	/* R4-2: radial progress mode -- the value sweeps a ring (track circle +
+	 * accent arc) instead of a horizontal bar.  The widget should be roughly
+	 * square; the percentage text is drawn centred inside the ring. */
+	VGUI_API void vgui_widget_set_radial(vgui_widget* widget, int radial);
+	/* R4-2: display safe-area insets in logical pixels (TV overscan, notches).
+	 * Hosts clamp their HUD anchors to these; negative values are clamped. */
+	VGUI_API void vgui_context_set_safe_area(vgui_context* ctx,
+		int left, int top, int right, int bottom);
+	VGUI_API void vgui_context_get_safe_area(vgui_context* ctx,
+		int* left, int* top, int* right, int* bottom);
+	/* R4-2: floating combat text.  Spawns a short-lived label at absolute
+	 * screen coordinates that rises rise px/s and fades over lifetime seconds.
+	 * Capped at 64 active labels (oldest evicted).  Drawn above all HUD
+	 * content. */
+	VGUI_API void vgui_spawn_float_text(vgui_context* ctx, float x, float y,
+		const char* text, vgui_color color, float lifetime, float rise);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);

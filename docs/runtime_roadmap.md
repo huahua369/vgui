@@ -130,11 +130,23 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
   - 生命周期：invalidate/控件销毁时 `recording_destroy`。
 - **验收**：headless 测试断言"二次绘制走 replay、set_text 后重录"；E03 截图回归在 runtime_hud 热键栏开缓存后 diff=0（重放渲染与逐帧重录像素一致）；R3-2 基准对比数字。
 
-### 6.3 R3-3 帧预算文档（P1，S）
+### 6.3 R3-3 帧预算基线（P1，S，已完成）
 
-- roadmap 内附表：控件规模（1x/4x）× 模式（A/B）× 缓存（开/关）的 update/draw/submit avg/max（60/120 FPS 预算对照）。数据来自 R3-2。
+- [x] 离屏 FBO 1280x800、MSAA 1、24 名牌 + 热键栏 + 状态板 + DejaVu 16px；单次跑分含机器波动，A/B 结论需交错跑：
 
-## 7. R4 HUD 控件包（R4-1 已实现；R4-2/R4-3 待实施）
+  | 场景 | update | draw | submit |
+  |---|---|---|---|
+  | 无静态面板 | 0.07 ms | 2.6 ms | 6.0 ms |
+  | 20 静态面板 | 0.10 ms | 4.7 ms | 9.7 ms |
+  | 40 静态面板 | 0.13 ms | 6.7 ms | 13.5 ms |
+  | 80 静态面板 | 0.16 ms | 5.6 ms | 11.5 ms |
+  | 40 面板 + 子树缓存 | 0.11 ms | ~5.4-7.2 ms | 11.9 ms |
+
+  结论：update 全程 <0.2ms 可忽略；draw/submit 随面板数近线性，40 面板约 20ms 合计（60fps 预算内、120fps 需子树缓存与图集预热配合）；子树缓存对简单矩形+文本内容收益约 17%（draw），重收益需 tess2 重的圆角/复杂路径内容。
+
+## 7. R4 HUD 控件包（R4-1/R4-2 已实现；R4-3 按需）
+
+> **实施记录**：R4-1 `vgui_widget_set_text` 已补同值短路（相同文本且无 text_key 时直接返回，不 mark_dirty、不失效录制缓存）；set_value 的 1e-6 脏检查为既有行为。绑定惯例已在 runtime_hud 名牌/血条/蓝条全帧直写模式上验证。R4-2 三件全部落地并截屏验证：(1) **冷却环**——`vgui_widget_set_radial(w, 1)`，progress 绘制分支切换为圆环轨道 + 12 点钟起顺时针 accent 弧 + 居中百分比文字（runtime_hud 热键栏右侧 ult 环演示，U 键触发 5s 冷却）；(2) **飘字**——`vgui_spawn_float_text(ctx, x, y, text, color, lifetime, rise)`，上浮 + 按 life/max_life 透明度衰减 + 过期回收，上限 64 条，绘制于全部 HUD 内容之上（技能键触发冷却时在槽位上方飘 "3.0s"，SendKeys 注入已验证）；(3) **安全区**——`vgui_context_set_safe_area/get`（逻辑 px，负值钳 0），runtime_hud layout_anchors 全锚点钳制 + B 键循环 0/60/100px 档位演示。
 
 > **实施记录**：R4-1 `vgui_widget_set_text` 已补同值短路（相同文本且无 text_key 时直接返回，不 mark_dirty、不失效录制缓存）；set_value 的 1e-6 脏检查为既有行为。绑定惯例已在 runtime_hud 名牌/血条/蓝条全帧直写模式上验证。
 

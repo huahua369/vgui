@@ -454,6 +454,9 @@ struct vgui_widget
 	float text_align_y = 0.5f;
 	int clip_children = 1;
 
+	// R4-2: radial progress mode (ring track + value arc).
+	int radial = 0;
+
 	// R3-1 subtree display-list cache (opt-in via set_recording_hint).
 	int recording_hint = 0;
 	void* cached_recording = nullptr;
@@ -679,6 +682,18 @@ struct vgui_context
 	uint64_t style_epoch = 1;
 	int recording_depth = 0;
 	ovg_ctx_cb* draw_cb = nullptr;
+
+	// R4-2: safe-area insets (logical px) and floating combat text pool.
+	int safe_l = 0, safe_t = 0, safe_r = 0, safe_b = 0;
+	struct float_text_t
+	{
+		std::string text;
+		float x = 0, y = 0;
+		vgui_color color = 0xFFFFFFFF;
+		float life = 0, max_life = 0;
+		float rise = 0;
+	};
+	std::vector<float_text_t> float_texts;
 
 	std::unordered_set<vgui_texture*> textures;
 	std::vector<vgui_texture*> pending_texture_destroy;
@@ -11384,25 +11399,48 @@ namespace {
 		float y = w->abs_y + w->padding[1];
 		float rounding = w->rounding > 0 ? w->rounding : ps.rounding;
 
-		if (!w->vertical)
+		const float fill_accent = vgui_widget_color(w, accent);
+		const float fill_track = vgui_widget_color(w, track);
+		if (w->radial)
 		{
-			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, vgui_widget_color(w, track));
+			// R4-2: ring track + value sweep.  The sweep starts at 12
+			// o'clock and runs clockwise; the percentage text stays centred.
+			const float cx = x + inner_w * 0.5f;
+			const float cy = y + inner_h * 0.5f;
+			const float ring_r = std::max(4.0f,
+				std::min(inner_w, inner_h) * 0.5f - 2.0f);
+			const float lw = std::max(2.0f, ring_r * 0.28f);
+			cb->set_line_width(vg, lw);
+			cb->set_source_color(vg, fill_track);
+			cb->circle(vg, cx, cy, ring_r);
+			cb->stroke(vg);
+			if (t > 0.004f)
+			{
+				const float a0 = -1.5707963f;
+				cb->set_source_color(vg, fill_accent);
+				cb->arc(vg, cx, cy, ring_r, a0, a0 + t * 6.2831853f);
+				cb->stroke(vg);
+			}
+		}
+		else if (!w->vertical)
+		{
+			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, fill_track);
 			if (vgui_is_rtl(ctx))
 			{
 				float fill_w = inner_w * t;
 				vgui_fill_rect(cb, vg, x + inner_w - fill_w, y, fill_w, inner_h, rounding,
-					vgui_widget_color(w, accent));
+					fill_accent);
 			}
 			else
 			{
-				vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, rounding, vgui_widget_color(w, accent));
+				vgui_fill_rect(cb, vg, x, y, inner_w * t, inner_h, rounding, fill_accent);
 			}
 		}
 		else
 		{
-			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, vgui_widget_color(w, track));
+			vgui_fill_rect(cb, vg, x, y, inner_w, inner_h, rounding, fill_track);
 			float fh = inner_h * t;
-			vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, rounding, vgui_widget_color(w, accent));
+			vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, rounding, fill_accent);
 		}
 
 		std::string label = w->text;
@@ -13363,6 +13401,16 @@ namespace {
 		ctx->time += dt;
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
+		// R4-2: advance floating combat text (rise + fade + expire).
+		for (auto it = ctx->float_texts.begin(); it != ctx->float_texts.end();)
+		{
+			it->y -= it->rise * dt;
+			it->life -= dt;
+			if (it->life <= 0.0f)
+				it = ctx->float_texts.erase(it);
+			else
+				++it;
+		}
 		if (ctx->open_menu) vgui_menu_tick(ctx->open_menu, ctx);
 		vgui_tooltip_update(ctx, dt);
 
@@ -14507,6 +14555,41 @@ extern "C" {
 	void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled)
 	{
 		if (widget) widget->input_enabled = enabled ? 1 : 0;
+	}
+
+	void vgui_widget_set_radial(vgui_widget* widget, int radial)
+	{
+		if (widget) widget->radial = radial ? 1 : 0;
+	}
+
+	void vgui_context_set_safe_area(vgui_context* ctx,
+		int left, int top, int right, int bottom)
+	{
+		if (!ctx) return;
+		ctx->safe_l = std::max(0, left);
+		ctx->safe_t = std::max(0, top);
+		ctx->safe_r = std::max(0, right);
+		ctx->safe_b = std::max(0, bottom);
+	}
+
+	void vgui_context_get_safe_area(vgui_context* ctx,
+		int* left, int* top, int* right, int* bottom)
+	{
+		if (!ctx) return;
+		if (left) *left = ctx->safe_l;
+		if (top) *top = ctx->safe_t;
+		if (right) *right = ctx->safe_r;
+		if (bottom) *bottom = ctx->safe_b;
+	}
+
+	void vgui_spawn_float_text(vgui_context* ctx, float x, float y,
+		const char* text, vgui_color color, float lifetime, float rise)
+	{
+		if (!ctx || !text || !*text || lifetime <= 0.0f) return;
+		constexpr size_t kMaxFloatTexts = 64;
+		if (ctx->float_texts.size() >= kMaxFloatTexts)
+			ctx->float_texts.erase(ctx->float_texts.begin());
+		ctx->float_texts.push_back({ text, x, y, color, lifetime, lifetime, rise });
 	}
 
 	void vgui_widget_set_recording_hint(vgui_widget* widget, int hint)
@@ -19018,6 +19101,17 @@ extern "C" {
 		// Toasts are the last overlay so a notification stays readable even
 		// while a modal is open.
 		vgui_draw_toasts(ctx, cb, vg);
+
+		// R4-2: floating combat text above everything (fades as it expires).
+		for (const auto& ft : ctx->float_texts)
+		{
+			const float a = std::clamp(ft.life / ft.max_life, 0.0f, 1.0f);
+			const uint32_t alpha = (uint32_t)(a * 255.0f) << 24;
+			vgui_draw_text_sized_raw(ctx, cb, vg, nullptr, ft.text,
+				ft.x, ft.y, 0.0f, 0.0f,
+				(ft.color & 0x00FFFFFFu) | alpha, 0.5f, 0.5f,
+				ctx->font_size * 0.9f);
+		}
 
 		++ctx->frame_index;
 	}

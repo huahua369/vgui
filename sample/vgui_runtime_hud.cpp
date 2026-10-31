@@ -54,6 +54,11 @@ struct hud_state
 	vgui_widget* hotbar = nullptr;
 	vgui_widget* cooldown[6] = {};
 
+	// R4-2 demo: radial ultimate cooldown + safe-area cycling.
+	vgui_widget* ult = nullptr;
+	float ult_cd = 0.0f;
+	int safe_level = 0;
+
 	// World-anchored nameplates: name + health bar + mana bar per entity,
 	// projected from world space onto the screen every frame.
 	vgui_widget* plates[kEntityCount] = {};
@@ -173,6 +178,9 @@ static void draw_crosshair(vgui_widget*, ovg_ctx_cb* cb, rvg_t* vg,
 static const char kSkillKeys[6] = { 'Q', 'W', 'E', 'R', 'T', 'Y' };
 static const char* kSkillNames[6] = { "Q", "W", "E", "R", "T", "Y" };
 
+static void apply_safe_area(hud_state* st);
+static void layout_anchors(hud_state* st, int width, int height);
+
 static int pick_unit(const hud_state* st, float mx, float my);
 static void select_unit(hud_state* st, int index);
 
@@ -213,8 +221,27 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 		if (key == (int)(unsigned char)kSkillKeys[i])
 		{
 			st->skill_cd[i] = 3.0f;
+			// R4-2 floating text demo: report the fresh cooldown above the slot.
+			float rx = 0, ry = 0, rw = 0, rh = 0;
+			vgui_widget_get_rect(st->cooldown[i], &rx, &ry, &rw, &rh);
+			char ftext[16] = {};
+			std::snprintf(ftext, sizeof(ftext), "3.0s");
+			vgui_spawn_float_text(st->ui, rx + rw * 0.5f, ry - 6.0f, ftext,
+				0xFFFFE080, 1.2f, 26.0f);
 			return 1;
 		}
+	}
+	if (key == 'U')
+	{
+		st->ult_cd = 5.0f;
+		return 1;
+	}
+	if (key == 'B')
+	{
+		st->safe_level = (st->safe_level + 1) % 3;
+		apply_safe_area(st);
+		layout_anchors(st, st->last_w, st->last_h);
+		return 1;
 	}
 	return 0;
 }
@@ -302,6 +329,14 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 		vgui_widget_set_size(st->cooldown[i], 56.0f, 16.0f);
 		vgui_widget_set_value(st->cooldown[i], 0.0f);
 	}
+
+	// R4-2 demo: radial ultimate cooldown ring to the right of the hotbar.
+	st->ult = vgui_widget_add(root, VGUI_PROGRESS, nullptr);
+	vgui_widget_set_size(st->ult, 44.0f, 44.0f);
+	vgui_widget_set_radial(st->ult, 1);
+	vgui_widget_set_accent(st->ult, 0xFF40A0FF);
+	vgui_widget_set_track(st->ult, 0x50202840);
+	vgui_widget_set_value(st->ult, 0.0f);
 
 	// Centre crosshair.
 	st->crosshair = vgui_widget_add(root, VGUI_CUSTOM, nullptr);
@@ -457,17 +492,46 @@ static void select_unit(hud_state* st, int index)
 	}
 }
 
+// R4-2: applies the current safe-area preset (B key cycles none/60px/100px).
+static void apply_safe_area(hud_state* st)
+{
+	static const int kPresets[3][4] = {
+		{ 0, 0, 0, 0 }, { 60, 60, 60, 60 }, { 100, 100, 100, 100 },
+	};
+	const int* inset = kPresets[st->safe_level % 3];
+	vgui_context_set_safe_area(st->ui, inset[0], inset[1], inset[2], inset[3]);
+}
+
 // Edge/centre anchors for the absolutely-positioned HUD plates; called on
-// build and whenever the window resizes.
+// build and whenever the window resizes.  Positions are clamped to the
+// display safe area (R4-2).
 static void layout_anchors(hud_state* st, int width, int height)
 {
 	st->last_w = width;
 	st->last_h = height;
-	vgui_widget_set_pos(st->status_plate, (float)width - st->status_w - 16.0f, 16.0f);
+	int sl = 0, stop = 0, sr = 0, sb = 0;
+	vgui_context_get_safe_area(st->ui, &sl, &stop, &sr, &sb);
+	auto clamp_x = [&](float x, float w)
+	{
+		const float lo = (float)sl;
+		const float hi = (float)width - (float)sr - w;
+		return std::max(lo, std::min(x, std::max(lo, hi)));
+	};
+	auto clamp_y = [&](float y, float h)
+	{
+		const float lo = (float)stop;
+		const float hi = (float)height - (float)sb - h;
+		return std::max(lo, std::min(y, std::max(lo, hi)));
+	};
+	vgui_widget_set_pos(st->status_plate,
+		clamp_x((float)width - st->status_w - 16.0f, st->status_w), 16.0f);
 	vgui_widget_set_size(st->status_plate, st->status_w, 56.0f);
-	vgui_widget_set_pos(st->minimap, 16.0f, (float)height - 196.0f);
-	vgui_widget_set_pos(st->hotbar, (float)width * 0.5f - 244.0f,
-		(float)height - 96.0f);
+	vgui_widget_set_pos(st->minimap, 16.0f,
+		clamp_y((float)height - 196.0f, 180.0f));
+	vgui_widget_set_pos(st->hotbar, clamp_x((float)width * 0.5f - 244.0f, 488.0f),
+		clamp_y((float)height - 96.0f, 80.0f));
+	vgui_widget_set_pos(st->ult, clamp_x((float)width * 0.5f + 252.0f, 44.0f),
+		clamp_y((float)height - 96.0f, 44.0f));
 	vgui_widget_set_pos(st->crosshair, (float)width * 0.5f - 16.0f,
 		(float)height * 0.5f - 16.0f);
 }
@@ -489,6 +553,9 @@ static void simulate(hud_state* st, float delta)
 			st->skill_cd[i] = std::max(0.0f, st->skill_cd[i] - delta);
 		vgui_widget_set_value(st->cooldown[i], st->skill_cd[i] / 3.0f);
 	}
+	if (st->ult_cd > 0.0f)
+		st->ult_cd = std::max(0.0f, st->ult_cd - delta);
+	vgui_widget_set_value(st->ult, st->ult_cd / 5.0f);
 	for (int i = 0; i < kEntityCount; ++i)
 	{
 		const float angle = st->time * 0.4f
