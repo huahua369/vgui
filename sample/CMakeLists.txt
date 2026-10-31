@@ -12,6 +12,17 @@ set(SRC_EDIT_TEST
     vgui_edit_test.cpp
 )
 
+# R0 运行时嵌入自测：无窗口/无 GPU/无 SDL，验证核心嵌入最小循环
+set(SRC_RUNTIME_EMBED_TEST
+    vgui_runtime_embed_test.cpp
+)
+
+# R1 HUD 合成示例：3D 场景 + HUD，load-op / 离屏纹理两种合成模式
+set(SRC_RUNTIME_HUD
+    vgui_runtime_hud.cpp
+    phase0_renderer.cpp
+)
+
 # 列表/树/菜单模型自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_MODEL_TEST
     vgui_model_test.cpp
@@ -87,7 +98,10 @@ set(VGUI_PUBLIC_HEADERS
     "${VGUI_SOURCE_DIR}/include/vgui.h")
 file(GLOB VGUI_PUBLIC_BACKEND_HEADERS CONFIGURE_DEPENDS
     "${VGUI_SOURCE_DIR}/include/vgui/backend/*.h")
-list(APPEND VGUI_PUBLIC_HEADERS ${VGUI_PUBLIC_BACKEND_HEADERS})
+# CORE_ONLY 构建没有 SDL3，后端公共头无法编译，只检查核心/kit/chart 头。
+if(NOT VGUI_CORE_ONLY)
+    list(APPEND VGUI_PUBLIC_HEADERS ${VGUI_PUBLIC_BACKEND_HEADERS})
+endif()
 if(VGUI_BUILD_EDITOR_KIT)
     file(GLOB VGUI_PUBLIC_EDITOR_HEADERS CONFIGURE_DEPENDS
         "${VGUI_SOURCE_DIR}/include/vgui/editor/*.h")
@@ -119,7 +133,10 @@ else()
 endif()
 
 # ---- 可执行文件 ----
+# SDL 依赖目标（demo/phase0/离屏渲染类测试）只在完整构建中编译；
+# CORE_ONLY 构建保留全部 headless 测试与运行时嵌入测试。
 
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_demo ${SRC_DEMO})
 target_link_libraries(vgui_demo PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
 if(VGUI_BUILD_EDITOR_KIT)
@@ -128,27 +145,46 @@ if(VGUI_BUILD_EDITOR_KIT)
     target_link_libraries(vgui_demo PRIVATE vgui::editor_kit)
     target_compile_definitions(vgui_demo PRIVATE VGUI_DEMO_HAS_EDITOR_KIT=1)
 endif()
-
-add_executable(vgui_edit_test ${SRC_EDIT_TEST})
-target_link_libraries(vgui_edit_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+endif()
 
 add_executable(vgui_model_test ${SRC_MODEL_TEST})
 target_link_libraries(vgui_model_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+# model_test 通过 app_mgr 加载系统字体（无窗口），仍需要后端符号。
+if(VGUI_CORE_ONLY)
+    set_target_properties(vgui_model_test PROPERTIES EXCLUDE_FROM_ALL ON)
+endif()
+
+# R0 运行时嵌入测试：core-only 与完整构建都编译（不触碰 SDL）。
+add_executable(vgui_runtime_embed_test ${SRC_RUNTIME_EMBED_TEST})
+target_link_libraries(vgui_runtime_embed_test PRIVATE vgui_sample_common vgui::vgui)
+
+if(NOT VGUI_CORE_ONLY)
+add_executable(vgui_edit_test ${SRC_EDIT_TEST})
+target_link_libraries(vgui_edit_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+endif()
 
 if(VGUI_BUILD_EDITOR_KIT)
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_editor ${SRC_UI_EDITOR})
 target_link_libraries(vgui_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB nlohmann_json::nlohmann_json)
 target_compile_definitions(vgui_editor PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+endif()
 
 add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
 target_link_libraries(vgui_editor_kit_test PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
 
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
 target_link_libraries(vgui_game_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
 endif()
+endif()
 
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_phase0 ${SRC_PHASE0})
 target_link_libraries(vgui_phase0 PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
+
+add_executable(vgui_runtime_hud ${SRC_RUNTIME_HUD})
+target_link_libraries(vgui_runtime_hud PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
 
 add_executable(ovg_texture_test ${SRC_OVG_TEXTURE_TEST})
 target_link_libraries(ovg_texture_test PRIVATE vgui_sample_common libovg SDL3::SDL3 glm::glm-header-only)
@@ -157,14 +193,17 @@ add_executable(ovg_tools_test ${SRC_OVG_TOOLS_TEST})
 target_link_libraries(ovg_tools_test PRIVATE vgui_sample_common libovg SDL3::SDL3 glm::glm-header-only)
 target_compile_definitions(ovg_tools_test PRIVATE
     VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+endif()
 
 add_executable(ovg_scene_json_test ${SRC_OVG_SCENE_JSON_TEST})
 target_link_libraries(ovg_scene_json_test PRIVATE vgui_sample_common libovg nlohmann_json::nlohmann_json)
 
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
 target_link_libraries(vgui_texture_test PRIVATE vgui_sample_common vgui::vgui libovg SDL3::SDL3 glm::glm-header-only)
+endif()
 
-if(VGUI_BUILD_EDITOR_KIT)
+if(VGUI_BUILD_EDITOR_KIT AND NOT VGUI_CORE_ONLY)
 add_executable(vgui_screenshot_test ${SRC_SCREENSHOT_TEST})
 target_link_libraries(vgui_screenshot_test PRIVATE vgui_sample_common vgui::editor_kit libovg
     SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB glm::glm-header-only)
@@ -188,6 +227,7 @@ if(VGUI_BUILD_CHART)
     set_target_properties(vgui_chart_test PROPERTIES LINKER_LANGUAGE CXX)
     add_test(NAME vgui_chart COMMAND vgui_chart_test)
 
+    if(NOT VGUI_CORE_ONLY)
     add_executable(vgui_chart_render_test vgui_chart_render_test.cpp)
     target_link_libraries(vgui_chart_render_test PRIVATE
         vgui_sample_common vgui::chart libovg SDL3::SDL3 glm::glm-header-only)
@@ -195,11 +235,14 @@ if(VGUI_BUILD_CHART)
         VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
     add_test(NAME vgui_chart_render COMMAND vgui_chart_render_test)
     set_tests_properties(vgui_chart_render PROPERTIES SKIP_RETURN_CODE 77)
+    endif()
 endif()
 
+if(NOT VGUI_CORE_ONLY)
 add_custom_command(
     TARGET vgui_demo POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         ${VGUI_SOURCE_DIR}/sample/res
         $<TARGET_FILE_DIR:vgui_demo>/res
 )
+endif()

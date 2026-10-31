@@ -1,11 +1,24 @@
+option(VGUI_CORE_ONLY "Build libvgui without the SDL3 backend (engine runtime / headless embedding)" OFF)
+
+# Core: the C widget tree, layout, input dispatch and OVG recording.  No SDL,
+# no OS windowing -- hosts drive vgui_update/vgui_draw and consume
+# ovg_draw_data_t with their own renderer.  mapView (OS mmap reader) and anim
+# are OS-dependent but SDL-free, so they stay in the core list.
 set(OVGUI_SOURCES
     ../gui/anim.cpp
-    ../gui/win_core.cpp
     ../gui/vgui.cpp
     mapView.cpp
-    vgui_sdl3.cpp
-    vgui_renderer_sdl3.cpp
 )
+
+if(NOT VGUI_CORE_ONLY)
+    # SDL3 backend: window/input/IME app layer, vgpu 2D GPU renderer and the
+    # Windows desktop integration used by it.
+    list(APPEND OVGUI_SOURCES
+        ../gui/win_core.cpp
+        vgui_sdl3.cpp
+        vgui_renderer_sdl3.cpp
+    )
+endif()
 
 add_library(libvgui STATIC ${OVGUI_SOURCES})
 add_library(vgui::vgui ALIAS libvgui)
@@ -27,9 +40,12 @@ target_include_directories(libvgui
 # link interface because vgui_sdl3.h / vgui_renderer_sdl3.h expose OVG types.
 target_link_libraries(libvgui
     PUBLIC
-        SDL3::SDL3
         glm::glm-header-only
         libovg
     PRIVATE
         PkgConfig::Clipper2
         PkgConfig::Clipper2Z)
+
+if(NOT VGUI_CORE_ONLY)
+    target_link_libraries(libvgui PUBLIC SDL3::SDL3)
+endif()

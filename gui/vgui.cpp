@@ -5,13 +5,11 @@ gui实现
 */
 
 #include "pch.h"
-#include <SDL3/SDL.h>
 #include "vgui_internal.h"
 #include <vgui/vgui.h>
 
-#include <vgui/backend/vgui_sdl3.h>
-
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -21,44 +19,19 @@ gui实现
 #include <unordered_map>
 #include <unordered_set>
 
-#include <mapView.h>
-
 #include <ovg_c.h>
 #include "tools/tools.hpp"
 
-#include <clipper2/clipper.h> 
+#include <clipper2/clipper.h>
 using namespace Clipper2Lib;
 //--------------------------------------------------------------------------------------------------------------------------------------------------
 
-gui_viewport::~gui_viewport()
-{
-	if (ui)
-	{
-		vgui_destroy(ui);
-		ui = nullptr;
-	}
-}
+// Clipboard bridge (declared in vgui_internal.h).  The SDL3 backend installs
+// the OS clipboard at startup; core-only builds leave both null and edit
+// copy/paste becomes an in-process no-op.
+	std::string (*vgui_clipboard_get_fn)() = nullptr;
+	void (*vgui_clipboard_set_fn)(const char*) = nullptr;
 
-void gui_viewport::trigger(dev_event_t* e)
-{
-	if (!e) return;
-	if (!ui)
-	{
-		e->ret = 0;
-		return;
-	}
-
-	int consumed = vgui_dispatch_dev_event(ui, e);
-	if (consumed) e->ret = 1;
-
-	io.WantCaptureMouse = vgui_context_wants_mouse(ui) != 0;
-	io.WantCaptureKey = vgui_context_wants_keyboard(ui) != 0;
-	io.WantTextInput = vgui_context_wants_text_input(ui) != 0;
-	vgui_context_get_text_input_rect(ui, &ime_rect.x, &ime_rect.y, &ime_rect.z, &ime_rect.w);
-
-	if (e->type == dev_event_type_e::mouse_move_e && e->v.m)
-		e->v.m->cursor = (cursor_st)vgui_context_get_cursor(ui);
-}
 //--------------------------------------------------------------------------------------------------------------------------------------------------
 // C API implementation
 //
@@ -710,6 +683,10 @@ struct vgui_context
 	int menu_swallow_up = 0;
 	int mods = 0;
 	double time = 0;
+	// Injected monotonic clock for double-click timing (vgui_time_fn).
+	// NULL -> std::chrono::steady_clock fallback; the core never touches the OS.
+	vgui_time_fn time_fn = nullptr;
+	void* time_user = nullptr;
 
 	int want_mouse = 0;
 	int want_key = 0;
@@ -777,6 +754,17 @@ struct vgui_context
 	bool layout_dirty = true;
 	bool in_input = false;
 };
+
+// Monotonic seconds for click/double-click timing.  The injected clock keeps
+// game engines and headless tests deterministic; the steady_clock fallback
+// needs no OS API.
+static double context_now_seconds(vgui_context* ctx)
+{
+	if (ctx && ctx->time_fn)
+		return ctx->time_fn(ctx->time_user);
+	return std::chrono::duration<double>(
+		std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 namespace {
 
@@ -6311,8 +6299,9 @@ namespace {
 		a = vgui_edit_clamp_index(w->edit_text, a);
 		b = vgui_edit_clamp_index(w->edit_text, b);
 		if (b <= a) return 0;
-		set_clipboard(w->edit_text.substr((size_t)a, (size_t)(b - a)).c_str());
-		return 1;
+		if (vgui_clipboard_set_fn)
+			vgui_clipboard_set_fn(w->edit_text.substr((size_t)a, (size_t)(b - a)).c_str());
+		return vgui_clipboard_set_fn ? 1 : 0;
 	}
 
 	static int vgui_edit_cut_impl(vgui_widget* w)
@@ -6349,7 +6338,8 @@ namespace {
 	static int vgui_edit_paste_impl(vgui_widget* w)
 	{
 		if (!w || w->readonly) return 0;
-		std::string s = vgui_edit_sanitize_paste(w, get_clipboard());
+		std::string s = vgui_edit_sanitize_paste(w,
+			vgui_clipboard_get_fn ? vgui_clipboard_get_fn() : std::string());
 		if (s.empty()) return 0;
 		vgui_edit_history_push(w, 2);
 		vgui_edit_erase_selection(w);
@@ -9082,7 +9072,7 @@ namespace {
 
 		// Track the click count here as well so callers that only forward raw
 		// mouse events still get click/double-click information.
-		double now = SDL_GetTicks() / 1000.0;
+		double now = context_now_seconds(ctx);
 		if (button >= 0 && button < 8)
 		{
 			if (clicks > 0)
@@ -13716,6 +13706,13 @@ extern "C" {
 	float vgui_context_get_ui_scale(vgui_context* ctx)
 	{
 		return ctx ? ctx->ui_scale : 1.0f;
+	}
+
+	void vgui_context_set_time_fn(vgui_context* ctx, vgui_time_fn fn, void* user)
+	{
+		if (!ctx) return;
+		ctx->time_fn = fn;
+		ctx->time_user = user;
 	}
 
 	int vgui_context_add_ui_scale_listener(vgui_context* ctx, vgui_ui_scale_fn fn, void* user)
@@ -18981,161 +18978,3 @@ void vgui_texture_bind_native(vgui_texture* texture, const ovg_texture_t* native
 	texture->native_texture = native_texture;
 	texture->release_native = release_native;
 }
-
-//----------------------------------------------------------------------------
-// SDL3 backend bridge (C++ linkage, declared in vgui_internal.h)
-//----------------------------------------------------------------------------
-
-namespace {
-
-	static int vgui_translate_sdl_key(int keycode)
-	{
-		switch (keycode)
-		{
-		case SDLK_BACKSPACE: return VGUI_KEY_BACKSPACE;
-		case SDLK_TAB: return VGUI_KEY_TAB;
-		case SDLK_RETURN:
-		case SDLK_KP_ENTER: return VGUI_KEY_ENTER;
-		case SDLK_ESCAPE: return VGUI_KEY_ESCAPE;
-		case SDLK_DELETE: return VGUI_KEY_DELETE;
-		case SDLK_LEFT: return VGUI_KEY_LEFT;
-		case SDLK_RIGHT: return VGUI_KEY_RIGHT;
-		case SDLK_UP: return VGUI_KEY_UP;
-		case SDLK_DOWN: return VGUI_KEY_DOWN;
-		case SDLK_HOME: return VGUI_KEY_HOME;
-		case SDLK_END: return VGUI_KEY_END;
-		case SDLK_PAGEUP: return VGUI_KEY_PAGE_UP;
-		case SDLK_PAGEDOWN: return VGUI_KEY_PAGE_DOWN;
-		case SDLK_INSERT: return VGUI_KEY_INSERT;
-		case SDLK_F1: return VGUI_KEY_F1;
-		case SDLK_F2: return VGUI_KEY_F2;
-		case SDLK_F3: return VGUI_KEY_F3;
-		case SDLK_F4: return VGUI_KEY_F4;
-		case SDLK_F5: return VGUI_KEY_F5;
-		case SDLK_F6: return VGUI_KEY_F6;
-		case SDLK_F7: return VGUI_KEY_F7;
-		case SDLK_F8: return VGUI_KEY_F8;
-		case SDLK_F9: return VGUI_KEY_F9;
-		case SDLK_F10: return VGUI_KEY_F10;
-		case SDLK_F11: return VGUI_KEY_F11;
-		case SDLK_F12: return VGUI_KEY_F12;
-		default: break;
-		}
-
-		if (keycode >= SDLK_A && keycode <= SDLK_Z)
-			return 'A' + (keycode - SDLK_A);
-		if (keycode >= SDLK_0 && keycode <= SDLK_9)
-			return '0' + (keycode - SDLK_0);
-		if (keycode > 0 && keycode < 128)
-			return keycode;
-		return 0;
-	}
-
-	static int vgui_translate_kmod(int kmod)
-	{
-		int mods = VGUI_MOD_NONE;
-		if (kmod & KM_SHIFT) mods |= VGUI_MOD_SHIFT;
-		if (kmod & KM_CTRL) mods |= VGUI_MOD_CTRL;
-		if (kmod & KM_ALT) mods |= VGUI_MOD_ALT;
-		if (kmod & KM_GUI) mods |= VGUI_MOD_GUI;
-		return mods;
-	}
-
-	static void vgui_ime_rect_to_event(vgui_context* ctx, int* x, int* y, int* w, int* h)
-	{
-		vgui_context_get_text_input_rect(ctx, x, y, w, h);
-	}
-
-} // anonymous namespace
-
-int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e)
-{
-	if (!ctx || !e) return 0;
-
-	int ret = 0;
-	switch (e->type)
-	{
-	case dev_event_type_e::mouse_move_e:
-	{
-		mouse_move_et* m = e->v.m;
-		if (!m) break;
-		ret = vgui_mouse_move_impl(ctx, (float)m->x, (float)m->y);
-		m->cursor = (cursor_st)vgui_context_get_cursor(ctx);
-		break;
-	}
-	case dev_event_type_e::mouse_button_e:
-	{
-		mouse_button_et* b = e->v.b;
-		if (!b) break;
-		if (b->down)
-			ret = vgui_mouse_down_impl(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
-		else
-			ret = vgui_mouse_up_impl(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
-		break;
-	}
-	case dev_event_type_e::mouse_wheel_e:
-	{
-		mouse_wheel_et* w = e->v.w;
-		if (!w) break;
-		ret = vgui_mouse_wheel_impl(ctx, (float)w->x, (float)w->y);
-		break;
-	}
-	case dev_event_type_e::keyboard_e:
-	{
-		keyboard_et* k = e->v.k;
-		if (!k) break;
-		int key = vgui_translate_sdl_key(k->keycode ? k->keycode : k->sym);
-		int mods = vgui_translate_kmod(k->kmod);
-		ret = vgui_key_impl(ctx, key, k->down ? 1 : 0, mods);
-		break;
-	}
-	case dev_event_type_e::text_input_e:
-	{
-		text_input_et* t = e->v.t;
-		if (!t) break;
-		ret = vgui_text_impl(ctx, t->text ? t->text : "");
-		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
-		break;
-	}
-	case dev_event_type_e::text_editing_e:
-	{
-		text_editing_et* t = e->v.e;
-		if (!t) break;
-		ret = vgui_editing_impl(ctx, t->text ? t->text : "", t->start, t->length);
-		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
-		break;
-	}
-	case dev_event_type_e::finger_e:
-	{
-		finger_et* f = e->v.f;
-		if (!f) break;
-		float fx = f->x, fy = f->y;
-		if (fx >= 0.0f && fx <= 1.0f && fy >= 0.0f && fy <= 1.0f)
-		{
-			fx *= (float)(ctx->width > 0 ? ctx->width : 1);
-			fy *= (float)(ctx->height > 0 ? ctx->height : 1);
-		}
-		if (f->t == 1)
-			ret = vgui_mouse_down_impl(ctx, 1, fx, fy, 1);
-		else if (f->t == 2)
-			ret = vgui_mouse_up_impl(ctx, 1, fx, fy, 1);
-		else
-			ret = vgui_mouse_move_impl(ctx, fx, fy);
-		break;
-	}
-	case dev_event_type_e::ole_drop_e:
-	{
-		// F03: OS 文件拖入桥接到通用拖放路由（fmt==1 文件列表）。
-		ole_drop_et* d = e->v.d;
-		if (!d || d->fmt != 1 || !d->str || d->count <= 0) break;
-		ret = vgui_input_drop_files(ctx, d->str, d->count, d->x, d->y);
-		break;
-	}
-	default:
-		break;
-	}
-
-	if (ret) e->ret = 1;
-	return ret;
-}
-

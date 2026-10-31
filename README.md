@@ -1153,18 +1153,21 @@ sample/
   ovg_scene_json_test.cpp   A08 OVGS 图片节点资源解析/上传缓存测试
   phase0_renderer.*         Phase 0 3D 渲染器：多 view、HDR/tonemap、MSAA 与深度可视化
   vgui_phase0.cpp           Phase 0 FBO -> 原生纹理 -> VGUI_IMAGE 示例
+  vgui_runtime_embed_test.cpp  R0 无窗口/无 GPU 嵌入自测（引擎最小嵌入循环参考）
+  vgui_runtime_hud.cpp      R1 运行时 HUD 示例：load-op/离屏纹理两种合成模式
   shaders/                  Phase 0 Slang 源与生成的 SPIR-V 头（compile.ps1）
 docs/
   chart.md            vgui_chart 图表/仪表盘/JSON 仪表板（P0）
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
   editor_roadmap.md   游戏编辑器组件路线图
+  runtime_roadmap.md  游戏运行时 UI 路线图（R 系列）
 ```
 
 公共 API 和控件相关说明集中在 `include/vgui/vgui.h`；SDL3 后端公共头位于 `include/vgui/backend/`，editor kit 公共头位于 `include/vgui/editor/`，chart 公共头位于 `include/vgui/chart/`，内部 C++ 声明在 `gui/vgui_internal.h`。
 
 ## 路线图
 
-游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，图表/仪表盘 P0 范围与 P1 边界见 [`docs/chart.md`](docs/chart.md)。
+游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)；游戏运行时方向（HUD 合成、手柄导航、显示列表缓存等）见 [`docs/runtime_roadmap.md`](docs/runtime_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，图表/仪表盘 P0 范围与 P1 边界见 [`docs/chart.md`](docs/chart.md)。
 
 ## 测试
 

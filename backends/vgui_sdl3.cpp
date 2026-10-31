@@ -32,6 +32,41 @@ vgui sdl3实现
 #undef max
 #endif // min
 
+// ---------------------------------------------------------------------------
+// gui_viewport: forwards backend device events into the C UI tree.  Lives in
+// the backend because the type is declared in vgui_sdl3.h; the core stays
+// independent of it (see VGUI_CORE_ONLY builds).
+// ---------------------------------------------------------------------------
+
+gui_viewport::~gui_viewport()
+{
+	if (ui)
+	{
+		vgui_destroy(ui);
+		ui = nullptr;
+	}
+}
+
+void gui_viewport::trigger(dev_event_t* e)
+{
+	if (!e) return;
+	if (!ui)
+	{
+		e->ret = 0;
+		return;
+	}
+
+	int consumed = vgui_dispatch_dev_event(ui, e);
+	if (consumed) e->ret = 1;
+
+	io.WantCaptureMouse = vgui_context_wants_mouse(ui) != 0;
+	io.WantCaptureKey = vgui_context_wants_keyboard(ui) != 0;
+	io.WantTextInput = vgui_context_wants_text_input(ui) != 0;
+	vgui_context_get_text_input_rect(ui, &ime_rect.x, &ime_rect.y, &ime_rect.z, &ime_rect.w);
+
+	if (e->type == dev_event_type_e::mouse_move_e && e->v.m)
+		e->v.m->cursor = (cursor_st)vgui_context_get_cursor(ui);
+}
 
 std::string get_clipboard()
 {
@@ -53,6 +88,20 @@ void set_clipboard(const char* str)
 	if (str)
 		SDL_SetClipboardText(str);
 }
+
+// Install the clipboard bridge (vgui_internal.h) with this translation unit's
+// OS clipboard implementation.
+namespace {
+	struct clipboard_bridge_install
+	{
+		clipboard_bridge_install()
+		{
+			vgui_clipboard_get_fn = []() -> std::string { return get_clipboard(); };
+			vgui_clipboard_set_fn = [](const char* s) { set_clipboard(s); };
+		}
+	};
+	const clipboard_bridge_install g_clipboard_bridge_install;
+} // namespace
 
 void set_col_u8()
 {
@@ -1255,3 +1304,167 @@ int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
 	vgui_texture_mark_layout_dirty(texture);
 	return 1;
 }
+
+//----------------------------------------------------------------------------
+// SDL3 backend bridge: SDL key/mod translation and the dev_event_t adapter.
+// Owns the SDL3-specific mapping; the core exposes portable vgui_key codes
+// through vgui_input_key().  Declarations in vgui_internal.h.
+//----------------------------------------------------------------------------
+
+namespace {
+
+	static int vgui_translate_sdl_key(int keycode)
+	{
+		switch (keycode)
+		{
+		case SDLK_BACKSPACE: return VGUI_KEY_BACKSPACE;
+		case SDLK_TAB: return VGUI_KEY_TAB;
+		case SDLK_RETURN:
+		case SDLK_KP_ENTER: return VGUI_KEY_ENTER;
+		case SDLK_ESCAPE: return VGUI_KEY_ESCAPE;
+		case SDLK_DELETE: return VGUI_KEY_DELETE;
+		case SDLK_LEFT: return VGUI_KEY_LEFT;
+		case SDLK_RIGHT: return VGUI_KEY_RIGHT;
+		case SDLK_UP: return VGUI_KEY_UP;
+		case SDLK_DOWN: return VGUI_KEY_DOWN;
+		case SDLK_HOME: return VGUI_KEY_HOME;
+		case SDLK_END: return VGUI_KEY_END;
+		case SDLK_PAGEUP: return VGUI_KEY_PAGE_UP;
+		case SDLK_PAGEDOWN: return VGUI_KEY_PAGE_DOWN;
+		case SDLK_INSERT: return VGUI_KEY_INSERT;
+		case SDLK_F1: return VGUI_KEY_F1;
+		case SDLK_F2: return VGUI_KEY_F2;
+		case SDLK_F3: return VGUI_KEY_F3;
+		case SDLK_F4: return VGUI_KEY_F4;
+		case SDLK_F5: return VGUI_KEY_F5;
+		case SDLK_F6: return VGUI_KEY_F6;
+		case SDLK_F7: return VGUI_KEY_F7;
+		case SDLK_F8: return VGUI_KEY_F8;
+		case SDLK_F9: return VGUI_KEY_F9;
+		case SDLK_F10: return VGUI_KEY_F10;
+		case SDLK_F11: return VGUI_KEY_F11;
+		case SDLK_F12: return VGUI_KEY_F12;
+		default: break;
+		}
+
+		if (keycode >= SDLK_A && keycode <= SDLK_Z)
+			return 'A' + (keycode - SDLK_A);
+		if (keycode >= SDLK_0 && keycode <= SDLK_9)
+			return '0' + (keycode - SDLK_0);
+		if (keycode > 0 && keycode < 128)
+			return keycode;
+		return 0;
+	}
+
+	static int vgui_translate_kmod(int kmod)
+	{
+		int mods = VGUI_MOD_NONE;
+		if (kmod & KM_SHIFT) mods |= VGUI_MOD_SHIFT;
+		if (kmod & KM_CTRL) mods |= VGUI_MOD_CTRL;
+		if (kmod & KM_ALT) mods |= VGUI_MOD_ALT;
+		if (kmod & KM_GUI) mods |= VGUI_MOD_GUI;
+		return mods;
+	}
+
+	static void vgui_ime_rect_to_event(vgui_context* ctx, int* x, int* y, int* w, int* h)
+	{
+		vgui_context_get_text_input_rect(ctx, x, y, w, h);
+	}
+
+} // anonymous namespace
+
+int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e)
+{
+	if (!ctx || !e) return 0;
+
+	int ret = 0;
+	switch (e->type)
+	{
+	case dev_event_type_e::mouse_move_e:
+	{
+		mouse_move_et* m = e->v.m;
+		if (!m) break;
+		ret = vgui_input_mouse_move(ctx, (float)m->x, (float)m->y);
+		m->cursor = (cursor_st)vgui_context_get_cursor(ctx);
+		break;
+	}
+	case dev_event_type_e::mouse_button_e:
+	{
+		mouse_button_et* b = e->v.b;
+		if (!b) break;
+		if (b->down)
+			ret = vgui_input_mouse_down(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
+		else
+			ret = vgui_input_mouse_up(ctx, (int)b->button, (float)b->x, (float)b->y, (int)b->clicks);
+		break;
+	}
+	case dev_event_type_e::mouse_wheel_e:
+	{
+		mouse_wheel_et* w = e->v.w;
+		if (!w) break;
+		ret = vgui_input_mouse_wheel(ctx, (float)w->x, (float)w->y);
+		break;
+	}
+	case dev_event_type_e::keyboard_e:
+	{
+		keyboard_et* k = e->v.k;
+		if (!k) break;
+		int key = vgui_translate_sdl_key(k->keycode ? k->keycode : k->sym);
+		int mods = vgui_translate_kmod(k->kmod);
+		ret = vgui_input_key(ctx, key, k->down ? 1 : 0, mods);
+		break;
+	}
+	case dev_event_type_e::text_input_e:
+	{
+		text_input_et* t = e->v.t;
+		if (!t) break;
+		ret = vgui_input_text(ctx, t->text ? t->text : "");
+		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
+		break;
+	}
+	case dev_event_type_e::text_editing_e:
+	{
+		text_editing_et* t = e->v.e;
+		if (!t) break;
+		ret = vgui_input_editing(ctx, t->text ? t->text : "", t->start, t->length);
+		vgui_ime_rect_to_event(ctx, &t->x, &t->y, &t->w, &t->h);
+		break;
+	}
+	case dev_event_type_e::finger_e:
+	{
+		finger_et* f = e->v.f;
+		if (!f) break;
+		float fx = f->x, fy = f->y;
+		if (fx >= 0.0f && fx <= 1.0f && fy >= 0.0f && fy <= 1.0f)
+		{
+			// Normalized touch coordinates scale to the context size through
+			// the public API; the backend never sees the context struct.
+			int ui_w = 0, ui_h = 0;
+			vgui_context_get_size(ctx, &ui_w, &ui_h);
+			fx *= (float)(ui_w > 0 ? ui_w : 1);
+			fy *= (float)(ui_h > 0 ? ui_h : 1);
+		}
+		if (f->t == 1)
+			ret = vgui_input_mouse_down(ctx, 1, fx, fy, 1);
+		else if (f->t == 2)
+			ret = vgui_input_mouse_up(ctx, 1, fx, fy, 1);
+		else
+			ret = vgui_input_mouse_move(ctx, fx, fy);
+		break;
+	}
+	case dev_event_type_e::ole_drop_e:
+	{
+		// F03: OS 文件拖入桥接到通用拖放路由（fmt==1 文件列表）。
+		ole_drop_et* d = e->v.d;
+		if (!d || d->fmt != 1 || !d->str || d->count <= 0) break;
+		ret = vgui_input_drop_files(ctx, d->str, d->count, d->x, d->y);
+		break;
+	}
+	default:
+		break;
+	}
+
+	if (ret) e->ret = 1;
+	return ret;
+}
+

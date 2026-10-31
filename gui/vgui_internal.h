@@ -295,6 +295,11 @@ struct switch_info_t
 // ---------------------------------------------------------------------------
 struct vgui_context;
 
+// Clipboard bridge: the backend installs the OS clipboard into these at
+// startup.  NULL in core-only builds -- edit copy/paste then no-ops.
+extern std::string (*vgui_clipboard_get_fn)();
+extern void (*vgui_clipboard_set_fn)(const char*);
+
 // Internal texture object.  The public API only exposes the opaque
 // vgui_texture pointer.  CPU textures keep a copy of the pixels and are
 // uploaded on first draw; native textures are borrowed GPU handles owned by
@@ -338,6 +343,8 @@ void vgui_texture_bind_native(vgui_texture* texture, const ovg_texture_t* native
 	void* native_ctx, void* native_texture, void (*release_native)(vgui_texture*));
 
 // Dispatches a backend device event to the C UI tree and returns non-zero when
-// the UI consumed the event.
+// the UI consumed the event.  Implemented in the SDL3 backend (it owns the
+// SDL key/mod translation and calls the public vgui_input_* API); core-only
+// builds have no producer for these events.
 int vgui_dispatch_dev_event(vgui_context* ctx, dev_event_t* e);
 

@@ -25,6 +25,7 @@ option(VGUI_BUILD_SAMPLES "Build vgui samples and tests" ${VGUI_IS_TOP_LEVEL})
 option(VGUI_BUILD_EDITOR_KIT "Build vgui_editor_kit" ON)
 option(VGUI_BUILD_CHART "Build the optional vgui_chart module" ON)
 option(VGUI_INSTALL "Install vgui headers, libraries and CMake package files" ${VGUI_IS_TOP_LEVEL})
+option(VGUI_CORE_ONLY "Build libvgui without the SDL3 backend (engine runtime / headless embedding)" OFF)
 
 # E03: 截图回归测试通过 CTest 注册，CI 可直接运行 ctest -R vgui_screenshots。
 if(VGUI_IS_TOP_LEVEL)
@@ -63,7 +64,10 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 # ---- 查找 lib ----
-find_package(SDL3 REQUIRED)
+# VGUI_CORE_ONLY 只构建核心（无 SDL3 后端）；采样点 SDL 仅在需要时查找。
+if(NOT VGUI_CORE_ONLY)
+    find_package(SDL3 REQUIRED)
+endif()
 find_package(harfbuzz CONFIG REQUIRED)
 find_package(Fontconfig REQUIRED)
 find_package(PkgConfig REQUIRED)
@@ -78,7 +82,13 @@ if(NOT TARGET PkgConfig::Clipper2Z)
     pkg_check_modules(Clipper2Z REQUIRED IMPORTED_TARGET Clipper2Z)
 endif()
 
+include_directories(${VGUI_SOURCE_DIR}/include)
+
 # 包含子项目。
+# 核心构建不编译 ovg 自带的 SDL3 GPU 渲染器，保持整条链无 SDL 依赖。
+if(VGUI_CORE_ONLY)
+    set(OVG_ENABLE_SDL3_GPURenderer OFF CACHE BOOL "" FORCE)
+endif()
 add_subdirectory(third_party/ovg)
 
 # libovg 由 third_party/ovg 定义；这里补齐供 vgui 构建树和安装包使用的

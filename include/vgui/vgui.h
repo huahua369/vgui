@@ -941,6 +941,16 @@ extern "C" {
 	VGUI_API int vgui_context_add_ui_scale_listener(vgui_context* ctx, vgui_ui_scale_fn fn, void* user);
 	VGUI_API void vgui_context_remove_ui_scale_listener(vgui_context* ctx, int token);
 
+	/* Monotonic clock used for double-click timing, in seconds.  The core never
+	 * touches the OS API: hosts driving vgui_input_mouse_* without the SDL3
+	 * backend (game engines, headless tests) may inject their own source for
+	 * deterministic or game-time behaviour (pausable clocks, replays).  When
+	 * fn is NULL the core falls back to std::chrono::steady_clock.  The
+	 * injected function must return non-decreasing seconds and may be called
+	 * from any vgui_input_mouse_down/cancel dispatch. */
+	typedef double (*vgui_time_fn)(void* user);
+	VGUI_API void vgui_context_set_time_fn(vgui_context* ctx, vgui_time_fn fn, void* user);
+
 	/* Fills style with the built-in defaults.  Style changes are applied to the
 	 * context immediately; widgets whose padding/rounding/requested sizes still
 	 * equal the previous defaults are migrated as well, so an existing tree can be

@@ -41,6 +41,13 @@ struct vg_fbo_t {
 	vgpu_texture_t* color_msaa_tex = nullptr;
 	SDL_GPUCommandBuffer* cmd = nullptr;
 	bool upsize = true;
+	// Load-op of the UI render pass.  true (default) clears the target before
+	// drawing; false keeps the existing content and blends the UI on top -- a
+	// game engine renders its 3D scene into the same texture first, then runs
+	// vgui/ovg recording into it as an overlay (docs/runtime_roadmap.md R1).
+	// Must be set before vgpu_render_frame(); within a frame each FBO is
+	// rendered by exactly one pass.
+	bool clear = true;
 };
 
 // Device: owns shaders and the default white texture; follows the
@@ -67,6 +74,18 @@ int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait)
 // offscreen FBOs.  Mainly used by SDL_DownloadFromGPUTexture readback in
 // offscreen tests.
 SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo);
+
+// The command buffer vgpu is currently encoding into: acquired by
+// vgpu_acquire_swapchain(), submitted by vgpu_render_frame().  Game engines
+// use it to encode their own work between the two -- e.g. SDL_BlitGPUTexture
+// of the 3D scene into the swapchain texture before the UI pass -- so blit
+// and UI stay ordered inside one submission.  NULL outside a frame.
+SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx);
+
+// The color format all vgpu targets use: the swapchain format the context was
+// created with.  Offscreen FBOs created by vgpu_create_fbo() and native
+// textures borrowed through vgpu_texture_init_native() must use it.
+SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx);
 
 // Native texture handle: samples an existing caller-owned SDL_GPUTexture.
 // vgui only borrows it and never releases it; the default sampler is

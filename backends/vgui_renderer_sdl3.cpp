@@ -1376,6 +1376,16 @@ SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo)
 	return nullptr;
 }
 
+SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx)
+{
+	return ctx ? ctx->current_cmd : nullptr;
+}
+
+SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx)
+{
+	return ctx ? ctx->color_format : SDL_GPU_TEXTUREFORMAT_INVALID;
+}
+
 void vgpu_destroy_fbo(vg_fbo_t* fbo)
 {
 	if (!fbo)
@@ -1609,7 +1619,7 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 			if (current_fbo)
 				end_pass(ctx, current_fbo);
 			current_fbo = fbo;
-			begin_pass(ctx, fbo, true);
+			begin_pass(ctx, fbo, fbo->clear);
 		}
 		SDL_GPURenderPass* pass = ctx->pass;
 		if (!pass)
