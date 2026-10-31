@@ -425,7 +425,8 @@ void os_window::hide_cursor()
 
 app_mgr::app_mgr()
 {
-	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+	uint32_t f = SDL_INIT_AUDIO | SDL_INIT_VIDEO | SDL_INIT_EVENTS
+		| SDL_INIT_GAMEPAD;
 #ifdef __ANDROID__
 	f |= SDL_INIT_HAPTIC;
 #endif
@@ -1073,6 +1074,103 @@ void app_mgr::process_event(const SDL_Event* e)
 	}
 
 }
+// R2-2: gamepad -> focus/activation input.  Opens the first connected pad,
+// maps face buttons to the keyboard/cancel path and dpad+left stick to
+// vgui_focus_navigate with a 350/140ms repeat cadence.  Degrades to a no-op
+// without a pad.
+void app_mgr::pump_gamepad()
+{
+	if (!gamepad)
+	{
+		int count = 0;
+		SDL_JoystickID* pads = SDL_GetGamepads(&count);
+		if (pads)
+		{
+			if (count > 0)
+				gamepad = SDL_OpenGamepad(pads[0]);
+			SDL_free(pads);
+		}
+		if (!gamepad)
+			return;
+	}
+	if (!SDL_GamepadConnected(gamepad))
+	{
+		SDL_CloseGamepad(gamepad);
+		gamepad = nullptr;
+		return;
+	}
+
+	gui_viewport* vp = (main_window && main_window->viewport)
+		? main_window->viewport : nullptr;
+	if (!vp || !vp->ui)
+		return;
+	vgui_context* ui = vp->ui;
+	const Uint64 now = SDL_GetTicks();
+
+	// Face buttons (edge triggered): A -> Enter (activates the focused
+	// widget), B -> cancel, Y -> menu key, Start -> F10 menubar.
+	const struct { SDL_GamepadButton btn; int key; bool cancel; } face[4] = {
+		{ SDL_GAMEPAD_BUTTON_SOUTH, VGUI_KEY_ENTER, false },
+		{ SDL_GAMEPAD_BUTTON_EAST, 0, true },
+		{ SDL_GAMEPAD_BUTTON_WEST, VGUI_KEY_MENU, false },
+		{ SDL_GAMEPAD_BUTTON_START, VGUI_KEY_F10, false },
+	};
+	for (int i = 0; i < 4; ++i)
+	{
+		const bool down = SDL_GetGamepadButton(gamepad, face[i].btn) != 0;
+		if (down && !gamepad_prev_btn[i])
+		{
+			if (face[i].cancel)
+				vgui_input_cancel(ui);
+			else
+				vgui_input_key(ui, face[i].key, 1, 0);
+		}
+		else if (!down && gamepad_prev_btn[i] && !face[i].cancel)
+		{
+			vgui_input_key(ui, face[i].key, 0, 0);
+		}
+		gamepad_prev_btn[i] = down;
+	}
+
+	// Directions: dpad OR left stick (dead-zone 0.35, dominant axis), routed
+	// to vgui_focus_navigate with a 350ms initial delay and 140ms repeat.
+	const bool dpad[4] = {
+		SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_UP) != 0,
+		SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_DOWN) != 0,
+		SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_LEFT) != 0,
+		SDL_GetGamepadButton(gamepad, SDL_GAMEPAD_BUTTON_DPAD_RIGHT) != 0,
+	};
+	const float lx = SDL_GetGamepadAxis(gamepad,
+		SDL_GAMEPAD_AXIS_LEFTX) / 32768.0f;
+	const float ly = SDL_GetGamepadAxis(gamepad,
+		SDL_GAMEPAD_AXIS_LEFTY) / 32768.0f;
+	bool stick[4] = {};
+	if (std::fabs(lx) > 0.35f || std::fabs(ly) > 0.35f)
+	{
+		if (std::fabs(ly) >= std::fabs(lx))
+			stick[ly < 0.0f ? 0 : 1] = true;
+		else
+			stick[lx < 0.0f ? 2 : 3] = true;
+	}
+	const vgui_nav_direction dirs[4] = { VGUI_NAV_UP, VGUI_NAV_DOWN,
+		VGUI_NAV_LEFT, VGUI_NAV_RIGHT };
+	for (int d = 0; d < 4; ++d)
+	{
+		const bool held = dpad[d] || stick[d];
+		if (held && !gamepad_dir_held[d])
+		{
+			vgui_focus_navigate(ui, dirs[d]);
+			gamepad_next_repeat[d] = now + 350;
+		}
+		else if (held && now >= gamepad_next_repeat[d])
+		{
+			vgui_focus_navigate(ui, dirs[d]);
+			gamepad_next_repeat[d] = now + 140;
+		}
+		gamepad_dir_held[d] = held;
+	}
+}
+
 int app_mgr::get_event()
 {
 	int ts = 0;
@@ -1100,6 +1198,7 @@ int app_mgr::get_event()
 	// Hosts normally call get_event() once per frame.  Re-syncing here also
 	// covers content-scale changes delivered without a window event.
 	sync_ui_scales();
+	pump_gamepad();
 	return ts;
 }
 

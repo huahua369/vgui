@@ -307,6 +307,14 @@ struct phase0_renderer
 	SDL_GPUGraphicsPipeline* depth_only_pipeline = nullptr;
 	std::vector<p0_pipeline_set> pipelines;
 
+	// R5-1 world-space UI billboard (texture borrowed from the host).
+	SDL_GPUTexture* billboard_texture = nullptr;
+	float billboard_pos[3] = { 0.0f, 0.0f, 0.0f };
+	float billboard_w = 0.0f;
+	float billboard_h = 0.0f;
+	SDL_GPUBuffer* billboard_buffer = nullptr;
+	Uint32 billboard_capacity = 0;
+
 	std::vector<std::unique_ptr<phase0_view>> views;
 	phase0_view* default_view = nullptr;
 };
@@ -772,6 +780,69 @@ void draw_view_ghosts(phase0_renderer* r, phase0_view* view,
 	}
 }
 
+// R5-1: draws the world-space UI billboard (see set_billboard) with the
+// blended grid pipeline and the host texture bound instead of white.
+void draw_view_billboard(phase0_renderer* r, phase0_view* view,
+	SDL_GPURenderPass* pass, SDL_GPUCommandBuffer* cmd,
+	const glm::mat4& view_projection, const glm::mat4& view_matrix,
+	const p0_pipeline_set* set)
+{
+	if (!r->billboard_texture || r->billboard_w <= 0.0f || r->billboard_h <= 0.0f
+		|| !set)
+		return;
+
+	// Camera basis from the view rotation rows (orthonormal, world space).
+	glm::vec3 right(view_matrix[0][0], view_matrix[1][0], view_matrix[2][0]);
+	glm::vec3 up(view_matrix[0][1], view_matrix[1][1], view_matrix[2][1]);
+	right = glm::normalize(right);
+	up = glm::normalize(up);
+	const glm::vec3 center(r->billboard_pos[0], r->billboard_pos[1],
+		r->billboard_pos[2]);
+	const glm::vec3 ex = right * (r->billboard_w * 0.5f);
+	const glm::vec3 ey = up * (r->billboard_h * 0.5f);
+	const uint32_t white = 0xFFFFFFFFu;
+
+	// CCW from the camera; uv (0,0) is the top-left of the UI texture.
+	const p0_vertex verts[6] = {
+		{ (center - ex + ey).x, (center - ex + ey).y, (center - ex + ey).z,
+			0.0f, 0.0f, white },
+		{ (center - ex - ey).x, (center - ex - ey).y, (center - ex - ey).z,
+			0.0f, 1.0f, white },
+		{ (center + ex - ey).x, (center + ex - ey).y, (center + ex - ey).z,
+			1.0f, 1.0f, white },
+		{ (center - ex + ey).x, (center - ex + ey).y, (center - ex + ey).z,
+			0.0f, 0.0f, white },
+		{ (center + ex - ey).x, (center + ex - ey).y, (center + ex - ey).z,
+			1.0f, 1.0f, white },
+		{ (center + ex + ey).x, (center + ex + ey).y, (center + ex + ey).z,
+			1.0f, 0.0f, white },
+	};
+
+	constexpr Uint32 kBytes = sizeof(verts);
+	if (!r->billboard_buffer || r->billboard_capacity < kBytes)
+	{
+		if (r->billboard_buffer)
+			SDL_ReleaseGPUBuffer(r->device, r->billboard_buffer);
+		SDL_GPUBufferCreateInfo info = {};
+		info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
+		info.size = 256;
+		r->billboard_buffer = SDL_CreateGPUBuffer(r->device, &info);
+		r->billboard_capacity = r->billboard_buffer ? 256 : 0;
+		if (!r->billboard_buffer)
+			return;
+	}
+	upload_buffer(r->device, r->billboard_buffer, verts, kBytes);
+
+	SDL_BindGPUGraphicsPipeline(pass, set->grid);
+	SDL_GPUBufferBinding binding = { r->billboard_buffer, 0 };
+	SDL_BindGPUVertexBuffers(pass, 0, &binding, 1);
+	SDL_GPUTextureSamplerBinding sampler = { r->billboard_texture,
+		r->linear_sampler };
+	SDL_BindGPUFragmentSamplers(pass, 0, &sampler, 1);
+	push_draw_uniforms(cmd, view_projection, glm::vec4(1.0f));
+	SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
+}
+
 void draw_scene_target(phase0_renderer* r, phase0_view* view,
 	SDL_GPUCommandBuffer* cmd, const p0_camera_matrices& camera,
 	const p0_pipeline_set* set, float time_seconds)
@@ -831,6 +902,7 @@ void draw_scene_target(phase0_renderer* r, phase0_view* view,
 	draw_scene_geometry(r, view, pass, cmd, view_projection, time_seconds, false);
 	draw_view_grid(r, view, pass, cmd, view_projection, set);
 	draw_view_ghosts(r, view, pass, cmd, view_projection, set);
+	draw_view_billboard(r, view, pass, cmd, view_projection, camera.view, set);
 
 	SDL_EndGPURenderPass(pass);
 }
@@ -1188,6 +1260,8 @@ void phase0_renderer_destroy(phase0_renderer* r)
 			SDL_ReleaseGPUTexture(r->device, r->white_texture);
 		if (r->ghost_vertex_buffer)
 			SDL_ReleaseGPUBuffer(r->device, r->ghost_vertex_buffer);
+		if (r->billboard_buffer)
+			SDL_ReleaseGPUBuffer(r->device, r->billboard_buffer);
 		if (r->vertex_buffer)
 			SDL_ReleaseGPUBuffer(r->device, r->vertex_buffer);
 		if (r->depth_only_frag)
@@ -1443,6 +1517,22 @@ int phase0_renderer_width(phase0_renderer* r)
 int phase0_renderer_height(phase0_renderer* r)
 {
 	return phase0_view_height(phase0_renderer_default_view(r));
+}
+
+void phase0_renderer_set_billboard(phase0_renderer* r,
+	SDL_GPUTexture* texture, const float position[3], float width, float height)
+{
+	if (!r)
+		return;
+	r->billboard_texture = texture;
+	if (position)
+	{
+		r->billboard_pos[0] = position[0];
+		r->billboard_pos[1] = position[1];
+		r->billboard_pos[2] = position[2];
+	}
+	r->billboard_w = width;
+	r->billboard_h = height;
 }
 
 void phase0_renderer_set_camera(phase0_renderer* r, const phase0_camera* camera)

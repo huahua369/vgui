@@ -175,7 +175,18 @@ public:
 	bool nc_down = false;
 	bool WantUpdateMonitors = true;
 	bool capture_type = true;
+
+	// R2-2: translates the first connected gamepad into the focus/activation
+	// input path (dpad+stick -> vgui_focus_navigate with repeat, A -> Enter,
+	// B -> cancel, Y -> menu, Start -> F10).  Safe when no gamepad exists.
+	void pump_gamepad();
+
 private:
+	SDL_Gamepad* gamepad = nullptr;
+	Uint64 gamepad_next_repeat[4] = {};	// vgui_nav_direction per direction
+	bool gamepad_dir_held[4] = {};
+	bool gamepad_prev_btn[4] = {};
+
 	std::vector<std::unique_ptr<os_window>> windows_;
 public:
 	app_mgr();

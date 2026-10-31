@@ -454,9 +454,23 @@ struct vgui_widget
 	float text_align_y = 0.5f;
 	int clip_children = 1;
 
+	// R3-1 subtree display-list cache (opt-in via set_recording_hint).
+	int recording_hint = 0;
+	void* cached_recording = nullptr;
+	bool cache_dirty = false;
+	float cache_rect[4] = {};
+	int cache_clip[4] = {};
+	int cache_clip_count = 0;
+	uint64_t cache_style_epoch = 0;
+
 	// state ----------------------------------------------------------------
 	int visible = 1;
 	int enabled = 1;
+	// 0: the widget AND its subtree are skipped by hit testing -- mouse
+	// events fall through to widgets underneath / the host.  Unlike
+	// enabled=0 the subtree keeps its normal visuals (world-anchored HUD
+	// indicators use this so world clicks pass through).
+	int input_enabled = 1;
 	int focusable = 0;
 	int hovered = 0;
 	int pressed = 0;
@@ -660,6 +674,11 @@ struct vgui_context
 	std::unordered_set<vgui_widget*> all_widgets;
 	std::unordered_set<vgui_widget*> alive;
 	std::vector<vgui_widget*> pending_delete;
+	// R3-1 cache bookkeeping: bumped by theme/style/scale/language changes;
+	// the draw-side cb (for recording_destroy on widget removal).
+	uint64_t style_epoch = 1;
+	int recording_depth = 0;
+	ovg_ctx_cb* draw_cb = nullptr;
 
 	std::unordered_set<vgui_texture*> textures;
 	std::vector<vgui_texture*> pending_texture_destroy;
@@ -5457,6 +5476,13 @@ namespace {
 		for (vgui_widget* w : list)
 		{
 			if (!w || !ctx->alive.count(w)) continue;
+			if (w->cached_recording && ctx->draw_cb
+				&& ctx->draw_cb->recording_destroy)
+			{
+				ctx->draw_cb->recording_destroy(
+					(ovg_recording_t*)w->cached_recording);
+				w->cached_recording = nullptr;
+			}
 			if (w->parent)
 			{
 				auto& v = w->parent->children;
@@ -5578,6 +5604,7 @@ namespace {
 	static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
 	{
 		if (!w || !w->visible || !w->enabled || w->destroy_pending) return nullptr;
+		if (!w->input_enabled) return nullptr;
 		if (!vgui_point_in(w, x, y)) return nullptr;
 		if (w->kind == VGUI_SPLITTER && vgui_splitter_sash_hit(w, x, y))
 			return w;
@@ -6938,6 +6965,114 @@ namespace {
 		if (index < 0) index = (int)list.size() - 1;
 		if (index >= (int)list.size()) index = 0;
 		vgui_set_focus_internal(ctx, list[(size_t)index]);
+	}
+
+	// R2-1 directional focus navigation (gamepad / remote hosts).  Purely
+	// geometric: picks the focusable widget whose centre lies closest to the
+	// focused widget in the requested visual direction (cone test, primary
+	// axis + cross-axis penalty); wraps to the farthest opposite widget when
+	// the cone is empty.  In-widget arrow-key behaviour (lists, sliders) is
+	// untouched -- hosts call this explicitly from their own input layer.
+	static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
+	{
+		if (!ctx)
+			return 0;
+		vgui_ensure_layout(ctx);
+		vgui_widget* root = vgui_active_root(ctx);
+		if (!root)
+			return 0;
+
+		float dir_x = 0.0f, dir_y = 0.0f;
+		switch (dir)
+		{
+		case VGUI_NAV_UP: dir_y = -1.0f; break;
+		case VGUI_NAV_DOWN: dir_y = 1.0f; break;
+		case VGUI_NAV_LEFT: dir_x = -1.0f; break;
+		case VGUI_NAV_RIGHT: dir_x = 1.0f; break;
+		default: return 0;
+		}
+
+		// Candidate collection mirrors vgui_focus_next_impl (trap-scoped).
+		vgui_widget* scope = root;
+		if (ctx->focus && ctx->alive.count(ctx->focus))
+		{
+			for (vgui_widget* p = ctx->focus; p; p = p->parent)
+				if (p->focus_trap) { scope = p; break; }
+		}
+		std::vector<vgui_widget*> list;
+		std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
+			{
+				if (!w || !w->visible || !w->enabled) return;
+				if (w->focusable) list.push_back(w);
+				for (vgui_widget* c : w->children) collect(c);
+			};
+		collect(scope);
+		if (list.empty() && scope != root)
+			collect(root);
+
+		vgui_widget* from = (ctx->focus && ctx->alive.count(ctx->focus))
+			? ctx->focus : nullptr;
+		if (!from)
+		{
+			// No focus yet: take the first candidate like Tab from scratch.
+			if (list.empty())
+				return 0;
+			vgui_set_focus_internal(ctx, list.front());
+			return 1;
+		}
+
+		const float fx = from->abs_x + from->abs_w * 0.5f;
+		const float fy = from->abs_y + from->abs_h * 0.5f;
+
+		vgui_widget* best = nullptr;
+		float best_score = 0.0f;
+		vgui_widget* wrap = nullptr;
+		float wrap_proj = 0.0f;
+		float wrap_cross = 0.0f;
+		for (vgui_widget* w : list)
+		{
+			if (w == from)
+				continue;
+			const float cx = w->abs_x + w->abs_w * 0.5f;
+			const float cy = w->abs_y + w->abs_h * 0.5f;
+			const float dx = cx - fx;
+			const float dy = cy - fy;
+			const float primary = dx * dir_x + dy * dir_y;
+			const float cross = dx * -dir_y + dy * dir_x;
+			if (primary > 0.5f)
+			{
+				const float ac = std::fabs(cross);
+				if (ac <= primary * 1.5f)
+				{
+					const float score = primary + 2.0f * ac;
+					if (!best || score < best_score)
+					{
+						best = w;
+						best_score = score;
+					}
+				}
+			}
+			else if (primary < 0.0f)
+			{
+				// Edge wrap candidate: the farthest widget in the opposite
+				// direction, ties broken by the smallest cross-axis offset
+				// (UP from a grid row wraps into the same column).
+				const float ac = std::fabs(cross);
+				if (!wrap || primary < wrap_proj - 1.0f
+					|| (primary < wrap_proj + 1.0f && ac < wrap_cross))
+				{
+					wrap = w;
+					wrap_proj = primary;
+					wrap_cross = ac;
+				}
+			}
+		}
+
+		vgui_widget* target = best ? best : wrap;
+		if (!target)
+			return 0;
+		vgui_set_focus_internal(ctx, target);
+		return 1;
 	}
 
 	//----------------------------------------------------------------------------
@@ -12578,6 +12713,55 @@ namespace {
 		cb->restore(vg);
 	}
 
+	// R3-1: content changes inside a hinted subtree invalidate the nearest
+	// enclosing recording (set_text/set_value/set_checked hook this too).
+	static void vgui_recording_invalidate_chain(vgui_widget* w)
+	{
+		for (vgui_widget* p = w; p; p = p->parent)
+		{
+			if (p->recording_hint)
+			{
+				if (p->cached_recording)
+					p->cache_dirty = true;
+				break;	// nearest enclosing hint only
+			}
+		}
+	}
+
+	// Per-frame validity: geometry, theme/style epoch, clip state and no
+	// active animations / focus ring inside the subtree (they draw
+	// differently per frame, so a replay would go stale).
+	static bool vgui_recording_replay_ok(vgui_widget* w, vgui_context* ctx,
+		vgui_clip_state* clips)
+	{
+		if (!w->cached_recording || w->cache_dirty)
+			return false;
+		if (w->abs_x != w->cache_rect[0] || w->abs_y != w->cache_rect[1]
+			|| w->abs_w != w->cache_rect[2] || w->abs_h != w->cache_rect[3])
+			return false;
+		if (ctx->style_epoch != w->cache_style_epoch)
+			return false;
+		if ((int)clips->stack.size() != w->cache_clip_count)
+			return false;
+		if (w->cache_clip_count
+			&& memcmp(&clips->stack.back(), w->cache_clip,
+				sizeof(glm::ivec4)) != 0)
+			return false;
+		std::function<bool(vgui_widget*)> scan = [&](vgui_widget* c) -> bool
+		{
+			if (!c) return false;
+			if (c == ctx->focus) return true;	// focus ring animates
+			if ((c->hover_anim > 0.001f && c->hover_anim < 0.999f)
+				|| (c->press_anim > 0.001f && c->press_anim < 0.999f)
+				|| (c->check_anim > 0.001f && c->check_anim < 0.999f))
+				return true;
+			for (vgui_widget* ch : c->children)
+				if (scan(ch)) return true;
+			return false;
+		};
+		return !scan(w);
+	}
+
 	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips);
 
 	static void vgui_draw_modal(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg,
@@ -13047,7 +13231,8 @@ namespace {
 		vgui_draw_focus(w, cb, vg);
 	}
 
-	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
+	static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_clip_state* clips)
 	{
 		if (!w || !w->visible || w->abs_w <= 0 || w->abs_h <= 0) return;
 		// 区域外直接不渲染
@@ -13222,6 +13407,53 @@ namespace {
 			if (w->kind == VGUI_CUSTOM)
 				w->custom_dt = dt;
 		}
+	}
+
+	// R3-1: outer wrapper -- replay a clean hinted subtree from its display
+	// list, otherwise record this draw into a fresh display list.  The
+	// recording depth guard keeps hinted subtrees from nesting recordings.
+	static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_clip_state* clips)
+	{
+		if (w && w->recording_hint && w->ctx
+			&& w->ctx->recording_depth == 0
+			&& cb->replay && cb->start_recording && cb->stop_recording
+			&& cb->recording_destroy)
+		{
+			vgui_context* ctx = w->ctx;
+			if (w->cached_recording
+				&& vgui_recording_replay_ok(w, ctx, clips))
+			{
+				cb->replay(vg, (ovg_recording_t*)w->cached_recording);
+				return;
+			}
+			if (w->cached_recording)
+			{
+				cb->recording_destroy((ovg_recording_t*)w->cached_recording);
+				w->cached_recording = nullptr;
+			}
+			cb->start_recording(vg);
+			++ctx->recording_depth;
+			vgui_draw_widget_inner(w, cb, vg, clips);
+			--ctx->recording_depth;
+			if (ovg_recording_t* rec = cb->stop_recording(vg, nullptr))
+			{
+				w->cached_recording = rec;
+				w->cache_rect[0] = w->abs_x;
+				w->cache_rect[1] = w->abs_y;
+				w->cache_rect[2] = w->abs_w;
+				w->cache_rect[3] = w->abs_h;
+				w->cache_style_epoch = ctx->style_epoch;
+				w->cache_clip_count = (int)clips->stack.size();
+				if (w->cache_clip_count > 0 && w->cache_clip_count <= 4
+					&& (int)clips->stack.size() == w->cache_clip_count)
+					memcpy(w->cache_clip, &clips->stack.back(),
+						sizeof(glm::ivec4));
+				w->cache_dirty = false;
+			}
+			return;
+		}
+		vgui_draw_widget_inner(w, cb, vg, clips);
 	}
 
 	static void vgui_process_texture_retire(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
@@ -13498,6 +13730,7 @@ extern "C" {
 
 	void vgui_context_set_theme(vgui_context* ctx, const vgui_theme* theme)
 	{
+		ctx->style_epoch++;
 		if (!ctx || !theme) return;
 		vgui_theme old = ctx->theme;
 		vgui_theme next = *theme;
@@ -13671,6 +13904,7 @@ extern "C" {
 
 	void vgui_context_set_ui_scale(vgui_context* ctx, float scale)
 	{
+		ctx->style_epoch++;
 		if (!ctx) return;
 		if (!std::isfinite(scale) || scale <= 0.0f) scale = 1.0f;
 		scale = vgui_clampf(scale, 0.25f, 4.0f);
@@ -13742,6 +13976,7 @@ extern "C" {
 
 	void vgui_context_set_style(vgui_context* ctx, const vgui_style* style)
 	{
+		ctx->style_epoch++;
 		if (!ctx || !style) return;
 		vgui_style old = ctx->style;
 		vgui_style next_base = *style;
@@ -13879,6 +14114,7 @@ extern "C" {
 
 	void vgui_context_set_language(vgui_context* ctx, const char* language)
 	{
+		ctx->style_epoch++;
 		if (!ctx) return;
 		std::string lang = language ? language : "";
 		if (ctx->language == lang) return;
@@ -14187,8 +14423,11 @@ extern "C" {
 	void vgui_widget_set_text(vgui_widget* widget, const char* text)
 	{
 		if (!widget) return;
+		const std::string next = text ? text : "";
+		if (widget->text == next && widget->text_key.empty())
+			return;	// R4-1: same-value sets must not dirty layout/recording
 		widget->text_key.clear();
-		widget->text = text ? text : "";
+		widget->text = next;
 		if (widget->kind == VGUI_EDIT)
 		{
 			widget->edit_text = widget->text;
@@ -14197,6 +14436,7 @@ extern "C" {
 			widget->ime_cursor = widget->ime_length = 0;
 			vgui_edit_invalidate_content_width(widget);
 		}
+		vgui_recording_invalidate_chain(widget);
 		vgui_mark_dirty(widget);
 	}
 
@@ -14262,6 +14502,30 @@ extern "C" {
 	void vgui_widget_set_track(vgui_widget* widget, vgui_color color)
 	{
 		if (widget) widget->track = color;
+	}
+
+	void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled)
+	{
+		if (widget) widget->input_enabled = enabled ? 1 : 0;
+	}
+
+	void vgui_widget_set_recording_hint(vgui_widget* widget, int hint)
+	{
+		if (!widget) return;
+		widget->recording_hint = hint ? 1 : 0;
+		vgui_context* c = widget->ctx;
+		if (!hint && widget->cached_recording && c && c->draw_cb
+			&& c->draw_cb->recording_destroy)
+		{
+			c->draw_cb->recording_destroy(
+				(ovg_recording_t*)widget->cached_recording);
+			widget->cached_recording = nullptr;
+		}
+	}
+
+	void vgui_widget_invalidate_recording(vgui_widget* widget)
+	{
+		if (widget) vgui_recording_invalidate_chain(widget);
 	}
 
 	void vgui_widget_set_background(vgui_widget* widget, vgui_color color)
@@ -15258,6 +15522,7 @@ extern "C" {
 	void vgui_widget_set_value(vgui_widget* widget, float value)
 	{
 		if (!widget) return;
+		vgui_recording_invalidate_chain(widget);
 		if (widget->kind == VGUI_RADIO)
 		{
 			if (value >= 0.5f)
@@ -15307,6 +15572,7 @@ extern "C" {
 	void vgui_widget_set_checked(vgui_widget* widget, int checked)
 	{
 		if (!widget) return;
+		vgui_recording_invalidate_chain(widget);
 		checked = checked ? 1 : 0;
 		if (widget->kind == VGUI_RADIO)
 		{
@@ -18567,6 +18833,11 @@ extern "C" {
 		vgui_focus_next_impl(ctx, reverse != 0);
 	}
 
+	int vgui_focus_navigate(vgui_context* ctx, vgui_nav_direction dir)
+	{
+		return vgui_focus_navigate_impl(ctx, dir);
+	}
+
 	int vgui_context_add_key_handler(vgui_context* ctx, vgui_key_handler_fn fn, void* user)
 	{
 		if (!ctx || !fn) return 0;
@@ -18691,8 +18962,12 @@ extern "C" {
 		vgui_update_impl(ctx, delta_time);
 	}
 
+	static void vgui_recording_atlas_check(vgui_context* ctx, rvg_t* vg);
+
 	void vgui_draw(vgui_context* ctx, struct ovg_ctx_cb* cb, struct rvg_t* vg)
 	{
+		if (ctx) ctx->draw_cb = cb;
+		vgui_recording_atlas_check(ctx, vg);
 		if (!ctx || !cb || !vg || !ctx->root) return;
 		vgui_flush_pending(ctx);
 		vgui_ensure_layout(ctx);
@@ -18745,6 +19020,30 @@ extern "C" {
 		vgui_draw_toasts(ctx, cb, vg);
 
 		++ctx->frame_index;
+	}
+
+	// R3-1: any texture upload this frame (font atlas growth etc.) invalidates
+	// cached subtree recordings -- their replayed commands reference the
+	// previous texture generation, and the old pages are destroyed.  Called
+	// once per frame from the public vgui_draw().
+	static void vgui_recording_atlas_check(vgui_context* ctx, rvg_t* vg)
+	{
+		if (!ctx)
+			return;
+		ovg_draw_data_t dd = get_draw_list(vg);
+		if (dd.image_desc_count == 0)
+			return;
+		++ctx->style_epoch;
+		for (vgui_widget* w : ctx->all_widgets)
+		{
+			if (w->cached_recording)
+			{
+				if (ctx->draw_cb && ctx->draw_cb->recording_destroy)
+					ctx->draw_cb->recording_destroy(
+						(ovg_recording_t*)w->cached_recording);
+				w->cached_recording = nullptr;
+			}
+		}
 	}
 
 	// -------------------------------------------------------------------------

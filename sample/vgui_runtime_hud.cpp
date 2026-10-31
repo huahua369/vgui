@@ -57,10 +57,12 @@ struct hud_state
 	// World-anchored nameplates: name + health bar + mana bar per entity,
 	// projected from world space onto the screen every frame.
 	vgui_widget* plates[kEntityCount] = {};
+	vgui_widget* plate_name[kEntityCount] = {};
 	vgui_widget* plate_hp[kEntityCount] = {};
 	vgui_widget* plate_mp[kEntityCount] = {};
 	float ent_hp[kEntityCount] = {};
 	float ent_mp[kEntityCount] = {};
+	int selected = -1;
 	float cam_eye[3] = { 0.0f, 6.5f, 9.0f };
 	float cam_target[3] = { 0.0f, 0.0f, 0.0f };
 	float cam_fov = 50.0f;
@@ -89,6 +91,12 @@ struct hud_state
 	vg_fbo_t ui_fbo{};
 	ovg_texture_t ui_tex{};
 	bool ui_tex_ready = false;
+
+	// R5-1 world panel: its own tiny UI context rendered into an offscreen
+	// FBO; phase0 samples that texture on a world-space billboard.
+	vgui_context* panel_ui = nullptr;
+	rvg_t* vg_panel = nullptr;
+	vg_fbo_t panel_fbo{};
 };
 
 // ---------------------------------------------------------------------------
@@ -164,6 +172,31 @@ static void draw_crosshair(vgui_widget*, ovg_ctx_cb* cb, rvg_t* vg,
 
 static const char kSkillKeys[6] = { 'Q', 'W', 'E', 'R', 'T', 'Y' };
 static const char* kSkillNames[6] = { "Q", "W", "E", "R", "T", "Y" };
+
+static int pick_unit(const hud_state* st, float mx, float my);
+static void select_unit(hud_state* st, int index);
+
+// R5-2: clicks that miss every HUD widget land on the root panel; unproject
+// them into the scene and select the entity under the cursor.  Right click
+// clears the selection.  Nameplates are input-disabled so clicks over them
+// also end up here.
+static void on_root_event(vgui_widget*, const vgui_event* e, void* user)
+{
+	hud_state* st = static_cast<hud_state*>(user);
+	if (e->type != VGUI_EVENT_CLICK)
+		return;
+	if (e->button == 3)
+	{
+		select_unit(st, -1);
+		return;
+	}
+	if (e->button == 1)
+	{
+		const int hit = pick_unit(st, e->x, e->y);
+		if (hit >= 0)
+			select_unit(st, hit);
+	}
+}
 
 static int on_key(vgui_context*, int key, int down, int, void* user)
 {
@@ -287,8 +320,12 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 		vgui_widget_set_gap(plate, 1.0f);
 		vgui_widget_set_padding(plate, 1, 1, 1, 1);
 		vgui_widget_set_background(plate, 0x70101418);
+		// Indicators, not interactive UI: clicks over a nameplate fall
+		// through to the root's world-picking handler (R5-2).
+		vgui_widget_set_input_enabled(plate, 0);
 
 		vgui_widget* name = vgui_widget_add(plate, VGUI_LABEL, plate_name);
+		st->plate_name[i] = name;
 		vgui_widget_set_font_size(name, 10.0f);
 		vgui_widget_set_text_align(name, 0.5f, 0.5f);
 
@@ -311,16 +348,19 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 		st->plates[i] = plate;
 	}
 
+	// R5-2 world picking: clicks that miss every widget land on the root
+	// panel; the handler unprojects them into the scene and selects the
+	// entity under the cursor.  Right click clears the selection.
+	vgui_widget_on_event(root, on_root_event, st);
+
 	vgui_context_add_key_handler(st->ui, on_key, st);
 	layout_anchors(st, width, height);
 	vgui_update(st->ui, 0.0f);
 }
 
-// Projects each entity's world anchor (above the cube) into screen space and
-// repositions its nameplate; mirrors the phase0 camera (RH_ZO projection with
-// a Y flip, see phase0_renderer.cpp camera_matrices).  Plates behind the
-// camera or far offscreen are hidden.
-static void update_nameplates(hud_state* st, int cw, int ch)
+// Builds the same view-projection the phase0 camera renders with (RH_ZO
+// projection with a Y flip, see phase0_renderer.cpp camera_matrices).
+static glm::mat4 build_view_projection(const hud_state* st, int cw, int ch)
 {
 	glm::mat4 proj = glm::perspectiveRH_ZO(glm::radians(st->cam_fov),
 		ch > 0 ? (float)cw / (float)ch : 1.0f, 0.1f, 100.0f)
@@ -329,32 +369,91 @@ static void update_nameplates(hud_state* st, int cw, int ch)
 		glm::vec3(st->cam_eye[0], st->cam_eye[1], st->cam_eye[2]),
 		glm::vec3(st->cam_target[0], st->cam_target[1], st->cam_target[2]),
 		glm::vec3(0.0f, 1.0f, 0.0f));
-	const glm::mat4 vp = proj * view;
+	return proj * view;
+}
 
+// Projects an entity's world anchor (above the cube) into screen coordinates;
+// returns false when the anchor is behind the camera or far offscreen.
+static bool project_entity(const hud_state* st, int index, int cw, int ch,
+	float* out_x, float* out_y)
+{
+	glm::vec4 clip = build_view_projection(st, cw, ch)
+		* glm::vec4(st->ent_x[index], 1.35f, st->ent_z[index], 1.0f);
+	if (clip.w <= 0.05f)
+		return false;
+	const float ndc_x = clip.x / clip.w;
+	const float ndc_y = clip.y / clip.w;
+	if (ndc_x < -1.3f || ndc_x > 1.3f || ndc_y < -1.3f || ndc_y > 1.3f)
+		return false;
+	*out_x = (ndc_x * 0.5f + 0.5f) * (float)cw;
+	*out_y = (ndc_y * 0.5f + 0.5f) * (float)ch;
+	return true;
+}
+
+static void update_nameplates(hud_state* st, int cw, int ch)
+{
 	for (int i = 0; i < kEntityCount; ++i)
 	{
-		glm::vec4 clip = vp * glm::vec4(st->ent_x[i], 1.35f, st->ent_z[i], 1.0f);
-		bool visible = clip.w > 0.05f;
 		float sx = 0.0f, sy = 0.0f;
-		if (visible)
-		{
-			const float ndc_x = clip.x / clip.w;
-			const float ndc_y = clip.y / clip.w;
-			if (ndc_x < -1.3f || ndc_x > 1.3f || ndc_y < -1.3f || ndc_y > 1.3f)
-			{
-				visible = false;
-			}
-			else
-			{
-				sx = (ndc_x * 0.5f + 0.5f) * (float)cw;
-				sy = (ndc_y * 0.5f + 0.5f) * (float)ch;
-			}
-		}
+		const bool visible = project_entity(st, i, cw, ch, &sx, &sy);
 		vgui_widget_set_visible(st->plates[i], visible ? 1 : 0);
 		if (visible)
 			vgui_widget_set_pos(st->plates[i], sx - 38.0f, sy - 30.0f);
 		vgui_widget_set_value(st->plate_hp[i], st->ent_hp[i]);
 		vgui_widget_set_value(st->plate_mp[i], st->ent_mp[i]);
+	}
+}
+
+// R5-2 world picking: unproject the screen point into a camera ray and
+// hit-test it against the entities' bounding spheres; returns the nearest
+// hit or -1.
+static int pick_unit(const hud_state* st, float mx, float my)
+{
+	const glm::mat4 inv = glm::inverse(build_view_projection(st,
+		st->last_w, st->last_h));
+	const float ndc_x = 2.0f * mx / (float)st->last_w - 1.0f;
+	const float ndc_y = 2.0f * my / (float)st->last_h - 1.0f;
+	glm::vec4 p0 = inv * glm::vec4(ndc_x, ndc_y, -1.0f, 1.0f);
+	glm::vec4 p1 = inv * glm::vec4(ndc_x, ndc_y, 1.0f, 1.0f);
+	if (p0.w == 0.0f || p1.w == 0.0f)
+		return -1;
+	const glm::vec3 origin(p0 / p0.w);
+	const glm::vec3 far_point(p1 / p1.w);
+	glm::vec3 dir = far_point - origin;
+	const float dir_len = glm::length(dir);
+	if (dir_len < 1e-6f)
+		return -1;
+	dir /= dir_len;
+
+	int best = -1;
+	float best_t = dir_len;
+	for (int i = 0; i < kEntityCount; ++i)
+	{
+		// Cube half-diagonal is ~0.7 at scale 0.8; 0.9 keeps clicks forgiving.
+		float t = 0.0f;
+		if (glm::intersectRaySphere(origin, dir,
+			glm::vec3(st->ent_x[i], 0.5f, st->ent_z[i]), 0.9f, t)
+			&& t < best_t)
+		{
+			best_t = t;
+			best = i;
+		}
+	}
+	return best;
+}
+
+static void select_unit(hud_state* st, int index)
+{
+	if (st->selected >= 0 && st->selected < kEntityCount)
+	{
+		vgui_widget_set_border(st->plates[st->selected], 0, 0.0f);
+		vgui_widget_set_text_color(st->plate_name[st->selected], 0);
+	}
+	st->selected = index;
+	if (index >= 0)
+	{
+		vgui_widget_set_border(st->plates[index], 0xFF40A0FF, 1.5f);
+		vgui_widget_set_text_color(st->plate_name[index], 0xFFFFFFFF);
 	}
 }
 
@@ -476,6 +575,12 @@ static void draw_status(hud_state* st, FpsCounter* fps, float upms, float drawms
 		"%s  \xC2\xB7  %d fps  \xC2\xB7  ui %.2f/%.2f ms  \xC2\xB7  M: mode",
 		st->mode == 0 ? "mode A: load-op" : "mode B: offscreen",
 		fps->get_fps(), upms * 0.001, drawms * 0.001);
+	if (st->selected >= 0)
+	{
+		char sel[32] = {};
+		std::snprintf(sel, sizeof(sel), "  \xC2\xB7  sel Unit %02d", st->selected + 1);
+		std::strncat(text, sel, sizeof(text) - std::strlen(text) - 1);
+	}
 	vgui_widget_set_text(st->status, text);
 
 	// Fit the plate to the text so the status never overflows the window
@@ -551,6 +656,10 @@ int main(int argc, char** argv)
 	form->viewport->ui = st.ui;
 
 	st.renderer = phase0_renderer_create(wg->device);
+	// R5-1: the world panel's FBO (cycle_target: rewritten every frame and
+	// sampled by phase0 one submission earlier) and the billboard hookup.
+	st.panel_fbo = vgpu_create_fbo(wg->vgctx, 256, 128, nullptr);
+	st.panel_fbo.cycle_target = true;
 	if (!st.renderer)
 	{
 		std::fprintf(stderr, "hud: 3D renderer creation failed\n");
@@ -572,6 +681,32 @@ int main(int argc, char** argv)
 	cam.target[2] = st.cam_target[2];
 	cam.fov_deg = st.cam_fov;
 	phase0_renderer_set_camera(st.renderer, &cam);
+	const float billboard_pos[3] = { 0.0f, 3.4f, 0.0f };
+	phase0_renderer_set_billboard(st.renderer,
+		vgpu_fbo_color_texture(&st.panel_fbo), billboard_pos, 3.2f, 1.6f);
+
+	// R5-1 world panel: a small UI context rendered into its own FBO; the
+	// texture is borrowed by phase0 for a camera-facing world billboard.
+	st.panel_ui = vgui_create(familys, 16.0f);
+	vgui_context_set_size(st.panel_ui, 256, 128);
+	{
+		vgui_widget* proot = vgui_root(st.panel_ui);
+		vgui_widget_set_layout(proot, VGUI_LAYOUT_COLUMN);
+		vgui_widget_set_padding(proot, 10, 8, 10, 8);
+		vgui_widget_set_gap(proot, 5.0f);
+		vgui_widget_set_background(proot, 0x98101418);
+		vgui_widget* title = vgui_widget_add(proot, VGUI_LABEL, "ARENA STATUS");
+		vgui_widget_set_font_size(title, 13.0f);
+		vgui_widget* ph = vgui_widget_add(proot, VGUI_PROGRESS, nullptr);
+		vgui_widget_set_size(ph, 0.0f, 12.0f);
+		vgui_widget_set_accent(ph, 0xFFE04040);
+		vgui_widget* pm = vgui_widget_add(proot, VGUI_PROGRESS, nullptr);
+		vgui_widget_set_size(pm, 0.0f, 12.0f);
+		vgui_widget_set_accent(pm, 0xFF4070E0);
+	}
+	st.vg_panel = cb->new_rvg(cb->ac);
+	st.vg_panel->width = 256;
+	st.vg_panel->height = 128;
 
 	vg_fbo_t* fbo = &form->fbo;
 	FpsCounter fps;
@@ -648,19 +783,41 @@ int main(int argc, char** argv)
 		fbo->clear = false;
 		blit_scene_to_swapchain(wg->vgctx, fbo, &st);
 
+		// R5-1 world panel: aggregate stats + record into its own FBO.
+		{
+			float sum_hp = 0.0f, sum_mp = 0.0f;
+			for (int i = 0; i < kEntityCount; ++i)
+			{
+				sum_hp += st.ent_hp[i];
+				sum_mp += st.ent_mp[i];
+			}
+			vgui_widget_set_value(vgui_widget_get_child(
+				vgui_root(st.panel_ui), 1), sum_hp / (float)kEntityCount);
+			vgui_widget_set_value(vgui_widget_get_child(
+				vgui_root(st.panel_ui), 2), sum_mp / (float)kEntityCount);
+			vgui_update(st.panel_ui, delta);
+			cb->clear(st.vg_panel);
+			cb->reset_clip(st.vg_panel, 1);
+			vgui_draw(st.panel_ui, cb, st.vg_panel);
+		}
+
+		// All vgpu passes of the frame in one submission: the offscreen world
+		// panel first (phase0 samples its texture next frame), then the HUD
+		// passes (mode A direct / mode B via the offscreen HUD + composite).
+		ovg_draw_data_t items[3] = {};
+		size_t item_count = 0;
+		items[item_count] = get_draw_list(st.vg_panel);
+		items[item_count].fbo = &st.panel_fbo;
+		++item_count;
+
 		if (st.mode == 0)
 		{
-			// Mode A: HUD pass blends directly over the scene.
-			draw_datas_cx drawable;
-			drawable.set(fbo);
-			drawable.add(vg);
-			drawable.render(wg->vgctx);
+			items[item_count] = get_draw_list(vg);
+			items[item_count].fbo = fbo;
+			++item_count;
 		}
 		else
 		{
-			// Mode B: item 0 renders the HUD into the offscreen FBO, item 1
-			// composites that texture over the scene -- one submission, two
-			// passes ("HUD as engine texture" path).
 			ovg_texture_r composite = {};
 			composite.tex = &st.ui_tex;
 			composite.rc = { -1, 0, 0, 0 };		// whole texture
@@ -671,13 +828,14 @@ int main(int argc, char** argv)
 			cb->reset_clip(vg_composite, 1);
 			cb->add_texture(vg_composite, &composite);
 
-			ovg_draw_data_t items[2] = {};
-			items[0] = get_draw_list(vg);
-			items[0].fbo = &st.ui_fbo;
-			items[1] = get_draw_list(vg_composite);
-			items[1].fbo = fbo;
-			vgpu_render_frame(wg->vgctx, items, 2);
+			items[item_count] = get_draw_list(vg);
+			items[item_count].fbo = &st.ui_fbo;
+			++item_count;
+			items[item_count] = get_draw_list(vg_composite);
+			items[item_count].fbo = fbo;
+			++item_count;
 		}
+		vgpu_render_frame(wg->vgctx, items, item_count);
 
 		++st.frames;
 		if (st.frames % 20 == 0)
@@ -689,6 +847,34 @@ int main(int argc, char** argv)
 			// (vg->width, ui_fbo reset, native texture rebind).
 			if (smoke_frames == 10)
 				SDL_SetWindowSize(form->window, 1000, 700);
+			// R5-2 self-test: click on the first visible entity's projected
+			// anchor, expect it selected; then right-click to deselect.
+			if (smoke_frames == 14)
+			{
+				float px = 0.0f, py = 0.0f;
+				int target = -1;
+				for (int i = 0; i < kEntityCount && target < 0; ++i)
+					if (project_entity(&st, i, st.last_w, st.last_h, &px, &py))
+						target = i;
+				if (target >= 0)
+				{
+					vgui_input_mouse_move(st.ui, px, py);
+					vgui_input_mouse_down(st.ui, 1, px, py, 0);
+					vgui_input_mouse_up(st.ui, 1, px, py, 0);
+				}
+			}
+			if (smoke_frames == 15)
+				std::printf("pick self-test: %s (selected=%d)\n",
+					st.selected >= 0 ? "ok" : "FAIL", st.selected);
+			if (smoke_frames == 18)
+			{
+				vgui_input_mouse_move(st.ui, 4.0f, 4.0f);
+				vgui_input_mouse_down(st.ui, 3, 4.0f, 4.0f, 0);
+				vgui_input_mouse_up(st.ui, 3, 4.0f, 4.0f, 0);
+			}
+			if (smoke_frames == 19)
+				std::printf("deselect self-test: %s (selected=%d)\n",
+					st.selected == -1 ? "ok" : "FAIL", st.selected);
 			// Exercise both modes before exiting (unless pinned).
 			if (!mode_pinned && st.frames == 20) st.mode = 1;
 			if (++smoke_frames >= 40)
@@ -703,6 +889,10 @@ int main(int argc, char** argv)
 	if (st.ui_fbo.ctx)
 		vgpu_destroy_fbo(&st.ui_fbo);
 	phase0_renderer_destroy(st.renderer);
+	if (st.panel_fbo.ctx)
+		vgpu_destroy_fbo(&st.panel_fbo);
+	vgui_destroy(st.panel_ui);
+	cb->destroy_rvg(st.vg_panel);
 	vgui_destroy(st.ui);
 	form->viewport->ui = nullptr;
 	delete_font_family(familys);

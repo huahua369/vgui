@@ -118,6 +118,14 @@ struct phase0_instance
 void phase0_view_set_instances(phase0_view* view,
 	const phase0_instance* instances, int count);
 
+/* R5-1: world-space UI billboard.  Samples the given texture (borrowed, not
+ * owned) with alpha blending on a camera-facing quad centred at position
+ * (world units), width x height in world units.  The quad is rebuilt every
+ * frame from the camera basis.  Pass NULL to hide.  The texture shows what
+ * the host last rendered into it (one frame of latency). */
+void phase0_renderer_set_billboard(phase0_renderer* renderer,
+	SDL_GPUTexture* texture, const float position[3], float width, float height);
+
 /* Renders every live view into its own attachments in one command buffer. */
 void phase0_renderer_render(phase0_renderer* renderer, float time_seconds);
 

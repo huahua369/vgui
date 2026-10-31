@@ -23,6 +23,11 @@ set(SRC_RUNTIME_HUD
     phase0_renderer.cpp
 )
 
+# R3-2 运行时基准（无窗口离屏渲染，分段计时）
+set(SRC_RUNTIME_BENCH
+    vgui_runtime_bench.cpp
+)
+
 # 列表/树/菜单模型自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_MODEL_TEST
     vgui_model_test.cpp
@@ -158,6 +163,12 @@ endif()
 add_executable(vgui_runtime_embed_test ${SRC_RUNTIME_EMBED_TEST})
 target_link_libraries(vgui_runtime_embed_test PRIVATE vgui_sample_common vgui::vgui)
 target_compile_definitions(vgui_runtime_embed_test PRIVATE
+    VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+
+# R3-2 runtime benchmark (headless, not a CTest -- timing is machine-bound).
+add_executable(vgui_runtime_bench ${SRC_RUNTIME_BENCH})
+target_link_libraries(vgui_runtime_bench PRIVATE vgui_sample_common vgui::vgui)
+target_compile_definitions(vgui_runtime_bench PRIVATE
     VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
 if(NOT VGUI_CORE_ONLY)

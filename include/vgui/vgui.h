@@ -1065,6 +1065,21 @@ extern "C" {
 	 * them to tint health/mana bars independently of the theme. */
 	VGUI_API void vgui_widget_set_accent(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_track(vgui_widget* widget, vgui_color color);
+	/* When 0, the widget AND its subtree are skipped by hit testing entirely:
+	 * mouse events fall through to whatever is underneath / to the host.
+	 * Unlike set_enabled(0) the subtree keeps its normal visuals.  World-
+	 * anchored HUD indicators (nameplates over the 3D scene) use this so
+	 * world clicks pass through them. */
+	VGUI_API void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled);
+	/* R3-1: opt-in subtree display-list cache.  When hint is 1 the subtree is
+	 * recorded once and replayed on subsequent frames while it stays clean
+	 * (no active animations/focus inside, geometry/clip/theme unchanged).
+	 * Content changes through set_text/set_value/set_checked auto-invalidate;
+	 * anything else the host changes must call
+	 * vgui_widget_invalidate_recording.  Only meaningful for PANEL-like
+	 * subtrees whose content the host keeps static. */
+	VGUI_API void vgui_widget_set_recording_hint(vgui_widget* widget, int hint);
+	VGUI_API void vgui_widget_invalidate_recording(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);
@@ -1865,6 +1880,20 @@ extern "C" {
 	 * is cleared.  Does nothing when no pointer interaction is running. */
 	VGUI_API void vgui_input_cancel(vgui_context* ctx);
 	VGUI_API void vgui_input_focus_next(vgui_context* ctx, int reverse);
+
+	/* R2-1 directional focus navigation for gamepad / remote hosts: moves
+	 * focus to the focusable widget closest to the focused one in the given
+	 * visual direction (geometric cone test), wrapping around the screen edge
+	 * when the cone is empty.  Purely geometric -- in-widget arrow-key
+	 * behaviour (lists, sliders) is untouched; hosts call this from their own
+	 * input layer.  Returns 1 when focus moved. */
+	typedef enum vgui_nav_direction {
+		VGUI_NAV_UP = 0,
+		VGUI_NAV_DOWN,
+		VGUI_NAV_LEFT,
+		VGUI_NAV_RIGHT
+	} vgui_nav_direction;
+	VGUI_API int vgui_focus_navigate(vgui_context* ctx, vgui_nav_direction dir);
 
 	VGUI_API int vgui_context_wants_mouse(vgui_context* ctx);
 	VGUI_API int vgui_context_wants_keyboard(vgui_context* ctx);

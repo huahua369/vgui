@@ -3946,7 +3946,71 @@ static void test_popup(vgui_context* ui)
 		state->last = scale;
 	}
 
-	static void test_ui_scale(vgui_context* ui)
+	// R2-1: directional focus navigation on a fixed-coordinate button grid.
+// Runs in its own context so leftover widgets from earlier tests cannot
+// become navigation candidates (the wrap rule picks the farthest widget).
+static void test_focus_navigate(vgui_context* ui, font_familys_t* familys)
+{
+	(void)ui;
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 300, 560);
+	vgui_widget* grid[3][3] = {};
+	for (int r = 0; r < 3; ++r)
+	{
+		for (int c = 0; c < 3; ++c)
+		{
+			char name[16] = {};
+			std::snprintf(name, sizeof(name), "nav_%d%d", r, c);
+			grid[r][c] = vgui_widget_add(vgui_root(ctx), VGUI_BUTTON, name);
+			vgui_widget_set_pos(grid[r][c], (float)(c * 120),
+				(float)(400 + r * 50));
+			vgui_widget_set_size(grid[r][c], 100.0f, 40.0f);
+		}
+	}
+
+	// Start from the centre cell.
+	vgui_set_focus(ctx, grid[1][1]);
+	check(vgui_get_focus(ctx) == grid[1][1], "nav: centre focused");
+
+	vgui_focus_navigate(ctx, VGUI_NAV_DOWN);
+	check(vgui_get_focus(ctx) == grid[2][1], "nav: DOWN to nav_21");
+	vgui_focus_navigate(ctx, VGUI_NAV_UP);
+	check(vgui_get_focus(ctx) == grid[1][1], "nav: UP back to nav_11");
+	vgui_focus_navigate(ctx, VGUI_NAV_RIGHT);
+	check(vgui_get_focus(ctx) == grid[1][2], "nav: RIGHT to nav_12");
+	vgui_focus_navigate(ctx, VGUI_NAV_LEFT);
+	check(vgui_get_focus(ctx) == grid[1][1], "nav: LEFT back to nav_11");
+
+	// Edge wrap: UP twice from the centre wraps to the bottom row.
+	vgui_focus_navigate(ctx, VGUI_NAV_UP);
+	vgui_focus_navigate(ctx, VGUI_NAV_UP);
+	check(vgui_get_focus(ctx) == grid[2][1], "nav: UP wraps to bottom row");
+	vgui_focus_navigate(ctx, VGUI_NAV_DOWN);
+	vgui_focus_navigate(ctx, VGUI_NAV_DOWN);
+	check(vgui_get_focus(ctx) == grid[1][1], "nav: DOWN wraps back");
+
+	// Disabled widgets are skipped (nav_12 disabled -> RIGHT goes to the
+	// next candidate in the cone or wraps).
+	vgui_widget_set_enabled(grid[1][2], 0);
+	vgui_focus_navigate(ctx, VGUI_NAV_RIGHT);
+	check(vgui_get_focus(ctx) != grid[1][2], "nav: disabled skipped");
+	vgui_widget_set_enabled(grid[1][2], 1);
+
+	// Hidden widgets are skipped too.
+	vgui_widget_set_visible(grid[1][2], 0);
+	vgui_focus_navigate(ctx, VGUI_NAV_RIGHT);
+	check(vgui_get_focus(ctx) != grid[1][2], "nav: hidden skipped");
+	vgui_widget_set_visible(grid[1][2], 1);
+
+	// No focus: a direction key focuses the first candidate.
+	vgui_set_focus(ctx, nullptr);
+	check(vgui_focus_navigate(ctx, VGUI_NAV_DOWN) == 1, "nav: focuses from scratch");
+	check(vgui_get_focus(ctx) != nullptr, "nav: focus set from scratch");
+
+	vgui_destroy(ctx);
+}
+
+static void test_ui_scale(vgui_context* ui)
 	{
 		vgui_context_set_ui_scale(ui, 1.0f);
 
@@ -4386,6 +4450,7 @@ int main()
 	test_popup(ui);
 	test_accessibility_e05(ui);
 	test_ui_scale(ui);
+	test_focus_navigate(ui, familys);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
