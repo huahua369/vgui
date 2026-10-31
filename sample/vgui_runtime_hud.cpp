@@ -67,6 +67,13 @@ struct hud_state
 	int mode = 0;
 	bool quit = false;
 
+	// Font family for text measurement; the status plate auto-fits its text
+	// and keeps its right edge anchored.
+	font_familys_t* font = nullptr;
+	float status_w = 280.0f;
+	int last_w = 0;
+	int last_h = 0;
+
 	// Mode B offscreen target: the rendered HUD, borrowed as a texture.
 	vg_fbo_t ui_fbo{};
 	ovg_texture_t ui_tex{};
@@ -169,6 +176,7 @@ static void layout_anchors(hud_state* st, int width, int height);
 
 static void build_hud(hud_state* st, font_familys_t* familys, int width, int height)
 {
+	st->font = familys;
 	st->ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(st->ui, width, height);
 	// The root never paints and never takes mouse input away from the game;
@@ -181,9 +189,9 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 	// Top-left vitals plate.
 	vgui_widget* vitals = vgui_widget_add(root, VGUI_PANEL, nullptr);
 	vgui_widget_set_pos(vitals, 16.0f, 16.0f);
-	vgui_widget_set_size(vitals, 280.0f, 76.0f);
+	vgui_widget_set_size(vitals, 266, 90.0f);
 	vgui_widget_set_layout(vitals, VGUI_LAYOUT_COLUMN);
-	vgui_widget_set_padding(vitals, 10, 8, 10, 8);
+	vgui_widget_set_padding(vitals, 8, 8, 8, 8);
 	vgui_widget_set_gap(vitals, 6.0f);
 	vgui_widget_set_background(vitals, 0x98101418);
 
@@ -224,7 +232,7 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 
 	// Bottom-centre hotbar: digit button + cooldown bar per slot.
 	st->hotbar = vgui_widget_add(root, VGUI_PANEL, nullptr);
-	vgui_widget_set_size(st->hotbar, 416.0f, 68.0f);
+	vgui_widget_set_size(st->hotbar, 488.0f, 80.0f);
 	vgui_widget_set_layout(st->hotbar, VGUI_LAYOUT_ROW);
 	vgui_widget_set_gap(st->hotbar, 8.0f);
 	vgui_widget_set_padding(st->hotbar, 8, 8, 8, 8);
@@ -240,7 +248,9 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 		vgui_widget* key = vgui_widget_add(slot, VGUI_BUTTON, label);
 		vgui_widget_set_size(key, 56.0f, 36.0f);
 		st->cooldown[i] = vgui_widget_add(slot, VGUI_PROGRESS, nullptr);
-		vgui_widget_set_size(st->cooldown[i], 56.0f, 6.0f);
+		// 16px tall: the built-in percentage label fits inside the bar
+		// instead of overflowing below the plate and getting clipped.
+		vgui_widget_set_size(st->cooldown[i], 56.0f, 16.0f);
 		vgui_widget_set_value(st->cooldown[i], 0.0f);
 	}
 
@@ -258,11 +268,13 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 // build and whenever the window resizes.
 static void layout_anchors(hud_state* st, int width, int height)
 {
-	vgui_widget_set_pos(st->status_plate, (float)width - 296.0f, 16.0f);
-	vgui_widget_set_size(st->status_plate, 280.0f, 56.0f);
+	st->last_w = width;
+	st->last_h = height;
+	vgui_widget_set_pos(st->status_plate, (float)width - st->status_w - 16.0f, 16.0f);
+	vgui_widget_set_size(st->status_plate, st->status_w, 56.0f);
 	vgui_widget_set_pos(st->minimap, 16.0f, (float)height - 196.0f);
-	vgui_widget_set_pos(st->hotbar, (float)width * 0.5f - 208.0f,
-		(float)height - 84.0f);
+	vgui_widget_set_pos(st->hotbar, (float)width * 0.5f - 244.0f,
+		(float)height - 96.0f);
 	vgui_widget_set_pos(st->crosshair, (float)width * 0.5f - 16.0f,
 		(float)height * 0.5f - 16.0f);
 }
@@ -365,10 +377,24 @@ static void draw_status(hud_state* st, FpsCounter* fps, float upms, float drawms
 {
 	char text[160] = {};
 	std::snprintf(text, sizeof(text),
-		"%s  \xC2\xB7  %d fps  \xC2\xB7  ui %.2f/%.2f ms  \xC2\xB7  TAB: mode",
+		"%s  \xC2\xB7  %d fps  \xC2\xB7  ui %.2f/%.2f ms  \xC2\xB7  M: mode",
 		st->mode == 0 ? "mode A: load-op" : "mode B: offscreen",
 		fps->get_fps(), upms * 0.001, drawms * 0.001);
 	vgui_widget_set_text(st->status, text);
+
+	// Fit the plate to the text so the status never overflows the window
+	// edge: measure with the same family and effective (scaled) font size
+	// the UI draws with.
+	float tw = vg_measure_text_width(st->font,
+		(int)(vgui_context_get_font_size(st->ui) + 0.5f),
+		text, (int)std::strlen(text));
+	float want = tw + 44.0f;	// plate padding (2x10) + anchor margin + rounding
+	if (want < 200.0f) want = 200.0f;
+	if (std::fabs(want - st->status_w) > 2.0f)
+	{
+		st->status_w = want;
+		layout_anchors(st, st->last_w, st->last_h);
+	}
 }
 
 int main(int argc, char** argv)
