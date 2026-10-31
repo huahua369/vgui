@@ -79,7 +79,7 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 
 参考实现：`sample/vgui_runtime_embed_test.cpp`。
 
-## 5. R2 手柄/键盘方向导航（R2-1/R2-2 已实现；R2-3 待实机验证）
+## 5. R2 手柄/键盘方向导航（已实现；焦点环待接实机手柄确认）
 
 > **实施记录**：R2-1 实际 API 为 `vgui_nav_direction`（UP/DOWN/LEFT/RIGHT，`vgui_direction` 名已被 RTL 方向占用）+ `vgui_focus_navigate`；环绕含横向偏移 tie-break（同主轴距离取横轴最小者，否则网格环绕落到 0 列）。验收：model_test test_focus_navigate 12 断言（独立上下文 3x3 网格，避免残留控件成为环绕候选）全过。R2-2 如设计实现（pump_gamepad 每帧泵）。
 
@@ -110,7 +110,7 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 
 验收（里程碑）：`vgui_runtime_hud` 不碰鼠标键盘、仅手柄可完成模式切换/技能/导航/激活。
 
-## 6. R3 运行时性能（R3-2/R3-1 已实现；R3-3 数字待补）
+## 6. R3 运行时性能（已实现）
 
 > **实施记录与实测结论**：R3-2 `vgui_runtime_bench` 已交付（离屏 FBO、BENCH_FRAMES/BENCH_WIDGETS/BENCH_CACHE）。R3-1 机制完整落地（hint opt-in、外层 replay/录制包装、链式失效、图集代数失效安全网），**实测 40 静态面板 draw 约 17% 收益（7.2→6.0ms）**——简单矩形+文本内容收益有限（回放 memcpy ≈ 重录成本），重收益预期在 tess2 重的圆角/复杂路径内容。**实施中发现的两个坑**：(1) 录制段内图集页增长会触发 ovg 向量越界 abort——宿主必须先无 hint 预热一帧再启用录制；(2) 图集上传帧须失效全部缓存（vgui_recording_atlas_check 已内建于 vgui_draw）。基线（widgets=0）：draw 3.3ms / submit 7.0ms。
 
