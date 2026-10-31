@@ -51,9 +51,15 @@ if(CMAKE_BUILD_TYPE MATCHES "Debug")
 endif()
 
 # 设置 vgui 自身示例/测试的输出目录。作为子目录被引入时不覆盖消费者的
-# 输出目录设置。
+# 输出目录设置。CORE_ONLY 构建单独输出：两种配置的 libvgui.lib 落在同一
+# 目录会互相覆盖（后构建的赢），消费者再链接时就会缺后端符号。
 if(VGUI_IS_TOP_LEVEL)
-    set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/out/bin/${platform_dir})
+    if(VGUI_CORE_ONLY)
+        set(VGUI_BIN_SUFFIX "${platform_dir}core")
+    else()
+        set(VGUI_BIN_SUFFIX "${platform_dir}")
+    endif()
+    set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/out/bin/${VGUI_BIN_SUFFIX})
     set(LIBRARY_OUTPUT_PATH ${EXECUTABLE_OUTPUT_PATH})
     LINK_DIRECTORIES(${EXECUTABLE_OUTPUT_PATH})
 endif()
