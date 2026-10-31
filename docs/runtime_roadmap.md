@@ -39,7 +39,7 @@
 - [x] **R0-1 时间源注入**：`vgui_context_set_time_fn(ctx, fn, user)` 注入单调时钟（秒），双击计时不再触碰 OS API；缺省回退 `std::chrono::steady_clock`。实现于 `gui/vgui.cpp`（`context_now_seconds`）。
 - [x] **R0-2 核心去 SDL 化**：`gui/vgui.cpp` 不再包含 SDL/后端头；`gui_viewport::trigger`、`vgui_dispatch_dev_event`、SDL 键码翻译搬入 `backends/vgui_sdl3.cpp`；剪贴板经 `vgui_internal.h` 的函数指针桥接（core-only 下复制/粘贴为空操作）。
 - [x] **R0-3 VGUI_CORE_ONLY 构建**：CMake 选项 `VGUI_CORE_ONLY=ON` 时 `libvgui` 仅编 core（anim/vgui/mapView），不编 SDL3 后端与 win_core，不链 SDL3，且 ovg 自带的 SDL3 渲染器一并关闭；headless 测试（embed/c_api/scene_json/chart/kit）在该配置下照常构建运行。见 `backends/CMakeLists.txt`、`CMakeLists.txt`、`bld_core.bat`。
-- [x] **R0-5 字体说明**：示例统一走系统 fontconfig 查找（`new_font_family(wg->font_ctx, "微软雅黑,Tahoma,...")`）。打包字体文件（`load_font_from_path` + `new_font_family("DejaVu Sans")`）能加载 face（count>0）但在窗口模式下不出字形（离屏正常）——R0 后续跟进项；运行时字体打包前不要切换。
+- [x] **R0-5 字体 C 接口与打包字体**：ovg_c.h 新增 `load_font_from_path / add_font_dir / load_font_from_memory / get_sys_family` 四个 C 函数（操作 `font_cache_cx`）。`load_font_from_memory` 由桩实现补齐：harfbuzz 从内存建 face（DUPLICATE 拷贝，调用后即可释放缓冲），直接登记到 `_familys_name[name]`，`new_font_family` 无需刷新即可按 name 找到，**窗口模式出字形已验证**（runtime_hud 示例即用打包字体）。`load_font_from_path` 给出 name 时同步按 name 登记；path/dir 的 fontconfig 登记需 `get_sys_family()` 刷新后按内部族名查找。
 - [x] **R0-4 无窗口嵌入验证**：`sample/vgui_runtime_embed_test.cpp`——无窗口/无 GPU/无字体/无 SDL，跑通"建树→注入事件→update→draw→消费 `ovg_draw_data_t`"最小嵌入循环（含注入时钟驱动的双击、取消按下状态、绘制命令数断言）。
 
 验收：`VGUI_CORE_ONLY=ON` 与 OFF 两种配置构建通过；`vgui_runtime_embed_test` 全绿；既有测试基线不回归。

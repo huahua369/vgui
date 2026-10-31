@@ -379,12 +379,29 @@ int main(int argc, char** argv)
 			smoke = true;
 
 	auto* wg = new app_mgr();
-	// Same system-font lookup as the other samples.  NOTE: bundling a font
-	// file via load_font_from_path + new_font_family("DejaVu Sans") loads
-	// the face but renders no glyphs in window mode (works offscreen) --
-	// tracked as a runtime_roadmap R0 follow-up, do not switch to it yet.
-	font_familys_t* familys = new_font_family(wg->font_ctx,
-		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
+	// Runtime apps bundle their fonts (sample/res/fonts, see
+	// LICENSE-DejaVu.txt) instead of relying on the system fontconfig
+	// database: register the file from memory via the C API, then fall back
+	// to the system lookup if the bundled file is unavailable.
+	font_familys_t* familys = nullptr;
+	{
+		const char* ttf = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+		FILE* f = fopen(ttf, "rb");
+		if (f)
+		{
+			fseek(f, 0, SEEK_END);
+			long size = ftell(f);
+			fseek(f, 0, SEEK_SET);
+			std::vector<unsigned char> buf((size_t)size);
+			if (fread(buf.data(), 1, (size_t)size, f) == (size_t)size)
+				load_font_from_memory(wg->font_ctx, buf.data(), size, "HudBundled");
+			fclose(f);
+		}
+		familys = new_font_family(wg->font_ctx, "HudBundled", nullptr);
+		if (!familys || familys->count <= 0)
+			familys = new_font_family(wg->font_ctx,
+				"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
+	}
 	if (!familys || familys->count <= 0)
 		std::fprintf(stderr, "hud: font family has no faces, text is disabled\n");
 	auto* cb = new_ctx_cb();

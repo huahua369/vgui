@@ -157,6 +157,8 @@ endif()
 # R0 运行时嵌入测试：core-only 与完整构建都编译（不触碰 SDL）。
 add_executable(vgui_runtime_embed_test ${SRC_RUNTIME_EMBED_TEST})
 target_link_libraries(vgui_runtime_embed_test PRIVATE vgui_sample_common vgui::vgui)
+target_compile_definitions(vgui_runtime_embed_test PRIVATE
+    VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
 if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_edit_test ${SRC_EDIT_TEST})

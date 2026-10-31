@@ -14,6 +14,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "pch.h"		// glm etc. (required by ovg_c.h)
 #include <ovg_c.h>		// rvg_t / ovg_ctx_cb / get_draw_list
@@ -189,6 +190,47 @@ int main()
 	ovg_draw_data_t dd = get_draw_list(vg);
 	check(dd.count > 0, "draw list has render commands");
 	check(dd.v_count > 0, "draw list has vertices");
+
+	// ---- R0 font C API: path / dir / memory registration -----------------
+	// Pure fontconfig + harfbuzz work, no window or GPU required.
+	font_cache_cx* fcache = new_font_cache();
+	check(fcache != nullptr, "new_font_cache");
+	if (fcache)
+	{
+		const std::string ttf =
+			std::string(VGUI_SOURCE_DIR) + "/sample/res/fonts/DejaVuSans.ttf";
+
+		check(load_font_from_path(fcache, ttf.c_str(), "EmbedPathDejaVu") != 0,
+			"load_font_from_path registers an alias immediately");
+		font_familys_t* fam1 = new_font_family(fcache, "EmbedPathDejaVu", nullptr);
+		check(fam1 && fam1->count > 0, "path-registered family resolves");
+		delete_font_family(fam1);
+
+		check(add_font_dir(fcache,
+			(std::string(VGUI_SOURCE_DIR) + "/sample/res/fonts").c_str()) != 0,
+			"add_font_dir");
+
+		FILE* ttf_file = fopen(ttf.c_str(), "rb");
+		check(ttf_file != nullptr, "open ttf for memory registration");
+		if (ttf_file)
+		{
+			std::vector<unsigned char> buf;
+			fseek(ttf_file, 0, SEEK_END);
+			long size = ftell(ttf_file);
+			fseek(ttf_file, 0, SEEK_SET);
+			buf.resize((size_t)size);
+			check(fread(buf.data(), 1, (size_t)size, ttf_file) == (size_t)size,
+				"read ttf into memory");
+			fclose(ttf_file);
+
+			check(load_font_from_memory(fcache, buf.data(), size,
+				"EmbedMemDejaVu") != 0, "load_font_from_memory");
+			font_familys_t* fam2 = new_font_family(fcache, "EmbedMemDejaVu", nullptr);
+			check(fam2 && fam2->count > 0, "memory-registered family resolves");
+			delete_font_family(fam2);
+		}
+		free_font_cache(fcache);
+	}
 
 	// ---- cleanup ----
 	vgui_destroy(ui);
