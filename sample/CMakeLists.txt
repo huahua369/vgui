@@ -155,6 +155,8 @@ target_link_libraries(ovg_texture_test PRIVATE vgui_sample_common libovg SDL3::S
 
 add_executable(ovg_tools_test ${SRC_OVG_TOOLS_TEST})
 target_link_libraries(ovg_tools_test PRIVATE vgui_sample_common libovg SDL3::SDL3 glm::glm-header-only)
+target_compile_definitions(ovg_tools_test PRIVATE
+    VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
 add_executable(ovg_scene_json_test ${SRC_OVG_SCENE_JSON_TEST})
 target_link_libraries(ovg_scene_json_test PRIVATE vgui_sample_common libovg nlohmann_json::nlohmann_json)

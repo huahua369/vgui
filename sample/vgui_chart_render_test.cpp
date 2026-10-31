@@ -34,6 +34,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 
@@ -242,6 +243,15 @@ namespace {
 		return write_png_bgra(path, bgra.data(), kWidth, kHeight);
 	}
 
+	/* Eyeball PNGs land in <repo>/screenshots regardless of the process CWD
+	 * so they never pollute the repository root. */
+	std::string screenshot_path(const char* name)
+	{
+		std::filesystem::create_directories(
+			std::string(VGUI_SOURCE_DIR) + "/screenshots");
+		return std::string(VGUI_SOURCE_DIR) + "/screenshots/" + name;
+	}
+
 	bool render_frame(test_context& t, vgui_context* ui)
 	{
 		// Two passes: the first one may fill CPU glyph/image atlases, the
@@ -443,7 +453,7 @@ namespace {
 			"chart scene: line series pixels");
 		check(t, count_color(t, bar_color, 10) > 100,
 			"chart scene: bar series pixels");
-		check(t, write_scene_png(t, "vgui_chart_render_chart.png"),
+		check(t, write_scene_png(t, screenshot_path("vgui_chart_render_chart.png").c_str()),
 			"chart scene: write PNG");
 		check(t, count_color(t, text, 24) > 50,
 			"chart scene: text pixels");
@@ -528,7 +538,7 @@ namespace {
 			"gauge scene: low zone pixels");
 		check(t, count_color(t, zone_bad, 8) > 50,
 			"gauge scene: high zone pixels");
-		check(t, write_scene_png(t, "vgui_chart_render_gauge.png"),
+		check(t, write_scene_png(t, screenshot_path("vgui_chart_render_gauge.png").c_str()),
 			"gauge scene: write PNG");
 		check(t, count_color(t, text, 24) > 200,
 			"gauge scene: value text pixels");
@@ -660,7 +670,7 @@ namespace {
 		check(t, count_color(t, from_vgui(theme.text), 24) > 300,
 			"dashboard scene: dashboard text");
 
-		check(t, write_scene_png(t, "vgui_chart_render.png"),
+		check(t, write_scene_png(t, screenshot_path("vgui_chart_render.png").c_str()),
 			"dashboard scene: write PNG");
 
 		vgui_dashboard_destroy(dashboard);
@@ -934,7 +944,7 @@ namespace {
 		check(t, count_color(t, from_vgui(theme.text), 24) > 200,
 			"grid scene: text pixels");
 
-		check(t, write_scene_png(t, "vgui_chart_render_grid.png"),
+		check(t, write_scene_png(t, screenshot_path("vgui_chart_render_grid.png").c_str()),
 			"grid scene: write PNG");
 
 		vgui_dashboard_destroy(dashboard);
@@ -1026,7 +1036,9 @@ namespace {
 				&& std::memcmp(file_bytes.data() + file_bytes.size() - 8,
 					"IEND", 4) == 0, "png scene: IEND trailer");
 
-			FILE* out = std::fopen("vgui_chart_export.png", "wb");
+			const std::string export_path =
+				screenshot_path("vgui_chart_export.png");
+			FILE* out = std::fopen(export_path.c_str(), "wb");
 			if (out)
 			{
 				std::fwrite(file_bytes.data(), 1, file_bytes.size(), out);

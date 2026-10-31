@@ -24,6 +24,8 @@
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <string>
 #include <vector>
 
 // ovg_fonts.h 导出，libovg 内实现；直接 extern 避免引入字体头
@@ -359,15 +361,20 @@ int main(int argc, char** argv)
 	expect_pixel(470, 110, BG, "no shadow above rect");
 	expect_pixel(441, 137, ORANGE, "effect cleared");
 	// 箭头 / 符号
+	// MSAA 8x（与产品管线一致）下 1px 细线/字形边缘是 8 样本量化覆盖
+	// （6/8..8/8），不再是解析 AA 的满覆盖，严格相等断言会读到
+	// fg/bg 分数混合色。以下细线断言用 expect_near，容差按最坏 6/8
+	// 覆盖 × 前景-背景最大通道差推算：覆盖不足会 FAIL，错画/漏画差异
+	// 远超容差同样 FAIL。
 	expect_pixel(17, 185, ORANGE, "arrow shaft");
 	expect_pixel(125, 215, ORANGE, "arrow head");
-	expect_pixel(159, 205, LIME, "check glyph");
+	expect_near(159, 205, LIME, 72, "check glyph");
 	expect_pixel(196, 200, CYAN, "xmark glyph");
 	expect_pixel(237, 200, WHITE, "chevron vertex");
 	expect_pixel(268, 202, KF, "tri glyph");
 	expect_pixel(296, 200, WHITE, "cross center");
 	// 选择框
-	expect_pixel(436, 186, CYAN, "sel frame top edge");
+	expect_near(436, 186, CYAN, 70, "sel frame top edge");
 	expect_pixel(376, 186, WHITE, "sel handle TL");
 	expect_pixel(496, 240, CYAN, "sel frame right edge");
 	expect_pixel(372, 182, BG, "sel outside corner");
@@ -376,10 +383,10 @@ int main(int argc, char** argv)
 	expect_pixel(366, 251, MAJOR, "ruler major tick");
 	expect_pixel(322, 277, LANE0, "lane 0 bg");
 	expect_pixel(322, 291, LANE1, "lane 1 bg");
-	expect_pixel(352, 277, LANE0, "keyframe hollow");
+	expect_near(352, 277, LANE0, 8, "keyframe hollow");
 	expect_pixel(392, 277, KF, "keyframe solid");
 	expect_pixel(432, 277, KF_SEL, "keyframe selected");
-	expect_pixel(412, 270, RED2, "playhead line");
+	expect_near(412, 270, RED2, 75, "playhead line");
 	expect_pixel(412, 251, RED2, "playhead cap");
 	expect_pixel(412, 316, BG, "range bar hollow");
 	expect_pixel(412, 304, GRAY_R, "range bar edge");
@@ -395,8 +402,8 @@ int main(int argc, char** argv)
 	expect_pixel(20, 320, WHITE, "curve anchor");
 	expect_pixel(90, 256, HANDLE, "curve control dot");
 	// 坐标轴 / 网格 / 十字 / 插入指示 / 标注
-	expect_pixel(40, 352, RED_AX, "origin X axis");
-	expect_pixel(12, 382, GREEN_AX, "origin Y axis");
+	expect_near(40, 352, RED_AX, 73, "origin X axis");
+	expect_near(12, 382, GREEN_AX, 66, "origin Y axis");
 	expect_pixel(28, 430, GRID_MIN, "grid minor");
 	expect_pixel(76, 430, GRID_MAJ, "grid major");
 	expect_pixel(280, 428, CYAN, "crosshair arm");
@@ -460,7 +467,12 @@ int main(int argc, char** argv)
 			bgra[i * 4 + 2] = (uint8_t)w;			// R
 			bgra[i * 4 + 3] = (uint8_t)(w >> 24);	// A
 		}
-		if (!write_png_bgra("ovg_tools_test.png", bgra.data(), W, H))
+		// 目检 PNG 统一落在 <repo>/screenshots，不污染仓库根目录
+		const std::string png_path = std::string(VGUI_SOURCE_DIR)
+			+ "/screenshots/ovg_tools_test.png";
+		std::filesystem::create_directories(
+			std::string(VGUI_SOURCE_DIR) + "/screenshots");
+		if (!write_png_bgra(png_path.c_str(), bgra.data(), W, H))
 			std::printf("note: png dump failed (non-fatal)\n");
 	}
 
