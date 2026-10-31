@@ -13475,16 +13475,15 @@ namespace {
 				cb->replay(vg, (ovg_recording_t*)w->cached_recording);
 				return;
 			}
-			if (w->cached_recording)
-			{
-				cb->recording_destroy((ovg_recording_t*)w->cached_recording);
-				w->cached_recording = nullptr;
-			}
 			cb->start_recording(vg);
 			++ctx->recording_depth;
 			vgui_draw_widget_inner(w, cb, vg, clips);
 			--ctx->recording_depth;
-			if (ovg_recording_t* rec = cb->stop_recording(vg, nullptr))
+			// R3-1: stop_recording reuses the previous recording in place
+			// (its second parameter), so the re-record path never calls
+			// recording_destroy -- the internal buffers are recycled.
+			if (ovg_recording_t* rec = cb->stop_recording(vg,
+				(ovg_recording_t*)w->cached_recording))
 			{
 				w->cached_recording = rec;
 				w->cache_rect[0] = w->abs_x;
@@ -13701,6 +13700,15 @@ extern "C" {
 		ctx->modal.restore_focus = nullptr;
 		ctx->dialog = vgui_dialog_state();
 		ctx->toasts.clear();
+		// R3-1: free the subtree display-list caches before the widgets go.
+		if (ctx->draw_cb && ctx->draw_cb->recording_destroy)
+			for (vgui_widget* w : ctx->all_widgets)
+				if (w->cached_recording)
+				{
+					ctx->draw_cb->recording_destroy(
+						(ovg_recording_t*)w->cached_recording);
+					w->cached_recording = nullptr;
+				}
 		if (ctx->root && ctx->alive.count(ctx->root))
 			vgui_delete_rec(ctx->root, ctx);
 		ctx->root = nullptr;
@@ -19128,16 +19136,11 @@ extern "C" {
 		if (dd.image_desc_count == 0)
 			return;
 		++ctx->style_epoch;
+		// Mark dirty only -- the next re-record reuses the recordings in
+		// place (stop_recording's pr parameter), no destroys needed.
 		for (vgui_widget* w : ctx->all_widgets)
-		{
 			if (w->cached_recording)
-			{
-				if (ctx->draw_cb && ctx->draw_cb->recording_destroy)
-					ctx->draw_cb->recording_destroy(
-						(ovg_recording_t*)w->cached_recording);
-				w->cached_recording = nullptr;
-			}
-		}
+				w->cache_dirty = true;
 	}
 
 	// -------------------------------------------------------------------------
