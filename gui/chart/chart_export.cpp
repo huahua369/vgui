@@ -186,12 +186,6 @@ namespace vgchart {
 			const series_data& series, const char* card_key, uint32_t flags,
 			bool have_view, double view_x0, double view_x1)
 		{
-			if (series.kind == VGUI_CHART_BAR)
-			{
-				/* Bars are exported as the raw data they represent; decimation
-				 * for bars is a rendering detail and would hide samples. */
-			}
-
 			size_t begin = 0;
 			size_t end = series.size();
 			if (have_view && (flags & VGUI_CHART_EXPORT_VISIBLE_ONLY))
@@ -203,8 +197,10 @@ namespace vgchart {
 				return 1;
 
 			const size_t visible = end - begin;
+			/* Bars are exported as the raw samples they represent; min/max
+			 * decimation is a line rendering detail and would hide samples. */
 			const bool decimated = (flags & VGUI_CHART_EXPORT_DECIMATED) != 0
-				&& visible > 4;
+				&& series.kind != VGUI_CHART_BAR && visible > 4;
 
 			if (!decimated)
 			{
@@ -242,7 +238,8 @@ namespace vgchart {
 				double max_y = 0.0;
 			};
 
-			const bool have_range = have_view && view_x1 > view_x0;
+			const bool have_range = have_view
+				&& (flags & VGUI_CHART_EXPORT_VISIBLE_ONLY) != 0;
 			const double x0 = have_range ? view_x0
 				: (series.empty() ? 0.0 : series.at(begin).x);
 			const double x1 = have_range ? view_x1

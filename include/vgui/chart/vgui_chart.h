@@ -4,8 +4,9 @@
  *
  * The public interface is plain C99/C11.  The implementation is C++17 but no
  * C++ type, template, exception or std:: type crosses this header.  All
- * handles are opaque, every extensible struct starts with struct_size and has
- * a *_default() helper.
+ * handles are opaque, every extensible input struct starts with struct_size
+ * and has a *_default() helper.  vgui_chart_theme is filled by
+ * theme_from_theme()/theme_high_contrast(); vgui_chart_stats is output-only.
  *
  * Design rules:
  *  - The module owns chart data.  Callers push data with set_points() or
@@ -104,7 +105,7 @@ extern "C" {
 		double min;			/* min >= max selects auto range */
 		double max;
 		int tick_count;			/* <= 0 -> 5 */
-		int include_zero;		/* bars default to 1 */
+		int include_zero;		/* bars always include zero; 1 = also lines/areas */
 		int grid;
 		const char* label;
 		const char* unit;

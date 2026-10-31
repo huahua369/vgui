@@ -124,7 +124,6 @@ namespace vgchart {
 				const double value = start + step * (double)i;
 				if (value > limit) break;
 				if (value < lo - step * 1e-9) continue;
-				if (std::fabs(value) < step * 1e-9) value == 0.0;
 				tick_value tick;
 				tick.value = std::fabs(value) < step * 1e-9 ? 0.0 : value;
 				format_value(axis, tick.value, tick.text);
@@ -494,8 +493,14 @@ namespace vgchart {
 				const float width = text_width(chart->widget, tick.text, font);
 				const float gap = horizontal ? width + 8.0f * ui_scale(chart->widget)
 					: line_height(chart->widget, font) + 2.0f;
-				const float start = horizontal ? tick.pos - width * 0.5f : tick.pos;
-				if (!first && start < last_end + gap)
+				/* X ticks are ascending left-to-right, Y ticks descend from
+				 * the bottom to the top of the plot.  Measure the distance in
+				 * the direction the labels advance so the second Y tick is not
+				 * rejected by a one-sided overlap test. */
+				const float distance = horizontal
+					? (tick.pos - width * 0.5f) - last_end
+					: last_end - tick.pos;
+				if (!first && distance < gap)
 					copy.label = false;
 				else
 				{

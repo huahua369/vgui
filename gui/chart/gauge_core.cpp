@@ -23,18 +23,6 @@ namespace vgchart {
 			return value > 4.0f ? value : 13.0f;
 		}
 
-		float text_width(vgui_widget* widget, const std::string& text, float font)
-		{
-			if (text.empty()) return 0.0f;
-			if (widget)
-			{
-				const float w = vgui_widget_measure_text_sized(widget,
-					text.c_str(), font);
-				if (w > 0.0f) return w;
-			}
-			return (float)text.size() * font * 0.5f;
-		}
-
 		float line_height(vgui_widget* widget, float font)
 		{
 			if (widget)
@@ -247,7 +235,6 @@ namespace vgchart {
 				cy + std::sin(angle1) * r - label_h * 0.5f,
 				56.0f * scale, label_h, theme.muted_text, 0.5f, 0.5f,
 				tick_font);
-			(void)text_width;
 		}
 	}
 

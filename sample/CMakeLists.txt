@@ -95,6 +95,11 @@ if(VGUI_BUILD_EDITOR_KIT)
         ${VGUI_PUBLIC_EDITOR_HEADERS}
         "${VGUI_SOURCE_DIR}/include/vgui_editor_kit.h")
 endif()
+if(VGUI_BUILD_CHART)
+    file(GLOB VGUI_PUBLIC_CHART_HEADERS CONFIGURE_DEPENDS
+        "${VGUI_SOURCE_DIR}/include/vgui/chart/*.h")
+    list(APPEND VGUI_PUBLIC_HEADERS ${VGUI_PUBLIC_CHART_HEADERS})
+endif()
 
 set(VGUI_HEADER_TEST_SOURCES)
 foreach(header IN LISTS VGUI_PUBLIC_HEADERS)
@@ -173,6 +178,22 @@ endif()
 add_executable(vgui_c_api_test ${SRC_C_API_TEST})
 target_link_libraries(vgui_c_api_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
 set_target_properties(vgui_c_api_test PROPERTIES LINKER_LANGUAGE CXX)
+
+if(VGUI_BUILD_CHART)
+    add_executable(vgui_chart_test vgui_chart_test.c)
+    target_link_libraries(vgui_chart_test PRIVATE
+        vgui_sample_common vgui::chart EnTT::EnTT ZLIB::ZLIB)
+    set_target_properties(vgui_chart_test PROPERTIES LINKER_LANGUAGE CXX)
+    add_test(NAME vgui_chart COMMAND vgui_chart_test)
+
+    add_executable(vgui_chart_render_test vgui_chart_render_test.cpp)
+    target_link_libraries(vgui_chart_render_test PRIVATE
+        vgui_sample_common vgui::chart libovg SDL3::SDL3 glm::glm-header-only)
+    target_compile_definitions(vgui_chart_render_test PRIVATE
+        VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+    add_test(NAME vgui_chart_render COMMAND vgui_chart_render_test)
+    set_tests_properties(vgui_chart_render PROPERTIES SKIP_RETURN_CODE 77)
+endif()
 
 add_custom_command(
     TARGET vgui_demo POST_BUILD

@@ -23,6 +23,7 @@ endif()
 
 option(VGUI_BUILD_SAMPLES "Build vgui samples and tests" ${VGUI_IS_TOP_LEVEL})
 option(VGUI_BUILD_EDITOR_KIT "Build vgui_editor_kit" ON)
+option(VGUI_BUILD_CHART "Build the optional vgui_chart module" ON)
 option(VGUI_INSTALL "Install vgui headers, libraries and CMake package files" ${VGUI_IS_TOP_LEVEL})
 
 # E03: 截图回归测试通过 CTest 注册，CI 可直接运行 ctest -R vgui_screenshots。
@@ -67,7 +68,7 @@ find_package(harfbuzz CONFIG REQUIRED)
 find_package(Fontconfig REQUIRED)
 find_package(PkgConfig REQUIRED)
 find_package(glm CONFIG REQUIRED)
-if(VGUI_BUILD_EDITOR_KIT OR VGUI_BUILD_SAMPLES)
+if(VGUI_BUILD_EDITOR_KIT OR VGUI_BUILD_SAMPLES OR VGUI_BUILD_CHART)
     find_package(nlohmann_json CONFIG REQUIRED)
 endif()
 if(NOT TARGET PkgConfig::Clipper2)
@@ -98,6 +99,9 @@ if(MSVC)
     target_compile_options(libovg INTERFACE /utf-8)
 endif()
 
+if(VGUI_BUILD_CHART)
+    add_subdirectory(gui/chart)
+endif()
 if(VGUI_BUILD_EDITOR_KIT)
     add_subdirectory(gui/editor)
 endif()
@@ -118,6 +122,13 @@ if(VGUI_INSTALL)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 
+    if(VGUI_BUILD_CHART)
+        install(TARGETS vgui_chart
+            EXPORT vguiTargets
+            ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
+            RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+    endif()
+
     install(FILES include/vgui/vgui.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
 
@@ -127,6 +138,11 @@ if(VGUI_INSTALL)
 
     if(VGUI_BUILD_EDITOR_KIT)
         install(DIRECTORY include/vgui/editor
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
+    endif()
+
+    if(VGUI_BUILD_CHART)
+        install(DIRECTORY include/vgui/chart
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
     endif()
 

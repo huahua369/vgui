@@ -18,7 +18,7 @@ if(NOT TARGET PkgConfig::HARFBUZZ_RASTER)
     pkg_check_modules(HARFBUZZ_RASTER REQUIRED IMPORTED_TARGET harfbuzz-raster)
 endif()
 
-if(@VGUI_BUILD_EDITOR_KIT@)
+if(@VGUI_BUILD_EDITOR_KIT@ OR @VGUI_BUILD_CHART@)
     find_dependency(nlohmann_json CONFIG)
 endif()
 

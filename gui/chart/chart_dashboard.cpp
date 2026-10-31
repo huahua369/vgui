@@ -1246,6 +1246,37 @@ extern "C" {
 				return 0;
 			}
 
+			/* Loading replaces the root panel.  Preserve the geometry the
+			 * caller assigned to the previous root so live dashboard reloads
+			 * do not shrink back to their preferred size. */
+			float old_x = 0.0f;
+			float old_y = 0.0f;
+			float old_w = 0.0f;
+			float old_h = 0.0f;
+			const bool had_root = dashboard->root != nullptr;
+			if (had_root)
+			{
+				vgui_widget_get_rect(dashboard->root, &old_x, &old_y,
+					&old_w, &old_h);
+				if (dashboard->parent)
+				{
+					float parent_x = 0.0f;
+					float parent_y = 0.0f;
+					float parent_w = 0.0f;
+					float parent_h = 0.0f;
+					vgui_widget_get_rect(dashboard->parent, &parent_x,
+						&parent_y, &parent_w, &parent_h);
+					old_x -= parent_x;
+					old_y -= parent_y;
+				}
+				float scale = vgui_context_get_ui_scale(dashboard->ctx);
+				if (!(scale > 0.0f)) scale = 1.0f;
+				vgui_widget_set_pos(built.root, old_x / scale,
+					old_y / scale);
+				vgui_widget_set_size(built.root, old_w / scale,
+					old_h / scale);
+			}
+
 			vgchart::clear_dashboard(dashboard);
 			dashboard->root = built.root;
 			dashboard->title_label = built.title_label;
