@@ -1313,7 +1313,10 @@ extern "C" {
 	 * moved between zones, reordered, floated as a draggable frame inside the
 	 * dock, and restored after being closed.  The dock owns added pages: remove
 	 * and clear destroy them, detach transfers ownership back to the caller.
-	 * Floating frames are confined to the dock rectangle. */
+	 * Floating frames are confined to the dock rectangle.  While a tab or a frame
+	 * is dragged the dock draws the live drop targets: the four zones, plus a
+	 * square in the middle of the centre zone that releases the tab as a floating
+	 * frame - the only way out of a zone that holds a single tab. */
 	typedef enum vgui_dock_zone {
 		VGUI_DOCK_LEFT = 0,
 		VGUI_DOCK_RIGHT,

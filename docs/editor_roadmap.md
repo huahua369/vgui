@@ -1,6 +1,6 @@
 # vgui 游戏编辑器组件路线图
 
-> 状态：MVP、完整编辑器组件、工程化打磨（E01～E07）以及 S08/A08 增补均已完成
+> 状态：MVP、完整编辑器组件、工程化打磨（E01～E07）以及 S08/S09/A08 增补均已完成
 >
 > 适用版本：vgui 0.3.x
 >
@@ -201,7 +201,7 @@
   - 停靠区域、面板拖动、标签组、浮动窗口、关闭/恢复。
   - 与布局持久化、Tab、Splitter 协同。
   - 验收：面板可在左右/底部停靠、合并为标签组、浮出再停靠；重启后布局恢复。
-  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。
+  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。拖拽期间的目标罗盘与中央浮出方块见 S09。
 
 - [x] **S07 工具栏辅助组件**（P1，S/M）
   - IconButton、ToggleButton、SegmentedControl。
@@ -213,6 +213,15 @@
   - New/Open/Save/Save As/Exit 宿主回调与快捷键；Edit > Delete 删除当前选择。
   - 验收：File 菜单与快捷键统一走文档回调；未安装回调时保持旧行为；删除进入命令栈。
   - 已实现：`editor_shell` 新增 `document_handlers`（new/open/save/save_as/exit + delete_selection）和 `set_document_handlers()`/`document_handler_state()`；File 菜单顺序为 New、Open...、分隔线、Save、Save As...、分隔线、Exit，对应 `Ctrl+N`/`Ctrl+O`/`Ctrl+S`/`Ctrl+Shift+S`。默认动作在未安装回调时仍只更新状态栏，宿主用 `commands().add()` 覆盖单个命令 ID 的旧用法保持兼容；`edit.delete` 把当前多选集合交给宿主，处理器返回 `false` 时回退为清除选择。`vgui_game_editor` 把内存场景变成真实文档：Save/Save As 写 `format: "vgui-game-scene"`、`version: 1` 的 JSON（对象 id/父子/可见/锁定/可渲染/TRS/字符串属性），Open 校验格式、修复悬空父引用、拒绝父链环并按序列化顺序恢复 roots/children，New 重建 World/Camera/Light，Exit 结束主循环；Outliner 删除复用同一个可撤销 `function_command`。`test_document_handlers` 覆盖菜单顺序、快捷键、回调转发、空处理器回退和删除回退。
+
+- [x] **S09 Dock 拖拽目标与浮出反馈**（P1，M）（已完成）
+  - 拖动标签或浮动框架时，在 Dock 内容矩形上绘制目标罗盘：左/右/底三条带 + 中央剩余区，外加正中的浮出方块；未命中带低亮、命中带高亮，命中的停靠区仍显示标签插入竖线。
+  - 浮出方块补齐"区里只有一个标签时拖不出来"：此前只有指针离开 Dock 内容矩形才判定浮出，而外壳的 Dock 铺满窗口，单标签只能落回原区。
+  - 拖影跟随指针（标题卡片 + 阴影 + 强调色描边），命中浮出方块时给出可辨识的浮出提示。
+  - 既有优先级不回退：悬停在某区已有标签条上仍是该区重排/合并，指针移出 Dock 矩形仍是浮出。
+  - 验收：单标签按下→拖到中央方块→松手后 `vgui_dock_is_floating` 为真；拖动中的画面由 `dock_drag_dark` 截图场景回归；`vgui_model_test` 的 LEFT/RIGHT/CENTER/FLOATING 往返与跨区/重排断言保持通过。
+  - 已实现：`vgui_dock_state` 增加 `drop_targets[5]/drop_target_count/drop_target`，由 `vgui_dock_update_drop_targets(w, x, y, frame_drag)` 一次算出命中与绘制共用的目标集：有面板的区域用已布局矩形（拖框架时收缩到标签条），折叠区域退回 30% 边缘带（与 `vgui_dock_fallback_zone` 同口径），中央区正中再叠一个 `min(120, max(36, 0.34*min(w,h)))` 的浮出方块；命中优先级为浮出方块 > 左/右/底 > 中央。`drag_mode == 2` 的 move 分支改为消费该目标集（保留"移出内容矩形/悬停在浮动框架上仍判浮出"和未命中时的 `vgui_dock_fallback_zone` 回退），`drag_mode == 3` 的 move 分支用同一目标集驱动高亮，mouse-up 在松手点重新求值后再 `vgui_dock_move_internal`，因此高亮与落点始终同源；`vgui_dock_zone_at_point()` 随旧判定一起删除。`vgui_draw_dock()` 在 `drag_mode` 为 2/3 时绘制整套罗盘（未命中 15% 强调色填充 + 1.5px 半透明描边，命中 26% 填充 + 2px 实描 + 插入竖线），浮出方块用"标题条 + 窗体"图标；拖影卡片加投影，`drop_floating` 时整卡改为强调色底 + 白字。press/up/`vgui_dock_clear()`/`vgui_input_clear()` 一并清空目标集。
+  - 验证：`test_dock_float_square` 断言单标签拖到中央区正中后 `vgui_dock_is_floating` 为真、偏上方块仍并入中央区；往返探针的 CENTER 目标点从"中央区正中"改为"中央区上方 1/4"，因为正中现在是浮出按钮。`vgui_model_test` 790 通过 / 0 失败（新增 4 条），`vgui_editor_kit_test` PASS，`vgui_screenshot_test` 11 场景全部 `diff=0`（新增 `dock_drag_dark`，其余 10 张基线逐像素未变）。
 
 ### M2 属性编辑（P）
 
@@ -538,6 +547,7 @@ MVP 验收场景：
 - S06 Dock / 浮动面板（核心与 editor_shell 接入均已完成）
 - S07 工具栏辅助组件（已完成）
 - S08 文件菜单 / 文档生命周期（已完成）
+- S09 Dock 拖拽目标与浮出反馈（已完成）
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient（已完成）
 - T01 Table/DataGrid（已完成）

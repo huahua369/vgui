@@ -92,6 +92,7 @@ namespace {
 	const scene_spec kScenes[] = {
 		{ "dock_default_dark", 1440, 900, false },
 		{ "dock_floating_dark", 1440, 900, false },
+		{ "dock_drag_dark", 1440, 900, false },
 		{ "property_grid_dark", 560, 720, false },
 		{ "property_grid_states_dark", 560, 720, false },
 		{ "outliner_selected_dark", 400, 560, false },
@@ -1132,7 +1133,14 @@ namespace {
 		projector proj;
 	};
 
-	void build_dock(scene_state& st, const scene_spec& spec, bool floating)
+	enum dock_scene_variant
+	{
+		dock_scene_default = 0,
+		dock_scene_floating = 1,
+		dock_scene_drag = 2
+	};
+
+	void build_dock(scene_state& st, const scene_spec& spec, int variant)
 	{
 		st.context = std::make_unique<editor_context>(st.ui);
 		st.shell = std::make_unique<editor_shell>(*st.context);
@@ -1160,18 +1168,10 @@ namespace {
 		shell.preview_viewport().set_texture(make_viewport_texture(ui));
 		shell.depth_viewport().set_texture(make_depth_texture(ui));
 
-		shell.set_status(floating ? "Properties floated - layout state"
-			: "Scene ready - 12 objects");
-
-		if (!floating)
+		vgui_widget* dock = shell.dock();
+		if (variant == dock_scene_floating)
 		{
-			vgui_widget* dock = shell.dock();
-			vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 380.0f);
-			vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 220.0f);
-		}
-		else
-		{
-			vgui_widget* dock = shell.dock();
+			shell.set_status("Properties floated - layout state");
 			vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 300.0f);
 			vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 240.0f);
 			const vgui_item_id properties_panel = vgui_dock_find(dock, "properties");
@@ -1188,6 +1188,36 @@ namespace {
 			const vgui_item_id console_tab = vgui_tab_get_at(tabs, 1);
 			if (console_tab)
 				vgui_tab_set_active(tabs, console_tab);
+		}
+		else
+		{
+			shell.set_status(variant == dock_scene_drag
+				? "Outliner mid-drag - drop targets shown"
+				: "Scene ready - 12 objects");
+			vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 380.0f);
+			vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 220.0f);
+			if (variant == dock_scene_drag)
+			{
+				// Grab the OUTLINER tab and hold it over the float button in the
+				// middle of the viewport zone, without releasing the button.
+				vgui_layout(ui);
+				const vgui_item_id outliner = vgui_dock_find(dock, "outliner");
+				float px = 0, py = 0, pw = 0, ph = 0;
+				float zx = 0, zy = 0, zw = 0, zh = 0;
+				if (outliner &&
+					vgui_dock_get_tab_rect(dock, outliner, &px, &py, &pw, &ph) &&
+					pw > 0.0f &&
+					vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &zx, &zy, &zw, &zh) &&
+					zw > 0.0f)
+				{
+					const float grab_x = px + pw * 0.5f;
+					const float grab_y = py + ph * 0.5f;
+					vgui_input_mouse_move(ui, grab_x, grab_y);
+					vgui_input_mouse_down(ui, 1, grab_x, grab_y, 1);
+					vgui_input_mouse_move(ui, grab_x + 24.0f, grab_y);
+					vgui_input_mouse_move(ui, zx + zw * 0.5f, zy + zh * 0.5f);
+				}
+			}
 		}
 		(void)spec;
 	}
@@ -1495,9 +1525,11 @@ namespace {
 			st.theme = theme;
 
 			if (std::strcmp(spec.name, "dock_default_dark") == 0)
-				build_dock(st, spec, false);
+				build_dock(st, spec, dock_scene_default);
 			else if (std::strcmp(spec.name, "dock_floating_dark") == 0)
-				build_dock(st, spec, true);
+				build_dock(st, spec, dock_scene_floating);
+			else if (std::strcmp(spec.name, "dock_drag_dark") == 0)
+				build_dock(st, spec, dock_scene_drag);
 			else if (std::strcmp(spec.name, "property_grid_dark") == 0)
 				build_property_grid(st, spec, false);
 			else if (std::strcmp(spec.name, "property_grid_states_dark") == 0)

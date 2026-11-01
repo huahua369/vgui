@@ -3806,12 +3806,14 @@ static void test_dock_bottom_roundtrip(vgui_context* ui, const vgui_style& base)
 		if (t.zone == VGUI_DOCK_LEFT) { out_x = fx0 + 40.0f; out_y = fy0 + fh0 * 0.5f; }
 		else if (t.zone == VGUI_DOCK_RIGHT) { out_x = fx0 + fw0 - 40.0f; out_y = fy0 + fh0 * 0.5f; }
 		else if (t.zone == VGUI_DOCK_BOTTOM) { out_x = fx0 + fw0 * 0.5f; out_y = fy0 + fh0 - 20.0f; }
+		/* The dead centre of the centre zone is the float button, so docking a
+		 * tab into the centre group aims above it. */
+		else if (t.zone == VGUI_DOCK_CENTER) { out_x = fx0 + fw0 * 0.5f; out_y = fy0 + fh0 * 0.25f; }
 		else if (t.floating) { out_x = 640.0f; out_y = 60.0f; }
 		vgui_input_mouse_move(ui, out_x, out_y);
 		vgui_input_mouse_up(ui, 1, out_x, out_y, 1);
 		const vgui_dock_zone want_zone = t.floating
 			? VGUI_DOCK_FLOATING : t.zone;
-			(int)vgui_dock_get_zone(dock, ic));
 		check(vgui_dock_get_zone(dock, ic) == want_zone,			"roundtrip: C moved out to target");
 
 		vgui_layout(ui);
@@ -3847,6 +3849,72 @@ static void test_dock_bottom_roundtrip(vgui_context* ui, const vgui_style& base)
 		vgui_set_focus(ui, nullptr);
 	}
 
+	vgui_context_set_style(ui, &base);
+}
+
+// The centre zone is the only drop target for a single tab when the dock fills
+// the window, so the compass punches a float button into its middle.
+static void test_dock_float_square(vgui_context* ui, const vgui_style& base)
+{
+	vgui_style style = base;
+	style.dock.left_width = 140.0f;
+	style.dock.right_width = 140.0f;
+	style.dock.bottom_height = 120.0f;
+	style.dock.gap = 4.0f;
+	style.dock.tab_height = 24.0f;
+	style.dock.tab_padding = 8.0f;
+	style.dock.tab_gap = 2.0f;
+	style.dock.tab_min_width = 40.0f;
+	style.dock.tab_max_width = 90.0f;
+	style.dock.close_size = 12.0f;
+	style.dock.drag_threshold = 4.0f;
+	style.dock.floating_title_height = 24.0f;
+	style.dock.floating_width = 240.0f;
+	style.dock.floating_height = 160.0f;
+	vgui_context_set_style(ui, &style);
+
+	vgui_widget* dock = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(dock, 20.0f, 20.0f);
+	vgui_widget_set_size(dock, 600.0f, 420.0f);
+	vgui_dock_panel_desc d;
+	vgui_dock_panel_desc_default(&d);
+	d.id = "solo";
+	d.title = "Solo";
+	d.zone = VGUI_DOCK_CENTER;
+	d.panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_item_id id = vgui_dock_add(dock, &d);
+	vgui_layout(ui);
+
+	float zx = 0, zy = 0, zw = 0, zh = 0;
+	check(vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &zx, &zy, &zw, &zh) &&
+		zw > 0.0f && zh > 0.0f, "float square: centre zone fills the dock");
+	float tx = 0, ty = 0, tw = 0, th = 0;
+	check(vgui_dock_get_tab_rect(dock, id, &tx, &ty, &tw, &th) && tw > 0.0f,
+		"float square: single tab has a tab rect");
+
+	auto drag_to = [&](float px, float py)
+		{
+			vgui_input_mouse_move(ui, tx + tw * 0.5f, ty + th * 0.5f);
+			vgui_input_mouse_down(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+			vgui_input_mouse_move(ui, tx + tw * 0.5f + 12.0f, ty + th * 0.5f);
+			vgui_input_mouse_move(ui, px, py);
+			vgui_input_mouse_up(ui, 1, px, py, 1);
+			vgui_set_focus(ui, nullptr);
+		};
+
+	// Just beside the button the tab still joins the centre group.
+	drag_to(zx + zw * 0.5f, zy + zh * 0.25f);
+	check(vgui_dock_get_zone(dock, id) == VGUI_DOCK_CENTER &&
+		!vgui_dock_is_floating(dock, id), "float square: beside it docks centre");
+
+	vgui_layout(ui);
+	drag_to(zx + zw * 0.5f, zy + zh * 0.5f);
+	check(vgui_dock_is_floating(dock, id) == 1 &&
+		vgui_dock_get_zone(dock, id) == VGUI_DOCK_FLOATING,
+		"float square: single tab dragged onto it floats");
+
+	vgui_dock_clear(dock);
+	vgui_widget_destroy(dock);
 	vgui_context_set_style(ui, &base);
 }
 
@@ -4253,6 +4321,7 @@ int main()
 	test_toast(ui, style);
 	test_dock(ui, style);
 	test_dock_bottom_roundtrip(ui, style);
+	test_dock_float_square(ui, style);
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
 	test_popup(ui);

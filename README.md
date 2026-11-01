@@ -23,7 +23,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **增量更新** | PropertyGrid 按 id+type 复用属性行，切换同 schema 对象不重建控件；Outliner 虚拟行源用 `scene_changed()`/`scene_row_changed()` 区分结构与单行刷新；AssetBrowser 只请求可见范围缩略图并复用内存/磁盘缓存 |
 | **国际化** | UTF-8 文案表与运行时语言切换；RTL 布局/文本/常用控件镜像；OVG 多字体回退与 bidi 文本 |
 | **无障碍** | 语义角色/名称/值/状态查询与可见控件树的预序遍历，供宿主桥接 UIA/AT-SPI/AccessKit；焦点陷阱、Tab 循环、F6 面板切换、F10 菜单、焦点/值/状态/选中/公告事件；高对比度主题 |
-| **视觉回归** | 10 个编辑器关键状态离屏截图基线（Dock/PropertyGrid/Outliner/AssetBrowser/Viewport），容差对比并输出差异图；CTest 可直接运行，无 Vulkan 自动 SKIP |
+| **视觉回归** | 11 个编辑器关键状态离屏截图基线（Dock/PropertyGrid/Outliner/AssetBrowser/Viewport），容差对比并输出差异图；CTest 可直接运行，无 Vulkan 自动 SKIP |
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
@@ -40,7 +40,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | ![属性网格（深色）](sample/screenshots/property_grid_dark.png)<br>属性网格：向量分量、引用行、曲线与渐变编辑器 | ![属性网格状态（深色）](sample/screenshots/property_grid_states_dark.png)<br>属性网格：多选混合值、校验提示与重置按钮 |
 | ![Outliner 多选（深色）](sample/screenshots/outliner_selected_dark.png)<br>Outliner 多选高亮 | ![Outliner 虚拟行（深色）](sample/screenshots/outliner_virtual_dark.png)<br>Outliner 虚拟行源与类型图标 |
 | ![Outliner 过滤（浅色）](sample/screenshots/outliner_filtered_light.png)<br>Outliner 关键词过滤（浅色主题） | ![资产浏览器网格（浅色）](sample/screenshots/asset_browser_grid_light.png)<br>资产浏览器网格视图与缩略图 |
-| ![资产浏览器列表（深色）](sample/screenshots/asset_browser_list_dark.png)<br>资产浏览器列表视图与搜索 | |
+| ![资产浏览器列表（深色）](sample/screenshots/asset_browser_list_dark.png)<br>资产浏览器列表视图与搜索 | ![Dock 拖拽目标（深色）](sample/screenshots/dock_drag_dark.png)<br>拖动 OUTLINER 标签时的目标罗盘、中央浮出方块与跟随指针的拖影 |
 
 ### 控件一览
 
@@ -241,7 +241,7 @@ vgui_dock_float(dock, panel, 120.0f, 120.0f, 360.0f, 260.0f);
 vgui_dock_on_close(dock, on_dock_close, app);
 ```
 
-- 拖动标签可重排或移到其他区域；拖出停靠区会变成浮动框架，拖到区域标签条则重新停靠。拖动浮动框架标题可移动窗口，拖到标签条可停靠。
+- 拖动标签可重排或移到其他区域；拖拽期间 Dock 会画出目标罗盘（左/右/底/中央四块加正中的浮出方块），未命中低亮、命中高亮并在命中的停靠区显示标签插入竖线，拖影跟随指针。指针移出 Dock 矩形、落在浮动框架上或命中中央浮出方块都会把面板变成浮动框架——中央方块是某个区只剩一个标签时唯一的浮出入口。拖动浮动框架标题可移动窗口，拖到某区域的标签条（或已折叠区域的边缘带）即重新停靠。
 - `vgui_dock_close()` 只隐藏面板并保留区域/顺序，`vgui_dock_restore()` 重新打开并激活；关闭按钮可通过 `vgui_dock_set_closeable()` 控制。
 - `vgui_dock_get_zone()/get_index()/is_open()/get_floating_rect()` 可读取布局状态，配合字符串 id 与 `vgui_dock_panel_desc` 重建即可恢复布局；区域尺寸通过 `vgui_dock_set_zone_size()` 保存/恢复。
 - 标签条溢出时可用滚轮横向滚动；样式字段位于 `vgui_style.dock`，颜色位于 `vgui_theme.dock_*`，零值会回退到面板/按钮/菜单调色板。

@@ -319,6 +319,14 @@ struct vgui_dock_tab_geom
 	float close_x = 0.0f, close_y = 0.0f, close_w = 0.0f, close_h = 0.0f;
 };
 
+struct vgui_dock_drop_target
+{
+	// VGUI_DOCK_LEFT/RIGHT/BOTTOM/CENTER, or VGUI_DOCK_FLOATING for the centre
+	// square that releases the panel as a floating frame.
+	int zone = -1;
+	float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+};
+
 struct vgui_dock_state
 {
 	std::vector<vgui_dock_panel> panels;
@@ -340,6 +348,9 @@ struct vgui_dock_state
 	int drop_zone = -1;
 	int drop_index = -1;
 	int drop_floating = 0;
+	vgui_dock_drop_target drop_targets[5];	// live drop feedback while dragging
+	int drop_target_count = 0;
+	int drop_target = -1;			// hovered entry in drop_targets
 	float drag_offset_x = 0.0f, drag_offset_y = 0.0f;
 	float zone_size[4] = { -1.0f, -1.0f, -1.0f, -1.0f };	// <0 -> style
 	float zone_x[4] = {};
@@ -2052,22 +2063,6 @@ namespace {
 		}
 	}
 
-	static int vgui_dock_zone_at_point(vgui_widget* w, float x, float y)
-	{
-		vgui_dock_state* st = vgui_dock_of(w);
-		if (!st) return -1;
-		if (vgui_dock_floating_at_point(w, x, y, nullptr, nullptr))
-			return VGUI_DOCK_FLOATING;
-		for (int zone = 0; zone < 4; ++zone)
-		{
-			if (st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f) continue;
-			if (x >= st->zone_x[zone] && x < st->zone_x[zone] + st->zone_w[zone] &&
-				y >= st->zone_y[zone] && y < st->zone_y[zone] + st->zone_h[zone])
-				return zone;
-		}
-		return -1;
-	}
-
 	// Dropping into an empty (collapsed) zone is still useful: infer the target
 	// from the pointer's position near the centre area's edges.
 	static int vgui_dock_fallback_zone(vgui_widget* w, float x, float y)
@@ -2112,6 +2107,120 @@ namespace {
 		if (!st || zone < 0 || zone >= 4) return -1;
 		if (!vgui_dock_zone_has_open(st, zone)) return 0;
 		return vgui_dock_drop_index_at(w, zone, x);
+	}
+
+	/* Drop targets shown while a tab or a floating frame is dragged.  A tab may
+	 * land anywhere inside an occupied zone, so that zone keeps its laid-out
+	 * rect; a floating frame only redocks onto a zone tab bar, so its targets
+	 * shrink to that strip and the centre stays out of the list.  Collapsed zones
+	 * fall back to their edge band so they stay reachable, and the centre square
+	 * releases a tab as a floating frame - the only way out of a zone that holds
+	 * a single tab when the dock fills the window. */
+	static void vgui_dock_update_drop_targets(vgui_widget* w, float x, float y,
+		bool frame_drag)
+	{
+		vgui_dock_state* st = vgui_dock_of(w);
+		if (!st || !w->ctx) return;
+		const vgui_dock_style& ds = w->ctx->style.dock;
+		float cx = 0, cy = 0, cw = 0, ch = 0;
+		vgui_dock_content_rect(w, &cx, &cy, &cw, &ch);
+		st->drop_target_count = 0;
+		st->drop_target = -1;
+		if (cw <= 0.0f || ch <= 0.0f) return;
+		if (x < cx || x >= cx + cw || y < cy || y >= cy + ch) return;
+
+		const float strip = std::min(ds.tab_height, ch);
+		const float band_left =
+			std::min(vgui_dock_resolved_zone_size(w, VGUI_DOCK_LEFT), cw * 0.3f);
+		const float band_right =
+			std::min(vgui_dock_resolved_zone_size(w, VGUI_DOCK_RIGHT), cw * 0.3f);
+		const float band_bottom =
+			std::min(vgui_dock_resolved_zone_size(w, VGUI_DOCK_BOTTOM), ch * 0.3f);
+
+		for (int zone = 0; zone < 4; ++zone)
+		{
+			if (frame_drag && zone == VGUI_DOCK_CENTER) continue;
+			vgui_dock_drop_target& t = st->drop_targets[st->drop_target_count++];
+			t.zone = zone;
+			if (st->zone_w[zone] > 0.0f && st->zone_h[zone] > 0.0f)
+			{
+				t.x = st->zone_x[zone];
+				t.y = st->zone_y[zone];
+				t.w = st->zone_w[zone];
+				t.h = frame_drag ? std::min(ds.tab_height, st->zone_h[zone])
+					: st->zone_h[zone];
+				continue;
+			}
+			switch (zone)
+			{
+			case VGUI_DOCK_LEFT:
+				t.x = cx; t.y = cy + strip;
+				t.w = band_left;
+				t.h = std::max(0.0f, ch - strip - band_bottom);
+				break;
+			case VGUI_DOCK_RIGHT:
+				t.x = cx + cw - band_right; t.y = cy + strip;
+				t.w = band_right;
+				t.h = std::max(0.0f, ch - strip - band_bottom);
+				break;
+			case VGUI_DOCK_BOTTOM:
+				t.x = cx; t.y = cy + ch - band_bottom;
+				t.w = cw; t.h = band_bottom;
+				break;
+			default:
+				t.x = cx + band_left; t.y = cy;
+				t.w = std::max(0.0f, cw - band_left - band_right);
+				t.h = std::max(0.0f, ch - band_bottom);
+				break;
+			}
+		}
+
+		if (!frame_drag)
+		{
+			const vgui_dock_drop_target& center = st->drop_targets[VGUI_DOCK_CENTER];
+			const float fit = std::min(center.w, center.h);
+			const float side = std::min(120.0f, std::max(36.0f, fit * 0.34f));
+			if (fit > 0.0f && side < fit)
+			{
+				vgui_dock_drop_target& t = st->drop_targets[st->drop_target_count++];
+				t.zone = VGUI_DOCK_FLOATING;
+				t.x = center.x + (center.w - side) * 0.5f;
+				t.y = center.y + (center.h - side) * 0.5f;
+				t.w = side;
+				t.h = side;
+			}
+		}
+
+		auto hits = [x, y](const vgui_dock_drop_target& t) {
+			return x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h;
+		};
+		for (int i = 0; i < st->drop_target_count; ++i)
+		{
+			if (st->drop_targets[i].zone == VGUI_DOCK_FLOATING &&
+				hits(st->drop_targets[i]))
+			{
+				st->drop_target = i;
+				return;
+			}
+		}
+		for (int i = 0; i < st->drop_target_count; ++i)
+		{
+			if (st->drop_targets[i].zone != VGUI_DOCK_CENTER &&
+				hits(st->drop_targets[i]))
+			{
+				st->drop_target = i;
+				return;
+			}
+		}
+		for (int i = 0; i < st->drop_target_count; ++i)
+		{
+			if (st->drop_targets[i].zone == VGUI_DOCK_CENTER &&
+				hits(st->drop_targets[i]))
+			{
+				st->drop_target = i;
+				return;
+			}
+		}
 	}
 
 	static void vgui_dock_notify_activate(vgui_widget* w, vgui_item_id item)
@@ -9066,39 +9175,33 @@ namespace {
 					ds->drop_zone = -1;
 					ds->drop_index = -1;
 					ds->drop_floating = 0;
+					vgui_dock_update_drop_targets(a, x, y, false);
 					float bx = 0, by = 0, bw = 0, bh = 0;
 					vgui_dock_content_rect(a, &bx, &by, &bw, &bh);
-					if (x < bx || x >= bx + bw || y < by || y >= by + bh)
+					const bool outside =
+						x < bx || x >= bx + bw || y < by || y >= by + bh;
+					if (outside || vgui_dock_floating_at_point(a, x, y, nullptr, nullptr))
 					{
 						ds->drop_floating = 1;
 					}
-					else
+					else if (ds->drop_target >= 0)
 					{
-						int zone = vgui_dock_zone_at_point(a, x, y);
-						if (zone == VGUI_DOCK_CENTER)
-						{
-							int fallback = vgui_dock_fallback_zone(a, x, y);
-							if (fallback >= 0 && fallback != VGUI_DOCK_CENTER &&
-								!vgui_dock_zone_has_open(ds, fallback))
-								zone = fallback;
-						}
-						if (zone >= 0 && zone < 4)
+						const int zone = ds->drop_targets[(size_t)ds->drop_target].zone;
+						if (zone == VGUI_DOCK_FLOATING)
+							ds->drop_floating = 1;
+						else
 						{
 							ds->drop_zone = zone;
 							ds->drop_index = vgui_dock_drop_index_any(a, zone, x);
 						}
-						else if (zone == VGUI_DOCK_FLOATING)
+					}
+					else
+					{
+						const int fallback = vgui_dock_fallback_zone(a, x, y);
+						if (fallback >= 0)
 						{
-							ds->drop_floating = 1;
-						}
-						else
-						{
-							int fallback = vgui_dock_fallback_zone(a, x, y);
-							if (fallback >= 0)
-							{
-								ds->drop_zone = fallback;
-								ds->drop_index = vgui_dock_drop_index_any(a, fallback, x);
-							}
+							ds->drop_zone = fallback;
+							ds->drop_index = vgui_dock_drop_index_any(a, fallback, x);
 						}
 					}
 					vgui_mark_dirty(a);
@@ -9110,6 +9213,21 @@ namespace {
 					{
 						vgui_dock_clamp_rect(a, panel, x - ds->drag_offset_x,
 							y - ds->drag_offset_y, panel->fw, panel->fh, false);
+						/* A frame redocks only onto a zone tab bar, so the
+						 * compass is built from the pointer - which sits on the
+						 * title bar being dragged. */
+						ds->drop_zone = -1;
+						ds->drop_index = -1;
+						vgui_dock_update_drop_targets(a, x, y, true);
+						if (ds->drop_target >= 0)
+						{
+							const int zone = ds->drop_targets[(size_t)ds->drop_target].zone;
+							if (zone >= 0 && zone < 4)
+							{
+								ds->drop_zone = zone;
+								ds->drop_index = vgui_dock_drop_index_any(a, zone, x);
+							}
+						}
 						vgui_mark_dirty(a);
 					}
 				}
@@ -9355,6 +9473,11 @@ namespace {
 				st->close_pressed = 0;
 				st->drag_mode = 0;
 				st->drag_panel = 0;
+				st->drop_zone = -1;
+				st->drop_index = -1;
+				st->drop_floating = 0;
+				st->drop_target_count = 0;
+				st->drop_target = -1;
 				int zone = -1, index = -1;
 				bool over_close = false;
 				bool on_tab = vgui_dock_tab_at_point(h, x, y, &zone, &index, &over_close);
@@ -9731,6 +9854,8 @@ namespace {
 				st->drop_zone = -1;
 				st->drop_index = -1;
 				st->drop_floating = 0;
+				st->drop_target_count = 0;
+				st->drop_target = -1;
 			}
 			vgui_emit(target, VGUI_EVENT_MOUSE_UP, lx, ly, button, clicks);
 			if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
@@ -9777,28 +9902,19 @@ namespace {
 			}
 			else if (drag_mode == 3 && drag_panel)
 			{
-				int zone = vgui_dock_zone_tab_bar_at(target, x, y);
-				if (zone < 0)
-				{
-					// Dock fix: dropping a floating frame over an EMPTY
-					// zone's fallback band must dock it there --
-					// zone_tab_bar_at only sees tab bars of zones that
-					// still hold panels, so an emptied zone (collapsed to
-					// zero size) is invisible to it and the panel could
-					// never be dragged back.
-					float bx = 0, by = 0, bw = 0, bh = 0;
-					vgui_dock_content_rect(target, &bx, &by, &bw, &bh);
-					if (x >= bx && x < bx + bw && y >= by && y < by + bh)
-					{
-						const int fb = vgui_dock_fallback_zone(target, x, y);
-						if (fb >= 0 && fb != VGUI_DOCK_CENTER && st
-							&& !vgui_dock_zone_has_open(st, fb))
-							zone = fb;
-					}
-				}
+				/* Re-derive the target from the release point with the same
+				 * frame-drag compass that was drawn during the drag: an occupied
+				 * zone only accepts the drop on its tab bar, while a collapsed
+				 * zone stays reachable through its edge band. */
+				vgui_dock_update_drop_targets(target, x, y, true);
+				int zone = -1;
+				if (st && st->drop_target >= 0)
+					zone = st->drop_targets[(size_t)st->drop_target].zone;
+				st->drop_target_count = 0;
+				st->drop_target = -1;
 				if (zone >= 0 && zone < 4)
 				{
-					int index = vgui_dock_drop_index_at(target, zone, x);
+					int index = vgui_dock_drop_index_any(target, zone, x);
 					if (index < 0) index = 0;
 					int current = vgui_dock_open_index(target, zone, drag_panel);
 					if (current >= 0 && index > current) index--;
@@ -13246,42 +13362,76 @@ namespace {
 			}
 		}
 
-		if (st->drag_mode == 2)
+		if (st->drag_mode == 2 || st->drag_mode == 3)
 		{
-			if (st->drop_zone >= 0 && st->drop_zone < 4 &&
-				st->zone_w[st->drop_zone] > 0.0f && st->zone_h[st->drop_zone] > 0.0f)
+			/* Drop compass: every reachable target stays visible while the drag
+			 * is live, so the pointer never has to guess where a panel lands. */
+			for (int i = 0; i < st->drop_target_count; ++i)
 			{
-				int zone = st->drop_zone;
-				float zx = st->zone_x[zone], zy = st->zone_y[zone];
-				float zw = st->zone_w[zone], zh = st->zone_h[zone];
-				vgui_fill_rect(cb, vg, zx, zy, zw, zh, 0.0f,
-					vgui_alpha_color(ctx->theme.accent, 0.12f));
-				vgui_stroke_rect(cb, vg, zx + 0.5f, zy + 0.5f,
-					std::max(0.0f, zw - 1.0f), std::max(0.0f, zh - 1.0f), 0.0f,
-					vgui_alpha_color(ctx->theme.accent, 0.85f), 1.0f);
-				float bar_h = std::min(ds.tab_height, zh);
-				float line_x = zx;
+				const vgui_dock_drop_target& t = st->drop_targets[(size_t)i];
+				const bool hot = (i == st->drop_target);
+				if (t.zone == VGUI_DOCK_FLOATING)
+				{
+					const uint32_t glow = hot ? ctx->theme.accent
+						: vgui_alpha_color(ctx->theme.accent, 0.6f);
+					vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, 6.0f,
+						vgui_alpha_color(ctx->theme.accent, hot ? 0.4f : 0.14f));
+					vgui_stroke_rect(cb, vg, t.x + 1.0f, t.y + 1.0f,
+						std::max(0.0f, t.w - 2.0f), std::max(0.0f, t.h - 2.0f), 6.0f,
+						glow, hot ? 2.0f : 1.0f);
+					const float gw = std::min(48.0f, std::max(0.0f, t.w * 0.62f));
+					const float gh = gw * 0.68f;
+					const float gx = t.x + (t.w - gw) * 0.5f;
+					const float gy = t.y + (t.h - gh) * 0.5f;
+					const float bar = std::max(5.0f, gh * 0.28f);
+					vgui_fill_rect(cb, vg, gx, gy, gw, gh, 3.0f,
+						vgui_alpha_color(ctx->theme.panel_bg, hot ? 0.95f : 0.7f));
+					vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f,
+						std::max(0.0f, gw - 1.0f), std::max(0.0f, gh - 1.0f), 3.0f,
+						glow, 1.5f);
+					vgui_fill_rect(cb, vg, gx, gy, gw, bar, 3.0f, glow);
+					continue;
+				}
+				vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, 0.0f,
+					vgui_alpha_color(ctx->theme.accent, hot ? 0.26f : 0.15f));
+				vgui_stroke_rect(cb, vg, t.x + 1.0f, t.y + 1.0f,
+					std::max(0.0f, t.w - 2.0f), std::max(0.0f, t.h - 2.0f), 0.0f,
+					vgui_alpha_color(ctx->theme.accent, hot ? 1.0f : 0.55f),
+					hot ? 2.0f : 1.5f);
+				if (!hot) continue;
+				const int zone = t.zone;
+				const float bar_h = std::min(ds.tab_height, t.h);
+				float line_x = t.x;
 				if (st->drop_index >= 0 && st->drop_index < (int)st->tabs[zone].size())
 					line_x = st->tabs[zone][(size_t)st->drop_index].x;
 				else if (!st->tabs[zone].empty())
 					line_x = st->tabs[zone].back().x + st->tabs[zone].back().w;
-				line_x = vgui_clampf(line_x, zx, zx + zw - 2.0f);
-				vgui_fill_rect(cb, vg, line_x, zy, 2.0f, bar_h, 0.0f, ctx->theme.accent);
+				line_x = vgui_clampf(line_x, t.x, t.x + t.w - 2.0f);
+				vgui_fill_rect(cb, vg, line_x, t.y, 2.0f, bar_h, 0.0f, ctx->theme.accent);
 			}
+		}
 
+		if (st->drag_mode == 2)
+		{
 			vgui_dock_panel* drag = vgui_dock_find(w, st->drag_panel);
 			if (drag)
 			{
-				float gx = st->drag_x + 10.0f;
-				float gy = st->drag_y + 10.0f;
-				float gw = vgui_clampf(vgui_text_width(w, drag->title) + ds.tab_padding * 2.0f,
-					ds.tab_min_width, ds.tab_max_width);
-				float gh = std::max(18.0f, ds.tab_height);
-				vgui_fill_rect(cb, vg, gx, gy, gw, gh, 3.0f, 0xC0202020);
-				vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f, gw - 1.0f, gh - 1.0f, 3.0f,
-					ctx->theme.accent, 1.0f);
+				/* Drag ghost: a card that trails the pointer and turns into the
+				 * accent colour the moment the drop would float the panel. */
+				const float gw = vgui_clampf(vgui_text_width(w, drag->title) +
+					ds.tab_padding * 2.0f, ds.tab_min_width, ds.tab_max_width);
+				const float gh = std::max(18.0f, ds.tab_height);
+				const float gx = st->drag_x + 12.0f;
+				const float gy = st->drag_y + 12.0f;
+				const bool floating = st->drop_floating != 0;
+				vgui_fill_rect(cb, vg, gx + 3.0f, gy + 3.0f, gw, gh, 4.0f, 0x80000000);
+				vgui_fill_rect(cb, vg, gx, gy, gw, gh, 4.0f,
+					floating ? ctx->theme.accent : ctx->theme.panel_bg);
+				vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f, gw - 1.0f, gh - 1.0f, 4.0f,
+					floating ? 0xE0FFFFFF : ctx->theme.accent, 1.5f);
 				vgui_draw_text(ctx, cb, vg, w, drag->title, gx + ds.tab_padding, gy,
-					gw - ds.tab_padding * 2.0f, gh, ctx->theme.text, 0.0f, 0.5f);
+					gw - ds.tab_padding * 2.0f, gh,
+					floating ? 0xFFFFFFFF : ctx->theme.text, 0.0f, 0.5f);
 			}
 		}
 
@@ -16235,6 +16385,8 @@ extern "C" {
 		st->drop_zone = -1;
 		st->drop_index = -1;
 		st->drop_floating = 0;
+		st->drop_target_count = 0;
+		st->drop_target = -1;
 		for (vgui_widget* page : pages)
 		{
 			vgui_dock_forget_focus(dock, page);
@@ -18873,6 +19025,8 @@ extern "C" {
 				w->dock->drop_zone = -1;
 				w->dock->drop_index = -1;
 				w->dock->drop_floating = 0;
+				w->dock->drop_target_count = 0;
+				w->dock->drop_target = -1;
 			}
 		}
 		ctx->hot = nullptr;
