@@ -1,6 +1,6 @@
 # vgui 游戏编辑器组件路线图
 
-> 状态：MVP、完整编辑器组件、工程化打磨（E01～E07）以及 S08/S09/A08 增补均已完成
+> 状态：MVP、完整编辑器组件、工程化打磨（E01～E07）以及 S08/S09/S10/A08 增补均已完成
 >
 > 适用版本：vgui 0.3.x
 >
@@ -201,7 +201,7 @@
   - 停靠区域、面板拖动、标签组、浮动窗口、关闭/恢复。
   - 与布局持久化、Tab、Splitter 协同。
   - 验收：面板可在左右/底部停靠、合并为标签组、浮出再停靠；重启后布局恢复。
-  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。拖拽期间的目标罗盘与中央浮出方块见 S09。
+  - 已实现：核心 `VGUI_DOCK` 提供左/右/底部/中央停靠区与浮动框架，区域即标签组并自动折叠；标签可重排、跨区移动、拖出浮出、拖到标签条再停靠；浮动框架可拖动/夹取/居中/提升，支持关闭/恢复与关闭按钮控制；区域尺寸、区域/标签/浮动矩形、活动页、打开状态和稳定字符串 id 均可查询，配合 `vgui_dock_panel_desc` 重建可恢复布局；支持标签条滚轮溢出、样式与主题回退。`editor_shell` 已切换到单个 Dock，`editor_layout` 版本 2 持久化区域尺寸、标签顺序、活动页、打开状态和浮动矩形。拖拽期间的目标罗盘与中央浮出方块见 S09；外壳底部七个视图各自是 Dock 面板见 S10。
 
 - [x] **S07 工具栏辅助组件**（P1，S/M）
   - IconButton、ToggleButton、SegmentedControl。
@@ -222,6 +222,16 @@
   - 验收：单标签按下→拖到中央方块→松手后 `vgui_dock_is_floating` 为真；拖动中的画面由 `dock_drag_dark` 截图场景回归；`vgui_model_test` 的 LEFT/RIGHT/CENTER/FLOATING 往返与跨区/重排断言保持通过。
   - 已实现：`vgui_dock_state` 增加 `drop_targets[5]/drop_target_count/drop_target`，由 `vgui_dock_update_drop_targets(w, x, y, frame_drag)` 一次算出命中与绘制共用的目标集：有面板的区域用已布局矩形（拖框架时收缩到标签条），折叠区域退回 30% 边缘带（与 `vgui_dock_fallback_zone` 同口径），中央区正中再叠一个 `min(120, max(36, 0.34*min(w,h)))` 的浮出方块；命中优先级为浮出方块 > 左/右/底 > 中央。`drag_mode == 2` 的 move 分支改为消费该目标集（保留"移出内容矩形/悬停在浮动框架上仍判浮出"和未命中时的 `vgui_dock_fallback_zone` 回退），`drag_mode == 3` 的 move 分支用同一目标集驱动高亮，mouse-up 在松手点重新求值后再 `vgui_dock_move_internal`，因此高亮与落点始终同源；`vgui_dock_zone_at_point()` 随旧判定一起删除。`vgui_draw_dock()` 在 `drag_mode` 为 2/3 时绘制整套罗盘（未命中 15% 强调色填充 + 1.5px 半透明描边，命中 26% 填充 + 2px 实描 + 插入竖线），浮出方块用"标题条 + 窗体"图标；拖影卡片加投影，`drop_floating` 时整卡改为强调色底 + 白字。press/up/`vgui_dock_clear()`/`vgui_input_clear()` 一并清空目标集。
   - 验证：`test_dock_float_square` 断言单标签拖到中央区正中后 `vgui_dock_is_floating` 为真、偏上方块仍并入中央区；往返探针的 CENTER 目标点从"中央区正中"改为"中央区上方 1/4"，因为正中现在是浮出按钮。`vgui_model_test` 790 通过 / 0 失败（新增 4 条），`vgui_editor_kit_test` PASS，`vgui_screenshot_test` 11 场景全部 `diff=0`（新增 `dock_drag_dark`，其余 10 张基线逐像素未变）。
+
+- [x] **S10 底部视图独立 Dock 面板**（P1，M）（已完成）
+  - 现状问题：外壳只有一个底部 Dock 面板（id `bottom`，标题 PANELS），ASSETS/CONSOLE/CANVAS/TABLE/TIMELINE/NODEGRAPH/CODE 是它内部一个 `vgui_tab` 的页签——Dock 的拖拽/浮出/持久化只认 Dock 面板，所以这些页签既拖不出中央浮出方块，也无法停靠到别的区。
+  - 改造：七个视图各自 `make_dock_page()` + `vgui_dock_add` 进 `VGUI_DOCK_BOTTOM`，稳定 id 为 `assets/console/canvas/table/timeline/nodegraph/code`，标题沿用全大写；内部 TabView 与其 `bottom_tabs()` 访问器、`*_tab_` 成员一并删除。
+  - `view.console/canvas/table/timeline/nodegraph/code` 改成"恢复并激活该 Dock 面板"，checked 条件为"该面板打开且是所在区的活动页"（面板被拖去别的区或浮出后仍然成立）；`editor_panel::bottom` 变成底部组的聚合开关（ON 重开组内所有被关闭的面板，OFF 全关），`panel_visible(bottom)` 为"组内至少一个打开"。
+  - F6 面板循环、a11y 名称、`focus_next_panel` 的 bottom 分支改为解析底部区当前活动面板的页面。
+  - 持久化：`editor_layout` 版本 7——底部组由既有的 `dock_panels`（区/序/开合/浮出矩形）与 `dock_active` 记录，不再写 `bottom_tab_order/bottom_active_tab`；读旧文件时把标题映射回新 id 仍按旧顺序排布，`apply_dock_panels` 补上"记录为打开则 restore"，使开合状态精确往返。
+  - 验收：底部七个标签逐个按下拖到中央浮出方块后 `vgui_dock_is_floating` 为真；跨区（如 CONSOLE 拖到右侧）与区内重排生效并可存盘恢复；旧版本布局文件仍能加载。
+  - 已实现：`editor_shell` 底部构建换成 `add_bottom_view` lambda——七个视图各自 `make_dock_page(dock_)` 后 `vgui_dock_add` 进 `VGUI_DOCK_BOTTOM`（id `assets/console/canvas/table/timeline/nodegraph/code`，标题沿用全大写），原来的页内 padding、最小高度、`align_self(STRETCH)`、`set_command_stack` 逐页搬到各自的 Dock 页面上；`vgui_dock_add` 会把每个新加的打开面板设为所在区活动页，所以七个添加完再显式 `vgui_dock_activate(assets)` 把默认视图放回 ASSETS。内部 `vgui_tab` 与 `bottom_tabs()` 访问器、`bottom_panel_/bottom_item_/bottom_tabs_/*_tab_` 成员全部删除，代之以 `bottom_view` 枚举 + `bottom_items_` 数组和四个私有辅助：`show_bottom_view()`（restore + activate）、`bottom_view_active()`（与所在区 `vgui_dock_get_active` 比较，面板被拖去别的区或浮出后依然成立）、`bottom_group_open()`、`set_bottom_group_visible()`；六个 `view.*` 命令与 `editor_panel::bottom` 聚合开关都走它们，`panel_item(bottom)` 返回 0。F6/`focus_next_panel` 的 bottom 分支、`apply_shell_palette` 的底色、`install_accessibility_names` 的名称（`Assets panel`…`Code panel`，角色仍是 `VGUI_A11Y_ROLE_PANEL`）统一用同一套 dock getter 重新解析。`editor_layout::current_version` 升到 7：`dock_panels/dock_active` 天然覆盖七个新面板，`apply_dock_panels` 两个分支补 `if (open) vgui_dock_restore else vgui_dock_close` 让开合精确往返，新增 `apply_legacy_bottom_tabs()`（仅 `version < 7` 且带 `bottom_tab_order` 时生效）把旧标题映射回面板、按旧顺序 `vgui_dock_set_zone(..., BOTTOM, next++)` 再激活旧活动页，`bottom_tab_order/bottom_active_tab` 降级为纯导入字段。调用点：`vgui_screenshot_test` 的 `dock_scene_floating` 用 `vgui_dock_find(dock,"console") + vgui_dock_activate` 取代切页签，`vgui_game_editor` 的控制台跳转从 `set_panel_visible(bottom,true)` 改为 `run_command("view.console")`。
+  - 验证：`vgui_editor_kit_test` 重写底部断言——默认捕获 10 个 Dock 面板、底部区 7 个且顺序为 assets…code、活动页是 assets；CONSOLE 浮出 420x260 + CODE 移到底部区首位后存盘/读回一致；恢复后底部区 6 个、code 首位、console 浮出矩形仍在；畸形布局回退默认七标签；v1 旧文件仍按旧顺序加载（console index 0、assets index 1、活动页 console）。新增"七个底部视图逐个 `vgui_dock_float` 后 `vgui_dock_is_floating` 全为真，再逐个 `vgui_dock_set_zone(BOTTOM,i)` 全部回 dock、CODE 拖到 RIGHT 区 index 1 再回底部"覆盖，命令断言改判 `vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM)`。`vgui_model_test` 790 通过 / 0 失败（核心未改动）。`vgui_screenshot_test` 11 场景 `diff=0`；三张 dock 基线按预期重生成（`dock_default_dark` 8.622%、`dock_floating_dark` 7.938%、`dock_drag_dark` 8.570%），差异逐像素只落在底部条带——PANELS 标题行消失、七标签各带关闭按钮、内容上移一行，中央浮出方块与拖影区域和 S09 基线完全一致。实机 `vgui_game_editor`：CODE 标签拖到中央浮出方块后浮成独立 CODE 窗口、底部区剩 6 标签并回到 ASSETS；CONSOLE 标签拖到右带并入 PROPERTIES 区成为第二标签；拖浮出窗口标题条回底部标签条，按插入位落在 CANVAS 与 TABLE 之间并激活。
 
 ### M2 属性编辑（P）
 
@@ -548,6 +558,7 @@ MVP 验收场景：
 - S07 工具栏辅助组件（已完成）
 - S08 文件菜单 / 文档生命周期（已完成）
 - S09 Dock 拖拽目标与浮出反馈（已完成）
+- S10 底部视图独立 Dock 面板（已完成）
 - P08 多选/混合值/复制粘贴/搜索
 - P09 Curve/Gradient（已完成）
 - T01 Table/DataGrid（已完成）
@@ -616,9 +627,9 @@ MVP 验收场景：
 - 核心 `VGUI_MENUBAR` 与 context 级按键过滤器：标题条、悬停/方向键切换、弹层生命周期，快捷键在焦点与菜单之后分发 (S03)。
 - 核心 `VGUI_TOOLTIP`：静态/provider 文本、延迟、指针/控件锚定、边缘翻转/钳制、多行、列表/树行级提示、禁用控件策略与自动清理 (S04)。
 - 核心 `VGUI_MODAL`、`vgui_dialog_alert/confirm/prompt` 与 Toast：遮罩/焦点陷阱/背景隔离、Esc/背景点击策略、结果回调与焦点恢复；Toast 六种位置、四级、过期/常驻/最大可见数 (S05)。
-- 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)。
-- `editor_shell`：单个 `VGUI_DOCK` 承载 OUTLINER / VIEWPORT / PROPERTIES / PANELS 四个面板，底部 PANELS 内用 TabView 组织 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；File 菜单通过 `document_handlers` 提供 New/Open/Save/Save As/Exit 生命周期，Edit > Delete 把选中集合交给宿主；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变 (S08)。
-- `editor_layout` 版本 6：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形、底部 Tab、TABLE 列宽/排序、TIMELINE 视图/播放状态、NODEGRAPH 视图/网格/小地图/吸附/选择与 CODE 编辑器状态；v1–v5 文件兼容映射，损坏或版本不支持时回退默认布局 (F05)。
+- 核心 `VGUI_DOCK`：四停靠区 + 浮动框架、标签组合并/重排/跨区/浮出/再停靠、关闭/恢复、区域尺寸与布局状态查询、标签条滚轮、样式/主题回退 (S06)；拖拽期间的目标罗盘（左/右/底/中央 + 正中浮出方块）、命中高亮与插入竖线、跟随指针的拖影 (S09)。
+- `editor_shell`：单个 `VGUI_DOCK` 承载十个面板——OUTLINER / VIEWPORT / PROPERTIES 三个主面板，加底部区的 ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE 七个视图，十者都是稳定的 Dock 面板 id，因此底部视图与主面板一样可独立浮出、跨区移动与重排 (S10)；顶部 `toolbar_view` 包含场景搜索、Undo/Redo 命令按钮、Grid 开关和视图分段控件，底部 `status_bar` 同步 `set_status()` 与当前选择，Properties 面板顶部用 `breadcrumb` 显示选择路径；File/Edit/View/Help 菜单；File 菜单通过 `document_handlers` 提供 New/Open/Save/Save As/Exit 生命周期，Edit > Delete 把选中集合交给宿主；Outliner、Viewport、PropertyGrid、AssetBrowser 组件边界保持不变 (S08)。
+- `editor_layout` 版本 7：保存 Dock 区域尺寸、标签顺序、活动页、打开状态、浮动矩形（底部七视图随其一起往返）、TABLE 列宽/排序、TIMELINE 视图/播放状态、NODEGRAPH 视图/网格/小地图/吸附/选择与 CODE 编辑器状态；v1–v6 文件兼容映射（旧文件的底部 Tab 顺序与当前页按标题映射回新的 Dock 面板），损坏或版本不支持时回退默认布局 (F05)。
 - `outliner_view`、`property_grid`、`asset_browser`、`viewport_view`：可构建的占位组件（属性面板为真实类型化实现，支持行虚拟化、Vector2-4 多分量编辑与统一拖拽；行扩展与拖放已接入）。
 - M2 P08：多选/混合值/复制粘贴/收藏——`set_multi_targets/getter/setter` 自动混合检测与 per-target 批量命令（一条 undo）、`copy/paste_properties` 进程内剪贴板（类型保持、shell Edit 菜单 Ctrl+Shift+C/V）、行级收藏星标与 "★" 过滤（跨重建保持）、`outliner_view::selection_objects()` 多选导出；`vgui_game_editor` Ctrl 多选混合值 dogfood。
 - M2 P09：Curve / Gradient 编辑器——`curve_editor`（linear/step/cubic、关键帧与切线拖拽、双击加点、T/V/In/Out spinbox、紧凑预览）、`gradient_editor`（渐变条/色标拖放、双击插点、内嵌 HSV 取色器、4 预设、紧凑预览）；PropertyGrid `property_type::curve/gradient` 共用 popup 会话（实时预览、单条可合并 undo、Esc 回滚、多目标事务）；`vgui_game_editor` 增加 Idle Curve / Color Ramp 可操作路径。

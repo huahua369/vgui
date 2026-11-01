@@ -358,95 +358,71 @@ namespace vgui_editor_kit {
 			return high_contrast_;
 		});
 
-		/* A07: reveal and focus the log console even when the bottom panel or
-		 * another bottom tab is active. */
+		/* A07: reveal and focus the log console even when its panel is closed or
+		 * parked in another zone. */
 		commands_.add("view.console", "Console", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (console_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, console_tab_);
+			show_bottom_view(bottom_console);
 			if (context_.ui() && console_.tree())
 				vgui_set_focus(context_.ui(), console_.tree());
 			set_status("console");
 		});
 		commands_.set_checked("view.console", [this]() {
-			return console_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == console_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_console);
 		});
 
 		/* V08: reveal and focus the standalone 2D canvas. */
 		commands_.add("view.canvas", "Canvas", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (canvas_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, canvas_tab_);
+			show_bottom_view(bottom_canvas);
 			if (canvas_.built())
 				canvas_.request_focus();
 			set_status("canvas");
 		});
 		commands_.set_checked("view.canvas", [this]() {
-			return canvas_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == canvas_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_canvas);
 		});
 
-		/* T01: reveal and focus the editable table tab. */
+		/* T01: reveal and focus the editable table. */
 		commands_.add("view.table", "Table", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (table_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, table_tab_);
+			show_bottom_view(bottom_table);
 			if (table_.built())
 				table_.focus();
 			set_status("table");
 		});
 		commands_.set_checked("view.table", [this]() {
-			return table_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == table_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_table);
 		});
 
-		/* T02: reveal and focus the animation timeline tab. */
+		/* T02: reveal and focus the animation timeline. */
 		commands_.add("view.timeline", "Timeline", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (timeline_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, timeline_tab_);
+			show_bottom_view(bottom_timeline);
 			if (timeline_.built())
 				timeline_.request_focus();
 			set_status("timeline");
 		});
 		commands_.set_checked("view.timeline", [this]() {
-			return timeline_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == timeline_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_timeline);
 		});
 
-		/* T03: reveal and focus the node graph tab. */
+		/* T03: reveal and focus the node graph. */
 		commands_.add("view.nodegraph", "Node Graph", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (node_graph_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, node_graph_tab_);
+			show_bottom_view(bottom_node_graph);
 			if (node_graph_.built())
 				node_graph_.request_focus();
 			set_status("node graph");
 		});
 		commands_.set_checked("view.nodegraph", [this]() {
-			return node_graph_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == node_graph_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_node_graph);
 		});
 
-		/* T04: reveal and focus the code editor tab. */
+		/* T04: reveal and focus the code editor. */
 		commands_.add("view.code", "Code", [this]() {
-			set_panel_visible(editor_panel::bottom, true);
-			if (code_tab_ && bottom_tabs_)
-				vgui_tab_set_active(bottom_tabs_, code_tab_);
+			show_bottom_view(bottom_code);
 			if (code_.built())
 				code_.request_focus();
 			set_status("code");
 		});
 		commands_.set_checked("view.code", [this]() {
-			return code_tab_ && bottom_tabs_ &&
-				vgui_tab_get_active(bottom_tabs_) == code_tab_ &&
-				panel_visible(editor_panel::bottom);
+			return bottom_view_active(bottom_code);
 		});
 
 		/* V04: 网格可见性、吸附总开关与网格尺寸。 */
@@ -940,80 +916,82 @@ namespace vgui_editor_kit {
 		desc.zone = VGUI_DOCK_RIGHT;
 		properties_item_ = vgui_dock_add(dock_, &desc);
 
-		bottom_panel_ = make_dock_page(dock_);
-		bottom_tabs_ = vgui_widget_add(bottom_panel_, VGUI_TABVIEW, nullptr);
-		vgui_widget_set_grow(bottom_tabs_, 1.0f);
-		vgui_widget_set_min_size(bottom_tabs_, 0, 80);
-		vgui_tab_set_tab_height(bottom_tabs_, 26.0f);
+		/* The bottom views are dock panels rather than tabs of a single panel,
+		 * so each one can be reordered, moved to another zone and floated out
+		 * on its own. */
+		auto add_bottom_view = [&desc, this](const char* id, const char* title,
+			vgui_widget* page)
+		{
+			desc.id = id;
+			desc.title = title;
+			desc.panel = page;
+			desc.zone = VGUI_DOCK_BOTTOM;
+			desc.index = -1;
+			return vgui_dock_add(dock_, &desc);
+		};
 
-		vgui_widget* assets_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(assets_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* assets_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(assets_page, 0, 80);
 		vgui_widget_set_padding(assets_page, 6, 6, 6, 6);
 		assets_.build(assets_page);
-		vgui_item_id assets_tab = vgui_tab_add(bottom_tabs_, "ASSETS", assets_page);
-		vgui_tab_set_closeable(bottom_tabs_, assets_tab, 0);
+		bottom_items_[bottom_assets] = add_bottom_view("assets", "ASSETS",
+			assets_page);
 
-		vgui_widget* console_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(console_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* console_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(console_page, 0, 80);
 		vgui_widget_set_padding(console_page, 6, 4, 6, 4);
 		console_.build(console_page);
-		console_tab_ = vgui_tab_add(bottom_tabs_, "CONSOLE", console_page);
-		vgui_tab_set_closeable(bottom_tabs_, console_tab_, 0);
+		bottom_items_[bottom_console] = add_bottom_view("console", "CONSOLE",
+			console_page);
 
-		vgui_widget* canvas_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(canvas_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* canvas_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(canvas_page, 0, 80);
 		vgui_widget_set_padding(canvas_page, 0, 0, 0, 0);
 		canvas_.build(canvas_page);
 		vgui_widget_set_align_self(canvas_.widget(), VGUI_ALIGN_STRETCH);
 		canvas_.set_snap_settings(&snap_);
 		canvas_.set_command_stack(&context_.commands());
-		canvas_tab_ = vgui_tab_add(bottom_tabs_, "CANVAS", canvas_page);
-		vgui_tab_set_closeable(bottom_tabs_, canvas_tab_, 0);
+		bottom_items_[bottom_canvas] = add_bottom_view("canvas", "CANVAS",
+			canvas_page);
 
-		vgui_widget* table_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(table_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* table_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(table_page, 0, 80);
 		vgui_widget_set_padding(table_page, 6, 4, 6, 4);
 		table_.build(table_page);
 		vgui_widget_set_align_self(table_.widget(), VGUI_ALIGN_STRETCH);
 		table_.set_command_stack(&context_.commands());
-		table_tab_ = vgui_tab_add(bottom_tabs_, "TABLE", table_page);
-		vgui_tab_set_closeable(bottom_tabs_, table_tab_, 0);
+		bottom_items_[bottom_table] = add_bottom_view("table", "TABLE",
+			table_page);
 
-		vgui_widget* timeline_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(timeline_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* timeline_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(timeline_page, 0, 80);
 		vgui_widget_set_padding(timeline_page, 0, 0, 0, 0);
 		timeline_.build(timeline_page);
 		vgui_widget_set_align_self(timeline_.widget(), VGUI_ALIGN_STRETCH);
 		timeline_.set_command_stack(&context_.commands());
-		timeline_tab_ = vgui_tab_add(bottom_tabs_, "TIMELINE", timeline_page);
-		vgui_tab_set_closeable(bottom_tabs_, timeline_tab_, 0);
+		bottom_items_[bottom_timeline] = add_bottom_view("timeline", "TIMELINE",
+			timeline_page);
 
-		vgui_widget* node_graph_page = vgui_widget_add(bottom_tabs_,
-			VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(node_graph_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* node_graph_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(node_graph_page, 0, 80);
 		vgui_widget_set_padding(node_graph_page, 0, 0, 0, 0);
 		node_graph_.build(node_graph_page);
 		vgui_widget_set_align_self(node_graph_.widget(), VGUI_ALIGN_STRETCH);
 		node_graph_.set_command_stack(&context_.commands());
-		node_graph_tab_ = vgui_tab_add(bottom_tabs_, "NODEGRAPH",
-			node_graph_page);
-		vgui_tab_set_closeable(bottom_tabs_, node_graph_tab_, 0);
+		bottom_items_[bottom_node_graph] = add_bottom_view("nodegraph",
+			"NODEGRAPH", node_graph_page);
 
-		vgui_widget* code_page = vgui_widget_add(bottom_tabs_, VGUI_PANEL,
-			nullptr);
-		vgui_widget_set_layout(code_page, VGUI_LAYOUT_COLUMN);
+		vgui_widget* code_page = make_dock_page(dock_);
+		vgui_widget_set_min_size(code_page, 0, 80);
 		vgui_widget_set_padding(code_page, 0, 0, 0, 0);
 		code_.build(code_page);
 		vgui_widget_set_align_self(code_.widget(), VGUI_ALIGN_STRETCH);
 		code_.set_command_stack(&context_.commands());
-		code_tab_ = vgui_tab_add(bottom_tabs_, "CODE", code_page);
-		vgui_tab_set_closeable(bottom_tabs_, code_tab_, 0);
-
-		desc.id = "bottom";
-		desc.title = "PANELS";
-		desc.panel = bottom_panel_;
-		desc.zone = VGUI_DOCK_BOTTOM;
-		bottom_item_ = vgui_dock_add(dock_, &desc);
+		bottom_items_[bottom_code] = add_bottom_view("code", "CODE", code_page);
+		/* Adding a panel activates it, so put the bottom zone back on ASSETS -
+		 * the view users saw before the bottom group was split apart. */
+		if (bottom_items_[bottom_assets])
+			vgui_dock_activate(dock_, bottom_items_[bottom_assets]);
 
 		statusbar_.build(root_);
 		update_selection_ui(context_.selection());
@@ -1103,11 +1081,6 @@ namespace vgui_editor_kit {
 		return nullptr;
 	}
 
-	vgui_widget* editor_shell::bottom_tabs() const noexcept
-	{
-		return bottom_tabs_;
-	}
-
 	console_view& editor_shell::console() noexcept
 	{
 		return console_;
@@ -1175,15 +1148,77 @@ namespace vgui_editor_kit {
 		case editor_panel::outliner: return outliner_item_;
 		case editor_panel::viewport: return viewport_item_;
 		case editor_panel::properties: return properties_item_;
-		case editor_panel::bottom: return bottom_item_;
+		case editor_panel::bottom: return 0;
 		}
 		return 0;
+	}
+
+	void editor_shell::show_bottom_view(bottom_view view)
+	{
+		if (!dock_ || view < 0 || view >= bottom_count)
+			return;
+		const vgui_item_id item = bottom_items_[(size_t)view];
+		if (!item)
+			return;
+		if (!vgui_dock_is_open(dock_, item))
+			vgui_dock_restore(dock_, item);
+		vgui_dock_activate(dock_, item);
+	}
+
+	bool editor_shell::bottom_view_active(bottom_view view) const
+	{
+		if (!dock_ || view < 0 || view >= bottom_count)
+			return false;
+		const vgui_item_id item = bottom_items_[(size_t)view];
+		if (!item || !vgui_dock_is_open(dock_, item))
+			return false;
+		/* A view stays "current" for its command even after the user parks it
+		 * in another zone or floats it out. */
+		return vgui_dock_get_active(dock_, vgui_dock_get_zone(dock_, item)) == item;
+	}
+
+	bool editor_shell::bottom_group_open() const
+	{
+		if (!dock_)
+			return false;
+		for (int i = 0; i < bottom_count; ++i)
+			if (bottom_items_[(size_t)i] &&
+				vgui_dock_is_open(dock_, bottom_items_[(size_t)i]))
+				return true;
+		return false;
+	}
+
+	void editor_shell::set_bottom_group_visible(bool visible)
+	{
+		if (!dock_)
+			return;
+		for (int i = 0; i < bottom_count; ++i)
+		{
+			const vgui_item_id item = bottom_items_[(size_t)i];
+			if (!item || vgui_dock_is_open(dock_, item) == (visible ? 1 : 0))
+				continue;
+			if (visible)
+				vgui_dock_restore(dock_, item);
+			else
+				vgui_dock_close(dock_, item);
+		}
 	}
 
 	void editor_shell::set_panel_visible(editor_panel panel, bool visible)
 	{
 		if (!dock_)
 			return;
+		if (panel == editor_panel::bottom)
+		{
+			if (bottom_group_open() == visible)
+			{
+				refresh_commands();
+				return;
+			}
+			set_bottom_group_visible(visible);
+			refresh_commands();
+			return;
+		}
 		vgui_item_id item = panel_item(panel);
 		if (!item)
 			return;
@@ -1204,23 +1239,10 @@ namespace vgui_editor_kit {
 	{
 		if (!dock_)
 			return false;
+		if (panel == editor_panel::bottom)
+			return bottom_group_open();
 		vgui_item_id item = panel_item(panel);
 		return item != 0 && vgui_dock_is_open(dock_, item) != 0;
-	}
-
-	void editor_shell::capture_bottom_tabs(editor_layout& layout) const
-	{
-		if (!bottom_tabs_)
-			return;
-		int count = vgui_tab_get_count(bottom_tabs_);
-		for (int i = 0; i < count; ++i)
-		{
-			vgui_item_id item = vgui_tab_get_at(bottom_tabs_, i);
-			layout.bottom_tab_order.emplace_back(vgui_tab_get_title(bottom_tabs_, item));
-		}
-		vgui_item_id active = vgui_tab_get_active(bottom_tabs_);
-		if (active)
-			layout.bottom_active_tab = vgui_tab_get_title(bottom_tabs_, active);
 	}
 
 	void editor_shell::capture_dock_state(editor_layout& layout) const
@@ -1304,7 +1326,6 @@ namespace vgui_editor_kit {
 		layout.viewport_visible = panel_visible(editor_panel::viewport);
 		layout.properties_visible = panel_visible(editor_panel::properties);
 		layout.bottom_visible = panel_visible(editor_panel::bottom);
-		capture_bottom_tabs(layout);
 		if (table_.built())
 			layout.table_state = table_state_to_json(table_.capture_state());
 		if (timeline_.built())
@@ -1342,45 +1363,44 @@ namespace vgui_editor_kit {
 		return layout;
 	}
 
-	void editor_shell::apply_bottom_tabs(const editor_layout& layout)
+	/* Layout files older than version 7 kept the bottom views as tabs of one
+	 * dock panel.  Map those titles onto the panels so an existing workspace
+	 * still opens with the tab order and active view the user left. */
+	void editor_shell::apply_legacy_bottom_tabs(const editor_layout& layout)
 	{
-		if (!bottom_tabs_)
+		if (!dock_ || layout.version >= 7 || layout.bottom_tab_order.empty())
 			return;
 
-		int count = vgui_tab_get_count(bottom_tabs_);
-		std::vector<vgui_item_id> items((size_t)count, 0);
-		std::vector<char> used((size_t)count, 0);
-		for (int i = 0; i < count; ++i)
-			items[(size_t)i] = vgui_tab_get_at(bottom_tabs_, i);
+		auto by_title = [this](const std::string& title) -> vgui_item_id
+		{
+			if (title.empty())
+				return 0;
+			for (int i = 0; i < bottom_count; ++i)
+			{
+				const vgui_item_id item = bottom_items_[(size_t)i];
+				if (!item)
+					continue;
+				const char* text = vgui_dock_get_title(dock_, item);
+				if (text && title == text)
+					return item;
+			}
+			return 0;
+		};
 
-		std::vector<vgui_item_id> desired;
-		desired.reserve((size_t)count);
+		int next = 0;
 		for (const std::string& title : layout.bottom_tab_order)
 		{
-			for (int i = 0; i < count; ++i)
-			{
-				if (used[(size_t)i]) continue;
-				if (title != vgui_tab_get_title(bottom_tabs_, items[(size_t)i])) continue;
-				desired.push_back(items[(size_t)i]);
-				used[(size_t)i] = 1;
-				break;
-			}
+			const vgui_item_id item = by_title(title);
+			if (!item || vgui_dock_get_zone(dock_, item) != VGUI_DOCK_BOTTOM)
+				continue;
+			if (vgui_dock_get_index(dock_, item) != next)
+				vgui_dock_set_zone(dock_, item, VGUI_DOCK_BOTTOM, next);
+			++next;
 		}
-		for (size_t i = 0; i < desired.size(); ++i)
-			vgui_tab_move(bottom_tabs_, desired[i], (int)i);
 
-		if (!layout.bottom_active_tab.empty())
-		{
-			count = vgui_tab_get_count(bottom_tabs_);
-			for (int i = 0; i < count; ++i)
-			{
-				vgui_item_id item = vgui_tab_get_at(bottom_tabs_, i);
-				if (layout.bottom_active_tab != vgui_tab_get_title(bottom_tabs_, item))
-					continue;
-				vgui_tab_set_active(bottom_tabs_, item);
-				break;
-			}
-		}
+		const vgui_item_id active = by_title(layout.bottom_active_tab);
+		if (active && vgui_dock_is_open(dock_, active))
+			vgui_dock_activate(dock_, active);
 	}
 
 	void editor_shell::apply_dock_sizes(const editor_layout& layout)
@@ -1457,7 +1477,9 @@ namespace vgui_editor_kit {
 			if (!vgui_dock_set_zone(dock_, item, panel.zone, next_index[zone]))
 				continue;
 			++next_index[zone];
-			if (!panel.open)
+			if (panel.open)
+				vgui_dock_restore(dock_, item);
+			else
 				vgui_dock_close(dock_, item);
 		}
 
@@ -1474,7 +1496,9 @@ namespace vgui_editor_kit {
 			const float height = panel.has_floating_rect ? finite_or(panel.height, 0.0f) : 0.0f;
 			if (!vgui_dock_float(dock_, item, x, y, width, height))
 				continue;
-			if (!panel.open)
+			if (panel.open)
+				vgui_dock_restore(dock_, item);
+			else
 				vgui_dock_close(dock_, item);
 		}
 
@@ -1580,7 +1604,7 @@ namespace vgui_editor_kit {
 
 		if (!layout.dock_panels.empty())
 			apply_dock_panels(layout);
-		apply_bottom_tabs(layout);
+		apply_legacy_bottom_tabs(layout);
 
 		if (!layout.table_state.empty())
 		{
@@ -1848,19 +1872,19 @@ namespace vgui_editor_kit {
 			vgui_widget_set_border(menubar_, border, 1);
 		}
 		vgui_widget* pages[] = { outliner_panel_, viewport_panel_,
-			properties_panel_, bottom_panel_ };
+			properties_panel_ };
 		for (vgui_widget* page : pages)
 			if (page) vgui_widget_set_background(page, section_bg);
-		if (bottom_tabs_)
+		/* Dock pages are plain panels created with the shell section color;
+		 * theme migration cannot see those hard-coded values. */
+		for (int i = 0; i < bottom_count; ++i)
 		{
-			/* Tab pages are plain panels created with the shell section color;
-			 * theme migration cannot see those hard-coded values. */
-			const std::size_t count = vgui_widget_get_child_count(bottom_tabs_);
-			for (std::size_t i = 0; i < count; ++i)
-			{
-				vgui_widget* child = vgui_widget_get_child(bottom_tabs_, i);
-				if (child) vgui_widget_set_background(child, section_bg);
-			}
+			if (!bottom_items_[(size_t)i])
+				continue;
+			vgui_widget* page = vgui_dock_get_panel(dock_,
+				bottom_items_[(size_t)i]);
+			if (page)
+				vgui_widget_set_background(page, section_bg);
 		}
 		if (view_strip_) vgui_widget_set_background(view_strip_, section_bg);
 		if (title_label_) vgui_widget_set_text_color(title_label_, title_text);
@@ -1916,19 +1940,13 @@ namespace vgui_editor_kit {
 			case editor_panel::properties: return properties_.widget();
 			case editor_panel::bottom:
 			{
-				if (bottom_tabs_)
-				{
-					vgui_item_id active = vgui_tab_get_active(bottom_tabs_);
-					if (!active)
-					{
-						active = vgui_tab_get_at(bottom_tabs_, 0);
-						if (active) vgui_tab_set_active(bottom_tabs_, active);
-					}
-					if (active)
-						if (vgui_widget* page = vgui_tab_get_page(bottom_tabs_, active))
-							return page;
-				}
-				return bottom_tabs_;
+				/* The bottom group is several panels; focus follows whichever
+				 * one the dock is currently showing. */
+				const vgui_item_id active = vgui_dock_get_active(dock_,
+					VGUI_DOCK_BOTTOM);
+				if (active)
+					return vgui_dock_get_panel(dock_, active);
+				return nullptr;
 			}
 			default: return nullptr;
 			}
@@ -1982,8 +2000,17 @@ namespace vgui_editor_kit {
 		name(outliner_panel_, "Outliner panel");
 		name(viewport_panel_, "Viewport panel");
 		name(properties_panel_, "Properties panel");
-		name(bottom_panel_, "Bottom panel");
-		name(bottom_tabs_, "Bottom tabs");
+		static const char* const kBottomNames[] = {
+			"Assets panel", "Console panel", "Canvas panel", "Table panel",
+			"Timeline panel", "Node graph panel", "Code panel"
+		};
+		for (int i = 0; i < bottom_count; ++i)
+		{
+			if (!bottom_items_[(size_t)i])
+				continue;
+			name(vgui_dock_get_panel(dock_, bottom_items_[(size_t)i]),
+				kBottomNames[i]);
+		}
 		name(scene_.widget(), "Scene outliner");
 		name(viewport_.widget(), "3D viewport");
 		name(preview_viewport_.widget(), "Preview viewport");

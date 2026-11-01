@@ -3415,7 +3415,7 @@ static void setup_editor(vgui_context* ui)
 				if (!path_id.empty())
 					(void)g.shell->assets().navigate_to(path_id);
 				g.shell->assets().set_selection({ where.asset_id });
-				g.shell->set_panel_visible(editor_panel::bottom, true);
+				g.shell->run_command("view.console");
 				g.shell->set_status("console jump: " + info.name);
 				return true;
 			}

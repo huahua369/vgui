@@ -348,24 +348,37 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					vgui_widget_get_kind(dock) != VGUI_DOCK)
 					return fail("layout shell dock build");
 
+				static const char* const kBottomIds[] = { "assets", "console",
+					"canvas", "table", "timeline", "nodegraph", "code" };
+
 				editor_layout initial = shell.capture_layout();
 				if (initial.version != editor_layout::current_version ||
 					!near_px(initial.dock_left_size, 230.0f) ||
 					!near_px(initial.dock_right_size, 300.0f) ||
 					!near_px(initial.dock_bottom_size, 180.0f) ||
-					initial.dock_panels.size() != 4 ||
+					initial.dock_panels.size() != 10 ||
 					!initial.outliner_visible || !initial.viewport_visible ||
 					!initial.properties_visible || !initial.bottom_visible ||
-					initial.bottom_tab_order.size() != 7 ||
-					initial.bottom_tab_order[0] != "ASSETS" ||
-					initial.bottom_tab_order[1] != "CONSOLE" ||
-					initial.bottom_tab_order[2] != "CANVAS" ||
-					initial.bottom_tab_order[3] != "TABLE" ||
-					initial.bottom_tab_order[4] != "TIMELINE" ||
-					initial.bottom_tab_order[5] != "NODEGRAPH" ||
-					initial.bottom_tab_order[6] != "CODE" ||
-					initial.bottom_active_tab != "ASSETS")
+					!initial.bottom_tab_order.empty() ||
+					!initial.bottom_active_tab.empty())
 					return fail("layout default capture");
+				/* S10: every bottom view is a dock panel of its own, appended to
+				 * the bottom zone in build order, so each can be floated. */
+				for (int i = 0; i < 7; ++i)
+				{
+					const vgui_item_id item = vgui_dock_find(dock, kBottomIds[i]);
+					if (!item ||
+						vgui_dock_get_zone(dock, item) != VGUI_DOCK_BOTTOM ||
+						vgui_dock_get_index(dock, item) != i ||
+						!vgui_dock_is_open(dock, item))
+						return fail("layout default bottom panels");
+				}
+				if (vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) !=
+					vgui_dock_find(dock, "assets"))
+					return fail("layout default bottom active panel");
+				if (std::string(vgui_dock_get_title(dock,
+					vgui_dock_find(dock, "nodegraph"))) != "NODEGRAPH")
+					return fail("layout default bottom titles");
 
 				/* T01: install a small table model so the saved layout can
 				 * round-trip widths and sort state. */
@@ -478,27 +491,29 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
 				vgui_item_id properties = vgui_dock_find(dock, "properties");
-				vgui_item_id bottom = vgui_dock_find(dock, "bottom");
-				if (!outliner || !viewport || !properties || !bottom)
+				vgui_item_id console = vgui_dock_find(dock, "console");
+				vgui_item_id code_panel = vgui_dock_find(dock, "code");
+				if (!outliner || !viewport || !properties || !console || !code_panel)
 					return fail("layout dock panel ids");
 
 				vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 260.0f);
 				vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 340.0f);
 				vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 150.0f);
 
-				// Merge Properties into the Outliner tab group, float the bottom
+				// Merge Properties into the Outliner tab group, float the console
 				// panel and close the viewport.
 				if (!vgui_dock_set_zone(dock, properties, VGUI_DOCK_LEFT, 1))
 					return fail("layout dock merge properties");
-				if (!vgui_dock_float(dock, bottom, 120.0f, 90.0f, 420.0f, 260.0f))
-					return fail("layout dock float bottom");
+				if (!vgui_dock_float(dock, console, 120.0f, 90.0f, 420.0f, 260.0f))
+					return fail("layout dock float console");
 				if (!vgui_dock_close(dock, viewport))
 					return fail("layout dock close viewport");
 
-				vgui_item_id console = vgui_tab_get_at(shell.bottom_tabs(), 1);
-				if (!console || !vgui_tab_move(shell.bottom_tabs(), console, 0) ||
-					!vgui_tab_set_active(shell.bottom_tabs(), console))
-					return fail("layout tab setup");
+				/* Reorder the bottom group and make the floated console the
+				 * active panel of its own zone. */
+				if (!vgui_dock_set_zone(dock, code_panel, VGUI_DOCK_BOTTOM, 0) ||
+					!vgui_dock_activate(dock, console))
+					return fail("layout bottom reorder");
 
 				std::string error;
 				if (!shell.save_layout(layout_path.string(), &error))
@@ -508,18 +523,11 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				if (!near_px(saved.dock_left_size, 260.0f) ||
 					!near_px(saved.dock_right_size, 340.0f) ||
 					!near_px(saved.dock_bottom_size, 150.0f) ||
-					saved.dock_panels.size() != 4 ||
+					saved.dock_panels.size() != 10 ||
 					!saved.outliner_visible || saved.viewport_visible ||
 					!saved.properties_visible || !saved.bottom_visible ||
-					saved.bottom_tab_order.size() != 7 ||
-					saved.bottom_tab_order[0] != "CONSOLE" ||
-					saved.bottom_tab_order[1] != "ASSETS" ||
-					saved.bottom_tab_order[2] != "CANVAS" ||
-					saved.bottom_tab_order[3] != "TABLE" ||
-					saved.bottom_tab_order[4] != "TIMELINE" ||
-					saved.bottom_tab_order[5] != "NODEGRAPH" ||
-					saved.bottom_tab_order[6] != "CODE" ||
-					saved.bottom_active_tab != "CONSOLE")
+					!saved.bottom_tab_order.empty() ||
+					!saved.bottom_active_tab.empty())
 					return fail("layout capture after edit");
 				if (saved.table_state.empty())
 					return fail("layout table state capture");
@@ -540,18 +548,30 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				const editor_dock_panel_layout* outliner_state = find_panel("outliner");
 				const editor_dock_panel_layout* viewport_state = find_panel("viewport");
 				const editor_dock_panel_layout* properties_state = find_panel("properties");
-				const editor_dock_panel_layout* bottom_state = find_panel("bottom");
+				const editor_dock_panel_layout* console_state = find_panel("console");
+				const editor_dock_panel_layout* code_state = find_panel("code");
 				if (!outliner_state || !viewport_state || !properties_state ||
-					!bottom_state)
+					!console_state || !code_state)
 					return fail("layout captured panel states");
 				if (outliner_state->zone != VGUI_DOCK_LEFT || !outliner_state->open ||
 					properties_state->zone != VGUI_DOCK_LEFT || !properties_state->open ||
 					viewport_state->zone != VGUI_DOCK_CENTER || viewport_state->open ||
-					bottom_state->zone != VGUI_DOCK_FLOATING || !bottom_state->open ||
-					!bottom_state->has_floating_rect ||
-					!near_px(bottom_state->width, 420.0f) ||
-					!near_px(bottom_state->height, 260.0f))
+					console_state->zone != VGUI_DOCK_FLOATING || !console_state->open ||
+					!console_state->has_floating_rect ||
+					!near_px(console_state->width, 420.0f) ||
+					!near_px(console_state->height, 260.0f))
 					return fail("layout captured dock state");
+				/* Zone order is the list order, so CODE has to be the first
+				 * bottom-zone entry after the reorder. */
+				const editor_dock_panel_layout* first_bottom = nullptr;
+				for (const editor_dock_panel_layout& panel : saved.dock_panels)
+					if (panel.zone == VGUI_DOCK_BOTTOM)
+					{
+						first_bottom = &panel;
+						break;
+					}
+				if (!first_bottom || first_bottom->id != "code")
+					return fail("layout captured bottom reorder");
 				if (saved.dock_active[VGUI_DOCK_LEFT] != "properties")
 					return fail("layout captured active tab");
 
@@ -743,17 +763,18 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 				vgui_item_id outliner = vgui_dock_find(dock, "outliner");
 				vgui_item_id viewport = vgui_dock_find(dock, "viewport");
 				vgui_item_id properties = vgui_dock_find(dock, "properties");
-				vgui_item_id bottom = vgui_dock_find(dock, "bottom");
-				if (!outliner || !viewport || !properties || !bottom)
+				vgui_item_id console = vgui_dock_find(dock, "console");
+				vgui_item_id code = vgui_dock_find(dock, "code");
+				if (!outliner || !viewport || !properties || !console || !code)
 					return fail("layout restored dock ids");
 				if (vgui_dock_get_zone(dock, outliner) != VGUI_DOCK_LEFT ||
 					vgui_dock_get_zone(dock, properties) != VGUI_DOCK_LEFT ||
 					vgui_dock_get_zone(dock, viewport) != VGUI_DOCK_CENTER ||
-					vgui_dock_get_zone(dock, bottom) != VGUI_DOCK_FLOATING ||
+					vgui_dock_get_zone(dock, console) != VGUI_DOCK_FLOATING ||
 					!vgui_dock_is_open(dock, outliner) ||
 					vgui_dock_is_open(dock, viewport) ||
 					!vgui_dock_is_open(dock, properties) ||
-					!vgui_dock_is_open(dock, bottom))
+					!vgui_dock_is_open(dock, console))
 					return fail("layout restored dock state");
 				if (vgui_dock_get_active(dock, VGUI_DOCK_LEFT) != properties)
 					return fail("layout restored active tab");
@@ -761,8 +782,11 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 0) != outliner ||
 					vgui_dock_get_zone_at(dock, VGUI_DOCK_LEFT, 1) != properties)
 					return fail("layout restored tab order");
+				if (vgui_dock_get_zone_count(dock, VGUI_DOCK_BOTTOM) != 6 ||
+					vgui_dock_get_zone_at(dock, VGUI_DOCK_BOTTOM, 0) != code)
+					return fail("layout restored bottom tab order");
 				float fx = 0, fy = 0, fw = 0, fh = 0;
-				if (!vgui_dock_get_floating_rect(dock, bottom, &fx, &fy, &fw, &fh) ||
+				if (!vgui_dock_get_floating_rect(dock, console, &fx, &fy, &fw, &fh) ||
 					!near_px(fx, 120.0f) || !near_px(fy, 90.0f) ||
 					!near_px(fw, 420.0f) || !near_px(fh, 260.0f))
 					return fail("layout restored floating rect");
@@ -771,13 +795,6 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!shell.panel_visible(editor_panel::properties) ||
 					!shell.panel_visible(editor_panel::bottom))
 					return fail("layout restored visibility");
-				if (vgui_tab_get_count(shell.bottom_tabs()) != 7)
-					return fail("layout restored tab count");
-				vgui_item_id first = vgui_tab_get_at(shell.bottom_tabs(), 0);
-				vgui_item_id active = vgui_tab_get_active(shell.bottom_tabs());
-				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), first)) != "CONSOLE" ||
-					std::string(vgui_tab_get_title(shell.bottom_tabs(), active)) != "CONSOLE")
-					return fail("layout restored tab order and active page");
 
 				if (!write_text(bad_path, "{ this is not layout json"))
 					return fail("layout write malformed file");
@@ -787,17 +804,19 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT), 300.0f) ||
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), 180.0f) ||
 					vgui_dock_get_zone(dock, properties) != VGUI_DOCK_RIGHT ||
-					vgui_dock_get_zone(dock, bottom) != VGUI_DOCK_BOTTOM ||
+					vgui_dock_get_zone(dock, console) != VGUI_DOCK_BOTTOM ||
 					!vgui_dock_is_open(dock, outliner) ||
 					!vgui_dock_is_open(dock, viewport) ||
 					!vgui_dock_is_open(dock, properties) ||
-					!vgui_dock_is_open(dock, bottom))
+					!vgui_dock_is_open(dock, console))
 					return fail("layout malformed fallback");
-				vgui_item_id fallback_first = vgui_tab_get_at(shell.bottom_tabs(), 0);
-				vgui_item_id fallback_active = vgui_tab_get_active(shell.bottom_tabs());
-				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), fallback_first)) != "ASSETS" ||
-					std::string(vgui_tab_get_title(shell.bottom_tabs(), fallback_active)) != "ASSETS")
-					return fail("layout malformed tab fallback");
+				/* The default layout put ASSETS first and left it active. */
+				if (vgui_dock_get_zone_count(dock, VGUI_DOCK_BOTTOM) != 7 ||
+					vgui_dock_get_zone_at(dock, VGUI_DOCK_BOTTOM, 0) !=
+						vgui_dock_find(dock, "assets") ||
+					vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) !=
+						vgui_dock_find(dock, "assets"))
+					return fail("layout malformed bottom fallback");
 
 				if (!write_text(bad_path, "{\"version\": 999}"))
 					return fail("layout write version file");
@@ -839,10 +858,10 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 					!near_px(vgui_dock_get_zone_size(dock, VGUI_DOCK_BOTTOM), expected_bottom) ||
 					vgui_dock_is_open(dock, properties))
 					return fail("layout legacy mapping");
-				vgui_item_id legacy_first = vgui_tab_get_at(shell.bottom_tabs(), 0);
-				vgui_item_id legacy_active = vgui_tab_get_active(shell.bottom_tabs());
-				if (std::string(vgui_tab_get_title(shell.bottom_tabs(), legacy_first)) != "CONSOLE" ||
-					std::string(vgui_tab_get_title(shell.bottom_tabs(), legacy_active)) != "CONSOLE")
+				/* The legacy tab records map onto the bottom dock panels. */
+				if (vgui_dock_get_index(dock, console) != 0 ||
+					vgui_dock_get_index(dock, vgui_dock_find(dock, "assets")) != 1 ||
+					vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != console)
 					return fail("layout legacy bottom tabs");
 			}
 			vgui_destroy(ui);
@@ -14459,8 +14478,10 @@ static int test_shell_accessibility_e05()
 			return fail("a11y shell: asset type filter role");
 		if (!e05_walk_has(walk, "Position X", VGUI_A11Y_ROLE_EDIT))
 			return fail("a11y shell: vector component name");
-		if (!e05_walk_has(walk, "ASSETS", VGUI_A11Y_ROLE_TAB_PANEL))
-			return fail("a11y shell: tab page role/name");
+		/* S10: the bottom views are dock panels, so their pages - not tab pages -
+		 * carry the accessibility names. */
+		if (!e05_walk_has(walk, "Assets panel", VGUI_A11Y_ROLE_PANEL))
+			return fail("a11y shell: bottom dock panel name");
 
 		/* F6 / Shift+F6 focus order: outliner -> viewport -> properties -> bottom. */
 		vgui_set_focus(ui, nullptr);
@@ -14474,7 +14495,9 @@ static int test_shell_accessibility_e05()
 			!e05_has_ancestor(vgui_get_focus(ui), shell.properties().widget()))
 			return fail("a11y shell: F6 properties");
 		if (vgui_input_key(ui, VGUI_KEY_F6, 1, 0) != 1 ||
-			!e05_has_ancestor(vgui_get_focus(ui), shell.bottom_tabs()))
+			!e05_has_ancestor(vgui_get_focus(ui),
+				vgui_dock_get_panel(shell.dock(),
+					vgui_dock_get_active(shell.dock(), VGUI_DOCK_BOTTOM))))
 			return fail("a11y shell: F6 bottom");
 		if (vgui_input_key(ui, VGUI_KEY_F6, 1, VGUI_MOD_SHIFT) != 1 ||
 			!e05_has_ancestor(vgui_get_focus(ui), shell.properties().widget()))
@@ -14799,53 +14822,83 @@ int main()
 		vgui_widget* dock = shell.dock();
 		if (!dock || vgui_widget_get_kind(dock) != VGUI_DOCK)
 			return fail("shell dock");
-		if (vgui_dock_get_count(dock) != 4)
+		if (vgui_dock_get_count(dock) != 10)
 			return fail("shell dock panel count");
 		vgui_item_id outliner_panel = vgui_dock_find(dock, "outliner");
 		vgui_item_id viewport_panel = vgui_dock_find(dock, "viewport");
 		vgui_item_id properties_panel = vgui_dock_find(dock, "properties");
-		vgui_item_id bottom_panel = vgui_dock_find(dock, "bottom");
-		if (!outliner_panel || !viewport_panel || !properties_panel || !bottom_panel)
+		if (!outliner_panel || !viewport_panel || !properties_panel)
 			return fail("shell dock panel ids");
 		if (vgui_dock_get_zone(dock, outliner_panel) != VGUI_DOCK_LEFT ||
 			vgui_dock_get_zone(dock, viewport_panel) != VGUI_DOCK_CENTER ||
-			vgui_dock_get_zone(dock, properties_panel) != VGUI_DOCK_RIGHT ||
-			vgui_dock_get_zone(dock, bottom_panel) != VGUI_DOCK_BOTTOM)
+			vgui_dock_get_zone(dock, properties_panel) != VGUI_DOCK_RIGHT)
 			return fail("shell dock zones");
 		if (shell.body_splitter() || shell.workspace_splitter() ||
 			shell.center_splitter())
 			return fail("shell legacy splitter handles");
-		if (vgui_tab_get_count(shell.bottom_tabs()) != 7)
-			return fail("shell bottom tab count");
-		vgui_item_id assets_tab = vgui_tab_get_at(shell.bottom_tabs(), 0);
-		vgui_item_id console_tab = vgui_tab_get_at(shell.bottom_tabs(), 1);
-		vgui_item_id canvas_tab = vgui_tab_get_at(shell.bottom_tabs(), 2);
-		vgui_item_id table_tab = vgui_tab_get_at(shell.bottom_tabs(), 3);
-		vgui_item_id timeline_tab = vgui_tab_get_at(shell.bottom_tabs(), 4);
-		vgui_item_id node_graph_tab = vgui_tab_get_at(shell.bottom_tabs(), 5);
-		vgui_item_id code_tab = vgui_tab_get_at(shell.bottom_tabs(), 6);
-		if (std::string(vgui_tab_get_title(shell.bottom_tabs(), assets_tab)) != "ASSETS" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), console_tab)) != "CONSOLE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), canvas_tab)) != "CANVAS" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), table_tab)) != "TABLE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), timeline_tab)) != "TIMELINE" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), node_graph_tab)) != "NODEGRAPH" ||
-			std::string(vgui_tab_get_title(shell.bottom_tabs(), code_tab)) != "CODE")
-			return fail("shell bottom tab titles");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), console_tab) ||
-			vgui_tab_get_active(shell.bottom_tabs()) != console_tab)
+		/* S10: the seven bottom views are dock panels in their own right, so the
+		 * Dock sees them and each can be reordered, floated or moved out of the
+		 * bottom zone. */
+		static const char* const kBottomIds[] = { "assets", "console", "canvas",
+			"table", "timeline", "nodegraph", "code" };
+		static const char* const kBottomTitles[] = { "ASSETS", "CONSOLE", "CANVAS",
+			"TABLE", "TIMELINE", "NODEGRAPH", "CODE" };
+		vgui_item_id bottom_panels[7] = {};
+		for (int i = 0; i < 7; ++i)
+		{
+			bottom_panels[i] = vgui_dock_find(dock, kBottomIds[i]);
+			if (!bottom_panels[i] ||
+				std::string(vgui_dock_get_title(dock, bottom_panels[i])) !=
+					kBottomTitles[i] ||
+				vgui_dock_get_zone(dock, bottom_panels[i]) != VGUI_DOCK_BOTTOM ||
+				vgui_dock_get_index(dock, bottom_panels[i]) != i ||
+				!vgui_dock_get_closeable(dock, bottom_panels[i]))
+				return fail("shell bottom dock panels");
+		}
+		const vgui_item_id assets_tab = bottom_panels[0];
+		const vgui_item_id console_tab = bottom_panels[1];
+		const vgui_item_id canvas_tab = bottom_panels[2];
+		const vgui_item_id table_tab = bottom_panels[3];
+		const vgui_item_id timeline_tab = bottom_panels[4];
+		const vgui_item_id node_graph_tab = bottom_panels[5];
+		const vgui_item_id code_tab = bottom_panels[6];
+		if (!vgui_dock_activate(dock, console_tab) ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != console_tab)
 			return fail("shell console tab activation");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
+		if (!vgui_dock_activate(dock, assets_tab))
 			return fail("shell assets tab restore");
 
-		/* A07: the CONSOLE tab is a live console_view, reachable through the
+		/* Every one of them floats out on its own - the point of the change. */
+		for (int i = 0; i < 7; ++i)
+		{
+			if (!vgui_dock_float(dock, bottom_panels[i], 60.0f + 20.0f * (float)i,
+				60.0f, 380.0f, 240.0f) ||
+				!vgui_dock_is_floating(dock, bottom_panels[i]))
+				return fail("shell bottom view floats");
+		}
+		for (int i = 0; i < 7; ++i)
+		{
+			if (!vgui_dock_set_zone(dock, bottom_panels[i], VGUI_DOCK_BOTTOM, i))
+				return fail("shell bottom view redocks");
+			if (vgui_dock_get_zone(dock, bottom_panels[i]) != VGUI_DOCK_BOTTOM ||
+				vgui_dock_get_index(dock, bottom_panels[i]) != i)
+				return fail("shell bottom view redock state");
+		}
+		/* A bottom view can also be parked in another zone. */
+		if (!vgui_dock_set_zone(dock, code_tab, VGUI_DOCK_RIGHT, 1) ||
+			vgui_dock_get_zone(dock, code_tab) != VGUI_DOCK_RIGHT)
+			return fail("shell code view moves right");
+		if (!vgui_dock_set_zone(dock, code_tab, VGUI_DOCK_BOTTOM, 6))
+			return fail("shell code view returns");
+
+		/* A07: the CONSOLE panel is a live console_view, reachable through the
 		 * view.console command and the shell accessor. */
 		if (!shell.console().built() || !shell.console().tree() ||
 			find_widget(shell.widget(), "console_view", VGUI_PANEL) == nullptr)
 			return fail("shell console built");
 		if (!shell.commands().has("view.console") ||
 			!shell.run_command("view.console") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != console_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != console_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.console"))
 			return fail("shell console command");
@@ -14856,52 +14909,71 @@ int main()
 				std::string::npos)
 			return fail("shell console append");
 
-		/* V08: the CANVAS tab hosts a standalone canvas_view; the command
+		/* A closed bottom view is reopened by its own command, and the bottom
+		 * group toggle drives the whole group. */
+		if (!vgui_dock_close(dock, console_tab) ||
+			vgui_dock_is_open(dock, console_tab) ||
+			shell.commands().is_checked("view.console"))
+			return fail("shell console close");
+		if (!shell.run_command("view.console") ||
+			!vgui_dock_is_open(dock, console_tab) ||
+			!shell.commands().is_checked("view.console"))
+			return fail("shell console reopen through command");
+		shell.set_panel_visible(editor_panel::bottom, false);
+		if (shell.panel_visible(editor_panel::bottom) ||
+			shell.commands().is_checked("view.console"))
+			return fail("shell bottom group hide");
+		shell.set_panel_visible(editor_panel::bottom, true);
+		for (int i = 0; i < 7; ++i)
+			if (!vgui_dock_is_open(dock, bottom_panels[i]))
+				return fail("shell bottom group restore");
+
+		/* V08: the CANVAS panel hosts a standalone canvas_view; the command
 		 * reveals the bottom panel and focuses it. */
 		if (!shell.canvas().built() || !shell.canvas().widget() ||
 			find_widget(shell.widget(), "canvas_view", VGUI_CUSTOM) == nullptr)
 			return fail("shell canvas built");
 		if (!shell.commands().has("view.canvas") ||
 			!shell.run_command("view.canvas") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != canvas_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != canvas_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.canvas") ||
 			!shell.canvas().focused())
 			return fail("shell canvas command");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after canvas");
+		if (!vgui_dock_activate(dock, assets_tab))
+			return fail("shell assets panel restored");
 
-		/* T01: the TABLE tab hosts the editable table and the command reveals,
+		/* T01: the TABLE panel hosts the editable table and the command reveals,
 		 * focuses and checks it. */
 		if (!shell.table().built() || !shell.table().widget() ||
 			find_widget(shell.widget(), "table_view", VGUI_CUSTOM) == nullptr)
 			return fail("shell table built");
 		if (!shell.commands().has("view.table") ||
 			!shell.run_command("view.table") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != table_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != table_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.table") ||
 			vgui_get_focus(ui) != shell.table().widget())
 			return fail("shell table command");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after table");
+		if (!vgui_dock_activate(dock, assets_tab))
+			return fail("shell assets panel restored");
 
-		/* T02: the TIMELINE tab hosts the timeline editor and the command
+		/* T02: the TIMELINE panel hosts the timeline editor and the command
 		 * reveals, focuses and checks it. */
 		if (!shell.timeline().built() || !shell.timeline().widget() ||
 			find_widget(shell.widget(), "timeline_view", VGUI_CUSTOM) == nullptr)
 			return fail("shell timeline built");
 		if (!shell.commands().has("view.timeline") ||
 			!shell.run_command("view.timeline") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != timeline_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != timeline_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.timeline") ||
 			!shell.timeline().focused())
 			return fail("shell timeline command");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after timeline");
+		if (!vgui_dock_activate(dock, assets_tab))
+			return fail("shell assets panel restored");
 
-		/* T03: the NODEGRAPH tab hosts the node graph editor and the command
+		/* T03: the NODEGRAPH panel hosts the node graph editor and the command
 		 * reveals, focuses and checks it. */
 		if (!shell.node_graph().built() || !shell.node_graph().widget() ||
 			find_widget(shell.widget(), "node_graph_view", VGUI_CUSTOM) ==
@@ -14909,15 +14981,15 @@ int main()
 			return fail("shell node graph built");
 		if (!shell.commands().has("view.nodegraph") ||
 			!shell.run_command("view.nodegraph") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != node_graph_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != node_graph_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.nodegraph") ||
 			!shell.node_graph().focused())
 			return fail("shell node graph command");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after node graph");
+		if (!vgui_dock_activate(dock, assets_tab))
+			return fail("shell assets panel restored");
 
-		/* T04: the CODE tab hosts the editor and the command reveals,
+		/* T04: the CODE panel hosts the editor and the command reveals,
 		 * focuses and checks it. */
 		if (!shell.code().built() || !shell.code().widget() ||
 			find_widget(shell.widget(), "code_editor", VGUI_PANEL) == nullptr ||
@@ -14927,13 +14999,13 @@ int main()
 			return fail("shell code editor built");
 		if (!shell.commands().has("view.code") ||
 			!shell.run_command("view.code") ||
-			vgui_tab_get_active(shell.bottom_tabs()) != code_tab ||
+			vgui_dock_get_active(dock, VGUI_DOCK_BOTTOM) != code_tab ||
 			!shell.panel_visible(editor_panel::bottom) ||
 			!shell.commands().is_checked("view.code") ||
 			!shell.code().focused())
 			return fail("shell code editor command");
-		if (!vgui_tab_set_active(shell.bottom_tabs(), assets_tab))
-			return fail("shell assets tab after code editor");
+		if (!vgui_dock_activate(dock, assets_tab))
+			return fail("shell assets panel restored");
 
 		/* V09: the viewport dock page hosts a second camera surface and a depth
 		 * preview surface, and the render settings are shared with the host

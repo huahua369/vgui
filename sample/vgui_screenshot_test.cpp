@@ -1184,10 +1184,9 @@ namespace {
 			console.append(console_view::level::warning, "texture checker.png uses fallback sampler", "renderer");
 			console.append(console_view::level::error, "asset rock_normal.png failed validation", "importer");
 			console.poll();
-			vgui_widget* tabs = shell.bottom_tabs();
-			const vgui_item_id console_tab = vgui_tab_get_at(tabs, 1);
-			if (console_tab)
-				vgui_tab_set_active(tabs, console_tab);
+			const vgui_item_id console_panel = vgui_dock_find(dock, "console");
+			if (console_panel)
+				vgui_dock_activate(dock, console_panel);
 		}
 		else
 		{

@@ -16,7 +16,11 @@
  * JSON string.  Version 5 adds the node graph state (pan, zoom, grid, minimap,
  * snapping and selection) as an opaque JSON string.  Version 6 adds the code
  * editor state (language, caret, scroll and presentation) as another opaque
- * JSON string.  Older files are still accepted and mapped onto the current
+ * JSON string.  Version 7 promotes the shell's bottom views (ASSETS, CONSOLE,
+ * CANVAS, TABLE, TIMELINE, NODEGRAPH, CODE) from tabs of one dock panel to
+ * dock panels of their own, so their order, open state and floating rectangles
+ * travel in dock_panels and bottom_tabs only stays as the import path for
+ * earlier files.  Older files are still accepted and mapped onto the current
  * format so existing user layouts keep working.
  */
 #include <array>
@@ -46,7 +50,7 @@ namespace vgui_editor_kit {
 
 	struct editor_layout
 	{
-		static constexpr int current_version = 6;
+		static constexpr int current_version = 7;
 
 		int version = current_version;
 
@@ -63,8 +67,10 @@ namespace vgui_editor_kit {
 		bool properties_visible = true;
 		bool bottom_visible = true;
 
-		/* Titles are used as stable panel identities for the shell's fixed
-		 * bottom tabs.  Unknown titles are ignored during restore. */
+		/* Legacy import path for pre-7 files: the tab titles the old single
+		 * bottom panel used, in order, plus the active one.  Version-7 captures
+		 * leave these empty because the bottom views are dock panels.  Unknown
+		 * titles are ignored during restore. */
 		std::vector<std::string> bottom_tab_order;
 		std::string bottom_active_tab;
 

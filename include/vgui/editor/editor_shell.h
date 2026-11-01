@@ -2,13 +2,14 @@
 /*
  * editor_shell.h - MVP shell for vgui_editor_kit.
  *
- * The shell is assembled from a core Dock: Outliner, Viewport, Properties and
- * the bottom panel are dock panels with stable ids, so hosts and users can
- * move them between the left/right/bottom/centre zones, merge them into tab
- * groups, float them and restore the arrangement after a restart.  The bottom
- * panel keeps its ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH /
- * CODE TabView.
+ * The shell is assembled from a core Dock.  Outliner, Viewport, Properties and
+ * the seven bottom views (Assets, Console, Canvas, Table, Timeline, Node Graph
+ * and Code) are all dock panels with stable ids, so hosts and users can move
+ * any of them between the left/right/bottom/centre zones, merge them into tab
+ * groups, drag them out as floating frames and restore the arrangement after a
+ * restart.
  */
+#include <array>
 #include <functional>
 #include <memory>
 #include <string>
@@ -40,6 +41,9 @@
 
 namespace vgui_editor_kit {
 
+	/* The four shell panels addressed through set_panel_visible().  The seven
+	 * bottom views are individual dock panels, so `bottom` stands for that
+	 * whole group. */
 	enum class editor_panel
 	{
 		outliner,
@@ -114,9 +118,10 @@ namespace vgui_editor_kit {
 		search_box& search() noexcept;
 		breadcrumb& path() noexcept;
 
-		/* The shell's Dock.  Panel ids are "outliner", "viewport",
-		 * "properties" and "bottom".  Use the vgui_dock_* API to rearrange,
-		 * float or query them. */
+		/* The shell's Dock.  Panel ids are "outliner", "viewport", "properties"
+		 * and the seven bottom views "assets", "console", "canvas", "table",
+		 * "timeline", "nodegraph" and "code".  Use the vgui_dock_* API to
+		 * rearrange, float or query them. */
 		vgui_widget* dock() const noexcept;
 
 		/* Legacy Splitter handles.  The shell now uses a Dock, so these return
@@ -125,56 +130,58 @@ namespace vgui_editor_kit {
 		vgui_widget* workspace_splitter() const noexcept;
 		vgui_widget* center_splitter() const noexcept;
 
-		/* The ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH TabView
-		 * inside the bottom dock panel. */
-		vgui_widget* bottom_tabs() const noexcept;
-
-		/* A07: the log console hosted by the CONSOLE tab.  Hosts append from
+		/* A07: the log console hosted by the CONSOLE dock panel.  Hosts append from
 		 * any thread, install a jump handler for error locations, and call
 		 * tick()/poll() if the console is not being drawn. */
 		console_view& console() noexcept;
 		const console_view& console() const noexcept;
 
-		/* V08: standalone 2D canvas hosted by the CANVAS tab.  The shell wires
-		 * its snapping policy and command stack; hosts own the item model. */
+		/* V08: standalone 2D canvas hosted by the CANVAS dock panel.  The shell
+		 * wires its snapping policy and command stack; hosts own the item
+		 * model. */
 		canvas_view& canvas() noexcept;
 		const canvas_view& canvas() const noexcept;
 
-		/* T01: virtualized, editable table hosted by the TABLE tab.  The shell
-		 * wires its command stack and persists widths/sort through
+		/* T01: virtualized, editable table hosted by the TABLE dock panel.  The
+		 * shell wires its command stack and persists widths/sort through
 		 * editor_layout; hosts install the data source and columns. */
 		table_view& table() noexcept;
 		const table_view& table() const noexcept;
 
-		/* T02: animation timeline hosted by the TIMELINE tab.  The shell wires
-		 * its command stack and persists its playhead/view settings through
-		 * editor_layout; hosts populate tracks and drive playback with tick(). */
+		/* T02: animation timeline hosted by the TIMELINE dock panel.  The shell
+		 * wires its command stack and persists its playhead/view settings
+		 * through editor_layout; hosts populate tracks and drive playback with
+		 * tick(). */
 		timeline_view& timeline() noexcept;
 		const timeline_view& timeline() const noexcept;
 
-		/* T03: node graph editor hosted by the NODEGRAPH tab.  The shell wires
-		 * its command stack and persists pan/zoom/grid/selection through
+		/* T03: node graph editor hosted by the NODEGRAPH dock panel.  The shell
+		 * wires its command stack and persists pan/zoom/grid/selection through
 		 * editor_layout; hosts populate the graph and may install a create-node
 		 * handler for context-menu Add Node. */
 		node_graph_view& node_graph() noexcept;
 		const node_graph_view& node_graph() const noexcept;
 
 		/* T04: syntax-highlighted code editor / rich log hosted by the CODE
-		 * tab.  The shell wires its command stack and persists language,
+		 * dock panel.  The shell wires its command stack and persists language,
 		 * caret, scroll and presentation through editor_layout; hosts supply
 		 * the document with set_text()/open_file(). */
 		code_editor& code() noexcept;
 		const code_editor& code() const noexcept;
 
+		/* Open/close a shell panel.  `bottom` addresses the whole bottom group:
+		 * showing it reopens every closed bottom view, hiding it closes the
+		 * ones that are open.  Individual bottom views are reached through the
+		 * view.* commands or vgui_dock_* with their panel ids. */
 		void set_panel_visible(editor_panel panel, bool visible);
 		bool panel_visible(editor_panel panel) const;
 
 		/* Layout persistence.  capture_layout() records the Dock zone sizes,
-		 * panel order/open state/active tabs/floating rectangles, panel
-		 * visibility and bottom-tab order; apply_layout() restores it.  Loading
-		 * a damaged or version-mismatched file falls back to the layout
-		 * captured immediately after build().  Version-1 splitter layouts are
-		 * still accepted and mapped onto the Dock. */
+		 * panel order/open state/active tabs/floating rectangles and panel
+		 * visibility; apply_layout() restores it.  Loading a damaged or
+		 * version-mismatched file falls back to the layout captured
+		 * immediately after build().  Version-1 splitter layouts and pre-7
+		 * bottom-tab records are still accepted and mapped onto the Dock. */
 		editor_layout capture_layout() const;
 		bool apply_layout(const editor_layout& layout, std::string* error = nullptr);
 		bool save_layout(const std::string& path, std::string* error = nullptr) const;
@@ -265,9 +272,27 @@ namespace vgui_editor_kit {
 
 		vgui_item_id panel_item(editor_panel panel) const noexcept;
 
-		void capture_bottom_tabs(editor_layout& layout) const;
+		/* The seven bottom views are dock panels in their own right.  The shell
+		 * keeps their items in build order so the group can be toggled,
+		 * captured and focused as a unit. */
+		enum bottom_view
+		{
+			bottom_assets = 0,
+			bottom_console,
+			bottom_canvas,
+			bottom_table,
+			bottom_timeline,
+			bottom_node_graph,
+			bottom_code,
+			bottom_count
+		};
+		void show_bottom_view(bottom_view view);
+		bool bottom_view_active(bottom_view view) const;
+		bool bottom_group_open() const;
+		void set_bottom_group_visible(bool visible);
+
 		void capture_dock_state(editor_layout& layout) const;
-		void apply_bottom_tabs(const editor_layout& layout);
+		void apply_legacy_bottom_tabs(const editor_layout& layout);
 		void apply_dock_sizes(const editor_layout& layout);
 		void apply_legacy_ratios(const editor_layout& layout);
 		void apply_dock_panels(const editor_layout& layout);
@@ -291,18 +316,10 @@ namespace vgui_editor_kit {
 		vgui_item_id outliner_item_ = 0;
 		vgui_item_id viewport_item_ = 0;
 		vgui_item_id properties_item_ = 0;
-		vgui_item_id bottom_item_ = 0;
-		vgui_widget* bottom_tabs_ = nullptr;
-		vgui_item_id console_tab_ = 0;
-		vgui_item_id canvas_tab_ = 0;
-		vgui_item_id table_tab_ = 0;
-		vgui_item_id timeline_tab_ = 0;
-		vgui_item_id node_graph_tab_ = 0;
-		vgui_item_id code_tab_ = 0;
+		std::array<vgui_item_id, bottom_count> bottom_items_{};
 		vgui_widget* outliner_panel_ = nullptr;
 		vgui_widget* viewport_panel_ = nullptr;
 		vgui_widget* properties_panel_ = nullptr;
-		vgui_widget* bottom_panel_ = nullptr;
 		bool applying_layout_ = false;
 		editor_layout default_layout_;
 
