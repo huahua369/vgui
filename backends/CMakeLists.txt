@@ -5,7 +5,7 @@ option(VGUI_CORE_ONLY "Build libvgui without the SDL3 backend (engine runtime / 
 # ovg_draw_data_t with their own renderer.  mapView (OS mmap reader) and anim
 # are OS-dependent but SDL-free, so they stay in the core list.
 set(OVGUI_SOURCES
-    ../gui/anim.cpp
+    anim.cpp
     ../gui/vgui.cpp
     mapView.cpp
 )
@@ -14,7 +14,7 @@ if(NOT VGUI_CORE_ONLY)
     # SDL3 backend: window/input/IME app layer, vgpu 2D GPU renderer and the
     # Windows desktop integration used by it.
     list(APPEND OVGUI_SOURCES
-        ../gui/win_core.cpp
+        win_core.cpp
         vgui_sdl3.cpp
         vgui_renderer_sdl3.cpp
     )
