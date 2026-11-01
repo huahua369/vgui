@@ -165,7 +165,7 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 
 - SDL 多指 → 手势识别（双指距离增量=捏合、质心位移=平移），注入为滚轮/缩放事件；前置条件是可缩放表面，暂缓。
 
-## 8. R5 世界空间 UI（部分完成）
+## 8. R5 世界空间 UI（已完成）
 
 - [x] **R5-0 屏幕空间名牌（世界锚点投影）**：宿主每帧用与 3D 相机一致的投影矩阵把世界锚点投到屏幕坐标，`vgui_widget_set_pos` 移动对应控件组，背面/出屏用 `vgui_widget_set_visible` 隐藏。配套新增 `vgui_widget_set_accent / set_track`（每控件条形图配色，0=继承主题）。参考实现：`sample/vgui_runtime_hud.cpp`（12 个 Unit 名牌 + 血条/蓝条跟随方块公转，投影参数与 phase0 相机一致：RH_ZO + Y 翻转）。
 - [x] **R5-1 UI→3D 面板**：离屏 UI 纹理贴到世界空间公告牌。phase0 新增 `phase0_renderer_set_billboard(renderer, texture, pos, w, h)`——复用场景片元着色器（p0_vertex 本就带 uv + scene_tex 采样）与 grid 混合管线（alpha 混合、深度测试开/写入关），CPU 侧按相机基（view 矩阵行向量）重建四边形顶点，每帧上传。宿主侧：独立小 UI 上下文渲进专用 FBO（`cycle_target=true`，phase0 采样上一帧内容，一帧延迟无碍）；与主 HUD/模式 B 合并进**一次 `vgpu_render_frame` 多 item 提交**（面板 item 在前）。注意：离屏 rvg 的 `width/height` 必须手动设置（与 FBO 尺寸一致），否则正交映射错位、文字落到视口外。参考实现：`sample/vgui_runtime_hud.cpp`（"ARENA STATUS" 聚合血条/蓝条公告牌）。
