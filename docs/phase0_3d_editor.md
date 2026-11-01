@@ -50,6 +50,8 @@ phase0_view_set_options(view, &options);
 
 `phase0_view_color_texture()` 返回可借给 vgui 的 RGBA8 纹理；HDR/MSAA 变化会重建附件，宿主应重新查询句柄并调用 `vgui_sdl3_texture_update_native()`。`phase0_view_depth_preview_texture()` 是深度可视化纹理，句柄在仅切换 `depth_preview` 时保持稳定。SDL_GPU 没有深度 resolve，因此 MSAA 模式额外用一个单采样、无颜色目标的深度专用通道填充预览深度；非 MSAA 模式直接采样场景深度。`sample/vgui_phase0.cpp` 仍使用旧单视口接口，`vgui_game_editor` 演示主视图、第二相机和深度预览三张纹理同帧渲染。
 
+所有 phase0 通道（场景、深度专用、tonemap、深度预览）都沿用引擎的负高度视口（`y = height`、`h = -height`），使附件的第 0 行始终是逻辑顶部，`p0_fullscreen.vert.slang` 的 uv 才能与源纹理逐行对齐；任一通道改用正向视口都会让该通道的输出上下翻转。
+
 示例中的关键循环：
 
 ```cpp

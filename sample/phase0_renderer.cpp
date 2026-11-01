@@ -843,6 +843,21 @@ void draw_view_billboard(phase0_renderer* r, phase0_view* view,
 	SDL_DrawGPUPrimitives(pass, 6, 1, 0, 0);
 }
 
+void set_flipped_viewport(SDL_GPURenderPass* pass, int width, int height)
+{
+	/* Every phase0 pass renders with the engine's negative-height viewport, so
+	 * render targets keep row 0 at the top and the fullscreen triangle's uv
+	 * maps 1:1 onto the source attachment rows. */
+	SDL_GPUViewport viewport = {};
+	viewport.x = 0.0f;
+	viewport.y = (float)height;
+	viewport.w = (float)width;
+	viewport.h = -(float)height;
+	viewport.min_depth = 0.0f;
+	viewport.max_depth = 1.0f;
+	SDL_SetGPUViewport(pass, &viewport);
+}
+
 void draw_scene_target(phase0_renderer* r, phase0_view* view,
 	SDL_GPUCommandBuffer* cmd, const p0_camera_matrices& camera,
 	const p0_pipeline_set* set, float time_seconds)
@@ -884,14 +899,7 @@ void draw_scene_target(phase0_renderer* r, phase0_view* view,
 	if (!pass)
 		return;
 
-	SDL_GPUViewport viewport = {};
-	viewport.x = 0.0f;
-	viewport.y = (float)view->height;
-	viewport.w = (float)view->width;
-	viewport.h = -(float)view->height;
-	viewport.min_depth = 0.0f;
-	viewport.max_depth = 1.0f;
-	SDL_SetGPUViewport(pass, &viewport);
+	set_flipped_viewport(pass, view->width, view->height);
 
 	SDL_BindGPUGraphicsPipeline(pass, set->scene);
 	SDL_GPUTextureSamplerBinding sampler = { r->white_texture,
@@ -924,11 +932,7 @@ void draw_hdr_tonemap(phase0_renderer* r, phase0_view* view,
 	if (!pass)
 		return;
 
-	SDL_GPUViewport viewport = {};
-	viewport.w = (float)view->width;
-	viewport.h = (float)view->height;
-	viewport.max_depth = 1.0f;
-	SDL_SetGPUViewport(pass, &viewport);
+	set_flipped_viewport(pass, view->width, view->height);
 	SDL_BindGPUGraphicsPipeline(pass, r->tonemap_pipeline);
 
 	SDL_GPUTextureSamplerBinding sampler = { source, r->linear_sampler };
@@ -959,12 +963,7 @@ void draw_depth_only(phase0_renderer* r, phase0_view* view,
 	if (!pass)
 		return;
 
-	SDL_GPUViewport viewport = {};
-	viewport.y = (float)view->height;
-	viewport.w = (float)view->width;
-	viewport.h = -(float)view->height;
-	viewport.max_depth = 1.0f;
-	SDL_SetGPUViewport(pass, &viewport);
+	set_flipped_viewport(pass, view->width, view->height);
 	SDL_BindGPUGraphicsPipeline(pass, r->depth_only_pipeline);
 	/* The depth-only fragment shader has no outputs and no samplers, so the
 	 * pass binds vertex uniforms only. */
@@ -993,11 +992,7 @@ void draw_depth_preview(phase0_renderer* r, phase0_view* view,
 	if (!pass)
 		return;
 
-	SDL_GPUViewport viewport = {};
-	viewport.w = (float)view->width;
-	viewport.h = (float)view->height;
-	viewport.max_depth = 1.0f;
-	SDL_SetGPUViewport(pass, &viewport);
+	set_flipped_viewport(pass, view->width, view->height);
 	SDL_BindGPUGraphicsPipeline(pass, r->depth_preview_pipeline);
 
 	SDL_GPUTextureSamplerBinding sampler = { source, r->nearest_sampler };
