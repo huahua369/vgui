@@ -9778,9 +9778,28 @@ namespace {
 			else if (drag_mode == 3 && drag_panel)
 			{
 				int zone = vgui_dock_zone_tab_bar_at(target, x, y);
+				if (zone < 0)
+				{
+					// Dock fix: dropping a floating frame over an EMPTY
+					// zone's fallback band must dock it there --
+					// zone_tab_bar_at only sees tab bars of zones that
+					// still hold panels, so an emptied zone (collapsed to
+					// zero size) is invisible to it and the panel could
+					// never be dragged back.
+					float bx = 0, by = 0, bw = 0, bh = 0;
+					vgui_dock_content_rect(target, &bx, &by, &bw, &bh);
+					if (x >= bx && x < bx + bw && y >= by && y < by + bh)
+					{
+						const int fb = vgui_dock_fallback_zone(target, x, y);
+						if (fb >= 0 && fb != VGUI_DOCK_CENTER && st
+							&& !vgui_dock_zone_has_open(st, fb))
+							zone = fb;
+					}
+				}
 				if (zone >= 0 && zone < 4)
 				{
 					int index = vgui_dock_drop_index_at(target, zone, x);
+					if (index < 0) index = 0;
 					int current = vgui_dock_open_index(target, zone, drag_panel);
 					if (current >= 0 && index > current) index--;
 					vgui_dock_move_internal(target, drag_panel, zone, index, true, true);
