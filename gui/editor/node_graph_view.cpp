@@ -21,9 +21,9 @@ namespace vgui_editor_kit {
 		constexpr float kBorderInset = 1.0f;
 		constexpr double kMinNodeWidth = 120.0;
 		constexpr double kMaxNodeWidth = 600.0;
-		constexpr double kDefaultNodeWidth = 180.0;
-		constexpr double kNodeHeaderHeight = 24.0;
-		constexpr double kNodeRowHeight = 20.0;
+		constexpr double kDefaultNodeWidth = 220.0;
+		constexpr double kNodeHeaderHeight = 28.0;
+		constexpr double kNodeRowHeight = 24.0;
 		constexpr double kNodeBodyPadding = 6.0;
 		constexpr double kPortInset = 9.0;
 		constexpr double kPortRadius = 4.0;

@@ -821,7 +821,7 @@ struct editor_state
 		scene_color.category = "Input";
 		scene_color.x = 40.0;
 		scene_color.y = 72.0;
-		scene_color.width = 190.0;
+		scene_color.width = 220.0;
 		scene_color.accent = 0xFF5FA8FFu;
 		scene_color.outputs.push_back(make_port("Color",
 			node_port_direction::output, node_port_type::color));
@@ -832,7 +832,7 @@ struct editor_state
 		time_node.category = "Input";
 		time_node.x = 48.0;
 		time_node.y = 248.0;
-		time_node.width = 170.0;
+		time_node.width = 200.0;
 		time_node.accent = 0xFF8FD16Au;
 		time_node.outputs.push_back(make_port("Seconds",
 			node_port_direction::output, node_port_type::number));
@@ -843,7 +843,7 @@ struct editor_state
 		multiply.category = "Math";
 		multiply.x = 336.0;
 		multiply.y = 120.0;
-		multiply.width = 200.0;
+		multiply.width = 230.0;
 		multiply.accent = 0xFFD9A441u;
 		multiply.inputs.push_back(make_port("Tint",
 			node_port_direction::input, node_port_type::color));
@@ -858,7 +858,7 @@ struct editor_state
 		surface.category = "Output";
 		surface.x = 656.0;
 		surface.y = 72.0;
-		surface.width = 200.0;
+		surface.width = 230.0;
 		surface.accent = 0xFFE06060u;
 		surface.inputs.push_back(make_port("Surface",
 			node_port_direction::input, node_port_type::color));
@@ -876,7 +876,7 @@ struct editor_state
 
 		/* The bottom panel starts at ~180 px, so use a demo-friendly framing;
 		 * Home / F still fit the whole graph or the current selection. */
-		graph.set_view_state({ 40.0, 32.0, 0.55 });
+		graph.set_view_state({ 40.0, 32.0, 1.0 });
 		graph.set_selection({ multiply_id }, multiply_id);
 		graph.set_selection_listener([this](const std::vector<object_id>& ids) {
 			if (!shell)

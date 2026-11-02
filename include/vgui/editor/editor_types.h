@@ -24,7 +24,7 @@ namespace vgui_editor_kit {
 	 * growing and shrinking with the view like part of the canvas, with only a
 	 * small floor so things stay clickable at extreme zoom-out. Sizes are in
 	 * logical units; the drawing helpers apply the context ui_scale on top. */
-	inline constexpr float kEditorBaseFontSize = 13.0f;
+	inline constexpr float kEditorBaseFontSize = 15.0f;
 	inline constexpr float kEditorMinFontSizePx = 1.0f;
 
 	inline constexpr float kEditorMinBorderPx = 0.75f;
