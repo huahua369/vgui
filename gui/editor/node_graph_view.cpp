@@ -194,7 +194,7 @@ namespace vgui_editor_kit {
 				if (error)
 					*error = message;
 				return false;
-			};
+				};
 			if (state.version < 1 ||
 				state.version > node_graph_state::current_version)
 				return fail("unsupported node graph state version");
@@ -271,24 +271,24 @@ namespace vgui_editor_kit {
 
 			auto number = [](const nlohmann::json& object, const char* key,
 				double fallback) {
-				auto it = object.find(key);
-				if (it == object.end())
-					return fallback;
-				if (!it->is_number())
-					throw std::runtime_error(std::string(
-						"expected number: ") + key);
-				return it->get<double>();
-			};
+					auto it = object.find(key);
+					if (it == object.end())
+						return fallback;
+					if (!it->is_number())
+						throw std::runtime_error(std::string(
+							"expected number: ") + key);
+					return it->get<double>();
+				};
 			auto boolean = [](const nlohmann::json& object, const char* key,
 				bool fallback) {
-				auto it = object.find(key);
-				if (it == object.end())
-					return fallback;
-				if (!it->is_boolean())
-					throw std::runtime_error(std::string(
-						"expected boolean: ") + key);
-				return it->get<bool>();
-			};
+					auto it = object.find(key);
+					if (it == object.end())
+						return fallback;
+					if (!it->is_boolean())
+						throw std::runtime_error(std::string(
+							"expected boolean: ") + key);
+					return it->get<bool>();
+				};
 			auto id_value = [](const nlohmann::json& value, const char* key) {
 				if (!value.is_number_integer() &&
 					!value.is_number_unsigned())
@@ -299,7 +299,7 @@ namespace vgui_editor_kit {
 					throw std::runtime_error(std::string(
 						"negative id: ") + key);
 				return (object_id)parsed;
-			};
+				};
 
 			auto view = root.find("view");
 			if (view != root.end())
@@ -531,7 +531,7 @@ namespace vgui_editor_kit {
 				return true;
 			return std::find(assigned.begin(), assigned.end(), id) !=
 				assigned.end();
-		};
+			};
 
 		if (node.id == invalid_object)
 		{
@@ -549,25 +549,25 @@ namespace vgui_editor_kit {
 
 		auto assign_ports = [&](std::vector<node_port>& ports,
 			node_port_direction direction) -> bool {
-			for (node_port& port : ports)
-			{
-				port.direction = direction;
-				if (port.id == invalid_object)
+				for (node_port& port : ports)
 				{
-					while (conflict(next_id_))
-						++next_id_;
-					port.id = next_id_++;
+					port.direction = direction;
+					if (port.id == invalid_object)
+					{
+						while (conflict(next_id_))
+							++next_id_;
+						port.id = next_id_++;
+					}
+					else if (conflict(port.id))
+					{
+						return false;
+					}
+					if (port.id >= next_id_)
+						next_id_ = port.id + 1;
+					assigned.push_back(port.id);
 				}
-				else if (conflict(port.id))
-				{
-					return false;
-				}
-				if (port.id >= next_id_)
-					next_id_ = port.id + 1;
-				assigned.push_back(port.id);
-			}
-			return true;
-		};
+				return true;
+			};
 		if (!assign_ports(node.inputs, node_port_direction::input) ||
 			!assign_ports(node.outputs, node_port_direction::output))
 			return invalid_object;
@@ -613,29 +613,29 @@ namespace vgui_editor_kit {
 					return true;
 			return std::find(assigned.begin(), assigned.end(), id) !=
 				assigned.end();
-		};
+			};
 
 		auto assign_ports = [&](std::vector<node_port>& ports,
 			node_port_direction direction) -> bool {
-			for (node_port& port : ports)
-			{
-				port.direction = direction;
-				if (port.id == invalid_object)
+				for (node_port& port : ports)
 				{
-					while (conflict(next_id_))
-						++next_id_;
-					port.id = next_id_++;
+					port.direction = direction;
+					if (port.id == invalid_object)
+					{
+						while (conflict(next_id_))
+							++next_id_;
+						port.id = next_id_++;
+					}
+					else if (conflict(port.id))
+					{
+						return false;
+					}
+					if (port.id >= next_id_)
+						next_id_ = port.id + 1;
+					assigned.push_back(port.id);
 				}
-				else if (conflict(port.id))
-				{
-					return false;
-				}
-				if (port.id >= next_id_)
-					next_id_ = port.id + 1;
-				assigned.push_back(port.id);
-			}
-			return true;
-		};
+				return true;
+			};
 		if (!assign_ports(next.inputs, node_port_direction::input) ||
 			!assign_ports(next.outputs, node_port_direction::output))
 			return false;
@@ -756,7 +756,7 @@ namespace vgui_editor_kit {
 
 		std::vector<node_port>& source =
 			direction == node_port_direction::input ? node->inputs
-				: node->outputs;
+			: node->outputs;
 		auto found = std::find_if(source.begin(), source.end(),
 			[&](const node_port& port) { return port.id == port_id; });
 		if (found == source.end())
@@ -765,7 +765,7 @@ namespace vgui_editor_kit {
 
 		std::vector<node_port>& target =
 			next_direction == node_port_direction::input ? node->inputs
-				: node->outputs;
+			: node->outputs;
 		target.push_back(std::move(next));
 		drop_invalid_connections();
 		prune_selection();
@@ -784,7 +784,7 @@ namespace vgui_editor_kit {
 			return false;
 		std::vector<node_port>& ports =
 			direction == node_port_direction::input ? node->inputs
-				: node->outputs;
+			: node->outputs;
 		ports.erase(std::remove_if(ports.begin(), ports.end(),
 			[&](const node_port& port) { return port.id == port_id; }),
 			ports.end());
@@ -1164,7 +1164,7 @@ namespace vgui_editor_kit {
 		}
 		if (primary == invalid_object ||
 			std::find(filtered.begin(), filtered.end(), primary) ==
-				filtered.end())
+			filtered.end())
 			primary = filtered.empty() ? invalid_object : filtered.front();
 		if (filtered == selection_ && primary == primary_)
 			return;
@@ -1781,7 +1781,7 @@ namespace vgui_editor_kit {
 			return false;
 		const std::vector<node_port>& ports =
 			direction == node_port_direction::input ? node.inputs
-				: node.outputs;
+			: node.outputs;
 		auto found = std::find_if(ports.begin(), ports.end(),
 			[&](const node_port& entry) { return entry.id == port.id; });
 		if (found == ports.end())
@@ -1847,7 +1847,7 @@ namespace vgui_editor_kit {
 			right = std::max(right, x);
 			top = std::min(top, y);
 			bottom = std::max(bottom, y);
-		};
+			};
 		for (object_id id : selection_)
 		{
 			if (const node_node* node = find_node(id))
@@ -1940,18 +1940,18 @@ namespace vgui_editor_kit {
 				continue;
 			auto test = [&](const std::vector<node_port>& ports,
 				node_port_direction direction) -> object_id {
-				for (const node_port& port : ports)
-				{
-					node_graph_point screen;
-					if (!port_screen_position(*it, port, direction,
-						nullptr, &screen))
-						continue;
-					if (std::hypot(screen.x - (double)content_x,
-						screen.y - (double)content_y) <= threshold)
-						return port.id;
-				}
-				return invalid_object;
-			};
+					for (const node_port& port : ports)
+					{
+						node_graph_point screen;
+						if (!port_screen_position(*it, port, direction,
+							nullptr, &screen))
+							continue;
+						if (std::hypot(screen.x - (double)content_x,
+							screen.y - (double)content_y) <= threshold)
+							return port.id;
+					}
+					return invalid_object;
+				};
 			const object_id input = test(it->inputs,
 				node_port_direction::input);
 			if (input != invalid_object)
@@ -2415,17 +2415,17 @@ namespace vgui_editor_kit {
 		vgui_menu_clear(menu_);
 		auto add = [&](const char* text, node_graph_action action,
 			const char* shortcut, bool checkable, bool checked) {
-			const vgui_item_id item = checkable
-				? vgui_menu_add_check_item(menu_, text, checked ? 1 : 0)
-				: vgui_menu_add_item(menu_, text);
-			if (!item)
-				return;
-			vgui_menu_set_item_user(menu_, item,
-				reinterpret_cast<void*>(
-					static_cast<std::uintptr_t>((int)action)));
-			if (shortcut)
-				vgui_menu_set_item_shortcut(menu_, item, shortcut);
-		};
+				const vgui_item_id item = checkable
+					? vgui_menu_add_check_item(menu_, text, checked ? 1 : 0)
+					: vgui_menu_add_item(menu_, text);
+				if (!item)
+					return;
+				vgui_menu_set_item_user(menu_, item,
+					reinterpret_cast<void*>(
+						static_cast<std::uintptr_t>((int)action)));
+				if (shortcut)
+					vgui_menu_set_item_shortcut(menu_, item, shortcut);
+			};
 		add("Add Node", node_graph_action::add_node, nullptr, false, false);
 		add("Duplicate", node_graph_action::duplicate, "Ctrl+D", false,
 			false);
@@ -2656,7 +2656,7 @@ namespace vgui_editor_kit {
 		auto apply = [this, alive](const snapshot& state) {
 			if (!alive.expired())
 				restore_snapshot(state);
-		};
+			};
 		commands_->push(std::make_unique<function_command>(
 			name ? name : "Node graph", [apply, after]() { apply(after); },
 			[apply, before]() { apply(before); }));
@@ -2845,7 +2845,7 @@ namespace vgui_editor_kit {
 		object_id primary = state.primary;
 		if (primary == invalid_object ||
 			std::find(selection.begin(), selection.end(), primary) ==
-				selection.end())
+			selection.end())
 			primary = selection.empty() ? invalid_object : selection.front();
 
 		view_.offset_x = state.view.offset_x;
@@ -2965,7 +2965,7 @@ namespace vgui_editor_kit {
 					if (std::find(next.begin(), next.end(), primary) ==
 						next.end())
 						primary = next.empty() ? invalid_object
-							: next.front();
+						: next.front();
 				}
 				else if (shift)
 				{
@@ -3025,7 +3025,7 @@ namespace vgui_editor_kit {
 					if (std::find(next.begin(), next.end(), primary) ==
 						next.end())
 						primary = next.empty() ? invalid_object
-							: next.front();
+						: next.front();
 				}
 				else if (shift)
 				{
@@ -3088,8 +3088,8 @@ namespace vgui_editor_kit {
 				{
 					self->gesture_ =
 						self->gesture_ == node_graph_gesture::pending_move
-							? node_graph_gesture::move
-							: node_graph_gesture::marquee;
+						? node_graph_gesture::move
+						: node_graph_gesture::marquee;
 				}
 				else
 				{
@@ -3499,8 +3499,12 @@ namespace vgui_editor_kit {
 			const uint32_t dim = searched ? 0x55 : 0xFF;
 			const vgui_color node_accent = node.accent
 				? node.accent : accent;
-			const float radius = (float)std::clamp(6.0 * zoom,
-				2.0 * scale, 8.0 * scale);
+			/* Corner radius follows zoom like the border does.  Capping it in
+			 * screen pixels while the stroke keeps growing let the border end up
+			 * wider than the corner it turns: ovg's inner join then folds back
+			 * over itself and the translucent stroke double-blends into darker
+			 * triangles at the corners -- most obvious at maximum zoom. */
+			const float radius = (int)std::max(6.0 * zoom, 0.0);
 			const float header_height = node.collapsed
 				? nh : (float)(kNodeHeaderHeight * zoom);
 
@@ -3547,53 +3551,53 @@ namespace vgui_editor_kit {
 				1.6 * scale);
 			auto draw_port_row = [&](const std::vector<node_port>& ports,
 				node_port_direction direction) {
-				for (std::size_t i = 0; i < ports.size(); ++i)
-				{
-					const node_port& port = ports[i];
-					const double gx = direction == node_port_direction::input
-						? node.x + kPortInset
-						: node.x + clamp_width(node.width) - kPortInset;
-					const double gy = node.y + kNodeHeaderHeight +
-						((double)i + 0.5) * kNodeRowHeight;
-					const node_graph_point screen = graph_to_screen(gx, gy);
-					const float px = x + (float)screen.x;
-					const float py = y + (float)screen.y;
-					vgui_color color = port_type_color(port.type);
-					if (searched)
-						color = with_alpha(color, 0x50);
-					ovg_tools::fill_circle(cb, vg, px, py, port_radius,
-						to_ovg(color));
-					if (!port.multi &&
-						direction == node_port_direction::input)
-						ovg_tools::stroke_circle(cb, vg, px, py,
-							port_radius + 1.5f * scale,
-							to_ovg(with_alpha(panel_border, 0xC0)),
-							1.0f * scale);
-				if (row_height >= font_px * 0.6f)
-				{
-					/* Anchor the label to the port dot's real screen position
-					 * (px) so it tracks zoom and always clears the dot. */
-					const float pad = 6.0f * scale;
-					const float label_right_in = px + port_radius + pad;
-					const float label_left_out = px - port_radius - pad;
-					const float label_x = direction ==
-						node_port_direction::input
-						? label_right_in
-						: nx + pad;
-					const float label_w = direction ==
-						node_port_direction::input
-						? std::max(1.0f, (nx + nw - pad) - label_right_in)
-						: std::max(1.0f, label_left_out - (nx + pad));
-					vgui_custom_draw_text_sized(widget, cb, vg,
-						port.name.c_str(), label_x,
-						py - row_height * 0.5f, label_w,
-						row_height, with_alpha(text,
-							searched ? 0x50 : 0xC0),
-						direction == node_port_direction::input
-							? 0.0f : 1.0f, 0.5f, font_logical);
-				}
-				}
-			};
+					for (std::size_t i = 0; i < ports.size(); ++i)
+					{
+						const node_port& port = ports[i];
+						const double gx = direction == node_port_direction::input
+							? node.x + kPortInset
+							: node.x + clamp_width(node.width) - kPortInset;
+						const double gy = node.y + kNodeHeaderHeight +
+							((double)i + 0.5) * kNodeRowHeight;
+						const node_graph_point screen = graph_to_screen(gx, gy);
+						const float px = x + (float)screen.x;
+						const float py = y + (float)screen.y;
+						vgui_color color = port_type_color(port.type);
+						if (searched)
+							color = with_alpha(color, 0x50);
+						ovg_tools::fill_circle(cb, vg, px, py, port_radius,
+							to_ovg(color));
+						if (!port.multi &&
+							direction == node_port_direction::input)
+							ovg_tools::stroke_circle(cb, vg, px, py,
+								port_radius + 1.5f * scale,
+								to_ovg(with_alpha(panel_border, 0xC0)),
+								1.0f * scale);
+						if (row_height >= font_px * 0.6f)
+						{
+							/* Anchor the label to the port dot's real screen position
+							 * (px) so it tracks zoom and always clears the dot. */
+							const float pad = 6.0f * scale;
+							const float label_right_in = px + port_radius + pad;
+							const float label_left_out = px - port_radius - pad;
+							const float label_x = direction ==
+								node_port_direction::input
+								? label_right_in
+								: nx + pad;
+							const float label_w = direction ==
+								node_port_direction::input
+								? std::max(1.0f, (nx + nw - pad) - label_right_in)
+								: std::max(1.0f, label_left_out - (nx + pad));
+							vgui_custom_draw_text_sized(widget, cb, vg,
+								port.name.c_str(), label_x,
+								py - row_height * 0.5f, label_w,
+								row_height, with_alpha(text,
+									searched ? 0x50 : 0xC0),
+								direction == node_port_direction::input
+								? 0.0f : 1.0f, 0.5f, font_logical);
+						}
+					}
+				};
 			draw_port_row(node.inputs, node_port_direction::input);
 			draw_port_row(node.outputs, node_port_direction::output);
 		}
@@ -3689,7 +3693,7 @@ namespace vgui_editor_kit {
 			return node_graph_point{
 				inner_x + (gx - bounds.x) / bounds.width * inner_w,
 				inner_y + (gy - bounds.y) / bounds.height * inner_h };
-		};
+			};
 
 		for (const node_connection& connection : connections_)
 		{
