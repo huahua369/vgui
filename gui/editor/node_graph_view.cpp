@@ -3464,6 +3464,13 @@ namespace vgui_editor_kit {
 			0xFF2A3038u);
 		const float scale = ui_scale();
 		const double zoom = effective_zoom();
+		/* Font scales with zoom but never below a readable floor nor above a
+		 * sane ceiling.  font_px is the device-pixel size; the *_sized text API
+		 * expects a logical size, so divide the ui_scale back out. */
+		const float font_px = (float)std::clamp(kEditorBaseFontSize * zoom,
+			(double)(kEditorMinFontSizePx * scale),
+			(double)(kEditorMaxFontSizePx * scale));
+		const float font_logical = font_px / scale;
 
 		for (const node_node& node : nodes_)
 		{
@@ -3500,32 +3507,34 @@ namespace vgui_editor_kit {
 					std::min(header_height, nh), radii,
 					to_ovg(with_alpha(node_accent, searched ? 0x40 : 0xB0)));
 			}
+			const float border_px = (float)std::clamp(
+				(is_selected(node.id) ? 2.0 : 1.0) * zoom,
+				(double)kEditorMinBorderPx, (double)kEditorMaxBorderPx);
 			ovg_tools::stroke_round_rect(cb, vg, nx, ny, nw, nh, radius,
 				to_ovg(with_alpha(is_selected(node.id) ? accent_hover
 					: panel_border, is_selected(node.id) ? 0xFF : 0xAA)),
-				(is_selected(node.id) ? 2.0f : 1.0f) * scale);
+				border_px);
 
-			if (header_height >= 11.0f * scale && nw > 36.0f * scale)
+			if (header_height >= font_px * 0.5f && nw > font_px * 3.0f)
 			{
-				vgui_custom_draw_text(widget, cb, vg,
+				vgui_custom_draw_text_sized(widget, cb, vg,
 					node.title.c_str(), nx + 8.0f * scale, ny,
 					std::max(1.0f, nw - 16.0f * scale), header_height,
-					with_alpha(text, dim), 0.0f, 0.5f);
+					with_alpha(text, dim), 0.0f, 0.5f, font_logical);
 				if (node.locked)
-					vgui_custom_draw_text(widget, cb, vg, "LOCK",
+					vgui_custom_draw_text_sized(widget, cb, vg, "LOCK",
 						nx, ny, std::max(1.0f, nw - 6.0f * scale),
 						header_height,
 						with_alpha(text, searched ? 0x40 : 0x90),
-						1.0f, 0.5f);
+						1.0f, 0.5f, font_logical);
 			}
 
-			if (node.collapsed || zoom < 0.22)
+			if (node.collapsed)
 				continue;
 
 			const float row_height = (float)(kNodeRowHeight * zoom);
 			const float port_radius = (float)std::clamp(kPortRadius *
 				zoom, 1.6 * scale, 7.0 * scale);
-			const float name_size = row_height;
 			auto draw_port_row = [&](const std::vector<node_port>& ports,
 				node_port_direction direction) {
 				for (std::size_t i = 0; i < ports.size(); ++i)
@@ -3550,22 +3559,22 @@ namespace vgui_editor_kit {
 							port_radius + 1.5f * scale,
 							to_ovg(with_alpha(panel_border, 0xC0)),
 							1.0f * scale);
-					if (name_size >= 7.0f * scale)
-					{
-						const float label_x = direction ==
-							node_port_direction::input
-							? nx + port_radius + 6.0f * scale
-							: nx + 6.0f * scale;
-						const float label_w = std::max(1.0f,
-							nw - port_radius * 2.0f - 18.0f * scale);
-						vgui_custom_draw_text(widget, cb, vg,
-							port.name.c_str(), label_x,
-							py - row_height * 0.5f, label_w,
-							row_height, with_alpha(text,
-								searched ? 0x50 : 0xC0),
-							direction == node_port_direction::input
-								? 0.0f : 1.0f, 0.5f);
-					}
+				if (row_height >= font_px * 0.6f)
+				{
+					const float label_x = direction ==
+						node_port_direction::input
+						? nx + port_radius + 6.0f * scale
+						: nx + 6.0f * scale;
+					const float label_w = std::max(1.0f,
+						nw - port_radius * 2.0f - 18.0f * scale);
+					vgui_custom_draw_text_sized(widget, cb, vg,
+						port.name.c_str(), label_x,
+						py - row_height * 0.5f, label_w,
+						row_height, with_alpha(text,
+							searched ? 0x50 : 0xC0),
+						direction == node_port_direction::input
+							? 0.0f : 1.0f, 0.5f, font_logical);
+				}
 				}
 			};
 			draw_port_row(node.inputs, node_port_direction::input);
@@ -3609,10 +3618,15 @@ namespace vgui_editor_kit {
 		curve.p2 = { x + (float)c2.x, y + (float)c2.y };
 		curve.p3 = { x + (float)to_screen.x, y + (float)to_screen.y };
 		const float scale = ui_scale();
+		const double zoom = effective_zoom();
+		const float line_px = (float)std::clamp(kEditorBaseLineWidthPx * zoom,
+			(double)kEditorMinLineWidthPx, (double)kEditorMaxLineWidthPx);
+		const float plug_px = (float)std::clamp(3.0 * zoom,
+			1.5 * (double)scale, 8.0 * (double)scale);
 		ovg_tools::bezier3(cb, vg, curve,
-			to_ovg(with_alpha(accent_hover, 0xCC)), 2.0f * scale);
+			to_ovg(with_alpha(accent_hover, 0xCC)), line_px);
 		ovg_tools::fill_circle(cb, vg, curve.p3.x, curve.p3.y,
-			3.0f * scale, to_ovg(accent_hover));
+			plug_px, to_ovg(accent_hover));
 	}
 
 	void node_graph_view::draw_minimap(ovg_ctx_cb* cb, rvg_t* vg, float x,

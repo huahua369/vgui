@@ -1513,6 +1513,13 @@ namespace vgui_editor_kit {
 			points.push_back({ x + screen.x, y + screen.y });
 		};
 
+		/* Canvas content scales with view_.zoom only (its content model is not
+		 * DPI-expanded).  Match NodeGraph's rule: font scales with zoom, clamped
+		 * to a readable floor/ceiling; the *_sized text API applies ui_scale. */
+		const float zoom = view_.zoom > 0.0f ? view_.zoom : 1.0f;
+		const float font_logical = std::clamp(kEditorBaseFontSize * zoom,
+			kEditorMinFontSizePx, kEditorMaxFontSizePx);
+
 		const float hw = item.bounds.width * 0.5f;
 		const float hh = item.bounds.height * 0.5f;
 		const bool unrotated = std::fabs(item.rotation) <= kEpsilon;
@@ -1530,7 +1537,8 @@ namespace vgui_editor_kit {
 			if ((item.border >> 24) != 0 && item.border_width > 0.0f)
 				ovg_tools::stroke_round_rect(cb, vg, x + screen.x,
 					y + screen.y, w, h, radius, to_ovg(item.border),
-					std::max(1.0f, item.border_width * view_.zoom));
+					std::min(kEditorMaxBorderPx, std::max(kEditorMinBorderPx,
+						item.border_width * view_.zoom)));
 		}
 		else
 		{
@@ -1566,7 +1574,8 @@ namespace vgui_editor_kit {
 			if ((item.border >> 24) != 0 && item.border_width > 0.0f)
 				ovg_tools::stroke_polyline(cb, vg, points.data(),
 					(int)points.size(), to_ovg(item.border),
-					std::max(1.0f, item.border_width * view_.zoom),
+					std::min(kEditorMaxBorderPx, std::max(kEditorMinBorderPx,
+						item.border_width * view_.zoom)),
 					VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
 		}
 
@@ -1576,9 +1585,9 @@ namespace vgui_editor_kit {
 			const canvas_point top_left = canvas_to_screen(bounds.x, bounds.y);
 			const float w = std::max(1.0f, bounds.width * view_.zoom);
 			const float h = std::max(1.0f, bounds.height * view_.zoom);
-			vgui_custom_draw_text(widget, cb, vg, item.label.c_str(),
+			vgui_custom_draw_text_sized(widget, cb, vg, item.label.c_str(),
 				x + top_left.x, y + top_left.y, w, h, item.text_color,
-				0.5f, 0.5f);
+				0.5f, 0.5f, font_logical);
 		}
 	}
 
