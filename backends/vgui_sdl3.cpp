@@ -540,6 +540,19 @@ SDL_GPUSampleCount get_gpusamplecount(SDL_GPUDevice* device, SDL_GPUTextureForma
 	return sc;
 }
 
+namespace {
+// User-facing sample count to SDL's enum: round down to the nearest supported
+// power of two (3 -> 2, 6 -> 4) and treat anything below 2 as "no MSAA", so a
+// sloppy settings value still produces a working context.  vgpu_create_context
+// clamps further, per device support.
+SDL_GPUSampleCount to_sdl_samplecount(int samples)
+{
+	if (samples >= 8) return SDL_GPU_SAMPLECOUNT_8;
+	if (samples >= 4) return SDL_GPU_SAMPLECOUNT_4;
+	if (samples >= 2) return SDL_GPU_SAMPLECOUNT_2;
+	return SDL_GPU_SAMPLECOUNT_1;
+}
+}
 void app_mgr::kncdown()
 {
 	if (nc_down)
@@ -611,7 +624,17 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		}
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
+		{
+			// The sample count is the ovg backend's only anti-aliasing control:
+			// building the context with SAMPLECOUNT_1 aliases every vector edge
+			// (Canvas, NodeGraph, panels) no matter what later asks for.
+			samplecount = to_sdl_samplecount(msaa_samples);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, samplecount);
+			if (vgctx)
+				samplecount = vgpu_context_samples(vgctx);	// the GPU may clamp it
+			msaa_samples = (int)samplecount;
+			msaa_requested = msaa_samples;
+		}
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 		p->sync_ui_scale(true);
@@ -655,12 +678,104 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		windows_.push_back(std::move(win));
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
-			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
+		{
+			samplecount = to_sdl_samplecount(msaa_samples);
+			vgctx = vgpu_create_context(vgdev, format ? format : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, samplecount);
+			if (vgctx)
+				samplecount = vgpu_context_samples(vgctx);
+			msaa_samples = (int)samplecount;
+			msaa_requested = msaa_samples;
+		}
 		assert(vgctx);
 		p->fbo = vgpu_create_fbo(vgctx, w, h, window);
 		p->sync_ui_scale(true);
 	}
 	return p;
+}
+int app_mgr::set_msaa_samples(int samples)
+{
+	// Retired contexts outlive the rebuild by one call: the free of a host's
+	// native texture is queued against the old context and runs in the next
+	// vgui_draw(), so it must still be alive when that happens.
+	for (vgpu_ctx_t* retired : retired_ctxs_)
+		vgpu_destroy_context(retired);
+	retired_ctxs_.clear();
+
+	if (samples < 1)
+		samples = 1;
+	const SDL_GPUSampleCount wanted = to_sdl_samplecount(samples);
+
+	// Hosts mirror a settings value here every frame, so the no-op path has to
+	// be free: only a real change reaches the rebuild below.
+	if (vgctx)
+	{
+		if (vgpu_context_samples(vgctx) == wanted)
+		{
+			msaa_requested = samples;
+			return (int)wanted;
+		}
+		// Same request as the last rebuild, which the device already clamped
+		// down: rebuilding again would recreate the context every frame for a
+		// sample count this GPU cannot give.
+		if (samples == msaa_requested)
+			return (int)vgpu_context_samples(vgctx);
+	}
+
+	if (!vgdev || !device)
+	{
+		msaa_samples = samples;
+		msaa_requested = samples;
+		samplecount = wanted;
+		return (int)wanted;
+	}
+
+	// Every window FBO owns an MSAA color texture sized to the old sample count
+	// and every recorded draw refers to the old context's pipelines and buffers,
+	// so the swap is: drop the FBOs, drop the context, rebuild both.  The GPU has
+	// to be idle first -- the previous frame's submission may still be sampling
+	// these attachments, and vgpu releases textures immediately.
+	if (device)
+		SDL_WaitForGPUIdle(device);
+	struct window_slot { os_window* win; int w; int h; };
+	std::vector<window_slot> slots;
+	slots.reserve(windows_.size());
+	for (auto& w : windows_)
+	{
+		slots.push_back({ w.get(), (int)w->fbo.width, (int)w->fbo.height });
+		vgpu_destroy_fbo(&w->fbo);
+	}
+
+	SDL_GPUTextureFormat format = slots.empty()
+		? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM
+		: SDL_GetGPUSwapchainTextureFormat(device, slots.front().win->window);
+	if (format == SDL_GPU_TEXTUREFORMAT_INVALID)
+		format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+
+	if (vgctx)
+	{
+		// Keep the old context alive for one more call (see retired_ctxs_):
+		// host-side native textures queued their release against it.
+		retired_ctxs_.push_back(vgctx);
+		vgctx = nullptr;
+	}
+
+	vgctx = vgpu_create_context(vgdev, format,
+		SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, wanted);
+	if (!vgctx)
+	{
+		// A device that refuses the request must not leave the app without a 2D
+		// context: fall back to no MSAA and report what is really in effect.
+		vgctx = vgpu_create_context(vgdev, format,
+			SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
+	}
+	samplecount = vgpu_context_samples(vgctx);
+	msaa_samples = (int)samplecount;
+	msaa_requested = samples;
+
+	for (const window_slot& slot : slots)
+		slot.win->fbo = vgpu_create_fbo(vgctx, slot.w, slot.h, slot.win->window);
+
+	return msaa_samples;
 }
 
 
@@ -695,6 +810,9 @@ void app_mgr::shutdown() {
 			SDL_DestroyWindow(w->window);
 	}
 	windows_.clear();
+	for (vgpu_ctx_t* retired : retired_ctxs_)
+		vgpu_destroy_context(retired);
+	retired_ctxs_.clear();
 	vgpu_destroy_context(vgctx); vgctx = 0;
 	vgpu_destroy_device(vgdev); vgdev = 0;
 	if (device) {

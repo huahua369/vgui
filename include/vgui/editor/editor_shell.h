@@ -58,8 +58,11 @@ namespace vgui_editor_kit {
 	struct viewport_render_settings
 	{
 		bool hdr = false;
-		/* 1 or 4; the host may clamp to what the device supports. */
-		int msaa_samples = 1;
+		/* 1, 2, 4 or 8; the host may clamp to what the device supports.
+		 * MSAA on by default: it is the only anti-aliasing the vector (ovg)
+		 * backend has, so the editor's Canvas / NodeGraph edges are smooth out
+		 * of the box and View > MSAA turns it off. */
+		int msaa_samples = 4;
 		bool depth_preview = true;
 	};
 

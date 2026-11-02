@@ -1415,6 +1415,11 @@ SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx)
 	return ctx ? ctx->color_format : SDL_GPU_TEXTUREFORMAT_INVALID;
 }
 
+SDL_GPUSampleCount vgpu_context_samples(vgpu_ctx_t* ctx)
+{
+	return ctx ? ctx->samples : SDL_GPU_SAMPLECOUNT_1;
+}
+
 void vgpu_destroy_fbo(vg_fbo_t* fbo)
 {
 	if (!fbo)

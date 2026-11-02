@@ -169,6 +169,27 @@ public:
 	vgpu_ctx_t* vgctx = 0;
 
 	SDL_GPUSampleCount samplecount = SDL_GPU_SAMPLECOUNT_1; // default sample count
+	// Requested MSAA for the shared 2D vector (ovg) context.  Set it before
+	// create()/create2() to build the context with that sample count, or call
+	// set_msaa_samples() later to switch at runtime.
+	//
+	// This sample count is vgui's anti-aliasing switch for everything drawn
+	// through the ovg backend -- Canvas, NodeGraph, panels, text-free vector
+	// chrome -- because the backend smooths edges solely through the
+	// multisampled render target; there is no per-draw AA flag to turn on.
+	int msaa_samples = 1;
+	// Rebuilds the 2D vector context with `samples` MSAA (1/2/4/8, rounded down
+	// to a supported count), recreates every window FBO against it, and returns
+	// the effective count -- the GPU may clamp the request.  Returns the current
+	// count unchanged when the context already matches, so it is safe to call
+	// every frame; a real change waits for the GPU to go idle, so call it at a
+	// frame boundary (before acquiring a swapchain), at most once per frame.
+	//
+	// Native textures registered with vgui_sdl3_texture_create_native() live in
+	// the old context's texture table: release them before calling and
+	// re-register them afterwards.  The old context is retired for one more call
+	// so those queued frees still find a live context.
+	int set_msaa_samples(int samples);
 	gui_io_mk_state _mouse_key = {};
 	gui_viewport* active_viewport_ = 0;
 	docking_mgr docking_ = {};
@@ -182,6 +203,15 @@ public:
 	void pump_gamepad();
 
 private:
+	// Contexts retired by set_msaa_samples().  They are destroyed one call later
+	// on purpose: when a host drops its native textures it only queues the free,
+	// and that free runs during the next vgui_draw() through the *old* context.
+	// Destroying the context immediately would leave a dangling pointer there.
+	std::vector<vgpu_ctx_t*> retired_ctxs_;
+	// Last sample count a rebuild was attempted with.  A device that clamps the
+	// request (4 -> 1) would otherwise look like "not applied yet" on every
+	// frame and trigger a rebuild each time.
+	int msaa_requested = -1;
 	SDL_Gamepad* gamepad = nullptr;
 	Uint64 gamepad_next_repeat[4] = {};	// vgui_nav_direction per direction
 	bool gamepad_dir_held[4] = {};

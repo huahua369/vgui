@@ -189,6 +189,22 @@ struct native_view_texture
 	int width = 0;
 	int height = 0;
 
+	/* Drops the vgui texture registered against the current 2D context.  The
+	 * context is rebuilt whenever the MSAA sample count changes, and its texture
+	 * table goes with it, so the host lets go of these handles first and sync()
+	 * re-registers them on the next frame. */
+	void release()
+	{
+		if (texture)
+		{
+			vgui_texture_destroy(texture);
+			texture = nullptr;
+		}
+		source = nullptr;
+		width = 0;
+		height = 0;
+	}
+
 	bool sync(vgui_context* ui, vgpu_ctx_t* gpu_ctx, viewport_view& surface,
 		SDL_GPUTexture* next_source, int next_width, int next_height)
 	{
@@ -251,6 +267,11 @@ struct editor_state
 	native_view_texture depth_texture;
 	viewport_render_settings render_settings{};
 	bool render_settings_initialized = false;
+	/* MSAA sample count currently built into the shared 2D vector context.  The
+	 * editor's View > MSAA setting drives both the 3D viewports and this context;
+	 * this caches what the 2D context actually got so a change can be detected
+	 * without asking the backend every frame. */
+	int ui_msaa = 1;
 	/* V03: 视口里唯一可见的立方体对应的场景对象。 */
 	/* V05/V07: gizmo drag snapshots (before = pre-drag, start = preview base). */
 	std::map<object_id, editor_transform::transform> gizmo_before_transforms;
@@ -3583,6 +3604,35 @@ int main()
 		float delta = fps.tick();
 		if (wg->get_event() < 0)
 			running = false;
+
+		/* 视口抗锯齿：2D 矢量上下文（ovg）唯一的抗锯齿开关就是 MSAA 采样数，
+		 * Canvas / NodeGraph / 所有面板的斜边和圆点都靠它平滑。把 View > MSAA
+		 * 的设置同步过去，必须放在取交换链之前——切换会重建上下文和所有窗口
+		 * FBO，而该上下文正是这一帧要用来录制的。原生视口纹理挂在旧上下文上，
+		 * 先释放，sync() 会在本帧稍后按新上下文重建它们。 */
+		if (g.shell)
+		{
+			const int requested_msaa = g.shell->viewport_settings().msaa_samples;
+			if (requested_msaa != g.ui_msaa)
+			{
+				/* Unbind before releasing: the viewports hold raw texture pointers
+				 * and the new context cannot sample the old handles. */
+				g.shell->viewport().set_texture(nullptr);
+				g.shell->preview_viewport().set_texture(nullptr);
+				g.shell->depth_viewport().set_texture(nullptr);
+				g.viewport_texture.release();
+				g.preview_texture.release();
+				g.depth_texture.release();
+			}
+			/* Called every frame on purpose: when the count is unchanged it is a
+			 * single compare, and it lets the backend retire the previous
+			 * context exactly one frame after the rebuild -- the window the
+			 * queued native-texture frees need.  ui_msaa caches the *requested*
+			 * value, so a device that clamps it does not re-trigger a rebuild
+			 * (wg->msaa_samples holds what is actually in effect). */
+			wg->set_msaa_samples(requested_msaa);
+			g.ui_msaa = requested_msaa;
+		}
 
 		if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
 		{

@@ -92,6 +92,14 @@ SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx);
 // textures borrowed through vgpu_texture_init_native() must use it.
 SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx);
 
+// MSAA sample count the context was actually created with: the requested value
+// may have been clamped down to what the device supports.  For the ovg/2D
+// backend this is the *only* anti-aliasing control -- the vector passes get
+// their edge smoothing from the multisampled render target, so a context
+// created with SAMPLECOUNT_1 draws aliased geometry no matter what the caller
+// asks for at draw time.
+SDL_GPUSampleCount vgpu_context_samples(vgpu_ctx_t* ctx);
+
 // Native texture handle: samples an existing caller-owned SDL_GPUTexture.
 // vgui only borrows it and never releases it; the default sampler is
 // linear + clamp.  The texture must have SDL_GPU_TEXTUREUSAGE_SAMPLER.
