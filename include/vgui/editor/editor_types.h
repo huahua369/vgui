@@ -25,7 +25,7 @@ namespace vgui_editor_kit {
 	 * lines, ports) scale with zoom and clamp to sane extremes. Sizes are in
 	 * logical units; the drawing helpers apply the context ui_scale on top. */
 	inline constexpr float kEditorBaseFontSize = 13.0f;
-	inline constexpr float kEditorMinFontSizePx = 9.0f;
+	inline constexpr float kEditorMinFontSizePx = 1.0f;
 
 	inline constexpr float kEditorBaseBorderPx = 1.0f;
 	inline constexpr float kEditorMinBorderPx = 0.75f;
