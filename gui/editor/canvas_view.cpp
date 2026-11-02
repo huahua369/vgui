@@ -1538,8 +1538,8 @@ namespace vgui_editor_kit {
 			if ((item.border >> 24) != 0 && item.border_width > 0.0f)
 				ovg_tools::stroke_round_rect(cb, vg, x + screen.x,
 					y + screen.y, w, h, radius, to_ovg(item.border),
-					std::min(kEditorMaxBorderPx, std::max(kEditorMinBorderPx,
-						item.border_width * view_.zoom)));
+					std::max(kEditorMinBorderPx,
+						item.border_width * view_.zoom));
 		}
 		else
 		{
@@ -1575,8 +1575,8 @@ namespace vgui_editor_kit {
 			if ((item.border >> 24) != 0 && item.border_width > 0.0f)
 				ovg_tools::stroke_polyline(cb, vg, points.data(),
 					(int)points.size(), to_ovg(item.border),
-					std::min(kEditorMaxBorderPx, std::max(kEditorMinBorderPx,
-						item.border_width * view_.zoom)),
+					std::max(kEditorMinBorderPx,
+						item.border_width * view_.zoom),
 					VG_LINE_CAP_ROUND, VG_LINE_JOIN_ROUND, true);
 		}
 

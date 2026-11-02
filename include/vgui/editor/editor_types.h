@@ -19,21 +19,18 @@ namespace vgui_editor_kit {
 	inline constexpr object_id invalid_object = 0;
 
 	/* Shared visual constants for the editor kit's canvas/node-graph views.
-	 * Centralised so NodeGraph and Canvas stay consistent: fonts scale with
-	 * zoom 1:1 (growing and shrinking with the view, like part of the canvas)
-	 * with only a readable floor, while geometry strokes (borders, connection
-	 * lines, ports) scale with zoom and clamp to sane extremes. Sizes are in
+	 * Centralised so NodeGraph and Canvas stay consistent: every visual element
+	 * (fonts, node borders, connection lines, ports) scales 1:1 with zoom,
+	 * growing and shrinking with the view like part of the canvas, with only a
+	 * small floor so things stay clickable at extreme zoom-out. Sizes are in
 	 * logical units; the drawing helpers apply the context ui_scale on top. */
 	inline constexpr float kEditorBaseFontSize = 13.0f;
 	inline constexpr float kEditorMinFontSizePx = 1.0f;
 
-	inline constexpr float kEditorBaseBorderPx = 1.0f;
 	inline constexpr float kEditorMinBorderPx = 0.75f;
-	inline constexpr float kEditorMaxBorderPx = 3.0f;
 
 	inline constexpr float kEditorBaseLineWidthPx = 2.0f;
 	inline constexpr float kEditorMinLineWidthPx = 1.0f;
-	inline constexpr float kEditorMaxLineWidthPx = 4.0f;
 
 	enum class drag_payload_kind
 	{

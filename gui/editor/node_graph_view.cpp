@@ -3392,6 +3392,7 @@ namespace vgui_editor_kit {
 		const vgui_color accent_hover = theme_color(theme.accent_hover,
 			0xFF74B6FFu);
 		const float scale = ui_scale();
+		const double zoom = effective_zoom();
 
 		for (const node_connection& connection : connections_)
 		{
@@ -3436,12 +3437,17 @@ namespace vgui_editor_kit {
 			curve.p2 = { x + (float)c2.x, y + (float)c2.y };
 			curve.p3 = { x + (float)to_screen.x,
 				y + (float)to_screen.y };
+			/* Connection lines scale 1:1 with zoom (grows with the view) and
+			 * never drop below a visible floor. */
+			const float select_glow = (float)std::max(1.0, 5.0 * zoom);
+			const float line_w = (float)std::max(1.0,
+				(selected ? 2.5 : 1.8) * zoom);
 			if (selected)
 				ovg_tools::bezier3(cb, vg, curve,
-					to_ovg(with_alpha(accent_hover, 0x50)), 5.0f * scale);
+					to_ovg(with_alpha(accent_hover, 0x50)), select_glow);
 			ovg_tools::bezier3(cb, vg, curve,
 				to_ovg(with_alpha(color, selected ? 0xFF : 0xCC)),
-				(selected ? 2.5f : 1.8f) * scale);
+				line_w);
 		}
 		(void)width;
 		(void)height;
@@ -3507,9 +3513,11 @@ namespace vgui_editor_kit {
 					std::min(header_height, nh), radii,
 					to_ovg(with_alpha(node_accent, searched ? 0x40 : 0xB0)));
 			}
-			const float border_px = (float)std::clamp(
+			/* Node border scales 1:1 with zoom (grows with the view) and
+			 * never drops below a visible floor. */
+			const float border_px = (float)std::max(
 				(is_selected(node.id) ? 2.0 : 1.0) * zoom,
-				(double)kEditorMinBorderPx, (double)kEditorMaxBorderPx);
+				(double)kEditorMinBorderPx);
 			ovg_tools::stroke_round_rect(cb, vg, nx, ny, nw, nh, radius,
 				to_ovg(with_alpha(is_selected(node.id) ? accent_hover
 					: panel_border, is_selected(node.id) ? 0xFF : 0xAA)),
@@ -3533,8 +3541,10 @@ namespace vgui_editor_kit {
 				continue;
 
 			const float row_height = (float)(kNodeRowHeight * zoom);
-			const float port_radius = (float)std::clamp(kPortRadius *
-				zoom, 1.6 * scale, 7.0 * scale);
+			/* Port dots scale 1:1 with zoom (grow/shrink with the view) and
+			 * never drop below a clickable floor. */
+			const float port_radius = (float)std::max(kPortRadius * zoom,
+				1.6 * scale);
 			auto draw_port_row = [&](const std::vector<node_port>& ports,
 				node_port_direction direction) {
 				for (std::size_t i = 0; i < ports.size(); ++i)
@@ -3561,12 +3571,19 @@ namespace vgui_editor_kit {
 							1.0f * scale);
 				if (row_height >= font_px * 0.6f)
 				{
+					/* Anchor the label to the port dot's real screen position
+					 * (px) so it tracks zoom and always clears the dot. */
+					const float pad = 6.0f * scale;
+					const float label_right_in = px + port_radius + pad;
+					const float label_left_out = px - port_radius - pad;
 					const float label_x = direction ==
 						node_port_direction::input
-						? nx + port_radius + 6.0f * scale
-						: nx + 6.0f * scale;
-					const float label_w = std::max(1.0f,
-						nw - port_radius * 2.0f - 18.0f * scale);
+						? label_right_in
+						: nx + pad;
+					const float label_w = direction ==
+						node_port_direction::input
+						? std::max(1.0f, (nx + nw - pad) - label_right_in)
+						: std::max(1.0f, label_left_out - (nx + pad));
 					vgui_custom_draw_text_sized(widget, cb, vg,
 						port.name.c_str(), label_x,
 						py - row_height * 0.5f, label_w,
@@ -3619,10 +3636,13 @@ namespace vgui_editor_kit {
 		curve.p3 = { x + (float)to_screen.x, y + (float)to_screen.y };
 		const float scale = ui_scale();
 		const double zoom = effective_zoom();
-		const float line_px = (float)std::clamp(kEditorBaseLineWidthPx * zoom,
-			(double)kEditorMinLineWidthPx, (double)kEditorMaxLineWidthPx);
-		const float plug_px = (float)std::clamp(3.0 * zoom,
-			1.5 * (double)scale, 8.0 * (double)scale);
+		/* Connection line scales 1:1 with zoom (grows with the view) and never
+		 * drops below a visible floor. */
+		const float line_px = (float)std::max(kEditorBaseLineWidthPx * zoom,
+			(double)kEditorMinLineWidthPx);
+		/* Pending-connection plug scales 1:1 with zoom (grows with the view)
+		 * and never drops below a clickable floor. */
+		const float plug_px = (float)std::max(3.0 * zoom, 1.5 * scale);
 		ovg_tools::bezier3(cb, vg, curve,
 			to_ovg(with_alpha(accent_hover, 0xCC)), line_px);
 		ovg_tools::fill_circle(cb, vg, curve.p3.x, curve.p3.y,
