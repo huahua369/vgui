@@ -991,7 +991,6 @@ static void test_png_export(vgui_widget* root)
 
 int main(void)
 {
-	check(&vgui_chart_theme_from_theme != NULL, "chart: C ABI symbols");
 	{
 		vgui_chart_theme theme;
 		memset(&theme, 0, sizeof(theme));

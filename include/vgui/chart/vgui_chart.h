@@ -254,8 +254,8 @@ extern "C" {
 
 	VGUI_API int vgui_chart_set_options(vgui_chart* chart,
 		const vgui_chart_options* options);
-	/* axis: 0 = x, 1 = y.  Only axis 0 is meaningful in P0; axis 1 sets the
-	 * left Y axis range, tick count and formatting. */
+	/* axis: 0 = x, 1 = y.  P1 still has a single left Y axis; axis 1 sets
+	 * its range, tick count and formatting. */
 	VGUI_API int vgui_chart_set_axis(vgui_chart* chart, int axis,
 		const vgui_chart_axis_desc* desc);
 	VGUI_API int vgui_chart_set_axis_format(vgui_chart* chart, int axis,

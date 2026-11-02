@@ -138,7 +138,7 @@ y_axis.format_pattern = "%.0f";
 vgui_chart_set_axis(chart, 1, &y_axis);
 ```
 
-- 轴 0 是 X 轴，轴 1 是左侧 Y 轴。P0 只有一个 Y 轴；`series_desc.axis` 目前只接受 0。
+- 轴 0 是 X 轴，轴 1 是左侧 Y 轴。目前只有一个 Y 轴；`series_desc.axis` 只接受 0。
 - `min >= max` 表示自动范围。柱状图始终包含 0；折线/面积图设置 `include_zero = 1` 后也包含 0。
 - `format_pattern` 必须是恰好包含一个浮点转换的 printf 风格模式（如 `%.1f`、`%g ms`）。为了安全，`%n`、字符串转换和多个转换会被拒绝。
 - `format` 回调优先级高于格式模式；默认格式为 `%.6g`。
@@ -239,7 +239,7 @@ vgui_gauge_set_value(gauge, 78.0);
 
 ## JSON 仪表板（schema version 1）
 
-`vgui_dashboard_create()` 创建单列仪表板根面板，`vgui_dashboard_load_json()` 解析 JSON 并重建卡片树。加载是原子的：解析或构建失败时不会修改已有仪表板，错误文本包含 JSON 路径（例如 `cards[1].axes.y.max: expected number`）。
+`vgui_dashboard_create()` 创建仪表板根面板，`vgui_dashboard_load_json()` 解析 JSON 并重建卡片树。加载是原子的：解析或构建失败时不会修改已有仪表板，错误文本包含 JSON 路径（例如 `cards[1].axes.y.max: expected number`）。
 
 ```c
 vgui_dashboard* dashboard = vgui_dashboard_create(root);
@@ -307,7 +307,7 @@ if (!vgui_dashboard_load_json(dashboard, json_text, json_len,
 - `value_key` 由 `vgui_dashboard_set_number()` 更新，显示值由 `format`（printf 浮点模式）和 `unit` 格式化。
 - `delta_key`、`text_key` 由 `vgui_dashboard_set_text()` 更新；文本为空时对应标签隐藏。
 - `status_key` 由 `vgui_dashboard_set_status()` 更新；也可以用卡片 `id` 作为 key。状态值：0 normal、1 info、2 warning、3 critical、4 stale。
-- `value` 可提供初始值；未提供时显示 `--`。P0 持久化不保存 KPI 运行时值。
+- `value` 可提供初始值；未提供时显示 `--`。`vgui_dashboard_save_json()` 不保存 KPI 运行时值；需要恢复时使用 `vgui_dashboard_save_json_ex()` 的 `VGUI_CHART_SAVE_RUNTIME`。
 
 ### 图表卡片
 
@@ -480,7 +480,7 @@ vgui_dashboard_export_csv(dashboard,
 - 文本字段（`series`、`card`）始终加双引号，内部 `"` 写成 `""`。
 - 数值使用 `%.17g`，足以无损往返 `double`；非有限值写成 `nan`、`inf`、`-inf`。
 - 行顺序为序列添加顺序；同一序列内按数据顺序。环形缓冲按从旧到新的逻辑顺序导出。
-- 如果没有任何可导出的序列，返回 0 并设置错误。写入回调失败同样返回 0。
+- 如果没有任何可见序列（`VGUI_CHART_EXPORT_INCLUDE_HIDDEN` 可放宽），返回 0 并设置错误；可见但为空的序列只产生零行。写入回调失败同样返回 0。
 - 仪表板导出复用同一套逐图表导出，自动附加卡片 id 列。
 
 ## PNG 导出（P1）

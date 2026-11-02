@@ -14,7 +14,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
 | **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView、NodeGraphView、CodeEditor、MarkdownView（`vgui_editor_kit`，基于公共 C API） |
-| **图表模块** | 折线/面积/柱状图、径向仪表盘与 JSON 仪表板（可选 `vgui_chart`）：每序列十万点级、min/max 降采样、环形缓冲、CSV 导出、配置持久化、十字准线/缩放/键盘与无障碍 |
+| **图表模块** | 折线/面积/柱状图、径向仪表盘与 JSON 仪表板（可选 `vgui_chart`）：每序列十万点级、min/max 降采样、环形缓冲、CSV/PNG 导出、配置与数据快照持久化、stack/wrap/grid/columns 布局、日期时间轴、十字准线/缩放/键盘与无障碍 |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
 | **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
@@ -846,8 +846,10 @@ vgui_chart_append_points(chart, rps, points, count);
 - 模块拥有点数据，绘制期间不回调宿主；`reserve()` 预分配，`set_ring_capacity()` 启用固定容量环形缓冲，实时采集使用批量 `append_points()`。
 - 默认 min/max 降采样按屏幕像素列聚合，十万点不会直接生成十万段路径；`vgui_chart_get_stats()` 可读取最近一次绘制的统计。
 - 交互包含图例显隐、悬浮提示/十字准线、中键平移、`Ctrl+滚轮` 缩放、双击复位和键盘逐点导航；主题从 `vgui_theme` 自动派生，支持高对比度。
-- JSON 仪表板 schema version 1 使用单列 `stack` 布局，支持 KPI、图表和仪表盘卡片；`vgui_dashboard_load_json()` 原子替换，失败保留旧树。
-- `vgui_dashboard_save_json()` 保存配置和图表视图状态（不保存点数据/KPI/仪表运行值）；`vgui_chart_export_csv()` / `vgui_dashboard_export_csv()` 导出长格式 CSV。
+- JSON 仪表板 schema version 1 支持 `stack` / `wrap` / `grid` / `columns` 布局和卡片 `span`，包含 KPI、图表和仪表盘卡片；`vgui_dashboard_load_json()` 原子替换，失败保留旧树。
+- `vgui_dashboard_save_json()` 保存配置和图表视图状态；`vgui_dashboard_save_json_ex()` 可追加点数据与 KPI/仪表运行时值快照，普通加载会自动恢复。
+- `VGUI_CHART_SCALE_DATETIME` 把 X 解释为 Unix epoch 秒，按 UTC 或本地时区生成日历刻度；`vgui_chart_export_csv()` / `vgui_dashboard_export_csv()` 导出长格式 CSV。
+- PNG 导出由宿主安装一次离屏渲染钩子（`vgui_chart_set_png_renderer()`），模块负责编码；`vgui_chart_export_png()` / `vgui_dashboard_export_png()` 输出二进制 PNG。
 
 ```json
 {
@@ -868,7 +870,7 @@ vgui_chart_append_points(chart, rps, points, count);
 }
 ```
 
-完整 API、schema 字段、CSV 格式、十万点/环形缓冲约定与 P1 边界见 [`docs/chart.md`](docs/chart.md)。
+完整 API、schema 字段、四种布局、日期时间轴、CSV/PNG 导出、十万点/环形缓冲约定与数据快照见 [`docs/chart.md`](docs/chart.md)。
 
 ### 交互与焦点
 
@@ -982,7 +984,7 @@ out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例（操作路径见
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
 out/bin/x64d/vgui_c_api_test.exe       # 纯 C API 头文件/链接与行为冒烟测试
-out/bin/x64d/vgui_chart_test.exe       # 纯 C 图表/仪表盘/JSON 仪表板/CSV 自测（十万点、环形缓冲、持久化）
+out/bin/x64d/vgui_chart_test.exe       # 纯 C 图表/仪表盘/JSON 仪表板/CSV/PNG 自测（十万点、环形缓冲、P1 布局/日期时间轴/数据快照）
 out/bin/x64d/vgui_chart_render_test.exe # 图表/仪表盘离屏像素与 PNG 回归（无 Vulkan 时 SKIP）
 out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文档生命周期(S08)、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、代码编辑器(T04)、Markdown 预览(T05)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
@@ -1126,7 +1128,7 @@ gui/
   vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Dock/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（不安装）
   editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)，含编辑/预览共享的 Markdown 词法 markdown_lex
-  chart/              vgui_chart 实现：数据/布局/绘制/交互/CSV/JSON 仪表板/仪表盘
+  chart/              vgui_chart 实现：数据/布局/绘制/交互/CSV/PNG/JSON 仪表板/仪表盘
 backends/
   vgui_sdl3.cpp       SDL3 窗口、输入、IME、DPI 与 GPU 视口实现
   vgui_renderer_sdl3.cpp vgui 专用 SDL3 GPU 2D 矢量后端实现
@@ -1142,8 +1144,8 @@ sample/
   vgui_edit_test.cpp        编辑框、滚动、主题、焦点自测
   vgui_model_test.cpp       列表、树、菜单、MenuBar、Dock、Tooltip、Modal/Dialog/Toast、按键处理器与 UI 缩放自测
   vgui_c_api_test.c         纯 C 消费者冒烟测试（含 UI 缩放、监听器与整树重算）
-  vgui_chart_test.c         纯 C 图表/仪表盘/JSON 仪表板/CSV 测试（十万点、环形缓冲、持久化）
-  vgui_chart_render_test.cpp 图表/仪表盘离屏像素与 PNG 回归
+  vgui_chart_test.c         纯 C 图表/仪表盘/JSON 仪表板/CSV/PNG 测试（十万点、环形缓冲、P1 布局/日期时间轴/数据快照）
+  vgui_chart_render_test.cpp 图表/仪表盘离屏像素、日期时间轴与 PNG 回归
   vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、文档生命周期、类型化属性、命令栈、资产/日志/Canvas/时间线/节点图/代码编辑器/Markdown 预览、DPI 与布局持久化自测
   vgui_texture_test.cpp     图片纹理离屏读回测试
   vgui_screenshot_test.cpp  E03 截图回归（离屏渲染 + 基线容差对比）
@@ -1157,7 +1159,7 @@ sample/
   vgui_runtime_hud.cpp      R1 运行时 HUD 示例：load-op/离屏纹理两种合成模式
   shaders/                  Phase 0 Slang 源与生成的 SPIR-V 头（compile.ps1）
 docs/
-  chart.md            vgui_chart 图表/仪表盘/JSON 仪表板（P0）
+  chart.md            vgui_chart 图表/仪表盘/JSON 仪表板（P0/P1）
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
   editor_roadmap.md   游戏编辑器组件路线图
   runtime_roadmap.md  游戏运行时 UI 路线图（R 系列）
@@ -1167,7 +1169,7 @@ docs/
 
 ## 路线图
 
-游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)；游戏运行时方向（HUD 合成、手柄导航、显示列表缓存等）见 [`docs/runtime_roadmap.md`](docs/runtime_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，图表/仪表盘 P0 范围与 P1 边界见 [`docs/chart.md`](docs/chart.md)。
+游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)；游戏运行时方向（HUD 合成、手柄导航、显示列表缓存等）见 [`docs/runtime_roadmap.md`](docs/runtime_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，图表/仪表盘 P0/P1 能力见 [`docs/chart.md`](docs/chart.md)。
 
 ## 测试
 
@@ -1185,7 +1187,7 @@ out/bin/x64d/ovg_scene_json_test.exe
 
 构建示例时还会编译 `vgui_headers_test`：它为每个安装的公共头生成独立翻译单元，验证头文件自包含，并且只通过公共 include 路径解析依赖。
 
-`vgui_chart_test` 以 C99 编译，覆盖十万点追加/读取、环形缓冲、CSV、JSON schema v1、加载失败回滚、重载几何保持和保存/重载；`vgui_chart_render_test` 使用离屏 FBO 回读折线/柱状/仪表盘像素并写出 PNG，无 Vulkan 设备时返回 77。CTest：
+`vgui_chart_test` 以 C99 编译，覆盖十万点追加/读取、环形缓冲、CSV、JSON schema v1、加载失败回滚、重载几何保持和保存/重载；P1 部分覆盖 wrap/grid/columns 布局与 span、日期时间轴 JSON 往返、数据快照（含 NaN/Inf 与环形顺序）和 PNG 导出。`vgui_chart_render_test` 使用离屏 FBO 回读折线/柱状/仪表盘像素并写出 PNG，P1 部分覆盖 datetime 轴刻度、grid 布局渲染与真实 FBO 渲染器的 PNG 导出；无 Vulkan 设备时返回 77。CTest：
 
 ```bash
 ctest --test-dir out/build/x64-debug -R vgui_chart --output-on-failure
