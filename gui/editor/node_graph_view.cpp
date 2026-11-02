@@ -3464,13 +3464,13 @@ namespace vgui_editor_kit {
 			0xFF2A3038u);
 		const float scale = ui_scale();
 		const double zoom = effective_zoom();
-		/* Font scales with zoom but never below a readable floor nor above a
-		 * sane ceiling.  font_px is the device-pixel size; the *_sized text API
-		 * expects a logical size, so divide the ui_scale back out. */
-		const float font_px = (float)std::clamp(kEditorBaseFontSize * zoom,
-			(double)(kEditorMinFontSizePx * scale),
-			(double)(kEditorMaxFontSizePx * scale));
-		const float font_logical = font_px / scale;
+		/* Font scales 1:1 with zoom (grows and shrinks with the view, like part
+		 * of the canvas) and never drops below a readable floor.  The *_sized
+		 * text API expects a logical size and applies ui_scale internally, so
+		 * font_px keeps the device-pixel size for geometry guards. */
+		const float font_logical = std::max(kEditorBaseFontSize * (float)zoom,
+			kEditorMinFontSizePx);
+		const float font_px = font_logical * scale;
 
 		for (const node_node& node : nodes_)
 		{

@@ -1514,11 +1514,12 @@ namespace vgui_editor_kit {
 		};
 
 		/* Canvas content scales with view_.zoom only (its content model is not
-		 * DPI-expanded).  Match NodeGraph's rule: font scales with zoom, clamped
-		 * to a readable floor/ceiling; the *_sized text API applies ui_scale. */
+		 * DPI-expanded).  Match NodeGraph's rule: font scales 1:1 with zoom
+		 * (grows and shrinks with the view) and never drops below a readable
+		 * floor; the *_sized text API applies ui_scale. */
 		const float zoom = view_.zoom > 0.0f ? view_.zoom : 1.0f;
-		const float font_logical = std::clamp(kEditorBaseFontSize * zoom,
-			kEditorMinFontSizePx, kEditorMaxFontSizePx);
+		const float font_logical = std::max(kEditorBaseFontSize * zoom,
+			kEditorMinFontSizePx);
 
 		const float hw = item.bounds.width * 0.5f;
 		const float hh = item.bounds.height * 0.5f;
