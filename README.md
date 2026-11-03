@@ -13,6 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `<vgui/vgui.h>`（兼容旧路径 `<vgui.h>`），不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
+| **文件对话框** | 原生打开/保存/选目录（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG portal，经 SDL3 后端）；异步、结果从 `vgui_update` 派发；公共头 `<vgui/vgui.h>` 不含 SDL 类型，provider 可替换 |
 | **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView、NodeGraphView、CodeEditor、MarkdownView（`vgui_editor_kit`，基于公共 C API） |
 | **图表模块** | 折线/面积/柱状图、径向仪表盘与 JSON 仪表板（可选 `vgui_chart`）：每序列十万点级、min/max 降采样、环形缓冲、CSV/PNG 导出、配置与数据快照持久化、stack/wrap/grid/columns 布局、日期时间轴、十字准线/缩放/键盘与无障碍 |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
@@ -984,6 +985,56 @@ vgui_binding_add_dependency(total, &order);      // 可登记多个模型
 
 诊断：`vgui_binding_count(ui)` 与 `vgui_binding_last_flush_count(ui)`（空闲帧为 0）可用来画绑定浮层。
 
+### 文件对话框（原生对话框）
+
+打开/保存/选目录走系统原生对话框（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG
+portal），实现放在 SDL3 后端，**公共头 `vgui.h` 里没有任何 SDL 类型**：接口只由 C 字符串和
+回调组成，其他后端或测试可以自己实现 provider。
+
+```c
+static void on_picked(void* user, vgui_file_dialog_kind kind,
+    const char* const* paths, int count, const char* error)
+{
+    if (error)        { /* 对话框失败 */ }
+    else if (count == 0) { /* 用户取消 */ }
+    else              { /* paths[0..count-1]，仅在回调期间有效 */ }
+}
+
+vgui_file_dialog_desc desc;
+vgui_file_dialog_desc_init(&desc);           /* 所有字段清零 */
+desc.title = "导出场景";
+desc.default_name = "scene.json";            /* SAVE 的建议文件名 */
+desc.accept_label = "导出";
+vgui_file_filter filters[] = { { "场景 JSON", "*.json" }, { "全部文件", "*" } };
+desc.filters = filters;
+desc.filter_count = 2;
+vgui_file_dialog_save(&desc, on_picked, my_state);
+```
+
+C++ 侧有 `#include <vgui/file_dialog.h>` 的薄封装（`std::string` / `std::function`）：
+
+```cpp
+vgui::file_dialog_options opt;
+opt.title = "导出场景";
+opt.default_name = "scene.json";
+opt.filters = { { "场景 JSON", "*.json" }, { "全部文件", "*" } };
+vgui::save_file(opt, [](const vgui::file_dialog_result& r) {
+    if (r.ok()) export_scene(r.path());
+});
+```
+
+行为约定：
+
+- **异步**。`vgui_file_dialog_*` 只负责把请求交给平台，返回非 0 表示已受理；结果在之后的
+  `vgui_update()` 里派发，即回调永远在驱动 UI 的线程上，即便平台从工作线程回报。
+- **三态结果**：`count > 0` 选中；`count == 0 && !error` 取消；`error != NULL` 失败。
+- `desc` 只在调用期间被读取，可以放栈上；`paths` 与其字符串只在回调期间有效。
+- `vgui_file_dialog_available()` 返回 0 表示当前构建没有 provider（`VGUI_CORE_ONLY`），
+  show 函数返回 0 且**不会**回调，宿主可退回手输路径。
+- 过滤串接受 `"*.png;*.jpg"` 与 `"png;jpg"` 两种写法，`"*"` 表示全部；后端负责转换成各平台格式。
+- 需要自定义对话框时用 `vgui_file_dialog_set_provider()` 装上自己的 provider，并用
+  `vgui_file_dialog_post_result()`（线程安全）回报结果；SDL3 后端在库加载时自动装好一个。
+
 ## 快速开始
 
 ### 环境要求
@@ -1118,7 +1169,7 @@ out/bin/x64d/vgui_game_editor.exe
 6. **Dock**：拖动标签重排/跨区/浮出，View 菜单可显示/隐藏面板；`editor_shell` 提供布局保存/恢复 API（示例未落盘，kit 自测覆盖该路径）。
 7. **底部视图**：ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE 是底部区的七个 Dock 面板，可逐个拖到中央浮出方块浮出、拖到左/右带跨区合并或在底部区内重排，开合与矩形随布局存盘；可验证日志分级/堆栈/跳转、2D 画布、虚拟表格、时间线播放与关键帧、节点图连线/搜索/小地图、代码编辑器语法高亮与查找替换。
 
-示例的场景是真实的内存文档：File > Save/Save As 把场景写成 `format: "vgui-game-scene"`、`version: 1` 的 JSON（对象 id、父子关系、可见/锁定/可渲染标志、位置/旋转/缩放和字符串属性），File > Open 校验格式、修复悬空父引用并拒绝父链环，New 重建 World/Camera/Light 初始场景；路径输入框模拟宿主的文件对话框，退出请求会结束主循环。资产库和命令历史仍在内存中，资产数据库与平台文件对话框由宿主实现。`vgui_editor_kit_test.exe` 覆盖布局持久化、命令栈、文档回调与各组件边界。
+示例的场景是真实的内存文档：File > Save/Save As 把场景写成 `format: "vgui-game-scene"`、`version: 1` 的 JSON（对象 id、父子关系、可见/锁定/可渲染标志、位置/旋转/缩放和字符串属性），File > Open 校验格式、修复悬空父引用并拒绝父链环，New 重建 World/Camera/Light 初始场景；场景路径仍用输入框输入（便于纯键盘演示），而 Assets 面板的 Import... 已改走原生文件对话框 `vgui_file_dialog_open()`（无 provider 时退回输入框），退出请求会结束主循环。资产库和命令历史仍在内存中；资产数据库由宿主实现。`vgui_editor_kit_test.exe` 覆盖布局持久化、命令栈、文档回调与各组件边界。
 
 ## 最小示例
 

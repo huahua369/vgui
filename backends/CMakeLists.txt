@@ -16,6 +16,7 @@ if(NOT VGUI_CORE_ONLY)
     list(APPEND OVGUI_SOURCES
         win_core.cpp
         vgui_sdl3.cpp
+        vgui_sdl3_dialog.cpp
         vgui_renderer_sdl3.cpp
     )
 endif()

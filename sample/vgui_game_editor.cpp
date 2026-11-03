@@ -1406,8 +1406,23 @@ bool editor_state::delete_objects(const std::vector<object_id>& ids)
 	return true;
 }
 
-/* A06 Import...: 宿主负责文件对话框;这里用一个路径输入框模拟,确认后走
- * 与 OS 拖入完全相同的 import_files() 入口。 */
+/* A06 Import...: 平台文件对话框由核心 vgui_file_dialog_* 提供（SDL3 后端）；
+ * 结果在 vgui_update 里回到 UI 线程，随后走与 OS 拖入完全相同的入口。 */
+static void on_native_import(void* user, vgui_file_dialog_kind kind,
+	const char* const* paths, int count, const char* error)
+{
+	(void)user;
+	(void)kind;
+	if (error || count <= 0 || !g.shell) return;
+	std::vector<std::string> files;
+	files.reserve((size_t)count);
+	for (int i = 0; i < count; ++i)
+		if (paths && paths[i]) files.emplace_back(paths[i]);
+	if (!files.empty())
+		(void)g.shell->assets().import_files(files);
+}
+
+/* 没有 provider（CORE_ONLY 构建）时的退路：路径输入框模拟对话框。 */
 static void on_demo_import_prompt(vgui_context* ctx, int result,
 	const char* text, void* user)
 {
@@ -3417,6 +3432,22 @@ static void setup_editor(vgui_context* ui)
 		return g.asset_dependencies(item);
 	});
 	assets.set_import_prompt_handler([]() {
+		if (vgui_file_dialog_available())
+		{
+			static const vgui_file_filter filters[] = {
+				{ "Assets", "*.mesh;*.glb;*.gltf;*.obj;*.fbx;*.png;*.jpg;*.mat" },
+				{ "All files", "*" }
+			};
+			vgui_file_dialog_desc desc;
+			vgui_file_dialog_desc_init(&desc);
+			desc.title = "Import Assets";
+			desc.accept_label = "Import";
+			desc.filters = filters;
+			desc.filter_count = 2;
+			desc.allow_many = 1;
+			vgui_file_dialog_open(&desc, &on_native_import, nullptr);
+			return;
+		}
 		vgui_dialog_prompt(g.ui, "Import Asset",
 			"File path (simulated OS dialog):", "NewAsset.png",
 			&on_demo_import_prompt, nullptr);

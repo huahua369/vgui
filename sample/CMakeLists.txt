@@ -100,6 +100,7 @@ target_include_directories(vgui_sample_common INTERFACE
 # 这样既检查头文件自包含，也保证它们不依赖 gui/、backends/ 或 OVG 私有头。
 set(VGUI_PUBLIC_HEADERS
     "${VGUI_SOURCE_DIR}/include/vgui/vgui.h"
+    "${VGUI_SOURCE_DIR}/include/vgui/file_dialog.h"
     "${VGUI_SOURCE_DIR}/include/vgui.h")
 file(GLOB VGUI_PUBLIC_BACKEND_HEADERS CONFIGURE_DEPENDS
     "${VGUI_SOURCE_DIR}/include/vgui/backend/*.h")

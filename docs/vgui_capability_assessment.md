@@ -109,7 +109,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 2. **无障碍**：无屏幕阅读器支持（仅键盘/手柄/高对比）
 3. **响应式/声明式数据绑定**：P0–P3 已实现——`vgui_bind`/`vgui_bind_cb`/C++ `vgui::bind` 提供双向绑定（value/text/checked/progress/visible/enabled/selection），模型变更经版本号懒 flush、用户编辑自动回写、无回声；编辑日志（`vgui_set_edit_recorder`）把用户编辑变成可撤销命令，editor kit 的 `binding_undo` 直接接到 `command_stack`（滑杆拖动合并为一步），`vgui::model_write` / `VGUI_MODEL_SET` 自动标脏，PropertyGrid 可用 `field_property` 直接绑字段，`vgui::vector_rows` 把 `std::vector<Row>` 适配成虚拟行源，`vgui_binding_add_dependency` 支持依赖驱动的 computed 值；`vgui_demo` 有绑定+撤销演示卡片，`model_test`/`editor_kit_test` 有断言。仍缺字符串表达式 DSL 与依赖自动分析，详见 `docs/data_binding_roadmap.md`
 4. **无多线程 UI**，单渲染线程约束
-5. **无原生文件对话框**（仅文件拖入）
+5. **原生文件对话框**：已实现——`vgui_file_dialog_open/save/select_folder`（异步、结果从 `vgui_update` 派发），实现走 SDL3 `SDL_ShowFileDialogWithProperties`（Windows `IFileDialog` / macOS `NSOpenPanel` / Linux XDG portal），**公共头 `vgui.h` 不含任何 SDL 类型**：接口只有 C 字符串 + 回调，后端通过 provider 桥接；`VGUI_CORE_ONLY` 下 `vgui_file_dialog_available()` 返回 0。仍缺平台内嵌预览（如缩略图选择器）与"最近使用目录"记忆
 6. **无高级富文本/排版**（核心层）
 7. **无 WebView / 多媒体 / 网络**
 8. **C API 优先**：暂无 C# / Python 等语言绑定（C 接口便于自建，但非开箱）
@@ -122,10 +122,10 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 
 - **游戏编辑器 / 开发工具**：vgui 最强、最现成的选择，组件几乎齐全，可直接 dogfood，`vgui_game_editor` 已验证全流程。
 - **游戏运行时 HUD / 游戏内 UI**：能力完备且经过基准验证，但只适合"引擎拥有主循环与渲染器、vgui 负责控件树与绘制录制"的嵌入式模式；移动端 / Web / 跨引擎需额外接 `ovg_draw_data_t`。
-- **普通桌面应用**：控件、布局、主题、i18n、图表都能打，但**文件对话框、富文本、无障碍、移动/Web 后端**是明显缺口；若要替代 Qt / Flutter 需自行补齐这些配套。
+- **普通桌面应用**：控件、布局、主题、i18n、图表、原生文件对话框都能打，但**富文本、无障碍、移动/Web 后端**仍是明显缺口；若要替代 Qt / Flutter 需自行补齐这些配套。
 
 ### 优先级建议（若要补齐普通应用短板）
-1. 暴露 SDL3 文件打开/保存对话框封装（低成本、高收益）
+1. ~~暴露 SDL3 文件打开/保存对话框封装~~（已完成，见 §5 第 5 条）
 2. 核心层补富文本/语法高亮/行号/查找替换，或把 kit 的 CodeEditor 能力下沉
 3. 增加屏幕阅读器/ARIA 语义（无障碍合规）
 4. 评估 WebAssembly / WebGPU 与移动端后端需求（若目标平台包含 Web/移动）
@@ -153,7 +153,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 | 集合/派生绑定 P3 | 数据密集界面、编辑器 | `vgui::vector_rows<Row>` 把 `std::vector<Row>` 适配成 `vgui_row_source`（attach/refresh/invalidate_rows）；`vgui_binding_add_dependency` 让 cb 绑定在依赖模型标脏时重算（computed 值）；`vgui_binding_count` / `vgui_binding_last_flush_count` 提供诊断计数 |
 
 ### 7.3 仍维持的"共通缺失"（未变）
-单一后端（SDL3 GPU，缺移动/Web/主机）、屏幕阅读器/ARIA、多线程 UI、原生文件对话框、核心层高级富文本、WebView/多媒体/网络、语言绑定、插件体系——以上均未改动，维持原结论。数据绑定已从该清单移出（见 §7.2）；其字符串表达式 DSL、依赖自动分析仍缺（核心功能已落地，见 roadmap P3）。
+单一后端（SDL3 GPU，缺移动/Web/主机）、屏幕阅读器/ARIA、多线程 UI、核心层高级富文本、WebView/多媒体/网络、语言绑定、插件体系——以上均未改动，维持原结论。数据绑定（§7.2）与原生文件对话框（§7.7）已从该清单移出；数据绑定的字符串表达式 DSL、依赖自动分析仍缺（核心功能已落地，见 roadmap P3）。
 
 ### 7.4 文档一致性修正
 - 普通应用 §2.2：删除"菜单项无图标 API"的错误表述。
@@ -172,3 +172,9 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - 顺带修正的过期断言：节点图行高 18→24 后的几何常量（节点高 70→82、端口 y 114→120 / 134→144 / 154→168、端口矩形 y 110→116）、编辑器外壳默认 MSAA 1→4 及其 toggle 顺序、`last_flush_count` 用例（computed 值不变时不计推送）、`model_write` 用例误用已解绑滑杆、派生绑定 9+2 写成 15。
 - 已知遗留：`vgui_texture_test` 2/79 失败（`cpu rotation top-left`、`cpu center rotation tl` 取到 `0x7F7F0000`），为 CPU 旋转图元边界像素的半透明混合，属采样精度问题，与上述改动无关；GPU 截图回归未在本机执行。
 
+### 7.7 原生文件对话框（2026-11-03）
+- 公共 API（`include/vgui/vgui.h`「File dialogs」段）：`vgui_file_dialog_kind`（OPEN/SAVE/FOLDER）、`vgui_file_filter`、`vgui_file_dialog_desc`、`vgui_file_dialog_fn`，以及 `vgui_file_dialog_desc_init/open/save/select_folder/show/available`。**头文件里没有任何 SDL 类型**——只有 C 字符串、整数和函数指针，C 消费方与非 SDL 后端同样可用。
+- 平台桥：`vgui_file_dialog_provider_fn` + `vgui_file_dialog_set_provider/get_provider`；provider 用 `vgui_file_dialog_post_result()` 回报（可从任意线程），核心用互斥队列暂存并在 `vgui_update()` 里派发，因此回调总在 UI 线程；`vgui_file_dialog_pending()` 暴露队列长度便于诊断/测试。provider 的惰性单例状态避开了静态初始化顺序问题。
+- SDL3 实现（`backends/vgui_sdl3_dialog.cpp`，库加载时用静态初始化器安装）：把描述符复制成自持有请求（SDL 会一直读过滤器数组直到回调），再调 `SDL_ShowFileDialogWithProperties`，支持 title / accept / cancel / default_location / default_name / allow_many；过滤器把 `*.png;*.jpg` 与 `png;jpg` 归一化成 SDL 要求的 `png;jpg`；父窗口取当前键盘/鼠标焦点窗口。
+- C++ 便捷头 `include/vgui/file_dialog.h`：`vgui::file_dialog_options` / `file_filter` / `file_dialog_result`（`ok/cancelled/failed/path()`）+ `open_file/save_file/select_folder`，`std::function` 由 trampoline 单次调用后释放。
+- 示例与测试：`vgui_demo` 新增「文件对话框 File dialog」卡片（打开/导出/选目录 + 结果行）；`vgui_model_test::test_file_dialog` 用假 provider 覆盖请求透传、结果排队 → update 派发、取消/失败三态、非法请求被拒、无 provider 时不回调。

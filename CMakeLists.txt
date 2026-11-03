@@ -145,7 +145,7 @@ if(VGUI_INSTALL)
             RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
     endif()
 
-    install(FILES include/vgui/vgui.h
+    install(FILES include/vgui/vgui.h include/vgui/file_dialog.h
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
 
     # Stage B: SDL3 后端公共头（app_mgr / gui_viewport / 渲染器 / 事件类型）。

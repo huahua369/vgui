@@ -2201,6 +2201,115 @@ extern "C" {
 #define VGUI_MODEL_SET(ctx, model, field, value) \
 	((void)((model)->field = (value)), vgui_model_mark_dirty((ctx), (model)))
 
+	/* ------------------------------------------------------------------------- */
+	/* File dialogs                                                              */
+	/* ------------------------------------------------------------------------- */
+
+	/* Native OS file/folder dialogs.  This API deliberately speaks only plain C
+	 * strings: no platform handle, window pointer or SDL type appears here.
+	 * libvgui owns no windowing code, so a backend supplies the implementation
+	 * through a *provider* (see the platform bridge below).  The SDL3 backend
+	 * installs one when app_mgr starts; core-only builds have none, in which
+	 * case dialogs report themselves as unavailable and the show calls fail
+	 * without invoking the callback.
+	 *
+	 * Dialogs are asynchronous: the request is handed to the platform and the
+	 * result arrives later.  Results are delivered from vgui_update(), i.e.
+	 * always on the thread that drives the UI, even when the platform reports
+	 * from a worker thread. */
+
+	typedef enum vgui_file_dialog_kind {
+		VGUI_FILE_DIALOG_OPEN = 0,  /* pick one or more existing files */
+		VGUI_FILE_DIALOG_SAVE,      /* pick a (possibly new) file path */
+		VGUI_FILE_DIALOG_FOLDER     /* pick one or more directories */
+	} vgui_file_dialog_kind;
+
+	/* One entry of the type drop-down.  `pattern` is a semicolon-separated list
+	 * of globs such as "*.png;*.jpg"; "*" (or an empty/NULL pattern) matches
+	 * everything.  Both "*.png" and "png" are accepted.  All strings are
+	 * borrowed for the duration of the show call only. */
+	typedef struct vgui_file_filter {
+		const char* name;     /* shown in the drop-down, e.g. "Images" */
+		const char* pattern;  /* e.g. "*.png;*.jpg" */
+	} vgui_file_filter;
+
+	typedef struct vgui_file_dialog_desc {
+		const char* title;             /* window title; NULL = platform default */
+		const char* default_location;  /* start folder or file; NULL = platform default */
+		const char* default_name;      /* suggested file name (SAVE only) */
+		const char* accept_label;      /* NULL = platform default ("Open"/"Save") */
+		const char* cancel_label;      /* NULL = platform default */
+		const vgui_file_filter* filters;
+		int         filter_count;      /* 0 disables the drop-down */
+		int         allow_many;        /* OPEN / FOLDER only */
+	} vgui_file_dialog_desc;
+
+	/* Result callback.  Exactly one of these shapes is reported:
+	 *   count > 0               : the user accepted; paths[0..count-1] are UTF-8
+	 *                             strings, the array is null terminated and both
+	 *                             the array and the strings are valid only for
+	 *                             the duration of the callback.
+	 *   count == 0, error NULL  : the user cancelled.
+	 *   error != NULL           : the dialog failed; paths/count are empty.
+	 * `kind` echoes the request that produced the result. */
+	typedef void (*vgui_file_dialog_fn)(void* user, vgui_file_dialog_kind kind,
+		const char* const* paths, int count, const char* error);
+
+	/* Zero-initialises a descriptor: all strings NULL, no filters, single
+	 * selection.  Always call it before filling in the fields you need. */
+	VGUI_API void vgui_file_dialog_desc_init(vgui_file_dialog_desc* desc);
+
+	/* Non-zero when a provider is installed, i.e. dialogs can actually open. */
+	VGUI_API int vgui_file_dialog_available(void);
+
+	/* Starts a dialog.  Returns non-zero when the platform accepted the request;
+	 * the callback is then guaranteed to run exactly once, possibly on a later
+	 * frame.  Returns 0 when nothing was started -- no provider, unknown kind or
+	 * a NULL callback -- and in that case fn is never called.
+	 * `desc` may be NULL for an all-defaults dialog and is only read during the
+	 * call, so it may live on the stack. */
+	VGUI_API int vgui_file_dialog_show(vgui_file_dialog_kind kind,
+		const vgui_file_dialog_desc* desc, vgui_file_dialog_fn fn, void* user);
+
+	/* Convenience wrappers around vgui_file_dialog_show(). */
+	VGUI_API int vgui_file_dialog_open(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user);
+	VGUI_API int vgui_file_dialog_save(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user);
+	VGUI_API int vgui_file_dialog_select_folder(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user);
+
+	/* ------------------------------------------------------------------------- */
+	/* File dialog platform bridge                                               */
+	/* ------------------------------------------------------------------------- */
+
+	/* A backend implements the provider: it opens the native dialog and reports
+	 * the outcome with vgui_file_dialog_post_result(), either before returning
+	 * or from any thread later on.  vgui copies the paths, so the provider may
+	 * release them as soon as the call returns.  Return non-zero if the request
+	 * was accepted; the SDL3 backend needs this split because the platform owns
+	 * the dialog once it is up. */
+	typedef int (*vgui_file_dialog_provider_fn)(void* provider_user,
+		vgui_file_dialog_kind kind, const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* callback_user);
+
+	/* Installs (fn == NULL removes) the provider.  Hosts normally never call
+	 * this: the SDL3 backend installs its provider from app_mgr's constructor.
+	 * Other backends -- or tests -- use it to plug in their own dialogs. */
+	VGUI_API void vgui_file_dialog_set_provider(vgui_file_dialog_provider_fn fn, void* user);
+	VGUI_API vgui_file_dialog_provider_fn vgui_file_dialog_get_provider(void** user);
+
+	/* Reports a result back to vgui, from any thread.  Pass paths/count for a
+	 * selection, paths == NULL with count 0 for a cancel, and a non-NULL `error`
+	 * for a failure.  Returns non-zero when the result was queued. */
+	VGUI_API int vgui_file_dialog_post_result(vgui_file_dialog_kind kind,
+		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
+		const char* error);
+
+	/* Number of finished results waiting for the next vgui_update().  Useful for
+	 * diagnostics and tests. */
+	VGUI_API int vgui_file_dialog_pending(void);
+
 #ifdef __cplusplus
 } /* extern "C" */
 

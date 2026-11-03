@@ -4653,6 +4653,153 @@ static void test_binding_collection(font_familys_t* familys)
 	vgui_destroy(ctx);
 }
 
+// ---------------------------------------------------------------------------
+// File dialogs: the platform bridge is provider based, so a fake provider can
+// exercise the whole path (request -> result -> update dispatch) headless.
+// ---------------------------------------------------------------------------
+
+struct file_dialog_probe
+{
+	int shows = 0;
+	vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
+	std::string title;
+	int filter_count = -1;
+	std::string first_filter;
+	std::string first_pattern;
+	int allow_many = -1;
+	vgui_file_dialog_fn fn = nullptr;
+	void* user = nullptr;
+};
+
+static int fake_dialog_provider(void* provider_user, vgui_file_dialog_kind kind,
+	const vgui_file_dialog_desc* desc, vgui_file_dialog_fn fn, void* user)
+{
+	file_dialog_probe* probe = (file_dialog_probe*)provider_user;
+	probe->shows++;
+	probe->kind = kind;
+	probe->title = (desc && desc->title) ? desc->title : "";
+	probe->filter_count = desc ? desc->filter_count : -1;
+	probe->allow_many = desc ? desc->allow_many : -1;
+	probe->first_filter = (desc && desc->filters && desc->filter_count > 0 &&
+		desc->filters[0].name) ? desc->filters[0].name : "";
+	probe->first_pattern = (desc && desc->filters && desc->filter_count > 0 &&
+		desc->filters[0].pattern) ? desc->filters[0].pattern : "";
+	probe->fn = fn;
+	probe->user = user;
+	return 1;	// accepted; the result is posted later, like a real platform
+}
+
+struct file_dialog_log
+{
+	int calls = 0;
+	vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
+	std::vector<std::string> paths;
+	std::string error;
+};
+
+static void on_file_dialog(void* user, vgui_file_dialog_kind kind,
+	const char* const* paths, int count, const char* error)
+{
+	file_dialog_log* log = (file_dialog_log*)user;
+	log->calls++;
+	log->kind = kind;
+	log->paths.clear();
+	for (int i = 0; i < count; ++i)
+		if (paths && paths[i]) log->paths.push_back(paths[i]);
+	log->error = error ? error : "";
+}
+
+static void test_file_dialog(vgui_context* ctx)
+{
+	/* The SDL3 backend installs its provider when the library loads; swap in the
+	 * probe and restore afterwards. */
+	void* saved_user = nullptr;
+	vgui_file_dialog_provider_fn saved = vgui_file_dialog_get_provider(&saved_user);
+	check(saved != nullptr, "file dialog: backend installs a provider");
+	check(vgui_file_dialog_available() == 1, "file dialog: available with a provider");
+
+	file_dialog_probe probe;
+	vgui_file_dialog_set_provider(fake_dialog_provider, &probe);
+
+	vgui_file_dialog_desc desc;
+	vgui_file_dialog_desc_init(&desc);
+	check(desc.title == nullptr && desc.default_location == nullptr &&
+		desc.filters == nullptr && desc.filter_count == 0 && desc.allow_many == 0,
+		"file dialog: desc_init clears the descriptor");
+
+	vgui_file_filter filters[2] = {
+		{ "Scenes", "*.json;*.scene" },
+		{ "All files", "*" }
+	};
+	desc.title = "Export scene";
+	desc.default_location = "E:/work";
+	desc.default_name = "scene.json";
+	desc.accept_label = "Export";
+	desc.filters = filters;
+	desc.filter_count = 2;
+	desc.allow_many = 1;
+
+	file_dialog_log log;
+	check(vgui_file_dialog_save(&desc, on_file_dialog, &log) == 1,
+		"file dialog: save request accepted");
+	check(probe.shows == 1 && probe.kind == VGUI_FILE_DIALOG_SAVE,
+		"file dialog: provider sees the kind");
+	check(probe.title == "Export scene" && probe.filter_count == 2 &&
+		probe.first_filter == "Scenes" && probe.first_pattern == "*.json;*.scene",
+		"file dialog: descriptor reaches the provider");
+	check(probe.fn == on_file_dialog && probe.user == &log,
+		"file dialog: callback is forwarded to the provider");
+	check(log.calls == 0, "file dialog: callback waits for a result");
+
+	const char* picked[2] = { "E:/work/scene.json", nullptr };
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_SAVE, probe.fn, probe.user, picked, 1, nullptr);
+	check(vgui_file_dialog_pending() == 1, "file dialog: result is queued");
+	check(log.calls == 0, "file dialog: result is not delivered inline");
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(log.calls == 1 && log.paths.size() == 1 &&
+		log.paths[0] == "E:/work/scene.json" && log.error.empty(),
+		"file dialog: update delivers the selection");
+	check(vgui_file_dialog_pending() == 0, "file dialog: queue drains");
+
+	log = file_dialog_log{};
+	check(vgui_file_dialog_open(nullptr, on_file_dialog, &log) == 1,
+		"file dialog: null descriptor uses defaults");
+	check(probe.kind == VGUI_FILE_DIALOG_OPEN && probe.filter_count == 0 &&
+		probe.title.empty(), "file dialog: defaults have no filters");
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user, nullptr, 0, nullptr);
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(log.calls == 1 && log.paths.empty() && log.error.empty(),
+		"file dialog: cancel reported as empty, no error");
+
+	log = file_dialog_log{};
+	check(vgui_file_dialog_select_folder(nullptr, on_file_dialog, &log) == 1,
+		"file dialog: folder request accepted");
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_FOLDER, probe.fn, probe.user, nullptr, 0, "boom");
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(log.calls == 1 && log.error == "boom" && log.paths.empty(),
+		"file dialog: errors are forwarded");
+
+	/* Invalid requests never reach the provider and never call back. */
+	int shows_before = probe.shows;
+	log = file_dialog_log{};
+	check(vgui_file_dialog_show(VGUI_FILE_DIALOG_OPEN, &desc, nullptr, nullptr) == 0,
+		"file dialog: null callback rejected");
+	check(vgui_file_dialog_show((vgui_file_dialog_kind)99, &desc, on_file_dialog, &log) == 0,
+		"file dialog: unknown kind rejected");
+	check(probe.shows == shows_before,
+		"file dialog: rejected requests never reach the provider");
+
+	vgui_file_dialog_set_provider(nullptr, nullptr);
+	check(vgui_file_dialog_available() == 0, "file dialog: provider can be removed");
+	check(vgui_file_dialog_open(&desc, on_file_dialog, &log) == 0,
+		"file dialog: no provider fails");
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(log.calls == 0, "file dialog: failed request never calls back");
+
+	vgui_file_dialog_set_provider(saved, saved_user);
+	check(vgui_file_dialog_available() == 1, "file dialog: provider restored");
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -4704,6 +4851,7 @@ int main()
 	test_focus_navigate(ui, familys);
 	test_binding(familys);
 	test_binding_collection(familys);
+	test_file_dialog(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

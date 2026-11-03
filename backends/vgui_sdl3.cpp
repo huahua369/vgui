@@ -24,6 +24,7 @@ vgui sdl3实现
 #include <ovg_c.h>
 #include <vgui_internal.h>
 #include <vgui/backend/vgui_sdl3.h>
+#include "vgui_sdl3_dialog.h"
 #include <stb_image.h>
 
 #include <vulkan/vulkan.h>
@@ -447,6 +448,9 @@ app_mgr::app_mgr()
 
 	UpdateMonitors();
 	font_ctx = new_font_cache();
+	// Native file dialogs live in their own translation unit; referencing the
+	// installer here keeps it in the link and wires it into the core bridge.
+	vgui_sdl3_install_file_dialog_provider();
 }
 app_mgr::~app_mgr() {
 	shutdown();

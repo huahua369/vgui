@@ -25,6 +25,7 @@
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>		// 公共 C API
+#include <vgui/file_dialog.h>	// C++ 文件对话框封装（内部走 SDL3 后端）
 #ifdef VGUI_DEMO_HAS_EDITOR_KIT
 #include <vgui/editor/code_editor.h>
 #include <vgui/editor/markdown_view.h>
@@ -196,6 +197,9 @@ struct demo_state
 	demo_bind_model bind_model;
 	vgui_widget* bind_state_label = nullptr;
 	vgui_widget* bind_list = nullptr;
+
+	// 文件对话框结果
+	vgui_widget* dialog_label = nullptr;
 
 	// P2：编辑日志（撤销）。demo 用教学用的最小实现记录字段变更；编辑器里
 	// 把同样的记录交给 vgui_editor_kit::binding_undo + command_stack。
@@ -1720,33 +1724,33 @@ struct gradient_preset { const char* name; const vgui_color colors[9]; /* topD, 
 static const gradient_preset kGradientPresets[] =
 {
 	/* 默认深灰（与 vgui_legacy gradient_style 默认值一致） */
-	{ "默认深灰", {
+	{ "默认深灰",{
 		0xFF4A4A4A, 0xFF3A3A3A,       /* default top/bot */
 		0x80404040, 0x80303030,       /* hover top/bot   */
 		0xFF292929, 0xFF1D1D1D,       /* active top/bot  */
 		0xFF5C5C5C, 0xFF1D1D1D,       /* borderLight / borderDark */
 		0xFFFFFFFF } },               /* text color */
-	/* 蓝色渐变 */
-	{ "科技蓝", {
-		0xFF4A8FE7, 0xFF2D6FD9,
-		0xFF6AA8F2, 0xFF3E82E0,
-		0xFF1E4FB0, 0xFF163D99,
-		0xFF7DB8FF, 0xFF0D2E66,
-		0xFFFFFFFF } },
-	/* 橙红渐变 */
-	{ "夕阳红", {
-		0xFFF59E0B, 0xFFDC2626,
-		0xFFFBBF24, 0xFFEF4444,
-		0xFFB45309, 0xFF991B1B,
-		0xFFFFE28A, 0xFF450A0A,
-		0xFFFFFFFF } },
-	/* 翠绿渐变 */
-	{ "森林绿", {
-		0xFF22C55E, 0xFF16A34A,
-		0xFF4ADE80, 0xFF22C55E,
-		0xFF0F7A2E, 0xFF065F22,
-		0xFF86EFAC, 0xFF052E16,
-		0xFFFFFFFF } },
+		/* 蓝色渐变 */
+		{ "科技蓝",{
+			0xFF4A8FE7, 0xFF2D6FD9,
+			0xFF6AA8F2, 0xFF3E82E0,
+			0xFF1E4FB0, 0xFF163D99,
+			0xFF7DB8FF, 0xFF0D2E66,
+			0xFFFFFFFF } },
+			/* 橙红渐变 */
+			{ "夕阳红",{
+				0xFFF59E0B, 0xFFDC2626,
+				0xFFFBBF24, 0xFFEF4444,
+				0xFFB45309, 0xFF991B1B,
+				0xFFFFE28A, 0xFF450A0A,
+				0xFFFFFFFF } },
+				/* 翠绿渐变 */
+				{ "森林绿",{
+					0xFF22C55E, 0xFF16A34A,
+					0xFF4ADE80, 0xFF22C55E,
+					0xFF0F7A2E, 0xFF065F22,
+					0xFF86EFAC, 0xFF052E16,
+					0xFFFFFFFF } },
 };
 static constexpr int kGradientPresetCount = (int)(sizeof(kGradientPresets) / sizeof(kGradientPresets[0]));
 
@@ -2246,31 +2250,31 @@ static void build_code_editor(demo_state* st, vgui_widget* root)
 		desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
 		desc.pixels = pixels.data();
 		return vgui_texture_create(st->ui, &desc);
-	};
+		};
 	vgui_texture* poster = make_media_texture(false);
 	vgui_texture* clip = make_media_texture(true);
 	st->preview.set_media_resolver(
 		[poster, clip](const std::string& source,
 			vgui_editor_kit::md_media_kind kind) {
-			using namespace vgui_editor_kit;
-			(void)kind;
-			md_media_info info;
-			if (source == "poster.png" && poster)
-			{
-				info.status = md_media_status::ready;
-				info.texture = poster;
-			}
-			else if (source == "clip.mp4" && clip)
-			{
-				info.status = md_media_status::ready;
-				info.texture = clip;
-			}
-			else
-			{
-				info.status = md_media_status::failed;
-				info.error = "demo: no texture for " + source;
-			}
-			return info;
+				using namespace vgui_editor_kit;
+				(void)kind;
+				md_media_info info;
+				if (source == "poster.png" && poster)
+				{
+					info.status = md_media_status::ready;
+					info.texture = poster;
+				}
+				else if (source == "clip.mp4" && clip)
+				{
+					info.status = md_media_status::ready;
+					info.texture = clip;
+				}
+				else
+				{
+					info.status = md_media_status::failed;
+					info.error = "demo: no texture for " + source;
+				}
+				return info;
 		});
 
 	st->code_info = label(c, "就绪", 13, 0xFF9A9A9A);
@@ -2278,14 +2282,14 @@ static void build_code_editor(demo_state* st, vgui_widget* root)
 	st->code.set_change_listener([st]() {
 		update_code_info(st);
 		preview_sync(st);
-	});
+		});
 	st->code.set_caret_listener([st](vgui_editor_kit::code_position caret) {
 		if (!st->follow_caret || !st->preview_visible ||
 			!st->preview.built())
 			return;
 		st->preview.set_active_source_line(caret.line);
 		st->preview.scroll_to_source_line(caret.line, true);
-	});
+		});
 	code_set_document(st, 0);
 	preview_sync(st);
 	update_code_info(st);
@@ -2381,7 +2385,7 @@ static void build_models(demo_state* st, vgui_widget* root)
 	std::string str;
 	for (int i = 0; i < 1000; i++)
 	{
-		str = "内容cgly"+std::to_string(i);
+		str = "内容cgly" + std::to_string(i);
 		vgui_item_id id = vgui_list_add_item(st->list_demo, str.c_str(), nullptr);
 		vgui_list_set_item_detail(st->list_demo, id, "稳定 item id");
 	}
@@ -2887,6 +2891,96 @@ static void build_binding(demo_state* st, vgui_widget* root)
 	st->bind_undo_token = vgui_context_add_key_handler(ui, on_bind_undo_key, st);
 }
 
+//---------------------------------------------------------------------------
+// 文件对话框：vgui.h 只有纯 C 的字符串接口，SDL3 的原生对话框在 backend 里
+// 实现（button → vgui::open_file → SDL_ShowFileDialogWithProperties），
+// 结果在 vgui_update 里回到 UI 线程。
+//---------------------------------------------------------------------------
+
+static void dialog_report(demo_state* st, const char* prefix,
+	const vgui::file_dialog_result& r)
+{
+	std::string text = prefix;
+	if (r.failed())
+		text += "失败: " + r.error;
+	else if (r.cancelled())
+		text += "已取消";
+	else
+	{
+		text += std::to_string((int)r.paths.size()) + " 个路径: ";
+		for (size_t i = 0; i < r.paths.size(); ++i)
+		{
+			if (i) text += " | ";
+			text += r.paths[i];
+		}
+	}
+	if (st->dialog_label) vgui_widget_set_text(st->dialog_label, text.c_str());
+}
+
+static void dialog_unavailable(demo_state* st, const char* what)
+{
+	if (!st->dialog_label) return;
+	std::string text = std::string(what) + "：当前构建没有文件对话框 provider（核心库 CORE_ONLY）";
+	vgui_widget_set_text(st->dialog_label, text.c_str());
+}
+
+static void on_dialog_open(vgui_widget*, const vgui_event* e, void* user)
+{
+	(void)e;
+	if (e->type != VGUI_EVENT_CLICK)return;
+	demo_state* st = (demo_state*)user;
+	vgui::file_dialog_options opt;
+	opt.title = "打开文件";
+	opt.accept_label = "打开";
+	opt.filters = { { "图片", "*.png;*.jpg;*.jpeg" },{ "全部文件", "*" } };
+	opt.allow_many = true;
+	if (!vgui::open_file(opt, [st](const vgui::file_dialog_result& r) { dialog_report(st, "打开: ", r); }))
+		dialog_unavailable(st, "打开");
+}
+
+static void on_dialog_save(vgui_widget*, const vgui_event* e, void* user)
+{
+	(void)e;
+	if (e->type != VGUI_EVENT_CLICK)return;
+	demo_state* st = (demo_state*)user;
+	vgui::file_dialog_options opt;
+	opt.title = "导出场景";
+	opt.accept_label = "导出";
+	opt.default_name = "scene.json";
+	opt.filters = { { "场景 JSON", "*.json" },{ "全部文件", "*" } };
+	if (!vgui::save_file(opt, [st](const vgui::file_dialog_result& r) { dialog_report(st, "导出: ", r); }))
+		dialog_unavailable(st, "导出");
+}
+
+static void on_dialog_folder(vgui_widget*, const vgui_event* e, void* user)
+{
+	(void)e;
+	if (e->type != VGUI_EVENT_CLICK)return;
+	demo_state* st = (demo_state*)user;
+	vgui::file_dialog_options opt;
+	opt.title = "选择资源目录";
+	opt.accept_label = "选择";
+	if (!vgui::select_folder(opt, [st](const vgui::file_dialog_result& r) { dialog_report(st, "目录: ", r); }))
+		dialog_unavailable(st, "选择目录");
+}
+
+static void build_file_dialog(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "文件对话框 File dialog");
+	label(c, "原生系统对话框（SDL3 IFileDialog / XDG portal）：vgui.h 只说字符串，SDL3 不出现在公共头。",
+		12, 0xFF9A9A9A);
+
+	vgui_widget* r1 = row(c, 8);
+	button(r1, "打开文件…", on_dialog_open, st);
+	button(r1, "保存/导出…", on_dialog_save, st);
+	button(r1, "选择目录…", on_dialog_folder, st);
+	label(r1, vgui_file_dialog_available() ? "provider: 已安装" : "provider: 无", 12,
+		vgui_file_dialog_available() ? 0xFF9CCF80 : 0xFFE0A050);
+
+	st->dialog_label = label(c, "尚未打开对话框", 12, 0xFF7FB6FF);
+	vgui_widget_set_id(st->dialog_label, "dialog-state");
+}
+
 static void build_focus_theme(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "焦点与主题 Focus / Theme");
@@ -3048,6 +3142,7 @@ static void build_ui(demo_state* st)
 	build_dynamic(st, root);
 	build_visibility(st, root);
 	build_binding(st, root);
+	build_file_dialog(st, root);
 	build_focus_theme(st, root);
 	build_i18n(st, root);
 	build_status(st, root);

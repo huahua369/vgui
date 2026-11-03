@@ -15,6 +15,7 @@ gui实现
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -31,6 +32,64 @@ using namespace Clipper2Lib;
 // copy/paste becomes an in-process no-op.
 std::string(*vgui_clipboard_get_fn)() = nullptr;
 void (*vgui_clipboard_set_fn)(const char*) = nullptr;
+
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+// File dialog bridge (public in vgui.h).  A backend installs a provider -- the
+// SDL3 backend does it at load time -- and reports results back through
+// vgui_file_dialog_post_result().  Platforms may call that from a worker
+// thread, so finished results wait in a mutex-protected queue and are
+// dispatched from vgui_update() on the UI thread.
+//--------------------------------------------------------------------------------------------------------------------------------------------------
+struct vgui_file_dialog_result
+{
+	vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
+	vgui_file_dialog_fn fn = nullptr;
+	void* user = nullptr;
+	std::vector<std::string> paths;
+	std::string error;
+};
+
+/* Function-local state: the SDL3 backend installs its provider from a static
+ * initialiser, which may run before this translation unit's globals are
+ * constructed.  A lazy singleton sidesteps that ordering problem. */
+struct vgui_file_dialog_state
+{
+	std::mutex mutex;
+	std::vector<vgui_file_dialog_result> queue;
+	vgui_file_dialog_provider_fn provider = nullptr;
+	void* provider_user = nullptr;
+};
+
+static vgui_file_dialog_state& vgui_file_dialog_state_get(void)
+{
+	static vgui_file_dialog_state state;
+	return state;
+}
+
+/* Deliver every queued result on the calling thread.  Callbacks may start new
+ * dialogs or remove the provider, so nothing is held across the calls. */
+static void vgui_file_dialog_drain(void)
+{
+	std::vector<vgui_file_dialog_result> batch;
+	{
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		if (state.queue.empty()) return;
+		batch.swap(state.queue);
+	}
+	for (vgui_file_dialog_result& r : batch)
+	{
+		if (!r.fn) continue;
+		std::vector<const char*> argv;
+		argv.reserve(r.paths.size() + 1);
+		for (const std::string& path : r.paths)
+			argv.push_back(path.c_str());
+		argv.push_back(nullptr);
+		const char* const* paths = r.paths.empty() ? nullptr : argv.data();
+		r.fn(r.user, r.kind, paths, (int)r.paths.size(),
+			r.error.empty() ? nullptr : r.error.c_str());
+	}
+}
 
 //--------------------------------------------------------------------------------------------------------------------------------------------------
 // C API implementation
@@ -19907,6 +19966,119 @@ extern "C" {
 	void vgui_update(vgui_context* ctx, float delta_time)
 	{
 		vgui_update_impl(ctx, delta_time);
+		// File dialog results may arrive from a platform worker thread.  They are
+		// dispatched after the frame so a callback cannot disturb the update that
+		// is in progress (and may safely start another dialog).
+		vgui_file_dialog_drain();
+	}
+
+	// -------------------------------------------------------------------------
+	// File dialogs (see the "File dialogs" section of vgui.h)
+	// -------------------------------------------------------------------------
+
+	void vgui_file_dialog_desc_init(vgui_file_dialog_desc* desc)
+	{
+		if (desc) *desc = vgui_file_dialog_desc{};
+	}
+
+	int vgui_file_dialog_available(void)
+	{
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		return state.provider != nullptr ? 1 : 0;
+	}
+
+	void vgui_file_dialog_set_provider(vgui_file_dialog_provider_fn fn, void* user)
+	{
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		state.provider = fn;
+		state.provider_user = user;
+	}
+
+	vgui_file_dialog_provider_fn vgui_file_dialog_get_provider(void** user)
+	{
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		if (user) *user = state.provider_user;
+		return state.provider;
+	}
+
+	int vgui_file_dialog_post_result(vgui_file_dialog_kind kind,
+		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
+		const char* error)
+	{
+		if (!fn) return 0;
+		vgui_file_dialog_result r;
+		r.kind = (kind == VGUI_FILE_DIALOG_SAVE || kind == VGUI_FILE_DIALOG_FOLDER)
+			? kind : VGUI_FILE_DIALOG_OPEN;
+		r.fn = fn;
+		r.user = user;
+		if (error && *error)
+		{
+			r.error = error;
+		}
+		else if (paths)
+		{
+			int n = count < 0 ? 0 : count;
+			r.paths.reserve((size_t)n);
+			for (int i = 0; i < n; ++i)
+				if (paths[i]) r.paths.emplace_back(paths[i]);
+		}
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		state.queue.push_back(std::move(r));
+		return 1;
+	}
+
+	int vgui_file_dialog_pending(void)
+	{
+		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+		std::lock_guard<std::mutex> lock(state.mutex);
+		return (int)state.queue.size();
+	}
+
+	int vgui_file_dialog_show(vgui_file_dialog_kind kind,
+		const vgui_file_dialog_desc* desc, vgui_file_dialog_fn fn, void* user)
+	{
+		if (!fn) return 0;
+		if (kind != VGUI_FILE_DIALOG_OPEN && kind != VGUI_FILE_DIALOG_SAVE &&
+			kind != VGUI_FILE_DIALOG_FOLDER)
+			return 0;
+
+		vgui_file_dialog_provider_fn provider = nullptr;
+		void* provider_user = nullptr;
+		{
+			vgui_file_dialog_state& state = vgui_file_dialog_state_get();
+			std::lock_guard<std::mutex> lock(state.mutex);
+			provider = state.provider;
+			provider_user = state.provider_user;
+		}
+		if (!provider) return 0;
+
+		// The provider is called without the lock: a synchronous provider posts
+		// its result (which takes the lock) before returning.
+		vgui_file_dialog_desc defaults{};
+		const vgui_file_dialog_desc* d = desc ? desc : &defaults;
+		return provider(provider_user, kind, d, fn, user) ? 1 : 0;
+	}
+
+	int vgui_file_dialog_open(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user)
+	{
+		return vgui_file_dialog_show(VGUI_FILE_DIALOG_OPEN, desc, fn, user);
+	}
+
+	int vgui_file_dialog_save(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user)
+	{
+		return vgui_file_dialog_show(VGUI_FILE_DIALOG_SAVE, desc, fn, user);
+	}
+
+	int vgui_file_dialog_select_folder(const vgui_file_dialog_desc* desc,
+		vgui_file_dialog_fn fn, void* user)
+	{
+		return vgui_file_dialog_show(VGUI_FILE_DIALOG_FOLDER, desc, fn, user);
 	}
 
 	static void vgui_recording_atlas_check(vgui_context* ctx, rvg_t* vg);
