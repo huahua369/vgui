@@ -546,6 +546,11 @@ struct vgui_widget
 	// enabled=0 the subtree keeps its normal visuals (world-anchored HUD
 	// indicators use this so world clicks pass through).
 	int input_enabled = 1;
+	// 0 (default): 第二/第三次连击仍然派发 VGUI_EVENT_CLICK（clicks 字段
+	// 照常累加）；1: 派发 VGUI_EVENT_DOUBLE_CLICK / VGUI_EVENT_TRIPLE_CLICK。
+	// 库内需要双击的内置控件（代码编辑器、曲线/渐变编辑器、表格、图表…）
+	// 在创建时自行打开。
+	int multi_click = 0;
 	int focusable = 0;
 	int hovered = 0;
 	int pressed = 0;
@@ -566,7 +571,9 @@ struct vgui_widget
 	vgui_tooltip_anchor tooltip_anchor = VGUI_TOOLTIP_ANCHOR_POINTER;
 
 	// F03 drop target ------------------------------------------------------
-	const vgui_drop_target* drop_target = nullptr;
+	// 按值保存：调用方可以把 vgui_drop_target 放在栈上，挂载后立即离开作用域。
+	vgui_drop_target drop_target = {};
+	int has_drop_target = 0;
 
 	// E05 accessibility ----------------------------------------------------
 	std::string a11y_name;
@@ -9408,6 +9415,12 @@ static void vgui_drag_end(vgui_context* ctx)
 	ctx->drop_hint = {};
 }
 
+// 控件挂载的 drop target（按值保存），未挂载返回 nullptr。
+static const vgui_drop_target* vgui_widget_drop_target(vgui_widget* w)
+{
+	return (w && w->has_drop_target) ? &w->drop_target : nullptr;
+}
+
 // 命中点向上找第一个注册了 drop target 的控件（target 可以是祖先容器）。
 static vgui_widget* vgui_drop_target_at(vgui_context* ctx, float x, float y)
 {
@@ -9415,7 +9428,7 @@ static vgui_widget* vgui_drop_target_at(vgui_context* ctx, float x, float y)
 	for (vgui_widget* w = hit; w; w = w->parent)
 	{
 		if (!ctx->alive.count(w)) return nullptr;
-		if (w->drop_target)
+		if (w->has_drop_target)
 			return w;
 	}
 	return nullptr;
@@ -9425,20 +9438,19 @@ static vgui_widget* vgui_drop_target_at(vgui_context* ctx, float x, float y)
 static void vgui_drag_route_move(vgui_context* ctx, float x, float y)
 {
 	vgui_widget* target = vgui_drop_target_at(ctx, x, y);
+	const vgui_drop_target* dt = vgui_widget_drop_target(target);
 	if (target != ctx->drop_hover)
 	{
 		ctx->drop_hover = target;
 		ctx->drop_accepted = 0;
 		ctx->drop_hint = {};
-		if (target && target->drop_target && target->drop_target->can_accept)
-			ctx->drop_accepted = target->drop_target->can_accept(
-				target->drop_target->user, &ctx->drag_payload) ? 1 : 0;
+		if (dt && dt->can_accept)
+			ctx->drop_accepted = dt->can_accept(dt->user, &ctx->drag_payload) ? 1 : 0;
 	}
-	if (ctx->drop_accepted && target && target->drop_target && target->drop_target->hover)
+	if (ctx->drop_accepted && dt && dt->hover)
 	{
 		vgui_drop_hint hint = {};
-		target->drop_target->hover(target->drop_target->user, &ctx->drag_payload,
-			x, y, &hint);
+		dt->hover(dt->user, &ctx->drag_payload, x, y, &hint);
 		ctx->drop_hint = hint;
 	}
 	else
@@ -9454,10 +9466,10 @@ static void vgui_drag_route_drop(vgui_context* ctx, float x, float y)
 {
 	vgui_widget* target = ctx->drop_hover;
 	if (target && !ctx->alive.count(target)) target = nullptr;
+	const vgui_drop_target* dt = vgui_widget_drop_target(target);
 	bool handled = false;
-	if (target && ctx->drop_accepted && target->drop_target && target->drop_target->drop)
-		handled = target->drop_target->drop(target->drop_target->user,
-			&ctx->drag_payload, x, y) != 0;
+	if (dt && ctx->drop_accepted && dt->drop)
+		handled = dt->drop(dt->user, &ctx->drag_payload, x, y) != 0;
 	(void)handled;
 	vgui_drag_end(ctx);
 }
@@ -10293,6 +10305,15 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	return ret;
 }
 
+// 连击派发类型：没开 multi_click 的控件恒收到 VGUI_EVENT_CLICK，连击次数
+// 仍通过 event->clicks 给出；打开后才升级成双击/三击事件。
+static vgui_event_type vgui_click_event_type(const vgui_widget* w, int clicks)
+{
+	if (clicks >= 2 && w && w->multi_click)
+		return clicks >= 3 ? VGUI_EVENT_TRIPLE_CLICK : VGUI_EVENT_DOUBLE_CLICK;
+	return VGUI_EVENT_CLICK;
+}
+
 static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, int clicks)
 {
 	if (!ctx) return 0;
@@ -10499,10 +10520,8 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		}
 		else if (!dragged && item && item == pressed_item && target->enabled)
 		{
-			vgui_event_type ct = VGUI_EVENT_CLICK;
-			if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
-			else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
-			vgui_item_event(target, ct, item, index, lx, ly, button, clicks);
+			vgui_item_event(target, vgui_click_event_type(target, clicks), item,
+				index, lx, ly, button, clicks);
 		}
 		ctx->want_mouse = ctx->hot != nullptr;
 		vgui_end_input(ctx);
@@ -10550,9 +10569,7 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 				vgui_tree_apply_click(target, item, target->tree->press_mods);
 				if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
 			}
-			vgui_event_type ct = VGUI_EVENT_CLICK;
-			if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
-			else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
+			vgui_event_type ct = vgui_click_event_type(target, clicks);
 			vgui_item_event(target, ct, item, index, lx, ly, button, clicks);
 			if (ctx->alive.count(target) && clicks >= 2)
 			{
@@ -10598,9 +10615,7 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 
 		if (inside && target->enabled)
 		{
-			vgui_event_type ct = VGUI_EVENT_CLICK;
-			if (clicks >= 3) ct = VGUI_EVENT_TRIPLE_CLICK;
-			else if (clicks == 2) ct = VGUI_EVENT_DOUBLE_CLICK;
+			vgui_event_type ct = vgui_click_event_type(target, clicks);
 
 			vgui_event ce = {};
 			ce.type = (int)ct;
@@ -15311,6 +15326,16 @@ extern "C" {
 		if (widget) widget->input_enabled = enabled ? 1 : 0;
 	}
 
+	void vgui_widget_set_multi_click_enabled(vgui_widget* widget, int enabled)
+	{
+		if (widget) widget->multi_click = enabled ? 1 : 0;
+	}
+
+	int vgui_widget_get_multi_click_enabled(vgui_widget* widget)
+	{
+		return (widget && widget->multi_click) ? 1 : 0;
+	}
+
 	void vgui_widget_set_radial(vgui_widget* widget, int radial)
 	{
 		if (widget) widget->radial = radial ? 1 : 0;
@@ -18196,8 +18221,15 @@ extern "C" {
 
 	void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target)
 	{
-		if (widget)
-			widget->drop_target = target;
+		if (!widget) return;
+		if (!target)
+		{
+			widget->drop_target = {};
+			widget->has_drop_target = 0;
+			return;
+		}
+		widget->drop_target = *target;
+		widget->has_drop_target = 1;
 	}
 
 	void vgui_list_set_row_drag(vgui_widget* list, vgui_row_drag_fn fn, void* user)
@@ -18235,20 +18267,18 @@ extern "C" {
 
 		// 一次性 hover + drop：命中点向上找 target，接受则直接交付。
 		vgui_widget* target = vgui_drop_target_at(ctx, x, y);
+		const vgui_drop_target* dt = vgui_widget_drop_target(target);
 		bool accepted = false;
-		if (target && target->drop_target && target->drop_target->can_accept)
-			accepted = target->drop_target->can_accept(target->drop_target->user,
-				&ctx->drag_payload) != 0;
-		if (accepted && target->drop_target->hover)
+		if (dt && dt->can_accept)
+			accepted = dt->can_accept(dt->user, &ctx->drag_payload) != 0;
+		if (accepted && dt->hover)
 		{
 			vgui_drop_hint hint = {};
-			target->drop_target->hover(target->drop_target->user, &ctx->drag_payload,
-				x, y, &hint);
+			dt->hover(dt->user, &ctx->drag_payload, x, y, &hint);
 		}
 		bool handled = false;
-		if (accepted && target->drop_target->drop)
-			handled = target->drop_target->drop(target->drop_target->user,
-				&ctx->drag_payload, x, y) != 0;
+		if (accepted && dt->drop)
+			handled = dt->drop(dt->user, &ctx->drag_payload, x, y) != 0;
 		vgui_drag_end(ctx);
 		return handled ? 1 : 0;
 	}

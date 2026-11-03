@@ -178,3 +178,9 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - SDL3 实现（`backends/vgui_sdl3_dialog.cpp`，库加载时用静态初始化器安装）：把描述符复制成自持有请求（SDL 会一直读过滤器数组直到回调），再调 `SDL_ShowFileDialogWithProperties`，支持 title / accept / cancel / default_location / default_name / allow_many；过滤器把 `*.png;*.jpg` 与 `png;jpg` 归一化成 SDL 要求的 `png;jpg`；父窗口取当前键盘/鼠标焦点窗口。
 - C++ 便捷头 `include/vgui/file_dialog.h`：`vgui::file_dialog_options` / `file_filter` / `file_dialog_result`（`ok/cancelled/failed/path()`）+ `open_file/save_file/select_folder`，`std::function` 由 trampoline 单次调用后释放。
 - 示例与测试：`vgui_demo` 新增「文件对话框 File dialog」卡片（打开/导出/选目录 + 结果行）；`vgui_model_test::test_file_dialog` 用假 provider 覆盖请求透传、结果排队 → update 派发、取消/失败三态、非法请求被拒、无 provider 时不回调。
+
+### 7.8 双击/三击改为显式启用（2026-11-03）
+- 新增 `vgui_widget_set_multi_click_enabled(w, 0|1)` 与 `vgui_widget_get_multi_click_enabled(w)`。**默认关闭**：450 ms 窗口内的第二、第三次按下不再升级成 `VGUI_EVENT_DOUBLE_CLICK` / `VGUI_EVENT_TRIPLE_CLICK`，而是继续派发 `VGUI_EVENT_CLICK`，连击次数仍由 `event->clicks` 提供——只处理单击的宿主代码不会漏计点击，也不必为双击写兜底分支。
+- 派发点统一走 `vgui_click_event_type()`（鼠标抬起的三条路径：标签页、列表/树行、普通控件），因此控件级开关对 item 事件同样生效；列表/树的双击**激活**属于核心行为，与事件开关解耦，仍然照常触发。
+- 内置控件按需自行打开：代码编辑器、Markdown 视图、表格、Outliner、曲线编辑器、渐变编辑器、图表在创建时调用该函数，内部双击交互（选词/选行、单元格编辑、行内重命名、加点、重置视图）不受影响。
+- 测试：`vgui_model_test::test_multi_click` 12 条断言（默认关闭时双击/三击仍是 CLICK 且 `clicks` 正确、opt-in 后逐级升级、运行中关回 CLICK、列表行默认关闭但激活仍生效、列表 opt-in 后升级）；`vgui_runtime_embed_test` 增加默认值断言并显式开启，覆盖注入时钟下的双击窗口。

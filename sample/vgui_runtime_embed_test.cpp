@@ -115,6 +115,10 @@ int main()
 	vgui_widget_set_size(button, 120.0f, 32.0f);
 	click_log log;
 	vgui_widget_on_event(button, on_button_event, &log);
+	// Multi-click dispatch is opt-in: without this call the second press in the
+	// window still arrives as VGUI_EVENT_CLICK (clicks == 2).
+	check(vgui_widget_get_multi_click_enabled(button) == 0, "multi-click off by default");
+	vgui_widget_set_multi_click_enabled(button, 1);
 
 	vgui_update(ui, 1.0f / 60.0f);	// one layout pass for meaningful rects
 

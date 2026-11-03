@@ -1076,6 +1076,17 @@ extern "C" {
 	 * anchored HUD indicators (nameplates over the 3D scene) use this so
 	 * world clicks pass through them. */
 	VGUI_API void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled);
+	/* Multi-click dispatch (double / triple click).  OFF by default: the
+	 * second and third press inside the 450 ms window still arrive as
+	 * VGUI_EVENT_CLICK, with event->clicks carrying the running count, so a
+	 * plain click handler never has to deal with gaps between clicks.
+	 * Enable it on the widgets that really want VGUI_EVENT_DOUBLE_CLICK /
+	 * VGUI_EVENT_TRIPLE_CLICK; the flag is per widget and can be toggled at
+	 * any time.  Built-in widgets that need double-click semantics (code
+	 * editor, curve/gradient editor, table view, chart, markdown view,
+	 * outliner tree) turn it on for themselves when created. */
+	VGUI_API void vgui_widget_set_multi_click_enabled(vgui_widget* widget, int enabled);
+	VGUI_API int vgui_widget_get_multi_click_enabled(vgui_widget* widget);
 	/* R3-1: opt-in subtree display-list cache.  When hint is 1 the subtree is
 	 * recorded once and replayed on subsequent frames while it stays clean
 	 * (no active animations/focus inside, geometry/clip/theme unchanged).
@@ -1709,7 +1720,11 @@ extern "C" {
 
 	/* Drop target attached to a widget.  While a drag is in flight the core
 	 * hit-tests the widget under the pointer (walking up through ancestors) and
-	 * routes through these callbacks on the UI thread. */
+	 * routes through these callbacks on the UI thread.
+	 *
+	 * The struct is COPIED by vgui_widget_set_drop_target(), so it may live on
+	 * the caller's stack and be gone once the call returns.  `user` is passed
+	 * back untouched; whatever it points at must outlive the attachment. */
 	typedef struct vgui_drop_target
 	{
 		/* Return non-zero to accept the payload while it hovers. */
@@ -1743,6 +1758,7 @@ extern "C" {
 	 * output is cleared otherwise.  Hosts/tests use this to verify the same
 	 * indicator the core draws. */
 	VGUI_API int vgui_drag_hint(vgui_context* ctx, vgui_drop_hint* hint);
+	/* Attaches (copies) or, with NULL, detaches the widget's drop target. */
 	VGUI_API void vgui_widget_set_drop_target(vgui_widget* widget, const vgui_drop_target* target);
 
 	VGUI_API void vgui_list_set_row_drag(vgui_widget* list, vgui_row_drag_fn fn, void* user);

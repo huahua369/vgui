@@ -3096,6 +3096,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_align_self(self->surface, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_focusable(self->surface, 1);
 		vgui_widget_set_cursor(self->surface, VGUI_CURSOR_IBEAM);
+		vgui_widget_set_multi_click_enabled(self->surface, 1);	// 双击选词 / 三击选段
 		vgui_custom_set_draw(self->surface, &impl::draw_cb, self);
 		vgui_custom_set_event(self->surface, &impl::event_cb, self);
 		vgui_custom_set_clip_content(self->surface, 1);

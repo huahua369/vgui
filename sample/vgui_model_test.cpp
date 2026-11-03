@@ -3263,6 +3263,36 @@ static void test_drag_drop(vgui_context* ui, const vgui_style& style)
 	payload.kind = VGUI_DRAG_NONE;
 	check(vgui_begin_drag(ui, list, &payload) == 0, "drag: none payload rejected");
 
+	// The descriptor is copied: a stack-local vgui_drop_target that leaves
+	// scope right after attaching must keep routing (the demo and the SDL3
+	// host both attach from a build function's frame).
+	vgui_widget* zone2 = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_id(zone2, "drop-zone-copy");
+	vgui_widget_set_pos(zone2, 400.0f, 300.0f);
+	vgui_widget_set_size(zone2, 200.0f, 150.0f);
+	drag_state ds2;
+	{
+		vgui_drop_target scoped = {};
+		scoped.can_accept = dd_can_accept;
+		scoped.hover = dd_hover;
+		scoped.drop = dd_drop;
+		scoped.user = &ds2;
+		vgui_widget_set_drop_target(zone2, &scoped);
+	}
+	vgui_update(ui, 0.016f);
+	float z2x = 0.0f, z2y = 0.0f, z2w = 0.0f, z2h = 0.0f;
+	vgui_widget_get_rect(zone2, &z2x, &z2y, &z2w, &z2h);
+	const float z2cx = z2x + z2w * 0.5f;
+	const float z2cy = z2y + z2h * 0.5f;
+	const char* one_file[] = { "assets/copy.png" };
+	check(vgui_input_drop_files(ui, one_file, 1, z2cx, z2cy) == 1,
+		"drag: target survives its descriptor's scope");
+	check(ds2.drops == 1 && ds2.last_files.size() == 1,
+		"drag: scoped target delivers the payload");
+	vgui_widget_set_drop_target(zone2, nullptr);
+	check(vgui_input_drop_files(ui, one_file, 1, z2cx, z2cy) == 0,
+		"drag: null detaches the target");
+
 	// OS file drop bridge: one-shot hover + drop over the zone.
 	ds.reject = false;
 	const char* files[] = { "assets/texture.png", "assets/model.glb" };
@@ -3270,6 +3300,141 @@ static void test_drag_drop(vgui_context* ui, const vgui_style& style)
 	check(ds.last_files.size() == 2 && ds.last_files[1] == "assets/model.glb",		"drag: file payload carried through");
 	check(vgui_input_drop_files(ui, files, 2, 100.0f, 600.0f) == 0,		"drag: file drop outside any target is refused");
 	check(vgui_drag_active(ui) == 0, "drag: file drop leaves no drag state");
+}
+
+/* Nested-layout drag & drop, mirroring the demo card (scrollable column page
+ * -> card -> row -> list + growing zone).  The drop descriptor is attached from
+ * an inner scope and the stack is clobbered afterwards: the core must keep its
+ * own copy, otherwise the callbacks dangle (this crashed the demo). */
+struct nested_drop_state
+{
+	vgui_widget* info = nullptr;
+	int drops = 0;
+	std::string text;
+};
+
+static volatile int g_stack_sink = 0;
+
+static void clobber_stack()
+{
+	volatile unsigned char buf[4096];
+	for (size_t i = 0; i < sizeof(buf); ++i) buf[i] = (unsigned char)(i * 31u + 7u);
+	g_stack_sink += buf[1024];
+}
+
+static int nd_can_accept(void* user, const vgui_drag_payload* payload)
+{
+	(void)user;
+	return payload && payload->kind == VGUI_DRAG_TEXT ? 1 : 0;
+}
+
+static void nd_hover(void* user, const vgui_drag_payload* payload, float x, float y,
+	vgui_drop_hint* hint)
+{
+	(void)user;
+	(void)payload;
+	(void)x;
+	(void)y;
+	if (hint)
+	{
+		hint->kind = VGUI_DROP_HINT_RECT;
+		hint->x = 0.0f;
+		hint->y = 0.0f;
+		hint->w = 10.0f;
+		hint->h = 10.0f;
+	}
+}
+
+static int nd_drop(void* user, const vgui_drag_payload* payload, float x, float y)
+{
+	(void)x;
+	(void)y;
+	nested_drop_state* s = (nested_drop_state*)user;
+	if (!s) return 0;
+	s->drops++;
+	s->text = (payload && payload->text) ? payload->text : "";
+	if (s->info)
+		vgui_widget_set_text(s->info, s->text.c_str());
+	return 1;
+}
+
+static void test_drag_drop_nested(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* page = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(page, 0.0f, 0.0f);
+	vgui_widget_set_size(page, 1080.0f, 860.0f);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 14, 14, 14, 14);
+	vgui_widget_set_gap(page, 10);
+	vgui_widget_set_align_items(page, VGUI_ALIGN_STRETCH);
+	vgui_panel_set_scrollable(page, 0, 1);
+
+	vgui_widget* c = vgui_widget_add(page, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(c, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(c, 12, 10, 12, 12);
+	vgui_widget_set_gap(c, 8);
+	vgui_widget_set_align_items(c, VGUI_ALIGN_STRETCH);
+	vgui_widget_add(c, VGUI_LABEL, "Drag & Drop");
+	vgui_widget_add(c, VGUI_LABEL, "drag a row onto the zone");
+
+	vgui_widget* r = vgui_widget_add(c, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(r, VGUI_LAYOUT_ROW);
+	vgui_widget_set_background(r, 0);
+	vgui_widget_set_border(r, 0, 0);
+	vgui_widget_set_padding(r, 0, 0, 0, 0);
+	vgui_widget_set_gap(r, 10);
+	vgui_widget_set_align_items(r, VGUI_ALIGN_STRETCH);
+
+	vgui_widget* list = vgui_widget_add(r, VGUI_LIST, nullptr);
+	vgui_widget_set_id(list, "nested-drag-list");
+	vgui_widget_set_size(list, 220, 120);
+	vgui_list_add_item(list, "drag me", nullptr);
+	vgui_list_add_item(list, "material", nullptr);
+	drag_state ds;
+	vgui_list_set_row_drag(list, dd_row_drag, &ds);
+
+	vgui_widget* zone = vgui_widget_add(r, VGUI_PANEL, nullptr);
+	vgui_widget_set_id(zone, "nested-drop-zone");
+	vgui_widget_set_grow(zone, 1.0f);
+	vgui_widget_set_min_size(zone, 220, 120);
+	vgui_widget_set_layout(zone, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(zone, 10, 10, 10, 10);
+	vgui_widget_set_align_items(zone, VGUI_ALIGN_CENTER);
+	nested_drop_state nst;
+	nst.info = vgui_widget_add(zone, VGUI_LABEL, "drop here");
+	{
+		vgui_drop_target target = {};
+		target.can_accept = nd_can_accept;
+		target.hover = nd_hover;
+		target.drop = nd_drop;
+		target.user = &nst;
+		vgui_widget_set_drop_target(zone, &target);
+	}
+	clobber_stack();
+
+	vgui_update(ui, 0.016f);
+	float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+	vgui_widget_get_rect(list, &lx, &ly, &lw, &lh);
+	float zx = 0.0f, zy = 0.0f, zw = 0.0f, zh = 0.0f;
+	vgui_widget_get_rect(zone, &zx, &zy, &zw, &zh);
+	check(lw > 200.0f && zw > lw, "drag nested: zone grows beside the list");
+
+	const float row_y = ly + style.list.padding_y + style.list.row_height * 0.5f;
+	const float zcx = zx + zw * 0.5f;
+	const float zcy = zy + zh * 0.5f;
+	vgui_input_mouse_move(ui, lx + 30.0f, row_y);
+	vgui_input_mouse_down(ui, 1, lx + 30.0f, row_y, 1);
+	vgui_input_mouse_move(ui, zcx, zcy);
+	check(vgui_drag_active(ui) == 1 && vgui_drag_hover_target(ui) == zone,
+		"drag nested: row drag reaches the nested zone");
+	vgui_input_mouse_up(ui, 1, zcx, zcy, 1);
+	check(nst.drops == 1 && nst.text == "dragged row",
+		"drag nested: copied target delivers the payload");
+	check(std::string(vgui_widget_get_text(nst.info)) == "dragged row",
+		"drag nested: drop updates the zone label");
+
+	vgui_widget_set_drop_target(zone, nullptr);
+	vgui_widget_destroy(page);
 }
 
 static void test_i18n_rtl(vgui_context* ui)
@@ -3545,6 +3710,105 @@ static void test_tree_filter_and_focus(vgui_context* ui, const vgui_style& style
 	check(events.submits == 1 && events.cancels == 1, "edit cancel: Enter still submits");
 	vgui_context_set_focus_listener(ui, nullptr, nullptr);
 	vgui_widget_destroy(edit);
+}
+
+//----------------------------------------------------------------------------
+// multi-click opt-in (double / triple click)
+//----------------------------------------------------------------------------
+
+struct multi_click_log
+{
+	int clicks = 0;		// VGUI_EVENT_CLICK count
+	int doubles = 0;
+	int triples = 0;
+	int last_count = 0;	// event->clicks of the last click event
+};
+
+static void on_multi_click(vgui_widget*, const vgui_event* event, void* user)
+{
+	multi_click_log* log = (multi_click_log*)user;
+	if (!log || !event) return;
+	switch (event->type)
+	{
+	case VGUI_EVENT_CLICK:        log->clicks++;  log->last_count = event->clicks; break;
+	case VGUI_EVENT_DOUBLE_CLICK: log->doubles++; log->last_count = event->clicks; break;
+	case VGUI_EVENT_TRIPLE_CLICK: log->triples++; log->last_count = event->clicks; break;
+	default: break;
+	}
+}
+
+static void test_multi_click(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* page = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_id(page, "multi-click-page");
+	vgui_widget_set_pos(page, 0.0f, 0.0f);
+	vgui_widget_set_size(page, 420.0f, 260.0f);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 10, 10, 10, 10);
+	vgui_widget_set_gap(page, 8);
+	vgui_widget_set_align_items(page, VGUI_ALIGN_START);
+
+	vgui_widget* b = vgui_widget_add(page, VGUI_BUTTON, "double");
+	vgui_widget_set_id(b, "multi-click-button");
+	vgui_widget_set_size(b, 140.0f, 30.0f);
+
+	vgui_widget* list = vgui_widget_add(page, VGUI_LIST, nullptr);
+	vgui_widget_set_id(list, "multi-click-list");
+	vgui_widget_set_size(list, 200.0f, 120.0f);
+	vgui_list_add_item(list, "row a", nullptr);
+	vgui_list_add_item(list, "row b", nullptr);
+
+	multi_click_log blog, llog;
+	vgui_widget_on_event(b, on_multi_click, &blog);
+	vgui_widget_on_event(list, on_multi_click, &llog);
+
+	vgui_update(ui, 0.016f);
+
+	float bx = 0.0f, by = 0.0f, bw = 0.0f, bh = 0.0f;
+	vgui_widget_get_rect(b, &bx, &by, &bw, &bh);
+	const float bcx = bx + bw * 0.5f;
+	const float bcy = by + bh * 0.5f;
+
+	/* 默认关闭：连击次数照常计入 clicks，但事件类型仍是 CLICK。 */
+	check(vgui_widget_get_multi_click_enabled(b) == 0,		"multi-click: off by default");
+	click_at(ui, bcx, bcy);
+	click_at(ui, bcx, bcy, 2);
+	check(blog.clicks == 2 && blog.doubles == 0,		"multi-click: double stays CLICK while disabled");
+	check(blog.last_count == 2,		"multi-click: disabled still reports clicks=2");
+	click_at(ui, bcx, bcy, 3);
+	check(blog.clicks == 3 && blog.doubles == 0 && blog.triples == 0,		"multi-click: triple stays CLICK while disabled");
+
+	/* 打开后按连击次数升级事件类型。 */
+	vgui_widget_set_multi_click_enabled(b, 1);
+	check(vgui_widget_get_multi_click_enabled(b) == 1,		"multi-click: opt-in is readable");
+	click_at(ui, bcx, bcy);
+	check(blog.clicks == 4 && blog.doubles == 0,		"multi-click: single click unaffected");
+	click_at(ui, bcx, bcy, 2);
+	check(blog.doubles == 1 && blog.last_count == 2,		"multi-click: double delivered once opted in");
+	click_at(ui, bcx, bcy, 3);
+	check(blog.triples == 1 && blog.last_count == 3,		"multi-click: triple delivered once opted in");
+
+	/* 运行中关掉：立刻退回 CLICK。 */
+	vgui_widget_set_multi_click_enabled(b, 0);
+	click_at(ui, bcx, bcy, 2);
+	check(blog.clicks == 5 && blog.doubles == 1 && blog.triples == 1,		"multi-click: toggling back restores CLICK");
+
+	/* 列表行：默认只给 CLICK，但双击激活（核心行为）不受影响。 */
+	float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;
+	vgui_widget_get_rect(list, &lx, &ly, &lw, &lh);
+	(void)lw;
+	(void)lh;
+	const float row_y = ly + style.list.padding_y + style.list.row_height * 0.5f;
+	click_at(ui, lx + 30.0f, row_y);
+	click_at(ui, lx + 30.0f, row_y, 2);
+	check(llog.clicks == 2 && llog.doubles == 0,		"multi-click: list rows stay CLICK by default");
+	check(vgui_list_get_selected_count(list) == 1,		"multi-click: double-click activation still runs");
+	vgui_widget_set_multi_click_enabled(list, 1);
+	click_at(ui, lx + 30.0f, row_y, 2);
+	check(llog.doubles == 1 && llog.last_count == 2,		"multi-click: list rows upgrade once opted in");
+
+	vgui_widget_set_multi_click_enabled(list, 0);
+	vgui_widget_destroy(page);
 }
 
 //----------------------------------------------------------------------------
@@ -4836,6 +5100,7 @@ int main()
 	test_list_row_extensions(ui, style);
 	test_tree_row_extensions(ui, style);
 	test_drag_drop(ui, style);
+	test_drag_drop_nested(ui, style);
 	test_tooltip(ui, style);
 	test_modal(ui);
 	test_dialog(ui);
@@ -4846,6 +5111,7 @@ int main()
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
 	test_popup(ui);
+	test_multi_click(ui, style);
 	test_accessibility_e05(ui);
 	test_ui_scale(ui);
 	test_focus_navigate(ui, familys);

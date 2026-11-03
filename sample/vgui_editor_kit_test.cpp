@@ -4281,6 +4281,10 @@ static int test_curve_editor()
 		!editor.value_widget() || !editor.in_tangent_widget() ||
 		!editor.out_tangent_widget())
 		return fail("curve editor widgets");
+	/* 双击/三击默认关闭，组件只对需要它的子控件打开。 */
+	if (vgui_widget_get_multi_click_enabled(editor.graph_widget()) != 1 ||
+		vgui_widget_get_multi_click_enabled(editor.widget()) != 0)
+		return fail("curve editor multi-click opt-in");
 	vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
 	vgui_widget_set_size(editor.widget(), 380.0f, 340.0f);
 	vgui_update(ui, 0.016f);
@@ -4416,6 +4420,10 @@ static int test_gradient_editor()
 		!editor.remove_widget() || !editor.time_widget() ||
 		!editor.picker() || !editor.preset_widget(0))
 		return fail("gradient editor widgets");
+	/* 双击/三击默认关闭，组件只对需要它的子控件打开。 */
+	if (vgui_widget_get_multi_click_enabled(editor.bar_widget()) != 1 ||
+		vgui_widget_get_multi_click_enabled(editor.widget()) != 0)
+		return fail("gradient editor multi-click opt-in");
 	vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
 	vgui_widget_set_size(editor.widget(), 380.0f, 360.0f);
 	vgui_update(ui, 0.016f);
@@ -12581,6 +12589,10 @@ static int test_code_editor()
 			find_widget(vgui_root(ui), "code_editor_surface", VGUI_CUSTOM) !=
 				editor.editor_widget())
 			return fail("t04 code editor build");
+		/* 双击选词/三击选行依赖连击事件，默认关闭后由组件自行打开。 */
+		if (vgui_widget_get_multi_click_enabled(editor.editor_widget()) != 1 ||
+			vgui_widget_get_multi_click_enabled(editor.widget()) != 0)
+			return fail("t04 code editor multi-click opt-in");
 		vgui_widget_set_pos(editor.widget(), 20.0f, 20.0f);
 		vgui_widget_set_size(editor.widget(), 760.0f, 300.0f);
 		vgui_update(ui, 1.0f / 60.0f);
