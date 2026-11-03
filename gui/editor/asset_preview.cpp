@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "tools/tools.hpp"
 #include "ui_scale.h"
+#include <vgui_internal.h>
 
 #include <algorithm>
 #include <cmath>
@@ -528,8 +529,11 @@ namespace vgui_editor_kit {
 		if (image.width <= 0 || image.height <= 0 || image.pixels.empty())
 			return;
 
-		int stride = image.stride > 0 ? image.stride : image.width * 4;
-		if (stride < image.width * 4)
+		const int bpp = vgui_texture_bpp(image.format);
+		if (bpp <= 0)
+			return;
+		int stride = image.stride > 0 ? image.stride : image.width * bpp;
+		if (stride < image.width * bpp)
 			return;
 		const std::size_t required = (std::size_t)stride * (std::size_t)image.height;
 		if (image.pixels.size() < required)

@@ -1439,6 +1439,10 @@ static SDL_GPUTextureFormat vgui_sdl3_texture_format(vgui_texture_format format)
 	case VGUI_TEXTURE_FORMAT_BGRA8:      return SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
 	case VGUI_TEXTURE_FORMAT_RGBA8_SRGB: return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB;
 	case VGUI_TEXTURE_FORMAT_BGRA8_SRGB: return SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
+	case VGUI_TEXTURE_FORMAT_RGBA16F:    return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+	case VGUI_TEXTURE_FORMAT_RGBA32F:    return SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+	case VGUI_TEXTURE_FORMAT_R16F:       return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	case VGUI_TEXTURE_FORMAT_R32F:       return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
 	default:                             return SDL_GPU_TEXTUREFORMAT_INVALID;
 	}
 }
@@ -1475,7 +1479,7 @@ vgui_texture* vgui_sdl3_texture_create_native(vgui_context* ui, vgpu_ctx_t* gpu_
 		return nullptr;
 	}
 
-	texture->stride = width * 4;
+	texture->stride = width * vgui_texture_bpp(format);
 	vgui_texture_bind_native(texture, &native, gpu_ctx, native_texture, vgui_sdl3_release_native);
 	return texture;
 }
@@ -1497,13 +1501,13 @@ int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
 		if (!vgpu_texture_init_native(gpu_ctx, &native, native_texture,
 			width, height, sdl_format))
 			return 0;
-		texture->width = width;
-		texture->height = height;
-		texture->stride = width * 4;
-		texture->format = format;
-		vgui_texture_bind_native(texture, &native, gpu_ctx, native_texture,
-			vgui_sdl3_release_native);
-	}
+	texture->width = width;
+	texture->height = height;
+	texture->stride = width * vgui_texture_bpp(format);
+	texture->format = format;
+	vgui_texture_bind_native(texture, &native, gpu_ctx, native_texture,
+		vgui_sdl3_release_native);
+}
 	else
 	{
 		if (!vgpu_texture_update_native(gpu_ctx, &texture->native, native_texture,
@@ -1511,7 +1515,7 @@ int vgui_sdl3_texture_update_native(vgui_texture* texture, vgpu_ctx_t* gpu_ctx,
 			return 0;
 		texture->width = width;
 		texture->height = height;
-		texture->stride = width * 4;
+		texture->stride = width * vgui_texture_bpp(format);
 		texture->format = format;
 		texture->image = texture->native.image;
 		texture->image.valid = false;

@@ -122,10 +122,14 @@ extern "C" {
 	} vgui_image_fit;
 
 	typedef enum vgui_texture_format {
-		VGUI_TEXTURE_FORMAT_RGBA8 = 0,
-		VGUI_TEXTURE_FORMAT_BGRA8,
-		VGUI_TEXTURE_FORMAT_RGBA8_SRGB,
-		VGUI_TEXTURE_FORMAT_BGRA8_SRGB
+		VGUI_TEXTURE_FORMAT_RGBA8 = 0,        /* 4 bytes/px, linear */
+		VGUI_TEXTURE_FORMAT_BGRA8,            /* 4 bytes/px, linear */
+		VGUI_TEXTURE_FORMAT_RGBA8_SRGB,       /* 4 bytes/px, sRGB */
+		VGUI_TEXTURE_FORMAT_BGRA8_SRGB,       /* 4 bytes/px, sRGB */
+		VGUI_TEXTURE_FORMAT_RGBA16F,          /* 8 bytes/px, half-float */
+		VGUI_TEXTURE_FORMAT_RGBA32F,          /* 16 bytes/px, full-float */
+		VGUI_TEXTURE_FORMAT_R16F,             /* 2 bytes/px, half-float, single channel */
+		VGUI_TEXTURE_FORMAT_R32F              /* 4 bytes/px, full-float, single channel */
 	} vgui_texture_format;
 
 	typedef enum vgui_texture_filter {
@@ -776,6 +780,7 @@ extern "C" {
 		float padding_y;		/* 4 */
 		float item_padding_x;	/* 8 */
 		float check_width;	/* 18: check column when any item is checkable */
+		float icon_size;		/* 18: icon/emoji area reserved when any item has an icon */
 		float shortcut_gap;	/* 24 */
 		float submenu_arrow_width;/* 10 */
 		float separator_height;	/* 9 */
@@ -1781,6 +1786,14 @@ extern "C" {
 	VGUI_API int vgui_menu_get_item_checkable(vgui_widget* menu, vgui_item_id item);
 	VGUI_API void vgui_menu_set_item_user(vgui_widget* menu, vgui_item_id item, void* user);
 	VGUI_API void* vgui_menu_get_item_user(vgui_widget* menu, vgui_item_id item);
+
+	/* Item icon: a texture (image) or an emoji/UTF-8 glyph string.  When any
+	 * item in a menu has an icon, the menu reserves a fixed icon area to the
+	 * left of the text (after the check column) so entries stay aligned. */
+	VGUI_API void vgui_menu_set_item_icon(vgui_widget* menu, vgui_item_id item, vgui_texture* icon);
+	VGUI_API vgui_texture* vgui_menu_get_item_icon(vgui_widget* menu, vgui_item_id item);
+	VGUI_API void vgui_menu_set_item_emoji(vgui_widget* menu, vgui_item_id item, const char* emoji);
+	VGUI_API const char* vgui_menu_get_item_emoji(vgui_widget* menu, vgui_item_id item);
 
 	VGUI_API void vgui_menu_open(vgui_widget* menu, float x, float y);
 	VGUI_API void vgui_menu_open_below(vgui_widget* menu, vgui_widget* anchor);

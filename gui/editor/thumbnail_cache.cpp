@@ -1,6 +1,7 @@
 #include <vgui/editor/thumbnail_cache.h>
 
 #include "pch.h"
+#include <vgui_internal.h>
 
 #include <algorithm>
 #include <atomic>
@@ -22,8 +23,10 @@ namespace vgui_editor_kit {
 		{
 			if (value.width <= 0 || value.height <= 0 || value.pixels.empty())
 				return false;
-			/* Every vgui_texture_format is four bytes per pixel. */
-			const int minimum_stride = value.width * 4;
+			const int bpp = vgui_texture_bpp(value.format);
+			if (bpp <= 0)
+				return false;
+			const int minimum_stride = value.width * bpp;
 			const int stride = value.stride > 0 ? value.stride : minimum_stride;
 			if (stride < minimum_stride)
 				return false;

@@ -334,6 +334,11 @@ void vgui_texture_release(vgui_texture* texture);
 // Marks the owning context for re-layout after a texture size change.
 void vgui_texture_mark_layout_dirty(vgui_texture* texture);
 
+// Bytes per pixel for a vgui_texture_format.  Returns 0 for an unknown format
+// (used by vgui_texture_desc_valid to reject it).  Shared so editor helpers and
+// backends compute strides consistently instead of hard-coding 4.
+int vgui_texture_bpp(vgui_texture_format format);
+
 // Backend helpers.  create_native_internal allocates a cpu=false texture and
 // registers it with the context; bind_native attaches the borrowed GPU handle
 // and the release callback that unregisters it.

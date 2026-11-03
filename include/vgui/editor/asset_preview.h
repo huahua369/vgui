@@ -39,8 +39,9 @@ namespace vgui_editor_kit {
 			custom
 		};
 
-		/* CPU image data.  stride is bytes per row; 0 means width * 4.  The
-		 * component copies the pixels into a vgui texture on the main thread. */
+		/* CPU image data.  stride is bytes per row; 0 means
+		 * width * bytes-per-pixel for `format`.  The component copies the
+		 * pixels into a vgui texture on the main thread. */
 		struct image_data
 		{
 			int width = 0;
