@@ -112,6 +112,15 @@ static vgui_theme theme_green()
 // 演示状态
 //---------------------------------------------------------------------------
 
+// 响应式数据绑定演示（P1）：一个结构体驱动多个控件。
+struct demo_bind_model
+{
+	float volume = 0.35f;
+	int muted = 0;
+	int selection = 1;
+	std::string title = "Reactive binding";
+};
+
 struct demo_state
 {
 	vgui_context* ui = nullptr;
@@ -182,6 +191,28 @@ struct demo_state
 	vgui_widget* i18n_info = nullptr;
 	vgui_widget* i18n_rtl = nullptr;
 	int lang_index = 0;
+
+	// 响应式数据绑定演示（P1/P2）
+	demo_bind_model bind_model;
+	vgui_widget* bind_state_label = nullptr;
+	vgui_widget* bind_list = nullptr;
+
+	// P2：编辑日志（撤销）。demo 用教学用的最小实现记录字段变更；编辑器里
+	// 把同样的记录交给 vgui_editor_kit::binding_undo + command_stack。
+	struct bind_undo_entry
+	{
+		void* model = nullptr;
+		size_t offset = 0;
+		int value_type = 0;		// VGUI_BINDV_*
+		double old_number = 0.0;
+		double new_number = 0.0;
+		std::string old_text;
+		std::string new_text;
+	};
+	std::vector<bind_undo_entry> bind_undo_stack;
+	vgui_widget* bind_undo_label = nullptr;
+	int bind_undo_token = 0;
+	int bind_undo_total = 0;
 
 	// TabView / Splitter
 	vgui_widget* splitter_outer = nullptr;
@@ -2655,6 +2686,207 @@ static void build_visibility(demo_state* st, vgui_widget* root)
 	st->enable_targets[st->enable_target_count++] = ec;
 }
 
+//---------------------------------------------------------------------------
+// 响应式数据绑定（P1）：滑杆/进度/开关/编辑框/列表 共享一个模型结构体
+//---------------------------------------------------------------------------
+
+static void bind_model_push(demo_state* st)
+{
+	vgui_model_mark_dirty(st->ui, &st->bind_model);
+}
+
+static void on_bind_prev(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	if (st->bind_model.selection > 0)
+		st->bind_model.selection--;
+	else
+		st->bind_model.selection = -1;
+	bind_model_push(st);
+}
+
+static void on_bind_next(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	if (st->bind_model.selection < 4)
+		st->bind_model.selection++;
+	bind_model_push(st);
+}
+
+static void on_bind_clear(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	st->bind_model.selection = -1;
+	bind_model_push(st);
+}
+
+static void on_bind_title(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	st->bind_model.title = "Host 推送的文本";
+	bind_model_push(st);
+}
+
+static void on_bind_reset(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	st->bind_model.volume = 0.35f;
+	st->bind_model.muted = 0;
+	st->bind_model.selection = 1;
+	st->bind_model.title = "Reactive binding";
+	bind_model_push(st);
+}
+
+static void bind_undo_refresh(demo_state* st)
+{
+	if (!st->bind_undo_label) return;
+	char buf[128] = {};
+	if (st->bind_undo_stack.empty())
+		snprintf(buf, sizeof(buf), "编辑日志：空 —— 拖动/点击任一绑定控件后再按 Ctrl+Z");
+	else
+		snprintf(buf, sizeof(buf), "编辑日志：%d 条待撤销（Ctrl+Z 回退模型字段，累计 %d 次编辑）",
+			(int)st->bind_undo_stack.size(), st->bind_undo_total);
+	vgui_widget_set_text(st->bind_undo_label, buf);
+}
+
+/* P2：核心在每次「用户编辑 → 模型」回写后回调一次，带新旧值。demo 用一个
+ * 最小栈演示；编辑器里换成 vgui_editor_kit::binding_undo + command_stack。 */
+static int on_bind_record(vgui_context* ctx, const vgui_bind_change* c, void* user)
+{
+	(void)ctx;
+	demo_state* st = (demo_state*)user;
+	if (!st || !c) return 0;
+	demo_state::bind_undo_entry e;
+	e.model = c->model;
+	e.offset = c->offset;
+	e.value_type = c->value_type;
+	e.old_number = c->old_number;
+	e.new_number = c->new_number;
+	if (c->old_text) e.old_text = c->old_text;
+	if (c->new_text) e.new_text = c->new_text;
+	st->bind_undo_stack.push_back(e);
+	if (st->bind_undo_stack.size() > 32)	// demo 只保留最近 32 步
+		st->bind_undo_stack.erase(st->bind_undo_stack.begin());
+	st->bind_undo_total++;
+	bind_undo_refresh(st);
+	return 1;
+}
+
+/* 撤销一步：把旧值写回字段。vgui_model_write_raw 不会再次触发记录，
+ * 否则 Ctrl+Z 会自己生成新的撤销项。 */
+static bool bind_undo_once(demo_state* st)
+{
+	if (!st || st->bind_undo_stack.empty()) return false;
+	demo_state::bind_undo_entry e = st->bind_undo_stack.back();
+	st->bind_undo_stack.pop_back();
+	vgui_model_write_raw(st->ui, e.model, e.offset, e.value_type,
+		e.old_number, e.old_text.c_str());
+	bind_undo_refresh(st);
+	return true;
+}
+
+static int on_bind_undo_key(vgui_context* ctx, int key, int down, int mods, void* user)
+{
+	(void)ctx;
+	if (!down || key != 'Z' || !(mods & VGUI_MOD_CTRL)) return 0;
+	return bind_undo_once((demo_state*)user) ? 1 : 0;
+}
+
+static void on_bind_undo_click(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	bind_undo_once((demo_state*)user);
+}
+
+static void on_bind_undo_clear(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w; (void)e;
+	demo_state* st = (demo_state*)user;
+	st->bind_undo_stack.clear();
+	bind_undo_refresh(st);
+}
+
+static void build_binding(demo_state* st, vgui_widget* root)
+{
+	vgui_context* ui = st->ui;
+	vgui_widget* c = card(root, "数据绑定 Reactive binding");
+	label(c, "控件与模型字段双向同步：拖动/点击会写回模型，改模型后 mark_dirty 即推送。",
+		12, 0xFF9A9A9A);
+
+	// 一个 float 字段驱动滑杆 + 进度条
+	vgui_widget* r1 = row(c, 10);
+	label(r1, "音量", 14, 0xFFB0B0B0);
+	vgui_widget* sl = vgui_widget_add(r1, VGUI_SLIDER, nullptr);
+	vgui_widget_set_id(sl, "bind-volume");
+	vgui_widget_set_size(sl, 180, 24);
+	vgui::bind(ui, sl, VGUI_BIND_VALUE, &st->bind_model, &demo_bind_model::volume);
+	vgui_widget* pb = vgui_widget_add(r1, VGUI_PROGRESS, nullptr);
+	vgui_widget_set_id(pb, "bind-progress");
+	vgui_widget_set_size(pb, 140, 10);
+	vgui::bind(ui, pb, VGUI_BIND_PROGRESS, &st->bind_model, &demo_bind_model::volume);
+
+	// 一个 int 字段驱动复选框 + 开关
+	vgui_widget* r2 = row(c, 10);
+	vgui_widget* chk = vgui_widget_add(r2, VGUI_CHECKBOX, "静音");
+	vgui_widget_set_id(chk, "bind-muted-check");
+	vgui::bind(ui, chk, VGUI_BIND_CHECKED, &st->bind_model, &demo_bind_model::muted);
+	vgui_widget* sw = vgui_widget_add(r2, VGUI_SWITCH, "联动开关");
+	vgui_widget_set_id(sw, "bind-muted-switch");
+	vgui::bind(ui, sw, VGUI_BIND_CHECKED, &st->bind_model, &demo_bind_model::muted);
+
+	// TEXT 字段：编辑框提交后写回模型，标签同帧跟随
+	vgui_widget* r3 = row(c, 10);
+	label(r3, "标题", 14, 0xFFB0B0B0);
+	vgui_widget* te = vgui_widget_add(r3, VGUI_EDIT, nullptr);
+	vgui_widget_set_id(te, "bind-title-edit");
+	vgui_widget_set_size(te, 200, 26);
+	vgui::bind(ui, te, VGUI_BIND_TEXT, &st->bind_model, &demo_bind_model::title);
+	vgui_widget* tl = vgui_widget_add(r3, VGUI_LABEL, "");
+	vgui_widget_set_id(tl, "bind-title-label");
+	vgui::bind(ui, tl, VGUI_BIND_TEXT, &st->bind_model, &demo_bind_model::title);
+	button(r3, "Host 改文本", on_bind_title, st);
+
+	// SELECTION 字段：列表选中行 ↔ 模型索引
+	vgui_widget* r4 = row(c, 10);
+	st->bind_list = vgui_widget_add(r4, VGUI_LIST, nullptr);
+	vgui_widget_set_id(st->bind_list, "bind-list");
+	vgui_widget_set_size(st->bind_list, 200, 108);
+	for (int i = 0; i < 5; ++i)
+	{
+		char buf[32] = {};
+		snprintf(buf, sizeof(buf), "条目 %d", i);
+		vgui_list_add_item(st->bind_list, buf, nullptr);
+	}
+	vgui::bind(ui, st->bind_list, VGUI_BIND_SELECTION, &st->bind_model,
+		&demo_bind_model::selection);
+
+	vgui_widget* r4b = col(r4, 6);
+	button(r4b, "上一项", on_bind_prev, st);
+	button(r4b, "下一项", on_bind_next, st);
+	button(r4b, "清除选择", on_bind_clear, st);
+	button(r4b, "重置模型", on_bind_reset, st);
+
+	st->bind_state_label = label(c, "-", 12, 0xFF7FB6FF);
+	vgui_widget_set_id(st->bind_state_label, "bind-state");
+
+	// P2：编辑日志 / 撤销（模型侧推送不产生记录，只有用户编辑才记录）
+	vgui_widget* r5 = row(c, 10);
+	button(r5, "撤销 Ctrl+Z", on_bind_undo_click, st);
+	button(r5, "清空撤销栈", on_bind_undo_clear, st);
+	st->bind_undo_label = label(c, "-", 12, 0xFF9CCF80);
+	vgui_widget_set_id(st->bind_undo_label, "bind-undo-state");
+	bind_undo_refresh(st);
+
+	// 安装核心编辑记录器；Ctrl+Z 走 context 级快捷键（控件先处理，未消费才到这里）。
+	vgui_set_edit_recorder(ui, on_bind_record, st);
+	st->bind_undo_token = vgui_context_add_key_handler(ui, on_bind_undo_key, st);
+}
+
 static void build_focus_theme(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "焦点与主题 Focus / Theme");
@@ -2815,6 +3047,7 @@ static void build_ui(demo_state* st)
 	build_scroll(st, root);
 	build_dynamic(st, root);
 	build_visibility(st, root);
+	build_binding(st, root);
 	build_focus_theme(st, root);
 	build_i18n(st, root);
 	build_status(st, root);
@@ -2831,6 +3064,19 @@ static void tick(demo_state* st, float delta)
 	const char* fid = f ? id_of(f) : "-";
 	if (strcmp(vgui_widget_get_text(st->focus_label), fid) != 0)
 		vgui_widget_set_text(st->focus_label, fid);
+
+	// 绑定演示：把模型当前值打印出来（控件写回后可直观看到）
+	if (st->bind_state_label)
+	{
+		char bind_buf[192] = {};
+		snprintf(bind_buf, sizeof(bind_buf),
+			"model: volume=%.2f  muted=%d  selection=%d  title=\"%s\"",
+			st->bind_model.volume, st->bind_model.muted,
+			st->bind_model.selection, st->bind_model.title.c_str());
+		const char* cur = vgui_widget_get_text(st->bind_state_label);
+		if (!cur || strcmp(cur, bind_buf) != 0)
+			vgui_widget_set_text(st->bind_state_label, bind_buf);
+	}
 
 	// 自动进度
 	if (st->anim_on)

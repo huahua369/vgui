@@ -1,6 +1,7 @@
 set(VGUI_EDITOR_KIT_SOURCES
     asset_browser.cpp
     asset_preview.cpp
+    binding_undo.cpp
     breadcrumb.cpp
     canvas_view.cpp
     code_editor.cpp

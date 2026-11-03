@@ -16,10 +16,12 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "pch.h"		// glm etc. (required by ovg_c.h)
 #include <ovg_c.h>		// font_familys_t
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / new_font_family
+#include <vgui/binding/collection.h>	// P3: std::vector<Row> -> vgui_row_source
 #include <vgui/vgui.h>		// public C API
 
 static int g_fail = 0;
@@ -4294,16 +4296,59 @@ static void bind_cb_set(void* user, vgui_bind_kind kind, const void* in)
 	((bind_cb_model*)user)->flag = (*(const int*)in) != 0;
 }
 
+/* P2 edit journal: keeps the last change plus stable copies of its text sides
+ * (the pointers inside vgui_bind_change are only valid during the callback). */
+struct bind_journal
+{
+	int count = 0;
+	vgui_bind_change last = {};
+	std::string old_text;
+	std::string new_text;
+};
+
+static int bind_journal_record(vgui_context* ctx, const vgui_bind_change* change, void* user)
+{
+	(void)ctx;
+	bind_journal* journal = (bind_journal*)user;
+	journal->count++;
+	journal->last = *change;
+	journal->old_text = change->old_text ? change->old_text : "";
+	journal->new_text = change->new_text ? change->new_text : "";
+	return 1;
+}
+
+/* P3 derived binding: a value computed from several fields.  The dependency
+ * models make the core re-run get() when any of them is marked dirty. */
+struct derived_model
+{
+	float a = 0.0f;
+	float b = 0.0f;
+	std::string text;	/* scratch buffer handed to the control */
+	int reads = 0;
+};
+
+static void derived_get(void* user, vgui_bind_kind kind, void* out)
+{
+	(void)kind;
+	derived_model* m = (derived_model*)user;
+	m->reads++;
+	char buf[64] = {};
+	snprintf(buf, sizeof(buf), "%.2f", (double)(m->a + m->b));
+	m->text = buf;
+	*(const char**)out = m->text.c_str();
+}
+
 static void test_binding(font_familys_t* familys)
 {
 	vgui_context* ctx = vgui_create(familys, 16.0f);
 	vgui_context_set_size(ctx, 400, 300);
 	vgui_widget_set_layout(vgui_root(ctx), VGUI_LAYOUT_ABSOLUTE);
 
-	struct model_t { float volume; int flag; std::string name; };
+	struct model_t { float volume; int flag; int sel; std::string name; };
 	model_t m;
 	m.volume = 0.25f;
 	m.flag = 1;
+	m.sel = 0;
 	m.name = "Hello";
 
 	vgui_widget* root = vgui_root(ctx);
@@ -4379,6 +4424,225 @@ static void test_binding(font_familys_t* familys)
 	vgui_update(ctx, 0.016f);
 	check(vgui_widget_get_checked(chk2) == 0, "binding: cb invalidate -> resync");
 
+	// ---- SELECTION binding (list row index, both directions) ----
+	vgui_widget* list = vgui_widget_add(root, VGUI_LIST, nullptr);
+	vgui_widget_set_pos(list, 250.0f, 10.0f);
+	vgui_widget_set_size(list, 140.0f, 160.0f);
+	vgui_item_id li0 = vgui_list_add_item(list, "row0", nullptr);
+	vgui_item_id li1 = vgui_list_add_item(list, "row1", nullptr);
+	vgui_item_id li2 = vgui_list_add_item(list, "row2", nullptr);
+
+	m.sel = 1;
+	vgui_bind(ctx, list, VGUI_BIND_SELECTION, &m, VGUI_OFFSET(model_t, sel));
+	vgui_update(ctx, 0.016f);
+	check(vgui_list_get_selected_count(list) == 1, "binding: selection initialized (count)");
+	check(vgui_list_get_selected(list, 0) == li1, "binding: selection initialized (row 1)");
+
+	m.sel = 2;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(vgui_list_get_selected(list, 0) == li2, "binding: selection model->widget");
+	check(m.sel == 2, "binding: model->widget selection does not echo back");
+
+	m.sel = -1;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(vgui_list_get_selected_count(list) == 0, "binding: selection cleared by -1");
+
+	// widget -> model: selecting a row writes its index back.
+	vgui_list_select(list, li0, 1);
+	check(m.sel == 0, "binding: selection writeback (row 0)");
+	vgui_list_select(list, li0, 0);
+	check(m.sel == -1, "binding: selection writeback (deselect -> -1)");
+
+	// ---- C++ member-pointer sugar (vgui::bind) ----
+	vgui_widget* s3 = vgui_widget_add(root, VGUI_SLIDER, "");
+	vgui_widget_set_pos(s3, 250.0f, 200.0f);
+	vgui_widget_set_size(s3, 200.0f, 24.0f);
+	m.volume = 0.4f;
+	vgui::bind(ctx, s3, VGUI_BIND_VALUE, &m, &model_t::volume);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s3), 0.4f), "binding: C++ sugar initializes widget");
+	m.volume = 0.9f;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s3), 0.9f), "binding: C++ sugar model->widget");
+
+	// ---- P2: edit journal (undo integration) ----
+	bind_journal jr;
+	void* rec_user = nullptr;
+	vgui_set_edit_recorder(ctx, bind_journal_record, &jr);
+	check(vgui_get_edit_recorder(ctx, &rec_user) == &bind_journal_record && rec_user == &jr,
+		"journal: recorder installed");
+
+	// Programmatic writes and model->widget flushes are never reported.
+	int record_base = jr.count;
+	vgui_widget_set_value(s1, 0.33f);
+	vgui::model_write(ctx, &m, &model_t::volume) = 0.44f;
+	vgui_update(ctx, 0.016f);
+	check(jr.count == record_base, "journal: programmatic writes not recorded");
+	check(near(vgui_widget_get_value(s1), 0.44f), "journal: model_write pushes to widget");
+
+	// A real drag reports the field with both sides of the change.  s2 is the
+	// bound slider here (s1 was unbound earlier).
+	vgui_input_mouse_move(ctx, 110.0f, 62.0f);
+	vgui_input_mouse_down(ctx, 1, 110.0f, 62.0f, 1);
+	vgui_input_mouse_move(ctx, 170.0f, 62.0f);
+	vgui_input_mouse_up(ctx, 1, 170.0f, 62.0f, 1);
+	check(jr.count > record_base, "journal: drag recorded");
+	check(jr.last.model == &m && jr.last.offset == VGUI_OFFSET(model_t, volume) &&
+		jr.last.value_type == VGUI_BINDV_FLOAT,
+		"journal: change identifies the field");
+	check(jr.last.old_number < jr.last.new_number, "journal: change carries old/new value");
+
+	// Undo replay: raw write restores the model, bound widgets follow, and the
+	// replay itself is not recorded (no recursive undo entries).
+	const double dragged_to = jr.last.new_number;
+	const double dragged_from = jr.last.old_number;
+	int after_drag = jr.count;
+	vgui_model_write_raw(ctx, &m, VGUI_OFFSET(model_t, volume), VGUI_BINDV_FLOAT,
+		dragged_from, nullptr);
+	check(near(m.volume, (float)dragged_from), "journal: raw write restores the model");
+	check(jr.count == after_drag, "journal: raw write is not recorded");
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s3), (float)dragged_from),
+		"journal: undo resyncs the sibling widget");
+	vgui_model_write_raw(ctx, &m, VGUI_OFFSET(model_t, volume), VGUI_BINDV_FLOAT,
+		dragged_to, nullptr);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s3), (float)dragged_to), "journal: redo restores the drag");
+
+	// TEXT changes carry both strings; typing into a bound edit is a user edit.
+	vgui_widget* ed = vgui_widget_add(root, VGUI_EDIT, "");
+	vgui_widget_set_pos(ed, 10.0f, 250.0f);
+	vgui_widget_set_size(ed, 200.0f, 24.0f);
+	m.name = "abc";
+	vgui_bind(ctx, ed, VGUI_BIND_TEXT, &m, VGUI_OFFSET(model_t, name));
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(ed)) == "abc", "binding: edit initialized from model");
+	jr.count = 0;
+	vgui_set_focus(ctx, ed);
+	vgui_input_text(ctx, "d");
+	check(jr.count == 1, "journal: typed text recorded once");
+	check(jr.old_text == "abc" && jr.new_text == "abcd",
+		"journal: text change carries both sides");
+	check(m.name == "abcd", "journal: typed text written back to the model");
+
+	vgui_model_write_raw(ctx, &m, VGUI_OFFSET(model_t, name), VGUI_BINDV_TEXT, 0.0, "abc");
+	check(m.name == "abc", "journal: raw text write restores the model");
+	check(jr.count == 1, "journal: raw text write is not recorded");
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(ed)) == "abc", "journal: undo resyncs the edit widget");
+
+	// Recorder suppression and removal.
+	vgui_set_edit_record_enabled(ctx, 0);
+	vgui_input_text(ctx, "z");
+	check(jr.count == 1, "journal: disabled recorder stays silent");
+	vgui_set_edit_record_enabled(ctx, 1);
+	vgui_set_edit_recorder(ctx, nullptr, nullptr);
+	check(vgui_get_edit_recorder(ctx, &rec_user) == nullptr && rec_user == nullptr,
+		"journal: recorder removed");
+
+	// ---- P3: derived (computed) binding driven by dependencies ----
+	derived_model dm;
+	dm.a = 1.0f;
+	dm.b = 2.0f;
+	vgui_widget* dl = vgui_widget_add(root, VGUI_LABEL, "");
+	vgui_binding* expr = vgui_bind_cb(ctx, dl, VGUI_BIND_TEXT, &dm, derived_get, nullptr);
+	vgui_binding_add_dependency(expr, &dm);
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(dl)) == "3.00",
+		"derived: computed value initialized");
+
+	dm.a = 4.0f;
+	vgui_model_mark_dirty(ctx, &dm);
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(dl)) == "6.00",
+		"derived: dependency change recomputes");
+	int reads = dm.reads;
+	dm.a = 9.0f;	/* not marked dirty */
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(dl)) == "6.00" && dm.reads == reads,
+		"derived: idle frame does not recompute");
+	vgui_model_mark_dirty(ctx, &dm);
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(dl)) == "15.00",
+		"derived: mark_dirty refreshes the computed value");
+
+	/* Flush diagnostics: idle frames push nothing. */
+	check(vgui_binding_count(ctx) > 0, "binding: live count diagnostic");
+	vgui_update(ctx, 0.016f);
+	check(vgui_binding_last_flush_count(ctx) == 0, "binding: idle flush count is zero");
+	vgui_model_mark_dirty(ctx, &dm);
+	vgui_update(ctx, 0.016f);
+	check(vgui_binding_last_flush_count(ctx) >= 1, "binding: flush count tracks pushes");
+
+	vgui_destroy(ctx);
+}
+
+/* P3: std::vector<Row> rendered through a virtual row source. */
+struct entity_row
+{
+	std::string name;
+	std::string kind;
+	bool locked = false;
+};
+
+static void test_binding_collection(font_familys_t* familys)
+{
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 400, 300);
+	vgui_widget_set_layout(vgui_root(ctx), VGUI_LAYOUT_ABSOLUTE);
+
+	std::vector<entity_row> data;
+	data.push_back({ "Cube", "Mesh", false });
+	data.push_back({ "Sun", "Light", true });
+
+	vgui::vector_rows<entity_row> rows(&data,
+		[](const entity_row& r) { return r.name; },
+		[](const entity_row& r) { return r.kind; },
+		[](const entity_row& r) -> vgui_item_id {
+			/* Stable per name, independent of vector order. */
+			vgui_item_id h = 1469598103u;
+			for (char c : r.name) h = (h ^ (vgui_item_id)(unsigned char)c) * 1099511628211u;
+			return h ? h : 1;
+		},
+		[](const entity_row& r) { return !r.locked; });
+
+	vgui_widget* list = vgui_widget_add(vgui_root(ctx), VGUI_LIST, nullptr);
+	vgui_widget_set_pos(list, 10.0f, 10.0f);
+	vgui_widget_set_size(list, 200.0f, 120.0f);
+	rows.attach(list);
+	vgui_update(ctx, 0.016f);
+
+	check(vgui_list_is_virtual(list) == 1, "collection: vector_rows installs a virtual source");
+	check(vgui_list_get_count(list) == 2, "collection: row count follows the vector");
+
+	vgui_item_id first = vgui_list_get_item_at(list, 0);
+	check(first != 0, "collection: row id from the accessor");
+	check(std::string(vgui_list_get_item_text(list, first)) == "Cube",
+		"collection: row label from the accessor");
+	check(vgui_list_get_item_enabled(list, first) == 1, "collection: enabled row");
+	vgui_item_id second = vgui_list_get_item_at(list, 1);
+	check(vgui_list_get_item_enabled(list, second) == 0, "collection: disabled row");
+
+	data.push_back({ "Spark", "Fx", false });
+	rows.refresh();
+	vgui_update(ctx, 0.016f);
+	check(vgui_list_get_count(list) == 3, "collection: refresh picks up new rows");
+
+	data[0].name = "Cube.001";
+	rows.invalidate_rows(0, 1);
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_list_get_item_text(list, vgui_list_get_item_at(list, 0))) == "Cube.001",
+		"collection: invalidate_rows refreshes content");
+
+	/* detach() releases the source before the adapter dies: the control must not
+	 * keep pointing at the (soon to be gone) callback table. */
+	rows.detach();
+	vgui_update(ctx, 0.016f);
+	check(vgui_list_is_virtual(list) == 0, "collection: detach clears the row source");
+
 	vgui_destroy(ctx);
 }
 
@@ -4432,6 +4696,7 @@ int main()
 	test_ui_scale(ui);
 	test_focus_navigate(ui, familys);
 	test_binding(familys);
+	test_binding_collection(familys);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

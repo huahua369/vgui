@@ -880,30 +880,104 @@ vgui_chart_append_points(chart, rps, points, count);
 
 ### 响应式数据绑定
 
-可选的绑定层把控件属性与模型字段连起来，双向同步且**不靠每帧轮询**（P0 已实现，见
+可选的绑定层把控件属性与模型字段连起来，双向同步且**不靠每帧轮询**（P0/P1 已实现，见
 [`docs/data_binding_roadmap.md`](docs/data_binding_roadmap.md)）。默认仍可用 R4-1 的"每帧直写 +
 脏检查"手工同步，两者并存。
 
 ```c
-struct settings { float volume; int mute; };
-struct settings s = { 0.5f, 0 };
+struct settings { float volume; int mute; int selected_row; std::string title; };
+struct settings s = { 0.5f, 0, -1, "" };
 
 /* 偏移绑定：模型为结构体，字段用 offsetof 定位。 */
 vgui_bind(ui, slider, VGUI_BIND_VALUE,   &s, offsetof(struct settings, volume));
 vgui_bind(ui, toggle, VGUI_BIND_CHECKED, &s, offsetof(struct settings, mute));
+vgui_bind(ui, list,   VGUI_BIND_SELECTION, &s, offsetof(struct settings, selected_row));
 
 /* 改完字段后仅打脏版本，下一帧 vgui_update 才真正同步控件。 */
 s.volume = 0.8f;
 vgui_model_mark_dirty(ui, &s);
 /* vgui_update(ui, dt) ... */
 
-/* 用户拖动/点击会自动回写到 s（无需手写 on_event）。 */
+/* 用户拖动/点击/选中行会自动回写到 s（无需手写 on_event）。 */
 ```
 
-支持的绑定类型：`VGUI_BIND_VALUE` / `TEXT` / `CHECKED` / `PROGRESS` / `VISIBLE` / `ENABLED`
-（`SELECTION` 为占位，P1）。非 POD 模型或需要类型转换时用 `vgui_bind_cb()` 提供 get/set 回调；
-`vgui_binding_invalidate()` 可强制重拉；`vgui_unbind()` 解除绑定（`vgui_destroy` 会回收未解绑的
-绑定）。
+C++ 下可直接传成员指针，省去 `offsetof`（编译期类型校验）：
+
+```cpp
+vgui::bind(ui, slider, VGUI_BIND_VALUE,   &s, &Settings::volume);
+vgui::bind(ui, label,  VGUI_BIND_TEXT,    &s, &Settings::title);
+vgui::bind(ui, list,   VGUI_BIND_SELECTION, &s, &Settings::selected_row);
+```
+
+支持的绑定类型：`VGUI_BIND_VALUE` / `TEXT` / `CHECKED` / `PROGRESS` / `VISIBLE` / `ENABLED` /
+`SELECTION`。`SELECTION` 以**行索引**（`-1` = 无选中）对应 list/tree 的选中行，多选时只反映第一条；
+绑定会清空控件上的 i18n `text_key`（显式文本与 key 二选一，绑定优先）。非 POD 模型或需要类型转换
+时用 `vgui_bind_cb()` 提供 get/set 回调；`vgui_binding_invalidate()` 可强制重拉；
+`vgui_unbind()` 解除绑定（`vgui_destroy` 会回收未解绑的绑定）。
+
+#### 自动脏标记
+
+```c
+/* C：赋值 + mark_dirty 一步完成 */
+VGUI_MODEL_SET(ui, &s, volume, 0.8f);
+
+/* C++：赋值代理，写完自动 mark_dirty（读回也能用） */
+vgui::model_write(ui, &s, &Settings::volume) = 0.8f;
+vgui::model_write(ui, &s, &Settings::title) = "Hello";
+```
+
+#### 编辑日志与撤销（P2）
+
+绑定层在每次「用户编辑 → 模型」回写后回调一次编辑日志，携带字段与新/旧值；模型推送、程序化
+`vgui_widget_set_*`、撤销回放都不会上报：
+
+```c
+static int on_edit(vgui_context* ui, const vgui_bind_change* c, void* user)
+{
+    /* c->model / c->offset / c->value_type 定位字段；c->old_number、c->new_number
+     * 或 c->old_text、c->new_text（仅回调期间有效）给出新旧值。 */
+    return 1;
+}
+vgui_set_edit_recorder(ui, on_edit, my_state);
+
+/* 撤销：把旧值写回字段并让绑定控件同帧回退（该写入不会再次记录）。 */
+vgui_model_write_raw(ui, c->model, c->offset, c->value_type, c->old_number, c->old_text);
+```
+
+编辑器里无需自建栈，直接用 editor kit 的适配器把日志接到 `command_stack`：
+
+```cpp
+vgui_editor_kit::command_stack stack;
+vgui_editor_kit::binding_undo undo(ui, stack);   // RAII，析构自动摘除
+/* 拖动滑杆 → 一步撤销；同字段连续编辑在 500ms 窗口内合并成一条 */
+stack.undo();   // 模型字段还原，绑定控件下一帧同步
+```
+
+PropertyGrid 行也可以直接绑结构体字段（免写 get/set lambda）：
+
+```cpp
+grid.add_property(vgui_editor_kit::field_property(
+    "volume", "Volume", &s, &Settings::volume, ui));
+```
+
+#### 集合与派生绑定（P3）
+
+```cpp
+// 用虚拟行源渲染 std::vector<Row>，不必手工填 vgui_row_source 回调表。
+vgui::vector_rows<Entity> rows(&entities,
+    [](const Entity& e) { return e.name; },
+    [](const Entity& e) { return e.kind; });
+rows.attach(list);       // list / tree 都可以
+rows.refresh();          // 增删行后重建
+rows.invalidate_rows(3, 2);   // 只是内容变了：比 refresh() 便宜
+rows.detach();           // 适配器先于控件销毁时必须调用（控件只存指针）
+
+// 派生（computed）值：依赖模型标脏即重算，无需手工 invalidate。
+vgui_binding* total = vgui_bind_cb(ui, label, VGUI_BIND_TEXT, &order, order_total_get, nullptr);
+vgui_binding_add_dependency(total, &order);      // 可登记多个模型
+```
+
+诊断：`vgui_binding_count(ui)` 与 `vgui_binding_last_flush_count(ui)`（空闲帧为 0）可用来画绑定浮层。
 
 ## 快速开始
 

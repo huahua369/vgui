@@ -2093,7 +2093,7 @@ extern "C" {
 		VGUI_BIND_PROGRESS,     /* float 0..1 <-> progress value */
 		VGUI_BIND_VISIBLE,      /* int (0/1) <-> visibility */
 		VGUI_BIND_ENABLED,      /* int (0/1) <-> enabled */
-		VGUI_BIND_SELECTION     /* int <-> list/tree selected index (model->widget, P1 writeback) */
+		VGUI_BIND_SELECTION     /* int <-> list/tree selected index (-1 = none); bidirectional */
 	} vgui_bind_kind;
 
 	/* Opaque binding handle. */
@@ -2126,10 +2126,154 @@ extern "C" {
 	/* Force a single binding to resync on the next update (cb bindings have no
 	 * model version, so this is how you push a change to them). */
 	VGUI_API void vgui_binding_invalidate(vgui_binding* binding);
+	/* 1 while the binding is still registered (not unbound / not destroyed).
+	 * Undo commands should check this before reviving a stored handle. */
+	VGUI_API int vgui_binding_alive(vgui_context* ctx, vgui_binding* binding);
+
+	/* Derived (computed) bindings.  A callback binding normally resyncs only on
+	 * vgui_binding_invalidate(); attaching dependency models makes it re-run
+	 * get_fn whenever any of them is marked dirty, which is how a value computed
+	 * from several fields (totals, "3 of 5 selected", formatted labels) stays
+	 * live without manual invalidation. */
+	VGUI_API void vgui_binding_add_dependency(vgui_binding* binding, void* model);
+	VGUI_API void vgui_binding_clear_dependencies(vgui_binding* binding);
+
+	/* Diagnostics for a binding debug overlay: number of live bindings, and how
+	 * many model -> widget pushes the last vgui_update flush performed (0 while
+	 * the UI is idle). */
+	VGUI_API int vgui_binding_count(vgui_context* ctx);
+	VGUI_API int vgui_binding_last_flush_count(vgui_context* ctx);
+
+	/* ---- edit journal (P2: undo integration) --------------------------------
+	 * Every writeback caused by a genuine user edit is reported once, *after*
+	 * the model field has been updated.  Both sides of the change are supplied
+	 * so a host can build an undoable command.  Not reported:
+	 *   - model -> widget pushes (vgui_update flush),
+	 *   - programmatic writes (vgui_widget_set_value / _text / _checked),
+	 *   - vgui_model_write_raw() replays (undo/redo).
+	 * old_text / new_text are only set for TEXT bindings and are valid for the
+	 * duration of the callback only. */
+	typedef enum vgui_bind_value_type {
+		VGUI_BINDV_FLOAT = 0,   /* VALUE / PROGRESS */
+		VGUI_BINDV_INT,         /* CHECKED / VISIBLE / ENABLED / SELECTION */
+		VGUI_BINDV_TEXT         /* TEXT */
+	} vgui_bind_value_type;
+
+	typedef struct vgui_bind_change {
+		vgui_binding*  binding;     /* still registered during the callback */
+		vgui_widget*   widget;
+		vgui_bind_kind kind;
+		void*          model;       /* NULL for callback bindings */
+		size_t         offset;      /* 0 for callback bindings */
+		void*          cb_user;     /* callback-binding user pointer */
+		vgui_bind_set_fn cb_set;    /* callback-binding setter (may be NULL) */
+		int            value_type;  /* vgui_bind_value_type */
+		double         old_number;  /* before the edit */
+		double         new_number;
+		const char*    old_text;
+		const char*    new_text;
+	} vgui_bind_change;
+
+	/* Returns non-zero when the change was consumed (informational only). */
+	typedef int (*vgui_bind_record_fn)(vgui_context* ctx,
+		const vgui_bind_change* change, void* user);
+
+	/* Installs the recorder; pass a null fn to remove.  A context has at most
+	 * one recorder (an editor kit adapter replaces it). */
+	VGUI_API void vgui_set_edit_recorder(vgui_context* ctx,
+		vgui_bind_record_fn fn, void* user);
+	VGUI_API vgui_bind_record_fn vgui_get_edit_recorder(vgui_context* ctx,
+		void** user);
+	/* Temporarily stop reporting changes.  Use it when the host replays undo /
+	 * redo itself instead of going through vgui_model_write_raw(). */
+	VGUI_API void vgui_set_edit_record_enabled(vgui_context* ctx, int enabled);
+
+	/* Typed field write used by undo commands: writes the field at
+	 * (model, offset) for the given value_type and marks the model dirty so
+	 * bound widgets resync on the next update.  Never reported to the
+	 * recorder.  number is used for FLOAT/INT, text for TEXT. */
+	VGUI_API void vgui_model_write_raw(vgui_context* ctx, void* model,
+		size_t offset, int value_type, double number, const char* text);
+
+/* C convenience: assign a model field and mark the model dirty in one
+ * statement.  C cannot intercept a bare `=`, so this is a setter macro
+ * (C++ users get vgui::model_write() below). */
+#define VGUI_MODEL_SET(ctx, model, field, value) \
+	((void)((model)->field = (value)), vgui_model_mark_dirty((ctx), (model)))
 
 #ifdef __cplusplus
 } /* extern "C" */
 
 /* Convenience: bind a C++ struct member without spelling offsetof. */
 #define VGUI_OFFSET(Model, field) offsetof(Model, field)
+
+/* Declarative C++ sugar:
+ *
+ *     vgui::bind(ui, slider, VGUI_BIND_VALUE,   &settings, &Settings::volume);
+ *     vgui::bind(ui, toggle, VGUI_BIND_CHECKED, &settings, &Settings::muted);
+ *     vgui::bind(ui, label,  VGUI_BIND_TEXT,    &settings, &Settings::title);
+ *
+ * Equivalent to vgui_bind() with VGUI_OFFSET, but the compiler type-checks the
+ * member pointer against the model struct.  Non-POD models that need custom
+ * conversion should use vgui_bind_cb() instead. */
+namespace vgui
+{
+	namespace detail
+	{
+		template <typename M, typename T>
+		inline size_t member_offset(T M::*field)
+		{
+			/* Compute the byte offset without dereferencing a null pointer:
+			 * take a suitably aligned scratch buffer as a fake object. */
+			alignas(M) unsigned char storage[sizeof(M)];
+			M* base = reinterpret_cast<M*>(storage);
+			return (size_t)((char*)&(base->*field) - (char*)base);
+		}
+	}
+
+	template <typename M, typename T>
+	inline vgui_binding* bind(vgui_context* ctx, vgui_widget* widget,
+		vgui_bind_kind kind, M* model, T M::*field)
+	{
+		return vgui_bind(ctx, widget, kind, model, detail::member_offset(field));
+	}
+
+	/* Assignment proxy so a model write can mark the model dirty without a
+	 * separate call:
+	 *
+	 *     vgui::model_write(ui, &settings, &Settings::volume) = 0.8f;
+	 *     vgui::model_write(ui, &settings, &Settings::title)  = "Hello";
+	 *
+	 * Reading through the proxy yields the current field value. */
+	namespace detail
+	{
+		template <typename M, typename T>
+		class model_write_proxy
+		{
+		public:
+			model_write_proxy(vgui_context* ctx, M* model, T M::*field)
+				: ctx_(ctx), model_(model), field_(field) {}
+
+			model_write_proxy& operator=(const T& value)
+			{
+				model_->*field_ = value;
+				vgui_model_mark_dirty(ctx_, model_);
+				return *this;
+			}
+			operator T() const { return model_->*field_; }
+
+		private:
+			vgui_context* ctx_;
+			M* model_;
+			T M::*field_;
+		};
+	}
+
+	template <typename M, typename T>
+	inline detail::model_write_proxy<M, T> model_write(vgui_context* ctx,
+		M* model, T M::*field)
+	{
+		return detail::model_write_proxy<M, T>(ctx, model, field);
+	}
+}
 #endif

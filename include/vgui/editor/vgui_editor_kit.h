@@ -7,6 +7,7 @@
  */
 #include "asset_browser.h"
 #include "asset_preview.h"
+#include "binding_undo.h"
 #include "breadcrumb.h"
 #include "canvas_view.h"
 #include "code_editor.h"
@@ -25,6 +26,7 @@
 #include "markdown_view.h"
 #include "node_graph_view.h"
 #include "outliner_view.h"
+#include "property_binding.h"
 #include "property_grid.h"
 #include "search_box.h"
 #include "spinbox.h"

@@ -46,7 +46,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **原生（OS）菜单**：仍缺（vgui 菜单为自绘浮层，无系统原生菜单）；但菜单项图标（图片纹理 / emoji）与运行时动态重建已实现，见 §4.2
 - **跨平台后端有限**：唯一后端 SDL3 GPU；**无 iOS / Android、无 WebAssembly / WebGPU 导出、无游戏主机**后端
 - **无障碍（Accessibility）**：仅键盘/手柄/焦点环 + 高对比主题，**无屏幕阅读器 / ARIA 语义**
-- **无数据绑定框架**：靠每帧直写控件状态（runtime 已给出"绑定惯例"，但非响应式）
+- **数据绑定**：P0–P3 已提供可选的响应式绑定层（`vgui_bind` / `vgui_bind_cb` / C++ `vgui::bind`），含编辑日志与撤销集成（`vgui_set_edit_recorder` + editor kit `binding_undo`）、`vgui::model_write` 自动脏标记、PropertyGrid 字段绑定、`vgui::vector_rows` 集合适配器与依赖驱动的 computed 绑定；仍非声明式 UI 描述（无 JSX/模板式字符串 DSL、无依赖自动分析）
 - **无多线程 UI**（明确单线程：纹理创建/更新/绘制须同线程）
 - **无内嵌 WebView / 音视频播放 / 网络**；高级动画仅 hover/press/check 过渡
 - 版本 0.3.0、仅源码兼容（无二进制兼容承诺）；构建依赖重（C++23 + vcpkg：SDL3 / harfbuzz / fontconfig / glm / nlohmann_json / Clipper2 / ovg）
@@ -107,7 +107,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 
 1. **单一渲染/OS 后端**（SDL3 GPU）：桌面可用，缺移动端 / Web / 主机后端
 2. **无障碍**：无屏幕阅读器支持（仅键盘/手柄/高对比）
-3. **响应式/声明式数据绑定**：P0 已实现——`vgui_bind`/`vgui_bind_cb`/`vgui_model_mark_dirty` 提供双向标量绑定（value/text/checked/progress/visible/enabled），模型变更经版本号懒 flush、用户编辑自动回写、无回声；规划与后续阶段见 `docs/data_binding_roadmap.md`（P1 扩展属性/演示、P2 撤销集成）
+3. **响应式/声明式数据绑定**：P0–P3 已实现——`vgui_bind`/`vgui_bind_cb`/C++ `vgui::bind` 提供双向绑定（value/text/checked/progress/visible/enabled/selection），模型变更经版本号懒 flush、用户编辑自动回写、无回声；编辑日志（`vgui_set_edit_recorder`）把用户编辑变成可撤销命令，editor kit 的 `binding_undo` 直接接到 `command_stack`（滑杆拖动合并为一步），`vgui::model_write` / `VGUI_MODEL_SET` 自动标脏，PropertyGrid 可用 `field_property` 直接绑字段，`vgui::vector_rows` 把 `std::vector<Row>` 适配成虚拟行源，`vgui_binding_add_dependency` 支持依赖驱动的 computed 值；`vgui_demo` 有绑定+撤销演示卡片，`model_test`/`editor_kit_test` 有断言。仍缺字符串表达式 DSL 与依赖自动分析，详见 `docs/data_binding_roadmap.md`
 4. **无多线程 UI**，单渲染线程约束
 5. **无原生文件对话框**（仅文件拖入）
 6. **无高级富文本/排版**（核心层）
@@ -148,12 +148,20 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 |---|---|---|
 | 纹理格式 `RGBA16F` / `RGBA32F` | 普通应用图片、游戏运行时 HDR 合成 | 公共枚举 + `vgui_texture_bpp` + OVG/SDL3 映射；同时修掉 `thumbnail_cache`/`asset_preview` 中"所有格式 4 字节"的硬编码 stride 假设 |
 | 单通道 `R16F` / `R32F` | 数据/高度图/掩码纹理、引擎数据纹理 | 因 OVG 原本无单通道格式，同步扩展 vendored `ovg_c.h` 枚举与 `vg_to_sdl_format`/`format_bpp`；采样返回 `(r,0,0,1)` |
+| 响应式数据绑定 P0/P1（标量双向 + 声明式糖） | 普通应用、编辑器 | `vgui_bind` / `vgui_bind_cb` / C++ `vgui::bind`（成员指针糖）；支持 VALUE/TEXT/CHECKED/PROGRESS/VISIBLE/ENABLED/SELECTION 双向；脏版本号懒 flush、编辑自动回写、无回声；`vgui_demo` 有演示卡片，`model_test` 有断言 |
+| 绑定撤销集成 P2 | 编辑器、工具类应用 | 核心编辑日志 `vgui_set_edit_recorder`（带新旧值、模型推送与程序化写入不上报）+ `vgui_model_write_raw`（回放不产生新记录）+ `vgui_binding_alive`；editor kit `binding_undo` 把日志接到 `command_stack`（500ms 合并窗口，RAII 摘除）；`vgui::model_write` / `VGUI_MODEL_SET` 自动标脏；`field_property` 让 PropertyGrid 直接绑结构体字段 |
+| 集合/派生绑定 P3 | 数据密集界面、编辑器 | `vgui::vector_rows<Row>` 把 `std::vector<Row>` 适配成 `vgui_row_source`（attach/refresh/invalidate_rows）；`vgui_binding_add_dependency` 让 cb 绑定在依赖模型标脏时重算（computed 值）；`vgui_binding_count` / `vgui_binding_last_flush_count` 提供诊断计数 |
 
 ### 7.3 仍维持的"共通缺失"（未变）
-单一后端（SDL3 GPU，缺移动/Web/主机）、屏幕阅读器/ARIA、响应式数据绑定、多线程 UI、原生文件对话框、核心层高级富文本、WebView/多媒体/网络、语言绑定、插件体系——以上均未改动，维持原结论。
+单一后端（SDL3 GPU，缺移动/Web/主机）、屏幕阅读器/ARIA、多线程 UI、原生文件对话框、核心层高级富文本、WebView/多媒体/网络、语言绑定、插件体系——以上均未改动，维持原结论。数据绑定已从该清单移出（见 §7.2）；其字符串表达式 DSL、依赖自动分析仍缺（核心功能已落地，见 roadmap P3）。
 
 ### 7.4 文档一致性修正
 - 普通应用 §2.2：删除"菜单项无图标 API"的错误表述。
 - 编辑器 §4.2：删除一处重复的"可编辑富文本"条目。
+- `editor_roadmap.md` §2.2：删除一行误入表格的开发便签，恢复表格与 §3 的空行。
+
+### 7.5 代码一致性修正
+- `property_binding.h`：`field_property` 的整型/浮点重载原先只靠默认模板实参（`enable_if`）区分，等于对同一模板重复声明，GCC/Clang 直接报 `redefinition of default argument`；已合并为单个 `is_arithmetic && !is_bool` 重载，按 `is_floating_point` 选 `integer`/`number` 类型。
+- `collection.h`：`vector_rows` 补 `detach()`，避免适配器先于控件销毁时控件残留悬垂行源指针。
 - 全文贯通纹理格式能力到 §2.1（图片/纹理）与 §3.1（游戏运行时 HUD）。
 

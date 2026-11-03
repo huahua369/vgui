@@ -14547,6 +14547,248 @@ static int test_shell_accessibility_e05()
 	return 0;
 }
 
+/* P2: field_property() turns a struct field into a PropertyGrid row. */
+int test_bound_properties()
+{
+	using namespace vgui_editor_kit;
+
+	auto near_value = [](float a, float b) { return std::fabs(a - b) <= 0.01f; };
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("field property: context");
+	vgui_context_set_size(ui, 600, 400);
+	vgui_widget_set_layout(vgui_root(ui), VGUI_LAYOUT_ABSOLUTE);
+
+	struct settings_t
+	{
+		bool enabled;
+		int count;
+		float volume;
+		double ratio;
+		std::string title;
+	};
+	settings_t s;
+	s.enabled = true;
+	s.count = 3;
+	s.volume = 0.25f;
+	s.ratio = 0.5;
+	s.title = "beam";
+
+	vgui_widget* volume_view = vgui_widget_add(vgui_root(ui), VGUI_SLIDER, "");
+	vgui_widget_set_pos(volume_view, 10.0f, 10.0f);
+	vgui_widget_set_size(volume_view, 200.0f, 24.0f);
+	vgui_bind(ui, volume_view, VGUI_BIND_VALUE, &s,
+		VGUI_OFFSET(settings_t, volume));
+
+	vgui_widget* ratio_view = vgui_widget_add(vgui_root(ui), VGUI_SLIDER, "");
+	vgui_widget_set_pos(ratio_view, 10.0f, 44.0f);
+	vgui_widget_set_size(ratio_view, 200.0f, 24.0f);
+	vgui_bind(ui, ratio_view, VGUI_BIND_VALUE, &s,
+		VGUI_OFFSET(settings_t, ratio));
+	vgui_update(ui, 1.0f / 60.0f);
+	if (!near_value(vgui_widget_get_value(volume_view), 0.25f) ||
+		!near_value(vgui_widget_get_value(ratio_view), 0.5f))
+		return fail("field property: initial binding push");
+
+	{
+		property_grid grid;
+		command_stack commands;
+		grid.build(vgui_root(ui));
+		grid.set_command_stack(&commands);
+
+		if (!grid.add_property(field_property("enabled", "Enabled", &s,
+				&settings_t::enabled, ui)))
+			return fail("field property: bool row");
+		if (!grid.add_property(field_property("count", "Count", &s,
+				&settings_t::count, ui)))
+			return fail("field property: int row");
+		if (!grid.add_property(field_property("volume", "Volume", &s,
+				&settings_t::volume, ui)))
+			return fail("field property: float row");
+		if (!grid.add_property(field_property("ratio", "Ratio", &s,
+				&settings_t::ratio, ui)))
+			return fail("field property: double row");
+		if (!grid.add_property(field_property("title", "Title", &s,
+				&settings_t::title, ui)))
+			return fail("field property: string row");
+
+		/* bool -> boolean, integral -> integer, floating -> number, string -> text. */
+		if (!grid.property_editor("enabled") || !grid.property_editor("count") ||
+			!grid.property_editor("volume") || !grid.property_editor("title"))
+			return fail("field property: editors built");
+		if (grid.property_value("enabled") != "true" ||
+			grid.property_value("count") != "3" ||
+			grid.property_value("volume") != "0.25" ||
+			grid.property_value("ratio") != "0.5" ||
+			grid.property_value("title") != "beam")
+			return fail("field property: initial text");
+
+		/* Committing a row writes the field and marks the model dirty, so a widget
+		 * bound to the same model resyncs on the next update. */
+		if (!grid.commit_property_value("volume", "0.75") ||
+			!near_value(s.volume, 0.75f))
+			return fail("field property: commit float");
+		vgui_update(ui, 1.0f / 60.0f);
+		if (!near_value(vgui_widget_get_value(volume_view), 0.75f))
+			return fail("field property: commit resyncs bound widget");
+
+		if (!grid.commit_property_value("count", "7") || s.count != 7)
+			return fail("field property: commit integer");
+		if (!grid.commit_property_value("enabled", "no") || s.enabled)
+			return fail("field property: commit boolean");
+		if (!grid.commit_property_value("title", "laser") || s.title != "laser")
+			return fail("field property: commit text");
+
+		/* Unparsable text is rejected before the field is touched. */
+		if (grid.commit_property_value("count", "abc") || s.count != 7)
+			return fail("field property: invalid integer rejected");
+		if (grid.commit_property_value("volume", "x") ||
+			!near_value(s.volume, 0.75f))
+			return fail("field property: invalid number rejected");
+
+		/* PropertyGrid keeps its own command stack: undo restores the field. */
+		if (!commands.undo() || s.title != "beam")
+			return fail("field property: undo restores the field");
+	}
+
+	/* The context argument is optional: without it the write is not marked dirty,
+	 * so bound widgets only resync after an explicit vgui_model_mark_dirty(). */
+	property_desc loose = field_property("ratio", "Ratio", &s, &settings_t::ratio);
+	loose.set_value("0.35");
+	if (!near_value((float)s.ratio, 0.35f))
+		return fail("field property: ctx-less write reaches the field");
+	vgui_update(ui, 1.0f / 60.0f);
+	if (!near_value(vgui_widget_get_value(ratio_view), 0.5f))
+		return fail("field property: ctx-less write does not push");
+	vgui_model_mark_dirty(ui, &s);
+	vgui_update(ui, 1.0f / 60.0f);
+	if (!near_value(vgui_widget_get_value(ratio_view), 0.35f))
+		return fail("field property: explicit mark_dirty pushes");
+
+	vgui_destroy(ui);
+	return 0;
+}
+
+/* P2: reactive binding writebacks become undoable commands. */
+int test_binding_undo()
+{
+	using namespace vgui_editor_kit;
+
+	auto near_value = [](float a, float b) { return std::fabs(a - b) <= 0.01f; };
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("binding undo: context");
+	vgui_context_set_size(ui, 400, 300);
+	vgui_widget_set_layout(vgui_root(ui), VGUI_LAYOUT_ABSOLUTE);
+
+	struct settings_t { float volume; int muted; std::string title; };
+	settings_t settings;
+	settings.volume = 0.2f;
+	settings.muted = 0;
+	settings.title = "one";
+
+	vgui_widget* slider = vgui_widget_add(vgui_root(ui), VGUI_SLIDER, "");
+	vgui_widget_set_id(slider, "volume");
+	vgui_widget_set_pos(slider, 10.0f, 10.0f);
+	vgui_widget_set_size(slider, 200.0f, 24.0f);
+	vgui_widget* chk = vgui_widget_add(vgui_root(ui), VGUI_CHECKBOX, "");
+	vgui_widget_set_id(chk, "mute");
+	vgui_widget_set_pos(chk, 10.0f, 50.0f);
+	vgui_widget_set_size(chk, 200.0f, 24.0f);
+
+	vgui_bind(ui, slider, VGUI_BIND_VALUE, &settings, VGUI_OFFSET(settings_t, volume));
+	vgui_bind(ui, chk, VGUI_BIND_CHECKED, &settings, VGUI_OFFSET(settings_t, muted));
+	vgui_update(ui, 1.0f / 60.0f);
+	if (!near_value(vgui_widget_get_value(slider), 0.2f))
+		return fail("binding undo: initial model->widget push");
+
+	void* recorder_user = nullptr;
+	command_stack stack;
+	{
+		binding_undo undo(ui, stack);
+		if (!undo.attached() || !undo.enabled())
+			return fail("binding undo: adapter attached");
+		if (!binding_undo::owns_recorder(ui))
+			return fail("binding undo: recorder installed");
+
+		/* A drag with several moves collapses into one undo record. */
+		vgui_input_mouse_move(ui, 110.0f, 22.0f);
+		vgui_input_mouse_down(ui, 1, 110.0f, 22.0f, 1);
+		vgui_input_mouse_move(ui, 140.0f, 22.0f);
+		vgui_input_mouse_move(ui, 170.0f, 22.0f);
+		vgui_input_mouse_up(ui, 1, 170.0f, 22.0f, 1);
+		if (stack.undo_count() != 1)
+			return fail("binding undo: drag merges into one record");
+		if (undo.recorded() < 2)
+			return fail("binding undo: every move is reported");
+		if (settings.volume < 0.5f)
+			return fail("binding undo: drag wrote the model");
+		const char* label = stack.next_undo_name();
+		if (!label || std::string(label) != "Edit volume")
+			return fail("binding undo: command label carries the widget id");
+
+		const float dragged = settings.volume;
+		if (!stack.undo())
+			return fail("binding undo: undo runs");
+		if (!near_value(settings.volume, 0.2f))
+			return fail("binding undo: undo restores the model field");
+		vgui_update(ui, 1.0f / 60.0f);
+		if (!near_value(vgui_widget_get_value(slider), 0.2f))
+			return fail("binding undo: undo resyncs the widget");
+		if (!stack.redo() || !near_value(settings.volume, dragged))
+			return fail("binding undo: redo reapplies the drag");
+
+		/* A different target records separately (no cross-field merging). */
+		vgui_input_mouse_move(ui, 110.0f, 62.0f);
+		vgui_input_mouse_down(ui, 1, 110.0f, 62.0f, 1);
+		vgui_input_mouse_up(ui, 1, 110.0f, 62.0f, 1);
+		if (settings.muted != 1)
+			return fail("binding undo: checkbox wrote the model");
+		if (stack.undo_count() != 2)
+			return fail("binding undo: second field records separately");
+		if (!stack.undo() || settings.muted != 0)
+			return fail("binding undo: undo restores the check state");
+
+		/* Programmatic writes never reach the journal. */
+		const std::size_t before = stack.undo_count();
+		vgui_widget_set_value(slider, 0.9f);
+		vgui_update(ui, 1.0f / 60.0f);
+		if (stack.undo_count() != before)
+			return fail("binding undo: programmatic write not recorded");
+
+		/* Suppression keeps the recorder installed but silent. */
+		undo.set_enabled(false);
+		vgui_input_mouse_move(ui, 110.0f, 22.0f);
+		vgui_input_mouse_down(ui, 1, 110.0f, 22.0f, 1);
+		vgui_input_mouse_up(ui, 1, 110.0f, 22.0f, 1);
+		if (stack.undo_count() != before)
+			return fail("binding undo: disabled adapter stays silent");
+		undo.set_enabled(true);
+	}
+
+	if (vgui_get_edit_recorder(ui, &recorder_user) != nullptr)
+		return fail("binding undo: adapter detaches on destruction");
+
+	/* merge_window(0) records every step separately. */
+	command_stack loose;
+	{
+		binding_undo undo(ui, loose);
+		undo.set_merge_window(0);
+		vgui_input_mouse_move(ui, 40.0f, 22.0f);
+		vgui_input_mouse_down(ui, 1, 40.0f, 22.0f, 1);
+		vgui_input_mouse_move(ui, 90.0f, 22.0f);
+		vgui_input_mouse_move(ui, 150.0f, 22.0f);
+		vgui_input_mouse_up(ui, 1, 150.0f, 22.0f, 1);
+		if (loose.undo_count() < 2)
+			return fail("binding undo: merge window 0 keeps separate records");
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -14594,6 +14836,10 @@ int main()
 	if (int rc = test_property_grid_vector())
 		return rc;
 	if (int rc = test_selection_binding())
+		return rc;
+	if (int rc = test_binding_undo())
+		return rc;
+	if (int rc = test_bound_properties())
 		return rc;
 	if (int rc = test_scene_asset_commands())
 		return rc;

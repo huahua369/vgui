@@ -2,7 +2,7 @@
 
 > 目标版本：v0.4+（可选层，不重写核心）  
 > 关联：runtime_roadmap §7.1（R4-1 绑定惯例）、editor_roadmap（PropertyGrid 命令栈）、`docs/vgui_capability_assessment.md` §5.3「无响应式/声明式数据绑定」  
-> 状态：规划（未实现）
+> 状态：P0（双向标量绑定）、P1（声明式糖 + SELECTION）、P2（撤销集成）、P3（集合/派生绑定，核心部分）已实现
 
 ---
 
@@ -13,7 +13,7 @@ vgui 当前的状态同步是**手动 push + 脏检查**模式（R4-1 约定）�
 - 宿主每帧调用 `vgui_widget_set_value/set_text/set_checked`，由 `1e-6` 脏检查 / 同值短路决定是否需要 `mark_dirty`。
 - 数据集合（list/tree）走 `vgui_row_source` **拉模型**（view → model 按需取数）。
 - 用户编辑经 `vgui_widget_on_event` + `vgui_widget_get_value` 回写宿主。
-- 撤销只在 editor 的 `command_stack` / PropertyGrid 内部，未对普通控件开放。
+- 撤销原先只在 editor 的 `command_stack` / PropertyGrid 内部；P2 起普通控件也能进撤销栈（编辑日志 + `binding_undo` 适配器）。
 
 **缺口**：没有"绑定对象"把「控件属性 ↔ 模型字段」连起来，让两者双向自动同步且不靠每帧轮询。这正是评估报告中列为共通缺失的"无响应式/声明式数据绑定"。
 
@@ -135,25 +135,40 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 
 ### Phase 1 — 声明式糖 + 更多属性（P1, M）
 
-- [ ] C++ `bind<T>(w, &model.field)` 模板封装（offsetof）。
-- [ ] 扩展 kind：TEXT / PROGRESS / VISIBLE / ENABLED / SELECTION（list/tree 选中 ↔ 模型索引）。
-- [ ] `vgui_demo` 增加「绑定演示」面板（滑块↔数值标签↔checkbox 联动一个 `settings` 结构体）。
-- [ ] text 绑定与 i18n `text_key` 的优先级约定写入文档（显式 text 覆盖 key；绑定 text 时清除 key）。
-- [ ] **验收**：demo 手动验证联动；`model_test` 增加 selection/text 绑定断言。
+- [x] C++ `bind<T>(w, &model.field)` 模板封装（`vgui::bind`，内部换算成员偏移，编译期类型校验）。
+- [x] 扩展 kind：TEXT / PROGRESS / VISIBLE / ENABLED / SELECTION（list/tree 选中 ↔ 模型行索引，双向）。
+- [x] `vgui_demo` 增加「数据绑定 Reactive binding」卡片（滑杆↔进度条↔静音开关↔标题↔列表选中共享一个 `demo_bind_model`）。
+- [x] text 绑定与 i18n `text_key` 的优先级约定写入文档（绑定写入时清除 `text_key`，显式文本优先）。
+- [x] **验收**：demo 手动验证联动；`model_test` 增加 selection/text 绑定断言。
+  - 已覆盖：selection 初始化、model→widget、`-1` 清空、widget→model（含取消选中回写 `-1`）、C++ 糖初始化与推送。
+  - 已知边界：`SELECTION` 只表达单个行索引，多选控件上报第一条选中；由模型反向推送时会先清空再选中该行。
 
 ### Phase 2 — 撤销集成 + 自动脏标记（P2, M）
 
-- [ ] `vgui_binding_set_transaction`：writeback 经 `command_stack` 生成可撤销命令（复用 PropertyGrid 的命令合并/事务）。
-- [ ] 提供 `VGUI_MODEL_WRITE(model, field) = x` 宏/RAII，自动 `vgui_model_mark_dirty`，免去手动调用。
-- [ ] PropertyGrid 直接字段绑定：复用本层把 PG 行编辑回写到结构体字段并 undo（替代部分手写 value_fn）。
-- [ ] **验收**：demo 中"绑定控件编辑 → Ctrl+Z 还原模型字段"。
+- [x] 编辑日志（edit journal）：`vgui_set_edit_recorder` / `vgui_get_edit_recorder` / `vgui_set_edit_record_enabled`。核心在每次「用户编辑 → 模型」回写后回调一次，携带 `vgui_bind_change`（绑定、控件、字段 model+offset、`VGUI_BINDV_*` 类型、新旧数值 / 新旧文本）；`vgui_update` 的模型推送、`vgui_widget_set_*`、`vgui_model_write_raw` 回放**都不上报**。
+- [x] `vgui_model_write_raw(ctx, model, offset, value_type, number, text)`：撤销命令用的类型化字段写入，写后直接 bump 版本（不产生新记录，避免 Ctrl+Z 自增撤销项）。
+- [x] `vgui_binding_alive(ctx, binding)`：撤销命令复活历史句柄前先校验，避免 unbind / 销毁后的悬垂。
+- [x] `vgui_editor_kit::binding_undo`（`include/vgui/editor/binding_undo.h`）：把编辑日志接到 `command_stack`，每次写回变成一条可撤销命令；同字段连续编辑在合并窗口（默认 500 ms）内折叠为一条（滑杆拖动、连续输入只留一步）；offset 绑定经 `vgui_model_write_raw` 回放，callback 绑定经 `set_fn` + `vgui_binding_invalidate` 回放；RAII 析构自动摘除记录器并还原上一个。
+- [x] 自动脏标记：C 用 `VGUI_MODEL_SET(ctx, model, field, value)`，C++ 用 `vgui::model_write(ctx, &model, &M::field) = value`（赋值代理，写完自动 mark_dirty）。
+- [x] PropertyGrid 直接字段绑定：`vgui_editor_kit::field_property(id, label, model, &M::field, ctx)`（`include/vgui/editor/property_binding.h`）由成员指针生成 `property_desc` 的 get/set，支持 bool/int/float/double/std::string；PG 自身命令栈仍在，避免与本层重复记录。
+  - 实现细节：整型与浮点共用一个 `enable_if<is_arithmetic && !is_bool>` 重载，按 `is_floating_point` 选 `integer`/`number`。两个仅在默认模板实参上不同的重载会被当作**同一模板的重复声明**（GCC/Clang 报 "redefinition of default argument"），MSVC 不报但语义不可移植。
+- [x] **验收**：
+  - `model_test`：拖动 1 次只记录 1 条且带新旧值、程序化写入不记录、`vgui_model_write_raw` 回放后模型与控件同步且不再记录、TEXT 新旧文本正确、记录器可关闭/移除。
+  - `editor_kit_test`：`binding_undo` + `command_stack` 下「拖动 → 1 条记录 → undo 还原模型并重推控件 → redo 复原」；不同字段不互相合并；`merge_window(0)` 逐步记录；适配器析构后记录器摘除。`test_bound_properties` 覆盖 `field_property`：bool/int/float/double/std::string 五行的类型推断与初始文本、提交后写字段并标脏使绑定滑杆同帧同步、非法文本被拒且字段不变、PropertyGrid 自身命令栈 undo 还原字段、省略 `ctx` 时只写字段不标脏（需手动 `vgui_model_mark_dirty` 才推控件）。
+  - `vgui_demo`「数据绑定」卡片：编辑日志行 + 「撤销 Ctrl+Z」按钮 + Ctrl+Z 快捷键（demo 用最小栈演示同一份记录器契约）。
+  - 已知边界：撤销命令只回放**模型侧**，控件侧的中间交互态（如拖动中未提交的滚动偏移）不还原；callback 绑定的回放依赖 `set_fn` 仍有效，绑定被销毁时静默跳过。
 
 ### Phase 3 — 集合/派生绑定（P3, L，可选）
 
-- [ ] 集合适配器：把 `std::vector<Row>` 经 `vgui_row_source` 自动桥接（现需手写 row_source；此阶段提供泛型适配器），与标量绑定共用 model version。
-- [ ] 派生/表达式绑定：computed binding（`get` 来自其它字段计算），声明式 `bind_expr`。
-- [ ] 调试浮层：可视化绑定图与每帧 flush 计数（性能诊断）。
-- [ ] **验收**：示例把"实体列表 + 选中实体属性面板"双向联动且可撤销。
+- [x] 集合适配器：`vgui::vector_rows<Row>`（`include/vgui/binding/collection.h`）把 `std::vector<Row>` 直接适配成 `vgui_row_source`：`attach(list_or_tree)` 自动按控件类型装源，`refresh()` 结构变更、`invalidate_rows(first,count)` 内容变更；行文本/详情/id/enabled 由访问器提供，返回文本放内部缓冲（符合 row_source 生命周期约定），默认 id = index+1。
+  - `detach()`（P3 收尾补齐）：控件只保存 `vgui_row_source*`，适配器若先于控件销毁必须显式摘源，否则控件持有悬垂指针；`detach()` 清空控件行源并复位内部 view 指针。
+- [x] 派生/表达式绑定：`vgui_binding_add_dependency(binding, model)` / `vgui_binding_clear_dependencies`。给 `vgui_bind_cb` 的绑定挂上依赖模型后，任一依赖被 `mark_dirty` 就重跑 `get_fn`（总和、`3/5 已选`、格式化标签等）；空闲帧不重算，无需手工 `invalidate`。
+  - 边界：这是**回调式** computed，不是字符串表达式 DSL；没有依赖自动分析（依赖需显式登记），也不做跨模型拓扑排序。
+- [x] 调试诊断：`vgui_binding_count(ctx)` 与 `vgui_binding_last_flush_count(ctx)`（上次 flush 的 model→widget 推送数，空闲为 0），供宿主画绑定浮层/性能诊断；可视化浮层本身由宿主 UI 绘制（未内置）。
+- [x] **验收**：
+  - `model_test::test_binding`：派生绑定初始化 / 依赖标脏重算 / 未标脏的空闲帧不重算（读取计数不变）/ 诊断计数；
+  - `model_test::test_binding_collection`：`vector_rows` 装源后 `vgui_list_is_virtual == 1`、行数/文本/id/enabled 来自访问器、`refresh()` 增行、`invalidate_rows()` 刷新内容、`detach()` 后 `vgui_list_is_virtual` 回到 0；
+  - 部分覆盖：「实体列表 + 选中实体属性面板 + 撤销」的完整示例仍由宿主组合（demo 卡片覆盖列表选中绑定 + 值绑定 + 撤销三步），未单独做一体化样例。
 
 ---
 
@@ -181,3 +196,5 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 ## 6. 与评估报告的对齐
 
 本规划落地后，`vgui_capability_assessment.md` §5.3「无响应式/声明式数据绑定」可改为"已实现（Phase 0/1）"；Phase 2 还会补上"控件编辑可撤销"这一编辑器能力。其余共通缺失（文件对话框、屏幕阅读器、移动/Web 后端、多线程 UI 等）不受影响。
+
+现状（P2 + P3 之后）：标量双向绑定、声明式糖、SELECTION、编辑日志 + `command_stack` 撤销、`model_write` 自动脏标记、PropertyGrid 字段绑定、`vector_rows` 集合适配器、依赖驱动的 computed 绑定均已落地；`vgui_capability_assessment.md` 的「响应式/声明式数据绑定」条目已从共通缺失中移除，仅保留「字符串表达式 DSL / 自动依赖分析」作为未覆盖项。

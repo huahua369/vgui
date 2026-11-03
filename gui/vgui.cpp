@@ -682,6 +682,10 @@ struct vgui_binding
 	vgui_bind_get_fn get_fn = nullptr;
 	vgui_bind_set_fn set_fn = nullptr;
 	void* cb_user = nullptr;
+	// P3 derived bindings: models whose version changes re-run get_fn.  Kept
+	// parallel so the flush can compare cheaply without hashing.
+	std::vector<void*> deps;
+	std::vector<uint64_t> dep_seen;
 };
 
 struct vgui_context
@@ -823,6 +827,13 @@ struct vgui_context
 	// model pointer -> monotonically increasing version; bumped by
 	// vgui_model_mark_dirty / writeback.  Used to flush only changed bindings.
 	std::unordered_map<void*, uint64_t> model_versions;
+	// P2: edit journal.  Writebacks caused by genuine user edits are reported
+	// here so a host (or the editor kit adapter) can record undo commands.
+	vgui_bind_record_fn edit_record_fn = nullptr;
+	void* edit_record_user = nullptr;
+	int edit_record_enabled = 1;
+	// P3 diagnostics: model->widget pushes performed by the last flush.
+	int last_flush_count = 0;
 };
 
 // Monotonic seconds for click/double-click timing.  The injected clock keeps
@@ -1503,8 +1514,14 @@ static float vgui_value_of(vgui_widget* w)
 }
 
 //----------------------------------------------------------------------------
-// reactive data binding (docs/data_binding_roadmap.md, Phase 0)
+// reactive data binding (docs/data_binding_roadmap.md)
 //----------------------------------------------------------------------------
+
+/* Selection sync needs the list/tree model helpers, which are defined further
+ * down (they in turn call the writeback helper declared here). */
+static int  vgui_binding_selection_apply(vgui_binding* b, int index);
+static int  vgui_binding_selection_index(vgui_widget* w);
+static void vgui_binding_writeback_selection(vgui_widget* w);
 
 /* Read the model-side value for a binding into f/i/t depending on kind. */
 static void vgui_binding_read_model(const vgui_binding* b, float* f, int* i, std::string* t)
@@ -1567,7 +1584,7 @@ static int vgui_binding_apply(vgui_binding* b)
 		if (w->text != t) { w->text = t; w->text_key.clear(); return 1; }
 		return 0;
 	case VGUI_BIND_SELECTION:
-		return 0; // model->widget for selection is Phase 1
+		return vgui_binding_selection_apply(b, i);
 	default:
 		return 0;
 	}
@@ -1579,27 +1596,74 @@ static int vgui_binding_apply(vgui_binding* b)
 static void vgui_binding_flush(vgui_context* ctx)
 {
 	if (!ctx) return;
+	ctx->last_flush_count = 0;
 	for (vgui_binding* b : ctx->bindings)
 	{
 		if (!b || !b->widget) continue;
 		if (b->uses_cb)
 		{
-			// Callback bindings have no model version; they resync only on
-			// vgui_binding_invalidate() (which resets seen to 0).
-			if (b->seen == 0)
+			// Callback bindings have no model version; they resync on
+			// vgui_binding_invalidate() (which resets seen to 0) or when one of
+			// their dependency models changed (derived / computed bindings).
+			bool dirty = (b->seen == 0);
+			for (std::size_t i = 0; i < b->deps.size(); ++i)
 			{
-				if (vgui_binding_apply(b))
-					vgui_mark_dirty(b->widget);
-				b->seen = 1;
+				const uint64_t v = ctx->model_versions[b->deps[i]];
+				if (v != b->dep_seen[i])
+				{
+					b->dep_seen[i] = v;
+					dirty = true;
+				}
 			}
+			if (!dirty) continue;
+			if (vgui_binding_apply(b))
+			{
+				vgui_mark_dirty(b->widget);
+				ctx->last_flush_count++;
+			}
+			b->seen = 1;
 			continue;
 		}
 		uint64_t mv = ctx->model_versions[b->model];
 		if (mv == b->seen) continue;
 		if (vgui_binding_apply(b))
+		{
 			vgui_mark_dirty(b->widget);
+			ctx->last_flush_count++;
+		}
 		b->seen = mv;
 	}
+}
+
+/* True while the binding is still registered on the context.  A recorder (or a
+ * cb set_fn) may unbind during a writeback, so every loop re-checks this. */
+static bool vgui_binding_registered(vgui_context* ctx, vgui_binding* b)
+{
+	return ctx && b &&
+		std::find(ctx->bindings.begin(), ctx->bindings.end(), b) != ctx->bindings.end();
+}
+
+/* Report one writeback to the edit recorder (P2 undo journal).  Called after
+ * the model field was updated so the change carries both sides. */
+static void vgui_binding_report(vgui_context* ctx, vgui_binding* b, vgui_widget* w,
+	int value_type, double old_number, double new_number,
+	const char* old_text, const char* new_text)
+{
+	if (!ctx || !ctx->edit_record_fn || !ctx->edit_record_enabled) return;
+	vgui_bind_change c = {};
+	c.binding = b;
+	c.widget = w;
+	c.kind = b->kind;
+	c.model = b->uses_cb ? nullptr : b->model;
+	c.offset = b->uses_cb ? 0 : b->offset;
+	c.cb_user = b->uses_cb ? b->cb_user : nullptr;
+	c.cb_set = b->uses_cb ? b->set_fn : nullptr;
+	c.value_type = value_type;
+	c.old_number = old_number;
+	c.new_number = new_number;
+	c.old_text = old_text;
+	c.new_text = new_text;
+	ctx->edit_record_fn(ctx, &c, ctx->edit_record_user);
 }
 
 /* Write the widget's current value/checked back into the bound model field(s)
@@ -1610,27 +1674,53 @@ static void vgui_binding_writeback_value(vgui_widget* w)
 {
 	if (!w || !w->ctx) return;
 	vgui_context* ctx = w->ctx;
+	/* Snapshot the targets: the recorder runs host code that may unbind. */
+	std::vector<vgui_binding*> targets;
 	for (vgui_binding* b : ctx->bindings)
 	{
 		if (!b || b->widget != w) continue;
-		if (b->kind != VGUI_BIND_VALUE && b->kind != VGUI_BIND_PROGRESS && b->kind != VGUI_BIND_CHECKED)
-			continue;
+		if (b->kind == VGUI_BIND_VALUE || b->kind == VGUI_BIND_PROGRESS || b->kind == VGUI_BIND_CHECKED)
+			targets.push_back(b);
+	}
+	for (vgui_binding* b : targets)
+	{
+		if (!vgui_binding_registered(ctx, b)) continue;
+		const bool is_check = (b->kind == VGUI_BIND_CHECKED);
+		int old_i = 0;
+		float old_f = 0.0f;
+		if (b->uses_cb)
+		{
+			if (b->get_fn) b->get_fn(b->cb_user, b->kind, is_check ? (void*)&old_i : (void*)&old_f);
+		}
+		else
+		{
+			char* base = (char*)b->model + b->offset;
+			if (is_check) old_i = *(int*)base;
+			else old_f = *(const float*)base;
+		}
+
 		if (b->uses_cb)
 		{
 			if (b->set_fn)
 			{
-				if (b->kind == VGUI_BIND_CHECKED) { int c = w->checked; b->set_fn(b->cb_user, b->kind, &c); }
+				if (is_check) { int c = w->checked; b->set_fn(b->cb_user, b->kind, &c); }
 				else { float v = w->value; b->set_fn(b->cb_user, b->kind, &v); }
 			}
 		}
 		else
 		{
 			char* base = (char*)b->model + b->offset;
-			if (b->kind == VGUI_BIND_CHECKED) *(int*)base = w->checked;
+			if (is_check) *(int*)base = w->checked;
 			else *(float*)base = w->value;
-		}
-		if (!b->uses_cb)
 			ctx->model_versions[b->model]++;
+		}
+
+		const double new_number = is_check ? (double)w->checked : (double)w->value;
+		const double old_number = is_check ? (double)old_i : (double)old_f;
+		if (old_number == new_number) continue;
+		vgui_binding_report(ctx, b, w,
+			is_check ? VGUI_BINDV_INT : VGUI_BINDV_FLOAT,
+			old_number, new_number, nullptr, nullptr);
 	}
 }
 
@@ -1639,20 +1729,38 @@ static void vgui_binding_writeback_text(vgui_widget* w)
 {
 	if (!w || !w->ctx) return;
 	vgui_context* ctx = w->ctx;
-	const std::string& t = w->text;
+	std::vector<vgui_binding*> targets;
 	for (vgui_binding* b : ctx->bindings)
+		if (b && b->widget == w && b->kind == VGUI_BIND_TEXT)
+			targets.push_back(b);
+	for (vgui_binding* b : targets)
 	{
-		if (!b || b->widget != w || b->kind != VGUI_BIND_TEXT) continue;
+		if (!vgui_binding_registered(ctx, b)) continue;
+		std::string old_t;
 		if (b->uses_cb)
 		{
-			if (b->set_fn) b->set_fn(b->cb_user, b->kind, t.c_str());
+			const char* cur = nullptr;
+			if (b->get_fn) b->get_fn(b->cb_user, b->kind, &cur);
+			if (cur) old_t = cur;
 		}
 		else
 		{
-			*(std::string*)((char*)b->model + b->offset) = t;
+			old_t = *(std::string*)((char*)b->model + b->offset);
 		}
-		if (!b->uses_cb)
+
+		if (b->uses_cb)
+		{
+			if (b->set_fn) b->set_fn(b->cb_user, b->kind, w->text.c_str());
+		}
+		else
+		{
+			*(std::string*)((char*)b->model + b->offset) = w->text;
 			ctx->model_versions[b->model]++;
+		}
+
+		if (old_t == w->text) continue;
+		vgui_binding_report(ctx, b, w, VGUI_BINDV_TEXT, 0.0, 0.0,
+			old_t.c_str(), w->text.c_str());
 	}
 }
 
@@ -2778,6 +2886,8 @@ static void vgui_list_notify_select(vgui_widget* w, vgui_item_id id, int selecte
 	e.index = (index == (size_t)-1) ? -1 : (int)index;
 	vgui_emit_full(w, e);
 	vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_SELECTION_CHANGED);
+	// Reactive binding: selection changed -> sync the row index back.
+	vgui_binding_writeback_selection(w);
 }
 
 static bool vgui_list_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
@@ -3097,6 +3207,8 @@ static void vgui_tree_notify_select(vgui_widget* w, vgui_item_id id, int selecte
 	e.index = index;
 	vgui_emit_full(w, e);
 	vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_SELECTION_CHANGED);
+	// Reactive binding: selection changed -> sync the row index back.
+	vgui_binding_writeback_selection(w);
 }
 
 static bool vgui_tree_set_selected_internal(vgui_widget* w, vgui_item_id id, bool selected, bool notify)
@@ -3145,6 +3257,137 @@ static void vgui_tree_clear_selection_internal(vgui_widget* w, bool notify)
 			vgui_tree_notify_select(w, id, 0);
 			if (!w->ctx || !w->ctx->alive.count(w)) return;
 		}
+}
+
+//----------------------------------------------------------------------------
+// reactive binding: list/tree selection (int row index, -1 = nothing selected)
+//----------------------------------------------------------------------------
+
+/* Current selection expressed as a row index, or -1.  Multi-select reports the
+ * first selected row: a single int cannot express a set. */
+static int vgui_binding_selection_index(vgui_widget* w)
+{
+	if (!w) return -1;
+	if (w->kind == VGUI_LIST)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st || st->selected.empty()) return -1;
+		size_t index = (size_t)-1;
+		if (!vgui_list_item_find(w, st->selected[0], &index)) return -1;
+		return (int)index;
+	}
+	if (w->kind == VGUI_TREE)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st || st->selected.empty()) return -1;
+		return vgui_tree_visible_index(w, st->selected[0]);
+	}
+	return -1;
+}
+
+/* Apply a model-provided selection index without notifying, so the writeback
+ * path does not fire and bounce the value back into the model. */
+static int vgui_binding_selection_apply(vgui_binding* b, int index)
+{
+	vgui_widget* w = b ? b->widget : nullptr;
+	if (!w) return 0;
+	if (index < -1) index = -1;
+	if (vgui_binding_selection_index(w) == index) return 0;
+
+	if (w->kind == VGUI_LIST)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		if (!st) return 0;
+		if (index < 0)
+		{
+			if (st->selected.empty()) return 0;
+			vgui_list_clear_selection_internal(w, false);
+			return 1;
+		}
+		vgui_item_id id = 0;
+		if (!vgui_list_item_at(w, index, &id) || id == 0) return 0;
+		if (st->selection_mode != VGUI_SELECTION_SINGLE)
+			vgui_list_clear_selection_internal(w, false);
+		vgui_list_set_selected_internal(w, id, true, false);
+		vgui_list_set_cursor(w, id);
+		return 1;
+	}
+	if (w->kind == VGUI_TREE)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		if (!st) return 0;
+		if (index < 0)
+		{
+			if (st->selected.empty()) return 0;
+			vgui_tree_clear_selection_internal(w, false);
+			return 1;
+		}
+		vgui_item_id id = vgui_tree_row_id_at(w, st, index);
+		if (id == 0) return 0;
+		if (st->selection_mode != VGUI_SELECTION_SINGLE)
+			vgui_tree_clear_selection_internal(w, false);
+		vgui_tree_set_selected_internal(w, id, true, false);
+		vgui_tree_set_cursor(w, id);
+		return 1;
+	}
+	return 0;
+}
+
+/* True when the widget holds a selection even if it currently has no visible
+ * row index (e.g. the selected tree node's parent got collapsed). */
+static int vgui_binding_selection_any(vgui_widget* w)
+{
+	if (!w) return 0;
+	if (w->kind == VGUI_LIST)
+	{
+		vgui_list_state* st = vgui_list_of(w);
+		return st && !st->selected.empty();
+	}
+	if (w->kind == VGUI_TREE)
+	{
+		vgui_tree_state* st = vgui_tree_of(w);
+		return st && !st->selected.empty();
+	}
+	return 0;
+}
+
+/* Selection changed (user click, keyboard or programmatic select) -> write the
+ * resulting row index back into every bound SELECTION field. */
+static void vgui_binding_writeback_selection(vgui_widget* w)
+{
+	if (!w || !w->ctx) return;
+	vgui_context* ctx = w->ctx;
+	std::vector<vgui_binding*> targets;
+	for (vgui_binding* b : ctx->bindings)
+		if (b && b->widget == w && b->kind == VGUI_BIND_SELECTION)
+			targets.push_back(b);
+	if (targets.empty()) return;
+	const int index = vgui_binding_selection_index(w);
+	/* A selection that has no visible row index (collapsed tree branch) must not
+	 * clobber the model with -1: leave the field untouched. */
+	if (index < 0 && vgui_binding_selection_any(w)) return;
+	for (vgui_binding* b : targets)
+	{
+		// A set callback may have unbound (and destroyed) an earlier target.
+		if (!vgui_binding_registered(ctx, b))
+			continue;
+		int old_index = 0;
+		if (b->uses_cb)
+		{
+			if (b->get_fn) b->get_fn(b->cb_user, b->kind, &old_index);
+			if (b->set_fn) b->set_fn(b->cb_user, b->kind, &index);
+		}
+		else
+		{
+			int* base = (int*)((char*)b->model + b->offset);
+			old_index = *base;
+			*base = index;
+			ctx->model_versions[b->model]++;
+		}
+		if (old_index == index) continue;
+		vgui_binding_report(ctx, b, w, VGUI_BINDV_INT,
+			(double)old_index, (double)index, nullptr, nullptr);
+	}
 }
 
 static void vgui_item_event(vgui_widget* w, vgui_event_type type, vgui_item_id item, int index,
@@ -16159,6 +16402,75 @@ extern "C" {
 			binding->seen = 0;            // cb bindings have no model version
 		else if (binding->model)
 			binding->ctx->model_versions[binding->model]++;
+	}
+
+	int vgui_binding_alive(vgui_context* ctx, vgui_binding* binding)
+	{
+		return vgui_binding_registered(ctx, binding) ? 1 : 0;
+	}
+
+	void vgui_binding_add_dependency(vgui_binding* binding, void* model)
+	{
+		if (!binding || !binding->uses_cb || !model || !binding->ctx) return;
+		if (std::find(binding->deps.begin(), binding->deps.end(), model) != binding->deps.end())
+			return;
+		binding->deps.push_back(model);
+		/* Record the current version so only *future* changes retrigger. */
+		binding->dep_seen.push_back(binding->ctx->model_versions[model]);
+	}
+
+	void vgui_binding_clear_dependencies(vgui_binding* binding)
+	{
+		if (!binding) return;
+		binding->deps.clear();
+		binding->dep_seen.clear();
+	}
+
+	int vgui_binding_count(vgui_context* ctx)
+	{
+		return ctx ? (int)ctx->bindings.size() : 0;
+	}
+
+	int vgui_binding_last_flush_count(vgui_context* ctx)
+	{
+		return ctx ? ctx->last_flush_count : 0;
+	}
+
+	void vgui_set_edit_recorder(vgui_context* ctx, vgui_bind_record_fn fn, void* user)
+	{
+		if (!ctx) return;
+		ctx->edit_record_fn = fn;
+		ctx->edit_record_user = fn ? user : nullptr;
+	}
+
+	vgui_bind_record_fn vgui_get_edit_recorder(vgui_context* ctx, void** user)
+	{
+		if (!ctx) { if (user) *user = nullptr; return nullptr; }
+		if (user) *user = ctx->edit_record_user;
+		return ctx->edit_record_fn;
+	}
+
+	void vgui_set_edit_record_enabled(vgui_context* ctx, int enabled)
+	{
+		if (!ctx) return;
+		ctx->edit_record_enabled = enabled ? 1 : 0;
+	}
+
+	void vgui_model_write_raw(vgui_context* ctx, void* model, size_t offset,
+		int value_type, double number, const char* text)
+	{
+		if (!ctx || !model) return;
+		char* base = (char*)model + offset;
+		switch (value_type)
+		{
+		case VGUI_BINDV_FLOAT: *(float*)base = (float)number; break;
+		case VGUI_BINDV_INT:   *(int*)base = (int)number; break;
+		case VGUI_BINDV_TEXT:  *(std::string*)base = text ? text : ""; break;
+		default: return;
+		}
+		/* Bumping the version is what pushes the value to bound widgets; the
+		 * write above must not be reported as a user edit. */
+		ctx->model_versions[model]++;
 	}
 
 	void vgui_widget_set_vertical(vgui_widget* widget, int vertical)

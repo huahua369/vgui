@@ -64,7 +64,7 @@
 | 国际化/RTL | UTF-8 文案表（语言→en→key 回退）、运行时切换；RTL 下 row/wrap/列对齐/文本对齐镜像，按钮/复选/开关/滑杆/进度/编辑/列表/树/菜单/菜单栏/标签/滚动条同步翻转；底层 OVG 负责 Unicode bidi shaping 与多字体回退 | 空语言显示 key；bidi 混排与 RTL 镜像经 `vgui_demo` 与 17 项 i18n/RTL 用例覆盖 |
 | 无障碍 | 完整键盘导航、焦点陷阱（Tab/Shift+Tab 在陷阱祖先内循环，模态/弹出层/浮动 Dock 自动开启）、`F10` 菜单栏、`F6`/`Shift+F6` 焦点漫游、高对比度主题（`Ctrl+Shift+H`）；`vgui_a11y_role/state/info` 推导角色/名称/值/状态，屏幕阅读器经 `a11y_listener` 接收焦点/值/状态/选中/告警事件（Toast 自动公告） | 不实现平台 UIA/AT-SPI provider；屏幕阅读器桥接由宿主经 listener 接收事件后自行转发 |
 | 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
-| shader要求使用slang来写 | 函数名不要分成多行写 |
+
 ## 3. 分层方案
 
 ```text

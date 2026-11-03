@@ -152,6 +152,10 @@ if(VGUI_INSTALL)
     install(DIRECTORY include/vgui/backend
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
 
+    # 可选 C++ 便捷头（数据绑定的集合适配器），随核心一起安装。
+    install(DIRECTORY include/vgui/binding
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
+
     if(VGUI_BUILD_EDITOR_KIT)
         install(DIRECTORY include/vgui/editor
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
