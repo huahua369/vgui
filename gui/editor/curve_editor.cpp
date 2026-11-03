@@ -271,7 +271,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_min_size(graph_, 240, 120);
 		vgui_custom_set_draw(graph_, &curve_editor::draw_graph, this);
 		vgui_custom_set_event(graph_, &curve_editor::on_graph_event, this);
-		vgui_widget_set_multi_click_enabled(graph_, 1);	// 双击添加关键帧
+		vgui_widget_set_multi_click_flags(graph_, VGUI_MULTI_CLICK_DOUBLE);	// 双击添加关键帧
 		vgui_widget_set_tooltip(graph_,
 			"Double-click to add a key; drag keys and tangent handles");
 

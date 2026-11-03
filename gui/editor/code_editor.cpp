@@ -1376,7 +1376,8 @@ namespace vgui_editor_kit {
 		vgui_widget_set_focusable(editor_, 1);
 		vgui_widget_set_cursor(editor_, VGUI_CURSOR_IBEAM);
 		vgui_widget_set_font_size(editor_, font_size_);
-		vgui_widget_set_multi_click_enabled(editor_, 1);	// 双击选词 / 三击选行
+		vgui_widget_set_multi_click_flags(editor_,
+			VGUI_MULTI_CLICK_DOUBLE | VGUI_MULTI_CLICK_TRIPLE);	// 双击选词 / 三击选行
 		vgui_widget_set_wants_text_input(editor_, 1);
 		vgui_custom_set_draw(editor_, &code_editor::on_draw, this);
 		vgui_custom_set_event(editor_, &code_editor::on_event, this);

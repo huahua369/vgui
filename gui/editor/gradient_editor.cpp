@@ -356,7 +356,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_min_size(bar_, 220, 44);
 		vgui_custom_set_draw(bar_, &gradient_editor::draw_bar, this);
 		vgui_custom_set_event(bar_, &gradient_editor::on_bar_event, this);
-		vgui_widget_set_multi_click_enabled(bar_, 1);	// 双击色条加色标
+		vgui_widget_set_multi_click_flags(bar_, VGUI_MULTI_CLICK_DOUBLE);	// 双击色条加色标
 		vgui_widget_set_tooltip(bar_,
 			"Drag stops; double-click the bar to add a stop");
 

@@ -393,7 +393,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_min_size(widget_, 160, 80);
 		vgui_widget_set_grow(widget_, 1.0f);
 		vgui_widget_set_focusable(widget_, 1);
-		vgui_widget_set_multi_click_enabled(widget_, 1);	// 双击单元格进入编辑
+		vgui_widget_set_multi_click_flags(widget_, VGUI_MULTI_CLICK_DOUBLE);	// 双击单元格进入编辑
 		vgui_widget_set_border(widget_, 0xFF2E3440u, 1.0f);
 
 		vgui_custom_set_draw(widget_, &table_view::on_draw, this);

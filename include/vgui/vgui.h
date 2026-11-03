@@ -1076,17 +1076,40 @@ extern "C" {
 	 * anchored HUD indicators (nameplates over the 3D scene) use this so
 	 * world clicks pass through them. */
 	VGUI_API void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled);
-	/* Multi-click dispatch (double / triple click).  OFF by default: the
-	 * second and third press inside the 450 ms window still arrive as
-	 * VGUI_EVENT_CLICK, with event->clicks carrying the running count, so a
-	 * plain click handler never has to deal with gaps between clicks.
-	 * Enable it on the widgets that really want VGUI_EVENT_DOUBLE_CLICK /
-	 * VGUI_EVENT_TRIPLE_CLICK; the flag is per widget and can be toggled at
-	 * any time.  Built-in widgets that need double-click semantics (code
-	 * editor, curve/gradient editor, table view, chart, markdown view,
-	 * outliner tree) turn it on for themselves when created. */
+	/* Multi-click dispatch (double / triple click), controlled per widget and
+	 * per event kind.  BOTH ARE OFF BY DEFAULT: the second and third press
+	 * inside the 450 ms window arrive as VGUI_EVENT_CLICK, with event->clicks
+	 * carrying the running count, so a plain click handler never has to deal
+	 * with gaps between clicks.  Each bit can be enabled on its own:
+	 *
+	 *   vgui_widget_set_double_click_enabled(w, 1);           // double only
+	 *   vgui_widget_set_triple_click_enabled(w, 1);           // + triple
+	 *   vgui_widget_set_multi_click_flags(w,
+	 *       VGUI_MULTI_CLICK_DOUBLE | VGUI_MULTI_CLICK_TRIPLE);  // both
+	 *   vgui_widget_set_multi_click_enabled(w, 0);            // back to plain clicks
+	 *
+	 * With triple enabled but double off, the 2nd click stays VGUI_EVENT_CLICK
+	 * and only the 3rd upgrades to VGUI_EVENT_TRIPLE_CLICK.  Built-in widgets
+	 * that need double-click semantics (code editor, markdown view, table
+	 * view, chart, curve/gradient editor, outliner tree) enable the bits they
+	 * use when they are created. */
+	typedef enum vgui_multi_click_flags
+	{
+		VGUI_MULTI_CLICK_NONE = 0,
+		VGUI_MULTI_CLICK_DOUBLE = 1 << 0,	/* deliver VGUI_EVENT_DOUBLE_CLICK */
+		VGUI_MULTI_CLICK_TRIPLE = 1 << 1,	/* deliver VGUI_EVENT_TRIPLE_CLICK */
+		VGUI_MULTI_CLICK_ALL = VGUI_MULTI_CLICK_DOUBLE | VGUI_MULTI_CLICK_TRIPLE
+	} vgui_multi_click_flags;
+
+	VGUI_API void vgui_widget_set_multi_click_flags(vgui_widget* widget, int flags);
+	/* Bitwise OR of vgui_multi_click_flags: 0 when both are off. */
+	VGUI_API int vgui_widget_get_multi_click_flags(vgui_widget* widget);
+	/* Convenience: 1 enables both bits, 0 clears both. */
 	VGUI_API void vgui_widget_set_multi_click_enabled(vgui_widget* widget, int enabled);
+	/* 1 when either bit is enabled. */
 	VGUI_API int vgui_widget_get_multi_click_enabled(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_double_click_enabled(vgui_widget* widget, int enabled);
+	VGUI_API void vgui_widget_set_triple_click_enabled(vgui_widget* widget, int enabled);
 	/* R3-1: opt-in subtree display-list cache.  When hint is 1 the subtree is
 	 * recorded once and replayed on subsequent frames while it stays clean
 	 * (no active animations/focus inside, geometry/clip/theme unchanged).

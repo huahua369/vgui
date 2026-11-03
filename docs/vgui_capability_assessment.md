@@ -179,8 +179,17 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - C++ 便捷头 `include/vgui/file_dialog.h`：`vgui::file_dialog_options` / `file_filter` / `file_dialog_result`（`ok/cancelled/failed/path()`）+ `open_file/save_file/select_folder`，`std::function` 由 trampoline 单次调用后释放。
 - 示例与测试：`vgui_demo` 新增「文件对话框 File dialog」卡片（打开/导出/选目录 + 结果行）；`vgui_model_test::test_file_dialog` 用假 provider 覆盖请求透传、结果排队 → update 派发、取消/失败三态、非法请求被拒、无 provider 时不回调。
 
-### 7.8 双击/三击改为显式启用（2026-11-03）
-- 新增 `vgui_widget_set_multi_click_enabled(w, 0|1)` 与 `vgui_widget_get_multi_click_enabled(w)`。**默认关闭**：450 ms 窗口内的第二、第三次按下不再升级成 `VGUI_EVENT_DOUBLE_CLICK` / `VGUI_EVENT_TRIPLE_CLICK`，而是继续派发 `VGUI_EVENT_CLICK`，连击次数仍由 `event->clicks` 提供——只处理单击的宿主代码不会漏计点击，也不必为双击写兜底分支。
+### 7.8 双击/三击改为按控件、按档位显式启用（2026-11-03）
+- 开关：`vgui_widget_set_multi_click_flags(w, flags)` / `vgui_widget_get_multi_click_flags(w)`，标志位 `VGUI_MULTI_CLICK_DOUBLE` / `VGUI_MULTI_CLICK_TRIPLE`（`VGUI_MULTI_CLICK_ALL` 为两者之和）；便捷接口 `vgui_widget_set_multi_click_enabled(w, 0|1)`（一次开关两档）、`vgui_widget_get_multi_click_enabled(w)`（任一档开启即返回 1），以及 `vgui_widget_set_double_click_enabled()` / `vgui_widget_set_triple_click_enabled()` 单独控制某一档。
+- **默认关闭**：450 ms 窗口内的第二、第三次按下不再升级成双击/三击事件，而是继续派发 `VGUI_EVENT_CLICK`，连击次数仍由 `event->clicks` 提供——只处理单击的宿主代码不会漏计点击，也不必为双击写兜底分支。
+- 两档互不影响：只开双击时第三次点击退回 `CLICK`；只开三击时第二次是 `CLICK`、第三次才升级；两档都开时逐级升级。
 - 派发点统一走 `vgui_click_event_type()`（鼠标抬起的三条路径：标签页、列表/树行、普通控件），因此控件级开关对 item 事件同样生效；列表/树的双击**激活**属于核心行为，与事件开关解耦，仍然照常触发。
-- 内置控件按需自行打开：代码编辑器、Markdown 视图、表格、Outliner、曲线编辑器、渐变编辑器、图表在创建时调用该函数，内部双击交互（选词/选行、单元格编辑、行内重命名、加点、重置视图）不受影响。
-- 测试：`vgui_model_test::test_multi_click` 12 条断言（默认关闭时双击/三击仍是 CLICK 且 `clicks` 正确、opt-in 后逐级升级、运行中关回 CLICK、列表行默认关闭但激活仍生效、列表 opt-in 后升级）；`vgui_runtime_embed_test` 增加默认值断言并显式开启，覆盖注入时钟下的双击窗口。
+- 内置控件按需打开各自需要的档位：代码编辑器与 Markdown 视图要双击选词 + 三击选行（两档），表格、Outliner、曲线编辑器、渐变编辑器、图表只用双击（单档）。
+- 测试：`vgui_model_test::test_multi_click` 20 条断言（默认无标志位、只开双击时三击仍为 CLICK、只开三击时双击仍为 CLICK、两档齐开逐级升级、清位立即回退、列表行默认关闭但激活仍生效、列表 opt-in 后升级）；`vgui_runtime_embed_test` 增加默认值断言并显式开启，覆盖注入时钟下的双击窗口；`vgui_editor_kit_test` 断言三处组件内部控件的档位（code editor=ALL、curve/gradient=DOUBLE、根面板=0）。
+
+### 7.9 `vgui_widget` 布尔状态改为位域（2026-11-03）
+- 原来的 `int visible/enabled/focusable/hovered/pressed/focused/checked/vertical/multiline/password/readonly/...`（共 28 个 int + 2 个 bool，约 114 字节）压成一个 32 位的位域块：29 个单比特标志 + `multi_click : 2`，写法仍是 `uint32_t visible : 1 = 1;`，默认值就地声明，语义与原 `int = 0/1` 完全一致。
+- `vgui_widget` 现在 `sizeof == 1096` 字节。被替换掉的 28 个 `int` + 2 个 `bool` 原本占 114 字节，合并成 4 字节后单个控件少约 110 字节（实际差值随对齐略有出入）；编辑器场景成百上千个控件时差别明显。
+- 非布尔的多值字段保持 `int`（`edit_drag` 0–3、`scroll_drag_axis` 0–2、`edit_scroll_drag` 0/3/4、`pressed_button` 等），避免把状态机硬塞进 1 位。
+- 由于位域不能被取地址，`vgui_widget` 内部不再对这些字段使用 `&`/引用绑定；属于该结构体的私有实现细节，公共头与 ABI 不受影响。
+

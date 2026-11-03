@@ -1666,8 +1666,9 @@ static void build_buttons(demo_state* st, vgui_widget* root)
 
 	vgui_widget* r1 = row(c, 8);
 	vgui_widget* counted = button(r1, "计数按钮", on_count_click, st);
-	// 双击/三击事件默认关闭，需要显式打开。
-	vgui_widget_set_multi_click_enabled(counted, 1);
+	// 双击/三击事件默认关闭，需要显式打开（两个档位可分开设置）。
+	vgui_widget_set_double_click_enabled(counted, 1);
+	vgui_widget_set_triple_click_enabled(counted, 1);
 	vgui_widget* dis = button(r1, "禁用按钮", on_widget_event, st);
 	vgui_widget_set_enabled(dis, 0);
 

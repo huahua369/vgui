@@ -3771,6 +3771,7 @@ static void test_multi_click(vgui_context* ui, const vgui_style& style)
 
 	/* 默认关闭：连击次数照常计入 clicks，但事件类型仍是 CLICK。 */
 	check(vgui_widget_get_multi_click_enabled(b) == 0,		"multi-click: off by default");
+	check(vgui_widget_get_multi_click_flags(b) == VGUI_MULTI_CLICK_NONE,		"multi-click: no flag bits by default");
 	click_at(ui, bcx, bcy);
 	click_at(ui, bcx, bcy, 2);
 	check(blog.clicks == 2 && blog.doubles == 0,		"multi-click: double stays CLICK while disabled");
@@ -3778,20 +3779,38 @@ static void test_multi_click(vgui_context* ui, const vgui_style& style)
 	click_at(ui, bcx, bcy, 3);
 	check(blog.clicks == 3 && blog.doubles == 0 && blog.triples == 0,		"multi-click: triple stays CLICK while disabled");
 
-	/* 打开后按连击次数升级事件类型。 */
-	vgui_widget_set_multi_click_enabled(b, 1);
-	check(vgui_widget_get_multi_click_enabled(b) == 1,		"multi-click: opt-in is readable");
-	click_at(ui, bcx, bcy);
-	check(blog.clicks == 4 && blog.doubles == 0,		"multi-click: single click unaffected");
+	/* 只开双击：第三次仍然退回 CLICK，不会串到三击。 */
+	vgui_widget_set_double_click_enabled(b, 1);
+	check(vgui_widget_get_multi_click_flags(b) == VGUI_MULTI_CLICK_DOUBLE,		"multi-click: double bit set alone");
 	click_at(ui, bcx, bcy, 2);
-	check(blog.doubles == 1 && blog.last_count == 2,		"multi-click: double delivered once opted in");
+	check(blog.doubles == 1 && blog.last_count == 2,		"multi-click: double delivered alone");
 	click_at(ui, bcx, bcy, 3);
-	check(blog.triples == 1 && blog.last_count == 3,		"multi-click: triple delivered once opted in");
+	check(blog.triples == 0 && blog.clicks == 4 && blog.last_count == 3,		"multi-click: triple stays CLICK when only double is on");
 
-	/* 运行中关掉：立刻退回 CLICK。 */
+	/* 只开三击：第二次仍是 CLICK，第三次才升级。 */
+	vgui_widget_set_double_click_enabled(b, 0);
+	vgui_widget_set_triple_click_enabled(b, 1);
+	check(vgui_widget_get_multi_click_flags(b) == VGUI_MULTI_CLICK_TRIPLE,		"multi-click: triple bit set alone");
+	click_at(ui, bcx, bcy, 2);
+	check(blog.doubles == 1 && blog.clicks == 5,		"multi-click: double stays CLICK when only triple is on");
+	click_at(ui, bcx, bcy, 3);
+	check(blog.triples == 1 && blog.last_count == 3,		"multi-click: triple delivered alone");
+
+	/* 两个都开：逐级升级；随后清掉立刻退回 CLICK。 */
+	vgui_widget_set_multi_click_enabled(b, 1);
+	check(vgui_widget_get_multi_click_flags(b) == VGUI_MULTI_CLICK_ALL,		"multi-click: convenience enables both bits");
+	click_at(ui, bcx, bcy);
+	check(blog.clicks == 6 && blog.doubles == 1,		"multi-click: single click unaffected");
+	click_at(ui, bcx, bcy, 2);
+	check(blog.doubles == 2,		"multi-click: double with both enabled");
+	click_at(ui, bcx, bcy, 3);
+	check(blog.triples == 2,		"multi-click: triple with both enabled");
+	vgui_widget_set_multi_click_flags(b, VGUI_MULTI_CLICK_DOUBLE);
+	click_at(ui, bcx, bcy, 3);
+	check(blog.triples == 2 && blog.clicks == 7,		"multi-click: clearing the triple bit drops it back to CLICK");
 	vgui_widget_set_multi_click_enabled(b, 0);
 	click_at(ui, bcx, bcy, 2);
-	check(blog.clicks == 5 && blog.doubles == 1 && blog.triples == 1,		"multi-click: toggling back restores CLICK");
+	check(blog.clicks == 8 && blog.doubles == 2 && blog.triples == 2,		"multi-click: toggling back restores CLICK");
 
 	/* 列表行：默认只给 CLICK，但双击激活（核心行为）不受影响。 */
 	float lx = 0.0f, ly = 0.0f, lw = 0.0f, lh = 0.0f;

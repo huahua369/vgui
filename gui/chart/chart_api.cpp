@@ -154,7 +154,7 @@ extern "C" {
 		vgui_widget_set_min_size(chart->widget, 240, 160);
 		vgui_widget_set_grow(chart->widget, 1.0f);
 		vgui_widget_set_focusable(chart->widget, 1);
-		vgui_widget_set_multi_click_enabled(chart->widget, 1);	// 双击重置视图
+		vgui_widget_set_multi_click_flags(chart->widget, VGUI_MULTI_CLICK_DOUBLE);	// 双击重置视图
 		vgui_custom_set_draw(chart->widget, &vgchart::chart_draw, chart);
 		vgui_custom_set_event(chart->widget, &vgchart::chart_event, chart);
 		vgui_custom_set_size(chart->widget, &vgchart::chart_size, chart);

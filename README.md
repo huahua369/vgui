@@ -18,7 +18,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **图表模块** | 折线/面积/柱状图、径向仪表盘与 JSON 仪表板（可选 `vgui_chart`）：每序列十万点级、min/max 降采样、环形缓冲、CSV/PNG 导出、配置与数据快照持久化、stack/wrap/grid/columns 布局、日期时间轴、十字准线/缩放/键盘与无障碍 |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
 | **布局** | 绝对定位、横向/纵向布局；padding、margin、gap、min/max size、align、justify、grow；滚动面板 |
-| **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击（双击/三击需 `vgui_widget_set_multi_click_enabled` 显式打开）、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
+| **事件** | 鼠标移动/按下/抬起/滚轮、单击/双击/三击（双击、三击各自独立 opt-in）、进入/离开、键盘、文本输入、IME、值改变、提交；列表/树/菜单事件携带稳定 item id 和索引 |
 | **主题与样式** | `vgui_theme` 颜色主题 + `vgui_style` 控件尺寸/间距/圆角/动画参数，均支持运行时切换；控件级背景、边框、圆角、文字颜色、透明度、字体大小；焦点环透明度 |
 | **高 DPI** | 统一 `ui_scale` 同步缩放字体、间距、圆角与图标；逻辑 setter + 有效像素 getter；缩放监听器；SDL3 显示器切换自动同步；布局持久化保存逻辑尺寸 |
 | **增量更新** | PropertyGrid 按 id+type 复用属性行，切换同 schema 对象不重建控件；Outliner 虚拟行源用 `scene_changed()`/`scene_row_changed()` 区分结构与单行刷新；AssetBrowser 只请求可见范围缩略图并复用内存/磁盘缓存 |
@@ -878,17 +878,23 @@ vgui_chart_append_points(chart, rps, points, count);
 - Tab / Shift+Tab 切换焦点，鼠标点击自动聚焦，可设置 `focusable`。
 - 悬停、按下、选中等状态动画；可设置鼠标指针形状和禁用态。
 - 命中测试、嵌套控件事件分发，输入函数会返回事件是否被消费。
-- **双击/三击默认关闭**：450 ms 内的第二、第三次按下仍然派发 `VGUI_EVENT_CLICK`，连击次数通过
-  `event->clicks` 给出，所以只处理单击的代码不会因为漏掉双击而少算一次点击。需要
-  `VGUI_EVENT_DOUBLE_CLICK` / `VGUI_EVENT_TRIPLE_CLICK` 的控件自己打开：
+- **双击/三击默认关闭，且两者可分开设置**：450 ms 内的第二、第三次按下默认仍然派发
+  `VGUI_EVENT_CLICK`，连击次数通过 `event->clicks` 给出，所以只处理单击的代码不会因为漏掉双击
+  而少算一次点击。需要时按位打开：
 
   ```c
-  vgui_widget_set_multi_click_enabled(button, 1);   /* 0 关闭（默认） */
-  if (vgui_widget_get_multi_click_enabled(button)) { /* ... */ }
+  vgui_widget_set_double_click_enabled(button, 1);   /* 只开双击 */
+  vgui_widget_set_triple_click_enabled(button, 1);   /* 再开三击 */
+  /* 或者一次到位： */
+  vgui_widget_set_multi_click_flags(button,
+      VGUI_MULTI_CLICK_DOUBLE | VGUI_MULTI_CLICK_TRIPLE);
+  if (vgui_widget_get_multi_click_flags(button) & VGUI_MULTI_CLICK_TRIPLE) { /* ... */ }
   ```
 
-  开关是每控件独立的，可随时切换。内置控件需要双击语义的（代码编辑器、Markdown 视图、表格、
-  Outliner、曲线/渐变编辑器、图表）在创建时已自行打开；列表/树的双击激活属于核心行为，与事件开关无关。
+  两个位互相独立：只开双击时第三次点击退回 `CLICK`；只开三击时第二次是 `CLICK`、第三次才是
+  `TRIPLE_CLICK`。开关每控件独立、可随时切换，`vgui_widget_set_multi_click_enabled(w, 0)` 一次清空。
+  内置控件需要双击语义的（代码编辑器、Markdown 视图、表格、Outliner、曲线/渐变编辑器、图表）
+  在创建时按需打开对应位；列表/树的双击激活属于核心行为，与事件开关无关。
 
 ### 响应式数据绑定
 

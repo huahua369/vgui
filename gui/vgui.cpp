@@ -466,7 +466,6 @@ struct vgui_widget
 	vgui_context* ctx = nullptr;
 	vgui_widget* parent = nullptr;
 	std::vector<vgui_widget*> children;
-	vgui_widget_kind kind = VGUI_PANEL;
 
 	std::string text;
 	std::string text_key;
@@ -481,8 +480,8 @@ struct vgui_widget
 	vgui_text_fn text_fn = nullptr;
 	vgui_scroll_fn scroll_fn = nullptr;
 	void* scroll_user = nullptr;
-	int scroll_notifying = 0;
 
+	vgui_widget_kind kind = VGUI_PANEL;
 	// layout ---------------------------------------------------------------
 	vgui_layout_kind layout = VGUI_LAYOUT_ABSOLUTE;
 	vgui_align align_items = VGUI_ALIGN_START;
@@ -498,7 +497,6 @@ struct vgui_widget
 	float gap = 0;
 	float grow = 0;
 
-	int scrollable_x = 0, scrollable_y = 0;
 	float scroll_x = 0, scroll_y = 0;
 	float content_w = 0, content_h = 0;
 	int scroll_drag_axis = 0;	// 面板滚动条拖动: 0 无 / 1 垂直 / 2 水平
@@ -524,70 +522,82 @@ struct vgui_widget
 	float focus_alpha = 0.0f;	// 负数则共用ctx的值 < 0 -> use the context value; 0 hides the ring
 	float text_align_x = 0.5f;
 	float text_align_y = 0.5f;
-	int clip_children = 1;
 
-	// R4-2: radial progress mode (ring track + value arc).
-	int radial = 0;
-
+	vgui_cursor cursor_type = VGUI_CURSOR_ARROW;
 	// R3-1 subtree display-list cache (opt-in via set_recording_hint).
-	int recording_hint = 0;
+	uint64_t cache_style_epoch = 0;
 	void* cached_recording = nullptr;
-	bool cache_dirty = false;
 	float cache_rect[4] = {};
 	int cache_clip[4] = {};
 	int cache_clip_count = 0;
-	uint64_t cache_style_epoch = 0;
 
 	// state ----------------------------------------------------------------
-	int visible = 1;
-	int enabled = 1;
+	// 布尔状态全部用位域：这一整块刚好占 32 位（原来每项 4 字节，30 余项
+	// 要 120+ 字节）。默认值直接写在声明处，语义与原来的 int = 0/1 一致。
+	uint32_t visible : 1 = 1;
+	uint32_t enabled : 1 = 1;
 	// 0: the widget AND its subtree are skipped by hit testing -- mouse
 	// events fall through to widgets underneath / the host.  Unlike
 	// enabled=0 the subtree keeps its normal visuals (world-anchored HUD
 	// indicators use this so world clicks pass through).
-	int input_enabled = 1;
-	// 0 (default): 第二/第三次连击仍然派发 VGUI_EVENT_CLICK（clicks 字段
-	// 照常累加）；1: 派发 VGUI_EVENT_DOUBLE_CLICK / VGUI_EVENT_TRIPLE_CLICK。
-	// 库内需要双击的内置控件（代码编辑器、曲线/渐变编辑器、表格、图表…）
-	// 在创建时自行打开。
-	int multi_click = 0;
-	int focusable = 0;
-	int hovered = 0;
-	int pressed = 0;
-	int focused = 0;
+	uint32_t input_enabled : 1 = 1;
+	uint32_t focusable : 1 = 0;
+	uint32_t hovered : 1 = 0;
+	uint32_t pressed : 1 = 0;
+	uint32_t focused : 1 = 0;
+	uint32_t checked : 1 = 0;
+	uint32_t vertical : 1 = 0;
+	uint32_t scrollable_x : 1 = 0;
+	uint32_t scrollable_y : 1 = 0;
+	uint32_t scroll_notifying : 1 = 0;
+	uint32_t clip_children : 1 = 1;
+	uint32_t radial : 1 = 0;			// R4-2 radial progress mode
+	uint32_t recording_hint : 1 = 0;	// R3-1 display-list cache opt-in
+	uint32_t cache_dirty : 1 = 0;
+	uint32_t tooltip_enabled : 1 = 1;
+	uint32_t tooltip_when_disabled : 1 = 1;
+	uint32_t has_drop_target : 1 = 0;	// F03 按值保存的 drop 描述符
+	uint32_t focus_trap : 1 = 0;		// E05
+	uint32_t multiline : 1 = 0;
+	uint32_t password : 1 = 0;
+	uint32_t readonly : 1 = 0;
+	uint32_t background_transparent : 1 = 0;	// 1 = skip the background fill
+	uint32_t edit_content_w_valid : 1 = 0;
+	uint32_t custom_clip_content : 1 = 1;	// 0 = 允许超出控件边界绘制
+	uint32_t wants_text_input : 1 = 0;
+	uint32_t text_input_rect_set : 1 = 0;
+	uint32_t destroy_pending : 1 = 0;
+	// 双击/三击事件开关，取 VGUI_MULTI_CLICK_* 的位或：
+	// 0（默认）时第二/第三次连击仍派发 VGUI_EVENT_CLICK（clicks 照常累加），
+	// 每位独立——可以只开双击、只开三击或都开。
+	uint32_t multi_click : 2 = 0;
+
 	int pressed_button = 0;
 	float hover_anim = 0;
 	float press_anim = 0;
 	float check_anim = 0;
-	vgui_cursor cursor_type = VGUI_CURSOR_ARROW;
 
 	// tooltip --------------------------------------------------------------
 	std::string tooltip;
 	vgui_tooltip_text_fn tooltip_text_fn = nullptr;
 	void* tooltip_user = nullptr;
 	float tooltip_delay = -1.0f;	// <0 -> context style default
-	int tooltip_enabled = 1;
-	int tooltip_when_disabled = 1;
 	vgui_tooltip_anchor tooltip_anchor = VGUI_TOOLTIP_ANCHOR_POINTER;
 
 	// F03 drop target ------------------------------------------------------
 	// 按值保存：调用方可以把 vgui_drop_target 放在栈上，挂载后立即离开作用域。
 	vgui_drop_target drop_target = {};
-	int has_drop_target = 0;
 
 	// E05 accessibility ----------------------------------------------------
 	std::string a11y_name;
 	std::string a11y_value;	// cache filled by vgui_widget_get_a11y_info
 	vgui_a11y_role a11y_role = VGUI_A11Y_ROLE_NONE;	// NONE -> derive from kind
-	int focus_trap = 0;
 
 	// values ---------------------------------------------------------------
 	float value = 0.0f;
 	float range_min = 0.0f;
 	float range_max = 1.0f;
 	float step = 0.0f;
-	int checked = 0;
-	int vertical = 0;
 
 	// edit -----------------------------------------------------------------
 	int edit_cursor = 0;
@@ -595,17 +605,12 @@ struct vgui_widget
 	int edit_drag = 0;			// 鼠标拖选模式: 0 无 / 1 字符 / 2 词 / 3 行
 	int ime_cursor = 0;
 	int ime_length = 0;
-	int multiline = 0;
-	int password = 0;
-	int readonly = 0;
-	int background_transparent = 0;	// 1 = skip the background fill, show the parent
 	char password_char = '*';
 	float edit_scroll_x = 0;
 	float edit_scroll_y = 0;
 	int edit_scroll_drag = 0;	// 多行编辑框内容滚动条拖动中: 0 / 3 垂直 / 4 水平
 	float edit_scroll_grab = 0;
 	float edit_content_w = 0;
-	int edit_content_w_valid = 0;
 	const font_familys_t* edit_content_font = nullptr;
 	float edit_content_font_size = 0;
 	float caret_blink = 0;
@@ -656,14 +661,9 @@ struct vgui_widget
 	vgui_custom_event_fn custom_event = nullptr;
 	void* custom_event_user = nullptr;
 	float custom_dt = 0;
-	int custom_clip_content = 1;	// 1=裁剪到控件边界（默认），0=允许超出（发光/阴影/拖影等）
 
 	// custom text input ------------------------------------------------
-	int wants_text_input = 0;
-	int text_input_rect_set = 0;
 	float text_input_rect[4] = { 0, 0, 0, 0 };
-
-	bool destroy_pending = false;
 };
 
 struct vgui_tooltip_state
@@ -10305,12 +10305,15 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	return ret;
 }
 
-// 连击派发类型：没开 multi_click 的控件恒收到 VGUI_EVENT_CLICK，连击次数
-// 仍通过 event->clicks 给出；打开后才升级成双击/三击事件。
+// 连击派发类型：双击/三击各自独立开关（VGUI_MULTI_CLICK_*）。没开的档位
+// 恒收到 VGUI_EVENT_CLICK，连击次数仍通过 event->clicks 给出。
 static vgui_event_type vgui_click_event_type(const vgui_widget* w, int clicks)
 {
-	if (clicks >= 2 && w && w->multi_click)
-		return clicks >= 3 ? VGUI_EVENT_TRIPLE_CLICK : VGUI_EVENT_DOUBLE_CLICK;
+	const unsigned flags = w ? w->multi_click : 0u;
+	if (clicks == 2)
+		return (flags & VGUI_MULTI_CLICK_DOUBLE) ? VGUI_EVENT_DOUBLE_CLICK : VGUI_EVENT_CLICK;
+	if (clicks >= 3)
+		return (flags & VGUI_MULTI_CLICK_TRIPLE) ? VGUI_EVENT_TRIPLE_CLICK : VGUI_EVENT_CLICK;
 	return VGUI_EVENT_CLICK;
 }
 
@@ -15326,14 +15329,42 @@ extern "C" {
 		if (widget) widget->input_enabled = enabled ? 1 : 0;
 	}
 
+	void vgui_widget_set_multi_click_flags(vgui_widget* widget, int flags)
+	{
+		if (!widget) return;
+		widget->multi_click = (unsigned)flags & (unsigned)VGUI_MULTI_CLICK_ALL;
+	}
+
+	int vgui_widget_get_multi_click_flags(vgui_widget* widget)
+	{
+		return widget ? (int)widget->multi_click : 0;
+	}
+
 	void vgui_widget_set_multi_click_enabled(vgui_widget* widget, int enabled)
 	{
-		if (widget) widget->multi_click = enabled ? 1 : 0;
+		if (!widget) return;
+		widget->multi_click = enabled ? (unsigned)VGUI_MULTI_CLICK_ALL : 0u;
 	}
 
 	int vgui_widget_get_multi_click_enabled(vgui_widget* widget)
 	{
 		return (widget && widget->multi_click) ? 1 : 0;
+	}
+
+	void vgui_widget_set_double_click_enabled(vgui_widget* widget, int enabled)
+	{
+		if (!widget) return;
+		unsigned f = widget->multi_click;
+		widget->multi_click = enabled ? (f | VGUI_MULTI_CLICK_DOUBLE)
+			: (f & ~(unsigned)VGUI_MULTI_CLICK_DOUBLE);
+	}
+
+	void vgui_widget_set_triple_click_enabled(vgui_widget* widget, int enabled)
+	{
+		if (!widget) return;
+		unsigned f = widget->multi_click;
+		widget->multi_click = enabled ? (f | VGUI_MULTI_CLICK_TRIPLE)
+			: (f & ~(unsigned)VGUI_MULTI_CLICK_TRIPLE);
 	}
 
 	void vgui_widget_set_radial(vgui_widget* widget, int radial)
