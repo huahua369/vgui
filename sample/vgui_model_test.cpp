@@ -4481,7 +4481,7 @@ static void test_binding(font_familys_t* familys)
 	vgui::model_write(ctx, &m, &model_t::volume) = 0.44f;
 	vgui_update(ctx, 0.016f);
 	check(jr.count == record_base, "journal: programmatic writes not recorded");
-	check(near(vgui_widget_get_value(s1), 0.44f), "journal: model_write pushes to widget");
+	check(near(vgui_widget_get_value(s2), 0.44f), "journal: model_write pushes to bound widgets");
 
 	// A real drag reports the field with both sides of the change.  s2 is the
 	// bound slider here (s1 was unbound earlier).
@@ -4566,16 +4566,23 @@ static void test_binding(font_familys_t* familys)
 		"derived: idle frame does not recompute");
 	vgui_model_mark_dirty(ctx, &dm);
 	vgui_update(ctx, 0.016f);
-	check(std::string(vgui_widget_get_text(dl)) == "15.00",
+	check(std::string(vgui_widget_get_text(dl)) == "11.00",
 		"derived: mark_dirty refreshes the computed value");
 
 	/* Flush diagnostics: idle frames push nothing. */
 	check(vgui_binding_count(ctx) > 0, "binding: live count diagnostic");
 	vgui_update(ctx, 0.016f);
 	check(vgui_binding_last_flush_count(ctx) == 0, "binding: idle flush count is zero");
+	/* A dirty model whose computed value did not change re-evaluates but writes
+	 * nothing, so it must not count as a push. */
 	vgui_model_mark_dirty(ctx, &dm);
 	vgui_update(ctx, 0.016f);
-	check(vgui_binding_last_flush_count(ctx) >= 1, "binding: flush count tracks pushes");
+	check(vgui_binding_last_flush_count(ctx) == 0, "binding: unchanged push writes nothing");
+	dm.a = 12.0f;
+	vgui_model_mark_dirty(ctx, &dm);
+	vgui_update(ctx, 0.016f);
+	check(std::string(vgui_widget_get_text(dl)) == "14.00" &&
+		vgui_binding_last_flush_count(ctx) >= 1, "binding: flush count tracks pushes");
 
 	vgui_destroy(ctx);
 }

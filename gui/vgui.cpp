@@ -1557,6 +1557,30 @@ static void vgui_binding_read_model(const vgui_binding* b, float* f, int* i, std
 	}
 }
 
+/* Write text onto the widget without going through the public setter (so no
+ * notify/echo fires).  VGUI_EDIT keeps the authoritative string in edit_text,
+ * so a model push has to update the caret buffer too - otherwise the control
+ * renders and reports the old text. */
+static int vgui_binding_apply_text(vgui_widget* w, const std::string& t)
+{
+	if (!w) return 0;
+	const bool edit = (w->kind == VGUI_EDIT);
+	const bool same = w->text == t && w->text_key.empty() &&
+		(!edit || w->edit_text == t);
+	if (same) return 0;
+	w->text_key.clear();
+	w->text = t;
+	if (edit)
+	{
+		w->edit_text = t;
+		w->edit_cursor = w->edit_anchor = (int)t.size();
+		w->ime_text.clear();
+		w->ime_cursor = w->ime_length = 0;
+		vgui_edit_invalidate_content_width(w);
+	}
+	return 1;
+}
+
 /* Push the model value onto the widget once (no version check).  Returns 1 if
  * the widget actually changed (so the caller can mark it dirty). */
 static int vgui_binding_apply(vgui_binding* b)
@@ -1581,8 +1605,7 @@ static int vgui_binding_apply(vgui_binding* b)
 		if (w->enabled != (i != 0)) { w->enabled = (i != 0); return 1; }
 		return 0;
 	case VGUI_BIND_TEXT:
-		if (w->text != t) { w->text = t; w->text_key.clear(); return 1; }
-		return 0;
+		return vgui_binding_apply_text(w, t);
 	case VGUI_BIND_SELECTION:
 		return vgui_binding_selection_apply(b, i);
 	default:
@@ -1729,6 +1752,9 @@ static void vgui_binding_writeback_text(vgui_widget* w)
 {
 	if (!w || !w->ctx) return;
 	vgui_context* ctx = w->ctx;
+	/* VGUI_EDIT stores the authoritative string in edit_text; get_text() hides
+	 * that difference for every other kind. */
+	const std::string current = vgui_widget_get_text(w);
 	std::vector<vgui_binding*> targets;
 	for (vgui_binding* b : ctx->bindings)
 		if (b && b->widget == w && b->kind == VGUI_BIND_TEXT)
@@ -1750,17 +1776,17 @@ static void vgui_binding_writeback_text(vgui_widget* w)
 
 		if (b->uses_cb)
 		{
-			if (b->set_fn) b->set_fn(b->cb_user, b->kind, w->text.c_str());
+			if (b->set_fn) b->set_fn(b->cb_user, b->kind, current.c_str());
 		}
 		else
 		{
-			*(std::string*)((char*)b->model + b->offset) = w->text;
+			*(std::string*)((char*)b->model + b->offset) = current;
 			ctx->model_versions[b->model]++;
 		}
 
-		if (old_t == w->text) continue;
+		if (old_t == current) continue;
 		vgui_binding_report(ctx, b, w, VGUI_BINDV_TEXT, 0.0, 0.0,
-			old_t.c_str(), w->text.c_str());
+			old_t.c_str(), current.c_str());
 	}
 }
 

@@ -915,6 +915,11 @@ vgui::bind(ui, list,   VGUI_BIND_SELECTION, &s, &Settings::selected_row);
 时用 `vgui_bind_cb()` 提供 get/set 回调；`vgui_binding_invalidate()` 可强制重拉；
 `vgui_unbind()` 解除绑定（`vgui_destroy` 会回收未解绑的绑定）。
 
+偏移绑定的字段类型必须与 kind 精确对应：`VALUE`/`PROGRESS` 读 `float`，`CHECKED`/`VISIBLE`/
+`ENABLED`/`SELECTION` 读 `int`，`TEXT` 读 `std::string`。把 `double` 字段绑到 `VALUE` 会按 4 字节
+float 读取（小端下 `0.5` 读到 `0.0`），需要 `double`/枚举/派生值时请走 `vgui_bind_cb()`。
+`TEXT` 绑到 `VGUI_EDIT` 时会同时更新编辑框的文本缓冲与光标，控件显示与回写都以编辑框内容为准。
+
 #### 自动脏标记
 
 ```c

@@ -126,6 +126,8 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 - [x] writeback：`vgui_notify_value`（value/checked/progress）与 `vgui_notify_text`（text）末尾写回 model + bump version；覆盖滑块拖动、checkbox 点击、编辑提交等真实用户编辑路径。
 - [x] 额外覆盖 `VGUI_BIND_VISIBLE` / `VGUI_BIND_ENABLED`（P0 顺带），`VGUI_BIND_SELECTION` 仅占位（P1）。
 - [x] `vgui_destroy` 释放未解绑的 binding（避免泄漏）。
+- [x] **实机回归修正（2026-11-03，MSVC 19.51 全量构建 + 跑测试）**：`VGUI_BIND_TEXT` 推送到 `VGUI_EDIT` 时只写了 `w->text`，而编辑框的权威文本在 `edit_text` 里 —— 控件显示旧值、用户输入从空串开始，回写也读不到新值。新增 `vgui_binding_apply_text()`：同时更新 `text_key`、`edit_text`、光标/锚点、IME 状态与内容宽度；回写侧统一用 `vgui_widget_get_text()` 取有效文本。
+  - 已知边界：offset 绑定要求字段类型与 kind 精确匹配 —— VALUE/PROGRESS 读 `float`，CHECKED/VISIBLE/ENABLED/SELECTION 读 `int`，TEXT 读 `std::string`。绑定 `double` 字段会被当成 4 字节 float 读取（小端下 `0.5` 读成 `0.0`），需要转换时请改用 `vgui_bind_cb`。
 - [x] 代码位置：`include/vgui/vgui.h`（API）、`gui/vgui.cpp`（`vgui_binding` 结构、context 成员、`vgui_binding_*` helper、`vgui_bind*` 实现）。
 - [x] **验收**（`sample/vgui_model_test.cpp::test_binding`）：
   - bind 初始化控件；`vgui_model_mark_dirty` + `vgui_update` 后控件更新，空闲帧不重复写；
@@ -165,6 +167,7 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 - [x] 派生/表达式绑定：`vgui_binding_add_dependency(binding, model)` / `vgui_binding_clear_dependencies`。给 `vgui_bind_cb` 的绑定挂上依赖模型后，任一依赖被 `mark_dirty` 就重跑 `get_fn`（总和、`3/5 已选`、格式化标签等）；空闲帧不重算，无需手工 `invalidate`。
   - 边界：这是**回调式** computed，不是字符串表达式 DSL；没有依赖自动分析（依赖需显式登记），也不做跨模型拓扑排序。
 - [x] 调试诊断：`vgui_binding_count(ctx)` 与 `vgui_binding_last_flush_count(ctx)`（上次 flush 的 model→widget 推送数，空闲为 0），供宿主画绑定浮层/性能诊断；可视化浮层本身由宿主 UI 绘制（未内置）。
+  - 计数只统计**真的写了控件**的推送：依赖标脏但 computed 值没变的绑定会重算一次、`last_flush_count` 仍为 0（`model_test` 有断言）。
 - [x] **验收**：
   - `model_test::test_binding`：派生绑定初始化 / 依赖标脏重算 / 未标脏的空闲帧不重算（读取计数不变）/ 诊断计数；
   - `model_test::test_binding_collection`：`vector_rows` 装源后 `vgui_list_is_virtual == 1`、行数/文本/id/enabled 来自访问器、`refresh()` 增行、`invalidate_rows()` 刷新内容、`detach()` 后 `vgui_list_is_virtual` 回到 0；

@@ -11760,27 +11760,29 @@ static int test_node_graph_view()
 		/* Geometry is exact in graph coordinates and content-local hit
 		 * testing resolves ports before nodes and connections. */
 		const node_graph_rect n1_rect = graph.node_rect(n1);
+		/* 180 wide; height = header 28 + 2 port rows * 24 + body padding 6. */
 		if (!close_to(n1_rect.x, 100.0) ||
 			!close_to(n1_rect.y, 80.0) ||
 			!close_to(n1_rect.width, 180.0) ||
-			!close_to(n1_rect.height, 70.0))
+			!close_to(n1_rect.height, 82.0))
 			return fail("t03 node graph node rect");
 		node_graph_point port_graph;
+		/* y = node.y + header 28 + (row 0 + 0.5) * 24. */
 		if (!graph.port_position(n1_out0, &port_graph) ||
 			!close_to(port_graph.x, 271.0) ||
-			!close_to(port_graph.y, 114.0))
+			!close_to(port_graph.y, 120.0))
 			return fail("t03 node graph port position");
 		const node_graph_rect port_bounds = graph.port_rect(n1_out0);
 		if (!close_to(port_bounds.x, 267.0) ||
-			!close_to(port_bounds.y, 110.0) ||
+			!close_to(port_bounds.y, 116.0) ||
 			!close_to(port_bounds.width, 8.0) ||
 			!close_to(port_bounds.height, 8.0))
 			return fail("t03 node graph port rect");
 		if (graph.node_at(190.0f, 115.0f) != n1 ||
 			graph.node_at(490.0f, 215.0f) != n2 ||
-			graph.port_at(271.0f, 114.0f) != n1_out0 ||
-			graph.port_at(409.0f, 214.0f) != n2_in0 ||
-			graph.hit_test(271.0f, 114.0f) != n1_out0 ||
+			graph.port_at(271.0f, 120.0f) != n1_out0 ||
+			graph.port_at(409.0f, 220.0f) != n2_in0 ||
+			graph.hit_test(271.0f, 120.0f) != n1_out0 ||
 			graph.connection_at(340.0f, 164.0f) == invalid_object ||
 			graph.connection_at(700.0f, 300.0f) != invalid_object)
 			return fail("t03 node graph hit testing");
@@ -11947,13 +11949,13 @@ static int test_node_graph_view()
 		/* Connection drag: output -> input, command, undo/redo. */
 		commands.clear();
 		graph.set_selection({});
-		move_to(271.0f, 134.0f);
-		down_at(271.0f, 134.0f);
+		move_to(271.0f, 144.0f);
+		down_at(271.0f, 144.0f);
 		if (graph.gesture() != node_graph_gesture::connect ||
 			graph.pending_connection_port() != n1_out1)
 			return fail("t03 node graph connect begins");
-		move_to(409.0f, 234.0f);
-		up_at(409.0f, 234.0f);
+		move_to(409.0f, 244.0f);
+		up_at(409.0f, 244.0f);
 		if (graph.connection_count() != 2 || commands.undo_count() != 1 ||
 			std::string(commands.next_undo_name()) != "Connect nodes")
 			return fail("t03 node graph connect drag");
@@ -11976,10 +11978,10 @@ static int test_node_graph_view()
 
 		/* Incompatible types are rejected without a command. */
 		commands.clear();
-		move_to(271.0f, 114.0f);
-		down_at(271.0f, 114.0f);
-		move_to(409.0f, 234.0f);
-		up_at(409.0f, 234.0f);
+		move_to(271.0f, 120.0f);
+		down_at(271.0f, 120.0f);
+		move_to(409.0f, 244.0f);
+		up_at(409.0f, 244.0f);
 		if (graph.connection_count() != 2 || commands.undo_count() != 0)
 			return fail("t03 node graph incompatible drag");
 
@@ -11993,10 +11995,10 @@ static int test_node_graph_view()
 		if (n1_color2 == invalid_object)
 			return fail("t03 node graph replacement port");
 		commands.clear();
-		move_to(271.0f, 154.0f);
-		down_at(271.0f, 154.0f);
-		move_to(409.0f, 234.0f);
-		up_at(409.0f, 234.0f);
+		move_to(271.0f, 168.0f);
+		down_at(271.0f, 168.0f);
+		move_to(409.0f, 244.0f);
+		up_at(409.0f, 244.0f);
 		if (graph.connection_count() != 2 || commands.undo_count() != 1 ||
 			graph.find_connection(color_connection) != nullptr)
 			return fail("t03 node graph single input drag replacement");
@@ -14581,14 +14583,17 @@ int test_bound_properties()
 	vgui_bind(ui, volume_view, VGUI_BIND_VALUE, &s,
 		VGUI_OFFSET(settings_t, volume));
 
-	vgui_widget* ratio_view = vgui_widget_add(vgui_root(ui), VGUI_SLIDER, "");
-	vgui_widget_set_pos(ratio_view, 10.0f, 44.0f);
-	vgui_widget_set_size(ratio_view, 200.0f, 24.0f);
-	vgui_bind(ui, ratio_view, VGUI_BIND_VALUE, &s,
-		VGUI_OFFSET(settings_t, ratio));
+	/* VGUI_BIND_VALUE reads a `float` field (the C API contract); the second
+	 * slider is a sibling on the same field, so it also proves that one model
+	 * push reaches every binding of that field. */
+	vgui_widget* sibling_view = vgui_widget_add(vgui_root(ui), VGUI_SLIDER, "");
+	vgui_widget_set_pos(sibling_view, 10.0f, 44.0f);
+	vgui_widget_set_size(sibling_view, 200.0f, 24.0f);
+	vgui_bind(ui, sibling_view, VGUI_BIND_VALUE, &s,
+		VGUI_OFFSET(settings_t, volume));
 	vgui_update(ui, 1.0f / 60.0f);
 	if (!near_value(vgui_widget_get_value(volume_view), 0.25f) ||
-		!near_value(vgui_widget_get_value(ratio_view), 0.5f))
+		!near_value(vgui_widget_get_value(sibling_view), 0.25f))
 		return fail("field property: initial binding push");
 
 	{
@@ -14630,7 +14635,8 @@ int test_bound_properties()
 			!near_value(s.volume, 0.75f))
 			return fail("field property: commit float");
 		vgui_update(ui, 1.0f / 60.0f);
-		if (!near_value(vgui_widget_get_value(volume_view), 0.75f))
+		if (!near_value(vgui_widget_get_value(volume_view), 0.75f) ||
+			!near_value(vgui_widget_get_value(sibling_view), 0.75f))
 			return fail("field property: commit resyncs bound widget");
 
 		if (!grid.commit_property_value("count", "7") || s.count != 7)
@@ -14652,18 +14658,22 @@ int test_bound_properties()
 			return fail("field property: undo restores the field");
 	}
 
+	/* Drain the pending pushes of the grid commits above (they bumped the same
+	 * model several times), so the next frame is a true idle frame. */
+	vgui_update(ui, 1.0f / 60.0f);
+
 	/* The context argument is optional: without it the write is not marked dirty,
 	 * so bound widgets only resync after an explicit vgui_model_mark_dirty(). */
-	property_desc loose = field_property("ratio", "Ratio", &s, &settings_t::ratio);
+	property_desc loose = field_property("volume", "Volume", &s, &settings_t::volume);
 	loose.set_value("0.35");
-	if (!near_value((float)s.ratio, 0.35f))
+	if (!near_value(s.volume, 0.35f))
 		return fail("field property: ctx-less write reaches the field");
 	vgui_update(ui, 1.0f / 60.0f);
-	if (!near_value(vgui_widget_get_value(ratio_view), 0.5f))
+	if (!near_value(vgui_widget_get_value(volume_view), 0.75f))
 		return fail("field property: ctx-less write does not push");
 	vgui_model_mark_dirty(ui, &s);
 	vgui_update(ui, 1.0f / 60.0f);
-	if (!near_value(vgui_widget_get_value(ratio_view), 0.35f))
+	if (!near_value(vgui_widget_get_value(volume_view), 0.35f))
 		return fail("field property: explicit mark_dirty pushes");
 
 	vgui_destroy(ui);
@@ -15266,7 +15276,8 @@ int main()
 			!shell.preview_camera().attached())
 			return fail("shell v09 preview camera");
 		const viewport_render_settings v09_defaults = shell.viewport_settings();
-		if (v09_defaults.hdr || v09_defaults.msaa_samples != 1 ||
+		/* Defaults: LDR, 4x MSAA, depth preview on (see viewport_render_settings). */
+		if (v09_defaults.hdr || v09_defaults.msaa_samples != 4 ||
 			!v09_defaults.depth_preview ||
 			!vgui_widget_get_visible(shell.depth_viewport().widget()))
 			return fail("shell v09 default settings");
@@ -15281,14 +15292,15 @@ int main()
 		if (!shell.run_command("view.hdr") || shell.viewport_settings().hdr ||
 			shell.commands().is_checked("view.hdr"))
 			return fail("shell v09 hdr off");
-		if (!shell.run_command("view.msaa") ||
-			shell.viewport_settings().msaa_samples != 4 ||
-			!shell.commands().is_checked("view.msaa"))
-			return fail("shell v09 msaa on");
+		/* view.msaa toggles between 1x and 4x; the shell starts at 4x. */
 		if (!shell.run_command("view.msaa") ||
 			shell.viewport_settings().msaa_samples != 1 ||
 			shell.commands().is_checked("view.msaa"))
 			return fail("shell v09 msaa off");
+		if (!shell.run_command("view.msaa") ||
+			shell.viewport_settings().msaa_samples != 4 ||
+			!shell.commands().is_checked("view.msaa"))
+			return fail("shell v09 msaa on");
 		if (!shell.run_command("view.depth") ||
 			shell.viewport_settings().depth_preview ||
 			shell.commands().is_checked("view.depth") ||
@@ -15315,7 +15327,7 @@ int main()
 			return fail("shell v09 settings setter");
 		shell.set_viewport_settings({});
 		if (shell.viewport_settings().hdr ||
-			shell.viewport_settings().msaa_samples != 1 ||
+			shell.viewport_settings().msaa_samples != 4 ||
 			!shell.viewport_settings().depth_preview ||
 			!vgui_widget_get_visible(shell.depth_viewport().widget()))
 			return fail("shell v09 settings reset");

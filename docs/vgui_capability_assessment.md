@@ -165,3 +165,10 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - `collection.h`：`vector_rows` 补 `detach()`，避免适配器先于控件销毁时控件残留悬垂行源指针。
 - 全文贯通纹理格式能力到 §2.1（图片/纹理）与 §3.1（游戏运行时 HUD）。
 
+### 7.6 实机回归（2026-11-03，MSVC 19.51 / VS 2026 + vcpkg `x64-windows-static`）
+- 全量构建 95 个目标通过，含 `vgui_headers_test` 逐头自包含编译（覆盖新增的 `binding/collection.h`、`editor/binding_undo.h`、`editor/property_binding.h`）。
+- `vgui_model_test` 850 通过 / 0 失败；`vgui_editor_kit_test` PASS；`vgui_c_api_test`、`vgui_chart_test`、`vgui_runtime_embed_test`、`ovg_texture_test` 均通过。
+- 回归中修掉的真实缺陷：`VGUI_BIND_TEXT` 推送 `VGUI_EDIT` 时未同步 `edit_text`（控件显示旧值、回写读不到用户输入），详见 `data_binding_roadmap.md` P0。
+- 顺带修正的过期断言：节点图行高 18→24 后的几何常量（节点高 70→82、端口 y 114→120 / 134→144 / 154→168、端口矩形 y 110→116）、编辑器外壳默认 MSAA 1→4 及其 toggle 顺序、`last_flush_count` 用例（computed 值不变时不计推送）、`model_write` 用例误用已解绑滑杆、派生绑定 9+2 写成 15。
+- 已知遗留：`vgui_texture_test` 2/79 失败（`cpu rotation top-left`、`cpu center rotation tl` 取到 `0x7F7F0000`），为 CPU 旋转图元边界像素的半透明混合，属采样精度问题，与上述改动无关；GPU 截图回归未在本机执行。
+
