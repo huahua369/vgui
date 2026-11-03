@@ -4279,6 +4279,109 @@ static void test_accessibility_e05(vgui_context* ui)
 	vgui_widget_clear(vgui_root(ui));
 }
 
+//-- reactive data binding (docs/data_binding_roadmap.md, Phase 0) -----------
+struct bind_cb_model { int flag; };
+
+static void bind_cb_get(void* user, vgui_bind_kind kind, void* out)
+{
+	(void)kind;
+	*(int*)out = ((bind_cb_model*)user)->flag;
+}
+
+static void bind_cb_set(void* user, vgui_bind_kind kind, const void* in)
+{
+	(void)kind;
+	((bind_cb_model*)user)->flag = (*(const int*)in) != 0;
+}
+
+static void test_binding(font_familys_t* familys)
+{
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 400, 300);
+	vgui_widget_set_layout(vgui_root(ctx), VGUI_LAYOUT_ABSOLUTE);
+
+	struct model_t { float volume; int flag; std::string name; };
+	model_t m;
+	m.volume = 0.25f;
+	m.flag = 1;
+	m.name = "Hello";
+
+	vgui_widget* root = vgui_root(ctx);
+	vgui_widget* s1 = vgui_widget_add(root, VGUI_SLIDER, "");
+	vgui_widget* s2 = vgui_widget_add(root, VGUI_SLIDER, "");
+	vgui_widget* chk = vgui_widget_add(root, VGUI_CHECKBOX, "");
+	vgui_widget* lbl = vgui_widget_add(root, VGUI_LABEL, "");
+	vgui_widget_set_pos(s1, 10.0f, 10.0f);   vgui_widget_set_size(s1, 200.0f, 24.0f);
+	vgui_widget_set_pos(s2, 10.0f, 50.0f);   vgui_widget_set_size(s2, 200.0f, 24.0f);
+	vgui_widget_set_pos(chk, 10.0f, 90.0f);  vgui_widget_set_size(chk, 200.0f, 24.0f);
+	vgui_widget_set_pos(lbl, 10.0f, 130.0f); vgui_widget_set_size(lbl, 200.0f, 24.0f);
+
+	vgui_binding* b1 = vgui_bind(ctx, s1, VGUI_BIND_VALUE, &m, VGUI_OFFSET(model_t, volume));
+	vgui_bind(ctx, s2, VGUI_BIND_VALUE, &m, VGUI_OFFSET(model_t, volume));
+	vgui_bind(ctx, chk, VGUI_BIND_CHECKED, &m, VGUI_OFFSET(model_t, flag));
+	vgui_bind(ctx, lbl, VGUI_BIND_TEXT, &m, VGUI_OFFSET(model_t, name));
+
+	// bind() initializes widgets from the model immediately.
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s1), 0.25f), "binding: slider1 initialized from model");
+	check(near(vgui_widget_get_value(s2), 0.25f), "binding: slider2 initialized from model");
+	check(vgui_widget_get_checked(chk) == 1, "binding: checkbox initialized from model");
+	check(std::string(vgui_widget_get_text(lbl)) == "Hello", "binding: label text initialized from model");
+
+	// model -> widget flush, triggered only by a version bump.
+	m.volume = 0.7f;
+	m.flag = 0;
+	m.name = "World";
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s1), 0.7f), "binding: model->widget flush (value)");
+	check(near(vgui_widget_get_value(s2), 0.7f), "binding: model->widget flush (second widget)");
+	check(vgui_widget_get_checked(chk) == 0, "binding: model->widget flush (checked)");
+	check(std::string(vgui_widget_get_text(lbl)) == "World", "binding: model->widget flush (text)");
+
+	// An idle update (no version bump) must not re-push anything.
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s1), 0.7f), "binding: idle update is a no-op");
+
+	// widget -> model writeback through a real user drag.
+	vgui_input_mouse_move(ctx, 110.0f, 22.0f);
+	vgui_input_mouse_down(ctx, 1, 110.0f, 22.0f, 1);
+	vgui_input_mouse_move(ctx, 160.0f, 22.0f);
+	vgui_input_mouse_up(ctx, 1, 160.0f, 22.0f, 1);
+	check(m.volume > 0.5f, "binding: widget->model writeback on drag");
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s2), vgui_widget_get_value(s1)),
+		"binding: writeback syncs sibling without echo");
+
+	// Checkbox click writes back to the model too.
+	vgui_input_mouse_move(ctx, 110.0f, 102.0f);
+	vgui_input_mouse_down(ctx, 1, 110.0f, 102.0f, 1);
+	vgui_input_mouse_up(ctx, 1, 110.0f, 102.0f, 1);
+	check(m.flag == 1, "binding: checkbox click writes back");
+
+	// unbind stops future model->widget sync for that binding only.
+	vgui_unbind(ctx, b1);
+	m.volume = 0.1f;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(s2), 0.1f), "binding: sibling still bound after unbind");
+
+	// callback binding + invalidate resync.
+	bind_cb_model cm = { 1 };
+	vgui_widget* chk2 = vgui_widget_add(root, VGUI_CHECKBOX, "");
+	vgui_widget_set_pos(chk2, 10.0f, 170.0f);
+	vgui_widget_set_size(chk2, 200.0f, 24.0f);
+	vgui_binding* cb = vgui_bind_cb(ctx, chk2, VGUI_BIND_CHECKED, &cm, bind_cb_get, bind_cb_set);
+	vgui_update(ctx, 0.016f);
+	check(vgui_widget_get_checked(chk2) == 1, "binding: cb initialized from model");
+	cm.flag = 0;
+	vgui_binding_invalidate(cb);
+	vgui_update(ctx, 0.016f);
+	check(vgui_widget_get_checked(chk2) == 0, "binding: cb invalidate -> resync");
+
+	vgui_destroy(ctx);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -4328,6 +4431,7 @@ int main()
 	test_accessibility_e05(ui);
 	test_ui_scale(ui);
 	test_focus_navigate(ui, familys);
+	test_binding(familys);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

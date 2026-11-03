@@ -878,6 +878,33 @@ vgui_chart_append_points(chart, rps, points, count);
 - 悬停、按下、选中等状态动画；可设置鼠标指针形状和禁用态。
 - 命中测试、嵌套控件事件分发，输入函数会返回事件是否被消费。
 
+### 响应式数据绑定
+
+可选的绑定层把控件属性与模型字段连起来，双向同步且**不靠每帧轮询**（P0 已实现，见
+[`docs/data_binding_roadmap.md`](docs/data_binding_roadmap.md)）。默认仍可用 R4-1 的"每帧直写 +
+脏检查"手工同步，两者并存。
+
+```c
+struct settings { float volume; int mute; };
+struct settings s = { 0.5f, 0 };
+
+/* 偏移绑定：模型为结构体，字段用 offsetof 定位。 */
+vgui_bind(ui, slider, VGUI_BIND_VALUE,   &s, offsetof(struct settings, volume));
+vgui_bind(ui, toggle, VGUI_BIND_CHECKED, &s, offsetof(struct settings, mute));
+
+/* 改完字段后仅打脏版本，下一帧 vgui_update 才真正同步控件。 */
+s.volume = 0.8f;
+vgui_model_mark_dirty(ui, &s);
+/* vgui_update(ui, dt) ... */
+
+/* 用户拖动/点击会自动回写到 s（无需手写 on_event）。 */
+```
+
+支持的绑定类型：`VGUI_BIND_VALUE` / `TEXT` / `CHECKED` / `PROGRESS` / `VISIBLE` / `ENABLED`
+（`SELECTION` 为占位，P1）。非 POD 模型或需要类型转换时用 `vgui_bind_cb()` 提供 get/set 回调；
+`vgui_binding_invalidate()` 可强制重拉；`vgui_unbind()` 解除绑定（`vgui_destroy` 会回收未解绑的
+绑定）。
+
 ## 快速开始
 
 ### 环境要求

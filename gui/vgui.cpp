@@ -667,6 +667,23 @@ struct vgui_focus_listener_entry
 	void* user = nullptr;
 };
 
+// Reactive data binding (see docs/data_binding_roadmap.md, Phase 0).
+// A binding links a widget property to a model field and keeps them in sync in
+// both directions without per-frame polling.
+struct vgui_binding
+{
+	vgui_context* ctx = nullptr;
+	vgui_widget* widget = nullptr;
+	vgui_bind_kind kind = VGUI_BIND_VALUE;
+	void* model = nullptr;        // NULL for callback bindings
+	size_t offset = 0;            // byte offset of the field within *model
+	uint64_t seen = 0;            // last model version observed on flush
+	int uses_cb = 0;              // 1 -> get_fn/set_fn variant
+	vgui_bind_get_fn get_fn = nullptr;
+	vgui_bind_set_fn set_fn = nullptr;
+	void* cb_user = nullptr;
+};
+
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
@@ -800,6 +817,12 @@ struct vgui_context
 
 	bool layout_dirty = true;
 	bool in_input = false;
+
+	// data binding (reactive / declarative) ---------------------------------
+	std::vector<vgui_binding*> bindings;
+	// model pointer -> monotonically increasing version; bumped by
+	// vgui_model_mark_dirty / writeback.  Used to flush only changed bindings.
+	std::unordered_map<void*, uint64_t> model_versions;
 };
 
 // Monotonic seconds for click/double-click timing.  The injected clock keeps
@@ -1479,6 +1502,160 @@ static float vgui_value_of(vgui_widget* w)
 	}
 }
 
+//----------------------------------------------------------------------------
+// reactive data binding (docs/data_binding_roadmap.md, Phase 0)
+//----------------------------------------------------------------------------
+
+/* Read the model-side value for a binding into f/i/t depending on kind. */
+static void vgui_binding_read_model(const vgui_binding* b, float* f, int* i, std::string* t)
+{
+	if (b->uses_cb)
+	{
+		switch (b->kind)
+		{
+		case VGUI_BIND_VALUE:
+		case VGUI_BIND_PROGRESS:    { float v = 0; if (b->get_fn) b->get_fn(b->cb_user, b->kind, &v); *f = v; } break;
+		case VGUI_BIND_CHECKED:
+		case VGUI_BIND_VISIBLE:
+		case VGUI_BIND_ENABLED:
+		case VGUI_BIND_SELECTION:   { int v = 0; if (b->get_fn) b->get_fn(b->cb_user, b->kind, &v); *i = v; } break;
+		case VGUI_BIND_TEXT:        { const char* v = nullptr; if (b->get_fn) b->get_fn(b->cb_user, b->kind, &v); *t = v ? v : ""; } break;
+		default: break;
+		}
+	}
+	else
+	{
+		char* base = (char*)b->model + b->offset;
+		switch (b->kind)
+		{
+		case VGUI_BIND_VALUE:
+		case VGUI_BIND_PROGRESS:    *f = *(const float*)base; break;
+		case VGUI_BIND_CHECKED:
+		case VGUI_BIND_VISIBLE:
+		case VGUI_BIND_ENABLED:
+		case VGUI_BIND_SELECTION:   *i = *(const int*)base; break;
+		case VGUI_BIND_TEXT:        *t = *(const std::string*)base; break;
+		default: break;
+		}
+	}
+}
+
+/* Push the model value onto the widget once (no version check).  Returns 1 if
+ * the widget actually changed (so the caller can mark it dirty). */
+static int vgui_binding_apply(vgui_binding* b)
+{
+	if (!b || !b->widget) return 0;
+	float f = 0; int i = 0; std::string t;
+	vgui_binding_read_model(b, &f, &i, &t);
+	vgui_widget* w = b->widget;
+	switch (b->kind)
+	{
+	case VGUI_BIND_VALUE:
+	case VGUI_BIND_PROGRESS:
+		if (std::fabs(w->value - f) > 1e-6f) { w->value = f; return 1; }
+		return 0;
+	case VGUI_BIND_CHECKED:
+		if (w->checked != (i != 0)) { w->checked = (i != 0); return 1; }
+		return 0;
+	case VGUI_BIND_VISIBLE:
+		if (w->visible != (i != 0)) { w->visible = (i != 0); return 1; }
+		return 0;
+	case VGUI_BIND_ENABLED:
+		if (w->enabled != (i != 0)) { w->enabled = (i != 0); return 1; }
+		return 0;
+	case VGUI_BIND_TEXT:
+		if (w->text != t) { w->text = t; w->text_key.clear(); return 1; }
+		return 0;
+	case VGUI_BIND_SELECTION:
+		return 0; // model->widget for selection is Phase 1
+	default:
+		return 0;
+	}
+}
+
+/* Flush model->widget for every binding whose model version changed.  Runs once
+ * per vgui_update; idle bindings do nothing.  Writes widget fields directly (not
+ * via the setters) so no value/notify echo fires back into the model. */
+static void vgui_binding_flush(vgui_context* ctx)
+{
+	if (!ctx) return;
+	for (vgui_binding* b : ctx->bindings)
+	{
+		if (!b || !b->widget) continue;
+		if (b->uses_cb)
+		{
+			// Callback bindings have no model version; they resync only on
+			// vgui_binding_invalidate() (which resets seen to 0).
+			if (b->seen == 0)
+			{
+				if (vgui_binding_apply(b))
+					vgui_mark_dirty(b->widget);
+				b->seen = 1;
+			}
+			continue;
+		}
+		uint64_t mv = ctx->model_versions[b->model];
+		if (mv == b->seen) continue;
+		if (vgui_binding_apply(b))
+			vgui_mark_dirty(b->widget);
+		b->seen = mv;
+	}
+}
+
+/* Write the widget's current value/checked back into the bound model field(s)
+ * and bump the model version.  Triggered by genuine user edits (slider drag,
+ * checkbox click, keyboard) via vgui_notify_value; NEVER by vgui_binding_flush
+ * (which writes fields directly) nor by host vgui_widget_set_value (notify=false). */
+static void vgui_binding_writeback_value(vgui_widget* w)
+{
+	if (!w || !w->ctx) return;
+	vgui_context* ctx = w->ctx;
+	for (vgui_binding* b : ctx->bindings)
+	{
+		if (!b || b->widget != w) continue;
+		if (b->kind != VGUI_BIND_VALUE && b->kind != VGUI_BIND_PROGRESS && b->kind != VGUI_BIND_CHECKED)
+			continue;
+		if (b->uses_cb)
+		{
+			if (b->set_fn)
+			{
+				if (b->kind == VGUI_BIND_CHECKED) { int c = w->checked; b->set_fn(b->cb_user, b->kind, &c); }
+				else { float v = w->value; b->set_fn(b->cb_user, b->kind, &v); }
+			}
+		}
+		else
+		{
+			char* base = (char*)b->model + b->offset;
+			if (b->kind == VGUI_BIND_CHECKED) *(int*)base = w->checked;
+			else *(float*)base = w->value;
+		}
+		if (!b->uses_cb)
+			ctx->model_versions[b->model]++;
+	}
+}
+
+/* Write the widget's current text back into bound TEXT model field(s). */
+static void vgui_binding_writeback_text(vgui_widget* w)
+{
+	if (!w || !w->ctx) return;
+	vgui_context* ctx = w->ctx;
+	const std::string& t = w->text;
+	for (vgui_binding* b : ctx->bindings)
+	{
+		if (!b || b->widget != w || b->kind != VGUI_BIND_TEXT) continue;
+		if (b->uses_cb)
+		{
+			if (b->set_fn) b->set_fn(b->cb_user, b->kind, t.c_str());
+		}
+		else
+		{
+			*(std::string*)((char*)b->model + b->offset) = t;
+		}
+		if (!b->uses_cb)
+			ctx->model_versions[b->model]++;
+	}
+}
+
 static void vgui_notify_value(vgui_widget* w, vgui_event_type type = VGUI_EVENT_VALUE_CHANGED)
 {
 	if (!w || !w->ctx || !w->ctx->alive.count(w)) return;
@@ -1495,6 +1672,8 @@ static void vgui_notify_value(vgui_widget* w, vgui_event_type type = VGUI_EVENT_
 	// value change (sliders, progress, spin values).
 	bool state = (w->kind == VGUI_CHECKBOX || w->kind == VGUI_SWITCH || w->kind == VGUI_RADIO);
 	vgui_a11y_notify(w->ctx, w, state ? VGUI_A11Y_EVENT_STATE_CHANGED : VGUI_A11Y_EVENT_VALUE_CHANGED);
+	// Reactive binding: user (or host) changed the value/check state -> sync back.
+	vgui_binding_writeback_value(w);
 }
 
 static void vgui_notify_text(vgui_widget* w)
@@ -1504,6 +1683,8 @@ static void vgui_notify_text(vgui_widget* w)
 		w->text_fn(w, w->text.c_str(), w->user);
 	if (w->kind == VGUI_EDIT)
 		vgui_a11y_notify(w->ctx, w, VGUI_A11Y_EVENT_VALUE_CHANGED);
+	// Reactive binding: edit commit -> sync text back to the model.
+	vgui_binding_writeback_text(w);
 }
 
 //----------------------------------------------------------------------------
@@ -13628,6 +13809,9 @@ static void vgui_update_impl(vgui_context* ctx, float dt)
 	if (dt < 0) dt = 0;
 	ctx->time += dt;
 	vgui_flush_pending(ctx);
+	// Reactive data binding: push model changes onto bound widgets before layout
+	// so they are laid out this frame.  Idle bindings do nothing.
+	vgui_binding_flush(ctx);
 	vgui_ensure_layout(ctx);
 	// R4-2: advance floating combat text (rise + fade + expire).
 	for (auto it = ctx->float_texts.begin(); it != ctx->float_texts.end();)
@@ -13920,6 +14104,12 @@ extern "C" {
 	void vgui_destroy(vgui_context* ctx)
 	{
 		if (!ctx) return;
+
+		// Release bindings the host did not explicitly unbind.
+		for (vgui_binding* binding : ctx->bindings)
+			delete binding;
+		ctx->bindings.clear();
+		ctx->model_versions.clear();
 
 		ctx->pending_delete.clear();
 		ctx->modal.active = 0;
@@ -15905,6 +16095,70 @@ extern "C" {
 	int vgui_widget_get_checked(vgui_widget* widget)
 	{
 		return widget ? widget->checked : 0;
+	}
+
+	//------------------------------------------------------------------------
+	// reactive data binding (docs/data_binding_roadmap.md, Phase 0)
+	//------------------------------------------------------------------------
+
+	vgui_binding* vgui_bind(vgui_context* ctx, vgui_widget* widget,
+		vgui_bind_kind kind, void* model, size_t offset)
+	{
+		if (!ctx || !widget || !model) return nullptr;
+		vgui_binding* b = new vgui_binding();
+		b->ctx = ctx;
+		b->widget = widget;
+		b->kind = kind;
+		b->model = model;
+		b->offset = offset;
+		b->seen = ctx->model_versions[model]; // start coherent; do not echo old value
+		ctx->bindings.push_back(b);
+		if (vgui_binding_apply(b))            // initialize widget from model once
+			vgui_mark_dirty(widget);
+		b->seen = ctx->model_versions[model];
+		return b;
+	}
+
+	vgui_binding* vgui_bind_cb(vgui_context* ctx, vgui_widget* widget,
+		vgui_bind_kind kind, void* user, vgui_bind_get_fn get, vgui_bind_set_fn set)
+	{
+		if (!ctx || !widget || !get) return nullptr;
+		vgui_binding* b = new vgui_binding();
+		b->ctx = ctx;
+		b->widget = widget;
+		b->kind = kind;
+		b->uses_cb = 1;
+		b->cb_user = user;
+		b->get_fn = get;
+		b->set_fn = set;
+		ctx->bindings.push_back(b);
+		if (vgui_binding_apply(b))            // initialize widget from model once
+			vgui_mark_dirty(widget);
+		return b;
+	}
+
+	void vgui_unbind(vgui_context* ctx, vgui_binding* binding)
+	{
+		if (!ctx || !binding) return;
+		auto it = std::find(ctx->bindings.begin(), ctx->bindings.end(), binding);
+		if (it != ctx->bindings.end())
+			ctx->bindings.erase(it);
+		delete binding;
+	}
+
+	void vgui_model_mark_dirty(vgui_context* ctx, void* model)
+	{
+		if (ctx && model)
+			ctx->model_versions[model]++;
+	}
+
+	void vgui_binding_invalidate(vgui_binding* binding)
+	{
+		if (!binding || !binding->ctx) return;
+		if (binding->uses_cb)
+			binding->seen = 0;            // cb bindings have no model version
+		else if (binding->model)
+			binding->ctx->model_versions[binding->model]++;
 	}
 
 	void vgui_widget_set_vertical(vgui_widget* widget, int vertical)

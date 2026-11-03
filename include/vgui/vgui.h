@@ -2075,6 +2075,61 @@ extern "C" {
 	VGUI_API void vgui_update(vgui_context* ctx, float delta_time);
 	VGUI_API void vgui_draw(vgui_context* ctx, struct ovg_ctx_cb* cb, struct rvg_t* vg);
 
+	/* ------------------------------------------------------------------------- */
+	/* Reactive / declarative data binding (optional layer; see docs)            */
+	/* ------------------------------------------------------------------------- */
+	/* Bi-directional binding links a widget property to a model field so the two
+	 * stay in sync without per-frame polling:
+	 *   - model -> widget is pulled lazily on vgui_update (only when the model's
+	 *     version changed), reusing the existing 1e-6 dirty-check;
+	 *   - widget -> model is written back when the user edits (checkbox toggle,
+	 *     slider drag, edit commit), bumping the model version.
+	 * An in-flush guard prevents echo loops.  See docs/data_binding_roadmap.md. */
+
+	typedef enum vgui_bind_kind {
+		VGUI_BIND_VALUE = 0,    /* float  <-> slider/default value (slider: normalized 0..1) */
+		VGUI_BIND_TEXT,         /* const char* / std::string <-> widget text */
+		VGUI_BIND_CHECKED,      /* int (0/1) <-> checkbox/switch/radio checked */
+		VGUI_BIND_PROGRESS,     /* float 0..1 <-> progress value */
+		VGUI_BIND_VISIBLE,      /* int (0/1) <-> visibility */
+		VGUI_BIND_ENABLED,      /* int (0/1) <-> enabled */
+		VGUI_BIND_SELECTION     /* int <-> list/tree selected index (model->widget, P1 writeback) */
+	} vgui_bind_kind;
+
+	/* Opaque binding handle. */
+	typedef struct vgui_binding vgui_binding;
+
+	/* Callback-based binding (non-POD models or type conversion).  On read the
+	 * host writes the value through *out; on write the host reads it from *in.
+	 * The interpretation of out/in depends on kind:
+	 *   VALUE / PROGRESS  -> float
+	 *   CHECKED / VISIBLE / ENABLED / SELECTION -> int
+	 *   TEXT -> const char* (host must copy) */
+	typedef void (*vgui_bind_get_fn)(void* user, vgui_bind_kind kind, void* out);
+	typedef void (*vgui_bind_set_fn)(void* user, vgui_bind_kind kind, const void* in);
+
+	/* Offset binding: model is a struct; the field is located with offsetof.
+	 * Numeric/int kinds read/write a float/int at that offset.  TEXT reads/writes
+	 * a std::string (C++ models); for C models use vgui_bind_cb instead. */
+	VGUI_API vgui_binding* vgui_bind(vgui_context* ctx, vgui_widget* widget,
+		vgui_bind_kind kind, void* model, size_t offset);
+	/* Callback binding: model is opaque; get/set move the value.  get is
+	 * required (it initializes and flushes the widget); set may be NULL for a
+	 * read-only binding (model->widget only). */
+	VGUI_API vgui_binding* vgui_bind_cb(vgui_context* ctx, vgui_widget* widget,
+		vgui_bind_kind kind, void* user, vgui_bind_get_fn get, vgui_bind_set_fn set);
+	VGUI_API void vgui_unbind(vgui_context* ctx, vgui_binding* binding);
+
+	/* Mark a model dirty so the next vgui_update flushes bound widgets.  Cheap:
+	 * only bumps a version counter.  Bindings of the same model stay coherent. */
+	VGUI_API void vgui_model_mark_dirty(vgui_context* ctx, void* model);
+	/* Force a single binding to resync on the next update (cb bindings have no
+	 * model version, so this is how you push a change to them). */
+	VGUI_API void vgui_binding_invalidate(vgui_binding* binding);
+
 #ifdef __cplusplus
 } /* extern "C" */
+
+/* Convenience: bind a C++ struct member without spelling offsetof. */
+#define VGUI_OFFSET(Model, field) offsetof(Model, field)
 #endif
