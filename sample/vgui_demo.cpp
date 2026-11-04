@@ -3207,6 +3207,19 @@ int main()
 {
 	// ---- 后端初始化 ----
 	auto* wg = new app_mgr();
+	// MSAA 8x：ovg 2D 矢量上下文唯一的抗锯齿开关就是多重采样数，面板圆角、
+	// 分隔线、图表折线和控件斜边都靠它平滑。必须在 init_gpu() 之前设置，
+	// 上下文才会直接按 8x 创建；设备不支持时由后端向下钳制（8 → 4 → 2 → 1）。
+	// 演示/截图可用 VGUI_DEMO_MSAA 覆盖（1/2/4/8），方便对比画质与开销。
+	{
+		int samples = 8;
+		if (const char* env = std::getenv("VGUI_DEMO_MSAA"); env && *env)
+		{
+			const int v = std::atoi(env);
+			if (v == 1 || v == 2 || v == 4 || v == 8) samples = v;
+		}
+		wg->set_msaa_samples(samples);
+	}
 	font_familys_t* familys = new_font_family(wg->font_ctx,
 		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
 	auto* cb = new_ctx_cb();
@@ -3217,6 +3230,9 @@ int main()
 		fprintf(stderr, "init_gpu 失败\n");
 		return -1;
 	}
+	// 设备可能钳制采样数，这里报告真正生效的值。
+	printf("MSAA: %dx\n", wg->msaa_samples);
+	fflush(stdout);
 
 	const int win_w = 1080, win_h = 860;
 	os_window* form = wg->create("vgui C API 控件演示", win_w, win_h, 0, true);

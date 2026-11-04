@@ -11943,7 +11943,13 @@ static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	cb->fill(vg);
 	if (st.radio.border_width > 0)
 	{
-		cb->circle(vg, cx, cy, d * 0.5f);
+		// 描边向内收半个线宽，让圆环的外沿正好落在控件自己的矩形里。否则
+		// 描边会向左右各溢出 bw/2，父容器的裁剪边一旦和控件边界重合（例如
+		// padding 为 0 的单选组行，第一个单选按钮的左边就是行的左边界），
+		// 外侧半条描边连同抗锯齿会被切掉，看起来像被削平了一块。复选框的
+		// 描边一直是这样向内收的，这里与之对齐。
+		const float inset = st.radio.border_width * 0.5f;
+		cb->circle(vg, cx, cy, std::max(0.0f, d * 0.5f - inset));
 		cb->set_line_width(vg, st.radio.border_width);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
 		cb->stroke(vg);

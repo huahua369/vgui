@@ -1168,6 +1168,8 @@ out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/
 
 `vgui_demo` 中可以体验按钮、选择控件、滑杆、进度条、编辑框、列表、树、菜单、滚动面板、动态增删控件、主题切换、焦点透明度和选区圆角等功能；图片卡片还提供九宫格、旋转循环和矩阵错切演示。启用 editor kit 构建（默认）时，“代码编辑器 CodeEditor”卡片直接嵌入 `vgui_editor_kit::code_editor`，可切换 C++/Lua/JSON/Markdown 示例（Markdown 示例覆盖标题、引用、任务列表、表格、分隔线和 cpp 围栏内嵌高亮）、打开查找/替换、撤销/重做，切换为带等级颜色的只读富文本日志，并在深色/浅色/护眼/高对比四套内置调色板之间切换；卡片右侧还有可拖动分栏的 Markdown 预览，编辑内容实时联动、可切换跟随光标，示例图片/视频由卡片创建的宿主纹理提供。
 
+demo 默认以 **MSAA 8x** 创建 2D 矢量上下文（在 `init_gpu()` 之前调用 `app_mgr::set_msaa_samples(8)`，此时只记录请求值，设备就绪后按它建上下文），圆角、斜边和图表折线的边缘平滑度与编辑器外壳的 4x 有直观差别；设备不支持时后端会向下钳制，启动时会打印实际生效值。需要对比画质或压测时可覆盖：`VGUI_DEMO_MSAA=1|2|4|8 out/bin/x64d/vgui_demo.exe`（非法值回退到 8）。
+
 ### 游戏编辑器示例（vgui_game_editor）
 
 `sample/vgui_game_editor.cpp` 是 editor kit 的持续 dogfood 示例：窗口标题为“vgui 游戏编辑器示例”，内置一套内存中的玩具场景与资产库，覆盖首批 MVP 主路径和后续专业编辑器页签。
