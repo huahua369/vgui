@@ -393,6 +393,12 @@ struct editor_state
 	bool live_drag = false;
 	vgui_item_id live_panel = 0;
 	float live_offx = 0.0f, live_offy = 0.0f;	// 光标在窗口内的抓取点
+	/* 拖动越界判定：按住 tab 拖动时，用面板【停靠时的矩形 + 拖动位移】判断
+	 * 是否已有部分超出主窗口；一旦超出就把面板浮到浮动窗口显示。 */
+	bool drag_rect_valid = false;
+	vgui_item_id drag_panel_seen = 0;
+	float drag_rect_x = 0, drag_rect_y = 0, drag_rect_w = 0, drag_rect_h = 0;
+	float drag_start_mx = 0, drag_start_my = 0;
 	/* 主机/后端句柄缓存（main() 启动时填充，供 tear_off 回调与浮动窗口工厂
 	 * 使用）。 */
 	app_mgr* wg = nullptr;
@@ -3870,8 +3876,80 @@ static void merge_floating_back(std::map<vgui_item_id, float_window>::iterator i
 	g.floaters.erase(it);
 }
 
-/* 实时拖出回调：光标按住 tab 拖动、一越出主窗口边界就触发（按键尚未松开）。
- * 只记录光标屏幕坐标并入队，窗口创建放到帧末（避免在输入回调里改窗口）。 */
+/* 兜底尺寸：只在面板还没完成布局、取不到实际显示矩形时使用。正常情况下
+ * 浮动窗口严格按【面板停靠时的实际尺寸】创建（见 tear_off_to_floating）。 */
+static void floating_size_for(vgui_item_id panel, int* w, int* h)
+{
+	const bool gameview = (panel == g.gameview_panel);
+	*w = gameview ? 760 : 520;
+	*h = gameview ? 470 : 360;
+}
+
+/* 浮动窗口外框（标题条 30 + Dock 标签条 30）的估算高度，单位渲染像素。
+ * 只用于建窗时的初始尺寸，attach 后会实测并校正，不受 DPI 影响。 */
+static const float kFloatChromeH = 60.0f;
+
+/* 屏幕坐标下的矩形是否【完全】落在主窗口内。两条交互规则都以此为准：
+ *  - 拖动中：面板矩形一旦有任何一部分超出 → 浮出成浮动窗口；
+ *  - 浮动中：只有整个浮动窗口完全落在主窗口内 → 才合并回 Dock。 */
+static bool rect_fully_inside_main(float x, float y, float w, float h)
+{
+	if (!g.main_window) return false;
+	int mx = 0, my = 0, mw = 0, mh = 0;
+	SDL_GetWindowPosition(g.main_window->window, &mx, &my);
+	SDL_GetWindowSize(g.main_window->window, &mw, &mh);
+	return x >= (float)mx && y >= (float)my &&
+		x + w <= (float)(mx + mw) && y + h <= (float)(my + mh);
+}
+
+/* 已存在的浮动窗口是否完全落在主窗口矩形内 —— 合并回 Dock 的唯一条件。 */
+static bool window_fully_inside_main(os_window* win)
+{
+	if (!win) return false;
+	int fx = 0, fy = 0, fw = 0, fh = 0;
+	SDL_GetWindowPosition(win->window, &fx, &fy);
+	SDL_GetWindowSize(win->window, &fw, &fh);
+	/* 2px 容差：窗口位置/尺寸取整后可能差 1px，不该因此拒绝合并。 */
+	return rect_fully_inside_main((float)fx + 2.0f, (float)fy + 2.0f,
+		(float)fw - 4.0f, (float)fh - 4.0f);
+}
+
+/* 拖动中的面板（停靠矩形按拖动位移平移后）是否仍完全在主窗口内。 */
+static bool dragged_panel_inside_main(float mx, float my)
+{
+	if (!g.drag_rect_valid) return false;
+	/* 2px 容差：面板矩形本来就贴着窗口右下边（停靠区与窗口同边），
+	 * 布局取整误差不应让“刚按下还没动”就判定为超出。 */
+	const float slack = 2.0f;
+	return rect_fully_inside_main(
+		g.drag_rect_x + (mx - g.drag_start_mx) + slack,
+		g.drag_rect_y + (my - g.drag_start_my) + slack,
+		g.drag_rect_w - slack * 2.0f, g.drag_rect_h - slack * 2.0f);
+}
+
+/* 取面板停靠时（页面实际显示区域）的屏幕矩形，供上面的位移判定使用。 */
+static bool panel_page_rect_screen(vgui_widget* dock, vgui_item_id panel,
+	float* x, float* y, float* w, float* h)
+{
+	if (!dock || !g.main_window) return false;
+	vgui_widget* page = vgui_dock_get_panel(dock, panel);
+	if (!page) return false;
+	float px = 0, py = 0, pw = 0, ph = 0;
+	vgui_widget_get_rect(page, &px, &py, &pw, &ph);
+	if (pw <= 1.0f || ph <= 1.0f) return false;
+	int wx = 0, wy = 0;
+	SDL_GetWindowPosition(g.main_window->window, &wx, &wy);
+	const float pr = g.main_window->pixel_ratio() > 0.0f
+		? g.main_window->pixel_ratio() : 1.0f;
+	*x = (float)wx + px / pr;
+	*y = (float)wy + py / pr;
+	*w = pw / pr;
+	*h = ph / pr;
+	return (*w > 1.0f && *h > 1.0f);
+}
+
+/* 实时拖出回调：按住 tab 拖动、面板（按浮动尺寸跟随光标）一有部分超出
+ * 主窗口就触发。只记录光标屏幕坐标并入队，窗口创建放到帧末。 */
 static void on_main_dock_drag_out(vgui_widget* dock, vgui_item_id panel,
 	float lx, float ly, void* user)
 {
@@ -3926,6 +4004,13 @@ static void tear_off_to_floating(vgui_item_id panel)
 	std::string id_str = id_raw ? id_raw : "";
 	const char* title = title_str.c_str();
 
+	/* 浮动窗口尺寸取【面板停靠时的实际页面尺寸】，不再用写死的数值 ——
+	 * 撕出前后面板内容大小完全一致。矩形必须在 detach 之前采样：detach
+	 * 之后页面已经离开 Dock，取不到它的显示区域。 */
+	float src_x = 0, src_y = 0, src_w = 0, src_h = 0;
+	bool have_src = panel_page_rect_screen(
+		main_dock, panel, &src_x, &src_y, &src_w, &src_h);
+
 	/* 从主 Dock 摘出：游戏视图销毁旧页面（稍后重建到浮动上下文）；其它面板
 	 * 只 detach，保留真实页面在主上下文。 */
 	vgui_dock_zone origin_zone = vgui_dock_get_zone(main_dock, panel);
@@ -3940,19 +4025,41 @@ static void tear_off_to_floating(vgui_item_id panel)
 		orphan_page = vgui_dock_detach(main_dock, panel);  /* 保留真实页面 */
 	}
 
-	const int width  = is_gameview ? 760 : 520;
-	const int height = is_gameview ? 470 : 360;
-	int px = (int)std::lround(g.tear_off_sx);
-	int py = (int)std::lround(g.tear_off_sy);
-	if (px <= 0 && py <= 0 && g.main_window)
+	int width = (int)std::lround(src_w);
+	int height = (int)std::lround(src_h);
+	if (!have_src || width < 160 || height < 120)
 	{
-		SDL_GetWindowPosition(g.main_window->window, &px, &py);
-		px += 48; py += 48;
+		/* 面板还没完成布局（罕见，例如启动首帧就被拖出）→ 退回默认尺寸。 */
+		floating_size_for(panel, &width, &height);
+		have_src = false;
 	}
+
+	/* 浮动窗口出现的位置 = 面板页面的屏幕左上角；实时拖动时再叠加光标
+	 * 位移，视觉上面板就是从原位置被“拽”出来的，不会跳。 */
+	float page_x = have_src ? src_x : g.tear_off_sx;
+	float page_y = have_src ? src_y : g.tear_off_sy;
+	float mx = 0, my = 0;
+	const bool mouse_down =
+		(SDL_GetGlobalMouseState(&mx, &my) & SDL_BUTTON_LMASK) != 0;
+	if (mouse_down && have_src && g.drag_panel_seen == panel)
+	{
+		page_x += mx - g.drag_start_mx;
+		page_y += my - g.drag_start_my;
+	}
+	float grab_x = mx - page_x, grab_y = my - page_y;
+
+	/* 初始位置把外框高度算上（页面要在标题条+标签条下面），attach 后再
+	 * 按实测外框精确校正一次。 */
+	const float ratio_hint = g.main_window && g.main_window->pixel_ratio() > 0.0f
+		? g.main_window->pixel_ratio() : 1.0f;
+	const float chrome_hint = kFloatChromeH / ratio_hint;
+	int px = (int)std::lround(page_x);
+	int py = (int)std::lround(page_y - chrome_hint);
 
 	os_window* win = g.wg->create2(is_gameview
 		? "vgui 游戏编辑器 · 游戏视图" : "vgui 游戏编辑器 · 浮动面板",
-		px, py, width, height, ef_borderless | ef_resizable, nullptr);
+		px, py, width, height + (int)std::lround(chrome_hint),
+		ef_borderless | ef_resizable, nullptr);
 	if (!win)
 	{
 		/* 窗口创建失败：回滚到主 Dock，并结束 vgui 侧拖动状态，避免轮询
@@ -3964,7 +4071,14 @@ static void tear_off_to_floating(vgui_item_id panel)
 	}
 
 	vgui_context* fui = vgui_create(g.familys, 16.0f);
-	vgui_context_set_size(fui, width, height);
+	/* 上下文尺寸必须取【窗口的渲染像素尺寸】，不能拿页面点数直接用：
+	 * 窗口里还装着标题条 / Dock 标签条，用页面尺寸会让首帧布局偏小，
+	 * 后续“实测外框”就会把外框算重（窗口越长越大）。 */
+	{
+		int win_px_w = 0, win_px_h = 0;
+		SDL_GetWindowSizeInPixels(win->window, &win_px_w, &win_px_h);
+		vgui_context_set_size(fui, win_px_w, win_px_h);
+	}
 	setup_floating_root(fui);
 
 	/* 标题条：既是装饰也是 SDL 命中拖动区（无边框窗口没有系统标题栏）。 */
@@ -3986,9 +4100,10 @@ static void tear_off_to_floating(vgui_item_id panel)
 
 	vgui_dock_panel_desc desc;
 	vgui_dock_panel_desc_default(&desc);
+	vgui_widget* page = nullptr;
 	if (is_gameview)
 	{
-		vgui_widget* page = build_gameview_page(fui, dock);
+		page = build_gameview_page(fui, dock);
 		desc.id = "gameview";
 		desc.title = "GAME VIEW";
 		desc.panel = page;
@@ -3996,7 +4111,7 @@ static void tear_off_to_floating(vgui_item_id panel)
 	}
 	else
 	{
-		vgui_widget* page = build_placeholder_page(fui, dock, title);
+		page = build_placeholder_page(fui, dock, title);
 		desc.id = nullptr;
 		desc.title = title;
 		desc.panel = page;
@@ -4017,6 +4132,42 @@ static void tear_off_to_floating(vgui_item_id panel)
 	}
 	win->sync_ui_scale(true);
 
+	/* 外框（标题条 + Dock 标签条）的实际高度取决于 DPI / UI scale，静态
+	 * 算不准：先按页面尺寸建窗，布局一次后实测「窗口渲染像素 − 页面渲染
+	 * 像素」得到外框，再把窗口一次性校正成「页面尺寸 = 原停靠尺寸」。
+	 * 这样撕出前后面板内容的大小完全一致，只有多出来的标题条改变外框。 */
+	{
+		const float float_ratio = win->pixel_ratio() > 0.0f
+			? win->pixel_ratio() : 1.0f;
+		int wpx = 0, hpx = 0;
+		SDL_GetWindowSizeInPixels(win->window, &wpx, &hpx);
+		float pw = 0, ph = 0;
+		vgui_widget_get_rect(page, nullptr, nullptr, &pw, &ph);
+		int chrome_w = wpx - (int)std::lround(pw);
+		int chrome_h = hpx - (int)std::lround(ph);
+		if (chrome_w < 0) chrome_w = 0;
+		if (chrome_h < 0) chrome_h = 0;
+		const int want_w = (int)std::lround((float)width * float_ratio) + chrome_w;
+		const int want_h = (int)std::lround((float)height * float_ratio) + chrome_h;
+		width = (int)std::lround((float)want_w / float_ratio);
+		height = (int)std::lround((float)want_h / float_ratio);
+		SDL_SetWindowSize(win->window, width, height);
+		vgui_context_set_size(fui, want_w, want_h);
+		/* 页面左上角仍对准原来的屏幕位置：标题条/标签条从窗口顶部往下占。 */
+		px = (int)std::lround(page_x);
+		py = (int)std::lround(page_y - (float)chrome_h / float_ratio);
+		SDL_SetWindowPosition(win->window, px, py);
+		/* 抓取点 = 光标相对窗口左上角；之后逐帧跟随即可让画面钉在光标下。 */
+		grab_x = mx - (float)px;
+		grab_y = my - (float)py;
+		/* 校正后的页面尺寸（应等于原停靠尺寸，供无头自检核对）。 */
+		float fpw = 0, fph = 0;
+		vgui_widget_get_rect(page, nullptr, nullptr, &fpw, &fph);
+		printf("tear-off page after resize: %dx%d (source %dx%d)\n",
+			(int)std::lround(fpw), (int)std::lround(fph),
+			(int)std::lround(src_w), (int)std::lround(src_h));
+	}
+
 	float_window fw;
 	fw.window = win;
 	fw.ui = fui;
@@ -4033,26 +4184,22 @@ static void tear_off_to_floating(vgui_item_id panel)
 	fw.hit_test_set = false;
 	g.floaters[panel] = fw;
 
-	/* 实时拖出：触发时鼠标还按着 —— 把窗口放在光标旁（光标落在标题条上，
-	 * 与 dock 拖动鬼影的位置一致），之后主循环里让窗口逐帧跟随光标；
-	 * 同时结束主 Dock 里残留的 vgui 拖动状态，否则松开鼠标时 dock 的
-	 * tear_off 回调会对已经摘走的面板再触发一次。 */
+	/* 实时拖出：触发时鼠标还按着 —— 窗口已经落在“面板页面原位置 + 光标
+	 * 位移”处，这里只记录抓取偏移，之后主循环让窗口逐帧跟随光标；同时
+	 * 结束主 Dock 里残留的 vgui 拖动状态，否则松开鼠标时 dock 的 tear_off
+	 * 回调会对已经摘走的面板再触发一次。 */
+	if (mouse_down)
 	{
-		float mx = 0, my = 0;
-		const Uint32 bs = SDL_GetGlobalMouseState(&mx, &my);
-		if (bs & SDL_BUTTON_LMASK)
-		{
-			g.live_drag = true;
-			g.live_panel = panel;
-			g.live_offx = 16.0f;
-			g.live_offy = 14.0f;
-			SDL_SetWindowPosition(win->window,
-				(int)std::lround(mx - g.live_offx),
-				(int)std::lround(my - g.live_offy));
-			if (g.shell && g.shell->dock())
-				vgui_dock_end_drag(g.shell->dock());
-		}
+		g.live_drag = true;
+		g.live_panel = panel;
+		g.live_offx = grab_x;
+		g.live_offy = grab_y;
+		if (g.shell && g.shell->dock())
+			vgui_dock_end_drag(g.shell->dock());
 	}
+	/* 拖动判定用的矩形已经用掉，下一轮拖动重新采样。 */
+	g.drag_rect_valid = false;
+	g.drag_panel_seen = 0;
 
 	if (is_gameview)
 	{
@@ -4060,8 +4207,12 @@ static void tear_off_to_floating(vgui_item_id panel)
 		g.gameview.window = win;
 		g.gameview.dock = dock;
 	}
-	printf("tear-off panel=%llu title=%s -> floating window %dx%d at (%d,%d) gameview=%d\n",
-		(unsigned long long)panel, title, width, height, px, py, is_gameview ? 1 : 0);
+	printf("tear-off panel=%llu title=%s -> floating window %dx%d at (%d,%d)"
+		" src_page=%dx%d gameview=%d\n",
+		(unsigned long long)panel, title, width, height, px, py,
+		have_src ? (int)std::lround(src_w) : 0,
+		have_src ? (int)std::lround(src_h) : 0,
+		is_gameview ? 1 : 0);
 	fflush(stdout);
 }
 
@@ -4195,21 +4346,16 @@ int main()
 			}
 			else
 			{
-				int mwx = 0, mwy = 0, mww = 0, mwh = 0;
-				SDL_GetWindowPosition(form->window, &mwx, &mwy);
-				SDL_GetWindowSize(form->window, &mww, &mwh);
-				const bool cursor_inside =
-					mx >= (float)(mwx + 24) && mx < (float)(mwx + mww - 24) &&
-					my >= (float)(mwy + 24) && my < (float)(mwy + mwh - 24);
 				const bool down_now = (bs & SDL_BUTTON_LMASK) != 0;
 				if (down_now)
 				{
 					SDL_SetWindowPosition(it->second.window->window,
 						(int)std::lround(mx - g.live_offx),
 						(int)std::lround(my - g.live_offy));
-					if (cursor_inside)
+					/* 只有【整个浮动窗口】都落在主窗口内才合并回 Dock；
+					 * 只要还有一部分压在主窗口外，就继续浮动。 */
+					if (window_fully_inside_main(it->second.window))
 					{
-						/* 拖回主窗口范围 → 自动合并回主窗口渲染。 */
 						g.live_drag = false;
 						merge_floating_back(it);
 					}
@@ -4217,35 +4363,45 @@ int main()
 				else
 				{
 					g.live_drag = false;
-					if (cursor_inside)
+					if (window_fully_inside_main(it->second.window))
 						merge_floating_back(it);
 				}
 			}
 		}
-		/* 轮询兜底：个别环境下光标越出窗口后 motion 事件不再送达，
-		 * vgui 的 drag_out 回调不会触发；这里直接用全局鼠标位置判断 ——
-		 * 按住 tab 拖动（vgui_dock_dragging 非零）期间光标一越出主窗口
-		 * 同样入队实时拖出。 */
-		if (!g.live_drag && !g.pending_tear_off && g.shell && g.shell->dock())
+		/* 拖动越界判定：按住 tab 拖动时，面板【停靠矩形 + 拖动位移】只要有
+		 * 任何一部分超出主窗口，就立刻把面板浮到浮动窗口显示（不必等光标
+		 * 整个离开窗口，更不必等松手）。判定所需的矩形在拖动开始时采样一次，
+		 * 之后按光标位移平移，所以仍能把面板拖到别的停靠区（矩形没出界就
+		 * 一直保持停靠）。 */
+		if (!g.live_drag && g.shell && g.shell->dock())
 		{
 			float mx = 0, my = 0;
 			const Uint32 bs = SDL_GetGlobalMouseState(&mx, &my);
-			if (bs & SDL_BUTTON_LMASK)
+			const vgui_item_id dragging = (bs & SDL_BUTTON_LMASK)
+				? vgui_dock_dragging(g.shell->dock()) : 0;
+			if (!dragging)
 			{
-				const vgui_item_id dragging =
-					vgui_dock_dragging(g.shell->dock());
-				if (dragging)
+				g.drag_rect_valid = false;
+				g.drag_panel_seen = 0;
+			}
+			else
+			{
+				if (g.drag_panel_seen != dragging)
 				{
-					int wx = 0, wy = 0, ww = 0, wh = 0;
-					SDL_GetWindowPosition(form->window, &wx, &wy);
-					SDL_GetWindowSize(form->window, &ww, &wh);
-					if (mx < (float)wx || my < (float)wy ||
-						mx >= (float)(wx + ww) || my >= (float)(wy + wh))
-					{
-						g.tear_off_sx = mx;
-						g.tear_off_sy = my;
-						g.pending_tear_off = dragging;
-					}
+					/* 拖动开始：采样面板此刻显示的矩形 + 起始光标位置。 */
+					g.drag_panel_seen = dragging;
+					g.drag_start_mx = mx;
+					g.drag_start_my = my;
+					g.drag_rect_valid = panel_page_rect_screen(
+						g.shell->dock(), dragging, &g.drag_rect_x,
+						&g.drag_rect_y, &g.drag_rect_w, &g.drag_rect_h);
+				}
+				if (!g.pending_tear_off && g.drag_rect_valid &&
+					!dragged_panel_inside_main(mx, my))
+				{
+					g.tear_off_sx = mx;
+					g.tear_off_sy = my;
+					g.pending_tear_off = dragging;
 				}
 			}
 		}
@@ -4274,16 +4430,13 @@ int main()
 				}
 				if (fw.window && released)
 				{
-					int fx = 0, fy = 0, fw_ = 0, fh_ = 0;
-					SDL_GetWindowPosition(fw.window->window, &fx, &fy);
-					SDL_GetWindowSize(fw.window->window, &fw_, &fh_);
-					int mxp = 0, myp = 0, mw_ = 0, mh_ = 0;
-					SDL_GetWindowPosition(form->window, &mxp, &myp);
-					SDL_GetWindowSize(form->window, &mw_, &mh_);
-					const bool inside = (fx + fw_ / 2 > mxp &&
-						fx + fw_ / 2 < mxp + mw_) &&
-						(fy + fh_ / 2 > myp && fy + fh_ / 2 < myp + mh_);
-					if (inside) { merge_floating_back(it++); continue; }
+					/* 松手（例如用标题条拖动浮动窗口）时同样只有【整个浮动
+					 * 窗口完全落在主窗口内】才合并回 Dock。 */
+					if (window_fully_inside_main(fw.window))
+					{
+						merge_floating_back(it++);
+						continue;
+					}
 				}
 				++it;
 			}
@@ -4667,6 +4820,46 @@ int main()
 				(unsigned long long)g.gameview_panel,
 				g.gameview.surface ? "yes" : "no",
 				g.gameview.texture ? "bound" : "none");
+			fflush(stdout);
+		}
+		/* 几何规则自检：不依赖真实鼠标，直接验证「矩形是否完全落在主窗口内」
+		 * 这条判定 —— 它是「有部分超出就浮出 / 完全在内才合并」的唯一依据。 */
+		if (max_frames > 0 && frame == 2 && g.main_window &&
+			std::getenv("VGUI_GEOM_CHECK"))
+		{
+			int wx = 0, wy = 0, ww = 0, wh = 0;
+			SDL_GetWindowPosition(g.main_window->window, &wx, &wy);
+			SDL_GetWindowSize(g.main_window->window, &ww, &wh);
+			int fw_ = 0, fh_ = 0;
+			/* 用面板停靠时的实际尺寸（浮动窗口就是按它创建的）。 */
+			float rx = 0, ry = 0, rw = 0, rh = 0;
+			if (panel_page_rect_screen(g.shell ? g.shell->dock() : nullptr,
+				g.gameview_panel, &rx, &ry, &rw, &rh))
+			{
+				fw_ = (int)std::lround(rw);
+				fh_ = (int)std::lround(rh);
+			}
+			else
+			{
+				floating_size_for(g.gameview_panel, &fw_, &fh_);
+			}
+			printf("GEOM check window=%dx%d float=%dx%d\n", ww, wh, fw_, fh_);
+			/* 完整落在窗口内（留 4px 边）→ 应判定为“完全在内”。 */
+			printf("GEOM inside       =%d (expect 1)\n",
+				rect_fully_inside_main((float)(wx + 4), (float)(wy + 4),
+					(float)(ww - 8), (float)(wh - 8)) ? 1 : 0);
+			/* 右边超出一部分 → 应判定为“未完全在内”。 */
+			printf("GEOM right-overflow=%d (expect 0)\n",
+				rect_fully_inside_main((float)(wx + 4), (float)(wy + 4),
+					(float)ww, (float)(wh - 8)) ? 1 : 0);
+			/* 底边超出一部分 → 应判定为“未完全在内”。 */
+			printf("GEOM bottom-overflow=%d (expect 0)\n",
+				rect_fully_inside_main((float)(wx + 4), (float)(wy + 4),
+					(float)(ww - 8), (float)wh) ? 1 : 0);
+			/* 浮动窗口尺寸正好放得下 → 完全在内。 */
+			printf("GEOM float-fits   =%d (expect 1)\n",
+				rect_fully_inside_main((float)(wx + 10), (float)(wy + 10),
+					(float)fw_, (float)fh_) ? 1 : 0);
 			fflush(stdout);
 		}
 		/* 无头自检：用推送的 SDL 鼠标事件走【真实的 vgui 拖动管线】——按下
