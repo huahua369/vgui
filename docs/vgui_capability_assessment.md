@@ -222,3 +222,12 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
   - 半径只能向下取整（OVG 内部还会 `round` 一次），宁可让描边内收半像素，也不能让外沿顶出控件边界。
 - 回归：`vgui_screenshot_test` 新增常驻场景 `button_styles_dark`（360×170，6 个按钮：SOLID 实心 r=12/r=20、SOLID 空心 bw=1/bw=3、GRADIENT r=12/pill bw=3）。逐像素对比修复前后：角部原本「亮边 + 灰暗晕圈」的两层结构变成单层贴合的亮边，暗晕消失。
 - 影响：所有带边框的纯色/渐变按钮圆角半径在描边层内收 0.5px，7 个截图基线（dock ×3、property grid ×2、asset browser ×2）一并更新，diff 均在 0.1%–0.36%、max_delta ≤ 30（仅边缘像素亮度变化）。
+
+### 7.14 描边同心口径全库统一（2026-11-04）
+- 背景：§7.13 只修了按钮。全库还有 22 处 `vgui_stroke_rect()` 和 12 处直接调 `ovg_tools::stroke_round_rect()` 的地方，一类是「路径内缩 `bw/2`、半径不变」（不同心），另一类是「路径不内缩、描边骑在轮廓上」（半个线宽溢到形状外）。两种写法在圆角处都和填充对不齐。
+- 口径收拢到一处：`ovg_tools::stroke_round_rect_inset(cb, vg, x, y, w, h, r, color, line_w, inset)` 定义规则——**外轮廓半径 `R = round_rect_radius(w, h, r)`，路径按 `inset` 内缩，半径同步取 `round_rect_radius(w - 2·inset, h - 2·inset, R - inset)`**；`ovg_tools::stroke_round_rect_frame(...)` 是 `inset = line_w/2` 的简写，即「描边完全落在形状内部、外沿与传入矩形重合」。
+- `gui/vgui.cpp`：`vgui_stroke_rect()` 删除，换成两个封装 `vgui_stroke_inset()` / `vgui_stroke_frame()`（保留 `color == 0` 早退），全部 22 个调用点改为走封装。控件外框统一用 `vgui_stroke_frame(控件矩形, w->rounding, ...)`，共 17 处：label / edit / image / model_frame / menubar / menu / splitter / tabs / dock / dock 浮动面板 / panel / custom / checkbox / tooltip / toast / button(SOLID)；焦点环用 `vgui_stroke_inset(..., fs.width, fs.inset)`；拖放提示框、drop compass、拖拽幽灵卡等临时可视元素也一并改掉。
+- 编辑器侧 12 处同步：`chart_draw`（提示框）、`asset_browser`（卡片选中/悬停环）、`asset_preview`（预览框、色板）、`canvas_view`（图元边框）、`markdown_view`（代码块、媒体框、焦点环）、`node_graph_view`（节点边框、小地图）、`table_view`（颜色色板）、`timeline_view`（运输按钮）。这些点原本都是「填充与外框同矩形」，改成 frame 后描边不再向形状外溢出半个线宽。
+- 半径变化：描边层半径由 `R` 变为 `floor(R - bw/2)`，`bw=1` 时减 0.5、`bw=3` 时减 1.5，向下取整后小圆角（r=3~6）会瘦 1px——这是保持同心的必要代价，圆角越小越要减，否则角部仍会错开。
+- 回归：`sample/ovg_tools_test.cpp` 新增 frame 场景（外轮廓 70×31、r=8、bw=3），7 条像素断言：外侧一列必须是背景、描边内侧为纯白、中部为填充色、角部被切掉。对照实验（把调用换回骑线写法）会让其中 5 条失败，证明断言有效。检查数 105 → 112。
+- 影响：`vgui_screenshot_test` 10/12 场景基线更新，diff 0.053%–1.536%、max_delta ≤ 184，全部集中在边框轮廓（面板外沿、卡片环、drop compass 圆角）；`button_styles_dark`、`viewport_gizmo_dark` 无变化。ctest 3/3、ovg_tools 112 / model / editor_kit / c_api / chart / runtime_embed / edit 全 PASS。

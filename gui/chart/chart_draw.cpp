@@ -526,7 +526,7 @@ namespace vgchart {
 
 			ovg_tools::fill_round_rect(cb, vg, bx, by, box_w, box_h,
 				4.0f * scale, to_ovg(with_alpha(chart->theme.tooltip_bg, 0xF2)));
-			ovg_tools::stroke_round_rect(cb, vg, bx, by, box_w, box_h,
+			ovg_tools::stroke_round_rect_frame(cb, vg, bx, by, box_w, box_h,
 				4.0f * scale, to_ovg(chart->theme.tooltip_border), 1.0f * scale);
 			for (size_t i = 0; i < rows.size(); ++i)
 			{

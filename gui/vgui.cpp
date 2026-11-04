@@ -11238,10 +11238,29 @@ static void vgui_fill_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w,
 	ovg_tools::fill_round_rect(cb, vg, x, y, w, h, r, vgui_ovg_color(color));
 }
 
-static void vgui_stroke_rect(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, float r, uint32_t color, float width)
+// 控件外轮廓圆角：向下取整、不超过半边长。填充层直接用这个值（ovg_tools 内部
+// 也是同一口径），描边层再按自身内缩量递减，两层才能同心。
+static float vgui_outer_radius(float rounding, float w, float h)
+{
+	return ovg_tools::round_rect_radius(w, h, rounding);
+}
+
+// 在 x,y,w,h 描述的外轮廓内按 inset 内缩描边，圆角半径同步减 inset——口径的实现
+// 放在 ovg_tools 里（stroke_round_rect_inset），保证全库描边都按同一条规则同心。
+static void vgui_stroke_inset(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+	float rounding, uint32_t color, float width, float inset)
 {
 	if (!cb || !vg || color == 0 || w <= 0 || h <= 0 || width <= 0) return;
-	ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, r, vgui_ovg_color(color), width);
+	ovg_tools::stroke_round_rect_inset(cb, vg, x, y, w, h, rounding,
+		vgui_ovg_color(color), width, inset);
+}
+
+// 描边贴合控件外轮廓：路径内缩半个线宽，外沿正好落在 x..x+w / y..y+h 上。
+// 适用于「填充铺满控件矩形」的常规边框。
+static void vgui_stroke_frame(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h,
+	float rounding, uint32_t color, float width)
+{
+	vgui_stroke_inset(cb, vg, x, y, w, h, rounding, color, width, width * 0.5f);
 }
 
 // One horizontal selection run (one text line).  Multi-line selections are
@@ -11502,8 +11521,7 @@ static void vgui_draw_focus(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	uint32_t color = vgui_alpha_color(vgui_widget_color(w, ctx->theme.accent), alpha);
 	float d[] = { fs.width * 2.0f,fs.width * 2.0f };
 	cb->set_dash(vg, d, 2, 0);
-	vgui_stroke_rect(cb, vg, w->abs_x + fs.inset, w->abs_y + fs.inset,
-		w->abs_w - fs.inset * 2.0f, w->abs_h - fs.inset * 2.0f, r, color, fs.width);
+	vgui_stroke_inset(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, r, color, fs.width, fs.inset);
 	// dash 用完即清（与 ovg_tools 约定一致）：焦点环泄漏的 dash 会与后续
 	// save/restore 的 dash 数组所有权交互，留下悬空引用后按垃圾值细分描边。
 	cb->set_dash(vg, nullptr, 0, 0);
@@ -11596,7 +11614,7 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	// 圆角半径口径：先定控件外轮廓半径 R（向下取整、不超过半高），各层按自身内缩量
 	// 同心递减成 R - inset。矩形内缩了、半径不跟着减，圆心就会偏移，描边在圆角处
 	// 要么探出填充轮廓、要么留出半像素宽的缝（rounding 越小越明显）。
-	const float r_outer = std::floor(std::min(rounding, std::min(ww, hh) * 0.5f));
+	const float r_outer = vgui_outer_radius(rounding, ww, hh);
 	auto ink_radius = [r_outer](float inset, float box_h)
 	{
 		return std::max(0.0f, std::min(std::floor(r_outer - inset), std::floor(box_h * 0.5f)));
@@ -11688,20 +11706,13 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 				bg = vgui_mix_color(bg, ctx->theme.button_hover,
 					std::max(bs.hover_mix_min, w->hover_anim));
 		}
-		// 圆角半径：填充和描边必须同心。描边路径内缩 bi 后，半径要同步减 bi，
-		// 否则两条弧半径相同、圆心却差 bi，描边外沿会在 45° 角部探到填充轮廓之外，
-		// 中间留下半像素缝（放大看就是角上多出一条比填充暗的边）。
-		// 半径只能向下取整，宁可内收半像素，不能让外沿顶出控件边界。
-		const float r_out = std::max(0.0f, std::floor(
-			std::min(w->rounding, std::min(w->abs_w, w->abs_h) * 0.5f)));
+		// 圆角半径：填充和描边必须同心（见 vgui_stroke_frame）。
+		const float r_out = vgui_outer_radius(w->rounding, w->abs_w, w->abs_h);
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, r_out, vgui_widget_color(w, bg));
 		if (w->border_width > 0)
 		{
-			float bi = w->border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-				w->abs_w - w->border_width, w->abs_h - w->border_width,
-				std::max(0.0f, std::floor(r_out - bi)),
-				vgui_widget_color(w, border), w->border_width);
+			vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+				r_out, vgui_widget_color(w, border), w->border_width);
 		}
 	}
 
@@ -11869,10 +11880,8 @@ static void vgui_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
 	if (w->border_width > 0 && w->border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, w->border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	}
 	vgui_draw_text(ctx, cb, vg, w, w->text,
 		w->abs_x + w->padding[0], w->abs_y + w->padding[1],
@@ -11904,10 +11913,8 @@ static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	}
 	if (st.checkbox.border_width > 0)
 	{
-		float bi = st.checkbox.border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, bx + bi, by + bi, box - st.checkbox.border_width,
-			box - st.checkbox.border_width, st.checkbox.rounding, vgui_widget_color(w, border),
-			st.checkbox.border_width);
+		vgui_stroke_frame(cb, vg, bx, by, box, box, st.checkbox.rounding,
+			vgui_widget_color(w, border), st.checkbox.border_width);
 	}
 
 	if (w->check_anim > 0.05f && st.checkbox.check_width > 0)
@@ -12188,10 +12195,8 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	}
 	if (w->border_width > 0)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, border), w->border_width);
 	}
 
 	float ix = w->abs_x + w->padding[0];
@@ -12761,9 +12766,7 @@ static void vgui_draw_image(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip
 
 	if (w->border_width > 0 && w->border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width,
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
 			w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	}
 	vgui_draw_focus(w, cb, vg);
@@ -12862,10 +12865,8 @@ static void vgui_draw_model_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_widget_color(w, bg));
 	if (w->border_width > 0)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, border), w->border_width);
 	}
 }
 
@@ -13201,10 +13202,8 @@ static void vgui_draw_menubar(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 			vgui_widget_color(w, bg));
 	if (w->border_width > 0 && border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, border), w->border_width);
 	}
 
 	cb->save(vg);
@@ -13255,10 +13254,8 @@ static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		vgui_widget_color(w, bg));
 	if (w->border_width > 0)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, border), w->border_width);
 	}
 
 	cb->save(vg);
@@ -13415,8 +13412,7 @@ static void vgui_draw_drag(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 		{
 			vgui_fill_rect(cb, vg, hint.x, hint.y, hint.w, hint.h, 0.0f,
 				vgui_alpha_color(accent, 0.12f));
-			vgui_stroke_rect(cb, vg, hint.x + 0.5f, hint.y + 0.5f,
-				std::max(0.0f, hint.w - 1.0f), std::max(0.0f, hint.h - 1.0f), 0.0f,
+			vgui_stroke_frame(cb, vg, hint.x, hint.y, hint.w, hint.h, 0.0f,
 				vgui_alpha_color(accent, 0.85f), 1.0f);
 		}
 		else if (hint.kind == VGUI_DROP_HINT_LINE)
@@ -13448,8 +13444,7 @@ static void vgui_draw_drag(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 	if (gx + gw > (float)ctx->width) gx = ctx->mouse_x - gw - 6.0f;
 	if (gy + gh > (float)ctx->height) gy = ctx->mouse_y - gh - 6.0f;
 	vgui_fill_rect(cb, vg, gx, gy, gw, gh, 3.0f, 0xC0202020);
-	vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f, gw - 1.0f, gh - 1.0f, 3.0f,
-		ctx->theme.accent, 1.0f);
+	vgui_stroke_frame(cb, vg, gx, gy, gw, gh, 3.0f, ctx->theme.accent, 1.0f);
 	vgui_draw_text(ctx, cb, vg, anchor, label, gx + 8.0f, gy, gw - 16.0f, gh,
 		ctx->theme.text, 0.0f, 0.5f);
 }
@@ -13476,10 +13471,7 @@ static void vgui_draw_tooltip(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 	vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, ts.rounding, bg);
 	if (ts.border_width > 0.0f && border)
 	{
-		float bi = ts.border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, t.x + bi, t.y + bi,
-			t.w - ts.border_width, t.h - ts.border_width,
-			ts.rounding, border, ts.border_width);
+		vgui_stroke_frame(cb, vg, t.x, t.y, t.w, t.h, ts.rounding, border, ts.border_width);
 	}
 
 	float pad_x = std::max(0.0f, ts.padding_x);
@@ -13609,10 +13601,7 @@ static void vgui_draw_toasts(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, rounding, bg);
 		if (ts.border_width > 0.0f && border)
 		{
-			float bi = ts.border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, t.x + bi, t.y + bi,
-				t.w - ts.border_width, t.h - ts.border_width, rounding,
-				border, ts.border_width);
+			vgui_stroke_frame(cb, vg, t.x, t.y, t.w, t.h, rounding, border, ts.border_width);
 		}
 
 		float accent_w = 3.0f;
@@ -13642,10 +13631,8 @@ static void vgui_draw_splitter(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_c
 			vgui_widget_color(w, w->bg));
 	if (w->border_width > 0 && w->border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, w->border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	}
 
 	cb->save(vg);
@@ -13697,10 +13684,8 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 			vgui_widget_color(w, w->bg));
 	if (w->border_width > 0 && w->border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, w->border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	}
 
 	float ix = w->abs_x + w->padding[0];
@@ -13827,10 +13812,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		vgui_widget_color(w, bg));
 	if (w->border_width > 0.0f && border)
 	{
-		float bi = w->border_width * 0.5f;
-		vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-			w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-			vgui_widget_color(w, border), w->border_width);
+		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+			w->rounding, vgui_widget_color(w, border), w->border_width);
 	}
 
 	for (int zone = 0; zone < 4; ++zone)
@@ -13910,9 +13893,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			cb->restore(vg);
 		}
 		if (border)
-			vgui_stroke_rect(cb, vg, zx + 0.5f, zy + 0.5f,
-				std::max(0.0f, zw - 1.0f), std::max(0.0f, zh - 1.0f),
-				0.0f, vgui_widget_color(w, border), 1.0f);
+			vgui_stroke_frame(cb, vg, zx, zy, zw, zh, 0.0f,
+				vgui_widget_color(w, border), 1.0f);
 	}
 
 	for (vgui_item_id id : st->float_order)
@@ -13932,9 +13914,7 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_widget_color(w, float_title));
 		if (ds.floating_border_width > 0.0f && float_border)
 		{
-			float bi = ds.floating_border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, fx + bi, fy + bi, fw - ds.floating_border_width,
-				fh - ds.floating_border_width, rounding,
+			vgui_stroke_frame(cb, vg, fx, fy, fw, fh, rounding,
 				vgui_widget_color(w, float_border), ds.floating_border_width);
 		}
 
@@ -13988,8 +13968,7 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 					: vgui_alpha_color(ctx->theme.accent, 0.6f);
 				vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, 6.0f,
 					vgui_alpha_color(ctx->theme.accent, hot ? 0.4f : 0.14f));
-				vgui_stroke_rect(cb, vg, t.x + 1.0f, t.y + 1.0f,
-					std::max(0.0f, t.w - 2.0f), std::max(0.0f, t.h - 2.0f), 6.0f,
+				vgui_stroke_frame(cb, vg, t.x, t.y, t.w, t.h, 6.0f,
 					glow, hot ? 2.0f : 1.0f);
 				const float gw = std::min(48.0f, std::max(0.0f, t.w * 0.62f));
 				const float gh = gw * 0.68f;
@@ -13998,16 +13977,13 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				const float bar = std::max(5.0f, gh * 0.28f);
 				vgui_fill_rect(cb, vg, gx, gy, gw, gh, 3.0f,
 					vgui_alpha_color(ctx->theme.panel_bg, hot ? 0.95f : 0.7f));
-				vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f,
-					std::max(0.0f, gw - 1.0f), std::max(0.0f, gh - 1.0f), 3.0f,
-					glow, 1.5f);
+				vgui_stroke_frame(cb, vg, gx, gy, gw, gh, 3.0f, glow, 1.5f);
 				vgui_fill_rect(cb, vg, gx, gy, gw, bar, 3.0f, glow);
 				continue;
 			}
 			vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, 0.0f,
 				vgui_alpha_color(ctx->theme.accent, hot ? 0.26f : 0.15f));
-			vgui_stroke_rect(cb, vg, t.x + 1.0f, t.y + 1.0f,
-				std::max(0.0f, t.w - 2.0f), std::max(0.0f, t.h - 2.0f), 0.0f,
+			vgui_stroke_frame(cb, vg, t.x, t.y, t.w, t.h, 0.0f,
 				vgui_alpha_color(ctx->theme.accent, hot ? 1.0f : 0.55f),
 				hot ? 2.0f : 1.5f);
 			if (!hot) continue;
@@ -14039,7 +14015,7 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_fill_rect(cb, vg, gx + 3.0f, gy + 3.0f, gw, gh, 4.0f, 0x80000000);
 			vgui_fill_rect(cb, vg, gx, gy, gw, gh, 4.0f,
 				floating ? ctx->theme.accent : ctx->theme.panel_bg);
-			vgui_stroke_rect(cb, vg, gx + 0.5f, gy + 0.5f, gw - 1.0f, gh - 1.0f, 4.0f,
+			vgui_stroke_frame(cb, vg, gx, gy, gw, gh, 4.0f,
 				floating ? 0xE0FFFFFF : ctx->theme.accent, 1.5f);
 			vgui_draw_text(ctx, cb, vg, w, drag->title, gx + ds.tab_padding, gy,
 				gw - ds.tab_padding * 2.0f, gh,
@@ -14081,10 +14057,8 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
 		if (w->border_width > 0 && w->border)
 		{
-			float bi = w->border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-				vgui_widget_color(w, w->border), w->border_width);
+			vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+				w->rounding, vgui_widget_color(w, w->border), w->border_width);
 		}
 
 		cb->save(vg);
@@ -14128,10 +14102,8 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 				vgui_widget_color(w, w->bg));
 		if (w->border_width > 0 && w->border)
 		{
-			float bi = w->border_width * 0.5f;
-			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
-				vgui_widget_color(w, w->border), w->border_width);
+			vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+				w->rounding, vgui_widget_color(w, w->border), w->border_width);
 		}
 		// 焦点环画在自定义内容之下（先画焦点环，再画用户内容）
 		vgui_draw_focus(w, cb, vg);

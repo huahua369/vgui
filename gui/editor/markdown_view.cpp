@@ -2502,7 +2502,7 @@ namespace vgui_editor_kit {
 			ovg_tools::fill_round_rect(cb, vg, ox - 4.0f * s, top,
 				width + 8.0f * s, block.height, 4.0f * s,
 				to_ovg(mix_color(bg, color_of(code_token_kind::text), 0.07f)));
-			ovg_tools::stroke_round_rect(cb, vg, ox - 4.0f * s, top,
+			ovg_tools::stroke_round_rect_frame(cb, vg, ox - 4.0f * s, top,
 				width + 8.0f * s, block.height, 4.0f * s,
 				to_ovg(border), std::max(1.0f, s));
 		}
@@ -2557,7 +2557,7 @@ namespace vgui_editor_kit {
 				ovg_tools::fill_round_rect(cb, vg, mx, my, mw, mh, 4.0f * s,
 					to_ovg(mix_color(bg, color_of(code_token_kind::text),
 						0.05f)));
-				ovg_tools::stroke_round_rect(cb, vg, mx, my, mw, mh, 4.0f * s,
+				ovg_tools::stroke_round_rect_frame(cb, vg, mx, my, mw, mh, 4.0f * s,
 					to_ovg(edge), std::max(1.0f, s));
 				if (surface && mh > block.line_height * 2.0f &&
 					mw > 40.0f * s)
@@ -2803,10 +2803,9 @@ namespace vgui_editor_kit {
 		if (ctx && surface && vgui_get_focus(ctx) == surface)
 		{
 			const vgui_color accent = ui.accent;
-			ovg_tools::stroke_round_rect(cb, vg, abs_x + 1.0f, abs_y + 1.0f,
-				std::max(1.0f, abs_w - 2.0f), std::max(1.0f, abs_h - 2.0f),
+			ovg_tools::stroke_round_rect_inset(cb, vg, abs_x, abs_y, abs_w, abs_h,
 				2.0f * s, to_ovg(with_alpha(accent, 0x66)),
-				std::max(1.0f, s));
+				std::max(1.0f, s), 1.0f);
 		}
 	}
 

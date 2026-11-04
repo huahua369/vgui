@@ -1536,10 +1536,9 @@ namespace vgui_editor_kit {
 				ovg_tools::fill_round_rect(cb, vg, x + screen.x,
 					y + screen.y, w, h, radius, to_ovg(item.fill));
 			if ((item.border >> 24) != 0 && item.border_width > 0.0f)
-				ovg_tools::stroke_round_rect(cb, vg, x + screen.x,
+				ovg_tools::stroke_round_rect_frame(cb, vg, x + screen.x,
 					y + screen.y, w, h, radius, to_ovg(item.border),
-					std::max(kEditorMinBorderPx,
-						item.border_width * view_.zoom));
+					std::max(kEditorMinBorderPx, item.border_width * view_.zoom));
 		}
 		else
 		{

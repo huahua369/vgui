@@ -3522,7 +3522,7 @@ namespace vgui_editor_kit {
 			const float border_px = (float)std::max(
 				(is_selected(node.id) ? 2.0 : 1.0) * zoom,
 				(double)kEditorMinBorderPx);
-			ovg_tools::stroke_round_rect(cb, vg, nx, ny, nw, nh, radius,
+			ovg_tools::stroke_round_rect_frame(cb, vg, nx, ny, nw, nh, radius,
 				to_ovg(with_alpha(is_selected(node.id) ? accent_hover
 					: panel_border, is_selected(node.id) ? 0xFF : 0xAA)),
 				border_px);
@@ -3679,7 +3679,7 @@ namespace vgui_editor_kit {
 		const float scale = ui_scale();
 		ovg_tools::fill_round_rect(cb, vg, mx, my, mw, mh, 4.0f * scale,
 			to_ovg(with_alpha(panel_bg, 0xE8)));
-		ovg_tools::stroke_round_rect(cb, vg, mx, my, mw, mh,
+		ovg_tools::stroke_round_rect_frame(cb, vg, mx, my, mw, mh,
 			4.0f * scale, to_ovg(with_alpha(panel_border, 0xE0)),
 			1.0f * scale);
 

@@ -316,6 +316,12 @@ int main(int argc, char** argv)
 	cb->set_source_color(vg, ORANGE);
 	cb->stroke(vg);
 
+	// ---- 描边同心口径回归（stroke_round_rect_frame） ----
+	// 外轮廓 (430,700,70,31)、r=8、线宽 3：路径内缩 1.5、半径同步减到 6，描边整体落在
+	// 填充内部。旧写法（内缩矩形、半径不变）会让描边向外溢出半个线宽，外侧一列变亮。
+	ot::fill_round_rect(cb, vg, 430, 700, 70, 31, 8, CYAN);
+	ot::stroke_round_rect_frame(cb, vg, 430, 700, 70, 31, 8, WHITE, 3.f);
+
 	// ---- 提交并读回 ----
 	ovg_draw_data_t data = get_draw_list(vg);
 	data.fbo = &fbo;
@@ -476,6 +482,14 @@ int main(int argc, char** argv)
 	// 因此取描边实心处而非几何中心。
 	expect_pixel(360, 699, ORANGE, "oversize rect2 top edge");
 	expect_pixel(299, 715, ORANGE, "oversize rect2 left cap");
+	// 描边同心口径：描边整体落在填充内部，外侧一列必须是背景（旧写法会溢出半线宽）
+	expect_pixel(429, 715, BG, "frame stroke outside left");
+	expect_pixel(431, 715, WHITE, "frame stroke on left edge");
+	expect_pixel(465, 699, BG, "frame stroke outside top");
+	expect_pixel(465, 701, WHITE, "frame stroke on top edge");
+	expect_pixel(465, 731, BG, "frame stroke outside bottom");
+	expect_pixel(465, 715, CYAN, "frame fill inside");
+	expect_pixel(430, 700, BG, "frame corner rounded");
 	// 复合路径裁剪
 	expect_pixel(170, 624, CYAN, "compound clip band");		// r=31 在环带内
 	expect_pixel(170, 655, BG, "compound clip hole");

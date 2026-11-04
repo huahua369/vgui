@@ -2151,7 +2151,7 @@ namespace vgui_editor_kit {
 						ovg_tools::fill_round_rect(cb, vg,
 							cell_x + kCellPaddingX * scale, sy, swatch, swatch,
 							2.0f * scale, to_ovg(color));
-						ovg_tools::stroke_round_rect(cb, vg,
+						ovg_tools::stroke_round_rect_frame(cb, vg,
 							cell_x + kCellPaddingX * scale, sy, swatch, swatch,
 							2.0f * scale, to_ovg(with_alpha(border, 0xCC)), 1.0f);
 						draw_cell_text(widget, cb, vg, text,

@@ -724,9 +724,8 @@ namespace vgui_editor_kit {
 			}
 		}
 
-		ovg_tools::stroke_round_rect(cb, vg, x + 0.5f * scale,
-			y + 0.5f * scale, std::max(1.0f, width - scale),
-			std::max(1.0f, height - scale), 4.0f * scale, border, scale);
+		ovg_tools::stroke_round_rect_frame(cb, vg, x, y, width, height,
+			4.0f * scale, border, scale);
 	}
 
 	void asset_preview::draw_info(ovg_ctx_cb* cb, rvg_t* vg, float x, float y,
@@ -896,7 +895,7 @@ namespace vgui_editor_kit {
 				break;
 			ovg_tools::fill_round_rect(cb, vg, sx, sy, sw, sh,
 				2.0f * scale, to_ovg(color));
-			ovg_tools::stroke_round_rect(cb, vg, sx, sy, sw, sh,
+			ovg_tools::stroke_round_rect_frame(cb, vg, sx, sy, sw, sh,
 				2.0f * scale, with_alpha(0xFFFFFFFFu, 0.35f), scale);
 			sx += sw + 4.0f * scale;
 			++shown;

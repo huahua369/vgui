@@ -2974,9 +2974,9 @@ namespace vgui_editor_kit {
 			vgui_custom_draw_text(grid_, cb, vg, info.type.c_str(), x + 6.0f * scale, y + h - 15.0f * scale, std::max(1.0f, w - 12.0f * scale), 12.0f * scale, theme.disabled ? theme.disabled : text_color_of(theme), 0.5f, 0.5f);
 
 		if (selected)
-			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.accent ? theme.accent : 0xFF409EFF), 1.5f);
+			ovg_tools::stroke_round_rect_frame(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.accent ? theme.accent : 0xFF409EFF), 1.5f);
 		else if (hovered)
-			ovg_tools::stroke_round_rect(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.panel_border), 1.0f);
+			ovg_tools::stroke_round_rect_frame(cb, vg, x, y, w, h, 5.0f * scale, to_ovg(theme.panel_border), 1.0f);
 	}
 
 	void asset_browser::update_hover(float local_x, float local_y)

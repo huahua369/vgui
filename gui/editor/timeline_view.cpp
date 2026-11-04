@@ -2719,7 +2719,7 @@ namespace vgui_editor_kit {
 			ovg_tools::fill_round_rect(cb, vg, bx, by, bw, bh,
 				4.0f * scale, to_ovg(checked ? with_alpha(accent, 0x50)
 					: button_bg));
-			ovg_tools::stroke_round_rect(cb, vg, bx, by, bw, bh,
+			ovg_tools::stroke_round_rect_frame(cb, vg, bx, by, bw, bh,
 				4.0f * scale, to_ovg(checked ? accent : button_border),
 				1.0f);
 			vgui_custom_draw_text(widget, cb, vg, labels[i], bx, by,
