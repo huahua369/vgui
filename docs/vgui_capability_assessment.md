@@ -198,3 +198,17 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - 根因是描边几何而不是裁剪：`vgui_draw_radio` 先按半径 `d/2` 填充实心圆、再按同一半径 `d/2` 描边，描边以路径为中心向内外各扩 `bw/2`，于是圆环外沿到了控件左边再往左 `bw/2` 的位置。单选组所在行 `padding` 为 0，第一个按钮的左边界正好等于这一行的左边界，父容器的裁剪就把外溢的半个线宽连同抗锯齿一起切掉；后面的按钮左侧还有行内空间，所以看不出问题。
 - 修复：描边半径改为 `d/2 - bw/2`（`std::max(0, ...)` 兜底），圆环外沿正好落在控件矩形内。复选框的描边一直是这么做的（`bx + bw/2`、尺寸减 `bw`），现在两者一致。
 - 验证：本机 1080×860 窗口 8x MSAA 截图逐像素比对，三个按钮的左右描边强度都是 85、外侧相邻像素都是纯背景 30，逐行宽度序列完全一致（`5,10,12,14,16,16,18×6,17,16,14,12,10,5`），最左侧按钮不再有平直切口。
+### 7.11 渐变色胶囊按钮端头修复（2026-11-04）
+- 现象：`vgui_demo` 按钮样式卡片里的「pill 胶囊」（`rounding = 20`、高 31）左右两端各挂着一两条游离的 1px 竖线，端头像是被削平；`rounding` 越大越明显，`rounding ≤ height/2` 时完全正常。
+- 根因在 OVG 的圆角取整顺序：`ovg_rounded_rectangle()` 先把半径 `clamp` 到 `min(w,h)/2`、再 `round()`。31px 高的胶囊得到 15.5，`round(15.5) = 16` 又越过了半高，路径自交；填充按非零环绕仍像个胶囊，但描边轮廓退化，两侧各漏出一条竖线。`vgui_draw_button_gradient()` 又把这个未取整的 `rounding` 直接喂给 `rounded_rectangle()`，所以只有渐变色按钮中招。
+- 修复：`vgui_draw_button_gradient()` 里新增 `pill_radius()`，按 `min(floor(r), floor(min(w,h)/2))` 取整，底色填充、渐变填充和两条描边统一使用；填充与描边的半径从此相差不超过 0，端头是真正的半圆，描边 1px 恰好贴在外沿。
+- 验证：离屏 8x MSAA 截图（`vgui_screenshot_test` 临时探针场景，验证后已移除）对比 `rounding = 8 / 14 / 20 / 40` 与高度 `24 / 28 / 30 / 31 / 32 / 33 / 36` 的组合：修复前 `rounding > h/2` 的用例在端头出现 21px 长的游离竖线，修复后全部消失；每个高度的最外侧像素都是 `borderDark`，内外对称，无 1px 亮边。
+
+### 7.12 OVG 圆角半径口径下沉（2026-11-04）
+- 起因：7.11 的修复落在调用侧（`vgui_draw_button_gradient`），OVG 内部「先把半径夹到 `min(w,h)/2`、再 `round()`」的顺序没动，任何绕开 `vgui_tools` 直接调用 `rounded_rectangle()` 的代码仍会踩到同一个半像素倒挂。
+- `ovg/ovg.cpp` 新增 `o_snap_radius(limit, radius)`：先 `round()` 到整数，再用 `floor(limit * 0.5)` 夹住上界。限值是 `x.5` 时 `round` 只会把半径顶出去（15.5 → 16），所以取整必须在前、夹取在后；顺带把 NaN 与负值统一归零，不再把 NaN 点写进路径。
+  - `ovg_rounded_rectangle()` 用该函数替换原来的两行 clamp + round。
+  - `ovg_rounded_rectangle2()` 原本既不夹取也没有 `w/h <= 0` 保护，现在 `rx` 夹到 `floor(w/2)`、`ry` 夹到 `floor(h/2)`，并补上漏掉的 `o_finish_path()`（与 `ovg_rounded_rectangle` 对齐）。
+- `ovg/tools/tools.hpp` 抽出 `round_rect_radius(w,h,r)` / `round_rect_radius2(len,r)`，`fill_round_rect`、`stroke_round_rect`、`fill_round_rect2`、`stroke_round_rect2`、`fill_round_rect_gradient`、`swatch_alpha`、`round_rect4_path` 全部改走同一口径，不再各处各写一份 `std::clamp(r, 0, min(w,h)*0.5f)`。
+- 回归：`ovg_tools_test` 新增 10 条断言（总检查 95 → 105）。用例是 `h = 31`（半高 15.5）、半径给到 20 与 `rx = 20 / ry = 99`，同时覆盖「直接调原生 API」和「走 tools 预取整」两条路径：端头圆弧、上下边、内部留空、圆角切除逐点比对。
+- 说明：椭圆角版本（`rounded_rectangle2`）走 `_elliptic_arc` 折线近似，描边中心线比几何 `x/y` 内收约半像素，断言取实心像素而不是几何中心。

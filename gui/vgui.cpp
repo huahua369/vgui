@@ -11593,6 +11593,15 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 
 	float x = w->abs_x, y = w->abs_y, ww = w->abs_w, hh = w->abs_h;
 
+	// 半径口径：向下取整，且不超过 min(w,h)/2。31px 高的胶囊若按 rounding 原值走，
+	// 半高是 15.5，取整成 16 会越过边界、两端圆弧自交，描边随之退化（端头那两条游离的
+	// 1px 竖线）。ovg_rounded_rectangle 内部已改成同一口径（先取整后夹），这里显式算一遍
+	// 是为了让底色、渐变、两条描边共用同一个半径值。
+	auto pill_radius = [](float rw, float rh, float r)
+	{
+		return std::min(std::floor(r), std::floor(std::min(rw, rh) * 0.5f));
+	};
+
 	// 按下态视觉凹陷：背景整体下移 press_offset，与 text/icon 的按下偏移量对齐
 	float translate_y = pushed ? ctx->style.button.press_offset : 0.0f;
 
@@ -11604,7 +11613,8 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	{
 		float t2 = thickness > 1 ? thickness : 0.0f;
 		cb->set_source_color(vg, vgui_ovg_color(w->bg));
-		cb->rounded_rectangle(vg, x + t2, y + t2, ww - t2 * 2, hh - t2 * 2, rounding);
+		cb->rounded_rectangle(vg, x + t2, y + t2, ww - t2 * 2, hh - t2 * 2,
+			pill_radius(ww - t2 * 2, hh - t2 * 2, rounding));
 		cb->fill(vg);
 	}
 
@@ -11613,7 +11623,7 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	if (pad > 0)
 		cb->translate(vg, pad, pad);
 	vgui_paint_linear_rect(cb, vg,
-		x, y, ww - pad * 2, hh - pad * 2, rounding,
+		x, y, ww - pad * 2, hh - pad * 2, pill_radius(ww - pad * 2, hh - pad * 2, rounding),
 		gradTop, gradBot);
 	if (pad > 0)
 		cb->translate(vg, -pad, -pad);
@@ -11626,14 +11636,17 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	// 上沿高光（不画底部）
 	cb->set_source_color(vg, vgui_ovg_color(borderLight));
 	if (pushed)
-		cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w, rounding);
+		cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w,
+			pill_radius(ww - line_w, hh - line_w, rounding));
 	else
-		cb->rounded_rectangle(vg, x + half, y + half + 1.0f, ww - line_w, hh - line_w - 1.0f, rounding);
+		cb->rounded_rectangle(vg, x + half, y + half + 1.0f, ww - line_w, hh - line_w - 1.0f,
+			pill_radius(ww - line_w, hh - line_w - 1.0f, rounding));
 	cb->stroke(vg);
 
 	// 下沿阴影（完整轮廓）
 	cb->set_source_color(vg, vgui_ovg_color(borderDark));
-	cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w, rounding);
+	cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w,
+		pill_radius(ww - line_w, hh - line_w, rounding));
 	cb->stroke(vg);
 
 	cb->restore(vg);

@@ -299,6 +299,23 @@ int main(int argc, char** argv)
 	ot::fill_rect(cb, vg, 300, 620, 100, 80, MAGENTA);
 	cb->reset_clip(vg, 1);
 
+	// ---- 圆角半径超界回归（直接调 ovg 原生 API，绕开 tools 的半径预取整） ----
+	// h = 31，半高 15.5；半径给 20 远超半高。若 ovg 内部"先夹取后取整"，round(15.5)=16 会
+	// 顶出边界半像素、胶囊端头路径自交：填充靠非零环绕仍成型，描边却丢掉端头圆弧。
+	cb->new_path(vg);
+	cb->rounded_rectangle(vg, 20, 700, 120, 31, 20);
+	cb->set_line_width(vg, 3.f);
+	cb->set_source_color(vg, WHITE);
+	cb->stroke(vg);
+	// 同样超界半径的填充（走 tools 预取整）：四角被切掉，顶边中点仍实心
+	ot::fill_round_rect(cb, vg, 160, 700, 120, 31, 20, CYAN);
+	// 椭圆角版本同样超界，端头同样不能丢
+	cb->new_path(vg);
+	cb->rounded_rectangle2(vg, 300, 700, 120, 31, 20, 99);
+	cb->set_line_width(vg, 3.f);
+	cb->set_source_color(vg, ORANGE);
+	cb->stroke(vg);
+
 	// ---- 提交并读回 ----
 	ovg_draw_data_t data = get_draw_list(vg);
 	data.fbo = &fbo;
@@ -445,6 +462,20 @@ int main(int argc, char** argv)
 	expect_pixel(32, 635, WHITE, "disjoint rect 1");
 	expect_pixel(80, 639, WHITE, "disjoint rect 2");
 	expect_pixel(56, 635, BG, "disjoint gap");
+	// 圆角半径超界（h=31/半高 15.5，r=20）：端头圆弧不能丢
+	expect_pixel(80, 700, WHITE, "oversize r top edge");
+	expect_pixel(80, 730, WHITE, "oversize r bottom edge");
+	expect_pixel(20, 715, WHITE, "oversize r left cap");
+	expect_pixel(140, 715, WHITE, "oversize r right cap");
+	expect_pixel(80, 715, BG, "oversize r hollow");
+	// 填充超界半径：四角仍被切掉，中线实心
+	expect_pixel(220, 700, CYAN, "oversize fill top edge");
+	expect_pixel(220, 715, CYAN, "oversize fill body");
+	expect_pixel(161, 701, BG, "oversize fill corner cut");
+	// 椭圆角超界（rx=20→15, ry=99→15）。椭圆弧走折线近似，中心线比 x/y 略内收半像素，
+	// 因此取描边实心处而非几何中心。
+	expect_pixel(360, 699, ORANGE, "oversize rect2 top edge");
+	expect_pixel(299, 715, ORANGE, "oversize rect2 left cap");
 	// 复合路径裁剪
 	expect_pixel(170, 624, CYAN, "compound clip band");		// r=31 在环带内
 	expect_pixel(170, 655, BG, "compound clip hole");
