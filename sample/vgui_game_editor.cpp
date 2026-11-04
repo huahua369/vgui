@@ -341,6 +341,9 @@ struct float_window
 	vgui_widget* orphan_page = nullptr;// 非游戏视图：保留在主上下文里的真实页面
 	vgui_dock_zone origin_zone = VGUI_DOCK_CENTER; // 合并回主窗口时使用的目标区域
 	bool hit_test_set = false;         // 是否已根据标题条几何设置命中区域
+	int chrome_h = 0;                  // 顶部外框高度（标题条 + Dock 标签条，窗口点）
+	int last_x = 0, last_y = 0;        // 上一帧窗口位置，用于识别“被系统拖动过”
+	int settle = 0;                    // 建窗后头几帧跳过位置抖动判定
 };
 
 struct editor_state
@@ -3850,6 +3853,9 @@ static void merge_floating_back(std::map<vgui_item_id, float_window>::iterator i
 {
 	if (it == g.floaters.end()) return;
 	float_window fw = it->second;       /* 拷贝，随后 erase 会使 it 失效 */
+	printf("merge panel=%llu title=%s -> back into main dock\n",
+		(unsigned long long)fw.panel, fw.title.c_str());
+	fflush(stdout);
 	if (fw.is_gameview)
 		g.gameview.release_texture();    /* 释放浮动上下文里的原生纹理 */
 	add_panel_to_main_dock(fw.is_gameview, fw.orphan_page, fw.origin_zone,
@@ -3902,16 +3908,51 @@ static bool rect_fully_inside_main(float x, float y, float w, float h)
 		x + w <= (float)(mx + mw) && y + h <= (float)(my + mh);
 }
 
-/* 已存在的浮动窗口是否完全落在主窗口矩形内 —— 合并回 Dock 的唯一条件。 */
-static bool window_fully_inside_main(os_window* win)
+/* 浮动窗口是否应该合并回主窗口的 Dock。
+ *
+ * 判定用的是【面板内容区】（窗口去掉顶部外框），不是整个窗口：
+ * 浮动窗口比面板本体多出标题条 + Dock 标签条（为了让无边框窗口能拖动而
+ * 加的外框）。若连外框一起要求“完全在主窗口内”，由于面板内容区本来就
+ * 几乎占满主窗口的高度，窗口总会比可用空间高出一条标题条 —— 用户把窗口
+ * 拖回主窗口时底边永远溢出，于是永远合并不了（这就是合并失效的根因）。
+ *
+ * 满足下面任一条即合并：
+ *   1) 内容区【完全】落在主窗口内（用户要求的严格规则）；
+ *   2) 内容区【中心】落在主窗口内 —— 面板比主窗口还高/宽时规则 1 在几何上
+ *      不可能成立，用中心兜底，否则这种面板永远拖不回去。
+ * 两条都不会在“刚撕出”时误触发：撕出瞬间光标已经拖到窗口外，内容区中心
+ * 也在外面。 */
+static bool floater_should_merge(const float_window& fw)
 {
-	if (!win) return false;
-	int fx = 0, fy = 0, fw = 0, fh = 0;
-	SDL_GetWindowPosition(win->window, &fx, &fy);
-	SDL_GetWindowSize(win->window, &fw, &fh);
-	/* 2px 容差：窗口位置/尺寸取整后可能差 1px，不该因此拒绝合并。 */
-	return rect_fully_inside_main((float)fx + 2.0f, (float)fy + 2.0f,
-		(float)fw - 4.0f, (float)fh - 4.0f);
+	if (!fw.window || !g.main_window) return false;
+	int fx = 0, fy = 0, ww = 0, wh = 0;
+	SDL_GetWindowPosition(fw.window->window, &fx, &fy);
+	SDL_GetWindowSize(fw.window->window, &ww, &wh);
+	int mx = 0, my = 0, mw = 0, mh = 0;
+	SDL_GetWindowPosition(g.main_window->window, &mx, &my);
+	SDL_GetWindowSize(g.main_window->window, &mw, &mh);
+
+	const float t = 2.0f;                        /* 坐标取整容差 */
+	const float cx = (float)fx;
+	const float cy = (float)fy + (float)fw.chrome_h;
+	const float cw = (float)ww;
+	const float ch = (float)(wh - fw.chrome_h);
+	if (cw <= 0.0f || ch <= 0.0f) return false;
+
+	/* 1) 完全在内（某轴比主窗口还大时，该轴退化为“盖住主窗口”）。 */
+	const bool x_ok = cw >= (float)mw - t
+		? cx <= (float)mx + t
+		: (cx >= (float)mx - t && cx + cw <= (float)(mx + mw) + t);
+	const bool y_ok = ch >= (float)mh - t
+		? cy <= (float)my + t
+		: (cy >= (float)my - t && cy + ch <= (float)(my + mh) + t);
+	if (x_ok && y_ok) return true;
+
+	/* 2) 中心在主窗口内（面板大于主窗口时的兜底）。 */
+	const float ccx = cx + cw * 0.5f;
+	const float ccy = cy + ch * 0.5f;
+	return ccx >= (float)mx && ccx <= (float)(mx + mw) &&
+		ccy >= (float)my && ccy <= (float)(my + mh);
 }
 
 /* 拖动中的面板（停靠矩形按拖动位移平移后）是否仍完全在主窗口内。 */
@@ -4136,6 +4177,7 @@ static void tear_off_to_floating(vgui_item_id panel)
 	 * 算不准：先按页面尺寸建窗，布局一次后实测「窗口渲染像素 − 页面渲染
 	 * 像素」得到外框，再把窗口一次性校正成「页面尺寸 = 原停靠尺寸」。
 	 * 这样撕出前后面板内容的大小完全一致，只有多出来的标题条改变外框。 */
+	int chrome_pt_h = 0;   /* 外框高度（窗口点），合并判定要用它换算内容区 */
 	{
 		const float float_ratio = win->pixel_ratio() > 0.0f
 			? win->pixel_ratio() : 1.0f;
@@ -4144,18 +4186,19 @@ static void tear_off_to_floating(vgui_item_id panel)
 		float pw = 0, ph = 0;
 		vgui_widget_get_rect(page, nullptr, nullptr, &pw, &ph);
 		int chrome_w = wpx - (int)std::lround(pw);
-		int chrome_h = hpx - (int)std::lround(ph);
+		int chrome_px_h = hpx - (int)std::lround(ph);
 		if (chrome_w < 0) chrome_w = 0;
-		if (chrome_h < 0) chrome_h = 0;
+		if (chrome_px_h < 0) chrome_px_h = 0;
 		const int want_w = (int)std::lround((float)width * float_ratio) + chrome_w;
-		const int want_h = (int)std::lround((float)height * float_ratio) + chrome_h;
+		const int want_h = (int)std::lround((float)height * float_ratio) + chrome_px_h;
 		width = (int)std::lround((float)want_w / float_ratio);
 		height = (int)std::lround((float)want_h / float_ratio);
+		chrome_pt_h = (int)std::lround((float)chrome_px_h / float_ratio);
 		SDL_SetWindowSize(win->window, width, height);
 		vgui_context_set_size(fui, want_w, want_h);
 		/* 页面左上角仍对准原来的屏幕位置：标题条/标签条从窗口顶部往下占。 */
 		px = (int)std::lround(page_x);
-		py = (int)std::lround(page_y - (float)chrome_h / float_ratio);
+		py = (int)std::lround(page_y - (float)chrome_px_h / float_ratio);
 		SDL_SetWindowPosition(win->window, px, py);
 		/* 抓取点 = 光标相对窗口左上角；之后逐帧跟随即可让画面钉在光标下。 */
 		grab_x = mx - (float)px;
@@ -4182,6 +4225,10 @@ static void tear_off_to_floating(vgui_item_id panel)
 	fw.orphan_page = orphan_page;
 	fw.origin_zone = origin_zone;
 	fw.hit_test_set = false;
+	fw.chrome_h = chrome_pt_h;
+	fw.last_x = px;
+	fw.last_y = py;
+	fw.settle = 8;
 	g.floaters[panel] = fw;
 
 	/* 实时拖出：触发时鼠标还按着 —— 窗口已经落在“面板页面原位置 + 光标
@@ -4332,9 +4379,45 @@ int main()
 			tear_off_to_floating(g.pending_tear_off);
 			g.pending_tear_off = 0;
 		}
+		/* 无头自检：模拟【系统模态拖动】—— 只改窗口位置、不碰鼠标状态，
+		 * 复现“拖动期间主循环不跑帧、松手后只能靠位置变化判断”的路径。 */
+		if (max_frames > 0 && std::getenv("VGUI_SIM_OSDRAG") &&
+			frame == max_frames / 2 && !g.floaters.empty() && g.main_window)
+		{
+			float_window& fw = g.floaters.begin()->second;
+			int wx = 0, wy = 0;
+			SDL_GetWindowPosition(g.main_window->window, &wx, &wy);
+			int drop_y = 20;
+			if (const char* e = std::getenv("VGUI_SIM_MERGE_Y"))
+				drop_y = std::atoi(e);
+			SDL_SetWindowPosition(fw.window->window, wx + 20, wy + drop_y);
+			printf("PROBE os-drag floater to +%d at frame %d\n", drop_y, frame);
+			fflush(stdout);
+		}
+		/* 无头自检：模拟「把浮动窗口拖回主窗口内 → 松手」应合并回主 Dock。
+		 * 把浮动窗口移到主窗口内部（内容区完整落在主窗口里），并伪造
+		 * “上一帧鼠标还按着”，让本帧的松手分支真正跑一遍合并判定。 */
+		if (max_frames > 0 && std::getenv("VGUI_SIM_MERGE_DRAG") &&
+			frame == max_frames / 2 && !g.floaters.empty() && g.main_window)
+		{
+			float_window& fw = g.floaters.begin()->second;
+			int wx = 0, wy = 0;
+			SDL_GetWindowPosition(g.main_window->window, &wx, &wy);
+			/* 落点可用 VGUI_SIM_MERGE_Y 指定（相对主窗口顶部的偏移），
+			 * 用来验证“随手丢在中间”这类不完全在窗口内的落点。 */
+			int drop_y = 20;
+			if (const char* e = std::getenv("VGUI_SIM_MERGE_Y"))
+				drop_y = std::atoi(e);
+			SDL_SetWindowPosition(fw.window->window, wx + 20, wy + drop_y);
+			printf("PROBE drag floater back to +%d at frame %d "
+				"(should_merge=%d)\n", drop_y, frame,
+				floater_should_merge(fw) ? 1 : 0);
+			fflush(stdout);
+			g.float_drag_was_down = true;   /* 伪造“上一帧按住拖动” */
+		}
 		/* 实时拖出：面板已撕成浮动窗口，按住鼠标期间让窗口逐帧跟随光标；
-		 * 光标拖回主窗口（留 24px 余量防误触）→ 立即合并回主 Dock；
-		 * 松开 → 光标在主窗口内则合并，否则浮动窗口停在原地。 */
+		 * 面板内容区回到主窗口内 → 立即合并回主 Dock；松开时同样判一次，
+		 * 不满足则浮动窗口停在原地。 */
 		if (g.live_drag)
 		{
 			float mx = 0, my = 0;
@@ -4352,9 +4435,9 @@ int main()
 					SDL_SetWindowPosition(it->second.window->window,
 						(int)std::lround(mx - g.live_offx),
 						(int)std::lround(my - g.live_offy));
-					/* 只有【整个浮动窗口】都落在主窗口内才合并回 Dock；
-					 * 只要还有一部分压在主窗口外，就继续浮动。 */
-					if (window_fully_inside_main(it->second.window))
+					/* 面板内容区回到主窗口内 → 合并回 Dock；还在窗口外就
+					 * 继续浮动（跟随光标）。 */
+					if (floater_should_merge(it->second))
 					{
 						g.live_drag = false;
 						merge_floating_back(it);
@@ -4363,7 +4446,7 @@ int main()
 				else
 				{
 					g.live_drag = false;
-					if (window_fully_inside_main(it->second.window))
+					if (floater_should_merge(it->second))
 						merge_floating_back(it);
 				}
 			}
@@ -4430,14 +4513,47 @@ int main()
 				}
 				if (fw.window && released)
 				{
-					/* 松手（例如用标题条拖动浮动窗口）时同样只有【整个浮动
-					 * 窗口完全落在主窗口内】才合并回 Dock。 */
-					if (window_fully_inside_main(fw.window))
+					/* 松手（用标题条把浮动窗口拖回主窗口）时判一次：面板
+					 * 内容区回到主窗口内就合并回 Dock。 */
+					if (floater_should_merge(fw))
 					{
 						merge_floating_back(it++);
 						continue;
 					}
 				}
+				/* 系统模态拖动结束的兜底判定。
+				 *
+				 * 无边框窗口的标题条拖动由 SDL 命中测试交给系统处理，Windows
+				 * 会进入【系统模态移动循环】：在 DispatchMessage 内部一直
+				 * 循环到松手，期间我们的主循环完全不跑帧。等它返回时鼠标
+				 * 已经松开，“按下 → 松开”的边沿根本观察不到（上一帧看到的
+				 * 还是按下之前的松开状态），所以只靠 released 永远判不出
+				 * “用户把窗口拖回来了”。
+				 *
+				 * 这里改用【窗口位置被外部改动】作为拖动结束的信号：模态拖动
+				 * 期间我们不动窗口，恢复后位置必然和上一帧记录的不同。
+				 * 6px 阈值过滤像素取整误差；settle 让建窗头几帧跳过 —— 那时
+				 * SDL/系统可能还在校正窗口位置，很容易把抖动误判成拖动结束。 */
+				if (fw.window && !down && !released)
+				{
+					int fx = 0, fy = 0;
+					SDL_GetWindowPosition(fw.window->window, &fx, &fy);
+					const int moved = std::abs(fx - fw.last_x) +
+						std::abs(fy - fw.last_y);
+					fw.last_x = fx;
+					fw.last_y = fy;
+					if (fw.settle <= 0 && moved > 6 && floater_should_merge(fw))
+					{
+						merge_floating_back(it++);
+						continue;
+					}
+				}
+				else if (fw.window)
+				{
+					SDL_GetWindowPosition(fw.window->window,
+						&fw.last_x, &fw.last_y);
+				}
+				if (fw.settle > 0) --fw.settle;
 				++it;
 			}
 			g.float_drag_was_down = down;
