@@ -241,3 +241,11 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **新增示例与测试**：`sample/vgui_multiwindow_demo.cpp`（两个真实 GPU 窗口各一个 Dock，`VGUI_MW_FRAMES=N` 有界自检，21 条断言，GPU 不可用返回 77；因依赖显示设备未注册 ctest）；`vgui_model_test::test_dock_multi_context()` 7 条常驻断言；`vgui_editor_kit_test::test_layout_set_multiwindow()`（v8 往返 / 旧版导入 / 畸形拒绝 / 文件 IO）。README 新增「多窗口宿主」章节。
 - **实机验证**：双窗口 90 帧自检 21/21 PASS，两窗口绘制命令 71 vs 49（缓冲与内容独立），关闭副窗口后主窗口继续渲染、Dock 状态完好。全量构建通过；model 908 / editor_kit / ovg_tools / c_api / chart / runtime_embed / edit 全 PASS；ctest 3/3；**截图基线零变化**。
 - **仍缺**：B（浮动面板变真 OS 窗口）与 C（跨窗口拖放停靠）未实施，core 的 5 条硬阻塞全在；`docking_mgr::viewports_enabled` 仍未接线（C 才需要）；文件对话框父窗口仍取全局焦点（A 阶段够用）。
+
+### 7.16 游戏编辑器示例默认多窗口（2026-11-04）
+- `sample/vgui_game_editor.cpp` 从「单窗口主循环」改为默认两窗口：主窗口仍是完整编辑器，副窗口 760×470 挂独立 `vgui_context` + 独立 `rvg` + 自己的 `VGUI_DOCK`（`GAME VIEW` / `STATS`）。帧循环改走 `multiwindow_host`（`begin_frame` → 各自的编辑/3D 逻辑 → `draw_all` → `end_frame`），**一帧一次提交**。
+- 副窗口画面来自**专属的第三个 `phase0_view`**（按面板像素尺寸重建附件），不是放大主窗口 363×148 的预览条；对应 `g.gameview_view`，窗口关闭时 `phase0_renderer_destroy_view()`。
+- 原生纹理按 `vgui_context` 注册：MSAA 切换会重建 vgpu 上下文与所有窗口 FBO，四个纹理（主视口 / 预览 / 深度 / 副窗口）都先 `release()`，本帧稍后 `sync()` 按新句柄重建。
+- 后端补了一条关闭请求：`app_mgr::get_event()` 收到 `SDL_EVENT_WINDOW_CLOSE_REQUESTED` 时把 `os_window::pending_close` 置位（此前是死字段），宿主据此销毁窗口；单窗口宿主不受影响（最后一个窗口关闭时 SDL 仍发 QUIT）。
+- 布局陷阱：`vgui_context` 根控件默认 `ABSOLUTE`，`grow` 不生效，副窗口 Dock 撑不满窗口。需先把根改成 `COLUMN` + `align_items = STRETCH`（与 `editor_shell` 一致）。
+- 自检：`VGUI_EDITOR_FRAMES=120` 跑完 120 帧，打印两窗口绘制命令数（477 / 57）、中途切 MSAA 后副窗口纹理 `bound`、副窗口关闭后主窗口继续渲染并正常退出；`VGUI_EDITOR_SINGLE_WINDOW=1` 退回单窗口。全量构建 + 7 个测试套件 + ctest 3/3 全通过，**截图基线零变化**。

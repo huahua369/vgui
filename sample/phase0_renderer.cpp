@@ -226,7 +226,15 @@ SDL_GPUTexture* create_texture(SDL_GPUDevice* device, SDL_GPUTextureFormat forma
 	info.layer_count_or_depth = 1;
 	info.num_levels = 1;
 	info.sample_count = samples;
-	return SDL_CreateGPUTexture(device, &info);
+	SDL_GPUTexture* tex = SDL_CreateGPUTexture(device, &info);
+	if (tex)
+	{
+		char name[64];
+		snprintf(name, sizeof(name), "phase0_tex_%dx%d_s%d",
+			width, height, sample_count_to_int(samples));
+		SDL_SetGPUTextureName(device, tex, name);
+	}
+	return tex;
 }
 
 } // namespace
@@ -1177,6 +1185,8 @@ phase0_renderer* phase0_renderer_create(SDL_GPUDevice* device)
 	texture_info.num_levels = 1;
 	texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
 	r->white_texture = SDL_CreateGPUTexture(device, &texture_info);
+	if (r->white_texture)
+		SDL_SetGPUTextureName(device, r->white_texture, "phase0_white");
 	if (!r->white_texture || !upload_white_texture(device, r->white_texture))
 	{
 		phase0_renderer_destroy(r);

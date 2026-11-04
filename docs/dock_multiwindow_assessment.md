@@ -280,7 +280,7 @@ SELFTEST PASS (21 pass, 0 fail)
 - **B / C 目标**：`VGUI_DOCK` 模型未动，浮动面板仍是窗口内自绘浮层，面板仍不能跨窗口拖动。§4 的 5 条硬阻塞全部仍在。
 - **文件对话框父窗口**：重新评估后判定 A 阶段无需改动。现有 `sdl3_dialog_parent()`（`backends/vgui_sdl3_dialog.cpp:76-83`）取 `SDL_GetKeyboardFocus()` / `SDL_GetMouseFocus()`，多窗口下通常就是正确的模态父窗口；要精确指定必须先把窗口句柄引入 `vgui.h` 的 provider 层，那属于 B 阶段。
 - **`docking_mgr::viewports_enabled`**：仍默认关闭、仍无调用方。它是「鼠标坐标转屏幕全局坐标」的开关，只有 C 目标（跨窗口拖拽命中测试）才需要，A 不涉及。
-- **现有单窗口宿主**：`vgui_demo.cpp` / `vgui_game_editor.cpp` 仍是单窗口主循环，未强行改成遍历 `windows()`；新的多窗口模式由 `multiwindow_host` 提供，宿主按需采用。
+- **现有单窗口宿主**：`vgui_demo.cpp` 仍是单窗口主循环；`vgui_game_editor.cpp` 已改为**默认两窗口**（见 §11.7），但宿主仍是各自手写的循环，没有引入统一框架。
 
 ### 11.6 复现命令
 
@@ -291,3 +291,38 @@ VGUI_MW_FRAMES=90 ./vgui_multiwindow_demo.exe   # 21 条自检
 ./vgui_model_test.exe | grep "dock:"             # 7 条多 context 断言
 ./vgui_editor_kit_test.exe                       # v8 布局分组
 ```
+
+### 11.7 目标 A 的第二个宿主：`vgui_game_editor` 默认两窗口（2026-11-04）
+
+在真实的编辑器宿主上落地，而不是只停留在 demo。`sample/vgui_game_editor.cpp` 现在默认开两个 OS 窗口。
+
+| 项 | 内容 |
+|---|---|
+| 主窗口 | 原有完整编辑器（1280×800，`editor_shell` 一套布局不动） |
+| 副窗口 | 760×470，独立 `vgui_context` + 独立 `rvg` + 自己的 `VGUI_DOCK`（`GAME VIEW` / `STATS` 两块） |
+| 画面来源 | 副窗口**专属**的第三个 `phase0_view`，按面板像素尺寸重建附件；不是把主窗口 363×148 的预览条放大（放大会糊） |
+| 纹理 | `vgui_sdl3_texture_create_native()` 在副窗口上下文注册一份；MSAA 重建 vgpu 上下文时先 `release()`、重建后 `sync()` 自动按新句柄再注册 |
+| 统计 | 每帧刷新 FPS / 帧时 / MSAA / 对象数 / 窗口数 / 编辑器与预览尺寸；文本不变时不调用 `set_text`，避免逐帧重排 |
+
+关闭语义也要改：副窗口关闭时编辑器继续跑。SDL 只在**最后一个**窗口关闭时发 `SDL_EVENT_QUIT`，所以在此之前 `WINDOW_CLOSE_REQUESTED` 没人消费。后端在 `app_mgr::get_event()` 的 switch 里新增一条：把该窗口的 `os_window::pending_close` 置位（这个字段此前是死字段），由宿主决定销毁。单窗口宿主行为不变——最后一个窗口关闭时 SDL 仍会发 QUIT。
+
+另外修掉一个布局陷阱：`vgui_context` 的根控件默认是 `VGUI_LAYOUT_ABSOLUTE`，直接往里加 `Dock` 并设置 `grow` 不会生效，副窗口的 Dock 只占了内容所需的高度、下面留一大片黑。必须像 `editor_shell` 那样先把根改成 `COLUMN` + `align_items = STRETCH`。
+
+自检（`VGUI_EDITOR_FRAMES=120`）：
+
+```
+windows=2 gameview=on
+INFO draw commands: editor=477 gameview=57
+INFO gameview: dock=1 panels=2 texture=bound
+PROBE request MSAA 2x at frame 40
+INFO after MSAA rebuild: gameview texture=bound
+PROBE pushed close request for the game view window
+frames=120 windows_at_exit=1 gameview_closed=1
+```
+
+即：两窗口同时出图（绘制命令 477 / 57，各自缓冲）、MSAA 切换后两套上下文的纹理都重新注册成功、关闭副窗口后主窗口继续渲染 40 帧并正常退出。单窗口回退用 `VGUI_EDITOR_SINGLE_WINDOW=1`，仍走同一条帧循环。
+
+落地时又踩到两个小坑，记在这里免得下次重犯：
+
+- **`app_mgr::create2()` 的 x/y 只对 popup/tooltip 生效**，普通窗口走 `SDL_CreateWindow(title, w, h, ...)`，位置由 WM 叠放决定。要指定位置必须自己补一句 `SDL_SetWindowPosition(win->window, x, y)`（`vgui_multiwindow_demo.cpp` 里本来就这么写）。
+- **窗口默认位置**：先算主窗口右侧剩余宽度（`SDL_GetDisplayUsableBounds`），够 420px 就贴右侧、不够就先收窄到剩余宽度；连 420 都没有（主窗口很宽时常见）就贴屏幕右下角，避免盖住主窗口上方的 3D 视口。实测本机 1920×1080、主窗口 1280×800 走的是右下角分支，副窗口落在 `(1152, 554)`。

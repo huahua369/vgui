@@ -427,6 +427,20 @@ struct vgui_dock_state
 	void* activate_user = nullptr;
 	vgui_item_fn change_fn = nullptr;
 	void* change_user = nullptr;
+	/* Tear-off: fired when a tab is dragged out of the dock's window and
+	 * released.  The host turns the panel into its own OS window.  `lx`/`ly`
+	 * are the drop point in the dock's local coordinates so the host can place
+	 * the new window.  The host must NOT create windows inside this callback
+	 * -- it should only queue the request and act after the frame. */
+	vgui_dock_tear_off_fn tear_off_fn = nullptr;
+	void* tear_off_user = nullptr;
+	/* Live tear-off: fired the moment a tab drag crosses out of the window
+	 * (canvas) bounds while the button is still down, so the host can turn
+	 * the panel into a borderless floating OS window right away and have it
+	 * follow the cursor.  Queue only -- create windows after the frame. */
+	vgui_dock_tear_off_fn drag_out_fn = nullptr;
+	void* drag_out_user = nullptr;
+	int drag_out_fired = 0;		// edge latch: fire on the leave transition
 };
 
 struct vgui_image_state
@@ -2644,6 +2658,16 @@ static void vgui_dock_notify_change(vgui_widget* w)
 	vgui_item_fn fn = st->change_fn;
 	void* user = st->change_user;
 	if (fn) fn(w, 0, user);
+}
+
+/* Fired from the mouse-up handler when a tab drag ends outside the dock's
+ * window.  `lx`/`ly` are the drop point in the dock's local coordinates. */
+static void vgui_dock_notify_tear_off(vgui_widget* w, vgui_item_id item,
+	float lx, float ly)
+{
+	vgui_dock_state* st = vgui_dock_of(w);
+	if (!st || !st->tear_off_fn) return;
+	st->tear_off_fn(w, item, lx, ly, st->tear_off_user);
 }
 
 static bool vgui_dock_alive(vgui_widget* w)
@@ -9723,6 +9747,27 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 			{
 				ds->drag_x = x;
 				ds->drag_y = y;
+				/* Live tear-off: the pointer just left the window while a tab
+				 * drag is in progress.  Fire once on the leave transition so
+				 * the host can spawn the floating OS window immediately and
+				 * let it follow the cursor. */
+				if (ds->drag_out_fn)
+				{
+					const bool outside_win =
+						x < 0.0f || y < 0.0f ||
+						(ctx->width > 0 && x >= (float)ctx->width) ||
+						(ctx->height > 0 && y >= (float)ctx->height);
+					if (outside_win && !ds->drag_out_fired)
+					{
+						ds->drag_out_fired = 1;
+						ds->drag_out_fn(a, ds->drag_panel, x, y,
+							ds->drag_out_user);
+					}
+					else if (!outside_win)
+					{
+						ds->drag_out_fired = 0;
+					}
+				}
 				ds->drop_zone = -1;
 				ds->drop_index = -1;
 				ds->drop_floating = 0;
@@ -10024,6 +10069,7 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			st->close_pressed = 0;
 			st->drag_mode = 0;
 			st->drag_panel = 0;
+			st->drag_out_fired = 0;
 			st->drop_zone = -1;
 			st->drop_index = -1;
 			st->drop_floating = 0;
@@ -10449,7 +10495,15 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		}
 		else if (drag_mode == 2 && drag_panel)
 		{
-			if (drop_floating)
+			/* Dropped outside the dock's window: tear the panel off into its
+			 * own OS window.  The host only queues this; it creates the window
+			 * later, after the frame, so we must not also float/move it here. */
+			if (lx < 0.0f || ly < 0.0f ||
+				lx > target->abs_w || ly > target->abs_h)
+			{
+				vgui_dock_notify_tear_off(target, drag_panel, lx, ly);
+			}
+			else if (drop_floating)
 			{
 				vgui_dock_float_internal(target, drag_panel, drag_x, drag_y, 0.0f, 0.0f,
 					true, true);
@@ -17443,6 +17497,45 @@ extern "C" {
 		if (!st) return;
 		st->change_fn = fn;
 		st->change_user = user;
+	}
+
+	void vgui_dock_on_tear_off(vgui_widget* dock, vgui_dock_tear_off_fn fn, void* user)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		st->tear_off_fn = fn;
+		st->tear_off_user = user;
+	}
+
+	void vgui_dock_on_drag_out(vgui_widget* dock, vgui_dock_tear_off_fn fn, void* user)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		st->drag_out_fn = fn;
+		st->drag_out_user = user;
+	}
+
+	vgui_item_id vgui_dock_dragging(vgui_widget* dock)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		return (st && st->drag_mode == 2) ? st->drag_panel : 0;
+	}
+
+	void vgui_dock_end_drag(vgui_widget* dock)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		st->drag_mode = 0;
+		st->drag_panel = 0;
+		st->drag_out_fired = 0;
+		st->drop_zone = -1;
+		st->drop_index = -1;
+		st->drop_floating = 0;
+		st->drop_target_count = 0;
+		st->drop_target = -1;
+		st->pressed = 0;
+		st->close_pressed = 0;
+		vgui_mark_dirty(dock);
 	}
 
 	void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user)

@@ -297,7 +297,7 @@ namespace {
 // 纹理与采样器
 // ---------------------------------------------------------------------------
 
-SDL_GPUSampler* create_sampler(SDL_GPUDevice* device)
+	SDL_GPUSampler* create_sampler(SDL_GPUDevice* device)
 {
 	SDL_GPUSamplerCreateInfo info = {};
 	info.min_filter = SDL_GPU_FILTER_NEAREST;
@@ -307,7 +307,8 @@ SDL_GPUSampler* create_sampler(SDL_GPUDevice* device)
 	info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
 	info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
 	info.max_anisotropy = 1.0f;
-	return SDL_CreateGPUSampler(device, &info);
+	SDL_GPUSampler* s = SDL_CreateGPUSampler(device, &info);
+	return s;
 }
 
 // 原生纹理默认采样器：linear + clamp。CPU 纹理保持 nearest，避免改变
@@ -322,7 +323,8 @@ SDL_GPUSampler* create_sampler_linear(SDL_GPUDevice* device)
 	info.address_mode_v = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
 	info.address_mode_w = SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
 	info.max_anisotropy = 1.0f;
-	return SDL_CreateGPUSampler(device, &info);
+	SDL_GPUSampler* s = SDL_CreateGPUSampler(device, &info);
+	return s;
 }
 
 vgpu_texture_t* create_texture(vgpu_device_t* device, int width, int height,
@@ -353,6 +355,12 @@ vgpu_texture_t* create_texture(vgpu_device_t* device, int width, int height,
 		SDL_LogError(SDL_LOG_CATEGORY_GPU, "vgui: failed to create texture: %s", SDL_GetError());
 		delete texture;
 		return nullptr;
+	}
+	{
+		char tex_name[64];
+		snprintf(tex_name, sizeof(tex_name), "vgpu_tex_%dx%d_s%d",
+			width, height, (int)samples);
+		SDL_SetGPUTextureName(device->gpu_device, texture->texture, tex_name);
 	}
 
 	if (samples == SDL_GPU_SAMPLECOUNT_1 && (usage & SDL_GPU_TEXTUREUSAGE_SAMPLER)) {
@@ -654,6 +662,16 @@ void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 					id = ctx->next_image_id++;
 					if (id == 0)
 						id = ctx->next_image_id++;
+				}
+				else if (id >= ctx->next_image_id)
+				{
+					/* The descriptor re-uses an id that lives in the ovg state
+					 * (e.g. the shared font atlas) rather than one handed out
+					 * by the counter.  Advance the counter past it, otherwise
+					 * a later fresh image / native texture gets the same id
+					 * and silently overwrites this entry in ctx->textures,
+					 * leaking the overwritten GPU texture. */
+					ctx->next_image_id = id + 1;
 				}
 				texture = create_texture(ctx->device,
 					static_cast<int>(desc->width), static_cast<int>(desc->height),
@@ -1388,11 +1406,17 @@ vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* win
 			static_cast<int>(fbo.width), static_cast<int>(fbo.height),
 			ctx->color_format,
 			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+		if (fbo.color_tex && fbo.color_tex->texture)
+			SDL_SetGPUTextureName(ctx->device->gpu_device, fbo.color_tex->texture,
+				"fbo_color_offscreen");
 	}
 	if (ctx->samples != SDL_GPU_SAMPLECOUNT_1) {
 		fbo.color_msaa_tex = create_texture(ctx->device,
 			static_cast<int>(fbo.width), static_cast<int>(fbo.height),
 			ctx->color_format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, ctx->samples);
+		if (fbo.color_msaa_tex && fbo.color_msaa_tex->texture)
+			SDL_SetGPUTextureName(ctx->device->gpu_device, fbo.color_msaa_tex->texture,
+				"fbo_color_msaa");
 	}
 	return fbo;
 }

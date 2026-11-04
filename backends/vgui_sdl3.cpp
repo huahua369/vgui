@@ -193,7 +193,18 @@ namespace pce {
 
 }//!pce
 
-SDL_HitTestResult HitTestCallback2(SDL_Window* win, const SDL_Point* area, void* data);
+/* Borderless-window drag handle.  `data` points at the owning os_window's
+ * hit_top (window-points); the top strip is DRAGGABLE, the rest is NORMAL. */
+SDL_HitTestResult HitTestCallback2(SDL_Window* win, const SDL_Point* area, void* data)
+{
+	(void)win;
+	const int* top = static_cast<const int*>(data);
+	if (top && area && area->y < *top)
+		return SDL_HITTEST_DRAGGABLE;
+	return SDL_HITTEST_NORMAL;
+}
+
+
 
 
 
@@ -421,6 +432,12 @@ void os_window::show_cursor()
 void os_window::hide_cursor()
 {
 	SDL_HideCursor();
+}
+void os_window::set_hit_test(int top_px)
+{
+	hit_top = top_px > 0 ? top_px : 0;
+	if (window)
+		SDL_SetWindowHitTest(window, &HitTestCallback2, &hit_top);
 }
 
 
@@ -657,7 +674,9 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 	}
 	else {
 		SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "1");
-		window = SDL_CreateWindow(title, w, h, SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY);
+		/* Use the flags resolved by get_flags() so ef_borderless / ef_resizable
+		 * are honoured for regular windows too (not just popups/tooltips). */
+		window = SDL_CreateWindow(title, w, h, flags);
 	}
 	os_window* p = 0;
 	if (window)
@@ -666,6 +685,15 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		win->window = window;
 		p = win.get();
 		pce::set_property(window, "osw.ptr", p);
+		if (iflags & ef_borderless)
+		{
+			/* Borderless windows have no OS title bar, so make the top strip of
+			 * the window a drag handle through SDL hit-testing.  The host sets
+			 * the real strip height via os_window::set_hit_test() once it knows
+			 * its title-bar geometry; until then the whole window is draggable. */
+			p->hit_top = 0;
+			SDL_SetWindowHitTest(window, &HitTestCallback2, &p->hit_top);
+		}
 		win->id = SDL_GetWindowID(window);
 		win->viewport = new gui_viewport();
 		win->viewport->io.mks = &win->viewport->key_state;
@@ -1346,6 +1374,17 @@ int app_mgr::get_event()
 		{
 			WantUpdateMonitors = true;
 			UpdateMonitors();
+			break;
+		}
+		case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+		{
+			/* The backend does not own window lifetime: it only records the
+			 * request on the os_window so a multi-window host can destroy the
+			 * window and drop its slot.  Single-window hosts are unaffected --
+			 * SDL still emits SDL_EVENT_QUIT when the last window closes. */
+			os_window* win = find(e.window.windowID);
+			if (win)
+				win->pending_close = true;
 			break;
 		}
 		}

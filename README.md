@@ -316,6 +316,16 @@ editor_layout_set_save_file("user/layout.json", set);
 
 **当前边界**：多窗口并存（每窗口一个 Dock）已支持；Dock 的浮动面板仍是主窗口内自绘的浮层，不是独立 OS 窗口，面板也不能跨窗口拖动。详见 `docs/dock_multiwindow_assessment.md`。
 
+`sample/vgui_game_editor.cpp` 默认就是两窗口：主窗口是完整编辑器，副窗口挂自己的 `vgui_context` + `VGUI_DOCK`（`GAME VIEW` / `STATS` 两个面板），画面来自副窗口专属的离屏 3D 视图（不是把主窗口的缩略图放大）。
+
+```bash
+./vgui_game_editor.exe                          # 默认两窗口
+VGUI_EDITOR_SINGLE_WINDOW=1 ./vgui_game_editor.exe   # 退回单窗口
+VGUI_EDITOR_FRAMES=120 ./vgui_game_editor.exe        # 自检：120 帧后退出
+```
+
+`VGUI_EDITOR_FRAMES` 模式会在中途切一次 MSAA、并向副窗口投递一次关闭请求，用来验证「两个窗口的 FBO 与两套上下文的原生纹理都能跟着重建」以及「关掉副窗口后主窗口继续渲染」。
+
 ### 文档生命周期（S08）
 
 File 菜单和快捷键通过 `document_handlers` 转发到宿主文档模型，不需要逐个替换命令：

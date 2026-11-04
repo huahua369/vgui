@@ -23,6 +23,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -39,6 +40,7 @@
 
 #include "pch.h"		// glm 等基础类型(ovg_c.h 依赖)
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
+#include <vgui/backend/vgui_multiwindow.h>	// 多窗口帧循环（每窗口独立 rvg / 一帧一次提交）
 #include <vgui/vgui.h>
 #include <vgui/editor/vgui_editor_kit.h>
 #include "ovg_main.h"
@@ -237,6 +239,110 @@ struct native_view_texture
 	}
 };
 
+/* 多窗口（docs/dock_multiwindow_assessment.md 目标 A）：副窗口是一个独立的
+ * OS 窗口 + 独立 vgui_context + 独立 rvg 画布，里面挂一棵自己的 Dock。它显示
+ * 预览相机（game view）的实时图像和一行统计。
+ *
+ * 与主窗口共享的只有 GPU 纹理句柄本身：预览相机的颜色附件按 vgui_context 注册
+ * 一份原生纹理，所以 MSAA 重建 vgpu 上下文后必须先 release_texture()，等重建
+ * 完成再按新句柄 create 一遍。 */
+struct gameview_window
+{
+	os_window* window = nullptr;
+	vgui_context* ui = nullptr;
+	/* 副窗口自己的 Dock，仅用于自检/诊断计数。 */
+	vgui_widget* dock = nullptr;
+	/* 预览图像：VGUI_CUSTOM 自绘，直接用 vgui_custom_draw_texture()。
+	 * 没有它就不存在「纹理没绑定成功」这种中间态。 */
+	vgui_widget* surface = nullptr;
+	vgui_widget* line1 = nullptr;
+	vgui_widget* line2 = nullptr;
+	vgui_texture* texture = nullptr;
+	SDL_GPUTexture* source = nullptr;
+	int width = 0;
+	int height = 0;
+	std::string stats1;
+	std::string stats2;
+
+	void release_texture()
+	{
+		if (texture)
+		{
+			vgui_texture_destroy(texture);
+			texture = nullptr;
+		}
+		source = nullptr;
+		width = 0;
+		height = 0;
+	}
+
+	/* Mirrors a phase0 attachment into this window's context.  Returns true
+	 * when the texture was (re)created or rebound. */
+	bool sync_texture(vgui_context* owner, vgpu_ctx_t* gpu_ctx,
+		SDL_GPUTexture* next_source, int next_width, int next_height)
+	{
+		if (!owner || !gpu_ctx || !next_source || next_width <= 0 ||
+			next_height <= 0)
+			return false;
+		if (texture && source == next_source && width == next_width &&
+			height == next_height)
+			return false;
+
+		if (!texture)
+		{
+			texture = vgui_sdl3_texture_create_native(owner, gpu_ctx,
+				next_source, next_width, next_height,
+				VGUI_TEXTURE_FORMAT_RGBA8);
+			if (!texture)
+				return false;
+		}
+		else if (!vgui_sdl3_texture_update_native(texture, gpu_ctx,
+			next_source, next_width, next_height,
+			VGUI_TEXTURE_FORMAT_RGBA8))
+		{
+			return false;
+		}
+
+		source = next_source;
+		width = next_width;
+		height = next_height;
+		return true;
+	}
+
+	void set_stats(const std::string& a, const std::string& b)
+	{
+		if (a != stats1)
+		{
+			stats1 = a;
+			if (line1)
+				vgui_widget_set_text(line1, stats1.c_str());
+		}
+		if (b != stats2)
+		{
+			stats2 = b;
+			if (line2)
+				vgui_widget_set_text(line2, stats2.c_str());
+		}
+	}
+};
+
+/* 一个被拖出主窗口、以无边框浮动 OS 窗口承载的面板。它拥有自己的
+ * vgui_context / Dock，并把面板内容重建进去。key 是主窗口 Dock 里的面板 id。 */
+struct float_window
+{
+	os_window* window = nullptr;
+	vgui_context* ui = nullptr;
+	vgui_widget* dock = nullptr;       // 浮动窗口内的 Dock
+	vgui_widget* title_bar = nullptr;  // 顶部拖动条（也是 SDL 命中区域）
+	vgui_item_id panel = 0;            // 主窗口 Dock 里的面板 id（= map key）
+	std::string id;                    // 稳定字符串 id，例如 "gameview"
+	std::string title;                 // 面板标题
+	bool is_gameview = false;          // true: 游戏视图（真实 3D 预览重建）
+	vgui_widget* orphan_page = nullptr;// 非游戏视图：保留在主上下文里的真实页面
+	vgui_dock_zone origin_zone = VGUI_DOCK_CENTER; // 合并回主窗口时使用的目标区域
+	bool hit_test_set = false;         // 是否已根据标题条几何设置命中区域
+};
+
 struct editor_state
 {
 	game_scene scene;
@@ -262,9 +368,37 @@ struct editor_state
 	phase0_renderer* renderer = nullptr;
 	phase0_view* main_view = nullptr;
 	phase0_view* preview_view = nullptr;
+	/* 多窗口：副窗口 GAME VIEW 的专属离屏视图（窗口关闭时销毁）。 */
+	phase0_view* gameview_view = nullptr;
 	native_view_texture viewport_texture;
 	native_view_texture preview_texture;
 	native_view_texture depth_texture;
+	/* 面板拖出/合并：游戏视图默认合并在主窗口的 Dock 内；把它拖出主窗口会
+	 * 生成无边框浮动窗口渲染它，拖回主窗口（或关掉浮动窗口）自动合并回主
+	 * 窗口的 Dock。window/ui 为空表示当前合并在主窗口内。 */
+	gameview_window gameview;
+	/* gameview 在主窗口 Dock 中的面板 id（由 vgui_dock_add 返回）。 */
+	vgui_item_id gameview_panel = 0;
+	/* 当前拖出主窗口、以无边框浮动窗口承载的面板集合，按主窗口面板 id 索引。 */
+	std::map<vgui_item_id, float_window> floaters;
+	/* 由 Dock 的 tear_off 回调入队、在帧末处理的“拖出”请求（只存面板 id）。 */
+	vgui_item_id pending_tear_off = 0;
+	/* tear_off 回调换算出的屏幕落点（用于摆放新浮动窗口）。 */
+	float tear_off_sx = 0.0f;
+	float tear_off_sy = 0.0f;
+	/* 帧末处理浮动窗口合并回主窗口的鼠标状态跟踪。 */
+	bool float_drag_was_down = false;
+	/* 实时拖出：光标拖着 tab 一越出主窗口就撕出浮动窗口，随后窗口逐帧
+	 * 跟随光标，松开（或拖回主窗口范围）时按位置合并/停留。 */
+	bool live_drag = false;
+	vgui_item_id live_panel = 0;
+	float live_offx = 0.0f, live_offy = 0.0f;	// 光标在窗口内的抓取点
+	/* 主机/后端句柄缓存（main() 启动时填充，供 tear_off 回调与浮动窗口工厂
+	 * 使用）。 */
+	app_mgr* wg = nullptr;
+	multiwindow_host* host = nullptr;
+	font_familys_t* familys = nullptr;
+	os_window* main_window = nullptr;
 	viewport_render_settings render_settings{};
 	bool render_settings_initialized = false;
 	/* MSAA sample count currently built into the shared 2D vector context.  The
@@ -3580,6 +3714,348 @@ static void setup_editor(vgui_context* ui)
 	g.shell->set_status("V08: CANVAS tab drag/resize/rotate; V03 viewport: LMB pick / box / Esc");
 }
 
+/* 副窗口的预览图像：直接画原生纹理，没有纹理时给出占位提示。 */
+static void gameview_draw(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+	float abs_x, float abs_y, float abs_w, float abs_h,
+	float delta_time, void* user)
+{
+	(void)delta_time;
+	(void)user;
+	if (!widget || !cb || !vg || abs_w <= 0.0f || abs_h <= 0.0f)
+		return;
+	if (g.gameview.texture)
+	{
+		vgui_custom_draw_texture(widget, cb, vg, g.gameview.texture,
+			abs_x, abs_y, abs_w, abs_h, 0xFFFFFFFF);
+		return;
+	}
+	vgui_theme theme = {};
+	if (vgui_context* ctx = vgui_widget_get_context(widget))
+		vgui_context_get_theme(ctx, &theme);
+	vgui_custom_draw_text(widget, cb, vg, "3D 预览不可用",
+		abs_x, abs_y, abs_w, abs_h, theme.disabled, 0.5f, 0.5f);
+}
+
+/* 副窗口：独立 vgui_context + 自己的 Dock（GAME VIEW / STATS 两个面板）。
+ * 返回 false 时调用方退回单窗口模式，不影响主窗口。 */
+/* 把游戏视图页面（3D 预览 surface + 两行 STATS）构建进 `dock` 所在上下文，
+ * 返回页面 widget 并刷新 g.gameview.surface / line1 / line2。 */
+static vgui_widget* build_gameview_page(vgui_context* ui, vgui_widget* dock)
+{
+	vgui_widget* page = vgui_widget_add(dock, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 0, 0, 0, 0);
+	vgui_widget_set_gap(page, 0);
+	vgui_widget_set_background(page, 0xFF0B0E13);
+
+	g.gameview.surface = vgui_widget_add(page, VGUI_CUSTOM, nullptr);
+	vgui_widget_set_grow(g.gameview.surface, 1.0f);
+	vgui_widget_set_align_self(g.gameview.surface, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_min_size(g.gameview.surface, 120, 80);
+	vgui_widget_set_background(g.gameview.surface, 0xFF0E1116);
+	vgui_widget_set_a11y_name(g.gameview.surface, "game view");
+	vgui_custom_set_draw(g.gameview.surface, &gameview_draw, nullptr);
+
+	vgui_widget* stats = vgui_widget_add(page, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(stats, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(stats, 10, 8, 10, 8);
+	vgui_widget_set_gap(stats, 4);
+	vgui_widget_set_background(stats, 0xFF12161C);
+	g.gameview.line1 = vgui_widget_add(stats, VGUI_LABEL, "…");
+	vgui_widget_set_size(g.gameview.line1, 0, 20);
+	vgui_widget_set_align_self(g.gameview.line1, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_text_color(g.gameview.line1, 0xFFD6DEE8);
+	g.gameview.line2 = vgui_widget_add(stats, VGUI_LABEL, "…");
+	vgui_widget_set_size(g.gameview.line2, 0, 20);
+	vgui_widget_set_align_self(g.gameview.line2, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_text_color(g.gameview.line2, 0xFF8A98A8);
+	return page;
+}
+
+/* 非游戏视图面板拖出时，浮动窗口里显示的占位页面（真实内容保留在主上下
+ * 文，合并时再挂回主 Dock）。 */
+static vgui_widget* build_placeholder_page(vgui_context* ui, vgui_widget* dock,
+	const char* title)
+{
+	(void)ui;
+	vgui_widget* page = vgui_widget_add(dock, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(page, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(page, 16, 16, 16, 16);
+	vgui_widget_set_gap(page, 10);
+	vgui_widget_set_background(page, 0xFF10141A);
+	vgui_widget* head = vgui_widget_add(page, VGUI_LABEL, title);
+	vgui_widget_set_size(head, 0, 24);
+	vgui_widget_set_align_self(head, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_text_color(head, 0xFFD6DEE8);
+	vgui_widget* hint = vgui_widget_add(page, VGUI_LABEL,
+		"此面板已拖出主窗口。把浮动窗口拖回主窗口即可合并回去。");
+	vgui_widget_set_size(hint, 0, 20);
+	vgui_widget_set_align_self(hint, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_text_color(hint, 0xFF8A98A8);
+	return page;
+}
+
+/* 把 vgui_context 的根改成 COLUMN + 交叉轴拉伸，Dock 才会跟随窗口尺寸。 */
+static void setup_floating_root(vgui_context* ui)
+{
+	vgui_widget* root = vgui_root(ui);
+	vgui_widget_set_layout(root, VGUI_LAYOUT_COLUMN);
+	vgui_widget_set_padding(root, 0, 0, 0, 0);
+	vgui_widget_set_gap(root, 0);
+	vgui_widget_set_align_items(root, VGUI_ALIGN_STRETCH);
+}
+
+/* 把面板恢复到主 Dock（主上下文）。游戏视图重建页面；其它面板挂回保留下来
+ * 的真实页面。返回主 Dock 里的面板 id。 */
+static vgui_item_id add_panel_to_main_dock(bool is_gameview,
+	vgui_widget* orphan_page, vgui_dock_zone origin_zone, const char* title)
+{
+	vgui_widget* main_dock = g.shell ? g.shell->dock() : nullptr;
+	if (!main_dock) return 0;
+	vgui_dock_panel_desc desc;
+	vgui_dock_panel_desc_default(&desc);
+	desc.index = -1;
+	vgui_dock_zone zone = origin_zone;
+	if (zone == VGUI_DOCK_FLOATING) zone = VGUI_DOCK_CENTER;
+	if (is_gameview)
+	{
+		desc.id = "gameview";
+		desc.title = "GAME VIEW";
+		desc.panel = build_gameview_page(g.ui, main_dock);
+		desc.zone = VGUI_DOCK_RIGHT;
+		vgui_item_id id = vgui_dock_add(main_dock, &desc);
+		g.gameview_panel = id;
+		g.gameview.ui = g.ui;
+		g.gameview.window = nullptr;
+		g.gameview.dock = nullptr;
+		return id;
+	}
+	desc.id = nullptr;
+	desc.title = title ? title : "PANEL";
+	desc.panel = orphan_page;          /* 保留下来的真实页面 */
+	desc.zone = zone;
+	return vgui_dock_add(main_dock, &desc);
+}
+
+/* 浮动窗口关闭（或拖回主窗口合并）时调用：把面板恢复到主 Dock 并销毁浮动
+ * 窗口（连带浮动上下文）。游戏视图会重建到主上下文；其它面板直接挂回保留
+ * 的真实页面。 */
+static void merge_floating_back(std::map<vgui_item_id, float_window>::iterator it)
+{
+	if (it == g.floaters.end()) return;
+	float_window fw = it->second;       /* 拷贝，随后 erase 会使 it 失效 */
+	if (fw.is_gameview)
+		g.gameview.release_texture();    /* 释放浮动上下文里的原生纹理 */
+	add_panel_to_main_dock(fw.is_gameview, fw.orphan_page, fw.origin_zone,
+		fw.title.c_str());
+	if (fw.window)
+	{
+		g.host->detach(fw.window);
+		/* 销毁顺序必须匹配最终清理路径（见 main() 尾部）：
+		 *   1) vgui_destroy(fw.ui) —— 释放浮动上下文（画布 / 字体图集等
+		 *      注册纹理，否则 vkDestroyDevice 报 Validation Error）；
+		 *   2) 把 viewport->ui 置空，避免 os_window 析构时 ~gui_viewport()
+		 *      再次销毁同一个上下文（double free / 崩溃）；
+		 *   3) wg->destroy(fw.window) —— 释放 os_window / SDL 窗口 / fbo。
+		 * app_mgr::destroy() 只释放窗口，不碰 vgui_context，故浮动上下文
+		 * 必须在此显式销毁。游戏视图纹理已在前面 release_texture() 释放。 */
+		if (fw.ui)
+		{
+			vgui_destroy(fw.ui);
+			if (fw.window->viewport) fw.window->viewport->ui = nullptr;
+			fw.ui = nullptr;
+		}
+		g.wg->destroy(fw.window->id);
+	}
+	g.floaters.erase(it);
+}
+
+/* 实时拖出回调：光标按住 tab 拖动、一越出主窗口边界就触发（按键尚未松开）。
+ * 只记录光标屏幕坐标并入队，窗口创建放到帧末（避免在输入回调里改窗口）。 */
+static void on_main_dock_drag_out(vgui_widget* dock, vgui_item_id panel,
+	float lx, float ly, void* user)
+{
+	(void)dock; (void)lx; (void)ly; (void)user;
+	float mx = 0, my = 0;
+	SDL_GetGlobalMouseState(&mx, &my);
+	g.tear_off_sx = mx;
+	g.tear_off_sy = my;
+	g.pending_tear_off = panel;
+}
+
+/* Dock 的 tear_off 回调：只把落点换算成屏幕坐标并入队，真正的窗口创建放到
+ * 帧末处理（避免在输入回调里改动窗口 / Dock）。 */
+static void on_main_dock_tear_off(vgui_widget* dock, vgui_item_id panel,
+	float lx, float ly, void* user)
+{
+	(void)dock; (void)user;
+	if (!g.main_window) return;
+	int ax = 0, ay = 0;
+	SDL_GetWindowPosition(g.main_window->window, &ax, &ay);
+	/* lx/ly 是 Dock 局部的渲染像素；窗口位置是屏幕点(points)，除以
+	 * pixel_ratio（渲染像素/点）换算，避免缩放显示下窗口飞出屏幕。 */
+	const float pr = g.main_window->pixel_ratio() > 0.0f
+		? g.main_window->pixel_ratio() : 1.0f;
+	g.tear_off_sx = (float)ax + lx / pr;
+	g.tear_off_sy = (float)ay + ly / pr;
+	g.pending_tear_off = panel;
+}
+
+/* 把主 Dock 里 id 为 `panel` 的面板拖出，生成一个无边框浮动窗口承载它。
+ * 游戏视图在浮动上下文里重建真实 3D 预览；其它面板在主上下文里保留真实
+ * 页面（浮动窗口仅显示占位），合并时再挂回。 */
+static void tear_off_to_floating(vgui_item_id panel)
+{
+	if (!g.shell) return;
+	vgui_widget* main_dock = g.shell->dock();
+	if (!main_dock) return;
+
+	const bool is_gameview = (panel == g.gameview_panel);
+	const char* title = is_gameview ? "GAME VIEW"
+		: vgui_dock_get_title(main_dock, panel);
+	if (!title) title = "PANEL";
+
+	/* 从主 Dock 摘出：游戏视图销毁旧页面（稍后重建到浮动上下文）；其它面板
+	 * 只 detach，保留真实页面在主上下文。 */
+	vgui_dock_zone origin_zone = vgui_dock_get_zone(main_dock, panel);
+	vgui_widget* orphan_page = nullptr;
+	if (is_gameview)
+	{
+		g.gameview.release_texture();        /* 释放主上下文里的原生纹理 */
+		vgui_dock_remove(main_dock, panel);  /* 销毁主上下文里的旧页面 */
+	}
+	else
+	{
+		orphan_page = vgui_dock_detach(main_dock, panel);  /* 保留真实页面 */
+	}
+
+	const int width  = is_gameview ? 760 : 520;
+	const int height = is_gameview ? 470 : 360;
+	int px = (int)std::lround(g.tear_off_sx);
+	int py = (int)std::lround(g.tear_off_sy);
+	if (px <= 0 && py <= 0 && g.main_window)
+	{
+		SDL_GetWindowPosition(g.main_window->window, &px, &py);
+		px += 48; py += 48;
+	}
+
+	os_window* win = g.wg->create2(is_gameview
+		? "vgui 游戏编辑器 · 游戏视图" : "vgui 游戏编辑器 · 浮动面板",
+		px, py, width, height, ef_borderless | ef_resizable, nullptr);
+	if (!win)
+	{
+		/* 窗口创建失败：回滚到主 Dock，并结束 vgui 侧拖动状态，避免轮询
+		 * 兜底每帧重新入队撕出请求造成死循环。 */
+		add_panel_to_main_dock(is_gameview, orphan_page, origin_zone, title);
+		if (g.shell && g.shell->dock())
+			vgui_dock_end_drag(g.shell->dock());
+		return;
+	}
+
+	vgui_context* fui = vgui_create(g.familys, 16.0f);
+	vgui_context_set_size(fui, width, height);
+	setup_floating_root(fui);
+
+	/* 标题条：既是装饰也是 SDL 命中拖动区（无边框窗口没有系统标题栏）。 */
+	vgui_widget* title_bar = vgui_widget_add(vgui_root(fui), VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(title_bar, VGUI_LAYOUT_ROW);
+	vgui_widget_set_padding(title_bar, 12, 0, 12, 0);
+	vgui_widget_set_size(title_bar, 0, 30);
+	vgui_widget_set_align_self(title_bar, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_background(title_bar, 0xFF1B2230);
+	vgui_widget* title_lbl = vgui_widget_add(title_bar, VGUI_LABEL, title);
+	vgui_widget_set_size(title_lbl, 0, 20);
+	vgui_widget_set_align_self(title_lbl, VGUI_ALIGN_STRETCH);
+	vgui_widget_set_text_color(title_lbl, 0xFFE6EDF5);
+
+	vgui_widget* dock = vgui_widget_add(vgui_root(fui), VGUI_DOCK, nullptr);
+	vgui_widget_set_grow(dock, 1.0f);
+	vgui_widget_set_align_self(dock, VGUI_ALIGN_STRETCH);
+	vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 104.0f);
+
+	vgui_dock_panel_desc desc;
+	vgui_dock_panel_desc_default(&desc);
+	if (is_gameview)
+	{
+		vgui_widget* page = build_gameview_page(fui, dock);
+		desc.id = "gameview";
+		desc.title = "GAME VIEW";
+		desc.panel = page;
+		desc.zone = VGUI_DOCK_CENTER;
+	}
+	else
+	{
+		vgui_widget* page = build_placeholder_page(fui, dock, title);
+		desc.id = nullptr;
+		desc.title = title;
+		desc.panel = page;
+		desc.zone = VGUI_DOCK_CENTER;
+	}
+	vgui_dock_add(dock, &desc);
+
+	if (!g.host->attach(win, fui))
+	{
+		vgui_destroy(fui);
+		const uint32_t id = win->id;
+		win->viewport->ui = nullptr;
+		g.wg->destroy(id);
+		add_panel_to_main_dock(is_gameview, orphan_page, origin_zone, title);
+		if (g.shell && g.shell->dock())
+			vgui_dock_end_drag(g.shell->dock());
+		return;
+	}
+	win->sync_ui_scale(true);
+
+	float_window fw;
+	fw.window = win;
+	fw.ui = fui;
+	fw.dock = dock;
+	fw.title_bar = title_bar;
+	fw.panel = panel;
+	fw.id = is_gameview ? "gameview"
+		: (vgui_dock_get_id(main_dock, panel) ? vgui_dock_get_id(main_dock, panel) : "");
+	fw.title = title;
+	fw.is_gameview = is_gameview;
+	fw.orphan_page = orphan_page;
+	fw.origin_zone = origin_zone;
+	fw.hit_test_set = false;
+	g.floaters[panel] = fw;
+
+	/* 实时拖出：触发时鼠标还按着 —— 把窗口放在光标旁（光标落在标题条上，
+	 * 与 dock 拖动鬼影的位置一致），之后主循环里让窗口逐帧跟随光标；
+	 * 同时结束主 Dock 里残留的 vgui 拖动状态，否则松开鼠标时 dock 的
+	 * tear_off 回调会对已经摘走的面板再触发一次。 */
+	{
+		float mx = 0, my = 0;
+		const Uint32 bs = SDL_GetGlobalMouseState(&mx, &my);
+		if (bs & SDL_BUTTON_LMASK)
+		{
+			g.live_drag = true;
+			g.live_panel = panel;
+			g.live_offx = 16.0f;
+			g.live_offy = 14.0f;
+			SDL_SetWindowPosition(win->window,
+				(int)std::lround(mx - g.live_offx),
+				(int)std::lround(my - g.live_offy));
+			if (g.shell && g.shell->dock())
+				vgui_dock_end_drag(g.shell->dock());
+		}
+	}
+
+	if (is_gameview)
+	{
+		g.gameview.ui = fui;
+		g.gameview.window = win;
+		g.gameview.dock = dock;
+	}
+	printf("tear-off panel=%llu -> floating window %dx%d at (%d,%d) gameview=%d\n",
+		(unsigned long long)panel, width, height, px, py, is_gameview ? 1 : 0);
+	fflush(stdout);
+}
+
+/* close_gameview_window() 已被面板拖出/合并引擎取代：浮动窗口由
+ * merge_floating_back() 统一关闭并合并回主 Dock。 */
+
 int main()
 {
 	// ---- 后端初始化 ----
@@ -3587,7 +4063,6 @@ int main()
 	font_familys_t* familys = new_font_family(wg->font_ctx,
 		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
 	auto* cb = new_ctx_cb();
-	rvg_t* vg = cb->new_rvg(cb->ac);
 
 	if (!wg->init_gpu(true))
 	{
@@ -3605,7 +4080,8 @@ int main()
 
 	/* V01/V09: 视口离屏渲染器（失败时视口显示占位文本，编辑器仍可用）。
 	 * 默认 view 给主相机，额外 view 给第二相机；两者共享着色器/管线/立方体
-	 * 缓冲，但各自拥有相机、实例、网格与颜色/深度附件。 */
+	 * 缓冲，但各自拥有相机、实例、网格与颜色/深度附件。游戏视图面板无论挂
+	 * 在主窗口还是浮动窗口，都用同一个 gameview_view 离屏渲染（见启动处）。 */
 	g.renderer = phase0_renderer_create(wg->device);
 	if (!g.renderer)
 		fprintf(stderr, "3D 渲染器不可用，视口将显示占位内容\n");
@@ -3619,28 +4095,195 @@ int main()
 	vgui_context* ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(ui, win_w, win_h);
 	setup_editor(ui);
-	form->viewport->ui = ui;
+	// ---- 面板拖出 / 合并：游戏视图默认合并在主窗口的 Dock 内；把它拖出主
+	// 窗口会生成无边框浮动窗口渲染它，拖回主窗口（或关掉浮动窗口）自动合并。
+	// 环境变量：
+	//   VGUI_EDITOR_FRAMES=N         渲染 N 帧后退出（无头自检）
+	int max_frames = 0;
+	if (const char* env = std::getenv("VGUI_EDITOR_FRAMES"); env && *env)
+		max_frames = std::atoi(env);
+
+	multiwindow_host host(wg, cb);
+	if (!host.attach(form, ui))
+	{
+		fprintf(stderr, "无法为主窗口分配录制画布\n");
+		vgui_destroy(ui);
+		form->viewport->ui = nullptr;
+		delete_font_family(familys);
+		free_ctx_cb(cb);
+		delete wg;
+		return -1;
+	}
 	// E01: adopt the monitor/DPI scale before the first frame.  The backend
 	// re-syncs on monitor changes; this only avoids a one-frame flash.
 	form->sync_ui_scale(true);
 
+	/* 把主窗口 / 后端句柄缓存进 editor_state，供 tear_off 回调与浮动窗口
+	 * 工厂使用。 */
+	g.wg = wg;
+	g.host = &host;
+	g.familys = familys;
+	g.main_window = form;
+
+	/* 游戏视图的离屏渲染视图：默认就存在（无论面板挂在主窗口还是浮动窗
+	 * 口），面板所在窗口的尺寸变化会重建它的附件。 */
+	if (g.renderer)
+		g.gameview_view = phase0_renderer_create_view(g.renderer);
+
+	/* 默认把 GAME VIEW 作为面板构建进主 Dock 的 RIGHT 区；注册拖出回调，
+	 * 把任意面板拖出主窗口即生成无边框浮动窗口承载它。 */
+	if (g.shell)
+	{
+		add_panel_to_main_dock(true, nullptr, VGUI_DOCK_RIGHT, "GAME VIEW");
+		vgui_dock_on_tear_off(g.shell->dock(), &on_main_dock_tear_off, nullptr);
+		vgui_dock_on_drag_out(g.shell->dock(), &on_main_dock_drag_out, nullptr);
+	}
+
+	printf("windows=%zu gameview=merged-in-main floaters=%zu\n", host.size(),
+		g.floaters.size());
+	fflush(stdout);
+
 	// ---- 主循环 ----
-	vg_fbo_t* fbo = &form->fbo;
 	FpsCounter fps;
 	runtime_cx rtc = {};
 	bool running = true;
-	int last_w = win_w, last_h = win_h;
+	int frame = 0;
 	while (running && !g.exit_requested)
 	{
 		float delta = fps.tick();
 		if (wg->get_event() < 0)
 			running = false;
 
+		/* 关闭请求：主窗口关闭即退出；浮动窗口关闭只销毁它自己，编辑器
+		 * 继续跑（多窗口下 SDL 不会因为关掉非最后一个窗口发 QUIT）。 */
+		if (form->pending_close)
+			running = false;
+
+		/* 面板拖出 / 合并引擎：
+		 *  - 处理上一帧入队的“拖出”请求（生成无边框浮动窗口）；
+		 *  - 浮动窗口中心落入主窗口且鼠标释放 → 合并回主 Dock；
+		 *  - 浮动窗口收到关闭请求 → 同样合并回主 Dock；
+		 *  - 首次布局后给无边框窗口设置标题条拖动命中区域。 */
+		if (g.pending_tear_off)
+		{
+			tear_off_to_floating(g.pending_tear_off);
+			g.pending_tear_off = 0;
+		}
+		/* 实时拖出：面板已撕成浮动窗口，按住鼠标期间让窗口逐帧跟随光标；
+		 * 光标拖回主窗口（留 24px 余量防误触）→ 立即合并回主 Dock；
+		 * 松开 → 光标在主窗口内则合并，否则浮动窗口停在原地。 */
+		if (g.live_drag)
+		{
+			float mx = 0, my = 0;
+			const Uint32 bs = SDL_GetGlobalMouseState(&mx, &my);
+			auto it = g.floaters.find(g.live_panel);
+			if (it == g.floaters.end() || !it->second.window)
+			{
+				g.live_drag = false;
+			}
+			else
+			{
+				int mwx = 0, mwy = 0, mww = 0, mwh = 0;
+				SDL_GetWindowPosition(form->window, &mwx, &mwy);
+				SDL_GetWindowSize(form->window, &mww, &mwh);
+				const bool cursor_inside =
+					mx >= (float)(mwx + 24) && mx < (float)(mwx + mww - 24) &&
+					my >= (float)(mwy + 24) && my < (float)(mwy + mwh - 24);
+				const bool down_now = (bs & SDL_BUTTON_LMASK) != 0;
+				if (down_now)
+				{
+					SDL_SetWindowPosition(it->second.window->window,
+						(int)std::lround(mx - g.live_offx),
+						(int)std::lround(my - g.live_offy));
+					if (cursor_inside)
+					{
+						/* 拖回主窗口范围 → 自动合并回主窗口渲染。 */
+						g.live_drag = false;
+						merge_floating_back(it);
+					}
+				}
+				else
+				{
+					g.live_drag = false;
+					if (cursor_inside)
+						merge_floating_back(it);
+				}
+			}
+		}
+		/* 轮询兜底：个别环境下光标越出窗口后 motion 事件不再送达，
+		 * vgui 的 drag_out 回调不会触发；这里直接用全局鼠标位置判断 ——
+		 * 按住 tab 拖动（vgui_dock_dragging 非零）期间光标一越出主窗口
+		 * 同样入队实时拖出。 */
+		if (!g.live_drag && !g.pending_tear_off && g.shell && g.shell->dock())
+		{
+			float mx = 0, my = 0;
+			const Uint32 bs = SDL_GetGlobalMouseState(&mx, &my);
+			if (bs & SDL_BUTTON_LMASK)
+			{
+				const vgui_item_id dragging =
+					vgui_dock_dragging(g.shell->dock());
+				if (dragging)
+				{
+					int wx = 0, wy = 0, ww = 0, wh = 0;
+					SDL_GetWindowPosition(form->window, &wx, &wy);
+					SDL_GetWindowSize(form->window, &ww, &wh);
+					if (mx < (float)wx || my < (float)wy ||
+						mx >= (float)(wx + ww) || my >= (float)(wy + wh))
+					{
+						g.tear_off_sx = mx;
+						g.tear_off_sy = my;
+						g.pending_tear_off = dragging;
+					}
+				}
+			}
+		}
+		{
+			/* mx/my 未使用，仅取按钮状态；SDL3 重载要求 float*，故传 nullptr。 */
+			const Uint32 bs = SDL_GetGlobalMouseState(nullptr, nullptr);
+			const bool down = (bs & SDL_BUTTON_LMASK) != 0;
+			const bool released = g.float_drag_was_down && !down;
+			for (auto it = g.floaters.begin(); it != g.floaters.end(); )
+			{
+				float_window& fw = it->second;
+				if (fw.window && fw.window->pending_close)
+				{
+					merge_floating_back(it++);
+					continue;
+				}
+				if (fw.window && !fw.hit_test_set && fw.title_bar)
+				{
+					/* 标题条高度由 vgui_widget_set_size(title_bar,0,30) 设定，
+					 * 单位为 vgui 布局的渲染像素；hit-test 坐标处于 SDL 窗口点
+					 * (points)，故除以 pixel_ratio()（渲染像素/点）换算。
+					 * vgui_widget 在本编译单元是不完整类型，不能访问 abs_h。 */
+					const int ht = (int)(30.0f / fw.window->pixel_ratio() + 0.5f);
+					fw.window->set_hit_test(ht);
+					fw.hit_test_set = true;
+				}
+				if (fw.window && released)
+				{
+					int fx = 0, fy = 0, fw_ = 0, fh_ = 0;
+					SDL_GetWindowPosition(fw.window->window, &fx, &fy);
+					SDL_GetWindowSize(fw.window->window, &fw_, &fh_);
+					int mxp = 0, myp = 0, mw_ = 0, mh_ = 0;
+					SDL_GetWindowPosition(form->window, &mxp, &myp);
+					SDL_GetWindowSize(form->window, &mw_, &mh_);
+					const bool inside = (fx + fw_ / 2 > mxp &&
+						fx + fw_ / 2 < mxp + mw_) &&
+						(fy + fh_ / 2 > myp && fy + fh_ / 2 < myp + mh_);
+					if (inside) { merge_floating_back(it++); continue; }
+				}
+				++it;
+			}
+			g.float_drag_was_down = down;
+		}
+
 		/* 视口抗锯齿：2D 矢量上下文（ovg）唯一的抗锯齿开关就是 MSAA 采样数，
 		 * Canvas / NodeGraph / 所有面板的斜边和圆点都靠它平滑。把 View > MSAA
-		 * 的设置同步过去，必须放在取交换链之前——切换会重建上下文和所有窗口
-		 * FBO，而该上下文正是这一帧要用来录制的。原生视口纹理挂在旧上下文上，
-		 * 先释放，sync() 会在本帧稍后按新上下文重建它们。 */
+		 * 的设置同步过去，必须放在本帧开始录制之前——切换会重建 vgpu 上下文
+		 * 和所有窗口的 FBO（主窗口 + 副窗口），而这个上下文正是接下来要用来
+		 * 录制的。各窗口的原生纹理都挂在旧上下文上，先释放，sync() 会在本帧
+		 * 稍后按新上下文重建它们。 */
 		if (g.shell)
 		{
 			const int requested_msaa = g.shell->viewport_settings().msaa_samples;
@@ -3654,6 +4297,8 @@ int main()
 				g.viewport_texture.release();
 				g.preview_texture.release();
 				g.depth_texture.release();
+				/* 副窗口的原生纹理同样挂在旧 vgpu 上下文上，必须一起放掉。 */
+				g.gameview.release_texture();
 			}
 			/* Called every frame on purpose: when the count is unchanged it is a
 			 * single compare, and it lets the backend retire the previous
@@ -3665,25 +4310,13 @@ int main()
 			g.ui_msaa = requested_msaa;
 		}
 
-		if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
+		rtc.begin();
+		/* 多窗口宿主：同步每个窗口的像素尺寸、清空它自己的 rvg 画布，并
+		 * 推进该窗口的 UI 树。交换链不在录制前获取——它由 end_frame() 里的
+		 * vgpu_render_frame() 按 FBO 统一获取并提交（vgpu 只有一份
+		 * current_cmd，逐窗口 acquire 会提前提交上一份命令缓冲）。 */
+		host.begin_frame(delta);
 		{
-			rtc.begin();
-			int cw = (int)fbo->display_size.x;
-			int ch = (int)fbo->display_size.y;
-			if (cw != last_w || ch != last_h)
-			{
-				last_w = cw;
-				last_h = ch;
-				vgui_context_set_size(ui, cw, ch);
-			}
-			if (fbo->upsize)
-			{
-				fbo->upsize = false;
-				vg->width = fbo->display_size.x;
-				vg->height = fbo->display_size.y;
-			}
-
-			vgui_update(ui, delta);
 			/* A07: drain the console every frame even when its tab is hidden,
 			 * so producers never accumulate an unbounded queue. */
 			if (g.shell)
@@ -3717,6 +4350,19 @@ int main()
 				if (g.preview_view && pw > 0 && ph > 0)
 					phase0_view_resize(g.preview_view, pw, ph);
 
+				/* 多窗口：副窗口里的 GAME VIEW 有自己的离屏视图，按面板实际
+				 * 像素尺寸重建附件——直接放大主窗口的预览纹理会糊。 */
+				int gw = 0, gh = 0;
+				if (g.gameview.surface)
+				{
+					float sx = 0, sy = 0, sw = 0, sh = 0;
+					vgui_widget_get_rect(g.gameview.surface, &sx, &sy, &sw, &sh);
+					gw = (int)std::lround(sw);
+					gh = (int)std::lround(sh);
+				}
+				if (g.gameview_view && gw > 0 && gh > 0)
+					phase0_view_resize(g.gameview_view, gw, gh);
+
 				/* V09: runtime HDR / MSAA / depth preview.  Both camera views
 				 * share pipelines for the same format/sample count, but keep
 				 * independent attachments and camera state. */
@@ -3742,6 +4388,15 @@ int main()
 					options.msaa_samples = requested.msaa_samples;
 					options.depth_preview = false;
 					phase0_view_set_options(g.preview_view, &options);
+
+					if (g.gameview_view)
+					{
+						options = phase0_view_get_options(g.gameview_view);
+						options.hdr = requested.hdr;
+						options.msaa_samples = requested.msaa_samples;
+						options.depth_preview = false;
+						phase0_view_set_options(g.gameview_view, &options);
+					}
 
 					/* The device may clamp MSAA; reflect the effective value so
 					 * the menu check does not claim an unsupported mode. */
@@ -3780,6 +4435,9 @@ int main()
 					make_camera(g.shell->preview_camera());
 				phase0_view_set_camera(g.main_view, &main_camera);
 				phase0_view_set_camera(g.preview_view, &preview_camera);
+				/* 副窗口跟随预览相机（与主窗口的预览条同源）。 */
+				if (g.gameview_view)
+					phase0_view_set_camera(g.gameview_view, &preview_camera);
 
 				/* V06: all renderable scene objects become cube proxies; the
 				 * drop preview adds one translucent ghost instance.  Both
@@ -3829,6 +4487,10 @@ int main()
 				phase0_view_set_instances(g.preview_view,
 					instances.empty() ? nullptr : instances.data(),
 					(int)instances.size());
+				if (g.gameview_view)
+					phase0_view_set_instances(g.gameview_view,
+						instances.empty() ? nullptr : instances.data(),
+						(int)instances.size());
 
 				/* V04: grid geometry (kit) -> renderer line quads (host).
 				 * V06 appends a ground marker under the drop preview.  Each
@@ -3908,6 +4570,17 @@ int main()
 					upload_grid(g.preview_view, preview_lines);
 				}
 
+				/* 副窗口的网格按它自己的像素尺寸和相机重新生成：grid.build()
+				 * 的密度依赖视口尺寸，直接复用预览条的网格会过密。 */
+				if (g.gameview_view && gw > 0 && gh > 0)
+				{
+					std::vector<viewport_grid_line> game_lines;
+					g.shell->grid().build(preview_camera_view, gw, gh,
+						&game_lines);
+					append_drop_marker(game_lines);
+					upload_grid(g.gameview_view, game_lines);
+				}
+
 				/* Auto grid keeps the translation snap in step with the cell. */
 				if (g.shell->grid().auto_density())
 				{
@@ -3935,40 +4608,206 @@ int main()
 						g.shell->depth_viewport(),
 						phase0_view_depth_preview_texture(g.main_view), rw, rh);
 				}
+				/* 多窗口：把副窗口专属视图的颜色附件绑定到它自己的上下文。 */
+				if (g.gameview.ui && g.gameview_view && gw > 0 && gh > 0)
+				{
+					g.gameview.sync_texture(g.gameview.ui, wg->vgctx,
+						phase0_view_color_texture(g.gameview_view), gw, gh);
+				}
+			}
+
+			/* 游戏视图统计：面板在浮动窗口或主窗口里都刷新（文本不变时不
+			 * 调用 set_text，避免每帧重排）。 */
+			if (g.gameview.ui)
+			{
+				char line_a[128];
+				char line_b[192];
+				int prw = 0, prh = 0;
+				if (g.shell)
+					g.shell->preview_viewport().get_render_size(&prw, &prh);
+				const int uw = host.slots().empty()
+					? 0 : host.slots().front().width;
+				const int uh = host.slots().empty()
+					? 0 : host.slots().front().height;
+				std::snprintf(line_a, sizeof line_a, "FPS %d   %.2f ms   MSAA %dx",
+					fps.get_fps(), delta * 1000.0f, wg->msaa_samples);
+				std::snprintf(line_b, sizeof line_b,
+					"对象 %zu   窗口 %zu   编辑器 %dx%d   预览 %dx%d",
+					g.scene.objects.size(), host.size(), uw, uh, prw, prh);
+				g.gameview.set_stats(line_a, line_b);
 			}
 
 			rtc.end();
-			rtc.begin();
-			cb->clear(vg);
-			cb->reset_clip(vg, 1);
-			vgui_draw(ui, cb, vg);
-
-			draw_datas_cx drawable;
-			drawable.set(fbo);
-			drawable.add(vg);
-			drawable.render(wg->vgctx);
+			/* 两个窗口的录制已经各自完成，这里一次性提交：每个 draw data
+			 * 自带所属窗口的 fbo，vgpu_render_frame 在同一个命令缓冲里按
+			 * FBO 分 pass。 */
+			host.draw_all();
+			host.end_frame();
 		}
+
+		++frame;
+		if (max_frames > 0 && frame == 3)
+		{
+			ovg_draw_data_t editor = get_draw_list(host.slots().front().canvas);
+			printf("INFO draw commands: editor=%zu floaters=%zu\n",
+				editor.count, g.floaters.size());
+			printf("INFO gameview: panel=%llu surface=%s texture=%s\n",
+				(unsigned long long)g.gameview_panel,
+				g.gameview.surface ? "yes" : "no",
+				g.gameview.texture ? "bound" : "none");
+			fflush(stdout);
+		}
+		/* 无头自检：用推送的 SDL 鼠标事件走【真实的 vgui 拖动管线】——按下
+		 * 游戏视图 tab、一路拖出主窗口右边界、松开——验证 drag_out 回调 /
+		 * tear_off 兜底会真正触发（不像 ALLOW_TEAROFF 那样直接入队，绕过
+		 * 拖动状态机）。 */
+		if (max_frames > 0 && frame == max_frames / 6 && g.shell &&
+			g.gameview_panel && g.floaters.empty() &&
+			std::getenv("VGUI_SIM_DRAG"))
+		{
+			float tx = 0, ty = 0, tw = 0, th = 0;
+			if (vgui_dock_get_tab_rect(g.shell->dock(), g.gameview_panel,
+					&tx, &ty, &tw, &th) && tw > 0.0f)
+			{
+				const float pr = form->pixel_ratio() > 0.0f
+					? form->pixel_ratio() : 1.0f;
+				const float cx = (tx + tw * 0.5f) / pr;
+				const float cy = (ty + th * 0.5f) / pr;
+				SDL_Event ev = {};
+				ev.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+				ev.button.windowID = form->id;
+				ev.button.button = 1;
+				ev.button.down = true;
+				ev.button.clicks = 1;
+				ev.button.x = cx;
+				ev.button.y = cy;
+				SDL_PushEvent(&ev);
+				for (int i = 1; i <= 10; ++i)
+				{
+					SDL_Event mv = {};
+					mv.type = SDL_EVENT_MOUSE_MOTION;
+					mv.motion.windowID = form->id;
+					mv.motion.x = cx + 60.0f * (float)i;
+					mv.motion.y = cy + 6.0f * (float)i;
+					mv.motion.xrel = 60.0f;
+					mv.motion.yrel = 6.0f;
+					mv.motion.state = SDL_BUTTON_LMASK;
+					SDL_PushEvent(&mv);
+				}
+				SDL_Event up = {};
+				up.type = SDL_EVENT_MOUSE_BUTTON_UP;
+				up.button.windowID = form->id;
+				up.button.button = 1;
+				up.button.down = false;
+				up.button.clicks = 1;
+				up.button.x = cx + 620.0f;
+				up.button.y = cy + 62.0f;
+				SDL_PushEvent(&up);
+				printf("PROBE sim drag: tab at (%.0f,%.0f) size %.0fx%.0f, "
+					"pushed down + 10 motions + up\n", cx, cy, tw, th);
+				fflush(stdout);
+			}
+		}
+		/* 无头自检：中途切一次 MSAA，验证「两个窗口的 FBO + 两套 vgui_context
+		 * 的原生纹理」都能跟着重建，不会留下悬挂纹理。同时模拟一次「拖出」——
+		 * 直接给浮动窗口工厂入队一个 tear-off 请求（等价于把面板拖出主窗口
+		 * 落到其外），下一帧顶部会据此生成无边框浮动窗口承载游戏视图。 */
+		if (max_frames > 0 && frame == max_frames / 3 && g.shell)
+		{
+			viewport_render_settings probe_settings =
+				g.shell->viewport_settings();
+			probe_settings.msaa_samples =
+				probe_settings.msaa_samples == 4 ? 2 : 4;
+			g.shell->set_viewport_settings(probe_settings);
+			printf("PROBE request MSAA %dx at frame %d\n",
+				probe_settings.msaa_samples, frame);
+			if (g.gameview_panel && g.floaters.empty() &&
+				std::getenv("VGUI_ALLOW_TEAROFF"))
+			{
+				g.pending_tear_off = g.gameview_panel;
+				printf("PROBE request tear-off of gameview panel at frame %d\n",
+					frame);
+			}
+			fflush(stdout);
+		}
+		/* 重建后确认两套上下文的原生纹理都已按新句柄重新注册。 */
+		if (max_frames > 0 && frame == max_frames / 3 + 3)
+		{
+			printf("INFO after MSAA rebuild: gameview texture=%s floaters=%zu\n",
+				g.gameview.texture ? "bound" : "none", g.floaters.size());
+			fflush(stdout);
+		}
+		/* 无头自检：若已有浮动窗口，向它投递一次关闭请求，走真实的
+		 * SDL_EVENT_WINDOW_CLOSE_REQUESTED → pending_close → 合并回主 Dock
+		 * 路径，验证关掉浮动窗口后编辑器继续渲染且面板回到主 Dock。 */
+		if (max_frames > 0 && frame == max_frames * 2 / 3 && !g.floaters.empty()
+			&& std::getenv("VGUI_ALLOW_MERGE"))
+		{
+			auto it = g.floaters.begin();
+			SDL_Event ev = {};
+			ev.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+			ev.window.windowID = it->second.window->id;
+			SDL_PushEvent(&ev);
+			printf("PROBE pushed close request for a floating window "
+				"(floaters=%zu)\n", g.floaters.size());
+			fflush(stdout);
+		}
+		/* 合并后确认：浮动窗口已销毁、面板回到主 Dock（gameview.ui 指回主
+		 * 上下文），且游戏视图纹理仍绑定（跨上下文重建成功）。 */
+		if (max_frames > 0 && frame == max_frames * 2 / 3 + 3)
+		{
+			printf("INFO after merge: floaters=%zu gameview_ui_is_main=%d "
+				"panel=%llu texture=%s\n",
+				g.floaters.size(),
+				g.gameview.ui == g.ui ? 1 : 0,
+				(unsigned long long)g.gameview_panel,
+				g.gameview.texture ? "bound" : "none");
+			fflush(stdout);
+		}
+		if (max_frames > 0 && frame >= max_frames)
+			running = false;
 	}
 
 	// ---- 清理 ----
+	const size_t windows_at_exit = host.size();
+	const bool gameview_closed = (g.gameview.window == nullptr);
 	wg->wait_gpu();
 	delete g.shell;
+	g.shell = nullptr;
 	delete g.context;
-	vgui_destroy(ui);
-	form->viewport->ui = nullptr;
+	g.context = nullptr;
+	/* 纹理按 vgui_context 注册，必须在销毁上下文之前放掉。 */
+	g.gameview.release_texture();
+	g.viewport_texture.release();
+	g.preview_texture.release();
+	g.depth_texture.release();
+	for (const multiwindow_slot& slot : host.slots())
+	{
+		vgui_destroy(slot.ui);
+		if (slot.window && slot.window->viewport)
+			slot.window->viewport->ui = nullptr;
+	}
 	if (g.renderer)
 	{
 		phase0_renderer_destroy(g.renderer);
 		g.renderer = nullptr;
 		g.main_view = nullptr;
 		g.preview_view = nullptr;
-		g.viewport_texture = {};
-		g.preview_texture = {};
-		g.depth_texture = {};
+		g.gameview_view = nullptr;
+	}
+	/* multiwindow_host 析构时要销毁每窗口的 rvg，必须发生在 free_ctx_cb
+	 * 之前；这里显式摘掉所有槽位，不依赖 main 退出时的局部对象顺序。 */
+	{
+		std::vector<os_window*> attached;
+		for (const multiwindow_slot& slot : host.slots())
+			attached.push_back(slot.window);
+		for (os_window* win : attached)
+			host.detach(win);
 	}
 	delete_font_family(familys);
-	cb->destroy_rvg(vg);
 	free_ctx_cb(cb);
 	delete wg;
+	printf("frames=%d windows_at_exit=%zu gameview_closed=%d\n", frame,
+		windows_at_exit, gameview_closed ? 1 : 0);
 	return 0;
 }

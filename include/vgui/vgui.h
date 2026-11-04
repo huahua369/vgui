@@ -1433,6 +1433,27 @@ extern "C" {
 	VGUI_API void vgui_dock_on_close(vgui_widget* dock, vgui_item_fn fn, void* user);
 	VGUI_API void vgui_dock_on_activate(vgui_widget* dock, vgui_item_fn fn, void* user);
 	VGUI_API void vgui_dock_on_change(vgui_widget* dock, vgui_item_fn fn, void* user);
+	/* Tear-off: fired (via vgui_dock_on_tear_off) when a tab is dragged out of
+	 * the dock's window and released.  `local_x`/`local_y` are the drop point in
+	 * the dock's local coordinates; the host converts them to screen space with
+	 * the window position and turns the panel into its own OS window.  The
+	 * callback must only queue the request -- never create a window inside it. */
+	typedef void (*vgui_dock_tear_off_fn)(vgui_widget* dock, vgui_item_id panel,
+		float local_x, float local_y, void* user);
+	VGUI_API void vgui_dock_on_tear_off(vgui_widget* dock, vgui_dock_tear_off_fn fn, void* user);
+
+	/* Live tear-off: fired (via vgui_dock_on_drag_out) the moment a tab drag
+	 * crosses out of the window bounds while the button is still down -- the
+	 * host can immediately turn the panel into a borderless floating OS window
+	 * that follows the cursor.  Queue only, act after the frame; call
+	 * vgui_dock_end_drag() once the host has taken the panel over. */
+	VGUI_API void vgui_dock_on_drag_out(vgui_widget* dock, vgui_dock_tear_off_fn fn, void* user);
+	/* Returns the panel id currently being tab-dragged (drag_mode 2), else 0.
+	 * Useful for hosts that poll the global mouse position as a fallback. */
+	VGUI_API vgui_item_id vgui_dock_dragging(vgui_widget* dock);
+	/* Cancel an in-progress dock tab drag from the host side (e.g. after a
+	 * live tear-off moved the panel into its own floating window). */
+	VGUI_API void vgui_dock_end_drag(vgui_widget* dock);
 
 	/* Callbacks. */
 	VGUI_API void vgui_widget_on_event(vgui_widget* widget, vgui_event_fn fn, void* user);

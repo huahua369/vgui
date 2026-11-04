@@ -116,6 +116,9 @@ struct os_window {
 	bool close_with_parent = true;
 	bool pending_close = false;
 	bool mouse_in_client = false;        // optional pointer-in-client tracking
+	/* Height (window-points) of the borderless draggable title bar.  Driven by
+	 * set_hit_test(); the hit-test callback reads it to decide DRAGGABLE. */
+	int hit_top = 0;
 
 	// UI callbacks.
 	std::function<void()> on_close;
@@ -147,6 +150,10 @@ struct os_window {
 	// Shows/hides the cursor.
 	void show_cursor();
 	void hide_cursor();
+	// Borderless-window dragging: marks the top `top_px` window-points of the
+	// window as a draggable title bar through SDL hit-testing.  Only meaningful
+	// for borderless (ef_borderless) windows, which have no OS title bar.
+	void set_hit_test(int top_px);
 };
 struct PointerState {
 	SDL_Window* window = nullptr;
