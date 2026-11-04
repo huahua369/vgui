@@ -212,3 +212,13 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - `ovg/tools/tools.hpp` 抽出 `round_rect_radius(w,h,r)` / `round_rect_radius2(len,r)`，`fill_round_rect`、`stroke_round_rect`、`fill_round_rect2`、`stroke_round_rect2`、`fill_round_rect_gradient`、`swatch_alpha`、`round_rect4_path` 全部改走同一口径，不再各处各写一份 `std::clamp(r, 0, min(w,h)*0.5f)`。
 - 回归：`ovg_tools_test` 新增 10 条断言（总检查 95 → 105）。用例是 `h = 31`（半高 15.5）、半径给到 20 与 `rx = 20 / ry = 99`，同时覆盖「直接调原生 API」和「走 tools 预取整」两条路径：端头圆弧、上下边、内部留空、圆角切除逐点比对。
 - 说明：椭圆角版本（`rounded_rectangle2`）走 `_elliptic_arc` 折线近似，描边中心线比几何 `x/y` 内收约半像素，断言取实心像素而不是几何中心。
+
+### 7.13 按钮描边与填充的圆角同心（2026-11-04）
+- 现象：`vgui_demo` 按钮卡片里，带边框的按钮在四个圆角处露出一圈比填充更暗的边缘（放大到 8 倍才能看清），`border_width = 3` 的空心按钮最明显——边框像从填充轮廓里"鼓"出来一块，外沿还越过控件矩形半个线宽。
+- 根因是描边和填充的圆角不同心：`vgui_draw_button()` 的纯色分支把描边路径内缩 `bi = border_width/2`、圆角却仍用原 `rounding`。两条弧半径相同、圆心差 `bi`，于是描边外沿在 45° 角部探到填充轮廓之外（`bi=0.5` 时约 0.15px，`bw=3` 时约 0.44px），中间留下一条半像素缝；MSAA 8x 把这条缝解析成一圈暗边。
+- 修复：两处按钮绘制统一成「外轮廓半径 R → 各层按内缩量递减」。
+  - `vgui_draw_button()` SOLID 分支：先算 `r_out = floor(min(rounding, min(w,h)/2))`，填充直接用 `r_out`；描边仍内缩 `bi`，半径改成 `floor(r_out - bi)`，圆心回到填充圆心。
+  - `vgui_draw_button_gradient()`：原来的 `pill_radius(该层尺寸, rounding)` 换成 `ink_radius(inset, box_h) = clamp(floor(r_outer - inset), 0, floor(box_h/2))`，底色、渐变填充、上沿高光、下沿阴影四层共用 `r_outer`。
+  - 半径只能向下取整（OVG 内部还会 `round` 一次），宁可让描边内收半像素，也不能让外沿顶出控件边界。
+- 回归：`vgui_screenshot_test` 新增常驻场景 `button_styles_dark`（360×170，6 个按钮：SOLID 实心 r=12/r=20、SOLID 空心 bw=1/bw=3、GRADIENT r=12/pill bw=3）。逐像素对比修复前后：角部原本「亮边 + 灰暗晕圈」的两层结构变成单层贴合的亮边，暗晕消失。
+- 影响：所有带边框的纯色/渐变按钮圆角半径在描边层内收 0.5px，7 个截图基线（dock ×3、property grid ×2、asset browser ×2）一并更新，diff 均在 0.1%–0.36%、max_delta ≤ 30（仅边缘像素亮度变化）。

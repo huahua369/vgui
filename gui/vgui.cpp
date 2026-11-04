@@ -11593,13 +11593,13 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 
 	float x = w->abs_x, y = w->abs_y, ww = w->abs_w, hh = w->abs_h;
 
-	// 半径口径：向下取整，且不超过 min(w,h)/2。31px 高的胶囊若按 rounding 原值走，
-	// 半高是 15.5，取整成 16 会越过边界、两端圆弧自交，描边随之退化（端头那两条游离的
-	// 1px 竖线）。ovg_rounded_rectangle 内部已改成同一口径（先取整后夹），这里显式算一遍
-	// 是为了让底色、渐变、两条描边共用同一个半径值。
-	auto pill_radius = [](float rw, float rh, float r)
+	// 圆角半径口径：先定控件外轮廓半径 R（向下取整、不超过半高），各层按自身内缩量
+	// 同心递减成 R - inset。矩形内缩了、半径不跟着减，圆心就会偏移，描边在圆角处
+	// 要么探出填充轮廓、要么留出半像素宽的缝（rounding 越小越明显）。
+	const float r_outer = std::floor(std::min(rounding, std::min(ww, hh) * 0.5f));
+	auto ink_radius = [r_outer](float inset, float box_h)
 	{
-		return std::min(std::floor(r), std::floor(std::min(rw, rh) * 0.5f));
+		return std::max(0.0f, std::min(std::floor(r_outer - inset), std::floor(box_h * 0.5f)));
 	};
 
 	// 按下态视觉凹陷：背景整体下移 press_offset，与 text/icon 的按下偏移量对齐
@@ -11614,7 +11614,7 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 		float t2 = thickness > 1 ? thickness : 0.0f;
 		cb->set_source_color(vg, vgui_ovg_color(w->bg));
 		cb->rounded_rectangle(vg, x + t2, y + t2, ww - t2 * 2, hh - t2 * 2,
-			pill_radius(ww - t2 * 2, hh - t2 * 2, rounding));
+			ink_radius(t2, hh - t2 * 2));
 		cb->fill(vg);
 	}
 
@@ -11623,7 +11623,7 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	if (pad > 0)
 		cb->translate(vg, pad, pad);
 	vgui_paint_linear_rect(cb, vg,
-		x, y, ww - pad * 2, hh - pad * 2, pill_radius(ww - pad * 2, hh - pad * 2, rounding),
+		x, y, ww - pad * 2, hh - pad * 2, ink_radius(pad, hh - pad * 2),
 		gradTop, gradBot);
 	if (pad > 0)
 		cb->translate(vg, -pad, -pad);
@@ -11633,20 +11633,20 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	float half = line_w * 0.5f;
 	cb->set_line_width(vg, line_w);
 
-	// 上沿高光（不画底部）
+	// 上沿高光（不画底部）：矩形比下沿阴影矮 1px，底边被后画的阴影盖住，只留上沿
 	cb->set_source_color(vg, vgui_ovg_color(borderLight));
 	if (pushed)
 		cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w,
-			pill_radius(ww - line_w, hh - line_w, rounding));
+			ink_radius(half, hh - line_w));
 	else
 		cb->rounded_rectangle(vg, x + half, y + half + 1.0f, ww - line_w, hh - line_w - 1.0f,
-			pill_radius(ww - line_w, hh - line_w - 1.0f, rounding));
+			ink_radius(half, hh - line_w - 1.0f));
 	cb->stroke(vg);
 
 	// 下沿阴影（完整轮廓）
 	cb->set_source_color(vg, vgui_ovg_color(borderDark));
 	cb->rounded_rectangle(vg, x + half, y + half, ww - line_w, hh - line_w,
-		pill_radius(ww - line_w, hh - line_w, rounding));
+		ink_radius(half, hh - line_w));
 	cb->stroke(vg);
 
 	cb->restore(vg);
@@ -11688,12 +11688,19 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 				bg = vgui_mix_color(bg, ctx->theme.button_hover,
 					std::max(bs.hover_mix_min, w->hover_anim));
 		}
-		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+		// 圆角半径：填充和描边必须同心。描边路径内缩 bi 后，半径要同步减 bi，
+		// 否则两条弧半径相同、圆心却差 bi，描边外沿会在 45° 角部探到填充轮廓之外，
+		// 中间留下半像素缝（放大看就是角上多出一条比填充暗的边）。
+		// 半径只能向下取整，宁可内收半像素，不能让外沿顶出控件边界。
+		const float r_out = std::max(0.0f, std::floor(
+			std::min(w->rounding, std::min(w->abs_w, w->abs_h) * 0.5f)));
+		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, r_out, vgui_widget_color(w, bg));
 		if (w->border_width > 0)
 		{
 			float bi = w->border_width * 0.5f;
 			vgui_stroke_rect(cb, vg, w->abs_x + bi, w->abs_y + bi,
-				w->abs_w - w->border_width, w->abs_h - w->border_width, w->rounding,
+				w->abs_w - w->border_width, w->abs_h - w->border_width,
+				std::max(0.0f, std::floor(r_out - bi)),
 				vgui_widget_color(w, border), w->border_width);
 		}
 	}

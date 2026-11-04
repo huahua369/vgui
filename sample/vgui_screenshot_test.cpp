@@ -101,6 +101,7 @@ namespace {
 		{ "asset_browser_grid_light", 700, 520, true },
 		{ "asset_browser_list_dark", 700, 520, false },
 		{ "viewport_gizmo_dark", 760, 520, false },
+		{ "button_styles_dark", 360, 170, false },
 	};
 
 	// ---------------------------------------------------------------- 主题
@@ -1313,6 +1314,54 @@ namespace {
 		populate_assets(*st.assets, st.ui, grid, !grid);
 	}
 
+	void build_button_styles(scene_state& st, const scene_spec& spec)
+	{
+		vgui_widget* page = make_page(st.ui, spec, 0, st.theme);
+		vgui_widget_set_layout(page, VGUI_LAYOUT_ABSOLUTE);
+		vgui_widget_set_border(page, 0, 0);
+		vgui_widget_set_background(page, 0xFF23262B);
+
+		struct item_desc
+		{
+			const char* label; float x, y, w, h;
+			float rounding; float bw;
+			bool gradient; bool filled;
+		};
+		const uint32_t top = 0xFF4A8FE7, bot = 0xFF2D6FD9;
+		const uint32_t bl = 0xFF7DB8FF, bd = 0xFF0D2E66;
+		const uint32_t solid_bg = 0xFF2D6FD9, solid_bd = 0xFF7DB8FF;
+		const item_desc items[] = {
+			// SOLID：实心 + 1px 亮边（demo 里的 rounding=12 / 20）
+			{ "solid r=12", 16, 16, 150, 31, 12, 1, false, true },
+			{ "solid r=20", 186, 16, 150, 31, 20, 1, false, true },
+			// SOLID：透明填充，只剩边框（demo 的 border_width=1 / 3）
+			{ "ghost bw=1", 16, 66, 150, 31, 6, 1, false, false },
+			{ "ghost bw=3", 186, 66, 150, 31, 6, 3, false, false },
+			// GRADIENT
+			{ "grad r=12", 16, 116, 150, 31, 12, 1, true, true },
+			{ "grad pill", 186, 116, 150, 31, 999, 3, true, true },
+		};
+		for (const item_desc& it : items)
+		{
+			vgui_widget* b = vgui_widget_add(page, VGUI_BUTTON, it.label);
+			vgui_widget_set_pos(b, it.x, it.y);
+			vgui_widget_set_size(b, it.w, it.h);
+			vgui_widget_set_rounding(b, it.rounding);
+			vgui_widget_set_text_color(b, 0xFFFFFFFF);
+			if (it.gradient)
+			{
+				vgui_button_set_style(b, VGUI_BUTTON_STYLE_GRADIENT);
+				vgui_button_set_gradient(b, top, bot, top, bot, top, bot, bl, bd);
+				vgui_widget_set_border(b, 0, it.bw);
+			}
+			else
+			{
+				vgui_widget_set_background(b, it.filled ? solid_bg : 0);
+				vgui_widget_set_border(b, solid_bd, it.bw);
+			}
+		}
+	}
+
 	void build_viewport(scene_state& st, const scene_spec& spec)
 	{
 		vgui_widget* page = make_page(st.ui, spec, 8, st.theme);
@@ -1545,6 +1594,8 @@ namespace {
 				build_asset_browser(st, spec, false);
 			else if (std::strcmp(spec.name, "viewport_gizmo_dark") == 0)
 				build_viewport(st, spec);
+			else if (std::strcmp(spec.name, "button_styles_dark") == 0)
+				build_button_styles(st, spec);
 			else
 			{
 				vgui_destroy(ui);
