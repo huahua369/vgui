@@ -872,6 +872,99 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		return 0;
 	}
 
+	int test_layout_set_multiwindow()
+	{
+		using namespace vgui_editor_kit;
+
+		editor_layout_set set;
+		editor_layout& main = set.ensure("main");
+		main.dock_left_size = 230.0f;
+		main.dock_active[VGUI_DOCK_CENTER] = "viewport";
+		editor_dock_panel_layout panel;
+		panel.id = "outliner";
+		panel.zone = VGUI_DOCK_LEFT;
+		main.dock_panels.push_back(panel);
+
+		editor_layout& aux = set.ensure("aux-window");
+		aux.dock_left_size = 120.0f;
+		aux.dock_active[VGUI_DOCK_CENTER] = "console";
+		editor_dock_panel_layout panel2;
+		panel2.id = "console";
+		panel2.zone = VGUI_DOCK_CENTER;
+		aux.dock_panels.push_back(panel2);
+		set.windows[1].has_rect = true;
+		set.windows[1].x = 970;
+		set.windows[1].y = 130;
+		set.windows[1].width = 720;
+		set.windows[1].height = 480;
+
+		if (set.windows.size() != 2 || &set.ensure("main") != &main)
+			return fail("layout set ensure/find");
+		if (set.find("missing") != nullptr)
+			return fail("layout set missing id");
+
+		std::string err;
+		const std::string text = editor_layout_set_to_json(set);
+		editor_layout_set parsed;
+		if (!editor_layout_set_from_json(text, parsed, &err))
+			return fail("layout set roundtrip parse");
+		if (parsed.version != editor_layout_set::current_version ||
+			parsed.windows.size() != 2 ||
+			parsed.windows[0].id != "main" || parsed.windows[1].id != "aux-window")
+			return fail("layout set roundtrip windows");
+		if (std::fabs(parsed.windows[0].layout.dock_left_size - 230.0f) > 0.01f ||
+			std::fabs(parsed.windows[1].layout.dock_left_size - 120.0f) > 0.01f)
+			return fail("layout set keeps per-window dock sizes");
+		if (parsed.windows[0].layout.dock_active[VGUI_DOCK_CENTER] != "viewport" ||
+			parsed.windows[1].layout.dock_active[VGUI_DOCK_CENTER] != "console")
+			return fail("layout set keeps per-window active panels");
+		if (parsed.windows[0].layout.dock_panels.size() != 1 ||
+			parsed.windows[0].layout.dock_panels[0].id != "outliner")
+			return fail("layout set keeps per-window panels");
+		if (!parsed.windows[1].has_rect || parsed.windows[1].x != 970 ||
+			parsed.windows[1].width != 720 || parsed.windows[1].height != 480)
+			return fail("layout set keeps window rectangle");
+		if (parsed.windows[0].has_rect)
+			return fail("layout set does not invent rectangles");
+
+		/* Legacy v1..v7 files are a single editor_layout object. */
+		editor_layout legacy;
+		legacy.version = 7;
+		legacy.dock_left_size = 260.0f;
+		editor_layout_set imported;
+		if (!editor_layout_set_from_json(editor_layout_to_json(legacy), imported, &err))
+			return fail("layout set imports legacy file");
+		if (imported.version != editor_layout_set::current_version ||
+			imported.windows.size() != 1 || imported.windows[0].id != "main" ||
+			std::fabs(imported.windows[0].layout.dock_left_size - 260.0f) > 0.01f)
+			return fail("layout set legacy mapping");
+
+		editor_layout_set bad;
+		if (editor_layout_set_from_json("{\"version\":9,\"windows\":[]}", bad, &err))
+			return fail("layout set rejects future version");
+		if (editor_layout_set_from_json("{\"version\":8}", bad, &err))
+			return fail("layout set rejects missing windows");
+		if (editor_layout_set_from_json(
+			"{\"version\":8,\"windows\":[{\"id\":\"main\",\"layout\":{\"version\":7}},"
+			"{\"id\":\"main\",\"layout\":{\"version\":7}}]}", bad, &err))
+			return fail("layout set rejects duplicate ids");
+
+		std::error_code ec;
+		const std::filesystem::path path =
+			std::filesystem::temp_directory_path() / "vgui_layout_set_test.json";
+		std::filesystem::remove(path, ec);
+		if (!editor_layout_set_save_file(path.string(), set, &err))
+			return fail("layout set save file");
+		editor_layout_set loaded;
+		if (!editor_layout_set_load_file(path.string(), loaded, &err))
+			return fail("layout set load file");
+		if (loaded.windows.size() != 2 ||
+			std::fabs(loaded.windows[1].layout.dock_left_size - 120.0f) > 0.01f)
+			return fail("layout set file roundtrip");
+		std::filesystem::remove(path, ec);
+		return 0;
+	}
+
 	int test_commands_and_menus()
 	{
 		using namespace vgui_editor_kit;
@@ -14823,6 +14916,8 @@ int main()
 	if (int rc = test_command_merge_and_failures())
 		return rc;
 	if (int rc = test_layout_persistence())
+		return rc;
+	if (int rc = test_layout_set_multiwindow())
 		return rc;
 	if (int rc = test_commands_and_menus())
 		return rc;

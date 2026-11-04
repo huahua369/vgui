@@ -265,6 +265,57 @@ shell.save_layout("user/editor_layout.json");
 
 也可以使用 `capture_layout()` / `apply_layout()` 在内存中交换布局，或调用 `reset_layout()` 恢复默认布局。
 
+### 多窗口宿主
+
+一个进程可以开多个 OS 窗口：每个 `os_window` 有独立的 `gui_viewport`（独立的 `vgui_context` 与键盘状态）、独立的 `vg_fbo_t`，SDL3 后端按 `SDL_WindowID` 路由事件。每窗口可以各挂一个 `VGUI_DOCK`，两棵树的面板、拖拽状态与 item id 互不相干。
+
+`vgui/backend/vgui_multiwindow.h` 的 `multiwindow_host` 封装了帧循环里唯一不直观的部分：
+
+```cpp
+#include <vgui/backend/vgui_multiwindow.h>
+
+auto* wg = new app_mgr();
+auto* cb = new_ctx_cb();
+wg->init_gpu(true);
+os_window* a = wg->create("main", 900, 620, 0, true);
+os_window* b = wg->create("aux",  720, 480, 0, true);
+vgui_context* uia = vgui_create(familys, 16.0f);
+vgui_context* uib = vgui_create(familys, 16.0f);
+build_dock(uia, ...);  build_dock(uib, ...);
+
+multiwindow_host host(wg, cb);
+host.attach(a, uia);
+host.attach(b, uib);
+
+while (running) {
+    if (wg->get_event() < 0) running = false;
+    host.begin_frame(delta);  // 同步尺寸、清空各窗口画布、vgui_update
+    host.draw_all();          // 或自己遍历 host.slots() 调用 vgui_draw
+    host.end_frame();         // 一帧内一次提交，每个 fbo 一个 render pass
+}
+```
+
+两条硬约束：
+
+- **每个窗口必须有自己的 `rvg_t`**。`get_draw_list()` 返回的 `ovg_draw_data_t` 内部全是指向 rvg 缓冲的裸指针，共用一个 rvg 会让所有窗口画同一份内容。`attach()` 为每个窗口单独 `new_rvg()`。
+- **不要逐窗口调用 `vgpu_acquire_swapchain()`**。它持有单个 `current_cmd`，第二次调用会先提交第一次的命令缓冲。正确做法是把每个窗口的 draw data（各自带 `fbo`）一次性交给 `vgpu_render_frame()`，由它在一个 command buffer 内按 FBO 顺序编码 pass。`end_frame()` 就是这个流程。
+
+验证示例：`sample/vgui_multiwindow_demo.cpp`（两个窗口各一个 Dock）。跑 `VGUI_MW_FRAMES=90 vgui_multiwindow_demo` 会渲染 90 帧后打印 21 条自检并退出；GPU 或窗口创建失败时返回 77。因为需要真实 GPU 窗口，它没有注册到 ctest。
+
+布局持久化方面，`editor_layout_set`（JSON 版本 8）把布局按窗口 id 分组：
+
+```cpp
+vgui_editor_kit::editor_layout_set set;
+set.ensure("main") = shell_a.capture_layout();
+set.ensure("aux-window") = shell_b.capture_layout();
+set.windows[1].has_rect = true;  // 可选：记住 OS 窗口矩形
+editor_layout_set_save_file("user/layout.json", set);
+```
+
+版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
+
+**当前边界**：多窗口并存（每窗口一个 Dock）已支持；Dock 的浮动面板仍是主窗口内自绘的浮层，不是独立 OS 窗口，面板也不能跨窗口拖动。详见 `docs/dock_multiwindow_assessment.md`。
+
 ### 文档生命周期（S08）
 
 File 菜单和快捷键通过 `document_handlers` 转发到宿主文档模型，不需要逐个替换命令：

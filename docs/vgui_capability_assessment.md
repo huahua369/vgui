@@ -90,6 +90,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **无障碍（E05）**：完整键盘导航、焦点陷阱（Tab/Shift+Tab 在陷阱祖先内循环，模态/弹出层/浮动 Dock 自动开启）、`F10` 菜单栏、`F6`/`Shift+F6` 焦点漫游、高对比度主题（`Ctrl+Shift+H`）；`vgui_a11y_role/state/info` 推导角色/名称/值/状态，屏幕阅读器经 `a11y_listener` 接收焦点/值/状态/选中/告警事件（Toast 自动公告）；不实现平台 UIA/AT-SPI provider
 
 ### 4.2 缺的功能 / 短板
+- **Dock 浮动面板不是独立 OS 窗口 / 面板不能跨窗口拖动（B、C 目标仍缺）**：`VGUI_DOCK_FLOATING` 是同一 Dock 控件内自绘的浮层，被 `vgui_dock_clamp_rect()` 夹在 dock 矩形内；面板 id 是 per-dock 局部自增、页面是绑定 `vgui_context` 的裸指针，跨窗口引用会误命中或被 `vgui_dock_add()` 拒绝。**「多窗口并存」（每窗口各一个 Dock）已于 2026-11-04 实现**，见 §7.15 与 `docs/dock_multiwindow_assessment.md`
 - **Dock 标签图标与右键上下文菜单**：路线图明确仍缺（未实现）
 - **菜单项图标（已实现）**：`vgui_menu_set_item_icon`（图片纹理）/ `vgui_menu_set_item_emoji`（emoji/UTF-8 字形），任一菜单有图标时统一预留图标列、LTR/RTL 自动镜像；菜单内容可经 add/remove/clear/set_item_* API 运行时动态重建
 - **原生（OS）菜单**：仍缺（vgui 菜单为自绘浮层，无系统原生菜单）
@@ -231,3 +232,12 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - 半径变化：描边层半径由 `R` 变为 `floor(R - bw/2)`，`bw=1` 时减 0.5、`bw=3` 时减 1.5，向下取整后小圆角（r=3~6）会瘦 1px——这是保持同心的必要代价，圆角越小越要减，否则角部仍会错开。
 - 回归：`sample/ovg_tools_test.cpp` 新增 frame 场景（外轮廓 70×31、r=8、bw=3），7 条像素断言：外侧一列必须是背景、描边内侧为纯白、中部为填充色、角部被切掉。对照实验（把调用换回骑线写法）会让其中 5 条失败，证明断言有效。检查数 105 → 112。
 - 影响：`vgui_screenshot_test` 10/12 场景基线更新，diff 0.053%–1.536%、max_delta ≤ 184，全部集中在边框轮廓（面板外沿、卡片环、drop compass 圆角）；`button_styles_dark`、`viewport_gizmo_dark` 无变化。ctest 3/3、ovg_tools 112 / model / editor_kit / c_api / chart / runtime_embed / edit 全 PASS。
+
+### 7.15 多窗口并存（Dock 专项评估目标 A，2026-11-04）
+- 起于 `docs/dock_multiwindow_assessment.md` 的三层结论：SDL3 后端已具备多窗口骨架，core `VGUI_DOCK` 是单窗口模型，editor kit 与布局 JSON 假定单根窗口。按建议先实施**目标 A（一个进程多个 OS 窗口，每窗口各一棵 widget 树 / 一个 Dock）**，`gui/vgui.cpp` 与 `vgui.h` 零改动。
+- **新增公共能力**：`include/vgui/backend/vgui_multiwindow.h` 的 header-only `multiwindow_host`（`attach/detach/prune/begin_frame/draw_all/end_frame`）。每个窗口单独 `new_rvg()`——`get_draw_list()` 返回的是指向 rvg 内部 vector 的裸指针，共用一个 rvg 会让所有窗口画同一份内容；`end_frame()` 把带各自 fbo 的 draw data 一次性交给 `vgpu_render_frame()`（一帧内按 FBO 分 pass 提交），**不能**逐窗口调 `vgpu_acquire_swapchain()`（它只有一份 `current_cmd`）。
+- **后端修正**：`gui_viewport` 增加独立 `key_state`（原来所有窗口共享 `app_mgr::_mouse_key`，修饰键状态会串）；`create()/create2()` 设置 `main_window`（此前从未赋值，`pump_gamepad()` 实际是死代码）；新增 `focus_viewport()` 让手柄导航跟随键盘焦点窗口；`destroy()` 清理 `main_window` / `active_viewport_` / `children` 的悬垂指针。
+- **布局持久化 v8**：`editor_layout_set` / `editor_window_layout` 按窗口 id 分组，可附带 OS 窗口矩形；JSON `{"version":8,"windows":[...]}`，v1–v7 单布局文件自动导入为 `id="main"` 的一个窗口，内嵌 layout 仍按自身版本校验。`windows` 用 `std::deque`，保证 `ensure()` 返回的引用在后续插入后不失效。
+- **新增示例与测试**：`sample/vgui_multiwindow_demo.cpp`（两个真实 GPU 窗口各一个 Dock，`VGUI_MW_FRAMES=N` 有界自检，21 条断言，GPU 不可用返回 77；因依赖显示设备未注册 ctest）；`vgui_model_test::test_dock_multi_context()` 7 条常驻断言；`vgui_editor_kit_test::test_layout_set_multiwindow()`（v8 往返 / 旧版导入 / 畸形拒绝 / 文件 IO）。README 新增「多窗口宿主」章节。
+- **实机验证**：双窗口 90 帧自检 21/21 PASS，两窗口绘制命令 71 vs 49（缓冲与内容独立），关闭副窗口后主窗口继续渲染、Dock 状态完好。全量构建通过；model 908 / editor_kit / ovg_tools / c_api / chart / runtime_embed / edit 全 PASS；ctest 3/3；**截图基线零变化**。
+- **仍缺**：B（浮动面板变真 OS 窗口）与 C（跨窗口拖放停靠）未实施，core 的 5 条硬阻塞全在；`docking_mgr::viewports_enabled` 仍未接线（C 才需要）；文件对话框父窗口仍取全局焦点（A 阶段够用）。

@@ -598,12 +598,13 @@ os_window* app_mgr::create(const char* title, int w, int h, uint32_t iflags, boo
 		pce::set_property(window, "osw.ptr", win.get());
 		win->id = SDL_GetWindowID(window);
 		win->viewport = new gui_viewport();
-		win->viewport->io.mks = &_mouse_key;
+		win->viewport->io.mks = &win->viewport->key_state;
 		win->viewport->io.ime_rect = &win->viewport->ime_rect;
 
 		SDL_ClaimWindowForGPUDevice(device, window);
 		p = win.get();
 		windows_.push_back(std::move(win));
+		if (!main_window) main_window = p;
 		SDL_GPUPresentMode chosen = SDL_GPU_PRESENTMODE_VSYNC; // 垂直同步
 		if (!vsync)
 		{
@@ -667,7 +668,7 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		pce::set_property(window, "osw.ptr", p);
 		win->id = SDL_GetWindowID(window);
 		win->viewport = new gui_viewport();
-		win->viewport->io.mks = &_mouse_key;
+		win->viewport->io.mks = &win->viewport->key_state;
 		win->viewport->io.ime_rect = &win->viewport->ime_rect;
 		if (iflags & ef_popup)
 			win->type = WindowType::PopupMenu;
@@ -680,6 +681,8 @@ os_window* app_mgr::create2(const char* title, int x, int y, int w, int h, uint3
 		}
 		SDL_ClaimWindowForGPUDevice(device, window);
 		windows_.push_back(std::move(win));
+		// Popups and tooltips are children, never the main window.
+		if (!main_window && !(iflags & (ef_popup | ef_tooltip))) main_window = p;
 		auto format = SDL_GetGPUSwapchainTextureFormat(device, window);
 		if (!vgctx)
 		{
@@ -792,9 +795,24 @@ os_window* app_mgr::find(uint32_t id) {
 void app_mgr::destroy(uint32_t id) {
 	for (auto it = windows_.begin(); it != windows_.end(); ++it) {
 		if ((*it)->id == id) {
-			SDL_ReleaseWindowFromGPUDevice(device, it->get()->window);
-			if ((*it)->parent == 0)
-				SDL_DestroyWindow(it->get()->window);
+			os_window* victim = it->get();
+			SDL_ReleaseWindowFromGPUDevice(device, victim->window);
+			if (victim->parent == 0)
+				SDL_DestroyWindow(victim->window);
+			// Never leave main_window / active_viewport_ / children pointing at
+			// a window that is about to be freed (multi-window hosts close
+			// windows in arbitrary order).
+			if (active_viewport_ == victim->viewport) active_viewport_ = nullptr;
+			for (auto& w : windows_) {
+				if (w.get() == victim) continue;
+				for (auto cit = w->children.begin(); cit != w->children.end();)
+					cit = (*cit == victim) ? w->children.erase(cit) : cit + 1;
+			}
+			if (main_window == victim) {
+				main_window = nullptr;
+				for (auto& w : windows_)
+					if (!w->parent) { main_window = w.get(); break; }
+			}
 			windows_.erase(it);
 			return;
 		}
@@ -928,6 +946,21 @@ void et2key(const SDL_Event* e, keyboard_et* ekm)
 gui_io_state_t* app_mgr::io()
 {
 	return active_viewport_ ? &active_viewport_->io : nullptr;
+}
+gui_viewport* app_mgr::focus_viewport() const
+{
+	SDL_Window* focus = SDL_GetKeyboardFocus();
+	if (!focus) focus = SDL_GetMouseFocus();
+	if (focus)
+	{
+		for (const auto& w : windows_)
+			if (w->window == focus && w->viewport && w->viewport->ui)
+				return w->viewport;
+	}
+	if (active_viewport_ && active_viewport_->ui) return active_viewport_;
+	if (main_window && main_window->viewport && main_window->viewport->ui)
+		return main_window->viewport;
+	return nullptr;
 }
 void app_mgr::process_event(const SDL_Event* e)
 {
@@ -1222,8 +1255,9 @@ void app_mgr::pump_gamepad()
 		return;
 	}
 
-	gui_viewport* vp = (main_window && main_window->viewport)
-		? main_window->viewport : nullptr;
+	// Follow the focused OS window instead of hard-coding the first one:
+	// gamepad navigation must land in the window the user is looking at.
+	gui_viewport* vp = focus_viewport();
 	if (!vp || !vp->ui)
 		return;
 	vgui_context* ui = vp->ui;

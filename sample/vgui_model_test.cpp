@@ -5083,6 +5083,58 @@ static void test_file_dialog(vgui_context* ctx)
 	check(vgui_file_dialog_available() == 1, "file dialog: provider restored");
 }
 
+// Two vgui_context instances can each own a Dock.  This locks down the
+// ownership boundaries documented in docs/dock_multiwindow_assessment.md:
+// item ids are local to each dock and pages cannot cross contexts.
+static void test_dock_multi_context(font_familys_t* familys)
+{
+	vgui_context* a = vgui_create(familys, 16.0f);
+	vgui_context* b = vgui_create(familys, 16.0f);
+	vgui_context_set_size(a, 900, 700);
+	vgui_context_set_size(b, 900, 700);
+	vgui_widget_set_layout(vgui_root(a), VGUI_LAYOUT_ABSOLUTE);
+	vgui_widget_set_layout(vgui_root(b), VGUI_LAYOUT_ABSOLUTE);
+
+	vgui_widget* da = vgui_widget_add(vgui_root(a), VGUI_DOCK, nullptr);
+	vgui_widget* db = vgui_widget_add(vgui_root(b), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(da, 0, 0); vgui_widget_set_size(da, 900, 700);
+	vgui_widget_set_pos(db, 0, 0); vgui_widget_set_size(db, 900, 700);
+
+	vgui_dock_panel_desc d;
+	vgui_dock_panel_desc_default(&d);
+	d.id = "pa"; d.title = "PA"; d.panel = vgui_widget_add(vgui_root(a), VGUI_PANEL, nullptr);
+	vgui_item_id ia = vgui_dock_add(da, &d);
+	vgui_dock_panel_desc_default(&d);
+	d.id = "pb"; d.title = "PB"; d.panel = vgui_widget_add(vgui_root(b), VGUI_PANEL, nullptr);
+	vgui_item_id ib = vgui_dock_add(db, &d);
+
+	check(ia != 0 && ib != 0, "dock: two contexts each own a dock");
+	check(ia == ib, "dock: item ids are local to their dock");
+	const char* alias = vgui_dock_get_title(db, ia);
+	check(alias && std::strcmp(alias, "PB") == 0,
+		"dock: local ids collide across docks (never pass them between windows)");
+
+	vgui_dock_panel_desc_default(&d);
+	d.id = "cross"; d.title = "CROSS";
+	d.panel = vgui_widget_add(vgui_root(b), VGUI_PANEL, nullptr);
+	check(vgui_dock_add(da, &d) == 0, "dock: refuses a page from another context");
+
+	vgui_dock_float(da, ia, 5000, 5000, 400, 300);
+	float fx = 0, fy = 0, fw = 0, fh = 0;
+	vgui_dock_get_floating_rect(da, ia, &fx, &fy, &fw, &fh);
+	check(fx >= 0 && fy >= 0 && fx + fw <= 900.5f && fy + fh <= 700.5f,
+		"dock: floating frames stay inside the dock rectangle");
+
+	vgui_widget* detached = vgui_dock_detach(da, ia);
+	vgui_dock_panel_desc_default(&d);
+	d.id = "moved"; d.title = "MOVED"; d.panel = detached;
+	check(vgui_dock_add(db, &d) == 0, "dock: detached page still belongs to its context");
+	check(vgui_dock_get_count(db) == 1, "dock: context B is unaffected by context A");
+
+	vgui_destroy(a);
+	vgui_destroy(b);
+}
+
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
@@ -5127,6 +5179,7 @@ int main()
 	test_dock(ui, style);
 	test_dock_bottom_roundtrip(ui, style);
 	test_dock_float_square(ui, style);
+	test_dock_multi_context(familys);
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);
 	test_popup(ui);

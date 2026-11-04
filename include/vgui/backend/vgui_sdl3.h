@@ -74,6 +74,10 @@ struct PlatformMonitor
 
 struct gui_viewport {
 	gui_io_state_t io = {};
+	// Per-window keyboard state.  io.mks points here.  All viewports used to
+	// share one app_mgr-level state, which leaked modifier keys and key-down
+	// edges between windows once a host opened more than one OS window.
+	gui_io_mk_state key_state = {};
 	// Retained C API tree attached to this window.  The viewport owns the
 	// context and destroys it together with the window.
 	vgui_context* ui = nullptr;
@@ -190,6 +194,8 @@ public:
 	// re-register them afterwards.  The old context is retired for one more call
 	// so those queued frees still find a live context.
 	int set_msaa_samples(int samples);
+	// Legacy shared key state.  Kept for source compatibility with hosts that
+	// referenced it directly; new viewports own their key_state instead.
 	gui_io_mk_state _mouse_key = {};
 	gui_viewport* active_viewport_ = 0;
 	docking_mgr docking_ = {};
@@ -244,6 +250,11 @@ public:
 	int get_event();
 	void process_event(const SDL_Event* e);
 	gui_io_state_t* io();
+	// The viewport of the OS window that currently has keyboard focus.  Falls
+	// back to the last event target, then to the first (main) window.  Returns
+	// nullptr when no window has a UI tree attached.  Use this instead of
+	// main_window for host-level input that should follow the active window.
+	gui_viewport* focus_viewport() const;
 	docking_mgr& docking();
 	void set_defcursor(cursor_st t);
 private:

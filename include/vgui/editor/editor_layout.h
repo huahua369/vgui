@@ -24,6 +24,7 @@
  * format so existing user layouts keep working.
  */
 #include <array>
+#include <deque>
 #include <string>
 #include <vector>
 
@@ -117,5 +118,58 @@ namespace vgui_editor_kit {
 		std::string* error = nullptr);
 	bool editor_layout_save_file(const std::string& path, const editor_layout& layout,
 		std::string* error = nullptr);
+
+	/* ---------------------------------------------------------------------
+	 * Version 8: a set of layouts, one per OS window.  A multi-window editor
+	 * host creates one editor_shell per window and captures each shell into
+	 * its own slot; the window id is host-defined and must be stable across
+	 * restarts (for example "main", "outliner-window").
+	 *
+	 * The file format is {"version":8,"windows":[{"id",...,"layout":{...}}]}.
+	 * Files at version 1..7 are a single editor_layout object and are
+	 * imported as one window with id "main", so existing user layouts keep
+	 * working.  The embedded layout still carries its own version (<= 7) so
+	 * editor_layout_from_json() can keep validating it.
+	 *
+	 * A slot may also remember its OS window rectangle.  It is informational:
+	 * libvgui owns no windowing code, so restoring the rectangle is the
+	 * host's job (SDL_SetWindowPosition / SDL_SetWindowSize).
+	 */
+	struct editor_window_layout
+	{
+		std::string id = "main";
+		bool has_rect = false;
+		int x = 0;
+		int y = 0;
+		int width = 0;
+		int height = 0;
+		editor_layout layout;
+	};
+
+	struct editor_layout_set
+	{
+		static constexpr int current_version = 8;
+		static constexpr int legacy_max_version = 7;
+
+		int version = current_version;
+		// deque keeps element addresses stable across push_back, so a
+		// reference returned by ensure() stays valid when more windows are
+		// added later.
+		std::deque<editor_window_layout> windows;
+
+		editor_layout* find(const std::string& id);
+		const editor_layout* find(const std::string& id) const;
+		// Returns the existing slot or creates an empty one.
+		editor_layout& ensure(const std::string& id);
+	};
+
+	std::string editor_layout_set_to_json(const editor_layout_set& set);
+	bool editor_layout_set_from_json(const std::string& text, editor_layout_set& out,
+		std::string* error = nullptr);
+
+	bool editor_layout_set_load_file(const std::string& path, editor_layout_set& out,
+		std::string* error = nullptr);
+	bool editor_layout_set_save_file(const std::string& path,
+		const editor_layout_set& set, std::string* error = nullptr);
 
 } /* namespace vgui_editor_kit */

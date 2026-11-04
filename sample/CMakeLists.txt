@@ -7,6 +7,11 @@ set(SRC_DEMO
     vgui_demo.cpp
 )
 
+# 多窗口宿主示例（两个独立 OS 窗口各挂一个 vgui_context / Dock）
+set(SRC_MULTIWINDOW_DEMO
+    vgui_multiwindow_demo.cpp
+)
+
 # 编辑框行为自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_EDIT_TEST
     vgui_edit_test.cpp
@@ -151,6 +156,13 @@ if(VGUI_BUILD_EDITOR_KIT)
     target_link_libraries(vgui_demo PRIVATE vgui::editor_kit)
     target_compile_definitions(vgui_demo PRIVATE VGUI_DEMO_HAS_EDITOR_KIT=1)
 endif()
+
+# 双窗口验证：每个窗口独立的 vgui_context / FBO / rvg，一帧统一提交。
+# 需要真实 GPU 窗口，因此不注册到 ctest（CI 未必有显示设备）；用
+# VGUI_MW_FRAMES=90 跑有界自检，GPU/窗口创建失败时返回 77。
+add_executable(vgui_multiwindow_demo ${SRC_MULTIWINDOW_DEMO})
+target_link_libraries(vgui_multiwindow_demo PRIVATE vgui_sample_common vgui::vgui
+    SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
 endif()
 
 add_executable(vgui_model_test ${SRC_MODEL_TEST})
