@@ -3909,11 +3909,22 @@ static void tear_off_to_floating(vgui_item_id panel)
 	if (!g.shell) return;
 	vgui_widget* main_dock = g.shell->dock();
 	if (!main_dock) return;
+	/* 幂等保护：实时拖出 + 松手回调可能对同一面板各入队一次；面板已经
+	 * 在浮动窗口里、或已不在主 Dock 中时，直接忽略，避免重复开窗/丢页面。 */
+	if (g.floaters.count(panel)) return;
+	if (vgui_dock_get_index(main_dock, panel) < 0) return;
 
 	const bool is_gameview = (panel == g.gameview_panel);
-	const char* title = is_gameview ? "GAME VIEW"
+	/* 标题 / 面板字符串 id 必须在 detach 之前拷出来：vgui_dock_get_title()
+	 * 返回的是 Dock 内部 vector 里 panel 元素的 c_str()，vgui_dock_detach()
+	 * 会 erase 该元素，之后再读这个指针就是悬空内存（会把别的面板的名字，
+	 * 比如 "Code"，当成标题读出来）。 */
+	const char* title_raw = is_gameview ? "GAME VIEW"
 		: vgui_dock_get_title(main_dock, panel);
-	if (!title) title = "PANEL";
+	std::string title_str = title_raw ? title_raw : "PANEL";
+	const char* id_raw = is_gameview ? "gameview" : vgui_dock_get_id(main_dock, panel);
+	std::string id_str = id_raw ? id_raw : "";
+	const char* title = title_str.c_str();
 
 	/* 从主 Dock 摘出：游戏视图销毁旧页面（稍后重建到浮动上下文）；其它面板
 	 * 只 detach，保留真实页面在主上下文。 */
@@ -4012,9 +4023,10 @@ static void tear_off_to_floating(vgui_item_id panel)
 	fw.dock = dock;
 	fw.title_bar = title_bar;
 	fw.panel = panel;
-	fw.id = is_gameview ? "gameview"
-		: (vgui_dock_get_id(main_dock, panel) ? vgui_dock_get_id(main_dock, panel) : "");
-	fw.title = title;
+	/* 用 detach 之前拷出来的 id_str：此时面板已不在主 Dock 里，
+	 * vgui_dock_get_id(main_dock, panel) 只会返回 nullptr。 */
+	fw.id = id_str;
+	fw.title = title_str;
 	fw.is_gameview = is_gameview;
 	fw.orphan_page = orphan_page;
 	fw.origin_zone = origin_zone;
@@ -4048,8 +4060,8 @@ static void tear_off_to_floating(vgui_item_id panel)
 		g.gameview.window = win;
 		g.gameview.dock = dock;
 	}
-	printf("tear-off panel=%llu -> floating window %dx%d at (%d,%d) gameview=%d\n",
-		(unsigned long long)panel, width, height, px, py, is_gameview ? 1 : 0);
+	printf("tear-off panel=%llu title=%s -> floating window %dx%d at (%d,%d) gameview=%d\n",
+		(unsigned long long)panel, title, width, height, px, py, is_gameview ? 1 : 0);
 	fflush(stdout);
 }
 
@@ -4662,11 +4674,26 @@ int main()
 		 * tear_off 兜底会真正触发（不像 ALLOW_TEAROFF 那样直接入队，绕过
 		 * 拖动状态机）。 */
 		if (max_frames > 0 && frame == max_frames / 6 && g.shell &&
-			g.gameview_panel && g.floaters.empty() &&
-			std::getenv("VGUI_SIM_DRAG"))
+			g.floaters.empty() && std::getenv("VGUI_SIM_DRAG"))
 		{
+			/* 取值为面板字符串 id（如 "nodegraph"）；未知名则退回游戏视图。 */
+			const char* want = std::getenv("VGUI_SIM_DRAG");
+			vgui_item_id target = 0;
+			if (want && want[0] && !(want[0] == '1' && !want[1]))
+			{
+				const char* wid = nullptr;
+				const vgui_item_id found = vgui_dock_find(g.shell->dock(), want);
+				if (found) { target = found; wid = want; }
+				if (target)
+				{
+					printf("PROBE sim drag target id=%s panel=%llu\n", wid,
+						(unsigned long long)target);
+					fflush(stdout);
+				}
+			}
+			if (!target) target = g.gameview_panel;
 			float tx = 0, ty = 0, tw = 0, th = 0;
-			if (vgui_dock_get_tab_rect(g.shell->dock(), g.gameview_panel,
+			if (target && vgui_dock_get_tab_rect(g.shell->dock(), target,
 					&tx, &ty, &tw, &th) && tw > 0.0f)
 			{
 				const float pr = form->pixel_ratio() > 0.0f
