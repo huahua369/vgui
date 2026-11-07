@@ -10497,9 +10497,15 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		{
 			/* Dropped outside the dock's window: tear the panel off into its
 			 * own OS window.  The host only queues this; it creates the window
-			 * later, after the frame, so we must not also float/move it here. */
-			if (lx < 0.0f || ly < 0.0f ||
-				lx > target->abs_w || ly > target->abs_h)
+			 * later, after the frame, so we must not also float/move it here.
+			 * Bounds are the window's, not the dock rectangle: a drop between
+			 * the dock's edge and the window edge still floats.  Headless
+			 * contexts (width == 0) only treat negative coordinates as out. */
+			const bool outside_win =
+				x < 0.0f || y < 0.0f ||
+				(ctx->width > 0 && x >= (float)ctx->width) ||
+				(ctx->height > 0 && y >= (float)ctx->height);
+			if (outside_win)
 			{
 				vgui_dock_notify_tear_off(target, drag_panel, lx, ly);
 			}
@@ -12548,7 +12554,7 @@ static void vgui_draw_image_geometry(ovg_ctx_cb* cb, rvg_t* vg, vg_image_t* text
 		sw <= 0 || sh <= 0 || dst_w <= 0.0f || dst_h <= 0.0f)
 		return;
 
-	static const uint32_t quad_indices[6] = { 0, 1, 2, 0, 2, 3 };
+	static const uint32_t quad_indices[6] = { 0, 1, 2, 2, 1, 3 };
 	static const uint32_t slice_indices[54] = {
 		0, 8, 12, 8, 12, 4, 12, 4, 14, 4, 14, 6, 14, 6, 2, 6, 2, 10,
 		6, 7, 10, 7, 10, 11, 4, 5, 6, 5, 6, 7, 8, 9, 4, 9, 4, 5,
