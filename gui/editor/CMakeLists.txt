@@ -12,6 +12,21 @@ set(VGUI_EDITOR_KIT_SOURCES
     console_view.cpp
     curve_editor.cpp
     drag_bridge.cpp
+    editor_c_api_assets.cpp
+    editor_c_api_canvas.cpp
+    editor_c_api_code.cpp
+    editor_c_api_console.cpp
+    editor_c_api_context.cpp
+    editor_c_api_editors.cpp
+    editor_c_api_nodegraph.cpp
+    editor_c_api_properties.cpp
+    editor_c_api_shell.cpp
+    editor_c_api_thumbnails.cpp
+    editor_c_api_timeline.cpp
+    editor_c_api_util.cpp
+    editor_c_api_viewport.cpp
+    editor_c_api_views.cpp
+    editor_c_api_widgets.cpp
     editor_context.cpp
     editor_layout.cpp
     editor_shell.cpp

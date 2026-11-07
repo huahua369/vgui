@@ -157,6 +157,9 @@ if(VGUI_INSTALL)
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
 
     if(VGUI_BUILD_EDITOR_KIT)
+        # 编辑器组件的纯 C 门面（与 vgui.h 同目录），实现在 vgui_editor_kit 中。
+        install(FILES include/vgui/vgui_editor.h
+            DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
         install(DIRECTORY include/vgui/editor
             DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/vgui)
     endif()

@@ -118,6 +118,7 @@ if(VGUI_BUILD_EDITOR_KIT)
         "${VGUI_SOURCE_DIR}/include/vgui/editor/*.h")
     list(APPEND VGUI_PUBLIC_HEADERS
         ${VGUI_PUBLIC_EDITOR_HEADERS}
+        "${VGUI_SOURCE_DIR}/include/vgui/vgui_editor.h"
         "${VGUI_SOURCE_DIR}/include/vgui_editor_kit.h")
 endif()
 if(VGUI_BUILD_CHART)
@@ -198,6 +199,17 @@ endif()
 
 add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
 target_link_libraries(vgui_editor_kit_test PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
+
+# 编辑器组件纯 C 门面（vgui_editor.h）以 C 编译并链接 vgui::editor_kit。
+add_executable(vgui_editor_c_api_test
+    vgui_editor_c_api_test.c
+    vgui_editor_c_api_test_views.c
+    vgui_editor_c_api_test_data.c
+    vgui_editor_c_api_test_shell.c)
+target_link_libraries(vgui_editor_c_api_test PRIVATE
+    vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
+set_target_properties(vgui_editor_c_api_test PROPERTIES LINKER_LANGUAGE CXX)
+add_test(NAME vgui_editor_c_api COMMAND vgui_editor_c_api_test)
 
 if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})

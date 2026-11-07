@@ -885,6 +885,41 @@ SDL_GPUTexture* depth = phase0_view_depth_preview_texture(main);
 
 `editor_shell` 在 VIEWPORT 停靠页内提供主视口、第二相机视口和深度预览视口，第二视口拥有独立的 `preview_camera()`，宿主可通过 `viewport_settings()` / `set_viewport_settings()` 同步渲染设置。View 菜单新增 `view.hdr`、`view.msaa`（1↔4）和 `view.depth`；`vgui_game_editor` 用主相机渲染主视口、用独立的俯视相机渲染第二视口，两者共享实例与管线，深度视口绑定主视口的深度可视化纹理。
 
+### 编辑器组件纯 C 接口（vgui_editor.h）
+
+`include/vgui/vgui_editor.h` 与 `vgui.h` 同目录，是编辑器组件层（`vgui_editor_kit`）的纯 C99/C11 门面：C 宿主用同一批面板（Outliner、PropertyGrid、AssetBrowser、Console、Table、Timeline、NodeGraph、CodeEditor、Canvas、视口叠加层、EditorShell，以及 Spinbox/ComboBox/SearchBox/Breadcrumb/Toolbar/StatusBar/ColorPicker/VectorEditor/Curve/Gradient），无需接触 C++ 类型。C++ 头 `<vgui/editor/*.h>` 仍是更完整的表面；门面覆盖 1344 个入口点（其中 48 个是 `*_default()` 结构默认值助手），实现编译进 `vgui_editor_kit`，与 C++ 组件共享同一份状态。
+
+约定与 `vgui_chart.h` 一致：
+
+- 句柄由 `*_create()` 返回、由对应 `*_destroy()` 销毁，内部持有 C++ 组件；由容器创建的句柄（工具栏按钮/分段控件、外壳各面板访问器）归容器所有，只使用、不销毁。
+- 可扩展输入结构以 `uint32_t struct_size` 开头，配对的 `*_default()` 负责填默认值并盖章；传入更小的 `struct_size` 会被按“旧版短结构”读取，未提供的字段保持零值。
+- 回调是 C 函数指针 + `void* user`，可选 `release_user` 在句柄最后一个引用消失时恰好执行一次；回调在 UI 线程、控件事件处理内部触发。
+- 输入字符串为 UTF-8 并由库复制；返回的 `const char*` 是借用指针，有效期到下一次修改同一句柄或句柄销毁。字符串读取器返回“完整文本所需长度”（不含结尾 0），无值时返回 `VGUI_EDITOR_NO_VALUE`，数组读取器在 `out == NULL` 时只回报数量；传入非空 `out` 时拷贝 `min(cap, n)` 个元素并返回**完整**数量，好让数组偏短的调用方知道自己漏了多少行（`vgui_editor_grid_build()` 是唯一例外，它回报实际写入的线数）。
+- 布尔用 `int`（0 为假）；向 setter 传 `NULL` 句柄是空操作而不是崩溃，失败原因可通过线程局部的 `vgui_editor_last_error()` 读取。
+- 析构顺序：先销毁子组件句柄，再销毁其宿主控件，最后销毁 `vgui_context`；`EditorShell` 先于 `vgui_editor_context` 销毁。
+
+```c
+#include <vgui/vgui_editor.h>
+
+vgui_editor_property_grid* grid = vgui_editor_property_grid_create(root);
+
+vgui_editor_property_desc desc;
+vgui_editor_property_desc_default(&desc);      /* 填默认值并盖章 struct_size */
+desc.id = "radius";
+desc.label = "Radius";
+desc.type = VGUI_EDITOR_PROPERTY_NUMBER;
+desc.has_range = 1;
+desc.min_value = 0.0;
+desc.max_value = 100.0;
+desc.binding = &binding;   /* vgui_editor_property_binding：get_value/set_value + user */
+vgui_editor_property_grid_add_property(grid, &desc);
+vgui_editor_property_grid_set_command_stack(grid, vgui_editor_context_commands(ctx));
+/* 每帧照常 vgui_update()/vgui_draw()；退出时 */
+vgui_editor_property_grid_destroy(grid);
+```
+
+纯 C 冒烟测试为 `vgui_editor_c_api_test`（以 C 编译，三册共 1990 项断言，覆盖全部组件的构造、模型读写、回调、撤销栈与 JSON 状态往返；只在无头 context 上验证行为，不涉及渲染结果），详见 [测试](#测试)。
+
 ### 图表与仪表盘（vgui_chart）
 
 `vgui_chart` 是独立的可选模块，不增加核心 `VGUI_*` 控件枚举：图表和仪表盘内部使用 `VGUI_CUSTOM` 绘制，外层仍是普通控件。公共头为纯 C（C99/C11），实现使用 C++17：
@@ -1169,8 +1204,12 @@ find_package(vgui CONFIG REQUIRED)
 add_executable(my_app main.c)
 target_link_libraries(my_app PRIVATE vgui::vgui)
 
-# 使用编辑器组件时：
+# 使用编辑器组件时（C++ 头）：
 # target_link_libraries(my_editor PRIVATE vgui::editor_kit)
+
+# 使用编辑器组件的纯 C 门面时（C 源文件，适配层实现为 C++，需 C++ 链接器）：
+# target_link_libraries(my_editor_c_app PRIVATE vgui::editor_kit)
+# set_target_properties(my_editor_c_app PROPERTIES LINKER_LANGUAGE CXX)
 
 # 使用图表模块时（C 源文件，静态库实现为 C++，需 C++ 链接器）：
 # target_link_libraries(my_chart_app PRIVATE vgui::chart)
@@ -1179,10 +1218,11 @@ target_link_libraries(my_app PRIVATE vgui::vgui)
 
 ```c
 #include <vgui/vgui.h>
+#include <vgui/vgui_editor.h>       /* 编辑器组件纯 C 门面，启用 vgui::editor_kit 时 */
 #include <vgui/chart/vgui_chart.h>   /* 启用 vgui::chart 时 */
 ```
 
-C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`。旧的 `<vgui.h>` / `<vgui_editor_kit.h>` 路径保留为兼容 shim，新代码应使用 `vgui/` 前缀。
+C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`；纯 C 宿主改用同一目录下的 `<vgui/vgui_editor.h>` 门面（入口点前缀 `vgui_editor_`），覆盖同一批组件的常用操作。旧的 `<vgui.h>` / `<vgui_editor_kit.h>` 路径保留为兼容 shim，新代码应使用 `vgui/` 前缀。
 
 直接使用 SDL3 后端时包含 `<vgui/backend/vgui_sdl3.h>`（窗口、输入、DPI 与 `gui_viewport`）和/或 `<vgui/backend/vgui_renderer_sdl3.h>`（`vgpu_*` 渲染器、FBO 与原生纹理桥）；共享事件类型在 `<vgui/backend/vgui_backend_types.h>`。
 
@@ -1219,6 +1259,7 @@ out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例（操作路径见
 out/bin/x64d/vgui_edit_test.exe        # 编辑框、滚动、主题、焦点等无需窗口/GPU 的行为自测
 out/bin/x64d/vgui_model_test.exe       # 列表、树、菜单、Tooltip/Modal/Dialog/Toast 与输入行为自测
 out/bin/x64d/vgui_c_api_test.exe       # 纯 C API 头文件/链接与行为冒烟测试
+out/bin/x64d/vgui_editor_c_api_test.exe # 纯 C 编辑器门面（vgui_editor.h）冒烟测试：全部组件的句柄、模型、回调、撤销栈与 JSON 状态
 out/bin/x64d/vgui_chart_test.exe       # 纯 C 图表/仪表盘/JSON 仪表板/CSV/PNG 自测（十万点、环形缓冲、P1 布局/日期时间轴/数据快照）
 out/bin/x64d/vgui_chart_render_test.exe # 图表/仪表盘离屏像素与 PNG 回归（无 Vulkan 时 SKIP）
 out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文档生命周期(S08)、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、代码编辑器(T04)、Markdown 预览(T05)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
@@ -1358,13 +1399,14 @@ include/
   vgui/vgui.h         公共纯 C API
   vgui/backend/       SDL3 后端公共头（窗口/输入/事件、vgpu 渲染器）
   vgui/editor/        vgui_editor_kit 公共头（菜单/命令、布局持久化、专业编辑器视图）
+  vgui/vgui_editor.h  编辑器组件纯 C 门面（与 vgui.h 同目录，句柄 + 回调 + struct_size 结构）
   vgui/chart/         vgui_chart 公共纯 C 头（图表/仪表盘/JSON 仪表板）
   vgui.h              旧路径兼容 shim
   vgui_editor_kit.h   旧路径兼容 shim
 gui/
   vgui.cpp            控件树、布局、事件与绘制实现（含 MenuBar/Splitter/TabView/Dock/Tooltip/Modal/Toast）
   vgui_internal.h     内部 C++ 接口（不安装）
-  editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)，含编辑/预览共享的 Markdown 词法 markdown_lex
+  editor/             vgui_editor_kit 实现与内部头 (ui_scale.h/editor_metrics.h)，含编辑/预览共享的 Markdown 词法 markdown_lex，以及纯 C 门面的适配层 editor_c_api_*.cpp（共享脚手架 editor_c_api.h、容器借用句柄 editor_c_api_borrow.h）
   chart/              vgui_chart 实现：数据/布局/绘制/交互/CSV/PNG/JSON 仪表板/仪表盘
 backends/
   vgui_sdl3.cpp       SDL3 窗口、输入、IME、DPI 与 GPU 视口实现
@@ -1384,6 +1426,10 @@ sample/
   vgui_chart_test.c         纯 C 图表/仪表盘/JSON 仪表板/CSV/PNG 测试（十万点、环形缓冲、P1 布局/日期时间轴/数据快照）
   vgui_chart_render_test.cpp 图表/仪表盘离屏像素、日期时间轴与 PNG 回归
   vgui_editor_kit_test.cpp  editor kit 骨架、Dock 外壳、文档生命周期、类型化属性、命令栈、资产/日志/Canvas/时间线/节点图/代码编辑器/Markdown 预览、DPI 与布局持久化自测
+  vgui_editor_c_api_test.c  纯 C 编辑器门面冒烟测试入口与断言工具（句柄、回调、撤销栈、JSON 状态）
+  vgui_editor_c_api_test_views.c 同上的视图分册：Outliner/Table/Timeline/NodeGraph/Canvas
+  vgui_editor_c_api_test_data.c 同上的数据分册：CodeEditor/Markdown/缩略图/资产浏览器/资产预览
+  vgui_editor_c_api_test_shell.c 同上的外壳分册：Viewport/Camera/Grid/Picking/Gizmo 与 EditorShell
   vgui_texture_test.cpp     图片纹理离屏读回测试
   vgui_screenshot_test.cpp  E03 截图回归（离屏渲染 + 基线容差对比）
   screenshots/              E03 基线 PNG
@@ -1417,6 +1463,7 @@ out/bin/x64d/vgui_c_api_test.exe
 out/bin/x64d/vgui_chart_test.exe
 out/bin/x64d/vgui_chart_render_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
+out/bin/x64d/vgui_editor_c_api_test.exe
 out/bin/x64d/vgui_texture_test.exe
 out/bin/x64d/vgui_screenshot_test.exe
 out/bin/x64d/ovg_scene_json_test.exe
@@ -1433,6 +1480,8 @@ ctest --test-dir out/build/x64-debug -R vgui_chart --output-on-failure
 自测覆盖编辑框文本输入、选区、剪贴板、撤销/重做、多行滚动、内部滚动条拖动、面板滚动条、主题切换内容尺寸稳定性、焦点透明度等行为；`vgui_model_test` 的 E01 用例覆盖 UI 比例钳制/非法值回退、样式与字体缩放、逻辑 setter 在非 1.0 比例下不累积、运行时整树重算、缩放监听器增删，以及 100%/125%/150%/200% 下的列布局不重叠（共 757 项断言；E05 用例另覆盖语义角色/名称/值/状态、可见无障碍树遍历、焦点/值/选中/公告事件与监听器移除、焦点陷阱与浮动 Dock 自动陷阱、F10 菜单、高对比度对比度），`vgui_c_api_test` 另以纯 C 编译验证同一组 API（32 项）。`vgui_editor_kit_test` 的 `test_shell_ui_scale` 检查四种比例下外壳各行/停靠区不重叠、面板不越界，以及 200%→125%→100% 的布局持久化仍保存同一逻辑 Dock 尺寸；E02 的 `test_property_grid_set_properties` 断言同 schema 切换返回 0 且行 widget 身份不变，`test_virtual_outliner` 断言折叠子树不查询名称、单行/结构刷新保持选择，A05 缓存命中测试断言缩略图不重新加载；模型测试覆盖列表/树的稳定 id、插入删除、单选/多选、展开折叠、键盘导航、菜单项激活/复选/子菜单、外部点击消费、MenuBar 标题切换与弹层生命周期、按键过滤器的注册顺序与消费，以及 Splitter 的比例/最小尺寸/拖动/复位和 TabView 的切换/关闭/禁用/重排/溢出/键盘操作；面板滚动监听覆盖程序化滚动、`scroll_by`、滚轮与移除回调。覆盖层测试还覆盖 Tooltip 的延迟/锚定/边缘翻转/销毁清理，Modal 的焦点陷阱/背景输入隔离/Esc/背景点击/销毁与焦点恢复，Alert/Confirm/Prompt 的结果与输入文本，以及 Toast 的位置/堆叠/过期/常驻/最大可见数/主题回退。Dock 测试覆盖四个停靠区/区域折叠、标签组与激活、关闭/恢复、跨区移动、标签重排、浮出/夹取/居中/提升/拖动/再停靠、空区落点推断、标签条滚轮滚动、detach/remove/clear、布局状态重建和样式/主题回退。核心拖放测试覆盖阈值/路由/拒绝/文件桥，以及 `vgui_drag_hint()` 的实时提示查询和落点后清空；另有一组嵌套卡片布局（可滚动列页 → 卡片 → 行 → 列表 + 增长 drop 区）的真实行拖拽用例，验证 drop 描述符按值拷贝——挂载后调用方可以立刻离开作用域（曾经悬垂指针导致 demo 拖放失效/崩溃）。`vgui_editor_kit_test` 覆盖 editor kit 的 Dock 外壳（十个稳定面板 id（含底部七视图）、区域合并、浮出、跨区移动、关闭与区域尺寸）、EditorContext 选择与可移除的选择监听器、Outliner/PropertyGrid/AssetBrowser（列表/网格双视图、缩略图、十万级虚拟源与键盘/框选、Breadcrumb/前进后退/刷新、防抖搜索与类型过滤、多选择监听器与过滤外 item_info）、AssetPreview（A03 后台加载非阻塞、陈旧结果丢弃、图像纹理、失败占位/错误、无加载器状态与 shell 选择同步）、资产拖放（A04 视口落点框跟随光标与拒绝保持上次结果、Outliner 行中部父子/空白根落点与插入线提示、PropertyGrid 整行高亮与命令撤销重做、资产浏览器导入入口及 `vgui_input_drop_files()` 等价/整批拒绝）、缩略图异步缓存（A05 非阻塞入队、优先级顺序、排队取消与陈旧结果丢弃、自动/手动重试、内存命中不重载、LRU 驱逐后的磁盘回源与 `disk_cache=false` 绕过、浏览器宿主缩略图优先、仅可见范围请求及离屏取消）、资产操作（A06 重命名/删除/复制/移动/重新导入、冲突/只读/占用/非法目标/I/O 错误、整批原子失败、批量单条撤销、不可撤销标记与警告 Toast、列表/网格右键菜单、F2/Delete/Ctrl+D/F5/Ctrl+I、重命名/删除对话框、导入通知与依赖模态框）、日志控制台（A07 构建/默认值、生产者队列与模型分离、有界排空、等级+搜索独立/组合/大小写、堆栈折叠、条目/帧跳转、可见/选中文本、等级颜色、自动滚动、清空、保留上限与 dropped 计数、4 线程并发追加，以及 shell CONSOLE 面板、`view.console` 命令与访问器追加）、2D Canvas（V08 模型/显式 id、坐标与缩放钳制、自适应网格、点击/Ctrl/Shift/框选、锁定与不可见过滤、手柄随旋转/缩放、移动/缩放/旋转吸附与命令撤销、Esc/CANCEL/失焦回滚、多选移动、中键平移、滚轮锚点缩放、禁用与选择监听器、shell CANVAS 面板/`view.canvas` 命令）、时间线（T02 轨道/关键帧/显式 id、线性/阶梯/平滑求值、关键帧命中与框选、拖拽/复制粘贴/插入/删除命令撤销、30fps 吸附与自定义步长、缩放锚点与亚帧精度、播放/循环/步进/外部 tick 与播放头监听、状态 JSON 往返与非法值拒绝、shell TIMELINE 面板/`view.timeline` 命令）、节点图（T03 节点/端口/连线模型与显式 id 冲突、端口类型/方向/单输入替换、节点与连线命中、点选/Ctrl/Shift/框选、锁定节点、拖动/连接/断开/复制/删除的 undo/redo、Esc/CANCEL/失焦回滚、极端缩放/偏移下的坐标与连线命中精度、搜索/小地图/右键动作、状态 JSON 往返与非法值拒绝、shell NODEGRAPH 面板/`view.nodegraph` 命令）、代码编辑器（T04：语言识别/状态 JSON/换行归一/跨行惰性词法/手工 span/编辑与命令栈 undo/redo/自动缩进/UTF-8 光标与选区/剪贴板/只读/查找替换/富文本日志颜色与保留/分块加载含跨块 CRLF/文件失败保留/取消加载/状态应用、shell CODE 面板/`view.code` 命令）、多视口与 HDR/MSAA/深度预览（V09 第二相机视口/深度视口、默认设置、`view.hdr`/`view.msaa`/`view.depth` 命令与设置 setter/重置）、Gizmo（V05/V07 三模式/四空间、旋转环 15° 吸附与跨 ±π 展开、轴向/统一缩放与 0.1 吸附、模式/空间切换取消、begin 快照、数值文本往返与多选共享枢轴）、Viewport 图片边界、命令栈的 undo/redo/事务/回滚与已应用命令 push、命令注册/快捷键分发/菜单状态同步，以及布局 JSON 的保存/恢复（Dock 区域尺寸、区域标签顺序、活动页、打开状态、浮动矩形，v7 起底部七视图作为 Dock 面板随其往返）、v1–v6 兼容映射（含旧底部 Tab 顺序/当前页按标题映射回新面板）、TABLE/TIMELINE/NODEGRAPH/CODE 状态保存/恢复、损坏和版本不匹配回退。PropertyGrid 测试覆盖文本/整数/浮点/布尔/枚举/颜色行、范围钳制与非法输入、默认值重置、只读状态、搜索过滤、分类折叠、值源刷新、get/set 描述符、命令栈撤销/重做、重建后的陈旧命令隔离，以及基于 editor_context 的选择绑定；1000 行虚拟化测试断言物化窗口有界、滚动到底部后顶部行被释放、滚回顶部后重新物化。数字行拖拽测试覆盖跨行移动、移出控件后的持续更新、越界钳制和释放时只记录一条命令。Spinbox 测试覆盖整数/浮点范围、步进、文本校验与错误恢复、Enter/Esc、Shift/Alt、加减按钮、只读/禁用状态、紧凑标签/按钮布局，以及跨行拖拽捕获和释放提交。VectorEditor 测试覆盖 2/3/4 分量构建、语义预设与自定义轴、静默赋值、分量输入/拖拽、范围钳制、只读/禁用、错误恢复、值源刷新与双向绑定、向量文本解析；PropertyGrid 向量测试覆盖分量独立编辑、主标签统一拖拽、单次命令提交、撤销/重做、重置、只读、非法输入、Gizmo 式值源刷新和过滤后编辑器重建。ComboBox 测试覆盖静默/用户选择、禁用项、空标签与 placeholder、菜单光标定位、菜单与关闭状态键盘导航、Alt+Down、焦点保持和析构关闭菜单；PropertyGrid 枚举测试覆盖 `allow_empty`、`(None)` 默认占位、禁用项跳过、菜单撤销/重做、空值选择以及点击标签时焦点保持。`vgui_editor --selftest` 还覆盖 UI 文档编辑器切换到 PropertyGrid 后的属性行构建、JSON 往返与代码生成。失败时返回非零退出码，适合接入 CI。
 
 `vgui_editor_kit_test` 的 `test_shell_accessibility_e05` 覆盖外壳与组件语义名称/角色、无障碍树中的面板与属性行条目、`F6`/`Shift+F6` 面板循环顺序、`F10` 与 `Ctrl+Shift+H` 快捷键、焦点变化事件、高对比度主题的 WCAG 对比度断言和关闭后的主题恢复。
+
+`vgui_editor_c_api_test` 是编辑器门面 `vgui_editor.h` 的纯 C99 消费者测试，分三册编译（`_views` 覆盖 Outliner/Table/Timeline/NodeGraph/Canvas，`_data` 覆盖 CodeEditor/Markdown/缩略图缓存/资产浏览器/资产预览，`_shell` 覆盖 Viewport/Camera/Grid/Picking/Gizmo/命令栈与 EditorShell），共 1990 项断言、0 失败、退出码 0。除构造/读写/回调与 JSON 状态往返之外，它把门面约定本身也钉成断言：`*_default()` 盖章 `struct_size`、给出文档默认值且对 `NULL` 安全；容器与外壳访问器返回的借用句柄 `*_destroy()` 是空操作；数组读取器在数组偏短时报回完整数量；`release_user` 恰好执行一次；`vgui_editor_last_error()` 解释失败。测试也固化了几处容易被误用的核心语义：一次只允许一个模态，因此 `begin_rename`/`confirm_remove`/`show_dependencies` 在旧对话框未关时返回 0；`retry_thumbnail` 只重启 `failed` 条目，未尝试过的 id 返回 0；没有 navigate handler 时被接受的 move/remove 会同步删掉浏览器的镜像行；`last_undoable()` 只有在挂了命令栈时才报告可撤销；`asset_preview::tick()` 会自行消费异步队列（宿主不必再 `poll()`），而 `rebuild_texture()` 需要 `stride * height` 个字节才留下纹理；不在 `vgui_editor_asset_action` 内的动词被拒绝并返回 0。该测试在无头 `vgui_context` 上运行，只验证 API 行为与内存/回调约定，不构成渲染或视觉层面的确认。
 
 `vgui_texture_test` 使用离屏 FBO + 像素回读，覆盖原生与 CPU 纹理的 source/fit/tint/flip/pixel snap，以及 V10 九宫格、旋转、自定义旋转中心、矩阵和它们的组合，并包含 CPU 图片在父级裁剪内的回归用例（79 项断言）；`vgui_demo` 的图片卡片可交互验证同一组变换。
 
