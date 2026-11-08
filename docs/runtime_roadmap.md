@@ -1,6 +1,6 @@
 # vgui 游戏运行时 UI 路线图
 
-> 状态：R0、R1 已完成
+> 状态：R0–R6 主体已完成（R2-3 待实机手柄确认；R4-3 按需）
 >
 > 适用版本：vgui 0.3.x
 >
@@ -171,14 +171,27 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 - [x] **R5-1 UI→3D 面板**：离屏 UI 纹理贴到世界空间公告牌。phase0 新增 `phase0_renderer_set_billboard(renderer, texture, pos, w, h)`——复用场景片元着色器（p0_vertex 本就带 uv + scene_tex 采样）与 grid 混合管线（alpha 混合、深度测试开/写入关），CPU 侧按相机基（view 矩阵行向量）重建四边形顶点，每帧上传。宿主侧：独立小 UI 上下文渲进专用 FBO（`cycle_target=true`，phase0 采样上一帧内容，一帧延迟无碍）；与主 HUD/模式 B 合并进**一次 `vgpu_render_frame` 多 item 提交**（面板 item 在前）。注意：离屏 rvg 的 `width/height` 必须手动设置（与 FBO 尺寸一致），否则正交映射错位、文字落到视口外。参考实现：`sample/vgui_runtime_hud.cpp`（"ARENA STATUS" 聚合血条/蓝条公告牌）。
 - [x] **R5-2 世界拾取与选中**：核心新增 `vgui_widget_set_input_enabled(w, 0)`——控件及子树整体跳过命中测试（保留正常视觉，区别于 set_enabled(0) 的禁用态），世界悬浮指示器靠它放行点击。宿主侧：根面板 `vgui_widget_on_event` 收未命中的 CLICK，反投影成射线（inverse VP，near/far 两点）对实体包围球求交（glm::intersectRaySphere），最近者 `select_unit` 联动名牌高亮（border + 名字色）；右键清除选中。自测内嵌 smoke（注入点击→断言选中→右键→断言取消）。参考实现：`sample/vgui_runtime_hud.cpp`。
 
-## 9. 关键依赖与批次
+## 9. R6 持久离屏渲染目标（P0 已完成）
 
-- R0/R1/R5 已完成，无外部依赖。
+> **实施记录**：新增后端公共 API `include/vgui/backend/vgui_render_target.h` 与实现 `backends/vgui_render_target.cpp`。一个目标拥有一个离屏 `vg_fbo_t`、一个稳定的 `vgui_texture` 和一个私有 `rvg_t`；`record()` 输出可直接并入宿主的一次 `vgpu_render_frame()`，`resize()` 原地更新纹理句柄，`destroy()` 等待 idle 后立即解绑原生纹理。详见 [`render_target_roadmap.md`](render_target_roadmap.md)。
+
+- [x] **R6-1 目标生命周期**：`create / destroy / resize / set_clear / get_size`；格式跟随 `vgpu_color_format()`，纹理指针在 resize 后保持不变；创建失败可通过 `vgui_render_target_last_error(NULL)` 查询。
+- [x] **R6-2 录制接口**：`record()`（原始矢量回调）与 `record_context()`（`vgui_context`，尺寸必须匹配）只产生 `ovg_draw_data_t`，不提交；`submit()` / `submit_context()` 仅作为静态/独立场景的便利入口。
+- [x] **R6-3 帧顺序与所有权**：一帧内所有 pass 仍需一次 `vgpu_render_frame()`；`clear=1` 默认清屏并启用 `cycle_target`，`clear=0` 保留内容且关闭轮换；`ovg_ctx_cb*` 为借用，必须比所有录制过的上下文活得久。
+- [x] **R6-4 验证**：`sample/vgui_render_target_test.cpp` 覆盖非法创建、原始矢量、上下文→纹理→图片→合成、resize 指针稳定、尺寸不匹配拒绝、`clear=0` 累积与 `submit()`；CTest 名称 `vgui_render_target`，无 Vulkan 设备返回 77。
+- [x] **R6-5 构建隔离**：`vgui_render_target.cpp` 只在 `NOT VGUI_CORE_ONLY` 下编译；公共头自包含检查通过；`VGUI_CORE_ONLY=ON` 不出现该接口。
+
+验收：全量构建与 core-only 构建通过；`vgui_render_target` 测试通过；既有测试/截图基线不回归。
+
+## 10. 关键依赖与批次
+
+- R0/R1/R5/R6 已完成，无外部依赖。
 - R2 批次：R2-1（core 导航，P0）→ R2-2（手柄映射，依赖 R2-1）→ R2-3（确认，S）。R2-2 的映射表可先行单测。
 - R3 批次：R3-2（基准，**先行建立基线**）→ R3-1（子树缓存，L，依赖基线与 ovg 录制/回放 API——已存在未接入）→ R3-3（文档，依赖 R3-2）。
 - R4 批次：R4-1（绑定惯例核查，S，先行）→ R4-2（冷却环/飘字/安全区）→ R4-3（多点触摸，P2 按需）。
-- 跨项：R4-2 冷却环与 R5-0 名牌共用 set_accent/set_track；R3-1 缓存对 R4 飘字/动态控件默认不生效（opt-in 语义）。
+- R6 批次：R6-1（目标生命周期）→ R6-2（录制接口）→ R6-3（帧顺序文档）→ R6-4（离屏测试）→ R6-5（core-only 隔离）。
+- 跨项：R4-2 冷却环与 R5-0 名牌共用 set_accent/set_track；R3-1 缓存对 R4 飘字/动态控件默认不生效（opt-in 语义）；R6 可替代 R1-3/R5-1 中手写的 FBO + native texture 桥。
 
-## 10. 维护方式
+## 11. 维护方式
 
 与 [editor_roadmap.md 第 10 节](editor_roadmap.md)一致：每完成一项把复选框改为 `[x]` 并补充实现位置与测试名；新条目沿用 R 前缀，标注 P0/P1/P2 与 S/M/L；每个里程碑在 `vgui_runtime_hud` 示例中补一条可操作路径，确保能力不是"只在测试里存在"。

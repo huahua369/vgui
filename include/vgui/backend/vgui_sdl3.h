@@ -21,6 +21,7 @@
 #include <vgui/vgui.h>
 #include <vgui/backend/vgui_backend_types.h>
 #include <vgui/backend/vgui_renderer_sdl3.h>
+#include <vgui/backend/vgui_render_target.h>
 
 namespace hz {
 	// Returns the monitor scale; pels is a glm::ivec2*.

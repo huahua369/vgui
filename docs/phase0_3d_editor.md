@@ -10,6 +10,7 @@ Phase 0 只建立后续场景编辑器需要的底层能力，不实现编辑器
 - `VGUI_IMAGE`：可聚焦图片控件，支持 source rect、fit、tint、flip、pixel snap。
 - `VGUI_LAYOUT_WRAP`：基于 OVG flex 的自动换行，vgui 负责 gap、每行 justify 和多行 align-content 的最终坐标。
 - SDL3 native texture bridge：把应用创建的 `SDL_GPUTexture` 借给 vgui 采样。
+- `vgui_render_target`：持久离屏 FBO + 稳定 `vgui_texture` + 录制画布，封装“vgui 画面 → 纹理 → 图片/引擎采样”的完整路径。
 - `sample/vgui_phase0.cpp`：单窗口、单视口、固定布局的最小 3D FBO 示例。
 - `sample/phase0_renderer.*`：最小 3D 渲染器，支持多个独立相机 view 共享管线、HDR/tonemap、MSAA resolve 与深度可视化纹理。
 - `sample/vgui_c_api_test.c`：以 C 编译并链接的公开头文件/API 冒烟测试。
@@ -192,6 +193,31 @@ void vgpu_texture_fini_native(vgpu_ctx_t*, ovg_texture_t*);
 
 `vgui_texture` 内部保存 `ovg_texture_t native` 值类型句柄，`VGUI_IMAGE` 绘制时优先走 `ovg_ctx_cb::add_texture`，因此源裁剪、tint、flip、九宫格、旋转、矩阵和当前 clip 都由 OVG 统一处理。CPU 纹理在提交阶段才获得 OVG image id，普通绘制走 `add_image`（同样应用当前 clip），变换/九宫格用生成的四边形/九宫格几何（`add_geometry`）实现相同的变换语义，两条路径由 `vgui_texture_test` 逐像素对齐验证，并包含 CPU 图片被父级面板裁剪的回归用例。
 
+## 持久离屏渲染目标
+
+如果目标是“让 vgui 自己渲染到离屏纹理，再把纹理给图片或引擎采样”，优先使用 `include/vgui/backend/vgui_render_target.h`，不要手写 FBO + native texture 组合。一个 `vgui_render_target` 同时拥有：
+
+- 离屏 `vg_fbo_t`（颜色纹理带 `SAMPLER | COLOR_TARGET`）；
+- 稳定 `vgui_texture`（`resize()` 原地更新，绑定过的图片无需重绑）；
+- 私有 `rvg_t` 录制画布。
+
+```c
+vgui_render_target_desc desc;
+vgui_render_target_desc_default(&desc);
+desc.width = 320;
+desc.height = 180;
+vgui_render_target* target =
+    vgui_render_target_create(ui, gpu_ctx, cb, &desc);
+
+vgui_image_set_texture(image, vgui_render_target_texture(target));
+```
+
+`vgui_render_target_record()` 接受原始矢量回调，`vgui_render_target_record_context()` 接受 `vgui_context`（尺寸必须与目标一致）。两者都只输出 `ovg_draw_data_t`，由宿主并入本帧的唯一一次 `vgpu_render_frame()`；`submit()` 只用于静态烘焙。`clear=0` 可保留已有内容做叠加/累积，但不要在同一提交内边写边采样。
+
+所有权：target 的 `vgui_texture` 注册在 owner 上下文中，`gpu_ctx`、owner 和传入的 `ovg_ctx_cb*` 都必须比 target 活得久；销毁顺序为“解绑图片 → 销毁 target → 销毁上下文/GPU 上下文”。完整 API、错误处理和后续计划见 [`render_target_roadmap.md`](render_target_roadmap.md)。
+
+底层 `vgui_sdl3_texture_create_native()` / `vgui_sdl3_texture_update_native()` 仍然保留，用于“纹理由引擎自己创建/重建”的场景（例如 3D 视口颜色附件在 `phase0_renderer` 内重建）；此时由宿主负责 FBO 生命周期并调用 update。
+
 ## 兼容性
 
 - 新增控件类型、布局类型、枚举和 `vgui_style` 字段都追加在现有枚举/结构末尾；已有枚举值和已有字段偏移不变。
@@ -208,6 +234,7 @@ out\bin\x64d\vgui_phase0.exe
 out\bin\x64d\vgui_phase0.exe --smoke
 out\bin\x64d\ovg_texture_test.exe
 out\bin\x64d\vgui_texture_test.exe
+out\bin\x64d\vgui_render_target_test.exe
 out\bin\x64d\vgui_model_test.exe
 out\bin\x64d\vgui_c_api_test.exe
 ```
@@ -215,6 +242,8 @@ out\bin\x64d\vgui_c_api_test.exe
 `ovg_texture_test` 用离屏 FBO + `SDL_DownloadFromGPUTexture` 读回，覆盖 `add_texture` 的方向、源裁剪、tint、水平/垂直 flip、九宫格、旋转、`mat3x2`、当前 clip、原地 update 和 fini。
 
 `vgui_texture_test` 覆盖 `vgui_sdl3_texture_create_native` → `VGUI_IMAGE` → 源裁剪/tint/flip → `vgui_sdl3_texture_update_native` → 释放的完整路径。
+
+`vgui_render_target_test` 用离屏回读验证持久目标：原始矢量录制、`vgui_context` → target 纹理 → `VGUI_IMAGE` → 另一 target 合成、resize 后纹理指针稳定、尺寸不匹配拒绝、`clear=0` 累积与 `submit()`；CTest 名称为 `vgui_render_target`。
 
 `vgui_model_test` 覆盖：纹理创建/更新/stride/非法参数、图片控件、纹理引用生命周期、wrap 换行位置、justify、align-content 和 grow。
 

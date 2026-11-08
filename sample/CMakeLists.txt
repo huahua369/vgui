@@ -81,6 +81,11 @@ set(SRC_VGUI_TEXTURE_TEST
     vgui_texture_test.cpp
 )
 
+# vgui_render_target 离屏目标测试（raw vector / context -> texture -> image）
+set(SRC_RENDER_TARGET_TEST
+    vgui_render_target_test.cpp
+)
+
 # E03 截图回归测试：离屏渲染编辑器关键状态，与基线 PNG 容差对比
 set(SRC_SCREENSHOT_TEST
     vgui_screenshot_test.cpp
@@ -179,11 +184,13 @@ target_link_libraries(vgui_runtime_embed_test PRIVATE vgui_sample_common vgui::v
 target_compile_definitions(vgui_runtime_embed_test PRIVATE
     VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
-# R3-2 runtime benchmark (headless, not a CTest -- timing is machine-bound).
+# R3-2 运行时基准（无窗口离屏渲染，分段计时；依赖 SDL3 后端，仅完整构建）
+if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_runtime_bench ${SRC_RUNTIME_BENCH})
 target_link_libraries(vgui_runtime_bench PRIVATE vgui_sample_common vgui::vgui)
 target_compile_definitions(vgui_runtime_bench PRIVATE
     VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+endif()
 
 if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_edit_test ${SRC_EDIT_TEST})
@@ -241,6 +248,11 @@ target_link_libraries(ovg_scene_json_test PRIVATE vgui_sample_common libovg nloh
 if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_texture_test ${SRC_VGUI_TEXTURE_TEST})
 target_link_libraries(vgui_texture_test PRIVATE vgui_sample_common vgui::vgui libovg SDL3::SDL3 glm::glm-header-only)
+
+add_executable(vgui_render_target_test ${SRC_RENDER_TARGET_TEST})
+target_link_libraries(vgui_render_target_test PRIVATE vgui_sample_common vgui::vgui libovg SDL3::SDL3 glm::glm-header-only)
+add_test(NAME vgui_render_target COMMAND vgui_render_target_test)
+set_tests_properties(vgui_render_target PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(VGUI_BUILD_EDITOR_KIT AND NOT VGUI_CORE_ONLY)

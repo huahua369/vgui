@@ -2,7 +2,7 @@
 
 > 评估对象：vgui v0.3.0（MIT 许可）
 > 评估维度：**普通应用** / **游戏运行时** / **编辑与开发工具**
-> 信息来源：`include/vgui/**` 公共头、`gui/`、`backends/`、`docs/`（runtime_roadmap / editor_roadmap / phase0_3d_editor / chart）
+> 信息来源：`include/vgui/**` 公共头、`gui/`、`backends/`、`docs/`（runtime_roadmap / render_target_roadmap / editor_roadmap / phase0_3d_editor / chart）
 > 评估日期：2026-11-03
 
 ---
@@ -55,9 +55,10 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 
 ## 3. 游戏运行时（HUD / 游戏内 UI）
 
-### 3.1 能做的（R0–R5 全部完成）
+### 3.1 能做的（R0–R6 全部完成）
 - **无窗口嵌入**：`VGUI_CORE_ONLY` 去掉 SDL3，引擎消费 `ovg_draw_data_t` 自建渲染通路
 - **HUD 合成**：LOAD-op 叠加在引擎 3D 画面之上；离屏 FBO → 纹理互借让引擎合成
+- **持久离屏渲染目标**：`vgui_render_target` 封装离屏 FBO + 稳定 `vgui_texture` + 录制画布；支持原始矢量回调和 `vgui_context` 录制、原地 resize、`clear=0` 累积、错误查询，draw data 并入宿主一次 `vgpu_render_frame()`
 - **世界空间 UI**：屏幕空间名牌投影、UI→3D 公告牌、世界拾取与选中联动
 - **手柄 / 键盘方向导航**：`vgui_focus_navigate` + SDL_Gamepad 映射（A→Enter、B→取消、Y→菜单、摇杆/十字键导航）
 - **性能**：静态子树显示列表缓存、离屏基准（40 面板 draw≈6.7ms）、图集代数失效安全网
@@ -249,3 +250,12 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - 后端补了一条关闭请求：`app_mgr::get_event()` 收到 `SDL_EVENT_WINDOW_CLOSE_REQUESTED` 时把 `os_window::pending_close` 置位（此前是死字段），宿主据此销毁窗口；单窗口宿主不受影响（最后一个窗口关闭时 SDL 仍发 QUIT）。
 - 布局陷阱：`vgui_context` 根控件默认 `ABSOLUTE`，`grow` 不生效，副窗口 Dock 撑不满窗口。需先把根改成 `COLUMN` + `align_items = STRETCH`（与 `editor_shell` 一致）。
 - 自检：`VGUI_EDITOR_FRAMES=120` 跑完 120 帧，打印两窗口绘制命令数（477 / 57）、中途切 MSAA 后副窗口纹理 `bound`、副窗口关闭后主窗口继续渲染并正常退出；`VGUI_EDITOR_SINGLE_WINDOW=1` 退回单窗口。全量构建 + 7 个测试套件 + ctest 3/3 全通过，**截图基线零变化**。
+
+### 7.17 持久离屏渲染目标 P0（2026-11-08）
+- **新增公共后端 API**：`include/vgui/backend/vgui_render_target.h`（`vgui_sdl3.h` 转包含），实现于 `backends/vgui_render_target.cpp`。一个 target 拥有离屏 `vg_fbo_t`、稳定 `vgui_texture` 和私有 `rvg_t`；`record()` / `record_context()` 只输出 `ovg_draw_data_t`，不自动提交；`submit()` 仅作为静态/独立场景便利入口。
+- **生命周期**：`create()` 的 `ovg_ctx_cb*` 是借用指针，因为 `vgui_draw()` 会把回调存进 `vgui_context::draw_cb` 供 `vgui_destroy()` 销毁缓存录制；owner 上下文、GPU 上下文和回调都必须比 target 活得久。`destroy()` 先 `vgpu_wait_idle()`，立即 `release_native()` 解绑纹理，再销毁 FBO；`resize()` 先建新 FBO，成功后原地更新 `vgui_texture`，纹理指针与 image id 不变。
+- **帧顺序**：`clear=1`（默认）清屏并启用 `cycle_target`；`clear=0` 保留内容并关闭轮换。目标 draw data 必须和采样它的 pass 放进同一次 `vgpu_render_frame()`，否则共享顶点缓冲与离屏写入/采样会产生竞态。
+- **构建隔离**：源文件只加入 `backends/CMakeLists.txt` 的 `NOT VGUI_CORE_ONLY` 列表；`VGUI_CORE_ONLY=ON` 不编译该接口，公共头自包含检查覆盖新头。
+- **验证**：新增 `sample/vgui_render_target_test.cpp`（CTest `vgui_render_target`，无 Vulkan 返回 77），覆盖非法创建、原始矢量回读、上下文→纹理→图片→合成、resize 指针稳定、尺寸不匹配拒绝、`clear=0` 累积与 `submit()`；全量构建、core-only 构建和 ctest 均通过。
+- **顺带修正**：`vgui_runtime_bench` 使用 SDL3 后端，已从 core-only 目标列表移入 `NOT VGUI_CORE_ONLY`，避免 core-only 链接缺后端符号（此前该配置下会链接失败）。
+- 详见 [`render_target_roadmap.md`](render_target_roadmap.md)。

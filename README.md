@@ -28,6 +28,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **文本** | HarfBuzz 驱动的文本测量与渲染，UTF-8 文本，多字体族回退，水平/垂直对齐 |
 | **滚动** | 面板横向/纵向滚动；滚轮、拖动滚动条、点击轨道、程序化滚动；支持嵌套滚动面板 |
 | **渲染** | 基于 OVG 的矢量路径、圆角矩形、文本和裁剪；SDL3 GPU 后端 |
+| **离屏渲染目标** | 持久离屏 FBO + 稳定 `vgui_texture`：录制原始矢量或整个 `vgui_context`，并入宿主的一次 `vgpu_render_frame()`；原地 resize 后纹理指针不变，`clear=0` 可累积绘制，创建/运行错误可查询 |
 | **工程** | CMake + vcpkg 清单，可安装的 CMake 包（`vgui::vgui` / `vgui::editor_kit` / `vgui::ovg`），附带控件演示、游戏编辑器示例、无需窗口/GPU 的模型自测与离屏截图回归（CTest） |
 
 ### 界面截图
@@ -98,6 +99,42 @@ vgui_image_set_matrix(image, shear);
 - 九宫格边宽按纹理像素解释；源边宽超过源区域时收缩，目标矩形小于两侧边宽之和时按比例压缩。九宫格可与旋转/矩阵组合。
 - 原生纹理走 OVG `add_texture`；CPU 纹理由 vgui 生成四边形/九宫格几何（`add_geometry`），两条路径的翻转、旋转、矩阵、tint 和裁剪结果一致。CPU 纹理首次绘制即可在同一帧上传并显示。
 - 图片始终被控件矩形裁剪；旋转/矩阵把内容移出控件时会被裁掉。
+
+### 离屏渲染目标
+
+`vgui_render_target`（`<vgui/backend/vgui_render_target.h>`）把"vgui 画面 → 离屏纹理 → 图片/引擎采样"封装成一个持久对象。它拥有一个离屏 FBO、一个稳定的 `vgui_texture` 和一个私有 OVG 录制画布；`resize()` 原地更新纹理句柄，绑定过的 `VGUI_IMAGE` 不需要重新绑定。
+
+```c
+vgui_render_target_desc desc;
+vgui_render_target_desc_default(&desc);
+desc.width = 640;
+desc.height = 360;
+
+/* owner 显示结果纹理；cb 为借用，必须比所有录制过的上下文活得久。 */
+vgui_render_target* target =
+    vgui_render_target_create(ui, gpu_ctx, cb, &desc);
+
+vgui_context_set_size(panel_ui, 640, 360);
+vgui_image_set_texture(image, vgui_render_target_texture(target));
+
+/* 每帧：录制两个 pass，一次提交；先写离屏目标，再让主 UI 采样它。 */
+ovg_draw_data_t content = {0};
+ovg_draw_data_t composite = {0};
+vgui_render_target_record_context(target, panel_ui, &content);
+vgui_render_target_record_context(host_target, ui, &composite);
+ovg_draw_data_t passes[] = { content, composite };
+vgpu_render_frame(gpu_ctx, passes, 2);
+
+/* 退出：先解绑图片，再销毁 target / 上下文 / GPU 上下文。 */
+vgui_image_set_texture(image, NULL);
+vgui_render_target_destroy(target);
+```
+
+- `record()` 只产生 draw data，不提交；一帧内所有 pass 必须放进同一次 `vgpu_render_frame()`，SDL3 的屏障才会把离屏写入排到采样之前。
+- `record_context()` 要求 `vgui_context` 尺寸与 target 完全一致，且不会调用 `vgui_update()`；动画/时间推进由宿主负责。
+- `clear = 1`（默认）每趟清成透明黑并启用 `cycle_target`；`clear = 0` 保留已有内容，适合叠加/累积，但不要在同一帧里边写边采样。
+- `submit()` / `submit_context()` 只是静态烘焙的便利入口；后续提交要采样结果时先 `vgpu_wait_idle()`。
+- `ovg_ctx_cb*`、`vgpu_ctx_t*` 和 owner `vgui_context` 都必须比 target 活得更久；详见 [`docs/render_target_roadmap.md`](docs/render_target_roadmap.md)。
 
 ### 文本编辑框
 
@@ -1224,7 +1261,7 @@ target_link_libraries(my_app PRIVATE vgui::vgui)
 
 C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`；纯 C 宿主改用同一目录下的 `<vgui/vgui_editor.h>` 门面（入口点前缀 `vgui_editor_`），覆盖同一批组件的常用操作。旧的 `<vgui.h>` / `<vgui_editor_kit.h>` 路径保留为兼容 shim，新代码应使用 `vgui/` 前缀。
 
-直接使用 SDL3 后端时包含 `<vgui/backend/vgui_sdl3.h>`（窗口、输入、DPI 与 `gui_viewport`）和/或 `<vgui/backend/vgui_renderer_sdl3.h>`（`vgpu_*` 渲染器、FBO 与原生纹理桥）；共享事件类型在 `<vgui/backend/vgui_backend_types.h>`。
+直接使用 SDL3 后端时包含 `<vgui/backend/vgui_sdl3.h>`（窗口、输入、DPI、`gui_viewport` 与 `vgui_render_target`）和/或 `<vgui/backend/vgui_renderer_sdl3.h>`（`vgpu_*` 渲染器、FBO 与原生纹理桥）；共享事件类型在 `<vgui/backend/vgui_backend_types.h>`。持久离屏目标也可单独包含 `<vgui/backend/vgui_render_target.h>`。
 
 Stage B 的安装树包含 SDL3 后端公共头与 OVG 公共头，`vgui::ovg` 目标带有安装后的 include 目录。OVG 的 `ovg_renderer_sdl3.h` 不安装，因为其中的 `vg_fbo_t` 与 vgui 自己的定义冲突；`backends/vgui_sdl3.h`、`backends/vgui_renderer_sdl3.h` 仅作为源码树兼容 shim 保留。vgui 自身的公共头使用英文注释；安装的 OVG 上游头仍保留其中文注释并以 UTF-8 保存，链接 `vgui::vgui` 或 `vgui::ovg` 的 MSVC 消费者会通过导出接口自动获得 `/utf-8`。OVG 的 `ovg_c.h` / `ovg_fonts.h` 沿用 OVG 的约定，使用前需先包含 `<glm/glm.hpp>`；vgui 的后端公共头已代为包含。
 
@@ -1264,6 +1301,7 @@ out/bin/x64d/vgui_chart_test.exe       # 纯 C 图表/仪表盘/JSON 仪表板/C
 out/bin/x64d/vgui_chart_render_test.exe # 图表/仪表盘离屏像素与 PNG 回归（无 Vulkan 时 SKIP）
 out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文档生命周期(S08)、类型化属性、Spinbox、ComboBox、VectorEditor、ColorPicker、曲线/渐变编辑器、引用行、多选混合值/剪贴板/收藏、命令栈、Outliner(O01~O06)、AssetBrowser(A01~A06)、Console(A07)、2D Canvas(V08)、时间线(T02)、节点图(T03)、代码编辑器(T04)、Markdown 预览(T05)、多视口/HDR/MSAA/深度预览(V09)、资产拖放/导入、资产操作与布局持久化自测
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
+out/bin/x64d/vgui_render_target_test.exe # 持久离屏目标：矢量/上下文录制、纹理→图片合成、resize、clear=0 与 submit（无 Vulkan 时 SKIP）
 out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Outliner/AssetBrowser/Viewport 基线对比
 out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/上传缓存测试（mock OVG 回调）
 ```
@@ -1411,6 +1449,7 @@ gui/
 backends/
   vgui_sdl3.cpp       SDL3 窗口、输入、IME、DPI 与 GPU 视口实现
   vgui_renderer_sdl3.cpp vgui 专用 SDL3 GPU 2D 矢量后端实现
+  vgui_render_target.cpp 持久离屏渲染目标（FBO + 稳定纹理 + 录制画布）
   vgui_sdl3.h         旧路径兼容 shim
   vgui_renderer_sdl3.h 旧路径兼容 shim
   mapView.*            视图/地图相关后端组件
@@ -1431,6 +1470,7 @@ sample/
   vgui_editor_c_api_test_data.c 同上的数据分册：CodeEditor/Markdown/缩略图/资产浏览器/资产预览
   vgui_editor_c_api_test_shell.c 同上的外壳分册：Viewport/Camera/Grid/Picking/Gizmo 与 EditorShell
   vgui_texture_test.cpp     图片纹理离屏读回测试
+  vgui_render_target_test.cpp 持久离屏目标与上下文→纹理→图片合成测试
   vgui_screenshot_test.cpp  E03 截图回归（离屏渲染 + 基线容差对比）
   screenshots/              E03 基线 PNG
   ovg_texture_test.cpp      OVG 原生纹理离屏测试
@@ -1444,6 +1484,7 @@ sample/
 docs/
   chart.md            vgui_chart 图表/仪表盘/JSON 仪表板（P0/P1）
   phase0_3d_editor.md 3D 场景编辑器基础与图片/纹理能力
+  render_target_roadmap.md 持久离屏渲染目标 API 与后续计划
   editor_roadmap.md   游戏编辑器组件路线图
   runtime_roadmap.md  游戏运行时 UI 路线图（R 系列）
 ```
@@ -1452,7 +1493,7 @@ docs/
 
 ## 路线图
 
-游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)；游戏运行时方向（HUD 合成、手柄导航、显示列表缓存等）见 [`docs/runtime_roadmap.md`](docs/runtime_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，图表/仪表盘 P0/P1 能力见 [`docs/chart.md`](docs/chart.md)。
+游戏编辑器方向的组件分层、优先级、依赖和验收标准见 [`docs/editor_roadmap.md`](docs/editor_roadmap.md)；游戏运行时方向（HUD 合成、手柄导航、显示列表缓存等）见 [`docs/runtime_roadmap.md`](docs/runtime_roadmap.md)。Phase 0 的图片/原生纹理基础见 [`docs/phase0_3d_editor.md`](docs/phase0_3d_editor.md)，持久离屏目标 API 见 [`docs/render_target_roadmap.md`](docs/render_target_roadmap.md)，图表/仪表盘 P0/P1 能力见 [`docs/chart.md`](docs/chart.md)。
 
 ## 测试
 
@@ -1465,6 +1506,7 @@ out/bin/x64d/vgui_chart_render_test.exe
 out/bin/x64d/vgui_editor_kit_test.exe
 out/bin/x64d/vgui_editor_c_api_test.exe
 out/bin/x64d/vgui_texture_test.exe
+out/bin/x64d/vgui_render_target_test.exe
 out/bin/x64d/vgui_screenshot_test.exe
 out/bin/x64d/ovg_scene_json_test.exe
 ```
@@ -1484,6 +1526,14 @@ ctest --test-dir out/build/x64-debug -R vgui_chart --output-on-failure
 `vgui_editor_c_api_test` 是编辑器门面 `vgui_editor.h` 的纯 C99 消费者测试，分三册编译（`_views` 覆盖 Outliner/Table/Timeline/NodeGraph/Canvas，`_data` 覆盖 CodeEditor/Markdown/缩略图缓存/资产浏览器/资产预览，`_shell` 覆盖 Viewport/Camera/Grid/Picking/Gizmo/命令栈与 EditorShell），共 1990 项断言、0 失败、退出码 0。除构造/读写/回调与 JSON 状态往返之外，它把门面约定本身也钉成断言：`*_default()` 盖章 `struct_size`、给出文档默认值且对 `NULL` 安全；容器与外壳访问器返回的借用句柄 `*_destroy()` 是空操作；数组读取器在数组偏短时报回完整数量；`release_user` 恰好执行一次；`vgui_editor_last_error()` 解释失败。测试也固化了几处容易被误用的核心语义：一次只允许一个模态，因此 `begin_rename`/`confirm_remove`/`show_dependencies` 在旧对话框未关时返回 0；`retry_thumbnail` 只重启 `failed` 条目，未尝试过的 id 返回 0；没有 navigate handler 时被接受的 move/remove 会同步删掉浏览器的镜像行；`last_undoable()` 只有在挂了命令栈时才报告可撤销；`asset_preview::tick()` 会自行消费异步队列（宿主不必再 `poll()`），而 `rebuild_texture()` 需要 `stride * height` 个字节才留下纹理；不在 `vgui_editor_asset_action` 内的动词被拒绝并返回 0。该测试在无头 `vgui_context` 上运行，只验证 API 行为与内存/回调约定，不构成渲染或视觉层面的确认。
 
 `vgui_texture_test` 使用离屏 FBO + 像素回读，覆盖原生与 CPU 纹理的 source/fit/tint/flip/pixel snap，以及 V10 九宫格、旋转、自定义旋转中心、矩阵和它们的组合，并包含 CPU 图片在父级裁剪内的回归用例（79 项断言）；`vgui_demo` 的图片卡片可交互验证同一组变换。
+
+`vgui_render_target_test` 覆盖持久离屏目标：非法创建错误、原始矢量回调回读、`vgui_context` 录制 → target 纹理 → `VGUI_IMAGE` → 另一 target 合成、`resize()` 后纹理指针稳定、上下文尺寸不匹配拒绝、`clear=0` 两次 `submit()` 的累积结果，以及 `submit()` 便捷入口。CTest 注册为 `vgui_render_target`：
+
+```bash
+ctest --test-dir out/build/x64-debug -R vgui_render_target --output-on-failure
+```
+
+无 Vulkan 设备时返回 77，由 CTest 标记 SKIP。
 
 `vgui_editor_kit_test` 的 `test_document_handlers` 覆盖 S08：File 菜单顺序、`Ctrl+N/O/S/Shift+S` 快捷键、回调转发、空处理器回退、`edit.delete` 把多选集合交给宿主以及返回 `false` 时清除选择的兼容路径。`ovg_scene_json_test` 用 mock `ovg_ctx_cb` 覆盖 A08：`image_ref`（可带 `@`）解析到 `TextureRes` 后经 `image_update` 上传、同一资源只上传一次、缺失/非纹理/stride 或像素长度非法的资源被跳过、`src_rect`/`dst_rect` 默认值、九宫格/颜色/flip 透传、场景切换与 `clear_image_cache()` 释放句柄。
 

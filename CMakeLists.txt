@@ -97,6 +97,14 @@ if(VGUI_CORE_ONLY)
 endif()
 add_subdirectory(third_party/ovg)
 
+# OVG 自己的 CMakeLists 把输出目录重置为 third_party/ovg/out/bin。完整构建与
+# core-only 构建的 libovg 源文件集合不同（core-only 关闭 SDL3 渲染器），必须
+# 分目录输出；否则先后构建两种配置会互相覆盖，下一次构建可能复用错误的静态库。
+if(VGUI_IS_TOP_LEVEL AND VGUI_CORE_ONLY)
+    set_target_properties(libovg PROPERTIES
+        ARCHIVE_OUTPUT_DIRECTORY "${VGUI_SOURCE_DIR}/out/bin/${VGUI_BIN_SUFFIX}")
+endif()
+
 # libovg 由 third_party/ovg 定义；这里补齐供 vgui 构建树和安装包使用的
 # 公开 include 目录与导出名。Stage B 起 vgui 的 SDL3 后端公共头会直接
 # 暴露 OVG 类型，因此 OVG 公共头也随 vgui 一起安装。

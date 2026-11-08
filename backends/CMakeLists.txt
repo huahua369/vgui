@@ -18,6 +18,7 @@ if(NOT VGUI_CORE_ONLY)
         vgui_sdl3.cpp
         vgui_sdl3_dialog.cpp
         vgui_renderer_sdl3.cpp
+        vgui_render_target.cpp
     )
 endif()
 
