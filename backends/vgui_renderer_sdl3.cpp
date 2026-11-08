@@ -1517,6 +1517,30 @@ bool vgpu_texture_update_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
 	return true;
 }
 
+void vgpu_blit_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* dst, int dst_w,
+	int dst_h, SDL_GPUTexture* src, int src_w, int src_h)
+{
+	if (!ctx || !ctx->device || !ctx->device->gpu_device ||
+		!dst || !src || dst_w <= 0 || dst_h <= 0 || src_w <= 0 || src_h <= 0)
+		return;
+
+	SDL_GPUBlitInfo blit = {};
+	blit.source.texture = src;
+	blit.source.w = static_cast<Uint32>(src_w);
+	blit.source.h = static_cast<Uint32>(src_h);
+	blit.destination.texture = dst;
+	blit.destination.w = static_cast<Uint32>(dst_w);
+	blit.destination.h = static_cast<Uint32>(dst_h);
+	blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+	blit.filter = SDL_GPU_FILTER_LINEAR;
+	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(
+		ctx->device->gpu_device);
+	if (!cmd)
+		return;
+	SDL_BlitGPUTexture(cmd, &blit);
+	SDL_SubmitGPUCommandBuffer(cmd);   // BlitGPUTexture 只编码：此处提交
+}
+
 void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex)
 {
 	if (!ctx || !tex || tex->image.id == 0)
