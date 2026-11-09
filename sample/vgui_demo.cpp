@@ -3221,7 +3221,7 @@ int main()
 		wg->set_msaa_samples(samples);
 	}
 	font_familys_t* familys = new_font_family(wg->font_ctx,
-		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI,Arial,Consolas,Segoe UI Emoji", 0);
+		"微软雅黑,Tahoma,Arial Unicode MS,Segoe UI Emoji,Segoe UI,Arial,Consolas", 0);
 	auto* cb = new_ctx_cb();
 	rvg_t* vg = cb->new_rvg(cb->ac);
 

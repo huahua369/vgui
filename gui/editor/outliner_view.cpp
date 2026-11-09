@@ -190,6 +190,17 @@ namespace vgui_editor_kit {
 		 * 令牌自守。 */
 		if (context_ && selection_sync_id_)
 			context_->remove_selection_set_listener(selection_sync_id_);
+		/* The widget tree may outlive this component (editor_shell destroys
+		 * its C++ parts first); detach every callback carrying `this`. */
+		if (tree_)
+		{
+			vgui_tree_set_row_source(tree_, nullptr);
+			vgui_tree_on_select(tree_, nullptr, nullptr);
+			vgui_tree_on_item_button(tree_, nullptr, nullptr);
+			vgui_widget_on_event(tree_, nullptr, nullptr);
+		}
+		if (edit_)
+			vgui_widget_on_event(edit_, nullptr, nullptr);
 	}
 
 	void outliner_view::build(editor_context& context, vgui_widget* parent)

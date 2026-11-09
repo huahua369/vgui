@@ -258,4 +258,5 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **构建隔离**：源文件只加入 `backends/CMakeLists.txt` 的 `NOT VGUI_CORE_ONLY` 列表；`VGUI_CORE_ONLY=ON` 不编译该接口，公共头自包含检查覆盖新头。
 - **验证**：新增 `sample/vgui_render_target_test.cpp`（CTest `vgui_render_target`，无 Vulkan 返回 77），覆盖非法创建、原始矢量回读、上下文→纹理→图片→合成、resize 指针稳定、尺寸不匹配拒绝、`clear=0` 累积与 `submit()`；全量构建、core-only 构建和 ctest 均通过。
 - **顺带修正**：`vgui_runtime_bench` 使用 SDL3 后端，已从 core-only 目标列表移入 `NOT VGUI_CORE_ONLY`，避免 core-only 链接缺后端符号（此前该配置下会链接失败）。
+- **core-only 编辑器关闭修正**：core-only C API 测试在 `vgui_editor_shell_destroy()` 后的 `frame(1)` 访问冲突（`0xC0000005`），根因是 `editor_shell` 先销毁 C++ 组件、控件树随后随 `vgui_context` 销毁，树上的虚拟行源仍指向已释放的 `console_view` / `asset_browser` / `outliner_view`。三个析构函数现在主动解绑承载 `this` 的行源、选择/激活、事件与自绘回调；core-only ctest 2/2、全量 ctest 5/5 均通过。
 - 详见 [`render_target_roadmap.md`](render_target_roadmap.md)。

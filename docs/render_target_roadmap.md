@@ -186,10 +186,10 @@ ctest --test-dir out\build\x64-debug -R vgui_render_target --output-on-failure
 
 构建验收：
 
-- 全量构建（`bld_full.bat`）通过；
-- `VGUI_CORE_ONLY=ON`（`bld_core.bat`）通过，且构建图里不出现 `vgui_render_target.cpp` / `vgui_render_target_test`；
+- 全量构建（`bld_full.bat`）通过，全量 ctest 5/5（含 `vgui_render_target`）；
+- `VGUI_CORE_ONLY=ON`（`bld_core.bat`）通过，core-only ctest 2/2，且构建图里不出现 `vgui_render_target.cpp` / `vgui_render_target_test`；
 - 公共头自包含检查覆盖新头文件；
-- 既有纹理、截图、模型与 C API 测试不回归。
+- 既有纹理、截图、模型与 C API 测试不回归（core-only 编辑器关闭路径一并修正，见 §8）。
 
 ## 7. 后续（P1/P2）
 
@@ -206,3 +206,4 @@ ctest --test-dir out\build\x64-debug -R vgui_render_target --output-on-failure
 ## 8. 变更记录
 
 - **2026-11-08：P0 落地**。新增 `vgui_render_target` 公共后端 API、实现、CMake 接入、离屏回读测试与 CTest 注册。`vgui_sdl3.h` 转包含新头。实现中使用借用 `ovg_ctx_cb*`，与 `vgui_context::draw_cb` 的生存期要求一致。
+- **2026-11-09：core-only 编辑器关闭修正**。同时暴露并修复了 core-only 下 `vgui_editor_c_api_test` 在 shell 销毁后崩溃的问题：编辑器组件先于控件树销毁，虚拟行源/回调仍持有 `this`。`asset_browser`、`console_view`、`outliner_view` 析构时解绑相关回调；core-only ctest 2/2 恢复通过。

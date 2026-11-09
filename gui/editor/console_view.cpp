@@ -89,6 +89,15 @@ namespace vgui_editor_kit {
 			vgui_context_remove_key_handler(context_, key_handler_token_);
 		context_ = nullptr;
 		key_handler_token_ = 0;
+		/* The widget tree may outlive this component (editor_shell destroys
+		 * its C++ parts first); detach every callback carrying `this`. */
+		if (tree_)
+		{
+			vgui_tree_set_row_source(tree_, nullptr);
+			vgui_tree_on_activate(tree_, nullptr, nullptr);
+		}
+		if (ticker_)
+			vgui_custom_set_draw(ticker_, nullptr, nullptr);
 		delete key_entry_;
 		key_entry_ = nullptr;
 		if (alive_token_)

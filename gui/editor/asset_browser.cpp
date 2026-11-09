@@ -316,6 +316,25 @@ namespace vgui_editor_kit {
 		 * vgui context disappear. */
 		cancel_thumbnail_requests();
 		thumbnails_.reset();
+
+		/* The widgets may outlive this component: editor_shell destroys its
+		 * C++ parts first and lets the vgui context delete the tree.  Detach
+		 * every callback carrying `this` so a later layout/draw cannot call
+		 * into freed memory. */
+		if (list_)
+		{
+			vgui_list_set_row_source(list_, nullptr);
+			vgui_list_on_select(list_, nullptr, nullptr);
+			vgui_list_on_activate(list_, nullptr, nullptr);
+			vgui_widget_on_event(list_, nullptr, nullptr);
+		}
+		if (ticker_)
+			vgui_custom_set_draw(ticker_, nullptr, nullptr);
+		if (grid_)
+		{
+			vgui_custom_set_draw(grid_, nullptr, nullptr);
+			vgui_custom_set_event(grid_, nullptr, nullptr);
+		}
 	}
 
 	void asset_browser::build(vgui_widget* parent)
