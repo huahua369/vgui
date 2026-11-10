@@ -113,6 +113,12 @@ bool vgpu_texture_update_native(vgpu_ctx_t* ctx, ovg_texture_t* tex,
 // SDL_GPUTexture is not released.
 void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex);
 
+// 独立命令缓冲的 GPU 线性缩小拷贝（src 全图 → dst 全图，双线性滤波）。
+// 静态烘焙用：先离屏渲一个超采样 pass，再把结果缩小到最终纹理。
+// 不要在帧 pass 序列中间调用（本函数自行获取并提交命令缓冲）。
+void vgpu_blit_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* dst, int dst_w,
+	int dst_h, SDL_GPUTexture* src, int src_w, int src_h);
+
 // Submits one frame.  The fbo in data must already have a swapchain from
 // vgpu_acquire_swapchain, or this function acquires one; the command buffer is
 // submitted when the function returns.

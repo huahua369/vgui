@@ -519,7 +519,10 @@ namespace vgui_editor_kit {
 		(void)wx;
 		(void)wy;
 		(void)wh;
-		self->a_ = std::clamp(event->x / std::max(1.0f, ww), 0.0f, 1.0f);
+		/* 透明度条从左到右是「不透明 -> 透明」，滑块位置要和这条
+		 * 渐变一致，否则左侧看着不透明、实际 alpha 却接近 0。 */
+		self->a_ = 1.0f - std::clamp(event->x / std::max(1.0f, ww),
+			0.0f, 1.0f);
 		self->apply_color(hsv_to_rgb(self->h_deg_, self->s_, self->v_, self->a_),
 			event->type == VGUI_EVENT_MOUSE_UP, false);
 		return 1;
@@ -563,8 +566,9 @@ namespace vgui_editor_kit {
 			((uint32_t)std::lround(std::clamp(self->edit_rgb_.g, 0.0f, 1.0f) * 255.0f) << 8) |
 			(uint32_t)std::lround(std::clamp(self->edit_rgb_.b, 0.0f, 1.0f) * 255.0f));
 		ovg_tools::alpha_bar(cb, vg, x, y, w, h, opaque);
-		ovg_tools::bar_thumb(cb, vg, x + self->a_ * w, y + h * 0.5f,
-			6.0f * ui_scale_of(widget));
+		/* 颜色条左边不透明、右边透明，alpha=1 对应最左侧。 */
+		ovg_tools::bar_thumb(cb, vg, x + (1.0f - self->a_) * w,
+			y + h * 0.5f, 6.0f * ui_scale_of(widget));
 	}
 
 } /* namespace vgui_editor_kit */
