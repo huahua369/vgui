@@ -286,6 +286,22 @@ struct vgpu_ctx_t {
 	gpu_buffer_t vbo;
 	gpu_buffer_t ibo;
 
+	// SDL3 的 transfer buffer 每次创建都会申请一块专用显存，而空分配只在
+	// 带交换链提交的帧里回收；窗口最小化时没有这种提交，逐帧“创建-释放”
+	// 转移缓冲会让显存单调增长。这里改为复用一组暂存槽位。
+	struct staging_slot_t {
+		SDL_GPUTransferBuffer* buffer = nullptr;
+		uint32_t capacity = 0;
+		bool busy = false;
+	};
+	struct staging_flight_t {
+		SDL_GPUFence* fence = nullptr;
+		std::vector<uint32_t> slots;
+	};
+	std::vector<staging_slot_t> staging;
+	std::vector<staging_flight_t> staging_flights;
+	std::vector<uint32_t> staging_frame;
+
 	SDL_GPUCommandBuffer* current_cmd = nullptr;
 	SDL_GPURenderPass* pass = nullptr;
 	bool swapchain_acquired = false;
@@ -611,9 +627,71 @@ SDL_GPUGraphicsPipeline* get_geom_pipeline(vgpu_ctx_t* ctx, const gem_info_t* in
 // 上传
 // ---------------------------------------------------------------------------
 
+void staging_collect(vgpu_ctx_t* ctx)
+{
+	for (size_t i = ctx->staging_flights.size(); i-- > 0;)
+	{
+		vgpu_ctx_t::staging_flight_t& flight = ctx->staging_flights[i];
+		if (!SDL_QueryGPUFence(ctx->device->gpu_device, flight.fence))
+			continue;
+		SDL_ReleaseGPUFence(ctx->device->gpu_device, flight.fence);
+		for (uint32_t index : flight.slots)
+			ctx->staging[index].busy = false;
+		ctx->staging_flights.erase(ctx->staging_flights.begin() + static_cast<ptrdiff_t>(i));
+	}
+}
+
+SDL_GPUTransferBuffer* staging_acquire(vgpu_ctx_t* ctx, size_t size)
+{
+	for (size_t i = 0; i < ctx->staging.size(); ++i)
+	{
+		vgpu_ctx_t::staging_slot_t& slot = ctx->staging[i];
+		if (slot.busy || slot.capacity < size)
+			continue;
+		slot.busy = true;
+		ctx->staging_frame.push_back(static_cast<uint32_t>(i));
+		return slot.buffer;
+	}
+
+	SDL_GPUTransferBufferCreateInfo info = {};
+	info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+	info.size = static_cast<Uint32>(size);
+	SDL_GPUTransferBuffer* buffer = SDL_CreateGPUTransferBuffer(ctx->device->gpu_device, &info);
+	if (!buffer)
+		return nullptr;
+	ctx->staging.push_back({ buffer, static_cast<uint32_t>(size), true });
+	ctx->staging_frame.push_back(static_cast<uint32_t>(ctx->staging.size() - 1));
+	return buffer;
+}
+
+// 提交本帧命令缓冲，并把本帧占用的暂存槽位挂到提交栅栏上。
+bool staging_submit(vgpu_ctx_t* ctx)
+{
+	if (ctx->staging_frame.empty())
+		return SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+
+	SDL_GPUFence* fence = SDL_SubmitGPUCommandBufferAndAcquireFence(ctx->current_cmd);
+	if (!fence)
+	{
+		for (uint32_t index : ctx->staging_frame)
+			ctx->staging[index].busy = false;
+		ctx->staging_frame.clear();
+		return false;
+	}
+	ctx->staging_flights.push_back({ fence, std::move(ctx->staging_frame) });
+	ctx->staging_frame.clear();
+	return true;
+}
+
+void staging_abort_frame(vgpu_ctx_t* ctx)
+{
+	for (uint32_t index : ctx->staging_frame)
+		ctx->staging[index].busy = false;
+	ctx->staging_frame.clear();
+}
+
 void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
-	const std::vector<ovg_draw_data_t*>& items,
-	std::vector<SDL_GPUTransferBuffer*>& transfers)
+	const std::vector<ovg_draw_data_t*>& items)
 {
 	SDL_GPUCopyPass* copy = nullptr;
 
@@ -704,18 +782,13 @@ void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 			if (total_bytes == 0)
 				continue;
 
-			SDL_GPUTransferBufferCreateInfo transfer_info = {};
-			transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-			transfer_info.size = static_cast<Uint32>(total_bytes);
-			SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(ctx->device->gpu_device, &transfer_info);
+			SDL_GPUTransferBuffer* transfer = staging_acquire(ctx, total_bytes);
 			if (!transfer)
 				continue;
 
 			void* mapped = SDL_MapGPUTransferBuffer(ctx->device->gpu_device, transfer, false);
-			if (!mapped) {
-				SDL_ReleaseGPUTransferBuffer(ctx->device->gpu_device, transfer);
+			if (!mapped)
 				continue;
-			}
 
 			const auto* source = static_cast<const uint8_t*>(desc->pixels) +
 				static_cast<size_t>(y) * stride + static_cast<size_t>(x) * bpp;
@@ -728,10 +801,8 @@ void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 
 			if (!copy) {
 				copy = SDL_BeginGPUCopyPass(cmd);
-				if (!copy) {
-					SDL_ReleaseGPUTransferBuffer(ctx->device->gpu_device, transfer);
+				if (!copy)
 					continue;
-				}
 			}
 
 			SDL_GPUTextureTransferInfo src = {};
@@ -748,7 +819,6 @@ void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 			dst.h = h;
 			dst.d = 1;
 			SDL_UploadToGPUTexture(copy, &src, &dst, false);
-			transfers.push_back(transfer);
 			desc->img->valid = false;
 		}
 	}
@@ -758,8 +828,7 @@ void process_image_descs(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 }
 
 void upload_buffers(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
-	const std::vector<ovg_draw_data_t*>& items,
-	std::vector<SDL_GPUTransferBuffer*>& transfers)
+	const std::vector<ovg_draw_data_t*>& items)
 {
 	size_t vbo_bytes = 0;
 	size_t ibo_bytes = 0;
@@ -796,18 +865,13 @@ void upload_buffers(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	if (vbo_bytes == 0 && ibo_bytes == 0)
 		return;
 
-	SDL_GPUTransferBufferCreateInfo transfer_info = {};
-	transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-	transfer_info.size = static_cast<Uint32>(vbo_bytes + ibo_bytes);
-	SDL_GPUTransferBuffer* transfer = SDL_CreateGPUTransferBuffer(ctx->device->gpu_device, &transfer_info);
+	SDL_GPUTransferBuffer* transfer = staging_acquire(ctx, vbo_bytes + ibo_bytes);
 	if (!transfer)
 		return;
 
 	void* mapped = SDL_MapGPUTransferBuffer(ctx->device->gpu_device, transfer, false);
-	if (!mapped) {
-		SDL_ReleaseGPUTransferBuffer(ctx->device->gpu_device, transfer);
+	if (!mapped)
 		return;
-	}
 
 	auto* base = static_cast<uint8_t*>(mapped);
 	for (ovg_draw_data_t* data : items) {
@@ -837,10 +901,8 @@ void upload_buffers(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	SDL_UnmapGPUTransferBuffer(ctx->device->gpu_device, transfer);
 
 	SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
-	if (!copy) {
-		SDL_ReleaseGPUTransferBuffer(ctx->device->gpu_device, transfer);
+	if (!copy)
 		return;
-	}
 	if (vbo_bytes > 0) {
 	SDL_GPUTransferBufferLocation src = {};
 	src.transfer_buffer = transfer;
@@ -868,7 +930,6 @@ void upload_buffers(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 		SDL_UploadToGPUBuffer(copy, &src, &dst, false);
 	}
 	SDL_EndGPUCopyPass(copy);
-	transfers.push_back(transfer);
 }
 
 // ---------------------------------------------------------------------------
@@ -1385,6 +1446,18 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 
 	ctx->vbo.release(device);
 	ctx->ibo.release(device);
+
+	for (vgpu_ctx_t::staging_flight_t& flight : ctx->staging_flights) {
+		if (flight.fence && device)
+			SDL_ReleaseGPUFence(device, flight.fence);
+	}
+	ctx->staging_flights.clear();
+	for (vgpu_ctx_t::staging_slot_t& slot : ctx->staging) {
+		if (slot.buffer && device)
+			SDL_ReleaseGPUTransferBuffer(device, slot.buffer);
+	}
+	ctx->staging.clear();
+	ctx->staging_frame.clear();
 	delete ctx;
 }
 
@@ -1633,12 +1706,16 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	if (!ctx || !ctx->device || !ctx->device->gpu_device)
 		return;
 
+	staging_collect(ctx);
+
 	if (count == 0 || !data) {
 		if (ctx->current_cmd) {
 			if (ctx->swapchain_acquired)
-				SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
-			else
+				staging_submit(ctx);
+			else {
+				staging_abort_frame(ctx);
 				SDL_CancelGPUCommandBuffer(ctx->current_cmd);
+			}
 			ctx->current_cmd = nullptr;
 			ctx->swapchain_acquired = false;
 		}
@@ -1674,9 +1751,11 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 
 	if (items.empty()) {
 		if (ctx->swapchain_acquired)
-			SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
-		else
+			staging_submit(ctx);
+		else {
+			staging_abort_frame(ctx);
 			SDL_CancelGPUCommandBuffer(ctx->current_cmd);
+		}
 		ctx->current_cmd = nullptr;
 		ctx->swapchain_acquired = false;
 		for (size_t i = 0; i < count; ++i) {
@@ -1686,9 +1765,8 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 		return;
 	}
 
-	std::vector<SDL_GPUTransferBuffer*> transfers;
-	process_image_descs(ctx, ctx->current_cmd, items, transfers);
-	upload_buffers(ctx, ctx->current_cmd, items, transfers);
+	process_image_descs(ctx, ctx->current_cmd, items);
+	upload_buffers(ctx, ctx->current_cmd, items);
 
 	// Encode one pass per FBO, in order of first appearance, so a caller that
 	// submits several draw data entries in one frame (offscreen HUD pass and
@@ -1737,7 +1815,7 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	if (current_fbo)
 		end_pass(ctx, current_fbo);
 
-	SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+	staging_submit(ctx);
 	ctx->current_cmd = nullptr;
 	ctx->pass = nullptr;
 	ctx->swapchain_acquired = false;
@@ -1746,9 +1824,6 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 		if (data[i].fbo)
 			data[i].fbo->swapchain = nullptr;
 	}
-
-	for (SDL_GPUTransferBuffer* transfer : transfers)
-		SDL_ReleaseGPUTransferBuffer(ctx->device->gpu_device, transfer);
 
 	if (!ctx->pending_destroy.empty()) {
 		SDL_WaitForGPUIdle(ctx->device->gpu_device);
