@@ -30,7 +30,7 @@ P0 交付范围：
 
 ### 1.2 非目标
 
-- 不是通用渲染图/合成器，不管理引擎的 pass 依赖关系。
+- 不是通用渲染图/合成器，不管理引擎的 pass 依赖关系——多 target 依赖排序由宿主以数组顺序表达并合并为一次提交（§4.1、§4.7），不引入图 API。
 - 多颜色附件仍不提供。深度/模板附件已由 P1 补齐（2026-11-14，`desc.depth` + `native_depth_texture()`，见 §4.4）——仅作为宿主 3D pass 的附件，vgui 的 UI pass 自身不使用深度。显式颜色格式已由 P1 补齐（2026-11-14，`desc.format`，见 §4.5）——HDR/sRGB 目标可直接烘入矢量/UI 内容，pipeline 按格式惰性创建。MSAA 采样数选择已由 P1 补齐（2026-11-14，`desc.sample_count`，见 §4.6）——按目标禁用/选择 1/2/4/8x。
 - 不提供 GPU 回读、PNG 编码或呈现 API；回读用 `SDL_DownloadFromGPUTexture`，呈现用引擎自己的 pass。
 - 不自动推进动画或布局：`record_context()` 不调用 `vgui_update()`。
@@ -177,6 +177,10 @@ vgpu_render_frame(gpu_ctx, passes, 2);
 - pipeline 按既有（格式，采样数）键惰性选择（§4.5 的缓存机制）；深度附件采样数自动跟随目标有效值。
 - 典型用途：回读/比对目标禁 MSAA；引擎按面板内容复杂度为各离屏目标选 4x/8x。
 
+### 4.7 多目标链路（P1，2026-11-14——以既有能力关闭，不引入图 API）
+
+多 target 渲染"图"由既有批量提交模式覆盖，无需新 API：每个 target 各自 `record()`/`record_context()` 产出一项 `ovg_draw_data_t`，宿主把依赖顺序排进数组，合并为**一次** `vgpu_render_frame()` 提交（§4.1）；SDL3 的自动屏障在同一次提交内保证"离屏写入 → 采样"顺序，与深度/格式/采样数选项全部可组合。`vgui_render_target_test` 的三级链路用例验证：target A（红）→ target B 的 UI 采样 A → target C 的 UI 采样 B，三项 pass 单次提交，末端回读同时命中"穿透两级的 A 颜色"与"穿过一级的 B 背景"。路线图原条目（`record()` 输出多 target 或显式依赖排序）判定为被该模式覆盖：数组顺序即依赖顺序，`ovg_draw_data_t::fbo` 已逐项携带目标；独立的依赖排序/图结构没有表达需求，不做。
+
 ## 5. 实现要点
 
 | 主题 | 实现 |
@@ -213,6 +217,7 @@ vgpu_render_frame(gpu_ctx, passes, 2);
 8. 深度附件（P1）：`desc.depth = 1` 创建后深度句柄在场、无 `depth` 的目标句柄为 NULL；同一份 UI 内容在"有深度/无深度"两个目标上颜色输出逐像素一致；resize 后深度句柄仍有效且可继续录制/读回。
 9. 显式格式（P1）：`desc.format = RGBA16F` 目标创建成功，纯红 UI 烘入后以 fp16 读回解码断言（R≈1、G/B≈0、A≈1）；resize 后仍可录制/读回；非法格式值 create 失败并给出错误描述；`format = 0` 既有 8-bit 全部用例不回归。
 10. MSAA 采样数选择（P1）：1x 上下文上 `desc.sample_count = 4` 目标创建成功，resolve 后输出与 1x 孪生目标逐像素一致；显式 `1` 创建成功；`3` 报 `"invalid sample count"`；`4 + depth` 组合成功且深度句柄在场（按设备 D32 4x 能力分支断言，不支持时必须干净失败）。
+11. 多目标链路（P1）：三个 target 按依赖顺序各自 `record_context()`，三项 pass 合并一次 `vgpu_render_frame()` 提交；末端回读同时命中穿透两级的层 0 颜色（红）与穿过一级的层 1 背景（绿）。
 
 运行：
 
@@ -236,13 +241,14 @@ ctest --test-dir out\build\x64-debug -R vgui_render_target --output-on-failure
 | ~~P1~~ | ~~MSAA 采样数选择~~ | **已完成（2026-11-14）**：`desc.sample_count`（0 跟随/1 禁用/2/4/8 显式），见 §4.6 |
 | ~~P1~~ | ~~显式格式/色彩空间~~ | **已完成（2026-11-14）**：`desc.format`（HDR/sRGB）+ 按格式惰性 pipeline，见 §4.5 |
 | ~~P1~~ | ~~深度/模板附件~~ | **已完成（2026-11-14）**：`desc.depth` + `native_depth_texture()`，复用 `vg_fbo_t` 深度字段，见 §4.4 |
-| P1 | 多目标渲染图 | 一个 `record()` 输出多个 target，或显式依赖排序；仍以一次 `vgpu_render_frame()` 提交 |
+| ~~P1~~ | ~~多目标渲染图~~ | **以既有能力关闭（2026-11-14）**：数组顺序即依赖顺序，N 个 target 各自 record 后合并一次 `vgpu_render_frame()` 提交，三级链路测试覆盖；不引入图 API，见 §4.7 |
 | P2 | 异步 resize/退休队列 | 去掉 `vgpu_wait_idle()`，用 fence + 延迟 FBO 释放 |
 | P2 | 设备丢失/重建 | 上下文重建后自动重建目标的 FBO 与纹理桥 |
 | P2 | 回读/编码辅助 | 可选的 `download()` / PNG 包装，避免每个宿主重复写 |
 
 ## 8. 变更记录
 
+- **2026-11-14：P1 多目标渲染图以既有能力关闭**。核查结论：N 个 target 各自 `record()` 产出一项、宿主按依赖顺序排数组、合并一次 `vgpu_render_frame()` 提交——这正是 §4.1 已文档化的批量模式，`ovg_draw_data_t::fbo` 逐项携带目标，SDL3 同提交自动屏障保证 写→采样 顺序；与深度/格式/采样数选项可组合。判定"显式依赖排序/图结构"没有独立表达需求，**不引入新 API**（路线图原条目"一个 record() 输出多个 target"是同一能力的低效形态）。`vgui_render_target_test` 新增三级链路用例：target A（红背景）→ target B 的 UI 采样 A（半幅）→ target C 的 UI 采样 B（全幅），三项 pass 单次提交，末端回读同时命中穿透两级的 A 红（(8,6)）与穿过一级的 B 绿（(40,30)）。§7 P1 行全部清零，剩 P2 三行（异步 resize、设备丢失、回读辅助）。
 - **2026-11-14：P1 MSAA 采样数选择落地**。`vg_fbo_t` 新增 `samples`（有效采样数）字段；`vgpu_create_fbo()` 加 `sample_count` 参数（0 跟随/1 禁用/2/4/8 显式，原始计数经新 `to_sdl_sample_count()` 映射为 SDL 序数枚举——直接 cast 会越界并被 SDL 静默降级 1x，本次实现曾踩此坑并加测试防回归），MSAA 颜色附件与深度附件均按有效值创建；`vgpu_reset_fbo()` 保留有效值、`vgpu_acquire_swapchain()` 为窗口 FBO 标注上下文采样数；新 API `vgpu_fbo_samples()`。`get_vg_pipeline()/get_geom_pipeline()` 的采样数维度改用 FBO 有效值，异采样数自动落入既有（格式，采样数）惰性缓存。`vgui_render_target_desc` 尾部追加 `sample_count`，create 解析 + `vgpu_supports_color_format()` 组合校验（非法值报 "invalid sample count"，不支持报 "sample count not supported for color target"），resize 携带重建。`vgui_render_target_test` 新增：4x 目标 resolve 输出与 1x 孪生逐像素一致、显式 1x、非法值拒绝、4x+深度组合（按设备 D32 4x 能力分支断言）。`begin_pass` 零改动。§7 仅剩多目标渲染图一行 P1。
 - **2026-11-14：P1 显式颜色格式落地**。`vg_fbo_t` 新增 `color_format` 字段；`vgpu_create_fbo()` 加 `color_format` 参数（INVALID 跟随上下文，仅离屏生效），`vgpu_reset_fbo()` 携带重建，`vgpu_acquire_swapchain()` 为窗口 FBO 标注交换链格式；新 API `vgpu_fbo_color_format()` / `vgpu_supports_color_format()`（2D + COLOR_TARGET|SAMPLER + MSAA 采样数校验）。vgpu 侧新增按（格式，采样数）惰性缓存的 `alt_vg_pipelines` 集合与 `create_vg_pipeline_set()`，`get_vg_pipeline()` 改按 FBO 格式选集，geom 缓存 key 纳入格式与采样数——**采样器/着色器/混合/裁剪零改动**。`vgui_render_target_desc` 尾部追加 `format`，create 经 `to_sdl_texture_format()` 映射并前置校验（失败报 "unsupported target color format"/"color format not supported for color target"），resize 携带格式重建。`vgui_render_target_test` 用 `download_texture_bytes()`（新，任意字节宽读回）+ 本地 half 解码覆盖 RGBA16F 创建/烘入/读回/resize 与非法格式拒绝。
 - **2026-11-14：P1 深度/模板附件落地**。`vg_fbo_t` 新增 `depth_tex/depth_format` 字段（路线图方向"复用 vg_fbo_t 深度字段"）；`vgpu_create_fbo()` 加默认参数 `depth`（离屏 + `SDL_GPUTextureSupportsSampleCount` 校验后创建 `D32_FLOAT`/`DEPTH_STENCIL_TARGET`，MSAA 跟随上下文），`vgpu_destroy_fbo()`/`vgpu_reset_fbo()` 同步处理，新访问器 `vgpu_fbo_depth_texture()`。`vgui_render_target_desc` 尾部追加 `depth`，创建/resize 校验深度在场（失败报 "failed to create depth attachment"），新 API `vgui_render_target_native_depth_texture()`。**UI pass 与所有 vgpu pipeline 零改动**（不绑深度），深度 clear/store 策略由宿主 pass 自理（phase0 `draw_scene_target` 配方，见 §4.4）。`vgui_render_target_test` 新增 17 项断言：句柄在场/缺失、同内容有无深度输出逐像素一致、resize 后句柄存活并可继续录制读回。

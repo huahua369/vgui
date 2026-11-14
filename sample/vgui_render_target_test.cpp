@@ -612,6 +612,92 @@ int main()
 			"sample count") != nullptr, "invalid sample count is described");
 	}
 
+	// 多目标链路:三个 target 依赖排序(每个 target 的 UI 采样上一个 target
+	// 的纹理),三项 pass 放进同一次 vgpu_render_frame() 提交——"多目标渲染
+	// 图"由既有批量提交模式覆盖,数组顺序即依赖顺序。
+	{
+		vgui_context* chain_ctx[3] = {};
+		vgui_render_target* chain_target[3] = {};
+		vgui_widget* chain_image[3] = {};
+		const uint32_t chain_bg[3] = { 0xFFFF0000u, 0xFF00FF00u, 0xFF0000FFu };
+		bool chain_ok = true;
+		for (int i = 0; i < 3 && chain_ok; ++i)
+		{
+			chain_ctx[i] = vgui_create(nullptr, 16.0f);
+			if (!chain_ctx[i])
+			{
+				std::printf("  chain step %d: create context failed\n", i);
+				chain_ok = false;
+				break;
+			}
+			vgui_context_set_size(chain_ctx[i], 64, 48);
+			vgui_widget_set_background(vgui_root(chain_ctx[i]), chain_bg[i]);
+			chain_target[i] = vgui_render_target_create(host, gpu.vgpu_ctx,
+				cb, &desc);
+			if (!chain_target[i])
+			{
+				std::printf("  chain step %d: create target failed: %s\n", i,
+					vgui_render_target_last_error(nullptr));
+				chain_ok = false;
+			}
+		}
+		// 第 i+1 层的 UI 显示第 i 层的纹理:层 1 半幅(留出自身背景),
+		// 层 2 全幅——末端同时可见"穿透两级的层 0 颜色"与"层 1 背景"。
+		for (int i = 0; i + 1 < 3 && chain_ok; ++i)
+		{
+			chain_image[i] = vgui_widget_add(vgui_root(chain_ctx[i + 1]),
+				VGUI_IMAGE, nullptr);
+			if (!chain_image[i])
+			{
+				std::printf("  chain step %d: create image failed\n", i);
+				chain_ok = false;
+				break;
+			}
+			vgui_widget_set_pos(chain_image[i], 0.0f, 0.0f);
+			vgui_widget_set_size(chain_image[i],
+				i == 0 ? 32.0f : 64.0f, i == 0 ? 24.0f : 48.0f);
+			vgui_widget_set_background(chain_image[i], 0);
+			vgui_widget_set_border(chain_image[i], 0, 0.0f);
+			vgui_image_set_fit(chain_image[i], VGUI_IMAGE_FIT_STRETCH);
+		}
+		check(chain_ok, "create 3-target chain");
+		if (chain_ok)
+		{
+			// 先绑定纹理再录制:第 i+1 层引用第 i 层的 vgui_texture。
+			for (int i = 0; i + 1 < 3; ++i)
+				vgui_image_set_texture(chain_image[i],
+					vgui_render_target_texture(chain_target[i]));
+
+			ovg_draw_data_t chain_passes[3] = {};
+			bool recorded = true;
+			for (int i = 0; i < 3 && recorded; ++i)
+				recorded = vgui_render_target_record_context(chain_target[i],
+					chain_ctx[i], &chain_passes[i]) == 1;
+			check(recorded, "record 3-target chain in dependency order");
+			if (recorded)
+			{
+				vgpu_render_frame(gpu.vgpu_ctx, chain_passes, 3);
+				vgpu_wait_idle(gpu.vgpu_ctx);
+				std::vector<uint32_t> chain_pixels;
+				check(download_texture(gpu.device,
+					vgui_render_target_native_texture(chain_target[2]), width,
+					height, chain_pixels), "download chain end target");
+				// 末端 (8,6) ← 层1(16,12) ← 层0 红:穿透两级;(40,30) ←
+				// 层1(40,30) 绿:层 1 自身背景(其图外区域)穿过一级。
+				expect_pixel(chain_pixels, width, height, 8, 6, rgba(255, 0, 0),
+					"chain carries layer 0 content", &failures);
+				expect_pixel(chain_pixels, width, height, 40, 30, rgba(0, 255, 0),
+					"chain carries layer 1 background", &failures);
+			}
+		}
+		for (int i = 0; i < 3; ++i)
+		{
+			vgui_render_target_destroy(chain_target[i]);
+			if (chain_ctx[i])
+				vgui_destroy(chain_ctx[i]);
+		}
+	}
+
 	// Release the widget binding before the target that owns the native texture.
 	vgui_image_set_texture(image, nullptr);
 	vgui_render_target_destroy(keep);
