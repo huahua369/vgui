@@ -2,13 +2,17 @@
 //
 // Offscreen test for vgui_render_target:
 //   vector -> target texture -> VGUI_IMAGE -> another target -> readback.
-// It also covers context recording, resize-in-place, clear=0 preservation and
-// the static submit() convenience.  No window is created; when no Vulkan device
-// is available the test returns 77 so CTest marks it as skipped.
+// It also covers context recording, resize-in-place, clear=0 preservation, the
+// static submit() convenience and the optional depth attachment (the UI pass
+// output is pixel-identical with and without depth; the depth handle survives
+// resize).  No window is created; when no Vulkan device is available the test
+// returns 77 so CTest marks it as skipped.
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <vector>
@@ -103,6 +107,32 @@ void draw_full_red(void* user, ovg_ctx_cb* cb, rvg_t* vg, int width, int height)
 	cb->set_source_color(vg, rgba(255, 0, 0));
 	cb->rectangle(vg, 0.0f, 0.0f, (float)width, (float)height);
 	cb->fill(vg);
+}
+
+// IEEE-754 binary16 -> float (enough for test assertions: normals and zeros).
+float half_to_float(uint16_t h)
+{
+	const uint32_t sign = static_cast<uint32_t>(h & 0x8000u) << 16;
+	const uint32_t exp = (h >> 10) & 0x1Fu;
+	const uint32_t man = h & 0x3FFu;
+	if (exp == 0)
+	{
+		const uint32_t zero = sign;
+		float out = 0.0f;
+		std::memcpy(&out, &zero, sizeof(out));
+		return out;
+	}
+	if (exp == 0x1Fu)
+	{
+		const uint32_t inf = sign | 0x7F800000u | (man << 13);
+		float out = 0.0f;
+		std::memcpy(&out, &inf, sizeof(out));
+		return out;
+	}
+	const uint32_t bits = sign | ((exp - 15u + 127u) << 23) | (man << 13);
+	float out = 0.0f;
+	std::memcpy(&out, &bits, sizeof(out));
+	return out;
 }
 
 struct rect_spec
@@ -316,6 +346,174 @@ int main()
 		"clear=0 preserves old content", &failures);
 	expect_pixel(pixels, keep_width, keep_height, 10, 10, rgba(0, 0, 255),
 		"clear=0 draws new content", &failures);
+
+	// 深度附件:desc.depth=1 创建 D32 深度句柄;UI pass 不绑深度,同一份内容
+	// 在"有深度/无深度"两个目标上的颜色输出必须逐像素一致。
+	check(desc.depth == 0, "desc default has no depth");
+	check(vgui_render_target_native_depth_texture(raw) == nullptr,
+		"no depth handle without desc.depth");
+	vgui_render_target_desc depth_desc = desc;
+	depth_desc.depth = 1;
+	vgui_render_target* depth_target = vgui_render_target_create(host,
+		gpu.vgpu_ctx, cb, &depth_desc);
+	check(depth_target != nullptr, "create depth=1 target");
+	if (depth_target)
+	{
+		check(vgui_render_target_native_depth_texture(depth_target) != nullptr,
+			"depth handle exists");
+
+		vgui_context* depth_panel = vgui_create(nullptr, 16.0f);
+		check(depth_panel != nullptr, "create depth panel context");
+		if (depth_panel)
+		{
+			vgui_context_set_size(depth_panel, 64, 48);
+			vgui_widget_set_background(vgui_root(depth_panel), 0xFF0000FFu);
+
+			vgui_render_target* plain = vgui_render_target_create(host,
+				gpu.vgpu_ctx, cb, &desc);
+			check(plain != nullptr, "create plain twin target");
+			if (plain)
+			{
+				ovg_draw_data_t depth_pass = {};
+				ovg_draw_data_t plain_pass = {};
+				check(vgui_render_target_record_context(depth_target,
+					depth_panel, &depth_pass) == 1, "record into depth target");
+				check(vgui_render_target_record_context(plain, depth_panel,
+					&plain_pass) == 1, "record into plain twin");
+				vgpu_render_frame(gpu.vgpu_ctx, &depth_pass, 1);
+				vgpu_render_frame(gpu.vgpu_ctx, &plain_pass, 1);
+				vgpu_wait_idle(gpu.vgpu_ctx);
+
+				std::vector<uint32_t> depth_pixels;
+				std::vector<uint32_t> plain_pixels;
+				check(download_texture(gpu.device,
+					vgui_render_target_native_texture(depth_target), width,
+					height, depth_pixels), "download depth target");
+				check(download_texture(gpu.device,
+					vgui_render_target_native_texture(plain), width, height,
+					plain_pixels), "download plain twin");
+				check(depth_pixels.size() == plain_pixels.size() &&
+					std::memcmp(depth_pixels.data(), plain_pixels.data(),
+						depth_pixels.size() * sizeof(uint32_t)) == 0,
+					"UI output identical with and without depth");
+
+				// resize 后深度句柄仍有效,颜色输出可继续读回。
+				vgui_texture* kept_texture =
+					vgui_render_target_texture(depth_target);
+				check(vgui_render_target_resize(depth_target, 32, 24) == 1,
+					"resize depth target");
+				check(vgui_render_target_texture(depth_target) == kept_texture,
+					"depth target texture pointer is stable");
+				check(vgui_render_target_native_depth_texture(depth_target) !=
+					nullptr, "depth handle survives resize");
+				vgui_context_set_size(depth_panel, 32, 24);
+				ovg_draw_data_t resized_depth_pass = {};
+				check(vgui_render_target_record_context(depth_target,
+					depth_panel, &resized_depth_pass) == 1,
+					"record into resized depth target");
+				vgpu_render_frame(gpu.vgpu_ctx, &resized_depth_pass, 1);
+				vgpu_wait_idle(gpu.vgpu_ctx);
+				int rw = 0, rh = 0;
+				vgui_render_target_get_size(depth_target, &rw, &rh);
+				std::vector<uint32_t> resized_pixels;
+				check(download_texture(gpu.device,
+					vgui_render_target_native_texture(depth_target), rw, rh,
+					resized_pixels), "download resized depth target");
+				expect_pixel(resized_pixels, rw, rh, 2, 2, rgba(0, 0, 255),
+					"resized depth target renders UI", &failures);
+				vgui_render_target_destroy(plain);
+			}
+			vgui_destroy(depth_panel);
+		}
+		vgui_render_target_destroy(depth_target);
+	}
+
+	// 显式格式(HDR):desc.format = RGBA16F 的目标,pipeline 按格式惰性创建,
+	// UI 输出以 fp16 读回并解码断言;非法格式在 create 时被拒绝。
+	{
+		const auto nearf = [](float a, float b)
+		{
+			return std::fabs(a - b) <= 1.0e-4f;
+		};
+		vgui_render_target_desc hdr_desc = desc;
+		hdr_desc.format = VGUI_TEXTURE_FORMAT_RGBA16F;
+		vgui_render_target* hdr = vgui_render_target_create(host, gpu.vgpu_ctx,
+			cb, &hdr_desc);
+		check(hdr != nullptr, "create RGBA16F target");
+		if (hdr)
+		{
+			vgui_context* hdr_panel = vgui_create(nullptr, 16.0f);
+			check(hdr_panel != nullptr, "create hdr panel context");
+			if (hdr_panel)
+			{
+				vgui_context_set_size(hdr_panel, 64, 48);
+				vgui_widget_set_background(vgui_root(hdr_panel), 0xFFFF0000u);
+				ovg_draw_data_t hdr_pass = {};
+				check(vgui_render_target_record_context(hdr, hdr_panel,
+					&hdr_pass) == 1, "record into RGBA16F target");
+				vgpu_render_frame(gpu.vgpu_ctx, &hdr_pass, 1);
+				vgpu_wait_idle(gpu.vgpu_ctx);
+
+				std::vector<uint8_t> hdr_bytes;
+				check(download_texture_bytes(gpu.device,
+					vgui_render_target_native_texture(hdr), width, height, 8,
+					hdr_bytes), "download RGBA16F target");
+				const auto sample_half = [&](int x, int y, int ch) -> float
+				{
+					const size_t base =
+						((size_t)y * width + (size_t)x) * 8u + (size_t)ch * 2u;
+					uint16_t h16 = 0;
+					if (base + 2 <= hdr_bytes.size())
+						std::memcpy(&h16, hdr_bytes.data() + base, sizeof(h16));
+					return half_to_float(h16);
+				};
+				check(nearf(sample_half(32, 24, 0), 1.0f) &&
+					nearf(sample_half(32, 24, 1), 0.0f) &&
+					nearf(sample_half(32, 24, 2), 0.0f) &&
+					nearf(sample_half(32, 24, 3), 1.0f),
+					"RGBA16F UI output is float HDR");
+
+				check(vgui_render_target_resize(hdr, 32, 24) == 1,
+					"resize RGBA16F target");
+				vgui_context_set_size(hdr_panel, 32, 24);
+				ovg_draw_data_t hdr_pass2 = {};
+				check(vgui_render_target_record_context(hdr, hdr_panel,
+					&hdr_pass2) == 1, "record into resized RGBA16F target");
+				vgpu_render_frame(gpu.vgpu_ctx, &hdr_pass2, 1);
+				vgpu_wait_idle(gpu.vgpu_ctx);
+				int rw = 0, rh = 0;
+				vgui_render_target_get_size(hdr, &rw, &rh);
+				std::vector<uint8_t> hdr_bytes2;
+				check(download_texture_bytes(gpu.device,
+					vgui_render_target_native_texture(hdr), rw, rh, 8,
+					hdr_bytes2), "download resized RGBA16F target");
+				const auto sample16 = [&](int x, int y, int ch) -> float
+				{
+					const size_t base =
+						((size_t)y * rw + (size_t)x) * 8u + (size_t)ch * 2u;
+					uint16_t h16 = 0;
+					if (base + 2 <= hdr_bytes2.size())
+						std::memcpy(&h16, hdr_bytes2.data() + base, sizeof(h16));
+					return half_to_float(h16);
+				};
+				check(nearf(sample16(16, 12, 0), 1.0f) &&
+					nearf(sample16(16, 12, 1), 0.0f) &&
+					nearf(sample16(16, 12, 2), 0.0f) &&
+					nearf(sample16(16, 12, 3), 1.0f),
+					"resized RGBA16F target renders UI");
+				vgui_destroy(hdr_panel);
+			}
+			vgui_render_target_destroy(hdr);
+		}
+
+		vgui_render_target_desc bad_desc = desc;
+		bad_desc.format = 0x7FFFFFFF;
+		vgui_render_target* bad = vgui_render_target_create(host, gpu.vgpu_ctx,
+			cb, &bad_desc);
+		check(bad == nullptr, "create with invalid format fails");
+		check(std::strstr(vgui_render_target_last_error(nullptr), "format") !=
+			nullptr, "invalid format is described");
+	}
 
 	// Release the widget binding before the target that owns the native texture.
 	vgui_image_set_texture(image, nullptr);

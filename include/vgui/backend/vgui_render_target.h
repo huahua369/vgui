@@ -53,13 +53,33 @@ typedef struct vgui_render_target_desc {
 	// also disables cycle_target; do not sample such a target in the same
 	// frame while a previous submission may still be reading it.
 	int clear;
+
+	// != 0: the offscreen FBO also gets a D32_FLOAT depth attachment for the
+	// host's own 3D passes (depth-tested scene rendered into the target before
+	// the vector/UI pass).  The vgui UI pass never binds it; the host binds
+	// vgui_render_target_native_depth_texture() in its own render pass via
+	// SDL_GPUDepthStencilTargetInfo and owns the depth clear/store policy
+	// (recipe: sample/phase0_renderer.cpp draw_scene_target).  Compositing a
+	// 3D scene under the UI typically pairs this with clear = 0 so the UI pass
+	// keeps the scene.  MSAA follows the context's sample count; SDL_GPU has
+	// no depth resolve, so reading depth back requires a single-sample
+	// re-render (phase0's depth-only pass).  Ignored for window FBOs.
+	int depth;
+
+	// vgui_texture_format override for the color attachment (0 = follow
+	// vgpu_color_format(), the default).  Lets a host bake the vector/UI pass
+	// into an HDR (RGBA16F/RGBA32F) or sRGB offscreen target: the vgpu
+	// pipelines used for that target are built lazily to match the format.
+	// Creation fails with an error when the device cannot render to the
+	// requested format.  Combine freely with depth.
+	int format;
 } vgui_render_target_desc;
 
 typedef void (*vgui_render_target_draw_fn)(void* user, ovg_ctx_cb* cb,
 	rvg_t* vg, int width, int height);
 
-// Fills desc with struct_size = sizeof(*desc), width = height = 0, clear = 1.
-// Callers must still set width/height.
+// Fills desc with struct_size = sizeof(*desc), width = height = 0, clear = 1,
+// depth = 0, format = 0.  Callers must still set width/height.
 void vgui_render_target_desc_default(vgui_render_target_desc* desc);
 
 // owner is the vgui_context that owns/display the resulting vgui_texture.
@@ -94,6 +114,13 @@ vgui_texture* vgui_render_target_texture(vgui_render_target* target);
 // Raw FBO color texture (never a swapchain).  Useful for SDL_BlitGPUTexture,
 // readback and engine-side sampling.  The pointer changes after resize().
 SDL_GPUTexture* vgui_render_target_native_texture(vgui_render_target* target);
+
+// Raw FBO depth attachment (SDL_GPU_TEXTUREFORMAT_D32_FLOAT), created when
+// vgui_render_target_desc::depth != 0.  NULL when the target has no depth or
+// depth creation failed.  Bind it in the host's own render pass via
+// SDL_GPUDepthStencilTargetInfo -- the vector/UI pass never touches depth.
+// The pointer changes after resize().
+SDL_GPUTexture* vgui_render_target_native_depth_texture(vgui_render_target* target);
 
 // Last failure for this target.  target may be NULL to query the most recent
 // create() failure.  Returns an empty string when there is no error; the

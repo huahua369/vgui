@@ -173,7 +173,7 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 
 ## 9. R6 持久离屏渲染目标（P0 已完成）
 
-> **实施记录**：新增后端公共 API `include/vgui/backend/vgui_render_target.h` 与实现 `backends/vgui_render_target.cpp`。一个目标拥有一个离屏 `vg_fbo_t`、一个稳定的 `vgui_texture` 和一个私有 `rvg_t`；`record()` 输出可直接并入宿主的一次 `vgpu_render_frame()`，`resize()` 原地更新纹理句柄，`destroy()` 等待 idle 后立即解绑原生纹理。详见 [`render_target_roadmap.md`](render_target_roadmap.md)。
+> **实施记录**：新增后端公共 API `include/vgui/backend/vgui_render_target.h` 与实现 `backends/vgui_render_target.cpp`。一个目标拥有一个离屏 `vg_fbo_t`、一个稳定的 `vgui_texture` 和一个私有 `rvg_t`；`record()` 输出可直接并入宿主的一次 `vgpu_render_frame()`，`resize()` 原地更新纹理句柄，`destroy()` 等待 idle 后立即解绑原生纹理。2026-11-14 起离屏目标可选携带 D32 深度附件（`desc.depth` + `native_depth_texture()`），供宿主 3D pass 绑定；详见 [`render_target_roadmap.md`](render_target_roadmap.md) §4.4。
 
 - [x] **R6-1 目标生命周期**：`create / destroy / resize / set_clear / get_size`；格式跟随 `vgpu_color_format()`，纹理指针在 resize 后保持不变；创建失败可通过 `vgui_render_target_last_error(NULL)` 查询。
 - [x] **R6-2 录制接口**：`record()`（原始矢量回调）与 `record_context()`（`vgui_context`，尺寸必须匹配）只产生 `ovg_draw_data_t`，不提交；`submit()` / `submit_context()` 仅作为静态/独立场景的便利入口。

@@ -7,9 +7,11 @@
  * features vgui uses: OVG fill/stroke triangles, solid and linear/radial/sweep
  * gradients, text-atlas and image triangles, rectangular clipping, MSAA and
  * multi-FBO/window swapchains.  It has no 3D geometry, path-template clipping,
- * instancing or compute effects, so it needs no depth/stencil attachments and
- * keeps resource ownership explicit.  It consumes OVG's ovg_draw_data_t
- * directly; vg_fbo_t is defined here while ovg_c.h only forward-declares it.
+ * instancing or compute effects, and the UI pass itself binds no depth/stencil
+ * attachment; offscreen FBOs may still carry an optional depth attachment for
+ * the host's own 3D passes.  Resource ownership stays explicit.  It consumes
+ * OVG's ovg_draw_data_t directly; vg_fbo_t is defined here while ovg_c.h only
+ * forward-declares it.
  *
  * See backends/vgui_renderer_sdl3.cpp for the implementation notes.
  */
@@ -29,7 +31,9 @@ struct vgpu_ctx_t;
 struct vgpu_texture_t;
 
 // Per-frame render target.  Window FBOs use the swapchain; offscreen FBOs use
-// color_tex.
+// color_tex.  Offscreen FBOs can optionally carry a depth attachment
+// (vgpu_create_fbo(..., depth=1)) that the host binds in its own 3D pass;
+// the vgui UI pass never touches it.
 struct vg_fbo_t {
 	uint32_t width = 0;
 	uint32_t height = 0;
@@ -39,6 +43,17 @@ struct vg_fbo_t {
 	SDL_GPUTexture* swapchain = nullptr;
 	vgpu_texture_t* color_tex = nullptr;
 	vgpu_texture_t* color_msaa_tex = nullptr;
+	// Optional depth attachment (D32_FLOAT).  With MSAA this already holds the
+	// multi-sampled depth: SDL_GPU has no depth resolve, so sampling the depth
+	// contents requires a single-sample re-render (see sample/phase0_renderer).
+	// NULL when the FBO was created without depth or depth creation failed.
+	vgpu_texture_t* depth_tex = nullptr;
+	SDL_GPUTextureFormat depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+	// Color attachment format.  INVALID means "follow vgpu_ctx_t::color_format"
+	// (the accessor resolves it); offscreen FBOs may override it per creation
+	// for HDR/sRGB targets.  Pipelines are selected to match this format at
+	// draw time.
+	SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 	SDL_GPUCommandBuffer* cmd = nullptr;
 	bool upsize = true;
 	// Load-op of the UI render pass.  true (default) clears the target before
@@ -61,8 +76,9 @@ vgpu_device_t* vgpu_create_device(SDL_GPUDevice* gpu_device);
 void vgpu_destroy_device(vgpu_device_t* device);
 
 // Context: owns pipelines, the texture table, GPU buffers and the current
-// command buffer.  depth_format is kept for call-site compatibility; the
-// backend creates no depth/stencil attachments.
+// command buffer.  depth_format is kept for call-site compatibility; the UI
+// pass itself never uses depth.  Offscreen FBOs may carry a depth attachment
+// for the host's own 3D passes (vgpu_create_fbo(..., depth=1)).
 vgpu_ctx_t* vgpu_create_context(vgpu_device_t* device,
 	SDL_GPUTextureFormat color_format,
 	SDL_GPUTextureFormat depth_format,
@@ -70,7 +86,15 @@ vgpu_ctx_t* vgpu_create_context(vgpu_device_t* device,
 void vgpu_destroy_context(vgpu_ctx_t* ctx);
 
 // FBO and swapchain.
-vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* window = nullptr);
+// depth != 0 creates a D32_FLOAT depth attachment on an offscreen FBO
+// (ignored for window FBOs; swapchains carry their own).  The depth target
+// uses the context's MSAA sample count when MSAA is enabled.  Depth
+// clear/store policy is entirely up to the host pass that binds it.
+// color_format overrides the color attachment format (INVALID follows
+// vgpu_ctx_t::color_format); only honored for offscreen FBOs.
+vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height,
+	SDL_Window* window = nullptr, int depth = 0,
+	SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID);
 void vgpu_destroy_fbo(vg_fbo_t* fbo);
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height);
 int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
@@ -79,6 +103,24 @@ int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait)
 // offscreen FBOs.  Mainly used by SDL_DownloadFromGPUTexture readback in
 // offscreen tests.
 SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo);
+
+// Resolves the FBO color attachment format: the explicit override, the
+// context's color format when the FBO has no override, or INVALID for a
+// context-less FBO.
+SDL_GPUTextureFormat vgpu_fbo_color_format(vg_fbo_t* fbo);
+
+// Checks that a color format is renderable on this device: 2D texture with
+// COLOR_TARGET | SAMPLER usage, and MSAA sample count support when samples
+// != 1.  Call before creating an FBO with an explicit color format.
+int vgpu_supports_color_format(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
+	SDL_GPUSampleCount samples);
+
+// Returns the FBO depth attachment created by vgpu_create_fbo(..., depth=1),
+// or NULL when the FBO has none.  The host binds it in its own render pass
+// via SDL_GPUDepthStencilTargetInfo (recipe: sample/phase0_renderer.cpp
+// draw_scene_target -- clear_depth=1, LOADOP_CLEAR, STOREOP_DONT_CARE unless
+// a later pass samples it, cycle=true).
+SDL_GPUTexture* vgpu_fbo_depth_texture(vg_fbo_t* fbo);
 
 // The command buffer vgpu is currently encoding into: acquired by
 // vgpu_acquire_swapchain(), submitted by vgpu_render_frame().  Game engines

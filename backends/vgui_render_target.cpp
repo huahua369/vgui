@@ -36,7 +36,10 @@ struct vgui_render_target
 	int width = 0;
 	int height = 0;
 	vgui_texture_format format = VGUI_TEXTURE_FORMAT_RGBA8;
+	// SDL format of the color attachment; INVALID follows the gpu context.
+	SDL_GPUTextureFormat sdl_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 	bool clear = true;
+	bool depth = false;
 
 	std::string error;
 };
@@ -48,6 +51,33 @@ thread_local std::string g_create_error;
 void set_create_error(const char* message)
 {
 	g_create_error = message ? message : "";
+}
+
+// vgui_texture_format -> SDL_GPUTextureFormat for the color attachment
+// override (desc.format).  Mirrors vgui_sdl3.cpp's vgui_sdl3_texture_format.
+SDL_GPUTextureFormat to_sdl_texture_format(vgui_texture_format format)
+{
+	switch (format)
+	{
+	case VGUI_TEXTURE_FORMAT_RGBA8:
+		return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	case VGUI_TEXTURE_FORMAT_BGRA8:
+		return SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+	case VGUI_TEXTURE_FORMAT_RGBA8_SRGB:
+		return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB;
+	case VGUI_TEXTURE_FORMAT_BGRA8_SRGB:
+		return SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM_SRGB;
+	case VGUI_TEXTURE_FORMAT_RGBA16F:
+		return SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT;
+	case VGUI_TEXTURE_FORMAT_RGBA32F:
+		return SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+	case VGUI_TEXTURE_FORMAT_R16F:
+		return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	case VGUI_TEXTURE_FORMAT_R32F:
+		return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+	default:
+		return SDL_GPU_TEXTUREFORMAT_INVALID;
+	}
 }
 
 bool to_vgui_texture_format(SDL_GPUTextureFormat format,
@@ -155,6 +185,8 @@ void vgui_render_target_desc_default(vgui_render_target_desc* desc)
 	std::memset(desc, 0, sizeof(*desc));
 	desc->struct_size = static_cast<uint32_t>(sizeof(*desc));
 	desc->clear = 1;
+	desc->depth = 0;
+	desc->format = 0;
 }
 
 vgui_render_target* vgui_render_target_create(vgui_context* owner,
@@ -197,7 +229,28 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 	}
 
 	vgui_texture_format format = VGUI_TEXTURE_FORMAT_RGBA8;
-	if (!to_vgui_texture_format(vgpu_color_format(gpu_ctx), &format))
+	SDL_GPUTextureFormat sdl_color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+	if (settings.format != 0)
+	{
+		// Explicit color attachment override (HDR/sRGB targets).  Validate up
+		// front so a target is never left half-created; the vgpu pipelines
+		// used for this format are built lazily at first draw.
+		sdl_color_format = to_sdl_texture_format(
+			static_cast<vgui_texture_format>(settings.format));
+		if (sdl_color_format == SDL_GPU_TEXTUREFORMAT_INVALID)
+		{
+			set_create_error("unsupported target color format");
+			return nullptr;
+		}
+		if (!vgpu_supports_color_format(gpu_ctx, sdl_color_format,
+			vgpu_context_samples(gpu_ctx)))
+		{
+			set_create_error("color format not supported for color target");
+			return nullptr;
+		}
+		format = static_cast<vgui_texture_format>(settings.format);
+	}
+	else if (!to_vgui_texture_format(vgpu_color_format(gpu_ctx), &format))
 	{
 		set_create_error("unsupported gpu color format");
 		return nullptr;
@@ -209,15 +262,24 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 	target->width = settings.width;
 	target->height = settings.height;
 	target->format = format;
+	target->sdl_format = sdl_color_format;
 	target->clear = settings.clear != 0;
+	target->depth = settings.depth != 0;
 
 	target->fbo = vgpu_create_fbo(gpu_ctx, settings.width, settings.height,
-		nullptr);
+		nullptr, target->depth ? 1 : 0, target->sdl_format);
 	target->fbo.clear = target->clear;
 	target->fbo.cycle_target = target->clear;
 	if (!vgpu_fbo_color_texture(&target->fbo))
 	{
 		target->error = "failed to create offscreen fbo";
+		set_create_error(target->error.c_str());
+		destroy_partial(target);
+		return nullptr;
+	}
+	if (target->depth && !vgpu_fbo_depth_texture(&target->fbo))
+	{
+		target->error = "failed to create depth attachment";
 		set_create_error(target->error.c_str());
 		destroy_partial(target);
 		return nullptr;
@@ -299,12 +361,19 @@ int vgui_render_target_resize(vgui_render_target* target, int width, int height)
 
 	// Build the replacement first so a failed resize leaves the old target
 	// intact.
-	vg_fbo_t next = vgpu_create_fbo(target->gpu_ctx, width, height, nullptr);
+	vg_fbo_t next = vgpu_create_fbo(target->gpu_ctx, width, height, nullptr,
+		target->depth ? 1 : 0, target->sdl_format);
 	next.clear = target->fbo.clear;
 	next.cycle_target = target->fbo.cycle_target;
 	if (!vgpu_fbo_color_texture(&next))
 	{
 		target->error = "failed to create offscreen fbo";
+		vgpu_destroy_fbo(&next);
+		return 0;
+	}
+	if (target->depth && !vgpu_fbo_depth_texture(&next))
+	{
+		target->error = "failed to create depth attachment";
 		vgpu_destroy_fbo(&next);
 		return 0;
 	}
@@ -359,6 +428,12 @@ vgui_texture* vgui_render_target_texture(vgui_render_target* target)
 SDL_GPUTexture* vgui_render_target_native_texture(vgui_render_target* target)
 {
 	return target ? vgpu_fbo_color_texture(&target->fbo) : nullptr;
+}
+
+SDL_GPUTexture* vgui_render_target_native_depth_texture(
+	vgui_render_target* target)
+{
+	return target ? vgpu_fbo_depth_texture(&target->fbo) : nullptr;
 }
 
 const char* vgui_render_target_last_error(const vgui_render_target* target)

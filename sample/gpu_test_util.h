@@ -76,11 +76,12 @@ static inline SDL_GPUTexture* create_texture(SDL_GPUDevice* device, int width, i
 	return texture;
 }
 
-static inline bool download_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture,
-	int width, int height, std::vector<uint32_t>& out)
+static inline bool download_texture_bytes(SDL_GPUDevice* device,
+	SDL_GPUTexture* texture, int width, int height, Uint32 bytes_per_pixel,
+	std::vector<uint8_t>& out)
 {
-	const Uint32 bytes = (Uint32)(width * height * sizeof(uint32_t));
-	out.assign((size_t)width * height, 0);
+	const Uint32 bytes = (Uint32)(width * height) * bytes_per_pixel;
+	out.assign((size_t)width * height * bytes_per_pixel, 0);
 	SDL_GPUTransferBufferCreateInfo transfer_info = {};
 	transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
 	transfer_info.size = bytes;
@@ -119,5 +120,17 @@ static inline bool download_texture(SDL_GPUDevice* device, SDL_GPUTexture* textu
 	std::memcpy(out.data(), mapped, bytes);
 	SDL_UnmapGPUTransferBuffer(device, transfer);
 	SDL_ReleaseGPUTransferBuffer(device, transfer);
+	return true;
+}
+
+static inline bool download_texture(SDL_GPUDevice* device, SDL_GPUTexture* texture,
+	int width, int height, std::vector<uint32_t>& out)
+{
+	std::vector<uint8_t> bytes;
+	if (!download_texture_bytes(device, texture, width, height,
+		(Uint32)sizeof(uint32_t), bytes))
+		return false;
+	out.resize(bytes.size() / sizeof(uint32_t));
+	std::memcpy(out.data(), bytes.data(), bytes.size());
 	return true;
 }

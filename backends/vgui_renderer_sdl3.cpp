@@ -220,6 +220,14 @@ struct geom_pipeline_t {
 	SDL_GPUGraphicsPipeline* pipeline = nullptr;
 };
 
+// One full vg pipeline set (one per vg_operator_t) for a specific
+// (color format, sample count) combination.  The context's own format lives
+// in vgpu_ctx_t::vg_pipelines; this cache only holds alternate formats
+// requested by offscreen FBOs with an explicit color-format override.
+struct vg_pipeline_set {
+	SDL_GPUGraphicsPipeline* pipelines[4] = {};
+};
+
 struct gpu_buffer_t {
 	SDL_GPUBuffer* buffer = nullptr;
 	size_t capacity = 0;
@@ -278,6 +286,7 @@ struct vgpu_ctx_t {
 
 	SDL_GPUGraphicsPipeline* vg_pipelines[4] = {};
 	std::unordered_map<uint64_t, geom_pipeline_t> geom_pipelines;
+	std::unordered_map<uint64_t, vg_pipeline_set> alt_vg_pipelines;
 
 	std::unordered_map<uint32_t, vgpu_texture_t*> textures;
 	std::vector<vgpu_texture_t*> pending_destroy;
@@ -520,7 +529,12 @@ SDL_GPUGraphicsPipeline* create_pipeline(
 	return pipeline;
 }
 
-void create_vg_pipelines(vgpu_ctx_t* ctx)
+// Builds the four vg pipelines for one (color format, sample count)
+// combination.  Used for the context's own format at context creation and,
+// lazily, for offscreen FBOs with an explicit color-format override (HDR /
+// sRGB targets).  Returns false when any pipeline failed to create.
+bool create_vg_pipeline_set(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
+	SDL_GPUSampleCount samples, vg_pipeline_set* out)
 {
 	static const SDL_GPUVertexAttribute attributes[] = {
 		{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0 },
@@ -533,39 +547,76 @@ void create_vg_pipelines(vgpu_ctx_t* ctx)
 		const int blend = (op == static_cast<int>(vg_operator_t::VG_OPERATOR_CLEAR))
 			? static_cast<int>(blendMode_e::none)
 			: static_cast<int>(blendMode_e::normal_prem);
-		ctx->vg_pipelines[op] = create_pipeline(
+		out->pipelines[op] = create_pipeline(
 			ctx->device, ctx->device->vg_vert, ctx->device->vg_frag,
-			ctx->color_format, ctx->samples,
+			format, samples,
 			SDL_GPU_PRIMITIVETYPE_TRIANGLELIST, blend,
 			OVG_VERTEX_SIZE, attributes, 3,
 			SDL_GPU_FILLMODE_FILL, SDL_GPU_CULLMODE_NONE,
 			SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE);
+		if (!out->pipelines[op])
+			return false;
 	}
+	return true;
 }
 
-SDL_GPUGraphicsPipeline* get_vg_pipeline(vgpu_ctx_t* ctx, int op)
+void create_vg_pipelines(vgpu_ctx_t* ctx)
+{
+	vg_pipeline_set set = {};
+	create_vg_pipeline_set(ctx, ctx->color_format, ctx->samples, &set);
+	for (int op = 0; op < 4; ++op)
+		ctx->vg_pipelines[op] = set.pipelines[op];
+}
+
+SDL_GPUGraphicsPipeline* get_vg_pipeline(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int op)
 {
 	if (op < 0 || op >= 4)
 		op = static_cast<int>(vg_operator_t::VG_OPERATOR_OVER);
-	if (!ctx->vg_pipelines[op])
-		return ctx->vg_pipelines[static_cast<int>(vg_operator_t::VG_OPERATOR_OVER)];
-	return ctx->vg_pipelines[op];
+	// Pipelines must match the color attachment format (and sample count) of
+	// the pass they are bound in.  The context's own format uses the eagerly
+	// created set; alternate formats are built lazily on first use.
+	const SDL_GPUTextureFormat format =
+		(fbo && fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
+			? fbo->color_format
+			: ctx->color_format;
+	if (format == ctx->color_format) {
+		if (!ctx->vg_pipelines[op])
+			return ctx->vg_pipelines[static_cast<int>(vg_operator_t::VG_OPERATOR_OVER)];
+		return ctx->vg_pipelines[op];
+	}
+
+	const uint64_t key = (static_cast<uint64_t>(format) << 8) |
+		static_cast<uint64_t>(ctx->samples);
+	auto it = ctx->alt_vg_pipelines.find(key);
+	if (it == ctx->alt_vg_pipelines.end()) {
+		vg_pipeline_set set = {};
+		create_vg_pipeline_set(ctx, format, ctx->samples, &set);
+		it = ctx->alt_vg_pipelines.emplace(key, set).first;
+	}
+	if (!it->second.pipelines[op])
+		return it->second.pipelines[static_cast<int>(vg_operator_t::VG_OPERATOR_OVER)];
+	return it->second.pipelines[op];
 }
 
-uint64_t make_geom_key(const gem_info_t* info)
+uint64_t make_geom_key(const gem_info_t* info, SDL_GPUTextureFormat format,
+	SDL_GPUSampleCount samples)
 {
 	// 只把真正影响管线状态的字段放进 key，避免 flags/lineWidth 造成无谓的
 	// 管线变体。shader 目前只用 a_base3d，但保留在 key 中便于以后扩展。
+	// 颜色格式与采样数决定管线的 target 兼容性，同样入 key。
 	uint64_t key = static_cast<uint8_t>(info->blendMode);
 	key |= static_cast<uint64_t>(info->topology) << 8;
 	key |= static_cast<uint64_t>(info->polygon) << 16;
 	key |= static_cast<uint64_t>(info->frontFace) << 24;
 	key |= static_cast<uint64_t>(info->cullMode) << 32;
 	key |= static_cast<uint64_t>(info->shader) << 40;
+	key |= static_cast<uint64_t>(format) << 48;
+	key |= static_cast<uint64_t>(samples) << 56;
 	return key;
 }
 
-SDL_GPUGraphicsPipeline* create_geom_pipeline(vgpu_ctx_t* ctx, const gem_info_t* info)
+SDL_GPUGraphicsPipeline* create_geom_pipeline(vgpu_ctx_t* ctx, const gem_info_t* info,
+	SDL_GPUTextureFormat format, SDL_GPUSampleCount samples)
 {
 	static const SDL_GPUVertexAttribute attributes[] = {
 		{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0 },
@@ -589,20 +640,26 @@ SDL_GPUGraphicsPipeline* create_geom_pipeline(vgpu_ctx_t* ctx, const gem_info_t*
 
 	return create_pipeline(
 		ctx->device, ctx->device->geom_vert, ctx->device->geom_frag,
-		ctx->color_format, ctx->samples,
+		format, samples,
 		topology, info->blendMode,
 		GEOM_VERTEX_SIZE, attributes, 3,
 		fill, cull, front);
 }
 
-SDL_GPUGraphicsPipeline* get_geom_pipeline(vgpu_ctx_t* ctx, const gem_info_t* info)
+SDL_GPUGraphicsPipeline* get_geom_pipeline(vgpu_ctx_t* ctx, vg_fbo_t* fbo,
+	const gem_info_t* info)
 {
-	const uint64_t key = make_geom_key(info);
+	const SDL_GPUTextureFormat format =
+		(fbo && fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
+			? fbo->color_format
+			: ctx->color_format;
+	const uint64_t key = make_geom_key(info, format, ctx->samples);
 	auto it = ctx->geom_pipelines.find(key);
 	if (it != ctx->geom_pipelines.end())
 		return it->second.pipeline;
 
-	SDL_GPUGraphicsPipeline* pipeline = create_geom_pipeline(ctx, info);
+	SDL_GPUGraphicsPipeline* pipeline = create_geom_pipeline(ctx, info, format,
+		ctx->samples);
 	ctx->geom_pipelines.emplace(key, geom_pipeline_t{ pipeline });
 	return pipeline;
 }
@@ -1041,8 +1098,11 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* cmd,
 		pc.fsq_patternType = (pc.fsq_patternType & FULLSCREEN_BIT) | (pattern_type & SRCTYPE_MASK);
 	}
 
-	SDL_BindGPUGraphicsPipeline(pass, get_vg_pipeline(ctx,
-		state ? static_cast<int>(state->curOperator) : static_cast<int>(vg_operator_t::VG_OPERATOR_OVER)));
+	SDL_GPUGraphicsPipeline* vg_pipeline = get_vg_pipeline(ctx, fbo,
+		state ? static_cast<int>(state->curOperator) : static_cast<int>(vg_operator_t::VG_OPERATOR_OVER));
+	if (!vg_pipeline)
+		return;
+	SDL_BindGPUGraphicsPipeline(pass, vg_pipeline);
 	SDL_PushGPUVertexUniformData(fbo->cmd, 0, &pc, sizeof(pc));
 	SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &gradient, sizeof(gradient));
 	SDL_BindGPUFragmentSamplers(pass, 0, &binding, 1);
@@ -1090,7 +1150,7 @@ void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* cmd,
 		return;
 	}
 
-	SDL_GPUGraphicsPipeline* pipeline = get_geom_pipeline(ctx, &cmd->state);
+	SDL_GPUGraphicsPipeline* pipeline = get_geom_pipeline(ctx, fbo, &cmd->state);
 	if (!pipeline)
 		return;
 
@@ -1368,6 +1428,13 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 		if (pipeline && device)
 			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
 	}
+	for (auto& [key, set] : ctx->alt_vg_pipelines) {
+		for (SDL_GPUGraphicsPipeline* pipeline : set.pipelines) {
+			if (pipeline && device)
+				SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
+		}
+	}
+	ctx->alt_vg_pipelines.clear();
 	for (auto& [key, pipeline] : ctx->geom_pipelines) {
 		if (pipeline.pipeline && device)
 			SDL_ReleaseGPUGraphicsPipeline(device, pipeline.pipeline);
@@ -1388,7 +1455,8 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 	delete ctx;
 }
 
-vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* window)
+vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height,
+	SDL_Window* window, int depth, SDL_GPUTextureFormat color_format)
 {
 	vg_fbo_t fbo = {};
 	fbo.ctx = ctx;
@@ -1397,6 +1465,10 @@ vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* win
 	fbo.height = static_cast<uint32_t>((std::max)(height, 1));
 	fbo.display_size = { static_cast<int>(fbo.width), static_cast<int>(fbo.height) };
 	fbo.upsize = true;
+	// Window FBOs render into the swapchain, which was created with the
+	// context's color format; only offscreen FBOs honor the override.
+	fbo.color_format = (ctx && color_format != SDL_GPU_TEXTUREFORMAT_INVALID &&
+		!window) ? color_format : ctx->color_format;
 
 	if (!ctx || !ctx->device)
 		return fbo;
@@ -1404,7 +1476,7 @@ vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* win
 	if (!window) {
 		fbo.color_tex = create_texture(ctx->device,
 			static_cast<int>(fbo.width), static_cast<int>(fbo.height),
-			ctx->color_format,
+			fbo.color_format,
 			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
 		if (fbo.color_tex && fbo.color_tex->texture)
 			SDL_SetGPUTextureName(ctx->device->gpu_device, fbo.color_tex->texture,
@@ -1413,11 +1485,31 @@ vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height, SDL_Window* win
 	if (ctx->samples != SDL_GPU_SAMPLECOUNT_1) {
 		fbo.color_msaa_tex = create_texture(ctx->device,
 			static_cast<int>(fbo.width), static_cast<int>(fbo.height),
-			ctx->color_format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, ctx->samples);
+			fbo.color_format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, ctx->samples);
 		if (fbo.color_msaa_tex && fbo.color_msaa_tex->texture)
 			SDL_SetGPUTextureName(ctx->device->gpu_device, fbo.color_msaa_tex->texture,
 				"fbo_color_msaa");
 	}
+	// Optional depth attachment for the host's own 3D passes.  Only offscreen
+	// FBOs carry one (swapchains come with their own depth handling); the MSAA
+	// sample count must match the color target.  Failure leaves the FBO
+	// without depth -- callers that require it check vgpu_fbo_depth_texture().
+	if (!window && depth) {
+		const SDL_GPUTextureFormat kDepthFormat = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
+		if (ctx->samples == SDL_GPU_SAMPLECOUNT_1 ||
+			SDL_GPUTextureSupportsSampleCount(ctx->device->gpu_device,
+				kDepthFormat, ctx->samples)) {
+			fbo.depth_tex = create_texture(ctx->device,
+				static_cast<int>(fbo.width), static_cast<int>(fbo.height),
+				kDepthFormat, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
+				ctx->samples);
+			if (fbo.depth_tex && fbo.depth_tex->texture)
+				SDL_SetGPUTextureName(ctx->device->gpu_device,
+					fbo.depth_tex->texture, "fbo_depth_offscreen");
+		}
+	}
+	if (fbo.depth_tex)
+		fbo.depth_format = SDL_GPU_TEXTUREFORMAT_D32_FLOAT;
 	return fbo;
 }
 
@@ -1427,6 +1519,38 @@ SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo)
 	if (fbo->swapchain) return fbo->swapchain;
 	if (fbo->color_tex) return fbo->color_tex->texture;
 	return nullptr;
+}
+
+SDL_GPUTexture* vgpu_fbo_depth_texture(vg_fbo_t* fbo)
+{
+	if (!fbo || !fbo->depth_tex) return nullptr;
+	return fbo->depth_tex->texture;
+}
+
+SDL_GPUTextureFormat vgpu_fbo_color_format(vg_fbo_t* fbo)
+{
+	if (!fbo)
+		return SDL_GPU_TEXTUREFORMAT_INVALID;
+	if (fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
+		return fbo->color_format;
+	return fbo->ctx ? fbo->ctx->color_format : SDL_GPU_TEXTUREFORMAT_INVALID;
+}
+
+int vgpu_supports_color_format(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
+	SDL_GPUSampleCount samples)
+{
+	if (!ctx || !ctx->device || !ctx->device->gpu_device ||
+		format == SDL_GPU_TEXTUREFORMAT_INVALID)
+		return 0;
+	if (!SDL_GPUTextureSupportsFormat(ctx->device->gpu_device, format,
+		SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET))
+		return 0;
+	if (samples != SDL_GPU_SAMPLECOUNT_1 &&
+		!SDL_GPUTextureSupportsSampleCount(ctx->device->gpu_device, format,
+			samples))
+		return 0;
+	return 1;
 }
 
 SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx)
@@ -1456,6 +1580,11 @@ void vgpu_destroy_fbo(vg_fbo_t* fbo)
 		destroy_texture(fbo->color_msaa_tex);
 		fbo->color_msaa_tex = nullptr;
 	}
+	if (fbo->depth_tex) {
+		destroy_texture(fbo->depth_tex);
+		fbo->depth_tex = nullptr;
+	}
+	fbo->depth_format = SDL_GPU_TEXTUREFORMAT_INVALID;
 	fbo->swapchain = nullptr;
 	fbo->cmd = nullptr;
 }
@@ -1565,6 +1694,13 @@ void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height)
 
 	vgpu_ctx_t* ctx = fbo->ctx;
 	SDL_Window* window = fbo->window;
+	// A pre-existing depth_format marks an FBO that wants its depth attachment
+	// recreated along with the color targets; color_format carries the explicit
+	// color-format override through the reset.
+	const SDL_GPUTextureFormat want_depth = fbo->depth_format;
+	const SDL_GPUTextureFormat want_color =
+		(fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID) ? fbo->color_format
+			: ctx->color_format;
 	vgpu_destroy_fbo(fbo);
 	fbo->ctx = ctx;
 	fbo->window = window;
@@ -1572,17 +1708,25 @@ void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height)
 	fbo->height = static_cast<uint32_t>((std::max)(height, 1));
 	fbo->display_size = { static_cast<int>(fbo->width), static_cast<int>(fbo->height) };
 	fbo->upsize = true;
+	fbo->color_format = want_color;
 
 	if (!window) {
 		fbo->color_tex = create_texture(ctx->device,
 			static_cast<int>(fbo->width), static_cast<int>(fbo->height),
-			ctx->color_format,
+			want_color,
 			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
 	}
 	if (ctx->samples != SDL_GPU_SAMPLECOUNT_1) {
 		fbo->color_msaa_tex = create_texture(ctx->device,
 			static_cast<int>(fbo->width), static_cast<int>(fbo->height),
-			ctx->color_format, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, ctx->samples);
+			want_color, SDL_GPU_TEXTUREUSAGE_COLOR_TARGET, ctx->samples);
+	}
+	if (!window && want_depth != SDL_GPU_TEXTUREFORMAT_INVALID) {
+		fbo->depth_tex = create_texture(ctx->device,
+			static_cast<int>(fbo->width), static_cast<int>(fbo->height),
+			want_depth, SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET, ctx->samples);
+		if (fbo->depth_tex)
+			fbo->depth_format = want_depth;
 	}
 }
 
@@ -1610,6 +1754,7 @@ int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait)
 		vg_fbo_t* current = fbo + i;
 		if (!current->ctx)
 			current->ctx = ctx;
+		current->color_format = ctx->color_format;
 		// 每次 acquire 都获取新的 swapchain，避免复用上一帧已提交的纹理。
 		current->swapchain = nullptr;
 		if (!ensure_swapchain(ctx, cmd, current, wait)) {
