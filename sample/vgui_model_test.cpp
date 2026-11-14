@@ -2648,6 +2648,27 @@ struct dock_cb
 	vgui_item_id last_close = 0;
 };
 
+struct dock_event_log
+{
+	int count = 0;
+	int button = 0;
+	vgui_item_id item = 0;
+	int index = -1;
+};
+
+static void on_dock_event_log(vgui_widget* w, const vgui_event* e, void* user)
+{
+	(void)w;
+	dock_event_log* log = (dock_event_log*)user;
+	if (e->type == VGUI_EVENT_MOUSE_DOWN)
+	{
+		log->count++;
+		log->button = e->button;
+		log->item = e->item;
+		log->index = e->index;
+	}
+}
+
 static void on_dock_activate(vgui_widget*, vgui_item_id item, void* user)
 {
 	dock_cb* cb = (dock_cb*)user;
@@ -2818,6 +2839,58 @@ static void test_dock(vgui_context* ui, const vgui_style& base)
 	check(std::string(vgui_dock_get_title(dock, ib)) == "Bee", "dock: set title");
 	vgui_dock_set_title(dock, ib, "B");
 
+	// 标签图标:宽度预留 + set/get/clear 往返。
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	float width_no_icon = tw;
+	check(vgui_dock_get_icon(dock, ib) == nullptr, "dock: icon defaults to null");
+	uint32_t icon_pixels[4] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+	vgui_texture_desc icon_desc = {};
+	icon_desc.width = 2;
+	icon_desc.height = 2;
+	icon_desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	icon_desc.pixels = icon_pixels;
+	vgui_texture* icon_tex = vgui_texture_create(ui, &icon_desc);
+	check(icon_tex != nullptr, "dock: icon texture created");
+	vgui_dock_set_icon(dock, ib, icon_tex);
+	check(vgui_dock_get_icon(dock, ib) == icon_tex, "dock: set/get icon");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	check(near(tw, width_no_icon + 22.0f),
+		"dock: tab width reserves icon area (16+6)");
+	vgui_dock_set_icon(dock, ib, nullptr);
+	check(vgui_dock_get_icon(dock, ib) == nullptr, "dock: clear icon");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	check(near(tw, width_no_icon), "dock: tab width restored after clear");
+	vgui_dock_set_emoji(dock, ib, "\xe2\x9a\x99");
+	check(std::string(vgui_dock_get_emoji(dock, ib)) == "\xe2\x9a\x99",
+		"dock: set/get emoji");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	check(near(tw, width_no_icon + 22.0f), "dock: emoji reserves the same area");
+	vgui_dock_set_emoji(dock, ib, nullptr);
+	check(vgui_dock_get_emoji(dock, ib) != nullptr &&
+		std::string(vgui_dock_get_emoji(dock, ib)).empty(), "dock: clear emoji");
+	vgui_texture_destroy(icon_tex);
+
+	// 右键标签/浮动标题:事件携带 item(TabView 同款契约),宿主据此建菜单。
+	dock_event_log log;
+	vgui_widget_on_event(dock, on_dock_event_log, &log);
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	vgui_input_mouse_move(ui, tx + tw * 0.5f, ty + th * 0.5f);
+	vgui_input_mouse_down(ui, 3, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	vgui_input_mouse_up(ui, 3, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	check(log.count == 1 && log.button == 3 && log.item == ib && log.index == 1,
+		"dock: right-click tab carries item and zone index");
+	vgui_layout(ui);
+	vgui_dock_get_tab_rect(dock, ib, &tx, &ty, &tw, &th);
+	vgui_input_mouse_down(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	vgui_input_mouse_up(ui, 1, tx + tw * 0.5f, ty + th * 0.5f, 1);
+	check(log.count == 2 && log.button == 1 && log.item == ib,
+		"dock: left-click tab also carries item (TabView parity)");
+
 	vgui_dock_set_closeable(dock, ib, 0);
 	check(vgui_dock_get_closeable(dock, ib) == 0, "dock: clear closeable");
 	vgui_layout(ui);
@@ -2913,6 +2986,15 @@ static void test_dock(vgui_context* ui, const vgui_style& base)
 	vgui_input_mouse_up(ui, 1, fx + 60.0f, fy + 40.0f, 1);
 	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
 	check(near(fx, 130.0f) && near(fy, 130.0f),		"dock: dragging the floating title moves the frame");
+
+	vgui_layout(ui);
+	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);
+	int log_before = log.count;
+	vgui_input_mouse_move(ui, fx + fw * 0.5f, fy + 10.0f);
+	vgui_input_mouse_down(ui, 3, fx + fw * 0.5f, fy + 10.0f, 1);
+	vgui_input_mouse_up(ui, 3, fx + fw * 0.5f, fy + 10.0f, 1);
+	check(log.count == log_before + 1 && log.button == 3 && log.item == ir &&
+		log.index == -1, "dock: right-click floating title carries item");
 
 	vgui_layout(ui);
 	vgui_dock_get_floating_rect(dock, ir, &fx, &fy, &fw, &fh);

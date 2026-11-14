@@ -332,6 +332,21 @@ extern "C" {
 		return shell ? shell->impl.dock() : nullptr;
 	}
 
+	void vgui_editor_shell_set_panel_icon(vgui_editor_shell* shell,
+		const char* panel_id, vgui_texture* icon)
+	{
+		if (!shell)
+			return;
+		shell->impl.set_panel_icon(panel_id, icon);
+	}
+
+	void vgui_editor_shell_set_dock_tab_menu(vgui_editor_shell* shell, int enabled)
+	{
+		if (!shell)
+			return;
+		shell->impl.set_dock_tab_menu_enabled(enabled != 0);
+	}
+
 	void vgui_editor_shell_set_panel_visible(vgui_editor_shell* shell,
 		vgui_editor_panel panel, int visible)
 	{

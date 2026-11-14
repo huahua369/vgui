@@ -92,7 +92,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 
 ### 4.2 缺的功能 / 短板
 - **Dock 浮动面板不是独立 OS 窗口 / 面板不能跨窗口拖动（B、C 目标仍缺）**：`VGUI_DOCK_FLOATING` 是同一 Dock 控件内自绘的浮层，被 `vgui_dock_clamp_rect()` 夹在 dock 矩形内；面板 id 是 per-dock 局部自增、页面是绑定 `vgui_context` 的裸指针，跨窗口引用会误命中或被 `vgui_dock_add()` 拒绝。**「多窗口并存」（每窗口各一个 Dock）已于 2026-11-04 实现**，见 §7.15 与 `docs/dock_multiwindow_assessment.md`
-- **Dock 标签图标与右键上下文菜单**：路线图明确仍缺（未实现）
+- **Dock 标签图标与右键上下文菜单（已实现，2026-11-14，S11）**：核心 `vgui_dock_set_icon/set_emoji`（纹理/emoji，标签 + 浮动标题 + 拖拽 ghost 三处绘制，`tab_icon_size` 样式）与带 `e.item` 的标签鼠标事件（TabView 同款契约，宿主据此建菜单）；`editor_shell` 内置程序化标签图标、宿主覆盖接口 `vgui_editor_shell_set_panel_icon` 与默认开启的标签右键菜单（Float/Dock Panel + Close Panel，`vgui_editor_shell_set_dock_tab_menu` 可关）
 - **菜单项图标（已实现）**：`vgui_menu_set_item_icon`（图片纹理）/ `vgui_menu_set_item_emoji`（emoji/UTF-8 字形），任一菜单有图标时统一预留图标列、LTR/RTL 自动镜像；菜单内容可经 add/remove/clear/set_item_* API 运行时动态重建
 - **原生（OS）菜单**：仍缺（vgui 菜单为自绘浮层，无系统原生菜单）
 - **可编辑富文本（WYSIWYG 行内格式）**：语法高亮/行号/查找替换/只读富文本日志已由 T04（CodeEditor/RichText）完成；任意行内加粗/斜体/混合字号的可编辑富文本文档仍非核心能力
@@ -101,7 +101,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - NodeGraph / Timeline 的"专业"深度未经独立验证（仅 `vgui_game_editor` 示例 dogfood 覆盖 MVP）
 - 无编辑器插件 / 扩展系统、无协作编辑、无脚本化编辑器
 
-> ✅ **已修正**：`editor_roadmap` 早前"当前边界"曾称"尚无工具栏/状态栏辅助组件"，但 `gui/editor/toolbar.cpp` 与 `status_bar.cpp` 已实现并参与构建、且 S07 已标记完成，现已在路线图第 51 行更正——工具栏/状态栏确已实现（`editor_shell` 顶部工具栏与底部状态栏已接入）。注：Dock 标签的图标与右键上下文菜单仍缺，属实。
+> ✅ **已修正**：`editor_roadmap` 早前"当前边界"曾称"尚无工具栏/状态栏辅助组件"，但 `gui/editor/toolbar.cpp` 与 `status_bar.cpp` 已实现并参与构建、且 S07 已标记完成，现已在路线图第 51 行更正——工具栏/状态栏确已实现（`editor_shell` 顶部工具栏与底部状态栏已接入）。注：Dock 标签的图标与右键上下文菜单已于 2026-11-14 实现（S11），条目移入 §4.2 的"已实现"清单。
 
 ---
 

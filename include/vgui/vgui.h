@@ -865,6 +865,7 @@ extern "C" {
 		float floating_border_width;	/* 1 */
 		float shadow;			/* 6: floating frame shadow offset */
 		float drag_threshold;		/* 4: pointer distance before a tab drag starts */
+		float tab_icon_size;		/* 16: tab/frame icon area, reserved per panel with an icon */
 	} vgui_dock_style;
 
 	typedef struct vgui_image_style {
@@ -1374,6 +1375,8 @@ extern "C" {
 		int open;			/* default 1; 0 starts closed */
 		float x, y;			/* floating position; 0,0 centres */
 		float width, height;		/* floating size; <=0 uses the style */
+		vgui_texture* icon;		/* optional tab/frame icon texture, may be NULL */
+		const char* emoji;		/* optional tab/frame icon glyph, may be NULL */
 	} vgui_dock_panel_desc;
 
 	VGUI_API void vgui_dock_panel_desc_default(vgui_dock_panel_desc* desc);
@@ -1391,6 +1394,12 @@ extern "C" {
 	VGUI_API const char* vgui_dock_get_id(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API const char* vgui_dock_get_title(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API void vgui_dock_set_title(vgui_widget* dock, vgui_item_id panel, const char* title);
+	/* Panel icon shown in the tab and floating frame title.  Texture icons are
+	 * retained by the dock; emoji uses the menu item emoji path (UTF-8 glyph). */
+	VGUI_API vgui_texture* vgui_dock_get_icon(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_set_icon(vgui_widget* dock, vgui_item_id panel, vgui_texture* icon);
+	VGUI_API const char* vgui_dock_get_emoji(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_set_emoji(vgui_widget* dock, vgui_item_id panel, const char* emoji);
 	VGUI_API int vgui_dock_get_closeable(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API void vgui_dock_set_closeable(vgui_widget* dock, vgui_item_id panel, int closeable);
 

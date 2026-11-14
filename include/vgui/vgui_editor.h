@@ -4789,6 +4789,18 @@ extern "C" {
 	 * vgui_dock_* API. */
 	VGUI_API vgui_widget* vgui_editor_shell_dock(vgui_editor_shell* shell);
 
+	/* Tab icons.  build() installs a built-in 16x16 procedural icon per panel;
+	 * set_panel_icon() replaces one (NULL clears it).  The dock retains the
+	 * texture, so the host may destroy its own reference right after the call. */
+	VGUI_API void vgui_editor_shell_set_panel_icon(vgui_editor_shell* shell,
+		const char* panel_id, vgui_texture* icon);
+
+	/* Right-click on a dock tab or floating frame title opens the shell's
+	 * built-in panel menu (Float/Dock Panel, Close Panel).  Enabled by default;
+	 * disable it to handle the dock's item-carrying mouse events yourself. */
+	VGUI_API void vgui_editor_shell_set_dock_tab_menu(vgui_editor_shell* shell,
+		int enabled);
+
 	/* Panel visibility.  VGUI_EDITOR_PANEL_BOTTOM addresses the whole bottom
 	 * group: showing it reopens every closed bottom view, hiding it closes the
 	 * open ones.  Individual views are also reachable through the view.*

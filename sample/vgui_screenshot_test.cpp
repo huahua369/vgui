@@ -93,6 +93,7 @@ namespace {
 		{ "dock_default_dark", 1440, 900, false },
 		{ "dock_floating_dark", 1440, 900, false },
 		{ "dock_drag_dark", 1440, 900, false },
+		{ "dock_tabmenu_dark", 1440, 900, false },
 		{ "property_grid_dark", 560, 720, false },
 		{ "property_grid_states_dark", 560, 720, false },
 		{ "outliner_selected_dark", 400, 560, false },
@@ -1138,7 +1139,8 @@ namespace {
 	{
 		dock_scene_default = 0,
 		dock_scene_floating = 1,
-		dock_scene_drag = 2
+		dock_scene_drag = 2,
+		dock_scene_tabmenu = 3
 	};
 
 	void build_dock(scene_state& st, const scene_spec& spec, int variant)
@@ -1193,7 +1195,9 @@ namespace {
 		{
 			shell.set_status(variant == dock_scene_drag
 				? "Outliner mid-drag - drop targets shown"
-				: "Scene ready - 12 objects");
+				: variant == dock_scene_tabmenu
+					? "Outliner tab menu - Float/Dock/Close"
+					: "Scene ready - 12 objects");
 			vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 380.0f);
 			vgui_dock_set_zone_size(dock, VGUI_DOCK_BOTTOM, 220.0f);
 			if (variant == dock_scene_drag)
@@ -1216,6 +1220,25 @@ namespace {
 					vgui_input_mouse_down(ui, 1, grab_x, grab_y, 1);
 					vgui_input_mouse_move(ui, grab_x + 24.0f, grab_y);
 					vgui_input_mouse_move(ui, zx + zw * 0.5f, zy + zh * 0.5f);
+				}
+			}
+			else if (variant == dock_scene_tabmenu)
+			{
+				// Right-click the OUTLINER tab and keep the shell's built-in
+				// panel menu (Float/Dock Panel, Close Panel) open for render.
+				vgui_layout(ui);
+				const vgui_item_id outliner = vgui_dock_find(dock, "outliner");
+				float px = 0, py = 0, pw = 0, ph = 0;
+				if (outliner &&
+					vgui_dock_get_tab_rect(dock, outliner, &px, &py, &pw, &ph) &&
+					pw > 0.0f)
+				{
+					const float cx = px + pw * 0.5f;
+					const float cy = py + ph * 0.5f;
+					vgui_input_mouse_move(ui, cx, cy);
+					vgui_input_mouse_down(ui, 3, cx, cy, 1);
+					vgui_input_mouse_up(ui, 3, cx, cy, 1);
+					vgui_input_mouse_move(ui, cx + 320.0f, cy + 8.0f);
 				}
 			}
 		}
@@ -1578,6 +1601,8 @@ namespace {
 				build_dock(st, spec, dock_scene_floating);
 			else if (std::strcmp(spec.name, "dock_drag_dark") == 0)
 				build_dock(st, spec, dock_scene_drag);
+			else if (std::strcmp(spec.name, "dock_tabmenu_dark") == 0)
+				build_dock(st, spec, dock_scene_tabmenu);
 			else if (std::strcmp(spec.name, "property_grid_dark") == 0)
 				build_property_grid(st, spec, false);
 			else if (std::strcmp(spec.name, "property_grid_states_dark") == 0)

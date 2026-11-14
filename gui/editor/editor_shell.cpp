@@ -180,6 +180,109 @@ namespace vgui_editor_kit {
 			return vgui_texture_create(ui, &desc);
 		}
 
+		/* Dock 标签内置图标:与行按钮图标同一套白色像素画法,绘制时被标签
+		 * 文字色着色,暗/亮主题自动适配。宿主可经 set_panel_icon() 覆盖。 */
+		enum class panel_icon_kind
+		{
+			outliner,
+			viewport,
+			properties,
+			assets,
+			console,
+			canvas,
+			table,
+			timeline,
+			nodegraph,
+			code
+		};
+
+		vgui_texture* make_panel_icon(vgui_context* ui, panel_icon_kind kind)
+		{
+			if (!ui)
+				return nullptr;
+			row_icon_canvas c;
+			const uint8_t a = 225;
+			switch (kind)
+			{
+			case panel_icon_kind::outliner:
+				/* 层级树:父框 - 连接线 - 子框。 */
+				c.rect(4, 2, 10, 5, 255, 255, 255, a);
+				c.line(7, 5, 7, 10, 1.4f, 255, 255, 255, a);
+				c.rect(4, 10, 10, 13, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::viewport:
+				/* 相机:机身 + 镜头环 + 右侧棱。 */
+				c.rect(2, 5, 10, 11, 255, 255, 255, a);
+				c.ring(6, 8, 3.2f, 2.1f, 255, 255, 255, a);
+				c.line(10, 6, 14, 5, 1.4f, 255, 255, 255, a);
+				c.line(14, 5, 14, 11, 1.4f, 255, 255, 255, a);
+				c.line(14, 11, 10, 10, 1.4f, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::properties:
+				/* 两个滑杆。 */
+				c.line(3, 5, 13, 5, 1.6f, 255, 255, 255, a);
+				c.circle(6, 5, 2.2f, 255, 255, 255, a);
+				c.line(3, 11, 13, 11, 1.6f, 255, 255, 255, a);
+				c.circle(10, 11, 2.2f, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::assets:
+				/* 文件夹:标签页 + 主体。 */
+				c.rect(2, 4, 7, 6, 255, 255, 255, a);
+				c.rect(2, 6, 14, 13, 255, 255, 255, a);
+				c.rect(4, 8, 12, 11, 60, 66, 76, 140);
+				break;
+			case panel_icon_kind::console:
+				/* 终端:深色窗 + 提示符与下划线光标。 */
+				c.rect(2, 3, 14, 13, 255, 255, 255, a);
+				c.rect(3, 4, 13, 12, 30, 34, 40, 200);
+				c.line(4, 6, 6, 8, 1.4f, 255, 255, 255, a);
+				c.line(6, 8, 4, 10, 1.4f, 255, 255, 255, a);
+				c.rect(8, 10, 12, 11, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::canvas:
+				/* 画笔:笔头圆 + 斜柄。 */
+				c.circle(10, 5, 3.0f, 255, 255, 255, a);
+				c.line(8, 7, 4, 12, 2.2f, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::table:
+				/* 网格:两行三列单元格。 */
+				c.rect(3, 3, 6, 6, 255, 255, 255, a);
+				c.rect(8, 3, 11, 6, 255, 255, 255, a);
+				c.rect(13, 3, 15, 6, 255, 255, 255, a);
+				c.rect(3, 9, 6, 12, 255, 255, 255, a);
+				c.rect(8, 9, 11, 12, 255, 255, 255, a);
+				c.rect(13, 9, 15, 12, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::timeline:
+				/* 时间轴:两端刻度 + 轨道 + 播放头。 */
+				c.rect(2, 5, 3, 11, 255, 255, 255, a);
+				c.rect(13, 5, 14, 11, 255, 255, 255, a);
+				c.line(3, 8, 13, 8, 1.6f, 255, 255, 255, a);
+				c.circle(9, 8, 2.6f, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::nodegraph:
+				/* 节点图:两节点 + 连线。 */
+				c.rect(2, 3, 7, 6, 255, 255, 255, a);
+				c.rect(9, 10, 14, 13, 255, 255, 255, a);
+				c.line(5, 6, 11, 10, 1.4f, 255, 255, 255, a);
+				break;
+			case panel_icon_kind::code:
+				/* 代码:一对尖括号。 */
+				c.line(7, 3, 3, 8, 1.6f, 255, 255, 255, a);
+				c.line(3, 8, 7, 13, 1.6f, 255, 255, 255, a);
+				c.line(9, 3, 13, 8, 1.6f, 255, 255, 255, a);
+				c.line(13, 8, 9, 13, 1.6f, 255, 255, 255, a);
+				break;
+			}
+			vgui_texture_desc desc = {};
+			desc.width = row_icon_canvas::kSize;
+			desc.height = row_icon_canvas::kSize;
+			desc.stride = row_icon_canvas::kSize * 4;
+			desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+			desc.pixels = c.pixels;
+			return vgui_texture_create(ui, &desc);
+		}
+
 		// E05: first focusable, visible and enabled descendant (pre-order).
 		vgui_widget* first_focusable_descendant(vgui_widget* widget)
 		{
@@ -858,6 +961,7 @@ namespace vgui_editor_kit {
 		desc.panel = outliner_panel_;
 		desc.zone = VGUI_DOCK_LEFT;
 		outliner_item_ = vgui_dock_add(dock_, &desc);
+		if (outliner_item_) dock_panel_zones_[outliner_item_] = (int)VGUI_DOCK_LEFT;
 
 		viewport_panel_ = make_dock_page(dock_);
 		viewport_.build(viewport_panel_);
@@ -901,6 +1005,7 @@ namespace vgui_editor_kit {
 		desc.panel = viewport_panel_;
 		desc.zone = VGUI_DOCK_CENTER;
 		viewport_item_ = vgui_dock_add(dock_, &desc);
+		if (viewport_item_) dock_panel_zones_[viewport_item_] = (int)VGUI_DOCK_CENTER;
 
 		properties_panel_ = make_dock_page(dock_);
 		path_.build(properties_panel_);
@@ -915,6 +1020,7 @@ namespace vgui_editor_kit {
 		desc.panel = properties_panel_;
 		desc.zone = VGUI_DOCK_RIGHT;
 		properties_item_ = vgui_dock_add(dock_, &desc);
+		if (properties_item_) dock_panel_zones_[properties_item_] = (int)VGUI_DOCK_RIGHT;
 
 		/* The bottom views are dock panels rather than tabs of a single panel,
 		 * so each one can be reordered, moved to another zone and floated out
@@ -927,7 +1033,9 @@ namespace vgui_editor_kit {
 			desc.panel = page;
 			desc.zone = VGUI_DOCK_BOTTOM;
 			desc.index = -1;
-			return vgui_dock_add(dock_, &desc);
+			const vgui_item_id item = vgui_dock_add(dock_, &desc);
+			if (item) dock_panel_zones_[item] = (int)VGUI_DOCK_BOTTOM;
+			return item;
 		};
 
 		vgui_widget* assets_page = make_dock_page(dock_);
@@ -1047,6 +1155,11 @@ namespace vgui_editor_kit {
 		 * surface visibility and menu checks. */
 		set_viewport_settings(viewport_settings_);
 		install_accessibility_names();
+
+		/* Dock 标签图标 + 右键菜单:布点内置图标,并接管 dock 的 item 事件。 */
+		build_panel_icons();
+		if (dock_)
+			vgui_widget_on_event(dock_, &editor_shell::on_dock_event, this);
 
 		default_layout_ = capture_layout();
 	}
@@ -1924,6 +2037,145 @@ namespace vgui_editor_kit {
 		row_icon_visible_off_ = nullptr;
 		row_icon_locked_on_ = nullptr;
 		row_icon_locked_off_ = nullptr;
+	}
+
+	void editor_shell::build_panel_icons()
+	{
+		vgui_context* ui = context_.ui();
+		if (!dock_ || !ui)
+			return;
+		struct panel_icon_entry
+		{
+			const char* id;
+			panel_icon_kind kind;
+		};
+		static const panel_icon_entry kPanelIcons[] = {
+			{"outliner", panel_icon_kind::outliner},
+			{"viewport", panel_icon_kind::viewport},
+			{"properties", panel_icon_kind::properties},
+			{"assets", panel_icon_kind::assets},
+			{"console", panel_icon_kind::console},
+			{"canvas", panel_icon_kind::canvas},
+			{"table", panel_icon_kind::table},
+			{"timeline", panel_icon_kind::timeline},
+			{"nodegraph", panel_icon_kind::nodegraph},
+			{"code", panel_icon_kind::code},
+		};
+		const int count = vgui_dock_get_count(dock_);
+		for (int i = 0; i < count; ++i)
+		{
+			const vgui_item_id item = vgui_dock_get_at(dock_, i);
+			if (!item)
+				continue;
+			const char* id = vgui_dock_get_id(dock_, item);
+			for (const panel_icon_entry& e : kPanelIcons)
+			{
+				if (!id || std::string(id) != e.id)
+					continue;
+				if (vgui_texture* tex = make_panel_icon(ui, e.kind))
+				{
+					vgui_dock_set_icon(dock_, item, tex);
+					vgui_texture_destroy(tex); /* dock 持有自己的引用 */
+				}
+				break;
+			}
+		}
+	}
+
+	void editor_shell::set_panel_icon(const char* panel_id, vgui_texture* icon)
+	{
+		if (!dock_ || !panel_id)
+			return;
+		const vgui_item_id item = vgui_dock_find(dock_, panel_id);
+		if (item)
+			vgui_dock_set_icon(dock_, item, icon);
+	}
+
+	void editor_shell::set_dock_tab_menu_enabled(bool enabled)
+	{
+		dock_tab_menu_ = enabled;
+		if (!enabled && dock_menu_)
+			vgui_menu_close(dock_menu_);
+	}
+
+	void editor_shell::on_dock_event(vgui_widget* widget, const vgui_event* event,
+		void* user)
+	{
+		(void)widget;
+		auto* self = static_cast<editor_shell*>(user);
+		if (!self || !event || !self->dock_tab_menu_)
+			return;
+		if (event->type != VGUI_EVENT_MOUSE_DOWN || event->button != 3 ||
+			event->item == 0)
+			return;
+		vgui_widget* dock = self->dock_;
+		if (!dock)
+			return;
+		float dx = 0, dy = 0, dw = 0, dh = 0;
+		vgui_widget_get_rect(dock, &dx, &dy, &dw, &dh);
+		(void)dw;
+		(void)dh;
+		self->dock_menu_panel_ = event->item;
+		self->open_dock_tab_menu(dx + event->x, dy + event->y);
+	}
+
+	void editor_shell::open_dock_tab_menu(float abs_x, float abs_y)
+	{
+		vgui_widget* dock = dock_;
+		if (!dock || dock_menu_panel_ == 0)
+			return;
+		if (!dock_menu_)
+		{
+			dock_menu_ = vgui_widget_create(context_.ui(), VGUI_MENU, nullptr);
+			vgui_menu_on_activate(dock_menu_, &editor_shell::on_dock_menu_activate,
+				this);
+		}
+		vgui_menu_clear(dock_menu_);
+		dock_menu_float_item_ = 0;
+		dock_menu_close_item_ = 0;
+		const bool floating = vgui_dock_is_floating(dock, dock_menu_panel_) != 0;
+		dock_menu_float_item_ = vgui_menu_add_item(dock_menu_,
+			floating ? "Dock Panel" : "Float Panel");
+		dock_menu_close_item_ = vgui_menu_add_item(dock_menu_, "Close Panel");
+		if (dock_menu_close_item_ &&
+			!vgui_dock_get_closeable(dock, dock_menu_panel_))
+			vgui_menu_set_item_enabled(dock_menu_, dock_menu_close_item_, 0);
+		vgui_menu_open(dock_menu_, abs_x, abs_y);
+	}
+
+	void editor_shell::on_dock_menu_activate(vgui_widget* menu, vgui_item_id item,
+		void* user)
+	{
+		(void)menu;
+		auto* self = static_cast<editor_shell*>(user);
+		if (!self || item == 0 || self->dock_menu_panel_ == 0)
+			return;
+		vgui_widget* dock = self->dock_;
+		if (!dock)
+			return;
+		const vgui_item_id panel = self->dock_menu_panel_;
+		if (item == self->dock_menu_float_item_)
+		{
+			if (vgui_dock_is_floating(dock, panel))
+			{
+				/* 回到 build 时的停靠区(core 的 float 会覆盖 panel->zone)。 */
+				const auto it = self->dock_panel_zones_.find(panel);
+				const int zone = it != self->dock_panel_zones_.end()
+					? it->second
+					: static_cast<int>(VGUI_DOCK_CENTER);
+				vgui_dock_set_zone(dock, panel,
+					static_cast<vgui_dock_zone>(zone), -1);
+			}
+			else
+			{
+				/* 0,0 = 样式默认尺寸并居中。 */
+				vgui_dock_float(dock, panel, 0.0f, 0.0f, 0.0f, 0.0f);
+			}
+		}
+		else if (item == self->dock_menu_close_item_)
+		{
+			vgui_dock_close(dock, panel);
+		}
 	}
 
 	void editor_shell::focus_next_panel(int direction)

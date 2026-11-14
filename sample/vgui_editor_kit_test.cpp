@@ -14518,6 +14518,201 @@ static float e05_contrast(vgui_color a, vgui_color b)
 	return (std::max(la, lb) + 0.05f) / (std::min(la, lb) + 0.05f);
 }
 
+/* Dock 标签图标与右键菜单:内置图标布点、宿主覆盖、右键弹出内置面板菜单
+ * (Float/Dock Panel + Close Panel)、开关。 */
+static int test_shell_dock_tab_menu()
+{
+	using namespace vgui_editor_kit;
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui)
+		return fail("dock menu: create context");
+	vgui_context_set_size(ui, 1280, 800);
+	{
+		editor_context context(ui);
+		editor_shell shell(context);
+		shell.build();
+		vgui_update(ui, 1.0f / 60.0f);
+		vgui_layout(ui);
+
+		vgui_widget* dock = shell.dock();
+		if (!dock)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: shell dock");
+		}
+		vgui_item_id assets_item = vgui_dock_find(dock, "assets");
+		vgui_item_id console_item = vgui_dock_find(dock, "console");
+		if (!assets_item || !console_item)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: panel ids");
+		}
+		if (!vgui_dock_get_icon(dock, assets_item) ||
+			!vgui_dock_get_icon(dock, console_item))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: built-in tab icons");
+		}
+
+		/* 宿主覆盖与清除(set_panel_icon 是 C++/C API 直通 vgui_dock_set_icon)。 */
+		uint32_t pixels[4] = { 0xFF00FFFFu, 0xFF00FFFFu, 0xFF00FFFFu, 0xFF00FFFFu };
+		vgui_texture_desc desc = {};
+		desc.width = 2;
+		desc.height = 2;
+		desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+		desc.pixels = pixels;
+		vgui_texture* custom = vgui_texture_create(ui, &desc);
+		if (!custom)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: texture");
+		}
+		shell.set_panel_icon("assets", custom);
+		if (vgui_dock_get_icon(dock, assets_item) != custom)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: icon override");
+		}
+		shell.set_panel_icon("assets", nullptr);
+		if (vgui_dock_get_icon(dock, assets_item) != nullptr)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: icon clear");
+		}
+		vgui_texture_destroy(custom);
+
+		auto right_click = [&](float x, float y)
+		{
+			vgui_input_mouse_move(ui, x, y);
+			vgui_input_mouse_down(ui, 3, x, y, 1);
+			vgui_input_mouse_up(ui, 3, x, y, 1);
+		};
+
+		/* 右键 ASSETS 标签 → 内置菜单。 */
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		if (!vgui_dock_get_tab_rect(dock, assets_item, &tx, &ty, &tw, &th))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: tab rect");
+		}
+		right_click(tx + tw * 0.5f, ty + th * 0.5f);
+		vgui_widget* menu = vgui_context_get_open_menu(ui);
+		if (!menu || !vgui_menu_is_open(menu))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: opens on tab right-click");
+		}
+		if (vgui_menu_get_count(menu) != 2)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: entry count");
+		}
+		vgui_item_id float_item = vgui_menu_get_item_at(menu, 0);
+		vgui_item_id close_item = vgui_menu_get_item_at(menu, 1);
+		if (!float_item || !close_item ||
+			std::string(vgui_menu_get_item_text(menu, float_item)) != "Float Panel" ||
+			std::string(vgui_menu_get_item_text(menu, close_item)) != "Close Panel")
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: entry texts");
+		}
+
+		/* 键盘激活 Float Panel → 面板浮动。 */
+		vgui_menu_set_cursor(menu, float_item);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		if (vgui_dock_is_floating(dock, assets_item) != 1)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: float action");
+		}
+		if (vgui_context_get_open_menu(ui))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: closes after activate");
+		}
+
+		/* 浮动标题右键 → 文案切换为 Dock Panel → 激活回靠 BOTTOM。 */
+		vgui_layout(ui);
+		float fx = 0, fy = 0, fw = 0, fh = 0;
+		if (!vgui_dock_get_floating_rect(dock, assets_item, &fx, &fy, &fw, &fh))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: floating rect");
+		}
+		right_click(fx + fw * 0.5f, fy + 10.0f);
+		menu = vgui_context_get_open_menu(ui);
+		if (!menu)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: opens on floating title");
+		}
+		vgui_item_id dock_item = vgui_menu_get_item_at(menu, 0);
+		if (!dock_item ||
+			std::string(vgui_menu_get_item_text(menu, dock_item)) != "Dock Panel")
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: wording toggles when floating");
+		}
+		vgui_menu_set_cursor(menu, dock_item);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		if (vgui_dock_is_floating(dock, assets_item) != 0 ||
+			vgui_dock_get_zone(dock, assets_item) != VGUI_DOCK_BOTTOM)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: redock action");
+		}
+
+		/* Close Panel → CONSOLE 面板关闭。 */
+		if (!vgui_dock_get_tab_rect(dock, console_item, &tx, &ty, &tw, &th))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: console tab rect");
+		}
+		right_click(tx + tw * 0.5f, ty + th * 0.5f);
+		menu = vgui_context_get_open_menu(ui);
+		if (!menu)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: reopens for console");
+		}
+		vgui_item_id console_close = vgui_menu_get_item_at(menu, 1);
+		if (!console_close ||
+			std::string(vgui_menu_get_item_text(menu, console_close)) != "Close Panel")
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: console close entry");
+		}
+		vgui_menu_set_cursor(menu, console_close);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+		vgui_input_key(ui, VGUI_KEY_ENTER, 0, 0);
+		if (vgui_dock_is_open(dock, console_item) != 0)
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: close action");
+		}
+
+		/* 开关:禁用后右键不再弹菜单。 */
+		shell.set_dock_tab_menu_enabled(false);
+		if (!vgui_dock_get_tab_rect(dock, assets_item, &tx, &ty, &tw, &th))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: tab rect after disable");
+		}
+		right_click(tx + tw * 0.5f, ty + th * 0.5f);
+		if (vgui_context_get_open_menu(ui))
+		{
+			vgui_destroy(ui);
+			return fail("dock menu: disabled stays closed");
+		}
+		shell.set_dock_tab_menu_enabled(true);
+	}
+
+	vgui_destroy(ui);
+	return 0;
+}
+
 static int g_e05_focus_events = 0;
 
 static void e05_on_a11y_event(vgui_context*, vgui_widget*, vgui_a11y_event event,
@@ -15032,6 +15227,8 @@ int main()
 	if (int rc = test_console_view())
 		return rc;
 	if (int rc = test_shell_accessibility_e05())
+		return rc;
+	if (int rc = test_shell_dock_tab_menu())
 		return rc;
 	if (int rc = test_shell_ui_scale())
 		return rc;

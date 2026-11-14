@@ -13,6 +13,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "asset_browser.h"
@@ -126,6 +127,17 @@ namespace vgui_editor_kit {
 		 * "timeline", "nodegraph" and "code".  Use the vgui_dock_* API to
 		 * rearrange, float or query them. */
 		vgui_widget* dock() const noexcept;
+
+		/* Dock tab icons.  build() installs a built-in 16x16 procedural icon per
+		 * panel; set_panel_icon() replaces one (NULL clears it).  The dock
+		 * retains the texture; the host may destroy its own reference right
+		 * after the call. */
+		void set_panel_icon(const char* panel_id, vgui_texture* icon);
+
+		/* Right-click on a dock tab or floating frame title opens the built-in
+		 * panel menu (Float/Dock Panel, Close Panel).  Enabled by default;
+		 * disable to handle the dock's item-carrying mouse events yourself. */
+		void set_dock_tab_menu_enabled(bool enabled);
 
 		/* Legacy Splitter handles.  The shell now uses a Dock, so these return
 		 * nullptr; they remain for source compatibility.  Use dock() instead. */
@@ -256,6 +268,10 @@ namespace vgui_editor_kit {
 		static void on_menu_open(vgui_widget* menu, void* user);
 		static void on_dock_change(vgui_widget* dock, vgui_item_id item, void* user);
 		static int on_key(vgui_context* ctx, int key, int down, int mods, void* user);
+		static void on_dock_event(vgui_widget* widget, const vgui_event* event,
+			void* user);
+		static void on_dock_menu_activate(vgui_widget* menu, vgui_item_id item,
+			void* user);
 
 		void register_default_commands();
 		void build_menus();
@@ -272,6 +288,9 @@ namespace vgui_editor_kit {
 		/* O01: default 16x16 eye/lock textures for the outliner row buttons. */
 		void build_row_button_icons();
 		void release_row_button_icons();
+		/* Dock tab icons (built-in procedural glyphs) and the tab context menu. */
+		void build_panel_icons();
+		void open_dock_tab_menu(float abs_x, float abs_y);
 
 		vgui_item_id panel_item(editor_panel panel) const noexcept;
 
@@ -311,6 +330,15 @@ namespace vgui_editor_kit {
 		int key_handler_token_ = 0;
 		vgui_widget* root_ = nullptr;
 		vgui_widget* dock_ = nullptr;
+		/* Dock tab menu state.  dock_panel_zones_ remembers the zone each panel
+		 * was docked in at build time so "Dock Panel" can return a floated
+		 * panel home (core float overwrites panel->zone). */
+		bool dock_tab_menu_ = true;
+		vgui_widget* dock_menu_ = nullptr;
+		vgui_item_id dock_menu_panel_ = 0;
+		vgui_item_id dock_menu_float_item_ = 0;
+		vgui_item_id dock_menu_close_item_ = 0;
+		std::unordered_map<vgui_item_id, int> dock_panel_zones_;
 		vgui_widget* title_label_ = nullptr;
 		vgui_widget* view_strip_ = nullptr;
 		bool high_contrast_ = false;

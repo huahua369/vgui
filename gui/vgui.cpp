@@ -371,6 +371,14 @@ struct vgui_dock_panel
 	int open = 1;
 	int closeable = 1;
 	float fx = 0.0f, fy = 0.0f, fw = 0.0f, fh = 0.0f;
+	vgui_texture* icon = nullptr;
+	std::string emoji;
+
+	void release_icon()
+	{
+		if (icon) { vgui_texture_release(icon); icon = nullptr; }
+		emoji.clear();
+	}
 };
 
 struct vgui_dock_tab_geom
@@ -390,6 +398,12 @@ struct vgui_dock_drop_target
 
 struct vgui_dock_state
 {
+	~vgui_dock_state()
+	{
+		/* Safety net: vgui_dock_clear() releases icons earlier, but the state
+		 * can also die through context teardown without a clear. */
+		for (vgui_dock_panel& panel : panels) panel.release_icon();
+	}
 	std::vector<vgui_dock_panel> panels;
 	std::unordered_map<vgui_item_id, size_t> index;
 	std::vector<vgui_item_id> order[4];	// LEFT, RIGHT, BOTTOM, CENTER
@@ -2273,11 +2287,19 @@ static void vgui_dock_content_rect(vgui_widget* w, float* x, float* y,
 	if (height) *height = rh;
 }
 
+/* Tab/frame icon reservation mirrors the menu item rule: emoji wins over the
+ * texture, and the icon area only exists when the panel actually has one. */
+static bool vgui_dock_panel_has_icon(const vgui_dock_panel& panel)
+{
+	return panel.icon != nullptr || !panel.emoji.empty();
+}
+
 static float vgui_dock_tab_item_width(vgui_widget* w, const vgui_dock_panel& panel)
 {
 	if (!w || !w->ctx) return 0.0f;
 	const vgui_dock_style& ds = w->ctx->style.dock;
 	float width = vgui_text_width(w, panel.title) + ds.tab_padding * 2.0f;
+	if (vgui_dock_panel_has_icon(panel)) width += ds.tab_icon_size + 6.0f;
 	if (panel.closeable) width += ds.close_size + 4.0f;
 	return vgui_clampf(width, ds.tab_min_width, ds.tab_max_width);
 }
@@ -3787,6 +3809,7 @@ static vgui_style vgui_default_style()
 	s.dock.floating_border_width = 1.0f;
 	s.dock.shadow = 6.0f;
 	s.dock.drag_threshold = 4.0f;
+	s.dock.tab_icon_size = 16.0f;
 
 	s.image.req_width = 240.0f;
 	s.image.req_height = 160.0f;
@@ -10063,6 +10086,10 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 		ctx->active = h;
 		ctx->press_target = h;
 		ctx->press_button = button;
+		/* TabView contract: a press on a tab/frame title carries the panel id in
+		 * e.item so hosts can open their own context menus on button 3. */
+		vgui_item_id ev_item = 0;
+		int ev_index = -1;
 		if (st)
 		{
 			st->pressed = 0;
@@ -10081,10 +10108,15 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			bool over_title = false;
 			bool float_close = false;
 			vgui_dock_panel* fp = vgui_dock_floating_at_point(h, x, y, &over_title, &float_close);
-			if (fp)
-			{
-				if (over_title && button == 1)
+				if (fp)
 				{
+					if (over_title)
+					{
+						ev_item = fp->id;
+						ev_index = -1;
+					}
+					if (over_title && button == 1)
+					{
 					st->pressed = fp->id;
 					st->press_panel = fp->id;
 					st->press_zone = VGUI_DOCK_FLOATING;
@@ -10108,6 +10140,8 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			else if (on_tab && zone >= 0 && index >= 0 && index < (int)st->tabs[zone].size())
 			{
 				vgui_item_id item = st->tabs[zone][(size_t)index].id;
+				ev_item = item;
+				ev_index = index;
 				if (button == 1 && over_close)
 				{
 					st->close_pressed = item;
@@ -10129,7 +10163,11 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			}
 			vgui_dock_update_hover(h, x, y);
 		}
-		vgui_emit(h, VGUI_EVENT_MOUSE_DOWN, x - h->abs_x, y - h->abs_y, button, clicks);
+		if (ev_item)
+			vgui_item_event(h, VGUI_EVENT_MOUSE_DOWN, ev_item, ev_index,
+				x - h->abs_x, y - h->abs_y, button, clicks);
+		else
+			vgui_emit(h, VGUI_EVENT_MOUSE_DOWN, x - h->abs_x, y - h->abs_y, button, clicks);
 		if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
 		ctx->want_mouse = 1;
 		ctx->cursor = (st && (st->hover || st->close_hover || st->drag_mode))
@@ -13919,6 +13957,25 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				float text_w = std::max(0.0f, tab.w - ds.tab_padding - close_space);
 				uint32_t text_color = active ? tab_text
 					: (ctx->theme.row_text ? ctx->theme.row_text : tab_text);
+				if (vgui_dock_panel_has_icon(*panel))
+				{
+					float icon_y = tab.y + (tab.h - ds.tab_icon_size) * 0.5f;
+					uint32_t icon_tint = vgui_widget_color(w, text_color);
+					if (!panel->emoji.empty())
+					{
+						vgui_draw_text_sized_raw(ctx, cb, vg, w, panel->emoji,
+							text_x, icon_y, ds.tab_icon_size, ds.tab_icon_size,
+							icon_tint, 0.5f, 0.5f, ds.tab_icon_size);
+					}
+					else if (panel->icon)
+					{
+						vgui_draw_row_texture(w, cb, vg, panel->icon,
+							text_x, icon_y, ds.tab_icon_size, icon_tint, true);
+					}
+					const float icon_space = ds.tab_icon_size + 6.0f;
+					text_x += icon_space;
+					text_w = std::max(0.0f, text_w - icon_space);
+				}
 				vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, tab.y,
 					text_w, tab.h, vgui_widget_color(w, text_color), 0.0f, 0.5f, clips);
 			}
@@ -13981,8 +14038,27 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		float text_x = fx + ds.tab_padding;
 		float close_space = panel->closeable ? ds.close_size + ds.tab_padding : 0.0f;
 		float text_w = std::max(0.0f, fw - ds.tab_padding * 2.0f - close_space);
+		uint32_t title_color = vgui_widget_color(w, tab_text);
+		if (vgui_dock_panel_has_icon(*panel))
+		{
+			float icon_y = fy + (title_h - ds.tab_icon_size) * 0.5f;
+			if (!panel->emoji.empty())
+			{
+				vgui_draw_text_sized_raw(ctx, cb, vg, w, panel->emoji,
+					text_x, icon_y, ds.tab_icon_size, ds.tab_icon_size,
+					title_color, 0.5f, 0.5f, ds.tab_icon_size);
+			}
+			else if (panel->icon)
+			{
+				vgui_draw_row_texture(w, cb, vg, panel->icon,
+					text_x, icon_y, ds.tab_icon_size, title_color, true);
+			}
+			const float icon_space = ds.tab_icon_size + 6.0f;
+			text_x += icon_space;
+			text_w = std::max(0.0f, text_w - icon_space);
+		}
 		vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, fy, text_w,
-			title_h, vgui_widget_color(w, tab_text), 0.0f, 0.5f, clips);
+			title_h, title_color, 0.0f, 0.5f, clips);
 
 		float cx = 0, cy = 0, cw = 0, ch = 0;
 		if (vgui_dock_floating_close_rect(w, *panel, &cx, &cy, &cw, &ch))
@@ -14066,8 +14142,10 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		{
 			/* Drag ghost: a card that trails the pointer and turns into the
 			 * accent colour the moment the drop would float the panel. */
+			const float icon_space = vgui_dock_panel_has_icon(*drag)
+				? ds.tab_icon_size + 6.0f : 0.0f;
 			const float gw = vgui_clampf(vgui_text_width(w, drag->title) +
-				ds.tab_padding * 2.0f, ds.tab_min_width, ds.tab_max_width);
+				ds.tab_padding * 2.0f + icon_space, ds.tab_min_width, ds.tab_max_width);
 			const float gh = std::max(18.0f, ds.tab_height);
 			const float gx = st->drag_x + 12.0f;
 			const float gy = st->drag_y + 12.0f;
@@ -14077,8 +14155,29 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				floating ? ctx->theme.accent : ctx->theme.panel_bg);
 			vgui_stroke_frame(cb, vg, gx, gy, gw, gh, 4.0f,
 				floating ? 0xE0FFFFFF : ctx->theme.accent, 1.5f);
-			vgui_draw_text(ctx, cb, vg, w, drag->title, gx + ds.tab_padding, gy,
-				gw - ds.tab_padding * 2.0f, gh,
+			float ghost_text_x = gx + ds.tab_padding;
+			float ghost_text_w = gw - ds.tab_padding * 2.0f;
+			if (icon_space > 0.0f)
+			{
+				float icon_y = gy + (gh - ds.tab_icon_size) * 0.5f;
+				if (!drag->emoji.empty())
+				{
+					vgui_draw_text_sized_raw(ctx, cb, vg, w, drag->emoji,
+						ghost_text_x, icon_y, ds.tab_icon_size, ds.tab_icon_size,
+						floating ? 0xFFFFFFFF : ctx->theme.text, 0.5f, 0.5f,
+						ds.tab_icon_size);
+				}
+				else if (drag->icon)
+				{
+					vgui_draw_row_texture(w, cb, vg, drag->icon,
+						ghost_text_x, icon_y, ds.tab_icon_size,
+						floating ? 0xFFFFFFFFu : ctx->theme.text, true);
+				}
+				ghost_text_x += icon_space;
+				ghost_text_w = std::max(0.0f, ghost_text_w - icon_space);
+			}
+			vgui_draw_text(ctx, cb, vg, w, drag->title, ghost_text_x, gy,
+				ghost_text_w, gh,
 				floating ? 0xFFFFFFFF : ctx->theme.text, 0.0f, 0.5f);
 		}
 	}
@@ -17090,6 +17189,12 @@ extern "C" {
 		panel.title = desc->title ? desc->title : "";
 		panel.page = page;
 		panel.closeable = desc->closeable ? 1 : 0;
+		if (desc->icon)
+		{
+			vgui_texture_retain(desc->icon);
+			panel.icon = desc->icon;
+		}
+		if (desc->emoji) panel.emoji = desc->emoji;
 		int zone = (int)desc->zone;
 		if (zone < 0 || zone >(int)VGUI_DOCK_FLOATING) zone = VGUI_DOCK_CENTER;
 		panel.zone = (vgui_dock_zone)zone;
@@ -17132,6 +17237,7 @@ extern "C" {
 		int index = vgui_dock_find_index(dock, panel_id);
 		if (!st || index < 0) return 0;
 		vgui_widget* page = st->panels[(size_t)index].page;
+		st->panels[(size_t)index].release_icon();
 		st->panels.erase(st->panels.begin() + index);
 		st->index.clear();
 		for (size_t i = 0; i < st->panels.size(); ++i)
@@ -17160,6 +17266,7 @@ extern "C" {
 		int index = vgui_dock_find_index(dock, panel_id);
 		if (!st || index < 0) return nullptr;
 		vgui_widget* page = st->panels[(size_t)index].page;
+		st->panels[(size_t)index].release_icon();
 		st->panels.erase(st->panels.begin() + index);
 		st->index.clear();
 		for (size_t i = 0; i < st->panels.size(); ++i)
@@ -17187,8 +17294,11 @@ extern "C" {
 		vgui_dock_state* st = vgui_dock_of(dock);
 		if (!st) return;
 		std::vector<vgui_widget*> pages;
-		for (const vgui_dock_panel& panel : st->panels)
+		for (vgui_dock_panel& panel : st->panels)
+		{
 			if (panel.page) pages.push_back(panel.page);
+			panel.release_icon();
+		}
 		st->panels.clear();
 		st->index.clear();
 		for (int z = 0; z < 4; ++z)
@@ -17271,6 +17381,36 @@ extern "C" {
 			st->scroll_active[panel->zone] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
+	}
+
+	vgui_texture* vgui_dock_get_icon(vgui_widget* dock, vgui_item_id panel_id)
+	{
+		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		return panel ? panel->icon : nullptr;
+	}
+
+	void vgui_dock_set_icon(vgui_widget* dock, vgui_item_id panel_id, vgui_texture* icon)
+	{
+		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		if (!panel || panel->icon == icon) return;
+		if (icon) vgui_texture_retain(icon);
+		if (panel->icon) vgui_texture_release(panel->icon);
+		panel->icon = icon;
+		vgui_mark_dirty(dock);
+	}
+
+	const char* vgui_dock_get_emoji(vgui_widget* dock, vgui_item_id panel_id)
+	{
+		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		return panel ? panel->emoji.c_str() : nullptr;
+	}
+
+	void vgui_dock_set_emoji(vgui_widget* dock, vgui_item_id panel_id, const char* emoji)
+	{
+		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		if (!panel) return;
+		panel->emoji = emoji ? emoji : "";
+		vgui_mark_dirty(dock);
 	}
 
 	int vgui_dock_get_closeable(vgui_widget* dock, vgui_item_id panel_id)
