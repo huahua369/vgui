@@ -73,13 +73,23 @@ typedef struct vgui_render_target_desc {
 	// Creation fails with an error when the device cannot render to the
 	// requested format.  Combine freely with depth.
 	int format;
+
+	// MSAA sample count override for the offscreen FBO (0 = follow the
+	// vgpu_ctx_t count, the default).  1 explicitly disables MSAA (the pass
+	// renders straight into the color texture, no resolve -- useful for
+	// readback targets); 2/4/8 request that many samples.  Creation fails
+	// with an error for values other than 0/1/2/4/8 or when the device does
+	// not support the requested (format, sample count) combination.  The
+	// depth attachment follows the effective count.
+	int sample_count;
 } vgui_render_target_desc;
 
 typedef void (*vgui_render_target_draw_fn)(void* user, ovg_ctx_cb* cb,
 	rvg_t* vg, int width, int height);
 
 // Fills desc with struct_size = sizeof(*desc), width = height = 0, clear = 1,
-// depth = 0, format = 0.  Callers must still set width/height.
+// depth = 0, format = 0, sample_count = 0.  Callers must still set
+// width/height.
 void vgui_render_target_desc_default(vgui_render_target_desc* desc);
 
 // owner is the vgui_context that owns/display the resulting vgui_texture.

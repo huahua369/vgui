@@ -54,6 +54,10 @@ struct vg_fbo_t {
 	// for HDR/sRGB targets.  Pipelines are selected to match this format at
 	// draw time.
 	SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+	// Effective MSAA sample count of the color (and depth) attachments.
+	// Offscreen FBOs may override the context's count per creation
+	// (vgpu_create_fbo(..., sample_count)); 1 = no MSAA texture at all.
+	SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
 	SDL_GPUCommandBuffer* cmd = nullptr;
 	bool upsize = true;
 	// Load-op of the UI render pass.  true (default) clears the target before
@@ -88,13 +92,16 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx);
 // FBO and swapchain.
 // depth != 0 creates a D32_FLOAT depth attachment on an offscreen FBO
 // (ignored for window FBOs; swapchains carry their own).  The depth target
-// uses the context's MSAA sample count when MSAA is enabled.  Depth
-// clear/store policy is entirely up to the host pass that binds it.
+// uses the FBO's effective MSAA sample count.  Depth clear/store policy is
+// entirely up to the host pass that binds it.
 // color_format overrides the color attachment format (INVALID follows
 // vgpu_ctx_t::color_format); only honored for offscreen FBOs.
+// sample_count overrides the MSAA count for offscreen FBOs: 0 follows the
+// context, 1 disables MSAA (no resolve), 2/4/8 are explicit counts.
 vg_fbo_t vgpu_create_fbo(vgpu_ctx_t* ctx, int width, int height,
 	SDL_Window* window = nullptr, int depth = 0,
-	SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID);
+	SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID,
+	int sample_count = 0);
 void vgpu_destroy_fbo(vg_fbo_t* fbo);
 void vgpu_reset_fbo(vg_fbo_t* fbo, int width, int height);
 int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait);
@@ -108,6 +115,10 @@ SDL_GPUTexture* vgpu_fbo_color_texture(vg_fbo_t* fbo);
 // context's color format when the FBO has no override, or INVALID for a
 // context-less FBO.
 SDL_GPUTextureFormat vgpu_fbo_color_format(vg_fbo_t* fbo);
+
+// Returns the FBO's effective MSAA sample count (explicit override or the
+// context's count).  Pipelines must be selected to match it.
+SDL_GPUSampleCount vgpu_fbo_samples(vg_fbo_t* fbo);
 
 // Checks that a color format is renderable on this device: 2D texture with
 // COLOR_TARGET | SAMPLER usage, and MSAA sample count support when samples

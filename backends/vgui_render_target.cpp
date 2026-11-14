@@ -38,6 +38,10 @@ struct vgui_render_target
 	vgui_texture_format format = VGUI_TEXTURE_FORMAT_RGBA8;
 	// SDL format of the color attachment; INVALID follows the gpu context.
 	SDL_GPUTextureFormat sdl_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+	// MSAA override as given in the desc (0 = follow context), and the
+	// resolved effective count used for validation.
+	int sample_override = 0;
+	SDL_GPUSampleCount target_samples = SDL_GPU_SAMPLECOUNT_1;
 	bool clear = true;
 	bool depth = false;
 
@@ -187,6 +191,7 @@ void vgui_render_target_desc_default(vgui_render_target_desc* desc)
 	desc->clear = 1;
 	desc->depth = 0;
 	desc->format = 0;
+	desc->sample_count = 0;
 }
 
 vgui_render_target* vgui_render_target_create(vgui_context* owner,
@@ -256,6 +261,38 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 		return nullptr;
 	}
 
+	// MSAA sample count override: 0 follows the context, 1 disables MSAA
+	// (no resolve -- useful for readback targets), 2/4/8 are explicit.
+	SDL_GPUSampleCount target_samples = SDL_GPU_SAMPLECOUNT_1;
+	switch (settings.sample_count)
+	{
+	case 0:
+		target_samples = vgpu_context_samples(gpu_ctx);
+		break;
+	case 1:
+		target_samples = SDL_GPU_SAMPLECOUNT_1;
+		break;
+	case 2:
+		target_samples = SDL_GPU_SAMPLECOUNT_2;
+		break;
+	case 4:
+		target_samples = SDL_GPU_SAMPLECOUNT_4;
+		break;
+	case 8:
+		target_samples = SDL_GPU_SAMPLECOUNT_8;
+		break;
+	default:
+		set_create_error("invalid sample count");
+		return nullptr;
+	}
+	if (!vgpu_supports_color_format(gpu_ctx,
+		sdl_color_format != SDL_GPU_TEXTUREFORMAT_INVALID ? sdl_color_format
+			: vgpu_color_format(gpu_ctx), target_samples))
+	{
+		set_create_error("sample count not supported for color target");
+		return nullptr;
+	}
+
 	vgui_render_target* target = new vgui_render_target();
 	target->owner = owner;
 	target->gpu_ctx = gpu_ctx;
@@ -263,11 +300,14 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 	target->height = settings.height;
 	target->format = format;
 	target->sdl_format = sdl_color_format;
+	target->sample_override = settings.sample_count;
+	target->target_samples = target_samples;
 	target->clear = settings.clear != 0;
 	target->depth = settings.depth != 0;
 
 	target->fbo = vgpu_create_fbo(gpu_ctx, settings.width, settings.height,
-		nullptr, target->depth ? 1 : 0, target->sdl_format);
+		nullptr, target->depth ? 1 : 0, target->sdl_format,
+		target->sample_override);
 	target->fbo.clear = target->clear;
 	target->fbo.cycle_target = target->clear;
 	if (!vgpu_fbo_color_texture(&target->fbo))
@@ -362,7 +402,7 @@ int vgui_render_target_resize(vgui_render_target* target, int width, int height)
 	// Build the replacement first so a failed resize leaves the old target
 	// intact.
 	vg_fbo_t next = vgpu_create_fbo(target->gpu_ctx, width, height, nullptr,
-		target->depth ? 1 : 0, target->sdl_format);
+		target->depth ? 1 : 0, target->sdl_format, target->sample_override);
 	next.clear = target->fbo.clear;
 	next.cycle_target = target->fbo.cycle_target;
 	if (!vgpu_fbo_color_texture(&next))

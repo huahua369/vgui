@@ -515,6 +515,103 @@ int main()
 			nullptr, "invalid format is described");
 	}
 
+	// MSAA 采样数选择:ctx 为 1x,目标可显式请求 4x(resolve 后输出与 1x
+	// 逐像素一致)、显式 1x、非法值拒绝,以及 4x + 深度组合。
+	{
+		vgui_render_target_desc msaa_desc = desc;
+		msaa_desc.sample_count = 4;
+		vgui_render_target* msaa = vgui_render_target_create(host, gpu.vgpu_ctx,
+			cb, &msaa_desc);
+		check(msaa != nullptr, "create 4x target on 1x context");
+		if (msaa)
+		{
+			vgui_context* msaa_panel = vgui_create(nullptr, 16.0f);
+			check(msaa_panel != nullptr, "create msaa panel context");
+			if (msaa_panel)
+			{
+				vgui_context_set_size(msaa_panel, 64, 48);
+				vgui_widget_set_background(vgui_root(msaa_panel), 0xFFFF0000u);
+
+				vgui_render_target* plain = vgui_render_target_create(host,
+					gpu.vgpu_ctx, cb, &desc);
+				check(plain != nullptr, "create 1x twin target");
+				if (plain)
+				{
+					ovg_draw_data_t msaa_pass = {};
+					ovg_draw_data_t plain_pass = {};
+					check(vgui_render_target_record_context(msaa, msaa_panel,
+						&msaa_pass) == 1, "record into 4x target");
+					check(vgui_render_target_record_context(plain, msaa_panel,
+						&plain_pass) == 1, "record into 1x twin");
+					vgpu_render_frame(gpu.vgpu_ctx, &msaa_pass, 1);
+					vgpu_render_frame(gpu.vgpu_ctx, &plain_pass, 1);
+					vgpu_wait_idle(gpu.vgpu_ctx);
+
+					std::vector<uint32_t> msaa_pixels;
+					std::vector<uint32_t> plain_pixels;
+					check(download_texture(gpu.device,
+						vgui_render_target_native_texture(msaa), width, height,
+						msaa_pixels), "download 4x target");
+					check(download_texture(gpu.device,
+						vgui_render_target_native_texture(plain), width, height,
+						plain_pixels), "download 1x twin");
+					check(msaa_pixels.size() == plain_pixels.size() &&
+						std::memcmp(msaa_pixels.data(), plain_pixels.data(),
+							msaa_pixels.size() * sizeof(uint32_t)) == 0,
+						"4x resolve output matches 1x output");
+					vgui_render_target_destroy(plain);
+				}
+
+				// 4x + 深度组合:深度附件按目标采样数创建。深度目标的采样数
+				// 支持不是 Vulkan 的强制保证(只保证颜色目标 4x),按设备能力
+				// 分支断言:支持时必须成功,不支持时必须干净失败并给出原因。
+				vgui_render_target_desc msaa_depth_desc = desc;
+				msaa_depth_desc.sample_count = 4;
+				msaa_depth_desc.depth = 1;
+				vgui_render_target* msaa_depth = vgui_render_target_create(host,
+					gpu.vgpu_ctx, cb, &msaa_depth_desc);
+				const bool depth4x = SDL_GPUTextureSupportsSampleCount(
+					gpu.device, SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
+					SDL_GPU_SAMPLECOUNT_4);
+				if (depth4x)
+				{
+					check(msaa_depth != nullptr, "create 4x + depth target");
+					check(msaa_depth != nullptr &&
+						vgui_render_target_native_depth_texture(msaa_depth) !=
+							nullptr, "depth handle on 4x target");
+				}
+				else
+				{
+					check(msaa_depth == nullptr,
+						"4x + depth fails cleanly when device lacks D32 4x");
+					check(msaa_depth == nullptr && std::strstr(
+						vgui_render_target_last_error(nullptr), "depth") !=
+						nullptr, "4x depth failure is described");
+				}
+				vgui_render_target_destroy(msaa_depth);
+				vgui_destroy(msaa_panel);
+			}
+			vgui_render_target_destroy(msaa);
+		}
+
+		// 显式禁 MSAA(ctx 本身 1x,输出应与默认一致)。
+		vgui_render_target_desc no_msaa_desc = desc;
+		no_msaa_desc.sample_count = 1;
+		vgui_render_target* no_msaa = vgui_render_target_create(host,
+			gpu.vgpu_ctx, cb, &no_msaa_desc);
+		check(no_msaa != nullptr, "create explicit 1x target");
+		vgui_render_target_destroy(no_msaa);
+
+		// 非法采样数。
+		vgui_render_target_desc bad_samples_desc = desc;
+		bad_samples_desc.sample_count = 3;
+		vgui_render_target* bad_samples = vgui_render_target_create(host,
+			gpu.vgpu_ctx, cb, &bad_samples_desc);
+		check(bad_samples == nullptr, "create with invalid sample count fails");
+		check(std::strstr(vgui_render_target_last_error(nullptr),
+			"sample count") != nullptr, "invalid sample count is described");
+	}
+
 	// Release the widget binding before the target that owns the native texture.
 	vgui_image_set_texture(image, nullptr);
 	vgui_render_target_destroy(keep);
