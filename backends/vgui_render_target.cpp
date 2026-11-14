@@ -476,6 +476,97 @@ SDL_GPUTexture* vgui_render_target_native_depth_texture(
 	return target ? vgpu_fbo_depth_texture(&target->fbo) : nullptr;
 }
 
+int vgui_render_target_bytes_per_pixel(vgui_render_target* target)
+{
+	if (!target)
+		return 0;
+	switch (target->format)
+	{
+	case VGUI_TEXTURE_FORMAT_RGBA8:
+	case VGUI_TEXTURE_FORMAT_BGRA8:
+	case VGUI_TEXTURE_FORMAT_RGBA8_SRGB:
+	case VGUI_TEXTURE_FORMAT_BGRA8_SRGB:
+	case VGUI_TEXTURE_FORMAT_R32F:
+		return 4;
+	case VGUI_TEXTURE_FORMAT_RGBA16F:
+		return 8;
+	case VGUI_TEXTURE_FORMAT_RGBA32F:
+		return 16;
+	case VGUI_TEXTURE_FORMAT_R16F:
+		return 2;
+	default:
+		return 0;
+	}
+}
+
+size_t vgui_render_target_download(vgui_render_target* target, void* out,
+	size_t cap)
+{
+	if (!target)
+		return 0;
+	const int bpp = vgui_render_target_bytes_per_pixel(target);
+	const size_t want = (size_t)target->width * (size_t)target->height *
+		(size_t)(bpp > 0 ? bpp : 0);
+	if (bpp <= 0 || !out || cap < want)
+	{
+		target->error = "download buffer too small or invalid target";
+		return 0;
+	}
+	SDL_GPUDevice* device = vgpu_context_device(target->gpu_ctx);
+	if (!device || !vgpu_fbo_color_texture(&target->fbo))
+	{
+		target->error = "download requires a gpu context and color texture";
+		return 0;
+	}
+
+	SDL_GPUTransferBufferCreateInfo transfer_info = {};
+	transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
+	transfer_info.size = (Uint32)want;
+	SDL_GPUTransferBuffer* transfer =
+		SDL_CreateGPUTransferBuffer(device, &transfer_info);
+	if (!transfer)
+	{
+		target->error = "failed to create download transfer buffer";
+		return 0;
+	}
+
+	SDL_GPUCommandBuffer* cmd = SDL_AcquireGPUCommandBuffer(device);
+	if (!cmd)
+	{
+		SDL_ReleaseGPUTransferBuffer(device, transfer);
+		target->error = "failed to acquire a command buffer for download";
+		return 0;
+	}
+	SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(cmd);
+	SDL_GPUTextureRegion src = {};
+	src.texture = vgpu_fbo_color_texture(&target->fbo);
+	src.w = (Uint32)target->width;
+	src.h = (Uint32)target->height;
+	src.d = 1;
+	SDL_GPUTextureTransferInfo dst = {};
+	dst.transfer_buffer = transfer;
+	dst.offset = 0;
+	dst.pixels_per_row = 0;
+	dst.rows_per_layer = 0;
+	SDL_DownloadFromGPUTexture(copy, &src, &dst);
+	SDL_EndGPUCopyPass(copy);
+	SDL_SubmitGPUCommandBuffer(cmd);
+	vgpu_wait_idle(target->gpu_ctx);
+
+	void* mapped = SDL_MapGPUTransferBuffer(device, transfer, false);
+	if (!mapped)
+	{
+		SDL_ReleaseGPUTransferBuffer(device, transfer);
+		target->error = "failed to map the download transfer buffer";
+		return 0;
+	}
+	std::memcpy(out, mapped, want);
+	SDL_UnmapGPUTransferBuffer(device, transfer);
+	SDL_ReleaseGPUTransferBuffer(device, transfer);
+	target->error.clear();
+	return want;
+}
+
 const char* vgui_render_target_last_error(const vgui_render_target* target)
 {
 	if (!target)

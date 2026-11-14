@@ -132,6 +132,20 @@ SDL_GPUTexture* vgui_render_target_native_texture(vgui_render_target* target);
 // The pointer changes after resize().
 SDL_GPUTexture* vgui_render_target_native_depth_texture(vgui_render_target* target);
 
+// Bytes per pixel of the color attachment in its native layout: 4 for the
+// 8-bit formats, 8 for RGBA16F, 16 for RGBA32F, 2 for R16F, 4 for R32F.
+// Returns 0 for an invalid target.
+int vgui_render_target_bytes_per_pixel(vgui_render_target* target);
+
+// Reads the color attachment back into `out` (CPU readback via a transfer
+// buffer; waits for GPU idle).  `out` must hold width * height *
+// vgui_render_target_bytes_per_pixel(target) bytes; the layout is the
+// texture's native format, rows tightly packed top-to-bottom.  Returns the
+// number of bytes written, 0 on failure (and sets the target's error string).
+// Submit the passes you want to read back before calling this.
+size_t vgui_render_target_download(vgui_render_target* target, void* out,
+	size_t cap);
+
 // Last failure for this target.  target may be NULL to query the most recent
 // create() failure.  Returns an empty string when there is no error; the
 // returned pointer is valid until the next call on the same target/thread.

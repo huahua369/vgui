@@ -145,6 +145,10 @@ SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx);
 // textures borrowed through vgpu_texture_init_native() must use it.
 SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx);
 
+// The SDL_GPUDevice the context renders on.  Backend helpers that need raw
+// device operations (e.g. texture readback transfer buffers) use it.
+SDL_GPUDevice* vgpu_context_device(vgpu_ctx_t* ctx);
+
 // MSAA sample count the context was actually created with: the requested value
 // may have been clamped down to what the device supports.  For the ovg/2D
 // backend this is the *only* anti-aliasing control -- the vector passes get

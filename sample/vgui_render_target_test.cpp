@@ -501,6 +501,24 @@ int main()
 					nearf(sample16(16, 12, 2), 0.0f) &&
 					nearf(sample16(16, 12, 3), 1.0f),
 					"resized RGBA16F target renders UI");
+
+				/* 公共回读 API:字节数、内容与测试基建互验,短缓冲被拒。 */
+				check(vgui_render_target_bytes_per_pixel(hdr) == 8,
+					"bytes per pixel reports 8 for RGBA16F");
+				const size_t want_bytes = (size_t)rw * (size_t)rh * 8u;
+				std::vector<uint8_t> public_bytes(want_bytes + 8, 0xAB);
+				const size_t wrote = vgui_render_target_download(hdr,
+					public_bytes.data(), want_bytes + 8);
+				check(wrote == want_bytes,
+					"public download writes exactly w*h*bpp bytes");
+				check(public_bytes[want_bytes] == 0xAB,
+					"public download does not write past the payload");
+				check(wrote == want_bytes &&
+					std::memcmp(public_bytes.data(), hdr_bytes2.data(),
+						want_bytes) == 0,
+					"public download matches the test helper");
+				check(vgui_render_target_download(hdr, public_bytes.data(),
+					want_bytes - 1) == 0, "download rejects a short buffer");
 				vgui_destroy(hdr_panel);
 			}
 			vgui_render_target_destroy(hdr);
@@ -696,6 +714,18 @@ int main()
 			if (chain_ctx[i])
 				vgui_destroy(chain_ctx[i]);
 		}
+	}
+
+	// 公共回读 API(8-bit 路径):字节数与容量校验。
+	{
+		check(vgui_render_target_bytes_per_pixel(raw) == 4,
+			"bytes per pixel reports 4 for RGBA8");
+		const size_t want_bytes = (size_t)width * (size_t)height * 4u;
+		std::vector<uint8_t> public_bytes(want_bytes, 0);
+		check(vgui_render_target_download(raw, public_bytes.data(),
+			want_bytes) == want_bytes, "public download writes RGBA8 payload");
+		check(vgui_render_target_download(raw, nullptr, want_bytes) == 0,
+			"download rejects a null buffer");
 	}
 
 	// Release the widget binding before the target that owns the native texture.
