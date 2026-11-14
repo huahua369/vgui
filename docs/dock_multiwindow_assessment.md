@@ -7,6 +7,8 @@
 > 本文只做评估，不改动任何实现。所有行号对应本次评估时的源码。
 >
 > **实施更新（2026-11-04）**：目标 A 已落地，见 §11。§1–§10 保留评估时的原始判断作为依据；涉及「未接线 / 零覆盖 / 缺 API」的表述以 §11 为准。
+>
+> **实施更新（2026-11-14）**：目标 B 第一步已落地（后端库化组件 `dock_floater_host`，core 零改动），见 §12。§4 的"5 条硬阻塞"对应 §8.2 的 core 深改路线——原型/组件路线（detach + 占位页 + 宿主建窗）全部绕开，见 §12.1。
 
 ---
 
@@ -326,3 +328,40 @@ frames=120 windows_at_exit=1 gameview_closed=1
 
 - **`app_mgr::create2()` 的 x/y 只对 popup/tooltip 生效**，普通窗口走 `SDL_CreateWindow(title, w, h, ...)`，位置由 WM 叠放决定。要指定位置必须自己补一句 `SDL_SetWindowPosition(win->window, x, y)`（`vgui_multiwindow_demo.cpp` 里本来就这么写）。
 - **窗口默认位置**：先算主窗口右侧剩余宽度（`SDL_GetDisplayUsableBounds`），够 420px 就贴右侧、不够就先收窄到剩余宽度；连 420 都没有（主窗口很宽时常见）就贴屏幕右下角，避免盖住主窗口上方的 3D 视口。实测本机 1920×1080、主窗口 1280×800 走的是右下角分支，副窗口落在 `(1152, 554)`。
+
+---
+
+## 12. 实施记录：目标 B 第一步——库化 floater 组件（2026-11-14）
+
+### 12.1 路径决策：后端组件路线，不走 §8.2 的 core 深改路线
+
+`vgui_game_editor.cpp:3994-4469` 在 §11.7 之后已实现目标 B 的完整宿主原型（拖出→无边框 OS 窗口→live drag 跟随→合并回收，约 450 行），core 零改动。它的关键做法是：**真实页面不跨 context**——`vgui_dock_detach()` 把页面留在主上下文，浮动窗口的 context 里由宿主钩子建页（占位或重建真实内容），合并时孤儿页 `vgui_dock_add` 挂回主 Dock。在这一路线下，§4 的 5 条"硬阻塞"逐条被绕开：
+
+| # | 阻塞点（§4） | 原型/组件路线下的状态 |
+|---|---|---|
+| 1 | 跨 context 页面被拒 | **绕开**：detach 不迁移页面，浮动窗口用宿主钩子重建/占位 |
+| 2 | 面板 id per-dock 局部 | **绕开**：宿主以主 dock 的 item id 为键维护 floater 表，id 不跨 dock 传递 |
+| 3 | 浮动被几何夹取 | **不适用**：真 OS 窗口由 WM 管理，`vgui_dock_clamp_rect` 只作用于窗口内 FLOATING 区 |
+| 4 | 拖拽状态单 context | **绕开**：跨窗口部分由宿主轮询全局鼠标 + SDL 窗口位置完成，core 拖拽状态机只管窗口内 |
+| 5 | 输入 API 无窗口概念 | **绕开**（B 范围内）：坐标换算在宿主/组件内完成；C 的跨窗口命中测试才需要全局坐标 |
+
+结论：**B 不需要改 core 数据模型**；只有 C（跨窗口 Dock 间拖放、罗盘画在目标窗口）才真正触及 §4。§8.2 草图（`vgui_dock_detach_to_window` + 全局稳定 id + clamp 屏幕化）保留为"C 启动时"的参考，本阶段不实施。§10.4 的判断成立：B + 记住窗口位置已覆盖大部分多屏需求。
+
+### 12.2 组件 API（`include/vgui/backend/vgui_dock_windows.h`，header-only）
+
+`dock_floater_host`——把 game_editor 原型泛化为可复用组件（与 `multiwindow_host`、`window_dock_manager` 同风格）：
+
+- `attach(app_mgr*, multiwindow_host*, vgui_widget* main_dock, os_window* main_window, font_familys_t* familys, font_size, opts, hooks)`：注册 `vgui_dock_on_tear_off/on_drag_out`（回调只入队，遵守 core 契约）；浮动窗口经宿主现有 `multiwindow_host` 提交——**一帧仍只有一次 `vgpu_render_frame()`**。
+- `tick()`：帧末调用。处理入队 tear-off（`create2(..., ef_borderless|ef_resizable)` 建无边框窗 → 新 `vgui_context` → 根 COLUMN+STRETCH → 标题条（兼 SDL hit-test 拖动区）→ Dock → 宿主钩子页/内置占位页 → chrome 实测校正，撕出前后面板尺寸一致）→ live drag 逐帧 `SDL_SetWindowPosition` 跟随 → 合并判定（内容区全含/中心点兜底，容差可配）→ 系统模态拖动结束的"位置变化 > 6px"检测（settle 过滤建窗抖动）→ 浮动窗口 `pending_close` 合并回收 → 失败路径回滚面板 + `vgui_dock_end_drag` 防入队循环。
+- 宿主钩子：`build_page`（nullptr = 内置占位页；真实内容面板如 3D 视口在此重建并处理原生纹理 release/sync，见 game_editor GAME VIEW）、`merged`（面板挂回后通知）。
+- 关键不变量（原型踩坑直接内建）：title/id 字符串 detach 前拷贝（`c_str()` 悬空）；页面矩形 detach 前采样；销毁顺序 `vgui_destroy(floater ctx)` → `viewport->ui = nullptr` → `wg->destroy(window)`。
+
+### 12.3 demo 与自测结果
+
+`sample/vgui_dock_floater_demo.cpp`（CMake target `vgui_dock_floater_demo`，不进 ctest，GPU 失败返回 77）：主窗口 3 面板，`VGUI_FLOATER_SIM=1` 注入拖拽做有界自检，17 项断言全绿——tear-off 建窗、占位页、单次提交（host.size()==2）、面板离开主 Dock、**合并后真实页面 widget 指针原样恢复**、二次 tear-off 幂等；`VGUI_FLOATER_SIM=0` 手动体验模式。本批次 core / editor kit **零改动**。
+
+### 12.4 后续批次
+
+1. `vgui_game_editor.cpp` 原型迁移到 `dock_floater_host`（GAME VIEW 的纹理 release/sync 走 `build_page` 钩子）。
+2. `editor_layout_set` 持久化"面板 → 浮动窗口屏幕坐标"（JSON v9）。
+3. C（跨窗口拖放）：本阶段不做；若启动需按 §8.3 评估 core 模型改造 + `docking_mgr::viewports_enabled` 接线。

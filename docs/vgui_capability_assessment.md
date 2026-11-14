@@ -91,7 +91,7 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **无障碍（E05）**：完整键盘导航、焦点陷阱（Tab/Shift+Tab 在陷阱祖先内循环，模态/弹出层/浮动 Dock 自动开启）、`F10` 菜单栏、`F6`/`Shift+F6` 焦点漫游、高对比度主题（`Ctrl+Shift+H`）；`vgui_a11y_role/state/info` 推导角色/名称/值/状态，屏幕阅读器经 `a11y_listener` 接收焦点/值/状态/选中/告警事件（Toast 自动公告）；不实现平台 UIA/AT-SPI provider
 
 ### 4.2 缺的功能 / 短板
-- **Dock 浮动面板不是独立 OS 窗口 / 面板不能跨窗口拖动（B、C 目标仍缺）**：`VGUI_DOCK_FLOATING` 是同一 Dock 控件内自绘的浮层，被 `vgui_dock_clamp_rect()` 夹在 dock 矩形内；面板 id 是 per-dock 局部自增、页面是绑定 `vgui_context` 的裸指针，跨窗口引用会误命中或被 `vgui_dock_add()` 拒绝。**「多窗口并存」（每窗口各一个 Dock）已于 2026-11-04 实现**，见 §7.15 与 `docs/dock_multiwindow_assessment.md`
+- **Dock 浮动面板 / 跨窗口拖动（B 第一步已落地 2026-11-14，C 仍缺）**：**B——面板拖出为真 OS 窗口——已由后端库化组件 `vgui_dock_windows.h` 的 `dock_floater_host` 承载**（tear-off 入队 → 无边框窗口 + 占位/重建页 → live drag 跟随 → 内容区回主窗口自动合并，core 零改动，见 `docs/dock_multiwindow_assessment.md` §12；`vgui_dock_floater_demo` 17 断言自测，`vgui_game_editor` 已有宿主原型）。窗口内 `VGUI_DOCK_FLOATING` 自绘浮层不变。**C——跨窗口 Dock 间拖放停靠——仍缺**：面板 id 是 per-dock 局部自增、页面是绑定 `vgui_context` 的裸指针，跨窗口引用会误命中或被 `vgui_dock_add()` 拒绝；「多窗口并存」（每窗口各一个 Dock）已于 2026-11-04 实现，见 §7.15 与 `docs/dock_multiwindow_assessment.md`
 - **Dock 标签图标与右键上下文菜单（已实现，2026-11-14，S11）**：核心 `vgui_dock_set_icon/set_emoji`（纹理/emoji，标签 + 浮动标题 + 拖拽 ghost 三处绘制，`tab_icon_size` 样式）与带 `e.item` 的标签鼠标事件（TabView 同款契约，宿主据此建菜单）；`editor_shell` 内置程序化标签图标、宿主覆盖接口 `vgui_editor_shell_set_panel_icon` 与默认开启的标签右键菜单（Float/Dock Panel + Close Panel，`vgui_editor_shell_set_dock_tab_menu` 可关）
 - **菜单项图标（已实现）**：`vgui_menu_set_item_icon`（图片纹理）/ `vgui_menu_set_item_emoji`（emoji/UTF-8 字形），任一菜单有图标时统一预留图标列、LTR/RTL 自动镜像；菜单内容可经 add/remove/clear/set_item_* API 运行时动态重建
 - **原生（OS）菜单**：仍缺（vgui 菜单为自绘浮层，无系统原生菜单）

@@ -12,6 +12,11 @@ set(SRC_MULTIWINDOW_DEMO
     vgui_multiwindow_demo.cpp
 )
 
+# Dock 面板拖出/合并示例（浮动面板 → 真 OS 窗口，目标 B 第一步的库化组件）
+set(SRC_DOCK_FLOATER_DEMO
+    vgui_dock_floater_demo.cpp
+)
+
 # 编辑框行为自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_EDIT_TEST
     vgui_edit_test.cpp
@@ -169,6 +174,12 @@ endif()
 add_executable(vgui_multiwindow_demo ${SRC_MULTIWINDOW_DEMO})
 target_link_libraries(vgui_multiwindow_demo PRIVATE vgui_sample_common vgui::vgui
     SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
+
+# Dock 面板拖出/合并：需要真实 GPU 窗口，不注册 ctest；用
+# VGUI_FLOATER_SIM=1 跑有界自检（拖出 → 占位 → 合并 → 回复），失败返回 1。
+add_executable(vgui_dock_floater_demo ${SRC_DOCK_FLOATER_DEMO})
+target_link_libraries(vgui_dock_floater_demo PRIVATE vgui_sample_common
+    vgui::vgui SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
 endif()
 
 add_executable(vgui_model_test ${SRC_MODEL_TEST})
