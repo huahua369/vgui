@@ -34,7 +34,7 @@ P0 交付范围：
 - 多颜色附件仍不提供。深度/模板附件已由 P1 补齐（2026-11-14，`desc.depth` + `native_depth_texture()`，见 §4.4）——仅作为宿主 3D pass 的附件，vgui 的 UI pass 自身不使用深度。显式颜色格式已由 P1 补齐（2026-11-14，`desc.format`，见 §4.5）——HDR/sRGB 目标可直接烘入矢量/UI 内容，pipeline 按格式惰性创建。MSAA 采样数选择已由 P1 补齐（2026-11-14，`desc.sample_count`，见 §4.6）——按目标禁用/选择 1/2/4/8x。
 - 不提供 GPU 回读、PNG 编码或呈现 API；回读用 `SDL_DownloadFromGPUTexture`，呈现用引擎自己的 pass。
 - 不自动推进动画或布局：`record_context()` 不调用 `vgui_update()`。
-- 异步 resize 仍不做（P0/resize/destroy/rebuild 都等待 GPU idle）。设备丢失/上下文重建已由 P2 覆盖（2026-11-15，`rebuild/rebuild_all`，见 §4.8）——仅针对 `vgpu_ctx_t` 重建（MSAA 切换）；SDL 设备级丢失仍由宿主整体重建。
+- 异步 resize 已由 P2 覆盖（2026-11-15，fence + 延迟 FBO 释放，见 §4.8）——resize 不再等待 GPU idle；destroy/rebuild 仍同步（罕见路径）。设备丢失/上下文重建已由 P2 覆盖（2026-11-15，`rebuild/rebuild_all`）——仅针对 `vgpu_ctx_t` 重建（MSAA 切换）；SDL 设备级丢失仍由宿主整体重建。
 
 ## 2. 公共 API
 
@@ -74,6 +74,7 @@ size_t vgui_render_target_download(vgui_render_target* target, void* out,
 int vgui_render_target_rebuild(vgui_render_target* target,
     vgpu_ctx_t* new_ctx);
 int vgui_render_target_rebuild_all(vgpu_ctx_t* old_ctx, vgpu_ctx_t* new_ctx);
+/* resize 不等 GPU idle:旧 FBO 由最新帧 fence 退休,稍后自动释放 */
 const char* vgui_render_target_last_error(const vgui_render_target* target);
 
 int vgui_render_target_record(vgui_render_target* target,
@@ -174,6 +175,15 @@ vgpu_render_frame(gpu_ctx, passes, 2);
 - **回读**：HDR 格式为 8 字节/像素（RGBA16F 用 half 解码），测试基建 `download_texture_bytes()` 支持任意字节宽。
 - 与 `desc.depth` 正交可组合；与 `clear=0`（保留宿主 3D 内容）同样可组合。
 
+### 4.8 异步 resize 与退休队列（P2，2026-11-15）
+
+`resize()` 不再 `vgpu_wait_idle()`：旧 FBO 推入模块级退休队列，由**最新帧提交的 fence** 守护，`SDL_QueryGPUFence` signalled 后才销毁。机制镜像 ovg 渲染器的 `tex_free_fence` 模式。
+
+- **vgpu 层**：`vgpu_ctx_t::last_frame_fence` 保存最近一次真实提交的 fence（静态助手 `submit_with_fence()` 接入 blit/render_frame flush/主提交三个提交点）；同队列提交按序完成——**单条最新 fence 的 signal 即蕴含此前全部提交完成**。`vgpu_take_frame_fence()` 转移所有权给退休队列；`vgpu_destroy_context` 释放未认领 fence。
+- **drain 点**：`record_internal` 开头（每帧一次，通常即刻清空）、`resize` 开头、`download` 结尾（已 idle → 全清）。fence 不可得（无历史提交，或前次 resize 已取走）时退回 `vgpu_wait_idle` + 立即销毁——正确性优先于无阻塞。
+- **只让 resize 走异步**：destroy/rebuild 保持同步（罕见路径；rebuild 的调用方 set_msaa_samples 本就先 idle）——缩小 fence 生命周期的风险面，避免应用退出时退休条目泄漏。
+- 生命周期安全：退休条目只持 FBO（其纹理自带 device 指针）与 device 级 fence；native 桥的释放本就经 `ctx->pending_destroy` 延迟一帧（与 `retired_ctxs_` 契约一致）。
+
 ### 4.6 MSAA 采样数选择（P1，2026-11-14）
 
 `desc.sample_count`：0 = 跟随 `vgpu_ctx_t` 采样数（默认），1 = 显式禁用 MSAA（pass 直接渲进 color_tex、无 resolve——回读/比对目标的推荐配置），2/4/8 = 显式采样数。非法值（如 3）在 create 时报 `"invalid sample count"`；(格式，采样数) 组合经 `vgpu_supports_color_format()` 校验，不支持报 `"sample count not supported for color target"`。
@@ -226,6 +236,7 @@ vgpu_render_frame(gpu_ctx, passes, 2);
 11. 多目标链路（P1）：三个 target 按依赖顺序各自 `record_context()`，三项 pass 合并一次 `vgpu_render_frame()` 提交；末端回读同时命中穿透两级的层 0 颜色（红）与穿过一级的层 1 背景（绿）。
 12. 回读 API（P2）：`bytes_per_pixel()` 对 RGBA8/RGBA16F 分别报 4/8；公共 `download()` 与测试基建（transfer buffer + copy pass）内容逐字节一致、不越界写、短缓冲与 NULL 缓冲被拒并写入错误串。
 13. 上下文重建（P2）：第二 `vgpu_ctx_t` 上 `rebuild_all` 精确重绑旧 ctx 的全部目标（计数==1）、`vgui_texture*` 指针不变、重录 + 新 ctx 提交 + 回读内容正确；同 ctx rebuild 为 no-op；换绑回旧 ctx 后目标继续可用。
+14. 异步 resize（P2）：交替尺寸连续 10 轮 resize → 立即 record → submit → download（不等 GPU idle），中心像素每轮全红——fence 退休队列守护旧 FBO，新内容不受在飞工作影响；resize 头注释同步更新为"不等 idle"。
 
 运行：
 
@@ -250,12 +261,13 @@ ctest --test-dir out\build\x64-debug -R vgui_render_target --output-on-failure
 | ~~P1~~ | ~~显式格式/色彩空间~~ | **已完成（2026-11-14）**：`desc.format`（HDR/sRGB）+ 按格式惰性 pipeline，见 §4.5 |
 | ~~P1~~ | ~~深度/模板附件~~ | **已完成（2026-11-14）**：`desc.depth` + `native_depth_texture()`，复用 `vg_fbo_t` 深度字段，见 §4.4 |
 | ~~P1~~ | ~~多目标渲染图~~ | **以既有能力关闭（2026-11-14）**：数组顺序即依赖顺序，N 个 target 各自 record 后合并一次 `vgpu_render_frame()` 提交，三级链路测试覆盖；不引入图 API，见 §4.7 |
-| P2 | 异步 resize/退休队列 | 去掉 `vgpu_wait_idle()`，用 fence + 延迟 FBO 释放 |
+| ~~P2~~ | ~~异步 resize/退休队列~~ | **已完成（2026-11-15）**：fence + 延迟 FBO 释放（镜像 ovg `tex_free_fence` 模式），resize 不再等 GPU idle，见 §4.8 |
 | ~~P2~~ | ~~设备丢失/重建~~ | **已完成（2026-11-15）**：`rebuild/rebuild_all`（后端注册表，`set_msaa_samples` 自动触发），见 §4.8 |
 | ~~P2~~ | ~~回读/编码辅助~~ | **已完成（2026-11-14）**：`vgui_render_target_download()`（原生格式 CPU 回读，含 GPU idle 等待）+ `bytes_per_pixel()`；PNG 编码留在宿主侧（chart 已有 PNG 路径） |
 
 ## 8. 变更记录
 
+- **2026-11-15：P2 异步 resize 落地**。`resize()` 不再 `vgpu_wait_idle()`：旧 FBO 由最新帧 fence 守护、退休队列延迟销毁（镜像 ovg `tex_free_fence` 模式）。vgpu 层新增 `vgpu_ctx_t::last_frame_fence` + `submit_with_fence()`（blit/flush/主提交三个真实提交点接入）+ `vgpu_take_frame_fence()` 公共访问器；`vgpu_destroy_context` 释放未认领 fence。退休队列 drain 于每帧 record/resize/download；fence 不可得时回退 idle+立即销毁。destroy/rebuild 保持同步（缩小风险面）。测试：交替尺寸 10 轮 resize→record→submit→download 压力块（不等 idle，输出每轮正确）。**render_target 路线图 §7 P1/P2 至此全部清零。**
 - **2026-11-15：P2 设备丢失/重建（上下文重建自动恢复）落地**。真实破坏场景：`app_mgr::set_msaa_samples` 重建共享 `vgpu_ctx_t` 时，离屏目标的 `gpu_ctx`/FBO/纹理桥全部悬空。修复：`vgui_render_target.cpp` 维护存活目标注册表（create 注册、destroy 注销），新 API `vgui_render_target_rebuild(target, new_ctx)`（镜像 resize 体：旧 ctx 存活期 `release_native` → idle → 新 FBO → `update_native` 重建分支 → 销毁旧 FBO；**失败也换 ctx**——旧 ctx 即将销毁，损坏态以错误串表达）与 `vgui_render_target_rebuild_all(old_ctx, new_ctx)`（遍历注册表）。`set_msaa_samples` 在窗口 FBO 重建后调用 `rebuild_all(retired, vgctx)`（GPU 已 idle、旧 ctx 退休未销毁，时序正好）；`vgui_sdl3.h` 契约注释同步。重建后 FBO 内容为空（同 resize 语义），需重录。测试：双 ctx 上 rebuild_all 精确重绑（计数==1）、纹理指针稳定、新 ctx 提交/回读内容正确、同 ctx no-op、换绑回旧 ctx 后可用。§7 仅剩异步 resize 一行 P2。
 - **2026-11-14：P2 回读 API 落地**。新公共 API `vgui_render_target_bytes_per_pixel()`（RGBA8/BGRA8/sRGB/R32F=4、RGBA16F=8、RGBA32F=16、R16F=2）与 `vgui_render_target_download(target, out, cap)`——transfer buffer + copy pass + 提交 + `vgpu_wait_idle()` 的 CPU 回读，原生格式行紧凑排布；cap 不足/NULL 缓冲/无效目标拒绝并写目标错误串。支撑改动：`vgpu_renderer_sdl3.h` 新增 `vgpu_context_device()`（`vgui_render_target.cpp` 无法访问不透明 `vgpu_ctx_t` 的 device）。实现与 `gpu_test_util.h` 的 download 基建同源；测试互验（RGBA16F/RGBA8 内容逐字节一致、不越界写、短缓冲拒绝）。PNG 编码留宿主侧（chart 已有 PNG 路径），P2 该行关闭。
 - **2026-11-14：P1 多目标渲染图以既有能力关闭**。核查结论：N 个 target 各自 `record()` 产出一项、宿主按依赖顺序排数组、合并一次 `vgpu_render_frame()` 提交——这正是 §4.1 已文档化的批量模式，`ovg_draw_data_t::fbo` 逐项携带目标，SDL3 同提交自动屏障保证 写→采样 顺序；与深度/格式/采样数选项可组合。判定"显式依赖排序/图结构"没有独立表达需求，**不引入新 API**（路线图原条目"一个 record() 输出多个 target"是同一能力的低效形态）。`vgui_render_target_test` 新增三级链路用例：target A（红背景）→ target B 的 UI 采样 A（半幅）→ target C 的 UI 采样 B（全幅），三项 pass 单次提交，末端回读同时命中穿透两级的 A 红（(8,6)）与穿过一级的 B 绿（(40,30)）。§7 P1 行全部清零，剩 P2 三行（异步 resize、设备丢失、回读辅助）。

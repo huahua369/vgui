@@ -286,6 +286,52 @@ int main()
 		}
 	}
 
+	// 异步 resize:交替尺寸连续 10 轮 resize → 立即 record → submit →
+	// download。旧 FBO 由 fence 退休队列守护,不等待 GPU idle,新内容不受
+	// 在飞工作影响。
+	{
+		bool stress_ok = true;
+		const int sizes[2][2] = { { 64, 48 }, { 32, 24 } };
+		for (int i = 0; i < 10 && stress_ok; ++i)
+		{
+			const int w = sizes[i % 2][0];
+			const int h = sizes[i % 2][1];
+			if (vgui_render_target_resize(raw, w, h) != 1)
+			{
+				stress_ok = false;
+				break;
+			}
+			ovg_draw_data_t stress_pass = {};
+			if (vgui_render_target_record(raw, draw_full_red, nullptr,
+				&stress_pass) != 1)
+			{
+				stress_ok = false;
+				break;
+			}
+			vgpu_render_frame(gpu.vgpu_ctx, &stress_pass, 1);
+			vgpu_wait_idle(gpu.vgpu_ctx);
+			std::vector<uint32_t> stress_pixels;
+			if (!download_texture(gpu.device,
+				vgui_render_target_native_texture(raw), w, h, stress_pixels))
+			{
+				stress_ok = false;
+				break;
+			}
+			if (stress_pixels[(size_t)(h / 2) * w + w / 2] != rgba(255, 0, 0))
+				stress_ok = false;
+		}
+		check(stress_ok, "async resize stress: 10 rounds correct output");
+		// 恢复到原始尺寸并重绘,后续断言以 64x48 红色内容为前提。
+		if (vgui_render_target_resize(raw, width, height) == 1)
+		{
+			ovg_draw_data_t restore_pass = {};
+			vgui_render_target_record(raw, draw_full_red, nullptr,
+				&restore_pass);
+			vgpu_render_frame(gpu.vgpu_ctx, &restore_pass, 1);
+			vgpu_wait_idle(gpu.vgpu_ctx);
+		}
+	}
+
 	vgui_render_target* content = vgui_render_target_create(host, gpu.vgpu_ctx, cb, &desc);
 	vgui_render_target* composite = vgui_render_target_create(host, gpu.vgpu_ctx, cb, &desc);
 	check(content != nullptr && composite != nullptr, "create context targets");

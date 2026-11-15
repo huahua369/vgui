@@ -149,6 +149,13 @@ SDL_GPUTextureFormat vgpu_color_format(vgpu_ctx_t* ctx);
 // device operations (e.g. texture readback transfer buffers) use it.
 SDL_GPUDevice* vgpu_context_device(vgpu_ctx_t* ctx);
 
+// Takes ownership of the most recent frame-submission fence (nullptr when
+// none is pending).  Since submissions on one queue complete in order, the
+// fence being signalled guarantees every earlier submission finished --
+// retire queues use it to defer resource destruction without idling.
+// The caller releases the fence with SDL_ReleaseGPUFence(device, fence).
+SDL_GPUFence* vgpu_take_frame_fence(vgpu_ctx_t* ctx);
+
 // MSAA sample count the context was actually created with: the requested value
 // may have been clamped down to what the device supports.  For the ovg/2D
 // backend this is the *only* anti-aliasing control -- the vector passes get

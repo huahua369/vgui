@@ -67,6 +67,46 @@ std::vector<vgui_render_target*>& live_targets()
 	return targets;
 }
 
+// Async resize retirement: FBOs whose GPU work may still be in flight wait
+// on the fence captured from the last frame submission.  Entries are drained
+// at the start of every record (one per frame), at resize and at download
+// (which idles, so it drains fully).  Mirrors ovg's tex_free_fence pattern.
+struct retired_fbo
+{
+	vg_fbo_t fbo;
+	SDL_GPUFence* fence = nullptr;
+	SDL_GPUDevice* device = nullptr;
+};
+
+std::vector<retired_fbo>& retired_fbos()
+{
+	static std::vector<retired_fbo> list;
+	return list;
+}
+
+void drain_retired_fbos(bool wait_all)
+{
+	auto& list = retired_fbos();
+	for (auto it = list.begin(); it != list.end();)
+	{
+		if (it->fence &&
+			!SDL_QueryGPUFence(it->device, it->fence))
+		{
+			if (!wait_all)
+			{
+				++it;
+				continue;
+			}
+			SDL_GPUFence* fences[1] = { it->fence };
+			SDL_WaitForGPUFences(it->device, true, fences, 1);
+		}
+		if (it->fence)
+			SDL_ReleaseGPUFence(it->device, it->fence);
+		vgpu_destroy_fbo(&it->fbo);
+		it = list.erase(it);
+	}
+}
+
 // vgui_texture_format -> SDL_GPUTextureFormat for the color attachment
 // override (desc.format).  Mirrors vgui_sdl3.cpp's vgui_sdl3_texture_format.
 SDL_GPUTextureFormat to_sdl_texture_format(vgui_texture_format format)
@@ -177,6 +217,10 @@ int record_internal(vgui_render_target* target,
 		target->error = "target has no valid size";
 		return 0;
 	}
+
+	// One drain per frame: release retired FBOs whose fence has signalled
+	// (async resize garbage collection).
+	drain_retired_fbos(false);
 
 	target->vg->width = target->width;
 	target->vg->height = target->height;
@@ -448,7 +492,7 @@ int vgui_render_target_resize(vgui_render_target* target, int width, int height)
 		return 0;
 	}
 
-	vgpu_wait_idle(target->gpu_ctx);
+	drain_retired_fbos(false);
 	if (!vgui_sdl3_texture_update_native(target->texture, target->gpu_ctx,
 		vgpu_fbo_color_texture(&next), width, height, target->format))
 	{
@@ -457,7 +501,23 @@ int vgui_render_target_resize(vgui_render_target* target, int width, int height)
 		return 0;
 	}
 
-	vgpu_destroy_fbo(&target->fbo);
+	// Retire the old FBO instead of idling: the fence taken from the last
+	// frame submission guards the in-flight work that referenced it (a
+	// submission on the same queue completes in order).  Without a pending
+	// fence there is either no prior submission at all (nothing can reference
+	// the old FBO) or an earlier retire consumed it -- fall back to an idle
+	// and destroy immediately in that case.
+	SDL_GPUFence* fence = vgpu_take_frame_fence(target->gpu_ctx);
+	if (fence)
+	{
+		retired_fbos().push_back({ target->fbo, fence,
+			vgpu_context_device(target->gpu_ctx) });
+	}
+	else
+	{
+		vgpu_wait_idle(target->gpu_ctx);
+		vgpu_destroy_fbo(&target->fbo);
+	}
 	target->fbo = next;
 	target->width = width;
 	target->height = height;
@@ -586,6 +646,8 @@ size_t vgui_render_target_download(vgui_render_target* target, void* out,
 	std::memcpy(out, mapped, want);
 	SDL_UnmapGPUTransferBuffer(device, transfer);
 	SDL_ReleaseGPUTransferBuffer(device, transfer);
+	// The idle wait above signalled every fence: full retirement drain.
+	drain_retired_fbos(true);
 	target->error.clear();
 	return want;
 }

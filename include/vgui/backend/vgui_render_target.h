@@ -108,8 +108,11 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 void vgui_render_target_destroy(vgui_render_target* target);
 
 // Recreates the FBO and updates the existing vgui_texture in place.  The
-// vgui_texture pointer and its image id stay stable.  Waits for GPU idle, so
-// call it at a frame boundary.  On failure the old target remains usable.
+// vgui_texture pointer and its image id stay stable.  Does NOT wait for GPU
+// idle: the old FBO is retired behind a fence taken from the last frame
+// submission and freed on a later call once its work finished (fence +
+// deferred release).  Call it at a frame boundary.  On failure the old
+// target remains usable.
 int vgui_render_target_resize(vgui_render_target* target, int width, int height);
 
 // Updates the load-op used by the next pass.  See vgui_render_target_desc::clear.

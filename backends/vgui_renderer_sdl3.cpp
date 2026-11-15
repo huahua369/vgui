@@ -298,9 +298,25 @@ struct vgpu_ctx_t {
 	SDL_GPUCommandBuffer* current_cmd = nullptr;
 	SDL_GPURenderPass* pass = nullptr;
 	bool swapchain_acquired = false;
+	// Fence of the most recent real submission (nullptr when already taken by
+	// a retire queue or none was made yet).  Submissions on the same queue
+	// complete in order, so this one fence guards all earlier work.
+	SDL_GPUFence* last_frame_fence = nullptr;
 };
 
 namespace {
+
+// Submits a command buffer and keeps its fence as the context's "latest
+// frame" fence: any resource retired from this point on can be guarded by
+// it, because submissions on one queue complete in order.  An unclaimed
+// previous fence is released here.
+void submit_with_fence(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd)
+{
+	if (ctx->last_frame_fence)
+		SDL_ReleaseGPUFence(ctx->device->gpu_device, ctx->last_frame_fence);
+	ctx->last_frame_fence =
+		SDL_SubmitGPUCommandBufferAndAcquireFence(cmd);
+}
 
 // ---------------------------------------------------------------------------
 // 纹理与采样器
@@ -1430,6 +1446,9 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 		if (pipeline && device)
 			SDL_ReleaseGPUGraphicsPipeline(device, pipeline);
 	}
+	if (ctx->last_frame_fence && device)
+		SDL_ReleaseGPUFence(device, ctx->last_frame_fence);
+	ctx->last_frame_fence = nullptr;
 	for (auto& [key, set] : ctx->alt_vg_pipelines) {
 		for (SDL_GPUGraphicsPipeline* pipeline : set.pipelines) {
 			if (pipeline && device)
@@ -1603,6 +1622,15 @@ SDL_GPUDevice* vgpu_context_device(vgpu_ctx_t* ctx)
 	return (ctx && ctx->device) ? ctx->device->gpu_device : nullptr;
 }
 
+SDL_GPUFence* vgpu_take_frame_fence(vgpu_ctx_t* ctx)
+{
+	if (!ctx)
+		return nullptr;
+	SDL_GPUFence* fence = ctx->last_frame_fence;
+	ctx->last_frame_fence = nullptr;
+	return fence;
+}
+
 SDL_GPUSampleCount vgpu_context_samples(vgpu_ctx_t* ctx)
 {
 	return ctx ? ctx->samples : SDL_GPU_SAMPLECOUNT_1;
@@ -1707,7 +1735,8 @@ void vgpu_blit_texture(vgpu_ctx_t* ctx, SDL_GPUTexture* dst, int dst_w,
 	if (!cmd)
 		return;
 	SDL_BlitGPUTexture(cmd, &blit);
-	SDL_SubmitGPUCommandBuffer(cmd);   // BlitGPUTexture 只编码：此处提交
+	// BlitGPUTexture 只编码：此处提交。fence 供后续 retire 队列使用。
+	submit_with_fence(ctx, cmd);
 }
 
 void vgpu_texture_fini_native(vgpu_ctx_t* ctx, ovg_texture_t* tex)
@@ -1781,7 +1810,7 @@ int vgpu_acquire_swapchain(vgpu_ctx_t* ctx, vg_fbo_t* fbo, int count, bool wait)
 	SDL_GPUDevice* device = ctx->device->gpu_device;
 	if (ctx->current_cmd) {
 		if (ctx->swapchain_acquired)
-			SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+			submit_with_fence(ctx, ctx->current_cmd);
 		else
 			SDL_CancelGPUCommandBuffer(ctx->current_cmd);
 		ctx->current_cmd = nullptr;
@@ -1825,7 +1854,7 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	if (count == 0 || !data) {
 		if (ctx->current_cmd) {
 			if (ctx->swapchain_acquired)
-				SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+				submit_with_fence(ctx, ctx->current_cmd);
 			else
 				SDL_CancelGPUCommandBuffer(ctx->current_cmd);
 			ctx->current_cmd = nullptr;
@@ -1863,7 +1892,7 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 
 	if (items.empty()) {
 		if (ctx->swapchain_acquired)
-			SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+			submit_with_fence(ctx, ctx->current_cmd);
 		else
 			SDL_CancelGPUCommandBuffer(ctx->current_cmd);
 		ctx->current_cmd = nullptr;
@@ -1926,7 +1955,7 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	if (current_fbo)
 		end_pass(ctx, current_fbo);
 
-	SDL_SubmitGPUCommandBuffer(ctx->current_cmd);
+	submit_with_fence(ctx, ctx->current_cmd);
 	ctx->current_cmd = nullptr;
 	ctx->pass = nullptr;
 	ctx->swapchain_acquired = false;
