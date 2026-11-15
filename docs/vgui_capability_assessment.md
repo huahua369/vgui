@@ -260,3 +260,10 @@ vgui 是一套 **C 接口、保留模式 + 即时录制** 的 GUI 库，分层�
 - **顺带修正**：`vgui_runtime_bench` 使用 SDL3 后端，已从 core-only 目标列表移入 `NOT VGUI_CORE_ONLY`，避免 core-only 链接缺后端符号（此前该配置下会链接失败）。
 - **core-only 编辑器关闭修正**：core-only C API 测试在 `vgui_editor_shell_destroy()` 后的 `frame(1)` 访问冲突（`0xC0000005`），根因是 `editor_shell` 先销毁 C++ 组件、控件树随后随 `vgui_context` 销毁，树上的虚拟行源仍指向已释放的 `console_view` / `asset_browser` / `outliner_view`。三个析构函数现在主动解绑承载 `this` 的行源、选择/激活、事件与自绘回调；core-only ctest 2/2、全量 ctest 5/5 均通过。
 - 详见 [`render_target_roadmap.md`](render_target_roadmap.md)。
+
+### 7.18 布局持久化 v9：浮动窗口屏幕坐标（2026-11-15）
+- **问题**：目标 B 第一步（`dock_floater_host`）把面板撕成真实无边框 OS 窗口后，面板已离开主 Dock，`editor_layout::dock_panels` 只能保存窗口内自绘浮层，重开编辑器时浮动窗口的位置/尺寸会丢。
+- **格式**：`editor_layout_set` JSON 升到 v9，每个窗口条目新增可选 `"floaters":[{"panel":"<dock panel id>","rect"?}]`；`rect` 是浮动 OS 窗口外框的屏幕坐标（点，含标题/标签 chrome）。空数组不写出。窗口级 `rect` 与内嵌 `editor_layout`（仍 v7）语义不变。
+- **兼容与校验**：文件版本 8/9 都接受（v8 无 `floaters`，解析为空），v1–v7 仍整份导入为 `id="main"`，未知版本拒绝；`floaters` 必须是数组、`panel` 非空且同一窗口内唯一、`rect` 必须是对象且宽高为正。无 `rect` 的条目保留（面板已知、窗口尺寸尚未采样）。
+- **组件接口**：`dock_floater_host::capture_floaters()` 返回 `dock_floater_rect{panel,id,x,y,width,height}` 快照；新增 `request_tear_off(panel,x,y,w,h)` 在下一 `tick()` 按保存矩形建窗。恢复顺序：先建 Dock/面板，再 `vgui_dock_find()` 映射 id → `request_tear_off()`。
+- **测试**：`vgui_editor_kit_test::test_layout_set_multiwindow()` 增加 v9 往返、浮动矩形/无矩形条目、v8 导入、重复/空 panel、空/畸形 rect、`floaters` 非数组、文件 IO；组件新接口随 `vgui_dock_floater_demo` 与 `vgui_game_editor` 构建覆盖。示例宿主尚未读写布局文件，接入点已就绪。

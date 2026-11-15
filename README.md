@@ -339,17 +339,42 @@ while (running) {
 
 验证示例：`sample/vgui_multiwindow_demo.cpp`（两个窗口各一个 Dock）。跑 `VGUI_MW_FRAMES=90 vgui_multiwindow_demo` 会渲染 90 帧后打印 21 条自检并退出；GPU 或窗口创建失败时返回 77。因为需要真实 GPU 窗口，它没有注册到 ctest。
 
-布局持久化方面，`editor_layout_set`（JSON 版本 8）把布局按窗口 id 分组：
+布局持久化方面，`editor_layout_set`（JSON 版本 9）把布局按窗口 id 分组，并记录被拖出为真实 OS 窗口的面板（`dock_floater_host`）的屏幕坐标：
 
 ```cpp
 vgui_editor_kit::editor_layout_set set;
 set.ensure("main") = shell_a.capture_layout();
 set.ensure("aux-window") = shell_b.capture_layout();
 set.windows[1].has_rect = true;  // 可选：记住 OS 窗口矩形
+
+// v9：保存浮动窗口（面板字符串 id + 外框屏幕矩形）。
+for (const dock_floater_rect& f : floater.capture_floaters()) {
+    vgui_editor_kit::editor_floater_layout saved;
+    saved.panel = f.id;
+    saved.has_rect = true;
+    saved.x = f.x;  saved.y = f.y;
+    saved.width = f.width;  saved.height = f.height;
+    set.ensure_window("main").floaters.push_back(saved);
+}
 editor_layout_set_save_file("user/layout.json", set);
 ```
 
-版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
+恢复时把保存的 id 映射回主 Dock 的面板，再按矩形请求撕出：
+
+```cpp
+vgui_editor_kit::editor_layout_set set;
+editor_layout_set_load_file("user/layout.json", set);
+const vgui_editor_kit::editor_layout* layout = set.find("main");
+if (layout) {
+    for (const auto& f : layout->floaters) {
+        vgui_item_id panel = vgui_dock_find(shell.dock(), f.panel.c_str());
+        if (panel && f.has_rect)
+            floater.request_tear_off(panel, f.x, f.y, f.width, f.height);
+    }
+}
+```
+
+版本 8 的文件照常读取（没有 `floaters` 数组）；版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
 
 **当前边界**：多窗口并存（每窗口一个 Dock）已支持；Dock 的浮动面板仍是主窗口内自绘的浮层，不是独立 OS 窗口，面板也不能跨窗口拖动。详见 `docs/dock_multiwindow_assessment.md`。
 

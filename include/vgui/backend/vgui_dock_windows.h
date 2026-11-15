@@ -50,6 +50,8 @@
 #include <cstddef>
 #include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include <SDL3/SDL.h>
 #include <vgui/backend/vgui_multiwindow.h>
@@ -78,6 +80,21 @@ struct dock_floater_info
 	 * panel is the main-dock item id the floater was created from. */
 	os_window* window = nullptr;
 	vgui_item_id panel = 0;
+};
+
+/* Snapshot of one live floater, for layout persistence (editor layout v9).
+ * id is copied out of the host (the panel's stable string id, "" when it had
+ * none).  x/y/width/height are the floating OS window's screen rectangle in
+ * points, including the title/tab chrome -- exactly the shape accepted by
+ * request_tear_off(panel, x, y, width, height). */
+struct dock_floater_rect
+{
+	vgui_item_id panel = 0;
+	std::string id;
+	int x = 0;
+	int y = 0;
+	int width = 0;
+	int height = 0;
 };
 
 /* Builds the page shown inside the floating window's dock.  Return nullptr
@@ -178,7 +195,11 @@ public:
 		{
 			const vgui_item_id panel = pending_tear_off_;
 			pending_tear_off_ = 0;
-			tear_off_to_floating(panel);
+			const bool has_rect = pending_rect_;
+			pending_rect_ = false;
+			tear_off_to_floating(panel, has_rect,
+				pending_rect_x_, pending_rect_y_,
+				pending_rect_w_, pending_rect_h_);
 		}
 		poll_dock_drag();
 		update_live_drag();
@@ -192,8 +213,50 @@ public:
 	}
 	vgui_item_id pending_tear_off() const { return pending_tear_off_; }
 	/* Queues a tear-off through the same path the callbacks use (probes and
-	 * tests): processed at the next tick(). */
-	void request_tear_off(vgui_item_id panel) { pending_tear_off_ = panel; }
+	 * tests): processed at the next tick().  A rect queued by the overload
+	 * below is discarded. */
+	void request_tear_off(vgui_item_id panel)
+	{
+		pending_tear_off_ = panel;
+		pending_rect_ = false;
+	}
+	/* Queues a tear-off at an explicit screen rectangle: x/y is the outer
+	 * window top-left and width/height its outer size, in points -- the
+	 * shape capture_floaters() returns.  Use it to restore layout v9
+	 * floater positions after mapping the saved panel id with
+	 * vgui_dock_find().  Processed at the next tick(); dropped if the panel
+	 * is not in the main dock. */
+	void request_tear_off(vgui_item_id panel, int x, int y, int width,
+		int height)
+	{
+		pending_tear_off_ = panel;
+		pending_rect_ = true;
+		pending_rect_x_ = x;
+		pending_rect_y_ = y;
+		pending_rect_w_ = width;
+		pending_rect_h_ = height;
+	}
+	/* Live floaters for layout persistence, in panel-id (std::map) order.
+	 * The rectangles are sampled from SDL on every call, so a host can save
+	 * them at any point in the frame; floaters whose window already died
+	 * outside our control are skipped. */
+	std::vector<dock_floater_rect> capture_floaters() const
+	{
+		std::vector<dock_floater_rect> out;
+		out.reserve(floaters_.size());
+		for (const auto& [panel, fw] : floaters_)
+		{
+			if (!fw.window || !window_alive(fw.window))
+				continue;
+			dock_floater_rect rect;
+			rect.panel = panel;
+			rect.id = fw.id;
+			SDL_GetWindowPosition(fw.window->window, &rect.x, &rect.y);
+			SDL_GetWindowSize(fw.window->window, &rect.width, &rect.height);
+			out.push_back(std::move(rect));
+		}
+		return out;
+	}
 	/* Test/demo accessors for the floater state. */
 	os_window* floater_window(vgui_item_id panel) const
 	{
@@ -399,7 +462,8 @@ private:
 
 	// -- tear-off ------------------------------------------------------------
 
-	void tear_off_to_floating(vgui_item_id panel)
+	void tear_off_to_floating(vgui_item_id panel, bool has_rect,
+		int rect_x, int rect_y, int rect_w, int rect_h)
 	{
 		if (!main_dock_ || !main_window_alive() || !host_ || !familys_)
 			return;
@@ -455,14 +519,42 @@ private:
 				height = opts_.fallback_page_h;
 			}
 
+			/* Chrome (title bar + dock tab bar) height depends on DPI /
+			 * ui_scale and cannot be computed statically: measure once after
+			 * the first layout, then correct the window so the PAGE size
+			 * equals the docked size.  The initial hint is close enough for
+			 * the first frame. */
+			const float ratio_hint = main_window_->pixel_ratio() > 0.0f
+				? main_window_->pixel_ratio() : 1.0f;
+			const float chrome_hint =
+				(opts_.title_bar_px + 30.0f) / ratio_hint;
+
+			/* Layout restore: the saved rectangle describes the whole OS
+			 * window (page + chrome), so the page gets the inner size.  The
+			 * caller-provided top-left replaces the sampled page position.
+			 * The post-layout chrome measurement below then converges the
+			 * window onto the saved outer rectangle. */
+			if (has_rect)
+			{
+				width = rect_w > opts_.min_page_w
+					? rect_w : opts_.min_page_w;
+				const int inner_h =
+					rect_h - (int)std::lround(chrome_hint);
+				height = inner_h > opts_.min_page_h
+					? inner_h : opts_.min_page_h;
+			}
+
 			/* The window shows up at the page's screen position; live drag
 			 * then adds the cursor delta so the panel looks "pulled out". */
-			float page_x = have_src ? src_x : tear_off_sx_;
-			float page_y = have_src ? src_y : tear_off_sy_;
+			float page_x = has_rect ? (float)rect_x
+				: (have_src ? src_x : tear_off_sx_);
+			float page_y = has_rect ? (float)rect_y + chrome_hint
+				: (have_src ? src_y : tear_off_sy_);
 			float mx = 0, my = 0;
 			const bool mouse_down =
 				(SDL_GetGlobalMouseState(&mx, &my) & SDL_BUTTON_LMASK) != 0;
-			if (mouse_down && have_src && drag_panel_seen_ == panel)
+			if (mouse_down && !has_rect && have_src &&
+				drag_panel_seen_ == panel)
 			{
 				page_x += mx - drag_start_mx_;
 				page_y += my - drag_start_my_;
@@ -472,10 +564,6 @@ private:
 
 			/* Initial position accounts for the chrome (page below title bar
 			 * + tab bar); measured and corrected once after first layout. */
-			const float ratio_hint = main_window_->pixel_ratio() > 0.0f
-				? main_window_->pixel_ratio() : 1.0f;
-			const float chrome_hint =
-				(opts_.title_bar_px + 30.0f) / ratio_hint;
 			int px = (int)std::lround(page_x);
 			int py = (int)std::lround(page_y - chrome_hint);
 
@@ -589,13 +677,13 @@ private:
 			fw.settle = opts_.settle_frames;
 			fw.page_w = width;
 			fw.page_h = height;
-			fw.from_live_drag = mouse_down;
+			fw.from_live_drag = mouse_down && !has_rect;
 			floaters_[panel] = fw;
 
 			/* Live tear-off: the button is still down -- record the grab
 			 * offset and cancel the core drag state, otherwise the mouse-up
 			 * tear-off callback would fire again for the detached panel. */
-			if (mouse_down)
+			if (mouse_down && !has_rect)
 			{
 				live_drag_ = true;
 				live_panel_ = panel;
@@ -851,6 +939,11 @@ private:
 
 	std::map<vgui_item_id, floater> floaters_;
 	vgui_item_id pending_tear_off_ = 0;
+	bool pending_rect_ = false;
+	int pending_rect_x_ = 0;
+	int pending_rect_y_ = 0;
+	int pending_rect_w_ = 0;
+	int pending_rect_h_ = 0;
 	float tear_off_sx_ = 0.0f, tear_off_sy_ = 0.0f;
 
 	bool live_drag_ = false;

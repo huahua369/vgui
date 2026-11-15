@@ -143,6 +143,7 @@ int main()
 		bool tear_off_checked = false;
 		bool merge_checked = false;
 		bool second_teared = false;
+		bool capture_checked = false;
 		vgui_item_id p1 = panel_ids[0];
 		vgui_item_id p2 = panel_ids[1];
 
@@ -241,6 +242,18 @@ int main()
 						"second tear-off floats p2");
 					check(vgui_dock_find(dock, "p2") == 0,
 						"p2 left the main dock");
+				}
+				else if (frame == 46 && !capture_checked)
+				{
+					/* Layout v9 capture: stable panel string id + the OS
+					 * window's screen rectangle. */
+					capture_checked = true;
+					const std::vector<dock_floater_rect> snap =
+						floater.capture_floaters();
+					check(snap.size() == 1 && snap[0].id == "p2" &&
+						snap[0].panel == p2 && snap[0].width > 0 &&
+						snap[0].height > 0,
+						"capture_floaters reports id and screen rect");
 				}
 			}
 

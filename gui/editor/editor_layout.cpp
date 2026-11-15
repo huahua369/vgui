@@ -411,29 +411,47 @@ namespace vgui_editor_kit {
 	}
 
 	// ------------------------------------------------------------------
-	// Version 8: per-window layout set (multi-window hosts).
+	// Version 8/9: per-window layout set (multi-window hosts).
 	// ------------------------------------------------------------------
 	editor_layout* editor_layout_set::find(const std::string& id)
 	{
-		for (editor_window_layout& window : windows)
-			if (window.id == id) return &window.layout;
-		return nullptr;
+		editor_window_layout* window = find_window(id);
+		return window ? &window->layout : nullptr;
 	}
 
 	const editor_layout* editor_layout_set::find(const std::string& id) const
 	{
-		for (const editor_window_layout& window : windows)
-			if (window.id == id) return &window.layout;
-		return nullptr;
+		const editor_window_layout* window = find_window(id);
+		return window ? &window->layout : nullptr;
 	}
 
 	editor_layout& editor_layout_set::ensure(const std::string& id)
 	{
-		if (editor_layout* found = find(id)) return *found;
+		return ensure_window(id).layout;
+	}
+
+	editor_window_layout* editor_layout_set::find_window(const std::string& id)
+	{
+		for (editor_window_layout& window : windows)
+			if (window.id == id) return &window;
+		return nullptr;
+	}
+
+	const editor_window_layout* editor_layout_set::find_window(
+		const std::string& id) const
+	{
+		for (const editor_window_layout& window : windows)
+			if (window.id == id) return &window;
+		return nullptr;
+	}
+
+	editor_window_layout& editor_layout_set::ensure_window(const std::string& id)
+	{
+		if (editor_window_layout* found = find_window(id)) return *found;
 		editor_window_layout window;
 		window.id = id.empty() ? "main" : id;
 		windows.push_back(std::move(window));
-		return windows.back().layout;
+		return windows.back();
 	}
 
 	std::string editor_layout_set_to_json(const editor_layout_set& set)
@@ -451,6 +469,26 @@ namespace vgui_editor_kit {
 					{ "x", window.x }, { "y", window.y },
 					{ "width", window.width }, { "height", window.height }
 				};
+			}
+			if (!window.floaters.empty())
+			{
+				json floaters = json::array();
+				for (const editor_floater_layout& floater : window.floaters)
+				{
+					json floater_json;
+					floater_json["panel"] = floater.panel;
+					if (floater.has_rect && floater.width > 0 &&
+						floater.height > 0)
+					{
+						floater_json["rect"] = {
+							{ "x", floater.x }, { "y", floater.y },
+							{ "width", floater.width },
+							{ "height", floater.height }
+						};
+					}
+					floaters.push_back(std::move(floater_json));
+				}
+				entry["floaters"] = std::move(floaters);
 			}
 			entry["layout"] = json::parse(editor_layout_to_json(window.layout));
 			entries.push_back(std::move(entry));
@@ -484,7 +522,9 @@ namespace vgui_editor_kit {
 				out.version = editor_layout_set::current_version;
 				return true;
 			}
-			if (file_version != editor_layout_set::current_version)
+			// Versions 8 and 9 use the windows array; 9 adds floaters.
+			if (file_version < editor_layout_set::multiwindow_min_version ||
+				file_version > editor_layout_set::current_version)
 				throw std::runtime_error("unsupported layout-set version");
 
 			auto windows_it = root.find("windows");
@@ -512,6 +552,49 @@ namespace vgui_editor_kit {
 					window.width = static_cast<int>(read_number(rect, "width", 0.0f));
 					window.height = static_cast<int>(read_number(rect, "height", 0.0f));
 					window.has_rect = window.width > 0 && window.height > 0;
+				}
+
+				auto floaters_it = entry.find("floaters");
+				if (floaters_it != entry.end())
+				{
+					if (!floaters_it->is_array())
+						throw std::runtime_error(
+							"layout-set floaters must be an array");
+					std::set<std::string> panels;
+					for (const auto& floater_json : *floaters_it)
+					{
+						if (!floater_json.is_object())
+							throw std::runtime_error(
+								"layout-set floaters entries must be objects");
+
+						editor_floater_layout floater;
+						floater.panel = read_string(floater_json, "panel", "");
+						if (floater.panel.empty())
+							throw std::runtime_error(
+								"layout-set floater panel id is missing");
+						if (!panels.insert(floater.panel).second)
+							throw std::runtime_error(
+								"duplicate layout-set floater panel id");
+
+						if (floater_json.contains("rect"))
+						{
+							const json& rect =
+								require_object(floater_json, "rect");
+							floater.x = static_cast<int>(
+								read_number(rect, "x", 0.0f));
+							floater.y = static_cast<int>(
+								read_number(rect, "y", 0.0f));
+							floater.width = static_cast<int>(
+								read_number(rect, "width", 0.0f));
+							floater.height = static_cast<int>(
+								read_number(rect, "height", 0.0f));
+							if (floater.width <= 0 || floater.height <= 0)
+								throw std::runtime_error(
+									"layout-set floater rect must be positive");
+							floater.has_rect = true;
+						}
+						window.floaters.push_back(std::move(floater));
+					}
 				}
 
 				const json& layout_json = require_object(entry, "layout");

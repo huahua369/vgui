@@ -898,13 +898,36 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		set.windows[1].width = 720;
 		set.windows[1].height = 480;
 
+		/* Version 9: real OS floaters are stored per window as panel id ->
+		 * floating window screen rectangle.  A floater without a rect (size
+		 * not known yet) must survive too. */
+		editor_floater_layout floater;
+		floater.panel = "gameview";
+		floater.has_rect = true;
+		floater.x = 1180;
+		floater.y = 90;
+		floater.width = 640;
+		floater.height = 420;
+		set.ensure_window("main").floaters.push_back(floater);
+		editor_floater_layout stat_floater;
+		stat_floater.panel = "stats";
+		set.ensure_window("aux-window").floaters.push_back(stat_floater);
+
 		if (set.windows.size() != 2 || &set.ensure("main") != &main)
 			return fail("layout set ensure/find");
 		if (set.find("missing") != nullptr)
 			return fail("layout set missing id");
+		if (set.find_window("missing") != nullptr ||
+			&set.ensure_window("main") != &set.windows[0] ||
+			&set.ensure_window("aux-window").layout != &aux)
+			return fail("layout set window accessors");
 
 		std::string err;
 		const std::string text = editor_layout_set_to_json(set);
+		if (text.find("\"floaters\"") == std::string::npos ||
+			text.find("\"gameview\"") == std::string::npos ||
+			text.find("\"version\": 9") == std::string::npos)
+			return fail("layout set writes floaters");
 		editor_layout_set parsed;
 		if (!editor_layout_set_from_json(text, parsed, &err))
 			return fail("layout set roundtrip parse");
@@ -926,6 +949,18 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			return fail("layout set keeps window rectangle");
 		if (parsed.windows[0].has_rect)
 			return fail("layout set does not invent rectangles");
+		if (parsed.windows[0].floaters.size() != 1 ||
+			parsed.windows[0].floaters[0].panel != "gameview" ||
+			!parsed.windows[0].floaters[0].has_rect ||
+			parsed.windows[0].floaters[0].x != 1180 ||
+			parsed.windows[0].floaters[0].y != 90 ||
+			parsed.windows[0].floaters[0].width != 640 ||
+			parsed.windows[0].floaters[0].height != 420)
+			return fail("layout set keeps floater rectangle");
+		if (parsed.windows[1].floaters.size() != 1 ||
+			parsed.windows[1].floaters[0].panel != "stats" ||
+			parsed.windows[1].floaters[0].has_rect)
+			return fail("layout set keeps floater without rect");
 
 		/* Legacy v1..v7 files are a single editor_layout object. */
 		editor_layout legacy;
@@ -936,18 +971,53 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			return fail("layout set imports legacy file");
 		if (imported.version != editor_layout_set::current_version ||
 			imported.windows.size() != 1 || imported.windows[0].id != "main" ||
+			!imported.windows[0].floaters.empty() ||
 			std::fabs(imported.windows[0].layout.dock_left_size - 260.0f) > 0.01f)
 			return fail("layout set legacy mapping");
 
+		/* Version 8 files still use the windows array but have no floaters. */
+		editor_layout_set previous;
+		if (!editor_layout_set_from_json(
+			"{\"version\":8,\"windows\":[{\"id\":\"main\","
+			"\"layout\":{\"version\":7}}]}", previous, &err))
+			return fail("layout set accepts version 8");
+		if (previous.version != 8 || previous.windows.size() != 1 ||
+			previous.windows[0].id != "main" ||
+			!previous.windows[0].floaters.empty())
+			return fail("layout set version 8 import");
+
 		editor_layout_set bad;
-		if (editor_layout_set_from_json("{\"version\":9,\"windows\":[]}", bad, &err))
+		if (editor_layout_set_from_json("{\"version\":10,\"windows\":[]}", bad, &err))
 			return fail("layout set rejects future version");
-		if (editor_layout_set_from_json("{\"version\":8}", bad, &err))
+		if (editor_layout_set_from_json("{\"version\":9}", bad, &err))
 			return fail("layout set rejects missing windows");
 		if (editor_layout_set_from_json(
-			"{\"version\":8,\"windows\":[{\"id\":\"main\",\"layout\":{\"version\":7}},"
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"layout\":{\"version\":7}},"
 			"{\"id\":\"main\",\"layout\":{\"version\":7}}]}", bad, &err))
 			return fail("layout set rejects duplicate ids");
+		if (editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":["
+			"{\"panel\":\"a\"},{\"panel\":\"a\"}],"
+			"\"layout\":{\"version\":7}}]}", bad, &err))
+			return fail("layout set rejects duplicate floater panels");
+		if (editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":["
+			"{\"panel\":\"\"}],\"layout\":{\"version\":7}}]}", bad, &err))
+			return fail("layout set rejects empty floater panel");
+		if (editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":["
+			"{\"panel\":\"a\",\"rect\":{\"x\":0,\"y\":0,\"width\":0,"
+			"\"height\":10}}],\"layout\":{\"version\":7}}]}", bad, &err))
+			return fail("layout set rejects empty floater rect");
+		if (editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":"
+			"[{\"panel\":\"a\",\"rect\":7}],\"layout\":{\"version\":7}}]}",
+			bad, &err))
+			return fail("layout set rejects malformed floater rect");
+		if (editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":7,"
+			"\"layout\":{\"version\":7}}]}", bad, &err))
+			return fail("layout set rejects malformed floaters");
 
 		std::error_code ec;
 		const std::filesystem::path path =
@@ -961,6 +1031,12 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		if (loaded.windows.size() != 2 ||
 			std::fabs(loaded.windows[1].layout.dock_left_size - 120.0f) > 0.01f)
 			return fail("layout set file roundtrip");
+		if (loaded.windows[0].floaters.size() != 1 ||
+			loaded.windows[0].floaters[0].panel != "gameview" ||
+			loaded.windows[0].floaters[0].x != 1180 ||
+			loaded.windows[1].floaters.size() != 1 ||
+			loaded.windows[1].floaters[0].panel != "stats")
+			return fail("layout set file roundtrip floaters");
 		std::filesystem::remove(path, ec);
 		return 0;
 	}
@@ -5756,7 +5832,9 @@ static int test_outliner_row_extensions()
 	vgui_context_set_style(ui, &style);
 
 	editor_context context(ui);
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
 	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
@@ -5827,6 +5905,7 @@ static int test_outliner_row_extensions()
 	if (vgui_tree_get_selected_count(scene.widget()) != 1)
 		return fail("row ext text area still selects");
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
@@ -15105,6 +15184,7 @@ int test_binding_undo()
 int main()
 {
 	using namespace vgui_editor_kit;
+	std::fprintf(stderr, "editor_kit_test start\n");
 	SetUnhandledExceptionFilter(crash_dump);
 	if (int rc = test_command_stack())
 		return rc;

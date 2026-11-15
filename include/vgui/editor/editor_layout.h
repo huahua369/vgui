@@ -125,16 +125,36 @@ namespace vgui_editor_kit {
 	 * its own slot; the window id is host-defined and must be stable across
 	 * restarts (for example "main", "outliner-window").
 	 *
-	 * The file format is {"version":8,"windows":[{"id",...,"layout":{...}}]}.
+	 * Version 9 adds the real OS floaters (dock_floater_host): a panel torn
+	 * out into its own top-level window leaves the main dock, so it cannot
+	 * travel in editor_layout::dock_panels.  Each slot carries a "floaters"
+	 * array instead: {"panel":<stable dock panel id>,"rect"?}.
+	 *
+	 * The file format is
+	 * {"version":9,"windows":[{"id","rect"?,"floaters"?,"layout":{...}}]}.
+	 * Files at version 8 parse unchanged (they simply have no "floaters").
 	 * Files at version 1..7 are a single editor_layout object and are
 	 * imported as one window with id "main", so existing user layouts keep
 	 * working.  The embedded layout still carries its own version (<= 7) so
 	 * editor_layout_from_json() can keep validating it.
 	 *
-	 * A slot may also remember its OS window rectangle.  It is informational:
-	 * libvgui owns no windowing code, so restoring the rectangle is the
-	 * host's job (SDL_SetWindowPosition / SDL_SetWindowSize).
+	 * A slot/window and a floater may also remember an OS rectangle.  It is
+	 * informational: libvgui owns no windowing code, so restoring them is the
+	 * host's job (SDL_SetWindowPosition / SDL_SetWindowSize, or
+	 * dock_floater_host::request_tear_off(panel, x, y, w, h) for floaters).
 	 */
+	struct editor_floater_layout
+	{
+		/* Stable string id the panel was added with (vgui_dock_panel_desc::id).
+		 * vgui_dock_find() maps it back to the panel after a restart. */
+		std::string panel;
+		bool has_rect = false;
+		int x = 0;
+		int y = 0;
+		int width = 0;
+		int height = 0;
+	};
+
 	struct editor_window_layout
 	{
 		std::string id = "main";
@@ -143,13 +163,16 @@ namespace vgui_editor_kit {
 		int y = 0;
 		int width = 0;
 		int height = 0;
+		std::vector<editor_floater_layout> floaters;
 		editor_layout layout;
 	};
 
 	struct editor_layout_set
 	{
-		static constexpr int current_version = 8;
+		static constexpr int current_version = 9;
 		static constexpr int legacy_max_version = 7;
+		/* Set formats that already use the "windows" array. */
+		static constexpr int multiwindow_min_version = 8;
 
 		int version = current_version;
 		// deque keeps element addresses stable across push_back, so a
@@ -161,6 +184,13 @@ namespace vgui_editor_kit {
 		const editor_layout* find(const std::string& id) const;
 		// Returns the existing slot or creates an empty one.
 		editor_layout& ensure(const std::string& id);
+
+		// Whole-window accessors (floaters and the window rectangle live on
+		// the slot, not in editor_layout).  ensure_window() keeps the same
+		// address-stability guarantee as ensure().
+		editor_window_layout* find_window(const std::string& id);
+		const editor_window_layout* find_window(const std::string& id) const;
+		editor_window_layout& ensure_window(const std::string& id);
 	};
 
 	std::string editor_layout_set_to_json(const editor_layout_set& set);
