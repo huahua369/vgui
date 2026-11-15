@@ -248,6 +248,44 @@ int main()
 	expect_pixel(pixels, width, height, 32, 24, rgba(255, 0, 0),
 		"raw vector red", &failures);
 
+	// 上下文重建(set_msaa_samples 场景):rebuild_all 把 raw 换绑到新 ctx,
+	// 纹理指针不变,重录 + 新 ctx 提交 + 回读仍红;再换绑回旧 ctx。
+	{
+		vgui_texture* raw_texture = vgui_render_target_texture(raw);
+		vgpu_ctx_t* ctx2 = vgpu_create_context(gpu.vgpu_device,
+			SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+			SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT,
+			SDL_GPU_SAMPLECOUNT_1);
+		check(ctx2 != nullptr, "create second gpu context");
+		if (ctx2)
+		{
+			check(vgui_render_target_rebuild_all(gpu.vgpu_ctx, ctx2) == 1,
+				"rebuild_all rebinds every target of the old context");
+			check(vgui_render_target_texture(raw) == raw_texture,
+				"texture pointer survives a context rebuild");
+
+			ovg_draw_data_t ctx2_pass = {};
+			check(vgui_render_target_record(raw, draw_full_red, nullptr,
+				&ctx2_pass) == 1, "record on the rebuilt target");
+			vgpu_render_frame(ctx2, &ctx2_pass, 1);
+			vgpu_wait_idle(ctx2);
+			std::vector<uint32_t> ctx2_pixels;
+			check(download_texture(gpu.device,
+				vgui_render_target_native_texture(raw), width, height,
+				ctx2_pixels), "download from the rebuilt target");
+			expect_pixel(ctx2_pixels, width, height, 32, 24, rgba(255, 0, 0),
+				"rebuilt target renders UI", &failures);
+			check(vgui_render_target_rebuild(raw, ctx2) == 1,
+				"same-context rebuild is a no-op");
+			check(vgui_render_target_rebuild(raw, gpu.vgpu_ctx) == 1,
+				"rebuild back to the original context");
+			vgpu_destroy_context(ctx2);
+			ovg_draw_data_t back_pass = {};
+			check(vgui_render_target_record(raw, draw_full_red, nullptr,
+				&back_pass) == 1, "target usable after ctx2 teardown");
+		}
+	}
+
 	vgui_render_target* content = vgui_render_target_create(host, gpu.vgpu_ctx, cb, &desc);
 	vgui_render_target* composite = vgui_render_target_create(host, gpu.vgpu_ctx, cb, &desc);
 	check(content != nullptr && composite != nullptr, "create context targets");

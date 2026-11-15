@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstring>
 #include <string>
+#include <vector>
 
 struct vgui_render_target
 {
@@ -55,6 +56,15 @@ thread_local std::string g_create_error;
 void set_create_error(const char* message)
 {
 	g_create_error = message ? message : "";
+}
+
+// Live target registry: lets vgui_render_target_rebuild_all() walk every
+// target bound to a dying vgpu context (app_mgr::set_msaa_samples recreates
+// the shared context on MSAA switches).  Single-threaded by contract.
+std::vector<vgui_render_target*>& live_targets()
+{
+	static std::vector<vgui_render_target*> targets;
+	return targets;
 }
 
 // vgui_texture_format -> SDL_GPUTextureFormat for the color attachment
@@ -346,6 +356,7 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 		return nullptr;
 	}
 
+	live_targets().push_back(target);
 	return target;
 }
 
@@ -353,6 +364,18 @@ void vgui_render_target_destroy(vgui_render_target* target)
 {
 	if (!target)
 		return;
+
+	{
+		auto& live = live_targets();
+		for (auto it = live.begin(); it != live.end(); ++it)
+		{
+			if (*it == target)
+			{
+				live.erase(it);
+				break;
+			}
+		}
+	}
 
 	// No submitted GPU work may still reference the FBO or the native entry.
 	if (target->gpu_ctx)
@@ -565,6 +588,65 @@ size_t vgui_render_target_download(vgui_render_target* target, void* out,
 	SDL_ReleaseGPUTransferBuffer(device, transfer);
 	target->error.clear();
 	return want;
+}
+
+int vgui_render_target_rebuild(vgui_render_target* target,
+	vgpu_ctx_t* new_ctx)
+{
+	if (!target || !new_ctx)
+		return 0;
+	if (target->gpu_ctx == new_ctx)
+		return 1;	// already bound: nothing to do
+
+	vgpu_ctx_t* old_ctx = target->gpu_ctx;
+	// Release the native bridge while the old context is still alive; the
+	// follow-up update_native then takes the fresh-registration branch
+	// (update_native refuses to rebind across contexts).
+	if (target->texture && target->texture->release_native)
+		target->texture->release_native(target->texture);
+	if (old_ctx)
+		vgpu_wait_idle(old_ctx);	// idle here too for standalone callers
+
+	// Build the replacement first.  On failure the target still moves to
+	// new_ctx (the old context may be dying) and is marked unusable.
+	vg_fbo_t next = vgpu_create_fbo(new_ctx, target->width, target->height,
+		nullptr, target->depth ? 1 : 0, target->sdl_format,
+		target->sample_override);
+	next.clear = target->fbo.clear;
+	next.cycle_target = target->fbo.cycle_target;
+	bool ok = vgpu_fbo_color_texture(&next) != nullptr &&
+		(!target->depth || vgpu_fbo_depth_texture(&next) != nullptr);
+	if (ok && target->texture)
+	{
+		ok = vgui_sdl3_texture_update_native(target->texture, new_ctx,
+			vgpu_fbo_color_texture(&next), target->width, target->height,
+			target->format) != 0;
+	}
+	vgpu_destroy_fbo(&target->fbo);
+	target->fbo = next;
+	target->gpu_ctx = new_ctx;	// never keep a pointer to a dying context
+	if (!ok)
+	{
+		target->error =
+			"failed to rebuild the offscreen fbo after context recreation";
+		return 0;
+	}
+	target->error.clear();
+	return 1;
+}
+
+int vgui_render_target_rebuild_all(vgpu_ctx_t* old_ctx, vgpu_ctx_t* new_ctx)
+{
+	if (!old_ctx || !new_ctx || old_ctx == new_ctx)
+		return 0;
+	int rebuilt = 0;
+	for (vgui_render_target* target : live_targets())
+	{
+		if (target->gpu_ctx == old_ctx &&
+			vgui_render_target_rebuild(target, new_ctx))
+			++rebuilt;
+	}
+	return rebuilt;
 }
 
 const char* vgui_render_target_last_error(const vgui_render_target* target)

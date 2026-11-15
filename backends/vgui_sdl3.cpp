@@ -786,10 +786,12 @@ int app_mgr::set_msaa_samples(int samples)
 	if (format == SDL_GPU_TEXTUREFORMAT_INVALID)
 		format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
 
+	vgpu_ctx_t* retired = nullptr;
 	if (vgctx)
 	{
 		// Keep the old context alive for one more call (see retired_ctxs_):
 		// host-side native textures queued their release against it.
+		retired = vgctx;
 		retired_ctxs_.push_back(vgctx);
 		vgctx = nullptr;
 	}
@@ -809,6 +811,13 @@ int app_mgr::set_msaa_samples(int samples)
 
 	for (const window_slot& slot : slots)
 		slot.win->fbo = vgpu_create_fbo(vgctx, slot.w, slot.h, slot.win->window);
+
+	// Offscreen vgui_render_targets bound to the retired context are rebuilt
+	// against the new one right here (the GPU is idle and the old context is
+	// still alive, exactly what the rebuild needs).  Host-owned native
+	// textures are NOT touched -- release/sync them yourself (see the header
+	// contract above and vgui_game_editor.cpp).
+	vgui_render_target_rebuild_all(retired, vgctx);
 
 	return msaa_samples;
 }

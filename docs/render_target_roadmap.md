@@ -34,7 +34,7 @@ P0 交付范围：
 - 多颜色附件仍不提供。深度/模板附件已由 P1 补齐（2026-11-14，`desc.depth` + `native_depth_texture()`，见 §4.4）——仅作为宿主 3D pass 的附件，vgui 的 UI pass 自身不使用深度。显式颜色格式已由 P1 补齐（2026-11-14，`desc.format`，见 §4.5）——HDR/sRGB 目标可直接烘入矢量/UI 内容，pipeline 按格式惰性创建。MSAA 采样数选择已由 P1 补齐（2026-11-14，`desc.sample_count`，见 §4.6）——按目标禁用/选择 1/2/4/8x。
 - 不提供 GPU 回读、PNG 编码或呈现 API；回读用 `SDL_DownloadFromGPUTexture`，呈现用引擎自己的 pass。
 - 不自动推进动画或布局：`record_context()` 不调用 `vgui_update()`。
-- 不做设备丢失恢复和异步 resize；P0 的 resize/destroy 会等待 GPU idle。
+- 异步 resize 仍不做（P0/resize/destroy/rebuild 都等待 GPU idle）。设备丢失/上下文重建已由 P2 覆盖（2026-11-15，`rebuild/rebuild_all`，见 §4.8）——仅针对 `vgpu_ctx_t` 重建（MSAA 切换）；SDL 设备级丢失仍由宿主整体重建。
 
 ## 2. 公共 API
 
@@ -71,6 +71,9 @@ SDL_GPUTexture* vgui_render_target_native_depth_texture(vgui_render_target* targ
 int vgui_render_target_bytes_per_pixel(vgui_render_target* target);
 size_t vgui_render_target_download(vgui_render_target* target, void* out,
     size_t cap);
+int vgui_render_target_rebuild(vgui_render_target* target,
+    vgpu_ctx_t* new_ctx);
+int vgui_render_target_rebuild_all(vgpu_ctx_t* old_ctx, vgpu_ctx_t* new_ctx);
 const char* vgui_render_target_last_error(const vgui_render_target* target);
 
 int vgui_render_target_record(vgui_render_target* target,
@@ -222,6 +225,7 @@ vgpu_render_frame(gpu_ctx, passes, 2);
 10. MSAA 采样数选择（P1）：1x 上下文上 `desc.sample_count = 4` 目标创建成功，resolve 后输出与 1x 孪生目标逐像素一致；显式 `1` 创建成功；`3` 报 `"invalid sample count"`；`4 + depth` 组合成功且深度句柄在场（按设备 D32 4x 能力分支断言，不支持时必须干净失败）。
 11. 多目标链路（P1）：三个 target 按依赖顺序各自 `record_context()`，三项 pass 合并一次 `vgpu_render_frame()` 提交；末端回读同时命中穿透两级的层 0 颜色（红）与穿过一级的层 1 背景（绿）。
 12. 回读 API（P2）：`bytes_per_pixel()` 对 RGBA8/RGBA16F 分别报 4/8；公共 `download()` 与测试基建（transfer buffer + copy pass）内容逐字节一致、不越界写、短缓冲与 NULL 缓冲被拒并写入错误串。
+13. 上下文重建（P2）：第二 `vgpu_ctx_t` 上 `rebuild_all` 精确重绑旧 ctx 的全部目标（计数==1）、`vgui_texture*` 指针不变、重录 + 新 ctx 提交 + 回读内容正确；同 ctx rebuild 为 no-op；换绑回旧 ctx 后目标继续可用。
 
 运行：
 
@@ -247,11 +251,12 @@ ctest --test-dir out\build\x64-debug -R vgui_render_target --output-on-failure
 | ~~P1~~ | ~~深度/模板附件~~ | **已完成（2026-11-14）**：`desc.depth` + `native_depth_texture()`，复用 `vg_fbo_t` 深度字段，见 §4.4 |
 | ~~P1~~ | ~~多目标渲染图~~ | **以既有能力关闭（2026-11-14）**：数组顺序即依赖顺序，N 个 target 各自 record 后合并一次 `vgpu_render_frame()` 提交，三级链路测试覆盖；不引入图 API，见 §4.7 |
 | P2 | 异步 resize/退休队列 | 去掉 `vgpu_wait_idle()`，用 fence + 延迟 FBO 释放 |
-| P2 | 设备丢失/重建 | 上下文重建后自动重建目标的 FBO 与纹理桥 |
+| ~~P2~~ | ~~设备丢失/重建~~ | **已完成（2026-11-15）**：`rebuild/rebuild_all`（后端注册表，`set_msaa_samples` 自动触发），见 §4.8 |
 | ~~P2~~ | ~~回读/编码辅助~~ | **已完成（2026-11-14）**：`vgui_render_target_download()`（原生格式 CPU 回读，含 GPU idle 等待）+ `bytes_per_pixel()`；PNG 编码留在宿主侧（chart 已有 PNG 路径） |
 
 ## 8. 变更记录
 
+- **2026-11-15：P2 设备丢失/重建（上下文重建自动恢复）落地**。真实破坏场景：`app_mgr::set_msaa_samples` 重建共享 `vgpu_ctx_t` 时，离屏目标的 `gpu_ctx`/FBO/纹理桥全部悬空。修复：`vgui_render_target.cpp` 维护存活目标注册表（create 注册、destroy 注销），新 API `vgui_render_target_rebuild(target, new_ctx)`（镜像 resize 体：旧 ctx 存活期 `release_native` → idle → 新 FBO → `update_native` 重建分支 → 销毁旧 FBO；**失败也换 ctx**——旧 ctx 即将销毁，损坏态以错误串表达）与 `vgui_render_target_rebuild_all(old_ctx, new_ctx)`（遍历注册表）。`set_msaa_samples` 在窗口 FBO 重建后调用 `rebuild_all(retired, vgctx)`（GPU 已 idle、旧 ctx 退休未销毁，时序正好）；`vgui_sdl3.h` 契约注释同步。重建后 FBO 内容为空（同 resize 语义），需重录。测试：双 ctx 上 rebuild_all 精确重绑（计数==1）、纹理指针稳定、新 ctx 提交/回读内容正确、同 ctx no-op、换绑回旧 ctx 后可用。§7 仅剩异步 resize 一行 P2。
 - **2026-11-14：P2 回读 API 落地**。新公共 API `vgui_render_target_bytes_per_pixel()`（RGBA8/BGRA8/sRGB/R32F=4、RGBA16F=8、RGBA32F=16、R16F=2）与 `vgui_render_target_download(target, out, cap)`——transfer buffer + copy pass + 提交 + `vgpu_wait_idle()` 的 CPU 回读，原生格式行紧凑排布；cap 不足/NULL 缓冲/无效目标拒绝并写目标错误串。支撑改动：`vgpu_renderer_sdl3.h` 新增 `vgpu_context_device()`（`vgui_render_target.cpp` 无法访问不透明 `vgpu_ctx_t` 的 device）。实现与 `gpu_test_util.h` 的 download 基建同源；测试互验（RGBA16F/RGBA8 内容逐字节一致、不越界写、短缓冲拒绝）。PNG 编码留宿主侧（chart 已有 PNG 路径），P2 该行关闭。
 - **2026-11-14：P1 多目标渲染图以既有能力关闭**。核查结论：N 个 target 各自 `record()` 产出一项、宿主按依赖顺序排数组、合并一次 `vgpu_render_frame()` 提交——这正是 §4.1 已文档化的批量模式，`ovg_draw_data_t::fbo` 逐项携带目标，SDL3 同提交自动屏障保证 写→采样 顺序；与深度/格式/采样数选项可组合。判定"显式依赖排序/图结构"没有独立表达需求，**不引入新 API**（路线图原条目"一个 record() 输出多个 target"是同一能力的低效形态）。`vgui_render_target_test` 新增三级链路用例：target A（红背景）→ target B 的 UI 采样 A（半幅）→ target C 的 UI 采样 B（全幅），三项 pass 单次提交，末端回读同时命中穿透两级的 A 红（(8,6)）与穿过一级的 B 绿（(40,30)）。§7 P1 行全部清零，剩 P2 三行（异步 resize、设备丢失、回读辅助）。
 - **2026-11-14：P1 MSAA 采样数选择落地**。`vg_fbo_t` 新增 `samples`（有效采样数）字段；`vgpu_create_fbo()` 加 `sample_count` 参数（0 跟随/1 禁用/2/4/8 显式，原始计数经新 `to_sdl_sample_count()` 映射为 SDL 序数枚举——直接 cast 会越界并被 SDL 静默降级 1x，本次实现曾踩此坑并加测试防回归），MSAA 颜色附件与深度附件均按有效值创建；`vgpu_reset_fbo()` 保留有效值、`vgpu_acquire_swapchain()` 为窗口 FBO 标注上下文采样数；新 API `vgpu_fbo_samples()`。`get_vg_pipeline()/get_geom_pipeline()` 的采样数维度改用 FBO 有效值，异采样数自动落入既有（格式，采样数）惰性缓存。`vgui_render_target_desc` 尾部追加 `sample_count`，create 解析 + `vgpu_supports_color_format()` 组合校验（非法值报 "invalid sample count"，不支持报 "sample count not supported for color target"），resize 携带重建。`vgui_render_target_test` 新增：4x 目标 resolve 输出与 1x 孪生逐像素一致、显式 1x、非法值拒绝、4x+深度组合（按设备 D32 4x 能力分支断言）。`begin_pass` 零改动。§7 仅剩多目标渲染图一行 P1。

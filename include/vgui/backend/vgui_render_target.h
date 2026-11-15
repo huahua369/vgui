@@ -146,6 +146,24 @@ int vgui_render_target_bytes_per_pixel(vgui_render_target* target);
 size_t vgui_render_target_download(vgui_render_target* target, void* out,
 	size_t cap);
 
+// Rebinds a target to a different vgpu context (e.g. after
+// app_mgr::set_msaa_samples recreated the shared context).  Releases the
+// native texture bridge against the OLD context, builds a fresh FBO in the
+// new one (same size/format/samples/depth) and re-registers the same
+// vgui_texture -- widgets keep their binding.  The FBO content is empty
+// afterwards: record the passes again.  On failure the target is switched to
+// new_ctx anyway (the old context may be dying) and marked unusable via its
+// error string; record/submit return 0 until the host rebuilds or destroys
+// it.  Call at a frame boundary.
+int vgui_render_target_rebuild(vgui_render_target* target,
+	vgpu_ctx_t* new_ctx);
+
+// Rebuilds every live target bound to old_ctx (see rebuild).  Called by the
+// SDL3 backend after app_mgr::set_msaa_samples recreated the shared context;
+// hosts that create/destroy vgpu contexts themselves call it instead.
+// Returns the number of targets successfully rebuilt.
+int vgui_render_target_rebuild_all(vgpu_ctx_t* old_ctx, vgpu_ctx_t* new_ctx);
+
 // Last failure for this target.  target may be NULL to query the most recent
 // create() failure.  Returns an empty string when there is no error; the
 // returned pointer is valid until the next call on the same target/thread.

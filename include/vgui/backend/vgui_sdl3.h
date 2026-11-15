@@ -200,7 +200,10 @@ public:
 	// Native textures registered with vgui_sdl3_texture_create_native() live in
 	// the old context's texture table: release them before calling and
 	// re-register them afterwards.  The old context is retired for one more call
-	// so those queued frees still find a live context.
+	// so those queued frees still find a live context.  Offscreen
+	// vgui_render_targets are rebuilt against the new context automatically
+	// (their FBO content is empty afterwards -- record the passes again);
+	// host-owned native textures are NOT touched.
 	int set_msaa_samples(int samples);
 	// Legacy shared key state.  Kept for source compatibility with hosts that
 	// referenced it directly; new viewports own their key_state instead.
