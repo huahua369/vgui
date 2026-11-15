@@ -74,6 +74,10 @@ struct dock_floater_info
 	const char* id = nullptr;		/* panel string id, "" when the panel had none */
 	const char* title = nullptr;
 	vgui_dock_zone origin_zone = VGUI_DOCK_CENTER;
+	/* Filled once the floating window exists (build_page and later hooks);
+	 * panel is the main-dock item id the floater was created from. */
+	os_window* window = nullptr;
+	vgui_item_id panel = 0;
 };
 
 /* Builds the page shown inside the floating window's dock.  Return nullptr
@@ -84,21 +88,49 @@ struct dock_floater_info
 typedef vgui_widget* (*dock_floater_page_fn)(vgui_context* floater_ui,
 	vgui_widget* floater_dock, const dock_floater_info& info, void* user);
 
-/* Fired after the panel has been merged back into the main dock.  page is
- * the restored widget (the orphan page, or the page the hook rebuilt). */
+/* Lifecycle hooks (all optional) around the panel move: */
+/* Called BEFORE the panel is detached (or removed) from the main dock --
+ * release per-panel native resources that were registered against the main
+ * context here. */
+typedef void (*dock_floater_teardown_fn)(const dock_floater_info& info,
+	void* user);
+/* Return true to REMOVE the panel (vgui_dock_remove destroys its page)
+ * instead of detaching it -- for panels whose page cannot survive the
+ * context switch (e.g. a page bound to a native texture that was just
+ * released).  The restored page then comes from restore_page. */
+typedef bool (*dock_floater_remove_fn)(const dock_floater_info& info,
+	void* user);
+/* Called on merge to obtain the page for the restored panel.  Return
+ * nullptr to fall back to the orphan page (or to an empty panel when the
+ * panel was in remove mode). */
+typedef vgui_widget* (*dock_floater_restore_fn)(vgui_widget* main_dock,
+	const dock_floater_info& info, vgui_widget* orphan_page, void* user);
+/* Called just before the floating window's context is destroyed -- release
+ * per-panel resources registered against THAT context here. */
+typedef void (*dock_floater_closing_fn)(const dock_floater_info& info,
+	void* user);
+/* Fired after the panel has been merged back into the main dock.  panel is
+ * the new main-dock item id (0 on failure) and page the restored widget. */
 typedef void (*dock_floater_merged_fn)(const dock_floater_info& info,
-	vgui_widget* page, void* user);
+	vgui_item_id panel, vgui_widget* page, void* user);
 
 class dock_floater_host
 {
 public:
 	/* Optional host hooks.  build_page: build the page shown inside the
 	 * floater (return nullptr for the built-in placeholder).  merged: fired
-	 * after the panel is back in the main dock. */
+	 * after the panel is back in the main dock.  teardown_page/remove_page/
+	 * restore_page/floater_closing cover the per-panel resource lifecycle
+	 * around the context switch -- see the typedef comments. */
 	struct hooks
 	{
 		dock_floater_page_fn build_page = nullptr;
 		void* build_user = nullptr;
+		dock_floater_teardown_fn teardown_page = nullptr;
+		dock_floater_remove_fn remove_page = nullptr;
+		dock_floater_restore_fn restore_page = nullptr;
+		dock_floater_closing_fn floater_closing = nullptr;
+		void* lifecycle_user = nullptr;
 		dock_floater_merged_fn merged = nullptr;
 		void* merged_user = nullptr;
 	};
@@ -159,6 +191,9 @@ public:
 		return floaters_.find(panel) != floaters_.end();
 	}
 	vgui_item_id pending_tear_off() const { return pending_tear_off_; }
+	/* Queues a tear-off through the same path the callbacks use (probes and
+	 * tests): processed at the next tick(). */
+	void request_tear_off(vgui_item_id panel) { pending_tear_off_ = panel; }
 	/* Test/demo accessors for the floater state. */
 	os_window* floater_window(vgui_item_id panel) const
 	{
@@ -177,10 +212,12 @@ private:
 		os_window* window = nullptr;
 		vgui_context* ui = nullptr;
 		vgui_widget* dock = nullptr;		/* the dock inside the floater */
+		vgui_item_id source_panel = 0;		/* main-dock panel id (map key) */
 		std::string id;				/* copied BEFORE detach (c_str dangles) */
 		std::string title;
 		vgui_dock_zone origin_zone = VGUI_DOCK_CENTER;
 		vgui_widget* orphan_page = nullptr;	/* real page kept in the main ctx */
+		bool removed_page = false;		/* remove mode: no orphan page exists */
 		int chrome_h = 0;			/* title bar + tab bar, window points */
 		int last_x = 0, last_y = 0;
 		int settle = 0;
@@ -396,7 +433,18 @@ private:
 			vgui_dock_zone zone = info.origin_zone;
 			if (zone == VGUI_DOCK_FLOATING)
 				zone = VGUI_DOCK_CENTER;
-			vgui_widget* orphan_page = vgui_dock_detach(main_dock_, panel);
+			/* Release per-panel resources first, then either remove the panel
+			 * (vgui_dock_remove destroys its page -- for pages that cannot
+			 * survive the context switch; the floater rebuilds via the
+			 * build_page hook) or detach it (the real page stays in the main
+			 * context and comes back on merge). */
+			if (hooks_.teardown_page)
+				hooks_.teardown_page(info, hooks_.lifecycle_user);
+			const bool remove = hooks_.remove_page &&
+				hooks_.remove_page(info, hooks_.lifecycle_user);
+			vgui_widget* orphan_page = remove
+				? (vgui_dock_remove(main_dock_, panel), nullptr)
+				: vgui_dock_detach(main_dock_, panel);
 
 			int width = (int)std::lround(src_w);
 			int height = (int)std::lround(src_h);
@@ -440,9 +488,10 @@ private:
 				ef_borderless | ef_resizable, nullptr);
 			if (!win)
 			{
-				roll_back(info, orphan_page, zone, title_str);
+				roll_back(info, orphan_page, remove, zone, title_str);
 				return;
 			}
+			info.window = win;
 
 			vgui_context* fui = vgui_create(familys_, font_size_);
 			{
@@ -487,7 +536,7 @@ private:
 				if (win->viewport)
 					win->viewport->ui = nullptr;
 				mgr_->destroy(win->id);
-				roll_back(info, orphan_page, zone, title_str);
+				roll_back(info, orphan_page, remove, zone, title_str);
 				return;
 			}
 			win->sync_ui_scale(true);
@@ -528,10 +577,12 @@ private:
 			fw.window = win;
 			fw.ui = fui;
 			fw.dock = dock;
+			fw.source_panel = panel;
 			fw.id = id_str;
 			fw.title = title_str;
 			fw.origin_zone = info.origin_zone;
 			fw.orphan_page = orphan_page;
+			fw.removed_page = remove;
 			fw.chrome_h = chrome_pt_h;
 			fw.last_x = px;
 			fw.last_y = py;
@@ -558,23 +609,49 @@ private:
 		}
 	}
 
+	/* Failure paths: put the panel back into the main dock.  The restore hook
+	 * runs here too -- in remove mode the original page is gone and the host
+	 * rebuilds it. */
 	void roll_back(const dock_floater_info& info, vgui_widget* orphan_page,
-		vgui_dock_zone zone, const std::string& title)
+		bool removed, vgui_dock_zone zone, const std::string& title)
 	{
+		(void)removed;
+		vgui_widget* page = orphan_page;
+		if (hooks_.restore_page)
+			page = hooks_.restore_page(main_dock_, info, orphan_page,
+				hooks_.lifecycle_user);
 		vgui_dock_panel_desc desc;
 		vgui_dock_panel_desc_default(&desc);
 		desc.id = !info.id || info.id[0] ? info.id : nullptr;
 		desc.title = title.c_str();
-		desc.panel = orphan_page;
+		desc.panel = page;
 		desc.zone = zone == VGUI_DOCK_FLOATING ? VGUI_DOCK_CENTER : zone;
 		vgui_dock_add(main_dock_, &desc);
 		vgui_dock_end_drag(main_dock_);
+	}
+
+	dock_floater_info info_of(const floater& fw) const
+	{
+		dock_floater_info info;
+		info.id = fw.id.c_str();
+		info.title = fw.title.c_str();
+		info.origin_zone = fw.origin_zone;
+		info.window = fw.window;
+		info.panel = fw.source_panel;
+		return info;
 	}
 
 	void close_floater_window(floater& fw)
 	{
 		if (fw.window)
 		{
+			/* The floater context dies below: give the host a chance to
+			 * release resources registered against it (native textures). */
+			if (hooks_.floater_closing)
+			{
+				dock_floater_info info = info_of(fw);
+				hooks_.floater_closing(info, hooks_.lifecycle_user);
+			}
 			if (host_)
 				host_->detach(fw.window);
 			/* Order matters (see the prototype): destroy the context first,
@@ -597,26 +674,29 @@ private:
 		if (it == floaters_.end())
 			return;
 		floater fw = it->second;	/* copy: erase invalidates the iterator */
+		const dock_floater_info info = info_of(fw);
 		close_floater_window(fw);
+
+		/* Page acquisition: the restore hook may rebuild (remove mode) or
+		 * fall back to the orphan page kept in the main context. */
+		vgui_widget* page = fw.orphan_page;
+		if (hooks_.restore_page)
+			page = hooks_.restore_page(main_dock_, info, fw.orphan_page,
+				hooks_.lifecycle_user);
 
 		vgui_dock_panel_desc desc;
 		vgui_dock_panel_desc_default(&desc);
 		desc.id = !fw.id.empty() ? fw.id.c_str() : nullptr;
 		desc.title = fw.title.c_str();
-		desc.panel = fw.orphan_page;	/* the real page kept in the main ctx */
+		desc.panel = page;	/* the real page kept in the main ctx / rebuilt */
 		desc.zone = fw.origin_zone == VGUI_DOCK_FLOATING
 			? VGUI_DOCK_CENTER : fw.origin_zone;
 		const vgui_item_id restored = vgui_dock_add(main_dock_, &desc);
 
 		if (hooks_.merged)
-		{
-			dock_floater_info info;
-			info.id = fw.id.c_str();
-			info.title = fw.title.c_str();
-			info.origin_zone = fw.origin_zone;
-			hooks_.merged(info, restored ? vgui_dock_get_panel(main_dock_,
-				restored) : nullptr, hooks_.merged_user);
-		}
+			hooks_.merged(info, restored,
+				restored ? vgui_dock_get_panel(main_dock_, restored) : nullptr,
+				hooks_.merged_user);
 		floaters_.erase(it);
 	}
 

@@ -362,6 +362,6 @@ frames=120 windows_at_exit=1 gameview_closed=1
 
 ### 12.4 后续批次
 
-1. `vgui_game_editor.cpp` 原型迁移到 `dock_floater_host`（GAME VIEW 的纹理 release/sync 走 `build_page` 钩子）。
+1. ~~`vgui_game_editor.cpp` 原型迁移到 `dock_floater_host`~~ **已完成（2026-11-15，批次二）**：宿主引擎（~450 行）删除，接入 4 个新生命周期钩子——GAME VIEW 面板走 **remove 模式**（页面不可跨 context 保留：`teardown_page` 先 release 纹理 → `remove_page` true → `vgui_dock_remove` → 浮动窗口由 `build_page` 重建真实页 → 合并/失败路径由 `restore_page` 在主 context 重建 + `floater_closing` 先于浮动 ctx 销毁释放纹理），其余面板走 detach + 内置占位页默认路径。迁移中发现并修复组件缺陷：remove 模式漏调 `vgui_dock_remove`（面板滞留主 Dock，合并时字符串 id 重复被拒）。集成自测：`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_ALLOW_MERGE=1` → 浮动窗口创建、**MSAA 重建后纹理重绑（floaters=1 期间跨上下文）**、关闭合并后 `panel=<新 id> texture=bound`。新增公共 `request_tear_off(panel)`（探针/测试入队）。
 2. `editor_layout_set` 持久化"面板 → 浮动窗口屏幕坐标"（JSON v9）。
 3. C（跨窗口拖放）：本阶段不做；若启动需按 §8.3 评估 core 模型改造 + `docking_mgr::viewports_enabled` 接线。
