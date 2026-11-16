@@ -148,6 +148,13 @@ namespace vgui_editor_kit {
 		/* Stable string id the panel was added with (vgui_dock_panel_desc::id).
 		 * vgui_dock_find() maps it back to the panel after a restart. */
 		std::string panel;
+		/* C2/C4 cross-window ownership.  `owner` is the window slot the panel
+		 * currently belongs to; `source` is where it originated (for history /
+		 * rollback).  Empty means "the enclosing window slot" (v8/v9 default).
+		 * A cross-window migrated floater can therefore live in B's slot while
+		 * `source` still points at A. */
+		std::string owner;
+		std::string source;
 		bool has_rect = false;
 		int x = 0;
 		int y = 0;
@@ -169,10 +176,13 @@ namespace vgui_editor_kit {
 
 	struct editor_layout_set
 	{
-		static constexpr int current_version = 9;
+		/* v10 adds owner/source to floater entries (cross-window ownership). */
+		static constexpr int current_version = 10;
 		static constexpr int legacy_max_version = 7;
 		/* Set formats that already use the "windows" array. */
 		static constexpr int multiwindow_min_version = 8;
+		/* First version whose floaters may carry owner/source. */
+		static constexpr int ownership_min_version = 10;
 
 		int version = current_version;
 		// deque keeps element addresses stable across push_back, so a

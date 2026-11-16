@@ -17,6 +17,11 @@ set(SRC_DOCK_FLOATER_DEMO
     vgui_dock_floater_demo.cpp
 )
 
+# 跨窗口 Dock 投放目标解析示例（目标 C 第一步：注册表 + 命中测试）
+set(SRC_CROSSWINDOW_DOCK_DEMO
+    vgui_crosswindow_dock_demo.cpp
+)
+
 # 编辑框行为自测（无需窗口/GPU，直接跑逻辑）
 set(SRC_EDIT_TEST
     vgui_edit_test.cpp
@@ -179,6 +184,12 @@ target_link_libraries(vgui_multiwindow_demo PRIVATE vgui_sample_common vgui::vgu
 # VGUI_FLOATER_SIM=1 跑有界自检（拖出 → 占位 → 合并 → 回复），失败返回 1。
 add_executable(vgui_dock_floater_demo ${SRC_DOCK_FLOATER_DEMO})
 target_link_libraries(vgui_dock_floater_demo PRIVATE vgui_sample_common
+    vgui::vgui SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
+
+# 跨窗口 Dock 命中测试：需要真实 GPU 窗口，不注册 ctest；用
+# VGUI_XDOCK_SIM=1 跑有界自检（窗口/区/标签命中 + prune/unregister），失败返回 1。
+add_executable(vgui_crosswindow_dock_demo ${SRC_CROSSWINDOW_DOCK_DEMO})
+target_link_libraries(vgui_crosswindow_dock_demo PRIVATE vgui_sample_common
     vgui::vgui SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
 endif()
 

@@ -376,7 +376,7 @@ if (window) {
 
 `request_tear_off()` 只入队，宿主每帧 `tick()` 处理一个请求；因此一次恢复多个浮动窗口不需要手工分帧，按保存顺序连续入队即可。版本 8 的文件照常读取（没有 `floaters` 数组）；版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
 
-**当前边界**：B 第一步已落地——`dock_floater_host` 可把面板拖出为真实无边框 OS 窗口、跟随拖动并合并回主 Dock；每窗口一个 Dock 的多窗口并存已支持。C（跨窗口 Dock 间拖放停靠）仍未实现，详见 `docs/dock_multiwindow_assessment.md`。
+**当前边界**：B 第一步已落地——`dock_floater_host` 可把面板拖出为真实无边框 OS 窗口、跟随拖动并合并回主 Dock；每窗口一个 Dock 的多窗口并存已支持。C（跨窗口 Dock 间拖放停靠）的 C1–C4 已落地：`crosswindow_dock_host` 做跨窗口 drop 命中（`resolve_drop`），`dock_floater_host` 的 `resolve_target`/`migrate_page`/`migrated` 钩子把面板迁移进任意已注册 Dock（含失败回滚），布局升 v10 记录归属；core（`gui/vgui.cpp`/`vgui.h`）零改动。验证示例 `vgui_crosswindow_dock_demo`（`VGUI_XDOCK_SIM=1` 有界自检，47 断言）。详见 `docs/dock_multiwindow_assessment.md` §13 与 `.zcode/plans/plan-dock-c-crosswindow-docking.md`。
 
 `sample/vgui_game_editor.cpp` 默认单主窗口：`GAME VIEW` / `STATS` 构建为 `gameview` Dock 面板挂在 RIGHT 区，拖出主窗口即成为真实浮动窗口；启动与退出通过 v9 布局文件保存/恢复 Dock 排列和浮动窗口屏幕矩形。默认路径是 `SDL_GetPrefPath("vgui", "game_editor")/layout.json`：
 

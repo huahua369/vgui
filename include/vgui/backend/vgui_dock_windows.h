@@ -55,6 +55,7 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#include <vgui/backend/vgui_crosswindow_dock.h>
 #include <vgui/backend/vgui_multiwindow.h>
 #include <vgui/backend/vgui_sdl3.h>
 
@@ -131,6 +132,25 @@ typedef void (*dock_floater_closing_fn)(const dock_floater_info& info,
  * the new main-dock item id (0 on failure) and page the restored widget. */
 typedef void (*dock_floater_merged_fn)(const dock_floater_info& info,
 	vgui_item_id panel, vgui_widget* page, void* user);
+/* --- C2: cross-window migration ---------------------------------------- */
+/* Resolves the current global screen point to a cross-window drop target.
+ * Return true only when the point lands on a DIFFERENT window's Dock than
+ * the panel's source (the caller still handles the source Dock via the normal
+ * merge path).  `out` carries the target window/dock/ui/zone/index. */
+typedef bool (*dock_floater_resolve_target_fn)(float screen_x, float screen_y,
+	crosswindow_drop_result& out, void* user);
+/* Builds the real page in the TARGET context for a cross-window migration.
+ * Widgets cannot move between contexts, so the source orphan page is always
+ * destroyed and this hook (or the built-in placeholder) provides the target
+ * page.  Return nullptr to use the built-in placeholder in the target dock. */
+typedef vgui_widget* (*dock_floater_migrate_page_fn)(vgui_context* target_ui,
+	vgui_widget* target_dock, const dock_floater_info& info,
+	const crosswindow_drop_result& drop, void* user);
+/* Fired after a cross-window migration.  panel/page are the new ids/widget in
+ * the target dock (0/nullptr on failure -> the panel rolled back to source). */
+typedef void (*dock_floater_migrated_fn)(const dock_floater_info& info,
+	const crosswindow_drop_result& drop, vgui_item_id panel,
+	vgui_widget* page, void* user);
 
 class dock_floater_host
 {
@@ -151,6 +171,14 @@ public:
 		void* lifecycle_user = nullptr;
 		dock_floater_merged_fn merged = nullptr;
 		void* merged_user = nullptr;
+		/* C2 cross-window migration (all optional).  When resolve_target is
+		 * set, a floater dropped over a DIFFERENT registered Dock migrates
+		 * there instead of merging back to main_dock_.  migrate_page builds
+		 * the page in the target context; migrated reports the outcome. */
+		dock_floater_resolve_target_fn resolve_target = nullptr;
+		dock_floater_migrate_page_fn migrate_page = nullptr;
+		dock_floater_migrated_fn migrated = nullptr;
+		void* crosswindow_user = nullptr;
 	};
 
 	dock_floater_host() = default;
@@ -202,6 +230,16 @@ public:
 		poll_dock_drag();
 		update_live_drag();
 		update_floaters();
+		/* Explicit migrations (probes / layout restore) run last so a panel
+		 * torn off this same tick can be migrated deterministically. */
+		while (!pending_migrations_.empty())
+		{
+			const migrate_request req = pending_migrations_.front();
+			pending_migrations_.pop_front();
+			auto it = floaters_.find(req.panel);
+			if (it != floaters_.end())
+				migrate_to(it, req.drop);
+		}
 	}
 
 	size_t floater_count() const { return floaters_.size(); }
@@ -218,6 +256,7 @@ public:
 	void close_all()
 	{
 		pending_tear_offs_.clear();
+		pending_migrations_.clear();
 		for (auto& [panel, fw] : floaters_)
 			close_floater_window(fw);
 		floaters_.clear();
@@ -226,6 +265,25 @@ public:
 	{
 		return pending_tear_offs_.empty() ? 0 : pending_tear_offs_.front().panel;
 	}
+	/* Queues a deterministic cross-window migration for a LIVE floater (C2
+	 * probes / layout restore).  `drop` must carry a valid target dock/ui from
+	 * crosswindow_dock_host::resolve_drop() (or be built from a registered
+	 * target).  Processed one per tick() after tear-offs.  No-op for a panel
+	 * that is not currently floating. */
+	void request_migrate(vgui_item_id panel, const crosswindow_drop_result& drop)
+	{
+		if (!drop.valid() || !drop.ui) return;
+		migrate_request req;
+		req.panel = panel;
+		req.drop = drop;
+		pending_migrations_.push_back(req);
+	}
+	size_t pending_migration_count() const { return pending_migrations_.size(); }
+	/* Latest cross-window drop probe from this tick (valid() when the cursor
+	 * is over a registered Dock).  Hosts may read it after tick() to draw a
+	 * target highlight in the floater window.  Reset when no target is under
+	 * the cursor. */
+	const crosswindow_drop_result& last_resolve() const { return last_resolve_; }
 	/* Queues a tear-off through the same path the callbacks use (probes and
 	 * tests): one request is processed per tick(). */
 	void request_tear_off(vgui_item_id panel)
@@ -294,6 +352,12 @@ private:
 		int y = 0;
 		int width = 0;
 		int height = 0;
+	};
+
+	struct migrate_request
+	{
+		vgui_item_id panel = 0;
+		crosswindow_drop_result drop;
 	};
 
 	struct floater
@@ -787,6 +851,102 @@ private:
 		}
 	}
 
+	/* C2: migrate a floater's panel into ANOTHER window's Dock.  Widgets
+	 * cannot cross contexts, so the source orphan page (if any) is destroyed
+	 * and a fresh page is built in the target context via the migrate_page
+	 * hook (or the built-in placeholder).  Failure rolls the panel back to
+	 * the source dock via the existing restore hook. */
+	void migrate_to(std::map<vgui_item_id, floater>::iterator it,
+		const crosswindow_drop_result& drop)
+	{
+		if (it == floaters_.end() || !drop.valid())
+			return;
+		floater fw = it->second;	/* copy: erase invalidates the iterator */
+		const dock_floater_info info = info_of(fw);
+		const std::string target_id = drop.window_id;
+
+		/* Release resources registered against the floating context before
+		 * destroying it (native textures etc.), same contract as merge. */
+		close_floater_window(fw);
+
+		/* The orphan page lives in the SOURCE context and cannot be re-parented
+		 * into the target -- destroy it.  In remove mode there is none. */
+		if (fw.orphan_page)
+			vgui_widget_destroy(fw.orphan_page);
+
+		vgui_widget* page = nullptr;
+		if (hooks_.migrate_page && drop.ui)
+			page = hooks_.migrate_page(drop.ui, drop.dock, info, drop,
+				hooks_.crosswindow_user);
+		if (!page)
+			page = build_placeholder_page(drop.ui, drop.dock,
+				fw.title.c_str());
+
+		vgui_dock_panel_desc desc;
+		vgui_dock_panel_desc_default(&desc);
+		desc.id = !fw.id.empty() ? fw.id.c_str() : nullptr;
+		desc.title = fw.title.c_str();
+		desc.panel = page;
+		desc.zone = drop.zone;
+		desc.index = drop.index;
+		const vgui_item_id panel = vgui_dock_add(drop.dock, &desc);
+
+		if (!panel)
+		{
+			/* Target refused the panel: rebuild in the SOURCE context and put
+			 * it back where it came from. */
+			if (page) vgui_widget_destroy(page);
+			roll_back(info, nullptr, true, fw.origin_zone, fw.title);
+		}
+		if (hooks_.migrated)
+			hooks_.migrated(info, drop, panel,
+				panel ? vgui_dock_get_panel(drop.dock, panel) : nullptr,
+				hooks_.crosswindow_user);
+		floaters_.erase(it);
+		(void)target_id;
+	}
+
+	/* Returns true when a cross-window target (a DIFFERENT registered Dock)
+	 * is under the given global screen point and a migration was performed.
+	 * The source Dock is intentionally excluded: it is handled by the normal
+	 * merge path so B behaviour is unchanged. */
+	bool try_migrate_at(std::map<vgui_item_id, floater>::iterator it,
+		float screen_x, float screen_y)
+	{
+		if (!hooks_.resolve_target)
+			return false;
+		crosswindow_drop_result drop;
+		if (!hooks_.resolve_target(screen_x, screen_y, drop,
+			hooks_.crosswindow_user))
+		{
+			last_resolve_.reset();
+			return false;
+		}
+		/* Keep the latest probe for hosts that want to draw a drop highlight
+		 * in the floater window (goal C §6, diagram A).  A source-dock hit is
+		 * recorded too so the host can show "will merge back". */
+		last_resolve_ = drop;
+		if (!drop.valid() || drop.dock == main_dock_ || !drop.ui)
+			return false;
+		migrate_to(it, drop);
+		return true;
+	}
+
+	/* Resolve a floater's content-rect centre in global screen points (the
+	 * most stable drop probe for both live drag and system title-bar drags). */
+	bool floater_screen_center(const floater& fw, float& sx, float& sy) const
+	{
+		if (!fw.window) return false;
+		float fx = 0, fy = 0, ww = 0, wh = 0;
+		vgui_dock_coords::window_rect(fw.window, fx, fy, ww, wh);
+		if (ww <= 0.0f || wh <= 0.0f) return false;
+		const float cy = fy + (float)fw.chrome_h +
+			(wh - (float)fw.chrome_h) * 0.5f;
+		sx = fx + ww * 0.5f;
+		sy = cy;
+		return true;
+	}
+
 	void merge_back(std::map<vgui_item_id, floater>::iterator it)
 	{
 		if (it == floaters_.end())
@@ -879,6 +1039,11 @@ private:
 			SDL_SetWindowPosition(it->second.window->window,
 				(int)std::lround(mx - live_offx_),
 				(int)std::lround(my - live_offy_));
+			if (try_migrate_at(it, mx, my))
+			{
+				live_drag_ = false;
+				return;
+			}
 			if (should_merge(it->second))
 			{
 				live_drag_ = false;
@@ -888,6 +1053,10 @@ private:
 		else
 		{
 			live_drag_ = false;
+			float sx = 0, sy = 0;
+			if (floater_screen_center(it->second, sx, sy) &&
+				try_migrate_at(it, sx, sy))
+				return;
 			if (should_merge(it->second))
 				merge_back(it);
 		}
@@ -926,10 +1095,17 @@ private:
 					(int)(opts_.hit_test_px / pr + 0.5f));
 				fw.hit_test_set = true;
 			}
-			if (released && should_merge(fw))
+			if (released)
 			{
-				merge_back(it++);
-				continue;
+				float sx = 0, sy = 0;
+				if (floater_screen_center(fw, sx, sy) &&
+					try_migrate_at(it, sx, sy))
+					continue;
+				if (should_merge(fw))
+				{
+					merge_back(it++);
+					continue;
+				}
 			}
 			/* System-modal title-bar drags swallow the frames on Windows; the
 			 * only visible signal afterwards is "the window position changed
@@ -942,10 +1118,17 @@ private:
 					std::abs(fy - fw.last_y);
 				fw.last_x = fx;
 				fw.last_y = fy;
-				if (fw.settle <= 0 && moved > 6 && should_merge(fw))
+				if (fw.settle <= 0 && moved > 6)
 				{
-					merge_back(it++);
-					continue;
+					float sx = 0, sy = 0;
+					if (floater_screen_center(fw, sx, sy) &&
+						try_migrate_at(it, sx, sy))
+						continue;
+					if (should_merge(fw))
+					{
+						merge_back(it++);
+						continue;
+					}
 				}
 			}
 			else
@@ -971,6 +1154,8 @@ private:
 
 	std::map<vgui_item_id, floater> floaters_;
 	std::deque<tear_off_request> pending_tear_offs_;
+	std::deque<migrate_request> pending_migrations_;
+	crosswindow_drop_result last_resolve_;
 	float tear_off_sx_ = 0.0f, tear_off_sy_ = 0.0f;
 
 	bool live_drag_ = false;

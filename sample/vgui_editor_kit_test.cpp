@@ -898,11 +898,13 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		set.windows[1].width = 720;
 		set.windows[1].height = 480;
 
-		/* Version 9: real OS floaters are stored per window as panel id ->
-		 * floating window screen rectangle.  A floater without a rect (size
-		 * not known yet) must survive too. */
+		/* Version 10: real OS floaters are stored per window as panel id ->
+		 * floating window screen rectangle, plus cross-window owner/source.
+		 * A floater without a rect (size not known yet) must survive too. */
 		editor_floater_layout floater;
 		floater.panel = "gameview";
+		floater.owner = "main";
+		floater.source = "aux-window";	/* migrated from aux to main */
 		floater.has_rect = true;
 		floater.x = 1180;
 		floater.y = 90;
@@ -926,8 +928,10 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 		const std::string text = editor_layout_set_to_json(set);
 		if (text.find("\"floaters\"") == std::string::npos ||
 			text.find("\"gameview\"") == std::string::npos ||
-			text.find("\"version\": 9") == std::string::npos)
-			return fail("layout set writes floaters");
+			text.find("\"version\": 10") == std::string::npos ||
+			text.find("\"owner\": \"main\"") == std::string::npos ||
+			text.find("\"source\": \"aux-window\"") == std::string::npos)
+			return fail("layout set writes floaters with ownership");
 		editor_layout_set parsed;
 		if (!editor_layout_set_from_json(text, parsed, &err))
 			return fail("layout set roundtrip parse");
@@ -957,6 +961,9 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			parsed.windows[0].floaters[0].width != 640 ||
 			parsed.windows[0].floaters[0].height != 420)
 			return fail("layout set keeps floater rectangle");
+		if (parsed.windows[0].floaters[0].owner != "main" ||
+			parsed.windows[0].floaters[0].source != "aux-window")
+			return fail("layout set keeps floater ownership");
 		if (parsed.windows[1].floaters.size() != 1 ||
 			parsed.windows[1].floaters[0].panel != "stats" ||
 			parsed.windows[1].floaters[0].has_rect)
@@ -986,8 +993,23 @@ LONG WINAPI crash_dump(EXCEPTION_POINTERS* info)
 			!previous.windows[0].floaters.empty())
 			return fail("layout set version 8 import");
 
+		/* Version 9 file with a floater but no owner/source: both stay empty
+		 * (meaning "the enclosing window slot"). */
+		editor_layout_set old_floater;
+		if (!editor_layout_set_from_json(
+			"{\"version\":9,\"windows\":[{\"id\":\"main\",\"floaters\":["
+			"{\"panel\":\"gameview\",\"rect\":{\"x\":10,\"y\":20,"
+			"\"width\":300,\"height\":200}}],\"layout\":{\"version\":7}}]}",
+			old_floater, &err))
+			return fail("layout set accepts version 9 floater");
+		if (old_floater.windows[0].floaters.size() != 1 ||
+			!old_floater.windows[0].floaters[0].owner.empty() ||
+			!old_floater.windows[0].floaters[0].source.empty() ||
+			old_floater.windows[0].floaters[0].x != 10)
+			return fail("layout set v9 floater has no ownership");
+
 		editor_layout_set bad;
-		if (editor_layout_set_from_json("{\"version\":10,\"windows\":[]}", bad, &err))
+		if (editor_layout_set_from_json("{\"version\":11,\"windows\":[]}", bad, &err))
 			return fail("layout set rejects future version");
 		if (editor_layout_set_from_json("{\"version\":9}", bad, &err))
 			return fail("layout set rejects missing windows");

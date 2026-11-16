@@ -410,3 +410,38 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 - **示例宿主接线**：`editor_layout_path()` 默认 `SDL_GetPrefPath("vgui","game_editor")/layout.json`，`VGUI_EDITOR_LAYOUT` 覆盖（空/`0` 关闭），有界 `VGUI_EDITOR_FRAMES` 忽略默认文件以保持确定性、但尊重显式路径。`load_editor_layout()` 在 floater host attach 之后执行：`shell->apply_layout()` 恢复 Dock，再对 `window->floaters` 逐个 `vgui_dock_find()` → `request_tear_off()`。`save_editor_layout()` 在销毁 shell / 浮动窗口之前执行：`shell->capture_layout()` + `capture_floaters()` 写入 v9 `windows[0]`。
 - **验证**：`vgui_dock_floater_demo` 自测 22/22（含 FIFO 与多 floater capture）。`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_EDITOR_LAYOUT=<tmp>\layout.json vgui_game_editor` 退出码 0，JSON 为 v9 且 `floaters:[{panel:"gameview",rect:{x:1296,y:158,width:300,height:724}}]`；用同一文件跑 `VGUI_EDITOR_FRAMES=30`（不注入 tear-off）打印 `layout loaded (floaters=1)`，第 3 帧绘制命令 `floaters=1`，退出后矩形与保存值一致。
 - **边界**：主窗口自身的 OS 矩形未保存/恢复（示例只用 v9 的 floater 数组）；`editor_layout` 内嵌版本仍为 7。
+
+---
+
+## 13. 实施记录：目标 C 跨窗口 Dock 间拖放停靠（2026-11-16）
+
+> 完整规划见 `.zcode/plans/plan-dock-c-crosswindow-docking.md`。**路径决策：走宿主组件路线，不走 §8.2/§8.3 的 core 深改。** C = B 的 tear-off（源→浮动 OS 窗口作运输载体）+ 泛化 merge（浮动→**任意**已注册 Dock），§4 的 5 条 core 硬阻塞继续被绕开。`gui/vgui.cpp` / `include/vgui/vgui.h` **零改动**。
+
+### 13.1 分层改动
+
+| 批次 | 文件 | 改动 |
+|---|---|---|
+| C1 命中 | `include/vgui/backend/vgui_dock_coords.h`（新增） | 屏幕点↔窗口渲染像素换算的唯一来源（`pixel_ratio` / `screen_to_render` / `render_to_screen` / `window_rect`）。B 组件的内联换算暂留，待 C2 触及合并路径时已一并改用本口径。 |
+| C1 命中 | `include/vgui/backend/vgui_crosswindow_dock.h`（新增） | `crosswindow_dock_host`：window→dock/ui 注册表（`register_target`/`unregister`/`prune`）+ `resolve_drop(sx,sy)` 屏幕命中（用现有 `vgui_dock_get_zone_rect`/`get_tab_rect`，四区逆序测试、tab 命中给 index）+ `screen_point_for()` 反查（自测用）。drop_result 带 window/dock/**ui**/window_id/zone/index。 |
+| C2 迁移 | `include/vgui/backend/vgui_dock_windows.h` | `dock_floater_host` 增 3 钩子 `resolve_target`/`migrate_page`/`migrated`（+`crosswindow_user`）；三处合并判定（live-drag down/up、release、系统标题栏位置变化）改为**先问跨窗口、否则原样 merge_back**。`migrate_to()`：关浮动窗（`floater_closing` 释放浮 ctx 资源）→ 销毁源孤儿页 → 目标 ctx 重建页（`migrate_page` 或内置占位）→ `vgui_dock_add(drop.dock,{zone,index})`；失败 `roll_back` 回源。新增 `request_migrate(panel,drop)` 显式队列（`tick()` 末尾处理，探针/恢复用）。全程用**字符串 id**（数值 id per-dock 局部会碰撞）。 |
+| C3 复杂页 | 同上 | `last_resolve()` 诊断：命中结果供宿主在浮动窗绘高亮（§6 方案 A）。复杂页（如 GAME VIEW）的纹理 release/rebuild 由既有 `teardown_page`/`floater_closing`/`migrate_page`/`restore_page` 四钩子覆盖——demo 用生命周期探针验证其在正确 context 触发。 |
+| C4 布局 | `include/vgui/editor/editor_layout.h` / `gui/editor/editor_layout.cpp` | JSON **v10**：`editor_floater_layout` 增 `owner`/`source`（跨窗口归属/来源），缺省为空（=所在窗口槽）以兼容 v8/v9；≥11 拒绝；其他校验不变。内嵌 `editor_layout` 仍 v7。 |
+
+### 13.2 交互模型与取舍
+
+两段式拖放：① 源 Dock 标签拖出窗口 → `on_tear_off` 入队建浮动 OS 窗口（B 现状）；② 系统级移动浮动窗到目标窗口 → 命中测试+**拖入即迁移**（与 B "拖回即合并"一致，松手不是必需）。这是组件路线相对"一次连续拖放"的体验代价。`vgui_crosswindow_dock_demo` 手写实测后接受；若要一次连续拖放，可按 §8.3 升级段 1（进程级 drag 会话 + `viewports_enabled`），本阶段不动。
+
+未启用 `docking_mgr::viewports_enabled`（全局坐标注入改所有输入语义，组件路线不需要）。每 dock 仅一个 tear_off/drag_out 回调槽且 B 已占用——`crosswindow_dock_host` 不注册 core 回调，由 floater 单入口调用。
+
+### 13.3 明确未做
+
+- **game_editor 未接跨窗口 target**：其副窗口是 GAME VIEW 专用窗口（已含同 id 面板），作为通用停靠目标语义混乱；跨窗口迁移的通用验证在 `vgui_crosswindow_dock_demo` 完成。
+- **目标区罗盘画在目标 Dock 内**：需改 core 增 `vgui_dock_set_drop_preview`（§6 方案 B）。当前用 `last_resolve()` 暴露命中结果，宿主可自行在浮动窗绘提示；因"拖入即迁移"无常驻高亮窗口期，暂不实现。
+- core 数据模型改造（全局稳定 id / widget 序列化 / 跨 context 指针搬运）仍未做，§8.2 草图保留作后续参考。
+
+### 13.4 验证
+
+- `vgui_crosswindow_dock_demo`（`VGUI_XDOCK_SIM=1`，真实 GPU 窗口，失败返回 77、不进 ctest）：**47/47**——C1 四区/标签命中、窗口外 invalid、unregister/prune；C2 迁移闭环（离开浮动、进 B 指定 zone/index、稳定 id 保留）+ 失败回滚（跨 ctx 页被引擎拒绝→回源）+ 非法 drop 不入队；C3 资源生命周期在正确 context（migrate=B / restore=A / teardown+closing 均触发）。
+- `vgui_editor_kit_test`：v10 往返 + owner/source + v9 兼容（无归属）+ ≥11 拒绝 + 畸形输入，全 PASS。
+- 回归：全量构建 0 新警告；`vgui_model_test` 920/0；`vgui_dock_floater_demo`（B）22/22；`vgui_multiwindow_demo`（A）21/21；`vgui_game_editor` 冒烟（MSAA 重建/纹理重绑/合并）正常；ctest 5/5，**截图基线零变化**。
+- `vgui_game_editor` v10 布局往返：保存生成 `"version":10`（内嵌 7），重开 `layout loaded (floaters=1)` 并恢复浮动窗矩形。

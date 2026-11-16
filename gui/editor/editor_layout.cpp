@@ -477,6 +477,10 @@ namespace vgui_editor_kit {
 				{
 					json floater_json;
 					floater_json["panel"] = floater.panel;
+					if (!floater.owner.empty())
+						floater_json["owner"] = floater.owner;
+					if (!floater.source.empty())
+						floater_json["source"] = floater.source;
 					if (floater.has_rect && floater.width > 0 &&
 						floater.height > 0)
 					{
@@ -522,7 +526,8 @@ namespace vgui_editor_kit {
 				out.version = editor_layout_set::current_version;
 				return true;
 			}
-			// Versions 8 and 9 use the windows array; 9 adds floaters.
+			// Versions 8+ use the windows array; 9 adds floaters; 10 adds
+			// cross-window owner/source on floaters.
 			if (file_version < editor_layout_set::multiwindow_min_version ||
 				file_version > editor_layout_set::current_version)
 				throw std::runtime_error("unsupported layout-set version");
@@ -567,16 +572,20 @@ namespace vgui_editor_kit {
 							throw std::runtime_error(
 								"layout-set floaters entries must be objects");
 
-						editor_floater_layout floater;
-						floater.panel = read_string(floater_json, "panel", "");
-						if (floater.panel.empty())
-							throw std::runtime_error(
-								"layout-set floater panel id is missing");
-						if (!panels.insert(floater.panel).second)
-							throw std::runtime_error(
-								"duplicate layout-set floater panel id");
+					editor_floater_layout floater;
+					floater.panel = read_string(floater_json, "panel", "");
+					if (floater.panel.empty())
+						throw std::runtime_error(
+							"layout-set floater panel id is missing");
+					if (!panels.insert(floater.panel).second)
+						throw std::runtime_error(
+							"duplicate layout-set floater panel id");
+					/* v10 owner/source; older files leave them empty (meaning
+					 * "the enclosing window slot"). */
+					floater.owner = read_string(floater_json, "owner", "");
+					floater.source = read_string(floater_json, "source", "");
 
-						if (floater_json.contains("rect"))
+					if (floater_json.contains("rect"))
 						{
 							const json& rect =
 								require_object(floater_json, "rect");
