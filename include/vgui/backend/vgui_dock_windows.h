@@ -442,6 +442,14 @@ private:
 		int page_w = 0, page_h = 0;		/* wanted page size, window points */
 		bool hit_test_set = false;
 		bool from_live_drag = false;
+		/* Live tear-off guard: a floater created under the cursor starts on
+		 * top of the source window (its docked rect is still inside it), so
+		 * should_merge() is true on frame one.  Require the window to have
+		 * actually LEFT the main window at least once before a live drag may
+		 * merge it back -- otherwise it collapses instantly and the user can
+		 * never pull a panel out.  Latched true the first frame the content
+		 * rect is outside; cleared on merge/close. */
+		bool left_main_once = false;
 	};
 
 	// -- callbacks (core contract: queue only, act after the frame) --------
@@ -1248,7 +1256,14 @@ private:
 				live_drag_ = false;
 				return;
 			}
-			if (should_merge(it->second))
+			/* The floater is spawned over the source window, so it starts
+			 * inside it.  Latch "left" only once the dragged window has
+			 * genuinely exited; until then ignore should_merge(), otherwise
+			 * a real mouse drag collapses the floater on its first frame. */
+			floater& fw = it->second;
+			if (!should_merge(fw))
+				fw.left_main_once = true;
+			if (fw.left_main_once && should_merge(fw))
 			{
 				live_drag_ = false;
 				merge_back(it);
