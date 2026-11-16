@@ -200,9 +200,50 @@ namespace vgui_editor_kit {
 			bool active_ = false;
 		};
 
+		/* Shorten `text` with a trailing ellipsis so it fits `max_width`,
+		 * measured with the same font/metric the text is drawn with.  Truncate
+		 * on UTF-8 code-point boundaries so multibyte labels are never split
+		 * in the middle of a character. */
+		std::string elide_text_to_width(vgui_widget* widget,
+			const std::string& text, float max_width)
+		{
+			if (text.empty() || max_width <= 0.0f)
+				return std::string();
+			if (vgui_widget_measure_text(widget, text.c_str()) <= max_width)
+				return text;
+
+			static const char* kEllipsis = "\xE2\x80\xA6"; /* U+2026 */
+			const float ellipsis_w = vgui_widget_measure_text(widget, kEllipsis);
+			if (ellipsis_w >= max_width)
+				return kEllipsis;
+
+			const float budget = max_width - ellipsis_w;
+			std::string out;
+			float used = 0.0f;
+			for (std::size_t i = 0; i < text.size();)
+			{
+				const unsigned char lead = static_cast<unsigned char>(text[i]);
+				std::size_t clen = 1;
+				if (lead >= 0xF0) clen = 4;
+				else if (lead >= 0xE0) clen = 3;
+				else if (lead >= 0xC0) clen = 2;
+				if (i + clen > text.size()) clen = 1;
+				const std::string one = text.substr(i, clen);
+				const float w = vgui_widget_measure_text(widget, one.c_str());
+				if (used + w > budget)
+					break;
+				used += w;
+				out += one;
+				i += clen;
+			}
+			out += kEllipsis;
+			return out;
+		}
+
 		void draw_cell_text(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 			const std::string& text, float x, float y, float width,
-			float height, vgui_color color, table_alignment alignment)
+			float height, vgui_color color, table_alignment alignment,
+			bool elide = false)
 		{
 			if (text.empty() || width <= 0.0f || height <= 0.0f)
 				return;
@@ -212,9 +253,11 @@ namespace vgui_editor_kit {
 			else if (alignment == table_alignment::right)
 				align = 1.0f;
 			const float padding = kCellPaddingX * ui_scale_of(widget);
-			vgui_custom_draw_text(widget, cb, vg, text.c_str(),
-				x + padding, y, std::max(1.0f, width - padding * 2.0f),
-				height, color, align, 0.5f);
+			const float avail = std::max(1.0f, width - padding * 2.0f);
+			const std::string shown = elide
+				? elide_text_to_width(widget, text, avail) : text;
+			vgui_custom_draw_text(widget, cb, vg, shown.c_str(),
+				x + padding, y, avail, height, color, align, 0.5f);
 		}
 	}
 
@@ -2514,6 +2557,10 @@ namespace vgui_editor_kit {
 			(theme.panel_border ? theme.panel_border : 0xFF2E3440u);
 		const vgui_color text_color = theme.text ? theme.text : 0xFFD8DEE9u;
 		const vgui_color accent = theme.accent ? theme.accent : 0xFF409EFFu;
+		/* Column separators follow the text color so they stay visible in
+		 * both light and dark themes (the raw border color is too close to
+		 * the header background). */
+		const uint32_t header_sep = to_ovg(with_alpha(text_color, 0x55));
 
 		ovg_tools::fill_rect(cb, vg, m.header_x, m.header_y,
 			m.header_width, m.header_height, to_ovg(header_bg));
@@ -2554,10 +2601,16 @@ namespace vgui_editor_kit {
 				}
 			}
 			const bool multi_sort = sort_specs_.size() > 1;
-			const float arrow_space = column.sortable ? 16.0f * scale : 0.0f;
+			/* Reserve room for the sort arrow / priority badge only when one
+			 * is actually drawn.  draw_cell_text already insets both sides by
+			 * kCellPaddingX, so subtract padding here would double-count it
+			 * and leave a large unused gap before the next column. */
+			float arrow_space = 0.0f;
+			if (sorted && sort_spec)
+				arrow_space = multi_sort ? 30.0f * scale : 16.0f * scale;
 			draw_cell_text(widget, cb, vg, column.label, column_x,
-				m.header_y, column_width - arrow_space - kCellPaddingX * scale,
-				m.header_height, text_color, table_alignment::left);
+				m.header_y, column_width - arrow_space,
+				m.header_height, text_color, table_alignment::left, true);
 			if (sorted && sort_spec)
 			{
 				const float cx = column_x + column_width - 11.0f * scale;
@@ -2577,8 +2630,8 @@ namespace vgui_editor_kit {
 			if (i + 1 < columns_.size())
 			{
 				ovg_tools::line(cb, vg, column_x + column_width,
-					m.header_y + 3.0f * scale, column_x + column_width,
-					m.header_y + m.header_height - 3.0f * scale, to_ovg(border),
+					m.header_y, column_x + column_width,
+					m.header_y + m.header_height, header_sep,
 					1.0f, VG_LINE_CAP_BUTT);
 			}
 			offset += column_width;
