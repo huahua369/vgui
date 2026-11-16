@@ -481,7 +481,7 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 
 ### 14.3 对旧结论的修正
 
-- §8.3 第 1 步「drag 会话提升到进程级」、第 2 步「启用 `viewports_enabled`」、第 4 步「`vgui_input_*` 带 window id」——**一次连续拖放不需要**（SDL 捕获已满足）。
+- §8.3 第 1 步「drag 会话提升到进程级」、第 2 步「启用 `viewports_enabled`」、第 4 步「`vgui_input_*` 带 window id」——**一次连续拖放不需要**（SDL 捕获已满足）。`viewports_enabled` / `docking_mgr` 已于 §16 物理删除。
 - §8.3 第 3 步「跨窗口 hit-test」仍需要，且已由 `crosswindow_dock_host::resolve_drop` 提供。
 - §13.2「一次连续拖放需 core 深改」「体验代价」——**已撤销**：`continuous_docking` 模式以极小 core 影响实现。
 - §13.3「目标区罗盘画在目标 Dock 内需改 core」——**已实现**（`vgui_dock_set_drop_preview`）。
@@ -528,3 +528,26 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 
 - 默认 / `VGUI_XDOCK_WIRING=1` 两模式下 `VGUI_SIM_DRAG=1 VGUI_ALLOW_MERGE=1` 的 tear-off→MSAA→merge 闭环输出**逐字一致**：`after merge: floaters=0 gameview_ui_is_main=1 texture=bound`，证明接线对现有行为零影响。
 - 全量构建 0 警告；`ctest` 5/5（截图基线零变化）；`crosswindow_demo` 74/74；model 920/0；kit PASS；c_api 32/0；B 22/22；A 21/21。
+
+---
+
+## 16. 实施记录：删除 viewports_enabled 死代码链（2026-11-16）
+
+> 落实 §15 之后的"清理确认死代码"请求。§3.1/§11.5 曾记录该开关是死代码——本次将其从源码**物理删除**，而非仅标注。
+
+### 16.1 删除范围（完整链，无残骸）
+
+| 位置 | 删除内容 |
+|---|---|
+| `include/vgui/backend/vgui_sdl3.h` | `class docking_mgr`（整个空壳类，唯一成员即本死字段）；`app_mgr::docking_` 成员；`app_mgr::docking()` getter 声明 |
+| `backends/vgui_sdl3.cpp` | `docking()` getter 定义；`process_event` 里 `bool viewports_enabled = docking().viewports_enabled` 局部拷贝；MOUSE_MOTION / DROP_POSITION / DROP_COMPLETE 三处 `if (viewports_enabled){ 加窗口偏移 }` 分支 |
+
+### 16.2 为什么行为不变
+
+setter `set_viewports_enabled()` 全仓库无调用（`docking()` 的唯一调用点就是被删的局部拷贝），字段恒为 `false`，三个 `if` 分支从未执行。删除后保留的是原 else 行为——直接用 SDL 事件的窗口局部坐标 `e->*.x/y` 乘 `pixel_ratio`，不做窗口偏移。跨窗口坐标换算早已由 `vgui_dock_coords.h` 的 `render_to_screen` + SDL 捕获路径承担（§14.1），不依赖此开关。
+
+### 16.3 验证
+
+全量构建 43/43 target 通过（含全部 sample，证明仓库内无残留调用方）；残留引用 grep 全空；回归 crosswindow 74/74、model 920/0、kit PASS、c_api 32/0、B 22/22、A 21/21、game_editor 冒烟正常；`ctest` 5/5，**截图基线零变化**。
+
+> 说明：这是公开头文件里的 API 移除。仓库内无调用方，但若存在仓库外宿主直接调用 `set_viewports_enabled()` / `docking()`，需同步移除该调用（本就无效果）。

@@ -1010,7 +1010,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		pw->sync_ui_scale();
 	}
 	auto pwio = io();
-	bool viewports_enabled = docking().viewports_enabled;
 	auto viewport = active_viewport_;
 	if (!viewport || !pwio)
 		return;
@@ -1026,13 +1025,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		mt.yrel = e->motion.yrel * pixel_ratio;	// The relative motion in the XY direction
 		mt.which = e->motion.which;		// 鼠标实例 
 		dev.type = dev_event_type_e::mouse_move_e;
-		if (viewports_enabled)
-		{
-			int window_x = 0, window_y = 0;
-			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			window_pos.x += (float)window_x;
-			window_pos.y += (float)window_y;
-		}
 		glm::ivec2 mouse_pos = {
 			(int)std::lround(window_pos.x * pixel_ratio),
 			(int)std::lround(window_pos.y * pixel_ratio) };
@@ -1184,13 +1176,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		ole_drop_et t = {};
 		glm::vec2 window_pos = { e->drop.x, e->drop.y };
 		dev.type = dev_event_type_e::ole_drop_e;
-		if (viewports_enabled)
-		{
-			int window_x = 0, window_y = 0;
-			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			window_pos.x += (float)window_x;
-			window_pos.y += (float)window_y;
-		}
 		t.x = (int)std::lround(window_pos.x * pixel_ratio);
 		t.y = (int)std::lround(window_pos.y * pixel_ratio);
 		dev.v.d = &t;
@@ -1203,13 +1188,6 @@ void app_mgr::process_event(const SDL_Event* e)
 		glm::vec2 window_pos = { e->drop.x, e->drop.y };
 
 		dev.type = dev_event_type_e::ole_drop_e;
-		if (viewports_enabled)
-		{
-			int window_x = 0, window_y = 0;
-			SDL_GetWindowPosition(SDL_GetWindowFromID(e->motion.windowID), &window_x, &window_y);
-			window_pos.x += (float)window_x;
-			window_pos.y += (float)window_y;
-		}
 		t.x = (int)std::lround(window_pos.x * pixel_ratio);
 		t.y = (int)std::lround(window_pos.y * pixel_ratio);
 		// F03: 文件列表走通用拖放路由（fmt==1）。
@@ -1405,8 +1383,6 @@ int app_mgr::get_event()
 	pump_gamepad();
 	return ts;
 }
-
-docking_mgr& app_mgr::docking() { return docking_; }
 
 void app_mgr::set_syscursor(int type)
 {

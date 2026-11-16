@@ -161,14 +161,6 @@ struct PointerState {
 	glm::ivec2  pos{};
 	bool pressed = false;
 };
-class docking_mgr {
-public:
-	bool viewports_enabled = false; // off by default; enabled for docking
-public:
-	void set_viewports_enabled(bool v) { viewports_enabled = v; }
-
-private:
-};
 class app_mgr
 {
 public:
@@ -209,7 +201,6 @@ public:
 	// referenced it directly; new viewports own their key_state instead.
 	gui_io_mk_state _mouse_key = {};
 	gui_viewport* active_viewport_ = 0;
-	docking_mgr docking_ = {};
 	bool nc_down = false;
 	bool WantUpdateMonitors = true;
 	bool capture_type = true;
@@ -266,7 +257,6 @@ public:
 	// nullptr when no window has a UI tree attached.  Use this instead of
 	// main_window for host-level input that should follow the active window.
 	gui_viewport* focus_viewport() const;
-	docking_mgr& docking();
 	void set_defcursor(cursor_st t);
 private:
 	void set_syscursor(int type);
