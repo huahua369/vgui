@@ -9,6 +9,8 @@
 > **实施更新（2026-11-04）**：目标 A 已落地，见 §11。§1–§10 保留评估时的原始判断作为依据；涉及「未接线 / 零覆盖 / 缺 API」的表述以 §11 为准。
 >
 > **实施更新（2026-11-14）**：目标 B 第一步已落地（后端库化组件 `dock_floater_host`，core 零改动），见 §12。§4 的"5 条硬阻塞"对应 §8.2 的 core 深改路线——原型/组件路线（detach + 占位页 + 宿主建窗）全部绕开，见 §12.1。
+>
+> **实施更新（2026-11-16）**：目标 B 第一步补齐多浮动窗口恢复（FIFO tear-off 队列）并让 `vgui_game_editor` 真正读写 v9 布局（`floaters` 屏幕矩形），见 §12.6。
 
 ---
 
@@ -19,7 +21,7 @@
 | 目标 | 含义 | 可行性 | 阻塞层 | 改动量 | 实施状态 |
 |---|---|---|---|---|---|
 | **A. 多窗口并存** | 一个进程开多个 OS 窗口，每窗口各有一棵 widget 树 / 一个 Dock，互不拖放面板 | **高** | 宿主循环、editor kit 多实例 | 中 | **已完成**（§11） |
-| **B. 浮动面板 → 真 OS 窗口** | 面板可浮出为主窗口之外的独立原生窗口（可移出主窗口、可跨屏） | **中** | core Dock 数据模型 | 大 | 未实施 |
+| **B. 浮动面板 → 真 OS 窗口** | 面板可浮出为主窗口之外的独立原生窗口（可移出主窗口、可跨屏） | **中** | core Dock 数据模型 | 大 | **第一步已完成**（§12） |
 | **C. 跨窗口拖放停靠** | 面板可在不同 OS 窗口的 Dock 之间拖动、互相合并标签组 | **低** | A + B 全部，外加跨窗口 drag 协议 | 很大 | 未实施 |
 
 按架构分层的判定：
@@ -359,11 +361,11 @@ frames=120 windows_at_exit=1 gameview_closed=1
 
 ### 12.3 demo 与自测结果
 
-`sample/vgui_dock_floater_demo.cpp`（CMake target `vgui_dock_floater_demo`，不进 ctest，GPU 失败返回 77）：主窗口 3 面板，`VGUI_FLOATER_SIM=1` 注入拖拽做有界自检，18 项断言全绿——tear-off 建窗、占位页、单次提交（host.size()==2）、面板离开主 Dock、**合并后真实页面 widget 指针原样恢复**、二次 tear-off 幂等、`capture_floaters()` 返回稳定 id 与屏幕矩形；`VGUI_FLOATER_SIM=0` 手动体验模式。本批次 core / editor kit **零改动**。
+`sample/vgui_dock_floater_demo.cpp`（CMake target `vgui_dock_floater_demo`，不进 ctest，GPU 失败返回 77）：主窗口 3 面板，`VGUI_FLOATER_SIM=1` 注入拖拽做有界自检，22 项断言全绿——tear-off 建窗、占位页、单次提交（host.size()==2）、面板离开主 Dock、**合并后真实页面 widget 指针原样恢复**、二次 tear-off 幂等、`capture_floaters()` 返回稳定 id 与屏幕矩形、**FIFO tear-off 队列一次恢复多个浮动窗口**（连续入队后每个 tick 建一个，最终 3 个 floater 全部存在且 `capture_floaters()` 逐一覆盖）；`VGUI_FLOATER_SIM=0` 手动体验模式。本批次 core / editor kit **零改动**。
 
 ### 12.4 后续批次
 
-1. ~~`vgui_game_editor.cpp` 原型迁移到 `dock_floater_host`~~ **已完成（2026-11-15，批次二）**：宿主引擎（~450 行）删除，接入 4 个新生命周期钩子——GAME VIEW 面板走 **remove 模式**（页面不可跨 context 保留：`teardown_page` 先 release 纹理 → `remove_page` true → `vgui_dock_remove` → 浮动窗口由 `build_page` 重建真实页 → 合并/失败路径由 `restore_page` 在主 context 重建 + `floater_closing` 先于浮动 ctx 销毁释放纹理），其余面板走 detach + 内置占位页默认路径。迁移中发现并修复组件缺陷：remove 模式漏调 `vgui_dock_remove`（面板滞留主 Dock，合并时字符串 id 重复被拒）。集成自测：`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_ALLOW_MERGE=1` → 浮动窗口创建、**MSAA 重建后纹理重绑（floaters=1 期间跨上下文）**、关闭合并后 `panel=<新 id> texture=bound`。新增公共 `request_tear_off(panel)`（探针/测试入队）。
+1. ~~`vgui_game_editor.cpp` 原型迁移到 `dock_floater_host`~~ **已完成（2026-11-15，批次二）**：宿主引擎（~450 行）删除，接入 4 个新生命周期钩子——GAME VIEW 面板走 **remove 模式**（页面不可跨 context 保留：`teardown_page` 先 release 纹理 → `remove_page` true → `vgui_dock_remove` → 浮动窗口由 `build_page` 重建真实页 → 合并/失败路径由 `restore_page` 在主 context 重建 + `floater_closing` 先于浮动 ctx 销毁释放纹理），其余面板走 detach + 内置占位页默认路径。迁移中发现并修复组件缺陷：remove 模式漏调 `vgui_dock_remove`（面板滞留主 Dock，合并时字符串 id 重复被拒）。集成自测：`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_ALLOW_MERGE=1` → 浮动窗口创建、**MSAA 重建后纹理重绑（floaters=1 期间跨上下文）**、关闭合并后 `panel=<新 id> texture=bound`。新增公共 `request_tear_off(panel)`（探针/测试入队）。批次四把请求改成 FIFO 队列并接入布局 v9，见 §12.6。
 2. ~~`editor_layout_set` 持久化"面板 → 浮动窗口屏幕坐标"（JSON v9）~~ **已完成（2026-11-15，批次三）**，见 §12.5。
 3. C（跨窗口拖放）：本阶段不做；若启动需按 §8.3 评估 core 模型改造 + `docking_mgr::viewports_enabled` 接线。
 
@@ -394,7 +396,17 @@ frames=120 windows_at_exit=1 gameview_closed=1
 | 位置 | 挂在 `editor_window_layout::floaters` 下，因为浮动窗口属于某个主窗口；内嵌 `editor_layout` 仍保持 v7，不把 OS 窗口坐标混进 Dock 的窗口内坐标 |
 | 兼容 | 文件版本 8/9 都接受；v8 没有 `floaters`，解析为空。v1–v7 仍整份导入为 `id="main"`。未知版本（≥10）拒绝 |
 | 校验 | `floaters` 必须是数组；`panel` 非空且同一窗口内不重复；`rect` 必须是对象且宽高为正。无 `rect` 的条目保留（面板已知、窗口尺寸尚未采样） |
-| 恢复 | 宿主遍历 `layout->floaters`：`vgui_dock_find(dock, panel.c_str())` → `floater.request_tear_off(panel, x, y, w, h)`。`request_tear_off` 只入队，下一 `tick()` 建窗；面板不在主 Dock 时静默丢弃 |
-| 示例宿主 | `vgui_game_editor.cpp` 目前不读写布局文件，接入点（`capture_floaters` / `request_tear_off`）已就绪，宿主加载顺序为「先建 Dock/面板 → 再恢复 floater」 |
+| 恢复 | 宿主遍历 `layout->floaters`：`vgui_dock_find(dock, panel.c_str())` → `floater.request_tear_off(panel, x, y, w, h)`。`request_tear_off` 只入 FIFO 队列，每个 `tick()` 建一个窗口，因此一批保存的 floater 一次遍历即可全部恢复；面板不在主 Dock 时静默丢弃 |
+| 示例宿主 | `vgui_game_editor.cpp` 启动时在 `dock_floater_host::attach()` 之后加载布局并逐个入队恢复，退出前（销毁 shell/浮动窗口之前）用 `capture_floaters()` 写回；默认路径 `SDL_GetPrefPath("vgui","game_editor")/layout.json`，`VGUI_EDITOR_LAYOUT` 覆盖（空/`0` 关闭），有界 `VGUI_EDITOR_FRAMES` 忽略默认文件但尊重显式路径 |
 
 测试：`vgui_editor_kit_test::test_layout_set_multiwindow()` 覆盖 v9 往返、浮动矩形/无矩形条目、v8 导入、重复 floater panel、空 panel、空/畸形 rect、`floaters` 非数组、文件 IO。`capture_floaters()` / 新 `request_tear_off` 为 header-only，随 `vgui_dock_floater_demo` 与 `vgui_game_editor` 的构建覆盖编译。
+
+### 12.6 实施记录：多浮动窗口恢复与示例宿主落盘（2026-11-16，批次四）
+
+v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` 覆盖前一个请求，宿主一次性恢复多个保存的 floater 时只有最后一个能建窗。批次四把请求改成 FIFO 队列，并让 `vgui_game_editor` 真正读写布局文件：
+
+- **请求队列**：`std::deque<tear_off_request>`，`on_tear_off_thunk` / `on_drag_out_thunk` / `poll_dock_drag` 与两个 `request_tear_off()` 重载统一 `push_back`；`tick()` 只处理队首一个，`pending_tear_off()` 返回队首面板，`poll_dock_drag` 以队列非空为去重条件。拖动/关闭路径每次仍只产生一个请求，语义不变。
+- **显式收尾**：新增 `close_all()`——销毁全部浮动窗口但不合并（每个都触发 `floater_closing`），并清空待处理队列。`vgui_game_editor` 的 `editor_state` 是静态对象，若依赖 `dock_floater_host` 析构会在 `main` 返回后才执行，那时 `app_mgr` / 窗口注册表已销毁（实测退出码 `0xC0000005`）；现在保存后、拆机前显式调用。
+- **示例宿主接线**：`editor_layout_path()` 默认 `SDL_GetPrefPath("vgui","game_editor")/layout.json`，`VGUI_EDITOR_LAYOUT` 覆盖（空/`0` 关闭），有界 `VGUI_EDITOR_FRAMES` 忽略默认文件以保持确定性、但尊重显式路径。`load_editor_layout()` 在 floater host attach 之后执行：`shell->apply_layout()` 恢复 Dock，再对 `window->floaters` 逐个 `vgui_dock_find()` → `request_tear_off()`。`save_editor_layout()` 在销毁 shell / 浮动窗口之前执行：`shell->capture_layout()` + `capture_floaters()` 写入 v9 `windows[0]`。
+- **验证**：`vgui_dock_floater_demo` 自测 22/22（含 FIFO 与多 floater capture）。`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_EDITOR_LAYOUT=<tmp>\layout.json vgui_game_editor` 退出码 0，JSON 为 v9 且 `floaters:[{panel:"gameview",rect:{x:1296,y:158,width:300,height:724}}]`；用同一文件跑 `VGUI_EDITOR_FRAMES=30`（不注入 tear-off）打印 `layout loaded (floaters=1)`，第 3 帧绘制命令 `floaters=1`，退出后矩形与保存值一致。
+- **边界**：主窗口自身的 OS 矩形未保存/恢复（示例只用 v9 的 floater 数组）；`editor_layout` 内嵌版本仍为 7。

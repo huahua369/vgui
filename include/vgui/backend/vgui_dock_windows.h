@@ -48,6 +48,7 @@
  */
 #include <cmath>
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <string>
 #include <utility>
@@ -191,15 +192,12 @@ public:
 	{
 		if (!mgr_ || !main_dock_)
 			return;
-		if (pending_tear_off_)
+		if (!pending_tear_offs_.empty())
 		{
-			const vgui_item_id panel = pending_tear_off_;
-			pending_tear_off_ = 0;
-			const bool has_rect = pending_rect_;
-			pending_rect_ = false;
-			tear_off_to_floating(panel, has_rect,
-				pending_rect_x_, pending_rect_y_,
-				pending_rect_w_, pending_rect_h_);
+			const tear_off_request req = pending_tear_offs_.front();
+			pending_tear_offs_.pop_front();
+			tear_off_to_floating(req.panel, req.has_rect,
+				req.x, req.y, req.width, req.height);
 		}
 		poll_dock_drag();
 		update_live_drag();
@@ -211,30 +209,48 @@ public:
 	{
 		return floaters_.find(panel) != floaters_.end();
 	}
-	vgui_item_id pending_tear_off() const { return pending_tear_off_; }
+	/* Destroys every floating window WITHOUT merging the panels back, firing
+	 * floater_closing for each.  Call this before the main dock/context, the
+	 * multiwindow_host and the window manager are torn down (the destructor
+	 * is then an empty fallback): a static host outliving app_mgr would
+	 * otherwise touch destroyed windows.  Pending tear-off requests are
+	 * dropped. */
+	void close_all()
+	{
+		pending_tear_offs_.clear();
+		for (auto& [panel, fw] : floaters_)
+			close_floater_window(fw);
+		floaters_.clear();
+	}
+	vgui_item_id pending_tear_off() const
+	{
+		return pending_tear_offs_.empty() ? 0 : pending_tear_offs_.front().panel;
+	}
 	/* Queues a tear-off through the same path the callbacks use (probes and
-	 * tests): processed at the next tick().  A rect queued by the overload
-	 * below is discarded. */
+	 * tests): one request is processed per tick(). */
 	void request_tear_off(vgui_item_id panel)
 	{
-		pending_tear_off_ = panel;
-		pending_rect_ = false;
+		tear_off_request req;
+		req.panel = panel;
+		pending_tear_offs_.push_back(req);
 	}
 	/* Queues a tear-off at an explicit screen rectangle: x/y is the outer
 	 * window top-left and width/height its outer size, in points -- the
 	 * shape capture_floaters() returns.  Use it to restore layout v9
 	 * floater positions after mapping the saved panel id with
-	 * vgui_dock_find().  Processed at the next tick(); dropped if the panel
-	 * is not in the main dock. */
+	 * vgui_dock_find().  One request is processed per tick(); dropped if the
+	 * panel is not in the main dock. */
 	void request_tear_off(vgui_item_id panel, int x, int y, int width,
 		int height)
 	{
-		pending_tear_off_ = panel;
-		pending_rect_ = true;
-		pending_rect_x_ = x;
-		pending_rect_y_ = y;
-		pending_rect_w_ = width;
-		pending_rect_h_ = height;
+		tear_off_request req;
+		req.panel = panel;
+		req.has_rect = true;
+		req.x = x;
+		req.y = y;
+		req.width = width;
+		req.height = height;
+		pending_tear_offs_.push_back(req);
 	}
 	/* Live floaters for layout persistence, in panel-id (std::map) order.
 	 * The rectangles are sampled from SDL on every call, so a host can save
@@ -270,6 +286,16 @@ public:
 	}
 
 private:
+	struct tear_off_request
+	{
+		vgui_item_id panel = 0;
+		bool has_rect = false;
+		int x = 0;
+		int y = 0;
+		int width = 0;
+		int height = 0;
+	};
+
 	struct floater
 	{
 		os_window* window = nullptr;
@@ -305,7 +331,9 @@ private:
 			? self->main_window_->pixel_ratio() : 1.0f;
 		self->tear_off_sx_ = (float)ax + lx / pr;
 		self->tear_off_sy_ = (float)ay + ly / pr;
-		self->pending_tear_off_ = panel;
+		tear_off_request req;
+		req.panel = panel;
+		self->pending_tear_offs_.push_back(req);
 	}
 
 	static void on_drag_out_thunk(vgui_widget* dock, vgui_item_id panel,
@@ -321,7 +349,9 @@ private:
 		SDL_GetGlobalMouseState(&mx, &my);
 		self->tear_off_sx_ = mx;
 		self->tear_off_sy_ = my;
-		self->pending_tear_off_ = panel;
+		tear_off_request req;
+		req.panel = panel;
+		self->pending_tear_offs_.push_back(req);
 	}
 
 	// -- helpers -------------------------------------------------------------
@@ -816,7 +846,7 @@ private:
 			drag_rect_valid_ = page_rect_screen(main_dock_, dragging,
 				&drag_rect_x_, &drag_rect_y_, &drag_rect_w_, &drag_rect_h_);
 		}
-		if (!pending_tear_off_ && drag_rect_valid_ &&
+		if (pending_tear_offs_.empty() && drag_rect_valid_ &&
 			!rect_fully_inside_main(
 				drag_rect_x_ + (mx - drag_start_mx_) + 2.0f,
 				drag_rect_y_ + (my - drag_start_my_) + 2.0f,
@@ -824,7 +854,9 @@ private:
 		{
 			tear_off_sx_ = mx;
 			tear_off_sy_ = my;
-			pending_tear_off_ = dragging;
+			tear_off_request req;
+			req.panel = dragging;
+			pending_tear_offs_.push_back(req);
 		}
 	}
 
@@ -938,12 +970,7 @@ private:
 	hooks hooks_;
 
 	std::map<vgui_item_id, floater> floaters_;
-	vgui_item_id pending_tear_off_ = 0;
-	bool pending_rect_ = false;
-	int pending_rect_x_ = 0;
-	int pending_rect_y_ = 0;
-	int pending_rect_w_ = 0;
-	int pending_rect_h_ = 0;
+	std::deque<tear_off_request> pending_tear_offs_;
 	float tear_off_sx_ = 0.0f, tear_off_sy_ = 0.0f;
 
 	bool live_drag_ = false;

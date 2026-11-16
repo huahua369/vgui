@@ -364,9 +364,9 @@ editor_layout_set_save_file("user/layout.json", set);
 ```cpp
 vgui_editor_kit::editor_layout_set set;
 editor_layout_set_load_file("user/layout.json", set);
-const vgui_editor_kit::editor_layout* layout = set.find("main");
-if (layout) {
-    for (const auto& f : layout->floaters) {
+const vgui_editor_kit::editor_window_layout* window = set.find_window("main");
+if (window) {
+    for (const auto& f : window->floaters) {
         vgui_item_id panel = vgui_dock_find(shell.dock(), f.panel.c_str());
         if (panel && f.has_rect)
             floater.request_tear_off(panel, f.x, f.y, f.width, f.height);
@@ -374,19 +374,20 @@ if (layout) {
 }
 ```
 
-版本 8 的文件照常读取（没有 `floaters` 数组）；版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
+`request_tear_off()` 只入队，宿主每帧 `tick()` 处理一个请求；因此一次恢复多个浮动窗口不需要手工分帧，按保存顺序连续入队即可。版本 8 的文件照常读取（没有 `floaters` 数组）；版本 1～7 的旧文件会被当作单窗口（`id = "main"`）导入，内嵌的 `editor_layout` 仍按自己的版本校验。窗口矩形只是记录，恢复窗口位置由宿主调用 `SDL_SetWindowPosition` / `SDL_SetWindowSize` 完成。
 
-**当前边界**：多窗口并存（每窗口一个 Dock）已支持；Dock 的浮动面板仍是主窗口内自绘的浮层，不是独立 OS 窗口，面板也不能跨窗口拖动。详见 `docs/dock_multiwindow_assessment.md`。
+**当前边界**：B 第一步已落地——`dock_floater_host` 可把面板拖出为真实无边框 OS 窗口、跟随拖动并合并回主 Dock；每窗口一个 Dock 的多窗口并存已支持。C（跨窗口 Dock 间拖放停靠）仍未实现，详见 `docs/dock_multiwindow_assessment.md`。
 
-`sample/vgui_game_editor.cpp` 默认就是两窗口：主窗口是完整编辑器，副窗口挂自己的 `vgui_context` + `VGUI_DOCK`（`GAME VIEW` / `STATS` 两个面板），画面来自副窗口专属的离屏 3D 视图（不是把主窗口的缩略图放大）。
+`sample/vgui_game_editor.cpp` 默认单主窗口：`GAME VIEW` / `STATS` 构建为 `gameview` Dock 面板挂在 RIGHT 区，拖出主窗口即成为真实浮动窗口；启动与退出通过 v9 布局文件保存/恢复 Dock 排列和浮动窗口屏幕矩形。默认路径是 `SDL_GetPrefPath("vgui", "game_editor")/layout.json`：
 
 ```bash
-./vgui_game_editor.exe                          # 默认两窗口
-VGUI_EDITOR_SINGLE_WINDOW=1 ./vgui_game_editor.exe   # 退回单窗口
-VGUI_EDITOR_FRAMES=120 ./vgui_game_editor.exe        # 自检：120 帧后退出
+./vgui_game_editor.exe
+VGUI_EDITOR_LAYOUT=user/layout.json ./vgui_game_editor.exe  # 指定布局文件
+VGUI_EDITOR_LAYOUT=0 ./vgui_game_editor.exe                 # 关闭布局持久化
+VGUI_EDITOR_FRAMES=120 ./vgui_game_editor.exe               # 自检：120 帧后退出
 ```
 
-`VGUI_EDITOR_FRAMES` 模式会在中途切一次 MSAA、并向副窗口投递一次关闭请求，用来验证「两个窗口的 FBO 与两套上下文的原生纹理都能跟着重建」以及「关掉副窗口后主窗口继续渲染」。
+有界自检（`VGUI_EDITOR_FRAMES`）会忽略默认布局文件以保证确定性，但显式 `VGUI_EDITOR_LAYOUT` 仍生效。中途切一次 MSAA；设置 `VGUI_ALLOW_TEAROFF=1` 会把 GAME VIEW 撕成浮动窗口，验证跨上下文重建与纹理重绑。
 
 ### 文档生命周期（S08）
 
@@ -1350,7 +1351,7 @@ out/bin/x64d/vgui_game_editor.exe
 3. **Viewport**：中键平移、右键轨道旋转、滚轮缩放、F 取景；左键点击/框选，Ctrl 切换、Shift 追加；W/E/R 切换平移/旋转/缩放 Gizmo，View > Gizmo Space 切换世界/局部/父级/屏幕；拖动按 Grid Size 与吸附步长约束，一次拖动只记录一条命令，Esc/失焦回滚；View > HDR/MSAA/Depth 可切换渲染选项，主视口下方的第二相机视口与深度预览共享同一场景。
 4. **Properties**：选中对象后显示类型化属性（文本/布尔/枚举/颜色/Vector/资产引用/曲线/渐变），多选时显示混合值并支持批量编辑与一次撤销；资产可拖到引用行赋值。
 5. **Assets**：目录面包屑/前进后退/刷新，防抖搜索与类型过滤，可见范围异步缩略图与 LRU/磁盘缓存；双击文件夹进入，资产可拖入视口（半透明落点预览）、Outliner 和属性栏；支持 OS 文件拖入导入、F2/Delete/Ctrl+D/F5/Ctrl+I 与右键重命名/删除/复制/移动/重新导入（包含冲突/只读/占用/损坏资源的模拟错误与确认框）。
-6. **Dock**：拖动标签重排/跨区/浮出，View 菜单可显示/隐藏面板；`editor_shell` 提供布局保存/恢复 API（示例未落盘，kit 自测覆盖该路径）。
+6. **Dock**：拖动标签重排/跨区/浮出，View 菜单可显示/隐藏面板；`editor_shell` 提供布局保存/恢复 API，示例启动/退出自动读写 v9 布局文件（Dock 排列 + 浮动窗口屏幕矩形）；面板拖出主窗口后成为真实无边框 OS 浮动窗口，拖回内容区自动合并。
 7. **底部视图**：ASSETS / CONSOLE / CANVAS / TABLE / TIMELINE / NODEGRAPH / CODE 是底部区的七个 Dock 面板，可逐个拖到中央浮出方块浮出、拖到左/右带跨区合并或在底部区内重排，开合与矩形随布局存盘；可验证日志分级/堆栈/跳转、2D 画布、虚拟表格、时间线播放与关键帧、节点图连线/搜索/小地图、代码编辑器语法高亮与查找替换。
 
 示例的场景是真实的内存文档：File > Save/Save As 把场景写成 `format: "vgui-game-scene"`、`version: 1` 的 JSON（对象 id、父子关系、可见/锁定/可渲染标志、位置/旋转/缩放和字符串属性），File > Open 校验格式、修复悬空父引用并拒绝父链环，New 重建 World/Camera/Light 初始场景；场景路径仍用输入框输入（便于纯键盘演示），而 Assets 面板的 Import... 已改走原生文件对话框 `vgui_file_dialog_open()`（无 provider 时退回输入框），退出请求会结束主循环。资产库和命令历史仍在内存中；资产数据库由宿主实现。`vgui_editor_kit_test.exe` 覆盖布局持久化、命令栈、文档回调与各组件边界。

@@ -144,8 +144,12 @@ int main()
 		bool merge_checked = false;
 		bool second_teared = false;
 		bool capture_checked = false;
+		bool queued_teared = false;
+		bool multi_capture_checked = false;
 		vgui_item_id p1 = panel_ids[0];
 		vgui_item_id p2 = panel_ids[1];
+		vgui_item_id p3 = panel_ids[2];
+		vgui_item_id p1_queued = 0;
 
 		while (running)
 		{
@@ -255,6 +259,39 @@ int main()
 						snap[0].height > 0,
 						"capture_floaters reports id and screen rect");
 				}
+				else if (frame == 50 && !queued_teared)
+				{
+					/* Layout v9 restore: a host feeds every saved floater in
+					 * one pass.  The requests must queue FIFO (one window per
+					 * tick) instead of overwriting each other. */
+					queued_teared = true;
+					p1_queued = vgui_dock_find(dock, "p1");
+					floater.request_tear_off(p1_queued, 80, 90, 420, 300);
+					floater.request_tear_off(p3, 540, 120, 380, 280);
+					check(floater.pending_tear_off() == p1_queued,
+						"queued tear-offs keep FIFO order");
+				}
+				else if (frame == 54 && queued_teared && !multi_capture_checked)
+				{
+					multi_capture_checked = true;
+					check(floater.floater_count() == 3 &&
+						floater.floating(p1_queued) && floater.floating(p2) &&
+						floater.floating(p3),
+						"two queued tear-offs create both floaters");
+					check(vgui_dock_get_count(dock) == 0,
+						"queued tear-offs empty the main dock");
+					const std::vector<dock_floater_rect> snap =
+						floater.capture_floaters();
+					bool saw_p1 = false, saw_p2 = false, saw_p3 = false;
+					for (const dock_floater_rect& r : snap)
+					{
+						saw_p1 = saw_p1 || r.id == "p1";
+						saw_p2 = saw_p2 || r.id == "p2";
+						saw_p3 = saw_p3 || r.id == "p3";
+					}
+					check(snap.size() == 3 && saw_p1 && saw_p2 && saw_p3,
+						"capture_floaters covers every floater");
+				}
 			}
 
 			floater.tick();
@@ -269,12 +306,12 @@ int main()
 
 		if (self_test)
 		{
-			check(second_teared && floater.floating(p2) &&
-				floater.floater_count() == 1,
-				"p2 stays floating at exit (manual merge path untouched)");
-			check(vgui_dock_get_count(dock) == 2 && vgui_dock_find(dock, "p1")
-				!= 0 && vgui_dock_find(dock, "p3") != 0,
-				"main dock holds p1 + p3 at exit");
+			check(second_teared && floater.floater_count() == 3 &&
+				floater.floating(p1_queued) && floater.floating(p2) &&
+				floater.floating(p3),
+				"all floaters stay open at exit (manual merge path untouched)");
+			check(vgui_dock_get_count(dock) == 0,
+				"main dock is empty after the queued tear-offs");
 		}
 		else
 		{

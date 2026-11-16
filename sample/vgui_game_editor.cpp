@@ -3750,6 +3750,119 @@ static vgui_widget* build_gameview_page(vgui_context* ui, vgui_widget* dock)
 	return page;
 }
 
+/* ---- Layout v9: Dock arrangement + floating OS window rectangles ----
+ *
+ * The shell persists its dock/panel state through editor_layout; the vgui
+ * game editor adds one v9 window slot ("main") whose "floaters" array stores
+ * the stable dock panel id plus the floater's outer screen rectangle.  The
+ * default path lives under SDL's per-user pref directory; VGUI_EDITOR_LAYOUT
+ * overrides it (empty or "0" disables persistence).  Bounded probe runs
+ * (VGUI_EDITOR_FRAMES) ignore the default file so a saved layout cannot change
+ * their dock state; an explicit VGUI_EDITOR_LAYOUT is still honored. */
+static std::string editor_layout_path(int max_frames)
+{
+	if (const char* env = std::getenv("VGUI_EDITOR_LAYOUT"))
+	{
+		if (!*env || std::strcmp(env, "0") == 0)
+			return {};
+		return env;
+	}
+	if (max_frames > 0)
+		return {};
+	char* pref = SDL_GetPrefPath("vgui", "game_editor");
+	if (!pref)
+		return "vgui_game_editor_layout.json";
+	std::string path(pref);
+	SDL_free(pref);
+	if (!path.empty() && path.back() != '/' && path.back() != '\\')
+		path += '/';
+	path += "layout.json";
+	return path;
+}
+
+static void load_editor_layout(editor_state& state, const std::string& path)
+{
+	if (path.empty() || !state.shell)
+		return;
+	std::error_code ec;
+	if (!std::filesystem::exists(path, ec) || ec)
+		return;
+
+	editor_layout_set set;
+	std::string error;
+	if (!editor_layout_set_load_file(path, set, &error))
+	{
+		fprintf(stderr, "layout load failed: %s\n", error.c_str());
+		return;
+	}
+	const editor_window_layout* window = set.find_window("main");
+	if (!window)
+		return;
+	if (!state.shell->apply_layout(window->layout, &error))
+	{
+		fprintf(stderr, "layout apply failed: %s\n", error.c_str());
+		return;
+	}
+
+	/* request_tear_off() now queues one panel per tick(), so every saved
+	 * floater can be restored in the same startup pass. */
+	size_t queued = 0;
+	for (const editor_floater_layout& saved : window->floaters)
+	{
+		const vgui_item_id panel = vgui_dock_find(state.shell->dock(),
+			saved.panel.c_str());
+		if (!panel)
+			continue;
+		if (saved.has_rect && saved.width > 0 && saved.height > 0)
+			state.floater.request_tear_off(panel, saved.x, saved.y,
+				saved.width, saved.height);
+		else
+			state.floater.request_tear_off(panel);
+		++queued;
+	}
+	printf("INFO layout loaded: %s (floaters=%zu)\n", path.c_str(), queued);
+	fflush(stdout);
+}
+
+static void save_editor_layout(editor_state& state, const std::string& path)
+{
+	if (path.empty() || !state.shell)
+		return;
+
+	editor_layout_set set;
+	editor_window_layout& window = set.ensure_window("main");
+	window.layout = state.shell->capture_layout();
+	for (const dock_floater_rect& floater : state.floater.capture_floaters())
+	{
+		if (floater.id.empty())
+			continue;
+		editor_floater_layout saved;
+		saved.panel = floater.id;
+		saved.has_rect = floater.width > 0 && floater.height > 0;
+		saved.x = floater.x;
+		saved.y = floater.y;
+		saved.width = floater.width;
+		saved.height = floater.height;
+		window.floaters.push_back(std::move(saved));
+	}
+
+	const std::filesystem::path file(path);
+	if (file.has_parent_path())
+	{
+		std::error_code ec;
+		std::filesystem::create_directories(file.parent_path(), ec);
+	}
+	std::string error;
+	if (!editor_layout_set_save_file(path, set, &error))
+	{
+		fprintf(stderr, "layout save failed: %s\n", error.c_str());
+		return;
+	}
+	printf("INFO layout saved: %s (floaters=%zu)\n", path.c_str(),
+		window.floaters.size());
+	fflush(stdout);
+}
+
 int main()
 {
 	// ---- 后端初始化 ----
@@ -3796,6 +3909,7 @@ int main()
 	int max_frames = 0;
 	if (const char* env = std::getenv("VGUI_EDITOR_FRAMES"); env && *env)
 		max_frames = std::atoi(env);
+	const std::string layout_path = editor_layout_path(max_frames);
 
 	multiwindow_host host(wg, cb);
 	if (!host.attach(form, ui))
@@ -3900,6 +4014,11 @@ int main()
 	};
 	g.floater.attach(wg, &host, g.shell->dock(), form, familys, 16.0f,
 		dock_floater_opts{}, fhooks);
+
+	/* Restore Dock arrangement and floater rectangles after every panel
+	 * exists and the floater host is attached; queued tear-offs are created
+	 * by the following frame ticks. */
+	load_editor_layout(g, layout_path);
 
 	printf("windows=%zu gameview=merged-in-main floaters=%zu\n", host.size(),
 		g.floater.floater_count());
@@ -4438,6 +4557,22 @@ int main()
 	}
 
 	// ---- 清理 ----
+	/* Save before the shell and floater windows are torn down: capture_layout()
+	 * reads the live dock and capture_floaters() samples the OS rectangles. */
+	save_editor_layout(g, layout_path);
+	/* editor_state is static: its dock_floater_host would otherwise be
+	 * destroyed after main() returns, when app_mgr and the window registry are
+	 * gone.  Close floaters explicitly while the backend is alive. */
+	g.floater.close_all();
+	/* The floater contexts that owned the GAME VIEW page are gone (the native
+	 * texture was released by floater_closing); drop the cached page
+	 * pointers so teardown/diagnostics never see a destroyed context. */
+	g.gameview.window = nullptr;
+	g.gameview.ui = nullptr;
+	g.gameview.dock = nullptr;
+	g.gameview.surface = nullptr;
+	g.gameview.line1 = nullptr;
+	g.gameview.line2 = nullptr;
 	const size_t windows_at_exit = host.size();
 	const bool gameview_closed = (g.gameview.window == nullptr);
 	wg->wait_gpu();
