@@ -10,6 +10,8 @@
 >
 > **实施更新（2026-11-14）**：目标 B 第一步已落地（后端库化组件 `dock_floater_host`，core 零改动），见 §12。§4 的"5 条硬阻塞"对应 §8.2 的 core 深改路线——原型/组件路线（detach + 占位页 + 宿主建窗）全部绕开，见 §12.1。
 >
+> **实施更新（2026-11-16）**：目标 C1–C4 已落地（§13），一次连续拖放也已落地（§14）。§8.3 关于"一次连续拖放需进程级会话 + `viewports_enabled` + core 深改"的判断经 SDL 捕获探针实证被推翻：core 只需 +1 绘制 API，其余在组件层完成。
+>
 > **实施更新（2026-11-16）**：目标 B 第一步补齐多浮动窗口恢复（FIFO tear-off 队列）并让 `vgui_game_editor` 真正读写 v9 布局（`floaters` 屏幕矩形），见 §12.6。
 
 ---
@@ -435,8 +437,8 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 
 ### 13.3 明确未做
 
-- **game_editor 未接跨窗口 target**：其副窗口是 GAME VIEW 专用窗口（已含同 id 面板），作为通用停靠目标语义混乱；跨窗口迁移的通用验证在 `vgui_crosswindow_dock_demo` 完成。
-- **目标区罗盘画在目标 Dock 内**：需改 core 增 `vgui_dock_set_drop_preview`（§6 方案 B）。当前用 `last_resolve()` 暴露命中结果，宿主可自行在浮动窗绘提示；因"拖入即迁移"无常驻高亮窗口期，暂不实现。
+- ~~**game_editor 未接跨窗口 target**~~ → **已接线，见 §15**（2026-11-16）。注意本节原文的依据（"GAME VIEW 专用副窗口、同 id 面板"）已是历史状态：该副窗口在 commit `bb0b445` 被删除，当前只有主窗口一个常驻 Dock。跨窗口迁移的通用验证仍在 `vgui_crosswindow_dock_demo` 完成。
+- ~~**目标区罗盘画在目标 Dock 内**~~ → **已实现，见 §14.2**（core 增 `vgui_dock_set_drop_preview`，D2）。
 - core 数据模型改造（全局稳定 id / widget 序列化 / 跨 context 指针搬运）仍未做，§8.2 草图保留作后续参考。
 
 ### 13.4 验证
@@ -445,3 +447,84 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 - `vgui_editor_kit_test`：v10 往返 + owner/source + v9 兼容（无归属）+ ≥11 拒绝 + 畸形输入，全 PASS。
 - 回归：全量构建 0 新警告；`vgui_model_test` 920/0；`vgui_dock_floater_demo`（B）22/22；`vgui_multiwindow_demo`（A）21/21；`vgui_game_editor` 冒烟（MSAA 重建/纹理重绑/合并）正常；ctest 5/5，**截图基线零变化**。
 - `vgui_game_editor` v10 布局往返：保存生成 `"version":10`（内嵌 7），重开 `layout loaded (floaters=1)` 并恢复浮动窗矩形。
+
+---
+
+## 14. 实施记录：一次连续拖放（2026-11-16）
+
+> 本节落实规划 `.zcode/plans/plan-dock-c-crosswindow-docking.md` §11"后续升级段 1"。**结论先行**：§8.3/§13.2 曾判断"一次连续拖放需要进程级 drag 会话 + `viewports_enabled` + 改输入语义"——**该前提经 SDL 探针实证被证伪**。实际只需 core 增加一个可选绘制 API，其余全部在宿主组件层完成。
+
+### 14.1 关键实证：SDL 捕获让跨窗口事件回到源窗口
+
+最小 SDL3 探针（`out/probe`，两窗口 + 系统级 `SetCursorPos` + `SDL_CaptureMouse`）实测：
+
+| 场景 | 鼠标物理位置 | 事件 windowID | 事件局部坐标 |
+|---|---|---|---|
+| 无捕获 | B 窗口上方 | **B**（正常路由） | B 局部，未越界 |
+| 捕获开（项目现状） | B 窗口上方 | **A**（捕获窗口） | A 局部且越界（如 `(760,150)`，A 宽 400） |
+
+项目在 `backends/vgui_sdl3.cpp` 的 `SDL_EVENT_MOUSE_BUTTON_DOWN` 分支调用 `pw->set_capture()`，按下期间鼠标事件（含 mousemove/mouseup）全部锁到源窗口。含义：
+
+1. core 的 `drag_mode` 会话挂在源 context，但**跨窗口的 mouseup 仍回到源 ctx**——会话不会断，不需要进程级会话重写。
+2. 越界的源窗口局部坐标经 `window_pos + local/pixel_ratio` 即得屏幕点（`render_to_screen`），与 `crosswindow_dock_host::resolve_drop` 同口径。
+3. `viewports_enabled` 是**不需要**的：它改的是全局坐标注入语义，而捕获路径已经提供了等价信息。启用它反而要回归所有输入路径（§9 风险），徒增成本。
+
+### 14.2 改动清单
+
+| 批次 | 改动 | core 影响 |
+|---|---|---|
+| D1 连续直迁 | `dock_floater_opts::continuous_docking`（默认关）；`on_tear_off_thunk` 在松手点命中异窗口 Dock 时入队 `direct_migrate_request`；`direct_migrate()` 从**仍停靠**的源面板 detach → 目标 ctx 重建页 → add → 失败 `roll_back`；连续模式下 `on_drag_out_thunk`/`poll_dock_drag` 抑制提前建浮动窗 | 无（纯组件层） |
+| D1 端到端 | `vgui_input_*` 注入真实 drag（down→越界 move→up），验证 core 回调链走到连续分支 | 无 |
+| D2 目标高亮 | core 增 `vgui_dock_set_drop_preview(dock, zone, index)`（纯视觉状态，zone<0 清除）+ `vgui_dock_state::preview_zone/index` + `vgui_draw_dock` 的目标区填充/描边/插入线；`dock_floater_host` 的 `set/clear_drop_preview` 在拖拽期间逐帧维护目标 dock | **+1 API +2 字段 +1 绘制分支** |
+
+**交互模型**：一次连续拖放 = 在源 tab 按下 → 拖过窗口边界（无浮动窗产生，目标 Dock 实时显示罗盘）→ 在目标 Dock 松手 → 面板直接从源 Dock 迁移到目标 Dock。命中 miss 或迁移失败时面板留在源 Dock（不丢）。两段式（B/C 现状）仍默认保留，连续模式按宿主 opt-in 开启。
+
+### 14.3 对旧结论的修正
+
+- §8.3 第 1 步「drag 会话提升到进程级」、第 2 步「启用 `viewports_enabled`」、第 4 步「`vgui_input_*` 带 window id」——**一次连续拖放不需要**（SDL 捕获已满足）。
+- §8.3 第 3 步「跨窗口 hit-test」仍需要，且已由 `crosswindow_dock_host::resolve_drop` 提供。
+- §13.2「一次连续拖放需 core 深改」「体验代价」——**已撤销**：`continuous_docking` 模式以极小 core 影响实现。
+- §13.3「目标区罗盘画在目标 Dock 内需改 core」——**已实现**（`vgui_dock_set_drop_preview`）。
+- §4 的 5 条硬阻塞与 §8.2 core 数据模型草图仍是"全局稳定 id / widget 序列化"层面的升级参考，本轮一次连续拖放**继续用字符串 id + 目标 ctx 重建**绕开，未触碰该模型。
+
+### 14.4 验证
+
+- `vgui_crosswindow_dock_demo`（`VGUI_XDOCK_SIM=1`）：**74/74**——在 §13.4 的 47 断言基础上新增 D1（连续直迁无浮动窗 / 源 dock 直接失去 / 目标 dock 直接获得 / 稳定 id / 目标 ctx 重建 / miss 不动 / 失败回滚）、D1 端到端（真实 `vgui_input_*` 拖拽 8 断言）、D2（目标预览 set/switch/clear）。
+- 回归：全量构建 0 警告；`ctest` 5/5（**截图基线零变化**——preview 分支默认不触发）；`vgui_model_test` 920/0；`vgui_editor_kit_test` PASS；`vgui_c_api_test` 32/0；B 22/22；A 21/21；`vgui_game_editor` 冒烟正常。
+
+---
+
+## 15. 实施记录：game_editor 跨窗口接线（2026-11-16）
+
+> 本节落实 §13.3 "game_editor 未接跨窗口 target" 的遗留项，同时修正其事实依据。
+
+### 15.1 事实修正：副窗口已不存在
+
+§13.3 当初给的理由是"GAME VIEW 专用副窗口（已含同 id 面板）语义混乱"。但当前工作区的副窗口已在 commit `bb0b445`（refactor: game_editor 面板拖出引擎迁移到 dock_floater_host，删宿主原型 ~450 行）中删除——GAME VIEW 现在是主窗口 Dock 里的一个普通面板，全文件只有一个 `wg->create()`。因此：
+
+- 原来的"同 id 面板 / 副窗口作为通用停靠目标语义冲突"前提**已不成立**；
+- 但 game_editor 现在**只有一个常驻窗口**（另一窗口是运行时浮动窗），没有第二个常驻 Dock 就无法真正演示跨窗口停靠。
+
+### 15.2 决策：仅接线，不新建窗口
+
+评估过三个方向（恢复通用第二窗口 / 恢复 GAME VIEW 专用副窗口 / 仅接线不建窗口），选择**仅接线**——不重新引入曾被有意删除的窗口架构。理由：恢复窗口属于架构决策、改动面大，且跨窗口能力已有 `vgui_crosswindow_dock_demo` 做完整通用验证；game_editor 的价值定位为"宿主如何接入跨窗口组件"的可运行范例。
+
+### 15.3 改动
+
+仅 `sample/vgui_game_editor.cpp`，核心组件与 core 均零改动：
+
+| 项 | 内容 |
+|---|---|
+| include / 成员 | 引入 `vgui_crosswindow_dock.h`；`editor_state` 持 `std::unique_ptr<crosswindow_dock_host> xdock`（延迟到 main 用 `wg` 构造） |
+| 注册 | `g.xdock->register_target(form, g.shell->dock(), "main", ui)`——唯一 target 即主 Dock，显式传 `ui` 不依赖 `viewport->ui` 时序 |
+| 钩子 | `resolve_target` 转发 `xdock.resolve_drop()`；`migrate_page` 按 id 特判 gameview，在目标 context `build_gameview_page()` 并同步 `gameview.ui/window/dock`（纹理生命周期复用既有 teardown/closing hook + `sync_texture`）；`migrated` 同步归属指针；`crosswindow_user=&g` |
+| 开关 | `dock_floater_opts::continuous_docking` 由 env `VGUI_XDOCK_WIRING=1` 开启，**默认关闭**——保持既有 B 两段式行为与所有现有自测不变 |
+
+### 15.4 安全退化
+
+只注册主 Dock 时，任何 drop 命中都满足 `drop.dock == main_dock_`，而 `try_migrate_at` / `direct_migrate` 明确排除源 Dock——跨窗口迁移路径**永不触发**，行为退化为 B 的"拖回即合并"。这是有意的：钩子完整接线，未来对第二个带 Dock 的窗口补一次 `register_target()` 即可激活跨窗口迁移 / 一次连续拖放，无需改任何钩子。
+
+### 15.5 验证
+
+- 默认 / `VGUI_XDOCK_WIRING=1` 两模式下 `VGUI_SIM_DRAG=1 VGUI_ALLOW_MERGE=1` 的 tear-off→MSAA→merge 闭环输出**逐字一致**：`after merge: floaters=0 gameview_ui_is_main=1 texture=bound`，证明接线对现有行为零影响。
+- 全量构建 0 警告；`ctest` 5/5（截图基线零变化）；`crosswindow_demo` 74/74；model 920/0；kit PASS；c_api 32/0；B 22/22；A 21/21。

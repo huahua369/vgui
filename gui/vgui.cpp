@@ -426,6 +426,12 @@ struct vgui_dock_state
 	vgui_dock_drop_target drop_targets[5];	// live drop feedback while dragging
 	int drop_target_count = 0;
 	int drop_target = -1;			// hovered entry in drop_targets
+	/* External cross-window drop preview (goal C D2): set by the host on the
+	 * TARGET dock while a panel from ANOTHER window is being dragged over it.
+	 * Drawn as a zone highlight + insertion line; -1 zone means inactive.  Kept
+	 * separate from drop_targets[] so the local drag compass is untouched. */
+	int preview_zone = -1;
+	int preview_index = -1;
 	float drag_offset_x = 0.0f, drag_offset_y = 0.0f;
 	float zone_size[4] = { -1.0f, -1.0f, -1.0f, -1.0f };	// <0 -> style
 	float zone_x[4] = {};
@@ -14090,6 +14096,34 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		}
 	}
 
+	/* External cross-window drop preview: a panel from ANOTHER window is being
+	 * dragged over this dock.  Paint the target zone + insertion line even
+	 * though this dock has no local drag of its own (drag_mode == 0). */
+	if (st->preview_zone >= 0 && st->preview_zone < 4)
+	{
+		const int pz = st->preview_zone;
+		const float px = st->zone_x[pz];
+		const float py = st->zone_y[pz];
+		const float pw = st->zone_w[pz];
+		const float ph = st->zone_h[pz];
+		if (pw > 0.0f && ph > 0.0f)
+		{
+			vgui_fill_rect(cb, vg, px, py, pw, ph, 0.0f,
+				vgui_alpha_color(ctx->theme.accent, 0.20f));
+			vgui_stroke_frame(cb, vg, px, py, pw, ph, 0.0f,
+				ctx->theme.accent, 2.0f);
+			const float bar_h = std::min(ds.tab_height, ph);
+			float line_x = px;
+			if (st->preview_index >= 0 &&
+				st->preview_index < (int)st->tabs[pz].size())
+				line_x = st->tabs[pz][(size_t)st->preview_index].x;
+			else if (!st->tabs[pz].empty())
+				line_x = st->tabs[pz].back().x + st->tabs[pz].back().w;
+			line_x = vgui_clampf(line_x, px, px + pw - 2.0f);
+			vgui_fill_rect(cb, vg, line_x, py, 2.0f, bar_h, 0.0f, ctx->theme.accent);
+		}
+	}
+
 	if (st->drag_mode == 2 || st->drag_mode == 3)
 	{
 		/* Drop compass: every reachable target stays visible while the drag
@@ -17321,6 +17355,8 @@ extern "C" {
 		st->drop_floating = 0;
 		st->drop_target_count = 0;
 		st->drop_target = -1;
+		st->preview_zone = -1;
+		st->preview_index = -1;
 		for (vgui_widget* page : pages)
 		{
 			vgui_dock_forget_focus(dock, page);
@@ -17619,6 +17655,23 @@ extern "C" {
 			return 1;
 		}
 		return 0;
+	}
+
+	void vgui_dock_set_drop_preview(vgui_widget* dock, vgui_dock_zone zone, int index)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		if ((int)zone < 0 || (int)zone >= 4)
+		{
+			st->preview_zone = -1;
+			st->preview_index = -1;
+		}
+		else
+		{
+			st->preview_zone = (int)zone;
+			st->preview_index = index;
+		}
+		if (dock) vgui_mark_dirty(dock);
 	}
 
 	void vgui_dock_on_close(vgui_widget* dock, vgui_item_fn fn, void* user)

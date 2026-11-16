@@ -42,6 +42,7 @@
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/backend/vgui_multiwindow.h>	// 多窗口帧循环（每窗口独立 rvg / 一帧一次提交）
 #include <vgui/backend/vgui_dock_windows.h>	// 面板拖出/合并引擎（Dock B 第一步）
+#include <vgui/backend/vgui_crosswindow_dock.h>	// 跨窗口 drop 命中（Dock C / 宿主接线范例）
 #include <vgui/vgui.h>
 #include <vgui/editor/vgui_editor_kit.h>
 #include "ovg_main.h"
@@ -371,6 +372,12 @@ struct editor_state
 	vgui_item_id gameview_panel = 0;
 	/* 面板拖出/合并引擎（tear-off 入队、浮动窗口生命周期、合并回收）。 */
 	dock_floater_host floater;
+	/* 跨窗口 drop 命中组件（Dock C）。当前 game_editor 只有一个常驻窗口，
+	 * 仅注册主 Dock 为 target——命中永远落在源 Dock，迁移路径按设计安全
+	 * 退化为 B 的“拖回即合并”。此处保留完整接线作为宿主接入范例：未来
+	 * 增加第二个带 Dock 的窗口时，只需对它 register_target() 即可激活
+	 * 跨窗口迁移 / 一次连续拖放，无需改动钩子。 */
+	std::unique_ptr<crosswindow_dock_host> xdock;
 	/* 主机/后端句柄缓存（main() 启动时填充，供 tear_off 回调与浮动窗口工厂
 	 * 使用）。 */
 	app_mgr* wg = nullptr;
@@ -3952,6 +3959,14 @@ int main()
 		g.gameview.ui = g.ui;
 	}
 
+	/* 跨窗口命中组件：构造并注册主 Dock 为唯一 drop target。game_editor
+	 * 当前只有一个常驻窗口，register_target 一个即可；下方的跨窗口钩子已
+	 * 完整接线，未来增加第二个带 Dock 的窗口时只需对它 register_target()
+	 * 即可激活跨窗口迁移 / 一次连续拖放，不必改动任何钩子。显式传 ui，
+	 * 不依赖 viewport->ui 的赋值时机。 */
+	g.xdock = std::make_unique<crosswindow_dock_host>(wg);
+	g.xdock->register_target(form, g.shell->dock(), "main", ui);
+
 	/* 面板拖出/合并引擎接线：GAME VIEW 面板的页面在面板所在 context 里
 	 * 重建（remove 模式），其余面板 detach 保留真实页 + 内置占位页。 */
 	dock_floater_host::hooks fhooks = {};
@@ -4012,8 +4027,55 @@ int main()
 			st->gameview.dock = nullptr;
 		}
 	};
+
+	/* 跨窗口迁移钩子（Dock C）。resolve 转发给命中组件；migrate_page 在
+	 * 目标 context 重建 GAME VIEW 真实页（widget 不能跨 context，且原生
+	 * 纹理已由 teardown_page 在源侧释放、下一帧 sync_texture 按新 owner
+	 * 重绑）；migrated 同步 GAME VIEW 的归属指针。当前只注册了主 Dock，
+	 * 这些钩子不会被真正触发，但保证加第二个窗口后零改动即可工作。 */
+	fhooks.crosswindow_user = &g;
+	fhooks.resolve_target = +[](float sx, float sy,
+		crosswindow_drop_result& out, void* user) -> bool
+	{
+		auto* st = static_cast<editor_state*>(user);
+		return st && st->xdock && st->xdock->resolve_drop(sx, sy, out);
+	};
+	fhooks.migrate_page = +[](vgui_context* target_ui,
+		vgui_widget* target_dock, const dock_floater_info& info,
+		const crosswindow_drop_result& drop, void* user) -> vgui_widget*
+	{
+		(void)drop;
+		auto* st = static_cast<editor_state*>(user);
+		if (st && info.id && std::strcmp(info.id, "gameview") == 0)
+		{
+			st->gameview.ui = target_ui;
+			st->gameview.window = drop.window;
+			st->gameview.dock = target_dock;
+			return build_gameview_page(target_ui, target_dock);
+		}
+		return nullptr;	/* 其余面板用组件内置占位页 */
+	};
+	fhooks.migrated = +[](const dock_floater_info& info,
+		const crosswindow_drop_result& drop, vgui_item_id panel,
+		vgui_widget* page, void* user)
+	{
+		(void)page;
+		auto* st = static_cast<editor_state*>(user);
+		if (st && info.id && std::strcmp(info.id, "gameview") == 0)
+		{
+			st->gameview_panel = panel;
+			st->gameview.ui = drop.ui;
+			st->gameview.window = drop.window;
+			st->gameview.dock = drop.dock;
+		}
+	};
+
+	dock_floater_opts fopts;
+	/* VGUI_XDOCK_WIRING=1 显式开启一次连续拖放；默认关闭，保持既有 B 的
+	 * 两段式行为与所有现有自测不变。单窗口下即使开启也会安全退化为合并。 */
+	fopts.continuous_docking = (std::getenv("VGUI_XDOCK_WIRING") != nullptr);
 	g.floater.attach(wg, &host, g.shell->dock(), form, familys, 16.0f,
-		dock_floater_opts{}, fhooks);
+		fopts, fhooks);
 
 	/* Restore Dock arrangement and floater rectangles after every panel
 	 * exists and the floater host is attached; queued tear-offs are created

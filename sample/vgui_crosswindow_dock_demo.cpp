@@ -9,6 +9,10 @@
 // Dock at a chosen zone/index via a deterministic request; asserts the panel
 // leaves the floater, appears in B, the source Dock loses it, and a forced
 // failure rolls the panel back to A.
+// D1 (assessment §14): one-shot continuous drag -- a still-docked panel released
+// over B migrates straight there with NO floating window (continuous_docking),
+// plus an end-to-end case driven through the real core vgui_input_* chain.
+// D2: target-dock drop compass set/switch/clear via the core preview API.
 //
 // Run interactively:      vgui_crosswindow_dock_demo.exe
 // Run as a bounded probe: VGUI_XDOCK_SIM=1 vgui_crosswindow_dock_demo.exe
@@ -96,6 +100,8 @@ struct probe_state
 	int closing_calls = 0;
 	vgui_context* last_migrate_ui = nullptr;
 	vgui_context* last_restore_ui = nullptr;
+	/* D1: how many times the release-point resolver was invoked. */
+	int resolve_calls = 0;
 };
 
 /* C2 hooks.  resolve just forwards to the C1 component. */
@@ -103,6 +109,7 @@ static bool probe_resolve(float sx, float sy, crosswindow_drop_result& out,
 	void* user)
 {
 	auto* st = static_cast<probe_state*>(user);
+	if (st) ++st->resolve_calls;
 	return st && st->xdock && st->xdock->resolve_drop(sx, sy, out);
 }
 
@@ -203,6 +210,9 @@ int main()
 		{ "a-left",  "A LEFT",  0xFF3A1B1B, VGUI_DOCK_LEFT },
 		{ "a-ctr-1", "A C1",    0xFF1B243A, VGUI_DOCK_CENTER },
 		{ "a-ctr-2", "A C2",    0xFF2A243A, VGUI_DOCK_CENTER },
+		{ "a-ctr-3", "A C3",    0xFF1B3A3A, VGUI_DOCK_CENTER }, /* D1 continuous */
+		{ "a-ctr-4", "A C4",    0xFF3A3A1B, VGUI_DOCK_CENTER }, /* D1 rollback  */
+		{ "a-e2e",   "A E2E",   0xFF2A3A2A, VGUI_DOCK_CENTER }, /* D1 real drag */
 		{ "a-bot",   "A BOTTOM",0xFF1B3A24, VGUI_DOCK_BOTTOM },
 	};
 	const def defs_b[] = {
@@ -255,9 +265,11 @@ int main()
 		fh.crosswindow_user = &probe;
 		fh.lifecycle_user = &probe;
 
+		dock_floater_opts fopts;
+		fopts.continuous_docking = true;	/* D1: enable one-shot direct migration */
 		dock_floater_host floater;
 		check(floater.attach(wg, &host, a.dock, a.win, familys, 16.0f,
-			dock_floater_opts{}, fh), "attach floater host on window A");
+			fopts, fh), "attach floater host on window A");
 
 		/* Force one layout pass so zone/tab rects are valid before synthesis. */
 		host.begin_frame(1.0f / 60.0f);
@@ -372,6 +384,121 @@ int main()
 			floater.request_migrate(a_ctr1, stale);
 			check(floater.pending_migration_count() == pend,
 				"invalid drop (no target ui) is not queued");
+
+			/* ---------- D1: one-shot continuous drag (no floater) ---------- */
+			/* A still-docked panel released over B's Dock migrates straight
+			 * there: no floating window is ever created. */
+			const int b_count_d1 = vgui_dock_get_count(b.dock);
+			const int a_count_d1 = vgui_dock_get_count(a.dock);
+			const vgui_item_id a_ctr3 = vgui_dock_find(a.dock, "a-ctr-3");
+			check(a_ctr3 != 0 && !floater.floating(a_ctr3),
+				"D1 source panel a-ctr-3 is still docked (no floater)");
+			const int resolve_before = probe.resolve_calls;
+			floater.request_direct_migrate(a_ctr3, sx, sy); /* sx,sy = B point */
+			check(floater.pending_direct_migration_count() == 1,
+				"D1 direct migration queued from a docked panel");
+			floater.tick();
+			check(probe.resolve_calls >= resolve_before + 1,
+				"D1 release point re-resolved to a target");
+			check(!floater.floating(a_ctr3),
+				"D1 no floating window created for direct migration");
+			check(vgui_dock_get_count(a.dock) == a_count_d1 - 1,
+				"D1 source dock A lost the panel directly");
+			check(vgui_dock_get_count(b.dock) == b_count_d1 + 1,
+				"D1 target dock B gained the panel directly");
+			check(vgui_dock_find(b.dock, "a-ctr-3") != 0,
+				"D1 directly migrated panel keeps its stable string id");
+			check(probe.last_migrate_ui == b.ui,
+				"D1 page rebuilt in target context B");
+
+			/* D1 miss: a screen point outside every window leaves the panel
+			 * exactly where it was (no detach, no loss). */
+			const int a_count_miss = vgui_dock_get_count(a.dock);
+			const vgui_item_id a_ctr4 = vgui_dock_find(a.dock, "a-ctr-4");
+			check(a_ctr4 != 0, "D1 source panel a-ctr-4 present for miss test");
+			floater.request_direct_migrate(a_ctr4, -5000.0f, -5000.0f);
+			floater.tick();
+			check(vgui_dock_get_count(a.dock) == a_count_miss,
+				"D1 miss leaves source dock panel count unchanged");
+			check(vgui_dock_find(a.dock, "a-ctr-4") != 0 &&
+				!floater.floating(a_ctr4),
+				"D1 miss keeps the panel docked in A");
+
+			/* D1 failure: target refuses a cross-context page -> rollback. */
+			const int b_count_fail = vgui_dock_get_count(b.dock);
+			probe.force_fail = true;
+			floater.request_direct_migrate(a_ctr4, sx, sy);
+			floater.tick();
+			probe.force_fail = false;
+			check(vgui_dock_get_count(b.dock) == b_count_fail,
+				"D1 failed direct migration did not add to target B");
+			check(vgui_dock_find(a.dock, "a-ctr-4") != 0,
+				"D1 failed direct migration rolled back into source A");
+			check(probe.last_restore_ui == a.ui,
+				"D1 rollback rebuilt the page in source context A");
+
+			/* D1 end-to-end: drive the REAL core drag state machine.  Under SDL
+			 * capture the mouse-up lands on the SOURCE context with a local
+			 * coord whose screen equivalent is over window B; core detects the
+			 * out-of-window release and fires on_tear_off, whose continuous
+			 * branch must redirect to a direct migration (no floater). */
+			{
+				const vgui_item_id panel = vgui_dock_find(a.dock, "a-e2e");
+				check(panel != 0, "D1 e2e panel a-e2e present");
+				host.begin_frame(1.0f / 60.0f);
+				host.draw_all();
+				float tx = 0, ty = 0, tw = 0, th = 0;
+				check(vgui_dock_get_tab_rect(a.dock, panel, &tx, &ty, &tw, &th) && tw > 0,
+					"D1 e2e source tab rect available");
+				const float cx = tx + tw * 0.5f, cy = ty + th * 0.5f;
+				/* Screen point inside B, converted to A-local render px. */
+				float bsx = 0, bsy = 0;
+				check(xdock.screen_point_for(b.win, b.dock, VGUI_DOCK_CENTER, -1,
+					bsx, bsy), "D1 e2e synthesise B screen point");
+				float lx = 0, ly = 0;
+				vgui_dock_coords::screen_to_render(a.win, bsx, bsy, lx, ly);
+				const int b_count_e2e = vgui_dock_get_count(b.dock);
+				const int migrations_before = probe.migrated_calls;
+
+				vgui_input_mouse_move(a.ui, cx, cy);
+				vgui_input_mouse_down(a.ui, 1, cx, cy, 1);
+				vgui_input_mouse_move(a.ui, cx + 14.0f, cy); /* cross threshold */
+				vgui_input_mouse_move(a.ui, lx, ly);          /* over B */
+				vgui_input_mouse_up(a.ui, 1, lx, ly, 1);      /* release */
+				floater.tick();
+
+				check(probe.migrated_calls == migrations_before + 1,
+					"D1 e2e real mouse-up fired direct migration");
+				check(!floater.floating(panel),
+					"D1 e2e no floating window created");
+				check(vgui_dock_find(b.dock, "a-e2e") != 0,
+					"D1 e2e panel landed in target dock B");
+				check(vgui_dock_get_count(b.dock) == b_count_e2e + 1,
+					"D1 e2e target dock count increased");
+				check(vgui_dock_find(a.dock, "a-e2e") == 0,
+					"D1 e2e panel left source dock A");
+			}
+
+			/* ---------- D2: target-dock drop compass wiring ---------- */
+			/* The host paints a preview on the TARGET dock via the core API.
+			 * Verify target tracking, target switching and clear. */
+			float hlx = 0, hly = 0;
+			check(xdock.screen_point_for(b.win, b.dock, VGUI_DOCK_CENTER, -1,
+				hlx, hly), "D2 synthesise target screen point");
+			crosswindow_drop_result hl;
+			check(xdock.resolve_drop(hlx, hly, hl) && hl.dock == b.dock,
+				"D2 resolve preview target dock B");
+			hl.zone = VGUI_DOCK_CENTER;
+			hl.index = 0;
+			floater.set_drop_preview(hl);
+			check(floater.drop_preview_dock() == b.dock,
+				"D2 set_drop_preview tracks target dock B");
+			floater.set_drop_preview(hl); /* idempotent re-set */
+			check(floater.drop_preview_dock() == b.dock,
+				"D2 re-setting the same target keeps one preview dock");
+			floater.clear_drop_preview();
+			check(floater.drop_preview_dock() == nullptr,
+				"D2 clear_drop_preview releases the target dock");
 
 			printf("SELFTEST %s (%d pass, %d fail)\n",
 				g_fail ? "FAIL" : "PASS", g_pass, g_fail);

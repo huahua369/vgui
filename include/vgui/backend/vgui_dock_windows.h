@@ -71,6 +71,14 @@ struct dock_floater_opts
 	int settle_frames = 8;		/* creation-jitter guard for the move detector */
 	const char* window_title_prefix = "vgui floater · ";
 	const char* window_title_suffix = "";	/* appended after the panel title */
+	/* One-shot continuous cross-window drag (D1).  When true, a tab released
+	 * over ANOTHER registered window's Dock migrates straight there from the
+	 * source Dock -- no floating OS window is created as a transport.  The
+	 * still-docked panel is detached only after the target hit is confirmed,
+	 * so a miss or failure keeps the panel in place.  Requires the
+	 * resolve_target/migrate_page hooks; defaults off to preserve the
+	 * two-stage B/C behaviour. */
+	bool continuous_docking = false;
 };
 
 struct dock_floater_info
@@ -220,6 +228,15 @@ public:
 	{
 		if (!mgr_ || !main_dock_)
 			return;
+		/* D1 direct migrations run first: at release the panel is still docked
+		 * and core has already cleared its drag state, so this is the only
+		 * window where the source panel id is still resolvable. */
+		while (!pending_direct_migrations_.empty())
+		{
+			const direct_migrate_request req = pending_direct_migrations_.front();
+			pending_direct_migrations_.pop_front();
+			direct_migrate(req.panel, req.screen_x, req.screen_y);
+		}
 		if (!pending_tear_offs_.empty())
 		{
 			const tear_off_request req = pending_tear_offs_.front();
@@ -257,6 +274,8 @@ public:
 	{
 		pending_tear_offs_.clear();
 		pending_migrations_.clear();
+		pending_direct_migrations_.clear();
+		clear_drop_preview();
 		for (auto& [panel, fw] : floaters_)
 			close_floater_window(fw);
 		floaters_.clear();
@@ -279,11 +298,47 @@ public:
 		pending_migrations_.push_back(req);
 	}
 	size_t pending_migration_count() const { return pending_migrations_.size(); }
+
+	/* D1: queue a continuous cross-window direct migration for a panel that is
+	 * STILL DOCKED in the source Dock (no floater needed).  Deterministic probe
+	 * entry point; resolve_target must be wired.  The screen point is resolved
+	 * again in tick() so the target is current. */
+	void request_direct_migrate(vgui_item_id panel, float screen_x, float screen_y)
+	{
+		if (!hooks_.resolve_target) return;
+		direct_migrate_request req;
+		req.panel = panel;
+		req.screen_x = screen_x;
+		req.screen_y = screen_y;
+		pending_direct_migrations_.push_back(req);
+	}
+	size_t pending_direct_migration_count() const
+	{
+		return pending_direct_migrations_.size();
+	}
 	/* Latest cross-window drop probe from this tick (valid() when the cursor
 	 * is over a registered Dock).  Hosts may read it after tick() to draw a
 	 * target highlight in the floater window.  Reset when no target is under
 	 * the cursor. */
 	const crosswindow_drop_result& last_resolve() const { return last_resolve_; }
+
+	/* D2: paint a drop compass on the target Dock while a continuous drag is
+	 * over it.  Tracks the last-highlighted dock so switching targets or ending
+	 * the drag clears the previous highlight. */
+	void set_drop_preview(const crosswindow_drop_result& drop)
+	{
+		if (preview_dock_ && preview_dock_ != drop.dock)
+			vgui_dock_set_drop_preview(preview_dock_, (vgui_dock_zone)-1, -1);
+		vgui_dock_set_drop_preview(drop.dock, drop.zone, drop.index);
+		preview_dock_ = drop.dock;
+	}
+	void clear_drop_preview()
+	{
+		if (preview_dock_)
+			vgui_dock_set_drop_preview(preview_dock_, (vgui_dock_zone)-1, -1);
+		preview_dock_ = nullptr;
+	}
+	vgui_widget* drop_preview_dock() const { return preview_dock_; }
 	/* Queues a tear-off through the same path the callbacks use (probes and
 	 * tests): one request is processed per tick(). */
 	void request_tear_off(vgui_item_id panel)
@@ -360,6 +415,16 @@ private:
 		crosswindow_drop_result drop;
 	};
 
+	/* D1 continuous drag: the panel is still docked in main_dock_ when the
+	 * release is resolved.  Carries the screen point so tick() can re-resolve
+	 * deterministically after the frame. */
+	struct direct_migrate_request
+	{
+		vgui_item_id panel = 0;
+		float screen_x = 0.0f;
+		float screen_y = 0.0f;
+	};
+
 	struct floater
 	{
 		os_window* window = nullptr;
@@ -395,6 +460,28 @@ private:
 			? self->main_window_->pixel_ratio() : 1.0f;
 		self->tear_off_sx_ = (float)ax + lx / pr;
 		self->tear_off_sy_ = (float)ay + ly / pr;
+
+		/* D1 continuous drag: the release point (a cross-window drop, thanks
+		 * to SDL capture keeping the events on the source context) may sit on
+		 * ANOTHER registered Dock.  Probe it here; if it hits, defer a direct
+		 * migration instead of building a floating window.  The panel is still
+		 * docked at this instant, so direct_migrate() can detach it safely. */
+		if (self->opts_.continuous_docking && self->hooks_.resolve_target)
+		{
+			crosswindow_drop_result drop;
+			if (self->hooks_.resolve_target(self->tear_off_sx_, self->tear_off_sy_,
+				drop, self->hooks_.crosswindow_user) &&
+				drop.valid() && drop.dock != self->main_dock_ && drop.ui)
+			{
+				direct_migrate_request req;
+				req.panel = panel;
+				req.screen_x = self->tear_off_sx_;
+				req.screen_y = self->tear_off_sy_;
+				self->pending_direct_migrations_.push_back(req);
+				return;
+			}
+		}
+
 		tear_off_request req;
 		req.panel = panel;
 		self->pending_tear_offs_.push_back(req);
@@ -408,6 +495,11 @@ private:
 		(void)lx;
 		(void)ly;
 		if (!self)
+			return;
+		/* Continuous mode keeps the panel docked until mouse-up resolves a
+		 * cross-window target; a live tear-off here would build a floating
+		 * window and defeat one-shot dragging. */
+		if (self->opts_.continuous_docking && self->hooks_.resolve_target)
 			return;
 		float mx = 0, my = 0;
 		SDL_GetGlobalMouseState(&mx, &my);
@@ -906,6 +998,96 @@ private:
 		(void)target_id;
 	}
 
+	/* D1: one-shot continuous drag.  The panel is still docked in main_dock_
+	 * (no floating window exists).  Resolve the release screen point; if it
+	 * lands on a DIFFERENT registered Dock, detach the panel from the source,
+	 * rebuild its page in the TARGET context and add it there.  A miss or a
+	 * target that refuses the panel rolls back into the source Dock, so the
+	 * panel can never be lost.  Returns true on success. */
+	bool direct_migrate(vgui_item_id panel, float screen_x, float screen_y)
+	{
+		if (!main_dock_ || !main_window_alive() || !hooks_.resolve_target)
+			return false;
+		if (vgui_dock_get_index(main_dock_, panel) < 0)
+			return false;	/* already gone / torn off elsewhere */
+
+		crosswindow_drop_result drop;
+		if (!hooks_.resolve_target(screen_x, screen_y, drop,
+			hooks_.crosswindow_user))
+		{
+			last_resolve_.reset();
+			return false;
+		}
+		last_resolve_ = drop;
+		if (!drop.valid() || drop.dock == main_dock_ || !drop.ui)
+			return false;
+		clear_drop_preview();
+
+		/* Snapshot metadata BEFORE detach -- get_title/get_id hand out c_str
+		 * pointers into the dock's panel vector. */
+		dock_floater_info info;
+		std::string title_str;
+		std::string id_str;
+		const char* title_raw = vgui_dock_get_title(main_dock_, panel);
+		const char* id_raw = vgui_dock_get_id(main_dock_, panel);
+		title_str = title_raw ? title_raw : "PANEL";
+		id_str = id_raw ? id_raw : "";
+		info.title = title_str.c_str();
+		info.id = id_str.c_str();
+		info.origin_zone = vgui_dock_get_zone(main_dock_, panel);
+		info.panel = panel;
+		info.window = main_window_;
+
+		/* Same resource contract as the tear-off path: release per-panel
+		 * native resources against the source context, then detach (or remove
+		 * when the page cannot survive the switch). */
+		if (hooks_.teardown_page)
+			hooks_.teardown_page(info, hooks_.lifecycle_user);
+		const bool remove = hooks_.remove_page &&
+			hooks_.remove_page(info, hooks_.lifecycle_user);
+		vgui_widget* orphan_page = remove
+			? (vgui_dock_remove(main_dock_, panel), nullptr)
+			: vgui_dock_detach(main_dock_, panel);
+
+		/* Rebuild the real page in the target context -- widgets cannot move
+		 * between contexts. */
+		vgui_widget* page = nullptr;
+		if (hooks_.migrate_page && drop.ui)
+			page = hooks_.migrate_page(drop.ui, drop.dock, info, drop,
+				hooks_.crosswindow_user);
+		if (!page)
+			page = build_placeholder_page(drop.ui, drop.dock, title_str.c_str());
+
+		vgui_dock_panel_desc desc;
+		vgui_dock_panel_desc_default(&desc);
+		desc.id = !id_str.empty() ? id_str.c_str() : nullptr;
+		desc.title = title_str.c_str();
+		desc.panel = page;
+		desc.zone = drop.zone;
+		desc.index = drop.index;
+		const vgui_item_id added = vgui_dock_add(drop.dock, &desc);
+
+		if (!added)
+		{
+			if (page) vgui_widget_destroy(page);
+			if (orphan_page) vgui_widget_destroy(orphan_page);
+			roll_back(info, nullptr, true, info.origin_zone, title_str);
+		}
+		else if (orphan_page)
+		{
+			/* Target accepted the rebuilt page; the source orphan is dead
+			 * weight (widgets cannot cross contexts). */
+			vgui_widget_destroy(orphan_page);
+		}
+
+		vgui_dock_end_drag(main_dock_);
+		if (hooks_.migrated)
+			hooks_.migrated(info, drop, added,
+				added ? vgui_dock_get_panel(drop.dock, added) : nullptr,
+				hooks_.crosswindow_user);
+		return added != 0;
+	}
+
 	/* Returns true when a cross-window target (a DIFFERENT registered Dock)
 	 * is under the given global screen point and a migration was performed.
 	 * The source Dock is intentionally excluded: it is handled by the normal
@@ -996,7 +1178,29 @@ private:
 		{
 			drag_rect_valid_ = false;
 			drag_panel_seen_ = 0;
+			/* D2: no live drag -> clear any target-compass preview. */
+			clear_drop_preview();
 			return;
+		}
+
+		/* D1: continuous mode never builds a transport floater.  Probe the
+		 * current global point each frame so the host can highlight the target
+		 * Dock (D2); the mouse-up callback performs the actual migration. */
+		if (opts_.continuous_docking && hooks_.resolve_target)
+		{
+			crosswindow_drop_result probe;
+			if (hooks_.resolve_target(mx, my, probe, hooks_.crosswindow_user) &&
+				probe.valid() && probe.dock != main_dock_ && probe.ui)
+			{
+				last_resolve_ = probe;
+				set_drop_preview(probe);
+			}
+			else
+			{
+				last_resolve_.reset();
+				clear_drop_preview();
+			}
+			return; /* suppress the early tear-off enqueue below */
 		}
 		if (drag_panel_seen_ != dragging)
 		{
@@ -1155,7 +1359,9 @@ private:
 	std::map<vgui_item_id, floater> floaters_;
 	std::deque<tear_off_request> pending_tear_offs_;
 	std::deque<migrate_request> pending_migrations_;
+	std::deque<direct_migrate_request> pending_direct_migrations_;
 	crosswindow_drop_result last_resolve_;
+	vgui_widget* preview_dock_ = nullptr;	/* D2: dock currently showing drop preview */
 	float tear_off_sx_ = 0.0f, tear_off_sy_ = 0.0f;
 
 	bool live_drag_ = false;

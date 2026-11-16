@@ -1435,6 +1435,12 @@ extern "C" {
 	 * The tab rect of a floating panel is its title bar. */
 	VGUI_API int vgui_dock_get_zone_rect(vgui_widget* dock, vgui_dock_zone zone, float* x, float* y, float* width, float* height);
 	VGUI_API int vgui_dock_get_tab_rect(vgui_widget* dock, vgui_item_id panel, float* x, float* y, float* width, float* height);
+	/* External cross-window drop preview: a host dragging a panel from ANOTHER
+	 * window over this dock calls this to paint a zone highlight + insertion
+	 * line on the target dock (the normal compass only renders for the source
+	 * dock's own drag).  zone < 0 clears the preview.  Purely visual state; it
+	 * does not move any panel and is cleared by vgui_dock_clear(). */
+	VGUI_API void vgui_dock_set_drop_preview(vgui_widget* dock, vgui_dock_zone zone, int index);
 
 	/* on_close runs after the panel has been hidden; the panel remains valid.
 	 * on_activate runs when a tab becomes active or a floating frame is raised.
