@@ -674,6 +674,56 @@ int main()
 			wg->request_render(main_win);
 			check(host.end_frame() == 1,
 				"request_render repaints exactly the requested window");
+
+			/* Footer labels are visually inert: moving within one must not
+			 * advance the paint revision or keep hover easing alive. */
+			for (int i = 0; i < 32; ++i)
+			{
+				host.begin_frame(0.016f);
+				host.end_frame();
+			}
+			float sx = 0, sy = 0, sw = 0, sh = 0;
+			vgui_widget_get_rect(g->sort_info, &sx, &sy, &sw, &sh);
+			if (sw > 0 && sh > 0)
+			{
+				const float x = sx + sw * 0.5f;
+				const float y = sy + sh * 0.5f;
+				vgui_input_mouse_move(g->ui, x, y);
+				for (int i = 0; i < 60; ++i)
+				{
+					host.begin_frame(0.016f);
+					host.end_frame();
+				}
+				vgui_input_mouse_move(g->ui, x + 3.0f, y);
+				check(!wg->should_render(main_win),
+					"no-op motion over footer label does not dirty");
+				check(host.end_frame() == 0,
+					"no-op motion over footer label submits no frame");
+			}
+			else
+				check(false, "no-op motion over footer label (no rect)");
+
+			/* Same rule inside one table cell: hover changes only when the
+			 * hovered row/column actually changes. */
+			float cx = 0, cy = 0, cw = 0, ch = 0;
+			if (g->table.cell_rect(0, 1, &cx, &cy, &cw, &ch) && cw > 8)
+			{
+				const float x = cx + cw * 0.5f;
+				const float y = cy + ch * 0.5f;
+				vgui_input_mouse_move(g->ui, x, y);
+				for (int i = 0; i < 60; ++i)
+				{
+					host.begin_frame(0.016f);
+					host.end_frame();
+				}
+				vgui_input_mouse_move(g->ui, x + 2.0f, y);
+				check(!wg->should_render(main_win),
+					"no-op motion inside one table cell does not dirty");
+				check(host.end_frame() == 0,
+					"no-op motion inside one table cell submits no frame");
+			}
+			else
+				check(false, "no-op motion inside one table cell (no rect)");
 		}
 
 		FpsCounter fps;

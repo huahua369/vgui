@@ -700,6 +700,45 @@ struct vgui_widget
 	float text_input_rect[4] = { 0, 0, 0, 0 };
 };
 
+/* Some widgets keep a hovered flag for tooltip / event routing but paint
+ * exactly the same pixels when it changes.  Easing that flag and bumping the
+ * paint revision makes an on-demand backend repaint for no visible reason
+ * (e.g. moving the pointer over the spreadsheet footer labels).
+ *
+ * Keep this list conservative: anything with item hover, a hover highlight,
+ * or an unknown custom painter stays in the animated set. */
+static bool vgui_widget_has_hover_paint_state(const vgui_widget* w)
+{
+	if (!w) return false;
+	switch (w->kind)
+	{
+	case VGUI_PANEL:
+	case VGUI_LABEL:
+	case VGUI_SEPARATOR:
+	case VGUI_IMAGE:
+	case VGUI_PROGRESS:
+	case VGUI_EDIT:
+	case VGUI_CHECKBOX:
+	case VGUI_RADIO:
+	case VGUI_SWITCH:
+	case VGUI_SLIDER:
+		return false;
+	default:
+		return true;
+	}
+}
+
+static bool vgui_widget_has_press_paint_state(const vgui_widget* w)
+{
+	return w && (w->kind == VGUI_BUTTON || w->kind == VGUI_CUSTOM);
+}
+
+static bool vgui_widget_has_check_paint_state(const vgui_widget* w)
+{
+	return w && (w->kind == VGUI_CHECKBOX || w->kind == VGUI_RADIO ||
+		w->kind == VGUI_SWITCH);
+}
+
 struct vgui_tooltip_state
 {
 	vgui_widget* candidate = nullptr;	// hover target being timed
@@ -9652,13 +9691,15 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	bool over_scrollbar = vgui_scrollbar_hit(h, x, y, &scrollbar_widget, &scrollbar_axis);
 	if (ctx->hot != h)
 	{
-		/* Hover entering/leaving a widget usually changes its painted state
-		 * (button highlight, border, ...).  Bump the revision so an on-demand
-		 * backend repaints; setters alone cannot cover this because hover is
-		 * core state, not a widget property setter.  The settle frames added
-		 * by the backend cover the hover_anim easing that follows. */
-		++ctx->paint_revision;
 		vgui_widget* old = ctx->hot;
+		/* Hover entering/leaving a widget changes painted state only for
+		 * controls that actually draw a hover highlight.  Inert widgets such
+		 * as labels and panels keep the same pixels, so bumping the revision
+		 * here would make an on-demand window redraw on every pointer pass
+		 * through a status bar or footer. */
+		if (vgui_widget_has_hover_paint_state(old) ||
+			vgui_widget_has_hover_paint_state(h))
+			++ctx->paint_revision;
 		if (old && ctx->alive.count(old))
 		{
 			old->hovered = 0;
@@ -14436,11 +14477,20 @@ static void vgui_update_impl(vgui_context* ctx, float dt)
 	for (vgui_widget* w : ctx->all_widgets)
 	{
 		if (!w || !ctx->alive.count(w) || w->destroy_pending) continue;
-		float hover_target = w->hovered ? 1.0f : 0.0f;
-		float press_target = w->pressed ? 1.0f : 0.0f;
-		w->hover_anim += (hover_target - w->hover_anim) * k;
-		w->press_anim += (press_target - w->press_anim) * k;
-		if (w->kind == VGUI_CHECKBOX || w->kind == VGUI_RADIO || w->kind == VGUI_SWITCH)
+		const float hover_target = w->hovered ? 1.0f : 0.0f;
+		const float press_target = w->pressed ? 1.0f : 0.0f;
+		/* Inert widgets do not paint hover/press easing.  Snap their state so
+		 * neither this update nor vgui_context_has_active_animation() keeps
+		 * requesting frames that cannot change a single pixel. */
+		if (vgui_widget_has_hover_paint_state(w))
+			w->hover_anim += (hover_target - w->hover_anim) * k;
+		else
+			w->hover_anim = hover_target;
+		if (vgui_widget_has_press_paint_state(w))
+			w->press_anim += (press_target - w->press_anim) * k;
+		else
+			w->press_anim = press_target;
+		if (vgui_widget_has_check_paint_state(w))
 		{
 			float ct = w->checked ? 1.0f : 0.0f;
 			w->check_anim += (ct - w->check_anim) * k;
@@ -20405,17 +20455,22 @@ extern "C" {
 				return 1;
 		}
 		/* Hover / press / check easing is advanced in vgui_update without any
-		 * setter call.  Keep repainting while any widget's eased value has not
-		 * converged to its target, so a hover highlight triggered by pointer
-		 * motion finishes its transition under on-demand rendering.  The 0.004
-		 * epsilon matches a visually-settled threshold at the default easing
-		 * speed and avoids an infinite tail from exponential decay. */
+		 * setter call.  Keep repainting only while a *visible* eased value has
+		 * not converged, so a real hover highlight finishes its transition but
+		 * an inert label under the cursor does not generate settle frames.
+		 * The 0.004 epsilon matches a visually-settled threshold at the default
+		 * easing speed and avoids an infinite tail from exponential decay. */
 		const float eps = 0.004f;
 		for (vgui_widget* w : ctx->all_widgets)
 		{
 			if (!w || !ctx->alive.count(w) || w->destroy_pending) continue;
-			if (std::fabs(w->hover_anim - (w->hovered ? 1.0f : 0.0f)) > eps ||
-				std::fabs(w->press_anim - (w->pressed ? 1.0f : 0.0f)) > eps ||
+			if (vgui_widget_has_hover_paint_state(w) &&
+				std::fabs(w->hover_anim - (w->hovered ? 1.0f : 0.0f)) > eps)
+				return 1;
+			if (vgui_widget_has_press_paint_state(w) &&
+				std::fabs(w->press_anim - (w->pressed ? 1.0f : 0.0f)) > eps)
+				return 1;
+			if (vgui_widget_has_check_paint_state(w) &&
 				std::fabs(w->check_anim - (w->checked ? 1.0f : 0.0f)) > eps)
 				return 1;
 		}
