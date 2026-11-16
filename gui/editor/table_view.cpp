@@ -1043,7 +1043,14 @@ namespace vgui_editor_kit {
 			content_x >= m.body_width || content_y < m.header_height ||
 			content_y >= m.header_height + m.body_height)
 			return {};
-		const int column = column_at(content_x + scroll_x_);
+		int column = column_at(content_x + scroll_x_);
+		/* When the body is wider than the sum of all columns there is empty
+		 * space to the right of the last column (no horizontal scrollbar).
+		 * Clamp to the last column so a click/hover/double-click in that gap
+		 * still targets the row under the cursor instead of being swallowed.
+		 * The boundary check above already excludes scrollbars. */
+		if (column < 0 && !columns_.empty())
+			column = (int)columns_.size() - 1;
 		if (column < 0)
 			return {};
 		const std::size_t display = row_at(content_y - m.header_height +

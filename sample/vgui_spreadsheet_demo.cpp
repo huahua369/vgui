@@ -529,6 +529,29 @@ static void run_probe()
 	/* Virtualization: painted rows are far fewer than total. */
 	check(g->table.last_render_cell_queries() < 500,
 		"paint queries only visible cells (virtualized)");
+
+	/* Right-gap hit testing: the table body is wider than the sum of all
+	 * columns (920px of columns in a ~1180px window), leaving empty space to
+	 * the right of the last column.  A click there must still select the row
+	 * under the cursor instead of being swallowed by hit_test returning none. */
+	{
+		float lx = 0, ly = 0, lw = 0, lh = 0;
+		const int last_col = (int)g->table.column_count() - 1;
+		if (g->table.cell_rect(0, last_col, &lx, &ly, &lw, &lh) && lw > 0)
+		{
+			const float cx = lx + lw + 40.0f;  /* right of last col, still in body */
+			const float cy = ly + lh * 0.5f;   /* centre of row 0 */
+			g->table.clear_selection();
+			vgui_input_mouse_move(g->ui, cx, cy);
+			vgui_input_mouse_down(g->ui, 1, cx, cy, 1);
+			vgui_input_mouse_up(g->ui, 1, cx, cy, 1);
+			const table_cell sel = g->table.selected_cell();
+			check(sel.valid() && sel.row == 0 && sel.column == last_col,
+				"right-gap click selects the row under cursor");
+		}
+		else
+			check(false, "right-gap click selects the row under cursor (no rect)");
+	}
 }
 
 /* ------------------------------------------------------------------------- */
