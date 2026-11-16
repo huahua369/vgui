@@ -2151,6 +2151,20 @@ extern "C" {
 	VGUI_API void vgui_draw(vgui_context* ctx, struct ovg_ctx_cb* cb, struct rvg_t* vg);
 
 	/* ------------------------------------------------------------------------- */
+	/* On-demand rendering hints                                                   */
+	/* ------------------------------------------------------------------------- */
+	/* Monotonic counter bumped whenever widget content changes (set_text,
+	 * set_value, set_checked, additions/removals, theme/scale changes, ...).
+	 * A backend that renders only on change can snapshot this once per repaint
+	 * and skip frames where it is unchanged.  Never resets, starts at 0. */
+	VGUI_API uint64_t vgui_context_paint_revision(const vgui_context* ctx);
+	/* Returns non-zero while the context has time-based visual activity that
+	 * needs continuous frames even when no content setter was called:
+	 * focused edit caret blink, toasts, floating text, visible tooltip, an open
+	 * menu/popup/dialog/modal, or a drag in progress. */
+	VGUI_API int vgui_context_has_active_animation(const vgui_context* ctx);
+
+	/* ------------------------------------------------------------------------- */
 	/* Reactive / declarative data binding (optional layer; see docs)            */
 	/* ------------------------------------------------------------------------- */
 	/* Bi-directional binding links a widget property to a model field so the two

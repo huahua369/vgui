@@ -7,6 +7,9 @@
 // Run interactively:      vgui_multiwindow_demo.exe
 // Run as a bounded probe: VGUI_MW_FRAMES=90 vgui_multiwindow_demo.exe
 //   (renders 90 frames, prints SELFTEST lines, exits with 0/1)
+// On-demand self-test:    VGUI_ONDEMAND_SIM=1 vgui_multiwindow_demo.exe
+//   (verifies that only changed windows are submitted, per-window control,
+//    runtime toggling and idle pacing; exits with 0/1)
 //
 // The probe needs a real GPU window; it returns 77 (ctest "skip") when the
 // GPU device or a window cannot be created.
@@ -99,6 +102,10 @@ int main()
 	int max_frames = 0;
 	if (const char* env = std::getenv("VGUI_MW_FRAMES"); env && *env)
 		max_frames = std::atoi(env);
+	const bool ondemand_sim = std::getenv("VGUI_ONDEMAND_SIM") != nullptr;
+	/* The on-demand assertions run before the main loop; bound the loop so the
+	 * SIM invocation exits on its own (probe uses the same mechanism). */
+	if (ondemand_sim && max_frames <= 0) max_frames = 3;
 	const bool probe = max_frames > 0;
 
 	int samples = 4;
@@ -153,6 +160,84 @@ int main()
 			"each window has a private rvg canvas");
 		check(win_a->viewport->io.mks != win_b->viewport->io.mks,
 			"key state is per window");
+
+		/* ---- On-demand rendering self-test --------------------------------
+		 * Pure CPU-level assertions on the should_render decision plus real
+		 * frame submissions; no synthetic input needed. */
+		if (ondemand_sim)
+		{
+			check(!wg->get_render_on_change(), "on-demand master off by default");
+			check(wg->should_render(win_a) && wg->should_render(win_b),
+				"master off -> every window due every frame");
+			check(host.end_frame() == 2, "master off submits both windows");
+
+			host.set_on_demand_render(true);
+			check(wg->get_render_on_change(), "runtime switch enables on-demand");
+			check(host.end_frame() == 2,
+				"enabling forces one repaint of all windows");
+
+			/* Let every settle counter drain; after that an untouched window
+			 * should not be submitted at all. */
+			for (int i = 0; i < 16; ++i)
+			{
+				host.begin_frame(0.016f);
+				host.draw_all();
+				host.end_frame();
+			}
+			int idle = host.end_frame();
+			check(idle == 0, "idle on-demand frame submits no window");
+
+			/* A content change on A only makes A due. */
+			vgui_widget* label = vgui_widget_add(vgui_root(a.ui), VGUI_LABEL, "changed");
+			(void)label;
+			check(wg->should_render(win_a) && !wg->should_render(win_b),
+				"content change marks only the owning window dirty");
+			/* Consume the repaint so A goes idle again. */
+			check(host.end_frame() == 1, "content change repaints only its window");
+			for (int i = 0; i < 16; ++i) { host.begin_frame(0.016f); host.end_frame(); }
+
+			/* request_render on one window leaves the other untouched. */
+			wg->request_render(win_b);
+			check(wg->should_render(win_b) && !wg->should_render(win_a),
+				"request_render targets a single window");
+			check(host.end_frame() == 1,
+				"on-demand frame submits exactly the dirty window");
+
+			/* Per-window opt-out keeps that window rendering every frame. */
+			for (int i = 0; i < 16; ++i) { host.begin_frame(0.016f); host.end_frame(); }
+			host.set_window_render_on_change(win_b, false);
+			check(!win_b->render_on_change && win_a->render_on_change,
+				"per-window opt-out is independent");
+			check(wg->should_render(win_b) && !wg->should_render(win_a),
+				"opted-out window always due, idle window skipped");
+			check(host.end_frame() == 1,
+				"opt-out window renders while idle window is skipped");
+
+			/* Runtime disable returns to legacy full render. */
+			host.set_on_demand_render(false);
+			check(!wg->get_render_on_change(), "runtime switch disables on-demand");
+			check(wg->should_render(win_a) && wg->should_render(win_b),
+				"disabled master makes all windows due again");
+			check(host.end_frame() == 2, "disabled master submits both windows");
+
+			/* Restore opt-in and drain before testing input-driven dirty. */
+			host.set_window_render_on_change(win_b, true);
+			host.set_on_demand_render(true);
+			for (int i = 0; i < 16; ++i) { host.begin_frame(0.016f); host.end_frame(); }
+			win_a->needs_render = false;
+			win_a->settle_frames = 0;
+			win_b->needs_render = false;
+			win_b->settle_frames = 0;
+			SDL_Event ev = {};
+			ev.type = SDL_EVENT_MOUSE_MOTION;
+			ev.window.windowID = win_a->id;
+			wg->process_event(&ev);
+			check(wg->should_render(win_a) && !wg->should_render(win_b),
+				"input event marks only the target window dirty");
+
+			host.set_on_demand_render(false); /* restore legacy for tests below */
+		}
+
 		check(vgui_dock_get_count(a.dock) == 3, "dock A has 3 panels");
 		check(vgui_dock_get_count(b.dock) == 2, "dock B has 2 panels");
 		check(vgui_dock_get_at(a.dock, 0) == vgui_dock_get_at(b.dock, 0),

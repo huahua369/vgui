@@ -833,6 +833,11 @@ struct vgui_context
 	std::vector<vgui_texture*> pending_texture_destroy;
 	std::vector<vgui_texture*> retired_textures;
 	uint64_t frame_index = 0;
+	/* Monotonic counter bumped by vgui_mark_dirty() on every content change
+	 * (set_text/set_value/set_checked/...).  Backends use it to detect that a
+	 * window's UI content changed and therefore needs a repaint, without the
+	 * host having to invalidate manually.  Never reset. */
+	uint64_t paint_revision = 0;
 	flex_run* flex = nullptr;
 
 	// input state ----------------------------------------------------------
@@ -1541,7 +1546,10 @@ static bool vgui_edit_vbar_visible(vgui_widget* w, float ih)
 static void vgui_mark_dirty(vgui_widget* w)
 {
 	if (w && w->ctx)
+	{
 		w->ctx->layout_dirty = true;
+		++w->ctx->paint_revision;
+	}
 }
 
 //----------------------------------------------------------------------------
@@ -15231,6 +15239,7 @@ extern "C" {
 		child->parent = parent;
 		parent->children.push_back(child);
 		parent->ctx->layout_dirty = true;
+		++parent->ctx->paint_revision;
 	}
 
 	void vgui_widget_remove(vgui_widget* widget)
@@ -15240,7 +15249,11 @@ extern "C" {
 		auto& v = parent->children;
 		v.erase(std::remove(v.begin(), v.end(), widget), v.end());
 		widget->parent = nullptr;
-		if (widget->ctx) widget->ctx->layout_dirty = true;
+		if (widget->ctx)
+		{
+			widget->ctx->layout_dirty = true;
+			++widget->ctx->paint_revision;
+		}
 	}
 
 	void vgui_widget_destroy(vgui_widget* widget)
@@ -20306,6 +20319,31 @@ extern "C" {
 	//----------------------------------------------------------------------------
 	// frame
 	//----------------------------------------------------------------------------
+
+	uint64_t vgui_context_paint_revision(const vgui_context* ctx)
+	{
+		return ctx ? ctx->paint_revision : 0;
+	}
+
+	int vgui_context_has_active_animation(const vgui_context* ctx)
+	{
+		if (!ctx) return 0;
+		/* Caret blink is the most common continuous animation: a focused edit
+		 * toggles visibility on a timer without any setter call. */
+		if (ctx->focus && ctx->focus->kind == VGUI_EDIT)
+			return 1;
+		if (!ctx->float_texts.empty() || !ctx->toasts.empty())
+			return 1;
+		/* candidate != nullptr means a hover timer is counting down toward a
+		 * tooltip; it needs frames even before visible flips to 1. */
+		if (ctx->tooltip.visible || ctx->tooltip.candidate ||
+			ctx->drag_kind != VGUI_DRAG_NONE)
+			return 1;
+		if (ctx->open_menu || ctx->modal.active || ctx->popup.content ||
+			ctx->dialog.panel)
+			return 1;
+		return 0;
+	}
 
 	void vgui_layout(vgui_context* ctx)
 	{

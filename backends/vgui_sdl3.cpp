@@ -1008,6 +1008,10 @@ void app_mgr::process_event(const SDL_Event* e)
 		active_viewport_ = pw->viewport;
 		// Keep the retained UI in sync before converting input coordinates.
 		pw->sync_ui_scale();
+		/* Any event aimed at this window may change its visuals (hover, focus,
+		 * drag, resize, DPI, ...).  With on-demand rendering enabled this is
+		 * the primary signal that the window needs another frame. */
+		pw->needs_render = true;
 	}
 	auto pwio = io();
 	auto viewport = active_viewport_;
@@ -1382,6 +1386,47 @@ int app_mgr::get_event()
 	sync_ui_scales();
 	pump_gamepad();
 	return ts;
+}
+
+void app_mgr::set_render_on_change(bool enabled)
+{
+	if (render_on_change == enabled) return;
+	render_on_change = enabled;
+	/* Whichever direction, force one repaint so the mode change itself is
+	 * visible and every window has a fresh revision snapshot. */
+	request_render(nullptr);
+}
+
+bool app_mgr::should_render(const os_window* w) const
+{
+	if (!w) return false;
+	if (!render_on_change) return true;              /* master off: legacy path */
+	if (!w->render_on_change) return true;           /* per-window opt-out */
+	if (w->needs_render || w->settle_frames > 0) return true;
+	const vgui_context* ui = w->viewport ? w->viewport->ui : nullptr;
+	if (!ui) return false;                           /* no UI -> nothing changes */
+	if (vgui_context_paint_revision(ui) != w->last_paint_revision)
+		return true;
+	if (vgui_context_has_active_animation(ui))
+		return true;
+	return false;
+}
+
+void app_mgr::note_rendered(os_window* w)
+{
+	if (!w) return;
+	w->needs_render = false;
+	if (w->settle_frames > 0) --w->settle_frames;
+	const vgui_context* ui = w->viewport ? w->viewport->ui : nullptr;
+	if (ui)
+		w->last_paint_revision = vgui_context_paint_revision(ui);
+}
+
+void app_mgr::request_render(os_window* w)
+{
+	if (w) { w->request_render(); return; }
+	for (auto& p : windows_)
+		if (p) p->request_render();
 }
 
 void app_mgr::set_syscursor(int type)

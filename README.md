@@ -339,6 +339,31 @@ while (running) {
 
 验证示例：`sample/vgui_multiwindow_demo.cpp`（两个窗口各一个 Dock）。跑 `VGUI_MW_FRAMES=90 vgui_multiwindow_demo` 会渲染 90 帧后打印 21 条自检并退出；GPU 或窗口创建失败时返回 77。因为需要真实 GPU 窗口，它没有注册到 ctest。
 
+#### 按需渲染（仅在内容变化时重绘）
+
+多窗口宿主可以让**静止的窗口完全不提交帧**，把 GPU/CPU 占用降到接近零，而仍在交互或有动画的窗口照常刷新。开关在运行期可随时切换：
+
+```cpp
+host.set_on_demand_render(true);   // 或 wg->set_render_on_change(true)
+// ...
+host.set_on_demand_render(false);  // 恢复"每帧每窗口都重绘"
+```
+
+判定一个窗口本帧是否需要重绘（`app_mgr::should_render()`，由 `multiwindow_host` 自动调用）综合了以下信号：
+
+- 该窗口收到任意输入事件（鼠标/键盘/滚轮/DPI/尺寸变化）；
+- 该窗口 UI 的 `vgui_context_paint_revision()` 自上次提交后增长——所有 `set_text`/`set_value`/增删控件等 setter 都会自动推进它；
+- 该窗口 UI 有活动动画（焦点编辑框光标闪烁、toast、浮字、tooltip、拖拽、菜单/弹窗）；
+- 宿主的 `wg->request_render(win)` 主动置脏（用于绕过 vgui setter 的宿主侧数据变更）。
+
+要点：
+
+- **每窗口独立控制**：`os_window::render_on_change`（默认 `true`）。对持续动画的视口（如游戏画面）设 `host.set_window_render_on_change(gameWin, false)`，它就会每帧刷新，而其它静止窗口仍按需渲染。
+- **单窗口宿主**：没有用 `multiwindow_host` 时，自行在帧循环里用 `wg->should_render(win)` 决定是否 acquire/draw/submit，提交后调用 `wg->note_rendered(win)`；全部跳过时用 `vgpu_render_frame(ctx, nullptr, 0)` 保持资源回收，并自行 sleep 节流（参考 `multiwindow_host::idle_delay_ms`）。
+- **零回归**：总开关默认关闭，未调用时行为与以前完全一致，现有 demo/截图不受影响。
+- **自检**：`VGUI_ONDEMAND_SIM=1 vgui_multiwindow_demo` 验证 38 条断言（总开关、空闲零提交、内容变更定点置脏、request_render、每窗口 opt-out、输入置脏、运行期切换），退出码 0/1。
+- **单窗口电子表格示例**：`vgui_spreadsheet_demo` 已在 attach 后开启按需渲染，`VGUI_SPREADSHEET_SIM=1` 的 26 条断言中额外验证了空闲零提交、宿主数据变更重绘一次、`request_render` 定点重绘。它演示了真实交互场景：排序/选区/剪贴板等 `table_view` 操作经输入置脏触发重绘，工具栏回调里的 `refresh_status()` 更新状态栏文本推进 revision。
+
 布局持久化方面，`editor_layout_set`（JSON 版本 9）把布局按窗口 id 分组，并记录被拖出为真实 OS 窗口的面板（`dock_floater_host`）的屏幕坐标：
 
 ```cpp

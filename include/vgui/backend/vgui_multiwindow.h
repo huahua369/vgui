@@ -35,6 +35,7 @@ struct multiwindow_slot
 	rvg_t* canvas = nullptr;
 	int width = 0;
 	int height = 0;
+	bool rendered_last_frame = false; /* set by end_frame; handy for diagnostics */
 };
 
 class multiwindow_host
@@ -101,35 +102,73 @@ public:
 	// advance the UI tree.  The host then calls
 	//   vgui_draw(s.ui, cb, s.canvas);
 	// for every slot (see draw_all below for the common case).
+	int idle_delay_ms = 8; /* Sleep when no slot rendered (<=0 disables) */
+
+	/* Enables/disables on-demand rendering at runtime for every window managed
+	 * by app_mgr.  When enabled, only windows whose content changed (or that
+	 * received input / have animation) are cleared, updated, drawn and
+	 * submitted each frame. */
+	void set_on_demand_render(bool enabled)
+	{
+		if (mgr_) mgr_->set_render_on_change(enabled);
+	}
+	bool get_on_demand_render() const
+	{
+		return mgr_ ? mgr_->get_render_on_change() : false;
+	}
+
+	/* Per-window opt-in helper.  Call with the window pointer (or nullptr for
+	 * every attached slot) to opt a continuously-animating window out of
+	 * on-demand rendering, or back in. */
+	void set_window_render_on_change(os_window* window, bool enabled)
+	{
+		for (multiwindow_slot& s : slots_)
+		{
+			if (window && s.window != window) continue;
+			s.window->render_on_change = enabled;
+			s.window->request_render();
+		}
+	}
+
+	bool should_render_slot(const multiwindow_slot& s) const
+	{
+		if (!mgr_) return true;
+		return mgr_->should_render(s.window);
+	}
+
 	void begin_frame(float delta)
 	{
 		if (!cb_) return;
 		for (multiwindow_slot& s : slots_)
 		{
-			if (!alive(s.window)) continue;
+			if (!alive(s.window)) { s.rendered_last_frame = false; continue; }
 			int w = 0, h = 0;
 			if (SDL_GetWindowSizeInPixels(s.window->window, &w, &h) && w > 0 && h > 0)
 			{
+				/* A resize is a content change even with no input event. */
+				if (w != s.width || h != s.height) s.window->request_render(2);
 				s.width = w;
 				s.height = h;
 				vgui_context_set_size(s.ui, w, h);
 				s.canvas->width = w;
 				s.canvas->height = h;
 			}
+			if (!should_render_slot(s)) { s.rendered_last_frame = false; continue; }
 			cb_->clear(s.canvas);
 			cb_->reset_clip(s.canvas, 1);
 			vgui_update(s.ui, delta);
 		}
 	}
 
-	// Convenience: record every attached UI tree into its own canvas.
+	// Convenience: record every due UI tree into its own canvas.
 	// A host that needs custom per-window drawing can skip this and loop
-	// over slots() itself.
+	// over slots() itself (honour should_render_slot() in that case).
 	void draw_all()
 	{
 		if (!cb_) return;
 		for (const multiwindow_slot& s : slots_)
-			if (alive(s.window)) vgui_draw(s.ui, cb_, s.canvas);
+			if (alive(s.window) && should_render_slot(s))
+				vgui_draw(s.ui, cb_, s.canvas);
 	}
 
 	// End of frame: collect one draw data entry per window (each tagged with
@@ -140,21 +179,32 @@ public:
 		if (!mgr_ || !mgr_->vgctx) return 0;
 		draw_datas_cx drawable;
 		int count = 0;
-		for (const multiwindow_slot& s : slots_)
+		for (multiwindow_slot& s : slots_)
 		{
-			if (!alive(s.window)) continue;
+			s.rendered_last_frame = false;
+			if (!alive(s.window) || !should_render_slot(s)) continue;
 			drawable.set(&s.window->fbo);
 			drawable.add(s.canvas);
+			s.rendered_last_frame = true;
 			++count;
 		}
 		if (count == 0)
 		{
 			// Still flush a dangling current_cmd (e.g. the host called
-			// vgpu_acquire_swapchain earlier this frame).
+			// vgpu_acquire_swapchain earlier this frame).  staging_collect()
+			// runs inside vgpu_render_frame even with no drawables, so calling
+			// this every frame is required for resource reclamation.
 			vgpu_render_frame(mgr_->vgctx, nullptr, 0);
+			/* Without a swapchain acquire the frame loop has no vsync pacing;
+			 * sleep briefly so an idle on-demand app does not spin at 100%. */
+			if (get_on_demand_render() && idle_delay_ms > 0)
+				SDL_Delay(static_cast<Uint32>(idle_delay_ms));
 			return 0;
 		}
 		drawable.render(mgr_->vgctx);
+		/* A window counts as painted only once its draw data was submitted. */
+		for (multiwindow_slot& s : slots_)
+			if (s.rendered_last_frame) mgr_->note_rendered(s.window);
 		return count;
 	}
 

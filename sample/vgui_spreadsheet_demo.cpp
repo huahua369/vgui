@@ -10,8 +10,12 @@
 //   - Ctrl+C / Ctrl+X / Ctrl+V: TSV copy / cut / paste (system clipboard)
 //   - toolbar: undo/redo, sort presets, select row/column, add/delete row
 // Bounded probe: VGUI_SPREADSHEET_SIM=1 vgui_spreadsheet_demo.exe
-//   injects API-level assertions + a real header click, exits 0/1.
+//   injects API-level assertions + a real header click + on-demand render
+//   assertions (idle frames submit nothing, changes repaint), exits 0/1.
 //   Returns 77 when a GPU/window cannot be created (ctest "skip").
+// Rendering: on-demand mode is ON.  Idle frames skip clear/update/draw/submit;
+//   input, sort/selection/clipboard changes and status text updates mark the
+//   window dirty and trigger exactly one repaint (plus settle frames).
 
 #include "pch.h"
 
@@ -606,6 +610,47 @@ int main()
 			free_ctx_cb(cb);
 			delete wg;
 			return 77;
+		}
+
+		/* ---- On-demand rendering -----------------------------------------
+		 * Idle frames submit nothing; input / content changes repaint.  This
+		 * demo has a single window, so it exercises the per-window dirty path
+		 * end to end through the real frame loop. */
+		host.set_on_demand_render(true);
+		if (self_test)
+		{
+			check(wg->get_render_on_change(),
+				"on-demand rendering enabled at runtime");
+
+			/* Drain the repaint forced by set_on_demand_render(true) plus its
+			 * settle frames; after that an untouched window goes idle. */
+			for (int i = 0; i < 16; ++i)
+			{
+				host.begin_frame(0.016f);
+				host.draw_all();
+				host.end_frame();
+			}
+			check(host.end_frame() == 0,
+				"idle on-demand frame submits no window");
+
+			/* Host-side data change + status text -> one repaint, then idle. */
+			g->rows[0].name = "ondemand";
+			g->table.refresh();
+			g->refresh_status();
+			check(wg->should_render(main_win),
+				"content change marks window dirty");
+			check(host.end_frame() == 1,
+				"content change repaints the window once");
+			for (int i = 0; i < 16; ++i)
+			{
+				host.begin_frame(0.016f);
+				host.end_frame();
+			}
+
+			/* Explicit request_render marks a single window dirty. */
+			wg->request_render(main_win);
+			check(host.end_frame() == 1,
+				"request_render repaints exactly the requested window");
 		}
 
 		FpsCounter fps;

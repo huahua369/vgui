@@ -117,6 +117,25 @@ struct os_window {
 	bool close_with_parent = true;
 	bool pending_close = false;
 	bool mouse_in_client = false;        // optional pointer-in-client tracking
+
+	/* ---- On-demand rendering (render only when content changes) -------------
+	 * Effective when the app_mgr master switch is enabled (see
+	 * app_mgr::set_render_on_change).  `render_on_change` is the per-window
+	 * opt-in: set it false for a window that must animate continuously (e.g. a
+	 * game viewport) while other windows stay idle.  `needs_render` is the
+	 * dirty latch set by input, resize, DPI changes and request_render(). */
+	bool render_on_change = true;
+	bool needs_render = true;            // first frame always renders
+	uint64_t last_paint_revision = 0;
+	/* Extra frames to keep rendering after the last change so short UI
+	 * transitions (hover easing, tooltip/toast fade-in) can settle. */
+	int settle_frames = 0;
+	void request_render(int settle = 8)
+	{
+		needs_render = true;
+		if (settle > settle_frames) settle_frames = settle;
+	}
+
 	/* Height (window-points) of the borderless draggable title bar.  Driven by
 	 * set_hit_test(); the hit-test callback reads it to decide DRAGGABLE. */
 	int hit_top = 0;
@@ -258,6 +277,30 @@ public:
 	// main_window for host-level input that should follow the active window.
 	gui_viewport* focus_viewport() const;
 	void set_defcursor(cursor_st t);
+
+	/* ---- On-demand rendering ------------------------------------------------
+	 * Runtime master switch for the whole app.  Off (default) = every window
+	 * repaints every frame, exactly as before.  On = a window is repainted only
+	 * when its UI content changed, it received input, it was resized, or it has
+	 * active time-based animation.  Hosts still own the frame loop: call
+	 * should_render() per window (multiwindow_host does this automatically) and
+	 * idle-pace when it returns false for every window.  `idle_delay_ms` is the
+	 * suggested Sleep length for that idle case (0 = caller decides). */
+	bool render_on_change = false;
+	int idle_delay_ms = 8; /* ~120 Hz idle poll while nothing needs repainting */
+	void set_render_on_change(bool enabled);
+	bool get_render_on_change() const { return render_on_change; }
+	/* True when `w` needs a repaint this frame under the current mode.  Always
+	 * true when the master switch is off.  Evaluates per-window dirty latch,
+	 * UI paint revision and active animation. */
+	bool should_render(const os_window* w) const;
+	/* Notifies the backend that `w` was repainted this frame: clears its dirty
+	 * latch and snapshots the current UI paint revision.  Called by
+	 * multiwindow_host; single-window hosts should call it after submitting. */
+	void note_rendered(os_window* w);
+	/* Marks one window (or every window when w == nullptr) dirty so the next
+	 * frame repaints it.  Use after host-side changes that bypass vgui setters. */
+	void request_render(os_window* w = nullptr);
 private:
 	void set_syscursor(int type);
 };
