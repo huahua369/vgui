@@ -1,6 +1,8 @@
 /* sample/vgui_editor_c_api_test_data.c - headless C tests for the code editor, markdown preview, thumbnail cache, asset browser and asset preview sections of <vgui/vgui_editor.h>. */
 #include "vgui_editor_c_api_test.h"
 
+#include <time.h>
+
 /* Everything below is plain C99 against <vgui/vgui_editor.h>: no C++ syntax, no
  * GPU, no fonts and no real files.  Two rules shape the checks:
  *   - A string getter returns the number of bytes it would write (the length
@@ -935,6 +937,20 @@ static void release_thumb_disk(void* user)
 	++((thumb_fixture*)user)->disk_releases;
 }
 
+/* The loader runs on a worker thread, so a pump made only of tick()/update()
+ * calls can finish before the OS ever schedules that thread.  Give each
+ * iteration ~1 ms of real time so the worker can publish its result. */
+static void pump_wait(void)
+{
+	clock_t start = clock();
+	clock_t span = (clock_t)(CLOCKS_PER_SEC / 1000);
+	if (span < 1)
+		span = 1;
+	while (clock() - start < span)
+	{
+	}
+}
+
 /* Enqueue `key` and pump the cache until it reaches a terminal state.  The
  * browser is pumped because it owns the rows whose thumbnails this drives; a
  * standalone cache would instead use vgui_editor_thumbnails_tick()/poll(). */
@@ -945,6 +961,7 @@ static int pump_until_ready(vgui_editor_asset_browser* browser,
 	int i;
 	for (i = 0; i < 200; ++i)
 	{
+		pump_wait();
 		vgui_editor_asset_browser_tick(browser, 0.05f);
 		frame(1);
 		state = vgui_editor_thumbnails_state(cache, key);

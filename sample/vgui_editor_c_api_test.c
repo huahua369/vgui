@@ -1492,6 +1492,7 @@ static void test_property_grid(probe* p)
 	vgui_editor_asset_info info;
 	counter bound;
 	char text[64];
+	const char* choices[2];
 	size_t changed;
 
 	memset(&bound, 0, sizeof(bound));
@@ -1521,14 +1522,11 @@ static void test_property_grid(probe* p)
 	descs[2].id = "mode";
 	descs[2].label = "Mode";
 	descs[2].type = VGUI_EDITOR_PROPERTY_ENUMERATION;
-	{
-		const char* choices[2];
-		choices[0] = "Fast";
-		choices[1] = "Slow";
-		descs[2].choices = choices;
-		descs[2].choice_count = 2;
-		descs[2].value = "Slow";
-	}
+	choices[0] = "Fast";
+	choices[1] = "Slow";
+	descs[2].choices = choices;
+	descs[2].choice_count = 2;
+	descs[2].value = "Slow";
 
 	changed = vgui_editor_property_grid_set_properties(grid, descs, 3);
 	check(changed == 3, "set_properties adds three rows");

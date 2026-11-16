@@ -5924,7 +5924,9 @@ static int test_outliner_inline_rename()
 
 	editor_context context(ui);
 	command_stack commands;
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	scene.set_command_stack(&commands);
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
@@ -6030,6 +6032,7 @@ static int test_outliner_inline_rename()
 	vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0);
 	vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
@@ -6102,7 +6105,9 @@ static int test_outliner_drag_semantics()
 
 	editor_context context(ui);
 	command_stack commands;
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	scene.set_command_stack(&commands);
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
@@ -6289,6 +6294,7 @@ static int test_outliner_drag_semantics()
 			return fail("multi drop undo restores both");
 	}
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
@@ -6306,7 +6312,9 @@ static int test_outliner_filter_sync()
 	vgui_context_set_style(ui, &style);
 
 	editor_context context(ui);
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
 	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
@@ -6388,6 +6396,7 @@ static int test_outliner_filter_sync()
 	if (context.selection() != 1)
 		return fail("sync stable after foreign selection");
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
@@ -6406,7 +6415,9 @@ static int test_virtual_outliner()
 
 	editor_context context(ui);
 	command_stack commands;
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
 	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
@@ -6603,6 +6614,7 @@ static int test_virtual_outliner()
 			return fail("virtual drag undo");
 	}
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
@@ -6620,7 +6632,9 @@ static int test_outliner_context_menu()
 	vgui_context_set_style(ui, &style);
 
 	editor_context context(ui);
-	outliner_view scene;
+	/* 组件析构会解绑树回调,所以必须先销毁组件再销毁 vgui 上下文。 */
+	auto scene_owner = std::make_unique<outliner_view>();
+	outliner_view& scene = *scene_owner;
 	scene.build(context, vgui_root(ui));
 	vgui_widget_set_pos(scene.widget(), 10.0f, 10.0f);
 	vgui_widget_set_size(scene.widget(), 240.0f, 200.0f);
@@ -6727,6 +6741,7 @@ static int test_outliner_context_menu()
 	if (scene.object_visibility(1))
 		return fail("context menu toggles visibility");
 
+	scene_owner.reset();
 	vgui_destroy(ui);
 	return 0;
 }
