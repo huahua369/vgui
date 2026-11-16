@@ -487,10 +487,14 @@ const std::string state =
     vgui_editor_kit::table_state_to_json(table.capture_state());
 ```
 
-- 表头点击切换升/降序，拖动列边界调整列宽；支持横/纵向滚动条、滚轮滚动、点击/双击命中、方向键/Home/End/PageUp/PageDown 导航、Enter/F2 或双击开始编辑、Esc 清除选择。
+- 表头点击三态循环（升序 → 降序 → 取消排序），`Shift` + 点击追加/切换次要排序列（多级稳定排序，表头按优先级显示 1/2/… 序号），拖动列边界调整列宽；支持横/纵向滚动条、滚轮滚动、点击/双击命中、方向键/Home/End/PageUp/PageDown 导航、Enter/F2 或双击开始编辑、Esc 清除选择。`set_sort_specs()` / `sort_specs()` 供宿主程序化设置与查询多列排序。
+- 区域选择：`Shift` + 点击/方向键扩展矩形选区，`Ctrl+A` 全选，`Shift+空格` 选整行、`Ctrl+空格` 选整列；单格选择是退化矩形，原 `selected_cell()` / `select_cell()` API 不变。`selection()` / `select_range()` / `set_selection_range_listener()` 可读写并监听选区。
+- 剪贴板：`Ctrl+C/X/V` 以 TSV 在显示顺序上复制/剪切/粘贴，`set_clipboard_handlers(get, set)` 由宿主提供系统剪贴板访问（editor kit 不依赖任何窗口后端；`vgui_game_editor` 已接 SDL 剪贴板）。粘贴经 `property_normalize_value()` 归一与列 `set_value` 写回，整块作为一条可撤销事务；只读列/校验失败格跳过，越界拒绝。`copy_selection()` / `cut_selection()` / `paste_text()` 也可程序化调用。
 - `table_column::editor` 复用 PropertyGrid 的 `property_desc`：文本、整数/浮点 Spinbox、Checkbox、枚举菜单、颜色、Vector2-4、曲线/渐变；写入前统一经 `property_normalize_value()` 校验。文本/数字/向量在提交或弹窗关闭时写入，布尔/枚举立即写入，颜色/曲线/渐变在单元格内实时预览并在关闭时提交（Esc 回滚）。每次实际变化压入一条 `Set <列>` 命令；只读列、校验失败或宿主拒绝不产生记录。
-- `table_state`（版本 1）保存列宽和排序列/方向；`table_state_to_json()` / `table_state_from_json()` 可单独持久化或校验。`editor_shell` 会把该状态放进 `editor_layout`（版本 3）并暴露 `table()` 与 `view.table` 命令。
+- `table_state`（版本 2）保存列宽与多列排序数组 `sorts`；仍完整兼容版本 1（单列 `sort` 映射为单元素 `sorts`）。`table_state_to_json()` / `table_state_from_json()` 可单独持久化或校验。`editor_shell` 会把该状态放进 `editor_layout`（版本 3，不因表格升级而变）并暴露 `table()` 与 `view.table` 命令。
 - `last_render_cell_queries()` 返回上一次绘制的单元格查询次数，可用于断言虚拟化边界；`refresh_row()` 可在单元格变化后刷新排序投影。控件回调指回 C++ 对象，`table_view` 必须比其控件树存活更久，析构时会解除自定义回调并销毁弹出编辑器。
+
+**电子表格 demo**（`out/bin/x64d/vgui_spreadsheet_demo.exe`）：独立的 5000 行 8 列电子表格，集中演示 S0+S1 能力（多列排序、矩形选区、TSV 剪贴板、事务撤销、类型化列编辑器、拉取式虚拟化）。交互操作：点表头三态排序、`Shift`+点表头叠加排序列、点格/`Shift`+点/`Shift`+方向/`Ctrl+A` 选区、`Ctrl+C/X/V` 复制/剪切/粘贴，工具栏提供撤销/重做、排序预设、选整行整列、增/删行；底部状态栏实时显示选区范围、排序优先级、可见行数与绘制查询次数（可直观看证虚拟化）。有界自检：`VGUI_SPREADSHEET_SIM=1 vgui_spreadsheet_demo.exe`（21 项断言，覆盖三态/多列排序、v2 状态往返、选区归一化、TSV 复制粘贴、粘贴单条撤销、虚拟化边界与真实表头点击；缺 GPU 返回 77）。
 
 ### 时间线（Timeline）
 

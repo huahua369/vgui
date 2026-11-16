@@ -227,10 +227,16 @@ namespace vgui_editor_kit {
 		nlohmann::json root;
 		root["version"] = table_state::current_version;
 		root["column_widths"] = state.column_widths;
+		/* Legacy mirror for readers that only understand v1. */
 		root["sort"] = {
 			{ "column", state.sort_column },
 			{ "ascending", state.sort_ascending }
 		};
+		nlohmann::json sorts = nlohmann::json::array();
+		for (const table_sort_spec& spec : state.sorts)
+			sorts.push_back({ { "column", spec.column },
+				{ "ascending", spec.ascending } });
+		root["sorts"] = sorts;
 		return root.dump();
 	}
 
@@ -296,6 +302,52 @@ namespace vgui_editor_kit {
 						return fail("sort.ascending must be a boolean");
 					parsed.sort_ascending = ascending->get<bool>();
 				}
+			}
+
+			/* v2 multi-column sort list.  When present it is authoritative;
+			 * the legacy `sort` object above is only a mirror. */
+			auto sorts = root.find("sorts");
+			if (sorts != root.end())
+			{
+				if (!sorts->is_array())
+					return fail("sorts must be an array");
+				std::vector<bool> seen;
+				for (const auto& entry : *sorts)
+				{
+					if (!entry.is_object())
+						return fail("sorts entry must be an object");
+					auto column = entry.find("column");
+					auto ascending = entry.find("ascending");
+					if (column == entry.end() ||
+						!column->is_number_integer())
+						return fail("sorts.column must be an integer");
+					if (ascending == entry.end() ||
+						!ascending->is_boolean())
+						return fail("sorts.ascending must be a boolean");
+					table_sort_spec spec;
+					spec.column = column->get<int>();
+					spec.ascending = ascending->get<bool>();
+					if (spec.column < 0)
+						return fail("sorts.column is invalid");
+					if (seen.size() <= (std::size_t)spec.column)
+						seen.resize((std::size_t)spec.column + 1, false);
+					if (seen[(std::size_t)spec.column])
+						return fail("duplicate sort column");
+					seen[(std::size_t)spec.column] = true;
+					parsed.sorts.push_back(spec);
+				}
+			}
+			else if (file_version == 1 && parsed.sort_column >= 0)
+			{
+				parsed.sorts.push_back({ parsed.sort_column,
+					parsed.sort_ascending });
+			}
+
+			/* Keep the mirror consistent with the authoritative list. */
+			if (!parsed.sorts.empty())
+			{
+				parsed.sort_column = parsed.sorts.front().column;
+				parsed.sort_ascending = parsed.sorts.front().ascending;
 			}
 
 			out = std::move(parsed);
@@ -551,7 +603,7 @@ namespace vgui_editor_kit {
 	{
 		if (source_row >= row_count_)
 			return;
-		if (sort_column_ >= 0)
+		if (!sort_specs_.empty())
 			rebuild_display();
 		clamp_scroll();
 	}
@@ -626,6 +678,8 @@ namespace vgui_editor_kit {
 		if (column >= (int)columns_.size() ||
 			!columns_[(size_t)column].sortable)
 			return false;
+		sort_specs_.clear();
+		sort_specs_.push_back({ column, ascending });
 		sort_column_ = column;
 		sort_ascending_ = ascending;
 		rebuild_display();
@@ -641,84 +695,200 @@ namespace vgui_editor_kit {
 
 	void table_view::clear_sort()
 	{
+		sort_specs_.clear();
 		sort_column_ = -1;
 		sort_ascending_ = true;
 		display_.clear();
 		clamp_scroll();
 	}
 
+	const std::vector<table_sort_spec>& table_view::sort_specs() const noexcept
+	{
+		return sort_specs_;
+	}
+
+	bool table_view::set_sort_specs(std::vector<table_sort_spec> specs)
+	{
+		if (specs.empty())
+		{
+			clear_sort();
+			return true;
+		}
+		std::vector<bool> seen(columns_.size(), false);
+		for (const table_sort_spec& spec : specs)
+		{
+			if (spec.column < 0 || spec.column >= (int)columns_.size() ||
+				!columns_[(std::size_t)spec.column].sortable ||
+				seen[(std::size_t)spec.column])
+				return false;
+			seen[(std::size_t)spec.column] = true;
+		}
+		sort_specs_ = std::move(specs);
+		sort_column_ = sort_specs_.front().column;
+		sort_ascending_ = sort_specs_.front().ascending;
+		rebuild_display();
+		if (selected_row_id_ != invalid_object)
+		{
+			std::size_t row = 0;
+			if (find_row_id(selected_row_id_, row))
+				selected_.row = row;
+		}
+		clamp_scroll();
+		return true;
+	}
+
+	bool table_view::toggle_sort_spec(int column, bool ascending)
+	{
+		if (column < 0 || column >= (int)columns_.size() ||
+			!columns_[(std::size_t)column].sortable)
+			return false;
+		for (table_sort_spec& spec : sort_specs_)
+		{
+			if (spec.column == column)
+			{
+				spec.ascending = !spec.ascending;
+				sort_column_ = sort_specs_.front().column;
+				sort_ascending_ = sort_specs_.front().ascending;
+				rebuild_display();
+				return true;
+			}
+		}
+		if (sort_specs_.empty())
+			return set_sort(column, ascending);
+		sort_specs_.push_back({ column, ascending });
+		rebuild_display();
+		return true;
+	}
+
+	bool table_view::remove_sort_spec(int column)
+	{
+		for (auto it = sort_specs_.begin(); it != sort_specs_.end(); ++it)
+		{
+			if (it->column == column)
+			{
+				sort_specs_.erase(it);
+				if (sort_specs_.empty())
+				{
+					sort_column_ = -1;
+					sort_ascending_ = true;
+					display_.clear();
+				}
+				else
+				{
+					sort_column_ = sort_specs_.front().column;
+					sort_ascending_ = sort_specs_.front().ascending;
+					rebuild_display();
+				}
+				clamp_scroll();
+				return true;
+			}
+		}
+		return false;
+	}
+
 	void table_view::rebuild_display()
 	{
 		display_.clear();
-		if (sort_column_ < 0 || sort_column_ >= (int)columns_.size() ||
-			!columns_[(size_t)sort_column_].sortable || row_count_ == 0)
+		if (sort_specs_.empty() || row_count_ == 0)
 			return;
 
-		const table_column& column = columns_[(size_t)sort_column_];
-		const property_type type = column.editor.type;
-		const bool numeric = type == property_type::integer ||
-			type == property_type::number;
-		const bool boolean = type == property_type::boolean;
-
-		struct entry
+		/* Validate the priority list against current columns.  Invalid specs
+		 * leave the table in natural order (getters still mirror spec[0]). */
+		struct key_meta
 		{
-			std::size_t row = 0;
+			int column = -1;
+			bool ascending = true;
+			bool numeric = false;
+			bool boolean = false;
+			const std::function<int(const std::string&,
+				const std::string&)>* compare = nullptr;
+		};
+		std::vector<key_meta> metas;
+		metas.reserve(sort_specs_.size());
+		for (const table_sort_spec& spec : sort_specs_)
+		{
+			if (spec.column < 0 || spec.column >= (int)columns_.size() ||
+				!columns_[(std::size_t)spec.column].sortable)
+				return;
+			const table_column& column = columns_[(std::size_t)spec.column];
+			key_meta meta;
+			meta.column = spec.column;
+			meta.ascending = spec.ascending;
+			const property_type type = column.editor.type;
+			meta.numeric = type == property_type::integer ||
+				type == property_type::number;
+			meta.boolean = type == property_type::boolean;
+			if (column.compare)
+				meta.compare = &column.compare;
+			metas.push_back(std::move(meta));
+		}
+
+		struct cell_key
+		{
 			std::string text;
 			std::string folded;
 			double number = 0.0;
 			bool has_number = false;
 			bool flag = false;
 		};
+		struct entry
+		{
+			std::size_t row = 0;
+			std::vector<cell_key> keys;
+		};
+
 		std::vector<entry> entries;
 		entries.reserve(row_count_);
 		for (std::size_t row = 0; row < row_count_; ++row)
 		{
 			entry item;
 			item.row = row;
-			item.text = cell_text(row, sort_column_);
-			item.folded = lower_copy(item.text);
-			if (numeric)
-				item.has_number = parse_double_text(item.text, item.number);
-			else if (boolean)
-				(void)parse_bool_text(item.text, item.flag);
+			item.keys.reserve(metas.size());
+			for (const key_meta& meta : metas)
+			{
+				cell_key key;
+				key.text = cell_text(row, meta.column);
+				key.folded = lower_copy(key.text);
+				if (meta.numeric)
+					key.has_number = parse_double_text(key.text, key.number);
+				else if (meta.boolean)
+					(void)parse_bool_text(key.text, key.flag);
+				item.keys.push_back(std::move(key));
+			}
 			entries.push_back(std::move(item));
 		}
 
-		auto less = [&](const entry& a, const entry& b) {
-			int result = 0;
-			if (column.compare)
-			{
-				result = column.compare(a.text, b.text);
-			}
-			else if (numeric)
+		auto compare_key = [](const cell_key& a, const cell_key& b,
+			const key_meta& meta) {
+			if (meta.compare)
+				return (*meta.compare)(a.text, b.text);
+			if (meta.numeric)
 			{
 				if (a.has_number && b.has_number)
-					result = a.number < b.number ? -1 :
+					return a.number < b.number ? -1 :
 						(a.number > b.number ? 1 : 0);
-				else if (a.has_number != b.has_number)
-					result = a.has_number ? -1 : 1;
-				else
-					result = a.folded < b.folded ? -1 :
-						(a.folded > b.folded ? 1 : 0);
+				if (a.has_number != b.has_number)
+					return a.has_number ? -1 : 1;
 			}
-			else if (boolean)
+			else if (meta.boolean)
 			{
-				result = a.flag == b.flag ? 0 : (a.flag ? 1 : -1);
+				return a.flag == b.flag ? 0 : (a.flag ? 1 : -1);
 			}
-			else
-			{
-				result = a.folded < b.folded ? -1 :
-					(a.folded > b.folded ? 1 : 0);
-			}
-			if (result == 0)
-				result = a.row < b.row ? -1 : (a.row > b.row ? 1 : 0);
-			return result;
+			return a.folded < b.folded ? -1 :
+				(a.folded > b.folded ? 1 : 0);
 		};
 
 		std::sort(entries.begin(), entries.end(), [&](const entry& a,
 			const entry& b) {
-			const int result = less(a, b);
-			return sort_ascending_ ? result < 0 : result > 0;
+			for (std::size_t i = 0; i < metas.size(); ++i)
+			{
+				const key_meta& meta = metas[i];
+				const int result = compare_key(a.keys[i], b.keys[i], meta);
+				if (result != 0)
+					return meta.ascending ? result < 0 : result > 0;
+			}
+			/* Stable tie-break on source order, independent of direction. */
+			return a.row < b.row;
 		});
 
 		display_.reserve(entries.size());
@@ -735,12 +905,21 @@ namespace vgui_editor_kit {
 		return selected_;
 	}
 
+	static bool selection_cell_valid(const table_cell& cell,
+		std::size_t row_count, std::size_t column_count)
+	{
+		return cell.valid() && cell.row < row_count &&
+			(std::size_t)cell.column < column_count;
+	}
+
 	bool table_view::select_cell(std::size_t source_row, int column)
 	{
 		if (source_row >= row_count_ || column < 0 ||
 			column >= (int)columns_.size())
 			return false;
-		selected_ = { source_row, column };
+		const table_cell cell{ source_row, column };
+		selected_ = cell;
+		selection_ = { cell, cell };
 		selected_row_id_ = row_id_at(source_row);
 		notify_selection();
 		return true;
@@ -750,9 +929,68 @@ namespace vgui_editor_kit {
 	{
 		const bool was = selected_.valid();
 		selected_ = {};
+		selection_ = {};
 		selected_row_id_ = invalid_object;
 		if (was)
 			notify_selection();
+	}
+
+	const table_selection& table_view::selection() const noexcept
+	{
+		return selection_;
+	}
+
+	bool table_view::select_range(const table_cell& anchor,
+		const table_cell& focus)
+	{
+		if (!selection_cell_valid(anchor, row_count_, columns_.size()) ||
+			!selection_cell_valid(focus, row_count_, columns_.size()))
+			return false;
+		/* Keep the caller's corners; normalized bounds are computed on demand. */
+		selection_ = { anchor, focus };
+		selected_ = focus;
+		selected_row_id_ = row_id_at(focus.row);
+		notify_selection();
+		return true;
+	}
+
+	bool table_view::extend_selection(const table_cell& focus)
+	{
+		if (!selection_cell_valid(focus, row_count_, columns_.size()))
+			return false;
+		const table_cell anchor = selection_.valid()
+			? selection_.anchor : focus;
+		selection_ = { anchor, focus };
+		selected_ = focus;
+		selected_row_id_ = row_id_at(focus.row);
+		notify_selection();
+		return true;
+	}
+
+	void table_view::select_all()
+	{
+		if (row_count_ == 0 || columns_.empty())
+		{
+			clear_selection();
+			return;
+		}
+		select_range({ 0, 0 }, { row_count_ - 1,
+			(int)columns_.size() - 1 });
+	}
+
+	bool table_view::select_row(std::size_t source_row)
+	{
+		if (source_row >= row_count_ || columns_.empty())
+			return false;
+		return select_range({ source_row, 0 },
+			{ source_row, (int)columns_.size() - 1 });
+	}
+
+	bool table_view::select_column(int column)
+	{
+		if (column < 0 || column >= (int)columns_.size() || row_count_ == 0)
+			return false;
+		return select_range({ 0, column }, { row_count_ - 1, column });
 	}
 
 	table_cell table_view::hit_test(float content_x, float content_y) const
@@ -777,10 +1015,18 @@ namespace vgui_editor_kit {
 		selection_listener_ = std::move(listener);
 	}
 
+	void table_view::set_selection_range_listener(
+		selection_range_listener listener)
+	{
+		selection_range_listener_ = std::move(listener);
+	}
+
 	void table_view::notify_selection()
 	{
 		if (selection_listener_)
 			selection_listener_(selected_);
+		if (selection_range_listener_)
+			selection_range_listener_(selection_);
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -1813,6 +2059,259 @@ namespace vgui_editor_kit {
 			edit_listener_(cell, value);
 	}
 
+	/* --------------------------------------------------------------------- */
+	/* Clipboard (TSV)                                                       */
+	/* --------------------------------------------------------------------- */
+
+	void table_view::set_clipboard_handlers(clipboard_get_fn get,
+		clipboard_set_fn set)
+	{
+		clipboard_get_ = std::move(get);
+		clipboard_set_ = std::move(set);
+	}
+
+	static std::string tsv_escape(const std::string& value)
+	{
+		if (value.find_first_of("\t\n\r\"") == std::string::npos)
+			return value;
+		std::string out;
+		out.reserve(value.size() + 2);
+		out.push_back('"');
+		for (char c : value)
+		{
+			if (c == '"')
+				out.push_back('"');
+			out.push_back(c);
+		}
+		out.push_back('"');
+		return out;
+	}
+
+	std::vector<std::vector<std::string>> table_view::parse_tsv(
+		const std::string& text)
+	{
+		std::vector<std::vector<std::string>> rows;
+		std::vector<std::string> current;
+		std::string field;
+		bool quoted = false;
+		for (std::size_t i = 0; i < text.size(); ++i)
+		{
+			const char c = text[i];
+			if (quoted)
+			{
+				if (c == '"')
+				{
+					if (i + 1 < text.size() && text[i + 1] == '"')
+					{
+						field.push_back('"');
+						++i;
+					}
+					else
+						quoted = false;
+				}
+				else
+					field.push_back(c);
+				continue;
+			}
+			if (c == '"' && field.empty())
+			{
+				quoted = true;
+			}
+			else if (c == '\t')
+			{
+				current.push_back(std::move(field));
+				field.clear();
+			}
+			else if (c == '\n')
+			{
+				if (!field.empty() || !current.empty())
+					current.push_back(std::move(field));
+				field.clear();
+				rows.push_back(std::move(current));
+				current.clear();
+			}
+			else if (c != '\r')
+			{
+				field.push_back(c);
+			}
+		}
+		if (!field.empty() || !current.empty())
+		{
+			current.push_back(std::move(field));
+			rows.push_back(std::move(current));
+		}
+		return rows;
+	}
+
+	std::string table_view::copy_selection() const
+	{
+		if (!selection_.valid())
+			return {};
+		/* Rows in display order so copy/paste stay aligned after sorting. */
+		std::vector<std::pair<int, std::size_t>> ordered;
+		for (std::size_t row = selection_.first_row();
+			row <= selection_.last_row(); ++row)
+		{
+			if (row >= row_count_)
+				break;
+			const int di = display_index_of(row);
+			ordered.push_back({ di < 0 ? (int)row : di, row });
+		}
+		std::sort(ordered.begin(), ordered.end());
+		std::string out;
+		for (std::size_t r = 0; r < ordered.size(); ++r)
+		{
+			if (r)
+				out.push_back('\n');
+			for (int col = selection_.first_column();
+				col <= selection_.last_column(); ++col)
+			{
+				if (col > selection_.first_column())
+					out.push_back('\t');
+				out += tsv_escape(cell_text(ordered[r].second, col));
+			}
+		}
+		return out;
+	}
+
+	std::string table_view::copy_selection_to_clipboard()
+	{
+		const std::string tsv = copy_selection();
+		if (clipboard_set_)
+			clipboard_set_(tsv);
+		return tsv;
+	}
+
+	bool table_view::cut_selection()
+	{
+		if (!selection_.valid() || !commands_)
+			return false;
+		const std::string tsv = copy_selection_to_clipboard();
+		/* Clear every editable cell in the selection as one undo record. */
+		commands_->begin_transaction("Cut cells");
+		bool any = false;
+		for (std::size_t row = selection_.first_row();
+			row <= selection_.last_row() && row < row_count_; ++row)
+		{
+			for (int col = selection_.first_column();
+				col <= selection_.last_column(); ++col)
+			{
+				const table_column* column = column_at_index(col);
+				if (!column || !column->editable)
+					continue;
+				const table_cell cell{ row, col };
+				const std::string old_value = cell_text(row, col);
+				if (old_value.empty())
+					continue;
+				const property_desc* desc = editor_desc(col);
+				property_value_result normalized;
+				if (desc)
+					normalized = property_normalize_value(*desc, "");
+				else
+				{
+					normalized.ok = true;
+					normalized.value.clear();
+				}
+				if (!normalized.ok || normalized.value == old_value)
+					continue;
+				if (apply_cell_value(cell, normalized.value, false))
+				{
+					push_cell_command(cell, old_value, normalized.value);
+					any = true;
+				}
+			}
+		}
+		if (any)
+			commands_->commit_transaction();
+		else
+			commands_->rollback_transaction();
+		return any;
+	}
+
+	bool table_view::paste_text(const std::string& tsv, std::string* error)
+	{
+		if (!selection_.valid() || !commands_)
+		{
+			if (error)
+				*error = "no selection or command stack";
+			return false;
+		}
+		const auto grid = parse_tsv(tsv);
+		if (grid.empty())
+		{
+			if (error)
+				*error = "empty clipboard data";
+			return false;
+		}
+		/* Anchor at the selection's top-left in display order. */
+		std::vector<std::pair<int, std::size_t>> ordered;
+		for (std::size_t row = selection_.first_row();
+			row <= selection_.last_row(); ++row)
+		{
+			if (row >= row_count_)
+				break;
+			const int di = display_index_of(row);
+			ordered.push_back({ di < 0 ? (int)row : di, row });
+		}
+		std::sort(ordered.begin(), ordered.end());
+		const int anchor_col = selection_.first_column();
+		const std::size_t max_cols = grid.front().size();
+		if (anchor_col + (int)max_cols > (int)columns_.size())
+		{
+			if (error)
+				*error = "paste out of column range";
+			return false;
+		}
+		if (grid.size() > ordered.size())
+		{
+			if (error)
+				*error = "paste out of row range";
+			return false;
+		}
+		commands_->begin_transaction("Paste cells");
+		bool any = false;
+		for (std::size_t r = 0; r < grid.size(); ++r)
+		{
+			const std::size_t source_row = ordered[r].second;
+			for (std::size_t c = 0; c < grid[r].size(); ++c)
+			{
+				const int col = anchor_col + (int)c;
+				const table_column* column = column_at_index(col);
+				if (!column || !column->editable)
+					continue;
+				const table_cell cell{ source_row, col };
+				const std::string old_value = cell_text(source_row, col);
+				const property_desc* desc = editor_desc(col);
+				property_value_result normalized;
+				if (desc)
+					normalized = property_normalize_value(*desc, grid[r][c]);
+				else
+				{
+					normalized.ok = true;
+					normalized.value = grid[r][c];
+				}
+				if (!normalized.ok || normalized.value == old_value)
+					continue;
+				if (apply_cell_value(cell, normalized.value, false))
+				{
+					push_cell_command(cell, old_value, normalized.value);
+					any = true;
+				}
+			}
+		}
+		if (any)
+		{
+			commands_->commit_transaction();
+			if (error)
+				error->clear();
+			return true;
+		}
+		commands_->rollback_transaction();
+		if (error)
+			*error = "no cell accepted the pasted data";
+		return false;
+	}
+
 	void table_view::push_cell_command(const table_cell& cell,
 		const std::string& old_value, const std::string& new_value)
 	{
@@ -1888,6 +2387,7 @@ namespace vgui_editor_kit {
 			state.column_widths.push_back(column.width);
 		state.sort_column = sort_column_;
 		state.sort_ascending = sort_ascending_;
+		state.sorts = sort_specs_;
 		return state;
 	}
 
@@ -1913,7 +2413,30 @@ namespace vgui_editor_kit {
 		for (std::size_t i = 0; i < count; ++i)
 			set_column_width(i, state.column_widths[i]);
 
-		if (state.sort_column < 0)
+		if (!state.sorts.empty())
+		{
+			/* Validate the full list before touching live state. */
+			std::vector<bool> seen(columns_.size(), false);
+			for (const table_sort_spec& spec : state.sorts)
+			{
+				if (spec.column < 0 || spec.column >= (int)columns_.size() ||
+					!columns_[(std::size_t)spec.column].sortable ||
+					seen[(std::size_t)spec.column])
+				{
+					if (error)
+						*error = "invalid sort column in table state";
+					return false;
+				}
+				seen[(std::size_t)spec.column] = true;
+			}
+			if (!set_sort_specs(state.sorts))
+			{
+				if (error)
+					*error = "invalid sort spec in table state";
+				return false;
+			}
+		}
+		else if (state.sort_column < 0)
 			clear_sort();
 		else if (state.sort_column >= (int)columns_.size() ||
 			!columns_[(std::size_t)state.sort_column].sortable)
@@ -2015,17 +2538,41 @@ namespace vgui_editor_kit {
 			if (column_x > m.header_x + m.body_width)
 				break;
 
-			const bool sorted = (int)i == sort_column_;
+			/* Find this column in the sort priority list (mirror getters
+			 * still expose sort_column_/sort_ascending_ for single sorts). */
+			const table_sort_spec* sort_spec = nullptr;
+			std::size_t sort_rank = 0;
+			bool sorted = false;
+			for (std::size_t s = 0; s < sort_specs_.size(); ++s)
+			{
+				if (sort_specs_[s].column == (int)i)
+				{
+					sort_spec = &sort_specs_[s];
+					sort_rank = s;
+					sorted = true;
+					break;
+				}
+			}
+			const bool multi_sort = sort_specs_.size() > 1;
 			const float arrow_space = column.sortable ? 16.0f * scale : 0.0f;
 			draw_cell_text(widget, cb, vg, column.label, column_x,
 				m.header_y, column_width - arrow_space - kCellPaddingX * scale,
 				m.header_height, text_color, table_alignment::left);
-			if (sorted)
+			if (sorted && sort_spec)
 			{
 				const float cx = column_x + column_width - 11.0f * scale;
 				const float cy = m.header_y + m.header_height * 0.5f;
 				ovg_tools::tri_glyph(cb, vg, cx, cy, 4.0f * scale,
-					sort_ascending_ ? 3 : 1, to_ovg(accent));
+					sort_spec->ascending ? 3 : 1, to_ovg(accent));
+				if (multi_sort)
+				{
+					/* Priority badge to the left of the arrow. */
+					const std::string rank = std::to_string(sort_rank + 1);
+					draw_cell_text(widget, cb, vg, rank,
+						column_x + column_width - 26.0f * scale,
+						m.header_y, 12.0f * scale, m.header_height,
+						accent, table_alignment::center);
+				}
 			}
 			if (i + 1 < columns_.size())
 			{
@@ -2077,11 +2624,14 @@ namespace vgui_editor_kit {
 			const bool selected_row = selected_.valid() &&
 				selected_.row == row;
 			const bool hovered_row = hover_row_ == row && hover_column_ >= 0;
+			/* A multi-cell range paints per-cell fills instead of a full row. */
+			const bool range_mode = selection_.valid() &&
+				(selection_.anchor != selection_.focus);
 
-			if (selected_row)
+			if (selected_row && !range_mode)
 				ovg_tools::fill_rect(cb, vg, m.body_x, top, m.body_width,
 					row_height, to_ovg(selection));
-			else if (hovered_row)
+			else if (!range_mode && hovered_row)
 				ovg_tools::fill_rect(cb, vg, m.body_x, top, m.body_width,
 					row_height, to_ovg(with_alpha(row_hover, 0x66)));
 			else if (display % 2 == 1)
@@ -2123,9 +2673,16 @@ namespace vgui_editor_kit {
 					text = cell_text(row, (int)column_index);
 				++render_cell_queries_;
 
-				vgui_color cell_text_color = selected_row
+				const bool in_range = range_mode &&
+					selection_.contains(row, (int)column_index);
+				vgui_color cell_text_color = (selected_row || in_range)
 					? selection_text : row_text;
 				vgui_color cell_bg = 0;
+				if (in_range)
+				{
+					ovg_tools::fill_rect(cb, vg, cell_x, top, column_width,
+						row_height, to_ovg(selection));
+				}
 				if (source_.cell_style)
 				{
 					const table_cell_style style = source_.cell_style(row,
@@ -2433,7 +2990,12 @@ namespace vgui_editor_kit {
 			{
 				const table_cell cell = self->hit_test(x, y);
 				if (cell.valid())
-					self->select_cell(cell.row, cell.column);
+				{
+					if ((event->mods & VGUI_MOD_SHIFT) != 0)
+						self->extend_selection(cell);
+					else
+						self->select_cell(cell.row, cell.column);
+				}
 				return 1;
 			}
 			return 0;
@@ -2554,9 +3116,39 @@ namespace vgui_editor_kit {
 				if (column >= 0 && column < (int)self->columns_.size() &&
 					self->columns_[(std::size_t)column].sortable)
 				{
-					const bool ascending = self->sort_column_ == column
-						? !self->sort_ascending_ : true;
-					self->set_sort(column, ascending);
+					const bool shift = (event->mods & VGUI_MOD_SHIFT) != 0;
+					if (shift)
+					{
+						/* Shift+click cycles a key: absent -> ascending ->
+						 * descending -> removed.  toggle_sort_spec adds or
+						 * flips; remove_sort_spec clears a descending key. */
+						const table_sort_spec* existing = nullptr;
+						for (const table_sort_spec& spec : self->sort_specs_)
+							if (spec.column == column)
+							{
+								existing = &spec;
+								break;
+							}
+						if (existing && !existing->ascending)
+							self->remove_sort_spec(column);
+						else
+							self->toggle_sort_spec(column, true);
+					}
+					else
+					{
+						/* Plain click: ascending -> descending -> unsorted.
+						 * Resets to a single primary key. */
+						if (self->sort_column_ == column &&
+							self->sort_specs_.size() == 1)
+						{
+							if (self->sort_ascending_)
+								self->set_sort(column, false);
+							else
+								self->clear_sort();
+						}
+						else
+							self->set_sort(column, true);
+					}
 				}
 				return 1;
 			}
@@ -2597,6 +3189,47 @@ namespace vgui_editor_kit {
 			}
 			if (self->columns_.empty())
 				return 0;
+			const bool mod_ctrl = (event->mods & VGUI_MOD_CTRL) != 0;
+			const bool mod_shift = (event->mods & VGUI_MOD_SHIFT) != 0;
+			/* While a cell editor is active let it handle Ctrl+A/C/X/V. */
+			if (mod_ctrl && !self->editing_)
+			{
+				if (event->key == 'A' || event->key == 'a')
+				{
+					self->select_all();
+					return 1;
+				}
+				if (event->key == 'C' || event->key == 'c')
+				{
+					self->copy_selection_to_clipboard();
+					return 1;
+				}
+				if (event->key == 'X' || event->key == 'x')
+				{
+					self->cut_selection();
+					return 1;
+				}
+				if (event->key == 'V' || event->key == 'v')
+				{
+					if (self->clipboard_get_)
+						self->paste_text(self->clipboard_get_());
+					return 1;
+				}
+			}
+			if (event->key == ' ' && mod_shift &&
+				self->selected_.valid())
+			{
+				if (self->select_row(self->selected_.row))
+					return 1;
+				return 0;
+			}
+			if (event->key == ' ' && mod_ctrl &&
+				self->selected_.valid())
+			{
+				if (self->select_column(self->selected_.column))
+					return 1;
+				return 0;
+			}
 			table_cell current = self->selected_;
 			int display = current.valid()
 				? self->display_index_of(current.row) : 0;
@@ -2645,7 +3278,11 @@ namespace vgui_editor_kit {
 			if (self->row_count_ == 0)
 				return 1;
 			const std::size_t row = self->source_row_at((std::size_t)display);
-			if (self->select_cell(row, column))
+			const table_cell target{ row, column };
+			const bool ok = mod_shift
+				? self->extend_selection(target)
+				: self->select_cell(row, column);
+			if (ok)
 				self->scroll_to_row(row);
 			return 1;
 		}

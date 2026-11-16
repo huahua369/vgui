@@ -1966,6 +1966,26 @@ extern "C" {
 
 	VGUI_API void vgui_editor_table_cell_default(vgui_editor_table_cell* cell);
 
+	/* A rectangular range expressed by two corner cells (source row indices). */
+	typedef struct vgui_editor_table_selection {
+		uint32_t struct_size;
+		vgui_editor_table_cell anchor;
+		vgui_editor_table_cell focus;
+	} vgui_editor_table_selection;
+
+	VGUI_API void vgui_editor_table_selection_default(
+		vgui_editor_table_selection* selection);
+
+	/* One column in a multi-column sort. */
+	typedef struct vgui_editor_table_sort_spec {
+		uint32_t struct_size;
+		int column;
+		int ascending;
+	} vgui_editor_table_sort_spec;
+
+	VGUI_API void vgui_editor_table_sort_spec_default(
+		vgui_editor_table_sort_spec* spec);
+
 	/* Per-cell presentation overrides; a zero colour keeps the theme default. */
 	typedef struct vgui_editor_table_cell_style {
 		uint32_t struct_size;
@@ -2026,8 +2046,17 @@ extern "C" {
 	 * set_value; the listener runs after a value was accepted. */
 	typedef void (*vgui_editor_table_select_fn)(void* user,
 		const vgui_editor_table_cell* cell);
+	typedef void (*vgui_editor_table_select_range_fn)(void* user,
+		const vgui_editor_table_selection* selection);
 	typedef int (*vgui_editor_table_edit_fn)(void* user,
 		const vgui_editor_table_cell* cell, const char* value);
+	/* System clipboard access supplied by the host (no SDL dependency).
+	 * get writes the clipboard text into out and returns the byte count needed
+	 * (0 when empty); set receives the TSV to copy. */
+	typedef size_t (*vgui_editor_table_clipboard_get_fn)(void* user, char* out,
+		size_t cap);
+	typedef void (*vgui_editor_table_clipboard_set_fn)(void* user,
+		const char* text);
 
 	VGUI_API vgui_editor_table* vgui_editor_table_create(vgui_widget* parent);
 	VGUI_API void vgui_editor_table_destroy(vgui_editor_table* table);
@@ -2141,6 +2170,45 @@ extern "C" {
 	 * visible rows were read. */
 	VGUI_API size_t vgui_editor_table_last_render_cell_queries(
 		vgui_editor_table* table);
+
+	/* Multi-column sorting. */
+	VGUI_API size_t vgui_editor_table_sort_spec_count(vgui_editor_table* table);
+	VGUI_API int vgui_editor_table_sort_spec_at(vgui_editor_table* table,
+		size_t index, vgui_editor_table_sort_spec* out);
+	VGUI_API int vgui_editor_table_set_sort_specs(vgui_editor_table* table,
+		const vgui_editor_table_sort_spec* specs, size_t count);
+	VGUI_API int vgui_editor_table_toggle_sort_spec(vgui_editor_table* table,
+		int column, int ascending);
+
+	/* Range selection. */
+	VGUI_API void vgui_editor_table_get_selection(vgui_editor_table* table,
+		vgui_editor_table_selection* out);
+	VGUI_API int vgui_editor_table_select_range(vgui_editor_table* table,
+		const vgui_editor_table_cell* anchor, const vgui_editor_table_cell* focus);
+	VGUI_API int vgui_editor_table_extend_selection(vgui_editor_table* table,
+		const vgui_editor_table_cell* focus);
+	VGUI_API void vgui_editor_table_select_all(vgui_editor_table* table);
+	VGUI_API int vgui_editor_table_select_row(vgui_editor_table* table,
+		size_t source_row);
+	VGUI_API int vgui_editor_table_select_column(vgui_editor_table* table,
+		int column);
+	VGUI_API void vgui_editor_table_set_on_selection_range(
+		vgui_editor_table* table, vgui_editor_table_select_range_fn fn,
+		void* user);
+
+	/* Clipboard (host-supplied).  copy/cut return the TSV byte count written
+	 * to out (or needed when out is null); paste applies a TSV string. */
+	VGUI_API void vgui_editor_table_set_clipboard_handlers(
+		vgui_editor_table* table,
+		vgui_editor_table_clipboard_get_fn get,
+		vgui_editor_table_clipboard_set_fn set,
+		void* user);
+	VGUI_API size_t vgui_editor_table_copy_selection(vgui_editor_table* table,
+		char* out, size_t cap);
+	VGUI_API size_t vgui_editor_table_cut_selection(vgui_editor_table* table,
+		char* out, size_t cap);
+	VGUI_API int vgui_editor_table_paste_text(vgui_editor_table* table,
+		const char* tsv);
 
 	/* ------------------------------------------------------------------------- */
 	/* Timeline                                                                  */

@@ -65,6 +65,12 @@ set(SRC_GAME_EDITOR
     phase0_renderer.cpp
 )
 
+# 电子表格 demo：S0+S1 扩展 table_view 的多列排序 / 矩形选区 / TSV 剪贴板。
+# 需要真实 GPU 窗口；用 VGUI_SPREADSHEET_SIM=1 跑有界自检，失败返回 1。
+set(SRC_SPREADSHEET_DEMO
+    vgui_spreadsheet_demo.cpp
+)
+
 # Phase 0: 3D FBO -> native texture -> VGUI_IMAGE
 set(SRC_PHASE0
     vgui_phase0.cpp
@@ -243,6 +249,11 @@ add_test(NAME vgui_editor_c_api COMMAND vgui_editor_c_api_test)
 if(NOT VGUI_CORE_ONLY)
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
 target_link_libraries(vgui_game_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
+
+# 电子表格 demo（真实 GPU 窗口，不注册 ctest）；VGUI_SPREADSHEET_SIM=1 自检。
+add_executable(vgui_spreadsheet_demo ${SRC_SPREADSHEET_DEMO})
+target_link_libraries(vgui_spreadsheet_demo PRIVATE vgui_sample_common
+    vgui::editor_kit SDL3::SDL3 EnTT::EnTT ZLIB::ZLIB)
 endif()
 endif()
 

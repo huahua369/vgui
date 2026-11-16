@@ -64,8 +64,11 @@ struct vgui_editor_table : vgeditor::c_object<table_view> {
 	vgui_editor_property_desc col_editor;
 
 	vgeditor::callback_slot<vgui_editor_table_select_fn> on_selection;
+	vgeditor::callback_slot<vgui_editor_table_select_range_fn> on_selection_range;
 	vgeditor::callback_slot<vgui_editor_table_edit_fn> edit_handler;
 	vgeditor::callback_slot<vgui_editor_table_edit_fn> on_edit;
+	vgeditor::callback_slot<vgui_editor_table_clipboard_get_fn> clipboard_get;
+	vgeditor::callback_slot<vgui_editor_table_clipboard_set_fn> clipboard_set;
 };
 
 namespace {
@@ -1041,6 +1044,8 @@ extern "C" {
 		if (!table || !table->owns_object())
 			return;
 		table->impl.set_selection_listener(nullptr);
+		table->impl.set_selection_range_listener(nullptr);
+		table->impl.set_clipboard_handlers(nullptr, nullptr);
 		table->impl.set_edit_handler(nullptr);
 		table->impl.set_edit_listener(nullptr);
 		table->impl.set_command_stack(nullptr);
@@ -1499,6 +1504,207 @@ extern "C" {
 	size_t vgui_editor_table_last_render_cell_queries(vgui_editor_table* table)
 	{
 		return table ? table->impl.last_render_cell_queries() : 0;
+	}
+
+	/* ---- multi-column sorting ------------------------------------------ */
+
+	void vgui_editor_table_sort_spec_default(vgui_editor_table_sort_spec* spec)
+	{
+		if (!spec)
+			return;
+		std::memset(spec, 0, sizeof(*spec));
+		spec->struct_size = (uint32_t)sizeof(*spec);
+		spec->column = -1;
+		spec->ascending = 1;
+	}
+
+	void vgui_editor_table_selection_default(vgui_editor_table_selection* sel)
+	{
+		if (!sel)
+			return;
+		std::memset(sel, 0, sizeof(*sel));
+		sel->struct_size = (uint32_t)sizeof(*sel);
+		vgui_editor_table_cell_default(&sel->anchor);
+		vgui_editor_table_cell_default(&sel->focus);
+	}
+
+	size_t vgui_editor_table_sort_spec_count(vgui_editor_table* table)
+	{
+		return table ? table->impl.sort_specs().size() : 0;
+	}
+
+	int vgui_editor_table_sort_spec_at(vgui_editor_table* table, size_t index,
+		vgui_editor_table_sort_spec* out)
+	{
+		if (!table || !out || index >= table->impl.sort_specs().size())
+			return 0;
+		const table_sort_spec& spec = table->impl.sort_specs()[index];
+		out->struct_size = (uint32_t)sizeof(*out);
+		out->column = spec.column;
+		out->ascending = spec.ascending ? 1 : 0;
+		return 1;
+	}
+
+	int vgui_editor_table_set_sort_specs(vgui_editor_table* table,
+		const vgui_editor_table_sort_spec* specs, size_t count)
+	{
+		if (!table || (!specs && count))
+			return 0;
+		std::vector<table_sort_spec> converted;
+		converted.reserve(count);
+		for (size_t i = 0; i < count; ++i)
+			converted.push_back({ specs[i].column, specs[i].ascending != 0 });
+		return table->impl.set_sort_specs(std::move(converted)) ? 1 : 0;
+	}
+
+	int vgui_editor_table_toggle_sort_spec(vgui_editor_table* table, int column,
+		int ascending)
+	{
+		return table && table->impl.toggle_sort_spec(column, ascending != 0)
+			? 1 : 0;
+	}
+
+	/* ---- range selection ------------------------------------------------ */
+
+	void vgui_editor_table_get_selection(vgui_editor_table* table,
+		vgui_editor_table_selection* out)
+	{
+		if (!out)
+			return;
+		vgui_editor_table_selection_default(out);
+		if (!table)
+			return;
+		const table_selection& sel = table->impl.selection();
+		fill_cell(sel.anchor, &out->anchor);
+		fill_cell(sel.focus, &out->focus);
+	}
+
+	int vgui_editor_table_select_range(vgui_editor_table* table,
+		const vgui_editor_table_cell* anchor, const vgui_editor_table_cell* focus)
+	{
+		if (!table || !anchor || !focus)
+			return 0;
+		return table->impl.select_range({ anchor->row, anchor->column },
+			{ focus->row, focus->column }) ? 1 : 0;
+	}
+
+	int vgui_editor_table_extend_selection(vgui_editor_table* table,
+		const vgui_editor_table_cell* focus)
+	{
+		if (!table || !focus)
+			return 0;
+		return table->impl.extend_selection({ focus->row, focus->column })
+			? 1 : 0;
+	}
+
+	void vgui_editor_table_select_all(vgui_editor_table* table)
+	{
+		if (table)
+			table->impl.select_all();
+	}
+
+	int vgui_editor_table_select_row(vgui_editor_table* table, size_t source_row)
+	{
+		return table && table->impl.select_row(source_row) ? 1 : 0;
+	}
+
+	int vgui_editor_table_select_column(vgui_editor_table* table, int column)
+	{
+		return table && table->impl.select_column(column) ? 1 : 0;
+	}
+
+	void vgui_editor_table_set_on_selection_range(vgui_editor_table* table,
+		vgui_editor_table_select_range_fn fn, void* user)
+	{
+		if (!table)
+			return;
+		if (!fn)
+		{
+			table->on_selection_range.clear();
+			table->impl.set_selection_range_listener(nullptr);
+			return;
+		}
+		table->on_selection_range.set(fn, user, nullptr);
+		auto fn_ = table->on_selection_range.fn;
+		auto user_ = table->on_selection_range.user;
+		auto owner_ = table->on_selection_range.owner;
+		table->impl.set_selection_range_listener([fn_, user_, owner_](
+			const table_selection& sel) {
+			if (!fn_)
+				return;
+			vgui_editor_table_selection view;
+			vgui_editor_table_selection_default(&view);
+			fill_cell(sel.anchor, &view.anchor);
+			fill_cell(sel.focus, &view.focus);
+			fn_(user_, &view);
+		});
+	}
+
+	/* ---- clipboard ------------------------------------------------------ */
+
+	void vgui_editor_table_set_clipboard_handlers(vgui_editor_table* table,
+		vgui_editor_table_clipboard_get_fn get,
+		vgui_editor_table_clipboard_set_fn set, void* user)
+	{
+		if (!table)
+			return;
+		if (!get && !set)
+		{
+			table->clipboard_get.clear();
+			table->clipboard_set.clear();
+			table->impl.set_clipboard_handlers(nullptr, nullptr);
+			return;
+		}
+		table->clipboard_get.set(get, user, nullptr);
+		table->clipboard_set.set(set, user, nullptr);
+		auto get_fn = table->clipboard_get.fn;
+		auto set_fn = table->clipboard_set.fn;
+		auto get_user = table->clipboard_get.user;
+		auto set_user = table->clipboard_set.user;
+		auto get_owner = table->clipboard_get.owner;
+		auto set_owner = table->clipboard_set.owner;
+		table->impl.set_clipboard_handlers(
+			[get_fn, get_user, get_owner]() -> std::string {
+				if (!get_fn)
+					return {};
+				const size_t needed = get_fn(get_user, nullptr, 0);
+				if (!needed)
+					return {};
+				std::string buffer(needed, '\0');
+				get_fn(get_user, &buffer[0], buffer.size());
+				return buffer;
+			},
+			[set_fn, set_user, set_owner](const std::string& text) {
+				if (set_fn)
+					set_fn(set_user, text.c_str());
+			});
+	}
+
+	size_t vgui_editor_table_copy_selection(vgui_editor_table* table, char* out,
+		size_t cap)
+	{
+		if (!table)
+			return 0;
+		const std::string tsv = table->impl.copy_selection();
+		return vgeditor::copy_string(out, cap, tsv.c_str());
+	}
+
+	size_t vgui_editor_table_cut_selection(vgui_editor_table* table, char* out,
+		size_t cap)
+	{
+		if (!table)
+			return 0;
+		const std::string tsv = table->impl.copy_selection();
+		if (!table->impl.cut_selection())
+			return 0;
+		return vgeditor::copy_string(out, cap, tsv.c_str());
+	}
+
+	int vgui_editor_table_paste_text(vgui_editor_table* table, const char* tsv)
+	{
+		if (!table || !tsv)
+			return 0;
+		return table->impl.paste_text(tsv) ? 1 : 0;
 	}
 
 } /* extern "C" */

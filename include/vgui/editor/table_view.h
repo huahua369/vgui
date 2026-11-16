@@ -17,6 +17,7 @@
  * through table_state_to_json()/table_state_from_json() and editor_shell stores
  * the resulting JSON in editor_layout.
  */
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -55,6 +56,58 @@ namespace vgui_editor_kit {
 	inline bool operator!=(const table_cell& a, const table_cell& b) noexcept
 	{
 		return !(a == b);
+	}
+
+	/* A rectangular selection expressed by two corner cells (anchor where the
+	 * selection started, focus where it currently ends).  Rows use source row
+	 * indices. */
+	struct table_selection
+	{
+		table_cell anchor{};
+		table_cell focus{};
+
+		bool valid() const noexcept
+		{
+			return anchor.valid() && focus.valid();
+		}
+		/* Inclusive bounds in source-row / column index space. */
+		std::size_t first_row() const noexcept
+		{
+			return std::min(anchor.row, focus.row);
+		}
+		std::size_t last_row() const noexcept
+		{
+			return std::max(anchor.row, focus.row);
+		}
+		int first_column() const noexcept
+		{
+			return std::min(anchor.column, focus.column);
+		}
+		int last_column() const noexcept
+		{
+			return std::max(anchor.column, focus.column);
+		}
+		std::size_t row_span() const noexcept
+		{
+			return valid() ? last_row() - first_row() + 1 : 0;
+		}
+		std::size_t column_span() const noexcept
+		{
+			return valid()
+				? (std::size_t)(last_column() - first_column() + 1) : 0;
+		}
+		bool contains(std::size_t source_row, int column) const noexcept
+		{
+			return valid() && source_row >= first_row() &&
+				source_row <= last_row() && column >= first_column() &&
+				column <= last_column();
+		}
+	};
+
+	inline bool operator==(const table_selection& a,
+		const table_selection& b) noexcept
+	{
+		return a.anchor == b.anchor && a.focus == b.focus;
 	}
 
 	/* Optional per-cell presentation overrides.  A zero colour keeps the
@@ -108,14 +161,34 @@ namespace vgui_editor_kit {
 		bool empty() const noexcept { return count == 0; }
 	};
 
+	/* One column in a multi-column sort.  Order in the vector is priority. */
+	struct table_sort_spec
+	{
+		int column = -1;
+		bool ascending = true;
+
+		bool valid() const noexcept { return column >= 0; }
+	};
+
+	inline bool operator==(const table_sort_spec& a,
+		const table_sort_spec& b) noexcept
+	{
+		return a.column == b.column && a.ascending == b.ascending;
+	}
+
 	struct table_state
 	{
-		static constexpr int current_version = 1;
+		/* Version 2 adds the `sorts` array for multi-column sorting.  Version
+		 * 1 files remain readable: they map to a single sort spec. */
+		static constexpr int current_version = 2;
 
 		int version = current_version;
 		std::vector<float> column_widths;
+		/* Primary sort, kept in sync with sorts[0] for v1 compatibility. */
 		int sort_column = -1;
 		bool sort_ascending = true;
+		/* Full sort priority list (empty means unsorted). */
+		std::vector<table_sort_spec> sorts;
 	};
 
 	std::string table_state_to_json(const table_state& state);
@@ -128,6 +201,8 @@ namespace vgui_editor_kit {
 	{
 	public:
 		using selection_listener = std::function<void(const table_cell&)>;
+		using selection_range_listener =
+			std::function<void(const table_selection&)>;
 		/* Applies an edit when the column has no set_value callback.  Return
 		 * false to reject the value. */
 		using edit_handler = std::function<bool(const table_cell&,
@@ -181,16 +256,67 @@ namespace vgui_editor_kit {
 		int sort_column() const noexcept;
 		bool sort_ascending() const noexcept;
 		/* column < 0 clears the sort.  Returns false when the index is not a
-		 * sortable column. */
+		 * sortable column.  Sets a single-key sort (clears any secondary keys). */
 		bool set_sort(int column, bool ascending);
 		void clear_sort();
 
+		/* ---- multi-column sorting ------------------------------------ */
+		/* The full sort priority list; empty when unsorted. */
+		const std::vector<table_sort_spec>& sort_specs() const noexcept;
+		/* Replaces the whole sort.  Invalid entries (out of range, duplicate
+		 * columns, unsortable) make the call fail with no change. */
+		bool set_sort_specs(std::vector<table_sort_spec> specs);
+		/* Adds a column as the last priority key, or flips its direction if it
+		 * is already present.  Used by Shift+click on a header.  When there is
+		 * no existing sort this behaves like set_sort(). */
+		bool toggle_sort_spec(int column, bool ascending = true);
+		/* Removes one column from the sort list.  Returns false when absent. */
+		bool remove_sort_spec(int column);
+
 		/* ---- selection / navigation ----------------------------------- */
+		/* The active cell (selection focus).  Single-cell selection remains
+		 * the default and keeps the original API unchanged. */
 		table_cell selected_cell() const noexcept;
 		bool select_cell(std::size_t source_row, int column);
 		void clear_selection();
 		table_cell hit_test(float content_x, float content_y) const;
 		void set_selection_listener(selection_listener listener);
+
+		/* ---- range selection ------------------------------------------ */
+		/* The full rectangular selection.  For a single cell anchor == focus. */
+		const table_selection& selection() const noexcept;
+		/* Selects a rectangle; focus/anchor are normalised from the two given
+		 * cells.  The active cell becomes focus. */
+		bool select_range(const table_cell& anchor, const table_cell& focus);
+		/* Extends the current selection's focus to a new cell (Shift+click /
+		 * Shift+arrow).  When there is no selection, starts one. */
+		bool extend_selection(const table_cell& focus);
+		/* Selects all visible rows across all columns. */
+		void select_all();
+		/* Selects a whole row (Shift+space) or column (Ctrl+space). */
+		bool select_row(std::size_t source_row);
+		bool select_column(int column);
+		void set_selection_range_listener(selection_range_listener listener);
+
+		/* ---- clipboard ------------------------------------------------- */
+		using clipboard_get_fn = std::function<std::string()>;
+		using clipboard_set_fn = std::function<void(const std::string&)>;
+		/* Host supplies system-clipboard access; the table never depends on a
+		 * windowing backend.  With no getter, Ctrl+V is a no-op; with no setter,
+		 * copy still returns the TSV but does not write the system clipboard. */
+		void set_clipboard_handlers(clipboard_get_fn get,
+			clipboard_set_fn set);
+		/* Serializes the current selection to TSV (rows by '\\n', columns by
+		 * '\\t') in display order.  Returns an empty string when no selection. */
+		std::string copy_selection() const;
+		/* Copies to the host clipboard (when installed) and returns the TSV. */
+		std::string copy_selection_to_clipboard();
+		/* Copies then clears every selected editable cell in one transaction. */
+		bool cut_selection();
+		/* Pastes TSV at the selection's top-left anchor in display order.
+		 * Applies through normalization + column set_value as one undo record.
+		 * Returns false if no selection, no writable column, or out of range. */
+		bool paste_text(const std::string& tsv, std::string* error = nullptr);
 
 		/* ---- geometry -------------------------------------------------- */
 		/* Absolute rectangles.  cell_rect works for off-screen rows too; it
@@ -291,6 +417,9 @@ namespace vgui_editor_kit {
 			bool notify);
 		void push_cell_command(const table_cell& cell,
 			const std::string& old_value, const std::string& new_value);
+		/* TSV parsing: splits into rows/columns, handling quoted fields. */
+		static std::vector<std::vector<std::string>> parse_tsv(
+			const std::string& text);
 		object_id row_id_at(std::size_t source_row) const;
 		bool find_row_id(object_id id, std::size_t& out) const;
 
@@ -333,12 +462,18 @@ namespace vgui_editor_kit {
 
 		/* Sorted display order.  Empty means the natural source order. */
 		std::vector<std::size_t> display_;
+		/* Full sort priority list (source of truth for sorting). */
+		std::vector<table_sort_spec> sort_specs_;
+		/* Primary-key mirror, kept for existing callers and getters. */
 		int sort_column_ = -1;
 		bool sort_ascending_ = true;
 
 		table_cell selected_{};
 		object_id selected_row_id_ = invalid_object;
 		selection_listener selection_listener_;
+		/* Rectangular selection; for single-cell selection anchor == focus. */
+		table_selection selection_;
+		selection_range_listener selection_range_listener_;
 
 		float row_height_ = 24.0f;
 		float scroll_x_ = 0.0f;
@@ -380,6 +515,8 @@ namespace vgui_editor_kit {
 
 		edit_handler edit_handler_;
 		edit_listener edit_listener_;
+		clipboard_get_fn clipboard_get_;
+		clipboard_set_fn clipboard_set_;
 		command_stack* commands_ = nullptr;
 
 		vgui_widget* popup_content_ = nullptr;

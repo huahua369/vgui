@@ -765,6 +765,12 @@ struct editor_state
 		};
 		table.set_source(source);
 
+		/* S1: wire the system clipboard so Ctrl+C/X/V work in the TABLE panel.
+		 * The table stays backend-agnostic; the host supplies SDL's clipboard. */
+		table.set_clipboard_handlers(
+			[]() -> std::string { return get_clipboard(); },
+			[](const std::string& text) { set_clipboard(text.c_str()); });
+
 		std::vector<table_column> columns(7);
 		columns[0].id = "name";
 		columns[0].label = "Name";

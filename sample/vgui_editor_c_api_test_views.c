@@ -801,6 +801,80 @@ void test_table(probe* p)
 		"no cell queries are counted without a paint");
 	vgui_editor_table_focus(table);
 
+	/* Multi-column sorting C API. */
+	{
+		vgui_editor_table_sort_spec specs[2];
+		vgui_editor_table_sort_spec_default(&specs[0]);
+		check(specs[0].struct_size == (uint32_t)sizeof(specs[0]) &&
+			specs[0].column == -1 && specs[0].ascending == 1,
+			"sort spec default stamps its size and values");
+		specs[0].column = 0; specs[0].ascending = 1;
+		specs[1].column = 1; specs[1].ascending = 0;
+		check(vgui_editor_table_set_sort_specs(table, specs, 1) == 1,
+			"a single valid sort spec applies");
+		check(vgui_editor_table_sort_spec_count(table) == 1,
+			"one sort spec is reported");
+		check(vgui_editor_table_set_sort_specs(table, specs, 2) == 0,
+			"an unsortable column is rejected in a sort spec list");
+		check(vgui_editor_table_toggle_sort_spec(table, 0, 1) == 1 &&
+			vgui_editor_table_sort_spec_count(table) == 1,
+			"toggling an existing spec keeps one key");
+		check(vgui_editor_table_sort_spec_at(table, 0, &specs[0]) == 1 &&
+			specs[0].column == 0,
+			"sort spec_at reports the first key");
+		check(vgui_editor_table_sort_spec_at(table, 9, &specs[0]) == 0,
+			"sort spec_at rejects an out-of-range index");
+	}
+
+	/* Range selection C API. */
+	{
+		vgui_editor_table_selection range;
+		vgui_editor_table_cell anchor, focus;
+		vgui_editor_table_cell_default(&anchor);
+		vgui_editor_table_cell_default(&focus);
+		vgui_editor_table_selection_default(&range);
+		check(range.struct_size == (uint32_t)sizeof(range) &&
+			range.anchor.column == VGUI_EDITOR_TABLE_NO_COLUMN,
+			"selection default stamps its size and empty corners");
+		anchor.row = 0; anchor.column = 0;
+		focus.row = 2; focus.column = 1;
+		check(vgui_editor_table_select_range(table, &anchor, &focus) == 1,
+			"a rectangular range is selected");
+		vgui_editor_table_get_selection(table, &range);
+		check(range.anchor.row == 0 && range.focus.row == 2 &&
+			range.focus.column == 1,
+			"get_selection reports the selected range");
+		focus.row = 1;
+		check(vgui_editor_table_extend_selection(table, &focus) == 1,
+			"the selection focus is extended");
+		check(vgui_editor_table_select_row(table, 1) == 1 &&
+			vgui_editor_table_select_column(table, 0) == 1,
+			"row and column selection are accepted");
+		vgui_editor_table_select_all(table);
+		vgui_editor_table_get_selection(table, &range);
+		check(range.focus.row == 2 && range.focus.column == 1,
+			"select_all covers the whole model");
+	}
+
+	/* Clipboard C API (host handlers + NULL safety). */
+	{
+		char tsv[128];
+		vgui_editor_table_set_clipboard_handlers(table, NULL, NULL, NULL);
+		vgui_editor_table_select_cell(table, 0, 0);
+		needed = vgui_editor_table_copy_selection(table, NULL, 0);
+		check(needed > 0, "copy_selection reports the TSV length");
+		check(vgui_editor_table_copy_selection(table, tsv, sizeof(tsv)) > 0 &&
+			tsv[0] != '\0', "copy_selection writes TSV bytes");
+		check(vgui_editor_table_paste_text(table, NULL) == 0,
+			"a NULL paste is rejected");
+		check(vgui_editor_table_cut_selection(NULL, tsv, sizeof(tsv)) == 0,
+			"a NULL table cuts nothing");
+		check(vgui_editor_table_copy_selection(NULL, tsv, sizeof(tsv)) == 0,
+			"a NULL table copies nothing");
+		vgui_editor_table_set_clipboard_handlers(table, NULL, NULL, NULL);
+	}
+	vgui_editor_table_set_on_selection_range(table, NULL, NULL);
+
 	/* Teardown. */
 	vgui_editor_table_set_on_selection(table, NULL, NULL);
 	vgui_editor_table_set_edit_handler(table, NULL, NULL);

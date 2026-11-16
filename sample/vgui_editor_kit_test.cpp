@@ -14151,6 +14151,174 @@ int test_table_view()
 			return fail("table redo follows row id");
 	}
 
+	/* --- S0: three-state + multi-column sorting ----------------------- */
+	{
+		command_stack cmds;
+		table_view table;
+		table.build(vgui_root(ui));
+		table.set_command_stack(&cmds);
+		std::vector<std::string> n(40);
+		std::vector<int> a(40), b(40);
+		for (std::size_t i = 0; i < n.size(); ++i)
+		{
+			n[i] = "R" + std::to_string(i);
+			a[i] = (int)(i % 4);
+			b[i] = (int)(i / 4);
+		}
+		table_source src;
+		src.row_count = [&] { return n.size(); };
+		src.row_id = [](std::size_t r) { return (object_id)(r + 1); };
+		src.cell_text = [&](std::size_t r, const std::string& col) {
+			if (col == "name") return n[r];
+			if (col == "a") return std::to_string(a[r]);
+			if (col == "b") return std::to_string(b[r]);
+			return std::string();
+		};
+		table.set_source(src);
+		std::vector<table_column> cols(3);
+		cols[0].id = "name"; cols[0].label = "Name";
+		cols[1].id = "a"; cols[1].label = "A";
+		cols[1].editor.type = property_type::integer;
+		cols[2].id = "b"; cols[2].label = "B";
+		cols[2].editor.type = property_type::integer;
+		table.set_columns(std::move(cols));
+
+		/* Stable multi-key sort: primary A ascending, secondary B descending. */
+		if (!table.set_sort_specs({ { 1, true }, { 2, false } }) ||
+			table.sort_specs().size() != 2 ||
+			table.sort_column() != 1 || !table.sort_ascending())
+			return fail("table multi sort setup");
+		std::size_t first = table.source_row_at(0);
+		if (a[first] != 0 || b[first] != 9)
+			return fail("table multi sort order");
+		/* Ties on A must be in descending B order: 3,7,11... for A=0 -> B=9..7,
+		 * verify first three share A=0 and B strictly decreasing. */
+		std::size_t r0 = table.source_row_at(0);
+		std::size_t r1 = table.source_row_at(1);
+		std::size_t r2 = table.source_row_at(2);
+		if (!(a[r0] == 0 && a[r1] == 0 && a[r2] == 0) ||
+			!(b[r0] > b[r1] && b[r1] > b[r2]))
+			return fail("table multi sort tie order");
+		/* Duplicate / invalid specs rejected without changing live state. */
+		if (table.set_sort_specs({ { 1, true }, { 1, false } }) ||
+			table.set_sort_specs({ { 9, true } }) ||
+			table.sort_specs().size() != 2)
+			return fail("table multi sort invalid");
+		if (!table.remove_sort_spec(2) || table.sort_specs().size() != 1)
+			return fail("table remove sort spec");
+		if (!table.toggle_sort_spec(2, true) ||
+			table.sort_specs().size() != 2 || table.sort_specs()[1].column != 2)
+			return fail("table toggle sort spec");
+
+		/* v2 state round-trip and v1 backward compatibility. */
+		table_state s2 = table.capture_state();
+		if (s2.version != 2 || s2.sorts.size() != 2)
+			return fail("table v2 capture");
+		table_state parsed2;
+		if (!table_state_from_json(table_state_to_json(s2), parsed2) ||
+			parsed2.sorts.size() != 2 || parsed2.sorts[1].column != 2 ||
+			!parsed2.sorts[1].ascending)
+			return fail("table v2 json round-trip");
+		table_state v1;
+		if (!table_state_from_json(
+			"{\"version\":1,\"column_widths\":[100],\"sort\":{\"column\":2,\"ascending\":false}}",
+			v1) || v1.sorts.size() != 1 || v1.sorts[0].column != 2 ||
+			v1.sorts[0].ascending)
+			return fail("table v1 compat");
+		if (!table.apply_state(v1) || table.sort_specs().size() != 1 ||
+			table.sort_column() != 2)
+			return fail("table apply v1 state");
+		table_state bad2;
+		if (table_state_from_json(
+			"{\"version\":2,\"sorts\":[{\"column\":1,\"ascending\":true},{\"column\":1,\"ascending\":false}]}",
+			bad2))
+			return fail("table v2 duplicate sort rejected");
+	}
+
+	/* --- S1: range selection + clipboard TSV -------------------------- */
+	{
+		command_stack cmds;
+		table_view table;
+		table.build(vgui_root(ui));
+		table.set_command_stack(&cmds);
+		std::vector<std::string> cells = { "a1", "a2", "a3",
+			"b1", "b2", "b3", "c1", "c2", "c3" };
+		table_source src;
+		src.row_count = [&] { return (std::size_t)3; };
+		src.cell_text = [&](std::size_t r, const std::string& col) {
+			int c = col == "c0" ? 0 : (col == "c1" ? 1 : 2);
+			return cells[r * 3 + c];
+		};
+		table.set_source(src);
+		std::vector<table_column> cols(3);
+		for (int i = 0; i < 3; ++i)
+		{
+			cols[i].id = "c" + std::to_string(i);
+			cols[i].label = cols[i].id;
+			const int ci = i;
+			cols[i].set_value = [&, ci](std::size_t r, const std::string& v) {
+				if (r >= 3) return false;
+				cells[r * 3 + ci] = v;
+				return true;
+			};
+		}
+		table.set_columns(std::move(cols));
+
+		/* Rectangular selection and normalized bounds. */
+		if (!table.select_range({ 0, 0 }, { 2, 1 }) ||
+			table.selection().row_span() != 3 ||
+			table.selection().column_span() != 2 ||
+			!table.selection().contains(1, 1) ||
+			table.selection().contains(0, 2))
+			return fail("table range selection");
+		/* Single-cell select keeps the degenerate range. */
+		if (!table.select_cell(1, 1) || table.selection().anchor !=
+			table.selection().focus)
+			return fail("table single cell degenerate range");
+		if (!table.extend_selection({ 2, 2 }) ||
+			table.selection().first_row() != 1 ||
+			table.selection().last_column() != 2)
+			return fail("table extend selection");
+
+		/* Copy produces TSV in row-major order. */
+		if (!table.select_range({ 0, 0 }, { 1, 2 }))
+			return fail("table copy selection setup");
+		const std::string tsv = table.copy_selection();
+		if (tsv != "a1\ta2\ta3\nb1\tb2\tb3")
+			return fail("table copy TSV");
+
+		/* Paste applies through set_value and is one atomic undo record. */
+		cmds.clear();
+		if (!table.paste_text("X1\tX2\nY1\tY2") ||
+			cells[0] != "X1" || cells[1] != "X2" ||
+			cells[3] != "Y1" || cells[4] != "Y2" ||
+			cmds.undo_count() != 1)
+			return fail("table paste TSV");
+		if (!cmds.undo() || cells[0] != "a1" || cells[3] != "b1")
+			return fail("table paste atomic undo");
+		/* Out-of-range paste is rejected without touching cells. */
+		std::string paste_error;
+		if (table.paste_text("z1\tz2\tz3\tz4", &paste_error) ||
+			cells[0] != "a1")
+			return fail("table paste out of range");
+		/* Quoted TSV fields round-trip. */
+		if (!table.select_cell(0, 0))
+			return fail("table quote paste setup");
+		if (!table.paste_text("\"tab\there\"") || cells[0] != "tab\there")
+			return fail("table quoted TSV");
+		/* Cut copies pre-clear TSV to the clipboard and clears the cells in
+		 * one undo record. */
+		std::string clipboard;
+		table.set_clipboard_handlers(nullptr,
+			[&](const std::string& v) { clipboard = v; });
+		if (!table.select_range({ 0, 0 }, { 0, 1 }))
+			return fail("table cut selection setup");
+		const std::string pre_cut = table.copy_selection();
+		if (!table.cut_selection() || cells[0] != "" || cells[1] != "" ||
+			clipboard != pre_cut)
+			return fail("table cut selection");
+	}
+
 	vgui_destroy(ui);
 	return 0;
 }
