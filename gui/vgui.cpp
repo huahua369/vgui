@@ -9652,6 +9652,12 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	bool over_scrollbar = vgui_scrollbar_hit(h, x, y, &scrollbar_widget, &scrollbar_axis);
 	if (ctx->hot != h)
 	{
+		/* Hover entering/leaving a widget usually changes its painted state
+		 * (button highlight, border, ...).  Bump the revision so an on-demand
+		 * backend repaints; setters alone cannot cover this because hover is
+		 * core state, not a widget property setter.  The settle frames added
+		 * by the backend cover the hover_anim easing that follows. */
+		++ctx->paint_revision;
 		vgui_widget* old = ctx->hot;
 		if (old && ctx->alive.count(old))
 		{
@@ -9677,6 +9683,24 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	}
 	if (h && ctx->alive.count(h))
 	{
+		/* Snapshot item-level hover so a change (e.g. moving between list rows
+		 * or dock tabs, where ctx->hot stays the same widget) marks the window
+		 * dirty for on-demand rendering.  widget-level enter/leave is already
+		 * handled above; this covers hover *within* one widget. */
+		vgui_item_id old_item_hover = 0, old_item_close = 0;
+		switch (h->kind)
+		{
+		case VGUI_LIST:  if (h->list) old_item_hover = h->list->hover; break;
+		case VGUI_TREE:  if (h->tree) old_item_hover = h->tree->hover; break;
+		case VGUI_TABVIEW:
+			if (vgui_tabs_of(h)) { old_item_hover = vgui_tabs_of(h)->hover; old_item_close = vgui_tabs_of(h)->close_hover; } break;
+		case VGUI_MENUBAR:
+			if (vgui_menubar_of(h)) old_item_hover = vgui_menubar_of(h)->hover; break;
+		case VGUI_DOCK:
+			if (vgui_dock_of(h)) { old_item_hover = vgui_dock_of(h)->hover; old_item_close = vgui_dock_of(h)->close_hover; } break;
+		default: break;
+		}
+
 		if (h->kind == VGUI_LIST)
 		{
 			int idx = vgui_list_index_at(h, x, y);
@@ -9730,6 +9754,22 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 		{
 			vgui_emit(h, VGUI_EVENT_MOUSE_MOVE, x - h->abs_x, y - h->abs_y);
 		}
+
+		vgui_item_id new_item_hover = 0, new_item_close = 0;
+		switch (h->kind)
+		{
+		case VGUI_LIST:  if (h->list) new_item_hover = h->list->hover; break;
+		case VGUI_TREE:  if (h->tree) new_item_hover = h->tree->hover; break;
+		case VGUI_TABVIEW:
+			if (vgui_tabs_of(h)) { new_item_hover = vgui_tabs_of(h)->hover; new_item_close = vgui_tabs_of(h)->close_hover; } break;
+		case VGUI_MENUBAR:
+			if (vgui_menubar_of(h)) new_item_hover = vgui_menubar_of(h)->hover; break;
+		case VGUI_DOCK:
+			if (vgui_dock_of(h)) { new_item_hover = vgui_dock_of(h)->hover; new_item_close = vgui_dock_of(h)->close_hover; } break;
+		default: break;
+		}
+		if (new_item_hover != old_item_hover || new_item_close != old_item_close)
+			++ctx->paint_revision;
 	}
 
 	if (ctx->active && ctx->alive.count(ctx->active))
@@ -20325,6 +20365,12 @@ extern "C" {
 		return ctx ? ctx->paint_revision : 0;
 	}
 
+	void vgui_widget_mark_dirty(vgui_widget* widget)
+	{
+		if (widget && widget->ctx)
+			++widget->ctx->paint_revision;
+	}
+
 	int vgui_context_has_active_animation(const vgui_context* ctx)
 	{
 		if (!ctx) return 0;
@@ -20342,6 +20388,37 @@ extern "C" {
 		if (ctx->open_menu || ctx->modal.active || ctx->popup.content ||
 			ctx->dialog.panel)
 			return 1;
+		/* A widget held in a pointer-driven drag keeps changing its painted
+		 * state on MOUSE_MOTION without setter calls (scrollbar thumb, slider,
+		 * edit text selection, splitter).  Keep those windows rendering. */
+		if (ctx->active && ctx->alive.count(ctx->active))
+		{
+			vgui_widget* a = ctx->active;
+			if (a->scroll_drag_axis || a->edit_scroll_drag ||
+				a->edit_drag || a->pressed)
+				return 1;
+			if (a->kind == VGUI_SPLITTER && a->splitter && a->splitter->dragging)
+				return 1;
+			if (a->kind == VGUI_TABVIEW && a->tabs && a->tabs->drag_item)
+				return 1;
+			if (a->kind == VGUI_DOCK && a->dock && a->dock->drag_mode)
+				return 1;
+		}
+		/* Hover / press / check easing is advanced in vgui_update without any
+		 * setter call.  Keep repainting while any widget's eased value has not
+		 * converged to its target, so a hover highlight triggered by pointer
+		 * motion finishes its transition under on-demand rendering.  The 0.004
+		 * epsilon matches a visually-settled threshold at the default easing
+		 * speed and avoids an infinite tail from exponential decay. */
+		const float eps = 0.004f;
+		for (vgui_widget* w : ctx->all_widgets)
+		{
+			if (!w || !ctx->alive.count(w) || w->destroy_pending) continue;
+			if (std::fabs(w->hover_anim - (w->hovered ? 1.0f : 0.0f)) > eps ||
+				std::fabs(w->press_anim - (w->pressed ? 1.0f : 0.0f)) > eps ||
+				std::fabs(w->check_anim - (w->checked ? 1.0f : 0.0f)) > eps)
+				return 1;
+		}
 		return 0;
 	}
 

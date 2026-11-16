@@ -2163,6 +2163,13 @@ extern "C" {
 	 * focused edit caret blink, toasts, floating text, visible tooltip, an open
 	 * menu/popup/dialog/modal, or a drag in progress. */
 	VGUI_API int vgui_context_has_active_animation(const vgui_context* ctx);
+	/* Marks a widget's visual state as changed so an on-demand backend repaints
+	 * its window on the next frame.  Custom widgets that keep their own hover /
+	 * selection drawing state (and therefore bypass the normal setters) should
+	 * call this when that state actually changes.  A no-op when the visual
+	 * state did not change is the caller's responsibility (compare old/new).
+	 * Does not force a layout pass, only bumps the paint revision. */
+	VGUI_API void vgui_widget_mark_dirty(vgui_widget* widget);
 
 	/* ------------------------------------------------------------------------- */
 	/* Reactive / declarative data binding (optional layer; see docs)            */

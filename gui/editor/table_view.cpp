@@ -3148,8 +3148,16 @@ namespace vgui_editor_kit {
 			}
 			{
 				const table_cell cell = self->hit_test(x, y);
-				self->hover_row_ = cell.valid() ? cell.row : kNoRow;
-				self->hover_column_ = cell.valid() ? cell.column : -1;
+				const std::size_t new_row = cell.valid() ? cell.row : kNoRow;
+				const int new_col = cell.valid() ? cell.column : -1;
+				if (new_row != self->hover_row_ || new_col != self->hover_column_)
+				{
+					self->hover_row_ = new_row;
+					self->hover_column_ = new_col;
+					/* Row/column hover is private drawing state (no widget
+					 * setter).  Mark it so the backend repaints on demand. */
+					vgui_widget_mark_dirty(widget);
+				}
 				vgui_widget_set_cursor(widget, VGUI_CURSOR_ARROW);
 			}
 			return 1;
@@ -3348,8 +3356,12 @@ namespace vgui_editor_kit {
 		}
 
 		case VGUI_EVENT_LEAVE:
-			self->hover_row_ = kNoRow;
-			self->hover_column_ = -1;
+			if (self->hover_row_ != kNoRow || self->hover_column_ != -1)
+			{
+				self->hover_row_ = kNoRow;
+				self->hover_column_ = -1;
+				vgui_widget_mark_dirty(widget);
+			}
 			vgui_widget_set_cursor(widget, VGUI_CURSOR_ARROW);
 			return 0;
 

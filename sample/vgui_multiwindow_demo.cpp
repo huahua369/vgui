@@ -228,12 +228,32 @@ int main()
 			win_a->settle_frames = 0;
 			win_b->needs_render = false;
 			win_b->settle_frames = 0;
+			/* Pointer motion that changes nothing on screen must NOT dirty.
+			 * First move into the dock's empty centre area and drain until idle
+			 * (this establishes hover and is a real change), then nudge within
+			 * the same empty area: no widget/item hover changes -> no repaint. */
 			SDL_Event ev = {};
 			ev.type = SDL_EVENT_MOUSE_MOTION;
 			ev.window.windowID = win_a->id;
+			ev.motion.x = 450.0f; ev.motion.y = 420.0f;
+			ev.motion.xrel = 1.0f; ev.motion.yrel = 1.0f;
 			wg->process_event(&ev);
+			for (int i = 0; i < 60; ++i) { host.begin_frame(0.016f); host.end_frame(); }
+			ev.motion.x = 455.0f; ev.motion.y = 425.0f;  /* same empty area */
+			wg->process_event(&ev);
+			check(!wg->should_render(win_a) && !wg->should_render(win_b),
+				"no-op mouse motion does NOT dirty any window");
+			check(host.end_frame() == 0,
+				"no-op mouse motion submits no frame");
+
+			/* A real click (non-motion input) still dirties only its window. */
+			SDL_Event down = {};
+			down.type = SDL_EVENT_MOUSE_BUTTON_DOWN;
+			down.window.windowID = win_a->id;
+			down.button.button = 1;
+			wg->process_event(&down);
 			check(wg->should_render(win_a) && !wg->should_render(win_b),
-				"input event marks only the target window dirty");
+				"click input marks only the target window dirty");
 
 			host.set_on_demand_render(false); /* restore legacy for tests below */
 		}

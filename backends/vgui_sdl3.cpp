@@ -1008,10 +1008,22 @@ void app_mgr::process_event(const SDL_Event* e)
 		active_viewport_ = pw->viewport;
 		// Keep the retained UI in sync before converting input coordinates.
 		pw->sync_ui_scale();
-		/* Any event aimed at this window may change its visuals (hover, focus,
-		 * drag, resize, DPI, ...).  With on-demand rendering enabled this is
-		 * the primary signal that the window needs another frame. */
-		pw->needs_render = true;
+		/* Non-motion input (click, key, wheel, resize, DPI, ...) may change
+		 * visuals without going through a vgui setter, so keep it as an
+		 * unconditional dirty signal for on-demand rendering.
+		 *
+		 * MOUSE_MOTION is deliberately excluded: pointer movement very often
+		 * leaves the picture unchanged (e.g. wiggling the mouse over a static
+		 * area), and forcing a repaint on every move defeats on-demand mode.
+		 * Motion-driven visual changes are covered precisely instead:
+		 *   - hover entering/leaving a widget bumps paint_revision (core);
+		 *   - custom widgets such as table_view mark their own hover state;
+		 *   - hover_anim easing and pointer-driven drags are reported by
+		 *     vgui_context_has_active_animation().
+		 * should_render() consumes all of these, so a motion only repaints
+		 * when something actually changed on screen. */
+		if (e->type != SDL_EVENT_MOUSE_MOTION)
+			pw->needs_render = true;
 	}
 	auto pwio = io();
 	auto viewport = active_viewport_;

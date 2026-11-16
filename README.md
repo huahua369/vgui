@@ -362,7 +362,8 @@ host.set_on_demand_render(false);  // 恢复"每帧每窗口都重绘"
 - **单窗口宿主**：没有用 `multiwindow_host` 时，自行在帧循环里用 `wg->should_render(win)` 决定是否 acquire/draw/submit，提交后调用 `wg->note_rendered(win)`；全部跳过时用 `vgpu_render_frame(ctx, nullptr, 0)` 保持资源回收，并自行 sleep 节流（参考 `multiwindow_host::idle_delay_ms`）。
 - **零回归**：总开关默认关闭，未调用时行为与以前完全一致，现有 demo/截图不受影响。
 - **自检**：`VGUI_ONDEMAND_SIM=1 vgui_multiwindow_demo` 验证 38 条断言（总开关、空闲零提交、内容变更定点置脏、request_render、每窗口 opt-out、输入置脏、运行期切换），退出码 0/1。
-- **单窗口电子表格示例**：`vgui_spreadsheet_demo` 已在 attach 后开启按需渲染，`VGUI_SPREADSHEET_SIM=1` 的 26 条断言中额外验证了空闲零提交、宿主数据变更重绘一次、`request_render` 定点重绘。它演示了真实交互场景：排序/选区/剪贴板等 `table_view` 操作经输入置脏触发重绘，工具栏回调里的 `refresh_status()` 更新状态栏文本推进 revision。
+- **单窗口电子表格示例**：`vgui_spreadsheet_demo` 已在 attach 后开启按需渲染，`VGUI_SPREADSHEET_SIM=1` 的 27 条断言中额外验证了空闲零提交、宿主数据变更重绘一次、`request_render` 定点重绘、右侧留白区点击选中当前行。它演示了真实交互场景：排序/选区/剪贴板等 `table_view` 操作经输入置脏触发重绘，工具栏回调里的 `refresh_status()` 更新状态栏文本推进 revision。
+- **鼠标移动不会无谓重绘**：`MOUSE_MOTION` 不再作为无条件置脏信号——指针在同一区域微动、画面无变化时完全不提交帧。 Motion 引起的真实视觉变化由精确信号覆盖：widget hover 进入/离开推进 `paint_revision`；内置 LIST/TREE/TAB/DOCK 的 item hover、自定义控件（如 `table_view` 行高亮）通过新 API `vgui_widget_mark_dirty()` 标记；`hover_anim`/`press_anim`/`check_anim` 缓动与指针拖拽由 `vgui_context_has_active_animation()` 报告。点击/按键/滚轮/尺寸变化等非 motion 输入仍无条件置脏。`VGUI_ONDEMAND_SIM=1 vgui_multiwindow_demo` 的 40 条断言含"无变化 motion 不提交"与"点击仍置脏"验证。
 
 布局持久化方面，`editor_layout_set`（JSON 版本 9）把布局按窗口 id 分组，并记录被拖出为真实 OS 窗口的面板（`dock_floater_host`）的屏幕坐标：
 
