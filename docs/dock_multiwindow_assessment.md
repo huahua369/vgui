@@ -411,7 +411,7 @@ v9 格式落地时组件的 tear-off 请求仍是单槽：`request_tear_off()` �
 - **显式收尾**：新增 `close_all()`——销毁全部浮动窗口但不合并（每个都触发 `floater_closing`），并清空待处理队列。`vgui_game_editor` 的 `editor_state` 是静态对象，若依赖 `dock_floater_host` 析构会在 `main` 返回后才执行，那时 `app_mgr` / 窗口注册表已销毁（实测退出码 `0xC0000005`）；现在保存后、拆机前显式调用。
 - **示例宿主接线**：`editor_layout_path()` 默认 `SDL_GetPrefPath("vgui","game_editor")/layout.json`，`VGUI_EDITOR_LAYOUT` 覆盖（空/`0` 关闭），有界 `VGUI_EDITOR_FRAMES` 忽略默认文件以保持确定性、但尊重显式路径。`load_editor_layout()` 在 floater host attach 之后执行：`shell->apply_layout()` 恢复 Dock，再对 `window->floaters` 逐个 `vgui_dock_find()` → `request_tear_off()`。`save_editor_layout()` 在销毁 shell / 浮动窗口之前执行：`shell->capture_layout()` + `capture_floaters()` 写入 v9 `windows[0]`。
 - **验证**：`vgui_dock_floater_demo` 自测 22/22（含 FIFO 与多 floater capture）。`VGUI_EDITOR_FRAMES=90 VGUI_ALLOW_TEAROFF=1 VGUI_EDITOR_LAYOUT=<tmp>\layout.json vgui_game_editor` 退出码 0，JSON 为 v9 且 `floaters:[{panel:"gameview",rect:{x:1296,y:158,width:300,height:724}}]`；用同一文件跑 `VGUI_EDITOR_FRAMES=30`（不注入 tear-off）打印 `layout loaded (floaters=1)`，第 3 帧绘制命令 `floaters=1`，退出后矩形与保存值一致。
-- **边界**：主窗口自身的 OS 矩形未保存/恢复（示例只用 v9 的 floater 数组）；`editor_layout` 内嵌版本仍为 7。
+- **边界**：主窗口自身的 OS 矩形当时未保存/恢复；`editor_layout` 内嵌版本仍为 7。**主窗口矩形持久化已于本节之后的实施记录（§17）补齐**——宿主层的 `capture_window_rect` / `restore_window_rect` 把 `editor_window_layout::rect` 接上，无需升格式版本（rect 字段自 v8 就在 JSON 中）。
 
 ---
 
@@ -551,3 +551,37 @@ setter `set_viewports_enabled()` 全仓库无调用（`docking()` 的唯一调�
 全量构建 43/43 target 通过（含全部 sample，证明仓库内无残留调用方）；残留引用 grep 全空；回归 crosswindow 74/74、model 920/0、kit PASS、c_api 32/0、B 22/22、A 21/21、game_editor 冒烟正常；`ctest` 5/5，**截图基线零变化**。
 
 > 说明：这是公开头文件里的 API 移除。仓库内无调用方，但若存在仓库外宿主直接调用 `set_viewports_enabled()` / `docking()`，需同步移除该调用（本就无效果）。
+
+---
+
+## 17. 实施记录：主窗口 OS 矩形持久化（2026-11-16）
+
+> 落实审计确认的遗留项 §12.6「边界」——主窗口自身 OS 矩形此前未保存/恢复，只持久化了浮动窗口矩形。
+
+### 17.1 缺口定位：序列化层已有，宿主层未接线
+
+- **序列化层（无需改动）**：`editor_window_layout` 早有 `has_rect/x/y/width/height`，`editor_layout_set_to_json` / `_from_json` 已完整读写 `windows[i].rect`（v8 起就是格式字段）。v9/v10 文件兼容，v1–v7 导入为 `id="main"` 且无 rect。
+- **宿主层（本次改动）**：`vgui_game_editor.cpp` 的 `save_editor_layout()` 未采集主窗口矩形，`load_editor_layout()` 未应用它。补的正是注释所说「restoring them is the host's job」。
+
+### 17.2 改动清单（仅 sample/vgui_game_editor.cpp，+73 行）
+
+| 函数 | 作用 |
+|---|---|
+| `capture_window_rect(win,…)` | SDL_GetWindowPosition/Size 采集屏幕点矩形（含边框），过滤最小化窗口（SDL 返回 -32000 之类的屏幕外坐标），复用 `editor_state::main_window` 无需改签名 |
+| `restore_window_rect(win,x,y,w,h)` | 遍历显示器可见区（SDL_GetDisplayUsableBounds）：矩形与任一可见区有交集才应用（SDL_SetWindowSize + SetWindowPosition），否则返回 false 由调用方忽略——防换分辨率/拔屏后窗口消失 |
+| `save_editor_layout()` | 主窗口矩形写入 `windows[0].rect` |
+| `load_editor_layout()` | 先恢复 OS 矩形，再 `apply_layout()`；`host.begin_frame()` 每帧从窗口像素尺寸同步 UI context，当帧按新尺寸重排各 Dock 区 |
+
+**不升格式版本**：rect 字段自 v8 就在 JSON 中，v10 `current_version` 不变；旧文件 `has_rect=false` 时 load 跳过，行为不变。core / 序列化层 / 其他 demo 零改动。
+
+### 17.3 验证（真实系统级窗口操作，非合成事件）
+
+用系统 API `MoveWindow` 把主窗口移到自定义矩形 → `WM_CLOSE` 正常退出 → 检查 JSON `windows[0].rect` → 重启检查恢复 → 手改 JSON 为 (-50000,-50000) 检查忽略：
+
+- **SAVE PASS**：rect 落盘（x/y/width/height 均非默认）。
+- **LOAD PASS**：重启后主窗口恢复到保存矩形（窗口外框含标题栏，与保存的 client 矩形差一个装饰边距，符合预期）。
+- **OFFSCREEN PASS**：越界矩形打印 `layout ignored off-screen main window rect` 并被忽略，窗口保持在可见范围。
+
+回归：`ctest` 5/5；B floater demo 22/22；crosswindow 74/74（序列化层未动）；game_editor SIM_DRAG floaters=1；kit PASS（debug）；release/debug 全量构建通过。
+
+> 坑：Python `SetProcessDPIAware()` 后 `MoveWindow` 用物理像素，而 SDL 的 `GetWindowSize` 是 client 点且不含边框——验证数值会有固定偏移，断言要比对「保存值 → 恢复值」而非「注入值 → 保存值」。

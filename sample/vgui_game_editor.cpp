@@ -3787,6 +3787,55 @@ static std::string editor_layout_path(int max_frames)
 	return path;
 }
 
+/* 主窗口 OS 矩形持久化（宿主职责：libvgui 不拥有窗口代码）。
+ * 采集用 SDL_GetWindowPosition/Size，与 dock_floater_rect 的口径一致——屏幕点、
+ * 含窗口边框。最小化窗口 SDL 会返回特殊坐标（如 -32000），必须过滤掉，否则
+ * 会把主窗口"存到"屏幕外。 */
+static bool capture_window_rect(os_window* win, int& x, int& y,
+	int& w, int& h)
+{
+	if (!win || !win->window || SDL_GetWindowFlags(win->window) & SDL_WINDOW_MINIMIZED)
+		return false;
+	SDL_GetWindowPosition(win->window, &x, &y);
+	SDL_GetWindowSize(win->window, &w, &h);
+	return w > 0 && h > 0;
+}
+
+/* 恢复矩形前做显示器边界校验：用户换分辨率 / 拔外接屏后，保存的坐标可能落在
+ * 所有显示器之外。此时保持窗口当前位置不变（不应用保存值），而不是把主窗口
+ * 放到看不见的地方。矩形只要与任意显示器的可见区域有交集就认为有效。 */
+static bool restore_window_rect(os_window* win, int x, int y, int w, int h)
+{
+	if (!win || !win->window || w <= 0 || h <= 0)
+		return false;
+	int count = 0;
+	SDL_DisplayID* displays = SDL_GetDisplays(&count);
+	bool visible = false;
+	if (displays)
+	{
+		for (int i = 0; i < count; ++i)
+		{
+			SDL_Rect usable = {};
+			if (!SDL_GetDisplayUsableBounds(displays[i], &usable) ||
+				usable.w <= 0 || usable.h <= 0)
+				continue;
+			/* 窗口左上角落在显示器可见区内，或与可见区有实质重叠。 */
+			if (x + w > usable.x && x < usable.x + usable.w &&
+				y + h > usable.y && y < usable.y + usable.h)
+			{
+				visible = true;
+				break;
+			}
+		}
+		SDL_free(displays);
+	}
+	if (!visible)
+		return false;
+	SDL_SetWindowSize(win->window, w, h);
+	SDL_SetWindowPosition(win->window, x, y);
+	return true;
+}
+
 static void load_editor_layout(editor_state& state, const std::string& path)
 {
 	if (path.empty() || !state.shell)
@@ -3805,6 +3854,19 @@ static void load_editor_layout(editor_state& state, const std::string& path)
 	const editor_window_layout* window = set.find_window("main");
 	if (!window)
 		return;
+	/* 先恢复主窗口 OS 矩形，再应用 Dock 布局：host.begin_frame() 每帧从窗口
+	 * 像素尺寸同步 UI context，所以本帧稍后就会按新尺寸布局各 Dock 区。 */
+	if (window->has_rect)
+	{
+		if (restore_window_rect(state.main_window, window->x, window->y,
+				window->width, window->height))
+			printf("INFO layout restored main window rect=(%d,%d %dx%d)\n",
+				window->x, window->y, window->width, window->height);
+		else
+			printf("INFO layout ignored off-screen main window rect "
+				"(%d,%d %dx%d)\n", window->x, window->y,
+				window->width, window->height);
+	}
 	if (!state.shell->apply_layout(window->layout, &error))
 	{
 		fprintf(stderr, "layout apply failed: %s\n", error.c_str());
@@ -3839,6 +3901,16 @@ static void save_editor_layout(editor_state& state, const std::string& path)
 	editor_layout_set set;
 	editor_window_layout& window = set.ensure_window("main");
 	window.layout = state.shell->capture_layout();
+	/* 主窗口 OS 矩形随布局一起持久化（最小化时不采集，避免存进屏幕外坐标）。 */
+	int wx = 0, wy = 0, ww = 0, wh = 0;
+	if (capture_window_rect(state.main_window, wx, wy, ww, wh))
+	{
+		window.has_rect = true;
+		window.x = wx;
+		window.y = wy;
+		window.width = ww;
+		window.height = wh;
+	}
 	for (const dock_floater_rect& floater : state.floater.capture_floaters())
 	{
 		if (floater.id.empty())
