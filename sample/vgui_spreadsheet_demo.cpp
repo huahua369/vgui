@@ -132,6 +132,34 @@ static vgui_texture* make_badge_texture(vgui_context* ui)
 	return vgui_texture_create(ui, &desc);
 }
 
+/* Programmatic 96x64 texture used by the floating drawing overlay.  A simple
+ * framed gradient makes the anchor rect and fit mode easy to see. */
+static vgui_texture* make_float_texture(vgui_context* ui)
+{
+	constexpr int w = 96, h = 64;
+	std::vector<uint32_t> pixels((std::size_t)w * h);
+	for (int y = 0; y < h; ++y)
+	{
+		for (int x = 0; x < w; ++x)
+		{
+			const uint8_t r = (uint8_t)(30 + x * 2);
+			const uint8_t g = (uint8_t)(180 - y);
+			const uint8_t b = (uint8_t)(120 + y * 2);
+			const uint8_t a = (x < 3 || y < 3 || x >= w - 3 || y >= h - 3)
+				? 255 : 210;
+			pixels[(std::size_t)y * w + x] =
+				(uint32_t)a << 24 | (uint32_t)b << 16 | (uint32_t)g << 8 | r;
+		}
+	}
+	vgui_texture_desc desc = {};
+	desc.width = w;
+	desc.height = h;
+	desc.stride = w * 4;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels.data();
+	return vgui_texture_create(ui, &desc);
+}
+
 struct app_state
 {
 	std::vector<record> rows;
@@ -141,17 +169,26 @@ struct app_state
 	vgui_widget* status = nullptr;
 	vgui_widget* sort_info = nullptr;
 	vgui_texture* badge_texture = nullptr;
+	vgui_texture* float_texture = nullptr;
+	std::vector<table_drawing> drawings;
 	int badge_image_queries = 0;
+	int drawing_queries = 0;
+	char drawing_selected[64] = "none";
 	char note[160] = "ready";
 
 	~app_state()
 	{
-		/* Texture belongs to the UI context, which is still alive when the
+		/* Textures belong to the UI context, which is still alive when the
 		 * heap app_state is deleted in main(). */
 		if (badge_texture)
 		{
 			vgui_texture_destroy(badge_texture);
 			badge_texture = nullptr;
+		}
+		if (float_texture)
+		{
+			vgui_texture_destroy(float_texture);
+			float_texture = nullptr;
 		}
 	}
 
@@ -363,6 +400,7 @@ static vgui_widget* make_toolbar(vgui_context* ui)
 static void configure_table(vgui_context* ui)
 {
 	g->badge_texture = make_badge_texture(ui);
+	g->float_texture = make_float_texture(ui);
 	g->table.build(vgui_root(ui));
 	g->table.set_command_stack(&g->commands);
 	vgui_widget_set_size(g->table.widget(), 0, 0);
@@ -425,6 +463,64 @@ static void configure_table(vgui_context* ui)
 			style.text_color = 0xFFC97A7A;	/* inactive rows: soft red */
 		return style;
 	};
+
+	/* Floating drawing overlay.  Three examples cover all anchor policies:
+	 * a resized picture across a cell range, a move-only badge and a fixed
+	 * content-space stamp.  Geometry is recomputed from anchors each paint. */
+	g->drawings.clear();
+	{
+		table_drawing d;
+		d.id = "float-resize";
+		d.key = "float://gradient";
+		d.texture = g->float_texture;
+		d.anchor_from = { 2, 1 };	/* source row 2, Name column */
+		d.anchor_to = { 5, 3 };		/* source row 5, Units column */
+		d.from_dx = 4.0f; d.from_dy = 3.0f;
+		d.to_dx = -4.0f; d.to_dy = -3.0f;
+		d.sizing = table_drawing_sizing::move_and_size;
+		d.fit = table_image_fit::stretch;
+		d.opacity = 0.92f;
+		d.z = 1;
+		d.alt_text = "resize-with-cells illustration";
+		g->drawings.push_back(d);
+	}
+	{
+		table_drawing d;
+		d.id = "float-move";
+		d.key = "float://badge";
+		d.texture = g->badge_texture;
+		d.anchor_from = { 8, 0 };
+		d.anchor_to = { 8, 0 };
+		d.sizing = table_drawing_sizing::move_only;
+		d.width = 64.0f; d.height = 40.0f;
+		d.fit = table_image_fit::contain;
+		d.z = 2;
+		d.alt_text = "move-only badge";
+		g->drawings.push_back(d);
+	}
+	{
+		table_drawing d;
+		d.id = "float-fixed";
+		d.key = "float://stamp";
+		d.texture = g->float_texture;
+		d.from_dx = 680.0f; d.from_dy = 8.0f;
+		d.sizing = table_drawing_sizing::fixed;
+		d.width = 72.0f; d.height = 48.0f;
+		d.fit = table_image_fit::cover;
+		d.opacity = 0.75f;
+		d.z = 3;
+		d.alt_text = "fixed stamp";
+		g->drawings.push_back(d);
+	}
+	source.drawings = []() {
+		++g->drawing_queries;
+		return g->drawings;
+	};
+	g->table.set_drawing_selection_listener([](const std::string& id) {
+		snprintf(g->drawing_selected, sizeof(g->drawing_selected), "%s",
+			id.empty() ? "none" : id.c_str());
+		g->refresh_status();
+	});
 	g->table.set_source(source);
 
 	g->table.set_clipboard_handlers(
@@ -616,6 +712,74 @@ static void run_probe()
 	check(g->table.last_render_cell_image_queries() <=
 		g->table.last_render_cell_queries(),
 		"image queries never exceed cell queries in one paint");
+
+	/* S2: floating drawing layer. */
+	check(g->float_texture != nullptr, "host created programmatic float texture");
+	check(g->drawing_queries > 0, "drawings pulled during paint");
+	check(g->table.last_render_drawing_count() == g->drawings.size(),
+		"last_render_drawing_count matches host drawings");
+	{
+		float rx = 0, ry = 0, rw = 0, rh = 0;
+		check(g->table.drawing_rect("float-resize", &rx, &ry, &rw, &rh) &&
+			rw > 0 && rh > 0, "anchored drawing resolves to a positive rect");
+
+		/* move_and_size: widening anchor_from column moves right edge and
+		 * grows the rectangle (anchor_to col boundary shifts too). */
+		const float w1 = g->table.column_width(1);
+		g->table.set_column_width(1, w1 + 40.0f);
+		float rx2 = 0, ry2 = 0, rw2 = 0, rh2 = 0;
+		g->table.drawing_rect("float-resize", &rx2, &ry2, &rw2, &rh2);
+		check(rw2 > rw + 30.0f,
+			"move_and_size drawing grows when an anchor column widens");
+
+		/* move_only keeps its fixed pixel size across the same resize. */
+		float mx = 0, my = 0, mw = 0, mh = 0;
+		g->table.drawing_rect("float-move", &mx, &my, &mw, &mh);
+		const float mw_before = mw;
+		g->table.set_column_width(1, w1);	/* restore */
+		g->table.drawing_rect("float-move", &mx, &my, &mw, &mh);
+		check(std::fabs(mw - mw_before) < 0.5f,
+			"move_only drawing keeps a fixed size across column resize");
+
+		/* fixed: content-space position is independent of column widths. */
+		float fx = 0, fy = 0, fw = 0, fh = 0;
+		g->table.drawing_rect("float-fixed", &fx, &fy, &fw, &fh);
+		const float fx_before = fx;
+		const float w2 = g->table.column_width(2);
+		g->table.set_column_width(2, w2 + 30.0f);
+		g->table.drawing_rect("float-fixed", &fx, &fy, &fw, &fh);
+		check(std::fabs(fx - fx_before) < 0.5f,
+			"fixed drawing ignores column resize");
+		g->table.set_column_width(2, w2);	/* restore */
+	}
+
+	/* Hit testing + mutually-exclusive selection via real pointer input. */
+	{
+		float dx = 0, dy = 0, dw = 0, dh = 0;
+		if (g->table.drawing_rect("float-resize", &dx, &dy, &dw, &dh) &&
+			dw > 8 && dh > 8)
+		{
+			const float px = dx + dw * 0.5f;
+			const float py = dy + dh * 0.5f;
+			g->table.select_cell(0, 0);
+			check(g->table.selected_cell().valid(), "cell selected before drawing click");
+			vgui_input_mouse_move(g->ui, px, py);
+			vgui_input_mouse_down(g->ui, 1, px, py, 1);
+			vgui_input_mouse_up(g->ui, 1, px, py, 1);
+			check(g->table.selected_drawing() == "float-resize" &&
+				!g->table.selected_cell().valid(),
+				"clicking a drawing selects it and clears cell selection");
+
+			g->table.select_drawing("float-fixed");
+			check(g->table.selected_drawing() == "float-fixed",
+				"select_drawing API selects a different drawing");
+			g->table.clear_drawing_selection();
+			check(g->table.selected_drawing().empty(),
+				"clear_drawing_selection empties the selection");
+		}
+		else
+			check(false, "drawing hit-test setup (no rect)");
+	}
 
 	/* Right-gap hit testing: the table body is wider than the sum of all
 	 * columns (920px of columns in a ~1180px window), leaving empty space to

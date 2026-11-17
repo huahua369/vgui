@@ -139,6 +139,40 @@ namespace vgui_editor_kit {
 		vgui_color tint = 0;	/* 0 keeps the theme/texture colour */
 	};
 
+	/* How a floating drawing follows its anchor cells when layout changes.
+	 * Mirrors Excel's "move and size" / "move" / "don't move or size". */
+	enum class table_drawing_sizing
+	{
+		move_and_size = 0,	/* follow anchor cells in position and size */
+		move_only,			/* follow top-left anchor, keep fixed size */
+		fixed				/* stay at fixed content coordinates */
+	};
+
+	/* A floating picture anchored to a cell range.  Geometry is recomputed
+	 * from the anchors on every paint, so it follows scrolling, column
+	 * resizing and re-sorting without storing absolute pixels.  `texture` is
+	 * BORROWED: the host owns it and keeps it alive for the paint. */
+	struct table_drawing
+	{
+		std::string id;						/* stable id for selection / undo */
+		std::string key;					/* resource key resolved by the host */
+		vgui_texture* texture = nullptr;	/* borrowed; null -> not painted */
+		table_cell anchor_from{};			/* top-left anchor cell */
+		table_cell anchor_to{};				/* bottom-right anchor cell */
+		float from_dx = 0.0f, from_dy = 0.0f;	/* inset inside anchor_from */
+		float to_dx = 0.0f, to_dy = 0.0f;		/* inset inside anchor_to */
+		table_drawing_sizing sizing = table_drawing_sizing::move_and_size;
+		/* Logical-pixel size used by move_only/fixed.  Zero means "derive
+		 * from the anchors" (useful when the host does not track size). */
+		float width = 0.0f;
+		float height = 0.0f;
+		table_image_fit fit = table_image_fit::stretch;
+		float rotation = 0.0f;				/* degrees; reserved for S3 */
+		float opacity = 1.0f;
+		int z = 0;							/* draw order: ascending */
+		std::string alt_text;
+	};
+
 	struct table_column
 	{
 		std::string id;
@@ -176,6 +210,10 @@ namespace vgui_editor_kit {
 		 * Returning a null texture falls back to cell_text. */
 		std::function<table_cell_image(std::size_t row,
 			const std::string& column)> cell_image;
+		/* Optional floating-drawing layer, pulled once per paint.  The host
+		 * should return only drawings intersecting the visible range for very
+		 * large sheets; geometry is recomputed from anchors each frame. */
+		std::function<std::vector<table_drawing>()> drawings;
 	};
 
 	struct table_row_range
@@ -324,6 +362,26 @@ namespace vgui_editor_kit {
 		bool select_column(int column);
 		void set_selection_range_listener(selection_range_listener listener);
 
+		/* ---- floating drawings ----------------------------------------- */
+		using drawing_selection_listener = std::function<void(const std::string&)>;
+		/* Currently selected drawing id; empty when none.  Selecting a drawing
+		 * clears the cell selection and vice versa (mutually exclusive). */
+		std::string selected_drawing() const noexcept;
+		bool select_drawing(const std::string& id);
+		void clear_drawing_selection();
+		/* Topmost drawing whose rectangle contains the point, or an empty id.
+		 * content_x/y use the same space as hit_test(): scaled content pixels,
+		 * origin at the body top-left, scroll not yet subtracted. */
+		std::string hit_test_drawing(float content_x, float content_y) const;
+		/* Drawing rectangle in ABSOLUTE window coordinates (like cell_rect),
+		 * recomputed from anchors and current scroll.  False if id absent or
+		 * the drawing cannot be resolved (e.g. hidden anchor row). */
+		bool drawing_rect(const std::string& id, float* x, float* y,
+			float* width, float* height) const;
+		/* Number of drawings painted by the last paint (after z-sort / cull). */
+		std::size_t last_render_drawing_count() const noexcept;
+		void set_drawing_selection_listener(drawing_selection_listener listener);
+
 		/* ---- clipboard ------------------------------------------------- */
 		using clipboard_get_fn = std::function<std::string()>;
 		using clipboard_set_fn = std::function<void(const std::string&)>;
@@ -423,8 +481,20 @@ namespace vgui_editor_kit {
 			const layout_metrics& metrics);
 		void draw_body(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,
 			const layout_metrics& metrics);
+		/* Floating-drawing overlay: pulls source_.drawings once per paint,
+		 * recomputes each rect from anchors, z-sorts and paints inside the
+		 * body clip. */
+		void draw_drawings(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,
+			const layout_metrics& metrics);
 		void draw_scrollbars(ovg_ctx_cb* cb, rvg_t* vg,
 			const layout_metrics& metrics);
+
+		/* Content-space rect of a drawing; shared by paint and hit test.  The
+		 * returned rect is in scaled content pixels (origin at body top-left,
+		 * scroll not subtracted), matching hit_test's input space. */
+		bool drawing_content_rect(const table_drawing& drawing, float* x,
+			float* y, float* width, float* height) const;
+		std::vector<table_drawing> pull_drawings() const;
 
 		layout_metrics metrics() const;
 		float ui_scale() const;
@@ -505,6 +575,13 @@ namespace vgui_editor_kit {
 		table_selection selection_;
 		selection_range_listener selection_range_listener_;
 
+		/* Floating-drawing layer.  `drawings_` is refreshed once per paint and
+		 * reused by hit testing so pointer queries do not pull host data. */
+		std::vector<table_drawing> drawings_;
+		std::string selected_drawing_id_;
+		std::string hover_drawing_id_;
+		drawing_selection_listener drawing_selection_listener_;
+
 		float row_height_ = 24.0f;
 		float scroll_x_ = 0.0f;
 		float scroll_y_ = 0.0f;
@@ -564,6 +641,7 @@ namespace vgui_editor_kit {
 
 		std::size_t render_cell_queries_ = 0;
 		std::size_t render_cell_image_queries_ = 0;
+		std::size_t render_drawing_count_ = 0;
 	};
 
 } /* namespace vgui_editor_kit */

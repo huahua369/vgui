@@ -989,6 +989,7 @@ namespace vgui_editor_kit {
 		if (source_row >= row_count_ || column < 0 ||
 			column >= (int)columns_.size())
 			return false;
+		clear_drawing_selection();
 		const table_cell cell{ source_row, column };
 		selected_ = cell;
 		selection_ = { cell, cell };
@@ -1106,6 +1107,175 @@ namespace vgui_editor_kit {
 			selection_listener_(selected_);
 		if (selection_range_listener_)
 			selection_range_listener_(selection_);
+	}
+
+	/* --------------------------------------------------------------------- */
+	/* Floating drawings                                                     */
+	/* --------------------------------------------------------------------- */
+
+	std::vector<table_drawing> table_view::pull_drawings() const
+	{
+		std::vector<table_drawing> items;
+		if (source_.drawings)
+			items = source_.drawings();
+		/* Ascending z: later entries (higher z) paint and hit-test on top. */
+		std::stable_sort(items.begin(), items.end(),
+			[](const table_drawing& a, const table_drawing& b) {
+				return a.z < b.z;
+			});
+		return items;
+	}
+
+	bool table_view::drawing_content_rect(const table_drawing& drawing,
+		float* x, float* y, float* width, float* height) const
+	{
+		const float scale = ui_scale();
+		const float rowh = row_height_px();
+		const bool anchored = drawing.anchor_from.valid() &&
+			drawing.anchor_to.valid();
+
+		/* Anchor-derived rectangle first (move_and_size, and the fallback
+		 * size for the other modes when width/height are not supplied). */
+		float left = 0.0f, top = 0.0f, right = 0.0f, bottom = 0.0f;
+		if (anchored)
+		{
+			const int from_display =
+				display_index_of(drawing.anchor_from.row);
+			const int to_display = display_index_of(drawing.anchor_to.row);
+			if (from_display < 0 || to_display < 0)
+				return false;
+			left = column_offset((std::size_t)drawing.anchor_from.column) +
+				drawing.from_dx * scale;
+			top = (float)from_display * rowh + drawing.from_dy * scale;
+			right = column_offset((std::size_t)drawing.anchor_to.column) +
+				column_width_px((std::size_t)drawing.anchor_to.column) +
+				drawing.to_dx * scale;
+			bottom = (float)(to_display + 1) * rowh + drawing.to_dy * scale;
+			if (right < left) std::swap(left, right);
+			if (bottom < top) std::swap(top, bottom);
+		}
+		else if (drawing.sizing != table_drawing_sizing::fixed)
+		{
+			return false;
+		}
+
+		float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
+		switch (drawing.sizing)
+		{
+		case table_drawing_sizing::fixed:
+			ax = drawing.from_dx * scale;
+			ay = drawing.from_dy * scale;
+			aw = drawing.width > 0.0f ? drawing.width * scale : (right - left);
+			ah = drawing.height > 0.0f ? drawing.height * scale : (bottom - top);
+			break;
+		case table_drawing_sizing::move_only:
+			if (!anchored) return false;
+			ax = left;
+			ay = top;
+			aw = drawing.width > 0.0f ? drawing.width * scale : (right - left);
+			ah = drawing.height > 0.0f ? drawing.height * scale : (bottom - top);
+			break;
+		case table_drawing_sizing::move_and_size:
+		default:
+			if (!anchored) return false;
+			ax = left;
+			ay = top;
+			aw = right - left;
+			ah = bottom - top;
+			break;
+		}
+		if (aw <= 0.0f || ah <= 0.0f)
+			return false;
+		if (x) *x = ax;
+		if (y) *y = ay;
+		if (width) *width = aw;
+		if (height) *height = ah;
+		return true;
+	}
+
+	std::string table_view::selected_drawing() const noexcept
+	{
+		return selected_drawing_id_;
+	}
+
+	bool table_view::select_drawing(const std::string& id)
+	{
+		bool found = false;
+		for (const table_drawing& d : drawings_)
+			if (d.id == id) { found = true; break; }
+		if (!found)
+			return false;
+		/* Mutually exclusive with cell selection. */
+		const bool had_cell = selected_.valid();
+		selected_ = {};
+		selection_ = {};
+		selected_row_id_ = invalid_object;
+		selected_drawing_id_ = id;
+		if (had_cell) notify_selection();
+		if (drawing_selection_listener_)
+			drawing_selection_listener_(selected_drawing_id_);
+		if (widget_) vgui_widget_mark_dirty(widget_);
+		return true;
+	}
+
+	void table_view::clear_drawing_selection()
+	{
+		if (selected_drawing_id_.empty())
+			return;
+		selected_drawing_id_.clear();
+		if (drawing_selection_listener_)
+			drawing_selection_listener_(selected_drawing_id_);
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	std::string table_view::hit_test_drawing(float content_x,
+		float content_y) const
+	{
+		const layout_metrics m = metrics();
+		const float px = content_x + scroll_x_;
+		const float py = content_y - m.header_height + scroll_y_;
+		/* drawings_ is z-ascending: iterate backwards so the topmost wins. */
+		for (auto it = drawings_.rbegin(); it != drawings_.rend(); ++it)
+		{
+			float dx = 0.0f, dy = 0.0f, dw = 0.0f, dh = 0.0f;
+			if (!drawing_content_rect(*it, &dx, &dy, &dw, &dh))
+				continue;
+			if (px >= dx && px < dx + dw && py >= dy && py < dy + dh)
+				return it->id;
+		}
+		return {};
+	}
+
+	bool table_view::drawing_rect(const std::string& id, float* x, float* y,
+		float* width, float* height) const
+	{
+		for (const table_drawing& d : drawings_)
+		{
+			if (d.id != id)
+				continue;
+			float cx = 0.0f, cy = 0.0f, cw = 0.0f, ch = 0.0f;
+			if (!drawing_content_rect(d, &cx, &cy, &cw, &ch))
+				return false;
+			/* Absolute window coordinates, like cell_rect/header_rect. */
+			const layout_metrics m = metrics();
+			if (x) *x = m.body_x + cx - scroll_x_;
+			if (y) *y = m.body_y + cy - scroll_y_;
+			if (width) *width = cw;
+			if (height) *height = ch;
+			return true;
+		}
+		return false;
+	}
+
+	std::size_t table_view::last_render_drawing_count() const noexcept
+	{
+		return render_drawing_count_;
+	}
+
+	void table_view::set_drawing_selection_listener(
+		drawing_selection_listener listener)
+	{
+		drawing_selection_listener_ = std::move(listener);
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -2584,6 +2754,7 @@ namespace vgui_editor_kit {
 		render_cell_image_queries_ = 0;
 		draw_header(cb, vg, widget, m);
 		draw_body(cb, vg, widget, m);
+		draw_drawings(cb, vg, widget, m);
 		draw_scrollbars(cb, vg, m);
 	}
 
@@ -2882,6 +3053,71 @@ namespace vgui_editor_kit {
 		}
 	}
 
+	void table_view::draw_drawings(ovg_ctx_cb* cb, rvg_t* vg,
+		vgui_widget* widget, const layout_metrics& m)
+	{
+		/* Pull once per paint and cache for pointer hit testing. */
+		drawings_ = pull_drawings();
+		render_drawing_count_ = drawings_.size();
+		if (drawings_.empty())
+			return;
+
+		vgui_theme theme = {};
+		if (context_)
+			vgui_context_get_theme(context_, &theme);
+		const vgui_color accent = theme.accent ? theme.accent : 0xFF409EFFu;
+		const float scale = ui_scale();
+
+		clip_guard clip(cb, vg, m.body_x, m.body_y, m.body_width,
+			m.body_height);
+		for (const table_drawing& d : drawings_)
+		{
+			float cx = 0.0f, cy = 0.0f, cw = 0.0f, ch = 0.0f;
+			if (!drawing_content_rect(d, &cx, &cy, &cw, &ch))
+				continue;
+			/* Cull drawings entirely outside the visible body. */
+			const float ax = m.body_x + cx - scroll_x_;
+			const float ay = m.body_y + cy - scroll_y_;
+			if (ax + cw <= m.body_x || ax >= m.body_x + m.body_width ||
+				ay + ch <= m.body_y || ay >= m.body_y + m.body_height)
+				continue;
+
+			if (d.texture)
+			{
+				vgui_color draw_tint = d.opacity < 1.0f
+					? with_alpha(0x00FFFFFFu,
+						(uint32_t)(std::clamp(d.opacity, 0.0f, 1.0f) * 255.0f))
+					: 0;
+				vgui_custom_draw_texture_fit(widget, cb, vg, d.texture,
+					ax, ay, cw, ch, to_image_fit(d.fit), draw_tint);
+			}
+
+			/* Selection / hover outline is real visual state: it is only
+			 * entered on id changes, so no idle repaint tail is introduced. */
+			const bool selected = d.id == selected_drawing_id_;
+			const bool hovered = d.id == hover_drawing_id_;
+			if (selected || hovered)
+			{
+				const vgui_color outline = selected ? accent
+					: with_alpha(accent, 0x99);
+				ovg_tools::stroke_rect(cb, vg, ax, ay, cw, ch,
+					to_ovg(outline), (selected ? 2.0f : 1.0f) * scale);
+				if (selected)
+				{
+					/* Small corner handles hint at the S3 resize affordance. */
+					const float hs = 5.0f * scale;
+					const float corners[4][2] = {
+						{ ax, ay }, { ax + cw - hs, ay },
+						{ ax, ay + ch - hs }, { ax + cw - hs, ay + ch - hs }
+					};
+					for (int i = 0; i < 4; ++i)
+						ovg_tools::fill_rect(cb, vg, corners[i][0],
+							corners[i][1], hs, hs, to_ovg(accent));
+				}
+			}
+		}
+	}
+
 	void table_view::draw_scrollbars(ovg_ctx_cb* cb, rvg_t* vg,
 		const layout_metrics& m)
 	{
@@ -3099,6 +3335,19 @@ namespace vgui_editor_kit {
 			}
 			if (y < m.header_height + m.body_height)
 			{
+				/* Floating drawings take priority over cells (topmost first).
+				 * Alt acts as a passthrough so a cell under a picture is still
+				 * reachable, matching Excel's selection behaviour. */
+				const bool alt_down = (event->mods & VGUI_MOD_ALT) != 0;
+				if (!alt_down)
+				{
+					const std::string hit = self->hit_test_drawing(x, y);
+					if (!hit.empty())
+					{
+						self->select_drawing(hit);
+						return 1;
+					}
+				}
 				const table_cell cell = self->hit_test(x, y);
 				if (cell.valid())
 				{
@@ -3107,6 +3356,8 @@ namespace vgui_editor_kit {
 					else
 						self->select_cell(cell.row, cell.column);
 				}
+				else
+					self->clear_drawing_selection();
 				return 1;
 			}
 			return 0;
@@ -3177,6 +3428,11 @@ namespace vgui_editor_kit {
 			{
 				self->hover_row_ = kNoRow;
 				self->hover_column_ = -1;
+				if (!self->hover_drawing_id_.empty())
+				{
+					self->hover_drawing_id_.clear();
+					vgui_widget_mark_dirty(widget);
+				}
 				return 0;
 			}
 			if (y < m.header_height)
@@ -3198,6 +3454,21 @@ namespace vgui_editor_kit {
 				return 1;
 			}
 			{
+				/* Hovering a floating drawing is visible state (outline).  Only
+				 * an id CHANGE marks the window dirty; micro-movements within
+				 * the same drawing or cell do not, preserving on-demand idle. */
+				const std::string drawing_hit = self->hit_test_drawing(x, y);
+				if (drawing_hit != self->hover_drawing_id_)
+				{
+					self->hover_drawing_id_ = drawing_hit;
+					vgui_widget_mark_dirty(widget);
+				}
+				const bool alt_down = (event->mods & VGUI_MOD_ALT) != 0;
+				if (!drawing_hit.empty() && !alt_down)
+				{
+					vgui_widget_set_cursor(widget, VGUI_CURSOR_HAND);
+					return 1;
+				}
 				const table_cell cell = self->hit_test(x, y);
 				const std::size_t new_row = cell.valid() ? cell.row : kNoRow;
 				const int new_col = cell.valid() ? cell.column : -1;
@@ -3298,10 +3569,13 @@ namespace vgui_editor_kit {
 			if (!self->editing_ && event->key == VGUI_KEY_ESCAPE)
 			{
 				self->clear_selection();
+				self->clear_drawing_selection();
 				return 1;
 			}
 			if (event->key == VGUI_KEY_ENTER || event->key == VGUI_KEY_F2)
 			{
+				if (!self->selected_drawing_id_.empty())
+					return 1;	/* drawings have no cell editor in S2 */
 				if (self->begin_edit())
 					return 1;
 				return 0;

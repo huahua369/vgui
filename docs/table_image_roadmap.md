@@ -1,6 +1,6 @@
 # 表格图片功能规划（对齐 Excel）
 
-> 状态：**S0/S1（in-cell 图片）已实施**；浮动图（S2～S5）仍为规划
+> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）已实施**；S3～S6 仍为规划
 > 适用版本：vgui 0.4+
 > 相关：[editor_roadmap](editor_roadmap.md) §2.2「表格/数据网格」、[vgui_capability_assessment](vgui_capability_assessment.md)、[data_binding_roadmap](data_binding_roadmap.md)
 > 面向对象：`vgui_editor_kit::table_view` / `vgui_editor_table`（C API）/ `vgui_spreadsheet_demo`
@@ -19,6 +19,17 @@
 - 回归：debug 全量构建 104/104、spreadsheet 35/35、multiwindow on-demand 40/40、editor kit PASS、C API 2013/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
 
 **浮动图几何决策（采纳建议）：不写进 `table_state` v3**。几何作为内容交给宿主数据，通过 `table_source::drawings` 拉模型提供，与 in-cell 图片和现有 `cell_text` 保持一致；`table_state` 保持 v2，S5 的 v3 升级取消。避开双份数据、多视图分裂与撤销跨层问题。
+
+**已完成：浮动图锚定层（对应规划 S2）**
+
+- 数据模型：`table_drawing_sizing`（move_and_size / move_only / fixed）、`table_drawing`（id/key/借用的 texture/双锚点+偏移/固定 width-height/fit/rotation/opacity/z/alt_text）、`table_source::drawings` 回调（每次绘制拉一次，z 升序）。
+- 坐标系：几何在**内容像素空间**（列偏移 + 显示行×行高，已乘 scale，未减 scroll）计算，与 `hit_test` 输入空间一致；绘制减 scroll 转绝对，命中加 scroll。锚点用 source row，经 `display_index_of` 跟随排序/增删行。
+- 三种锚定：`move_and_size` 用双锚点算矩形（随列宽/行高缩放）；`move_only` 左上跟 from 锚点、尺寸用固定 width/height；`fixed` 用 from_dx/dy 作内容绝对坐标。全部随滚动。
+- 交互基础：drawings 在 body clip 内绘制；点选优先命中 drawing（z 逆序），Alt 穿透到单元格；单元格选区与 drawing 选区互斥；Esc 清除；hover/选中边框只在 id 变化时推进 revision（无 idle tail）。
+- 公共 API：`selected_drawing` / `select_drawing` / `clear_drawing_selection` / `hit_test_drawing` / `drawing_rect`（绝对坐标）/ `last_render_drawing_count` / `set_drawing_selection_listener`。
+- rotation 字段已预留但 S2 不绘制（S3 接入手柄与旋转）。
+- demo：spreadsheet 用程序化 96×64 纹理加三张浮动图（resize/move/fixed 各一），自检从 35 → 46 条，覆盖三种锚定随列宽变化、点选互斥、绘制计数。
+- 回归：debug 全量构建、spreadsheet 46/46、multiwindow on-demand 40/40、editor kit PASS、C API 2013/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
 
 ---
 
