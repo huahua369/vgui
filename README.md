@@ -13,7 +13,7 @@ UI 侧维护控件树、布局和交互状态；绘制时遍历控件树，将�
 | **公共接口** | 纯 C 头文件 `<vgui/vgui.h>`（兼容旧路径 `<vgui.h>`），不依赖 C++ 类型、模板或 glm；可直接从 C/C++ 或其他语言通过 FFI 调用 |
 | **控件** | Panel、Label、Button、Checkbox、Radio、Switch、Slider（水平/垂直）、Progress、Edit、Separator、List、Tree、Menu、MenuBar、Splitter、TabView、Dock |
 | **覆盖层** | Tooltip、Modal（遮罩/焦点陷阱/背景隔离）、Alert/Confirm/Prompt 对话框、Toast 通知 |
-| **文件对话框** | 原生打开/保存/选目录（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG portal，经 SDL3 后端）；异步、结果从 `vgui_update` 派发；公共头 `<vgui/vgui.h>` 不含 SDL 类型，provider 可替换 |
+| **文件对话框** | 原生打开/保存/选目录（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG portal，经 SDL3 后端）；异步、结果从 `vgui_update` 派发；公共头 `<vgui/vgui.h>` 不含 SDL 类型，provider 可替换；最近目录 LRU（自动记录/注入 + JSON 持久化）；另有 vgui 自有网格缩略图选择器（editor-kit `file_selector`，补原生对话框无预览之缺） |
 | **编辑器组件** | IconButton、ToggleButton、SegmentedControl、Toolbar、StatusBar、SearchBox、Breadcrumb、Spinbox、ComboBox、VectorEditor、ColorPicker、CurveEditor、GradientEditor、ThumbnailCache、ConsoleView、CanvasView、TableView、TimelineView、NodeGraphView、CodeEditor、MarkdownView（`vgui_editor_kit`，基于公共 C API） |
 | **图表模块** | 折线/面积/柱状图、径向仪表盘与 JSON 仪表板（可选 `vgui_chart`）：每序列十万点级、min/max 降采样、环形缓冲、CSV/PNG 导出、配置与数据快照持久化、stack/wrap/grid/columns 布局、日期时间轴、十字准线/缩放/键盘与无障碍 |
 | **3D 视口示例** | `phase0_renderer` 多相机 view 共享着色器/管线/网格缓冲；HDR（RGBA16F + tonemap）、MSAA resolve、深度可视化纹理，可运行时切换 |
@@ -1257,6 +1257,35 @@ vgui::save_file(opt, [](const vgui::file_dialog_result& r) {
 - 过滤串接受 `"*.png;*.jpg"` 与 `"png;jpg"` 两种写法，`"*"` 表示全部；后端负责转换成各平台格式。
 - 需要自定义对话框时用 `vgui_file_dialog_set_provider()` 装上自己的 provider，并用
   `vgui_file_dialog_post_result()`（线程安全）回报结果；SDL3 后端在库加载时自动装好一个。
+
+#### 最近使用目录（MRU）
+
+core 维护一个进程内的最近目录 LRU（默认开启，无需后端）：一次成功选择后自动记录文件的
+父目录（选目录则记录其自身），下次对话框 `desc.default_location` 为空时从最近目录注入；
+宿主显式给出的 `default_location` 始终优先。`vgui_recent_dirs_set_enabled()` 可关闭自动
+行为，`add`/`count`/`at`/`clear` 可手动维护，`to_json`/`from_json`/`save_file`/`load_file`
+负责持久化（`{"version":1,"dirs":[…]}`）。C++ 侧有 `vgui::recent_dirs` 便捷封装。
+
+#### vgui 自有缩略图选择器
+
+SDL3 的原生对话框没有缩略图预览钩子（3.4 仅暴露 8 个属性），需要"对话框内缩略图预览"
+时用 editor-kit 的 `vgui_editor_kit::file_selector`（`<vgui/editor/file_selector.h>`）：
+组合 `asset_browser` 的网格/列表、面包屑导航、搜索与类型过滤、异步 `thumbnail_cache`，
+用 `std::filesystem` 枚举目录（文件夹优先、按名排序、glob 过滤），以 modal 承载。
+默认用程序化缩略图（按类型着色，headless 可用），宿主可用 `set_thumbnail_loader()` 注入
+真实图片解码器。`show(kind, desc, fn, user)` 的回调与原生对话框**完全同契**（结果仍经
+`vgui_file_dialog_post_result()` 在下一帧派发），因此宿主可共用一套回调路径。
+
+```cpp
+vgui_editor_kit::file_selector picker;
+picker.build(ctx);                       // 分离面板 + 控件树
+vgui_file_dialog_desc desc;
+vgui_file_dialog_desc_init(&desc);
+desc.allow_many = true;
+picker.show(VGUI_FILE_DIALOG_OPEN, &desc, on_picked, my_state);
+```
+
+`vgui_demo` 的「文件对话框」卡片有"缩略图选择器…"按钮可直接体验。
 
 ## 快速开始
 

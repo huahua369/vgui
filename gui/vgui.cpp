@@ -66,6 +66,199 @@ static vgui_file_dialog_state& vgui_file_dialog_state_get(void)
 	return state;
 }
 
+/* -------------------------------------------------------------------------- */
+/* Recent directories: a process-wide MRU of folders used by file dialogs.    */
+/* Kept here (next to the dialog bridge) so a successful selection can be      */
+/* recorded from vgui_file_dialog_drain() on the UI thread.                    */
+/* -------------------------------------------------------------------------- */
+struct vgui_recent_dirs_state
+{
+	std::mutex mutex;
+	std::vector<std::string> dirs;  // front = most recently used
+	bool enabled = true;
+	static constexpr std::size_t kMax = 12;
+};
+
+static vgui_recent_dirs_state& vgui_recent_dirs_state_get(void)
+{
+	static vgui_recent_dirs_state state;
+	return state;
+}
+
+/* Normalise a folder path: trim trailing separators and reject filesystem
+ * roots / empty strings, which are not useful as "recent folders". */
+static std::string vgui_recent_dirs_normalise(const char* path)
+{
+	if (!path || !*path) return std::string();
+	std::string s(path);
+	std::size_t end = s.size();
+	while (end > 0 && (s[end - 1] == '/' || s[end - 1] == '\\')) --end;
+	if (end == 0) return std::string();
+	s.resize(end);
+	/* A bare name has no directory component; a lone drive/root carries no
+	 * useful navigation target.  Neither is worth remembering. */
+	if (s.find_first_of("/\\") == std::string::npos) return std::string();
+	if (s.size() <= 2 && s[s.size() - 1] == ':') return std::string();
+	return s;
+}
+
+/* Given a selected file/folder path, return the parent folder (without a
+ * trailing separator).  Returns empty for a bare filename or root. */
+static std::string vgui_recent_dirs_parent_of(const char* path)
+{
+	const std::string norm = vgui_recent_dirs_normalise(path);
+	if (norm.empty()) return std::string();
+	const std::size_t slash = norm.find_last_of("/\\");
+	if (slash == std::string::npos || slash == 0)
+		return std::string();
+	return vgui_recent_dirs_normalise(norm.substr(0, slash).c_str());
+}
+
+void vgui_recent_dirs_set_enabled(int enabled)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	st.enabled = enabled != 0;
+}
+
+int vgui_recent_dirs_enabled(void)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	return st.enabled ? 1 : 0;
+}
+
+void vgui_recent_dirs_add(const char* path_or_dir)
+{
+	const std::string folder = vgui_recent_dirs_normalise(path_or_dir);
+	if (folder.empty()) return;
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	st.dirs.erase(std::remove(st.dirs.begin(), st.dirs.end(), folder), st.dirs.end());
+	st.dirs.insert(st.dirs.begin(), folder);
+	if (st.dirs.size() > vgui_recent_dirs_state::kMax)
+		st.dirs.resize(vgui_recent_dirs_state::kMax);
+}
+
+/* Internal: turn a dialog selection into a folder.  FOLDER dialogs already
+ * yield a directory (record it verbatim); OPEN/SAVE yield a file path, so the
+ * new MRU entry is its parent folder. */
+void vgui_recent_dirs_record_selection(vgui_file_dialog_kind kind, const char* path)
+{
+	if (!path || !*path) return;
+	if (kind == VGUI_FILE_DIALOG_FOLDER)
+		vgui_recent_dirs_add(path);
+	else
+	{
+		const std::string parent = vgui_recent_dirs_parent_of(path);
+		if (!parent.empty()) vgui_recent_dirs_add(parent.c_str());
+	}
+}
+
+int vgui_recent_dirs_count(void)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	return (int)st.dirs.size();
+}
+
+const char* vgui_recent_dirs_at(int index)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	if (index < 0 || (std::size_t)index >= st.dirs.size()) return nullptr;
+	/* Borrowed pointer: valid until the next mutation of the list. */
+	return st.dirs[(std::size_t)index].c_str();
+}
+
+void vgui_recent_dirs_clear(void)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	st.dirs.clear();
+}
+
+int vgui_recent_dirs_to_json(char* buf, int buf_capacity)
+{
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::string dirs_json;
+	{
+		std::lock_guard<std::mutex> lock(st.mutex);
+		njson j = njson::object();
+		j["version"] = 1;
+		j["dirs"] = st.dirs;
+		dirs_json = j.dump();
+	}
+	const int needed = (int)dirs_json.size() + 1;  // includes NUL
+	if (buf && buf_capacity > 0)
+	{
+		const int copy = (std::min)(needed, buf_capacity);
+		std::memcpy(buf, dirs_json.c_str(), (std::size_t)(copy - 1));
+		buf[copy - 1] = '\0';
+	}
+	return needed;
+}
+
+int vgui_recent_dirs_from_json(const char* json)
+{
+	if (!json || !*json) return -1;
+	std::vector<std::string> parsed;
+	try
+	{
+		njson j = njson::parse(json);
+		if (!j.is_object() || !j.contains("version") ||
+			!j["version"].is_number_integer() || j["version"].get<int>() != 1 ||
+			!j.contains("dirs") || !j["dirs"].is_array())
+			return -1;
+		for (const njson& item : j["dirs"])
+		{
+			if (!item.is_string()) return -1;
+			std::string folder = vgui_recent_dirs_normalise(item.get<std::string>().c_str());
+			if (!folder.empty() &&
+				std::find(parsed.begin(), parsed.end(), folder) == parsed.end())
+				parsed.push_back(folder);
+		}
+	}
+	catch (const std::exception&)
+	{
+		return -1;
+	}
+	vgui_recent_dirs_state& st = vgui_recent_dirs_state_get();
+	std::lock_guard<std::mutex> lock(st.mutex);
+	if (parsed.size() > vgui_recent_dirs_state::kMax)
+		parsed.resize(vgui_recent_dirs_state::kMax);
+	st.dirs = std::move(parsed);
+	return (int)st.dirs.size();
+}
+
+int vgui_recent_dirs_save_file(const char* path)
+{
+	if (!path || !*path) return 0;
+	const int needed = vgui_recent_dirs_to_json(nullptr, 0);
+	std::vector<char> buffer((std::size_t)needed);
+	vgui_recent_dirs_to_json(buffer.data(), needed);
+	FILE* f = std::fopen(path, "wb");
+	if (!f) return 0;
+	const std::size_t written = std::fwrite(buffer.data(), 1,
+		(std::size_t)(needed - 1), f);  // omit trailing NUL
+	std::fclose(f);
+	return written == (std::size_t)(needed - 1) ? 1 : 0;
+}
+
+int vgui_recent_dirs_load_file(const char* path)
+{
+	if (!path || !*path) return -1;
+	FILE* f = std::fopen(path, "rb");
+	if (!f) return -1;
+	std::string text;
+	char chunk[4096];
+	std::size_t n;
+	while ((n = std::fread(chunk, 1, sizeof(chunk), f)) > 0)
+		text.append(chunk, n);
+	std::fclose(f);
+	return vgui_recent_dirs_from_json(text.c_str());
+}
+
 /* Deliver every queued result on the calling thread.  Callbacks may start new
  * dialogs or remove the provider, so nothing is held across the calls. */
 static void vgui_file_dialog_drain(void)
@@ -79,6 +272,12 @@ static void vgui_file_dialog_drain(void)
 	}
 	for (vgui_file_dialog_result& r : batch)
 	{
+		/* Record the folder of a successful selection *before* the callback so
+		 * the host sees the new MRU head and may override it in its callback. */
+		if (r.error.empty() && !r.paths.empty() &&
+			vgui_recent_dirs_enabled())
+			vgui_recent_dirs_record_selection(r.kind, r.paths.front().c_str());
+
 		if (!r.fn) continue;
 		std::vector<const char*> argv;
 		argv.reserve(r.paths.size() + 1);
@@ -20577,11 +20776,27 @@ extern "C" {
 		}
 		if (!provider) return 0;
 
-		// The provider is called without the lock: a synchronous provider posts
-		// its result (which takes the lock) before returning.
-		vgui_file_dialog_desc defaults{};
-		const vgui_file_dialog_desc* d = desc ? desc : &defaults;
-		return provider(provider_user, kind, d, fn, user) ? 1 : 0;
+	// The provider is called without the lock: a synchronous provider posts
+	// its result (which takes the lock) before returning.
+	vgui_file_dialog_desc defaults{};
+	vgui_file_dialog_desc effective = desc ? *desc : defaults;
+
+	// Convenience: when the host supplied no starting location and the MRU is
+	// enabled, start from the most recently used folder.  An explicit
+	// default_location always wins, so this never changes a host's intent.
+	if (vgui_recent_dirs_enabled() &&
+		(!effective.default_location || !*effective.default_location))
+	{
+		const char* top = vgui_recent_dirs_at(0);
+		if (top)
+		{
+			effective.default_location = top;
+			// `top` is borrowed from the MRU list; it stays valid for the whole
+			// provider call (provider copies what it keeps).  The user callback
+			// runs later from drain(), by which time we no longer reference it.
+		}
+	}
+	return provider(provider_user, kind, &effective, fn, user) ? 1 : 0;
 	}
 
 	int vgui_file_dialog_open(const vgui_file_dialog_desc* desc,

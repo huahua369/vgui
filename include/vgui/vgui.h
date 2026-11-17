@@ -2417,6 +2417,40 @@ extern "C" {
 	 * diagnostics and tests. */
 	VGUI_API int vgui_file_dialog_pending(void);
 
+	/* ------------------------------------------------------------------------- */
+	/* Recent directories                                                        */
+	/* ------------------------------------------------------------------------- */
+
+	/* An optional, process-wide LRU of folders used by file dialogs.  When
+	 * enabled (the default), a successful selection records the parent folder
+	 * of the chosen file -- or the folder itself for FOLDER dialogs -- and the
+	 * next dialog whose desc.default_location is empty starts there.  This is
+	 * purely a convenience layer: hosts that manage their own location can turn
+	 * it off, and an explicit desc.default_location always wins.  The list is
+	 * in-memory only until the host persists it with to_json()/save_file(). */
+	VGUI_API void vgui_recent_dirs_set_enabled(int enabled);
+	VGUI_API int  vgui_recent_dirs_enabled(void);
+
+	/* Adds a path or folder to the front of the LRU (deduplicated, capped).  A
+	 * file path contributes its parent folder; pass a folder directly to record
+	 * it verbatim.  No-op for empty paths or the filesystem root. */
+	VGUI_API void vgui_recent_dirs_add(const char* path_or_dir);
+	VGUI_API int  vgui_recent_dirs_count(void);
+	/* Borrowed pointer, valid until the list is next mutated; NULL if index is
+	 * out of range.  Index 0 is the most recently used folder. */
+	VGUI_API const char* vgui_recent_dirs_at(int index);
+	VGUI_API void vgui_recent_dirs_clear(void);
+
+	/* Serialises to `{"version":1,"dirs":[...]}` into a caller buffer.  Returns
+	 * the number of bytes needed including the NUL; pass buf=NULL/cap=0 to query
+	 * the size.  Truncates safely when the buffer is too small. */
+	VGUI_API int  vgui_recent_dirs_to_json(char* buf, int buf_capacity);
+	/* Loads a snapshot produced by to_json().  Returns the number of folders
+	 * loaded, or -1 for malformed JSON / version mismatch (list unchanged). */
+	VGUI_API int  vgui_recent_dirs_from_json(const char* json);
+	VGUI_API int  vgui_recent_dirs_save_file(const char* path);
+	VGUI_API int  vgui_recent_dirs_load_file(const char* path);
+
 #ifdef __cplusplus
 } /* extern "C" */
 

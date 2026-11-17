@@ -154,4 +154,51 @@ namespace vgui
 	{
 		return detail::show_file_dialog(kind, options, std::move(callback));
 	}
+
+	/* Convenience wrapper for the process-wide recent-directory MRU.  The
+	 * automatic recording + injection is on by default in core; these helpers
+	 * let hosts inspect, seed or persist it.  See vgui.h for the C contract. */
+	namespace recent_dirs
+	{
+		inline void set_enabled(bool enabled) { vgui_recent_dirs_set_enabled(enabled ? 1 : 0); }
+		inline bool enabled() { return vgui_recent_dirs_enabled() != 0; }
+		inline void add(const std::string& path_or_dir) { vgui_recent_dirs_add(path_or_dir.c_str()); }
+		inline void clear() { vgui_recent_dirs_clear(); }
+		inline int count() { return vgui_recent_dirs_count(); }
+
+		inline std::vector<std::string> all()
+		{
+			std::vector<std::string> out;
+			const int n = count();
+			out.reserve((std::size_t)n);
+			for (int i = 0; i < n; ++i)
+			{
+				const char* p = vgui_recent_dirs_at(i);
+				if (p) out.emplace_back(p);
+			}
+			return out;
+		}
+
+		inline std::string to_json()
+		{
+			const int needed = vgui_recent_dirs_to_json(nullptr, 0);
+			if (needed <= 0) return std::string();
+			std::vector<char> buffer((std::size_t)needed);
+			vgui_recent_dirs_to_json(buffer.data(), needed);
+			return std::string(buffer.data());
+		}
+
+		inline bool from_json(const std::string& json)
+		{
+			return vgui_recent_dirs_from_json(json.c_str()) >= 0;
+		}
+		inline bool save_file(const std::string& path)
+		{
+			return vgui_recent_dirs_save_file(path.c_str()) != 0;
+		}
+		inline bool load_file(const std::string& path)
+		{
+			return vgui_recent_dirs_load_file(path.c_str()) >= 0;
+		}
+	} // namespace recent_dirs
 } // namespace vgui

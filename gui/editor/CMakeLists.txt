@@ -29,6 +29,7 @@ set(VGUI_EDITOR_KIT_SOURCES
     editor_c_api_widgets.cpp
     editor_context.cpp
     editor_layout.cpp
+    file_selector.cpp
     editor_shell.cpp
     gradient_editor.cpp
     markdown_lex.cpp

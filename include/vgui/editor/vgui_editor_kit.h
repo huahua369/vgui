@@ -22,6 +22,7 @@
 #include "editor_layout.h"
 #include "editor_shell.h"
 #include "editor_types.h"
+#include "file_selector.h"
 #include "gradient_editor.h"
 #include "markdown_view.h"
 #include "node_graph_view.h"

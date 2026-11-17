@@ -5031,6 +5031,7 @@ struct file_dialog_probe
 	int filter_count = -1;
 	std::string first_filter;
 	std::string first_pattern;
+	std::string default_location;
 	int allow_many = -1;
 	vgui_file_dialog_fn fn = nullptr;
 	void* user = nullptr;
@@ -5043,6 +5044,8 @@ static int fake_dialog_provider(void* provider_user, vgui_file_dialog_kind kind,
 	probe->shows++;
 	probe->kind = kind;
 	probe->title = (desc && desc->title) ? desc->title : "";
+	probe->default_location =
+		(desc && desc->default_location) ? desc->default_location : "";
 	probe->filter_count = desc ? desc->filter_count : -1;
 	probe->allow_many = desc ? desc->allow_many : -1;
 	probe->first_filter = (desc && desc->filters && desc->filter_count > 0 &&
@@ -5165,6 +5168,141 @@ static void test_file_dialog(vgui_context* ctx)
 	check(vgui_file_dialog_available() == 1, "file dialog: provider restored");
 }
 
+static void test_recent_dirs(vgui_context* ctx)
+{
+	/* Isolate the process-wide MRU: disable auto-record so this test's own
+	 * dialog probes do not pollute the assertions, then clear. */
+	vgui_recent_dirs_set_enabled(0);
+	vgui_recent_dirs_clear();
+	check(vgui_recent_dirs_enabled() == 0, "recent dirs: toggle off");
+	check(vgui_recent_dirs_count() == 0, "recent dirs: clear empties the list");
+	check(vgui_recent_dirs_at(0) == nullptr && vgui_recent_dirs_at(-1) == nullptr,
+		"recent dirs: out-of-range index returns null");
+
+	/* add() records a folder verbatim (trim trailing separators), dedupes and
+	 * moves repeated entries to the front. */
+	vgui_recent_dirs_add("E:/proj/alpha");
+	vgui_recent_dirs_add("E:/proj/beta/");
+	check(vgui_recent_dirs_count() == 2, "recent dirs: add two folders");
+	check(std::string(vgui_recent_dirs_at(0)) == "E:/proj/beta" &&
+		std::string(vgui_recent_dirs_at(1)) == "E:/proj/alpha",
+		"recent dirs: most recent first, trailing slash trimmed");
+	vgui_recent_dirs_add("E:/proj/alpha");
+	check(vgui_recent_dirs_count() == 2 &&
+		std::string(vgui_recent_dirs_at(0)) == "E:/proj/alpha",
+		"recent dirs: re-add dedupes and promotes to front");
+	vgui_recent_dirs_add("bare-filename.png");
+	vgui_recent_dirs_add("C:/");
+	check(vgui_recent_dirs_count() == 2,
+		"recent dirs: bare filename and drive root are rejected");
+
+	/* Capped at 12 entries. */
+	for (int i = 0; i < 20; ++i)
+	{
+		char buf[64];
+		std::snprintf(buf, sizeof(buf), "F:/dir/%02d", i);
+		vgui_recent_dirs_add(buf);
+	}
+	check(vgui_recent_dirs_count() == 12, "recent dirs: LRU capped at 12");
+	check(std::string(vgui_recent_dirs_at(0)) == "F:/dir/19" &&
+		std::string(vgui_recent_dirs_at(11)) == "F:/dir/08",
+		"recent dirs: oldest entries evicted");
+
+	/* JSON round trip preserves order and content. */
+	const int needed = vgui_recent_dirs_to_json(nullptr, 0);
+	std::vector<char> json((std::size_t)needed);
+	check(vgui_recent_dirs_to_json(json.data(), needed) == needed &&
+		json[needed - 1] == '\0', "recent dirs: to_json size query and NUL");
+	const std::string json_text(json.data());
+	check(json_text.find("\"version\":1") != std::string::npos &&
+		json_text.find("F:/dir/19") != std::string::npos,
+		"recent dirs: JSON carries version and folders");
+	vgui_recent_dirs_clear();
+	check(vgui_recent_dirs_from_json(json_text.c_str()) == 12 &&
+		std::string(vgui_recent_dirs_at(0)) == "F:/dir/19",
+		"recent dirs: from_json restores order");
+	check(vgui_recent_dirs_from_json("{\"version\":9,\"dirs\":[]}") == -1 &&
+		vgui_recent_dirs_count() == 12, "recent dirs: version mismatch rejected atomically");
+	check(vgui_recent_dirs_from_json("not json") == -1 &&
+		vgui_recent_dirs_count() == 12, "recent dirs: malformed JSON rejected atomically");
+	check(vgui_recent_dirs_from_json("{\"version\":1,\"dirs\":[\"E:/a\",5]}") == -1,
+		"recent dirs: non-string folder rejected");
+
+	/* File persistence round trip via a temp file. */
+	const char* tmp = "vgui_recent_dirs_test.json";
+	check(vgui_recent_dirs_save_file(tmp) == 1, "recent dirs: save_file writes snapshot");
+	vgui_recent_dirs_clear();
+	check(vgui_recent_dirs_load_file(tmp) == 12 &&
+		std::string(vgui_recent_dirs_at(0)) == "F:/dir/19",
+		"recent dirs: load_file restores snapshot");
+	check(vgui_recent_dirs_load_file("vgui_no_such_recent_dirs_file.json") == -1,
+		"recent dirs: load_file fails cleanly for a missing file");
+	std::remove(tmp);
+
+	/* Dialog injection: with auto-record off and a seeded MRU, a dialog with
+	 * no explicit location starts from the newest folder; an explicit location
+	 * always wins; disabling the feature removes injection. */
+	void* saved_user = nullptr;
+	vgui_file_dialog_provider_fn saved =
+		vgui_file_dialog_get_provider(&saved_user);
+	file_dialog_probe probe;
+	vgui_file_dialog_set_provider(fake_dialog_provider, &probe);
+	file_dialog_log log;
+
+	vgui_recent_dirs_clear();
+	vgui_recent_dirs_add("G:/seed/folder");
+	vgui_recent_dirs_set_enabled(1);
+	check(vgui_file_dialog_open(nullptr, on_file_dialog, &log) == 1 &&
+		probe.default_location == "G:/seed/folder",
+		"recent dirs: empty default_location is injected from MRU head");
+
+	vgui_file_dialog_desc desc;
+	vgui_file_dialog_desc_init(&desc);
+	desc.default_location = "H:/explicit/path";
+	check(vgui_file_dialog_open(&desc, on_file_dialog, &log) == 1 &&
+		probe.default_location == "H:/explicit/path",
+		"recent dirs: explicit default_location wins over MRU");
+
+	vgui_recent_dirs_set_enabled(0);
+	check(vgui_file_dialog_open(nullptr, on_file_dialog, &log) == 1 &&
+		probe.default_location.empty(),
+		"recent dirs: disabled feature injects nothing");
+
+	/* Automatic record from a successful result: OPEN records the parent,
+	 * FOLDER records the chosen directory itself.  Cancelled / failed results
+	 * record nothing. */
+	vgui_recent_dirs_clear();
+	vgui_recent_dirs_set_enabled(1);
+	const char* picked[2] = { "I:/images/photo.png", nullptr };
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user,
+		picked, 1, nullptr);
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(vgui_recent_dirs_count() == 1 &&
+		std::string(vgui_recent_dirs_at(0)) == "I:/images",
+		"recent dirs: OPEN selection records the parent folder");
+
+	const char* folder_picked[2] = { "J:/projects/level", nullptr };
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_FOLDER, probe.fn, probe.user,
+		folder_picked, 1, nullptr);
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(vgui_recent_dirs_count() == 2 &&
+		std::string(vgui_recent_dirs_at(0)) == "J:/projects/level",
+		"recent dirs: FOLDER selection records the folder itself");
+
+	const int before = vgui_recent_dirs_count();
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user,
+		nullptr, 0, nullptr);
+	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user,
+		picked, 1, "boom");
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(vgui_recent_dirs_count() == before,
+		"recent dirs: cancelled and failed results record nothing");
+
+	vgui_file_dialog_set_provider(saved, saved_user);
+	vgui_recent_dirs_clear();
+	vgui_recent_dirs_set_enabled(1);
+}
+
 // Two vgui_context instances can each own a Dock.  This locks down the
 // ownership boundaries documented in docs/dock_multiwindow_assessment.md:
 // item ids are local to each dock and pages cannot cross contexts.
@@ -5272,6 +5410,7 @@ int main()
 	test_binding(familys);
 	test_binding_collection(familys);
 	test_file_dialog(ui);
+	test_recent_dirs(ui);
 
 	vgui_destroy(ui);
 	delete_font_family(familys);

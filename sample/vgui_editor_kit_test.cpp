@@ -15386,6 +15386,191 @@ int test_binding_undo()
 	return 0;
 }
 
+static void click_at_selector(vgui_context* ui, float x, float y)
+{
+	vgui_input_mouse_move(ui, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	vgui_input_mouse_up(ui, 1, x, y, 1);
+}
+
+static vgui_widget* find_button_by_text(vgui_widget* w, const char* text)
+{
+	if (!w) return nullptr;
+	const char* t = vgui_widget_get_text(w);
+	if (t && std::string(t) == text && vgui_widget_get_kind(w) == VGUI_BUTTON)
+		return w;
+	for (std::size_t i = 0, n = vgui_widget_get_child_count(w); i < n; ++i)
+		if (vgui_widget* f = find_button_by_text(vgui_widget_get_child(w, i), text))
+			return f;
+	return nullptr;
+}
+
+struct selector_result
+{
+	int calls = 0;
+	vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
+	std::vector<std::string> paths;
+	std::string error;
+};
+
+static void on_selector_result(void* user, vgui_file_dialog_kind kind,
+	const char* const* paths, int count, const char* error)
+{
+	selector_result* r = (selector_result*)user;
+	r->calls++;
+	r->kind = kind;
+	r->paths.clear();
+	for (int i = 0; i < count; ++i)
+		if (paths && paths[i]) r->paths.push_back(paths[i]);
+	r->error = error ? error : "";
+}
+
+static int test_file_selector()
+{
+	using namespace vgui_editor_kit;
+	namespace fs = std::filesystem;
+
+	/* ---- static enumerate(): folders first, sorted, glob-filtered ---- */
+	fs::path dir = fs::temp_directory_path() / "vgui_file_selector_test";
+	std::error_code ec;
+	fs::remove_all(dir, ec);  // start clean even if a previous run left files
+	fs::create_directories(dir, ec);
+	fs::create_directories(dir / "ZFolder", ec);
+	fs::create_directories(dir / "afolder", ec);
+	{ std::ofstream(dir / "b.png") << "x"; }
+	{ std::ofstream(dir / "a.txt") << "x"; }
+	{ std::ofstream(dir / "c.JPG") << "x"; }
+
+	std::vector<std::pair<std::string, bool>> entries;
+	if (!file_selector::enumerate(dir.string(), "", &entries))
+		return fail("file selector: enumerate a real directory");
+	bool folders_first = entries.size() >= 2 && entries[0].second && entries[1].second;
+	if (!folders_first)
+		return fail("file selector: folders are listed first");
+	if (entries[0].first != "afolder" || entries[1].first != "ZFolder")
+		return fail("file selector: case-insensitive folder sort");
+	// Extension filter: images only, case-insensitive; folders always present.
+	if (!file_selector::enumerate(dir.string(), "*.png;*.jpg", &entries))
+		return fail("file selector: glob enumerate");
+	int images = 0, folders = 0;
+	for (const auto& e : entries)
+	{
+		if (e.second) ++folders;
+		else ++images;
+	}
+	if (images != 2 || folders != 2)
+		return fail("file selector: glob filters files but keeps folders");
+	if (file_selector::enumerate((dir / "no-such-dir").string(), "", &entries))
+		return fail("file selector: enumerate rejects a missing directory");
+
+	vgui_context* ui = vgui_create(nullptr, 16.0f);
+	if (!ui) { fs::remove_all(dir, ec); return fail("file selector: context"); }
+	vgui_context_set_size(ui, 1100, 850);
+	vgui_style style; vgui_style_default(&style);
+	vgui_context_set_style(ui, &style);
+
+	/* ---- build + show + confirm via OK button ---- */
+	{
+		file_selector sel;
+		sel.build(ui);
+		if (!sel.root() || sel.context() != ui)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: build creates panel"); }
+		if (sel.active())
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: inactive before show"); }
+
+		selector_result result;
+		vgui_file_dialog_desc desc;
+		vgui_file_dialog_desc_init(&desc);
+		desc.default_location = dir.string().c_str();
+		desc.filters = nullptr;
+		desc.filter_count = 0;
+		desc.accept_label = "Choose";
+		if (sel.show(VGUI_FILE_DIALOG_OPEN, &desc, &on_selector_result, &result) != 1)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: show accepted"); }
+		if (!sel.active() || vgui_modal_active(ui) != 1)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: modal active after show"); }
+		if (sel.show(VGUI_FILE_DIALOG_OPEN, &desc, &on_selector_result, &result) != 0)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: second show rejected"); }
+		if (result.calls != 0)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: no callback before result"); }
+		if (sel.current_path().empty())
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: navigated to seed folder"); }
+
+		/* Select the first file entry, then click OK. */
+		std::vector<vgui_item_id> ids;
+		for (int i = 0; i < sel.browser().item_count(); ++i)
+		{
+			asset_info info;
+			if (sel.browser().item_at(i, &info) && info.type != "Folder")
+				ids.push_back(info.id);
+		}
+		sel.browser().set_selection(ids);
+		if (sel.selected_paths().empty())
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: selected_paths resolves ids"); }
+
+		vgui_layout(ui);
+		vgui_widget* ok = find_button_by_text(sel.root(), "Open");
+		if (!ok)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: OK button exists"); }
+		float bx = 0, by = 0, bw = 0, bh = 0;
+		vgui_widget_get_rect(ok, &bx, &by, &bw, &bh);
+		click_at_selector(ui, bx + bw * 0.5f, by + bh * 0.5f);
+		if (result.calls != 0)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: result deferred to update"); }
+		vgui_update(ui, 1.0f / 60.0f);
+		if (result.calls != 1 || result.kind != VGUI_FILE_DIALOG_OPEN ||
+			result.paths.size() != 1 || result.error.empty() == false)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: OK posts one selected path"); }
+		if (sel.active())
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: modal closed after confirm"); }
+	}
+
+	/* ---- cancel via Cancel button posts an empty result ---- */
+	{
+		file_selector sel;
+		sel.build(ui);
+		selector_result result;
+		vgui_file_dialog_desc desc;
+		vgui_file_dialog_desc_init(&desc);
+		desc.default_location = dir.string().c_str();
+		if (sel.show(VGUI_FILE_DIALOG_FOLDER, &desc, &on_selector_result, &result) != 1)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: folder show accepted"); }
+		vgui_layout(ui);
+		vgui_widget* cancel = find_button_by_text(sel.root(), "Cancel");
+		if (!cancel)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: Cancel button exists"); }
+		float cx = 0, cy = 0, cw = 0, ch = 0;
+		vgui_widget_get_rect(cancel, &cx, &cy, &cw, &ch);
+		click_at_selector(ui, cx + cw * 0.5f, cy + ch * 0.5f);
+		vgui_update(ui, 1.0f / 60.0f);
+		if (result.calls != 1 || result.kind != VGUI_FILE_DIALOG_FOLDER ||
+			!result.paths.empty() || !result.error.empty())
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: cancel posts empty result"); }
+	}
+
+	/* ---- destruction while active closes cleanly without dangling callback ---- */
+	{
+		selector_result result;
+		{
+			file_selector sel;
+			sel.build(ui);
+			vgui_file_dialog_desc desc;
+			vgui_file_dialog_desc_init(&desc);
+			desc.default_location = dir.string().c_str();
+			sel.show(VGUI_FILE_DIALOG_OPEN, &desc, &on_selector_result, &result);
+		}
+		vgui_update(ui, 1.0f / 60.0f);
+		if (vgui_modal_active(ui) != 0)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: destructor closes active modal"); }
+		if (result.calls != 0)
+		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: destruction posts no callback"); }
+	}
+
+	vgui_destroy(ui);
+	fs::remove_all(dir, ec);
+	return 0;
+}
+
 int main()
 {
 	using namespace vgui_editor_kit;
@@ -15488,6 +15673,8 @@ int main()
 	if (int rc = test_viewport_drop_hover())
 		return rc;
 	if (int rc = test_asset_thumbnails())
+		return rc;
+	if (int rc = test_file_selector())
 		return rc;
 	if (int rc = test_asset_operations())
 		return rc;

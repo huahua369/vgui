@@ -28,6 +28,7 @@
 #include <vgui/file_dialog.h>	// C++ 文件对话框封装（内部走 SDL3 后端）
 #ifdef VGUI_DEMO_HAS_EDITOR_KIT
 #include <vgui/editor/code_editor.h>
+#include <vgui/editor/file_selector.h>
 #include <vgui/editor/markdown_view.h>
 #endif
 #include "ovg_main.h"
@@ -241,6 +242,9 @@ struct demo_state
 	vgui_widget* follow_toggle = nullptr;
 	bool preview_visible = true;
 	bool follow_caret = true;
+
+	// vgui 自有缩略图选择器（原生对话框无缩略图预览，作为替代入口）。
+	vgui_editor_kit::file_selector thumbnail_picker;
 #endif
 
 	// 数值状态
@@ -2967,6 +2971,41 @@ static void on_dialog_folder(vgui_widget*, const vgui_event* e, void* user)
 		dialog_unavailable(st, "选择目录");
 }
 
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+static void on_thumbnail_picker_result(void* user, vgui_file_dialog_kind kind,
+	const char* const* paths, int count, const char* error)
+{
+	demo_state* st = (demo_state*)user;
+	vgui::file_dialog_result r;
+	r.kind = kind;
+	if (error) r.error = error;
+	for (int i = 0; i < count; ++i)
+		if (paths && paths[i]) r.paths.push_back(paths[i]);
+	dialog_report(st, "缩略图选择器: ", r);
+}
+
+static void on_dialog_thumbnails(vgui_widget*, const vgui_event* e, void* user)
+{
+	(void)e;
+	if (e->type != VGUI_EVENT_CLICK) return;
+	demo_state* st = (demo_state*)user;
+	if (!st->thumbnail_picker.context())
+		st->thumbnail_picker.build(st->ui);
+	vgui_file_dialog_desc desc;
+	vgui_file_dialog_desc_init(&desc);
+	desc.title = "缩略图选择器（vgui 自有）";
+	desc.filters = nullptr;
+	desc.filter_count = 0;
+	desc.allow_many = true;
+	if (!st->thumbnail_picker.show(VGUI_FILE_DIALOG_OPEN, &desc,
+		&on_thumbnail_picker_result, st))
+	{
+		if (st->dialog_label)
+			vgui_widget_set_text(st->dialog_label, "缩略图选择器：无法打开（已有模态框？）");
+	}
+}
+#endif
+
 static void build_file_dialog(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "文件对话框 File dialog");
@@ -2979,6 +3018,12 @@ static void build_file_dialog(demo_state* st, vgui_widget* root)
 	button(r1, "选择目录…", on_dialog_folder, st);
 	label(r1, vgui_file_dialog_available() ? "provider: 已安装" : "provider: 无", 12,
 		vgui_file_dialog_available() ? 0xFF9CCF80 : 0xFFE0A050);
+
+#ifdef VGUI_DEMO_HAS_EDITOR_KIT
+	vgui_widget* r2 = row(c, 8);
+	button(r2, "缩略图选择器…", on_dialog_thumbnails, st);
+	label(r2, "vgui 自有网格缩略图选择器（原生对话框无预览钩子）", 12, 0xFF9A9A9A);
+#endif
 
 	st->dialog_label = label(c, "尚未打开对话框", 12, 0xFF7FB6FF);
 	vgui_widget_set_id(st->dialog_label, "dialog-state");
