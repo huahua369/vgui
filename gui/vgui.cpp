@@ -1939,8 +1939,22 @@ static int vgui_binding_apply(vgui_binding* b)
 	{
 	case VGUI_BIND_VALUE:
 	case VGUI_BIND_PROGRESS:
-		if (std::fabs(w->value - f) > 1e-6f) { w->value = f; return 1; }
-		return 0;
+		{
+			/* SLIDER/PROGRESS keep w->value normalised to [0,1]; the model
+			 * side speaks the widget's range (see vgui_widget_set_value).
+			 * Without this mapping a model value such as 12.5 on a [0,50]
+			 * slider is written verbatim into w->value, clamps to 1.0 at
+			 * paint time and parks the knob against the right edge (half of
+			 * it clipped). */
+			float nv = f;
+			if (w->kind == VGUI_SLIDER || w->kind == VGUI_PROGRESS)
+			{
+				float span = w->range_max - w->range_min;
+				nv = span > 0 ? vgui_clampf((f - w->range_min) / span, 0.0f, 1.0f) : 0.0f;
+			}
+			if (std::fabs(w->value - nv) > 1e-6f) { w->value = nv; return 1; }
+			return 0;
+		}
 	case VGUI_BIND_CHECKED:
 		if (w->checked != (i != 0)) { w->checked = (i != 0); return 1; }
 		return 0;
@@ -2043,6 +2057,10 @@ static void vgui_binding_writeback_value(vgui_widget* w)
 {
 	if (!w || !w->ctx) return;
 	vgui_context* ctx = w->ctx;
+	/* SLIDER/PROGRESS store w->value normalised to [0,1]; the model side
+	 * speaks the widget's range.  Use the same mapping as the public getter
+	 * so set_fn, the model write and the edit journal all report real units. */
+	const float widget_value = vgui_value_of(w);
 	/* Snapshot the targets: the recorder runs host code that may unbind. */
 	std::vector<vgui_binding*> targets;
 	for (vgui_binding* b : ctx->bindings)
@@ -2077,18 +2095,18 @@ static void vgui_binding_writeback_value(vgui_widget* w)
 			if (b->set_fn)
 			{
 				if (is_check) { int c = w->checked; b->set_fn(b->cb_user, b->kind, &c); }
-				else { float v = w->value; b->set_fn(b->cb_user, b->kind, &v); }
+				else { float v = widget_value; b->set_fn(b->cb_user, b->kind, &v); }
 			}
 		}
 		else
 		{
 			char* base = (char*)b->model + b->offset;
 			if (is_check) *(int*)base = w->checked;
-			else *(float*)base = w->value;
+			else *(float*)base = widget_value;
 			ctx->model_versions[b->model]++;
 		}
 
-		const double new_number = is_check ? (double)w->checked : (double)w->value;
+		const double new_number = is_check ? (double)w->checked : (double)widget_value;
 		const double old_number = is_check ? (double)old_i : (double)old_f;
 		if (old_number == new_number) continue;
 		vgui_binding_report(ctx, b, w,

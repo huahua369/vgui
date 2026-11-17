@@ -5196,6 +5196,62 @@ static void test_binding_expr(font_familys_t* familys)
 	vgui_expr_scope_destroy(scope);
 }
 
+// A slider/progress bound with a non-default range must speak the model's
+// actual units, not the widget's normalised [0,1] value.  Otherwise a model
+// value of 12.5 on a [0,50] slider is written verbatim into w->value, clamps
+// to 1.0 at paint time and parks the knob against the right edge (half of it
+// clipped) - and dragging writes 0..1 back into the model.
+static void test_binding_slider_range(font_familys_t* familys)
+{
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 400, 300);
+	vgui_widget_set_layout(vgui_root(ctx), VGUI_LAYOUT_ABSOLUTE);
+
+	struct range_model { float price; float ratio; };
+	range_model m = { 12.5f, 25.0f };
+
+	vgui_widget* sl = vgui_widget_add(vgui_root(ctx), VGUI_SLIDER, "");
+	vgui_widget_set_pos(sl, 10.0f, 10.0f);
+	vgui_widget_set_size(sl, 200.0f, 24.0f);
+	vgui_widget_set_range(sl, 0.0f, 50.0f);
+	vgui_binding* bs = vgui_bind(ctx, sl, VGUI_BIND_VALUE, &m, VGUI_OFFSET(range_model, price));
+
+	vgui_widget* pg = vgui_widget_add(vgui_root(ctx), VGUI_PROGRESS, nullptr);
+	vgui_widget_set_pos(pg, 10.0f, 50.0f);
+	vgui_widget_set_size(pg, 200.0f, 10.0f);
+	vgui_widget_set_range(pg, 0.0f, 100.0f);
+	vgui_bind(ctx, pg, VGUI_BIND_PROGRESS, &m, VGUI_OFFSET(range_model, ratio));
+
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(sl), 12.5f),
+		"range binding: slider apply maps model 12.5 into [0,50] (not clamped to 1)");
+	check(near(vgui_widget_get_value(pg), 25.0f),
+		"range binding: progress apply maps model 25 into [0,100]");
+	// Paint uses clamp(w->value,0,1); with a correct 0.25 normalised value the
+	// knob sits at a quarter of the track instead of clipping at the edge.
+	check(vgui_widget_get_value(sl) < 50.0f,
+		"range binding: slider knob not parked at the clipped right edge");
+
+	// model -> widget flush stays in real units.
+	m.price = 37.5f;
+	m.ratio = 80.0f;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(sl), 37.5f), "range binding: model->widget flush in units");
+	check(near(vgui_widget_get_value(pg), 80.0f), "range binding: progress flush in units");
+
+	// widget -> model writeback through a real drag: drop at x=110 (half the
+	// 200px track) must write ~25 into the [0,50] model, not ~0.5.
+	vgui_input_mouse_move(ctx, 110.0f, 22.0f);
+	vgui_input_mouse_down(ctx, 1, 110.0f, 22.0f, 1);
+	vgui_input_mouse_up(ctx, 1, 110.0f, 22.0f, 1);
+	check(m.price > 20.0f && m.price < 30.0f,
+		"range binding: drag writeback in model units (not normalised 0..1)");
+
+	(void)bs;
+	vgui_destroy(ctx);
+}
+
 // ---------------------------------------------------------------------------
 // File dialogs: the platform bridge is provider based, so a fake provider can
 // exercise the whole path (request -> result -> update dispatch) headless.
@@ -5588,6 +5644,7 @@ int main()
 	test_binding(familys);
 	test_binding_collection(familys);
 	test_binding_expr(familys);
+	test_binding_slider_range(familys);
 	test_file_dialog(ui);
 	test_recent_dirs(ui);
 

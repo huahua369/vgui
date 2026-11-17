@@ -3227,9 +3227,9 @@ static void build_i18n(demo_state* st, vgui_widget* root)
 	vgui_widget_set_id(st->i18n_rtl, "i18n-rtl");
 	vgui_widget_on_value(st->i18n_rtl, on_i18n_rtl_value, st);
 
-	// 双向文本：阿拉伯语 / 希伯来语 / 日语 / emoji 混排，由底层 ICU bidi 重排
+	// 双向文本：阿拉伯语 / 希伯来语 / 繁体中文 / emoji 混排，由底层 ICU bidi 重排
 	vgui_widget* bidi = vgui_widget_add(c, VGUI_LABEL,
-		"Bidi: العربية · עברית · 日本語 · English · 🎨");
+		"Bidi: العربية · עברית · 繁體中文 · English · 🎨");
 	vgui_widget_set_id(bidi, "i18n-bidi");
 	vgui_widget_set_text_color(bidi, 0xFF9A9A9A);
 
