@@ -434,6 +434,128 @@ namespace vgui_editor_kit {
 		}
 	}
 
+	/* --------------------------------------------------------------------- */
+	/* Drawing snapshot serialization (S5)                                   */
+	/* --------------------------------------------------------------------- */
+
+	static nlohmann::json drawing_cell_to_json(const table_cell& cell)
+	{
+		return { { "row", cell.row }, { "column", cell.column } };
+	}
+
+	static bool json_to_drawing_cell(const nlohmann::json& value,
+		table_cell& out, const char* what, std::string* error)
+	{
+		if (!value.is_object())
+		{
+			if (error) *error = std::string(what) + " must be an object";
+			return false;
+		}
+		auto row = value.find("row");
+		auto column = value.find("column");
+		if (row == value.end() || !row->is_number_unsigned() ||
+			column == value.end() || !column->is_number_integer())
+		{
+			if (error) *error = std::string(what) + " needs unsigned row and integer column";
+			return false;
+		}
+		out.row = row->get<std::size_t>();
+		out.column = column->get<int>();
+		return true;
+	}
+
+	std::string table_drawings_to_json(
+		const std::vector<table_drawing>& drawings)
+	{
+		nlohmann::json root = nlohmann::json::array();
+		for (const table_drawing& d : drawings)
+		{
+			nlohmann::json item;
+			item["id"] = d.id;
+			item["key"] = d.key;
+			item["anchor_from"] = drawing_cell_to_json(d.anchor_from);
+			item["anchor_to"] = drawing_cell_to_json(d.anchor_to);
+			item["from_dx"] = d.from_dx; item["from_dy"] = d.from_dy;
+			item["to_dx"] = d.to_dx; item["to_dy"] = d.to_dy;
+			item["sizing"] = (int)d.sizing;
+			item["width"] = d.width; item["height"] = d.height;
+			item["fit"] = (int)d.fit;
+			item["rotation"] = d.rotation;
+			item["opacity"] = d.opacity;
+			item["z"] = d.z;
+			item["alt_text"] = d.alt_text;
+			/* `texture` is borrowed and intentionally not serialized. */
+			root.push_back(std::move(item));
+		}
+		return root.dump();
+	}
+
+	bool table_drawings_from_json(const std::string& text,
+		std::vector<table_drawing>& out, std::string* error)
+	{
+		std::vector<table_drawing> parsed;
+		auto fail = [error](const std::string& message) {
+			if (error) *error = message;
+			return false;
+		};
+		try
+		{
+			nlohmann::json root = nlohmann::json::parse(text);
+			if (!root.is_array())
+				return fail("drawings snapshot root must be an array");
+			for (const auto& entry : root)
+			{
+				if (!entry.is_object())
+					return fail("drawings entry must be an object");
+				table_drawing d;	/* defaults cover missing/older fields */
+				auto read_string = [&](const char* name, std::string& dst) {
+					auto it = entry.find(name);
+					if (it != entry.end() && it->is_string())
+						dst = it->get<std::string>();
+				};
+				auto read_float = [&](const char* name, float& dst) {
+					auto it = entry.find(name);
+					if (it != entry.end() && it->is_number())
+						dst = it->get<float>();
+				};
+				read_string("id", d.id);
+				read_string("key", d.key);
+				read_string("alt_text", d.alt_text);
+				auto af = entry.find("anchor_from");
+				if (af != entry.end() &&
+					!json_to_drawing_cell(*af, d.anchor_from, "anchor_from", error))
+					return false;
+				auto at = entry.find("anchor_to");
+				if (at != entry.end() &&
+					!json_to_drawing_cell(*at, d.anchor_to, "anchor_to", error))
+					return false;
+				read_float("from_dx", d.from_dx); read_float("from_dy", d.from_dy);
+				read_float("to_dx", d.to_dx); read_float("to_dy", d.to_dy);
+				read_float("width", d.width); read_float("height", d.height);
+				read_float("rotation", d.rotation); read_float("opacity", d.opacity);
+				auto sizing = entry.find("sizing");
+				if (sizing != entry.end() && sizing->is_number_integer())
+					d.sizing = (table_drawing_sizing)sizing->get<int>();
+				auto fit = entry.find("fit");
+				if (fit != entry.end() && fit->is_number_integer())
+					d.fit = (table_image_fit)fit->get<int>();
+				auto z = entry.find("z");
+				if (z != entry.end() && z->is_number_integer())
+					d.z = z->get<int>();
+				/* texture stays null: the host re-binds it from `key`. */
+				d.texture = nullptr;
+				parsed.push_back(std::move(d));
+			}
+			out = std::move(parsed);
+			if (error) error->clear();
+			return true;
+		}
+		catch (const std::exception& e)
+		{
+			return fail(e.what());
+		}
+	}
+
 	/* Long-lived kit drop target: offers OS files as an insert request and
 	 * highlights the table body while hovered.  Defined before construction so
 	 * the unique_ptr member has a complete type at destruction. */
@@ -563,6 +685,9 @@ namespace vgui_editor_kit {
 		 * forwards files to the host as an insert request. */
 		file_drop_target_ = std::make_unique<file_drop_target>(this);
 		set_editor_drop_target(widget_, file_drop_target_.get());
+
+		/* S5: dynamic tooltip showing the hovered drawing's alt text. */
+		vgui_widget_set_tooltip_provider(widget_, &table_view::on_tooltip, this);
 	}
 
 	vgui_widget* table_view::widget() const noexcept
@@ -1719,6 +1844,31 @@ namespace vgui_editor_kit {
 		request.drawing.sizing = table_drawing_sizing::move_only;
 		request.drawing.fit = table_image_fit::contain;
 		return emit_drawing_request(request);
+	}
+
+	std::string table_view::drawing_tooltip_text(
+		const std::string& id) const
+	{
+		if (id.empty()) return {};
+		for (const table_drawing& d : drawings_)
+		{
+			if (d.id != id) continue;
+			return d.alt_text.empty() ? d.key : d.alt_text;
+		}
+		return {};
+	}
+
+	const char* table_view::on_tooltip(vgui_widget* widget, void* user)
+	{
+		(void)widget;
+		auto* self = static_cast<table_view*>(user);
+		if (!self || self->hover_drawing_id_.empty())
+			return nullptr;
+		/* drawings_ is the last painted, z-sorted snapshot that hover hit
+		 * testing also uses, so the hovered id is always present here. */
+		self->tooltip_text_ = self->drawing_tooltip_text(self->hover_drawing_id_);
+		return self->tooltip_text_.empty() ? nullptr
+			: self->tooltip_text_.c_str();
 	}
 
 	/* --------------------------------------------------------------------- */

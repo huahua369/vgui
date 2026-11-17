@@ -23,6 +23,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <vector>
 
@@ -1117,6 +1118,57 @@ static void run_probe()
 			"unknown ids and empty payloads are refused");
 		check(g->drawings.size() == n_refuse,
 			"refused operations leave the drawing model intact");
+	}
+
+	/* ---- S5: read-only drawing snapshot serialization ------------------ */
+	{
+		/* Round-trip the current host model; geometry and metadata survive,
+		 * the borrowed texture does not (host re-binds it by key). */
+		const std::string json = table_drawings_to_json(g->drawings);
+		std::vector<table_drawing> restored;
+		std::string err;
+		check(table_drawings_from_json(json, restored, &err) &&
+			err.empty() && restored.size() == g->drawings.size(),
+			"drawings snapshot JSON round-trips with every entry");
+		bool faithful = true;
+		table_drawing ref = g->drawings.front();
+		table_drawing got = restored.front();
+		if (ref.id != got.id || ref.key != got.key ||
+			ref.alt_text != got.alt_text || ref.anchor_from != got.anchor_from ||
+			ref.anchor_to != got.anchor_to || ref.sizing != got.sizing ||
+			ref.fit != got.fit || ref.z != got.z ||
+			std::fabs(ref.width - got.width) > 0.001f ||
+			std::fabs(ref.rotation - got.rotation) > 0.001f ||
+			std::fabs(ref.opacity - got.opacity) > 0.001f ||
+			got.texture != nullptr)
+			faithful = false;
+		check(faithful,
+			"snapshot preserves geometry/metadata and clears borrowed texture");
+
+		/* Older JSON with optional fields missing must still parse, falling
+		 * back to table_drawing defaults instead of failing. */
+		const char* legacy = "[{\"id\":\"old\",\"key\":\"k\"}]";
+		std::vector<table_drawing> old;
+		check(table_drawings_from_json(legacy, old, &err) && old.size() == 1 &&
+			old[0].id == "old" && old[0].key == "k" &&
+			old[0].sizing == table_drawing_sizing::move_and_size &&
+			old[0].texture == nullptr,
+			"snapshot reader defaults missing fields and stays compatible");
+
+		/* Malformed / wrong-type input is rejected with an error message. */
+		std::vector<table_drawing> bad;
+		check(!table_drawings_from_json("{}", bad, &err) && !err.empty(),
+			"snapshot reader rejects a non-array root with an error");
+		check(!table_drawings_from_json("[{\"anchor_from\":3}]", bad, &err) &&
+			!err.empty(),
+			"snapshot reader rejects a malformed anchor cell");
+
+		/* Tooltip text API: alt text is preferred; empty/unknown ids are safe. */
+		check(g->table.drawing_tooltip_text("float-fixed") == "fixed stamp",
+			"drawing tooltip resolves the alt text of a known drawing");
+		check(g->table.drawing_tooltip_text("").empty() &&
+			g->table.drawing_tooltip_text("no-such-drawing").empty(),
+			"drawing tooltip is empty for empty and unknown ids");
 	}
 
 	/* Right-gap hit testing: the table body is wider than the sum of all

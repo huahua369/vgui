@@ -286,6 +286,18 @@ namespace vgui_editor_kit {
 	bool table_state_from_json(const std::string& text, table_state& out,
 		std::string* error = nullptr);
 
+	/* S5: optional read-only serialization of the floating-drawing snapshot.
+	 * This is a HOST-side helper for saving/restoring drawing geometry (e.g.
+	 * in editor_layout); it is deliberately separate from table_state, which
+	 * stays at v2.  The borrowed `texture` pointer is never serialized - a
+	 * restored drawing has texture == nullptr and the host re-binds it by key.
+	 * Fields absent in older JSON default to the same values as a fresh
+	 * table_drawing, so forward-compatible additions stay readable. */
+	std::string table_drawings_to_json(
+		const std::vector<table_drawing>& drawings);
+	bool table_drawings_from_json(const std::string& text,
+		std::vector<table_drawing>& out, std::string* error = nullptr);
+
 	class spinbox;
 
 	class table_view
@@ -408,6 +420,12 @@ namespace vgui_editor_kit {
 		/* Number of drawings painted by the last paint (after z-sort / cull). */
 		std::size_t last_render_drawing_count() const noexcept;
 		void set_drawing_selection_listener(drawing_selection_listener listener);
+
+		/* S5: tooltip text for a drawing - its alt_text, or its key when no
+		 * alt text is set.  Returns empty for an unknown id.  The widget's
+		 * tooltip provider uses this for the drawing currently under the
+		 * pointer; hosts may also query it directly. */
+		std::string drawing_tooltip_text(const std::string& id) const;
 
 		/* ---- floating drawing interaction (S3) ------------------------ */
 		/* Handles around a selected drawing.  Corners resize (aspect-locked
@@ -582,6 +600,8 @@ namespace vgui_editor_kit {
 			float delta_time, void* user);
 		static int on_event(vgui_widget* widget, const vgui_event* event,
 			void* user);
+		/* S5: dynamic tooltip for the hovered drawing's alt text. */
+		static const char* on_tooltip(vgui_widget* widget, void* user);
 
 		void draw(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget, float x,
 			float y, float width, float height);
@@ -704,6 +724,7 @@ namespace vgui_editor_kit {
 		std::vector<table_drawing> drawings_;
 		std::string selected_drawing_id_;
 		std::string hover_drawing_id_;
+		std::string tooltip_text_;	/* scratch backing on_tooltip's c_str() */
 		drawing_selection_listener drawing_selection_listener_;
 		drawing_change_listener drawing_change_listener_;
 		drawing_request_listener drawing_request_listener_;
