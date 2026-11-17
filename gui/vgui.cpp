@@ -20812,26 +20812,63 @@ extern "C" {
 
 	void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint)
 	{
+		vgui_custom_draw_texture_fit(widget, cb, vg, texture, x, y, width, height,
+			VGUI_IMAGE_FIT_CONTAIN, tint);
+	}
+
+	void vgui_custom_draw_texture_fit(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, vgui_color tint)
+	{
 		if (!widget || !widget->ctx || !cb || !vg || !texture || width <= 0.0f || height <= 0.0f) return;
 		vgui_texture_ensure_upload(widget->ctx, texture, cb, vg);
 		const int tex_w = texture->width;
 		const int tex_h = texture->height;
 		if (tex_w <= 0 || tex_h <= 0) return;
-		const float scale = std::min(width / (float)tex_w, height / (float)tex_h);
-		const float draw_w = std::max(1.0f, (float)tex_w * scale);
-		const float draw_h = std::max(1.0f, (float)tex_h * scale);
-		const float draw_x = x + (width - draw_w) * 0.5f;
-		const float draw_y = y + (height - draw_h) * 0.5f;
+
+		/* Source rect: COVER crops to the destination aspect ratio; the other
+		 * modes use the whole texture. */
+		int sx = 0, sy = 0, sw = tex_w, sh = tex_h;
+		if (fit == VGUI_IMAGE_FIT_COVER)
+		{
+			const float dst_aspect = width / height;
+			const float src_aspect = (float)sw / (float)sh;
+			if (src_aspect > dst_aspect)
+			{
+				int nw = std::max(1, (int)std::lround((float)sh * dst_aspect));
+				sx += (sw - nw) / 2;
+				sw = nw;
+			}
+			else if (src_aspect < dst_aspect)
+			{
+				int nh = std::max(1, (int)std::lround((float)sw / dst_aspect));
+				sy += (sh - nh) / 2;
+				sh = nh;
+			}
+		}
+
+		float draw_x = x, draw_y = y, draw_w = width, draw_h = height;
+		if (fit == VGUI_IMAGE_FIT_CONTAIN || fit == VGUI_IMAGE_FIT_NONE)
+		{
+			const float scale = fit == VGUI_IMAGE_FIT_NONE
+				? 1.0f
+				: std::min(width / (float)sw, height / (float)sh);
+			draw_w = std::max(1.0f, (float)sw * scale);
+			draw_h = std::max(1.0f, (float)sh * scale);
+			draw_x = x + (width - draw_w) * 0.5f;
+			draw_y = y + (height - draw_h) * 0.5f;
+		}
+
+		/* Clip to the destination rectangle: COVER and NONE intentionally draw
+		 * outside it and must be cropped; STRETCH/CONTAIN already fit. */
 		glm::ivec4 saved = {};
 		int has_saved = 0;
-		vgui_custom_clip_begin(cb, vg, draw_x, draw_y, draw_w, draw_h, &saved, &has_saved);
+		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
 		const uint32_t color = vgui_ovg_color(vgui_widget_color(widget, tint ? tint : 0xFFFFFFFF));
 		const bool native = !texture->cpu && texture->native.image.id != 0;
 		if (native && cb->add_texture)
 		{
 			ovg_texture_r r = {};
 			r.tex = &texture->native;
-			r.rc = { 0, 0, tex_w, tex_h };
+			r.rc = { sx, sy, sw, sh };
 			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
 			r.color = color;
 			cb->add_texture(vg, &r);
@@ -20840,7 +20877,7 @@ extern "C" {
 		{
 			ovg_image_r r = {};
 			r.img = &texture->image;
-			r.rc = { 0, 0, tex_w, tex_h };
+			r.rc = { sx, sy, sw, sh };
 			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
 			r.color = color;
 			cb->add_image(vg, &r);

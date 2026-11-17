@@ -463,6 +463,23 @@ static void tbl_cell_style(void* user, size_t row, const char* column,
 	out->text_color = row == 0 ? 0xFFFF0000u : 0u;
 }
 
+static void tbl_cell_image(void* user, size_t row, const char* column,
+	vgui_editor_table_cell_image* out)
+{
+	probe* p = (probe*)user;
+	(void)row;
+	(void)column;
+	if (p)
+		++p->image_count;
+	if (!out)
+		return;
+	vgui_editor_table_cell_image_default(out);
+	out->fit = VGUI_EDITOR_TABLE_IMAGE_COVER;
+	out->tint = 0x22FF0000u;
+	/* texture stays NULL: the C API conversion must pass through the fit/tint
+	 * fields and fall back to text when there is no borrowed texture. */
+}
+
 static int tbl_compare(void* user, const char* a, const char* b)
 {
 	probe* p = (probe*)user;
@@ -578,7 +595,20 @@ void test_table(probe* p)
 		"table source default stamps its size");
 	check(source.row_count == NULL && source.cell_text == NULL,
 		"the table source default has no callbacks");
+	check(source.cell_image == NULL,
+		"the table source default has no image callback");
 	vgui_editor_table_source_default(NULL);
+
+	{
+		vgui_editor_table_cell_image image;
+		vgui_editor_table_cell_image_default(&image);
+		check(image.struct_size == (uint32_t)sizeof(image),
+			"table cell image default stamps its size");
+		check(image.texture == NULL &&
+			image.fit == VGUI_EDITOR_TABLE_IMAGE_CONTAIN && image.tint == 0,
+			"table cell image default is empty and contain");
+		vgui_editor_table_cell_image_default(NULL);
+	}
 
 	/* Pull model. */
 	memset(&source, 0, sizeof(source));
@@ -587,6 +617,7 @@ void test_table(probe* p)
 	source.cell_text = tbl_cell_text;
 	source.row_id = tbl_row_id;
 	source.cell_style = tbl_cell_style;
+	source.cell_image = tbl_cell_image;
 	source.user = p;
 	source.release_user = release_probe;
 	p->released = 0;
@@ -594,6 +625,18 @@ void test_table(probe* p)
 	vgui_editor_table_refresh(table);
 	check(vgui_editor_table_row_count(table) == 3, "the row count comes from the host");
 	check(p->navigate_count >= 1, "the table pulled the row count");
+	check(source.cell_image == tbl_cell_image,
+		"the table source accepts an in-cell image callback");
+	{
+		vgui_editor_table_cell_image image;
+		p->image_count = 0;
+		vgui_editor_table_cell_image_default(&image);
+		tbl_cell_image(p, 0, "badge", &image);
+		check(p->image_count == 1 &&
+			image.fit == VGUI_EDITOR_TABLE_IMAGE_COVER &&
+			image.tint == 0x22FF0000u && image.texture == NULL,
+			"cell image callback fills fit/tint with a borrowed texture slot");
+	}
 
 	/* Columns. */
 	vgui_editor_table_column_default(&columns[0]);

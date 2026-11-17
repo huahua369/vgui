@@ -40,6 +40,16 @@ namespace vgui_editor_kit {
 		right
 	};
 
+	/* How an in-cell image is placed inside its cell rectangle.  Matches the
+	 * VGUI_IMAGE fit set so hosts can reuse the same convention. */
+	enum class table_image_fit
+	{
+		contain = 0,	/* scale to fit, letterbox (Excel "Place in Cell") */
+		cover,			/* scale to fill, crop overflow */
+		stretch,		/* ignore aspect ratio */
+		none			/* native size, centred, cropped */
+	};
+
 	struct table_cell
 	{
 		std::size_t row = 0;	/* source row index */
@@ -118,6 +128,17 @@ namespace vgui_editor_kit {
 		vgui_color background = 0;
 	};
 
+	/* Result of an in-cell image query.  `texture` is BORROWED: the host owns
+	 * it and must keep it alive for the duration of the paint that consumes it.
+	 * table_view never creates, updates or destroys the texture.  A null
+	 * texture means "no image" and the cell falls back to its text. */
+	struct table_cell_image
+	{
+		vgui_texture* texture = nullptr;
+		table_image_fit fit = table_image_fit::contain;
+		vgui_color tint = 0;	/* 0 keeps the theme/texture colour */
+	};
+
 	struct table_column
 	{
 		std::string id;
@@ -150,6 +171,11 @@ namespace vgui_editor_kit {
 		std::function<object_id(std::size_t row)> row_id;
 		std::function<table_cell_style(std::size_t row,
 			const std::string& column)> cell_style;
+		/* Optional in-cell image query, using the same pull model and
+		 * column-id convention as cell_text.  Only called for visible cells.
+		 * Returning a null texture falls back to cell_text. */
+		std::function<table_cell_image(std::size_t row,
+			const std::string& column)> cell_image;
 	};
 
 	struct table_row_range
@@ -363,6 +389,10 @@ namespace vgui_editor_kit {
 		 * hosts can use it to verify that only visible rows were queried. */
 		std::size_t last_render_cell_queries() const noexcept;
 
+		/* Number of cell_image queries performed by the last paint.  Mirrors
+		 * last_render_cell_queries() for the in-cell image path. */
+		std::size_t last_render_cell_image_queries() const noexcept;
+
 	private:
 		struct layout_metrics
 		{
@@ -533,6 +563,7 @@ namespace vgui_editor_kit {
 		std::map<vgui_item_id, std::string> edit_menu_values_;
 
 		std::size_t render_cell_queries_ = 0;
+		std::size_t render_cell_image_queries_ = 0;
 	};
 
 } /* namespace vgui_editor_kit */

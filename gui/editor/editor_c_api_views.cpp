@@ -305,6 +305,26 @@ namespace {
 				return style;
 			};
 		}
+		if (d.cell_image) {
+			out.cell_image = [d, owner](size_t row,
+				const std::string& column) -> table_cell_image {
+				table_cell_image image;
+				vgui_editor_table_cell_image view;
+				vgui_editor_table_cell_image_default(&view);
+				const char* key = column.c_str();
+				d.cell_image(owner->user, row, key, &view);
+				image.texture = view.texture;
+				image.fit = view.fit == VGUI_EDITOR_TABLE_IMAGE_COVER
+					? table_image_fit::cover
+					: view.fit == VGUI_EDITOR_TABLE_IMAGE_STRETCH
+						? table_image_fit::stretch
+						: view.fit == VGUI_EDITOR_TABLE_IMAGE_NONE
+							? table_image_fit::none
+							: table_image_fit::contain;
+				image.tint = view.tint;
+				return image;
+			};
+		}
 		return out;
 	}
 
@@ -995,6 +1015,17 @@ extern "C" {
 			return;
 		std::memset(style, 0, sizeof(*style));
 		style->struct_size = (uint32_t)sizeof(*style);
+	}
+
+	void vgui_editor_table_cell_image_default(vgui_editor_table_cell_image* image)
+	{
+		if (!image)
+			return;
+		std::memset(image, 0, sizeof(*image));
+		image->struct_size = (uint32_t)sizeof(*image);
+		image->texture = nullptr;
+		image->fit = VGUI_EDITOR_TABLE_IMAGE_CONTAIN;
+		image->tint = 0;
 	}
 
 	void vgui_editor_table_column_default(vgui_editor_table_column* column)

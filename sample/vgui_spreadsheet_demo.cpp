@@ -104,6 +104,34 @@ static std::vector<record> make_rows(std::size_t count)
 /* Demo state + toolbar callbacks                                            */
 /* ------------------------------------------------------------------------- */
 
+/* Programmatic 32x20 RGBA badge used by the in-cell image column.  The host
+ * owns the texture; table_view only borrows it during paint. */
+static vgui_texture* make_badge_texture(vgui_context* ui)
+{
+	constexpr int w = 32, h = 20;
+	std::vector<uint32_t> pixels((std::size_t)w * h);
+	for (int y = 0; y < h; ++y)
+	{
+		for (int x = 0; x < w; ++x)
+		{
+			const uint8_t r = (uint8_t)(40 + x * 6);
+			const uint8_t g = (uint8_t)(90 + y * 7);
+			const uint8_t b = 200;
+			const uint8_t a = (x == 0 || y == 0 || x == w - 1 || y == h - 1)
+				? 255 : 220;
+			pixels[(std::size_t)y * w + x] =
+				(uint32_t)a << 24 | (uint32_t)b << 16 | (uint32_t)g << 8 | r;
+		}
+	}
+	vgui_texture_desc desc = {};
+	desc.width = w;
+	desc.height = h;
+	desc.stride = w * 4;
+	desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
+	desc.pixels = pixels.data();
+	return vgui_texture_create(ui, &desc);
+}
+
 struct app_state
 {
 	std::vector<record> rows;
@@ -112,7 +140,20 @@ struct app_state
 	vgui_context* ui = nullptr;
 	vgui_widget* status = nullptr;
 	vgui_widget* sort_info = nullptr;
+	vgui_texture* badge_texture = nullptr;
+	int badge_image_queries = 0;
 	char note[160] = "ready";
+
+	~app_state()
+	{
+		/* Texture belongs to the UI context, which is still alive when the
+		 * heap app_state is deleted in main(). */
+		if (badge_texture)
+		{
+			vgui_texture_destroy(badge_texture);
+			badge_texture = nullptr;
+		}
+	}
 
 	record* row_at(std::size_t row)
 	{
@@ -321,6 +362,7 @@ static vgui_widget* make_toolbar(vgui_context* ui)
 
 static void configure_table(vgui_context* ui)
 {
+	g->badge_texture = make_badge_texture(ui);
 	g->table.build(vgui_root(ui));
 	g->table.set_command_stack(&g->commands);
 	vgui_widget_set_size(g->table.widget(), 0, 0);
@@ -349,7 +391,30 @@ static void configure_table(vgui_context* ui)
 		if (column == "active") return r->active ? "true" : "false";
 		if (column == "color") return r->color;
 		if (column == "pos") return r->pos;
+		if (column == "badge")
+		{
+			char buf[32];
+			snprintf(buf, sizeof(buf), "badge://%zu", row);
+			return buf;
+		}
 		return {};
+	};
+	source.cell_image = [](std::size_t row,
+		const std::string& column) -> table_cell_image {
+		table_cell_image image;
+		if (column != "badge" || !g->badge_texture)
+			return image;
+		++g->badge_image_queries;
+		image.texture = g->badge_texture;
+		/* Rotate through the four fits so the demo shows all of them. */
+		switch (row % 4)
+		{
+		case 0: image.fit = table_image_fit::contain; break;
+		case 1: image.fit = table_image_fit::cover; break;
+		case 2: image.fit = table_image_fit::stretch; break;
+		default: image.fit = table_image_fit::none; break;
+		}
+		return image;
 	};
 	source.cell_style = [](std::size_t row,
 		const std::string& column) -> table_cell_style {
@@ -366,7 +431,7 @@ static void configure_table(vgui_context* ui)
 		[]() -> std::string { return get_clipboard(); },
 		[](const std::string& text) { set_clipboard(text.c_str()); });
 
-	std::vector<table_column> columns(8);
+	std::vector<table_column> columns(9);
 	columns[0].id = "id";
 	columns[0].label = "ID";
 	columns[0].width = 90.0f;
@@ -455,6 +520,20 @@ static void configure_table(vgui_context* ui)
 		r->pos = value;
 		return true;
 	};
+
+	/* In-cell image column.  Content is a borrowed texture supplied by the
+	 * host through source.cell_image; the text value is the image key used by
+	 * copy/paste and editing. */
+	columns[8].id = "badge";
+	columns[8].label = "Badge";
+	columns[8].width = 80.0f;
+	columns[8].alignment = table_alignment::center;
+	columns[8].editor.type = property_type::text;
+	columns[8].set_value = [](std::size_t row, const std::string& value) {
+		record* r = g->row_at(row);
+		if (!r || value.rfind("badge://", 0) != 0) return false;
+		return true;	/* key accepted; texture stays host-owned */
+	};
 	g->table.set_columns(std::move(columns));
 
 	g->table.set_edit_listener([](const table_cell& cell,
@@ -478,7 +557,9 @@ static void run_probe()
 {
 	check(g->rows.size() == 5000, "host model has 5000 rows");
 	check(g->table.row_count() == 5000, "table sees 5000 rows");
-	check(g->table.column_count() == 8, "table has 8 typed columns");
+	check(g->table.column_count() == 9, "table has 9 typed columns");
+	check(g->badge_texture != nullptr, "host created programmatic badge texture");
+	check(g->badge_image_queries > 0, "in-cell image queries happened during paint");
 
 	/* S0: three-state plain sort via public API semantics. */
 	check(g->table.set_sort(1, true) && g->table.sort_column() == 1 &&
@@ -529,6 +610,12 @@ static void run_probe()
 	/* Virtualization: painted rows are far fewer than total. */
 	check(g->table.last_render_cell_queries() < 500,
 		"paint queries only visible cells (virtualized)");
+	check(g->table.last_render_cell_image_queries() < 500 &&
+		g->table.last_render_cell_image_queries() > 0,
+		"in-cell image queries are virtualized to visible cells");
+	check(g->table.last_render_cell_image_queries() <=
+		g->table.last_render_cell_queries(),
+		"image queries never exceed cell queries in one paint");
 
 	/* Right-gap hit testing: the table body is wider than the sum of all
 	 * columns (920px of columns in a ~1180px window), leaving empty space to

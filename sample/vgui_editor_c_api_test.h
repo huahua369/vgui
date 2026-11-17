@@ -46,6 +46,7 @@ typedef struct probe {
 	int selection_count;
 	int selection_set_count;
 	vgui_editor_object_id last_selection;
+	int image_count;
 	int released;
 } probe;
 

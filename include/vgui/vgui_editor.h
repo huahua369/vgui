@@ -1996,6 +1996,26 @@ extern "C" {
 	VGUI_API void vgui_editor_table_cell_style_default(
 		vgui_editor_table_cell_style* style);
 
+	/* How an in-cell image fits inside its cell, matching VGUI_IMAGE fit. */
+	typedef enum vgui_editor_table_image_fit {
+		VGUI_EDITOR_TABLE_IMAGE_CONTAIN = 0,
+		VGUI_EDITOR_TABLE_IMAGE_COVER,
+		VGUI_EDITOR_TABLE_IMAGE_STRETCH,
+		VGUI_EDITOR_TABLE_IMAGE_NONE
+	} vgui_editor_table_image_fit;
+
+	/* Result of an in-cell image query.  `texture` is BORROWED and must stay
+	 * alive through the paint that consumes it; NULL falls back to cell text. */
+	typedef struct vgui_editor_table_cell_image {
+		uint32_t struct_size;
+		vgui_texture* texture;
+		vgui_editor_table_image_fit fit;
+		vgui_color tint;
+	} vgui_editor_table_cell_image;
+
+	VGUI_API void vgui_editor_table_cell_image_default(
+		vgui_editor_table_cell_image* image);
+
 	/* One column.  `editor` describes the cell editor with the same descriptor
 	 * the property grid uses; its own id/label fields are ignored in favour of
 	 * the column's. */
@@ -2037,6 +2057,11 @@ extern "C" {
 			vgui_editor_table_cell_style* out);
 		void* user;
 		vgui_editor_release_fn release_user;
+		/* Optional in-cell image query.  Fills `out` (default it first with
+		 * vgui_editor_table_cell_image_default).  Only called for visible
+		 * cells; a NULL texture falls back to cell text. */
+		void (*cell_image)(void* user, size_t row, const char* column,
+			vgui_editor_table_cell_image* out);
 	} vgui_editor_table_source;
 
 	VGUI_API void vgui_editor_table_source_default(

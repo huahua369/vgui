@@ -2141,6 +2141,10 @@ extern "C" {
 	 * place each run themselves keep full control. */
 	VGUI_API void vgui_custom_draw_text_sized(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size);
 	VGUI_API void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint);
+	/* Texture draw with explicit fit inside the destination rectangle, matching
+	 * VGUI_IMAGE fit semantics (STRETCH/CONTAIN/COVER/NONE).  Always clipped to
+	 * the destination rectangle.  Used by custom widgets such as table cells. */
+	VGUI_API void vgui_custom_draw_texture_fit(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, vgui_color tint);
 
 	/* ------------------------------------------------------------------------- */
 	/* Frame                                                                     */

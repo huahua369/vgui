@@ -259,6 +259,35 @@ namespace vgui_editor_kit {
 			vgui_custom_draw_text(widget, cb, vg, shown.c_str(),
 				x + padding, y, avail, height, color, align, 0.5f);
 		}
+
+		vgui_image_fit to_image_fit(table_image_fit fit)
+		{
+			switch (fit)
+			{
+			case table_image_fit::cover: return VGUI_IMAGE_FIT_COVER;
+			case table_image_fit::stretch: return VGUI_IMAGE_FIT_STRETCH;
+			case table_image_fit::none: return VGUI_IMAGE_FIT_NONE;
+			case table_image_fit::contain:
+			default: return VGUI_IMAGE_FIT_CONTAIN;
+			}
+		}
+
+		/* Draw a borrowed texture inside a cell rectangle with the requested
+		 * fit.  A small inset keeps the image clear of the grid lines. */
+		void draw_cell_image(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+			const table_cell_image& image, float x, float y, float width,
+			float height)
+		{
+			if (!image.texture || width <= 0.0f || height <= 0.0f)
+				return;
+			const float inset = 2.0f * ui_scale_of(widget);
+			const float ix = x + inset;
+			const float iy = y + inset;
+			const float iw = std::max(1.0f, width - inset * 2.0f);
+			const float ih = std::max(1.0f, height - inset * 2.0f);
+			vgui_custom_draw_texture_fit(widget, cb, vg, image.texture,
+				ix, iy, iw, ih, to_image_fit(image.fit), image.tint);
+		}
 	}
 
 	/* --------------------------------------------------------------------- */
@@ -2504,6 +2533,11 @@ namespace vgui_editor_kit {
 		return render_cell_queries_;
 	}
 
+	std::size_t table_view::last_render_cell_image_queries() const noexcept
+	{
+		return render_cell_image_queries_;
+	}
+
 	/* --------------------------------------------------------------------- */
 	/* Drawing                                                               */
 	/* --------------------------------------------------------------------- */
@@ -2547,6 +2581,7 @@ namespace vgui_editor_kit {
 			to_ovg(border), 1.0f);
 
 		render_cell_queries_ = 0;
+		render_cell_image_queries_ = 0;
 		draw_header(cb, vg, widget, m);
 		draw_body(cb, vg, widget, m);
 		draw_scrollbars(cb, vg, m);
@@ -2755,6 +2790,22 @@ namespace vgui_editor_kit {
 				if (cell_bg)
 					ovg_tools::fill_rect(cb, vg, cell_x, top, column_width,
 						row_height, to_ovg(cell_bg));
+
+				/* In-cell images take priority over text: when the host returns
+				 * a texture for this cell the image is the cell's content, just
+				 * like Excel's "Place in Cell" pictures. */
+				table_cell_image image;
+				if (source_.cell_image)
+				{
+					image = source_.cell_image(row, column.id);
+					++render_cell_image_queries_;
+				}
+				if (image.texture)
+				{
+					draw_cell_image(widget, cb, vg, image, cell_x, top,
+						column_width, row_height);
+					continue;
+				}
 
 				const property_type type = column.editor.type;
 				if (type == property_type::color)
