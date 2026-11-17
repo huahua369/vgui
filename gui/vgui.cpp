@@ -785,6 +785,7 @@ struct vgui_widget
 	uint32_t scroll_notifying : 1 = 0;
 	uint32_t clip_children : 1 = 1;
 	uint32_t radial : 1 = 0;			// R4-2 radial progress mode
+	uint32_t progress_no_text : 1 = 0;	// 1 = skip the built-in percentage label
 	uint32_t recording_hint : 1 = 0;	// R3-1 display-list cache opt-in
 	uint32_t cache_dirty : 1 = 0;
 	uint32_t tooltip_enabled : 1 = 1;
@@ -12492,23 +12493,32 @@ static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
 			vgui_widget_color(w, vgui_alpha_color(w->bg, ss.background_alpha)));
 
+	// Keep the knob fully inside the widget: painting its centre at the raw
+	// track endpoint clips half the circle at t==0 / t==1.  The usable centre
+	// range is inset by the knob radius, and the filled portion ends exactly
+	// at the knob centre so fill/knob stay visually attached.
+	float inset = std::min(knob, inner_w * 0.5f);
+	float centre_span = std::max(0.0f, inner_w - 2.0f * inset);
+
 	if (!w->vertical)
 	{
 		float x = w->abs_x + w->padding[0];
 		float y = w->abs_y + w->abs_h * 0.5f - thickness * 0.5f;
 		vgui_fill_rect(cb, vg, x, y, inner_w, thickness, track_rounding, vgui_widget_color(w, track));
+		float cx;
 		if (vgui_is_rtl(ctx))
 		{
-			float fill_w = inner_w * t;
-			vgui_fill_rect(cb, vg, x + inner_w - fill_w, y, fill_w, thickness, track_rounding,
+			cx = x + inner_w - inset - centre_span * t;
+			vgui_fill_rect(cb, vg, cx, y, (x + inner_w) - cx, thickness, track_rounding,
 				vgui_widget_color(w, accent));
-			cb->circle(vg, x + inner_w - fill_w, y + thickness * 0.5f, knob);
 		}
 		else
 		{
-			vgui_fill_rect(cb, vg, x, y, inner_w * t, thickness, track_rounding, vgui_widget_color(w, accent));
-			cb->circle(vg, x + inner_w * t, y + thickness * 0.5f, knob);
+			cx = x + inset + centre_span * t;
+			vgui_fill_rect(cb, vg, x, y, cx - x, thickness, track_rounding,
+				vgui_widget_color(w, accent));
 		}
+		cb->circle(vg, cx, y + thickness * 0.5f, knob);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 		cb->fill(vg);
 	}
@@ -12517,10 +12527,11 @@ static void vgui_draw_slider(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		float x = w->abs_x + w->abs_w * 0.5f - thickness * 0.5f;
 		float y = w->abs_y + w->padding[1];
 		vgui_fill_rect(cb, vg, x, y, thickness, inner_h, track_rounding, vgui_widget_color(w, track));
-		float fill_h = inner_h * t;
-		vgui_fill_rect(cb, vg, x, y + inner_h - fill_h, thickness, fill_h, track_rounding,
+		float vinset = std::min(knob, inner_h * 0.5f);
+		float vspan = std::max(0.0f, inner_h - 2.0f * vinset);
+		float ky = y + inner_h - vinset - vspan * t;
+		vgui_fill_rect(cb, vg, x, ky, thickness, (y + inner_h) - ky, track_rounding,
 			vgui_widget_color(w, accent));
-		float ky = y + inner_h - fill_h;
 		cb->circle(vg, x + thickness * 0.5f, ky, knob);
 		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, knob_color)));
 		cb->fill(vg);
@@ -12586,14 +12597,19 @@ static void vgui_draw_progress(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_fill_rect(cb, vg, x, y + inner_h - fh, inner_w, fh, rounding, fill_accent);
 	}
 
-	std::string label = w->text;
-	if (label.empty())
+	/* Thin bars cannot fit the built-in percentage text; hosts may disable it
+	 * and draw the value in their own label (see vgui_widget_set_progress_text_visible). */
+	if (!w->progress_no_text)
 	{
-		char buf[32] = {};
-		std::snprintf(buf, sizeof(buf), "%d%%", (int)std::lround(t * 100.0f));
-		label = buf;
+		std::string label = w->text;
+		if (label.empty())
+		{
+			char buf[32] = {};
+			std::snprintf(buf, sizeof(buf), "%d%%", (int)std::lround(t * 100.0f));
+			label = buf;
+		}
+		vgui_draw_text(ctx, cb, vg, w, label, x, y, inner_w, inner_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
 	}
-	vgui_draw_text(ctx, cb, vg, w, label, x, y, inner_w, inner_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -15889,6 +15905,11 @@ extern "C" {
 	void vgui_widget_set_radial(vgui_widget* widget, int radial)
 	{
 		if (widget) widget->radial = radial ? 1 : 0;
+	}
+
+	void vgui_widget_set_progress_text_visible(vgui_widget* widget, int visible)
+	{
+		if (widget) widget->progress_no_text = visible ? 0 : 1;
 	}
 
 	void vgui_context_set_safe_area(vgui_context* ctx,

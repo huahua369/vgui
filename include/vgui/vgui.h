@@ -1124,6 +1124,10 @@ extern "C" {
 	 * accent arc) instead of a horizontal bar.  The widget should be roughly
 	 * square; the percentage text is drawn centred inside the ring. */
 	VGUI_API void vgui_widget_set_radial(vgui_widget* widget, int radial);
+	/* PROGRESS: hide the built-in percentage text (default visible).  Useful
+	 * for thin bars where the text does not fit; draw the value in a separate
+	 * LABEL bound to the same model/expression instead. */
+	VGUI_API void vgui_widget_set_progress_text_visible(vgui_widget* widget, int visible);
 	/* R4-2: display safe-area insets in logical pixels (TV overscan, notches).
 	 * Hosts clamp their HUD anchors to these; negative values are clamped. */
 	VGUI_API void vgui_context_set_safe_area(vgui_context* ctx,

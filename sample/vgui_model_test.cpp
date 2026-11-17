@@ -5090,6 +5090,15 @@ static void test_binding_expr(font_familys_t* familys)
 	check(bp != nullptr, "expr: clamp expression compiles");
 	check(near(vgui_widget_get_value(prog), 0.75f), "expr: clamp() result bound");
 
+	// Percentage text for a thin bar whose built-in label is hidden (demo uses
+	// this exact shape on the right of its progress bar).
+	vgui_widget* pct = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_binding* bpc = vgui_bind_expr(ctx, pct, VGUI_BIND_TEXT, scope,
+		"round(clamp(volume, 0, 1) * 100) + '%'", err, sizeof err);
+	check(bpc != nullptr && err[0] == '\0', "expr: percentage text compiles");
+	check(std::string(vgui_widget_get_text(pct)) == "75%",
+		"expr: percentage text formats as integer + percent");
+
 	// Comparison + logic -> CHECKED.
 	vgui_widget* chk = vgui_widget_add(vgui_root(ctx), VGUI_CHECKBOX, "");
 	vgui_binding* bc = vgui_bind_expr(ctx, chk, VGUI_BIND_CHECKED, scope,

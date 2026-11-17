@@ -2973,9 +2973,17 @@ static void build_expr(demo_state* st, vgui_widget* root)
 	vgui_widget* prog = vgui_widget_add(pe, VGUI_PROGRESS, nullptr);
 	vgui_widget_set_id(prog, "expr-progress");
 	vgui_widget_set_size(prog, 140, 10);
+	// 细条放不下内嵌百分比文字（会被上下截断）：关掉内嵌文字，右侧用独立
+	// LABEL 绑同一表达式显示，读数完整且可随字段实时重算。
+	vgui_widget_set_progress_text_visible(prog, 0);
 	vgui_binding* bp = vgui_bind_expr(ui, prog, VGUI_BIND_PROGRESS, sc.native(),
 		"clamp(price * qty / 100, 0, 1)", err, sizeof err);
 	if (!bp) label(out, err, 12, 0xFFFF8080);
+	vgui_widget* ratio_label = label(pe, "-", 13, 0xFF7FB6FF);
+	vgui_widget_set_id(ratio_label, "expr-ratio");
+	vgui_binding* br = vgui_bind_expr(ui, ratio_label, VGUI_BIND_TEXT, sc.native(),
+		"round(clamp(price * qty / 100, 0, 1) * 100) + '%'", err, sizeof err);
+	if (!br) vgui_widget_set_text(ratio_label, err);
 
 	vgui_widget* ce = row(out, 8);
 	vgui_widget* chk = vgui_widget_add(ce, VGUI_CHECKBOX, "批量折扣 (qty>=3 && price>0)");
