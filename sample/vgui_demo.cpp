@@ -19,12 +19,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>		// 公共 C API
+#include <vgui/binding/expression.h>	// P4: 字符串表达式绑定
 #include <vgui/file_dialog.h>	// C++ 文件对话框封装（内部走 SDL3 后端）
 #ifdef VGUI_DEMO_HAS_EDITOR_KIT
 #include <vgui/editor/code_editor.h>
@@ -123,6 +125,14 @@ struct demo_bind_model
 	std::string title = "Reactive binding";
 };
 
+// 字符串表达式绑定演示（P4）：可编辑字段 + 只读表达式派生值。
+struct demo_expr_model
+{
+	float price = 12.5f;
+	float qty = 3.0f;		// 用滑杆编辑，故为 float（offset 绑定按 kind 读 float）
+	std::string name = "Widget";
+};
+
 struct demo_state
 {
 	vgui_context* ui = nullptr;
@@ -198,6 +208,13 @@ struct demo_state
 	demo_bind_model bind_model;
 	vgui_widget* bind_state_label = nullptr;
 	vgui_widget* bind_list = nullptr;
+
+	// 字符串表达式绑定演示（P4）。scope 拥有所有 AST，必须晚于 context 销毁；
+	// st 在 main 栈上、vgui_destroy(st.ui) 在 main 返回前调用，成员析构顺序正确。
+	demo_expr_model expr_model;
+	std::unique_ptr<vgui::expr_scope> expr_scope;
+	vgui_widget* expr_total_label = nullptr;
+	vgui_widget* expr_flush_label = nullptr;
 
 	// 文件对话框结果
 	vgui_widget* dialog_label = nullptr;
@@ -2899,6 +2916,85 @@ static void build_binding(demo_state* st, vgui_widget* root)
 }
 
 //---------------------------------------------------------------------------
+// 字符串表达式绑定（P4）：可编辑字段经普通双向绑定写回模型，只读表达式从
+// 同一模型计算派生值。依赖自动分析——改任一字段，引用它的表达式下一帧重算。
+//---------------------------------------------------------------------------
+
+static void build_expr(demo_state* st, vgui_widget* root)
+{
+	vgui_context* ui = st->ui;
+	vgui_widget* c = card(root, "表达式绑定 Expression DSL (P4)");
+	label(c, "左侧字段可编辑（写回模型）；右侧是只读表达式，自动分析依赖并随字段实时重算。",
+		12, 0xFF9A9A9A);
+
+	st->expr_scope.reset(new vgui::expr_scope(ui));
+	vgui::expr_scope& sc = *st->expr_scope;
+	/* 字段类型由模板成员指针推导：price/qty -> FLOAT，name -> TEXT。
+	 * 自定义 getter 也可用 sc.getter(name, type, fn, user, dep_model) 注册。 */
+	sc.field("price", &st->expr_model, &demo_expr_model::price);
+	sc.field("qty", &st->expr_model, &demo_expr_model::qty);
+	sc.field("name", &st->expr_model, &demo_expr_model::name);
+
+	char err[256];
+
+	// 可编辑输入：滑杆用 VALUE 双向绑定（拖动即写回模型并触发表达式重算），
+	// 名称用 EDIT + TEXT 双向绑定。三种 kind 覆盖数值/整数/字符串来源。
+	vgui_widget* in = col(c, 8);
+	vgui_widget* r1 = row(in, 8);
+	label(r1, "单价", 14, 0xFFB0B0B0);
+	vgui_widget* price_sl = vgui_widget_add(r1, VGUI_SLIDER, nullptr);
+	vgui_widget_set_id(price_sl, "expr-price");
+	vgui_widget_set_size(price_sl, 120, 24);
+	vgui_widget_set_range(price_sl, 0.0f, 50.0f);
+	vgui::bind(ui, price_sl, VGUI_BIND_VALUE, &st->expr_model, &demo_expr_model::price);
+
+	vgui_widget* r2 = row(in, 8);
+	label(r2, "数量", 14, 0xFFB0B0B0);
+	vgui_widget* qty_sl = vgui_widget_add(r2, VGUI_SLIDER, nullptr);
+	vgui_widget_set_id(qty_sl, "expr-qty");
+	vgui_widget_set_size(qty_sl, 120, 24);
+	vgui_widget_set_range(qty_sl, 0.0f, 10.0f);
+	vgui::bind(ui, qty_sl, VGUI_BIND_VALUE, &st->expr_model, &demo_expr_model::qty);
+
+	vgui_widget* r3 = row(in, 8);
+	label(r3, "名称", 14, 0xFFB0B0B0);
+	vgui_widget* name_edit = vgui_widget_add(r3, VGUI_EDIT, nullptr);
+	vgui_widget_set_id(name_edit, "expr-name");
+	vgui_widget_set_size(name_edit, 130, 26);
+	vgui::bind(ui, name_edit, VGUI_BIND_TEXT, &st->expr_model, &demo_expr_model::name);
+
+	// 只读表达式输出：金额文本（拼接 + 函数）、进度（clamp）、布尔（比较+逻辑）。
+	vgui_widget* out = col(c, 8);
+	st->expr_total_label = label(out, "-", 15, 0xFF7FB6FF);
+	vgui_widget_set_id(st->expr_total_label, "expr-total");
+
+	vgui_widget* pe = row(out, 8);
+	label(pe, "金额比率", 13, 0xFFB0B0B0);
+	vgui_widget* prog = vgui_widget_add(pe, VGUI_PROGRESS, nullptr);
+	vgui_widget_set_id(prog, "expr-progress");
+	vgui_widget_set_size(prog, 140, 10);
+	vgui_binding* bp = vgui_bind_expr(ui, prog, VGUI_BIND_PROGRESS, sc.native(),
+		"clamp(price * qty / 100, 0, 1)", err, sizeof err);
+	if (!bp) label(out, err, 12, 0xFFFF8080);
+
+	vgui_widget* ce = row(out, 8);
+	vgui_widget* chk = vgui_widget_add(ce, VGUI_CHECKBOX, "批量折扣 (qty>=3 && price>0)");
+	vgui_widget_set_id(chk, "expr-check");
+	vgui_binding* bc = vgui_bind_expr(ui, chk, VGUI_BIND_CHECKED, sc.native(),
+		"qty >= 3 && price > 0", err, sizeof err);
+	if (!bc) label(out, err, 12, 0xFFFF8080);
+
+	// 金额文本：数值→字符串按 %.6g、upper(name)、字符串拼接。
+	vgui_binding* bt = vgui_bind_expr(ui, st->expr_total_label, VGUI_BIND_TEXT, sc.native(),
+		"'¥' + price * qty + '  ' + upper(name)", err, sizeof err);
+	if (!bt) vgui_widget_set_text(st->expr_total_label, err);
+
+	// 诊断：把「上次 flush 真正推送数」画出来，直观看到空闲帧为 0。
+	st->expr_flush_label = label(c, "-", 12, 0xFF9CCF80);
+	vgui_widget_set_id(st->expr_flush_label, "expr-flush");
+}
+
+//---------------------------------------------------------------------------
 // 文件对话框：vgui.h 只有纯 C 的字符串接口，SDL3 的原生对话框在 backend 里
 // 实现（button → vgui::open_file → SDL_ShowFileDialogWithProperties），
 // 结果在 vgui_update 里回到 UI 线程。
@@ -3190,6 +3286,7 @@ static void build_ui(demo_state* st)
 	build_dynamic(st, root);
 	build_visibility(st, root);
 	build_binding(st, root);
+	build_expr(st, root);
 	build_file_dialog(st, root);
 	build_focus_theme(st, root);
 	build_i18n(st, root);
@@ -3219,6 +3316,19 @@ static void tick(demo_state* st, float delta)
 		const char* cur = vgui_widget_get_text(st->bind_state_label);
 		if (!cur || strcmp(cur, bind_buf) != 0)
 			vgui_widget_set_text(st->bind_state_label, bind_buf);
+	}
+
+	// 表达式绑定：显示模型源值 + 上次 flush 推送数（空闲帧为 0，直观看到按需重算）
+	if (st->expr_flush_label)
+	{
+		char expr_buf[192] = {};
+		snprintf(expr_buf, sizeof(expr_buf),
+			"expr: price=%.2f qty=%.0f name=\"%s\"  ·  上次 flush 推送 %d 个控件（空闲为 0）",
+			st->expr_model.price, st->expr_model.qty, st->expr_model.name.c_str(),
+			vgui_binding_last_flush_count(st->ui));
+		const char* cur = vgui_widget_get_text(st->expr_flush_label);
+		if (!cur || strcmp(cur, expr_buf) != 0)
+			vgui_widget_set_text(st->expr_flush_label, expr_buf);
 	}
 
 	// 自动进度

@@ -1242,6 +1242,9 @@ vgui_binding* b = vgui_bind_expr(ui, label, VGUI_BIND_TEXT, sc,
 - **C++ 糖**：`vgui::expr_scope sc(ui); sc.field("price", &o, &Order::price); sc.bind(label, VGUI_BIND_TEXT, "price*qty", &err);`
   模板按成员类型自动推断 FLOAT/INT/TEXT，`expr_scope` 为 RAII move-only。
 
+`vgui_demo` 有「表达式绑定 Expression DSL」卡片可直接操作：拖动单价/数量滑杆、改名称，右侧只读表达式
+（金额拼接、`clamp` 比率、批量折扣布尔）实时重算，底部读数里的「上次 flush 推送」在空闲帧显示 0。
+
 详见 `docs/data_binding_roadmap.md` Phase 4 与 `sample/vgui_model_test.cpp::test_binding_expr`（29 条断言）。
 
 ### 文件对话框（原生对话框）
