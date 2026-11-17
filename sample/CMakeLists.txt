@@ -127,6 +127,7 @@ target_include_directories(vgui_sample_common INTERFACE
 set(VGUI_PUBLIC_HEADERS
     "${VGUI_SOURCE_DIR}/include/vgui/vgui.h"
     "${VGUI_SOURCE_DIR}/include/vgui/file_dialog.h"
+    "${VGUI_SOURCE_DIR}/include/vgui/richtext.h"
     "${VGUI_SOURCE_DIR}/include/vgui.h")
 # Optional C++ binding helpers are pure core (no SDL), checked even in CORE_ONLY.
 file(GLOB VGUI_PUBLIC_BINDING_HEADERS CONFIGURE_DEPENDS

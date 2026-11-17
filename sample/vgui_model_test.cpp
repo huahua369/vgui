@@ -23,6 +23,7 @@
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / new_font_family
 #include <vgui/binding/collection.h>	// P3: std::vector<Row> -> vgui_row_source
 #include <vgui/binding/expression.h>	// P4: string expression DSL + auto deps
+#include <vgui/richtext.h>	// core rich-text span primitives
 #include <vgui/vgui.h>		// public C API
 
 static int g_fail = 0;
@@ -5262,6 +5263,101 @@ static void test_binding_slider_range(font_familys_t* familys)
 }
 
 // ---------------------------------------------------------------------------
+// Core rich-text span primitives: byte-ranged spans -> styled runs, measured
+// and laid out without a renderer.  These are headless assertions on the
+// measurement/line-height contracts that the draw callback uses.
+// ---------------------------------------------------------------------------
+static void test_richtext_spans(font_familys_t* familys)
+{
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 400, 300);
+	vgui_widget* label = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_widget_set_font_size(label, 16.0f);
+
+	const char* text = "abcXYZ";
+	const float base_w = vgui_widget_measure_text(label, text);
+	const float base_lh = vgui_widget_get_line_height(label);
+
+	// No spans == plain measurement; empty/NULL spans are equivalent.
+	check(near(vgui_widget_measure_text_spans(label, text, nullptr, 0, 0.0f), base_w),
+		"richtext: no spans measures like plain text");
+	vgui_text_span empty[1] = { { 0, 0, 0xFF112233u, 0.0f, 0 } };
+	check(near(vgui_widget_measure_text_spans(label, text, empty, 1, 0.0f), base_w),
+		"richtext: zero-length span is ignored");
+
+	// Full-cover single span inherits font size -> same width.
+	vgui_text_span full[1] = { { 0, 6, 0xFF112233u, 0.0f, 0 } };
+	check(near(vgui_widget_measure_text_spans(label, text, full, 1, 0.0f), base_w),
+		"richtext: full span with inherited font keeps width");
+	check(near(vgui_widget_get_line_height_spans(label, full, 1, 0.0f), base_lh),
+		"richtext: inherited font keeps line height");
+
+	// Larger font in a span -> wider and taller line box.
+	vgui_text_span big[1] = { { 0, 3, 0, 32.0f, 0 } };
+	check(vgui_widget_measure_text_spans(label, text, big, 1, 0.0f) > base_w,
+		"richtext: larger span font widens the run");
+	check(vgui_widget_get_line_height_spans(label, big, 1, 0.0f) > base_lh,
+		"richtext: line box grows to the tallest run");
+
+	// Splitting into adjacent spans sums to the whole (within rounding).
+	vgui_text_span split[2] = {
+		{ 0, 3, 0xFF112233u, 0.0f, 0 },
+		{ 3, 3, 0xFF445566u, 0.0f, 0 }
+	};
+	float split_w = vgui_widget_measure_text_spans(label, text, split, 2, 0.0f);
+	check(std::fabs(split_w - base_w) < 0.5f,
+		"richtext: adjacent spans sum to the plain width");
+
+	// Unsorted spans are sorted; overlaps are resolved by later span, not double counted.
+	vgui_text_span unordered[3] = {
+		{ 3, 3, 0xFF445566u, 0.0f, 0 },
+		{ 0, 3, 0xFF112233u, 0.0f, 0 },
+		{ 1, 4, 0xFF778899u, 0.0f, 0 }   // overlaps both, comes last
+	};
+	float unordered_w = vgui_widget_measure_text_spans(label, text, unordered, 3, 0.0f);
+	check(std::fabs(unordered_w - base_w) < 0.5f,
+		"richtext: unsorted overlapping spans never double count");
+
+	// UTF-8: a cut inside a 3-byte character is snapped to its boundary and
+	// still covers the whole string (no dropped/duplicated bytes).
+	const char* u8 = "中文ab";
+	const float u8_w = vgui_widget_measure_text(label, u8);
+	vgui_text_span u8_spans[2] = {
+		{ 0, 4, 0xFF112233u, 0.0f, 0 },   // cuts after first byte of 文 (E6 96 87)
+		{ 4, 4, 0xFF445566u, 0.0f, 0 }
+	};
+	float u8_spans_w = vgui_widget_measure_text_spans(label, u8, u8_spans, 2, 0.0f);
+	check(std::fabs(u8_spans_w - u8_w) < 0.5f,
+		"richtext: UTF-8 byte cuts snap to character boundaries");
+
+	// Out-of-range and negative spans are clamped / ignored, never crash.
+	vgui_text_span odd[3] = {
+		{ -4, 2, 0, 0.0f, 0 },    // partially before start
+		{ 5, 100, 0, 0.0f, 0 },   // runs past end
+		{ 2, -1, 0, 0.0f, 0 }     // negative length
+	};
+	float odd_w = vgui_widget_measure_text_spans(label, text, odd, 3, 0.0f);
+	check(odd_w > 0.0f && odd_w < base_w * 2.0f,
+		"richtext: out-of-range spans are clamped");
+
+	// Decoration bits are accepted and do not affect measurement.
+	vgui_text_span decor[1] = { { 1, 4, 0xFF112233u, 0.0f,
+		VGUI_TEXT_DECOR_UNDERLINE | VGUI_TEXT_DECOR_STRIKETHROUGH } };
+	check(std::fabs(vgui_widget_measure_text_spans(label, text, decor, 1, 0.0f) - base_w) < 0.5f,
+		"richtext: decoration bits do not change metrics");
+
+	// Draw callback path with a null renderer must be a safe no-op.
+	vgui_custom_draw_text_spans(label, nullptr, nullptr, text, full, 1,
+		0.0f, 0.0f, 100.0f, 20.0f, 0xFFFFFFFFu, 0.0f, 0.5f, 0.0f);
+	check(true, "richtext: draw with null renderer is a safe no-op");
+
+	check((VGUI_TEXT_DECOR_UNDERLINE & VGUI_TEXT_DECOR_STRIKETHROUGH) == 0,
+		"richtext: decoration bits are distinct");
+
+	vgui_destroy(ctx);
+}
+
+// ---------------------------------------------------------------------------
 // File dialogs: the platform bridge is provider based, so a fake provider can
 // exercise the whole path (request -> result -> update dispatch) headless.
 // ---------------------------------------------------------------------------
@@ -5654,6 +5750,7 @@ int main()
 	test_binding_collection(familys);
 	test_binding_expr(familys);
 	test_binding_slider_range(familys);
+	test_richtext_spans(familys);
 	test_file_dialog(ui);
 	test_recent_dirs(ui);
 

@@ -1247,6 +1247,30 @@ vgui_binding* b = vgui_bind_expr(ui, label, VGUI_BIND_TEXT, sc,
 
 详见 `docs/data_binding_roadmap.md` Phase 4 与 `sample/vgui_model_test.cpp::test_binding_expr`（29 条断言）。
 
+### 富文本原语（`<vgui/richtext.h>`）
+
+核心提供一组**富文本原语**：把一段 UTF-8 文本 + 字节区间 span 数组解析成带样式的绘制 run，供宿主自绘
+语法高亮、混排字号、富日志等，不引入新控件、不解析标记语言、不改 `vgui_widget` 结构，CORE_ONLY 可用。
+
+```c
+vgui_text_span spans[] = {
+    { 0, 3, 0xFFFF8080u, 0.0f, 0 },                       /* 前 3 字节红色 */
+    { 3, 3, 0, 24.0f, VGUI_TEXT_DECOR_UNDERLINE }          /* 后 3 字节大字号+下划线 */
+};
+/* 在 VGUI_CUSTOM 绘制回调中： */
+vgui_custom_draw_text_spans(widget, cb, vg, text, spans, 2,
+    x, y, width, line_height, 0xFFFFFFFFu, 0.0f, 0.5f, 16.0f);
+float w = vgui_widget_measure_text_spans(widget, text, spans, 2, 16.0f);
+float h = vgui_widget_get_line_height_spans(widget, spans, 2, 16.0f);
+```
+
+- `start/length` 是 UTF-8 **字节**区间并会对齐到字符边界；span 可乱序/重叠（后者胜出），未覆盖字节用 base 样式。
+- `color==0`/`font_size==0` 继承调用方传入的 base；`decor` 支持下划线与删除线位（OVG 无粗斜体，故不提供）。
+- 所有 run 共享最高 run 的行高并垂直居中；对齐为物理对齐（RTL 不翻转，与 `vgui_custom_draw_text_sized` 一致）。
+- 词法器/主题/行号栏/查找替换仍属 editor kit（见 `docs/editor_roadmap.md`）；WYSIWYG 可编辑行内格式是独立目标，本原语未覆盖。
+
+详见 `docs/richtext_roadmap.md` 与 `sample/vgui_model_test.cpp::test_richtext_spans`。
+
 ### 文件对话框（原生对话框）
 
 打开/保存/选目录走系统原生对话框（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG

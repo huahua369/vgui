@@ -8,6 +8,7 @@ set(OVGUI_SOURCES
     anim.cpp
     ../gui/vgui.cpp
     ../gui/binding/expression.cpp
+    ../gui/richtext.cpp
     mapView.cpp
 )
 
