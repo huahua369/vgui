@@ -1910,6 +1910,19 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 // 的，这个近似几乎和真模糊一样。文字辉光用多方向的低透明度副本叠加，
 // 字距靠逐字符定位做出来（vgui 没有 letter-spacing）。
 //
+// 为什么不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW：
+//   1) 该特效在 ovg 的离屏路径是好的（ovg_tools_test 的 shadow 断言 + fx stats
+//      effects=1 通过），但走 vgui 的自定义控件绘制时完全没有输出——同一控件、
+//      同一位置对照实测：叠描边有光晕，换成 set_effect 后只剩本体描边。这是
+//      渲染器里录制/裁剪/多采样上下文的路径问题，改它风险远大于收益。
+//   2) 即使修好也覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配 fx
+//      槽位，文字是 add_text 生成的图集几何，不进 mask，拿不到发光。文字必须
+//      手绘副本，那线框也一并手绘，绘制路径反而统一。
+//   3) 成本与可控性：每个特效要额外一轮 R8 mask + R16F 两次 blur dispatch +
+//      合成 quad，还要按尺寸分桶的纹理池；hover 缓动期间每帧参数都在变，等于
+//      每帧重算。叠描边是纯顶点绘制，且只有一个标量同时控制亮度与半径，方便
+//      按像素剖面把「静止淡 / 悬停强」调到目标值。
+//
 // 控件是 VGUI_CUSTOM，自己维护 hover/press 动画并在未收敛时标脏，
 // 这样按需渲染（内容不变不重绘）下动画仍然连续。
 //---------------------------------------------------------------------------
@@ -1969,13 +1982,13 @@ static void neon_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	const float total = prev + track * (float)(index - 1);
 	const float ox = x + (ww - total) * 0.5f;
 
-	// 光晕用 4~8 个方向的低透明度副本叠出来。偏移必须小于 1px 才会融合成"发光
-	// 边缘"，偏移大了就变成双影/重影；所以这里最多到 1.25px。
+	// 光晕用 4~8 个方向的低透明度副本叠出来。偏移必须小于 1.5px 才会融合成
+	// "发光边缘"，偏移大了就变成双影/重影；所以这里控制在 0.6~1.3px。
 	static const float kDir[8][2] = {
 		{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
 		{ 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, -0.7071f }
 	};
-	const float d = 0.7f + 0.55f * glow;
+	const float d = 0.6f + 0.7f * glow;
 	for (const glyph& g : items)
 	{
 		const float gx = ox + g.x;
@@ -1983,11 +1996,11 @@ static void neon_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 		{
 			// 盒子放宽，避免单字符裁剪框把偏移后的字形切掉。
 			// 静止态只画 4 个正向副本（够用且便宜），悬停/按下再补对角线。
-			const int dirs = (glow > 0.62f) ? 8 : 4;
+			const int dirs = (glow > 0.55f) ? 8 : 4;
 			for (int i = 0; i < dirs; ++i)
 				vgui_custom_draw_text_sized(w, cb, vg, g.s,
 					gx + kDir[i][0] * d, y + kDir[i][1] * d, g.adv + track + 8.0f, hh,
-					neon_alpha(rgb, 0.10f * glow), 0.0f, 0.5f, fs);
+					neon_alpha(rgb, 0.18f * glow), 0.0f, 0.5f, fs);
 		}
 		vgui_custom_draw_text_sized(w, cb, vg, g.s, gx, y, g.adv + track + 4.0f, hh, rgb, 0.0f, 0.5f, fs);
 	}
@@ -2019,7 +2032,14 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	const bool focused = ctx && vgui_get_focus((vgui_context*)ctx) == w;
 	const float h = st->hover, pr = st->press;
 	const uint32_t accent = disabled ? 0xFF66707A : st->accent;
-	const float glow = disabled ? 0.0f : (0.52f + 0.38f * h + 0.26f * pr + (focused ? 0.18f : 0.0f));
+
+	// 发光分两档：静止给一层贴边的淡光（透明度低但肉眼可见），指针进入后
+	// 亮度与扩散半径同时拉满，两档差距要一眼可见。
+	// 注意静止档不能压太低：8-bit 量化后 0.2 级别 + 3px 扩散基本等于没有。
+	const float glow = disabled ? 0.0f
+		: std::min(1.25f, 0.30f + 0.70f * h + 0.20f * pr + (focused ? 0.10f : 0.0f));
+	// 文字光晕给一个更高的基线：字符面积小，同样的透明度阈值下比线框更不容易看见。
+	const float text_glow = disabled ? 0.0f : std::min(1.0f, 0.32f + 0.68f * h + 0.15f * pr);
 
 	// 1) 外发光：矩形横平竖直，用一圈圈外扩的低透明度描边逼近高斯衰减。
 	//    辉光全部画在控件内部的留白里（pad），不依赖越界绘制：自定义控件的
@@ -2032,15 +2052,17 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 
 	if (glow > 0.01f)
 	{
-		const int kLayers = 7;
-		const float reach = std::min(4.2f + 6.5f * h + 3.0f * pr, pad - 1.0f);
+		// 层数要多、层距要窄且互相重叠，否则外扩描边会露出一圈圈台阶。
+		const int kLayers = 12;
+		// 静止 7px（柔和的贴边淡光），悬停扩到 11.5px：扩散范围本身也是状态信号。
+		const float reach = std::min(7.0f + 4.5f * h + 3.0f * pr, pad - 1.5f);
 		const float step = reach / (float)kLayers;
 		for (int i = kLayers; i >= 1; --i)
 		{
 			const float t = (float)i / (float)kLayers;
 			const float d = step * (float)i;
 			const float a = glow * 0.30f * (1.0f - t) * (1.0f - t);
-			cb->set_line_width(vg, step + 0.6f);
+			cb->set_line_width(vg, step + 1.5f);
 			cb->set_source_color(vg, neon_abgr(neon_alpha(accent, a)));
 			cb->rectangle(vg, bx - d, by - d, bw + d * 2.0f, bh + d * 2.0f);
 			cb->stroke(vg);
@@ -2053,9 +2075,9 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	cb->rectangle(vg, bx, by, bw, bh);
 	cb->stroke(vg);
 
-	// 3) 文字：居中于线框内，按下整体下沉 1px，字距 4px，字色随悬停提亮。
+	// 3) 文字：居中于线框内，按下整体下沉 1px，字距 4px，字色与光晕随悬停提亮。
 	neon_draw_label(w, cb, vg, st->label, bx, by + pr, bw, bh,
-		neon_alpha(accent, disabled ? 0.55f : 0.82f + 0.18f * h), 15.0f, 4.0f, glow * 0.9f);
+		neon_alpha(accent, disabled ? 0.55f : 0.82f + 0.18f * h), 15.0f, 4.0f, text_glow);
 }
 
 static void neon_fire(vgui_widget* w, neon_button* st)
@@ -2117,7 +2139,7 @@ static int neon_event(vgui_widget* w, const vgui_event* e, void* user)
 static void build_neon(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "霓虹线框按钮 NEON（仅边框 + 文字发光）");
-	label(c, "透明底：只画 1px 描边和文字，两者各自带辉光；悬停提亮、按下内缩，支持点击与回车触发。",
+	label(c, "透明底：只画 1px 描边和文字，两者都带辉光——静止是淡光，悬停明显加强；按下内缩，点击/回车均可触发。",
 		13, 0xFF9AA7B4);
 
 	vgui_widget* r = row(c, 14);
