@@ -14,6 +14,7 @@
 //
 // 窗口与事件由 SDL3 后端（include/vgui/backend/vgui_sdl3.h）提供。
 
+#include <algorithm>
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
@@ -131,6 +132,20 @@ struct demo_expr_model
 	float price = 12.5f;
 	float qty = 3.0f;		// 用滑杆编辑，故为 float（offset 绑定按 kind 读 float）
 	std::string name = "Widget";
+};
+
+// 霓虹线框按钮的状态（绘制/事件回调通过 user 指针持有，地址必须稳定，
+// 因此实例放在 demo_state 里而不是栈上）。
+struct neon_button
+{
+	const char* label = "";
+	uint32_t accent = 0xFF3AD8FF;	// 0xAARRGGBB
+	float hover = 0.0f;				// 动画值 0..1
+	float press = 0.0f;
+	int hover_target = 0;
+	int press_target = 0;
+	int* total_clicks = nullptr;
+	vgui_widget* readout = nullptr;
 };
 
 struct demo_state
@@ -270,6 +285,11 @@ struct demo_state
 	float anim = 0.0f;
 	int anim_dir = 1;
 	bool anim_on = true;
+
+	// 霓虹线框按钮（NEON 卡片）
+	neon_button neon[4];
+	int neon_clicks = 0;
+	vgui_widget* neon_readout = nullptr;
 };
 
 //---------------------------------------------------------------------------
@@ -1883,6 +1903,256 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 	vgui_widget_set_grow(info, 1);
 }
 
+//---------------------------------------------------------------------------
+// 霓虹线框按钮：只画线框和文字，两者各自带辉光，不填充底色。
+//
+// 线框辉光用一圈圈外扩、逐层降低 alpha 的描边逼近高斯衰减：矩形是轴对齐
+// 的，这个近似几乎和真模糊一样。文字辉光用多方向的低透明度副本叠加，
+// 字距靠逐字符定位做出来（vgui 没有 letter-spacing）。
+//
+// 控件是 VGUI_CUSTOM，自己维护 hover/press 动画并在未收敛时标脏，
+// 这样按需渲染（内容不变不重绘）下动画仍然连续。
+//---------------------------------------------------------------------------
+
+// 统一按 alpha 覆盖到已有的 0xAARRGGBB 上。
+static uint32_t neon_alpha(uint32_t argb, float alpha)
+{
+	const uint32_t a = (uint32_t)(std::lround(std::clamp(alpha, 0.0f, 1.0f) * 255.0f));
+	return (a << 24) | (argb & 0x00FFFFFFu);
+}
+
+// vgui 是 0xAARRGGBB，ovg 原生是 0xAABBGGRR：传进 cb 之前必须换位。
+static uint32_t neon_abgr(uint32_t argb)
+{
+	return (argb & 0xFF00FF00u) | ((argb & 0x00FF0000u) >> 16) | ((argb & 0x000000FFu) << 16);
+}
+
+static size_t neon_utf8_len(unsigned char c)
+{
+	if (c < 0x80) return 1;
+	if ((c >> 5) == 0x6) return 2;
+	if ((c >> 4) == 0xE) return 3;
+	if ((c >> 3) == 0x1E) return 4;
+	return 1;
+}
+
+// 逐字符排版：起点用「前缀宽度 + i*tracking」算，这样保留字体自身的 kerning；
+// 按单字宽度居中排会得到忽宽忽窄的字距。vgui 没有 letter-spacing，只能这样叠。
+static void neon_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+	const char* text, float x, float y, float ww, float hh,
+	uint32_t rgb, float fs, float track, float glow)
+{
+	if (!text || !*text) return;
+	struct glyph
+	{
+		char s[8];
+		float x;		// 相对行首的起点
+		float adv;		// 该字符的自然宽度
+	};
+	std::vector<glyph> items;
+	std::string prefix;
+	float prev = 0.0f;
+	int index = 0;
+	for (const char* p = text; *p; ++index)
+	{
+		const size_t n = neon_utf8_len((unsigned char)*p);
+		glyph g = {};
+		memcpy(g.s, p, n);
+		prefix.append(p, n);
+		const float cur = vgui_widget_measure_text_sized(w, prefix.c_str(), fs);
+		g.x = prev + track * (float)index;
+		g.adv = cur - prev;
+		prev = cur;
+		items.push_back(g);
+		p += n;
+	}
+	const float total = prev + track * (float)(index - 1);
+	const float ox = x + (ww - total) * 0.5f;
+
+	// 光晕用 4~8 个方向的低透明度副本叠出来。偏移必须小于 1px 才会融合成"发光
+	// 边缘"，偏移大了就变成双影/重影；所以这里最多到 1.25px。
+	static const float kDir[8][2] = {
+		{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
+		{ 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, -0.7071f }
+	};
+	const float d = 0.7f + 0.55f * glow;
+	for (const glyph& g : items)
+	{
+		const float gx = ox + g.x;
+		if (glow > 0.01f)
+		{
+			// 盒子放宽，避免单字符裁剪框把偏移后的字形切掉。
+			// 静止态只画 4 个正向副本（够用且便宜），悬停/按下再补对角线。
+			const int dirs = (glow > 0.62f) ? 8 : 4;
+			for (int i = 0; i < dirs; ++i)
+				vgui_custom_draw_text_sized(w, cb, vg, g.s,
+					gx + kDir[i][0] * d, y + kDir[i][1] * d, g.adv + track + 8.0f, hh,
+					neon_alpha(rgb, 0.10f * glow), 0.0f, 0.5f, fs);
+		}
+		vgui_custom_draw_text_sized(w, cb, vg, g.s, gx, y, g.adv + track + 4.0f, hh, rgb, 0.0f, 0.5f, fs);
+	}
+}
+
+static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+	float x, float y, float ww, float hh, float dt, void* user)
+{
+	neon_button* st = (neon_button*)user;
+	if (!st || !cb || !vg || ww <= 0.0f || hh <= 0.0f) return;
+
+	// 帧率无关的指数趋近；未收敛时标脏，让按需渲染的窗口继续出帧。
+	const float kh = 1.0f - std::exp(-std::max(dt, 0.0f) * 16.0f);
+	const float kp = 1.0f - std::exp(-std::max(dt, 0.0f) * 30.0f);
+	st->hover += ((float)st->hover_target - st->hover) * kh;
+	st->press += ((float)st->press_target - st->press) * kp;
+	const bool animating = std::fabs((float)st->hover_target - st->hover) > 0.002f ||
+		std::fabs((float)st->press_target - st->press) > 0.002f;
+	if (animating)
+		vgui_widget_mark_dirty(w);
+	else
+	{
+		st->hover = (float)st->hover_target;
+		st->press = (float)st->press_target;
+	}
+
+	const bool disabled = vgui_widget_get_enabled(w) == 0;
+	const vgui_context* ctx = vgui_widget_get_context(w);
+	const bool focused = ctx && vgui_get_focus((vgui_context*)ctx) == w;
+	const float h = st->hover, pr = st->press;
+	const uint32_t accent = disabled ? 0xFF66707A : st->accent;
+	const float glow = disabled ? 0.0f : (0.52f + 0.38f * h + 0.26f * pr + (focused ? 0.18f : 0.0f));
+
+	// 1) 外发光：矩形横平竖直，用一圈圈外扩的低透明度描边逼近高斯衰减。
+	//    辉光全部画在控件内部的留白里（pad），不依赖越界绘制：自定义控件的
+	//    绘制默认被裁到自身矩形，靠 clip_content=0 在某些录制/复用路径下并
+	//    不可靠，留边距最稳。
+	const float pad = 13.0f;
+	const float inset = 0.5f + 0.75f * pr;
+	const float bx = x + pad + inset, by = y + pad + inset;
+	const float bw = ww - (pad + inset) * 2.0f, bh = hh - (pad + inset) * 2.0f;
+
+	if (glow > 0.01f)
+	{
+		const int kLayers = 7;
+		const float reach = std::min(4.2f + 6.5f * h + 3.0f * pr, pad - 1.0f);
+		const float step = reach / (float)kLayers;
+		for (int i = kLayers; i >= 1; --i)
+		{
+			const float t = (float)i / (float)kLayers;
+			const float d = step * (float)i;
+			const float a = glow * 0.30f * (1.0f - t) * (1.0f - t);
+			cb->set_line_width(vg, step + 0.6f);
+			cb->set_source_color(vg, neon_abgr(neon_alpha(accent, a)));
+			cb->rectangle(vg, bx - d, by - d, bw + d * 2.0f, bh + d * 2.0f);
+			cb->stroke(vg);
+		}
+	}
+
+	// 2) 1px 线框本体。
+	cb->set_line_width(vg, 1.0f);
+	cb->set_source_color(vg, neon_abgr(neon_alpha(accent, disabled ? 0.45f : 0.70f + 0.30f * h)));
+	cb->rectangle(vg, bx, by, bw, bh);
+	cb->stroke(vg);
+
+	// 3) 文字：居中于线框内，按下整体下沉 1px，字距 4px，字色随悬停提亮。
+	neon_draw_label(w, cb, vg, st->label, bx, by + pr, bw, bh,
+		neon_alpha(accent, disabled ? 0.55f : 0.82f + 0.18f * h), 15.0f, 4.0f, glow * 0.9f);
+}
+
+static void neon_fire(vgui_widget* w, neon_button* st)
+{
+	if (!st) return;
+	st->press = 1.0f;			// 键盘触发也要有一下按压反馈
+	st->press_target = 0;
+	if (st->total_clicks) ++(*st->total_clicks);
+	if (st->readout)
+	{
+		char buf[64] = {};
+		std::snprintf(buf, sizeof buf, "点击计数：%d", st->total_clicks ? *st->total_clicks : 0);
+		vgui_widget_set_text(st->readout, buf);
+	}
+	vgui_widget_mark_dirty(w);
+}
+
+static int neon_event(vgui_widget* w, const vgui_event* e, void* user)
+{
+	neon_button* st = (neon_button*)user;
+	if (!st || !e) return 0;
+	switch (e->type)
+	{
+	case VGUI_EVENT_ENTER:
+		st->hover_target = 1;
+		vgui_widget_mark_dirty(w);
+		return 0;
+	case VGUI_EVENT_LEAVE:
+		st->hover_target = 0;
+		st->press_target = 0;
+		vgui_widget_mark_dirty(w);
+		return 0;
+	case VGUI_EVENT_MOUSE_DOWN:
+		if (e->button != 1) return 0;
+		st->press_target = 1;
+		vgui_set_focus(vgui_widget_get_context(w), w);
+		vgui_widget_mark_dirty(w);
+		return 1;
+	case VGUI_EVENT_MOUSE_UP:
+		if (e->button != 1) return 0;
+		st->press_target = 0;
+		vgui_widget_mark_dirty(w);
+		return 1;
+	case VGUI_EVENT_CLICK:
+		neon_fire(w, st);
+		return 1;
+	case VGUI_EVENT_KEY_DOWN:
+		if (e->key == VGUI_KEY_ENTER || e->key == 32)	// Enter / Space
+		{
+			neon_fire(w, st);
+			return 1;
+		}
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+static void build_neon(demo_state* st, vgui_widget* root)
+{
+	vgui_widget* c = card(root, "霓虹线框按钮 NEON（仅边框 + 文字发光）");
+	label(c, "透明底：只画 1px 描边和文字，两者各自带辉光；悬停提亮、按下内缩，支持点击与回车触发。",
+		13, 0xFF9AA7B4);
+
+	vgui_widget* r = row(c, 14);
+	static const char* kLabels[4] = { "EXPLORE", "LAUNCH", "SCAN", "LOCKED" };
+	static const uint32_t kAccents[4] = { 0xFF3AD8FF, 0xFFFF54D0, 0xFF9BFF5A, 0xFF7E8B98 };
+	for (int i = 0; i < 4; ++i)
+	{
+		neon_button& nb = st->neon[i];
+		nb.label = kLabels[i];
+		nb.accent = kAccents[i];
+		nb.total_clicks = &st->neon_clicks;
+
+		vgui_widget* b = vgui_widget_add(r, VGUI_CUSTOM, nullptr);
+		vgui_widget_set_id(b, kLabels[i]);
+		// VGUI_CUSTOM 默认带主题面板底色 + 1px 边框，这里要纯线框，全部清掉。
+		vgui_widget_set_background(b, 0);
+		vgui_widget_set_border(b, 0, 0);
+		vgui_widget_set_size(b, 184, 62);
+		vgui_widget_set_min_size(b, 150, 56);
+		vgui_widget_set_align_self(b, VGUI_ALIGN_CENTER);
+		vgui_widget_set_focusable(b, i < 3 ? 1 : 0);
+		vgui_widget_set_a11y_name(b, kLabels[i]);
+		// 不靠 clip_content=0 让辉光溢出：该属性在录制/复用路径下不生效，
+		// 辉光统一画在控件内部的 13px 留白里（见 neon_draw 的 pad）。
+		vgui_custom_set_draw(b, neon_draw, &st->neon[i]);
+		vgui_custom_set_event(b, neon_event, &st->neon[i]);
+		if (i == 3)
+			vgui_widget_set_enabled(b, 0);
+	}
+
+	st->neon_readout = label(c, "点击计数：0", 13, 0xFF8FA8C0);
+	for (int i = 0; i < 4; ++i)
+		st->neon[i].readout = st->neon_readout;
+}
+
 static void build_toggles(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "选择控件 Checkbox / Radio / Switch");
@@ -3279,6 +3549,7 @@ static void build_ui(demo_state* st)
 	build_header(st, root);
 	build_buttons(st, root);
 	build_button_styles(st, root);
+	build_neon(st, root);
 	build_images(st, root);
 	build_toggles(st, root);
 	build_sliders(st, root);

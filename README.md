@@ -1475,6 +1475,18 @@ out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/
 
 demo 默认以 **MSAA 8x** 创建 2D 矢量上下文（在 `init_gpu()` 之前调用 `app_mgr::set_msaa_samples(8)`，此时只记录请求值，设备就绪后按它建上下文），圆角、斜边和图表折线的边缘平滑度与编辑器外壳的 4x 有直观差别；设备不支持时后端会向下钳制，启动时会打印实际生效值。需要对比画质或压测时可覆盖：`VGUI_DEMO_MSAA=1|2|4|8 out/bin/x64d/vgui_demo.exe`（非法值回退到 8）。
 
+#### 自绘霓虹线框按钮
+
+demo 里的“霓虹线框按钮 NEON”卡片是一个纯 `VGUI_CUSTOM` 自绘控件：不填底色，只画 1px 描边和宽字距大写文字，两者各自带辉光；悬停提亮并扩大辉光半径，按下线框内缩 1px、文字下沉 1px，鼠标点击与回车/空格都能触发，末位 `LOCKED` 为禁用态（灰化且无辉光）。它同时是把“截图风格按钮”落到 vgui 上的参考实现，几个关键点都可直接照搬：
+
+- **颜色通道**：vgui 用 `0xAARRGGBB`，交给 `ovg_ctx_cb`（`set_source_color` 等）前必须换成 `0xAABBGGRR`，否则青色会显示成黄色、品红会显示成绿色。
+- **线框辉光**：用 7 层逐层外扩、alpha 按 `(1-t)²` 衰减的描边逼近高斯衰减；矩形是轴对齐的，这个近似几乎和真模糊等价，开销只有 7 次 `stroke`。`vg_effect_t` 的 `VG_EFFECT_OUTER_GLOW` 在本工程的多采样上下文里不出图，所以没有走特效路径。
+- **裁剪不要赌**：辉光全部画在控件内部的 13px 留白里（`neon_draw()` 的 `pad`），不依赖 `vgui_custom_set_clip_content(w, 0)` 放行越界绘制——该属性在录制/复用路径下不生效，越界内容会整块消失。
+- **文字辉光只能叠**：文字经 `add_text` 绘制，字形不参与路径遮罩，`set_effect` 对它无效；这里按 4 个方向（悬停时 8 个）叠加低透明度副本，偏移必须小于 1px 才会融合成光边，偏移大了会变成双影。
+- **宽字距手写**：vgui 没有 letter-spacing，`neon_draw_label()` 逐字符定位，第 i 个字符的 x 用“前缀测量宽度 + `i * tracking`”算，这样保留字体自身的 kerning；改成“按单字宽度居中排槽位”会得到忽宽忽窄的字距。
+- **自己标脏**：`VGUI_CUSTOM` 不在 `vgui_context_has_active_animation()` 的白名单里，缓动未收敛时必须自己调 `vgui_widget_mark_dirty()`，否则开启按需渲染后动画会卡在第一帧。
+- **清掉主题底**：`VGUI_CUSTOM` 默认被主题注入 `panel_bg` + 1px `panel_border`，要纯线框需显式 `vgui_widget_set_background(w, 0)` 与 `vgui_widget_set_border(w, 0, 0)`。
+
 ### 游戏编辑器示例（vgui_game_editor）
 
 `sample/vgui_game_editor.cpp` 是 editor kit 的持续 dogfood 示例：窗口标题为“vgui 游戏编辑器示例”，内置一套内存中的玩具场景与资产库，覆盖首批 MVP 主路径和后续专业编辑器页签。
