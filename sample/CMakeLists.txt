@@ -102,6 +102,11 @@ set(SRC_RENDER_TARGET_TEST
     vgui_render_target_test.cpp
 )
 
+# vgui 后端特效管线（vg_effect_t）离屏像素回归：mask -> blur -> 合成
+set(SRC_FX_TEST
+    vgui_fx_test.cpp
+)
+
 # E03 截图回归测试：离屏渲染编辑器关键状态，与基线 PNG 容差对比
 set(SRC_SCREENSHOT_TEST
     vgui_screenshot_test.cpp
@@ -291,6 +296,13 @@ add_executable(vgui_render_target_test ${SRC_RENDER_TARGET_TEST})
 target_link_libraries(vgui_render_target_test PRIVATE vgui_sample_common vgui::vgui libovg SDL3::SDL3 glm::glm-header-only)
 add_test(NAME vgui_render_target COMMAND vgui_render_target_test)
 set_tests_properties(vgui_render_target PROPERTIES SKIP_RETURN_CODE 77)
+
+add_executable(vgui_fx_test ${SRC_FX_TEST})
+target_link_libraries(vgui_fx_test PRIVATE vgui_sample_common vgui::vgui libovg SDL3::SDL3 glm::glm-header-only)
+target_compile_definitions(vgui_fx_test PRIVATE
+    VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+add_test(NAME vgui_fx COMMAND vgui_fx_test)
+set_tests_properties(vgui_fx PROPERTIES SKIP_RETURN_CODE 77)
 endif()
 
 if(VGUI_BUILD_EDITOR_KIT AND NOT VGUI_CORE_ONLY)

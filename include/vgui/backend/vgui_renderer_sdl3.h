@@ -126,6 +126,14 @@ SDL_GPUSampleCount vgpu_fbo_samples(vg_fbo_t* fbo);
 int vgpu_supports_color_format(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
 	SDL_GPUSampleCount samples);
 
+// Whether vg_effect_t (outer/inner glow, shadow) actually renders on this
+// context.  The effect pipeline needs an R8 (or RGBA8) color target for the
+// coverage mask plus R16_FLOAT with compute-storage write for the blur; when
+// either is missing everything still draws, the effects are just skipped
+// silently.  Apps that want a fallback (e.g. stacked strokes) should ask here
+// instead of guessing.
+int vgpu_effects_supported(vgpu_ctx_t* ctx);
+
 // Returns the FBO depth attachment created by vgpu_create_fbo(..., depth=1),
 // or NULL when the FBO has none.  The host binds it in its own render pass
 // via SDL_GPUDepthStencilTargetInfo (recipe: sample/phase0_renderer.cpp

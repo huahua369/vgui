@@ -34,6 +34,11 @@
 #include "shaders/spv_c/a_vg.frag.h"
 #include "shaders/spv_c/a_base3d.vert.h"
 #include "shaders/spv_c/a_base3d.frag.h"
+// 特效：mask 覆盖度写入 + compute 两趟模糊 + 合成（与 OVG 渲染器共用着色器）
+#include "shaders/spv_c/effect_mask.frag.h"
+#include "shaders/spv_c/effect_present.vert.h"
+#include "shaders/spv_c/effect_present.frag.h"
+#include "shaders/spv_c/blur.spv.h"
 
 #ifdef min
 #undef min
@@ -271,6 +276,29 @@ struct gpu_buffer_t {
 
 } // namespace
 
+// 特效（vg_effect_t）离屏资源：mask 是路径覆盖度（R8），模糊链在 R16F 上跑
+// 两趟（水平 + 垂直），合成时两者一起采样。尺寸是 ROI（包围盒 + sigma 外扩）。
+struct fx_set_t {
+	vgpu_texture_t* mask = nullptr;
+	vgpu_texture_t* tmp = nullptr;
+	vgpu_texture_t* blur = nullptr;
+	int width = 0;
+	int height = 0;
+	bool need_blur = false;
+};
+
+// 一条 draw 命令预先算好的特效结果；tex/mask 指向本帧借用的 fx_set。
+struct fx_result_t {
+	vgpu_texture_t* tex = nullptr;		// 模糊后的覆盖度（无模糊时即 mask）
+	vgpu_texture_t* mask = nullptr;		// 原始覆盖度
+	glm::vec4 rect = {};				// ROI：x, y, w, h（设备像素）
+	glm::vec4 color = {};				// 直通 RGBA
+	glm::vec2 offset = {};
+	float spread = 0.0f;
+	float opacity = 1.0f;
+	int mode = 0;						// 0 外发光 / 1 内发光 / 2 阴影
+};
+
 struct vgpu_device_t {
 	SDL_GPUDevice* gpu_device = nullptr;
 	SDL_GPUShader* vg_vert = nullptr;
@@ -310,6 +338,8 @@ struct vgpu_ctx_t {
 	struct staging_flight_t {
 		SDL_GPUFence* fence = nullptr;
 		std::vector<uint32_t> slots;
+		// 该次提交用到的特效纹理集合；栅栏完成后归还 fx_pool。
+		std::vector<fx_set_t*> fx_sets;
 	};
 	std::vector<staging_slot_t> staging;
 	std::vector<staging_flight_t> staging_flights;
@@ -323,6 +353,27 @@ struct vgpu_ctx_t {
 	// order, so this one fence guards all earlier work.  It is borrowed from
 	// the matching staging flight, which owns and releases it.
 	SDL_GPUFence* last_frame_fence = nullptr;
+
+	// ------------------------------------------------------------------
+	// 特效管线（对应 OVG 渲染器里的 fxSupported / pipeEffectMask /
+	// pipeEffectComposite / comp_pipe[blur] 与纹理池）。
+	// 本后端按设计去掉了 compute 与路径模板裁剪，这里补的是特效需要的那部分：
+	//   mask 写入 R8 → compute 两趟模糊到 R16F → 在主 pass 里合成。
+	// 硬件不支持时 fx_supported 保持 false，所有特效静默跳过（不崩、不报错）。
+	// ------------------------------------------------------------------
+	bool fx_supported = false;
+	SDL_GPUTextureFormat fx_mask_format = SDL_GPU_TEXTUREFORMAT_R8_UNORM;
+	SDL_GPUTextureFormat fx_blur_format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+	SDL_GPUSampler* fx_sampler = nullptr;
+	SDL_GPUGraphicsPipeline* fx_mask_pipeline = nullptr;		// 写入 mask 格式
+	SDL_GPUGraphicsPipeline* fx_present_pipeline = nullptr;	// 合成到主格式 + samples
+	std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> fx_present_pipelines;
+	SDL_GPUComputePipeline* fx_blur_pipeline = nullptr;
+	// 空闲集合池：按 (w, h, need_blur) 复用，避免每帧为按钮重建纹理。
+	std::vector<fx_set_t*> fx_pool;
+	// 本帧正在使用的集合；提交时随栅栏一起交给 staging_flight，等 GPU 完成
+	// 后才归还池子——否则下一帧可能写进 GPU 还在读的纹理。
+	std::vector<fx_set_t*> fx_in_use;
 };
 
 namespace {
@@ -337,6 +388,9 @@ void staging_release_frame(vgpu_ctx_t* ctx)
 	for (uint32_t index : ctx->staging_frame)
 		ctx->staging[index].busy = false;
 	ctx->staging_frame.clear();
+	for (fx_set_t* set : ctx->fx_in_use)
+		ctx->fx_pool.push_back(set);
+	ctx->fx_in_use.clear();
 }
 
 // 归还已完成提交占用的槽位。同队列提交按序完成：最新提交的栅栏触发时，
@@ -367,6 +421,8 @@ void staging_collect(vgpu_ctx_t* ctx)
 
 		for (uint32_t index : flight.slots)
 			ctx->staging[index].busy = false;
+		for (fx_set_t* set : flight.fx_sets)
+			ctx->fx_pool.push_back(set);
 		ctx->staging_flights.erase(
 			ctx->staging_flights.begin() + static_cast<std::ptrdiff_t>(i));
 	}
@@ -414,6 +470,8 @@ void submit_with_fence(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd)
 		return;
 	}
 	ctx->staging_flights.push_back({ fence, std::move(ctx->staging_frame) });
+	ctx->staging_flights.back().fx_sets = std::move(ctx->fx_in_use);
+	ctx->fx_in_use.clear();
 	ctx->staging_frame.clear();
 	ctx->last_frame_fence = fence;
 }
@@ -1052,6 +1110,546 @@ void bind_index_buffer(SDL_GPURenderPass* pass, gpu_buffer_t& buffer, uint32_t o
 	SDL_BindGPUIndexBuffer(pass, &binding, SDL_GPU_INDEXELEMENTSIZE_32BIT);
 }
 
+// ---------------------------------------------------------------------------
+// 特效（vg_effect_t）：mask 离屏 → compute 两趟模糊 → 主 pass 合成
+//
+// 对应 OVG 渲染器里的 pipeEffectMask / pipeEffectComposite / comp_pipe[blur]
+// 与 fx 纹理池。本后端按设计砍掉了 compute 与路径模板裁剪，这里补的正是特效
+// 需要的那部分；硬件不支持（R16F 不能做 compute 写、也没有 R8/RGBA8 可渲染
+// 格式）时整体关闭，特效静默失效，但主体绘制完全不受影响。
+// ---------------------------------------------------------------------------
+
+struct fx_blur_params_t {
+	glm::vec2 texel;
+	float sigma;
+	int axis;
+};
+
+void set_viewport2d(SDL_GPURenderPass* pass, int w, int h)
+{
+	SDL_GPUViewport vp = {};
+	vp.x = 0.0f;
+	vp.y = static_cast<float>(h);
+	vp.w = static_cast<float>(w);
+	vp.h = -static_cast<float>(h);
+	vp.min_depth = 0.0f;
+	vp.max_depth = 1.0f;
+	SDL_SetGPUViewport(pass, &vp);
+}
+
+void destroy_fx_set(vgpu_device_t* device, fx_set_t* set)
+{
+	if (!set)
+		return;
+	(void)device;
+	destroy_texture(set->mask);
+	destroy_texture(set->tmp);
+	destroy_texture(set->blur);
+	delete set;
+}
+
+// 合成管线的目标格式 / 采样数必须和被合成的 pass 一致，因此按 (format,
+// samples) 缓存：窗口是 (ctx 格式, ctx 采样数)，离屏 FBO 可能不同。
+SDL_GPUGraphicsPipeline* get_fx_present_pipeline(vgpu_ctx_t* ctx,
+	SDL_GPUTextureFormat format, SDL_GPUSampleCount samples)
+{
+	// 与上下文同格式/同采样数的组合缓存到成员上（最常用），其余按 key 缓存。
+	SDL_GPUGraphicsPipeline** member_slot = nullptr;
+	uint64_t key = 0;
+	if (format == ctx->color_format && samples == ctx->samples) {
+		if (ctx->fx_present_pipeline)
+			return ctx->fx_present_pipeline;
+		member_slot = &ctx->fx_present_pipeline;
+	}
+	else {
+		key = (static_cast<uint64_t>(format) << 8) | static_cast<uint64_t>(samples);
+		auto it = ctx->fx_present_pipelines.find(key);
+		if (it != ctx->fx_present_pipelines.end())
+			return it->second;
+	}
+
+	SDL_GPUDevice* device = ctx->device->gpu_device;
+	SDL_GPUShader* vert = compile_shader(device, SDL_GPU_SHADERSTAGE_VERTEX,
+		a_effect_present_vert, sizeof(a_effect_present_vert), 0, 0, 0, 0);
+	SDL_GPUShader* frag = compile_shader(device, SDL_GPU_SHADERSTAGE_FRAGMENT,
+		a_effect_present_frag, sizeof(a_effect_present_frag), 2, 1, 0, 0);
+	SDL_GPUGraphicsPipeline* pipeline = nullptr;
+	if (vert && frag) {
+		SDL_GPUColorTargetDescription ct = {};
+		ct.format = format;
+		set_blend_state(ct.blend_state, static_cast<int>(blendMode_e::normal_prem));
+
+		SDL_GPUDepthStencilState ds = {};
+		ds.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+		ds.front_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+		ds.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
+		ds.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
+		ds.front_stencil_state.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+		ds.back_stencil_state = ds.front_stencil_state;
+
+		SDL_GPURasterizerState rs = {};
+		rs.fill_mode = SDL_GPU_FILLMODE_FILL;
+		rs.cull_mode = SDL_GPU_CULLMODE_NONE;
+		rs.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+
+		SDL_GPUMultisampleState ms = {};
+		ms.sample_count = samples;
+
+		// 全屏三角形不需要顶点输入：显式 0 个 buffer / 0 个 attribute。
+		SDL_GPUVertexInputState vi = {};
+
+		SDL_GPUGraphicsPipelineCreateInfo info = {};
+		info.vertex_shader = vert;
+		info.fragment_shader = frag;
+		info.vertex_input_state = vi;
+		info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+		info.rasterizer_state = rs;
+		info.multisample_state = ms;
+		info.depth_stencil_state = ds;
+		info.target_info.num_color_targets = 1;
+		info.target_info.color_target_descriptions = &ct;
+		pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
+		if (!pipeline) {
+			SDL_LogError(SDL_LOG_CATEGORY_GPU,
+				"vgui: failed to create fx present pipeline: %s", SDL_GetError());
+		}
+	}
+	if (vert) SDL_ReleaseGPUShader(device, vert);
+	if (frag) SDL_ReleaseGPUShader(device, frag);
+	if (member_slot)
+		*member_slot = pipeline;
+	else
+		ctx->fx_present_pipelines.emplace(key, pipeline);
+	return pipeline;
+}
+
+// 探测格式并建好 mask / 合成 / 模糊三条管线；任何一步失败都整体关闭。
+bool create_fx_resources(vgpu_ctx_t* ctx)
+{
+	if (!ctx || !ctx->device || !ctx->device->gpu_device)
+		return false;
+	SDL_GPUDevice* device = ctx->device->gpu_device;
+
+	const bool mask_r8 = SDL_GPUTextureSupportsFormat(device,
+		SDL_GPU_TEXTUREFORMAT_R8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+	const bool mask_rgba8 = SDL_GPUTextureSupportsFormat(device,
+		SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET);
+	const bool blur_r16 = SDL_GPUTextureSupportsFormat(device,
+		SDL_GPU_TEXTUREFORMAT_R16_FLOAT, SDL_GPU_TEXTURETYPE_2D,
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE);
+	if ((!mask_r8 && !mask_rgba8) || !blur_r16)
+		return false;
+	ctx->fx_mask_format = mask_r8 ? SDL_GPU_TEXTUREFORMAT_R8_UNORM
+		: SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+	ctx->fx_blur_format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+
+	ctx->fx_sampler = create_sampler(device);
+	if (!ctx->fx_sampler)
+		return false;
+
+	// mask：与 a_vg 顶点布局相同，片元只输出覆盖度 alpha，单采样、无混合。
+	SDL_GPUShader* mask_frag = compile_shader(device, SDL_GPU_SHADERSTAGE_FRAGMENT,
+		a_effect_mask_frag, sizeof(a_effect_mask_frag), 0, 0, 0, 0);
+	if (!ctx->device->vg_vert || !mask_frag) {
+		if (mask_frag) SDL_ReleaseGPUShader(device, mask_frag);
+		return false;
+	}
+	{
+		static const SDL_GPUVertexAttribute attributes[] = {
+			{ 0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 0 },
+			{ 1, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2, 8 },
+			{ 2, 0, SDL_GPU_VERTEXELEMENTFORMAT_UBYTE4_NORM, 16 },
+		};
+		SDL_GPUColorTargetDescription ct = {};
+		ct.format = ctx->fx_mask_format;
+		set_blend_state(ct.blend_state, static_cast<int>(blendMode_e::none));
+		// 只需要覆盖度：R 单通道写入，省带宽也避免 RGBA8 回退时的多余填充。
+		ct.blend_state.color_write_mask = SDL_GPU_COLORCOMPONENT_R;
+
+		SDL_GPUDepthStencilState ds = {};
+		ds.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+		ds.front_stencil_state.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
+		ds.front_stencil_state.pass_op = SDL_GPU_STENCILOP_KEEP;
+		ds.front_stencil_state.fail_op = SDL_GPU_STENCILOP_KEEP;
+		ds.front_stencil_state.depth_fail_op = SDL_GPU_STENCILOP_KEEP;
+		ds.back_stencil_state = ds.front_stencil_state;
+
+		SDL_GPURasterizerState rs = {};
+		rs.fill_mode = SDL_GPU_FILLMODE_FILL;
+		rs.cull_mode = SDL_GPU_CULLMODE_NONE;
+		rs.front_face = SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
+
+		SDL_GPUVertexBufferDescription vbd = {};
+		vbd.slot = 0;
+		vbd.input_rate = SDL_GPU_VERTEXINPUTRATE_VERTEX;
+		vbd.pitch = OVG_VERTEX_SIZE;
+		SDL_GPUVertexInputState vi = {};
+		vi.num_vertex_buffers = 1;
+		vi.vertex_buffer_descriptions = &vbd;
+		vi.num_vertex_attributes = 3;
+		vi.vertex_attributes = attributes;
+
+		SDL_GPUMultisampleState ms = {};
+		ms.sample_count = SDL_GPU_SAMPLECOUNT_1;
+
+		SDL_GPUGraphicsPipelineCreateInfo info = {};
+		info.vertex_shader = ctx->device->vg_vert;
+		info.fragment_shader = mask_frag;
+		info.vertex_input_state = vi;
+		info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+		info.rasterizer_state = rs;
+		info.multisample_state = ms;
+		info.depth_stencil_state = ds;
+		info.target_info.num_color_targets = 1;
+		info.target_info.color_target_descriptions = &ct;
+		ctx->fx_mask_pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
+		SDL_ReleaseGPUShader(device, mask_frag);
+		if (!ctx->fx_mask_pipeline)
+			return false;
+	}
+
+	// 模糊：blur.comp 每次处理 8x8，读写各一张纹理。参数来自 device 的
+	// threadcount 约定（8,8,1）。
+	{
+		SDL_GPUComputePipelineCreateInfo cp = {};
+		cp.code_size = sizeof(a_blur_comp);
+		cp.code = reinterpret_cast<const Uint8*>(a_blur_comp);
+		cp.entrypoint = "main";
+		cp.format = detect_shader_format(device);
+		cp.num_samplers = 1;
+		cp.num_uniform_buffers = 1;
+		cp.num_readwrite_storage_textures = 1;
+		cp.threadcount_x = 8;
+		cp.threadcount_y = 8;
+		cp.threadcount_z = 1;
+		ctx->fx_blur_pipeline = SDL_CreateGPUComputePipeline(device, &cp);
+		if (!ctx->fx_blur_pipeline)
+			return false;
+	}
+
+	if (!get_fx_present_pipeline(ctx, ctx->color_format, ctx->samples))
+		return false;
+
+	ctx->fx_supported = true;
+	return true;
+}
+
+void destroy_fx_resources(vgpu_ctx_t* ctx)
+{
+	if (!ctx)
+		return;
+	SDL_GPUDevice* device = ctx->device ? ctx->device->gpu_device : nullptr;
+	for (fx_set_t* set : ctx->fx_pool)
+		destroy_fx_set(ctx->device, set);
+	ctx->fx_pool.clear();
+	for (fx_set_t* set : ctx->fx_in_use)
+		destroy_fx_set(ctx->device, set);
+	ctx->fx_in_use.clear();
+	if (!device)
+		return;
+	if (ctx->fx_mask_pipeline) {
+		SDL_ReleaseGPUGraphicsPipeline(device, ctx->fx_mask_pipeline);
+		ctx->fx_mask_pipeline = nullptr;
+	}
+	if (ctx->fx_present_pipeline) {
+		SDL_ReleaseGPUGraphicsPipeline(device, ctx->fx_present_pipeline);
+		ctx->fx_present_pipeline = nullptr;
+	}
+	for (auto& kv : ctx->fx_present_pipelines) {
+		if (kv.second && kv.second != ctx->fx_present_pipeline)
+			SDL_ReleaseGPUGraphicsPipeline(device, kv.second);
+	}
+	ctx->fx_present_pipelines.clear();
+	if (ctx->fx_blur_pipeline) {
+		SDL_ReleaseGPUComputePipeline(device, ctx->fx_blur_pipeline);
+		ctx->fx_blur_pipeline = nullptr;
+	}
+	if (ctx->fx_sampler) {
+		SDL_ReleaseGPUSampler(device, ctx->fx_sampler);
+		ctx->fx_sampler = nullptr;
+	}
+	ctx->fx_supported = false;
+}
+
+// 取一套与 (w, h, need_blur) 匹配的空闲纹理集合；池里没有就新建。
+// 池里保存的都是 GPU 已确认写完的集合（由 staging_flight 归还）。
+fx_set_t* fx_acquire(vgpu_ctx_t* ctx, int w, int h, bool need_blur)
+{
+	for (size_t i = 0; i < ctx->fx_pool.size(); ++i) {
+		fx_set_t* set = ctx->fx_pool[i];
+		if (set->width == w && set->height == h && set->need_blur == need_blur) {
+			ctx->fx_pool.erase(ctx->fx_pool.begin() + static_cast<std::ptrdiff_t>(i));
+			return set;
+		}
+	}
+
+	auto* set = new fx_set_t();
+	set->width = w;
+	set->height = h;
+	set->need_blur = need_blur;
+	const SDL_GPUTextureUsageFlags mask_usage =
+		SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+	set->mask = create_texture(ctx->device, w, h, ctx->fx_mask_format, mask_usage);
+	if (!set->mask) {
+		delete set;
+		return nullptr;
+	}
+	if (need_blur) {
+		const SDL_GPUTextureUsageFlags blur_usage =
+			SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE;
+		set->tmp = create_texture(ctx->device, w, h, ctx->fx_blur_format, blur_usage);
+		set->blur = create_texture(ctx->device, w, h, ctx->fx_blur_format, blur_usage);
+		if (!set->tmp || !set->blur) {
+			destroy_fx_set(ctx->device, set);
+			return nullptr;
+		}
+	}
+	return set;
+}
+
+// 池子只缓存一小把尺寸，避免 UI 里各种临时尺寸把显存顶起来。
+void fx_trim_pool(vgpu_ctx_t* ctx)
+{
+	constexpr size_t kMaxSets = 16;
+	while (ctx->fx_pool.size() > kMaxSets) {
+		destroy_fx_set(ctx->device, ctx->fx_pool.front());
+		ctx->fx_pool.erase(ctx->fx_pool.begin());
+	}
+}
+
+// bounds 是录制阶段 apply_effect_bounds() 算好的包围盒（已含 3*sigma 外扩）。
+bool fx_roi_from_bounds(const vgcmd_t* c, const vg_fbo_t* fbo, glm::ivec4& roi)
+{
+	if (!c || !fbo || !(c->bounds.z > 0.0f) || !(c->bounds.w > 0.0f))
+		return false;
+	const float fx0 = (std::max)(c->bounds.x, 0.0f);
+	const float fy0 = (std::max)(c->bounds.y, 0.0f);
+	const float fx1 = (std::min)(c->bounds.x + c->bounds.z, static_cast<float>(fbo->width));
+	const float fy1 = (std::min)(c->bounds.y + c->bounds.w, static_cast<float>(fbo->height));
+	if (!(fx1 > fx0) || !(fy1 > fy0))
+		return false;
+	const int x0 = static_cast<int>(std::floor(fx0));
+	const int y0 = static_cast<int>(std::floor(fy0));
+	const int x1 = static_cast<int>(std::ceil(fx1));
+	const int y1 = static_cast<int>(std::ceil(fy1));
+	if (x1 <= x0 || y1 <= y0)
+		return false;
+	roi = glm::ivec4(x0, y0, x1 - x0, y1 - y0);
+	return true;
+}
+
+// 把这条 fill/stroke 的几何重画到 R8 mask 上：viewport 取 ROI 尺寸，几何整体
+// 平移 -roi.xy（平移落在 mat3 的第三列）。没有 stencil，裁剪靠 ROI 本身。
+void render_effect_mask(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	ovg_draw_data_t* kd, vgcmd_t* c, vgpu_texture_t* mask, const glm::ivec4& roi)
+{
+	if (!ctx || !cmd || !kd || !c || !c->state || !mask || !mask->texture)
+		return;
+	SDL_GPUColorTargetInfo ct = {};
+	ct.texture = mask->texture;
+	ct.load_op = SDL_GPU_LOADOP_CLEAR;
+	ct.store_op = SDL_GPU_STOREOP_STORE;
+	ct.clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
+	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
+	if (!pass)
+		return;
+
+	set_viewport2d(pass, roi.z, roi.w);
+	SDL_Rect sc = { 0, 0, roi.z, roi.w };
+	SDL_SetGPUScissor(pass, &sc);
+	SDL_BindGPUGraphicsPipeline(pass, ctx->fx_mask_pipeline);
+	bind_vertex_buffer(pass, ctx->vbo, kd->vg_offset.x);
+	bind_index_buffer(pass, ctx->ibo, kd->vg_offset.y);
+
+	push_constants_t pc = c->state->pushConsts;
+	pc.size = { static_cast<float>(roi.z), static_cast<float>(roi.w) };
+	pc.mat[2].x -= static_cast<float>(roi.x);
+	pc.mat[2].y -= static_cast<float>(roi.y);
+	pc.source = { 1.0f, 1.0f, 1.0f, 1.0f };
+	pc.fsq_patternType = static_cast<uint32_t>(vg_pattern_type_t::VG_PATTERN_TYPE_SOLID);
+	pc.opacity = 1.0f;
+	SDL_PushGPUVertexUniformData(cmd, 0, &pc, sizeof(pc));
+
+	if (c->index.y > 0) {
+		SDL_DrawGPUIndexedPrimitives(pass, static_cast<Uint32>(c->index.y), 1,
+			static_cast<Uint32>(c->index.x), static_cast<int32_t>(c->vertex.x), 0);
+	}
+	else {
+		SDL_DrawGPUPrimitives(pass, static_cast<Uint32>(c->vertex.y), 1,
+			static_cast<Uint32>(c->vertex.x), 0);
+	}
+	SDL_EndGPURenderPass(pass);
+}
+
+void dispatch_fx_blur(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	vgpu_texture_t* dst, vgpu_texture_t* src, const fx_blur_params_t& params,
+	int w, int h)
+{
+	if (!ctx || !cmd || !ctx->fx_blur_pipeline || !dst || !dst->texture ||
+		!src || !src->texture || w <= 0 || h <= 0)
+		return;
+	SDL_GPUStorageTextureReadWriteBinding rw = {};
+	rw.texture = dst->texture;
+	rw.layer = 0;
+	rw.mip_level = 0;
+	rw.cycle = false;
+	SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
+	if (!pass)
+		return;
+	SDL_BindGPUComputePipeline(pass, ctx->fx_blur_pipeline);
+	SDL_GPUTextureSamplerBinding binding = { src->texture, ctx->fx_sampler };
+	SDL_BindGPUComputeSamplers(pass, 0, &binding, 1);
+	SDL_PushGPUComputeUniformData(cmd, 0, &params, sizeof(params));
+	SDL_DispatchGPUCompute(pass,
+		static_cast<Uint32>((w + 7) / 8), static_cast<Uint32>((h + 7) / 8), 1);
+	SDL_EndGPUComputePass(pass);
+}
+
+// 主 pass 之前把一条命令的特效算好：mask → 水平模糊 → 垂直模糊。
+void prepare_effect(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+	ovg_draw_data_t* kd, vgcmd_t* c, vg_fbo_t* fbo, fx_result_t* out)
+{
+	if (!out)
+		return;
+	out->tex = nullptr;
+	if (!ctx || !ctx->fx_supported || !cmd || !kd || !c || !c->state || !fbo)
+		return;
+	const vg_effect_t& e = c->state->effect;
+	if (c->ref < 0 || e.type == VG_EFFECT_NONE || e.opacity <= 0.0f)
+		return;
+	if (((e.color >> 24) & 0xFF) == 0)
+		return;
+	if (c->index.y == 0 && c->vertex.y == 0)
+		return;
+	// 合成管线绑定在目标 pass 上，格式/采样数必须对得上；对不上就跳过特效，
+	// 主体照常绘制（HDR 或自定义采样的离屏 FBO 走这条路）。
+	const SDL_GPUTextureFormat target_format = (fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
+		? fbo->color_format : ctx->color_format;
+	if (!get_fx_present_pipeline(ctx, target_format, fbo->samples))
+		return;
+
+	glm::ivec4 roi;
+	if (!fx_roi_from_bounds(c, fbo, roi))
+		return;
+	const int w = roi.z;
+	const int h = roi.w;
+	const bool need_blur = e.sigma > 0.01f;
+
+	fx_set_t* set = fx_acquire(ctx, w, h, need_blur);
+	if (!set)
+		return;
+	ctx->fx_in_use.push_back(set);
+	fx_trim_pool(ctx);
+
+	render_effect_mask(ctx, cmd, kd, c, set->mask, roi);
+
+	if (need_blur) {
+		fx_blur_params_t bp = {};
+		bp.texel = { 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h) };
+		bp.sigma = e.sigma;
+		bp.axis = 0;
+		dispatch_fx_blur(ctx, cmd, set->tmp, set->mask, bp, w, h);
+		bp.axis = 1;
+		dispatch_fx_blur(ctx, cmd, set->blur, set->tmp, bp, w, h);
+	}
+
+	out->tex = need_blur ? set->blur : set->mask;
+	out->mask = set->mask;
+	out->rect = glm::vec4(static_cast<float>(roi.x), static_cast<float>(roi.y),
+		static_cast<float>(w), static_cast<float>(h));
+	out->color = glm::vec4(
+		static_cast<float>(e.color & 0xFF) / 255.0f,
+		static_cast<float>((e.color >> 8) & 0xFF) / 255.0f,
+		static_cast<float>((e.color >> 16) & 0xFF) / 255.0f,
+		static_cast<float>((e.color >> 24) & 0xFF) / 255.0f);
+	out->offset = e.offset;
+	out->spread = e.spread;
+	out->opacity = e.opacity;
+	out->mode = (e.type == VG_EFFECT_OUTER_GLOW) ? 0
+		: (e.type == VG_EFFECT_INNER_GLOW) ? 1 : 2;
+}
+
+// 在目标 pass 里叠一层特效：scissor 到 ROI ∩ 当前裁剪，画一个全屏三角形，
+// 由 effect_present.frag 按 mode 合成，结束后把 scissor 还给调用方。
+void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass,
+	const fx_result_t* fx, SDL_Rect* clip)
+{
+	if (!fbo || !pass || !fx || !fx->tex)
+		return;
+	vgpu_ctx_t* ctx = fbo->ctx;
+	if (!ctx || !ctx->fx_sampler)
+		return;
+	const SDL_GPUTextureFormat format = (fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
+		? fbo->color_format : ctx->color_format;
+	SDL_GPUGraphicsPipeline* pipeline = get_fx_present_pipeline(ctx, format, fbo->samples);
+	if (!pipeline)
+		return;
+	SDL_BindGPUGraphicsPipeline(pass, pipeline);
+
+	int x0 = static_cast<int>(fx->rect.x);
+	int y0 = static_cast<int>(fx->rect.y);
+	int x1 = x0 + static_cast<int>(fx->rect.z);
+	int y1 = y0 + static_cast<int>(fx->rect.w);
+	if (clip && clip->w > 0 && clip->h > 0) {
+		x0 = (std::max)(x0, clip->x);
+		y0 = (std::max)(y0, clip->y);
+		x1 = (std::min)(x1, clip->x + clip->w);
+		y1 = (std::min)(y1, clip->y + clip->h);
+	}
+	x0 = (std::max)(x0, 0);
+	y0 = (std::max)(y0, 0);
+	x1 = (std::min)(x1, static_cast<int>(fbo->width));
+	y1 = (std::min)(y1, static_cast<int>(fbo->height));
+	if (x1 <= x0 || y1 <= y0)
+		return;
+	SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
+	SDL_SetGPUScissor(pass, &rc);
+
+	SDL_GPUTextureSamplerBinding bindings[2] = {
+		{ fx->mask->texture, ctx->fx_sampler },
+		{ fx->tex->texture, ctx->fx_sampler },
+	};
+	SDL_BindGPUFragmentSamplers(pass, 0, bindings, 2);
+
+	// 与 effect_present.frag 的 Params 布局逐字段对齐（56 字节）。
+	struct fx_present_params_t {
+		int mode;
+		float spread;
+		float opacity;
+		float pad0;
+		float offset[2];
+		float color[4];
+		float rect[4];
+	};
+	static_assert(sizeof(fx_present_params_t) == 56, "fx_present_params_t must match effect_present.frag");
+	fx_present_params_t pu = {};
+	pu.mode = fx->mode;
+	pu.spread = fx->spread;
+	pu.opacity = fx->opacity;
+	pu.offset[0] = fx->offset.x;
+	pu.offset[1] = fx->offset.y;
+	pu.color[0] = fx->color.x;
+	pu.color[1] = fx->color.y;
+	pu.color[2] = fx->color.z;
+	pu.color[3] = fx->color.w;
+	pu.rect[0] = fx->rect.x;
+	pu.rect[1] = fx->rect.y;
+	pu.rect[2] = fx->rect.z;
+	pu.rect[3] = fx->rect.w;
+	SDL_PushGPUFragmentUniformData(fbo->cmd, 0, &pu, sizeof(pu));
+	SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+
+	// 恢复调用方的裁剪状态，否则后续文字/图形会被 ROI 裁掉。
+	if (clip && clip->w > 0 && clip->h > 0)
+		SDL_SetGPUScissor(pass, clip);
+	else {
+		SDL_Rect full = { 0, 0, static_cast<int>(fbo->width), static_cast<int>(fbo->height) };
+		SDL_SetGPUScissor(pass, &full);
+	}
+}
+
 void apply_scissor(vg_fbo_t* fbo, SDL_GPURenderPass* pass,
 	const glm::vec4* rect, SDL_Rect* current)
 {
@@ -1142,12 +1740,19 @@ void transform_gradient(vg_gradient_t* gradient, int type,
 }
 
 void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* cmd,
-	SDL_Rect* current_scissor, const glm::uvec2& offset)
+	SDL_Rect* current_scissor, const glm::uvec2& offset,
+	const fx_result_t* fx = nullptr)
 {
 	if (!cmd || !fbo || !fbo->ctx)
 		return;
 
 	vgpu_ctx_t* ctx = fbo->ctx;
+
+	// 外发光/阴影叠在主体之前，内发光叠在主体之后（neon 那种“描边自己发亮”
+	// 就是 outer glow，文字发光仍靠上层叠副本，见 sample/vgui_demo.cpp）。
+	const bool fx_valid = fx && fx->tex && fx->mask;
+	if (fx_valid && fx->mode != 1)
+		draw_effect_quad(fbo, pass, fx, current_scissor);
 	bind_vertex_buffer(pass, ctx->vbo, offset.x);
 	bind_index_buffer(pass, ctx->ibo, offset.y);
 
@@ -1236,6 +1841,10 @@ void draw_vg(vg_fbo_t* fbo, SDL_GPURenderPass* pass, vgcmd_t* cmd,
 	default:
 		break;
 	}
+
+	// 内发光画在主体之后：掩码在主体覆盖区域内侧，先画光再画主体会被盖住。
+	if (fx_valid && fx->mode == 1 && (cmd->type == 0 || cmd->type == 1))
+		draw_effect_quad(fbo, pass, fx, current_scissor);
 }
 
 void draw_geom(vg_fbo_t* fbo, SDL_GPURenderPass* pass, geom_cmd_t* cmd,
@@ -1498,6 +2107,8 @@ vgpu_ctx_t* vgpu_create_context(vgpu_device_t* device,
 			return nullptr;
 		}
 	}
+	// 特效管线是可选增强：探测失败就保持关闭，不让整个上下文建不起来。
+	create_fx_resources(ctx);
 	ctx->textures[0] = device->empty_texture;
 	return ctx;
 }
@@ -1532,6 +2143,10 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 	for (vgpu_ctx_t::staging_flight_t& flight : ctx->staging_flights) {
 		if (flight.fence && device)
 			SDL_ReleaseGPUFence(device, flight.fence);
+		// 还在飞行中的特效纹理：归还到 in_use，由 destroy_fx_resources() 统一销毁。
+		for (fx_set_t* set : flight.fx_sets)
+			ctx->fx_in_use.push_back(set);
+		flight.fx_sets.clear();
 	}
 	ctx->staging_flights.clear();
 	ctx->last_frame_fence = nullptr;
@@ -1552,6 +2167,9 @@ void vgpu_destroy_context(vgpu_ctx_t* ctx)
 		if (pipeline.pipeline && device)
 			SDL_ReleaseGPUGraphicsPipeline(device, pipeline.pipeline);
 	}
+
+	// 特效资源：纹理池 + 三条管线 + 采样器。
+	destroy_fx_resources(ctx);
 
 	vgpu_texture_t* empty_texture = ctx->device ? ctx->device->empty_texture : nullptr;
 	for (auto& [id, texture] : ctx->textures) {
@@ -1697,6 +2315,11 @@ int vgpu_supports_color_format(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
 			samples))
 		return 0;
 	return 1;
+}
+
+int vgpu_effects_supported(vgpu_ctx_t* ctx)
+{
+	return (ctx && ctx->fx_supported) ? 1 : 0;
 }
 
 SDL_GPUCommandBuffer* vgpu_current_command_buffer(vgpu_ctx_t* ctx)
@@ -2016,6 +2639,41 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 	process_image_descs(ctx, ctx->current_cmd, items);
 	upload_buffers(ctx, ctx->current_cmd, items);
 
+	// 特效必须在主 pass 之前算完：每条带 vg_effect_t 的 fill/stroke 先渲染
+	// mask、跑两趟 compute 模糊，结果按命令的 ref 槽位存好，绘制时查表合成。
+	// ref 由录制阶段的 apply_effect_bounds() 分配，这里是同一个 vgcmd_t。
+	// 用 item 指针做键：下面会按 FBO 顺序 stable_sort，按下标存会错位。
+	std::unordered_map<const ovg_draw_data_t*, std::vector<fx_result_t>> fx_by_item;
+	if (ctx->fx_supported) {
+		for (ovg_draw_data_t* item : items) {
+			int max_slot = -1;
+			for (size_t i = 0; i < item->count; ++i) {
+				gcmd_t& command = item->d[i];
+				if (static_cast<cmd_type_e>(command.g.stype) != cmd_type_e::DRAW_VG)
+					continue;
+				vgcmd_t& cc = command.vg;
+				if ((cc.type == 0 || cc.type == 1) && cc.state &&
+					cc.state->effect.type != VG_EFFECT_NONE && cc.ref >= 0)
+					max_slot = (std::max)(max_slot, static_cast<int>(cc.ref));
+			}
+			if (max_slot < 0)
+				continue;
+			std::vector<fx_result_t>& slot =
+				fx_by_item.emplace(item, std::vector<fx_result_t>()).first->second;
+			slot.assign(static_cast<size_t>(max_slot) + 1, fx_result_t{});
+			for (size_t i = 0; i < item->count; ++i) {
+				gcmd_t& command = item->d[i];
+				if (static_cast<cmd_type_e>(command.g.stype) != cmd_type_e::DRAW_VG)
+					continue;
+				vgcmd_t& cc = command.vg;
+				if ((cc.type == 0 || cc.type == 1) && cc.state &&
+					cc.state->effect.type != VG_EFFECT_NONE && cc.ref >= 0)
+					prepare_effect(ctx, ctx->current_cmd, item, &cc, item->fbo,
+						&slot[static_cast<size_t>(cc.ref)]);
+			}
+		}
+	}
+
 	// Encode one pass per FBO, in order of first appearance, so a caller that
 	// submits several draw data entries in one frame (offscreen HUD pass and
 	// then a window composite, say) gets the passes in that order and SDL3's
@@ -2050,9 +2708,20 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 		for (size_t i = 0; i < item->count; ++i) {
 			gcmd_t& command = item->d[i];
 			switch (static_cast<cmd_type_e>(command.g.stype)) {
-			case cmd_type_e::DRAW_VG:
-				draw_vg(fbo, pass, &command.vg, &scissor, item->vg_offset);
+			case cmd_type_e::DRAW_VG: {
+				// ref 是 stencil ref 与 fx 槽位共用的字段，必须同时确认这条命令
+				// 确实带着特效状态，否则裁剪/裁剪透传命令也会命中同一槽位。
+				const fx_result_t* fx = nullptr;
+				if (!fx_by_item.empty() && command.vg.ref >= 0 && command.vg.state &&
+					command.vg.state->effect.type != VG_EFFECT_NONE) {
+					auto it = fx_by_item.find(item);
+					if (it != fx_by_item.end() &&
+						static_cast<size_t>(command.vg.ref) < it->second.size())
+						fx = &it->second[static_cast<size_t>(command.vg.ref)];
+				}
+				draw_vg(fbo, pass, &command.vg, &scissor, item->vg_offset, fx);
 				break;
+			}
 			case cmd_type_e::DRAW_GEOM:
 				draw_geom(fbo, pass, &command.g, item->geom_offset);
 				break;

@@ -1449,6 +1449,24 @@ pwsh sample/shaders/compile.ps1
 
 脚本使用 `-target spirv -emit-spirv-via-glsl`，经 Slang 的 GLSL 路径输出 SPIR-V 1.0，与示例创建的 Vulkan 1.0 管线保持一致；入口固定为 `main`，并校验输出字长与 SPIR-V 1.0 模块头后写成现有数组名（`p0_scene_frag` 等）。根 `vcpkg.json` 不再依赖 `glslang`，只要求重新生成着色器时安装 Vulkan SDK。
 
+### 特效管线（`vg_effect_t`）
+
+`backends/vgui_renderer_sdl3.cpp` 实现了 OVG 的 `vg_effect_t` 外发光/内发光/投影，与 `third_party/ovg/ovg/ovg_renderer_sdl3.cpp` 的完整渲染器一致的三段式：
+
+1. **遮罩**：把带特效的几何重画一遍到 `R8_UNORM`（该格式不支持时回退 `R8G8B8A8_UNORM`）的离屏纹理，单采样、关混合、只写 R 通道。viewport 取录制期算好的 ROI（`vgcmd_t::bounds`，已含 `3*sigma` 外扩），几何平移 `-roi.xy`。
+2. **模糊**：两趟 compute（H/V 分离）读写 `R16_FLOAT`，`threadcount` 8×8，R16F 必须支持 `SAMPLER|COMPUTE_STORAGE_WRITE`。
+3. **合成**：全屏三角形 `effect_present` 按 `OUTER_GLOW`/`INNER_GLOW`/`SHADOW` 分支混合回主 pass；外发光与投影画在主体之前、内发光画在之后。
+
+使用要点：
+
+- **遮罩取的是几何自身的 alpha**，所以 `set_effect` 之后那一笔必须用实心色。想“只显示光不显示本体”就先把颜色 alpha 设 0，会得到**空遮罩**，什么也不出。
+- **文字不参与特效**：`apply_effect_bounds()` 只在 `fill`/`stroke` 时分配 fx 槽位，`add_text` 生成的图集几何不进遮罩。文字要发光只能手绘多方向低透明度副本。
+- **`vgcmd_t::ref` 是双语义**：既是 stencil ref，也是 fx 槽位号。按 `ref >= 0` 查表会把裁剪命令误命中到别处的特效，必须同时判 `state->effect.type != VG_EFFECT_NONE`。
+- **格式不满足时静默跳过**：设备不支持上述格式，或目标 FBO 的格式/采样数与合成管线对不上（例如 HDR 或自定义采样的离屏目标）时，特效不画、主体照常。应用要兜底应先查 `vgpu_effects_supported(ctx)`（声明在 `include/vgui/backend/vgui_renderer_sdl3.h`）。
+- **纹理池**：离屏纹理按 `(宽, 高, 是否模糊)` 分桶复用，池上限 16 套；本帧用过的集合挂在 `staging_flight_t` 上，栅栏确认完成才归还，避免改写 GPU 仍在读的纹理。
+
+像素级回归是 `vgui_fx_test`（`ctest -R vgui_fx`）：220×160 离屏目标上画三块矩形（无特效对照 / `OUTER_GLOW` / `clear_effect` 之后），断言本体为白、特效矩形外侧 8px 提亮、对照组与远角不被污染、清除后立刻恢复。
+
 ### 运行示例
 
 Debug 输出目录为 `out/bin/x64d/`：
@@ -1468,6 +1486,7 @@ out/bin/x64d/vgui_editor_kit_test.exe  # editor kit 骨架、Dock 外壳、文�
 out/bin/x64d/vgui_texture_test.exe     # 图片纹理离屏回读：source/fit/tint/flip/pixel snap 与 V10 九宫格/旋转/矩阵（原生 + CPU 纹理）
 out/bin/x64d/vgui_render_target_test.exe # 持久离屏目标：矢量/上下文录制、纹理→图片合成、resize、clear=0 与 submit（无 Vulkan 时 SKIP）
 out/bin/x64d/vgui_screenshot_test.exe  # E03 截图回归：Dock/PropertyGrid/Outliner/AssetBrowser/Viewport 基线对比
+out/bin/x64d/vgui_fx_test.exe          # 特效管线离屏像素回归：OUTER_GLOW 外侧提亮、对照组无光、clear_effect 恢复（无 Vulkan 时 SKIP）
 out/bin/x64d/ovg_scene_json_test.exe   # A08 OVGS 图片节点 image_ref 解析/上传缓存测试（mock OVG 回调）
 ```
 
@@ -1481,7 +1500,7 @@ demo 里的“霓虹线框按钮 NEON”卡片是一个纯 `VGUI_CUSTOM` 自绘�
 
 - **颜色通道**：vgui 用 `0xAARRGGBB`，交给 `ovg_ctx_cb`（`set_source_color` 等）前必须换成 `0xAABBGGRR`，否则青色会显示成黄色、品红会显示成绿色。
 - **线框辉光**：用 12 层逐层外扩、alpha 按 `(1-t)²` 衰减的描边逼近高斯衰减；矩形是轴对齐的，这个近似几乎和真模糊等价，开销只有 12 次 `stroke`。层距要小于线宽（`step + 1.5f`）让层间重叠，否则会露出一圈圈同心方框台阶。
-- **`vg_effect_t` 在 vgui 后端是空实现**：`backends/vgui_renderer_sdl3.cpp` 是 OVG 渲染器的精简分支，文件头就写明去掉了 compute 与路径模板裁剪——`fxSupported`、`effect_mask`、`blur`、`draw_effect_quad` 一处都没有，`set_effect` 只是把参数写进 `vg_state_save_t::effect`，没有任何消费者，等于**静默失效**。完整实现只在 `third_party/ovg/ovg/ovg_renderer_sdl3.cpp` 里（那边 `ovg_tools_test` 的 shadow 断言与 `fx stats: effects=1` 都是绿的）。所以在 vgui 侧要么自己叠描边，要么先把后端这套管线补上。
+- **`vg_effect_t` 已可用，但对 1px 细线不划算**：`backends/vgui_renderer_sdl3.cpp` 现在完整实现了特效管线（见“特效管线”一节），`VG_EFFECT_OUTER_GLOW` / `INNER_GLOW` / `SHADOW` 都能出图。但高斯核会把 1px 描边的能量摊到几十个像素上，覆盖度太低——即使把 `spread` 拉满（合成乘 4 倍），矩形外 8px 处也只有 +1/255 的提亮。大面积填充、圆角或阴影才划算。叠描边能用层距与线宽精确控制衰减曲线，细线框反而更合适。要肉眼对比两条路径：`VGUI_NEON_FX=1 out/bin/x64d/vgui_demo.exe`。
 - **静止档别压太低**：8-bit 量化会把弱发光直接抹平——0.2 级别强度配 3px 扩散在深色底上取样出来和背景完全一致，看起来就是“没有发光”。静止档取 0.30 亮度 + 7px 扩散才既有“低透明度”的观感又确实可见。
 - **裁剪不要赌**：辉光全部画在控件内部的 13px 留白里（`neon_draw()` 的 `pad`），不依赖 `vgui_custom_set_clip_content(w, 0)` 放行越界绘制——该属性在录制/复用路径下不生效，越界内容会整块消失。
 - **文字辉光只能叠**：文字经 `add_text` 绘制，字形不参与路径遮罩，`set_effect` 对它无效；这里按 4 个方向（悬停时 8 个）叠加低透明度副本，偏移控制在 0.6~1.3px 才会融合成光边，偏移大了会变成双影。
@@ -1687,6 +1706,7 @@ out/bin/x64d/vgui_editor_c_api_test.exe
 out/bin/x64d/vgui_texture_test.exe
 out/bin/x64d/vgui_render_target_test.exe
 out/bin/x64d/vgui_screenshot_test.exe
+out/bin/x64d/vgui_fx_test.exe
 out/bin/x64d/ovg_scene_json_test.exe
 ```
 
@@ -1713,6 +1733,14 @@ ctest --test-dir out/build/x64-debug -R vgui_render_target --output-on-failure
 ```
 
 无 Vulkan 设备时返回 77，由 CTest 标记 SKIP。
+
+`vgui_fx_test` 是特效管线的像素级回归：220×160、MSAA 8 的离屏目标上并排画三块白色实心矩形——对照组（无特效）、`VG_EFFECT_OUTER_GLOW`（`sigma=4`、`spread=1`）、以及 `clear_effect` 之后的第三块，然后回读像素断言 8 条：下载成功、三块本体都是白、对照组与第三块外侧无提亮、特效块外侧 8px 处 G 通道明显高于背景、远角仍是背景色。它同时验证了纹理池与 flight 归还路径不泄漏（开着 `VK_LAYER_KHRONOS_validation` 跑不应出现 `has not been destroyed`）。CTest 注册为 `vgui_fx`：
+
+```bash
+ctest --test-dir out/build/x64-debug -R vgui_fx --output-on-failure
+```
+
+特效格式不被支持时返回 77，同样标记 SKIP。
 
 `vgui_editor_kit_test` 的 `test_document_handlers` 覆盖 S08：File 菜单顺序、`Ctrl+N/O/S/Shift+S` 快捷键、回调转发、空处理器回退、`edit.delete` 把多选集合交给宿主以及返回 `false` 时清除选择的兼容路径。`ovg_scene_json_test` 用 mock `ovg_ctx_cb` 覆盖 A08：`image_ref`（可带 `@`）解析到 `TextureRes` 后经 `image_update` 上传、同一资源只上传一次、缺失/非纹理/stride 或像素长度非法的资源被跳过、`src_rect`/`dst_rect` 默认值、九宫格/颜色/flip 透传、场景切换与 `clear_image_cache()` 释放句柄。
 

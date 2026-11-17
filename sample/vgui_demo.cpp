@@ -1910,20 +1910,18 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 // 的，这个近似几乎和真模糊一样。文字辉光用多方向的低透明度副本叠加，
 // 字距靠逐字符定位做出来（vgui 没有 letter-spacing）。
 //
-// 为什么不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW：
-//   1) vgui 的渲染后端（backends/vgui_renderer_sdl3.cpp）是 ovg 渲染器的精简
-//      分支，按设计删掉了 compute 与路径模板裁剪，因此整套特效管线在这里是
-//      不存在的：fxSupported / effect_mask / blur / draw_effect_quad 一处都没有，
-//      set_effect 只是把参数写进 vg_state_save_t::effect，没有消费者，等于静默
-//      失效（同一控件同位置对照实测：叠描边有光晕，换 set_effect 后只剩本体）。
-//      完整实现只在 third_party/ovg/ovg/ovg_renderer_sdl3.cpp 里。
-//   2) 即使补上后端也覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配
-//      fx 槽位，文字是 add_text 生成的图集几何，不进 mask，拿不到发光。文字必须
-//      手绘副本，那线框也一并手绘，绘制路径反而统一。
+// 为什么默认不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW（后端已支持，见下一段）：
+//   1) 覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配 fx 槽位，文字是
+//      add_text 生成的图集几何，不进 mask，拿不到发光。文字必须手绘副本，
+//      那线框也一并手绘，绘制路径反而统一。
+//   2) 1px 细线对高斯发光是低效输入：模糊核把能量摊到几十个像素上，覆盖度太低，
+//      spread 拉满也偏弱（实测线框外 8px 处只有 +1/255）。大面积填充或圆角阴影
+//      才划算。叠描边能用「层距 + 线宽」精确控制衰减曲线，细线框更合适。
 //   3) 成本与可控性：每个特效要额外一轮 R8 mask + R16F 两次 blur dispatch +
 //      合成 quad，还要按尺寸分桶的纹理池；hover 缓动期间每帧参数都在变，等于
 //      每帧重算。叠描边是纯顶点绘制，且只有一个标量同时控制亮度与半径，方便
 //      按像素剖面把「静止淡 / 悬停强」调到目标值。
+//   两条路径都能跑，VGUI_NEON_FX=1 可切换到 fx 版本做肉眼对比。
 //
 // 控件是 VGUI_CUSTOM，自己维护 hover/press 动画并在未收敛时标脏，
 // 这样按需渲染（内容不变不重绘）下动画仍然连续。
@@ -1941,6 +1939,11 @@ static uint32_t neon_abgr(uint32_t argb)
 {
 	return (argb & 0xFF00FF00u) | ((argb & 0x00FF0000u) >> 16) | ((argb & 0x000000FFu) << 16);
 }
+
+// 对比开关：VGUI_NEON_FX=1 时改用 vg_effect_t 的真实高斯外发光。
+// 保留它是因为它验证了 vgui 后端刚补齐的特效管线；但实测 1px 细线在 blur 下
+// 的覆盖度太低（spread 拉满仍偏弱），所以默认仍走叠描边方案。
+static const bool neon_use_fx = std::getenv("VGUI_NEON_FX") != nullptr;
 
 static size_t neon_utf8_len(unsigned char c)
 {
@@ -2052,7 +2055,25 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	const float bx = x + pad + inset, by = y + pad + inset;
 	const float bw = ww - (pad + inset) * 2.0f, bh = hh - (pad + inset) * 2.0f;
 
-	if (glow > 0.01f)
+	if (neon_use_fx)
+	{
+		// vg_effect_t 路径：mask + compute 高斯模糊 + 合成，光晕是连续的，
+		// 没有叠描边的层间台阶。代价是每帧多几张离屏纹理和两趟 compute。
+		vg_effect_t e = {};
+		e.type = VG_EFFECT_OUTER_GLOW;
+		e.color = neon_abgr(neon_alpha(accent, glow));
+		e.sigma = 5.0f;
+		e.spread = 1.0f;	// 1px 描边的模糊覆盖度太低，靠 spread 放大（上限 4 倍）
+		e.opacity = 1.0f;
+		cb->set_effect(vg, &e);
+		cb->set_line_width(vg, 1.0f);
+		// 遮罩取的是几何自身的 alpha，所以这里必须用实心色，不能画成全透明。
+		cb->set_source_color(vg, neon_abgr(neon_alpha(accent, 1.0f)));
+		cb->rectangle(vg, bx, by, bw, bh);
+		cb->stroke(vg);
+		cb->set_effect(vg, nullptr);
+	}
+	else if (glow > 0.01f)
 	{
 		// 层数要多、层距要窄且互相重叠，否则外扩描边会露出一圈圈台阶。
 		const int kLayers = 12;
