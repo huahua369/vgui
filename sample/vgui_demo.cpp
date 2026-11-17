@@ -1906,16 +1906,19 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 //---------------------------------------------------------------------------
 // 霓虹线框按钮：只画线框和文字，两者各自带辉光，不填充底色。
 //
-// 线框辉光用一圈圈外扩、逐层降低 alpha 的描边逼近高斯衰减：矩形是轴对齐
-// 的，这个近似几乎和真模糊一样。文字辉光用多方向的低透明度副本叠加，
-// 字距靠逐字符定位做出来（vgui 没有 letter-spacing）。
+// 线框辉光用一圈圈外扩、逐层降低 alpha 的描边逼近高斯衰减。外扩层必须和本体
+// 同形：圆角矩形向外偏移 d 后仍是圆角矩形、半径正好是 R + d（等价于与半径 d 的
+// 圆做 Minkowski 和），所以这里每层都用 rounded_rectangle 并把半径一起加 d。
+// 只画 rectangle() 的话本体是圆角、光晕是直角，四角会露出“方框套圆角”的错位。
+// 文字辉光用多方向的低透明度副本叠加，字距靠逐字符定位做出来（vgui 没有
+// letter-spacing）。
 //
 // 为什么默认不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW（后端已支持，见下一段）：
 //   1) 覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配 fx 槽位，文字是
 //      add_text 生成的图集几何，不进 mask，拿不到发光。文字必须手绘副本，
 //      那线框也一并手绘，绘制路径反而统一。
 //   2) 1px 细线对高斯发光是低效输入：模糊核把能量摊到几十个像素上，覆盖度太低，
-//      spread 拉满也偏弱（实测线框外 8px 处只有 +1/255）。大面积填充或圆角阴影
+//      spread 拉满也偏弱（实测线框外 8px 处只有 +1/255）。大面积填充或柔和大圆角
 //      才划算。叠描边能用「层距 + 线宽」精确控制衰减曲线，细线框更合适。
 //   3) 成本与可控性：每个特效要额外一轮 R8 mask + R16F 两次 blur dispatch +
 //      合成 quad，还要按尺寸分桶的纹理池；hover 缓动期间每帧参数都在变，等于
@@ -2054,6 +2057,10 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	const float inset = 0.5f + 0.75f * pr;
 	const float bx = x + pad + inset, by = y + pad + inset;
 	const float bw = ww - (pad + inset) * 2.0f, bh = hh - (pad + inset) * 2.0f;
+	// 圆角半径。辉光层要跟着本体一起圆：圆角矩形向外偏移 d 后仍是圆角矩形，
+	// 半径正好是 R + d（等于和半径 d 的圆做 Minkowski 和），所以叠描边对圆角
+	// 同样是精确解，不会在四角露出“方框套圆角”的直角。
+	const float kCorner = 10.0f;
 
 	if (neon_use_fx)
 	{
@@ -2069,7 +2076,7 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 		cb->set_line_width(vg, 1.0f);
 		// 遮罩取的是几何自身的 alpha，所以这里必须用实心色，不能画成全透明。
 		cb->set_source_color(vg, neon_abgr(neon_alpha(accent, 1.0f)));
-		cb->rectangle(vg, bx, by, bw, bh);
+		cb->rounded_rectangle(vg, bx, by, bw, bh, kCorner);
 		cb->stroke(vg);
 		cb->set_effect(vg, nullptr);
 	}
@@ -2087,7 +2094,9 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 			const float a = glow * 0.30f * (1.0f - t) * (1.0f - t);
 			cb->set_line_width(vg, step + 1.5f);
 			cb->set_source_color(vg, neon_abgr(neon_alpha(accent, a)));
-			cb->rectangle(vg, bx - d, by - d, bw + d * 2.0f, bh + d * 2.0f);
+			// 半径随外扩同步增大，四角的弧长与本体保持同心。
+			cb->rounded_rectangle(vg, bx - d, by - d, bw + d * 2.0f, bh + d * 2.0f,
+				kCorner + d);
 			cb->stroke(vg);
 		}
 	}
@@ -2095,7 +2104,7 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	// 2) 1px 线框本体。
 	cb->set_line_width(vg, 1.0f);
 	cb->set_source_color(vg, neon_abgr(neon_alpha(accent, disabled ? 0.45f : 0.70f + 0.30f * h)));
-	cb->rectangle(vg, bx, by, bw, bh);
+	cb->rounded_rectangle(vg, bx, by, bw, bh, kCorner);
 	cb->stroke(vg);
 
 	// 3) 文字：居中于线框内，按下整体下沉 1px，字距 4px，字色与光晕随悬停提亮。
@@ -2162,7 +2171,7 @@ static int neon_event(vgui_widget* w, const vgui_event* e, void* user)
 static void build_neon(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "霓虹线框按钮 NEON（仅边框 + 文字发光）");
-	label(c, "透明底：只画 1px 描边和文字，两者都带辉光——静止是淡光，悬停明显加强；按下内缩，点击/回车均可触发。",
+	label(c, "透明底：只画 1px 圆角描边（半径 10）和文字，两者都带辉光——辉光的圆角与本体同心；静止是淡光，悬停明显加强；按下内缩，点击/回车均可触发。",
 		13, 0xFF9AA7B4);
 
 	vgui_widget* r = row(c, 14);
