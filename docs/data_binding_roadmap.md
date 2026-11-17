@@ -2,7 +2,7 @@
 
 > 目标版本：v0.4+（可选层，不重写核心）  
 > 关联：runtime_roadmap §7.1（R4-1 绑定惯例）、editor_roadmap（PropertyGrid 命令栈）、`docs/vgui_capability_assessment.md` §5.3「无响应式/声明式数据绑定」  
-> 状态：P0（双向标量绑定）、P1（声明式糖 + SELECTION）、P2（撤销集成）、P3（集合/派生绑定，核心部分）已实现
+> 状态：P0（双向标量绑定）、P1（声明式糖 + SELECTION）、P2（撤销集成）、P3（集合/派生绑定）已实现；P4（字符串表达式 DSL + 依赖自动分析）已规划、实施中
 
 ---
 
@@ -175,6 +175,78 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 
 ---
 
+### Phase 4 — 字符串表达式 DSL + 依赖自动分析（P4, L，可选）
+
+> 规划于 2026-11-17。三项设计决策已确认：① 语法范围 = 核心运算 + 内建函数；② 变量来源 = 模型字段 offset + 自定义 getter 都支持；③ 语义 = 只读计算绑定（不写回）。
+
+**目标**：把 P3 的「回调式 computed + 手工 `add_dependency`」升级为「字符串表达式 + 自动依赖分析」。宿主写一行表达式（`price*qty`、`"3 of 5 selected"`、`clamp(volume,0,1)`），解析后自动找出引用了哪些变量、自动登记对应 model 为依赖，任一依赖 `mark_dirty` 后下一帧 flush 重算并推送控件；空闲帧零重算、零 `set_*`。
+
+**架构关键**：表达式绑定**完全用现有公开 API 组合**，不改 `vgui.cpp` 私有 `vgui_binding` 结构、不动 flush / writeback 路径。实现为一个「编译期构造 + 运行期求值」的包装：
+1. `tokenize` + 递归下降 `parse` → AST；
+2. 遍历 AST 收集引用的变量名 → 在 scope 里解析成 model 指针 → 自动 `vgui_binding_add_dependency()`；
+3. 用 `vgui_bind_cb(ctx, widget, kind, user=已编译表达式, get=expr_get_fn, set=NULL)` 注册；
+4. `expr_get_fn` 每次被 flush 调用时求值 AST，把结果按 `kind` 写进 `out`（float / int / const char*）。
+
+因 `set=NULL`，编辑日志与 writeback 天然不触发，符合只读语义；依赖自动登记后完全复用 P3 的版本比对 flush，`last_flush_count` 统计口径不变。
+
+**新增公共 API**（新头 `include/vgui/binding/expression.h`，纯 C 接口 + C++ RAII 糖；随核心安装、`VGUI_CORE_ONLY` 可用）：
+```c
+/* 表达式作用域：把变量名映射到 (model, offset, type) 或自定义 getter。 */
+vgui_expr_scope* vgui_expr_scope_create(vgui_context* ctx);
+void vgui_expr_scope_destroy(vgui_expr_scope* scope);
+/* 变量来源一：模型字段 offset（type ∈ vgui_bind_value_type）。 */
+void vgui_expr_scope_add_field(vgui_expr_scope* scope, const char* name,
+                               void* model, size_t offset, int value_type);
+/* 变量来源二：自定义 getter（非 POD / 需转换），dep_model 可为 NULL。 */
+typedef void (*vgui_expr_get_fn)(void* user, int value_type, void* out);
+void vgui_expr_scope_add_getter(vgui_expr_scope* scope, const char* name,
+                                int value_type, vgui_expr_get_fn get, void* user,
+                                void* dep_model);
+/* 编译并绑定。失败返回 NULL 并把错误写入 errbuf。AST/依赖在内部持久持有。 */
+vgui_binding* vgui_bind_expr(vgui_context* ctx, vgui_widget* widget,
+                             vgui_bind_kind kind, vgui_expr_scope* scope,
+                             const char* expression, char* errbuf, size_t errbuf_size);
+/* 诊断：最近一次编译的错误、表达式引用到的变量名快照。 */
+const char* vgui_expr_scope_last_error(const vgui_expr_scope* scope);
+int vgui_expr_scope_var_count(const vgui_expr_scope* scope);
+```
+
+C++ 糖（同头、`namespace vgui`）：`vgui::expr_scope`（RAII 持有 scope）、`vgui::bind_expr(widget, kind, "…")`、`scope.field("price", &model, &M::price)` / `scope.getter(...)`。
+
+**DSL 语法（第一版）**：
+- 字面量：十进制数（`1`、`2.5`、`0.3`）、单/双引号字符串；
+- 变量：标识符 `[A-Za-z_][A-Za-z0-9_]*`，指向 scope 中注册的字段/getter；
+- 运算：`+ - * / %`（字符串 `+` 为拼接）、比较 `== != < <= > >=`、逻辑 `&& || !`、括号；
+- 内建函数：`min max abs round floor ceil clamp`（数值）、`len upper lower`（字符串）；
+- 优先级（高→低）：括号/一元 `! -` → `* / %` → `+ -` → 比较 → `&&` → `||`。
+- 结果按 `kind` 强制转换：VALUE/PROGRESS → float，CHECKED/VISIBLE/ENABLED → int（非零为真），TEXT → 字符串（数值转十进制串）。
+
+**依赖自动分析细节**：
+- parse 时按标识符在 scope 内解析；未定义变量 → 编译失败（errbuf 报错），不产生绑定；
+- 引用的每个变量若来自 `add_field` → 登记其 `model`；若来自 `add_getter` 且 `dep_model != NULL` → 登记 `dep_model`；重复 model 去重；
+- 登记时机在 `vgui_bind_cb` 之后（`add_dependency` 要求 cb 绑定），因 `vgui_bind_cb` 注册即 apply 一次，会用到 scope，故**必须先建好 scope 变量再 bind**；
+- 表达式是只读的，宿主更新字段仍走 `vgui_model_mark_dirty` / `VGUI_MODEL_SET` / `vgui::model_write`。
+
+**生命周期约束**：编译后的 AST 持有变量名字符串与对 scope 变量的引用；`vgui_unbind` 时随 `vgui_binding` 释放 AST（在 `bind_expr` 包装的 user payload 析构里）。scope 必须比绑定活得久；文档与 C++ RAII 糖显式约束这一点（`expr_scope` 移动语义、禁止先于绑定析构——约定宿主顺序，类似 render_target 的借用指针约定）。
+
+**实现文件**：
+- 新建 `include/vgui/binding/expression.h`（公共头，纳入安装与自包含检查 glob）；
+- 新建 `gui/binding/expression.cpp`（tokenizer/parser/AST/eval/scope），加入 `backends/CMakeLists.txt` 核心源列表（CORE_ONLY 也编译，纯核心无 SDL）；
+- `vgui_model_test.cpp` 增 `test_binding_expr`；README 增「表达式绑定」段；本路线图状态更新。
+
+**验收**（`model_test::test_binding_expr`）：
+- 编译成功：`price*qty` → VALUE 标签、`"3 of 5 selected"`/`len(name)` → TEXT、`clamp(volume,0,1)` → PROGRESS；
+- 初始化控件一次；依赖字段 `mark_dirty` → 重算推送；未引用字段 `mark_dirty` → 不重算（读数计数 / `last_flush_count==0`）；
+- getter 变量 + `dep_model` 标脏触发重算；`dep_model=NULL` 的 getter 靠 `invalidate` 重算；
+- 空闲帧 `last_flush_count==0`；
+- 错误：未定义变量 / 括号不匹配 / 未知函数 / 除零约定 → `bind_expr` 返回 NULL 且 errbuf 非空；
+- 只读：无 set_fn，控件编辑不回写模型（编辑日志不记录该绑定）；
+- `unbind` / `vgui_destroy` 后无泄漏、无悬垂。
+
+**边界 / 非目标**：不做跨表达式拓扑排序（依赖是 model 级，与 P3 一致）；不做字符串/数值的动态弱类型隐式转换链（仅上面列出的固定转换）；不做赋值/语句（表达式纯函数）；不做反射式 `obj.field` 成员路径（变量须在 scope 显式注册）。
+
+---
+
 ## 4. 非目标（明确不做）
 
 - **完整元对象 / 反射系统**（类 Qt MOC）：过重，C 库不适用；用 offset / 回调替代。
@@ -201,3 +273,5 @@ vgui_binding* bind(vgui_context* ctx, vgui_widget* w,
 本规划落地后，`vgui_capability_assessment.md` §5.3「无响应式/声明式数据绑定」可改为"已实现（Phase 0/1）"；Phase 2 还会补上"控件编辑可撤销"这一编辑器能力。其余共通缺失（文件对话框、屏幕阅读器、移动/Web 后端、多线程 UI 等）不受影响。
 
 现状（P2 + P3 之后）：标量双向绑定、声明式糖、SELECTION、编辑日志 + `command_stack` 撤销、`model_write` 自动脏标记、PropertyGrid 字段绑定、`vector_rows` 集合适配器、依赖驱动的 computed 绑定均已落地；`vgui_capability_assessment.md` 的「响应式/声明式数据绑定」条目已从共通缺失中移除，仅保留「字符串表达式 DSL / 自动依赖分析」作为未覆盖项。
+
+P4 落地后（规划见上）：字符串表达式 DSL（核心运算 + 内建函数）、模型字段/自定义 getter 两类变量来源、parse 期自动收集依赖并登记、只读计算绑定——把最后一项未覆盖项也消解，届时可把评估报告中「仍缺字符串表达式 DSL 与依赖自动分析」改写为已实现（P4）。

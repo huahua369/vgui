@@ -128,6 +128,10 @@ set(VGUI_PUBLIC_HEADERS
     "${VGUI_SOURCE_DIR}/include/vgui/vgui.h"
     "${VGUI_SOURCE_DIR}/include/vgui/file_dialog.h"
     "${VGUI_SOURCE_DIR}/include/vgui.h")
+# Optional C++ binding helpers are pure core (no SDL), checked even in CORE_ONLY.
+file(GLOB VGUI_PUBLIC_BINDING_HEADERS CONFIGURE_DEPENDS
+    "${VGUI_SOURCE_DIR}/include/vgui/binding/*.h")
+list(APPEND VGUI_PUBLIC_HEADERS ${VGUI_PUBLIC_BINDING_HEADERS})
 file(GLOB VGUI_PUBLIC_BACKEND_HEADERS CONFIGURE_DEPENDS
     "${VGUI_SOURCE_DIR}/include/vgui/backend/*.h")
 # CORE_ONLY 构建没有 SDL3，后端公共头无法编译，只检查核心/kit/chart 头。

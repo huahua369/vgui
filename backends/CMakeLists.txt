@@ -7,6 +7,7 @@ option(VGUI_CORE_ONLY "Build libvgui without the SDL3 backend (engine runtime / 
 set(OVGUI_SOURCES
     anim.cpp
     ../gui/vgui.cpp
+    ../gui/binding/expression.cpp
     mapView.cpp
 )
 

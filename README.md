@@ -1208,6 +1208,42 @@ vgui_binding_add_dependency(total, &order);      // 可登记多个模型
 
 诊断：`vgui_binding_count(ui)` 与 `vgui_binding_last_flush_count(ui)`（空闲帧为 0）可用来画绑定浮层。
 
+#### 字符串表达式绑定（P4，`<vgui/binding/expression.h>`）
+
+把派生值写成一行表达式即可：解析一次成 AST，自动找出引用的变量并把它们的模型登记为依赖，
+任一依赖 `vgui_model_mark_dirty()` 后下一帧重算；空闲帧零重算、零 `set_*`。表达式是**只读计算绑定**
+（不设 setter，用户编辑不回写、不进编辑日志）。纯核心、无 SDL，`VGUI_CORE_ONLY` 可用。
+
+```c
+#include <vgui/binding/expression.h>
+
+struct Order { float price; int qty; std::string name; } o = { 2.0f, 3, "Widget" };
+vgui_expr_scope* sc = vgui_expr_scope_create(ui);
+vgui_expr_scope_add_field(sc, "price", &o, VGUI_OFFSET(Order, price), VGUI_BINDV_FLOAT);
+vgui_expr_scope_add_field(sc, "qty",   &o, VGUI_OFFSET(Order, qty),   VGUI_BINDV_INT);
+vgui_expr_scope_add_field(sc, "name",  &o, VGUI_OFFSET(Order, name),  VGUI_BINDV_TEXT);
+
+char err[256];
+vgui_binding* b = vgui_bind_expr(ui, label, VGUI_BIND_TEXT, sc,
+    "'Total: ' + price * qty + ' (' + upper(name) + ')'", err, sizeof err);
+// => "Total: 6 (WIDGET)"；改 o.price/o.qty/o.name 后 vgui_model_mark_dirty(ui,&o) 即刷新
+```
+
+- **语法**：数值/单双引号字符串字面量、变量、括号；`+ - * / %`（`+` 遇字符串为拼接）、
+  `== != < <= > >=`、`&& || !`；函数 `min max abs round floor ceil clamp len upper lower`。
+  优先级：`! -` → `* / %` → `+ -` → 比较 → `&&` → `||`。结果按绑定 kind 转换。
+- **变量来源**：`vgui_expr_scope_add_field()`（模型字段 offset，依赖全自动）或
+  `vgui_expr_scope_add_getter()`（自定义 get 回调，非 POD/需转换；传 `dep_model` 自动登记，
+  传 `NULL` 时靠 `vgui_binding_invalidate()` 推送）。
+- **错误处理**：未定义变量 / 语法错 / 未知函数 → `vgui_bind_expr()` 返回 `NULL` 并把原因写进 `errbuf`；
+  `vgui_expr_scope_last_error()` 可取最近一次错误。
+- **生命周期**：scope 拥有所有编译好的 AST，必须**晚于**由它创建的绑定与 context 销毁
+  （先 `vgui_destroy(ui)` / `vgui_unbind()`，再 `vgui_expr_scope_destroy(sc)`；与 `vector_rows` 同一借用约定）。
+- **C++ 糖**：`vgui::expr_scope sc(ui); sc.field("price", &o, &Order::price); sc.bind(label, VGUI_BIND_TEXT, "price*qty", &err);`
+  模板按成员类型自动推断 FLOAT/INT/TEXT，`expr_scope` 为 RAII move-only。
+
+详见 `docs/data_binding_roadmap.md` Phase 4 与 `sample/vgui_model_test.cpp::test_binding_expr`（29 条断言）。
+
 ### 文件对话框（原生对话框）
 
 打开/保存/选目录走系统原生对话框（Windows `IFileDialog`、macOS `NSOpenPanel`、Linux XDG

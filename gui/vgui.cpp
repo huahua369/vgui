@@ -2054,6 +2054,10 @@ static void vgui_binding_writeback_value(vgui_widget* w)
 	for (vgui_binding* b : targets)
 	{
 		if (!vgui_binding_registered(ctx, b)) continue;
+		/* A callback binding with no setter is read-only (e.g. a computed
+		 * expression).  There is no model side to write back, so it must not
+		 * evaluate get() nor emit an edit-journal record on a user edit. */
+		if (b->uses_cb && !b->set_fn) continue;
 		const bool is_check = (b->kind == VGUI_BIND_CHECKED);
 		int old_i = 0;
 		float old_f = 0.0f;
@@ -2108,6 +2112,8 @@ static void vgui_binding_writeback_text(vgui_widget* w)
 	for (vgui_binding* b : targets)
 	{
 		if (!vgui_binding_registered(ctx, b)) continue;
+		/* Read-only callback bindings (no setter) have no model side to write. */
+		if (b->uses_cb && !b->set_fn) continue;
 		std::string old_t;
 		if (b->uses_cb)
 		{
@@ -3761,6 +3767,8 @@ static void vgui_binding_writeback_selection(vgui_widget* w)
 		// A set callback may have unbound (and destroyed) an earlier target.
 		if (!vgui_binding_registered(ctx, b))
 			continue;
+		/* Read-only callback bindings (no setter) have no model side to write. */
+		if (b->uses_cb && !b->set_fn) continue;
 		int old_index = 0;
 		if (b->uses_cb)
 		{

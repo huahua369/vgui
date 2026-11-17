@@ -22,6 +22,7 @@
 #include <ovg_c.h>		// font_familys_t
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / new_font_family
 #include <vgui/binding/collection.h>	// P3: std::vector<Row> -> vgui_row_source
+#include <vgui/binding/expression.h>	// P4: string expression DSL + auto deps
 #include <vgui/vgui.h>		// public C API
 
 static int g_fail = 0;
@@ -5018,6 +5019,183 @@ static void test_binding_collection(font_familys_t* familys)
 	vgui_destroy(ctx);
 }
 
+//-- P4: string expression DSL + automatic dependency analysis ---------------
+struct expr_order
+{
+	float price = 2.0f;
+	int qty = 3;
+	std::string name = "Widget";
+	float volume = 0.75f;
+	int unrelated = 0;
+	int getter_reads = 0;
+	std::string getter_scratch;
+};
+
+/* A custom getter variable that also records how often it is evaluated. */
+static void expr_custom_get(void* user, int value_type, void* out)
+{
+	expr_order* m = (expr_order*)user;
+	(void)value_type;
+	m->getter_reads++;
+	m->getter_scratch = "PREMIUM";
+	*(const char**)out = m->getter_scratch.c_str();
+}
+
+/* Independent counter for the second (no-dep) getter, so a mark_dirty that
+ * legitimately recomputes 'grade' cannot be mistaken for recomputing 'tag'. */
+struct expr_tag_state { int reads = 0; std::string scratch = "TAG"; };
+static void expr_tag_get(void* user, int value_type, void* out)
+{
+	expr_tag_state* t = (expr_tag_state*)user;
+	(void)value_type;
+	t->reads++;
+	*(const char**)out = t->scratch.c_str();
+}
+
+static void test_binding_expr(font_familys_t* familys)
+{
+	vgui_context* ctx = vgui_create(familys, 16.0f);
+	vgui_context_set_size(ctx, 400, 300);
+	vgui_widget_set_layout(vgui_root(ctx), VGUI_LAYOUT_ABSOLUTE);
+
+	expr_order m;
+	vgui_expr_scope* scope = vgui_expr_scope_create(ctx);
+	vgui_expr_scope_add_field(scope, "price", &m, VGUI_OFFSET(expr_order, price), VGUI_BINDV_FLOAT);
+	vgui_expr_scope_add_field(scope, "qty", &m, VGUI_OFFSET(expr_order, qty), VGUI_BINDV_INT);
+	vgui_expr_scope_add_field(scope, "name", &m, VGUI_OFFSET(expr_order, name), VGUI_BINDV_TEXT);
+	vgui_expr_scope_add_field(scope, "volume", &m, VGUI_OFFSET(expr_order, volume), VGUI_BINDV_FLOAT);
+	/* unrelated is deliberately NOT registered as a variable. */
+	check(vgui_expr_scope_var_count(scope) == 4, "expr: registered variable count");
+
+	char err[256];
+
+	// Numeric expression -> VALUE widget, initialized once.
+	vgui_widget* total = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_binding* bt = vgui_bind_expr(ctx, total, VGUI_BIND_VALUE, scope, "price * qty", err, sizeof err);
+	check(bt != nullptr && err[0] == '\0', "expr: numeric expression compiles");
+	check(near(vgui_widget_get_value(total), 6.0f), "expr: numeric value initialized (2*3)");
+
+	// TEXT expression with a function + string concatenation.
+	vgui_widget* label = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_binding* bl = vgui_bind_expr(ctx, label, VGUI_BIND_TEXT, scope,
+		"'Total: ' + price * qty + ' (' + upper(name) + ')'", err, sizeof err);
+	check(bl != nullptr && err[0] == '\0', "expr: text expression compiles");
+	check(std::string(vgui_widget_get_text(label)) == "Total: 6 (WIDGET)",
+		"expr: text expression evaluates (concat + upper)");
+
+	// PROGRESS expression with clamp().
+	vgui_widget* prog = vgui_widget_add(vgui_root(ctx), VGUI_PROGRESS, nullptr);
+	vgui_binding* bp = vgui_bind_expr(ctx, prog, VGUI_BIND_PROGRESS, scope,
+		"clamp(volume, 0, 1)", err, sizeof err);
+	check(bp != nullptr, "expr: clamp expression compiles");
+	check(near(vgui_widget_get_value(prog), 0.75f), "expr: clamp() result bound");
+
+	// Comparison + logic -> CHECKED.
+	vgui_widget* chk = vgui_widget_add(vgui_root(ctx), VGUI_CHECKBOX, "");
+	vgui_binding* bc = vgui_bind_expr(ctx, chk, VGUI_BIND_CHECKED, scope,
+		"qty > 2 && len(name) >= 6", err, sizeof err);
+	check(bc != nullptr, "expr: boolean expression compiles");
+	check(vgui_widget_get_checked(chk) == 1, "expr: comparison + logic -> checked");
+
+	// ---- automatic dependency analysis ----
+	m.price = 5.0f;
+	m.qty = 4;
+	m.name = "Gadget";
+	m.volume = 0.4f;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(total), 20.0f), "expr: referenced model change recomputes value");
+	check(std::string(vgui_widget_get_text(label)) == "Total: 20 (GADGET)",
+		"expr: referenced model change recomputes text");
+	check(near(vgui_widget_get_value(prog), 0.4f), "expr: referenced model change recomputes clamp");
+
+	// Idle frame: no recompute, no writes.
+	int flush_before = vgui_binding_last_flush_count(ctx);
+	vgui_update(ctx, 0.016f);
+	check(vgui_binding_last_flush_count(ctx) == 0 && flush_before >= 0,
+		"expr: idle frame does no work");
+
+	// A model that no expression references: mark dirty must not push anything.
+	m.unrelated = 42;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(near(vgui_widget_get_value(total), 20.0f) &&
+		vgui_binding_last_flush_count(ctx) == 0,
+		"expr: unrelated field change does not recompute (auto deps are exact)");
+
+	// Recompute whose result is unchanged writes nothing.
+	m.qty = 4; m.price = 5.0f;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(vgui_binding_last_flush_count(ctx) == 0, "expr: unchanged result writes nothing");
+
+	// ---- getter variable with dep_model ----
+	m.getter_reads = 0;
+	vgui_widget* ggetter = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_binding* bg = vgui_bind_expr(ctx, ggetter, VGUI_BIND_TEXT, scope, "grade", err, sizeof err);
+	check(bg == nullptr && err[0] != '\0', "expr: undefined variable fails to compile");
+	vgui_expr_scope_add_getter(scope, "grade", VGUI_BINDV_TEXT, expr_custom_get, &m, &m);
+	vgui_binding* bg2 = vgui_bind_expr(ctx, ggetter, VGUI_BIND_TEXT, scope, "grade + ' TIER'", err, sizeof err);
+	check(bg2 != nullptr, "expr: getter variable compiles");
+	check(std::string(vgui_widget_get_text(ggetter)) == "PREMIUM TIER",
+		"expr: getter variable evaluates");
+	check(m.getter_reads >= 1, "expr: getter was evaluated");
+	int reads_after_init = m.getter_reads;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(m.getter_reads > reads_after_init, "expr: getter dep_model retriggers evaluation");
+
+	// getter with dep_model=NULL -> only invalidate() pushes.
+	expr_tag_state tag_state;
+	vgui_expr_scope_add_getter(scope, "tag", VGUI_BINDV_TEXT, expr_tag_get, &tag_state, nullptr);
+	vgui_widget* tagw = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	vgui_binding* btag = vgui_bind_expr(ctx, tagw, VGUI_BIND_TEXT, scope, "tag", err, sizeof err);
+	check(btag != nullptr, "expr: getter (no dep) compiles");
+	/* A newly bound cb binding has seen==0 and re-applies on the first update;
+	 * settle that before measuring. */
+	vgui_update(ctx, 0.016f);
+	int tag_reads = tag_state.reads;
+	vgui_model_mark_dirty(ctx, &m);
+	vgui_update(ctx, 0.016f);
+	check(tag_state.reads == tag_reads, "expr: getter (no dep) is not retriggered by mark_dirty");
+	vgui_binding_invalidate(btag);
+	vgui_update(ctx, 0.016f);
+	check(tag_state.reads > tag_reads, "expr: getter (no dep) retriggers on invalidate");
+
+	// ---- error handling ----
+	vgui_widget* bad = vgui_widget_add(vgui_root(ctx), VGUI_LABEL, "");
+	check(vgui_bind_expr(ctx, bad, VGUI_BIND_TEXT, scope, "(price * qty", err, sizeof err) == nullptr &&
+		err[0] != '\0', "expr: unbalanced paren reports error");
+	check(vgui_bind_expr(ctx, bad, VGUI_BIND_TEXT, scope, "nosuchvar + 1", err, sizeof err) == nullptr &&
+		err[0] != '\0', "expr: unknown variable reports error");
+	check(vgui_bind_expr(ctx, bad, VGUI_BIND_TEXT, scope, "mystery(1)", err, sizeof err) == nullptr &&
+		err[0] != '\0', "expr: unknown function reports error");
+	check(vgui_bind_expr(ctx, bad, VGUI_BIND_TEXT, scope, "", err, sizeof err) == nullptr &&
+		err[0] != '\0', "expr: empty expression reports error");
+	check(std::string(vgui_expr_scope_last_error(scope)).size() > 0,
+		"expr: last error retained for diagnostics");
+
+	// ---- read-only: expression bindings have no setter / no edit-journal record ----
+	/* A genuine checkbox edit must not write back or be reported: the expression
+	 * binding installs set=NULL, so there is no model field or journal entry. */
+	bind_journal expr_journal;
+	vgui_set_edit_recorder(ctx, bind_journal_record, &expr_journal);
+	vgui_widget_set_pos(chk, 10.0f, 220.0f);
+	vgui_widget_set_size(chk, 180.0f, 24.0f);
+	vgui_input_mouse_move(ctx, 20.0f, 232.0f);
+	vgui_input_mouse_down(ctx, 1, 20.0f, 232.0f, 1);
+	vgui_input_mouse_up(ctx, 1, 20.0f, 232.0f, 1);
+	vgui_update(ctx, 0.016f);
+	check(expr_journal.count == 0, "expr: read-only binding produces no edit record");
+	vgui_set_edit_recorder(ctx, nullptr, nullptr);
+
+	// unbind engine, scope still owns ASTs; destroying ctx first is the contract.
+	vgui_unbind(ctx, bt);
+	vgui_unbind(ctx, bl);
+	vgui_destroy(ctx);
+	vgui_expr_scope_destroy(scope);
+}
+
 // ---------------------------------------------------------------------------
 // File dialogs: the platform bridge is provider based, so a fake provider can
 // exercise the whole path (request -> result -> update dispatch) headless.
@@ -5409,6 +5587,7 @@ int main()
 	test_focus_navigate(ui, familys);
 	test_binding(familys);
 	test_binding_collection(familys);
+	test_binding_expr(familys);
 	test_file_dialog(ui);
 	test_recent_dirs(ui);
 
