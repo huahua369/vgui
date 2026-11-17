@@ -173,6 +173,33 @@ namespace vgui_editor_kit {
 		std::string alt_text;
 	};
 
+	/* S4: a request from the table to the host to add/remove/change a drawing.
+	 * The table never decodes files, assigns ids or mutates the host's drawing
+	 * collection: it only describes the intent and the host answers by
+	 * updating its model and recording one undo step.  `files` are BORROWED and
+	 * valid only for the duration of the listener call. */
+	enum class table_drawing_request_kind
+	{
+		insert = 0,	/* new drawing: `files` (drop/paste) or `drawing` (api) */
+		remove,		/* delete `id` */
+		update		/* replace `id` with `drawing` */
+	};
+
+	struct table_drawing_request
+	{
+		table_drawing_request_kind kind = table_drawing_request_kind::insert;
+		/* OS drop / clipboard payload: borrowed paths, empty for api inserts. */
+		std::vector<std::string> files;
+		/* Cell under the drop/paste point; invalid for api calls. */
+		table_cell anchor;
+		/* Target of remove/update; empty on insert (host generates the id). */
+		std::string id;
+		/* Template for insert / full value for update. */
+		table_drawing drawing;
+		/* "drop" / "paste" / "api" - lets the host word its undo entry. */
+		std::string source;
+	};
+
 	struct table_column
 	{
 		std::string id;
@@ -421,14 +448,47 @@ namespace vgui_editor_kit {
 		bool send_drawing_to_back(const std::string& id);
 		bool move_drawing_z(const std::string& id, int direction);
 
+		/* ---- drawing insertion requests (S4) -------------------------- */
+		/* The host answers insert/remove/update requests: it decodes any
+		 * files, assigns stable ids/textures, edits its own drawing model and
+		 * records one undo step.  Return false to refuse the request.  Without
+		 * a listener, all request APIs are no-ops returning false. */
+		using drawing_request_listener =
+			std::function<bool(const table_drawing_request&)>;
+		void set_drawing_request_listener(drawing_request_listener listener);
+		drawing_request_listener drawing_request_listener_fn() const;
+
+		/* Programmatic host API.  Each returns the host's answer. */
+		bool insert_drawing(const table_drawing& drawing);
+		bool remove_drawing(const std::string& id);
+		bool update_drawing(const std::string& id,
+			const table_drawing& drawing);
+
+		/* OS file drop entry point (backends call this with absolute window
+		 * coordinates).  Files are offered to the host as an insert request
+		 * anchored at the cell under (abs_x, abs_y).  Returns true when the
+		 * host accepted; false when there is no listener/at a bad location. */
+		bool insert_drawings_from_files(
+			const std::vector<std::string>& files, float abs_x, float abs_y);
+
 		/* ---- clipboard ------------------------------------------------- */
 		using clipboard_get_fn = std::function<std::string()>;
 		using clipboard_set_fn = std::function<void(const std::string&)>;
+		/* S4: host supplies image paths from the system clipboard; an empty
+		 * vector means "no image".  The table turns them into a paste insert
+		 * request anchored at the current selection.  Kept separate from the
+		 * text handlers so existing callers are unaffected. */
+		using clipboard_image_get_fn = std::function<std::vector<std::string>()>;
 		/* Host supplies system-clipboard access; the table never depends on a
 		 * windowing backend.  With no getter, Ctrl+V is a no-op; with no setter,
 		 * copy still returns the TSV but does not write the system clipboard. */
 		void set_clipboard_handlers(clipboard_get_fn get,
 			clipboard_set_fn set);
+		void set_clipboard_image_getter(clipboard_image_get_fn get);
+		/* Pastes clipboard images (when a getter is installed and returns
+		 * paths) as one insert request; returns false when there is no image
+		 * or the host refused.  Text TSV is untouched. */
+		bool paste_images_from_clipboard();
 		/* Serializes the current selection to TSV (rows by '\\n', columns by
 		 * '\\t') in display order.  Returns an empty string when no selection. */
 		std::string copy_selection() const;
@@ -491,6 +551,15 @@ namespace vgui_editor_kit {
 		std::size_t last_render_cell_image_queries() const noexcept;
 
 	private:
+		/* S4 OS-file drop target; defined out-of-line in table_view.cpp and
+		 * kept alive for the widget's whole lifetime. */
+		struct file_drop_target;
+		std::unique_ptr<file_drop_target> file_drop_target_;
+
+		/* Sends a request to the host; marks the widget dirty on acceptance so
+		 * the next paint pulls the host-updated drawing model. */
+		bool emit_drawing_request(const table_drawing_request& request) const;
+
 		struct layout_metrics
 		{
 			float x = 0.0f, y = 0.0f, width = 0.0f, height = 0.0f;
@@ -637,6 +706,7 @@ namespace vgui_editor_kit {
 		std::string hover_drawing_id_;
 		drawing_selection_listener drawing_selection_listener_;
 		drawing_change_listener drawing_change_listener_;
+		drawing_request_listener drawing_request_listener_;
 		drawing_handle hover_drawing_handle_ = drawing_handle::none;
 
 		/* In-flight transform gesture.  `before` is the snapshot at press;
@@ -700,6 +770,7 @@ namespace vgui_editor_kit {
 		edit_listener edit_listener_;
 		clipboard_get_fn clipboard_get_;
 		clipboard_set_fn clipboard_set_;
+		clipboard_image_get_fn clipboard_image_get_;
 		command_stack* commands_ = nullptr;
 
 		vgui_widget* popup_content_ = nullptr;

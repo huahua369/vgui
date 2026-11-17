@@ -1,6 +1,7 @@
 #include <vgui/editor/table_view.h>
 
 #include <vgui/editor/curve_editor.h>
+#include <vgui/editor/drag_bridge.h>
 #include <vgui/editor/gradient_editor.h>
 #include <vgui/editor/spinbox.h>
 #include "ui_scale.h"
@@ -433,6 +434,40 @@ namespace vgui_editor_kit {
 		}
 	}
 
+	/* Long-lived kit drop target: offers OS files as an insert request and
+	 * highlights the table body while hovered.  Defined before construction so
+	 * the unique_ptr member has a complete type at destruction. */
+	struct table_view::file_drop_target final : public drop_target
+	{
+		explicit file_drop_target(table_view* owner) : owner_(owner) {}
+
+		bool can_accept(const drag_payload& payload) const override
+		{
+			return owner_ && owner_->drawing_request_listener_ &&
+				payload.kind == drag_payload_kind::files && !payload.files.empty();
+		}
+
+		void hover(const drag_payload& payload, vgui_widget* target,
+			float x, float y, vgui_drop_hint* hint) override
+		{
+			(void)payload; (void)x; (void)y;
+			if (!hint) return;
+			float wx = 0, wy = 0, ww = 0, wh = 0;
+			if (target)
+				vgui_widget_get_rect(target, &wx, &wy, &ww, &wh);
+			hint->kind = VGUI_DROP_HINT_RECT;
+			hint->x = wx; hint->y = wy; hint->w = ww; hint->h = wh;
+		}
+
+		bool drop(const drag_payload& payload, float x, float y) override
+		{
+			if (!owner_) return false;
+			return owner_->insert_drawings_from_files(payload.files, x, y);
+		}
+
+		table_view* owner_;
+	};
+
 	/* --------------------------------------------------------------------- */
 	/* Construction / widget                                                 */
 	/* --------------------------------------------------------------------- */
@@ -523,6 +558,11 @@ namespace vgui_editor_kit {
 		vgui_custom_set_draw(widget_, &table_view::on_draw, this);
 		vgui_custom_set_event(widget_, &table_view::on_event, this);
 		vgui_custom_set_clip_content(widget_, 1);
+
+		/* S4: accept OS file drops.  The target is owned by this view and
+		 * forwards files to the host as an insert request. */
+		file_drop_target_ = std::make_unique<file_drop_target>(this);
+		set_editor_drop_target(widget_, file_drop_target_.get());
 	}
 
 	vgui_widget* table_view::widget() const noexcept
@@ -1596,6 +1636,92 @@ namespace vgui_editor_kit {
 	}
 
 	/* --------------------------------------------------------------------- */
+	/* Drawing insertion requests (S4)                                       */
+	/* --------------------------------------------------------------------- */
+
+	bool table_view::emit_drawing_request(
+		const table_drawing_request& request) const
+	{
+		bool accepted = false;
+		if (drawing_request_listener_)
+			accepted = drawing_request_listener_(request) != false;
+		if (accepted && widget_)
+			vgui_widget_mark_dirty(widget_);
+		return accepted;
+	}
+
+	void table_view::set_drawing_request_listener(
+		drawing_request_listener listener)
+	{
+		drawing_request_listener_ = std::move(listener);
+	}
+
+	table_view::drawing_request_listener
+	table_view::drawing_request_listener_fn() const
+	{
+		return drawing_request_listener_;
+	}
+
+	bool table_view::insert_drawing(const table_drawing& drawing)
+	{
+		table_drawing_request request;
+		request.kind = table_drawing_request_kind::insert;
+		request.drawing = drawing;
+		request.source = "api";
+		return emit_drawing_request(request);
+	}
+
+	bool table_view::remove_drawing(const std::string& id)
+	{
+		if (id.empty()) return false;
+		table_drawing_request request;
+		request.kind = table_drawing_request_kind::remove;
+		request.id = id;
+		request.source = "api";
+		return emit_drawing_request(request);
+	}
+
+	bool table_view::update_drawing(const std::string& id,
+		const table_drawing& drawing)
+	{
+		if (id.empty()) return false;
+		table_drawing_request request;
+		request.kind = table_drawing_request_kind::update;
+		request.id = id;
+		request.drawing = drawing;
+		request.source = "api";
+		return emit_drawing_request(request);
+	}
+
+	bool table_view::insert_drawings_from_files(
+		const std::vector<std::string>& files, float abs_x, float abs_y)
+	{
+		if (files.empty() || !drawing_request_listener_) return false;
+		/* Access the drop point in the same content space hit_test() uses:
+		 * absolute window point -> widget-local -> minus border inset. */
+		const layout_metrics m = metrics();
+		const float scale = ui_scale();
+		const float content_x = abs_x - m.x - kBorderInset * scale;
+		const float content_y = abs_y - m.y - kBorderInset * scale;
+		const table_cell cell = hit_test(content_x, content_y);
+
+		table_drawing_request request;
+		request.kind = table_drawing_request_kind::insert;
+		request.files = files;
+		request.anchor = cell;
+		request.source = "drop";
+		/* A sensible template: anchor at the drop cell, default size.  The
+		 * host is free to replace it (it decodes the real image). */
+		request.drawing.anchor_from = cell;
+		request.drawing.anchor_to = cell;
+		request.drawing.width = 96.0f;
+		request.drawing.height = 64.0f;
+		request.drawing.sizing = table_drawing_sizing::move_only;
+		request.drawing.fit = table_image_fit::contain;
+		return emit_drawing_request(request);
+	}
+
+	/* --------------------------------------------------------------------- */
 	/* Geometry / scrolling                                                  */
 	/* --------------------------------------------------------------------- */
 
@@ -2634,6 +2760,35 @@ namespace vgui_editor_kit {
 	{
 		clipboard_get_ = std::move(get);
 		clipboard_set_ = std::move(set);
+	}
+
+	void table_view::set_clipboard_image_getter(clipboard_image_get_fn get)
+	{
+		clipboard_image_get_ = std::move(get);
+	}
+
+	bool table_view::paste_images_from_clipboard()
+	{
+		if (!clipboard_image_get_ || !drawing_request_listener_)
+			return false;
+		const std::vector<std::string> files = clipboard_image_get_();
+		if (files.empty()) return false;
+
+		table_drawing_request request;
+		request.kind = table_drawing_request_kind::insert;
+		request.files = files;
+		request.source = "paste";
+		/* Anchor at the current selection's top-left cell when available. */
+		if (selection_.valid())
+			request.anchor = { selection_.first_row(),
+				selection_.first_column() };
+		request.drawing.anchor_from = request.anchor;
+		request.drawing.anchor_to = request.anchor;
+		request.drawing.width = 96.0f;
+		request.drawing.height = 64.0f;
+		request.drawing.sizing = table_drawing_sizing::move_only;
+		request.drawing.fit = table_image_fit::contain;
+		return emit_drawing_request(request);
 	}
 
 	static std::string tsv_escape(const std::string& value)
@@ -4035,6 +4190,9 @@ namespace vgui_editor_kit {
 				}
 				if (event->key == 'V' || event->key == 'v')
 				{
+					/* S4: images on the clipboard take priority over TSV. */
+					if (self->paste_images_from_clipboard())
+						return 1;
 					if (self->clipboard_get_)
 						self->paste_text(self->clipboard_get_());
 					return 1;

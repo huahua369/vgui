@@ -1,6 +1,6 @@
 # 表格图片功能规划（对齐 Excel）
 
-> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）+ S3（交互）已实施**；S4～S6 仍为规划
+> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）+ S3（交互）+ S4（插入途径）已实施**；S5～S6 仍为规划
 > 适用版本：vgui 0.4+
 > 相关：[editor_roadmap](editor_roadmap.md) §2.2「表格/数据网格」、[vgui_capability_assessment](vgui_capability_assessment.md)、[data_binding_roadmap](data_binding_roadmap.md)
 > 面向对象：`vgui_editor_kit::table_view` / `vgui_editor_table`（C API）/ `vgui_spreadsheet_demo`
@@ -41,6 +41,15 @@
 - 公共 API：`set_drawing_change_listener` / `hit_test_drawing_handle` / `drawing_gesture_active` / 三个 z 命令。
 - demo：宿主 change 回调写回 `g->drawings` 并压 `function_command`（"Edit Drawing"，undo 恢复 before）；自检从 46 → 64 条，覆盖手柄命中、move/resize/rotate 各一次提交+undo、Escape 取消、z 命令与错误 id。
 - 回归：debug 全量构建 104/104、spreadsheet 64/64、multiwindow on-demand 40/40、editor kit PASS、editor C API 2013/0、通用 C API 32/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
+
+**已完成：插入途径（对应规划 S4）**
+
+- 统一请求通道：新增 `table_drawing_request_kind`（insert/remove/update）、`table_drawing_request`（files / anchor / id / drawing / source）、`set_drawing_request_listener()`。表格只描述意图，宿主在其中解码文件、分配 id/纹理、写回自己的模型并压一条 undo；表格不解码、不拥有数据、不写入 `table_state`，接受后仅 `mark_dirty()`。无 listener 时请求 API 均为 no-op 返回 false。
+- 宿主 API：`insert_drawing()` / `remove_drawing()` / `update_drawing()`，每次发一条 request 并返回宿主结果。
+- OS 文件拖入：表格控件在 `build()` 挂 kit drop target（`can_accept` 只收 files；`hover` 高亮整个表体为 `VGUI_DROP_HINT_RECT`；`drop` 把绝对坐标换算到内容空间、`hit_test` 取落点单元格）。`insert_drawings_from_files()` 可程序化触发，request `source="drop"` 并带锚点与借用路径。
+- 剪贴板图片：`set_clipboard_image_getter()`（独立于文本 handlers，源码兼容），`paste_images_from_clipboard()` 把路径作为 insert request（`source="paste"`，锚在当前选区左上）。`Ctrl+V` 优先图片、无图片才回退 TSV。
+- demo：spreadsheet 的 request listener 用程序化纹理模拟"解码"，insert 生成稳定 id 并把首文件路径设为 key，insert/remove/update 各压一条 `function_command` undo；剪贴板用内存路径模拟。自检从 64 → 85 条，覆盖三种入口各一条 request+undo、锚点命中、模型写回、非法 id/空载荷拒绝且不改模型。
+- 待续：S5（alt text tooltip、序列化快照——几何仍归宿主，只做只读快照）、S6（C API 镜像 drawings/request + 测试）。
 
 ---
 
