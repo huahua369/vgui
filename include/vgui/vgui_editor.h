@@ -2016,6 +2016,82 @@ extern "C" {
 	VGUI_API void vgui_editor_table_cell_image_default(
 		vgui_editor_table_cell_image* image);
 
+	/* ---- floating drawings ------------------------------------------------ */
+
+	/* How a floating drawing follows its anchor cells when layout changes. */
+	typedef enum vgui_editor_table_drawing_sizing {
+		VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE = 0,
+		VGUI_EDITOR_TABLE_DRAWING_MOVE_ONLY,
+		VGUI_EDITOR_TABLE_DRAWING_FIXED
+	} vgui_editor_table_drawing_sizing;
+
+	/* Handle under the pointer for a selected drawing. */
+	typedef enum vgui_editor_table_drawing_handle {
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_NONE = 0,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_MOVE,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_ROTATE,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_NORTH_WEST,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_NORTH,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_NORTH_EAST,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_EAST,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_SOUTH_EAST,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_SOUTH,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_SOUTH_WEST,
+		VGUI_EDITOR_TABLE_DRAWING_HANDLE_WEST
+	} vgui_editor_table_drawing_handle;
+
+	/* Kind of an insertion request sent from the table to the host. */
+	typedef enum vgui_editor_table_drawing_request_kind {
+		VGUI_EDITOR_TABLE_DRAWING_INSERT = 0,
+		VGUI_EDITOR_TABLE_DRAWING_REMOVE,
+		VGUI_EDITOR_TABLE_DRAWING_UPDATE
+	} vgui_editor_table_drawing_request_kind;
+
+	/* A floating picture anchored to a cell range.  `id` / `key` / `alt_text`
+	 * are BORROWED for the duration of the host callback that supplies or
+	 * receives them; `texture` is BORROWED through the consuming paint. */
+	typedef struct vgui_editor_table_drawing {
+		uint32_t struct_size;
+		const char* id;
+		const char* key;
+		vgui_texture* texture;
+		vgui_editor_table_cell anchor_from;
+		vgui_editor_table_cell anchor_to;
+		float from_dx;
+		float from_dy;
+		float to_dx;
+		float to_dy;
+		vgui_editor_table_drawing_sizing sizing;
+		float width;
+		float height;
+		vgui_editor_table_image_fit fit;
+		float rotation;
+		float opacity;
+		int z;
+		const char* alt_text;
+	} vgui_editor_table_drawing;
+
+	VGUI_API void vgui_editor_table_drawing_default(
+		vgui_editor_table_drawing* drawing);
+
+	/* A request from the table to the host.  The host decodes files, assigns
+	 * ids/textures, edits its own model and records one undo step.  `files`,
+	 * `id`, `source` and the strings inside `drawing` are BORROWED and only
+	 * valid for the listener call. */
+	typedef struct vgui_editor_table_drawing_request {
+		uint32_t struct_size;
+		vgui_editor_table_drawing_request_kind kind;
+		const char* const* files;
+		size_t file_count;
+		vgui_editor_table_cell anchor;
+		const char* id;
+		vgui_editor_table_drawing drawing;
+		const char* source;
+	} vgui_editor_table_drawing_request;
+
+	VGUI_API void vgui_editor_table_drawing_request_default(
+		vgui_editor_table_drawing_request* request);
+
 	/* One column.  `editor` describes the cell editor with the same descriptor
 	 * the property grid uses; its own id/label fields are ignored in favour of
 	 * the column's. */
@@ -2062,6 +2138,14 @@ extern "C" {
 		 * cells; a NULL texture falls back to cell text. */
 		void (*cell_image)(void* user, size_t row, const char* column,
 			vgui_editor_table_cell_image* out);
+		/* Optional floating-drawing layer, pulled once per paint.  Writes up
+		 * to `cap` drawings into `out` (default each with
+		 * vgui_editor_table_drawing_default) and returns the total count;
+		 * when the count exceeds cap the table retries with an exact-size
+		 * buffer.  Strings inside each drawing are BORROWED and must stay
+		 * valid until the pull call returns. */
+		size_t (*drawings)(void* user, vgui_editor_table_drawing* out,
+			size_t cap);
 	} vgui_editor_table_source;
 
 	VGUI_API void vgui_editor_table_source_default(
@@ -2082,6 +2166,24 @@ extern "C" {
 		size_t cap);
 	typedef void (*vgui_editor_table_clipboard_set_fn)(void* user,
 		const char* text);
+
+	/* Floating-drawing callbacks.  selection fires with the selected id (empty
+	 * string for none); change hands before/after so the host can write back
+	 * and undo; request is answered with non-zero to accept.  All string and
+	 * drawing pointers are BORROWED for the duration of the call. */
+	typedef void (*vgui_editor_table_drawing_selection_fn)(void* user,
+		const char* id);
+	typedef void (*vgui_editor_table_drawing_change_fn)(void* user,
+		const char* id, const vgui_editor_table_drawing* before,
+		const vgui_editor_table_drawing* after);
+	typedef int (*vgui_editor_table_drawing_request_fn)(void* user,
+		const vgui_editor_table_drawing_request* request);
+	/* Host supplies image paths from the system clipboard.  Follows the
+	 * bytes-needed convention: returns the total byte count of a NUL-separated
+	 * path list ending in an extra NUL (0 when there is no image), writes into
+	 * out when cap allows. */
+	typedef size_t (*vgui_editor_table_clipboard_image_get_fn)(void* user,
+		char* out, size_t cap);
 
 	VGUI_API vgui_editor_table* vgui_editor_table_create(vgui_widget* parent);
 	VGUI_API void vgui_editor_table_destroy(vgui_editor_table* table);
@@ -2234,6 +2336,70 @@ extern "C" {
 		char* out, size_t cap);
 	VGUI_API int vgui_editor_table_paste_text(vgui_editor_table* table,
 		const char* tsv);
+
+	/* ---- floating drawings -------------------------------------------------- */
+
+	/* Selection / hit-testing.  String results follow the bytes-needed
+	 * convention (0 means "no drawing"). */
+	VGUI_API size_t vgui_editor_table_selected_drawing(vgui_editor_table* table,
+		char* out, size_t cap);
+	VGUI_API int vgui_editor_table_select_drawing(vgui_editor_table* table,
+		const char* id);
+	VGUI_API void vgui_editor_table_clear_drawing_selection(
+		vgui_editor_table* table);
+	VGUI_API size_t vgui_editor_table_hit_test_drawing(
+		vgui_editor_table* table, float content_x, float content_y, char* out,
+		size_t cap);
+	VGUI_API int vgui_editor_table_drawing_rect(vgui_editor_table* table,
+		const char* id, float* x, float* y, float* width, float* height);
+	VGUI_API size_t vgui_editor_table_last_render_drawing_count(
+		vgui_editor_table* table);
+	VGUI_API void vgui_editor_table_set_on_drawing_selection(
+		vgui_editor_table* table, vgui_editor_table_drawing_selection_fn fn,
+		void* user);
+	VGUI_API size_t vgui_editor_table_drawing_tooltip_text(
+		vgui_editor_table* table, const char* id, char* out, size_t cap);
+
+	/* Interaction (S3). */
+	VGUI_API void vgui_editor_table_set_on_drawing_change(
+		vgui_editor_table* table, vgui_editor_table_drawing_change_fn fn,
+		void* user);
+	VGUI_API vgui_editor_table_drawing_handle
+	vgui_editor_table_hit_test_drawing_handle(vgui_editor_table* table,
+		const char* id, float abs_x, float abs_y);
+	VGUI_API int vgui_editor_table_drawing_gesture_active(
+		vgui_editor_table* table);
+	VGUI_API int vgui_editor_table_bring_drawing_to_front(
+		vgui_editor_table* table, const char* id);
+	VGUI_API int vgui_editor_table_send_drawing_to_back(
+		vgui_editor_table* table, const char* id);
+	VGUI_API int vgui_editor_table_move_drawing_z(vgui_editor_table* table,
+		const char* id, int direction);
+
+	/* Insertion requests (S4). */
+	VGUI_API void vgui_editor_table_set_on_drawing_request(
+		vgui_editor_table* table, vgui_editor_table_drawing_request_fn fn,
+		void* user);
+	VGUI_API int vgui_editor_table_insert_drawing(vgui_editor_table* table,
+		const vgui_editor_table_drawing* drawing);
+	VGUI_API int vgui_editor_table_remove_drawing(vgui_editor_table* table,
+		const char* id);
+	VGUI_API int vgui_editor_table_update_drawing(vgui_editor_table* table,
+		const char* id, const vgui_editor_table_drawing* drawing);
+	VGUI_API int vgui_editor_table_insert_drawings_from_files(
+		vgui_editor_table* table, const char* const* files, size_t count,
+		float abs_x, float abs_y);
+
+	/* Clipboard images (S4). */
+	VGUI_API void vgui_editor_table_set_clipboard_image_getter(
+		vgui_editor_table* table,
+		vgui_editor_table_clipboard_image_get_fn fn, void* user);
+	VGUI_API int vgui_editor_table_paste_images_from_clipboard(
+		vgui_editor_table* table);
+
+	/* In-cell image queries performed by the last paint (S0/S1). */
+	VGUI_API size_t vgui_editor_table_last_render_cell_image_queries(
+		vgui_editor_table* table);
 
 	/* ------------------------------------------------------------------------- */
 	/* Timeline                                                                  */

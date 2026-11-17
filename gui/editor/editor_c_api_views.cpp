@@ -69,6 +69,14 @@ struct vgui_editor_table : vgeditor::c_object<table_view> {
 	vgeditor::callback_slot<vgui_editor_table_edit_fn> on_edit;
 	vgeditor::callback_slot<vgui_editor_table_clipboard_get_fn> clipboard_get;
 	vgeditor::callback_slot<vgui_editor_table_clipboard_set_fn> clipboard_set;
+	vgeditor::callback_slot<vgui_editor_table_drawing_selection_fn>
+		on_drawing_selection;
+	vgeditor::callback_slot<vgui_editor_table_drawing_change_fn>
+		on_drawing_change;
+	vgeditor::callback_slot<vgui_editor_table_drawing_request_fn>
+		on_drawing_request;
+	vgeditor::callback_slot<vgui_editor_table_clipboard_image_get_fn>
+		clipboard_image_get;
 };
 
 namespace {
@@ -107,6 +115,31 @@ namespace {
 		"table alignment drift");
 	static_assert((int)VGUI_EDITOR_TABLE_ALIGN_RIGHT == (int)table_alignment::right,
 		"table alignment drift");
+
+	static_assert((int)VGUI_EDITOR_TABLE_IMAGE_CONTAIN ==
+		(int)table_image_fit::contain, "image fit drift");
+	static_assert((int)VGUI_EDITOR_TABLE_IMAGE_COVER ==
+		(int)table_image_fit::cover, "image fit drift");
+	static_assert((int)VGUI_EDITOR_TABLE_IMAGE_STRETCH ==
+		(int)table_image_fit::stretch, "image fit drift");
+	static_assert((int)VGUI_EDITOR_TABLE_IMAGE_NONE ==
+		(int)table_image_fit::none, "image fit drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE ==
+		(int)table_drawing_sizing::move_and_size, "drawing sizing drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_MOVE_ONLY ==
+		(int)table_drawing_sizing::move_only, "drawing sizing drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_FIXED ==
+		(int)table_drawing_sizing::fixed, "drawing sizing drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_INSERT ==
+		(int)table_drawing_request_kind::insert, "drawing request kind drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_REMOVE ==
+		(int)table_drawing_request_kind::remove, "drawing request kind drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_UPDATE ==
+		(int)table_drawing_request_kind::update, "drawing request kind drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_HANDLE_NONE ==
+		(int)table_view::drawing_handle::none, "drawing handle drift");
+	static_assert((int)VGUI_EDITOR_TABLE_DRAWING_HANDLE_WEST ==
+		(int)table_view::drawing_handle::west, "drawing handle drift");
 
 	/* The table column reuses the property descriptor, so it shares the grid's
 	 * type/semantic ordering. */
@@ -265,6 +298,123 @@ namespace {
 		out->column = cell.column;
 	}
 
+	/* ---- drawing conversion helpers ---------------------------------- */
+
+	vgui_editor_table_image_fit to_c_fit(table_image_fit fit)
+	{
+		switch (fit) {
+		case table_image_fit::cover: return VGUI_EDITOR_TABLE_IMAGE_COVER;
+		case table_image_fit::stretch: return VGUI_EDITOR_TABLE_IMAGE_STRETCH;
+		case table_image_fit::none: return VGUI_EDITOR_TABLE_IMAGE_NONE;
+		default: return VGUI_EDITOR_TABLE_IMAGE_CONTAIN;
+		}
+	}
+
+	table_image_fit from_c_fit(vgui_editor_table_image_fit fit)
+	{
+		switch (fit) {
+		case VGUI_EDITOR_TABLE_IMAGE_COVER: return table_image_fit::cover;
+		case VGUI_EDITOR_TABLE_IMAGE_STRETCH: return table_image_fit::stretch;
+		case VGUI_EDITOR_TABLE_IMAGE_NONE: return table_image_fit::none;
+		default: return table_image_fit::contain;
+		}
+	}
+
+	vgui_editor_table_drawing_sizing to_c_sizing(table_drawing_sizing sizing)
+	{
+		switch (sizing) {
+		case table_drawing_sizing::move_only:
+			return VGUI_EDITOR_TABLE_DRAWING_MOVE_ONLY;
+		case table_drawing_sizing::fixed:
+			return VGUI_EDITOR_TABLE_DRAWING_FIXED;
+		default:
+			return VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE;
+		}
+	}
+
+	table_drawing_sizing from_c_sizing(vgui_editor_table_drawing_sizing sizing)
+	{
+		switch (sizing) {
+		case VGUI_EDITOR_TABLE_DRAWING_MOVE_ONLY:
+			return table_drawing_sizing::move_only;
+		case VGUI_EDITOR_TABLE_DRAWING_FIXED:
+			return table_drawing_sizing::fixed;
+		default:
+			return table_drawing_sizing::move_and_size;
+		}
+	}
+
+	vgui_editor_table_drawing_handle to_c_handle(table_view::drawing_handle h)
+	{
+		if (h < table_view::drawing_handle::none ||
+			h > table_view::drawing_handle::west)
+			return VGUI_EDITOR_TABLE_DRAWING_HANDLE_NONE;
+		return (vgui_editor_table_drawing_handle)(int)h;
+	}
+
+	/* Fills a C drawing view from a C++ drawing.  The three scratch strings
+	 * keep the borrowed const char* pointers valid for the callback's life. */
+	struct drawing_view {
+		std::string id;
+		std::string key;
+		std::string alt;
+		vgui_editor_table_drawing value;
+	};
+
+	drawing_view to_c_drawing(const table_drawing& src)
+	{
+		drawing_view holder;
+		vgui_editor_table_drawing_default(&holder.value);
+		holder.id = src.id;
+		holder.key = src.key;
+		holder.alt = src.alt_text;
+		vgui_editor_table_drawing& v = holder.value;
+		v.id = holder.id.empty() ? nullptr : holder.id.c_str();
+		v.key = holder.key.empty() ? nullptr : holder.key.c_str();
+		v.alt_text = holder.alt.empty() ? nullptr : holder.alt.c_str();
+		v.texture = src.texture;
+		fill_cell(src.anchor_from, &v.anchor_from);
+		fill_cell(src.anchor_to, &v.anchor_to);
+		v.from_dx = src.from_dx;
+		v.from_dy = src.from_dy;
+		v.to_dx = src.to_dx;
+		v.to_dy = src.to_dy;
+		v.sizing = to_c_sizing(src.sizing);
+		v.width = src.width;
+		v.height = src.height;
+		v.fit = to_c_fit(src.fit);
+		v.rotation = src.rotation;
+		v.opacity = src.opacity;
+		v.z = src.z;
+		return holder;
+	}
+
+	table_drawing from_c_drawing(const vgui_editor_table_drawing* src)
+	{
+		table_drawing out;
+		const vgui_editor_table_drawing v = vgeditor::take_desc(src);
+		if (v.id) out.id = v.id;
+		if (v.key) out.key = v.key;
+		if (v.alt_text) out.alt_text = v.alt_text;
+		out.texture = v.texture;
+		out.anchor_from.row = v.anchor_from.row;
+		out.anchor_from.column = v.anchor_from.column;
+		out.anchor_to.row = v.anchor_to.row;
+		out.anchor_to.column = v.anchor_to.column;
+		out.from_dx = v.from_dx;
+		out.from_dy = v.from_dy;
+		out.to_dx = v.to_dx;
+		out.to_dy = v.to_dy;
+		out.sizing = from_c_sizing(v.sizing);
+		out.width = v.width;
+		out.height = v.height;
+		out.fit = from_c_fit(v.fit);
+		out.rotation = v.rotation;
+		out.opacity = v.opacity;
+		out.z = v.z;
+		return out;
+	}
+
 	/* Pull model conversion.  row_count and cell_text are required (a missing
 	 * required callback degrades to an empty model); row_id and cell_style fall
 	 * back to the kit defaults when the host leaves them NULL. */
@@ -321,12 +471,30 @@ namespace {
 						: view.fit == VGUI_EDITOR_TABLE_IMAGE_NONE
 							? table_image_fit::none
 							: table_image_fit::contain;
-				image.tint = view.tint;
-				return image;
-			};
-		}
-		return out;
+			image.tint = view.tint;
+			return image;
+		};
 	}
+	if (d.drawings) {
+		out.drawings = [d, owner]() -> std::vector<table_drawing> {
+			const size_t count = d.drawings(owner->user, nullptr, 0);
+			std::vector<table_drawing> drawings;
+			if (!count)
+				return drawings;
+			std::vector<vgui_editor_table_drawing> views(count);
+			for (vgui_editor_table_drawing& view : views)
+				vgui_editor_table_drawing_default(&view);
+			const size_t pulled = d.drawings(owner->user, views.data(),
+				views.size());
+			const size_t n = pulled < count ? pulled : count;
+			drawings.reserve(n);
+			for (size_t i = 0; i < n; ++i)
+				drawings.push_back(from_c_drawing(&views[i]));
+			return drawings;
+		};
+	}
+	return out;
+}
 
 	/* Outliner virtual adapter.  Names cross as borrowed host strings copied by
 	 * to_text; the tooltip keeps the host pointer because the kit only borrows it
@@ -1028,6 +1196,32 @@ extern "C" {
 		image->tint = 0;
 	}
 
+	void vgui_editor_table_drawing_default(vgui_editor_table_drawing* drawing)
+	{
+		if (!drawing)
+			return;
+		std::memset(drawing, 0, sizeof(*drawing));
+		drawing->struct_size = (uint32_t)sizeof(*drawing);
+		vgui_editor_table_cell_default(&drawing->anchor_from);
+		vgui_editor_table_cell_default(&drawing->anchor_to);
+		drawing->sizing = VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE;
+		drawing->fit = VGUI_EDITOR_TABLE_IMAGE_STRETCH;
+		drawing->opacity = 1.0f;
+		drawing->z = 0;
+	}
+
+	void vgui_editor_table_drawing_request_default(
+		vgui_editor_table_drawing_request* request)
+	{
+		if (!request)
+			return;
+		std::memset(request, 0, sizeof(*request));
+		request->struct_size = (uint32_t)sizeof(*request);
+		request->kind = VGUI_EDITOR_TABLE_DRAWING_INSERT;
+		vgui_editor_table_cell_default(&request->anchor);
+		vgui_editor_table_drawing_default(&request->drawing);
+	}
+
 	void vgui_editor_table_column_default(vgui_editor_table_column* column)
 	{
 		if (!column)
@@ -1077,6 +1271,10 @@ extern "C" {
 		table->impl.set_selection_listener(nullptr);
 		table->impl.set_selection_range_listener(nullptr);
 		table->impl.set_clipboard_handlers(nullptr, nullptr);
+		table->impl.set_clipboard_image_getter(nullptr);
+		table->impl.set_drawing_selection_listener(nullptr);
+		table->impl.set_drawing_change_listener(nullptr);
+		table->impl.set_drawing_request_listener(nullptr);
 		table->impl.set_edit_handler(nullptr);
 		table->impl.set_edit_listener(nullptr);
 		table->impl.set_command_stack(nullptr);
@@ -1736,6 +1934,291 @@ extern "C" {
 		if (!table || !tsv)
 			return 0;
 		return table->impl.paste_text(tsv) ? 1 : 0;
+	}
+
+	/* ---- floating drawings ------------------------------------------------ */
+
+	size_t vgui_editor_table_selected_drawing(vgui_editor_table* table,
+		char* out, size_t cap)
+	{
+		if (!table)
+			return 0;
+		return vgeditor::copy_string(out, cap,
+			table->impl.selected_drawing().c_str());
+	}
+
+	int vgui_editor_table_select_drawing(vgui_editor_table* table,
+		const char* id)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.select_drawing(id) ? 1 : 0;
+	}
+
+	void vgui_editor_table_clear_drawing_selection(vgui_editor_table* table)
+	{
+		if (table)
+			table->impl.clear_drawing_selection();
+	}
+
+	size_t vgui_editor_table_hit_test_drawing(vgui_editor_table* table,
+		float content_x, float content_y, char* out, size_t cap)
+	{
+		if (!table)
+			return 0;
+		return vgeditor::copy_string(out, cap,
+			table->impl.hit_test_drawing(content_x, content_y).c_str());
+	}
+
+	int vgui_editor_table_drawing_rect(vgui_editor_table* table,
+		const char* id, float* x, float* y, float* width, float* height)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.drawing_rect(id, x, y, width, height) ? 1 : 0;
+	}
+
+	size_t vgui_editor_table_last_render_drawing_count(
+		vgui_editor_table* table)
+	{
+		return table ? table->impl.last_render_drawing_count() : 0;
+	}
+
+	void vgui_editor_table_set_on_drawing_selection(
+		vgui_editor_table* table, vgui_editor_table_drawing_selection_fn fn,
+		void* user)
+	{
+		if (!table)
+			return;
+		if (!fn) {
+			table->on_drawing_selection.clear();
+			table->impl.set_drawing_selection_listener(nullptr);
+			return;
+		}
+		table->on_drawing_selection.set(fn, user, nullptr);
+		auto fn_ = table->on_drawing_selection.fn;
+		auto user_ = table->on_drawing_selection.user;
+		auto owner_ = table->on_drawing_selection.owner;
+		table->impl.set_drawing_selection_listener(
+			[fn_, user_, owner_](const std::string& id) {
+				if (fn_)
+					fn_(user_, id.c_str());
+			});
+	}
+
+	size_t vgui_editor_table_drawing_tooltip_text(vgui_editor_table* table,
+		const char* id, char* out, size_t cap)
+	{
+		if (!table || !id)
+			return 0;
+		return vgeditor::copy_string(out, cap,
+			table->impl.drawing_tooltip_text(id).c_str());
+	}
+
+	void vgui_editor_table_set_on_drawing_change(
+		vgui_editor_table* table, vgui_editor_table_drawing_change_fn fn,
+		void* user)
+	{
+		if (!table)
+			return;
+		if (!fn) {
+			table->on_drawing_change.clear();
+			table->impl.set_drawing_change_listener(nullptr);
+			return;
+		}
+		table->on_drawing_change.set(fn, user, nullptr);
+		auto fn_ = table->on_drawing_change.fn;
+		auto user_ = table->on_drawing_change.user;
+		auto owner_ = table->on_drawing_change.owner;
+		table->impl.set_drawing_change_listener(
+			[fn_, user_, owner_](const std::string& id,
+				const table_drawing& before, const table_drawing& after) {
+				if (!fn_)
+					return;
+				drawing_view before_view = to_c_drawing(before);
+				drawing_view after_view = to_c_drawing(after);
+				fn_(user_, id.c_str(), &before_view.value, &after_view.value);
+			});
+	}
+
+	vgui_editor_table_drawing_handle
+	vgui_editor_table_hit_test_drawing_handle(vgui_editor_table* table,
+		const char* id, float abs_x, float abs_y)
+	{
+		if (!table || !id)
+			return VGUI_EDITOR_TABLE_DRAWING_HANDLE_NONE;
+		return to_c_handle(table->impl.hit_test_drawing_handle(id, abs_x,
+			abs_y));
+	}
+
+	int vgui_editor_table_drawing_gesture_active(vgui_editor_table* table)
+	{
+		return table && table->impl.drawing_gesture_active() ? 1 : 0;
+	}
+
+	int vgui_editor_table_bring_drawing_to_front(vgui_editor_table* table,
+		const char* id)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.bring_drawing_to_front(id) ? 1 : 0;
+	}
+
+	int vgui_editor_table_send_drawing_to_back(vgui_editor_table* table,
+		const char* id)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.send_drawing_to_back(id) ? 1 : 0;
+	}
+
+	int vgui_editor_table_move_drawing_z(vgui_editor_table* table,
+		const char* id, int direction)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.move_drawing_z(id, direction) ? 1 : 0;
+	}
+
+	void vgui_editor_table_set_on_drawing_request(
+		vgui_editor_table* table, vgui_editor_table_drawing_request_fn fn,
+		void* user)
+	{
+		if (!table)
+			return;
+		if (!fn) {
+			table->on_drawing_request.clear();
+			table->impl.set_drawing_request_listener(nullptr);
+			return;
+		}
+		table->on_drawing_request.set(fn, user, nullptr);
+		auto fn_ = table->on_drawing_request.fn;
+		auto user_ = table->on_drawing_request.user;
+		auto owner_ = table->on_drawing_request.owner;
+		table->impl.set_drawing_request_listener(
+			[fn_, user_, owner_](const table_drawing_request& request) -> bool {
+				if (!fn_)
+					return false;
+				vgui_editor_table_drawing_request view;
+				vgui_editor_table_drawing_request_default(&view);
+				view.kind = request.kind == table_drawing_request_kind::remove
+					? VGUI_EDITOR_TABLE_DRAWING_REMOVE
+					: request.kind == table_drawing_request_kind::update
+						? VGUI_EDITOR_TABLE_DRAWING_UPDATE
+						: VGUI_EDITOR_TABLE_DRAWING_INSERT;
+				/* Borrowed file paths: hold strings and pointer table alive. */
+				std::vector<std::string> files;
+				files.reserve(request.files.size());
+				for (const std::string& f : request.files)
+					files.push_back(f);
+				std::vector<const char*> file_ptrs;
+				file_ptrs.reserve(files.size());
+				for (const std::string& f : files)
+					file_ptrs.push_back(f.c_str());
+				view.files = file_ptrs.empty() ? nullptr : file_ptrs.data();
+				view.file_count = file_ptrs.size();
+				fill_cell(request.anchor, &view.anchor);
+				view.id = request.id.empty() ? nullptr : request.id.c_str();
+				drawing_view drawing_holder = to_c_drawing(request.drawing);
+				view.drawing = drawing_holder.value;
+				view.source = request.source.empty()
+					? nullptr : request.source.c_str();
+				return fn_(user_, &view) != 0;
+			});
+	}
+
+	int vgui_editor_table_insert_drawing(vgui_editor_table* table,
+		const vgui_editor_table_drawing* drawing)
+	{
+		if (!table || !drawing)
+			return 0;
+		return table->impl.insert_drawing(from_c_drawing(drawing)) ? 1 : 0;
+	}
+
+	int vgui_editor_table_remove_drawing(vgui_editor_table* table,
+		const char* id)
+	{
+		if (!table || !id)
+			return 0;
+		return table->impl.remove_drawing(id) ? 1 : 0;
+	}
+
+	int vgui_editor_table_update_drawing(vgui_editor_table* table,
+		const char* id, const vgui_editor_table_drawing* drawing)
+	{
+		if (!table || !id || !drawing)
+			return 0;
+		return table->impl.update_drawing(id, from_c_drawing(drawing)) ? 1 : 0;
+	}
+
+	int vgui_editor_table_insert_drawings_from_files(
+		vgui_editor_table* table, const char* const* files, size_t count,
+		float abs_x, float abs_y)
+	{
+		if (!table || !files || !count)
+			return 0;
+		std::vector<std::string> paths;
+		paths.reserve(count);
+		for (size_t i = 0; i < count; ++i)
+			if (files[i])
+				paths.push_back(files[i]);
+		if (paths.empty())
+			return 0;
+		return table->impl.insert_drawings_from_files(paths, abs_x, abs_y)
+			? 1 : 0;
+	}
+
+	void vgui_editor_table_set_clipboard_image_getter(
+		vgui_editor_table* table,
+		vgui_editor_table_clipboard_image_get_fn fn, void* user)
+	{
+		if (!table)
+			return;
+		if (!fn) {
+			table->clipboard_image_get.clear();
+			table->impl.set_clipboard_image_getter(nullptr);
+			return;
+		}
+		table->clipboard_image_get.set(fn, user, nullptr);
+		auto fn_ = table->clipboard_image_get.fn;
+		auto user_ = table->clipboard_image_get.user;
+		auto owner_ = table->clipboard_image_get.owner;
+		table->impl.set_clipboard_image_getter(
+			[fn_, user_, owner_]() -> std::vector<std::string> {
+				std::vector<std::string> out;
+				if (!fn_)
+					return out;
+				const size_t needed = fn_(user_, nullptr, 0);
+				if (!needed)
+					return out;
+				std::vector<char> buffer(needed + 1, '\0');
+				fn_(user_, buffer.data(), buffer.size());
+				const char* cursor = buffer.data();
+				const char* end = buffer.data() + needed;
+				while (cursor < end) {
+					const char* nul = (const char*)std::memchr(cursor, 0,
+						(size_t)(end - cursor));
+					if (!nul || nul == cursor)
+						break;
+					out.emplace_back(cursor, (size_t)(nul - cursor));
+					cursor = nul + 1;
+				}
+				return out;
+			});
+	}
+
+	int vgui_editor_table_paste_images_from_clipboard(
+		vgui_editor_table* table)
+	{
+		if (!table)
+			return 0;
+		return table->impl.paste_images_from_clipboard() ? 1 : 0;
+	}
+
+	size_t vgui_editor_table_last_render_cell_image_queries(
+		vgui_editor_table* table)
+	{
+		return table ? table->impl.last_render_cell_image_queries() : 0;
 	}
 
 } /* extern "C" */

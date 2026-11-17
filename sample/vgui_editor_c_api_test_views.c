@@ -529,6 +529,91 @@ static void tbl_on_select(void* user, const vgui_editor_table_cell* cell)
 		p->last_value = (double)cell->row + (double)cell->column * 0.001;
 }
 
+/* ---- floating drawing callbacks (C host simulation) ---------------------- */
+
+static const char* tbl_drawing_ids[] = { "d-resize", "d-move", "d-fixed" };
+
+static size_t tbl_drawings(void* user, vgui_editor_table_drawing* out,
+	size_t cap)
+{
+	probe* p = (probe*)user;
+	size_t i;
+	const size_t total = 3;
+	if (p)
+		++p->drawing_pull_count;
+	if (!out)
+		return total;
+	for (i = 0; i < cap && i < total; ++i) {
+		vgui_editor_table_drawing_default(&out[i]);
+		out[i].id = tbl_drawing_ids[i];
+		out[i].key = "float://badge.png";
+		out[i].texture = NULL;
+		out[i].anchor_from.row = (size_t)i;
+		out[i].anchor_from.column = 0;
+		out[i].anchor_to.row = (size_t)i;
+		out[i].anchor_to.column = 1;
+		out[i].from_dx = 2.0f;
+		out[i].from_dy = 3.0f;
+		out[i].sizing = VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE;
+		out[i].width = 96.0f;
+		out[i].height = 64.0f;
+		out[i].fit = VGUI_EDITOR_TABLE_IMAGE_CONTAIN;
+		out[i].rotation = 0.0f;
+		out[i].opacity = 1.0f;
+		out[i].z = (int)i;
+		out[i].alt_text = "floating badge";
+	}
+	return total;
+}
+
+static void tbl_on_drawing_select(void* user, const char* id)
+{
+	probe* p = (probe*)user;
+	++p->drawing_selection_count;
+	copy_text(p->last_drawing_id, sizeof(p->last_drawing_id), id);
+}
+
+static void tbl_on_drawing_change(void* user, const char* id,
+	const vgui_editor_table_drawing* before,
+	const vgui_editor_table_drawing* after)
+{
+	probe* p = (probe*)user;
+	++p->drawing_change_count;
+	copy_text(p->last_drawing_id, sizeof(p->last_drawing_id), id);
+	if (after)
+		p->last_drawing_z = after->z;
+	(void)before;
+}
+
+static int tbl_on_drawing_request(void* user,
+	const vgui_editor_table_drawing_request* request)
+{
+	probe* p = (probe*)user;
+	++p->drawing_request_count;
+	if (!request)
+		return 0;
+	p->last_request_kind = (int)request->kind;
+	copy_text(p->last_request_source, sizeof(p->last_request_source),
+		request->source ? request->source : "");
+	if (request->kind == VGUI_EDITOR_TABLE_DRAWING_UPDATE && request->id)
+		copy_text(p->last_drawing_id, sizeof(p->last_drawing_id), request->id);
+	p->drawing_request_accepted = request->file_count > 0 ||
+		request->kind != VGUI_EDITOR_TABLE_DRAWING_INSERT ||
+		(request->drawing.key != NULL);
+	return p->drawing_request_accepted;
+}
+
+static size_t tbl_clipboard_images(void* user, char* out, size_t cap)
+{
+	/* Two NUL-terminated paths plus a final NUL. */
+	static const char paths[] = "C:/img/a.png\0C:/img/b.png\0";
+	const size_t need = sizeof(paths);
+	(void)user;
+	if (out && cap >= need)
+		memcpy(out, paths, need);
+	return need;
+}
+
 void test_table(probe* p)
 {
 	vgui_editor_table* table;
@@ -918,10 +1003,170 @@ void test_table(probe* p)
 	}
 	vgui_editor_table_set_on_selection_range(table, NULL, NULL);
 
+	/* Floating drawings C API. */
+	{
+		vgui_editor_table_drawing drawing;
+		vgui_editor_table_drawing_request request;
+		char text[128];
+		float dx, dy, dw, dh;
+
+		vgui_editor_table_drawing_default(&drawing);
+		check(drawing.struct_size == (uint32_t)sizeof(drawing),
+			"drawing default stamps its size");
+		check(drawing.id == NULL && drawing.key == NULL &&
+			drawing.texture == NULL && drawing.alt_text == NULL,
+			"drawing default has no strings or texture");
+		check(drawing.sizing == VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE &&
+			drawing.fit == VGUI_EDITOR_TABLE_IMAGE_STRETCH &&
+			drawing.opacity == 1.0f && drawing.z == 0,
+			"drawing default carries sizing/fit/opacity/z");
+		check(drawing.anchor_from.column == VGUI_EDITOR_TABLE_NO_COLUMN &&
+			drawing.anchor_to.column == VGUI_EDITOR_TABLE_NO_COLUMN,
+			"drawing default anchors have no column");
+		vgui_editor_table_drawing_default(NULL);
+
+		vgui_editor_table_drawing_request_default(&request);
+		check(request.struct_size == (uint32_t)sizeof(request),
+			"drawing request default stamps its size");
+		check(request.kind == VGUI_EDITOR_TABLE_DRAWING_INSERT &&
+			request.files == NULL && request.file_count == 0 &&
+			request.id == NULL && request.source == NULL,
+			"drawing request default is an empty insert");
+		check(request.drawing.struct_size == (uint32_t)sizeof(request.drawing),
+			"drawing request's nested drawing is defaulted");
+		vgui_editor_table_drawing_request_default(NULL);
+
+		/* The drawings pull callback fills a C view array. */
+		{
+			vgui_editor_table_drawing views[3];
+			size_t i;
+			const size_t total = tbl_drawings(p, NULL, 0);
+			check(total == 3 && p->drawing_pull_count >= 1,
+				"drawings pull reports the total count");
+			for (i = 0; i < 3; ++i)
+				vgui_editor_table_drawing_default(&views[i]);
+			check(tbl_drawings(p, views, 3) == 3, "drawings pull fills the views");
+			check(views[0].id && strcmp(views[0].id, "d-resize") == 0 &&
+				views[2].z == 2 && views[2].alt_text != NULL,
+				"drawings pull carries id/z/alt through the C view");
+			check(views[0].anchor_from.row == 0 &&
+				views[0].from_dx == 2.0f &&
+				views[0].sizing == VGUI_EDITOR_TABLE_DRAWING_MOVE_AND_SIZE,
+				"drawings pull carries anchor/inset/sizing");
+		}
+
+		/* Install the source with a drawings callback. */
+		{
+			vgui_editor_table_source draw_source;
+			vgui_editor_table_source_default(&draw_source);
+			draw_source.row_count = tbl_row_count;
+			draw_source.cell_text = tbl_cell_text;
+			draw_source.drawings = tbl_drawings;
+			draw_source.user = p;
+			draw_source.release_user = release_probe;
+			vgui_editor_table_set_source(table, &draw_source);
+			vgui_editor_table_refresh(table);
+		}
+		check(vgui_editor_table_last_render_drawing_count(table) == 0,
+			"no drawings are counted without a paint");
+
+		/* Selection / hit-test / geometry: no paint means an empty cache. */
+		check(vgui_editor_table_selected_drawing(table, text, sizeof(text)) == 0,
+			"no drawing is selected initially");
+		check(vgui_editor_table_select_drawing(table, "d-resize") == 0,
+			"an unpainted drawing cannot be selected");
+		check(vgui_editor_table_select_drawing(table, NULL) == 0,
+			"a NULL drawing id is refused");
+		check(vgui_editor_table_hit_test_drawing(table, 10.0f, 10.0f, text,
+			sizeof(text)) == 0, "an unpainted hit test finds no drawing");
+		dx = dy = dw = dh = -1.0f;
+		check(vgui_editor_table_drawing_rect(table, "d-resize", &dx, &dy, &dw,
+			&dh) == 0 && dx == -1.0f,
+			"an unknown drawing rect leaves the outputs alone");
+		check(vgui_editor_table_select_drawing(NULL, "d-resize") == 0,
+			"a NULL table selects no drawing");
+		check(vgui_editor_table_drawing_rect(NULL, "d-resize", NULL, NULL, NULL,
+			NULL) == 0, "a NULL table has no drawing rect");
+		check(vgui_editor_table_hit_test_drawing_handle(table, "d-resize", 0.0f,
+			0.0f) == VGUI_EDITOR_TABLE_DRAWING_HANDLE_NONE,
+			"an unpainted drawing has no handle");
+		check(vgui_editor_table_drawing_gesture_active(table) == 0,
+			"no drawing gesture is active");
+		check(vgui_editor_table_bring_drawing_to_front(table, "d-resize") == 0 &&
+			vgui_editor_table_send_drawing_to_back(table, "d-resize") == 0 &&
+			vgui_editor_table_move_drawing_z(table, "d-resize", 1) == 0,
+			"z commands refuse an unpainted drawing");
+
+		/* Listeners install without a paint. */
+		vgui_editor_table_set_on_drawing_selection(table, tbl_on_drawing_select,
+			p);
+		vgui_editor_table_set_on_drawing_change(table, tbl_on_drawing_change, p);
+		vgui_editor_table_set_on_drawing_request(table, tbl_on_drawing_request,
+			p);
+		check(vgui_editor_table_drawing_tooltip_text(table, "d-resize", text,
+			sizeof(text)) == 0, "an unpainted drawing has no tooltip text");
+
+		/* Request listener: the three host APIs are answer-bearing even with
+		 * an empty draw cache, because they only describe intent. */
+		p->drawing_request_count = 0;
+		vgui_editor_table_drawing_default(&drawing);
+		drawing.key = "api://inserted.png";
+		check(vgui_editor_table_insert_drawing(table, &drawing) == 1 &&
+			p->drawing_request_count == 1 &&
+			p->last_request_kind == VGUI_EDITOR_TABLE_DRAWING_INSERT &&
+			strcmp(p->last_request_source, "api") == 0,
+			"insert_drawing emits an accepted api insert request");
+		check(vgui_editor_table_remove_drawing(table, "d-resize") == 1 &&
+			p->last_request_kind == VGUI_EDITOR_TABLE_DRAWING_REMOVE,
+			"remove_drawing emits a remove request");
+		check(vgui_editor_table_update_drawing(table, "d-resize", &drawing) == 1 &&
+			p->last_request_kind == VGUI_EDITOR_TABLE_DRAWING_UPDATE &&
+			strcmp(p->last_drawing_id, "d-resize") == 0,
+			"update_drawing emits an update request with the target id");
+		check(vgui_editor_table_insert_drawing(table, NULL) == 0 &&
+			vgui_editor_table_remove_drawing(table, NULL) == 0 &&
+			vgui_editor_table_update_drawing(table, NULL, &drawing) == 0,
+			"NULL drawing request arguments are refused");
+		{
+			const char* files[2] = { "C:/img/x.png", "C:/img/y.png" };
+			check(vgui_editor_table_insert_drawings_from_files(table, files, 2,
+				10.0f, 10.0f) == 1 &&
+				strcmp(p->last_request_source, "drop") == 0,
+				"file insertion emits a drop request");
+			check(vgui_editor_table_insert_drawings_from_files(table, files, 0,
+				10.0f, 10.0f) == 0 &&
+				vgui_editor_table_insert_drawings_from_files(table, NULL, 2,
+					10.0f, 10.0f) == 0,
+				"empty/NULL file lists are refused");
+		}
+
+		/* Clipboard images: the bytes-needed getter is unpacked into paths. */
+		vgui_editor_table_set_clipboard_image_getter(table, tbl_clipboard_images,
+			p);
+		check(vgui_editor_table_paste_images_from_clipboard(table) == 1 &&
+			strcmp(p->last_request_source, "paste") == 0,
+			"clipboard images paste as a request");
+		vgui_editor_table_set_clipboard_image_getter(table, NULL, NULL);
+		check(vgui_editor_table_paste_images_from_clipboard(table) == 0,
+			"no image getter means no image paste");
+
+		check(vgui_editor_table_last_render_cell_image_queries(table) == 0,
+			"no in-cell image queries are counted without a paint");
+		check(vgui_editor_table_last_render_cell_image_queries(NULL) == 0 &&
+			vgui_editor_table_last_render_drawing_count(NULL) == 0 &&
+			vgui_editor_table_drawing_tooltip_text(NULL, "x", text,
+				sizeof(text)) == 0 &&
+			vgui_editor_table_paste_images_from_clipboard(NULL) == 0,
+			"NULL tables answer zero for drawing queries");
+	}
+
 	/* Teardown. */
 	vgui_editor_table_set_on_selection(table, NULL, NULL);
 	vgui_editor_table_set_edit_handler(table, NULL, NULL);
 	vgui_editor_table_set_on_edit(table, NULL, NULL);
+	vgui_editor_table_set_on_drawing_selection(table, NULL, NULL);
+	vgui_editor_table_set_on_drawing_change(table, NULL, NULL);
+	vgui_editor_table_set_on_drawing_request(table, NULL, NULL);
 	p->released = 0;
 	vgui_editor_table_clear_columns(table);
 	vgui_editor_table_set_source(table, NULL);

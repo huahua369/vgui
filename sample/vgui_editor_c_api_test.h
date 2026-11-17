@@ -48,6 +48,16 @@ typedef struct probe {
 	vgui_editor_object_id last_selection;
 	int image_count;
 	int released;
+	/* Floating drawing callbacks. */
+	int drawing_pull_count;
+	int drawing_selection_count;
+	int drawing_change_count;
+	int drawing_request_count;
+	int drawing_request_accepted;
+	int last_drawing_z;
+	int last_request_kind;
+	char last_drawing_id[64];
+	char last_request_source[64];
 } probe;
 
 /* Views: outliner, table, timeline, node graph and 2D canvas. */

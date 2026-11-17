@@ -1,6 +1,6 @@
 # 表格图片功能规划（对齐 Excel）
 
-> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）+ S3（交互）+ S4（插入途径）+ S5（辅助信息与快照）已实施**；仅 S6（C API 镜像）仍为规划
+> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）+ S3（交互）+ S4（插入途径）+ S5（辅助信息与快照）+ S6（C API 镜像）全部实施完成**
 > 适用版本：vgui 0.4+
 > 相关：[editor_roadmap](editor_roadmap.md) §2.2「表格/数据网格」、[vgui_capability_assessment](vgui_capability_assessment.md)、[data_binding_roadmap](data_binding_roadmap.md)
 > 面向对象：`vgui_editor_kit::table_view` / `vgui_editor_table`（C API）/ `vgui_spreadsheet_demo`
@@ -49,7 +49,7 @@
 - OS 文件拖入：表格控件在 `build()` 挂 kit drop target（`can_accept` 只收 files；`hover` 高亮整个表体为 `VGUI_DROP_HINT_RECT`；`drop` 把绝对坐标换算到内容空间、`hit_test` 取落点单元格）。`insert_drawings_from_files()` 可程序化触发，request `source="drop"` 并带锚点与借用路径。
 - 剪贴板图片：`set_clipboard_image_getter()`（独立于文本 handlers，源码兼容），`paste_images_from_clipboard()` 把路径作为 insert request（`source="paste"`，锚在当前选区左上）。`Ctrl+V` 优先图片、无图片才回退 TSV。
 - demo：spreadsheet 的 request listener 用程序化纹理模拟"解码"，insert 生成稳定 id 并把首文件路径设为 key，insert/remove/update 各压一条 `function_command` undo；剪贴板用内存路径模拟。自检从 64 → 85 条，覆盖三种入口各一条 request+undo、锚点命中、模型写回、非法 id/空载荷拒绝且不改模型。
-- 待续：S5（alt text tooltip、序列化快照——几何仍归宿主，只做只读快照）、S6（C API 镜像 drawings/request + 测试）。
+- 回归：debug 全量构建、spreadsheet 85/85、on-demand 40/40、editor kit PASS、editor C API 2013/0、通用 C API 32/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
 
 **已完成：辅助信息与快照（对应规划 S5）**
 
@@ -58,7 +58,14 @@
 - 只读快照：`table_drawings_to_json()` / `table_drawings_from_json()` 序列化 vector<table_drawing> 的 id/key/双锚点/偏移/尺寸/fit/旋转/透明度/z/alt；**不序列化借用的 texture**（反序列化置空，宿主按 key 重新绑定）。旧 JSON 缺字段用 `table_drawing` 默认值填充，非法根/畸形锚点返回 error。
 - demo：自检从 85 → 92 条，覆盖快照往返几何保真、texture 置空、旧字段兼容、非法输入拒绝、alt tooltip 文本查询。
 - 回归：debug 全量构建、spreadsheet 92/92、on-demand 40/40、editor kit PASS、C API 2013/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
-- 待续：仅 S6（C API 镜像 drawings/request + 测试）。
+
+**已完成：C API 镜像（对应规划 S6）**
+
+- 类型：`vgui_editor_table_drawing`（首字段 struct_size + `_default()`）、`vgui_editor_table_drawing_request`（含嵌套 drawing）、sizing/handle/request-kind 三个枚举；枚举顺序与 C++ 侧用 static_assert 对齐。`vgui_editor_table_source` 末尾追加 `drawings` 拉取回调（两遍法：NULL out 查总数，再填数组），保持 struct_size 前缀源码兼容。
+- listener：`vgui_editor_table_drawing_selection_fn` / `drawing_change_fn`（before/after 两个 C view）/ `drawing_request_fn`（返回非 0 接受）/ `clipboard_image_get_fn`（NUL 分隔路径、bytes-needed）。桥接照 cell_image 模式用 take_desc + callback_slot，C view 的借用字符串由局部 holder 在回调期间保持有效。
+- API：`selected_drawing` / `select_drawing` / `clear_drawing_selection` / `hit_test_drawing` / `drawing_rect` / `drawing_tooltip_text` / `hit_test_drawing_handle` / `drawing_gesture_active` / `bring_drawing_to_front` / `send_drawing_to_back` / `move_drawing_z` / `set_on_drawing_*` / `insert_drawing` / `remove_drawing` / `update_drawing` / `insert_drawings_from_files` / `set_clipboard_image_getter` / `paste_images_from_clipboard` / `last_render_drawing_count` / `last_render_cell_image_queries`。字符串结果走 bytes-needed，NULL 参数安全。`destroy` 补清理全部新 listener。C++ 的 `table_drawings_to_json/from_json` 保持 C++ 专属，不跨 C 边界。
+- 测试：`vgui_editor_c_api_test_views.c` 的 `test_table` 新增 33 条断言（drawings default/拉取回调字段透传、三入口 request+source、文件与剪贴板图片、listener 安装与 NULL 安全、未绘制缓存下的拒绝行为）；C API 计数从 2013 → 2046。
+- 回归：debug 全量构建、spreadsheet 92/92、on-demand 40/40、editor kit PASS、editor C API 2046/0、通用 C API 32/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
 
 ---
 
