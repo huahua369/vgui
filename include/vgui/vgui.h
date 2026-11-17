@@ -2145,6 +2145,13 @@ extern "C" {
 	 * VGUI_IMAGE fit semantics (STRETCH/CONTAIN/COVER/NONE).  Always clipped to
 	 * the destination rectangle.  Used by custom widgets such as table cells. */
 	VGUI_API void vgui_custom_draw_texture_fit(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, vgui_color tint);
+	/* Like vgui_custom_draw_texture_fit(), but rotates the fitted texture by
+	 * `rotation` degrees clockwise around the destination centre using an OVG
+	 * transform.  Works for both CPU and native textures.  Unlike the fit
+	 * variant it does NOT clip to the destination rectangle (a rotated image
+	 * extends past it); callers must supply an outer clip.  No-op at rotation
+	 * 0, where the fit variant is preferred. */
+	VGUI_API void vgui_custom_draw_texture_rotated(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, float rotation, vgui_color tint);
 
 	/* ------------------------------------------------------------------------- */
 	/* Frame                                                                     */

@@ -173,8 +173,14 @@ struct app_state
 	std::vector<table_drawing> drawings;
 	int badge_image_queries = 0;
 	int drawing_queries = 0;
+	int drawing_change_count = 0;
 	char drawing_selected[64] = "none";
 	char note[160] = "ready";
+
+	/* Latest change listener payloads, captured by the self-test. */
+	std::string last_change_id;
+	table_drawing last_change_before;
+	table_drawing last_change_after;
 
 	~app_state()
 	{
@@ -521,6 +527,30 @@ static void configure_table(vgui_context* ui)
 			id.empty() ? "none" : id.c_str());
 		g->refresh_status();
 	});
+	/* S3: the table hands edited drawings back; the host owns the model and
+	 * records one undo step per committed change. */
+	g->table.set_drawing_change_listener([](const std::string& id,
+		const table_drawing& before, const table_drawing& after) {
+		++g->drawing_change_count;
+		g->last_change_id = id;
+		g->last_change_before = before;
+		g->last_change_after = after;
+		for (table_drawing& d : g->drawings)
+			if (d.id == id) { d = after; break; }
+		const std::size_t undo_before = g->commands.undo_count();
+		g->commands.push(std::make_unique<function_command>(
+			"Edit Drawing",
+			[id, after]() {
+				for (table_drawing& d : g->drawings)
+					if (d.id == id) { d = after; break; }
+			},
+			[id, before]() {
+				for (table_drawing& d : g->drawings)
+					if (d.id == id) { d = before; break; }
+			}));
+		(void)undo_before;
+		g->set_note("drawing edited (undo restores)");
+	});
 	g->table.set_source(source);
 
 	g->table.set_clipboard_handlers(
@@ -779,6 +809,119 @@ static void run_probe()
 		}
 		else
 			check(false, "drawing hit-test setup (no rect)");
+	}
+
+	/* S3: handle hit testing, transform gestures, Escape cancel, z-order. */
+	{
+		float fx = 0, fy = 0, fw = 0, fh = 0;
+		if (g->table.drawing_rect("float-fixed", &fx, &fy, &fw, &fh) &&
+			fw > 16 && fh > 16)
+		{
+			g->table.select_drawing("float-fixed");
+			check(g->table.hit_test_drawing_handle("float-fixed",
+				fx + fw * 0.5f, fy + fh * 0.5f) == table_view::drawing_handle::move,
+				"drawing body centre reports the move handle");
+			check(g->table.hit_test_drawing_handle("float-fixed",
+				fx, fy) == table_view::drawing_handle::north_west,
+				"drawing top-left corner reports the NW resize handle");
+			const float rknob_y = fy + fh * 0.5f - (fh * 0.5f + 22.0f);
+			check(g->table.hit_test_drawing_handle("float-fixed",
+				fx + fw * 0.5f, rknob_y) == table_view::drawing_handle::rotate,
+				"point above top edge reports the rotate handle");
+
+			/* Move gesture: one change + one undo, geometry becomes fixed. */
+			const int changes0 = g->drawing_change_count;
+			const std::size_t undo0 = g->commands.undo_count();
+			const float cx = fx + fw * 0.5f, cy = fy + fh * 0.5f;
+			vgui_input_mouse_move(g->ui, cx, cy);
+			vgui_input_mouse_down(g->ui, 1, cx, cy, 1);
+			check(g->table.drawing_gesture_active(),
+				"press on drawing body starts a move gesture");
+			vgui_input_mouse_move(g->ui, cx + 30.0f, cy + 20.0f);
+			vgui_input_mouse_up(g->ui, 1, cx + 30.0f, cy + 20.0f, 1);
+			check(!g->table.drawing_gesture_active(),
+				"mouse up ends the gesture");
+			check(g->drawing_change_count == changes0 + 1,
+				"committed move emits exactly one drawing change");
+			check(g->commands.undo_count() == undo0 + 1,
+				"committed move pushes exactly one undo record");
+			check(g->last_change_id == "float-fixed" &&
+				g->last_change_after.sizing == table_drawing_sizing::fixed &&
+				g->last_change_after.from_dx > g->last_change_before.from_dx,
+				"move bakes a fixed drawing with a shifted position");
+
+			/* Resize gesture from the NW corner grows width/height. */
+			const int changes1 = g->drawing_change_count;
+			g->table.select_drawing("float-fixed");
+			float rx = 0, ry = 0, rw = 0, rh = 0;
+			g->table.drawing_rect("float-fixed", &rx, &ry, &rw, &rh);
+			vgui_input_mouse_move(g->ui, rx, ry);
+			vgui_input_mouse_down(g->ui, 1, rx, ry, 1);
+			vgui_input_mouse_move(g->ui, rx - 20.0f, ry - 14.0f);
+			vgui_input_mouse_up(g->ui, 1, rx - 20.0f, ry - 14.0f, 1);
+			check(g->drawing_change_count == changes1 + 1 &&
+				g->last_change_after.width > g->last_change_before.width,
+				"NW resize grows the drawing via a single change");
+
+			/* Rotate gesture from the knob changes rotation by one change.
+			 * Use float-move: its knob sits well inside the body (float-fixed
+			 * is near the header, where the knob would fall in header space). */
+			const int changesr = g->drawing_change_count;
+			g->table.select_drawing("float-move");
+			float xx = 0, xy = 0, xw = 0, xh = 0;
+			g->table.drawing_rect("float-move", &xx, &xy, &xw, &xh);
+			const float knob_x = xx + xw * 0.5f;
+			const float knob_y = xy + xh * 0.5f - (xh * 0.5f + 22.0f);
+			const float centre_y = xy + xh * 0.5f;
+			const float radius = centre_y - knob_y;
+			vgui_input_mouse_move(g->ui, knob_x, knob_y);
+			vgui_input_mouse_down(g->ui, 1, knob_x, knob_y, 1);
+			check(g->table.drawing_gesture_active(),
+				"press on rotate knob starts a gesture");
+			/* Move the knob to the right of the centre: ~ +90 degrees. */
+			vgui_input_mouse_move(g->ui, knob_x + radius, centre_y);
+			vgui_input_mouse_up(g->ui, 1, knob_x + radius, centre_y, 1);
+			check(g->drawing_change_count == changesr + 1 &&
+				std::fabs(g->last_change_after.rotation -
+					g->last_change_before.rotation) > 30.0f,
+				"rotate gesture sets a non-zero rotation via one change");
+
+			/* Escape cancels an in-flight gesture with no change/undo. */
+			const int changes2 = g->drawing_change_count;
+			const std::size_t undo2 = g->commands.undo_count();
+			g->table.select_drawing("float-fixed");
+			float ex = 0, ey = 0, ew = 0, eh = 0;
+			g->table.drawing_rect("float-fixed", &ex, &ey, &ew, &eh);
+			vgui_input_mouse_move(g->ui, ex + ew * 0.5f, ey + eh * 0.5f);
+			vgui_input_mouse_down(g->ui, 1, ex + ew * 0.5f, ey + eh * 0.5f, 1);
+			vgui_input_mouse_move(g->ui, ex + ew * 0.5f + 40.0f, ey + eh * 0.5f);
+			vgui_input_key(g->ui, VGUI_KEY_ESCAPE, 1, 0);
+			vgui_input_mouse_up(g->ui, 1, ex + ew * 0.5f + 40.0f, ey + eh * 0.5f, 1);
+			check(!g->table.drawing_gesture_active() &&
+				g->drawing_change_count == changes2 &&
+				g->commands.undo_count() == undo2,
+				"Escape cancels a gesture with no change or undo");
+		}
+		else
+			check(false, "S3 gesture setup (no rect)");
+
+		/* Z-order commands each emit one change with the new z. */
+		{
+			const int changes0 = g->drawing_change_count;
+			check(g->table.bring_drawing_to_front("float-move"),
+				"bring_drawing_to_front returns true for a valid id");
+			check(g->drawing_change_count == changes0 + 1 &&
+				g->last_change_after.z > g->last_change_before.z,
+				"bring-to-front emits one change with a higher z");
+			check(g->table.send_drawing_to_back("float-move"),
+				"send_drawing_to_back returns true for a valid id");
+			check(g->last_change_after.z < g->last_change_before.z,
+				"send-to-back emits a change with a lower z");
+			check(g->table.move_drawing_z("float-move", 1),
+				"move_drawing_z returns true for a valid id");
+			check(!g->table.bring_drawing_to_front("missing-id"),
+				"z-order command returns false for an unknown id");
+		}
 	}
 
 	/* Right-gap hit testing: the table body is wider than the sum of all

@@ -1278,6 +1278,323 @@ namespace vgui_editor_kit {
 		drawing_selection_listener_ = std::move(listener);
 	}
 
+	void table_view::set_drawing_change_listener(
+		drawing_change_listener listener)
+	{
+		drawing_change_listener_ = std::move(listener);
+	}
+
+	const table_drawing* table_view::find_drawing(const std::string& id) const
+	{
+		for (const table_drawing& d : drawings_)
+			if (d.id == id) return &d;
+		return nullptr;
+	}
+
+	bool table_view::drawing_abs_rect(const table_drawing& drawing, float* x,
+		float* y, float* width, float* height) const
+	{
+		/* A live gesture overrides the anchor-derived geometry for its target. */
+		if (drawing_gesture_active_ && drawing.id == drawing_gesture_id_)
+		{
+			if (x) *x = gesture_preview_x_;
+			if (y) *y = gesture_preview_y_;
+			if (width) *width = gesture_preview_w_;
+			if (height) *height = gesture_preview_h_;
+			return true;
+		}
+		float cx = 0.0f, cy = 0.0f, cw = 0.0f, ch = 0.0f;
+		if (!drawing_content_rect(drawing, &cx, &cy, &cw, &ch))
+			return false;
+		const layout_metrics m = metrics();
+		if (x) *x = m.body_x + cx - scroll_x_;
+		if (y) *y = m.body_y + cy - scroll_y_;
+		if (width) *width = cw;
+		if (height) *height = ch;
+		return true;
+	}
+
+	/* Handle order must match the drawing_handle enum values 2..9. */
+	void table_view::drawing_handle_points(float ax, float ay, float aw,
+		float ah, float rotation, float points[9][2]) const
+	{
+		const float cx = ax + aw * 0.5f;
+		const float cy = ay + ah * 0.5f;
+		const float rad = rotation * 3.14159265358979323846f / 180.0f;
+		const float c = std::cos(rad), s = std::sin(rad);
+		/* Unrotated offsets from centre, in enum order:
+		 * NW, N, NE, E, SE, S, SW, W. */
+		const float ox[8] = { -aw*0.5f, 0.0f, aw*0.5f, aw*0.5f,
+			aw*0.5f, 0.0f, -aw*0.5f, -aw*0.5f };
+		const float oy[8] = { -ah*0.5f, -ah*0.5f, -ah*0.5f, 0.0f,
+			ah*0.5f, ah*0.5f, ah*0.5f, 0.0f };
+		for (int i = 0; i < 8; ++i)
+		{
+			points[i][0] = cx + c * ox[i] - s * oy[i];
+			points[i][1] = cy + s * ox[i] + c * oy[i];
+		}
+	}
+
+	table_view::drawing_handle table_view::hit_test_drawing_handle(
+		const std::string& id, float abs_x, float abs_y) const
+	{
+		const table_drawing* d = find_drawing(id);
+		if (!d) return drawing_handle::none;
+		float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
+		if (!drawing_abs_rect(*d, &ax, &ay, &aw, &ah))
+			return drawing_handle::none;
+		const float rotation = drawing_gesture_active_ && id == drawing_gesture_id_
+			? gesture_preview_rotation_ : d->rotation;
+		float pts[8][2] = {};
+		drawing_handle_points(ax, ay, aw, ah, rotation, pts);
+		const float scale = ui_scale();
+		const float grab = kResizeGrab * scale * 1.5f;
+		/* Corner handles first, then edge handles. */
+		const drawing_handle order[8] = {
+			drawing_handle::north_west, drawing_handle::north_east,
+			drawing_handle::south_east, drawing_handle::south_west,
+			drawing_handle::north, drawing_handle::east,
+			drawing_handle::south, drawing_handle::west
+		};
+		for (int i = 0; i < 8; ++i)
+		{
+			const float dx = abs_x - pts[i][0];
+			const float dy = abs_y - pts[i][1];
+			if (dx * dx + dy * dy <= grab * grab)
+				return order[i];
+		}
+		/* Rotate handle: 22 px above the (rotated) top edge centre. */
+		const float cx = ax + aw * 0.5f, cy = ay + ah * 0.5f;
+		const float rad = rotation * 3.14159265358979323846f / 180.0f;
+		const float c = std::cos(rad), s = std::sin(rad);
+		const float reach = ah * 0.5f + 22.0f * scale;
+		const float rx = cx + s * reach;
+		const float ry = cy - c * reach;
+		const float rdx = abs_x - rx, rdy = abs_y - ry;
+		if (rdx * rdx + rdy * rdy <= grab * grab)
+			return drawing_handle::rotate;
+		/* Body -> move.  Point-in-rotated-rect via inverse rotation. */
+		const float lx = abs_x - cx, ly = abs_y - cy;
+		const float ux = c * lx + s * ly;
+		const float uy = -s * lx + c * ly;
+		if (ux >= -aw * 0.5f && ux <= aw * 0.5f &&
+			uy >= -ah * 0.5f && uy <= ah * 0.5f)
+			return drawing_handle::move;
+		return drawing_handle::none;
+	}
+
+	bool table_view::drawing_gesture_active() const noexcept
+	{
+		return drawing_gesture_active_;
+	}
+
+	void table_view::begin_drawing_gesture(const std::string& id,
+		drawing_handle handle, float abs_x, float abs_y, bool lock_aspect)
+	{
+		const table_drawing* d = find_drawing(id);
+		if (!d) return;
+		float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
+		if (!drawing_abs_rect(*d, &ax, &ay, &aw, &ah))
+			return;
+		drawing_gesture_active_ = true;
+		drawing_gesture_id_ = id;
+		drawing_gesture_handle_ = handle;
+		drawing_gesture_before_ = *d;
+		gesture_preview_x_ = ax;
+		gesture_preview_y_ = ay;
+		gesture_preview_w_ = aw;
+		gesture_preview_h_ = ah;
+		gesture_preview_rotation_ = d->rotation;
+		gesture_base_x_ = ax;
+		gesture_base_y_ = ay;
+		gesture_base_w_ = aw;
+		gesture_base_h_ = ah;
+		gesture_start_abs_x_ = abs_x;
+		gesture_start_abs_y_ = abs_y;
+		gesture_lock_aspect_ = lock_aspect;
+		const float cx = ax + aw * 0.5f, cy = ay + ah * 0.5f;
+		gesture_rotation_start_ = std::atan2(abs_y - cy, abs_x - cx);
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	void table_view::update_drawing_gesture(float abs_x, float abs_y,
+		bool lock_aspect)
+	{
+		if (!drawing_gesture_active_) return;
+		gesture_lock_aspect_ = lock_aspect;
+		const float scale = ui_scale();
+		const float min_size = 16.0f * scale;
+
+		const float ax = gesture_base_x_, ay = gesture_base_y_;
+		const float aw = gesture_base_w_, ah = gesture_base_h_;
+		if (drawing_gesture_handle_ == drawing_handle::move)
+		{
+			/* Recompute from the original rect at press to avoid drift. */
+			gesture_preview_x_ = ax + (abs_x - gesture_start_abs_x_);
+			gesture_preview_y_ = ay + (abs_y - gesture_start_abs_y_);
+			gesture_preview_w_ = aw;
+			gesture_preview_h_ = ah;
+		}
+		else if (drawing_gesture_handle_ == drawing_handle::rotate)
+		{
+			const float cx = ax + aw * 0.5f, cy = ay + ah * 0.5f;
+			const float angle = std::atan2(abs_y - cy, abs_x - cx);
+			float deg = (angle - gesture_rotation_start_) * 180.0f /
+				3.14159265358979323846f;
+			float result = drawing_gesture_before_.rotation + deg;
+			if (!lock_aspect) /* Shift snaps rotation to 15-degree steps. */
+				result = std::round(result / 15.0f) * 15.0f;
+			gesture_preview_rotation_ = result;
+			gesture_preview_x_ = ax;
+			gesture_preview_y_ = ay;
+			gesture_preview_w_ = aw;
+			gesture_preview_h_ = ah;
+		}
+		else
+		{
+			/* Resize: anchor-derived rect at press is the base. */
+			const float dx = abs_x - gesture_start_abs_x_;
+			const float dy = abs_y - gesture_start_abs_y_;
+			const drawing_handle h = drawing_gesture_handle_;
+			bool west = h == drawing_handle::north_west ||
+				h == drawing_handle::south_west || h == drawing_handle::west;
+			bool east = h == drawing_handle::north_east ||
+				h == drawing_handle::south_east || h == drawing_handle::east;
+			bool north = h == drawing_handle::north_west ||
+				h == drawing_handle::north_east || h == drawing_handle::north;
+			bool south = h == drawing_handle::south_west ||
+				h == drawing_handle::south_east || h == drawing_handle::south;
+
+			float left = ax, top = ay, right = ax + aw, bottom = ay + ah;
+			if (west) left += dx;
+			if (east) right += dx;
+			if (north) top += dy;
+			if (south) bottom += dy;
+
+			if (lock_aspect && (west || east) && (north || south))
+			{
+				/* Corner resize with aspect lock: drive from the larger relative
+				 * delta and keep the opposite corner fixed. */
+				const float aspect = aw / std::max(1.0f, ah);
+				float nw = right - left, nh = bottom - top;
+				if (std::fabs(dx) / std::max(1.0f, aw) >
+					std::fabs(dy) / std::max(1.0f, ah))
+				{
+					nw = std::max(min_size, nw);
+					nh = nw / aspect;
+				}
+				else
+				{
+					nh = std::max(min_size, nh);
+					nw = nh * aspect;
+				}
+				if (west) left = right - nw; else right = left + nw;
+				if (north) top = bottom - nh; else bottom = top + nh;
+			}
+			gesture_preview_x_ = std::min(left, right - min_size);
+			gesture_preview_y_ = std::min(top, bottom - min_size);
+			gesture_preview_w_ = std::max(min_size, right - left);
+			gesture_preview_h_ = std::max(min_size, bottom - top);
+			gesture_preview_rotation_ = drawing_gesture_before_.rotation;
+		}
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	void table_view::emit_drawing_change(const std::string& id,
+		const table_drawing& before, const table_drawing& after)
+	{
+		if (drawing_change_listener_)
+			drawing_change_listener_(id, before, after);
+		/* A committed change alters painted geometry/z; under on-demand
+		 * rendering this is the signal to repaint (covers z-order commands,
+		 * which do not go through the gesture commit path). */
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	void table_view::commit_drawing_gesture()
+	{
+		if (!drawing_gesture_active_) return;
+		const bool changed =
+			std::fabs(gesture_preview_x_ - gesture_base_x_) > 0.5f ||
+			std::fabs(gesture_preview_y_ - gesture_base_y_) > 0.5f ||
+			std::fabs(gesture_preview_w_ - gesture_base_w_) > 0.5f ||
+			std::fabs(gesture_preview_h_ - gesture_base_h_) > 0.5f ||
+			std::fabs(gesture_preview_rotation_ - drawing_gesture_before_.rotation) > 0.1f;
+
+		if (changed)
+		{
+			const layout_metrics m = metrics();
+			const float scale = ui_scale();
+			table_drawing after = drawing_gesture_before_;
+			/* Bake the edited absolute rect back into a fixed drawing so its
+			 * geometry is explicit and host-owned (no hidden gesture state). */
+			after.sizing = table_drawing_sizing::fixed;
+			after.from_dx = (gesture_preview_x_ - m.body_x + scroll_x_) / scale;
+			after.from_dy = (gesture_preview_y_ - m.body_y + scroll_y_) / scale;
+			after.width = gesture_preview_w_ / scale;
+			after.height = gesture_preview_h_ / scale;
+			after.rotation = gesture_preview_rotation_;
+			emit_drawing_change(drawing_gesture_id_, drawing_gesture_before_, after);
+		}
+		drawing_gesture_active_ = false;
+		drawing_gesture_id_.clear();
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	void table_view::cancel_drawing_gesture()
+	{
+		if (!drawing_gesture_active_) return;
+		drawing_gesture_active_ = false;
+		drawing_gesture_id_.clear();
+		if (widget_) vgui_widget_mark_dirty(widget_);
+	}
+
+	bool table_view::bring_drawing_to_front(const std::string& id)
+	{
+		const table_drawing* d = find_drawing(id);
+		if (!d || drawings_.empty()) return false;
+		int max_z = d->z;
+		for (const table_drawing& it : drawings_) max_z = std::max(max_z, it.z);
+		if (d->z == max_z) return false;
+		table_drawing after = *d;
+		after.z = max_z + 1;
+		emit_drawing_change(id, *d, after);
+		return true;
+	}
+
+	bool table_view::send_drawing_to_back(const std::string& id)
+	{
+		const table_drawing* d = find_drawing(id);
+		if (!d || drawings_.empty()) return false;
+		int min_z = d->z;
+		for (const table_drawing& it : drawings_) min_z = std::min(min_z, it.z);
+		if (d->z == min_z) return false;
+		table_drawing after = *d;
+		after.z = min_z - 1;
+		emit_drawing_change(id, *d, after);
+		return true;
+	}
+
+	bool table_view::move_drawing_z(const std::string& id, int direction)
+	{
+		const table_drawing* d = find_drawing(id);
+		if (!d || direction == 0) return false;
+		/* Find the neighbour z in the requested direction. */
+		int target = d->z;
+		for (const table_drawing& it : drawings_)
+		{
+			if (it.id == id) continue;
+			if (direction > 0 && it.z > d->z) target = std::min(target, it.z + 1);
+			if (direction < 0 && it.z < d->z) target = std::max(target, it.z - 1);
+		}
+		if (target == d->z)
+			target = d->z + direction;
+		table_drawing after = *d;
+		after.z = target;
+		emit_drawing_change(id, *d, after);
+		return true;
+	}
+
 	/* --------------------------------------------------------------------- */
 	/* Geometry / scrolling                                                  */
 	/* --------------------------------------------------------------------- */
@@ -3072,15 +3389,17 @@ namespace vgui_editor_kit {
 			m.body_height);
 		for (const table_drawing& d : drawings_)
 		{
-			float cx = 0.0f, cy = 0.0f, cw = 0.0f, ch = 0.0f;
-			if (!drawing_content_rect(d, &cx, &cy, &cw, &ch))
+			float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;
+			if (!drawing_abs_rect(d, &ax, &ay, &aw, &ah))
 				continue;
 			/* Cull drawings entirely outside the visible body. */
-			const float ax = m.body_x + cx - scroll_x_;
-			const float ay = m.body_y + cy - scroll_y_;
-			if (ax + cw <= m.body_x || ax >= m.body_x + m.body_width ||
-				ay + ch <= m.body_y || ay >= m.body_y + m.body_height)
+			if (ax + aw <= m.body_x || ax >= m.body_x + m.body_width ||
+				ay + ah <= m.body_y || ay >= m.body_y + m.body_height)
 				continue;
+			const bool is_gesture_target =
+				drawing_gesture_active_ && d.id == drawing_gesture_id_;
+			const float rotation = is_gesture_target
+				? gesture_preview_rotation_ : d.rotation;
 
 			if (d.texture)
 			{
@@ -3088,8 +3407,12 @@ namespace vgui_editor_kit {
 					? with_alpha(0x00FFFFFFu,
 						(uint32_t)(std::clamp(d.opacity, 0.0f, 1.0f) * 255.0f))
 					: 0;
-				vgui_custom_draw_texture_fit(widget, cb, vg, d.texture,
-					ax, ay, cw, ch, to_image_fit(d.fit), draw_tint);
+				if (std::fabs(rotation) > 0.01f)
+					vgui_custom_draw_texture_rotated(widget, cb, vg, d.texture,
+						ax, ay, aw, ah, to_image_fit(d.fit), rotation, draw_tint);
+				else
+					vgui_custom_draw_texture_fit(widget, cb, vg, d.texture,
+						ax, ay, aw, ah, to_image_fit(d.fit), draw_tint);
 			}
 
 			/* Selection / hover outline is real visual state: it is only
@@ -3100,19 +3423,65 @@ namespace vgui_editor_kit {
 			{
 				const vgui_color outline = selected ? accent
 					: with_alpha(accent, 0x99);
-				ovg_tools::stroke_rect(cb, vg, ax, ay, cw, ch,
-					to_ovg(outline), (selected ? 2.0f : 1.0f) * scale);
+				if (std::fabs(rotation) > 0.01f)
+				{
+					/* Rotated selection frame: stroke the four rotated corners. */
+					float pts[8][2] = {};
+					drawing_handle_points(ax, ay, aw, ah, rotation, pts);
+					const vec2 corners[5] = {
+						{ pts[0][0], pts[0][1] }, { pts[2][0], pts[2][1] },
+						{ pts[4][0], pts[4][1] }, { pts[6][0], pts[6][1] },
+						{ pts[0][0], pts[0][1] }
+					};
+					ovg_tools::stroke_polyline(cb, vg, corners, 5,
+						to_ovg(outline), (selected ? 2.0f : 1.0f) * scale,
+						VG_LINE_CAP_BUTT, VG_LINE_JOIN_MITER, true);
+				}
+				else
+				{
+					ovg_tools::stroke_rect(cb, vg, ax, ay, aw, ah,
+						to_ovg(outline), (selected ? 2.0f : 1.0f) * scale);
+				}
+
 				if (selected)
 				{
-					/* Small corner handles hint at the S3 resize affordance. */
+					/* Eight resize handles + a rotate handle on a stem. */
+					float pts[8][2] = {};
+					drawing_handle_points(ax, ay, aw, ah, rotation, pts);
 					const float hs = 5.0f * scale;
-					const float corners[4][2] = {
-						{ ax, ay }, { ax + cw - hs, ay },
-						{ ax, ay + ch - hs }, { ax + cw - hs, ay + ch - hs }
+					const drawing_handle order[8] = {
+						drawing_handle::north_west, drawing_handle::north,
+						drawing_handle::north_east, drawing_handle::east,
+						drawing_handle::south_east, drawing_handle::south,
+						drawing_handle::south_west, drawing_handle::west
 					};
-					for (int i = 0; i < 4; ++i)
-						ovg_tools::fill_rect(cb, vg, corners[i][0],
-							corners[i][1], hs, hs, to_ovg(accent));
+					for (int i = 0; i < 8; ++i)
+					{
+						const bool hot = hover_drawing_handle_ == order[i] ||
+							(drawing_gesture_active_ &&
+								drawing_gesture_handle_ == order[i]);
+						ovg_tools::fill_rect(cb, vg,
+							pts[i][0] - hs * 0.5f, pts[i][1] - hs * 0.5f,
+							hs, hs, to_ovg(hot ? 0xFFFFFFFFu : accent));
+					}
+					/* Rotate stem + knob, centred on the rotated top edge. */
+					const float cx = ax + aw * 0.5f, cy = ay + ah * 0.5f;
+					const float rad = rotation * 3.14159265358979323846f / 180.0f;
+					const float c = std::cos(rad), s = std::sin(rad);
+					const float edge = ah * 0.5f;
+					const float reach = edge + 22.0f * scale;
+					const float bx = cx + s * edge, by = cy - c * edge;
+					const float rx = cx + s * reach, ry = cy - c * reach;
+					ovg_tools::line(cb, vg, bx, by, rx, ry, to_ovg(accent),
+						1.0f, VG_LINE_CAP_BUTT);
+					const float rr = (hover_drawing_handle_ == drawing_handle::rotate ||
+						drawing_gesture_handle_ == drawing_handle::rotate)
+						? 4.5f * scale : 3.5f * scale;
+					ovg_tools::fill_round_rect(cb, vg, rx - rr, ry - rr,
+						rr * 2.0f, rr * 2.0f, rr,
+						to_ovg(hover_drawing_handle_ == drawing_handle::rotate ||
+							drawing_gesture_handle_ == drawing_handle::rotate
+							? 0xFFFFFFFFu : accent));
 				}
 			}
 		}
@@ -3335,6 +3704,22 @@ namespace vgui_editor_kit {
 			}
 			if (y < m.header_height + m.body_height)
 			{
+				/* Selected drawing handles win over everything else.  Convert
+				 * the local point to absolute (event coords are content-local). */
+				const float abs_x = m.x + x;
+				const float abs_y = m.y + y;
+				const bool lock_aspect = (event->mods & VGUI_MOD_SHIFT) == 0;
+				if (!self->selected_drawing_id_.empty())
+				{
+					const drawing_handle h = self->hit_test_drawing_handle(
+						self->selected_drawing_id_, abs_x, abs_y);
+					if (h != drawing_handle::none)
+					{
+						self->begin_drawing_gesture(self->selected_drawing_id_,
+							h, abs_x, abs_y, lock_aspect);
+						return 1;
+					}
+				}
 				/* Floating drawings take priority over cells (topmost first).
 				 * Alt acts as a passthrough so a cell under a picture is still
 				 * reachable, matching Excel's selection behaviour. */
@@ -3376,6 +3761,12 @@ namespace vgui_editor_kit {
 			return 0;
 
 		case VGUI_EVENT_MOUSE_MOVE:
+			if (self->drawing_gesture_active_)
+			{
+				const bool lock_aspect = (event->mods & VGUI_MOD_SHIFT) == 0;
+				self->update_drawing_gesture(m.x + x, m.y + y, lock_aspect);
+				return 1;
+			}
 			if (self->resizing_)
 			{
 				if (self->resize_column_ >= 0)
@@ -3428,9 +3819,11 @@ namespace vgui_editor_kit {
 			{
 				self->hover_row_ = kNoRow;
 				self->hover_column_ = -1;
-				if (!self->hover_drawing_id_.empty())
+				if (!self->hover_drawing_id_.empty() ||
+					self->hover_drawing_handle_ != drawing_handle::none)
 				{
 					self->hover_drawing_id_.clear();
+					self->hover_drawing_handle_ = drawing_handle::none;
 					vgui_widget_mark_dirty(widget);
 				}
 				return 0;
@@ -3439,6 +3832,8 @@ namespace vgui_editor_kit {
 			{
 				self->hover_row_ = kNoRow;
 				self->hover_column_ = -1;
+				if (self->hover_drawing_handle_ != drawing_handle::none)
+					self->hover_drawing_handle_ = drawing_handle::none;
 				const int column = self->column_at(x + self->scroll_x_);
 				bool near_edge = false;
 				if (column >= 0)
@@ -3454,14 +3849,39 @@ namespace vgui_editor_kit {
 				return 1;
 			}
 			{
-				/* Hovering a floating drawing is visible state (outline).  Only
-				 * an id CHANGE marks the window dirty; micro-movements within
-				 * the same drawing or cell do not, preserving on-demand idle. */
+				/* Hovering a floating drawing / handle is visible state (outline
+				 * or highlighted handle).  Only an id or handle CHANGE marks the
+				 * window dirty; micro-movements inside the same target do not. */
+				const float abs_x = m.x + x;
+				const float abs_y = m.y + y;
 				const std::string drawing_hit = self->hit_test_drawing(x, y);
 				if (drawing_hit != self->hover_drawing_id_)
 				{
 					self->hover_drawing_id_ = drawing_hit;
 					vgui_widget_mark_dirty(widget);
+				}
+				const drawing_handle new_handle =
+					!self->selected_drawing_id_.empty()
+					? self->hit_test_drawing_handle(
+						self->selected_drawing_id_, abs_x, abs_y)
+					: drawing_handle::none;
+				if (new_handle != self->hover_drawing_handle_)
+				{
+					self->hover_drawing_handle_ = new_handle;
+					vgui_widget_mark_dirty(widget);
+				}
+				/* Resize/rotate handles own the cursor; return before the generic
+				 * drawing/cell cursor logic can override it. */
+				if (new_handle == drawing_handle::rotate)
+				{
+					vgui_widget_set_cursor(widget, VGUI_CURSOR_HAND);
+					return 1;
+				}
+				if (new_handle != drawing_handle::none &&
+					new_handle != drawing_handle::move)
+				{
+					vgui_widget_set_cursor(widget, VGUI_CURSOR_SIZE_H);
+					return 1;
 				}
 				const bool alt_down = (event->mods & VGUI_MOD_ALT) != 0;
 				if (!drawing_hit.empty() && !alt_down)
@@ -3487,6 +3907,11 @@ namespace vgui_editor_kit {
 		case VGUI_EVENT_MOUSE_UP:
 			if (event->button != 1)
 				return 0;
+			if (self->drawing_gesture_active_)
+			{
+				self->commit_drawing_gesture();
+				return 1;
+			}
 			if (self->resizing_)
 			{
 				self->resizing_ = false;
@@ -3568,6 +3993,12 @@ namespace vgui_editor_kit {
 		{
 			if (!self->editing_ && event->key == VGUI_KEY_ESCAPE)
 			{
+				/* Escape during a gesture cancels the preview (no undo entry). */
+				if (self->drawing_gesture_active_)
+				{
+					self->cancel_drawing_gesture();
+					return 1;
+				}
 				self->clear_selection();
 				self->clear_drawing_selection();
 				return 1;

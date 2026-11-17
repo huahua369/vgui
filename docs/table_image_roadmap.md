@@ -1,6 +1,6 @@
 # 表格图片功能规划（对齐 Excel）
 
-> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）已实施**；S3～S6 仍为规划
+> 状态：**S0/S1（in-cell 图片）+ S2（浮动图锚定层）+ S3（交互）已实施**；S4～S6 仍为规划
 > 适用版本：vgui 0.4+
 > 相关：[editor_roadmap](editor_roadmap.md) §2.2「表格/数据网格」、[vgui_capability_assessment](vgui_capability_assessment.md)、[data_binding_roadmap](data_binding_roadmap.md)
 > 面向对象：`vgui_editor_kit::table_view` / `vgui_editor_table`（C API）/ `vgui_spreadsheet_demo`
@@ -30,6 +30,17 @@
 - rotation 字段已预留但 S2 不绘制（S3 接入手柄与旋转）。
 - demo：spreadsheet 用程序化 96×64 纹理加三张浮动图（resize/move/fixed 各一），自检从 35 → 46 条，覆盖三种锚定随列宽变化、点选互斥、绘制计数。
 - 回归：debug 全量构建、spreadsheet 46/46、multiwindow on-demand 40/40、editor kit PASS、C API 2013/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
+
+**已完成：交互（对应规划 S3）**
+
+- 手柄：`drawing_handle`（move / rotate / 四角 / 四边）。选中图绘制 8 缩放柄 + 顶部旋转柄（带连线），命中按角 > 边 > 旋转柄 > 本体；手柄位置随 rotation 旋转，命中用逆旋转做点内判定。方向光标在手柄切换时更新，微动不置脏（延续按需渲染约束）。
+- 手势状态机：按下记录基准绝对矩形 + 指针角 → 移动算预览矩形/角度（覆盖锚点几何，仅视觉）→ 抬起提交；Escape 取消且不产生变更。角点缩放默认锁宽高比，Shift 临时解锁并将旋转吸附到 15°。
+- 变更提交：新增 `table_source` 之外的 `set_drawing_change_listener(id, before, after)`——表格从不改宿主数据，手势提交与 z 命令各发一次回调，宿主写回模型并压一条 undo。提交时把编辑后的绝对矩形烘焙成 `sizing=fixed` + from_dx/dy + width/height + rotation，几何显式归宿主，无隐藏状态。
+- 旋转绘制：新增核心 API `vgui_custom_draw_texture_rotated()`，用 OVG 变换矩阵绕目标中心旋转（CPU/native 纹理都支持）；无旋转仍走 fit 版本（截图回归不变）。旋转选中框用四角折线描边。
+- z 命令：`bring_drawing_to_front` / `send_drawing_to_back` / `move_drawing_z(id, ±1)`，即时重排下一帧绘制顺序。
+- 公共 API：`set_drawing_change_listener` / `hit_test_drawing_handle` / `drawing_gesture_active` / 三个 z 命令。
+- demo：宿主 change 回调写回 `g->drawings` 并压 `function_command`（"Edit Drawing"，undo 恢复 before）；自检从 46 → 64 条，覆盖手柄命中、move/resize/rotate 各一次提交+undo、Escape 取消、z 命令与错误 id。
+- 回归：debug 全量构建 104/104、spreadsheet 64/64、multiwindow on-demand 40/40、editor kit PASS、editor C API 2013/0、通用 C API 32/0、截图 13 场景 diff=0、crosswindow 74/74、floater 22/22。
 
 ---
 

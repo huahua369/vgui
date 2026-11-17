@@ -382,6 +382,45 @@ namespace vgui_editor_kit {
 		std::size_t last_render_drawing_count() const noexcept;
 		void set_drawing_selection_listener(drawing_selection_listener listener);
 
+		/* ---- floating drawing interaction (S3) ------------------------ */
+		/* Handles around a selected drawing.  Corners resize (aspect-locked
+		 * unless Shift is held), edges resize one axis, rotate spins around
+		 * the centre.  move is the drawing body itself. */
+		enum class drawing_handle
+		{
+			none = 0,
+			move,
+			rotate,
+			north_west, north, north_east, east,
+			south_east, south, south_west, west
+		};
+
+		/* Fired once when a move/resize/rotate gesture is committed, or when a
+		 * z-order command runs.  The table never mutates the host's drawing
+		 * model: it hands `before` and the computed `after` back so the host
+		 * can update its data and record one undo step.  Cancelling a gesture
+		 * (Escape) produces no call. */
+		using drawing_change_listener = std::function<void(
+			const std::string& id,
+			const table_drawing& before,
+			const table_drawing& after)>;
+		void set_drawing_change_listener(drawing_change_listener listener);
+
+		/* Handle under an absolute window-space point for a given drawing.
+		 * none when the point misses every handle/body.  Rotation is honoured:
+		 * handle positions are rotated with the drawing. */
+		drawing_handle hit_test_drawing_handle(const std::string& id,
+			float abs_x, float abs_y) const;
+		/* Whether a gesture is currently in progress (preview state). */
+		bool drawing_gesture_active() const noexcept;
+
+		/* Z-order commands.  Each calls the change listener once with the new
+		 * z and returns false only when the id is not present or the value
+		 * would not change.  The next paint pulls the re-sorted model. */
+		bool bring_drawing_to_front(const std::string& id);
+		bool send_drawing_to_back(const std::string& id);
+		bool move_drawing_z(const std::string& id, int direction);
+
 		/* ---- clipboard ------------------------------------------------- */
 		using clipboard_get_fn = std::function<std::string()>;
 		using clipboard_set_fn = std::function<void(const std::string&)>;
@@ -495,6 +534,22 @@ namespace vgui_editor_kit {
 		bool drawing_content_rect(const table_drawing& drawing, float* x,
 			float* y, float* width, float* height) const;
 		std::vector<table_drawing> pull_drawings() const;
+		const table_drawing* find_drawing(const std::string& id) const;
+		/* Absolute window rect of a drawing, optionally overridden by the
+		 * live gesture preview (so hit testing follows what is on screen). */
+		bool drawing_abs_rect(const table_drawing& drawing, float* x, float* y,
+			float* width, float* height) const;
+		/* Handle centres in absolute window coordinates for a drawing rect. */
+		void drawing_handle_points(float ax, float ay, float aw, float ah,
+			float rotation, float points[9][2]) const;
+		/* Gesture state machine. */
+		void begin_drawing_gesture(const std::string& id, drawing_handle handle,
+			float abs_x, float abs_y, bool lock_aspect);
+		void update_drawing_gesture(float abs_x, float abs_y, bool lock_aspect);
+		void commit_drawing_gesture();
+		void cancel_drawing_gesture();
+		void emit_drawing_change(const std::string& id,
+			const table_drawing& before, const table_drawing& after);
 
 		layout_metrics metrics() const;
 		float ui_scale() const;
@@ -581,6 +636,27 @@ namespace vgui_editor_kit {
 		std::string selected_drawing_id_;
 		std::string hover_drawing_id_;
 		drawing_selection_listener drawing_selection_listener_;
+		drawing_change_listener drawing_change_listener_;
+		drawing_handle hover_drawing_handle_ = drawing_handle::none;
+
+		/* In-flight transform gesture.  `before` is the snapshot at press;
+		 * `preview` is the mutated copy painted until commit/cancel.  The
+		 * host model is only updated on commit via drawing_change_listener. */
+		bool drawing_gesture_active_ = false;
+		drawing_handle drawing_gesture_handle_ = drawing_handle::none;
+		std::string drawing_gesture_id_;
+		table_drawing drawing_gesture_before_;
+		/* Live preview in absolute window pixels (scale already applied), plus
+		 * the preview rotation.  Overrides the anchor-derived rect while active. */
+		float gesture_preview_x_ = 0.0f, gesture_preview_y_ = 0.0f;
+		float gesture_preview_w_ = 0.0f, gesture_preview_h_ = 0.0f;
+		float gesture_preview_rotation_ = 0.0f;
+		/* Base absolute rect captured at press (preview overrides the helper). */
+		float gesture_base_x_ = 0.0f, gesture_base_y_ = 0.0f;
+		float gesture_base_w_ = 0.0f, gesture_base_h_ = 0.0f;
+		float gesture_start_abs_x_ = 0.0f, gesture_start_abs_y_ = 0.0f;
+		float gesture_rotation_start_ = 0.0f;	/* pointer angle at press */
+		bool gesture_lock_aspect_ = true;
 
 		float row_height_ = 24.0f;
 		float scroll_x_ = 0.0f;

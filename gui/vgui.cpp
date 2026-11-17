@@ -20885,6 +20885,90 @@ extern "C" {
 		vgui_custom_clip_end(cb, vg, saved, has_saved);
 	}
 
+	void vgui_custom_draw_texture_rotated(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, float rotation, vgui_color tint)
+	{
+		if (!widget || !widget->ctx || !cb || !vg || !texture || width <= 0.0f || height <= 0.0f) return;
+		/* At zero rotation the fit variant is cheaper and clips to dst. */
+		if (std::fabs(rotation) < 0.01f)
+		{
+			vgui_custom_draw_texture_fit(widget, cb, vg, texture, x, y, width,
+				height, fit, tint);
+			return;
+		}
+		vgui_texture_ensure_upload(widget->ctx, texture, cb, vg);
+		const int tex_w = texture->width;
+		const int tex_h = texture->height;
+		if (tex_w <= 0 || tex_h <= 0) return;
+
+		/* Same fit maths as vgui_custom_draw_texture_fit. */
+		int sx = 0, sy = 0, sw = tex_w, sh = tex_h;
+		if (fit == VGUI_IMAGE_FIT_COVER)
+		{
+			const float dst_aspect = width / height;
+			const float src_aspect = (float)sw / (float)sh;
+			if (src_aspect > dst_aspect)
+			{
+				int nw = std::max(1, (int)std::lround((float)sh * dst_aspect));
+				sx += (sw - nw) / 2;
+				sw = nw;
+			}
+			else if (src_aspect < dst_aspect)
+			{
+				int nh = std::max(1, (int)std::lround((float)sw / dst_aspect));
+				sy += (sh - nh) / 2;
+				sh = nh;
+			}
+		}
+		float draw_x = x, draw_y = y, draw_w = width, draw_h = height;
+		if (fit == VGUI_IMAGE_FIT_CONTAIN || fit == VGUI_IMAGE_FIT_NONE)
+		{
+			const float scale = fit == VGUI_IMAGE_FIT_NONE
+				? 1.0f
+				: std::min(width / (float)sw, height / (float)sh);
+			draw_w = std::max(1.0f, (float)sw * scale);
+			draw_h = std::max(1.0f, (float)sh * scale);
+			draw_x = x + (width - draw_w) * 0.5f;
+			draw_y = y + (height - draw_h) * 0.5f;
+		}
+
+		/* Rotation about the destination centre.  GLM mat3x2 is column-major:
+		 * mat3x2(xx, yx, xy, yy, tx, ty).  Composite T(c)*R*T(-c) so the image
+		 * spins in place.  Positive angle = clockwise on screen. */
+		const float rad = rotation * 3.14159265358979323846f / 180.0f;
+		const float c = std::cos(rad), s = std::sin(rad);
+		const float cx = x + width * 0.5f;
+		const float cy = y + height * 0.5f;
+		const float tx = cx - c * cx + s * cy;
+		const float ty = cy - s * cx - c * cy;
+		glm::mat3x2 rot(c, s, -s, c, tx, ty);
+		glm::mat3x2 saved = glm::mat3x2(1.0f);
+		if (cb->get_matrix) cb->get_matrix(vg, &saved);
+		if (cb->transform) cb->transform(vg, &rot);
+
+		const uint32_t color = vgui_ovg_color(vgui_widget_color(widget, tint ? tint : 0xFFFFFFFF));
+		const bool native = !texture->cpu && texture->native.image.id != 0;
+		if (native && cb->add_texture)
+		{
+			ovg_texture_r r = {};
+			r.tex = &texture->native;
+			r.rc = { sx, sy, sw, sh };
+			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
+			r.color = color;
+			cb->add_texture(vg, &r);
+		}
+		else if (!native && texture->image.id != 0 && cb->add_image)
+		{
+			ovg_image_r r = {};
+			r.img = &texture->image;
+			r.rc = { sx, sy, sw, sh };
+			r.dst = { (int)std::lround(draw_x), (int)std::lround(draw_y), (int)std::lround(draw_w), (int)std::lround(draw_h) };
+			r.color = color;
+			cb->add_image(vg, &r);
+		}
+
+		if (cb->set_matrix) cb->set_matrix(vg, &saved);
+	}
+
 } // extern "C"
 
 //----------------------------------------------------------------------------
