@@ -1911,12 +1911,14 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 // 字距靠逐字符定位做出来（vgui 没有 letter-spacing）。
 //
 // 为什么不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW：
-//   1) 该特效在 ovg 的离屏路径是好的（ovg_tools_test 的 shadow 断言 + fx stats
-//      effects=1 通过），但走 vgui 的自定义控件绘制时完全没有输出——同一控件、
-//      同一位置对照实测：叠描边有光晕，换成 set_effect 后只剩本体描边。这是
-//      渲染器里录制/裁剪/多采样上下文的路径问题，改它风险远大于收益。
-//   2) 即使修好也覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配 fx
-//      槽位，文字是 add_text 生成的图集几何，不进 mask，拿不到发光。文字必须
+//   1) vgui 的渲染后端（backends/vgui_renderer_sdl3.cpp）是 ovg 渲染器的精简
+//      分支，按设计删掉了 compute 与路径模板裁剪，因此整套特效管线在这里是
+//      不存在的：fxSupported / effect_mask / blur / draw_effect_quad 一处都没有，
+//      set_effect 只是把参数写进 vg_state_save_t::effect，没有消费者，等于静默
+//      失效（同一控件同位置对照实测：叠描边有光晕，换 set_effect 后只剩本体）。
+//      完整实现只在 third_party/ovg/ovg/ovg_renderer_sdl3.cpp 里。
+//   2) 即使补上后端也覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配
+//      fx 槽位，文字是 add_text 生成的图集几何，不进 mask，拿不到发光。文字必须
 //      手绘副本，那线框也一并手绘，绘制路径反而统一。
 //   3) 成本与可控性：每个特效要额外一轮 R8 mask + R16F 两次 blur dispatch +
 //      合成 quad，还要按尺寸分桶的纹理池；hover 缓动期间每帧参数都在变，等于
