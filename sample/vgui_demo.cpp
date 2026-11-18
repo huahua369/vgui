@@ -36,6 +36,7 @@
 #include <vgui/editor/markdown_view.h>
 #endif
 #include "ovg_main.h"
+#include "tools/tools.hpp"
 //---------------------------------------------------------------------------
 // 主题预设
 //---------------------------------------------------------------------------
@@ -156,7 +157,6 @@ struct demo_state
 	// 状态栏 / 读数
 	vgui_widget* status = nullptr;
 	vgui_widget* focus_label = nullptr;
-	vgui_widget* fps_label = nullptr;
 	vgui_widget* edit_mirror = nullptr;
 	vgui_widget* slider_h_readout = nullptr;
 	vgui_widget* slider_c_readout = nullptr;
@@ -285,7 +285,7 @@ struct demo_state
 	int added = 0;
 	float anim = 0.0f;
 	int anim_dir = 1;
-	bool anim_on = true;
+	bool anim_on = false;
 
 	// 霓虹线框按钮（NEON 卡片）
 	neon_button neon[4];
@@ -1677,7 +1677,7 @@ static void on_tab_move_last(vgui_widget* w, const vgui_event* e, void* user)
 // 构建界面
 //---------------------------------------------------------------------------
 
-static void build_header(demo_state* st, vgui_widget* root)
+static void build_header(vgui_widget* root)
 {
 	vgui_widget* head = row(root, 12);
 	vgui_widget_set_id(head, "header");
@@ -1695,10 +1695,9 @@ static void build_header(demo_state* st, vgui_widget* root)
 	vgui_widget* vl = label(right, ver, 13, 0xFF9A9A9A);
 	vgui_widget_set_text_align(vl, 1.0f, 0.5f);
 	vgui_widget_set_min_size(vl, 140, 0);
-	st->fps_label = label(right, "fps: -", 13, 0xFF9A9A9A);
-	vgui_widget_set_text_align(st->fps_label, 1.0f, 0.5f);
-	vgui_widget_set_min_size(st->fps_label, 140, 0);
-	vgui_widget_set_max_size(st->fps_label, 300, 0);
+	vgui_widget* refresh = label(right, "按需刷新", 13, 0xFF9A9A9A);
+	vgui_widget_set_text_align(refresh, 1.0f, 0.5f);
+	vgui_widget_set_min_size(refresh, 140, 0);
 	separator(root);
 }
 
@@ -1906,26 +1905,8 @@ static void build_button_styles(demo_state* st, vgui_widget* root)
 
 //---------------------------------------------------------------------------
 // 霓虹线框按钮：只画线框和文字，两者各自带辉光，不填充底色。
-//
-// 线框辉光用一圈圈外扩、逐层降低 alpha 的描边逼近高斯衰减。外扩层必须和本体
-// 同形：圆角矩形向外偏移 d 后仍是圆角矩形、半径正好是 R + d（等价于与半径 d 的
-// 圆做 Minkowski 和），所以这里每层都用 rounded_rectangle 并把半径一起加 d。
-// 只画 rectangle() 的话本体是圆角、光晕是直角，四角会露出“方框套圆角”的错位。
-// 文字辉光用多方向的低透明度副本叠加，字距靠逐字符定位做出来（vgui 没有
-// letter-spacing）。
-//
-// 为什么默认不用 vg_effect_t 的 VG_EFFECT_OUTER_GLOW（后端已支持，见下一段）：
-//   1) 覆盖不到文字：apply_effect_bounds 只在 fill/stroke 时分配 fx 槽位，文字是
-//      add_text 生成的图集几何，不进 mask，拿不到发光。文字必须手绘副本，
-//      那线框也一并手绘，绘制路径反而统一。
-//   2) 1px 细线对高斯发光是低效输入：模糊核把能量摊到几十个像素上，覆盖度太低，
-//      spread 拉满也偏弱（实测线框外 8px 处只有 +1/255）。大面积填充或柔和大圆角
-//      才划算。叠描边能用「层距 + 线宽」精确控制衰减曲线，细线框更合适。
-//   3) 成本与可控性：每个特效要额外一轮 R8 mask + R16F 两次 blur dispatch +
-//      合成 quad，还要按尺寸分桶的纹理池；hover 缓动期间每帧参数都在变，等于
-//      每帧重算。叠描边是纯顶点绘制，且只有一个标量同时控制亮度与半径，方便
-//      按像素剖面把「静止淡 / 悬停强」调到目标值。
-//   两条路径都能跑，VGUI_NEON_FX=1 可切换到 fx 版本做肉眼对比。
+// OVG blurs one stroke mask for the frame and one glyph mask for the label.
+// The visible frame and text are drawn separately from the masks.
 //
 // 控件是 VGUI_CUSTOM，自己维护 hover/press 动画并在未收敛时标脏，
 // 这样按需渲染（内容不变不重绘）下动画仍然连续。
@@ -1942,88 +1923,6 @@ static uint32_t neon_alpha(uint32_t argb, float alpha)
 static uint32_t neon_abgr(uint32_t argb)
 {
 	return (argb & 0xFF00FF00u) | ((argb & 0x00FF0000u) >> 16) | ((argb & 0x000000FFu) << 16);
-}
-
-// 对比开关：VGUI_NEON_FX=1 时改用 vg_effect_t 的真实高斯外发光。
-// 保留它是因为它验证了 vgui 后端刚补齐的特效管线；但实测 1px 细线在 blur 下
-// 的覆盖度太低（spread 拉满仍偏弱），所以默认仍走叠描边方案。
-static const bool neon_use_fx = std::getenv("VGUI_NEON_FX") != nullptr;
-
-static size_t neon_utf8_len(unsigned char c)
-{
-	if (c < 0x80) return 1;
-	if ((c >> 5) == 0x6) return 2;
-	if ((c >> 4) == 0xE) return 3;
-	if ((c >> 3) == 0x1E) return 4;
-	return 1;
-}
-
-// 逐字符排版：起点用「前缀宽度 + i*tracking」算，这样保留字体自身的 kerning；
-// 按单字宽度居中排会得到忽宽忽窄的字距。vgui 没有 letter-spacing，只能这样叠。
-static void neon_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
-	const char* text, float x, float y, float ww, float hh,
-	uint32_t rgb, float fs, float track, float glow)
-{
-	if (!text || !*text) return;
-	if (neon_use_fx)
-	{
-		vgui_text_span span = {};
-		span.length = (int)std::strlen(text);
-		span.glow.color = neon_alpha(rgb, 0.7f * glow);
-		span.glow.sigma = 1.0f + 1.5f * glow;
-		span.glow.spread = 0.1f;
-		vgui_custom_draw_text_spans(w, cb, vg, text, &span, 1,
-			x, y, ww, hh, rgb, 0.5f, 0.5f, fs);
-		return;
-	}
-	struct glyph
-	{
-		char s[8];
-		float x;		// 相对行首的起点
-		float adv;		// 该字符的自然宽度
-	};
-	std::vector<glyph> items;
-	std::string prefix;
-	float prev = 0.0f;
-	int index = 0;
-	for (const char* p = text; *p; ++index)
-	{
-		const size_t n = neon_utf8_len((unsigned char)*p);
-		glyph g = {};
-		memcpy(g.s, p, n);
-		prefix.append(p, n);
-		const float cur = vgui_widget_measure_text_sized(w, prefix.c_str(), fs);
-		g.x = prev + track * (float)index;
-		g.adv = cur - prev;
-		prev = cur;
-		items.push_back(g);
-		p += n;
-	}
-	const float total = prev + track * (float)(index - 1);
-	const float ox = x + (ww - total) * 0.5f;
-
-	// 光晕用 4~8 个方向的低透明度副本叠出来。偏移必须小于 1.5px 才会融合成
-	// "发光边缘"，偏移大了就变成双影/重影；所以这里控制在 0.6~1.3px。
-	static const float kDir[8][2] = {
-		{ 1.0f, 0.0f }, { -1.0f, 0.0f }, { 0.0f, 1.0f }, { 0.0f, -1.0f },
-		{ 0.7071f, 0.7071f }, { -0.7071f, 0.7071f }, { 0.7071f, -0.7071f }, { -0.7071f, -0.7071f }
-	};
-	const float d = 0.6f + 0.7f * glow;
-	for (const glyph& g : items)
-	{
-		const float gx = ox + g.x;
-		if (glow > 0.01f)
-		{
-			// 盒子放宽，避免单字符裁剪框把偏移后的字形切掉。
-			// 静止态只画 4 个正向副本（够用且便宜），悬停/按下再补对角线。
-			const int dirs = (glow > 0.55f) ? 8 : 4;
-			for (int i = 0; i < dirs; ++i)
-				vgui_custom_draw_text_sized(w, cb, vg, g.s,
-					gx + kDir[i][0] * d, y + kDir[i][1] * d, g.adv + track + 8.0f, hh,
-					neon_alpha(rgb, 0.18f * glow), 0.0f, 0.5f, fs);
-		}
-		vgui_custom_draw_text_sized(w, cb, vg, g.s, gx, y, g.adv + track + 4.0f, hh, rgb, 0.0f, 0.5f, fs);
-	}
 }
 
 static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
@@ -2048,80 +1947,51 @@ static void neon_draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	}
 
 	const bool disabled = vgui_widget_get_enabled(w) == 0;
-	const vgui_context* ctx = vgui_widget_get_context(w);
-	const bool focused = ctx && vgui_get_focus((vgui_context*)ctx) == w;
+	auto* ctx = vgui_widget_get_context(w);
+	const bool focused = ctx && vgui_get_focus(ctx) == w;
 	const float h = st->hover, pr = st->press;
 	const uint32_t accent = disabled ? 0xFF66707A : st->accent;
+	const float scale = vgui_context_get_ui_scale(ctx);
 
-	// 发光分两档：静止给一层贴边的淡光（透明度低但肉眼可见），指针进入后
-	// 亮度与扩散半径同时拉满，两档差距要一眼可见。
-	// 注意静止档不能压太低：8-bit 量化后 0.2 级别 + 3px 扩散基本等于没有。
-	const float glow = disabled ? 0.0f
-		: std::min(1.25f, 0.30f + 0.70f * h + 0.20f * pr + (focused ? 0.10f : 0.0f));
-	// 文字光晕给一个更高的基线：字符面积小，同样的透明度阈值下比线框更不容易看见。
-	const float text_glow = disabled ? 0.0f : std::min(1.0f, 0.32f + 0.68f * h + 0.15f * pr);
+	// Keep the halo inside the custom widget's clip, including at high DPI.
+	const float inset = (13.5f + 0.75f * pr) * scale;
+	const float bx = x + inset, by = y + inset;
+	const float bw = ww - 2.0f * inset, bh = hh - 2.0f * inset;
+	const float corner = 10.0f * scale;
+	if (bw <= 0.0f || bh <= 0.0f) return;
 
-	// 1) 外发光：矩形横平竖直，用一圈圈外扩的低透明度描边逼近高斯衰减。
-	//    辉光全部画在控件内部的留白里（pad），不依赖越界绘制：自定义控件的
-	//    绘制默认被裁到自身矩形，靠 clip_content=0 在某些录制/复用路径下并
-	//    不可靠，留边距最稳。
-	const float pad = 13.0f;
-	const float inset = 0.5f + 0.75f * pr;
-	const float bx = x + pad + inset, by = y + pad + inset;
-	const float bw = ww - (pad + inset) * 2.0f, bh = hh - (pad + inset) * 2.0f;
-	// 圆角半径。辉光层要跟着本体一起圆：圆角矩形向外偏移 d 后仍是圆角矩形，
-	// 半径正好是 R + d（等于和半径 d 的圆做 Minkowski 和），所以叠描边对圆角
-	// 同样是精确解，不会在四角露出“方框套圆角”的直角。
-	const float kCorner = 10.0f;
-
-	if (neon_use_fx)
+	if (!disabled)
 	{
-		// vg_effect_t 路径：mask + compute 高斯模糊 + 合成，光晕是连续的，
-		// 没有叠描边的层间台阶。代价是每帧多几张离屏纹理和两趟 compute。
-		vg_effect_t e = {};
-		e.type = VG_EFFECT_OUTER_GLOW;
-		e.color = neon_abgr(neon_alpha(accent, glow));
-		e.sigma = 5.0f;
-		e.spread = 1.0f;	// 1px 描边的模糊覆盖度太低，靠 spread 放大（上限 4 倍）
-		e.opacity = 1.0f;
-		cb->set_effect(vg, &e);
-		cb->set_line_width(vg, 1.0f);
-		// 遮罩取的是几何自身的 alpha，所以这里必须用实心色，不能画成全透明。
-		cb->set_source_color(vg, neon_abgr(neon_alpha(accent, 1.0f)));
-		cb->rounded_rectangle(vg, bx, by, bw, bh, kCorner);
-		cb->stroke(vg);
-		cb->set_effect(vg, nullptr);
+		vg_effect_t glow = {};
+		glow.type = VG_EFFECT_OUTER_GLOW;
+		glow.color = neon_abgr(accent);
+		glow.sigma = (1.8f + 1.60f * h + 0.15f * pr) * scale;
+		glow.spread = 0.85f;
+		glow.opacity = std::min(1.0f, 0.28f + 0.37f * h + 0.14f * pr + (focused ? 0.10f : 0.0f));
+		cb->save(vg);
+		cb->set_effect(vg, &glow);
+		// A wider opaque mask feeds the blur; zero draw opacity keeps the
+		// mask itself invisible, even on a backend without effects.
+		cb->set_opacity(vg, 0.0f);
+		ovg_tools::stroke_round_rect(cb, vg, bx, by, bw, bh, corner, 0xFFFFFFFFu, 3.0f * scale);
+		cb->restore(vg);
 	}
-	else if (glow > 0.01f)
+	ovg_tools::stroke_round_rect(cb, vg, bx, by, bw, bh, corner,
+		neon_abgr(neon_alpha(accent, disabled ? 0.45f : 0.70f + 0.20f * h)), scale);
+
+	// Keep the whole label in one run so OVG shapes it and emits one halo.
+	vgui_text_span span = {};
+	span.length = (int)std::strlen(st->label);
+	if (!disabled)
 	{
-		// 层数要多、层距要窄且互相重叠，否则外扩描边会露出一圈圈台阶。
-		const int kLayers = 12;
-		// 静止 7px（柔和的贴边淡光），悬停扩到 11.5px：扩散范围本身也是状态信号。
-		const float reach = std::min(7.0f + 4.5f * h + 3.0f * pr, pad - 1.5f);
-		const float step = reach / (float)kLayers;
-		for (int i = kLayers; i >= 1; --i)
-		{
-			const float t = (float)i / (float)kLayers;
-			const float d = step * (float)i;
-			const float a = glow * 0.30f * (1.0f - t) * (1.0f - t);
-			cb->set_line_width(vg, step + 1.5f);
-			cb->set_source_color(vg, neon_abgr(neon_alpha(accent, a)));
-			// 半径随外扩同步增大，四角的弧长与本体保持同心。
-			cb->rounded_rectangle(vg, bx - d, by - d, bw + d * 2.0f, bh + d * 2.0f,
-				kCorner + d);
-			cb->stroke(vg);
-		}
+		span.glow.color = accent;
+		span.glow.sigma = 1.0f + 1.5f * h;
+		span.glow.spread = 0.15f;
+		span.glow.opacity = std::min(1.0f, 0.30f + 0.55f * h + 0.15f * pr);
 	}
-
-	// 2) 1px 线框本体。
-	cb->set_line_width(vg, 1.0f);
-	cb->set_source_color(vg, neon_abgr(neon_alpha(accent, disabled ? 0.45f : 0.70f + 0.30f * h)));
-	cb->rounded_rectangle(vg, bx, by, bw, bh, kCorner);
-	cb->stroke(vg);
-
-	// 3) 文字：居中于线框内，按下整体下沉 1px，字距 4px，字色与光晕随悬停提亮。
-	neon_draw_label(w, cb, vg, st->label, bx, by + pr, bw, bh,
-		neon_alpha(accent, disabled ? 0.55f : 0.82f + 0.18f * h), 15.0f, 4.0f, text_glow);
+	vgui_custom_draw_text_spans(w, cb, vg, st->label, &span, 1,
+		bx, by + pr * scale, bw, bh, neon_alpha(accent, disabled ? 0.55f : 0.82f + 0.18f * h),
+		0.5f, 0.5f, 15.0f);
 }
 
 static void neon_fire(vgui_widget* w, neon_button* st)
@@ -2183,7 +2053,7 @@ static int neon_event(vgui_widget* w, const vgui_event* e, void* user)
 static void build_neon(demo_state* st, vgui_widget* root)
 {
 	vgui_widget* c = card(root, "霓虹线框按钮 NEON（仅边框 + 文字发光）");
-	label(c, "透明底：只画 1px 圆角描边（半径 10）和文字，两者都带辉光——辉光的圆角与本体同心；静止是淡光，悬停明显加强；按下内缩，点击/回车均可触发。",
+	label(c, "圆角线框和文字都用 OVG 外发光。静止时淡光，悬停时更亮；按下内缩，点击、回车或空格均可触发。",
 		13, 0xFF9AA7B4);
 
 	vgui_widget* r = row(c, 14);
@@ -2206,8 +2076,7 @@ static void build_neon(demo_state* st, vgui_widget* root)
 		vgui_widget_set_align_self(b, VGUI_ALIGN_CENTER);
 		vgui_widget_set_focusable(b, i < 3 ? 1 : 0);
 		vgui_widget_set_a11y_name(b, kLabels[i]);
-		// 不靠 clip_content=0 让辉光溢出：该属性在录制/复用路径下不生效，
-		// 辉光统一画在控件内部的 13px 留白里（见 neon_draw 的 pad）。
+		// 光晕留在控件内部，不需要放开自定义控件的裁剪。
 		vgui_custom_set_draw(b, neon_draw, &st->neon[i]);
 		vgui_custom_set_event(b, neon_event, &st->neon[i]);
 		if (i == 3)
@@ -2315,7 +2184,7 @@ static void build_progress(demo_state* st, vgui_widget* root)
 	st->anim_toggle = vgui_widget_add(r1, VGUI_CHECKBOX, "自动动画");
 	vgui_widget_set_id(st->anim_toggle, "progress-anim");
 	vgui_widget_on_value(st->anim_toggle, on_value, st);
-	vgui_widget_set_checked(st->anim_toggle, 1);
+	vgui_widget_set_checked(st->anim_toggle, st->anim_on);
 	label(r1, "自动:", 14, 0xFFB0B0B0);
 	st->progress_auto = vgui_widget_add(r1, VGUI_PROGRESS, nullptr);
 	vgui_widget_set_id(st->progress_auto, "progress-auto");
@@ -3612,7 +3481,7 @@ static void build_ui(demo_state* st)
 	vgui_context_get_theme(ui, &theme);
 	vgui_widget_set_background(root, theme.panel_bg);
 
-	build_header(st, root);
+	build_header(root);
 	build_buttons(st, root);
 	build_button_styles(st, root);
 	build_neon(st, root);
@@ -3762,68 +3631,59 @@ int main()
 	}
 
 	form->viewport->ui = st.ui;
+	wg->set_render_on_change(true);
 
 	// ---- 主循环 ----
 	vg_fbo_t* fbo = &form->fbo;
-	FpsCounter fps;
-	runtime_cx rtc = {};
-	bool running = true;
-	float stat_timer = 0.0f;
+	Uint64 last_tick = SDL_GetTicksNS();
 	int last_w = win_w, last_h = win_h;
-
-	int upms = 0;
-	int drawms = 0;
-	int submitms = 0;
-	while (running)
+	for (;;)
 	{
-		float delta = fps.tick();
-		if (wg->get_event() < 0)
-			running = false;
+		if (wg->get_event() < 0 || form->pending_close)
+			break;
 
-		if (vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
+		const Uint64 now = SDL_GetTicksNS();
+		const float delta = (float)(now - last_tick) * 1.0e-9f;
+		last_tick = now;
+		// 空闲时也要推进 UI 定时器并派发异步文件对话框结果。
+		tick(&st, delta);
+		vgui_update(st.ui, delta);
+
+		if ((SDL_GetWindowFlags(form->window) & SDL_WINDOW_MINIMIZED) ||
+			!wg->should_render(form) || !vgpu_acquire_swapchain(wg->vgctx, fbo, 1, true))
 		{
-			rtc.begin();
-			int cw = (int)fbo->display_size.x;
-			int ch = (int)fbo->display_size.y;
-			if (cw != last_w || ch != last_h)
-			{
-				last_w = cw;
-				last_h = ch;
-				vgui_context_set_size(st.ui, cw, ch);
-			}
-			if (fbo->upsize)
-			{
-				fbo->upsize = false;
-				vg->width = fbo->display_size.x;
-				vg->height = fbo->display_size.y;
-			}
-
-			tick(&st, delta);
-			vgui_update(st.ui, delta);
-
-			stat_timer += delta;
-			if (stat_timer > 0.5f)
-			{
-				stat_timer = 0.0f;
-				char buf[64] = {};
-				snprintf(buf, sizeof(buf), "fps: %d\tupdate: %dms\tdraw: %dms\tsubmit: %dms", fps.get_fps(), upms, drawms, submitms);
-				vgui_widget_set_text(st.fps_label, buf);
-			}
-			upms = rtc.end();
-			rtc.begin();
-			cb->clear(vg);
-			cb->reset_clip(vg, 1);
-			vgui_draw(st.ui, cb, vg);
-
-			drawms = rtc.end();
-			rtc.begin();
-			draw_datas_cx drawable;
-			drawable.set(fbo);
-			drawable.add(vg);
-			drawable.render(wg->vgctx);
-			submitms = rtc.end();
+			vgpu_render_frame(wg->vgctx, nullptr, 0); // 仅回收已完成的上传缓冲
+			SDL_Delay(8);
+			continue;
 		}
-		//SDL_Delay(1);
+
+		const int cw = fbo->display_size.x, ch = fbo->display_size.y;
+		if (cw != last_w || ch != last_h)
+		{
+			last_w = cw;
+			last_h = ch;
+			vgui_context_set_size(st.ui, cw, ch);
+		}
+		if (fbo->upsize)
+		{
+			fbo->upsize = false;
+			vg->width = cw;
+			vg->height = ch;
+		}
+
+		cb->clear(vg);
+		cb->reset_clip(vg, 1);
+		const uint64_t paint_before_draw = vgui_context_paint_revision(st.ui);
+		vgui_draw(st.ui, cb, vg);
+		draw_datas_cx drawable;
+		drawable.set(fbo);
+		drawable.add(vg);
+		drawable.render(wg->vgctx);
+		wg->note_rendered(form);
+		// 保留动画结束时的最后一帧（例如 toast 消失），以及 draw 内的置脏请求。
+		if (vgui_context_has_active_animation(st.ui) ||
+			vgui_context_paint_revision(st.ui) != paint_before_draw)
+			form->request_render(0);
 	}
 
 	// ---- 清理 ----

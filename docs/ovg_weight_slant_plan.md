@@ -1456,12 +1456,7 @@ void vgui_draw_text_passes(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 
 #### 11.7.3 demo
 
-`sample/vgui_demo.cpp` 的霓虹文字目前用多方向低透明度副本（`neon_draw_label`，约 1913-2015 行）。G3：
-
-- `VGUI_NEON_FX=1` 时改用 `vgui_widget_set_text_glow()` / `span.glow`，删除文字叠副本；
-- 默认路径可以保留叠副本作为无 effect 后端的对照，或直接切到真实 glow（opacity=0 填充在不支持时自然无光，不会崩）；
-- 截图对比「叠副本 vs 真实 glow」的半径/亮度/边缘，确认 `sigma` 与 `spread` 的默认值；
-- 霓虹 label 若使用内置文本，控件矩形要留出 `ceil(3*sigma+2)` 的 padding；`VGUI_CUSTOM` 需要 `custom_clip_content=0` 并自行限制父 clip，否则光晕会被控件边界切掉。
+`sample/vgui_demo.cpp` 的 `build_neon()` 已默认使用 OVG 光晕：圆角线框通过 `VG_EFFECT_OUTER_GLOW` 渲染，标签通过 `span.glow` 一次整形并提交字形遮罩。已移除叠描边、文字副本和 `VGUI_NEON_FX` 开关。线框和文字的光晕都留在控件内部的留白内；不支持特效时仍绘制线框和正文。
 
 ### 11.8 分阶段与验收
 

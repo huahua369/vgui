@@ -3370,14 +3370,25 @@ namespace vgui_editor_kit {
 		load_total_bytes_ = 0;
 	}
 
+	static bool caret_blink_on(float time)
+	{
+		return std::fmod(std::max(0.0f, time), 1.0f) < 0.55f;
+	}
+
 	void code_editor::tick(float delta_time)
 	{
+		const bool was_caret_on = caret_blink_on(tick_time_);
 		if (delta_time > 0.0f && std::isfinite(delta_time))
 			tick_time_ += delta_time;
+		const bool was_loading = loading_;
+		const float old_scroll_y = scroll_y_;
 		if (loading_)
 			(void)process_load_step();
 		if (auto_scroll_ && !loading_ && read_only_ && !lines_.empty())
 			scroll_to_line((int)lines_.size() - 1);
+		if (was_loading || old_scroll_y != scroll_y_ ||
+			(!read_only_ && focused() && was_caret_on != caret_blink_on(tick_time_)))
+			vgui_widget_mark_dirty(editor_);
 	}
 
 	/* ------------------------------------------------------------------------- */
@@ -4238,24 +4249,19 @@ namespace vgui_editor_kit {
 		}
 
 		/* Caret. */
-		if (self->focused() && !self->read_only_)
+		if (!self->read_only_ && self->focused() && caret_blink_on(self->tick_time_))
 		{
-			const float phase = std::fmod(std::max(0.0f, self->tick_time_),
-				1.0f);
-			if (phase < 0.55f)
+			const float x = g.text_x +
+				self->x_for_column(self->caret_.line,
+					self->caret_.column) - self->scroll_x_;
+			const float y = g.y + (float)self->caret_.line *
+				line_height - self->scroll_y_;
+			if (x >= g.text_x - 1.0f &&
+				x <= g.text_x + g.text_width + 1.0f &&
+				y + line_height > g.y && y < g.y + g.text_height)
 			{
-				const float x = g.text_x +
-					self->x_for_column(self->caret_.line,
-						self->caret_.column) - self->scroll_x_;
-				const float y = g.y + (float)self->caret_.line *
-					line_height - self->scroll_y_;
-				if (x >= g.text_x - 1.0f &&
-					x <= g.text_x + g.text_width + 1.0f &&
-					y + line_height > g.y && y < g.y + g.text_height)
-				{
-					ovg_tools::fill_rect(cb, vg, x, y, self->caret_width,
-						line_height, to_ovg(plain_text));
-				}
+				ovg_tools::fill_rect(cb, vg, x, y, self->caret_width,
+					line_height, to_ovg(plain_text));
 			}
 		}
 
