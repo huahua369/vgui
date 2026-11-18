@@ -4,7 +4,7 @@
 >
 > 适用版本：vgui 0.3.x
 >
-> 相关文档：[Phase 0：3D 场景编辑器基础](phase0_3d_editor.md)
+> 相关文档：[Phase 0：3D 场景编辑器基础](phase0_3d_editor.md)、[独立 UI 编辑器重建规划](ui_editor_roadmap.md)（与本组件路线图分开）
 
 ## 1. 目标与边界
 
@@ -63,7 +63,7 @@
 | DPI | 统一 `ui_scale` 贯通核心/editor kit/SDL3；逻辑 setter 与有效像素 getter 分离，字体/间距/圆角/图标同步缩放；显示器切换自动同步；布局持久化保存逻辑尺寸 | E03 已建立 10 个关键状态截图基线；自定义宿主控件需自行遵守逻辑单位约定 |
 | 国际化/RTL | UTF-8 文案表（语言→en→key 回退）、运行时切换；RTL 下 row/wrap/列对齐/文本对齐镜像，按钮/复选/开关/滑杆/进度/编辑/列表/树/菜单/菜单栏/标签/滚动条同步翻转；底层 OVG 负责 Unicode bidi shaping 与多字体回退 | 空语言显示 key；bidi 混排与 RTL 镜像经 `vgui_demo` 与 17 项 i18n/RTL 用例覆盖 |
 | 无障碍 | 完整键盘导航、焦点陷阱（Tab/Shift+Tab 在陷阱祖先内循环，模态/弹出层/浮动 Dock 自动开启）、`F10` 菜单栏、`F6`/`Shift+F6` 焦点漫游、高对比度主题（`Ctrl+Shift+H`）；`vgui_a11y_role/state/info` 推导角色/名称/值/状态，屏幕阅读器经 `a11y_listener` 接收焦点/值/状态/选中/告警事件（Toast 自动公告） | 不实现平台 UIA/AT-SPI provider；屏幕阅读器桥接由宿主经 listener 接收事件后自行转发 |
-| 现有 UI 编辑器 | `vgui_editor` 已能编辑 UI 文档，属性检查器已切换到通用 PropertyGrid | 层级面板仍直接使用 Tree；颜色/枚举等编辑器继续由 P02～P06 深化 |
+| 独立 UI 编辑器 | 旧 UI 文档编辑原型已移除，公共 editor kit 不受影响 | 见 [UI 编辑器重建规划](ui_editor_roadmap.md) |
 
 ## 3. 分层方案
 
@@ -250,8 +250,8 @@
 - [x] **P01 PropertyGrid 骨架**（P0，M）（已完成）
   - 分类、折叠、搜索、行虚拟化、标签列 + 编辑列。
   - 单行重置、只读状态、错误提示、行级 tooltip。
-  - 验收：能替换 `ui_editor` 中的手工属性面板；1000 行属性滚动流畅；分类和搜索状态可保持。
-  - 已实现：分类/折叠/搜索、标签列 + 编辑列、单行重置、只读、错误提示、行级 tooltip；`clear()` 保留搜索、折叠和最近颜色。PropertyGrid 使用扁平显示列表 + 上下 spacer，只物化视口窗口（含 overscan）内的行，滚动/过滤/折叠时按需挂载与释放，`materialized_row_count()` 供无窗口断言；核心新增 `vgui_panel_set_scroll_listener()`，程序化滚动、滚轮与滚动条拖动都会驱动窗口更新。`vgui_editor` 的 UI 文档属性面板已切换到 PropertyGrid（ARGB ↔ RGBA 转换、descriptor setter 写回节点）。`vgui_editor_kit_test` 覆盖 1000 行虚拟化的有界物化、滚动到底部与滚回顶部，`vgui_editor --selftest` 覆盖属性行构建。
+  - 验收：可作为通用属性检查器嵌入应用；1000 行属性滚动流畅；分类和搜索状态可保持。
+  - 已实现：分类/折叠/搜索、标签列 + 编辑列、单行重置、只读、错误提示、行级 tooltip；`clear()` 保留搜索、折叠和最近颜色。PropertyGrid 使用扁平显示列表 + 上下 spacer，只物化视口窗口（含 overscan）内的行，滚动/过滤/折叠时按需挂载与释放，`materialized_row_count()` 供无窗口断言；核心新增 `vgui_panel_set_scroll_listener()`，程序化滚动、滚轮与滚动条拖动都会驱动窗口更新。`vgui_editor_kit_test` 覆盖 1000 行虚拟化的有界物化、滚动到底部与滚回顶部。
 
 - [x] **P02 Number / Spinbox / DragNumber**（P0，M）（已完成）
   - int/float、范围、步进、拖拽调值、文本输入与校验。
@@ -492,7 +492,7 @@
   - 新增 `sample/vgui_game_editor.cpp`，持续 dogfood。
   - 更新 README、示例/API 注释和本路线图状态。
   - 验收：新用户能按文档构建并运行编辑器示例；示例覆盖首批 MVP 主路径。
-  - 已实现：`sample/vgui_game_editor.cpp` 已作为 editor_shell 的持续 dogfood 示例，覆盖外壳菜单/工具栏/状态栏、Outliner 行扩展/重命名/拖放/过滤/多选同步、Viewport 相机/拾取/框选/网格/吸附/平移旋转缩放 Gizmo/资产落点预览/HDR/MSAA/深度预览、Properties 类型化与多选混合值、Assets 目录导航/搜索/异步缩略图/导入与资产操作、Dock 重排/浮出，以及 CONSOLE/CANVAS/TABLE/TIMELINE/NODEGRAPH/CODE 页签和命令栈。README 新增“游戏编辑器示例”操作路径、控件说明与构建/运行命令，补充国际化/RTL、截图回归与 CTest 段落，并修正运行列表与项目结构（移除不存在的 `vgui.exe`/`vgui_legacy.cpp`，加入 `vgui_editor`、`vgui_phase0`、`vgui_screenshot_test`、`sample/screenshots/`）。`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围与常用操作。示例中的场景、资产库和命令历史均为内存模型；S08 后续已把场景接入真实 `vgui-game-scene` JSON 文档（New/Open/Save/Save As/Exit），资产数据库仍由宿主实现；平台文件对话框已由核心 `vgui_file_dialog_*`（SDL3 后端原生对话框，公共头无 SDL 类型）提供，宿主只需决定导入/导出策略，布局保存/恢复由 `editor_shell` API 提供并在 `vgui_editor_kit_test` 覆盖。新用户可按 README 的 vcpkg + CMake 命令构建并运行 `out/bin/x64d/vgui_game_editor.exe`；公共头注释已在各里程碑同步，本次补充示例顶部注释与 README 操作说明。
+  - 已实现：`sample/vgui_game_editor.cpp` 已作为 editor_shell 的持续 dogfood 示例，覆盖外壳菜单/工具栏/状态栏、Outliner 行扩展/重命名/拖放/过滤/多选同步、Viewport 相机/拾取/框选/网格/吸附/平移旋转缩放 Gizmo/资产落点预览/HDR/MSAA/深度预览、Properties 类型化与多选混合值、Assets 目录导航/搜索/异步缩略图/导入与资产操作、Dock 重排/浮出，以及 CONSOLE/CANVAS/TABLE/TIMELINE/NODEGRAPH/CODE 页签和命令栈。README 新增“游戏编辑器示例”操作路径、控件说明与构建/运行命令，补充国际化/RTL、截图回归与 CTest 段落，并修正运行列表与项目结构（移除不存在的 `vgui.exe`/`vgui_legacy.cpp`，加入 `vgui_phase0`、`vgui_screenshot_test`、`sample/screenshots/`）。`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围与常用操作。示例中的场景、资产库和命令历史均为内存模型；S08 后续已把场景接入真实 `vgui-game-scene` JSON 文档（New/Open/Save/Save As/Exit），资产数据库仍由宿主实现；平台文件对话框已由核心 `vgui_file_dialog_*`（SDL3 后端原生对话框，公共头无 SDL 类型）提供，宿主只需决定导入/导出策略，布局保存/恢复由 `editor_shell` API 提供并在 `vgui_editor_kit_test` 覆盖。新用户可按 README 的 vcpkg + CMake 命令构建并运行 `out/bin/x64d/vgui_game_editor.exe`；公共头注释已在各里程碑同步，本次补充示例顶部注释与 README 操作说明。
 
 - [x] **E05 无障碍**（P2，L）（已完成）
   - 完整键盘导航、焦点陷阱、屏幕阅读器、高对比度主题。
@@ -668,7 +668,7 @@ MVP 验收场景：
 - M7 E07 Slang 着色器：`sample/shaders/*.slang` 取代原 GLSL 源，`compile.ps1` 从 `SLANGC`/PATH/Vulkan SDK 定位 `slangc`，用 `-target spirv -emit-spirv-via-glsl` 生成 SPIR-V 1.0 并写入签入的 `spv_c/*.h`；普通 CMake 构建不依赖着色器编译器，根 `vcpkg.json` 已移除 `glslang`。
 - M7 E03 截图回归：`sample/vgui_screenshot_test.cpp` 用无窗口 SDL_GPU/OVG 离屏管线渲染 10 个关键状态（Dock 默认/浮动、PropertyGrid 混合值/错误折叠只读、Outliner 深色选中/虚拟行源/浅色过滤、AssetBrowser 网格/列表、Viewport 网格+Gizmo），基线保存在 `sample/screenshots/`；默认每通道容差 2、差异像素比例上限 0.05%，`--update` 重建基线，`--filter`/`--list` 便于本地调试，失败输出 `_actual.png` 与 `_diff.png`。根 CMake 启用 CTest，`vgui_screenshots` 可直接在 CI 运行，无 Vulkan 时返回 77 标记 SKIP。
 - M7 E04 文档与示例：README 新增“游戏编辑器示例”的 MVP 主路径与常用操作、构建/运行/测试命令、国际化/RTL 与截图回归说明，并修正运行列表和项目结构；`vgui_game_editor.cpp` 顶部注释同步为当前完整 dogfood 范围。新用户可按 README 使用 vcpkg + CMake 构建并运行 `vgui_game_editor`。
-- 现有 `vgui_model_test`（757 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥、E01 样式/字体/几何缩放与 100%/125%/150%/200% 列布局不重叠、E05 语义树/焦点陷阱/公告事件/高对比度对比度）、`vgui_c_api_test`（32 项，含 V01 附加焦点监听与 `vgui_input_cancel`、E01 纯 C UI 缩放/监听器/整树重算）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）、`vgui_screenshot_test`（E03：10 个场景对比，同机 `diff=0`）、`ovg_scene_json_test`（A08：图片上传/缓存/释放）保持通过；`vgui_editor_kit_test` 另覆盖 `test_document_handlers`（S08 菜单/快捷键/回调回退）与 `test_shell_ui_scale` 的四档 DPI 外壳/停靠区布局与逻辑尺寸持久化往返；`vgui_editor --selftest` 覆盖 PropertyGrid 属性行构建、JSON 往返与代码生成。
+- 现有 `vgui_model_test`（757 项，含树过滤/行矩形/编辑取消/焦点监听、context popup 层开关/外点/Esc/边缘钳制/焦点/互斥、E01 样式/字体/几何缩放与 100%/125%/150%/200% 列布局不重叠、E05 语义树/焦点陷阱/公告事件/高对比度对比度）、`vgui_c_api_test`（32 项，含 V01 附加焦点监听与 `vgui_input_cancel`、E01 纯 C UI 缩放/监听器/整树重算）、`vgui_texture_test`（79 项，含 V10 原生/CPU 首帧绘制、九宫格、旋转、矩阵、父级裁剪及组合）、`vgui_screenshot_test`（E03：10 个场景对比，同机 `diff=0`）、`ovg_scene_json_test`（A08：图片上传/缓存/释放）保持通过；`vgui_editor_kit_test` 另覆盖 `test_document_handlers`（S08 菜单/快捷键/回调回退）与 `test_shell_ui_scale` 的四档 DPI 外壳/停靠区布局与逻辑尺寸持久化往返。
 
 下一步优先项：
 

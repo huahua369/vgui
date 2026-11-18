@@ -48,12 +48,6 @@ set(SRC_MODEL_TEST
     vgui_model_test.cpp
 )
 
-# UI 编辑器（文档 JSON + C++ 代码生成 + 实时预览）
-set(SRC_UI_EDITOR
-    ui_editor_main.cpp
-    ../gui/ui_editor.cpp
-)
-
 # vgui_editor_kit MVP 骨架自测（无需窗口/GPU）
 set(SRC_EDITOR_KIT_TEST
     vgui_editor_kit_test.cpp
@@ -241,12 +235,6 @@ target_link_libraries(vgui_edit_test PRIVATE vgui_sample_common vgui::vgui EnTT:
 endif()
 
 if(VGUI_BUILD_EDITOR_KIT)
-if(NOT VGUI_CORE_ONLY)
-add_executable(vgui_editor ${SRC_UI_EDITOR})
-target_link_libraries(vgui_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB nlohmann_json::nlohmann_json)
-target_compile_definitions(vgui_editor PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
-endif()
-
 add_executable(vgui_editor_kit_test ${SRC_EDITOR_KIT_TEST})
 target_link_libraries(vgui_editor_kit_test PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
 
