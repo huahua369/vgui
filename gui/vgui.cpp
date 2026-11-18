@@ -7,6 +7,7 @@ gui实现
 #include "pch.h"
 #include "vgui_internal.h"
 #include <vgui/vgui.h>
+#include "vgui_text_draw.h"
 
 #include <algorithm>
 #include <chrono>
@@ -17,6 +18,7 @@ gui实现
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -749,6 +751,9 @@ struct vgui_widget
 	vgui_color track = 0;
 	float font_size = 0;		// effective size (0 = inherit context)
 	float base_font_size = 0;	// logical size supplied by the host
+	int font_weight = 0;
+	int font_slant = 0;
+	vgui_text_glow text_glow = {};
 	float rounding = 0;
 	float border_width = 0;
 	float opacity = 1.0f;
@@ -1030,6 +1035,8 @@ struct vgui_binding
 struct vgui_context
 {
 	font_familys_t* font = nullptr;
+	uint64_t font_revision = 0;
+	std::map<std::pair<int, int>, font_familys_t*> font_variants;
 	float font_size = 16.0f;		// effective size (base_font_size * ui_scale)
 	float base_font_size = 16.0f;	// logical size supplied by the host
 	float ui_scale = 1.0f;
@@ -1546,6 +1553,42 @@ static int vgui_u8_col_at_byte(const std::string& s, int byte_index)
 	return n;
 }
 
+static bool vgui_valid_font_weight(int weight)
+{
+	return weight == 0 || (weight >= 100 && weight <= 900);
+}
+
+static bool vgui_valid_font_slant(int slant)
+{
+	return slant >= VGUI_FONT_SLANT_DEFAULT && slant <= VGUI_FONT_SLANT_OBLIQUE;
+}
+
+static font_familys_t* vgui_font_for(vgui_context* ctx, const vgui_widget* w,
+	int weight = 0, int slant = 0)
+{
+	if (!ctx || !ctx->font) return nullptr;
+	if (w)
+	{
+		if (!weight || !vgui_valid_font_weight(weight)) weight = w->font_weight;
+		if (!slant || !vgui_valid_font_slant(slant)) slant = w->font_slant;
+	}
+	if ((!weight && !slant) || !vgui_valid_font_weight(weight) || !vgui_valid_font_slant(slant))
+		return ctx->font;
+	const auto key = std::make_pair(weight, slant);
+	auto it = ctx->font_variants.find(key);
+	if (it != ctx->font_variants.end()) return it->second ? it->second : ctx->font;
+	auto& variant = ctx->font_variants[key];
+	variant = font_familys_derive(ctx->font, weight, slant);
+	return variant ? variant : ctx->font;
+}
+
+static void vgui_free_font_variants(vgui_context* ctx)
+{
+	for (const auto& entry : ctx->font_variants)
+		if (entry.second) delete_font_family(entry.second);
+	ctx->font_variants.clear();
+}
+
 static float vgui_font_size(vgui_context* ctx, vgui_widget* w)
 {
 	float fs = w && w->font_size > 0 ? w->font_size : (ctx ? ctx->font_size : 16.0f);
@@ -1579,17 +1622,14 @@ static bool vgui_wants_text(vgui_widget* w)
 static float vgui_line_height(vgui_context* ctx, vgui_widget* w)
 {
 	float fs = vgui_font_size(ctx, w);
-	return vg_get_font_metrics(ctx ? ctx->font : nullptr, fs).line_height;
+	return vg_get_font_metrics(vgui_font_for(ctx, w), fs).line_height;
 }
 
-// ovg anchors a text run on its baseline: vg_add_text_run leaves
-// baseline_y = text_st_t::pos.y (the ascender is computed but unused).  The UI
-// works in line boxes, so the renderer needs pos.y = box top + ascender.
-// Mirrors ovg's own ascent source, the primary family at the pixel size.
+// OVG anchors a text run on its baseline; the UI works in line boxes.
 static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
 {
 	float fs = vgui_font_size(ctx, w);
-	return vg_get_font_metrics(ctx ? ctx->font : nullptr, fs).ascent;
+	return vg_get_font_metrics(vgui_font_for(ctx, w), fs).ascent;
 }
 
 // Text measurement lives in ovg_fonts.cpp (vg_measure_text_width).  It uses
@@ -1604,14 +1644,14 @@ static float vgui_text_width(vgui_widget* w, const std::string& text)
 {
 	vgui_context* ctx = w ? w->ctx : nullptr;
 	float fs = vgui_font_size(ctx, w);
-	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text.c_str(), (int)text.size());
+	return vgui_measure_text_range(vgui_font_for(ctx, w), (int)fs, text.c_str(), (int)text.size());
 }
 
 static float vgui_text_width_n(vgui_widget* w, const char* text, int len)
 {
 	vgui_context* ctx = w ? w->ctx : nullptr;
 	float fs = vgui_font_size(ctx, w);
-	return vgui_measure_text_range(ctx ? ctx->font : nullptr, (int)fs, text, len);
+	return vgui_measure_text_range(vgui_font_for(ctx, w), (int)fs, text, len);
 }
 
 // Greedy word wrapping used by dialogs and toasts.  Existing newlines are
@@ -1635,7 +1675,7 @@ static std::vector<std::string> vgui_wrap_text(vgui_context* ctx, vgui_widget* o
 			}
 			auto measure = [&](const char* data, int len)
 				{
-					return vgui_measure_text_range(ctx->font,
+					return vgui_measure_text_range(vgui_font_for(ctx, owner),
 						(int)vgui_font_size(ctx, owner), data, len);
 				};
 			size_t start = 0;
@@ -1697,7 +1737,7 @@ static float vgui_edit_content_width(vgui_widget* w)
 {
 	if (!w) return 0.0f;
 	vgui_context* ctx = w->ctx;
-	font_familys_t* font = ctx ? ctx->font : nullptr;
+	font_familys_t* font = vgui_font_for(ctx, w);
 	float fs = vgui_font_size(ctx, w);
 	if (w->edit_content_w_valid &&
 		w->edit_content_font == font &&
@@ -5021,7 +5061,7 @@ static float vgui_list_content_width(vgui_widget* w, vgui_list_state* st)
 			return std::max(0.0f, st->source.row_max_width(st->source.user));
 		return w->ctx ? w->ctx->style.list.req_width : 0.0f;
 	}
-	const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
+	const font_familys_t* font = vgui_font_for(w->ctx, w);
 	float fs = vgui_font_size(w->ctx, w);
 	if (st->content_w_valid && st->content_w_font == font && st->content_w_font_size == fs)
 		return st->content_w;
@@ -5054,7 +5094,7 @@ static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 		return w->ctx ? w->ctx->style.tree.req_width : 0.0f;
 	}
 	vgui_tree_rebuild_rows(w);
-	const font_familys_t* font = w->ctx ? w->ctx->font : nullptr;
+	const font_familys_t* font = vgui_font_for(w->ctx, w);
 	float fs = vgui_font_size(w->ctx, w);
 	float indent = w->ctx ? w->ctx->style.tree.indent : 0.0f;
 	float arrow = w->ctx ? w->ctx->style.tree.arrow_size + w->ctx->style.tree.arrow_gap : 0.0f;
@@ -11574,6 +11614,19 @@ static uint32_t vgui_widget_color(vgui_widget* w, uint32_t c)
 	return vgui_alpha_color(c, w->opacity);
 }
 
+vgui_color vgui_text_widget_color(vgui_widget* widget, vgui_color color)
+{
+	return widget ? vgui_widget_color(widget, color) : color;
+}
+
+uint64_t vgui_text_font_revision(const vgui_context* ctx)
+{
+	return ctx ? ctx->font_revision : 0;
+}
+
+static bool vgui_custom_clip_begin(ovg_ctx_cb*, rvg_t*, float, float, float, float, glm::ivec4*, int*);
+static void vgui_custom_clip_end(ovg_ctx_cb*, rvg_t*, const glm::ivec4&, int);
+
 // Scrollbar feedback: only the thumb changes, and only slightly, so the
 // track stays quiet and the bar remains readable on both dark and light
 // themes.  The hover colour is part of the theme.
@@ -11857,37 +11910,149 @@ static void vgui_fill_selection(ovg_ctx_cb* cb, rvg_t* vg,
 	cb->fill(vg);
 }
 
-/* Physical text drawing.  ax/ay are used exactly as supplied, so compound
- * controls that already placed every sub-region themselves can avoid the
- * automatic RTL mirroring done by vgui_draw_text(). */
+static void vgui_text_prepare(vgui_context* ctx, vgui_widget* w,
+	std::string_view text, float x, float y, float width, float height,
+	float ax, float ay, float fs, int weight, int slant, vg_text_glow_run_t& run)
+{
+	if (fs < 1.0f) fs = vgui_font_size(ctx, w);
+	auto* font = vgui_font_for(ctx, w, weight, slant);
+	const auto metrics = vg_get_font_metrics(font, fs);
+	const float lh = metrics.line_height;
+	const float tw = std::max(width, vgui_measure_text_range(font, (int)fs, text.data(), (int)text.size()));
+	const auto lines = 1 + std::count(text.begin(), text.end(), '\n');
+	const float th = lines > 1 ? lh * (float)lines : std::max(height, lh);
+	run.style.family = font;
+	run.style.fontsize = fs;
+	run.style.min_subpixel = ctx->style.text_min_subpixel;
+	run.box.text_align = { ax, ay };
+	run.box.rc = { x,y,tw, th };
+	run.box.baseline = (int)metrics.ascent;
+	run.text.pos = { x, y };
+	run.text.size = { tw, height };
+	run.text.text = text.data();
+	run.text.text_len = (int)text.size();
+}
+
+static bool vgui_text_set_glow(vgui_context* ctx, vgui_widget* w,
+	const vgui_text_glow& glow, text_style_t& st)
+{
+	auto light = glow.color;
+	if (!(light >> 24)) return false;
+	if (w && !w->enabled)
+		light = vgui_mix_color(light, ctx->theme.disabled, ctx->style.disabled_text_mix);
+	if (w) light = vgui_widget_color(w, light);
+	if (!(light >> 24)) return false;
+	const float sigma = glow.sigma * ctx->ui_scale;
+	st.color_glow = vgui_ovg_color(light);
+	st.glow_sigma = std::isfinite(sigma) ? std::clamp(sigma, 0.0f, 256.0f) : 0.0f;
+	st.glow_spread = std::isfinite(glow.spread) ? std::clamp(glow.spread, -1.0f, 1.0f) : 0.0f;
+	st.glow_opacity = std::isfinite(glow.opacity) && glow.opacity > 0.0f ? std::min(glow.opacity, 1.0f) : 1.0f;
+	st.glow_mode = glow.mode == VGUI_TEXT_GLOW_INNER ? VG_TEXT_GLOW_INNER : VG_TEXT_GLOW_OUTER;
+	st.glow_blend = glow.blend == VGUI_TEXT_GLOW_ADD ? VG_EFFECT_BLEND_ADD : VG_EFFECT_BLEND_OVER;
+	return true;
+}
+
+static void vgui_text_submit(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
+	std::string_view text, float x, float y, float width, float height,
+	uint32_t color, float ax, float ay, float fs, int weight, int slant,
+	const vgui_text_glow* glow, unsigned passes)
+{
+	if (!ctx || !ctx->font || !cb || !cb->add_text || !vg || text.empty()) return;
+	vg_text_glow_run_t run = {};
+	vgui_text_prepare(ctx, w, text, x, y, width, height, ax, ay, fs, weight, slant, run);
+	if (!glow && w) glow = &w->text_glow;
+	const bool inner = glow && glow->mode == VGUI_TEXT_GLOW_INNER;
+	const auto submit = [&](bool clipped, float cw, float ch, float pad) {
+		if (!clipped) { cb->add_text(vg, &run.text, &run.style, &run.box); return; }
+		glm::ivec4 saved = {};
+		int has_saved = 0;
+		if (vgui_custom_clip_begin(cb, vg, x - pad, y - pad, cw + 2 * pad, ch + 2 * pad, &saved, &has_saved))
+			cb->add_text(vg, &run.text, &run.style, &run.box);
+		vgui_custom_clip_end(cb, vg, saved, has_saved);
+	};
+	const auto submit_glow = [&] {
+		if (!glow || !vgui_text_set_glow(ctx, w, *glow, run.style)) return;
+		run.style.color = 0;
+		const float pad = inner ? 0.0f : std::ceil(3.0f * run.style.glow_sigma + 2.0f);
+		if (inner)
+			submit((passes & VGUI_TEXT_PASS_CLIP_TEXT) != 0, width, height, pad);
+		else
+			submit(true, run.text.size.x, (float)run.box.rc.w, pad);
+		run.style.color_glow = 0;
+	};
+	if (!inner && (passes & VGUI_TEXT_PASS_GLOW)) submit_glow();
+	if ((passes & VGUI_TEXT_PASS_TEXT) && color && ((color >> 24) || !glow || !(glow->color >> 24)))
+	{
+		run.style.color = vgui_ovg_color(color);
+		submit((passes & VGUI_TEXT_PASS_CLIP_TEXT) != 0, width, height, 0);
+	}
+	if (inner && (passes & VGUI_TEXT_PASS_INNER_GLOW)) submit_glow();
+}
+
+void vgui_draw_text_passes(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+	const char* text, float x, float y, float width, float height,
+	vgui_color color, float ax, float ay, float font_size,
+	const vgui_text_glow* glow, unsigned passes, int weight, int slant)
+{
+	if (!widget || !widget->ctx || !text) return;
+	vgui_text_submit(widget->ctx, cb, vg, widget, text, x, y, width, height, color,
+		ax, ay, vgui_font_size_for(widget->ctx, widget, font_size), weight, slant, glow, passes);
+}
+
+void vgui_text_ink_intervals(vgui_widget* widget, const char* text, float x, float y,
+	float font_size, int weight, int slant, float top, float bottom,
+	std::vector<std::pair<float, float>>& out)
+{
+	if (!widget || !widget->ctx || !text || !*text || !(bottom > top)) return;
+	auto* ctx = widget->ctx;
+	const float fs = vgui_font_size_for(ctx, widget, font_size);
+	auto* font = vgui_font_for(ctx, widget, weight, slant);
+	const auto metrics = vg_get_font_metrics(font, fs);
+	text_st_t t = {};
+	t.text = text;
+	t.text_len = -1;
+	text_style_t st = {};
+	st.family = font;
+	st.fontsize = fs;
+	st.min_subpixel = ctx->style.text_min_subpixel;
+	struct scan { float top, bottom; std::vector<std::pair<float, float>>& out; } bounds{top, bottom, out};
+	vg_visit_text_ink(&t, &st, std::trunc(x), std::trunc(y) + std::trunc(metrics.ascent),
+		[](void* user, float x, float y, float w, float h) {
+			auto& scan = *static_cast<struct scan*>(user);
+			if (y < scan.bottom && y + h > scan.top) scan.out.emplace_back(x, x + w);
+		}, &bounds);
+}
+
+bool vgui_text_glow_batch(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, const vgui_text_glow& glow,
+	const vgui_glow_run* items, size_t count, const vgui_glow_rect* rects, size_t rect_count)
+{
+	if (!w || !w->ctx || !cb || !cb->add_text_glow_batch || !vg || (!count && !rect_count)) return false;
+	std::vector<vg_text_glow_run_t> runs(std::max<size_t>(1, count));
+	text_style_t effect{};
+	if (!vgui_text_set_glow(w->ctx, w, glow, effect)) return true;
+	for (size_t i = 0; i < count; ++i) {
+		const auto& a = items[i];
+		runs[i].style = effect;
+		vgui_text_prepare(w->ctx, w, a.text, a.x, a.y, a.width, a.height, 0, 0,
+			vgui_font_size_for(w->ctx, w, a.font_size), a.weight, a.slant, runs[i]);
+	}
+	if (!count) runs[0].style = effect;
+	std::vector<vec4> boxes;
+	boxes.reserve(rect_count);
+	for (size_t i = 0; i < rect_count; ++i)
+		boxes.emplace_back(rects[i].x, rects[i].y, rects[i].width, rects[i].height);
+	return cb->add_text_glow_batch(vg, runs.data(), runs.size(), boxes.data(), boxes.size());
+}
+
+/* Physical drawing without clipping or glow, used by compound controls. */
 static void vgui_draw_text_sized_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
 	const std::string& text, float x, float y, float width, float height,
 	uint32_t color, float ax, float ay, float fs)
 {
-	if (!ctx || !ctx->font || !cb || !vg || text.empty() || color == 0) return;
-	if (fs < 1.0f) fs = vgui_font_size(ctx, w);
-	const float lh = vg_get_font_metrics(ctx->font, fs).line_height;
-	const float tw = std::max(width,
-		vgui_measure_text_range(ctx->font, (int)fs, text.c_str(), (int)text.size()));
-	int count = vgui_text_lines(text);
-	float th = std::max(height, lh);
-	if (count > 1)
-		th = lh * (float)count;
-	text_style_t st = {};
-	st.family = ctx->font;
-	st.fontsize = fs;
-	st.color = vgui_ovg_color(color);
-	st.min_subpixel = ctx->style.text_min_subpixel;
-	text_box_rt box = {};
-	box.text_align = { ax, ay };
-	box.rc = { x,y,tw, th };
-	box.baseline = vg_get_font_metrics(ctx->font, fs).ascent;
-	text_st_t t = {};
-	t.pos = { x, y };
-	t.size = { tw, height };
-	t.text = text.c_str();
-	t.text_len = (int)text.size();
-	cb->add_text(vg, &t, &st, &box);
+	constexpr vgui_text_glow no_glow = {};
+	if (!color) return;
+	vgui_text_submit(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay,
+		fs, 0, 0, &no_glow, VGUI_TEXT_PASS_TEXT);
 }
 
 static void vgui_draw_text_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
@@ -11906,7 +12071,9 @@ static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_wi
 {
 	if (vgui_is_rtl(ctx))
 		ax = 1.0f - ax;
-	vgui_draw_text_raw(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay);
+	if (!color) return;
+	vgui_text_submit(ctx, cb, vg, w, text, x, y, width, height, color,
+		ax, ay, vgui_font_size(ctx, w), 0, 0, nullptr, VGUI_TEXT_PASS_ALL);
 }
 
 static uint32_t vgui_text_color(vgui_widget* w)
@@ -14837,11 +15004,11 @@ static void vgui_process_texture_retire(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t
 // Clip helpers for the public VGUI_CUSTOM drawing helpers.  save/restore does
 // not cover the scissor rectangle, so callers capture and restore it explicitly
 // and intersect the requested rect with the active clip instead of replacing it.
-static void vgui_custom_clip_begin(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, glm::ivec4* saved, int* has_saved)
+static bool vgui_custom_clip_begin(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w, float h, glm::ivec4* saved, int* has_saved)
 {
 	*has_saved = 0;
 	saved->x = saved->y = saved->z = saved->w = 0;
-	if (!cb || !vg || !cb->clip_rect) return;
+	if (!cb || !vg || !cb->clip_rect) return true;
 	if (cb->get_clip_rect)
 	{
 		cb->get_clip_rect(vg, saved);
@@ -14859,6 +15026,7 @@ static void vgui_custom_clip_begin(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, 
 		y1 = std::min(y1, saved->y + saved->w);
 	}
 	cb->clip_rect(vg, x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
+	return x1 > x0 && y1 > y0;
 }
 
 static void vgui_custom_clip_end(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec4& saved, int has_saved)
@@ -15047,6 +15215,7 @@ extern "C" {
 			free_flex_run(ctx->flex);
 			ctx->flex = nullptr;
 		}
+		vgui_free_font_variants(ctx);
 		delete ctx;
 	}
 
@@ -15067,10 +15236,23 @@ extern "C" {
 	void vgui_context_set_font(vgui_context* ctx, struct font_familys_t* font, float font_size)
 	{
 		if (!ctx) return;
+		if (ctx->font != font)
+		{
+			vgui_free_font_variants(ctx);
+			++ctx->font_revision;
+			for (auto* w : ctx->all_widgets)
+			{
+				vgui_edit_invalidate_content_width(w);
+				if (w->list) w->list->content_w_valid = false;
+				if (w->tree) w->tree->content_w_valid = false;
+			}
+		}
 		ctx->font = font;
 		if (font_size > 0) ctx->base_font_size = font_size;
 		ctx->font_size = ctx->base_font_size * ctx->ui_scale;
 		ctx->layout_dirty = true;
+		++ctx->style_epoch;
+		++ctx->paint_revision;
 	}
 
 	float vgui_context_get_font_size(vgui_context* ctx)
@@ -15841,6 +16023,69 @@ extern "C" {
 		if (!widget) return 0.0f;
 		if (widget->font_size > 0.0f) return widget->font_size;
 		return widget->ctx ? widget->ctx->font_size : 0.0f;
+	}
+
+	void vgui_widget_set_font_weight(vgui_widget* widget, int weight)
+	{
+		if (!widget || !vgui_valid_font_weight(weight) || widget->font_weight == weight) return;
+		widget->font_weight = weight;
+		vgui_mark_dirty(widget);
+	}
+
+	int vgui_widget_get_font_weight(vgui_widget* widget)
+	{
+		return widget ? widget->font_weight : 0;
+	}
+
+	void vgui_widget_set_font_slant(vgui_widget* widget, int slant)
+	{
+		if (!widget || !vgui_valid_font_slant(slant) || widget->font_slant == slant) return;
+		widget->font_slant = slant;
+		vgui_mark_dirty(widget);
+	}
+
+	int vgui_widget_get_font_slant(vgui_widget* widget)
+	{
+		return widget ? widget->font_slant : 0;
+	}
+
+	void vgui_widget_set_text_glow_style(vgui_widget* widget, const vgui_text_glow* style)
+	{
+		if (!widget) return;
+		vgui_text_glow glow = {};
+		if (style && (style->color >> 24))
+		{
+			glow.color = style->color;
+			glow.sigma = std::isfinite(style->sigma) ? std::max(0.0f, style->sigma) : 0.0f;
+			glow.spread = std::isfinite(style->spread) ? std::clamp(style->spread, -1.0f, 1.0f) : 0.0f;
+			glow.opacity = std::isfinite(style->opacity) ? std::clamp(style->opacity, 0.0f, 1.0f) : 0.0f;
+			glow.mode = style->mode == VGUI_TEXT_GLOW_INNER ? VGUI_TEXT_GLOW_INNER : VGUI_TEXT_GLOW_OUTER;
+			glow.blend = style->blend == VGUI_TEXT_GLOW_ADD ? VGUI_TEXT_GLOW_ADD : VGUI_TEXT_GLOW_OVER;
+			glow.flags = style->flags & VGUI_TEXT_GLOW_DECORATION;
+		}
+		const auto& prev = widget->text_glow;
+		if (prev.color == glow.color && prev.sigma == glow.sigma && prev.spread == glow.spread &&
+			prev.opacity == glow.opacity && prev.mode == glow.mode && prev.blend == glow.blend && prev.flags == glow.flags)
+			return;
+		widget->text_glow = glow;
+		vgui_widget_invalidate_recording(widget);
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_widget_set_text_glow(vgui_widget* widget, vgui_color color, float sigma, float spread)
+	{
+		const vgui_text_glow glow{color, sigma, spread};
+		vgui_widget_set_text_glow_style(widget, &glow);
+	}
+
+	void vgui_widget_clear_text_glow(vgui_widget* widget)
+	{
+		vgui_widget_set_text_glow_style(widget, nullptr);
+	}
+
+	vgui_text_glow vgui_widget_get_text_glow(vgui_widget* widget)
+	{
+		return widget ? widget->text_glow : vgui_text_glow{};
 	}
 
 	void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color)
@@ -20999,20 +21244,43 @@ extern "C" {
 		return vgui_line_height(widget->ctx, widget);
 	}
 
-	float vgui_widget_measure_text_sized(vgui_widget* widget, const char* text,
-		float font_size)
+	float vgui_widget_measure_text_styled(vgui_widget* widget, const char* text,
+		float font_size, int weight, int slant)
 	{
 		if (!widget || !widget->ctx || !text || !*text) return 0.0f;
 		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
-		return vgui_measure_text_range(widget->ctx->font, (int)fs, text,
-			(int)std::strlen(text));
+		return vgui_measure_text_range(vgui_font_for(widget->ctx, widget, weight, slant),
+			(int)fs, text, (int)std::strlen(text));
+	}
+
+	void vgui_widget_get_text_metrics_styled(vgui_widget* widget, float font_size,
+		int weight, int slant, vgui_text_metrics* out)
+	{
+		if (!out) return;
+		auto* ctx = widget ? widget->ctx : nullptr;
+		const float fs = vgui_font_size_for(ctx, widget, font_size);
+		const auto m = vg_get_font_metrics(vgui_font_for(ctx, widget, weight, slant), fs);
+		*out = {m.ascent, m.line_height, m.underline_offset, m.underline_thickness,
+			m.strikeout_offset, m.strikeout_thickness, m.x_height, m.cap_height};
+	}
+
+	float vgui_widget_get_line_height_styled(vgui_widget* widget, float font_size,
+		int weight, int slant)
+	{
+		if (!widget || !widget->ctx) return 0.0f;
+		vgui_text_metrics m = {};
+		vgui_widget_get_text_metrics_styled(widget, font_size, weight, slant, &m);
+		return m.line_height;
+	}
+
+	float vgui_widget_measure_text_sized(vgui_widget* widget, const char* text, float font_size)
+	{
+		return vgui_widget_measure_text_styled(widget, text, font_size, 0, 0);
 	}
 
 	float vgui_widget_get_line_height_sized(vgui_widget* widget, float font_size)
 	{
-		if (!widget || !widget->ctx) return 0.0f;
-		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
-		return vg_get_font_metrics(widget->ctx->font, fs).line_height;
+		return vgui_widget_get_line_height_styled(widget, font_size, 0, 0);
 	}
 
 	void vgui_widget_get_intrinsic_size(vgui_widget* widget, float* width,
@@ -21052,24 +21320,21 @@ extern "C" {
 
 	void vgui_custom_draw_text(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y)
 	{
-		if (!widget || !widget->ctx || !cb || !vg || !text || !*text || width <= 0.0f || height <= 0.0f || color == 0) return;
-		glm::ivec4 saved = {};
-		int has_saved = 0;
-		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
-		vgui_draw_text(widget->ctx, cb, vg, widget, text, x, y, width, height, vgui_widget_color(widget, color), align_x, align_y);
-		vgui_custom_clip_end(cb, vg, saved, has_saved);
+		if (widget && vgui_is_rtl(widget->ctx)) align_x = 1.0f - align_x;
+		vgui_custom_draw_text_styled(widget, cb, vg, text, x, y, width, height, color, align_x, align_y, 0, 0, 0);
+	}
+
+	void vgui_custom_draw_text_styled(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size, int weight, int slant)
+	{
+		if (!widget || width <= 0.0f || height <= 0.0f || !color) return;
+		vgui_draw_text_passes(widget, cb, vg, text, x, y, width, height,
+			vgui_widget_color(widget, color), align_x, align_y, font_size, nullptr,
+			VGUI_TEXT_PASS_ALL | VGUI_TEXT_PASS_CLIP_TEXT, weight, slant);
 	}
 
 	void vgui_custom_draw_text_sized(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size)
 	{
-		if (!widget || !widget->ctx || !cb || !vg || !text || !*text || width <= 0.0f || height <= 0.0f || color == 0) return;
-		const float fs = vgui_font_size_for(widget->ctx, widget, font_size);
-		glm::ivec4 saved = {};
-		int has_saved = 0;
-		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
-		vgui_draw_text_sized_raw(widget->ctx, cb, vg, widget, text, x, y, width,
-			height, vgui_widget_color(widget, color), align_x, align_y, fs);
-		vgui_custom_clip_end(cb, vg, saved, has_saved);
+		vgui_custom_draw_text_styled(widget, cb, vg, text, x, y, width, height, color, align_x, align_y, font_size, 0, 0);
 	}
 
 	void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint)

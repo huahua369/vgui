@@ -130,8 +130,10 @@ int vgpu_supports_color_format(vgpu_ctx_t* ctx, SDL_GPUTextureFormat format,
 // context.  The effect pipeline needs an R8 (or RGBA8) color target for the
 // coverage mask plus R16_FLOAT with compute-storage write for the blur; when
 // either is missing everything still draws, the effects are just skipped
-// silently.  Apps that want a fallback (e.g. stacked strokes) should ask here
-// instead of guessing.
+// silently. Individual effects may also be skipped if their target/blend
+// pipeline is unavailable or the context's 96 MiB effect texture budget is
+// exhausted (including in-flight textures). Source draws are unchanged.
+// Apps can use this query to choose a fallback when effects are unavailable.
 int vgpu_effects_supported(vgpu_ctx_t* ctx);
 
 // Returns the FBO depth attachment created by vgpu_create_fbo(..., depth=1),

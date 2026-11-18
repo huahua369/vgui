@@ -27,6 +27,7 @@
 #include "pch.h"		// glm 等基础类型（ovg_c.h 依赖）
 #include <vgui/backend/vgui_sdl3.h>	// app_mgr / gui_viewport / draw_datas_cx
 #include <vgui/vgui.h>		// 公共 C API
+#include <vgui/richtext.h>
 #include <vgui/binding/expression.h>	// P4: 字符串表达式绑定
 #include <vgui/file_dialog.h>	// C++ 文件对话框封装（内部走 SDL3 后端）
 #ifdef VGUI_DEMO_HAS_EDITOR_KIT
@@ -1964,6 +1965,17 @@ static void neon_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	uint32_t rgb, float fs, float track, float glow)
 {
 	if (!text || !*text) return;
+	if (neon_use_fx)
+	{
+		vgui_text_span span = {};
+		span.length = (int)std::strlen(text);
+		span.glow.color = neon_alpha(rgb, 0.7f * glow);
+		span.glow.sigma = 1.0f + 1.5f * glow;
+		span.glow.spread = 0.1f;
+		vgui_custom_draw_text_spans(w, cb, vg, text, &span, 1,
+			x, y, ww, hh, rgb, 0.5f, 0.5f, fs);
+		return;
+	}
 	struct glyph
 	{
 		char s[8];

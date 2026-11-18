@@ -68,7 +68,8 @@ float vgui_widget_get_line_height_spans(vgui_widget* widget,
 - 可编辑富文本/WYSIWYG 行内格式（粗体/斜体/混合字号的可编辑文档模型）——独立立项。
 - 词法器、语法高亮主题、行号 gutter、查找替换、富日志控件——继续留 kit，宿主自己用原语拼。
 - 撤销/事务栈下沉、CodeEditor 源文件搬运、新控件枚举。
-- 粗体/斜体：OVG 字体层无 weight/slant 支持，字段不暴露；下划线/删除线用装饰位实现。
+
+现已支持绘制富文本的字重/倾斜与基于字体度量的下划线、删除线和上划线。字体变体匹配、样式继承规则与发光支持见 [OVG 文本样式规划](ovg_weight_slant_plan.md)。
 
 ## 4. 验证计划
 

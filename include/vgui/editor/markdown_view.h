@@ -81,6 +81,11 @@ namespace vgui_editor_kit {
 		const code_highlight_theme& highlight_theme() const noexcept;
 		bool set_highlight_preset(const std::string& name);
 
+		/* Optional heading/link appearance; does not affect layout or Markdown
+		 * syntax. Both default to no glow. A link in a heading inherits the
+		 * heading glow unless link sets a color or VGUI_TEXT_GLOW_OFF. */
+		void set_text_glow(const vgui_text_glow& heading, const vgui_text_glow& link);
+
 		/* Effective-pixel vertical content size for the current widget width. */
 		float content_height() const;
 		void set_scroll(float y);

@@ -1049,6 +1049,77 @@ extern "C" {
 	 * (size * context ui_scale); pass 0 to inherit the context font. */
 	VGUI_API void vgui_widget_set_font_size(vgui_widget* widget, float size);
 	VGUI_API float vgui_widget_get_font_size(vgui_widget* widget);
+
+	/* CSS weight (100..900) and slant. Zero preserves the context font style. */
+	typedef enum vgui_font_weight
+	{
+		VGUI_FONT_WEIGHT_DEFAULT = 0,
+		VGUI_FONT_WEIGHT_THIN = 100,
+		VGUI_FONT_WEIGHT_EXTRA_LIGHT = 200,
+		VGUI_FONT_WEIGHT_LIGHT = 300,
+		VGUI_FONT_WEIGHT_SEMI_LIGHT = 350,
+		VGUI_FONT_WEIGHT_REGULAR = 400,
+		VGUI_FONT_WEIGHT_MEDIUM = 500,
+		VGUI_FONT_WEIGHT_SEMI_BOLD = 600,
+		VGUI_FONT_WEIGHT_BOLD = 700,
+		VGUI_FONT_WEIGHT_EXTRA_BOLD = 800,
+		VGUI_FONT_WEIGHT_BLACK = 900
+	} vgui_font_weight;
+	typedef enum vgui_font_slant
+	{
+		VGUI_FONT_SLANT_DEFAULT = 0,
+		VGUI_FONT_SLANT_NORMAL = 1,
+		VGUI_FONT_SLANT_ITALIC = 2,
+		VGUI_FONT_SLANT_OBLIQUE = 3
+	} vgui_font_slant;
+	VGUI_API void vgui_widget_set_font_weight(vgui_widget* widget, int weight);
+	VGUI_API int vgui_widget_get_font_weight(vgui_widget* widget);
+	VGUI_API void vgui_widget_set_font_slant(vgui_widget* widget, int slant);
+	VGUI_API int vgui_widget_get_font_slant(vgui_widget* widget);
+
+	/* Device-pixel font metrics. Decoration offsets locate each line's top edge
+	 * relative to the baseline (positive = down). */
+	typedef struct vgui_text_metrics
+	{
+		float ascent;
+		float line_height;
+		float underline_offset;
+		float underline_thickness;
+		float strikeout_offset;
+		float strikeout_thickness;
+		float x_height;
+		float cap_height;
+	} vgui_text_metrics;
+	/* Size is logical; zero size/weight/slant each inherit the widget value. */
+	VGUI_API void vgui_widget_get_text_metrics_styled(vgui_widget* widget,
+		float font_size, int font_weight, int font_slant, vgui_text_metrics* out);
+	VGUI_API float vgui_widget_measure_text_styled(vgui_widget* widget, const char* text,
+		float font_size, int font_weight, int font_slant);
+	VGUI_API float vgui_widget_get_line_height_styled(vgui_widget* widget,
+		float font_size, int font_weight, int font_slant);
+
+	/* Color is 0xAARRGGBB; alpha zero disables glow. Sigma is in logical pixels. */
+	typedef struct vgui_text_glow
+	{
+		vgui_color color;
+		float sigma;
+		float spread;
+		unsigned flags;
+		float opacity;   /* 0 = full strength; positive values cap at 1 */
+		unsigned mode;   /* vgui_text_glow_mode */
+		unsigned blend;  /* vgui_text_glow_blend */
+	} vgui_text_glow;
+	enum vgui_text_glow_flags {
+		VGUI_TEXT_GLOW_OFF = 1u << 0, /* span-only */
+		VGUI_TEXT_GLOW_DECORATION = 1u << 1 /* include opted-in richtext decoration */
+	};
+	enum vgui_text_glow_mode { VGUI_TEXT_GLOW_OUTER = 0, VGUI_TEXT_GLOW_INNER = 1 };
+	enum vgui_text_glow_blend { VGUI_TEXT_GLOW_OVER = 0, VGUI_TEXT_GLOW_ADD = 1 };
+	VGUI_API void vgui_widget_set_text_glow_style(vgui_widget* widget, const vgui_text_glow* style);
+	VGUI_API void vgui_widget_set_text_glow(vgui_widget* widget,
+		vgui_color color, float sigma, float spread);
+	VGUI_API void vgui_widget_clear_text_glow(vgui_widget* widget);
+	VGUI_API vgui_text_glow vgui_widget_get_text_glow(vgui_widget* widget);
 	/* Text metrics using the widget font.  Useful for VGUI_CUSTOM widgets
 	 * that lay out code/grid text themselves.  Both return a positive value
 	 * when a font is available and a size-derived fallback otherwise. */
@@ -2144,6 +2215,9 @@ extern "C" {
 	 * font).  Alignment is physical: 0/1 do not swap in RTL, so callers that
 	 * place each run themselves keep full control. */
 	VGUI_API void vgui_custom_draw_text_sized(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size);
+	/* Glow may extend past this text rectangle, but not the active parent clip.
+	 * To draw only glow, pass a nonzero RGB color with alpha 0. */
+	VGUI_API void vgui_custom_draw_text_styled(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text, float x, float y, float width, float height, vgui_color color, float align_x, float align_y, float font_size, int font_weight, int font_slant);
 	VGUI_API void vgui_custom_draw_texture(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_color tint);
 	/* Texture draw with explicit fit inside the destination rectangle, matching
 	 * VGUI_IMAGE fit semantics (STRETCH/CONTAIN/COVER/NONE).  Always clipped to

@@ -1,0 +1,204 @@
+// Headless OVG font matching, fallback and cache regression test.
+// Optional fixtures: OVG_TEST_BOLD_FONT, OVG_TEST_BOLD_ITALIC_FONT,
+// OVG_TEST_VARIABLE_FONT (a wght variable font with lowercase Latin glyphs).
+#include "pch.h"
+#include <ovg_c.h>
+#include <ovg_fonts.h>
+#include <hb.h>
+#include <hb-ot.h>
+#include <algorithm>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <iterator>
+#include <memory>
+#include <utility>
+#include <vector>
+
+namespace {
+int failures = 0;
+void check(bool ok, const char* what) {
+    if (!ok) { std::fprintf(stderr, "FAIL: %s\n", what); ++failures; }
+}
+using cache_ptr = std::unique_ptr<font_cache_cx, decltype(&free_font_cache)>;
+using fonts_ptr = std::unique_ptr<font_familys_t, decltype(&delete_font_family)>;
+fonts_ptr fonts(font_familys_t* f) { return {f, delete_font_family}; }
+font_family_t* first(const fonts_ptr& f) { return f && f->count ? f->familys[0] : nullptr; }
+std::pair<int, int> style(const font_familys_t* f) {
+    int weight = -1, slant = -1;
+    font_familys_get_style(f, &weight, &slant);
+    return {weight, slant};
+}
+bool memory_font(font_cache_cx* cache, const char* path, const char* name) {
+    std::ifstream file(path, std::ios::binary);
+    std::vector<unsigned char> bytes{std::istreambuf_iterator<char>(file), {}};
+    return !bytes.empty() && load_font_from_memory(cache, bytes.data(), static_cast<long>(bytes.size()), name);
+}
+float embolden(font_family_t* f) {
+    float x = 0;
+    hb_font_get_synthetic_bold(f->font, &x, nullptr, nullptr);
+    return x;
+}
+float width(const font_familys_t* f, int size = 64) { return vg_measure_text_width(f, size, "abca", 4); }
+std::vector<uint8_t> raster(font_familys_t* f) {
+    std::vector<uint8_t> pixels(256 * 128 * 4);
+    text_st_t text{};
+    text.pos = {20, 40}; text.size = {220, 100};
+    text.text = "abca"; text.text_len = 4;
+    text_style_t st{};
+    st.family = f; st.fontsize = 48; st.color = 0xffffffff;
+    check(vg_render_text_rgba8(&text, &st, nullptr, pixels.data(), 256, 128, 256 * 4, nullptr), "RGBA renders selected face");
+    check(std::any_of(pixels.begin(), pixels.end(), [](auto v) { return v != 0; }), "face produces ink");
+    return pixels;
+}
+
+void test_synthetic(font_cache_cx* cache, const char* regular_path) {
+    check(memory_font(cache, regular_path, "OvgTestRegular"), "register regular from memory");
+    check(memory_font(cache, regular_path, "OvgTestFallback"), "register independent fallback");
+    auto regular = fonts(new_font_family(cache, "OvgTestRegular,OvgTestFallback", nullptr));
+    auto default_ex = fonts(new_font_family_ex(cache, "OvgTestRegular,OvgTestFallback", nullptr, 0, 0));
+    auto bold = fonts(font_familys_derive(regular.get(), 700, 0));
+    auto repeat = fonts(font_familys_derive(regular.get(), 700, 0));
+    auto italic = fonts(font_familys_derive(regular.get(), 400, VG_FONT_SLANT_ITALIC));
+    auto light = fonts(font_familys_derive(regular.get(), 300, 0));
+    check(first(regular) && first(default_ex) == first(regular), "default API keeps the legacy face");
+    check(first(bold) && first(italic) && first(bold) == first(repeat), "same request shares a variant");
+    if (!first(regular) || !first(bold) || !first(italic)) return;
+    check(first(light) == first(regular), "no negative synthesis");
+    check(style(regular.get()) == std::pair{400, int(VG_FONT_SLANT_NORMAL)}, "regular effective style");
+    check(style(bold.get()) == std::pair{700, int(VG_FONT_SLANT_NORMAL)}, "synthetic bold effective style");
+    check(style(italic.get()) == std::pair{400, int(VG_FONT_SLANT_ITALIC)}, "synthetic italic effective style");
+    check(bold->count == 2 && bold->familys[1] != regular->familys[1] && bold->familys[1] != bold->familys[0],
+        "fallback faces are resolved independently");
+    check(embolden(first(bold)) > 0 && embolden(first(regular)) == 0, "base is not emboldened");
+    check(hb_font_get_synthetic_slant(first(italic)->font) > 0.20f &&
+        hb_font_get_synthetic_slant(first(regular)->font) == 0, "base is not slanted");
+    auto bold_italic = fonts(font_familys_derive(regular.get(), 700, VG_FONT_SLANT_ITALIC));
+    check(first(bold_italic) && embolden(first(bold_italic)) > 0 &&
+        hb_font_get_synthetic_slant(first(bold_italic)->font) > 0.20f, "one face supports both synthetic dimensions");
+    check(width(bold.get(), 24) > width(regular.get(), 24) && width(bold.get()) > width(regular.get()) &&
+        width(bold.get()) > width(bold.get(), 24), "emboldening adjusts shaped advances at independent sizes");
+    auto regular_pixels = raster(regular.get());
+    check(raster(bold.get()) != regular_pixels, "synthetic bold changes raster output");
+    check(raster(italic.get()) != regular_pixels, "synthetic slant changes raster output");
+    check(raster(default_ex.get()) == regular_pixels, "rendering variants does not alter regular pixels");
+
+    const auto m16 = vg_get_font_metrics(regular.get(), 16);
+    const auto m32 = vg_get_font_metrics(regular.get(), 32);
+    const auto mb32 = vg_get_font_metrics(bold.get(), 32);
+    const auto fallback = vg_get_font_metrics(nullptr, 16);
+    check(m16.underline_offset > 0 && m16.strikeout_offset < 0 &&
+        m16.underline_thickness >= 1 && m16.strikeout_thickness >= 1,
+        "deco metrics use the correct baseline direction and minimum thickness");
+    check(m32.underline_offset > m16.underline_offset && m32.x_height > m16.x_height &&
+        m32.cap_height > m16.cap_height, "deco metrics scale with font size");
+    check(mb32.underline_thickness >= 1 && cache->font_metrics_cache.count({bold.get(), 32}) == 1,
+        "variant decoration metrics are cached independently");
+    check(fallback.underline_thickness >= 1 && fallback.strikeout_offset < 0,
+        "decoration metrics have readable fallback values without a face");
+
+    hb_codepoint_t gid = 0;
+    auto* hb = first(regular)->font;
+    check(hb_font_get_nominal_glyph(hb, 'a', &gid), "fixture covers the test glyph");
+    auto r = cache->get_cache_lookup_glyph(hb, gid, 48);
+    auto b = cache->get_cache_lookup_glyph(first(bold)->font, gid, 48);
+    check(r && b && r != b && r->type == glyph_atlas_entry::RASTER && b->type == glyph_atlas_entry::RASTER &&
+        r->path_data != b->path_data, "variant uses distinct atlas and vector cache entries");
+    auto another_regular = fonts(font_familys_derive(regular.get(), 0, 0));
+    check(first(another_regular) == first(regular) && cache->get_cache_lookup_glyph(hb, gid, 48) == r,
+        "reselecting a base face does not change its cache id");
+
+    auto p = bold.get();
+    cache->glyph_advance_cache.emplace(vg_measure_glyph_key{p, 64, 'a'}, 1.0f);
+    vg_get_font_metrics(p, 64);
+    check(cache->text_width_cache.count({p, 64, "abca"}) == 1 && cache->font_metrics_cache.count({p, 64}) == 1,
+        "populate measurement cache for the derived list");
+    bold.reset();
+    check(!cache->text_width_cache.count({p, 64, "abca"}) && !cache->font_metrics_cache.count({p, 64}) &&
+        !cache->glyph_advance_cache.count({p, 64, 'a'}), "deletion removes measurement entries keyed by the list");
+    check(cache->text_width_cache.count({regular.get(), 64, "abca"}) == 1, "deletion does not evict another list's measurements");
+    font_familys_t foreign{};
+    check(font_familys_derive(&foreign, 700, 0) == nullptr, "cannot derive a caller-owned list");
+    delete_font_family(&foreign);
+    check(style(&foreign) == std::pair{0, 0}, "unknown list style is zero");
+    cache->clear_load();
+    check(cache->glyph_cache.empty() && cache->_sub_glyph_cache.empty() && cache->image_cache._data.empty() &&
+        cache->text_width_cache.empty() && cache->font_metrics_cache.empty() && cache->glyph_advance_cache.empty(),
+        "explicit reset clears glyph, atlas and measurement caches");
+    check(!regular->count && !regular->familys, "explicit reset invalidates borrowed faces safely");
+}
+
+void test_static(font_cache_cx* cache, const char* regular_path) {
+    const auto* bold_path = std::getenv("OVG_TEST_BOLD_FONT");
+    if (!bold_path) { std::puts("SKIP: optional static face fixtures"); return; }
+    check(memory_font(cache, regular_path, "OvgTestStatic"), "register regular static face");
+    check(memory_font(cache, bold_path, "OvgTestStatic"), "register bold static face");
+    auto bold = fonts(new_font_family_ex(cache, "OvgTestStatic", nullptr, 700, VG_FONT_SLANT_NORMAL));
+    auto explicit_bold = fonts(new_font_family_ex(cache, "OvgTestStatic", "Bold", 400, VG_FONT_SLANT_NORMAL));
+    auto missing_style = fonts(new_font_family_ex(cache, "OvgTestStatic", "NotASubfamily", 700, VG_FONT_SLANT_NORMAL));
+    check(first(bold) && style(bold.get()).first == 700 && embolden(first(bold)) == 0, "real bold beats synthesis");
+    check(first(bold) && first(explicit_bold) == first(bold), "exact subfamily outranks weight distance");
+    check(first(bold) && first(missing_style) == first(bold), "missing subfamily falls back to weight matching");
+    if (const auto* bold_italic = std::getenv("OVG_TEST_BOLD_ITALIC_FONT")) {
+        check(memory_font(cache, bold_italic, "OvgTestStatic"), "register bold italic face");
+        auto bi = fonts(new_font_family_ex(cache, "OvgTestStatic", nullptr, 700, VG_FONT_SLANT_ITALIC));
+        check(first(bi) && style(bi.get()) == std::pair{700, int(VG_FONT_SLANT_ITALIC)} &&
+            embolden(first(bi)) == 0 && hb_font_get_synthetic_slant(first(bi)->font) == 0, "real bold italic is not synthesized");
+    }
+}
+
+void test_variable(font_cache_cx* cache) {
+    const auto* path = std::getenv("OVG_TEST_VARIABLE_FONT");
+    if (!path) { std::puts("SKIP: optional variable face fixture"); return; }
+    check(memory_font(cache, path, "OvgTestVariable"), "register variable font");
+    auto base = fonts(new_font_family(cache, "OvgTestVariable", nullptr));
+    if (!first(base)) { check(false, "resolve variable default"); return; }
+    const auto initial = raster(base.get());
+    auto* base_hb = first(base)->font;
+    auto* face = hb_font_get_face(base_hb);
+    hb_ot_var_axis_info_t wght{};
+    check(hb_ot_var_find_axis_info(face, HB_TAG('w','g','h','t'), &wght), "fixture has a weight axis");
+    std::vector<uint8_t> previous;
+    for (auto w : {300, 400, 700}) {
+        auto variant = fonts(font_familys_derive(base.get(), w, 0));
+        auto repeat = fonts(font_familys_derive(base.get(), w, 0));
+        check(first(variant) && first(variant) == first(repeat), "variable requests are cached");
+        if (!first(variant)) continue;
+        unsigned count = 0;
+        const float* coords = hb_font_get_var_coords_design(first(variant)->font, &count);
+        const auto target = std::clamp(float(w), wght.min_value, wght.max_value);
+        check((count > wght.axis_index ? coords[wght.axis_index] : wght.default_value) == target &&
+            embolden(first(variant)) == 0, "use the clamped weight axis, not synthetic bold");
+        auto pixels = raster(variant.get());
+        if (!previous.empty()) check(pixels != previous, "adjacent test weights produce different glyphs");
+        previous = std::move(pixels);
+    }
+    check(raster(base.get()) == initial, "variations do not mutate default face");
+    auto italic = fonts(font_familys_derive(base.get(), 0, VG_FONT_SLANT_ITALIC));
+    if (!first(italic)) { check(false, "resolve italic variable face"); return; }
+    for (auto [tag, value] : {std::pair{HB_TAG('s','l','n','t'), -12.0f}, std::pair{HB_TAG('i','t','a','l'), 1.0f}}) {
+        hb_ot_var_axis_info_t axis{};
+        if (!hb_ot_var_find_axis_info(face, tag, &axis)) continue;
+        unsigned count = 0;
+        auto coords = hb_font_get_var_coords_design(first(italic)->font, &count);
+        check((count > axis.axis_index ? coords[axis.axis_index] : axis.default_value) ==
+            std::clamp(value, axis.min_value, axis.max_value), "apply real slnt/ital coordinates");
+    }
+}
+} // namespace
+
+int main() {
+    cache_ptr cache(new_font_cache(), free_font_cache);
+    if (!cache) return 1;
+    const char* regular_path = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+    check(load_font_from_path(cache.get(), regular_path, nullptr), "register system font fixture");
+    get_sys_family(cache.get());
+    const auto next_id = cache->next_font_id;
+    get_sys_family(cache.get());
+    check(cache->next_font_id == next_id, "fontconfig refresh does not insert faces twice");
+    test_synthetic(cache.get(), regular_path);
+    test_static(cache.get(), regular_path);
+    test_variable(cache.get());
+    std::printf("OVG font tests: %d failure(s)\n", failures);
+    return failures ? 1 : 0;
+}

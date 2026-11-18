@@ -278,6 +278,8 @@ struct gpu_buffer_t {
 
 // 特效（vg_effect_t）离屏资源：mask 是路径覆盖度（R8），模糊链在 R16F 上跑
 // 两趟（水平 + 垂直），合成时两者一起采样。尺寸是 ROI（包围盒 + sigma 外扩）。
+constexpr size_t FX_MAX_TEXTURE_BYTES = 96ull << 20;
+
 struct fx_set_t {
 	vgpu_texture_t* mask = nullptr;
 	vgpu_texture_t* tmp = nullptr;
@@ -285,6 +287,7 @@ struct fx_set_t {
 	int width = 0;
 	int height = 0;
 	bool need_blur = false;
+	size_t bytes = 0;
 };
 
 // 一条 draw 命令预先算好的特效结果；tex/mask 指向本帧借用的 fx_set。
@@ -297,6 +300,7 @@ struct fx_result_t {
 	float spread = 0.0f;
 	float opacity = 1.0f;
 	int mode = 0;						// 0 外发光 / 1 内发光 / 2 阴影
+	SDL_GPUGraphicsPipeline* pipeline = nullptr; // borrowed from the context cache
 };
 
 struct vgpu_device_t {
@@ -366,7 +370,6 @@ struct vgpu_ctx_t {
 	SDL_GPUTextureFormat fx_blur_format = SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
 	SDL_GPUSampler* fx_sampler = nullptr;
 	SDL_GPUGraphicsPipeline* fx_mask_pipeline = nullptr;		// 写入 mask 格式
-	SDL_GPUGraphicsPipeline* fx_present_pipeline = nullptr;	// 合成到主格式 + samples
 	std::unordered_map<uint64_t, SDL_GPUGraphicsPipeline*> fx_present_pipelines;
 	SDL_GPUComputePipeline* fx_blur_pipeline = nullptr;
 	// 空闲集合池：按 (w, h, need_blur) 复用，避免每帧为按钮重建纹理。
@@ -374,6 +377,7 @@ struct vgpu_ctx_t {
 	// 本帧正在使用的集合；提交时随栅栏一起交给 staging_flight，等 GPU 完成
 	// 后才归还池子——否则下一帧可能写进 GPU 还在读的纹理。
 	std::vector<fx_set_t*> fx_in_use;
+	size_t fx_texture_bytes = 0; // estimated total of pooled, active and in-flight sets
 };
 
 namespace {
@@ -381,6 +385,8 @@ namespace {
 // ---------------------------------------------------------------------------
 // 帧提交栅栏与暂存槽位
 // ---------------------------------------------------------------------------
+
+void fx_trim_pool(vgpu_ctx_t* ctx, size_t reserve_bytes = 0);
 
 // 放弃本帧已编码的上传（命令缓冲被取消）：没有 GPU 工作会读取这些槽位。
 void staging_release_frame(vgpu_ctx_t* ctx)
@@ -391,6 +397,7 @@ void staging_release_frame(vgpu_ctx_t* ctx)
 	for (fx_set_t* set : ctx->fx_in_use)
 		ctx->fx_pool.push_back(set);
 	ctx->fx_in_use.clear();
+	fx_trim_pool(ctx);
 }
 
 // 归还已完成提交占用的槽位。同队列提交按序完成：最新提交的栅栏触发时，
@@ -426,6 +433,7 @@ void staging_collect(vgpu_ctx_t* ctx)
 		ctx->staging_flights.erase(
 			ctx->staging_flights.begin() + static_cast<std::ptrdiff_t>(i));
 	}
+	fx_trim_pool(ctx);
 }
 
 SDL_GPUTransferBuffer* staging_acquire(vgpu_ctx_t* ctx, size_t size)
@@ -1148,25 +1156,15 @@ void destroy_fx_set(vgpu_device_t* device, fx_set_t* set)
 	delete set;
 }
 
-// 合成管线的目标格式 / 采样数必须和被合成的 pass 一致，因此按 (format,
-// samples) 缓存：窗口是 (ctx 格式, ctx 采样数)，离屏 FBO 可能不同。
+// A composite PSO is specific to the target format, sample count and blend.
 SDL_GPUGraphicsPipeline* get_fx_present_pipeline(vgpu_ctx_t* ctx,
-	SDL_GPUTextureFormat format, SDL_GPUSampleCount samples)
+	SDL_GPUTextureFormat format, SDL_GPUSampleCount samples, bool additive)
 {
-	// 与上下文同格式/同采样数的组合缓存到成员上（最常用），其余按 key 缓存。
-	SDL_GPUGraphicsPipeline** member_slot = nullptr;
-	uint64_t key = 0;
-	if (format == ctx->color_format && samples == ctx->samples) {
-		if (ctx->fx_present_pipeline)
-			return ctx->fx_present_pipeline;
-		member_slot = &ctx->fx_present_pipeline;
-	}
-	else {
-		key = (static_cast<uint64_t>(format) << 8) | static_cast<uint64_t>(samples);
-		auto it = ctx->fx_present_pipelines.find(key);
-		if (it != ctx->fx_present_pipelines.end())
-			return it->second;
-	}
+	const uint64_t key = (static_cast<uint64_t>(format) << 16) |
+		(static_cast<uint64_t>(samples) << 8) | static_cast<uint64_t>(additive);
+	auto it = ctx->fx_present_pipelines.find(key);
+	if (it != ctx->fx_present_pipelines.end())
+		return it->second;
 
 	SDL_GPUDevice* device = ctx->device->gpu_device;
 	SDL_GPUShader* vert = compile_shader(device, SDL_GPU_SHADERSTAGE_VERTEX,
@@ -1177,7 +1175,10 @@ SDL_GPUGraphicsPipeline* get_fx_present_pipeline(vgpu_ctx_t* ctx,
 	if (vert && frag) {
 		SDL_GPUColorTargetDescription ct = {};
 		ct.format = format;
-		set_blend_state(ct.blend_state, static_cast<int>(blendMode_e::normal_prem));
+		// The shader already weights RGB by coverage, color alpha and opacity.
+		// ADD adds that RGB once and leaves destination alpha unchanged.
+		set_blend_state(ct.blend_state, static_cast<int>(additive
+			? blendMode_e::additive_prem : blendMode_e::normal_prem));
 
 		SDL_GPUDepthStencilState ds = {};
 		ds.compare_op = SDL_GPU_COMPAREOP_ALWAYS;
@@ -1216,10 +1217,8 @@ SDL_GPUGraphicsPipeline* get_fx_present_pipeline(vgpu_ctx_t* ctx,
 	}
 	if (vert) SDL_ReleaseGPUShader(device, vert);
 	if (frag) SDL_ReleaseGPUShader(device, frag);
-	if (member_slot)
-		*member_slot = pipeline;
-	else
-		ctx->fx_present_pipelines.emplace(key, pipeline);
+	// Cache failure per variant: ADD failure must neither retry every draw nor disable OVER.
+	ctx->fx_present_pipelines.emplace(key, pipeline);
 	return pipeline;
 }
 
@@ -1329,7 +1328,7 @@ bool create_fx_resources(vgpu_ctx_t* ctx)
 			return false;
 	}
 
-	if (!get_fx_present_pipeline(ctx, ctx->color_format, ctx->samples))
+	if (!get_fx_present_pipeline(ctx, ctx->color_format, ctx->samples, false))
 		return false;
 
 	ctx->fx_supported = true;
@@ -1353,12 +1352,8 @@ void destroy_fx_resources(vgpu_ctx_t* ctx)
 		SDL_ReleaseGPUGraphicsPipeline(device, ctx->fx_mask_pipeline);
 		ctx->fx_mask_pipeline = nullptr;
 	}
-	if (ctx->fx_present_pipeline) {
-		SDL_ReleaseGPUGraphicsPipeline(device, ctx->fx_present_pipeline);
-		ctx->fx_present_pipeline = nullptr;
-	}
 	for (auto& kv : ctx->fx_present_pipelines) {
-		if (kv.second && kv.second != ctx->fx_present_pipeline)
+		if (kv.second)
 			SDL_ReleaseGPUGraphicsPipeline(device, kv.second);
 	}
 	ctx->fx_present_pipelines.clear();
@@ -1377,6 +1372,11 @@ void destroy_fx_resources(vgpu_ctx_t* ctx)
 // 池里保存的都是 GPU 已确认写完的集合（由 staging_flight 归还）。
 fx_set_t* fx_acquire(vgpu_ctx_t* ctx, int w, int h, bool need_blur)
 {
+	const size_t pixel_bytes = (ctx->fx_mask_format == SDL_GPU_TEXTUREFORMAT_R8_UNORM ? 1 : 4)
+		+ (need_blur ? 4 : 0); // two R16_FLOAT textures
+	if (static_cast<size_t>(w) > FX_MAX_TEXTURE_BYTES / pixel_bytes / static_cast<size_t>(h))
+		return nullptr;
+	const size_t bytes = static_cast<size_t>(w) * h * pixel_bytes;
 	for (size_t i = 0; i < ctx->fx_pool.size(); ++i) {
 		fx_set_t* set = ctx->fx_pool[i];
 		if (set->width == w && set->height == h && set->need_blur == need_blur) {
@@ -1385,7 +1385,13 @@ fx_set_t* fx_acquire(vgpu_ctx_t* ctx, int w, int h, bool need_blur)
 		}
 	}
 
+	// Evict only completed sets. Don't stall or overcommit when the GPU is behind.
+	fx_trim_pool(ctx, bytes);
+	if (bytes > FX_MAX_TEXTURE_BYTES - ctx->fx_texture_bytes)
+		return nullptr;
+
 	auto* set = new fx_set_t();
+	set->bytes = bytes;
 	set->width = w;
 	set->height = h;
 	set->need_blur = need_blur;
@@ -1406,14 +1412,17 @@ fx_set_t* fx_acquire(vgpu_ctx_t* ctx, int w, int h, bool need_blur)
 			return nullptr;
 		}
 	}
+	ctx->fx_texture_bytes += bytes;
 	return set;
 }
 
-// 池子只缓存一小把尺寸，避免 UI 里各种临时尺寸把显存顶起来。
-void fx_trim_pool(vgpu_ctx_t* ctx)
+// Retain a small cache, and free idle textures to make room for different ROIs.
+void fx_trim_pool(vgpu_ctx_t* ctx, size_t reserve_bytes)
 {
 	constexpr size_t kMaxSets = 16;
-	while (ctx->fx_pool.size() > kMaxSets) {
+	while (!ctx->fx_pool.empty() && (ctx->fx_pool.size() > kMaxSets ||
+		reserve_bytes > FX_MAX_TEXTURE_BYTES - ctx->fx_texture_bytes)) {
+		ctx->fx_texture_bytes -= ctx->fx_pool.front()->bytes;
 		destroy_fx_set(ctx->device, ctx->fx_pool.front());
 		ctx->fx_pool.erase(ctx->fx_pool.begin());
 	}
@@ -1442,11 +1451,11 @@ bool fx_roi_from_bounds(const vgcmd_t* c, const vg_fbo_t* fbo, glm::ivec4& roi)
 
 // 把这条 fill/stroke 的几何重画到 R8 mask 上：viewport 取 ROI 尺寸，几何整体
 // 平移 -roi.xy（平移落在 mat3 的第三列）。没有 stencil，裁剪靠 ROI 本身。
-void render_effect_mask(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+bool render_effect_mask(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	ovg_draw_data_t* kd, vgcmd_t* c, vgpu_texture_t* mask, const glm::ivec4& roi)
 {
 	if (!ctx || !cmd || !kd || !c || !c->state || !mask || !mask->texture)
-		return;
+		return false;
 	SDL_GPUColorTargetInfo ct = {};
 	ct.texture = mask->texture;
 	ct.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -1454,7 +1463,7 @@ void render_effect_mask(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	ct.clear_color = { 0.0f, 0.0f, 0.0f, 0.0f };
 	SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(cmd, &ct, 1, nullptr);
 	if (!pass)
-		return;
+		return false;
 
 	set_viewport2d(pass, roi.z, roi.w);
 	SDL_Rect sc = { 0, 0, roi.z, roi.w };
@@ -1481,15 +1490,16 @@ void render_effect_mask(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 			static_cast<Uint32>(c->vertex.x), 0);
 	}
 	SDL_EndGPURenderPass(pass);
+	return true;
 }
 
-void dispatch_fx_blur(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
+bool dispatch_fx_blur(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	vgpu_texture_t* dst, vgpu_texture_t* src, const fx_blur_params_t& params,
 	int w, int h)
 {
 	if (!ctx || !cmd || !ctx->fx_blur_pipeline || !dst || !dst->texture ||
 		!src || !src->texture || w <= 0 || h <= 0)
-		return;
+		return false;
 	SDL_GPUStorageTextureReadWriteBinding rw = {};
 	rw.texture = dst->texture;
 	rw.layer = 0;
@@ -1497,7 +1507,7 @@ void dispatch_fx_blur(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	rw.cycle = false;
 	SDL_GPUComputePass* pass = SDL_BeginGPUComputePass(cmd, &rw, 1, nullptr, 0);
 	if (!pass)
-		return;
+		return false;
 	SDL_BindGPUComputePipeline(pass, ctx->fx_blur_pipeline);
 	SDL_GPUTextureSamplerBinding binding = { src->texture, ctx->fx_sampler };
 	SDL_BindGPUComputeSamplers(pass, 0, &binding, 1);
@@ -1505,6 +1515,7 @@ void dispatch_fx_blur(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	SDL_DispatchGPUCompute(pass,
 		static_cast<Uint32>((w + 7) / 8), static_cast<Uint32>((h + 7) / 8), 1);
 	SDL_EndGPUComputePass(pass);
+	return true;
 }
 
 // 主 pass 之前把一条命令的特效算好：mask → 水平模糊 → 垂直模糊。
@@ -1527,7 +1538,9 @@ void prepare_effect(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	// 主体照常绘制（HDR 或自定义采样的离屏 FBO 走这条路）。
 	const SDL_GPUTextureFormat target_format = (fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
 		? fbo->color_format : ctx->color_format;
-	if (!get_fx_present_pipeline(ctx, target_format, fbo->samples))
+	SDL_GPUGraphicsPipeline* pipeline = get_fx_present_pipeline(ctx, target_format,
+		fbo->samples, e.blend == VG_EFFECT_BLEND_ADD);
+	if (!pipeline)
 		return;
 
 	glm::ivec4 roi;
@@ -1541,20 +1554,22 @@ void prepare_effect(vgpu_ctx_t* ctx, SDL_GPUCommandBuffer* cmd,
 	if (!set)
 		return;
 	ctx->fx_in_use.push_back(set);
-	fx_trim_pool(ctx);
-
-	render_effect_mask(ctx, cmd, kd, c, set->mask, roi);
+	if (!render_effect_mask(ctx, cmd, kd, c, set->mask, roi))
+		return;
 
 	if (need_blur) {
 		fx_blur_params_t bp = {};
 		bp.texel = { 1.0f / static_cast<float>(w), 1.0f / static_cast<float>(h) };
 		bp.sigma = e.sigma;
 		bp.axis = 0;
-		dispatch_fx_blur(ctx, cmd, set->tmp, set->mask, bp, w, h);
+		if (!dispatch_fx_blur(ctx, cmd, set->tmp, set->mask, bp, w, h))
+			return;
 		bp.axis = 1;
-		dispatch_fx_blur(ctx, cmd, set->blur, set->tmp, bp, w, h);
+		if (!dispatch_fx_blur(ctx, cmd, set->blur, set->tmp, bp, w, h))
+			return;
 	}
 
+	out->pipeline = pipeline;
 	out->tex = need_blur ? set->blur : set->mask;
 	out->mask = set->mask;
 	out->rect = glm::vec4(static_cast<float>(roi.x), static_cast<float>(roi.y),
@@ -1581,12 +1596,6 @@ void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass,
 	vgpu_ctx_t* ctx = fbo->ctx;
 	if (!ctx || !ctx->fx_sampler)
 		return;
-	const SDL_GPUTextureFormat format = (fbo->color_format != SDL_GPU_TEXTUREFORMAT_INVALID)
-		? fbo->color_format : ctx->color_format;
-	SDL_GPUGraphicsPipeline* pipeline = get_fx_present_pipeline(ctx, format, fbo->samples);
-	if (!pipeline)
-		return;
-	SDL_BindGPUGraphicsPipeline(pass, pipeline);
 
 	int x0 = static_cast<int>(fx->rect.x);
 	int y0 = static_cast<int>(fx->rect.y);
@@ -1606,6 +1615,7 @@ void draw_effect_quad(vg_fbo_t* fbo, SDL_GPURenderPass* pass,
 		return;
 	SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
 	SDL_SetGPUScissor(pass, &rc);
+	SDL_BindGPUGraphicsPipeline(pass, fx->pipeline);
 
 	SDL_GPUTextureSamplerBinding bindings[2] = {
 		{ fx->mask->texture, ctx->fx_sampler },
@@ -2712,7 +2722,8 @@ void vgpu_render_frame(vgpu_ctx_t* ctx, ovg_draw_data_t* data, size_t count)
 				// ref 是 stencil ref 与 fx 槽位共用的字段，必须同时确认这条命令
 				// 确实带着特效状态，否则裁剪/裁剪透传命令也会命中同一槽位。
 				const fx_result_t* fx = nullptr;
-				if (!fx_by_item.empty() && command.vg.ref >= 0 && command.vg.state &&
+				if (!fx_by_item.empty() && (command.vg.type == 0 || command.vg.type == 1) &&
+					command.vg.ref >= 0 && command.vg.state &&
 					command.vg.state->effect.type != VG_EFFECT_NONE) {
 					auto it = fx_by_item.find(item);
 					if (it != fx_by_item.end() &&

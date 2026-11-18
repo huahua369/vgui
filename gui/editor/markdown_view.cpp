@@ -1,9 +1,11 @@
 #include <vgui/editor/markdown_view.h>
+#include <vgui/richtext.h>
 
 #include "code_lex.h"
 #include "editor_metrics.h"
 #include "markdown_lex.h"
 #include "ui_scale.h"
+#include "vgui_text_draw.h"
 
 #include "tools/tools.hpp"
 
@@ -204,6 +206,10 @@ namespace vgui_editor_kit {
 			bool code = false;
 			bool link = false;
 			code_token_kind color = code_token_kind::text;
+			vgui_text_glow glow = {};
+
+			int weight() const { return bold ? VGUI_FONT_WEIGHT_BOLD : 0; }
+			int slant() const { return italic ? VGUI_FONT_SLANT_ITALIC : 0; }
 		};
 
 		struct md_run
@@ -212,6 +218,32 @@ namespace vgui_editor_kit {
 			int length = 0;
 			md_style style;
 		};
+
+		/* Layout and wrapping must cut the same UTF-8 ranges that become spans. */
+		template<class Visitor>
+		void visit_runs(const std::vector<md_run>& runs, int start, int end,
+			const md_style& base, Visitor&& visit)
+		{
+			if (start >= end)
+				return;
+			auto it = std::partition_point(runs.begin(), runs.end(),
+				[start](const md_run& run) { return run.start + run.length <= start; });
+			int cursor = start;
+			for (; it != runs.end() && it->start < end; ++it)
+			{
+				const int a = std::max(start, it->start);
+				const int b = std::min(end, it->start + it->length);
+				if (cursor < a)
+					visit(cursor, a, base);
+				md_style style = it->style;
+				style.bold |= base.bold;
+				style.italic |= base.italic;
+				visit(a, b, style);
+				cursor = b;
+			}
+			if (cursor < end)
+				visit(cursor, end, base);
+		}
 
 		struct md_cell
 		{
@@ -289,9 +321,31 @@ namespace vgui_editor_kit {
 			int end = 0;
 			float x = 0.0f;
 			float width = 0.0f;
-			/* Table cells clip their runs at the cell edge; 0 = no extra clip. */
-			float clip_w = 0.0f;
+			float clip_right = 0.0f;
 			md_style style;
+		};
+
+		struct md_line_box
+		{
+			float ascent = 0.0f;
+			float descent = 0.0f;
+			float height() const { return ascent + descent; }
+			void include(md_line_box box)
+			{
+				ascent = std::max(ascent, box.ascent);
+				descent = std::max(descent, box.descent);
+			}
+		};
+
+		/* A visual line has one span batch, except for table rows: each cell
+		 * is an independently positioned/clipped line sharing the row baseline. */
+		struct md_line_part
+		{
+			std::size_t first = 0;
+			std::size_t end = 0;
+			float x = 0.0f;
+			float right = 0.0f;
+			md_line_box box;
 		};
 
 		struct md_line
@@ -302,7 +356,9 @@ namespace vgui_editor_kit {
 			float height = 0.0f;
 			float x = 0.0f;
 			float width = 0.0f;
+			md_line_box box;
 			std::vector<md_segment> segments;
+			std::vector<md_line_part> parts;
 		};
 
 		/* --------------------------------------------------------------------- */
@@ -417,8 +473,9 @@ namespace vgui_editor_kit {
 					{
 						md_style style = base;
 						style.strike = true;
-						style.color = code_token_kind::strike;
-						append_styled(out, runs, source, start + 2, stop - 2,
+						if (!style.link)
+							style.color = code_token_kind::strike;
+						append_inline(out, runs, source, start + 2, stop - 2,
 							style);
 					}
 					break;
@@ -437,10 +494,8 @@ namespace vgui_editor_kit {
 					if (stop - marker > start + marker)
 					{
 						md_style style = base;
-						style.bold = marker >= 2;
-						style.italic = marker != 2;
-						style.color = marker >= 2 ? code_token_kind::strong :
-							code_token_kind::emphasis;
+						style.bold |= marker >= 2;
+						style.italic |= marker != 2;
 						append_inline(out, runs, source, start + marker,
 							stop - marker, style);
 					}
@@ -1383,8 +1438,9 @@ namespace vgui_editor_kit {
 					{
 						for (md_run& run : block.runs)
 						{
-							run.style.color = code_token_kind::heading;
-							run.style.bold = block.level <= 2;
+							if (run.style.color == code_token_kind::text)
+								run.style.color = code_token_kind::heading;
+							run.style.bold |= block.level <= 2;
 						}
 					}
 					if (!block.text.empty() || setext)
@@ -1503,6 +1559,11 @@ namespace vgui_editor_kit {
 		bool layout_valid = false;
 		float layout_widget_w = -1.0f;
 		float layout_widget_h = -1.0f;
+		float layout_scale = 0.0f;
+		float layout_font = 0.0f;
+		uint64_t layout_font_revision = 0;
+		int layout_font_weight = 0, layout_font_slant = 0;
+		bool layout_has_font = false;
 		float layout_content_h = 0.0f;
 		float layout_view_h = 0.0f;
 		float max_scroll = 0.0f;
@@ -1510,6 +1571,8 @@ namespace vgui_editor_kit {
 
 		float font_size = 0.0f;
 		code_highlight_theme theme{};
+		vgui_text_glow heading_glow = {};
+		vgui_text_glow link_glow = {};
 		float max_media_height = 320.0f;
 		int active_line = -1;
 
@@ -1543,11 +1606,16 @@ namespace vgui_editor_kit {
 		float pad_bottom() const { return 12.0f * scale(); }
 		float scrollbar_width() const { return 10.0f * scale(); }
 
-		float measure(const std::string& text, float logical) const;
+		float measure(const std::string& text, float logical, const md_style& style) const;
+		float measure(const std::string& text, const std::vector<md_run>& runs,
+			int start, int end, float logical, const md_style& base) const;
 		float fallback_measure(const std::string& text, float logical) const;
-		float line_height(float logical) const;
-		std::vector<std::pair<int, int>> wrap(const std::string& text,
-			float max_width, float logical) const;
+		md_line_box text_box(float logical, const md_style& style) const;
+		float line_height(float logical) const { return text_box(logical, {}).height(); }
+		std::vector<std::pair<int, int>> wrap(const md_block& block,
+			float max_width, const md_style& base) const;
+		float segment_x(const md_block& block, const md_segment& segment,
+			int offset) const;
 
 		vgui_color color_of(code_token_kind kind) const;
 		vgui_color background() const;
@@ -1619,171 +1687,123 @@ namespace vgui_editor_kit {
 	}
 
 	float markdown_view::impl::measure(const std::string& text,
-		float logical) const
+		float logical, const md_style& style) const
 	{
 		if (text.empty())
 			return 0.0f;
-		if (root)
-		{
-			const float width = vgui_widget_measure_text_sized(root,
-				text.c_str(), logical);
-			if (width > 0.0f)
-				return width;
-		}
+		if (layout_has_font)
+			return vgui_widget_measure_text_styled(surface, text.c_str(), logical,
+				style.weight(), style.slant());
 		return fallback_measure(text, logical);
 	}
 
-	float markdown_view::impl::line_height(float logical) const
+	float markdown_view::impl::measure(const std::string& text,
+		const std::vector<md_run>& runs, int start, int end, float logical,
+		const md_style& base) const
 	{
-		if (root)
+		float width = 0.0f;
+		visit_runs(runs, start, end, base, [&](int a, int b, const md_style& style)
+			{
+				width += measure(text.substr((std::size_t)a, (std::size_t)(b - a)),
+					logical, style);
+			});
+		return width;
+	}
+
+	md_line_box markdown_view::impl::text_box(float logical, const md_style& style) const
+	{
+		if (surface)
 		{
-			const float height = vgui_widget_get_line_height_sized(root, logical);
-			if (height > 0.0f)
-				return height;
+			vgui_text_metrics metrics = {};
+			vgui_widget_get_text_metrics_styled(surface, logical, style.weight(),
+				style.slant(), &metrics);
+			if (metrics.line_height > 0.0f)
+			{
+				const float ascent = std::trunc(metrics.ascent);
+				return { ascent, metrics.line_height - ascent };
+			}
 		}
-		return std::max(10.0f * scale(), logical * scale() * 1.35f);
+		const float height = std::max(10.0f * scale(), logical * scale() * 1.35f);
+		return { height * 0.8f, height * 0.2f };
 	}
 
 	std::vector<std::pair<int, int>> markdown_view::impl::wrap(
-		const std::string& text, float max_width, float logical) const
+		const md_block& block, float max_width, const md_style& base) const
 	{
-		std::vector<std::pair<int, int>> result;
-		if (text.empty())
-		{
-			result.push_back({ 0, 0 });
-			return result;
-		}
-		if (max_width <= 1.0f)
-			max_width = 1.0f;
-
-		struct unit
-		{
-			int start = 0;
-			int end = 0;
-			bool space = false;
-			bool wide = false;
-			float width = 0.0f;
-		};
-		std::vector<unit> units;
+		const std::string& text = block.text;
 		const int length = (int)text.size();
-		int pos = 0;
-		while (pos < length)
+		max_width = std::max(1.0f, max_width);
+		auto range_width = [&](int start, int end)
+			{
+				return measure(text, block.runs, start, end, block.text_font, base);
+			};
+
+		std::vector<std::pair<int, int>> units;
+		for (int pos = 0; pos < length;)
 		{
-			int next = 0;
-			const uint32_t cp = utf8_decode(text, pos, &next);
+			int end = 0;
+			const uint32_t cp = utf8_decode(text, pos, &end);
 			if (is_space_char(text[(std::size_t)pos]))
 			{
-				int end = next;
-				while (end < length &&
-					is_space_char(text[(std::size_t)end]))
-					end = utf8_next(text, end);
-				unit item;
-				item.start = pos;
-				item.end = end;
-				item.space = true;
-				item.width = measure(text.substr((std::size_t)pos,
-					(std::size_t)(end - pos)), logical);
-				units.push_back(item);
 				pos = end;
 				continue;
 			}
-			if (is_wide_codepoint(cp))
+			const int next = end;
+			if (!is_wide_codepoint(cp))
 			{
-				unit item;
-				item.start = pos;
-				item.end = next;
-				item.wide = true;
-				item.width = measure(text.substr((std::size_t)pos,
-					(std::size_t)(next - pos)), logical);
-				units.push_back(item);
-				pos = next;
-				continue;
+				while (end < length && !is_space_char(text[(std::size_t)end]))
+				{
+					int after = 0;
+					if (is_wide_codepoint(utf8_decode(text, end, &after)))
+						break;
+					end = after;
+				}
 			}
-			int end = next;
-			while (end < length)
+			if (end > next && range_width(pos, end) > max_width)
 			{
-				int after = 0;
-				const uint32_t cp2 = utf8_decode(text, end, &after);
-				if (is_space_char(text[(std::size_t)end]) ||
-					is_wide_codepoint(cp2))
-					break;
-				end = after;
-			}
-			const float width = measure(text.substr((std::size_t)pos,
-				(std::size_t)(end - pos)), logical);
-			if (width > max_width)
-			{
-				int split = pos;
-				while (split < end)
+				for (int split = pos; split < end;)
 				{
 					const int after = utf8_next(text, split);
-					unit item;
-					item.start = split;
-					item.end = after;
-					item.width = measure(text.substr((std::size_t)split,
-						(std::size_t)(after - split)), logical);
-					units.push_back(item);
+					units.emplace_back(split, after);
 					split = after;
 				}
 			}
 			else
-			{
-				unit item;
-				item.start = pos;
-				item.end = end;
-				item.width = width;
-				units.push_back(item);
-			}
+				units.emplace_back(pos, end);
 			pos = end;
 		}
 
-		int line_start = -1;
-		int last_break = -1;
-		float line_width = 0.0f;
-		auto flush = [&](int end)
-			{
-				while (end > line_start &&
-					text[(std::size_t)end - 1] == ' ')
-					--end;
-				result.push_back({ line_start, end });
-				line_start = -1;
-				last_break = -1;
-				line_width = 0.0f;
-			};
-
-		for (const unit& item : units)
+		std::vector<std::pair<int, int>> result;
+		const int count = (int)units.size();
+		for (int first = 0; first < count;)
 		{
-			if (item.space)
+			const int start = units[(std::size_t)first].first;
+			auto fits = [&](int last)
+				{
+					return range_width(start, units[(std::size_t)last].second) <= max_width;
+				};
+			/* Measure whole candidate runs, not sums of independently shaped
+			 * words. Exponential probing bounds work for long lines/words. */
+			int last = first;
+			int probe = first + 1;
+			while (probe < count && fits(probe))
 			{
-				if (line_start < 0)
-					continue;
-				line_width += item.width;
-				last_break = item.end;
-				continue;
+				last = probe;
+				probe = std::min(count, first + (probe - first) * 2);
 			}
-			if (line_start < 0)
+			while (last + 1 < probe)
 			{
-				line_start = item.start;
-				line_width = 0.0f;
-				last_break = -1;
+				const int mid = last + (probe - last) / 2;
+				if (fits(mid))
+					last = mid;
+				else
+					probe = mid;
 			}
-			if (line_width + item.width > max_width &&
-				item.start > line_start)
-			{
-				const int end = last_break > line_start ? last_break :
-					item.start;
-				flush(end);
-				line_start = item.start;
-				line_width = 0.0f;
-			}
-			line_width += item.width;
-			if (item.wide)
-				last_break = item.end;
+			result.emplace_back(start, units[(std::size_t)last].second);
+			first = last + 1;
 		}
-		if (line_start >= 0)
-			flush(length);
 		if (result.empty())
-			result.push_back({ 0, 0 });
+			result.emplace_back(0, 0);
 		return result;
 	}
 
@@ -1838,12 +1858,28 @@ namespace vgui_editor_kit {
 			if (h > 0.0f)
 				height = h;
 		}
-		if (layout_valid &&
+		const float ui_scale = scale();
+		const float font = base_font();
+		const auto font_revision = vgui_text_font_revision(vgui_widget_get_context(surface));
+		const int font_weight = vgui_widget_get_font_weight(surface);
+		const int font_slant = vgui_widget_get_font_slant(surface);
+		/* Headless callers may not have installed a font family yet. */
+		const bool has_font = surface &&
+			vgui_widget_measure_text_styled(surface, "M", font, 0, 0) > 0.0f;
+		if (layout_valid && layout_scale == ui_scale && layout_font == font &&
+			layout_font_revision == font_revision && layout_font_weight == font_weight &&
+			layout_font_slant == font_slant && layout_has_font == has_font &&
 			std::fabs(width - layout_widget_w) < 0.5f &&
 			std::fabs(height - layout_widget_h) < 0.5f)
 			return;
 		layout_widget_w = width;
 		layout_widget_h = height;
+		layout_scale = ui_scale;
+		layout_font = font;
+		layout_font_revision = font_revision;
+		layout_font_weight = font_weight;
+		layout_font_slant = font_slant;
+		layout_has_font = has_font;
 		layout_view_h = height;
 		lines.clear();
 		const float content_w = std::max(1.0f, width - pad_left() -
@@ -1867,47 +1903,43 @@ namespace vgui_editor_kit {
 		const float bf = base_font();
 		float y = 0.0f;
 
-		/* Intersects block.runs with [start, end) and appends positioned
-		 * segments.  clip_right > 0 clips a segment at that x (table cells). */
-		auto append_runs = [&](const md_block& block, md_line& line,
-			int start, int end, float origin_x, float clip_right,
-			const md_style& base)
+		auto append_runs = [&](const md_block& block, md_line& line, int start,
+			int end, float x, float right, const md_style& base)
 			{
-				int cursor = start;
-				float x = origin_x;
-				auto emit = [&](int a, int b, const md_style& style)
+				md_line_part part;
+				part.first = line.segments.size();
+				part.x = x;
+				part.right = right;
+				visit_runs(block.runs, start, end, base,
+					[&](int a, int b, const md_style& style)
 					{
-						if (b <= a)
-							return;
 						md_segment segment;
 						segment.start = a;
 						segment.end = b;
 						segment.style = style;
 						segment.x = x;
-						segment.width = measure(block.text.substr(
-							(std::size_t)a, (std::size_t)(b - a)),
-							block.text_font);
-						if (clip_right > 0.0f)
-							segment.clip_w = std::max(0.0f,
-								clip_right - x);
+						segment.clip_right = right;
+						segment.width = measure(block.text.substr((std::size_t)a,
+							(std::size_t)(b - a)), block.text_font, style);
 						x += segment.width;
-						line.width = std::max(line.width,
-							x - line.x);
+						part.box.include(text_box(block.text_font, style));
 						line.segments.push_back(segment);
-					};
-				for (const md_run& run : block.runs)
+					});
+				part.end = line.segments.size();
+				if (part.first != part.end)
 				{
-					const int a = std::max(run.start, start);
-					const int b = std::min(run.start + run.length, end);
-					if (b <= a)
-						continue;
-					if (a > cursor)
-						emit(cursor, a, base);
-					emit(a, b, run.style);
-					cursor = std::max(cursor, b);
+					line.box.include(part.box);
+					line.width = std::max(line.width, std::min(x, right));
+					line.parts.push_back(part);
 				}
-				if (cursor < end)
-					emit(cursor, end, base);
+			};
+		auto finish_line = [&](md_line& line, const md_block& block,
+			const md_style& base, float vertical_padding = 0.0f)
+			{
+				if (line.parts.empty())
+					line.box = text_box(block.text_font, base);
+				line.height = line.box.height() + vertical_padding * 2.0f;
+				lines.push_back(std::move(line));
 			};
 
 		for (int index = 0; index < (int)blocks.size(); ++index)
@@ -1934,7 +1966,6 @@ namespace vgui_editor_kit {
 					font *= kHeadingScale[level - 1];
 				}
 				block.text_font = font;
-				block.line_height = line_height(font);
 
 				float text_indent = 0.0f;
 				if (block.kind == md_block_kind::quote)
@@ -1943,11 +1974,6 @@ namespace vgui_editor_kit {
 				else if (block.kind == md_block_kind::list_item)
 					text_indent = 18.0f * s +
 					std::max(0, block.level) * 16.0f * s;
-
-				const float wrap_width = std::max(8.0f,
-					width - text_indent);
-				const std::vector<std::pair<int, int>> wrapped = wrap(
-					block.text, wrap_width, font);
 
 				md_style base;
 				if (block.kind == md_block_kind::heading)
@@ -1960,30 +1986,30 @@ namespace vgui_editor_kit {
 				else
 					base.color = code_token_kind::text;
 
-				for (std::size_t i = 0; i < wrapped.size(); ++i)
+				const float wrap_width = std::max(1.0f, width - text_indent);
+				const auto wrapped = wrap(block, wrap_width, base);
+				float line_y = 0.0f;
+				for (const auto& range : wrapped)
 				{
 					md_line line;
 					line.block = index;
 					line.source_line = block.kind == md_block_kind::heading ?
-						block.source_first :
-						source_line_for_offset(block, wrapped[i].first);
-					line.y = (float)i * block.line_height;
-					line.height = block.line_height;
+						block.source_first : source_line_for_offset(block, range.first);
+					line.y = line_y;
 					line.x = text_indent;
-					append_runs(block, line, wrapped[i].first,
-						wrapped[i].second, text_indent, 0.0f, base);
-					lines.push_back(std::move(line));
+					append_runs(block, line, range.first, range.second, 0.0f, wrap_width, base);
+					finish_line(line, block, base);
+					line_y += lines.back().height;
 				}
-				block.height = std::max(block.line_height,
-					(float)wrapped.size() * block.line_height);
+				block.height = line_y;
 			}
+
 			else if (block.kind == md_block_kind::code)
 			{
 				block.text_font = bf * 0.95f;
-				block.line_height = line_height(block.text_font);
 				const float pad = 8.0f * s;
-				md_style base;
-				base.color = code_token_kind::text;
+				const md_style base;
+				float line_y = pad;
 				for (std::size_t i = 0; i < block.code_lines.size(); ++i)
 				{
 					const int start = block.code_line_offsets[i];
@@ -1992,20 +2018,18 @@ namespace vgui_editor_kit {
 					line.block = index;
 					line.source_line = std::min(block.source_first + 1 +
 						(int)i, block.source_last);
-					line.y = pad + (float)i * block.line_height;
-					line.height = block.line_height;
+					line.y = line_y;
 					line.x = pad;
-					append_runs(block, line, start, end, pad, 0.0f, base);
-					lines.push_back(std::move(line));
+					append_runs(block, line, start, end, 0.0f, std::max(0.0f, width - pad), base);
+					finish_line(line, block, base);
+					line_y += lines.back().height;
 				}
-				const int rows = std::max(1, (int)block.code_lines.size());
-				block.height = pad * 2.0f +
-					(float)rows * block.line_height;
+				block.height = line_y + pad + (block.code_lines.empty() ?
+					line_height(block.text_font) : 0.0f);
 			}
 			else if (block.kind == md_block_kind::table)
 			{
 				block.text_font = bf * 0.95f;
-				block.line_height = line_height(block.text_font);
 				const float pad_x = 8.0f * s;
 				const float pad_y = 4.0f * s;
 				const float min_col = 24.0f * s;
@@ -2016,10 +2040,13 @@ namespace vgui_editor_kit {
 				block.column_widths.assign(columns, min_col);
 				for (const md_table_row& row : block.rows)
 				{
+					md_style base;
+					base.bold = row.header;
 					for (std::size_t col = 0; col < row.cells.size(); ++col)
 					{
-						const float text_w = measure(row.cells[col].text,
-							block.text_font);
+						const md_cell& cell = row.cells[col];
+						const float text_w = measure(cell.text, cell.runs, 0,
+							(int)cell.text.size(), block.text_font, base);
 						block.column_widths[col] = std::max(
 							block.column_widths[col],
 							text_w + 2.0f * pad_x);
@@ -2045,16 +2072,15 @@ namespace vgui_editor_kit {
 						total = width;
 					}
 				}
-				const float row_h = block.line_height + 2.0f * pad_y;
-				for (std::size_t r = 0; r < block.rows.size(); ++r)
+				float row_y = 0.0f;
+				for (const md_table_row& row : block.rows)
 				{
-					const md_table_row& row = block.rows[r];
 					md_line line;
 					line.block = index;
 					line.source_line = row.source_line;
-					line.y = (float)r * row_h;
-					line.height = row_h;
-					line.x = 0.0f;
+					line.y = row_y;
+					md_style base;
+					base.bold = row.header;
 					line.width = total;
 					float cell_x = 0.0f;
 					for (std::size_t col = 0; col < columns; ++col)
@@ -2063,11 +2089,11 @@ namespace vgui_editor_kit {
 						if (col < row.cells.size())
 						{
 							const md_cell& cell = row.cells[col];
-							const float text_w = measure(cell.text,
-								block.text_font);
+							const float text_w = measure(cell.text, cell.runs, 0,
+								(int)cell.text.size(), block.text_font, base);
 							const float inner = std::max(0.0f,
 								col_w - 2.0f * pad_x);
-							float tx = cell_x + pad_x;
+							float tx = cell_x + std::min(pad_x, col_w);
 							const int align = col < block.column_align.size() ?
 								block.column_align[col] : 0;
 							if (align == 1)
@@ -2075,18 +2101,16 @@ namespace vgui_editor_kit {
 									(inner - text_w) * 0.5f);
 							else if (align == 2)
 								tx += std::max(0.0f, inner - text_w);
-							md_style base;
-							base.color = code_token_kind::text;
-							base.bold = row.header;
 							append_runs(block, line, cell.offset,
 								cell.offset + (int)cell.text.size(),
 								tx, cell_x + col_w, base);
 						}
 						cell_x += col_w;
 					}
-					lines.push_back(std::move(line));
+					finish_line(line, block, base, pad_y);
+					row_y += lines.back().height;
 				}
-				block.height = (float)block.rows.size() * row_h;
+				block.height = row_y;
 			}
 			else if (block.kind == md_block_kind::media)
 			{
@@ -2122,24 +2146,20 @@ namespace vgui_editor_kit {
 				float caption_y = media_h + 4.0f * s;
 				if (!block.text.empty())
 				{
-					const std::vector<std::pair<int, int>> wrapped = wrap(
-						block.text, width, block.text_font);
 					md_style base;
 					base.color = code_token_kind::comment;
-					for (std::size_t i = 0; i < wrapped.size(); ++i)
+					const float wrap_width = std::max(1.0f, width - block.media_x);
+					for (const auto& range : wrap(block, wrap_width, base))
 					{
 						md_line line;
 						line.block = index;
 						line.source_line = block.source_first;
-						line.y = caption_y +
-							(float)i * block.line_height;
-						line.height = block.line_height;
+						line.y = caption_y;
 						line.x = block.media_x;
-						append_runs(block, line, wrapped[i].first,
-							wrapped[i].second, block.media_x, 0.0f, base);
-						lines.push_back(std::move(line));
+						append_runs(block, line, range.first, range.second, 0.0f, wrap_width, base);
+						finish_line(line, block, base);
+						caption_y += lines.back().height;
 					}
-					caption_y += (float)wrapped.size() * block.line_height;
 				}
 				block.caption_y = caption_y;
 				block.height = caption_y;
@@ -2167,28 +2187,29 @@ namespace vgui_editor_kit {
 		layout_content_h = blocks.empty() ? 0.0f : y;
 	}
 
+	float markdown_view::impl::segment_x(const md_block& block,
+		const md_segment& segment, int offset) const
+	{
+		float advance = segment.width;
+		if (offset < segment.end)
+			advance = measure(block.text.substr((std::size_t)segment.start,
+				(std::size_t)std::max(0, offset - segment.start)),
+				block.text_font, segment.style);
+		return std::min(segment.clip_right, segment.x + advance);
+	}
+
 	float markdown_view::impl::x_at_offset(const md_block& block,
 		const md_line& line, int offset) const
 	{
 		if (line.segments.empty())
 			return line.x;
-		if (offset <= line.segments.front().start)
-			return line.x + line.segments.front().x;
 		for (const md_segment& segment : line.segments)
 		{
-			if (offset < segment.start)
-				return line.x + segment.x;
 			if (offset <= segment.end)
-			{
-				const int prefix = std::clamp(offset - segment.start, 0,
-					segment.end - segment.start);
-				return line.x + segment.x + measure(block.text.substr(
-					(std::size_t)segment.start, (std::size_t)prefix),
-					block.text_font);
-			}
+				return line.x + segment_x(block, segment, offset);
 		}
 		const md_segment& last = line.segments.back();
-		return line.x + last.x + last.width;
+		return line.x + segment_x(block, last, last.end);
 	}
 
 	/* ------------------------------------------------------------------------- */
@@ -2312,20 +2333,19 @@ namespace vgui_editor_kit {
 			line.segments.front().x);
 		for (const md_segment& segment : line.segments)
 		{
+			if (segment.x >= segment.clip_right)
+				continue;
 			int offset = segment.start;
 			while (true)
 			{
-				const float at = segment.x + measure(block.text.substr(
-					(std::size_t)segment.start,
-					(std::size_t)(offset - segment.start)),
-					block.text_font);
+				const float at = segment_x(block, segment, offset);
 				const float distance = std::fabs(text_x - at);
 				if (distance < best_distance)
 				{
 					best_distance = distance;
 					best = offset;
 				}
-				if (offset >= segment.end)
+				if (offset >= segment.end || at >= segment.clip_right)
 					break;
 				offset = std::min(segment.end,
 					utf8_next(block.text, offset));
@@ -2512,19 +2532,18 @@ namespace vgui_editor_kit {
 			for (float col_w : block.column_widths)
 				table_w += col_w;
 			table_w = std::min(width, table_w);
-			const float row_h = block.line_height + 8.0f * s;
-			if (!block.rows.empty())
-				ovg_tools::fill_rect(cb, vg, ox, top, table_w, row_h,
+			if (block.line_count > 0)
+				ovg_tools::fill_rect(cb, vg, ox, top, table_w,
+					lines[(std::size_t)block.line_begin].height,
 					to_ovg(mix_color(bg, color_of(code_token_kind::text),
 						0.08f)));
-			for (std::size_t r = 1; r < block.rows.size(); ++r)
+			for (int r = 1; r < block.line_count; ++r)
 			{
-				const float row_y = top + (float)r * row_h;
+				const float row_y = top + lines[(std::size_t)(block.line_begin + r)].y;
 				ovg_tools::line(cb, vg, ox, row_y, ox + table_w, row_y,
 					to_ovg(with_alpha(border, 0x88)), std::max(1.0f, s));
 			}
-			ovg_tools::stroke_rect(cb, vg, ox, top, table_w,
-				(float)block.rows.size() * row_h,
+			ovg_tools::stroke_rect(cb, vg, ox, top, table_w, block.height,
 				to_ovg(border), std::max(1.0f, s));
 		}
 		else if (block.kind == md_block_kind::rule)
@@ -2640,54 +2659,63 @@ namespace vgui_editor_kit {
 		if (!surface)
 			return;
 		const vgui_color bg = background();
+		/* Draw chips first so none can cover text or glow in a neighboring run. */
 		for (const md_segment& segment : line.segments)
 		{
-			const int length = segment.end - segment.start;
-			if (length <= 0)
-				continue;
-			const std::string text = block.text.substr(
-				(std::size_t)segment.start, (std::size_t)length);
-			if (text.empty())
-				continue;
-			const vgui_color color = color_of(segment.style.color);
-			const float x = x0 + segment.x;
-			float width = segment.clip_w > 0.0f ? segment.clip_w :
-				std::max(1.0f, segment.width + 2.0f * s);
-			width = std::min(width, std::max(1.0f,
-				content_w - segment.x));
-			if (width < 1.0f)
-				continue;
-
-			if (segment.style.code)
-			{
-				const float chip_w = std::min(
-					std::max(segment.width + 4.0f * s, 2.0f * s),
-					width + 4.0f * s);
-				ovg_tools::fill_round_rect(cb, vg, x - 2.0f * s,
-					y + line.height * 0.12f, chip_w,
+			const float width = std::min(segment.width, segment.clip_right - segment.x);
+			if (segment.style.code && width > 0.0f)
+				ovg_tools::fill_round_rect(cb, vg, x0 + segment.x - 2.0f * s,
+					y + line.height * 0.12f, width + 4.0f * s,
 					line.height * 0.76f, 2.0f * s,
-					to_ovg(mix_color(bg, color, 0.15f)));
-			}
-			if (segment.style.strike)
-				ovg_tools::line(cb, vg, x, y + line.height * 0.55f,
-					x + std::min(segment.width, width),
-					y + line.height * 0.55f, to_ovg(color),
-					std::max(1.0f, s));
+					to_ovg(mix_color(bg, color_of(segment.style.color), 0.15f)));
+		}
 
-			vgui_custom_draw_text_sized(surface, cb, vg, text.c_str(), x,
-				y, width, line.height, to_ovg(color), 0.0f, 0.5f,
-				block.text_font);
-			if (segment.style.bold && width > 1.0f)
-				vgui_custom_draw_text_sized(surface, cb, vg,
-					text.c_str(), x + 0.6f * s, y,
-					std::max(1.0f, width - 0.6f * s), line.height,
-					to_ovg(color), 0.0f, 0.5f, block.text_font);
-			if (segment.style.link)
-				ovg_tools::line(cb, vg, x, y + line.height * 0.84f,
-					x + std::min(segment.width, width),
-					y + line.height * 0.84f,
-					to_ovg(with_alpha(color, 0xCC)),
-					std::max(1.0f, s));
+		const float text_y = y + (line.height - line.box.height()) * 0.5f;
+		std::vector<vgui_text_span> spans;
+		for (const md_line_part& part : line.parts)
+		{
+			const float width = std::min(part.right, content_w - line.x) - part.x;
+			if (width <= 0.0f)
+				continue;
+			const int start = line.segments[part.first].start;
+			const int end = line.segments[part.end - 1].end;
+			const std::string text = block.text.substr((std::size_t)start,
+				(std::size_t)(end - start));
+			spans.clear();
+			spans.reserve(part.end - part.first);
+			for (std::size_t i = part.first; i < part.end; ++i)
+			{
+				const md_segment& segment = line.segments[i];
+				md_style style = segment.style;
+				if (block.kind == md_block_kind::heading)
+					style.glow = heading_glow;
+				if (style.link && ((link_glow.color >> 24) ||
+					(link_glow.flags & VGUI_TEXT_GLOW_OFF)))
+					style.glow = link_glow;
+
+				vgui_text_span span = {};
+				span.start = segment.start - start;
+				span.length = segment.end - segment.start;
+				span.color = color_of(style.color);
+				span.font_size = block.text_font;
+				span.font_weight = style.weight();
+				span.font_slant = style.slant();
+				span.glow = style.glow;
+				if (!style.code)
+				{
+					if (style.strike)
+						span.decor |= VGUI_TEXT_DECOR_STRIKETHROUGH;
+					if (style.link)
+					{
+						span.decor |= VGUI_TEXT_DECOR_UNDERLINE;
+						span.decor_color = with_alpha(span.color, 0xCC);
+					}
+				}
+				spans.push_back(span);
+			}
+			vgui_custom_draw_text_spans(surface, cb, vg, text.c_str(), spans.data(),
+				(int)spans.size(), x0 + part.x, text_y + line.box.ascent - part.box.ascent,
+				width, part.box.height(), base_color(block), 0.0f, 0.0f, block.text_font);
 		}
 	}
 
@@ -3228,6 +3256,26 @@ namespace vgui_editor_kit {
 		return true;
 	}
 
+	void markdown_view::set_text_glow(const vgui_text_glow& heading, const vgui_text_glow& link)
+	{
+		if (!impl_)
+			return;
+		const auto same = [](const vgui_text_glow& a, const vgui_text_glow& b)
+			{
+				return a.color == b.color && a.sigma == b.sigma && a.spread == b.spread &&
+					a.flags == b.flags && a.opacity == b.opacity && a.mode == b.mode && a.blend == b.blend;
+			};
+		if (same(impl_->heading_glow, heading) && same(impl_->link_glow, link))
+			return;
+		impl_->heading_glow = heading;
+		impl_->link_glow = link;
+		if (impl_->surface)
+		{
+			vgui_widget_invalidate_recording(impl_->surface);
+			vgui_widget_mark_dirty(impl_->surface);
+		}
+	}
+
 	float markdown_view::content_height() const
 	{
 		if (!impl_)
@@ -3280,6 +3328,8 @@ namespace vgui_editor_kit {
 			(int)self->blocks.size() - 1;
 		const md_block& target = self->blocks[(std::size_t)index];
 		float y = target.top;
+		float height = target.line_count > 0 ?
+			self->lines[(std::size_t)target.line_begin].height : target.height;
 		for (int i = target.line_begin;
 			i < target.line_begin + target.line_count; ++i)
 		{
@@ -3287,12 +3337,12 @@ namespace vgui_editor_kit {
 			if (text_line.source_line >= line)
 			{
 				y = target.top + text_line.y;
+				height = text_line.height;
 				break;
 			}
 		}
 		if (center)
-			y += (target.line_count > 0 ? target.line_height * 0.5f :
-				target.height * 0.5f) - self->layout_view_h * 0.5f;
+			y += (height - self->layout_view_h) * 0.5f;
 		self->scroll_to_y(y, false);
 	}
 
