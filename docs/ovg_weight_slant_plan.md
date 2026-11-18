@@ -1,6 +1,6 @@
 # OVG 文本样式支持规划：weight / slant / decoration / glow
 
-> 状态：O1–O3、D1–D4、G1–G4 已落地；O4 已验证回归矩阵和字体缓存生命周期，绘制耗时与独立泄漏检测尚未验收。后文的缺口清单是实现前的基线；最终接口、限制和测试见下方实施记录。
+> 状态：O1–O3、D1–D4、G1–G4 已落地；O4 已完成回归矩阵、字体缓存生命周期、预热绘制基准和 MSVC Debug CRT 堆检查。后文的缺口清单是实现前的基线；最终接口、限制和测试见下方实施记录。
 >
 > 验证入口：`ovg_font_style`（静态、变量字面素材可通过环境变量传入，见测试文件）、`vgui_richtext`、`ovg_text_glow`、`ovg_text_glow_gpu`（需 SDL3/Vulkan）、`ovg_text_rgba`。`vg_render_text_rgba8` 可用于缓存正文像素，不包含装饰或光晕。
 >
@@ -23,7 +23,9 @@
 
 - `ovg_font_style` 增加 16 轮字体缓存重建，覆盖 `clear_load()`、`clear_sys()`、系统字面重新枚举、内存字面重注册，以及失效 family 的派生与销毁。每轮验证清理前后的 advance 与 RGBA 像素一致；累计 1,024 次同样式派生确认复用同一字面且不消耗新 font id。此项不测绘制耗时。
 - `vgui_model` 使用仓库内的 DejaVu Sans，加入完整构建与 `VGUI_CORE_ONLY` 的 CTest。两种配置都测异步文件对话框桥接；仅完整构建验证 SDL3 provider 安装。
-- Windows 验证：完整 SDL3/Vulkan 构建 16 项 CTest（含截图）、Core-only 8 项 CTest、MSVC ASan 下 7 项文本与生命周期 CTest 均通过；编辑器套件、C API 与电子表格独立自检通过。可选的真实粗体、粗斜体及变量字面用例分别使用 Arial Bold、Arial Bold Italic 和 Bahnschrift。Windows ASan 结果不等同于 LeakSanitizer 验收。
+- Windows 验证：完整 SDL3/Vulkan 构建 16 项 CTest（含截图）、Core-only 8 项 CTest、MSVC ASan 下 7 项文本与生命周期 CTest 均通过；编辑器套件、C API 与电子表格独立自检通过。可选的真实粗体、粗斜体及变量字面用例分别使用 Arial Bold、Arial Bold Italic 和 Bahnschrift。
+- **绘制基准**：用 Release 的 `ovg_font_test --bench`。每帧用预热的 DejaVu Sans 生成 24 行 24 px 文本的 OVG 命令，四种样式按轮轮换，取 9 组 × 256 帧的组均值中位数。MSVC x64 Release/Core-only 本机结果：常规 84.12、合成粗体 79.95、合成斜体 77.27、合成粗斜体 76.90 µs/帧，未观察到合成样式增加预热绘制耗时。各组光栅几何数量一致，绘制不消耗新 font id。计时仅覆盖 CPU 命令生成和清理，不含冷启动整形／光栅化、纹理上传或 GPU 提交，不设跨机器固定阈值。
+- **独立堆检查**：MSVC Debug 下运行 `ctest --test-dir <build-dir> -R '^ovg_font_heap_lifetime$'`（或 `ovg_font_test --leak-check`）。预热一次后执行三批完整的字体缓存创建、测试和销毁（48 轮清理重建）；完整和 Core-only 均通过，Debug CRT 堆净增 0 块、0 字节。临时保留 123 字节的对照能检出 1 块增长并返回失败。此检查仅覆盖由当前 Debug CRT 追踪的分配，不覆盖其他分配器、GPU 资源或进程退出时的全局分配，不等同于 LeakSanitizer。MSVC Release 的 CTest 会跳过该项。
 
 ## 0. 结论摘要
 
@@ -482,7 +484,7 @@ hb_font_set_synthetic_slant(font, tan(12 * PI / 180));   // ≈ 0.2126
 ### O4 — 回归、性能、文档（约 1 天）
 
 - 全量构建：core-only / model / spreadsheet / chart / editor kit / C API / screenshot。
-- ASAN：反复创建/删除变体、clear_load/clear_sys、重新注册，无泄漏/悬空。
+- ASan 验证反复创建/删除变体、`clear_load()`/`clear_sys()` 与重注册时无越界或悬空访问；另用 Debug CRT 快照检查字体缓存生命周期内的堆增长。
 - 性能：同一样式只创建一次变体；绘制热路径不做 `new_font_family`；对比 Regular 文本 draw 耗时，合成变体允许小幅上升。
 - 文档：ovg README 字体章节、vgui README、能力评估、richtext roadmap。
 

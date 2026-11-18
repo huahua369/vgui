@@ -1,14 +1,21 @@
 // Headless OVG font matching, fallback and cache regression test.
 // Optional fixtures: OVG_TEST_BOLD_FONT, OVG_TEST_BOLD_ITALIC_FONT,
 // OVG_TEST_VARIABLE_FONT (a wght variable font with lowercase Latin glyphs).
+// --bench times warm CPU draw-list generation; --leak-check uses MSVC Debug CRT.
 #include "pch.h"
 #include <ovg_c.h>
 #include <ovg_fonts.h>
 #include <hb.h>
 #include <hb-ot.h>
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#if defined(_MSC_VER) && defined(_DEBUG)
+#include <crtdbg.h>
+#endif
 #include <fstream>
 #include <iterator>
 #include <memory>
@@ -249,12 +256,141 @@ void test_variable(font_cache_cx* cache) {
             std::clamp(value, axis.min_value, axis.max_value), "apply real slnt/ital coordinates");
     }
 }
+void benchmark_text(font_cache_cx* cache, const char* regular_path) {
+    if (!memory_font(cache, regular_path, "OvgTestBench")) {
+        check(false, "register benchmark font");
+        return;
+    }
+    auto regular = fonts(new_font_family(cache, "OvgTestBench", nullptr));
+    auto bold = fonts(font_familys_derive(regular.get(), VG_FONT_WEIGHT_BOLD, 0));
+    auto italic = fonts(font_familys_derive(regular.get(), 0, VG_FONT_SLANT_ITALIC));
+    auto both = fonts(font_familys_derive(regular.get(), VG_FONT_WEIGHT_BOLD, VG_FONT_SLANT_ITALIC));
+    if (!first(regular) || !first(bold) || !first(italic) || !first(both) ||
+        embolden(first(bold)) <= 0 || hb_font_get_synthetic_slant(first(italic)->font) <= 0 ||
+        embolden(first(both)) <= 0 || hb_font_get_synthetic_slant(first(both)->font) <= 0) {
+        check(false, "benchmark needs regular and synthetic faces from one fixture");
+        return;
+    }
+
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    vg->width = 960;
+    vg->height = 880;
+    constexpr int runs = 24, warmup = 32, batches = 9, frames = 256;
+    constexpr char line[] = "The quick brown fox jumps over the lazy dog.";
+    const std::array families{regular.get(), bold.get(), italic.get(), both.get()};
+    constexpr std::array names{"Regular", "Synthetic bold", "Synthetic italic", "Synthetic bold italic"};
+    std::array<std::array<double, batches>, names.size()> samples{};
+    auto draw_frame = [&](font_familys_t* family) {
+        cb->clear(vg.get());
+        text_st_t text{};
+        text.text = line;
+        text.text_len = sizeof(line) - 1;
+        text.size = {920, 32};
+        text_style_t st{};
+        st.family = family;
+        st.fontsize = 24;
+        st.color = 0xffffffffu;
+        for (int row = 0; row < runs; ++row) {
+            text.pos = {20.0f, 12.0f + row * 36.0f};
+            cb->add_text(vg.get(), &text, &st, nullptr);
+        }
+        return get_draw_list(vg.get());
+    };
+    size_t vertices = 0, indices = 0;
+    for (auto* family : families) {
+        for (int i = 0; i < warmup; ++i) draw_frame(family);
+        const auto dl = get_draw_list(vg.get());
+        if (family == regular.get()) { vertices = dl.v1_count; indices = dl.ig_count; }
+        check(dl.count && vertices && indices && !dl.v_count &&
+            dl.v1_count == vertices && dl.ig_count == indices,
+            "all benchmark styles generate the same amount of raster geometry");
+    }
+    if (failures) return;
+
+    const auto next_id = cache->next_font_id;
+    using clock = std::chrono::steady_clock;
+    for (int batch = 0; batch < batches; ++batch) {
+        // Rotate order so temperature or background load does not always bias one style.
+        for (size_t i = 0; i < families.size(); ++i) {
+            const size_t style_index = (i + batch) % families.size();
+            size_t processed = 0;
+            const auto start = clock::now();
+            for (int frame = 0; frame < frames; ++frame)
+                processed += draw_frame(families[style_index]).v1_count;
+            samples[style_index][batch] = std::chrono::duration<double, std::micro>(
+                clock::now() - start).count() / frames;
+            check(processed == frames * vertices, "each timed frame generates text geometry");
+        }
+    }
+    check(cache->next_font_id == next_id, "warm drawing does not allocate font ids");
+    std::printf("OVG CPU: %d runs/frame at 24 px, median of %d x %d frames (no GPU)\n", runs, batches, frames);
+    for (auto& values : samples) std::sort(values.begin(), values.end());
+    for (size_t i = 0; i < families.size(); ++i) {
+        const double median = samples[i][batches / 2];
+        std::printf("%-22s %8.2f us/frame  %6.3fx regular\n", names[i], median, median / samples[0][batches / 2]);
+    }
+}
+
+#if defined(_MSC_VER) && defined(_DEBUG)
+void check_heap_lifetime(const char* regular_path) {
+    const int flags = _CrtSetDbgFlag(_CRTDBG_REPORT_FLAG);
+    if (!(flags & _CRTDBG_ALLOC_MEM_DF)) {
+        check(false, "Debug CRT allocation tracking must be enabled");
+        return;
+    }
+    auto exercise = [&] {
+        cache_ptr cache(new_font_cache(), free_font_cache);
+        if (!cache || !load_font_from_path(cache.get(), regular_path, nullptr)) {
+            check(false, "register disk fixture for heap lifetime check");
+            return;
+        }
+        get_sys_family(cache.get());
+        test_synthetic(cache.get(), regular_path);
+        test_cache_lifetime(cache.get(), regular_path);
+    };
+    // Run once outside the checkpoints to initialize process-lifetime caches.
+    exercise();
+    if (failures) return;
+    _CrtMemState before{}, after{};
+    _CrtMemCheckpoint(&before);
+    constexpr int passes = 3;
+    for (int pass = 0; pass < passes; ++pass) exercise();
+    _CrtMemCheckpoint(&after);
+    for (int type : {_NORMAL_BLOCK, _CLIENT_BLOCK}) {
+        const auto blocks = static_cast<long long>(after.lCounts[type]) - before.lCounts[type];
+        const auto bytes = static_cast<long long>(after.lSizes[type]) - before.lSizes[type];
+        std::printf("Debug CRT heap (block type %d): %+lld blocks, %+lld bytes after %d passes\n",
+            type, blocks, bytes, passes);
+        check(blocks == 0 && bytes == 0, "no live Debug CRT block or byte growth after font teardown");
+    }
+    if (failures) _CrtMemDumpAllObjectsSince(&before);
+}
+#endif
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
+    const char* regular_path = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+    if (argc == 2 && std::strcmp(argv[1], "--leak-check") == 0) {
+#if defined(_MSC_VER) && defined(_DEBUG)
+        check_heap_lifetime(regular_path);
+        return failures ? 1 : 0;
+#else
+        std::puts("SKIP: --leak-check requires the MSVC Debug CRT");
+        return 77;
+#endif
+    }
+    const bool bench = argc == 2 && std::strcmp(argv[1], "--bench") == 0;
+    if (argc > 1 && !bench) {
+        std::fprintf(stderr, "Usage: %s [--bench | --leak-check]\n", argv[0]);
+        return 2;
+    }
     cache_ptr cache(new_font_cache(), free_font_cache);
     if (!cache) return 1;
-    const char* regular_path = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+    if (bench) {
+        benchmark_text(cache.get(), regular_path);
+        return failures ? 1 : 0;
+    }
     check(load_font_from_path(cache.get(), regular_path, nullptr), "register system font fixture");
     get_sys_family(cache.get());
     const auto next_id = cache->next_font_id;
