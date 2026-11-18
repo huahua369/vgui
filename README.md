@@ -1258,18 +1258,20 @@ vgui_text_span spans[] = {
     { 3, 3, 0, 24.0f, VGUI_TEXT_DECOR_UNDERLINE }          /* 后 3 字节大字号+下划线 */
 };
 /* 在 VGUI_CUSTOM 绘制回调中： */
-vgui_custom_draw_text_spans(widget, cb, vg, text, spans, 2,
-    x, y, width, line_height, 0xFFFFFFFFu, 0.0f, 0.5f, 16.0f);
 float w = vgui_widget_measure_text_spans(widget, text, spans, 2, 16.0f);
-float h = vgui_widget_get_line_height_spans(widget, spans, 2, 16.0f);
+float h = vgui_widget_get_text_height_spans(widget, text, spans, 2, 16.0f);
+vgui_custom_draw_text_spans(widget, cb, vg, text, spans, 2,
+    x, y, width, height, 0xFFFFFFFFu, 0.0f, 0.5f, 16.0f);
 ```
 
-- `start/length` 是 UTF-8 **字节**区间并会对齐到字符边界；span 可乱序/重叠（后者胜出），未覆盖字节用 base 样式。
-- `color==0`/`font_size==0` 继承调用方传入的 base；`decor` 支持下划线与删除线位（OVG 无粗斜体，故不提供）。
-- 所有 run 共享最高 run 的行高并垂直居中；对齐为物理对齐（RTL 不翻转，与 `vgui_custom_draw_text_sized` 一致）。
+- `start/length` 是 UTF-8 **字节**区间并会扩展到字符边界。文字样式由最后一个覆盖该区间的 span 决定；未设置的字段使用基础样式。
+- `color==0`/`font_size==0` 使用传入的 base；`font_weight`、`font_slant` 为 0 时继承控件。装饰支持下划线、删除线、上划线，各自可覆盖线型、颜色、粗细、偏移和避墨设置；`glow` 可设置内/外发光。
+- 同一行的 run 共享基线，支持 LF/CRLF 显式换行，不自动折行。水平按行对齐、垂直按整段对齐；RTL 不翻转物理对齐方向。
 - 词法器/主题/行号栏/查找替换仍属 editor kit（见 `docs/editor_roadmap.md`）；WYSIWYG 可编辑行内格式是独立目标，本原语未覆盖。
 
-详见 `docs/richtext_roadmap.md` 与 `sample/vgui_model_test.cpp::test_richtext_spans`。
+**交互示例**：完整构建中运行 `bld_full.bat -j 4 vgui_richtext_demo`，再打开 `out/bin/x64d/vgui_richtext_demo.exe`。示例展示 UTF-8 混排、五种装饰线型及单个 span 的发光，并可切换对齐方式、内/外发光、模糊 sigma 和下划线避墨（Skip ink）。源码见 [`sample/vgui_richtext_demo.cpp`](sample/vgui_richtext_demo.cpp)，无需系统字体。
+
+详见 `docs/richtext_roadmap.md` 与 `sample/vgui_richtext_test.cpp`。
 
 ### 文件对话框（原生对话框）
 
@@ -1473,6 +1475,7 @@ Debug 输出目录为 `out/bin/x64d/`：
 
 ```text
 out/bin/x64d/vgui_demo.exe             # 全部控件的交互演示
+out/bin/x64d/vgui_richtext_demo.exe    # 富文本混排、装饰和发光交互示例
 out/bin/x64d/vgui_editor.exe           # UI 文档编辑器（JSON 文档 + C++ 代码生成 + 实时预览）
 out/bin/x64d/vgui_phase0.exe           # Phase 0：3D FBO -> 原生纹理 -> VGUI_IMAGE
 out/bin/x64d/vgui_game_editor.exe      # 游戏编辑器示例（操作路径见下文）

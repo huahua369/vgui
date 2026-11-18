@@ -189,6 +189,10 @@ if(VGUI_BUILD_EDITOR_KIT)
     target_compile_definitions(vgui_demo PRIVATE VGUI_DEMO_HAS_EDITOR_KIT=1)
 endif()
 
+add_executable(vgui_richtext_demo vgui_richtext_demo.cpp)
+target_link_libraries(vgui_richtext_demo PRIVATE vgui_sample_common vgui::vgui SDL3::SDL3)
+target_compile_definitions(vgui_richtext_demo PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+
 # 双窗口验证：每个窗口独立的 vgui_context / FBO / rvg，一帧统一提交。
 # 需要真实 GPU 窗口，因此不注册到 ctest（CI 未必有显示设备）；用
 # VGUI_MW_FRAMES=90 跑有界自检，GPU/窗口创建失败时返回 77。
