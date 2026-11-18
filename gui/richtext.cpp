@@ -138,12 +138,47 @@ namespace
 			span->font_weight, span->font_slant};
 	}
 
+	constexpr size_t marker_size = sizeof(VGUI_RICHTEXT_IMAGE_MARKER) - 1;
+
+	struct inline_box
+	{
+		const char* pos;
+		const vgui_richtext_image* image;
+		float width, height, descent;
+	};
+
+	std::vector<inline_box> resolve_images(const char* text, const vgui_richtext_image* images,
+		int count, float scale)
+	{
+		std::vector<inline_box> boxes;
+		if (!images || count <= 0) return boxes;
+		const size_t len = std::strlen(text);
+		if (len < marker_size) return boxes;
+		for (int i = 0; i < count; ++i)
+		{
+			const auto& image = images[i];
+			if (image.byte_offset < 0 || static_cast<size_t>(image.byte_offset) > len - marker_size ||
+				!(image.width > 0 && image.height > 0) || !std::isfinite(image.descent)) continue;
+			const char* pos = text + image.byte_offset;
+			if (std::memcmp(pos, VGUI_RICHTEXT_IMAGE_MARKER, marker_size) != 0) continue;
+			const float width = image.width * scale, height = image.height * scale;
+			if (!std::isfinite(width) || !std::isfinite(height) || !(width > 0 && height > 0)) continue;
+			boxes.push_back({pos, &image, width, height, std::clamp(image.descent, 0.0f, image.height) * scale});
+		}
+		std::stable_sort(boxes.begin(), boxes.end(), [](const auto& a, const auto& b) { return a.pos < b.pos; });
+		// Reverse unique keeps the last valid record at each offset.
+		boxes.erase(boxes.begin(), std::unique(boxes.rbegin(), boxes.rend(),
+			[](const auto& a, const auto& b) { return a.pos == b.pos; }).base());
+		return boxes;
+	}
+
 	struct styled_range
 	{
 		const char* first;
 		const char* last;
 		span_sources sources;
 		font_style font;
+		const inline_box* box = nullptr;
 	};
 
 	// ICU operates on the original UTF-8 paragraph so neither a change of
@@ -160,7 +195,7 @@ namespace
 			return vgui_widget_measure_text_styled(widget, scratch.c_str(), font.size, font.weight, font.slant);
 		};
 		double width = 0;
-		for (const auto& r : ranges) width += advance(r.first, r.last, r.font);
+		for (const auto& r : ranges) width += r.box ? r.box->width : advance(r.first, r.last, r.font);
 		if (width <= max_width || last - first > std::numeric_limits<int32_t>::max())
 		{
 			emit_line(first, last);
@@ -184,7 +219,7 @@ namespace
 			return;
 		}
 
-		struct edge { const char* pos; double width; };
+		struct edge { const char* pos; double width; bool space = false, oversized = false; };
 		struct cut { size_t end, next; };
 		std::vector<edge> edges{{first, 0}};
 		std::vector<cut> cuts;
@@ -192,24 +227,46 @@ namespace
 		ubrk_first(line_breaks.get());
 		int32_t soft = ubrk_next(line_breaks.get());
 		ubrk_first(graphemes.get());
-		for (int32_t end = ubrk_next(graphemes.get()); end != UBRK_DONE; end = ubrk_next(graphemes.get()))
+		int32_t grapheme = ubrk_next(graphemes.get());
+		const auto next_box = [&](auto from) {
+			return std::find_if(from, ranges.end(), [](const auto& r) { return r.box != nullptr; });
+		};
+		auto object = next_box(ranges.begin());
+		while (grapheme != UBRK_DONE || object != ranges.end())
 		{
 			const char* a = edges.back().pos;
-			const char* b = first + end;
+			const char* b = grapheme != UBRK_DONE ? first + grapheme : last;
+			if (object != ranges.end())
+			{
+				// Split ICU clusters at object edges (e.g. U+FFFC followed by
+				// an extending mark), but never allow a break within the object.
+				if (a == object->first) b = object->last;
+				else b = std::min(b, object->first);
+			}
+			const int32_t end = static_cast<int32_t>(b - first);
+			while (grapheme != UBRK_DONE && grapheme <= end) grapheme = ubrk_next(graphemes.get());
+			if (object != ranges.end() && b == object->last) object = next_box(object + 1);
 			double pen = edges.back().width;
+			bool oversized = false;
 			// The OVG width API sums nominal glyph advances. Walk the styled
 			// slices once, rather than remeasuring prefixes of a long word.
 			for (const char* p = a; p < b;)
 			{
 				const auto& r = ranges[style];
 				const char* q = std::min(r.last, b);
-				pen += advance(p, q, r.font);
+				if (r.box)
+				{
+					pen += r.box->width;
+					oversized = r.box->width > max_width;
+				}
+				else pen += advance(p, q, r.font);
 				p = q;
 				if (p == r.last) ++style;
 			}
 			const size_t index = edges.size();
-			edges.push_back({b, pen});
-			if (!std::all_of(a, b, [](char c) { return c == ' ' || c == '\t'; })) trimmed = index;
+			const bool space = std::all_of(a, b, [](char c) { return c == ' ' || c == '\t'; });
+			edges.push_back({b, pen, space, oversized});
+			if (!space) trimmed = index;
 			while (soft != UBRK_DONE && soft < end) soft = ubrk_next(line_breaks.get());
 			if (soft == end) cuts.push_back({trimmed, index});
 		}
@@ -221,6 +278,13 @@ namespace
 
 		for (size_t start = 0; start + 1 < edges.size();)
 		{
+			if (edges[start + 1].oversized)
+			{
+				emit_line(edges[start].pos, edges[start + 1].pos);
+				++start;
+				while (start + 1 < edges.size() && edges[start + 1].space) ++start;
+				continue;
+			}
 			const double limit = edges[start].width + max_width;
 			const auto fit = std::upper_bound(edges.begin() + start + 1, edges.end(), limit,
 				[](double w, const edge& e) { return w < e.width; });
@@ -242,27 +306,56 @@ namespace
 	}
 
 	template<class EmitRun, class FinishLine>
-	void walk_wrapped_lines(vgui_widget* widget, const char* text, const vgui_text_span* spans,
-		int span_count, bool for_draw, float base_size, float max_width, EmitRun emit_run, FinishLine finish_line)
+	void walk_layout_lines(vgui_widget* widget, const vgui_richtext_content& content,
+		bool for_draw, float base_size, float max_width, EmitRun emit_run, FinishLine finish_line)
 	{
+		const auto* text = content.text;
+		const auto boxes = resolve_images(text, content.images, content.image_count,
+			vgui_context_get_ui_scale(vgui_widget_get_context(widget)));
+		if (max_width <= 0 && boxes.empty())
+		{
+			walk_lines(text, content.spans, content.span_count, for_draw,
+				[&](const char* first, const char* last, const span_sources& sources) {
+					emit_run(first, last, sources, nullptr);
+				}, finish_line);
+			return;
+		}
+
 		std::vector<styled_range> ranges;
-		walk_lines(text, spans, span_count, for_draw,
+		size_t object = 0;
+		walk_lines(text, content.spans, content.span_count, for_draw,
 			[&](const char* first, const char* last, const span_sources& sources) {
-				ranges.push_back({first, last, sources, font_for(sources[paint_channel], base_size)});
+				const auto font = font_for(sources[paint_channel], base_size);
+				while (object < boxes.size() && boxes[object].pos < last)
+				{
+					const auto& box = boxes[object++];
+					if (first < box.pos) ranges.push_back({first, box.pos, sources, font});
+					first = box.pos + marker_size;
+					ranges.push_back({box.pos, first, {}, {}, &box});
+				}
+				if (first < last) ranges.push_back({first, last, sources, font});
 			}, [&] {
-				if (ranges.empty()) { finish_line(); return; }
-				size_t i = 0;
-				wrap_paragraph(widget, ranges, max_width, [&](const char* first, const char* last) {
-					while (i < ranges.size() && ranges[i].last <= first) ++i;
-					while (i < ranges.size() && ranges[i].first < last)
-					{
-						const auto& r = ranges[i];
-						emit_run(std::max(first, r.first), std::min(last, r.last), r.sources);
-						if (r.last > last) break;
-						++i;
-					}
+				if (max_width <= 0)
+				{
+					for (const auto& r : ranges) emit_run(r.first, r.last, r.sources, r.box);
 					finish_line();
-				});
+				}
+				else if (ranges.empty()) finish_line();
+				else
+				{
+					size_t i = 0;
+					wrap_paragraph(widget, ranges, max_width, [&](const char* first, const char* last) {
+						while (i < ranges.size() && ranges[i].last <= first) ++i;
+						while (i < ranges.size() && ranges[i].first < last)
+						{
+							const auto& r = ranges[i];
+							emit_run(std::max(first, r.first), std::min(last, r.last), r.sources, r.box);
+							if (r.last > last) break;
+							++i;
+						}
+						finish_line();
+					});
+				}
 				ranges.clear();
 			});
 	}
@@ -280,12 +373,16 @@ namespace
 	struct line_box
 	{
 		float ascent = 0, descent = 0, max_height = 0;
+		void add(float a, float d, float height)
+		{
+			ascent = std::max(ascent, a);
+			descent = std::max(descent, d);
+			max_height = std::max(max_height, height);
+		}
 		void add(const vgui_text_metrics& m)
 		{
 			const float a = layout_ascent(m);
-			ascent = std::max(ascent, a);
-			descent = std::max(descent, m.line_height - a);
-			max_height = std::max(max_height, m.line_height);
+			add(a, m.line_height - a, m.line_height);
 		}
 		float height() const { return std::max(max_height, ascent + descent); }
 	};
@@ -293,6 +390,7 @@ namespace
 	struct text_run
 	{
 		std::string text;
+		const vgui_richtext_image* image = nullptr;
 		font_style font;
 		vgui_color color = 0;
 		vgui_text_glow glow = {};
@@ -315,16 +413,26 @@ namespace
 		float width = 0, height = 0;
 	};
 
-	text_layout layout_text(vgui_widget* widget, const char* text, const vgui_text_span* spans,
-		int span_count, float base_size, float wrap_width, vgui_color base_color)
+	text_layout layout_text(vgui_widget* widget, const vgui_richtext_content& content,
+		float base_size, float wrap_width, vgui_color base_color)
 	{
 		text_layout layout;
 		text_line row;
 		const bool for_draw = base_color != 0;
 		const auto base_glow = for_draw ? vgui_widget_get_text_glow(widget) : vgui_text_glow{};
-		auto append_run = [&](const char* first, const char* last, const span_sources& sources) {
-			const auto* paint = sources[paint_channel];
+		auto append_run = [&](const char* first, const char* last, const span_sources& sources, const inline_box* box) {
 			auto& run = row.runs.emplace_back();
+			if (box)
+			{
+				run.image = box->image;
+				run.width = box->width;
+				run.line_height = box->height;
+				run.ascent = box->height - box->descent;
+				row.box.add(run.ascent, box->descent, box->height);
+				row.width += run.width;
+				return;
+			}
+			const auto* paint = sources[paint_channel];
 			run.text.assign(first, last);
 			run.font = font_for(paint, base_size);
 			if (for_draw)
@@ -353,10 +461,7 @@ namespace
 			if (for_draw) layout.lines.push_back(std::move(row));
 			row = {};
 		};
-		if (wrap_width > 0.0f)
-			walk_wrapped_lines(widget, text, spans, span_count, for_draw, base_size, wrap_width, append_run, finish_line);
-		else
-			walk_lines(text, spans, span_count, for_draw, append_run, finish_line);
+		walk_layout_lines(widget, content, for_draw, base_size, wrap_width, append_run, finish_line);
 		return layout;
 	}
 
@@ -693,17 +798,16 @@ namespace
 	}
 }
 
-static void draw_text_spans(vgui_widget* widget,
-	ovg_ctx_cb* cb, rvg_t* vg, const char* text,
-	const vgui_text_span* spans, int span_count,
+static void draw_richtext(vgui_widget* widget,
+	ovg_ctx_cb* cb, rvg_t* vg, const vgui_richtext_content& content,
 	float x, float y, float width, float height,
 	vgui_color base_color, float align_x, float align_y, float base_font_size, bool wrap)
 {
-	if (!widget || !cb || !vg || !text || !*text || !base_color || !(width > 0 && height > 0)) return;
+	if (!widget || !cb || !vg || !content.text || !*content.text || !base_color || !(width > 0 && height > 0)) return;
 	if (wrap && !std::isfinite(width)) return;
 	const rect clip = { x, y, x + width, y + height };
 	const float scale = vgui_context_get_ui_scale(vgui_widget_get_context(widget));
-	auto layout = layout_text(widget, text, spans, span_count, base_font_size, wrap ? width : 0, base_color);
+	auto layout = layout_text(widget, content, base_font_size, wrap ? width : 0, base_color);
 	auto& lines = layout.lines;
 	if (!(layout.height > 0.0f)) return;
 
@@ -750,7 +854,7 @@ static void draw_text_spans(vgui_widget* widget,
 				if (cb->add_text_glow_batch) {
 					// Keep the ROI local and the batch bounded. Text remains shaped
 					// per original run, including differently styled glyphs.
-					while (end < line.runs.size() && end - i < 64 && line.runs[end].x < clip.x1 &&
+					while (end < line.runs.size() && end - i < 64 && !line.runs[end].image && line.runs[end].x < clip.x1 &&
 						line.runs[end].x + line.runs[end].width - run.x <= 1024.0f &&
 						same_glow(glow, line.runs[end].glow)) ++end;
 				}
@@ -799,7 +903,18 @@ static void draw_text_spans(vgui_widget* widget,
 			for (const auto& run : line.runs)
 			{
 				if (run.x >= clip.x1) break;
-				if (has_alpha(run.color) && run.line_height > 0)
+				if (run.image)
+				{
+					if (!run.image->texture) continue;
+					const rect visible{std::max(clip.x0, run.x), std::max(clip.y0, run.y),
+						std::min(clip.x1, run.x + run.width), std::min(clip.y1, run.y + run.line_height)};
+					if (!(visible.x1 > visible.x0 && visible.y1 > visible.y0)) continue;
+					scoped_clip image_clip(cb, vg, visible);
+					if (image_clip.visible)
+						vgui_custom_draw_texture(widget, cb, vg, run.image->texture, run.x, run.y,
+							run.width, run.line_height, run.image->tint);
+				}
+				else if (has_alpha(run.color) && run.line_height > 0)
 					submit(run, VGUI_TEXT_PASS_TEXT | VGUI_TEXT_PASS_CLIP_TEXT);
 			}
 		}
@@ -823,7 +938,7 @@ void vgui_custom_draw_text_spans(vgui_widget* widget,
 	float x, float y, float width, float height,
 	vgui_color base_color, float align_x, float align_y, float base_font_size)
 {
-	draw_text_spans(widget, cb, vg, text, spans, span_count, x, y, width, height,
+	draw_richtext(widget, cb, vg, {text, spans, span_count, nullptr, 0}, x, y, width, height,
 		base_color, align_x, align_y, base_font_size, false);
 }
 
@@ -833,24 +948,49 @@ void vgui_custom_draw_text_spans_wrapped(vgui_widget* widget,
 	float x, float y, float width, float height,
 	vgui_color base_color, float align_x, float align_y, float base_font_size)
 {
-	draw_text_spans(widget, cb, vg, text, spans, span_count, x, y, width, height,
+	draw_richtext(widget, cb, vg, {text, spans, span_count, nullptr, 0}, x, y, width, height,
 		base_color, align_x, align_y, base_font_size, true);
+}
+
+static bool valid_wrap_mode(vgui_richtext_wrap_mode wrap)
+{
+	return wrap == VGUI_RICHTEXT_WRAP_NONE || wrap == VGUI_RICHTEXT_WRAP_UNICODE;
+}
+
+void vgui_custom_draw_richtext(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+	const vgui_richtext_content* content, float x, float y, float width, float height,
+	vgui_richtext_wrap_mode wrap, vgui_color base_color, float align_x, float align_y, float base_font_size)
+{
+	if (!content || !valid_wrap_mode(wrap) || !std::isfinite(x) || !std::isfinite(y) ||
+		!std::isfinite(width) || !std::isfinite(height)) return;
+	draw_richtext(widget, cb, vg, *content, x, y, width, height,
+		base_color, align_x, align_y, base_font_size, wrap == VGUI_RICHTEXT_WRAP_UNICODE);
+}
+
+void vgui_widget_measure_richtext(vgui_widget* widget, const vgui_richtext_content* content,
+	float max_width, vgui_richtext_wrap_mode wrap, float base_font_size, float* out_width, float* out_height)
+{
+	if (!out_width && !out_height) return;
+	float width = 0, height = 0;
+	if (widget && vgui_widget_get_context(widget) && content && content->text && *content->text &&
+		valid_wrap_mode(wrap) && (wrap == VGUI_RICHTEXT_WRAP_NONE || (max_width > 0 && std::isfinite(max_width))))
+	{
+		const auto layout = layout_text(widget, *content, base_font_size,
+			wrap == VGUI_RICHTEXT_WRAP_NONE ? 0 : max_width, 0);
+		width = layout.width;
+		height = layout.height;
+	}
+	if (out_width) *out_width = width;
+	if (out_height) *out_height = height;
 }
 
 void vgui_widget_measure_text_spans_wrapped(vgui_widget* widget,
 	const char* text, const vgui_text_span* spans, int span_count,
 	float max_width, float base_font_size, float* out_width, float* out_height)
 {
-	if (!out_width && !out_height) return;
-	float width = 0, height = 0;
-	if (widget && vgui_widget_get_context(widget) && text && *text && max_width > 0 && std::isfinite(max_width))
-	{
-		const auto layout = layout_text(widget, text, spans, span_count, base_font_size, max_width, 0);
-		width = layout.width;
-		height = layout.height;
-	}
-	if (out_width) *out_width = width;
-	if (out_height) *out_height = height;
+	const vgui_richtext_content content{text, spans, span_count, nullptr, 0};
+	vgui_widget_measure_richtext(widget, &content, max_width, VGUI_RICHTEXT_WRAP_UNICODE,
+		base_font_size, out_width, out_height);
 }
 
 float vgui_widget_measure_text_spans(vgui_widget* widget,

@@ -238,6 +238,170 @@ void test_wrapped_spans(vgui_widget* widget, ovg_ctx_cb& cb, rvg_t& vg) {
         check(w == 0 && h == 0, "empty text clears both wrapped dimensions");
     }
 }
+
+void test_inline_images(vgui_widget* widget, ovg_ctx_cb cb, rvg_t& vg) {
+    constexpr float x = 10, y = 10, height = 90, size = 16;
+    constexpr auto no_wrap = VGUI_RICHTEXT_WRAP_NONE, wrap = VGUI_RICHTEXT_WRAP_UNICODE;
+    constexpr vgui_color accent = 0xffaa33aa;
+    auto* ctx = vgui_widget_get_context(widget);
+    const unsigned char pixels[8] = {255, 255, 255, 255, 255, 255, 255, 255};
+    const vgui_texture_desc desc{2, 1, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels};
+    std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)> texture(
+        vgui_texture_create(ctx, &desc), vgui_texture_destroy);
+    check(!!texture, "inline-image fixture texture creation");
+    if (!texture) return;
+
+    // Resolve the lazy CPU upload without a GPU; keep the normal VGUI texture
+    // path and record its destination rectangle alongside the text commands.
+    cb.image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    cb.add_image = [](rvg_t*, ovg_image_r* img) {
+        commands.push_back({'M', {}, clip, img->dst, 0, (float)img->dst.z,
+            (float)img->dst.w, img->color, (float)img->dst.x, (float)img->dst.y});
+    };
+    const auto only = [](char kind) {
+        std::vector<command> selected;
+        for (const auto& c : commands) if (c.kind == kind) selected.push_back(c);
+        return selected;
+    };
+    const auto near = [](float a, float b) { return std::fabs(a - b) < 0.01f; };
+    const auto advance = [&](const char* text) { return vgui_widget_measure_text_sized(widget, text, size); };
+    const auto measure = [&](const vgui_richtext_content& content, float limit, vgui_richtext_wrap_mode mode,
+        float want_w, float want_h, const char* name) {
+        float w = -1, h = -1;
+        vgui_widget_measure_richtext(widget, &content, limit, mode, size, &w, &h);
+        check(near(w, want_w) && near(h, want_h), "incorrect measured width or line-box height", name);
+    };
+    const auto draw = [&](const vgui_richtext_content& content, float limit = 170,
+        vgui_richtext_wrap_mode mode = VGUI_RICHTEXT_WRAP_NONE, float align = 0) {
+        commands.clear();
+        const auto saved_clip = clip;
+        vgui_custom_draw_richtext(widget, &cb, &vg, &content, x, y, limit, height, mode, 0xffffffff, align, 0, size);
+        check(clip == saved_clip, "inline-image draw did not restore the parent clip");
+    };
+
+    // The 32x56 box dominates both font metrics. Its 2:1 texture occupies
+    // only 32x16, centered vertically, with the box baseline at top + 42.
+    vgui_text_span effect{};
+    effect.length = 5;
+    effect.color = accent;
+    effect.decor = VGUI_TEXT_DECOR_UNDERLINE;
+    effect.decor_thickness = 2;
+    effect.glow = {accent, 2, 0, VGUI_TEXT_GLOW_DECORATION};
+    vgui_richtext_image image{1, nullptr, 32, 56, 14, 0xff123456};
+    const vgui_richtext_content mixed{"A" VGUI_RICHTEXT_IMAGE_MARKER "B", &effect, 1, &image, 1};
+    const float a = advance("A"), b = advance("B");
+    measure(mixed, 1, no_wrap, a + 32 + b, 56, "NULL texture reserves the entire box");
+    draw(mixed);
+    const auto placeholder = only('T');
+    check(only('M').empty(), "NULL texture must not submit a texture command");
+
+    image.texture = texture.get();
+    measure(mixed, 1, no_wrap, a + 32 + b, 56, "replacing the texture preserves dimensions");
+    vgui_widget_set_opacity(widget, 0.5f);
+    draw(mixed);
+    vgui_widget_set_opacity(widget, 1);
+    const auto text = only('T'), pictures = only('M'), decor = only('D'), glow = only('B');
+    check(text.size() == 2 && text[0].text == "A" && text[1].text == "B" &&
+        near(text[0].x, x) && near(text[1].x, x + a + 32) &&
+        text[0].baseline == y + 42 && text[1].baseline == text[0].baseline &&
+        text[0].color == 0x80aa33aa && text[1].color == text[0].color,
+        "text on both sides uses the image baseline, box advance and crossing span style");
+    check(placeholder.size() == 2 && text.size() == 2 && placeholder[0].box == text[0].box &&
+        placeholder[1].box == text[1].box && near(placeholder[1].x, text[1].x) &&
+        placeholder[0].baseline == text[0].baseline, "NULL replacement changed surrounding text geometry");
+    check(pictures.size() == 1 && pictures[0].box == ivec4((int)std::lround(x + a), y + 20, 32, 16) &&
+        pictures[0].color == 0x80563412, "image should be aspect-fitted with its own tint and widget opacity");
+    check(decor.size() == 2 && near(decor[0].x, x) && near(decor[0].width, a) &&
+        near(decor[1].x, x + a + 32) && near(decor[1].width, b), "crossing underline must stop at the image");
+    check(glow.size() == 2 && glow[0].width == 1 && glow[1].width == 1 &&
+        glow[0].height == 1 && glow[1].height == 1, "image must separate both glyph and underline glow batches");
+
+    vgui_text_metrics metrics{};
+    vgui_widget_get_text_metrics_styled(widget, size, 0, 0, &metrics);
+    const float line_h = metrics.line_height, text_ascent = std::trunc(metrics.ascent);
+    const float z = advance("Z");
+    const float nan = std::numeric_limits<float>::quiet_NaN();
+    const float inf = std::numeric_limits<float>::infinity();
+    // Unsorted offsets, clamped descents at both ends, and a valid duplicate
+    // followed by invalid duplicates. No font metrics belong on the image row.
+    const vgui_richtext_image records[] = {
+        {3, texture.get(), 16, 8, -5, 0}, {0, texture.get(), 50, 25, 0, 0},
+        {0, texture.get(), 12, 6, 99, accent}, {0, nullptr, 0, 50, 0, 0},
+        {-1, texture.get(), 70, 35, 0, 0}, {1, texture.get(), 70, 35, 0, 0},
+        {9, texture.get(), 70, 35, 0, 0}, {99, texture.get(), 70, 35, 0, 0},
+        {0, nullptr, nan, 50, 0, 0}, {0, nullptr, 50, inf, 0, 0}, {3, nullptr, 90, 50, nan, 0},
+    };
+    const vgui_richtext_content pure{VGUI_RICHTEXT_IMAGE_MARKER VGUI_RICHTEXT_IMAGE_MARKER "\r\n\nZ",
+        nullptr, 0, records, sizeof(records) / sizeof(records[0])};
+    measure(pure, 1, no_wrap, std::max(28.0f, z), 14 + 2 * line_h, "image-only row, CRLF and explicit blank row");
+    draw(pure);
+    const auto pair = only('M'), last_row = only('T');
+    check(pair.size() == 2 && pair[0].box == ivec4(x, y + 8, 12, 6) && pair[0].color == accent &&
+        pair[1].box == ivec4(x + 12, y, 16, 8) && pair[1].color == 0xffffffff,
+        "only the last valid record at each marker wins, in text order, with clamped descents");
+    check(last_row.size() == 1 && last_row[0].text == "Z" && near(last_row[0].y, std::floor(y + 14 + line_h)),
+        "image-only and empty rows move the following text by their own metrics");
+
+    const vgui_richtext_content unbound{"A" VGUI_RICHTEXT_IMAGE_MARKER "B", nullptr, 0, nullptr, 1};
+    measure(unbound, 1, no_wrap, advance(unbound.text), line_h, "unbound marker uses font metrics");
+    draw(unbound);
+    check(commands.size() == 1 && commands[0].kind == 'T' && commands[0].text == unbound.text,
+        "NULL image array is empty; the unbound marker is passed through to the font");
+
+    // A prefix + image does not fit. The image + 'i' does, but U+FFFC gives
+    // a Unicode break before 'iW', so the Latin word moves intact to row 3.
+    const char* prefix = "A\u4E2D";
+    image = {4, texture.get(), 32, 16, 0, 0};
+    const vgui_richtext_content broken{"A\u4E2D" VGUI_RICHTEXT_IMAGE_MARKER "iW", nullptr, 0, &image, 1};
+    constexpr float limit = 40;
+    const float head = advance(prefix), tail = advance("iW");
+    check(head < limit && tail < limit && 32 + advance("i") < limit &&
+        limit < std::min(head, tail) + 32, "fixture must prefer a Unicode break to a fitting grapheme");
+    const float unwrapped_ascent = std::max(text_ascent, 16.0f);
+    measure(broken, limit, no_wrap, head + 32 + tail, unwrapped_ascent + line_h - text_ascent,
+        "no-wrap ignores max_width");
+    draw(broken, limit, no_wrap);
+    const auto unwrapped = only('M');
+    check(unwrapped.size() == 1 && unwrapped[0].box.x == std::lround(x + head) &&
+        unwrapped[0].box.y + unwrapped[0].box.w == y + unwrapped_ascent,
+        "no-wrap draw keeps the image after the prefix on the first row");
+
+    measure(broken, limit, wrap, std::max({head, 32.0f, tail}), 2 * line_h + 16, "Unicode soft wraps around image");
+    draw(broken, limit, wrap, 0.5f);
+    const auto rows = only('T'), moved = only('M');
+    check(rows.size() == 2 && rows[0].text == prefix && rows[1].text == "iW" &&
+        near(rows[0].x, x + (limit - head) / 2) && near(rows[1].x, x + (limit - tail) / 2) &&
+        near(rows[0].y, y) && near(rows[1].y, std::floor(y + line_h + 16)),
+        "Unicode drawing preserves whole runs and uses independently measured row positions");
+    check(moved.size() == 1 && moved[0].box == ivec4(x + 4, std::floor(y + line_h), 32, 16),
+        "fitting image moves intact and is centered on the second row");
+
+    image.width = 72;
+    image.height = 36;
+    measure(broken, limit, wrap, 72, 2 * line_h + 36, "oversized image has a full-width row of its own");
+    clip = {15, 4, 180, 100};
+    draw(broken, limit, wrap);
+    const auto wide = only('M'), edges = only('T');
+    check(wide.size() == 1 && wide[0].box == ivec4(x, std::floor(y + line_h), 72, 36) &&
+        wide[0].clip.x == 15 && wide[0].clip.x + wide[0].clip.z == x + limit,
+        "oversized image keeps its full geometry and is clipped by both parent and content");
+    check(edges.size() == 2 && edges[0].text == prefix && edges[1].text == "iW" &&
+        near(edges[0].y, y) && near(edges[1].y, std::floor(y + line_h + 36)),
+        "oversized image row separates both neighboring text rows");
+    clip = parent_clip;
+
+    const float saved_scale = vgui_context_get_ui_scale(ctx);
+    vgui_context_set_ui_scale(ctx, 2);
+    const vgui_richtext_image small[] = {{0, texture.get(), 14, 7, 0, 0}, {3, texture.get(), 14, 7, 0, 0}};
+    const vgui_richtext_content dpi{VGUI_RICHTEXT_IMAGE_MARKER VGUI_RICHTEXT_IMAGE_MARKER, nullptr, 0, small, 2};
+    measure(dpi, limit, wrap, 28, 28, "2x DPI scales boxes but not the wrap width");
+    draw(dpi, limit, wrap);
+    const auto scaled = only('M');
+    check(commands.size() == 2 && scaled.size() == 2 && scaled[0].box == ivec4(x, y, 28, 14) &&
+        scaled[1].box == ivec4(x, y + 14, 28, 14), "2x DPI drawing uses the same window-pixel wrap limit");
+    vgui_context_set_ui_scale(ctx, saved_scale);
+    commands.clear();
+}
 } // namespace
 
 int main() {
@@ -402,5 +566,7 @@ int main() {
     check(commands.size() == 5 && commands[0].kind == 'B' && commands[1].kind == 'B' &&
         commands[0].width == 1 && commands[1].width == 1 && clip == parent_clip,
         "distinct segment intensity splits outer-glow batches and restores clip");
+    vgui_widget_clear_text_glow(widget);
+    test_inline_images(widget, cb, vg);
     return failures != 0;
 }

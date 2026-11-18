@@ -15,6 +15,7 @@
 #include <glm/glm.hpp>
 
 #include "ovg.h"
+#include <vgui/richtext.h>
 #include <vgui/vgui.h>
 #include <vgui/backend/vgui_sdl3.h>
 #include <vgui/backend/vgui_renderer_sdl3.h>
@@ -299,6 +300,26 @@ int main()
 	vgui_image_set_pixel_snap(clip_cpu, 1);
 	vgui_image_set_texture(clip_cpu, cpu_quad);
 
+	// The 40x24 inline box contains a centered 24x24 square. The rich-text
+	// rectangle cuts it on the right and the parent panel cuts it below.
+	vgui_widget* inline_panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(inline_panel, 225, 210);
+	vgui_widget_set_size(inline_panel, 50, 20);
+	vgui_widget_set_padding(inline_panel, 0, 0, 0, 0);
+	vgui_widget_set_background(inline_panel, 0);
+	vgui_widget_set_border(inline_panel, 0, 0);
+	vgui_widget* inline_view = vgui_widget_add(inline_panel, VGUI_CUSTOM, nullptr);
+	vgui_widget_set_size(inline_view, 50, 40);
+	vgui_widget_set_background(inline_view, 0);
+	vgui_widget_set_border(inline_view, 0, 0);
+	vgui_custom_set_draw(inline_view, [](vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+		float x, float y, float, float, float, void* user) {
+		const vgui_richtext_image image{0, static_cast<vgui_texture*>(user), 40, 24, 0, 0};
+		const vgui_richtext_content content{VGUI_RICHTEXT_IMAGE_MARKER, nullptr, 0, &image, 1};
+		vgui_custom_draw_richtext(widget, cb, vg, &content, x + 8, y, 24, 40,
+			VGUI_RICHTEXT_WRAP_UNICODE, 0xFFFFFFFFu, 0, 0, 16);
+	}, native_quad16);
+
 	vgui_update(ui, 0.0f);
 	vgui_layout(ui);
 	if (!render_vgui(t, ui))
@@ -418,6 +439,13 @@ int main()
 	expect_pixel(t, 184, 208, red, "rotation+matrix tr");
 	expect_pixel(t, 152, 240, yellow, "rotation+matrix bl");
 	expect_pixel(t, 184, 240, green, "rotation+matrix br");
+
+	// The inline image's left letterbox and both clipping edges stay clear.
+	expect_pixel(t, 236, 214, clear, "inline image letterbox");
+	expect_pixel(t, 244, 214, red, "inline image fitted top");
+	expect_pixel(t, 244, 227, blue, "inline image fitted bottom");
+	expect_pixel(t, 259, 214, clear, "inline image content clip");
+	expect_pixel(t, 244, 232, clear, "inline image parent clip");
 
 	expect_pixel(t, 500, 240, clear, "untouched background");
 

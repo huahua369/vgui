@@ -144,6 +144,53 @@ VGUI_API float vgui_widget_get_text_height_spans(vgui_widget* widget,
 	const char* text, const vgui_text_span* spans, int span_count,
 	float base_font_size);
 
+/* U+FFFC OBJECT REPLACEMENT CHARACTER in UTF-8. */
+#define VGUI_RICHTEXT_IMAGE_MARKER "\xEF\xBF\xBC"
+
+typedef struct vgui_richtext_image {
+	int byte_offset;       /* First byte of a U+FFFC marker in content.text. */
+	vgui_texture* texture; /* Borrowed; NULL reserves a blank box. */
+	float width, height;   /* Finite positive box dimensions in logical UI units. */
+	float descent;        /* Finite, clamped to [0, height]; 0 puts the bottom on the baseline. */
+	vgui_color tint;      /* AARRGGBB; 0 = untinted (white). */
+} vgui_richtext_image;
+
+typedef struct vgui_richtext_content {
+	const char* text;     /* NUL-terminated UTF-8; span offsets refer to this exact string. */
+	const vgui_text_span* spans;
+	int span_count;
+	const vgui_richtext_image* images;
+	int image_count;
+} vgui_richtext_content;
+
+typedef enum vgui_richtext_wrap_mode {
+	VGUI_RICHTEXT_WRAP_NONE = 0,   /* Explicit LF/CRLF only. */
+	VGUI_RICHTEXT_WRAP_UNICODE = 1 /* Same soft-wrap policy as the wrapped span API. */
+} vgui_richtext_wrap_mode;
+
+/* As with vgui_custom_draw_text_spans, call from VGUI_CUSTOM. A bound marker is
+ * an indivisible box that participates in the line baseline and wrapping. It
+ * contains an aspect-fitted texture (no text decorations or glow). Invalid
+ * records are ignored, the last valid record at an offset wins; unbound
+ * markers are ordinary text. NULL arrays and nonpositive counts mean empty.
+ * Content and arrays are borrowed for the call; the caller keeps textures
+ * alive until any recorded draws using them are consumed. Replacing a texture
+ * does not change the box size; mark the widget dirty for on-demand rendering. */
+VGUI_API void vgui_custom_draw_richtext(vgui_widget* widget,
+	struct ovg_ctx_cb* cb, struct rvg_t* vg, const vgui_richtext_content* content,
+	float x, float y, float width, float height, vgui_richtext_wrap_mode wrap,
+	vgui_color base_color, float align_x, float align_y, float base_font_size);
+
+/* Measures the largest line advance and total line-box height in window pixels,
+ * without consulting the textures. Both outputs are optional. max_width is
+ * ignored with WRAP_NONE; with WRAP_UNICODE it must be finite and positive.
+ * A box wider than max_width occupies a line by itself: the reported width can
+ * exceed max_width even though the picture is clipped when drawn.
+ * Invalid input (including wrap mode) or empty content produces zero outputs. */
+VGUI_API void vgui_widget_measure_richtext(vgui_widget* widget,
+	const vgui_richtext_content* content, float max_width, vgui_richtext_wrap_mode wrap,
+	float base_font_size, float* out_width, float* out_height);
+
 #ifdef __cplusplus
 } /* extern "C" */
 #endif

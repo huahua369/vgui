@@ -1269,9 +1269,10 @@ vgui_custom_draw_text_spans(widget, cb, vg, text, spans, 2,
 - 同一行的 run 共享基线，支持 LF/CRLF 显式换行。水平按行对齐、垂直按整段对齐；RTL 不翻转物理对齐方向。
 - `vgui_custom_draw_text_spans()` 保留只按显式换行、超宽裁剪的行为。需要自动换行时，改用 `vgui_custom_draw_text_spans_wrapped()`（参数相同），并用相同的窗口像素宽度调用 `vgui_widget_measure_text_spans_wrapped(widget, text, spans, span_count, width, base_font_size, &w, &h)` 获取最长折行宽度和总高度。
 - 自动换行优先采用 Unicode 断行点（如词间、CJK 字符之间）；超长词可按字素簇拆分，不改变原始 span 的字节偏移。这不提供跨 span 整形或整行双向重排。
+- 需要行内图片时，使用 `vgui_custom_draw_richtext()` / `vgui_widget_measure_richtext()`，在 UTF-8 原文中放入 `VGUI_RICHTEXT_IMAGE_MARKER`，并通过独立数组按字节位置绑定宿主的 `vgui_texture*`。图片盒参与基线、测量和换行；`NULL` 纹理仍保留盒子，不影响文本排版。参见[接口与示例](docs/richtext_roadmap.md#6-行内图片公开-api)。
 - 词法器/主题/行号栏/查找替换仍属 editor kit（见 `docs/editor_roadmap.md`）；WYSIWYG 可编辑行内格式是独立目标，本原语未覆盖。
 
-**交互示例**：完整构建中运行 `bld_full.bat -j 4 vgui_richtext_demo`，再打开 `out/bin/x64d/vgui_richtext_demo.exe`。示例展示 UTF-8 混排、五种装饰线型及单个 span 的发光，并可切换对齐方式、内/外发光、模糊 sigma 和下划线避墨（Skip ink）。在 **Auto Wrap** 卡片拖动 **Width** 滑块，可实时调整文本框宽度，并查看实际框宽、最长行宽和总高度。源码见 [`sample/vgui_richtext_demo.cpp`](sample/vgui_richtext_demo.cpp)，无需系统字体。
+**交互示例**：完整构建中运行 `bld_full.bat -j 4 vgui_richtext_demo`，再打开 `out/bin/x64d/vgui_richtext_demo.exe`。示例展示 UTF-8 混排、五种装饰线型及单个 span 的发光，并可切换对齐方式、内/外发光、模糊 sigma 和下划线避墨（Skip ink）。在 **Auto Wrap** 卡片拖动 **Width** 滑块，可实时调整框宽，并查看实际框宽、最长行宽和总高度。可切换 **Text / Inline images / Placeholders**，对比纯文本、图文一起换行和只保留图片占位的效果。源码见 [`sample/vgui_richtext_demo.cpp`](sample/vgui_richtext_demo.cpp)，无需系统字体或外部图片。
 
 详见 `docs/richtext_roadmap.md` 与 `sample/vgui_richtext_test.cpp`。
 

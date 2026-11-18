@@ -1,7 +1,8 @@
-// Native SDL3 example: application-owned UTF-8 + spans in VGUI_CUSTOM.
+// Native SDL3 example: UTF-8 spans and inline images in VGUI_CUSTOM.
 #include "pch.h"
 
 #include <algorithm>
+#include <array>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -29,8 +30,31 @@ struct demo_state {
 	vgui_widget* skip_ink = nullptr;
 	vgui_widget* previews[3] = {};
 	vgui_widget* wrap_width = nullptr;
+	vgui_widget* wrap_mode[3] = {};
 	vgui_widget* wrap_preview = nullptr;
+	vgui_texture* badge_texture = nullptr; // Borrowed from main.
 };
+
+vgui_texture* create_badge_texture(vgui_context* ui)
+{
+	// A tintable badge generated once, without loading an external asset.
+	constexpr int width = 32, height = 16, radius = 6;
+	std::array<unsigned char, width * height * 4> pixels{};
+	for (int y = 0; y < height; ++y) {
+		for (int x = 0; x < width; ++x) {
+			const int dx = x - std::clamp(x, radius, width - radius - 1);
+			const int dy = y - std::clamp(y, radius, height - radius - 1);
+			if (dx * dx + dy * dy > radius * radius) continue;
+			const bool mark = (x >= 6 && x < 12 && y >= 5 && y < 11) ||
+				(x >= 16 && x < 26 && (y == 5 || y == 6 || y == 9 || y == 10));
+			auto* rgba = &pixels[(y * width + x) * 4];
+			rgba[0] = rgba[1] = rgba[2] = mark ? 45 : 255;
+			rgba[3] = 255;
+		}
+	}
+	const vgui_texture_desc desc{width, height, width * 4, VGUI_TEXTURE_FORMAT_RGBA8, pixels.data()};
+	return vgui_texture_create(ui, &desc); // Copies pixels; the upload is lazy.
+}
 
 float preview_alignment(const demo_state& state)
 {
@@ -166,22 +190,42 @@ void draw_wrap_preview(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 	const char* text = "Drag the slider to reflow a caf\xC3\xA9 note. Bold text and a wavy underline keep their styles.\n"
 		"After the hard break.";
 	constexpr float font_size = 17;
-	vgui_text_span spans[] = {
-		span_for(text, "caf\xC3\xA9", lilac), span_for(text, "Bold text", gold, 19),
-		span_for(text, "wavy underline", cyan)
-	};
-	spans[1].font_weight = VGUI_FONT_WEIGHT_BOLD;
-	spans[2].decor = VGUI_TEXT_DECOR_UNDERLINE;
-	spans[2].decor_style = VGUI_TEXT_DECOR_STYLE_WAVY;
-	spans[2].decor_offset = 2;
-	constexpr int span_count = static_cast<int>(sizeof(spans) / sizeof(spans[0]));
 	float text_width = 0, text_height = 0;
-	vgui_widget_measure_text_spans_wrapped(widget, text, spans, span_count, width, font_size, &text_width, &text_height);
-	vgui_custom_draw_text_spans_wrapped(widget, cb, vg, text, spans, span_count,
-		left, y + pad, width, body_height, ink, preview_alignment(state), 0, font_size);
+	const bool text_only = vgui_widget_get_checked(state.wrap_mode[0]);
+	if (text_only) {
+		vgui_text_span spans[] = {
+			span_for(text, "caf\xC3\xA9", lilac), span_for(text, "Bold text", gold, 19),
+			span_for(text, "wavy underline", cyan)
+		};
+		spans[1].font_weight = VGUI_FONT_WEIGHT_BOLD;
+		spans[2].decor = VGUI_TEXT_DECOR_UNDERLINE;
+		spans[2].decor_style = VGUI_TEXT_DECOR_STYLE_WAVY;
+		spans[2].decor_offset = 2;
+		vgui_widget_measure_text_spans_wrapped(widget, text, spans, 3, width, font_size, &text_width, &text_height);
+		vgui_custom_draw_text_spans_wrapped(widget, cb, vg, text, spans, 3,
+			left, y + pad, width, body_height, ink, preview_alignment(state), 0, font_size);
+	} else {
+		text = "Status " VGUI_RICHTEXT_IMAGE_MARKER " online. A larger " VGUI_RICHTEXT_IMAGE_MARKER
+			" badge moves with the caf\xC3\xA9 note.\nAfter the hard break.";
+		const char* small = std::strstr(text, VGUI_RICHTEXT_IMAGE_MARKER);
+		const char* large = std::strstr(small + sizeof(VGUI_RICHTEXT_IMAGE_MARKER) - 1, VGUI_RICHTEXT_IMAGE_MARKER);
+		vgui_texture* texture = vgui_widget_get_checked(state.wrap_mode[2]) ? nullptr : state.badge_texture;
+		const vgui_richtext_image images[] = {
+			{static_cast<int>(small - text), texture, 30, 15, 2, cyan},
+			{static_cast<int>(large - text), texture, 56, 28, 5, gold}
+		};
+		vgui_text_span spans[] = {span_for(text, "online", cyan), span_for(text, "caf\xC3\xA9", lilac)};
+		spans[0].font_weight = VGUI_FONT_WEIGHT_BOLD;
+		const vgui_richtext_content content{text, spans, 2, images, 2};
+		vgui_widget_measure_richtext(widget, &content, width, VGUI_RICHTEXT_WRAP_UNICODE,
+			font_size, &text_width, &text_height);
+		vgui_custom_draw_richtext(widget, cb, vg, &content, left, y + pad, width, body_height,
+			VGUI_RICHTEXT_WRAP_UNICODE, ink, preview_alignment(state), 0, font_size);
+	}
 
 	char metrics[88];
-	std::snprintf(metrics, sizeof(metrics), "Box %.0f px   /   Text %.0f x %.0f px", width, text_width, text_height);
+	std::snprintf(metrics, sizeof(metrics), "Box %.0f px   /   %s %.0f x %.0f px",
+		width, text_only ? "Text" : "Layout", text_width, text_height);
 	vgui_custom_draw_text_sized(widget, cb, vg, metrics,
 		left, y + pad + body_height, w - 2 * pad, 20 * scale, muted, 0, 0.5f, 13);
 }
@@ -257,6 +301,7 @@ void add_wrap_specimen(vgui_widget* root, demo_state& state)
 	auto* bar = panel(card, VGUI_LAYOUT_ROW, 14);
 	vgui_widget_set_align_items(bar, VGUI_ALIGN_CENTER);
 	vgui_widget_set_grow(label(bar, "04 / AUTO WRAP", 15, cyan), 1);
+	add_radios(bar, "PREVIEW", { "Text", "Inline images", "Placeholders" }, state.wrap_mode, 1, state);
 	label(bar, "WIDTH", 13, cyan);
 	state.wrap_width = vgui_widget_add(bar, VGUI_SLIDER, nullptr);
 	vgui_widget_set_size(state.wrap_width, 180, 22);
@@ -354,8 +399,14 @@ int main()
 	SDL_SetWindowMinimumSize(window->window, 920, 480);
 
 	demo_state state;
-	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui(vgui_create(font.get(), 15), vgui_destroy);
 	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui(vgui_create(font.get(), 15), vgui_destroy);
+	std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)> badge(create_badge_texture(ui.get()), vgui_texture_destroy);
+	if (!badge) {
+		std::fprintf(stderr, "Cannot create the inline image texture\n");
+		return 1;
+	}
+	state.badge_texture = badge.get();
 	multiwindow_host host(&app, cb.get());
 	if (!host.attach(window, ui.get())) {
 		std::fprintf(stderr, "Cannot create the rich text demo canvas\n");
