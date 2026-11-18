@@ -2,7 +2,7 @@
 
 > 状态：O1–O3、D1–D4、G1–G4 已落地；O4 已完成回归矩阵、字体缓存生命周期、预热绘制基准和 MSVC Debug CRT 堆检查。后文的缺口清单是实现前的基线；最终接口、限制和测试见下方实施记录。
 >
-> 验证入口：`ovg_font_style`（静态、变量字面素材可通过环境变量传入，见测试文件）、`vgui_richtext`、`ovg_text_glow`、`ovg_text_glow_gpu`（需 SDL3/Vulkan）、`ovg_text_rgba`。`vg_render_text_rgba8` 可用于缓存正文像素，不包含装饰或光晕。
+> 验证入口：`ovg_font_style`（静态、变量字面素材可通过环境变量传入，见测试文件）、`vgui_richtext`、`ovg_text_glow`、`ovg_text_glow_gpu`（需 SDL3/Vulkan）、`ovg_text_rgba`。`vg_render_text_rgba8` 可用于缓存正文像素；`vg_create_text_rgba_layout` / `vg_render_text_layout_rgba8` 可重复绘制已排版的正文。两者均不包含装饰或光晕。
 >
 > 兼容性：未使用新样式的调用方仍走原字体选择；富文本装饰线改用实际度量。公共结构新增字段后，下游需用新头文件重新编译。
 > 范围：`third_party/ovg` 字体层（weight/slant 主 + decoration 度量 + glow 矢量 pass）+ `vgui` 文本 API / `richtext` / `markdown_view`（集成）

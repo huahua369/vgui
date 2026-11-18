@@ -1,16 +1,72 @@
 // CPU-only regression tests for the caller-owned RGBA text renderer.
 #include "pch.h" // ovg_c.h uses glm types
 #include <ovg_c.h>
+#include <ovg_fonts.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 static int failures = 0;
 static void check(bool ok, const char* message) {
     if (!ok) { std::fprintf(stderr, "FAIL: %s\n", message); ++failures; }
+}
+
+using layout_ptr = std::unique_ptr<vg_text_rgba_layout, decltype(&vg_free_text_rgba_layout)>;
+
+static void test_layout(font_cache_cx* cache, const char* path) {
+    constexpr int w = 192, h = 128, stride = w * 4 + 13, dx = -8, dy = 7;
+    constexpr uint32_t tint = 0x8000ff00;
+    ivec4 clip = {35, 20, 40, 90};
+    std::vector<uint8_t> base(stride * h, 0), moved(stride * h, 0);
+    layout_ptr layout(nullptr, vg_free_text_rgba_layout);
+    if (!load_font_from_path(cache, path, "RgbaLayoutDejaVu")) {
+        check(false, "register layout fixture");
+        free_font_cache(cache);
+        return;
+    }
+    {
+        std::unique_ptr<font_familys_t, decltype(&delete_font_family)> family(
+            new_font_family(cache, "RgbaLayoutDejaVu", nullptr), delete_font_family);
+        std::string input = "AV\nglyph";
+        text_st_t text{};
+        text.pos = {12, 3}; text.text = input.c_str(); text.text_len = (int)input.size();
+        text_style_t style{};
+        style.family = family.get(); style.fontsize = 24; style.color = 0xff0000ff;
+        text_box_rt box{};
+        box.rc = {0, 0, 140, 100}; box.baseline = 24; box.text_align = {0.5f, 0.5f};
+        layout.reset(vg_create_text_rgba_layout(&text, &style, &box));
+        check(layout != nullptr, "prepare aligned multiline layout");
+        check(vg_render_text_rgba8(&text, &style, &box, base.data(), w, h, stride, nullptr),
+            "render one-shot reference");
+        text.pos.x += dx; text.pos.y += dy; style.color = tint;
+        check(vg_render_text_rgba8(&text, &style, &box, moved.data(), w, h, stride, &clip),
+            "render translated and clipped one-shot reference");
+    }
+    // Neither the input string and descriptors nor the family's handle need to
+    // survive creation. Leave only the layout holding a font cache reference.
+    if (layout) check(cache->references == 2, "prepared layout retains exactly one cache reference");
+    free_font_cache(cache);
+    if (!layout) return;
+    cache->min_subpixel = 99; // shape_segment would set this back to zero.
+    std::vector<uint8_t> pixels(stride * h, 0);
+    check(vg_render_text_layout_rgba8(layout.get(), 0, 0, 0xff0000ff, pixels.data(), w, h, stride, nullptr) &&
+        pixels == base && std::any_of(base.begin(), base.end(), [](auto b) { return b != 0; }),
+        "cached replay equals one-shot pixels after releasing input, family and cache handles");
+    std::fill(pixels.begin(), pixels.end(), 0);
+    check(vg_render_text_layout_rgba8(layout.get(), dx, dy, tint, pixels.data(), w, h, stride, &clip) &&
+        pixels == moved && std::any_of(moved.begin(), moved.end(), [](auto b) { return b != 0; }),
+        "reuse prepared layout with a different origin, tint and clip");
+    check(cache->min_subpixel == 99, "replay does not shape the input again");
+    const auto saved = pixels;
+    check(!vg_render_text_layout_rgba8(layout.get(), dx, dy, tint, pixels.data(), w, h, w * 4 - 1, &clip) &&
+        pixels == saved, "reject short stride without writes");
+    cache->clear_load();
+    check(!vg_render_text_layout_rgba8(layout.get(), 0, 0, tint, pixels.data(), w, h, stride, nullptr) &&
+        pixels == saved, "reject layout whose font cache has been cleared, without writes");
 }
 
 int main() {
@@ -125,7 +181,14 @@ int main() {
     int large_ink = 0;
     for (size_t i = 3; i < large.size(); i += 4) if (large[i]) ++large_ink;
     check(large_ink > 100, "large glyph produces visible pixels");
-    delete_font_family(family); free_font_cache(cache);
+    layout_ptr large_layout(vg_create_text_rgba_layout(&text, &style, nullptr), vg_free_text_rgba_layout);
+    std::vector<uint8_t> large_replay(large.size(), 0);
+    check(large_layout && vg_render_text_layout_rgba8(large_layout.get(), 0, 0, style.color,
+        large_replay.data(), 512, 512, 512 * 4, nullptr) && large_replay == large,
+        "prepared vector glyphs match one-shot rasterization");
+    large_layout.reset();
+    delete_font_family(family);
+    test_layout(cache, path.c_str()); // takes ownership of the original cache reference
     std::printf("RGBA text tests: %d failure(s)\n", failures);
     return failures ? 1 : 0;
 }
