@@ -211,10 +211,11 @@ endif()
 
 add_executable(vgui_model_test ${SRC_MODEL_TEST})
 target_link_libraries(vgui_model_test PRIVATE vgui_sample_common vgui::vgui EnTT::EnTT ZLIB::ZLIB)
-# model_test 通过 app_mgr 加载系统字体（无窗口），仍需要后端符号。
+target_compile_definitions(vgui_model_test PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 if(VGUI_CORE_ONLY)
-    set_target_properties(vgui_model_test PROPERTIES EXCLUDE_FROM_ALL ON)
+    target_compile_definitions(vgui_model_test PRIVATE VGUI_CORE_ONLY)
 endif()
+add_test(NAME vgui_model COMMAND vgui_model_test)
 
 # R0 运行时嵌入测试：core-only 与完整构建都编译（不触碰 SDL）。
 add_executable(vgui_runtime_embed_test ${SRC_RUNTIME_EMBED_TEST})

@@ -1,6 +1,6 @@
 # OVG 文本样式支持规划：weight / slant / decoration / glow
 
-> 状态：O1–O3、D1–D4、G1–G4 已落地。后文的缺口清单是实现前的基线；D4/G4 的最终接口、限制和测试见下方实施记录。
+> 状态：O1–O3、D1–D4、G1–G4 已落地；O4 已验证回归矩阵和字体缓存生命周期，绘制耗时与独立泄漏检测尚未验收。后文的缺口清单是实现前的基线；最终接口、限制和测试见下方实施记录。
 >
 > 验证入口：`ovg_font_style`（静态、变量字面素材可通过环境变量传入，见测试文件）、`vgui_richtext`、`ovg_text_glow`、`ovg_text_glow_gpu`（需 SDL3/Vulkan）、`ovg_text_rgba`。`vg_render_text_rgba8` 可用于缓存正文像素，不包含装饰或光晕。
 >
@@ -18,6 +18,12 @@
 - **合批与降级**：一行中相邻、同光晕参数的 run 保留各自的整形位置，合用一个遮罩。OVG 超过 127 个 effect 槽时只省略光晕，保留正文；`ovg_text_glow_budget_drops()` 可观察槽位丢弃数。OVG SDL3 以可配置的 `ovg_fx_set_budget()` pending 预算约束每帧效果纹理；vgui SDL3 使用包含在途纹理的 96 MiB 上限。预算不足同样仅省略效果。
 
 验证：`vgui_richtext`（多行、线型、skip-ink、装饰光晕合批）、`ovg_text_glow`（提交顺序、槽位耗尽）、`ovg_sdl3_effect_blend` 与 `vgui_sdl3_effect_blend`（Vulkan 像素对比）纳入 CTest。
+
+## O4 验收记录
+
+- `ovg_font_style` 增加 16 轮字体缓存重建，覆盖 `clear_load()`、`clear_sys()`、系统字面重新枚举、内存字面重注册，以及失效 family 的派生与销毁。每轮验证清理前后的 advance 与 RGBA 像素一致；累计 1,024 次同样式派生确认复用同一字面且不消耗新 font id。此项不测绘制耗时。
+- `vgui_model` 使用仓库内的 DejaVu Sans，加入完整构建与 `VGUI_CORE_ONLY` 的 CTest。两种配置都测异步文件对话框桥接；仅完整构建验证 SDL3 provider 安装。
+- Windows 验证：完整 SDL3/Vulkan 构建 16 项 CTest（含截图）、Core-only 8 项 CTest、MSVC ASan 下 7 项文本与生命周期 CTest 均通过；编辑器套件、C API 与电子表格独立自检通过。可选的真实粗体、粗斜体及变量字面用例分别使用 Arial Bold、Arial Bold Italic 和 Bahnschrift。Windows ASan 结果不等同于 LeakSanitizer 验收。
 
 ## 0. 结论摘要
 

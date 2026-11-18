@@ -19,12 +19,14 @@
 #include <vector>
 
 #include "pch.h"		// glm etc. (required by ovg_c.h)
-#include <ovg_c.h>		// font_familys_t
-#include <vgui/backend/vgui_sdl3.h>	// app_mgr / new_font_family
+#include <ovg_c.h>		// OVG font cache
 #include <vgui/binding/collection.h>	// P3: std::vector<Row> -> vgui_row_source
 #include <vgui/binding/expression.h>	// P4: string expression DSL + auto deps
 #include <vgui/richtext.h>	// core rich-text span primitives
 #include <vgui/vgui.h>		// public C API
+#ifndef VGUI_CORE_ONLY
+#include "../backends/vgui_sdl3_dialog.h"
+#endif
 
 static int g_fail = 0;
 static int g_pass = 0;
@@ -5418,15 +5420,22 @@ static void on_file_dialog(void* user, vgui_file_dialog_kind kind,
 
 static void test_file_dialog(vgui_context* ctx)
 {
-	/* The SDL3 backend installs its provider when the library loads; swap in the
-	 * probe and restore afterwards. */
+	/* Test the native installer when linked and the same fake async provider
+	 * in both configurations. Restore the original provider afterwards. */
+#ifndef VGUI_CORE_ONLY
+	vgui_sdl3_install_file_dialog_provider();
+#endif
 	void* saved_user = nullptr;
 	vgui_file_dialog_provider_fn saved = vgui_file_dialog_get_provider(&saved_user);
+#ifdef VGUI_CORE_ONLY
+	check(saved == nullptr, "file dialog: core-only starts without a native provider");
+#else
 	check(saved != nullptr, "file dialog: backend installs a provider");
-	check(vgui_file_dialog_available() == 1, "file dialog: available with a provider");
+#endif
 
 	file_dialog_probe probe;
 	vgui_file_dialog_set_provider(fake_dialog_provider, &probe);
+	check(vgui_file_dialog_available() == 1, "file dialog: available with a provider");
 
 	vgui_file_dialog_desc desc;
 	vgui_file_dialog_desc_init(&desc);
@@ -5504,7 +5513,9 @@ static void test_file_dialog(vgui_context* ctx)
 	check(log.calls == 0, "file dialog: failed request never calls back");
 
 	vgui_file_dialog_set_provider(saved, saved_user);
-	check(vgui_file_dialog_available() == 1, "file dialog: provider restored");
+	void* restored_user = nullptr;
+	check(vgui_file_dialog_get_provider(&restored_user) == saved && restored_user == saved_user &&
+		vgui_file_dialog_available() == (saved != nullptr), "file dialog: original provider state restored");
 }
 
 static void test_recent_dirs(vgui_context* ctx)
@@ -5697,8 +5708,15 @@ static void test_dock_multi_context(font_familys_t* familys)
 int main()
 {
 	setvbuf(stdout, nullptr, _IONBF, 0);
-	auto* wg = new app_mgr();
-	font_familys_t* familys = new_font_family(wg->font_ctx, "Consolas,微软雅黑", 0);
+	auto* font_cache = new_font_cache();
+	const char* fixture = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+	if (!load_font_from_path(font_cache, fixture, "VguiModelTest"))
+	{
+		fprintf(stderr, "Cannot load model test font: %s\n", fixture);
+		free_font_cache(font_cache);
+		return 1;
+	}
+	font_familys_t* familys = new_font_family(font_cache, "VguiModelTest", nullptr);
 	vgui_context* ui = vgui_create(familys, 16.0f);
 	vgui_context_set_size(ui, 900, 700);
 	vgui_widget_set_layout(vgui_root(ui), VGUI_LAYOUT_ABSOLUTE);
@@ -5756,7 +5774,7 @@ int main()
 
 	vgui_destroy(ui);
 	delete_font_family(familys);
-	delete wg;
+	free_font_cache(font_cache);
 
 	printf("\n%d passed, %d failed\n", g_pass, g_fail);
 	return g_fail ? 1 : 0;

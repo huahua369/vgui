@@ -128,6 +128,70 @@ void test_synthetic(font_cache_cx* cache, const char* regular_path) {
     check(!regular->count && !regular->familys, "explicit reset invalidates borrowed faces safely");
 }
 
+void test_cache_lifetime(font_cache_cx* cache, const char* regular_path) {
+    constexpr auto alias = "OvgTestLifetime";
+    constexpr int weight = VG_FONT_WEIGHT_BOLD;
+    constexpr int slant = VG_FONT_SLANT_ITALIC;
+    std::vector<uint8_t> expected_pixels;
+    float expected_width = 0;
+    for (int cycle = 0; cycle < 16; ++cycle) {
+        if (!memory_font(cache, regular_path, alias)) {
+            check(false, "re-register the fixture after a font cache reset");
+            return;
+        }
+        auto base = fonts(new_font_family(cache, alias, nullptr));
+        auto variant = fonts(font_familys_derive(base.get(), weight, slant));
+        auto* face = first(variant);
+        if (!face) {
+            check(false, "resolve a new variant after a font cache reset");
+            return;
+        }
+        const auto next_id = cache->next_font_id;
+        for (int i = 0; i < 64; ++i) {
+            auto derived = fonts(font_familys_derive(base.get(), weight, slant));
+            check(first(derived) == face, "short-lived family lists share the same variant face");
+        }
+        check(cache->next_font_id == next_id, "repeated requests do not allocate font ids");
+
+        hb_codepoint_t glyph = 0;
+        check(hb_font_get_nominal_glyph(face->font, 'a', &glyph) &&
+            cache->get_cache_lookup_glyph(face->font, glyph, 48), "populate the variant glyph cache");
+        const auto pixels = raster(variant.get());
+        const float advance = width(variant.get());
+        if (cycle == 0) {
+            expected_width = advance;
+            expected_pixels = pixels;
+        }
+        check(advance > 0 && advance == expected_width && pixels == expected_pixels,
+            "advances and pixels remain stable across cache resets");
+
+        // An explicit legacy subfamily bypasses memory aliases and resolves
+        // the disk fixture registered with fontconfig in main().
+        auto system = fonts(new_font_family(cache, "DejaVu Sans", "Book"));
+        check(first(system) != nullptr, "resolve the fixture via fontconfig");
+        if (cycle % 2 == 0)
+            cache->clear_load();
+        else
+            cache->clear_sys();
+        for (const auto* list : {base.get(), variant.get(), system.get()})
+            check(list && !list->count && !list->familys, "reset invalidates all live lists without destroying them");
+        check(cache->glyph_cache.empty() && cache->_sub_glyph_cache.empty() && cache->image_cache._data.empty() &&
+            cache->text_width_cache.empty(), "reset clears rendered glyphs and measured advances");
+        if (cycle % 2 != 0) {
+            auto missing_system = fonts(new_font_family(cache, "DejaVu Sans", "Book"));
+            check(!first(missing_system), "system face is unavailable until fontconfig is re-enumerated");
+            // clear_sys leaves memory registrations intact. Resolve a fresh
+            // variant through the invalidated list, then clear the registrations
+            // before the next cycle to exercise that rebuild too.
+            auto rebuilt = fonts(font_familys_derive(base.get(), weight, slant));
+            check(first(rebuilt) && raster(rebuilt.get()) == expected_pixels,
+                "derive from an invalidated list using the retained memory face");
+            get_sys_family(cache);
+            cache->clear_load();
+        }
+    }
+}
+
 void test_static(font_cache_cx* cache, const char* regular_path) {
     const auto* bold_path = std::getenv("OVG_TEST_BOLD_FONT");
     if (!bold_path) { std::puts("SKIP: optional static face fixtures"); return; }
@@ -197,6 +261,7 @@ int main() {
     get_sys_family(cache.get());
     check(cache->next_font_id == next_id, "fontconfig refresh does not insert faces twice");
     test_synthetic(cache.get(), regular_path);
+    test_cache_lifetime(cache.get(), regular_path);
     test_static(cache.get(), regular_path);
     test_variable(cache.get());
     std::printf("OVG font tests: %d failure(s)\n", failures);
