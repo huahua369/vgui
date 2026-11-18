@@ -105,6 +105,27 @@ VGUI_API void vgui_custom_draw_text_spans(vgui_widget* widget,
 	float x, float y, float width, float height,
 	vgui_color base_color, float align_x, float align_y, float base_font_size);
 
+/* Like vgui_custom_draw_text_spans, but wraps to the rectangle width in
+ * device pixels. LF/CRLF remain explicit breaks. Wrapping prefers Unicode
+ * line-break opportunities and falls back to grapheme boundaries for long
+ * words. ASCII spaces and tabs at a taken soft break are omitted. A single
+ * grapheme wider than the rectangle takes its own line and is clipped. Span
+ * ranges still refer to the original UTF-8 text. */
+VGUI_API void vgui_custom_draw_text_spans_wrapped(vgui_widget* widget,
+	struct ovg_ctx_cb* cb, struct rvg_t* vg, const char* text,
+	const vgui_text_span* spans, int span_count,
+	float x, float y, float width, float height,
+	vgui_color base_color, float align_x, float align_y, float base_font_size);
+
+/* Measure the same wrapped lines, without a height limit, in device pixels.
+ * out_width is the largest line advance (which can exceed max_width for an
+ * oversized grapheme); out_height includes explicit empty lines. Neither
+ * includes decoration or glow. Each output is optional. NULL/empty text or
+ * a nonpositive/nonfinite max_width returns zero in both outputs. */
+VGUI_API void vgui_widget_measure_text_spans_wrapped(vgui_widget* widget,
+	const char* text, const vgui_text_span* spans, int span_count,
+	float max_width, float base_font_size, float* out_width, float* out_height);
+
 /* Largest advance width of any explicit line in the same layout as drawing. */
 VGUI_API float vgui_widget_measure_text_spans(vgui_widget* widget,
 	const char* text, const vgui_text_span* spans, int span_count,

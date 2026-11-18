@@ -5,6 +5,7 @@ include(CMakeFindDependencyMacro)
 find_dependency(SDL3 CONFIG)
 find_dependency(glm CONFIG)
 find_dependency(harfbuzz CONFIG)
+find_dependency(ICU COMPONENTS i18n uc)
 find_dependency(Fontconfig)
 find_dependency(PkgConfig)
 

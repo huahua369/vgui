@@ -1266,10 +1266,12 @@ vgui_custom_draw_text_spans(widget, cb, vg, text, spans, 2,
 
 - `start/length` 是 UTF-8 **字节**区间并会扩展到字符边界。文字样式由最后一个覆盖该区间的 span 决定；未设置的字段使用基础样式。
 - `color==0`/`font_size==0` 使用传入的 base；`font_weight`、`font_slant` 为 0 时继承控件。装饰支持下划线、删除线、上划线，各自可覆盖线型、颜色、粗细、偏移和避墨设置；`glow` 可设置内/外发光。
-- 同一行的 run 共享基线，支持 LF/CRLF 显式换行，不自动折行。水平按行对齐、垂直按整段对齐；RTL 不翻转物理对齐方向。
+- 同一行的 run 共享基线，支持 LF/CRLF 显式换行。水平按行对齐、垂直按整段对齐；RTL 不翻转物理对齐方向。
+- `vgui_custom_draw_text_spans()` 保留只按显式换行、超宽裁剪的行为。需要自动换行时，改用 `vgui_custom_draw_text_spans_wrapped()`（参数相同），并用相同的窗口像素宽度调用 `vgui_widget_measure_text_spans_wrapped(widget, text, spans, span_count, width, base_font_size, &w, &h)` 获取最长折行宽度和总高度。
+- 自动换行优先采用 Unicode 断行点（如词间、CJK 字符之间）；超长词可按字素簇拆分，不改变原始 span 的字节偏移。这不提供跨 span 整形或整行双向重排。
 - 词法器/主题/行号栏/查找替换仍属 editor kit（见 `docs/editor_roadmap.md`）；WYSIWYG 可编辑行内格式是独立目标，本原语未覆盖。
 
-**交互示例**：完整构建中运行 `bld_full.bat -j 4 vgui_richtext_demo`，再打开 `out/bin/x64d/vgui_richtext_demo.exe`。示例展示 UTF-8 混排、五种装饰线型及单个 span 的发光，并可切换对齐方式、内/外发光、模糊 sigma 和下划线避墨（Skip ink）。源码见 [`sample/vgui_richtext_demo.cpp`](sample/vgui_richtext_demo.cpp)，无需系统字体。
+**交互示例**：完整构建中运行 `bld_full.bat -j 4 vgui_richtext_demo`，再打开 `out/bin/x64d/vgui_richtext_demo.exe`。示例展示 UTF-8 混排、五种装饰线型及单个 span 的发光，并可切换对齐方式、内/外发光、模糊 sigma 和下划线避墨（Skip ink）。在 **Auto Wrap** 卡片拖动 **Width** 滑块，可实时调整文本框宽度，并查看实际框宽、最长行宽和总高度。源码见 [`sample/vgui_richtext_demo.cpp`](sample/vgui_richtext_demo.cpp)，无需系统字体。
 
 详见 `docs/richtext_roadmap.md` 与 `sample/vgui_richtext_test.cpp`。
 
@@ -1432,7 +1434,7 @@ C++ 编辑器组件使用 `<vgui/editor/vgui_editor_kit.h>`；纯 C 宿主改用
 
 Stage B 的安装树包含 SDL3 后端公共头与 OVG 公共头，`vgui::ovg` 目标带有安装后的 include 目录。OVG 的 `ovg_renderer_sdl3.h` 不安装，因为其中的 `vg_fbo_t` 与 vgui 自己的定义冲突；`backends/vgui_sdl3.h`、`backends/vgui_renderer_sdl3.h` 仅作为源码树兼容 shim 保留。vgui 自身的公共头使用英文注释；安装的 OVG 上游头仍保留其中文注释并以 UTF-8 保存，链接 `vgui::vgui` 或 `vgui::ovg` 的 MSVC 消费者会通过导出接口自动获得 `/utf-8`。OVG 的 `ovg_c.h` / `ovg_fonts.h` 沿用 OVG 的约定，使用前需先包含 `<glm/glm.hpp>`；vgui 的后端公共头已代为包含。
 
-包配置会通过 `find_dependency` 查找 SDL3、glm、HarfBuzz、Fontconfig、pkg-config（Clipper2、Clipper2Z、harfbuzz-raster），以及 editor kit 或 chart 需要的 nlohmann_json；这些依赖仍需由 vcpkg 工具链或 `CMAKE_PREFIX_PATH` 提供。可用选项：`VGUI_BUILD_SAMPLES`（默认仅顶层 ON）、`VGUI_BUILD_EDITOR_KIT`（默认 ON）、`VGUI_BUILD_CHART`（默认 ON）、`VGUI_INSTALL`（默认仅顶层 ON）。作为子目录集成时可关闭示例和安装：
+包配置会通过 `find_dependency` 查找 SDL3、glm、HarfBuzz、ICU（自动断行）、Fontconfig、pkg-config（Clipper2、Clipper2Z、harfbuzz-raster），以及 editor kit 或 chart 需要的 nlohmann_json；这些依赖仍需由 vcpkg 工具链或 `CMAKE_PREFIX_PATH` 提供。可用选项：`VGUI_BUILD_SAMPLES`（默认仅顶层 ON）、`VGUI_BUILD_EDITOR_KIT`（默认 ON）、`VGUI_BUILD_CHART`（默认 ON）、`VGUI_INSTALL`（默认仅顶层 ON）。作为子目录集成时可关闭示例和安装：
 
 ```cmake
 set(VGUI_BUILD_SAMPLES OFF CACHE BOOL "" FORCE)

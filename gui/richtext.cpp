@@ -8,12 +8,15 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <set>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include <ovg_c.h>
+#include <unicode/ubrk.h>
+#include <unicode/utext.h>
 #include "tools/tools.hpp"
 
 namespace
@@ -24,6 +27,8 @@ namespace
 	enum { paint_channel = 0, underline_channel, strike_channel, overline_channel, glow_channel, channel_count };
 
 	bool has_alpha(vgui_color color) { return (color >> 24) != 0; }
+
+	using span_sources = std::array<const vgui_text_span*, channel_count>;
 
 	struct span_event
 	{
@@ -56,7 +61,7 @@ namespace
 			events.push_back({start, i, true});
 			events.push_back({end, i, false});
 		}
-		std::array<const vgui_text_span*, channel_count> sources = {};
+		span_sources sources = {};
 		if (events.empty())
 		{
 			if (len > 0) emit(0, len, sources);
@@ -133,6 +138,135 @@ namespace
 			span->font_weight, span->font_slant};
 	}
 
+	struct styled_range
+	{
+		const char* first;
+		const char* last;
+		span_sources sources;
+		font_style font;
+	};
+
+	// ICU operates on the original UTF-8 paragraph so neither a change of
+	// style nor a byte offset inside an extended grapheme is a line break.
+	template<class EmitLine>
+	void wrap_paragraph(vgui_widget* widget, const std::vector<styled_range>& ranges,
+		float max_width, EmitLine emit_line)
+	{
+		const char* first = ranges.front().first;
+		const char* last = ranges.back().last;
+		std::string scratch;
+		auto advance = [&](const char* a, const char* b, font_style font) {
+			scratch.assign(a, b);
+			return vgui_widget_measure_text_styled(widget, scratch.c_str(), font.size, font.weight, font.slant);
+		};
+		double width = 0;
+		for (const auto& r : ranges) width += advance(r.first, r.last, r.font);
+		if (width <= max_width || last - first > std::numeric_limits<int32_t>::max())
+		{
+			emit_line(first, last);
+			return;
+		}
+
+		UErrorCode status = U_ZERO_ERROR;
+		std::unique_ptr<UText, decltype(&utext_close)> input(
+			utext_openUTF8(nullptr, first, last - first, &status), utext_close);
+		auto breaker = [&](UBreakIteratorType kind) {
+			std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> it(
+				ubrk_open(kind, "root", nullptr, 0, &status), ubrk_close);
+			if (U_SUCCESS(status)) ubrk_setUText(it.get(), input.get(), &status);
+			return it;
+		};
+		auto line_breaks = breaker(UBRK_LINE);
+		auto graphemes = breaker(UBRK_CHARACTER);
+		if (U_FAILURE(status))
+		{
+			emit_line(first, last); // Keep the explicit line if ICU cannot be initialized.
+			return;
+		}
+
+		struct edge { const char* pos; double width; };
+		struct cut { size_t end, next; };
+		std::vector<edge> edges{{first, 0}};
+		std::vector<cut> cuts;
+		size_t style = 0, trimmed = 0;
+		ubrk_first(line_breaks.get());
+		int32_t soft = ubrk_next(line_breaks.get());
+		ubrk_first(graphemes.get());
+		for (int32_t end = ubrk_next(graphemes.get()); end != UBRK_DONE; end = ubrk_next(graphemes.get()))
+		{
+			const char* a = edges.back().pos;
+			const char* b = first + end;
+			double pen = edges.back().width;
+			// The OVG width API sums nominal glyph advances. Walk the styled
+			// slices once, rather than remeasuring prefixes of a long word.
+			for (const char* p = a; p < b;)
+			{
+				const auto& r = ranges[style];
+				const char* q = std::min(r.last, b);
+				pen += advance(p, q, r.font);
+				p = q;
+				if (p == r.last) ++style;
+			}
+			const size_t index = edges.size();
+			edges.push_back({b, pen});
+			if (!std::all_of(a, b, [](char c) { return c == ' ' || c == '\t'; })) trimmed = index;
+			while (soft != UBRK_DONE && soft < end) soft = ubrk_next(line_breaks.get());
+			if (soft == end) cuts.push_back({trimmed, index});
+		}
+		if (edges.back().pos != last)
+		{
+			emit_line(first, last);
+			return;
+		}
+
+		for (size_t start = 0; start + 1 < edges.size();)
+		{
+			const double limit = edges[start].width + max_width;
+			const auto fit = std::upper_bound(edges.begin() + start + 1, edges.end(), limit,
+				[](double w, const edge& e) { return w < e.width; });
+			size_t end = static_cast<size_t>(fit - edges.begin() - 1), next = end;
+			if (fit != edges.end())
+			{
+				const auto preferred = std::upper_bound(cuts.begin(), cuts.end(), limit,
+					[&](double w, const cut& c) { return w < edges[c.end].width; });
+				if (preferred != cuts.begin() && (preferred - 1)->end > start)
+				{
+					end = (preferred - 1)->end;
+					next = (preferred - 1)->next;
+				}
+				if (end == start) end = next = start + 1; // Keep an oversized grapheme intact.
+			}
+			emit_line(edges[start].pos, edges[end].pos);
+			start = next;
+		}
+	}
+
+	template<class EmitRun, class FinishLine>
+	void walk_wrapped_lines(vgui_widget* widget, const char* text, const vgui_text_span* spans,
+		int span_count, bool for_draw, float base_size, float max_width, EmitRun emit_run, FinishLine finish_line)
+	{
+		std::vector<styled_range> ranges;
+		walk_lines(text, spans, span_count, for_draw,
+			[&](const char* first, const char* last, const span_sources& sources) {
+				ranges.push_back({first, last, sources, font_for(sources[paint_channel], base_size)});
+			}, [&] {
+				if (ranges.empty()) { finish_line(); return; }
+				size_t i = 0;
+				wrap_paragraph(widget, ranges, max_width, [&](const char* first, const char* last) {
+					while (i < ranges.size() && ranges[i].last <= first) ++i;
+					while (i < ranges.size() && ranges[i].first < last)
+					{
+						const auto& r = ranges[i];
+						emit_run(std::max(first, r.first), std::min(last, r.last), r.sources);
+						if (r.last > last) break;
+						++i;
+					}
+					finish_line();
+				});
+				ranges.clear();
+			});
+	}
+
 	vgui_text_metrics metrics_for(vgui_widget* widget, font_style font)
 	{
 		vgui_text_metrics m = {};
@@ -174,6 +308,57 @@ namespace
 		float width = 0, top = 0, baseline = 0;
 		unsigned decorated = 0;
 	};
+
+	struct text_layout
+	{
+		std::vector<text_line> lines;
+		float width = 0, height = 0;
+	};
+
+	text_layout layout_text(vgui_widget* widget, const char* text, const vgui_text_span* spans,
+		int span_count, float base_size, float wrap_width, vgui_color base_color)
+	{
+		text_layout layout;
+		text_line row;
+		const bool for_draw = base_color != 0;
+		const auto base_glow = for_draw ? vgui_widget_get_text_glow(widget) : vgui_text_glow{};
+		auto append_run = [&](const char* first, const char* last, const span_sources& sources) {
+			const auto* paint = sources[paint_channel];
+			auto& run = row.runs.emplace_back();
+			run.text.assign(first, last);
+			run.font = font_for(paint, base_size);
+			if (for_draw)
+			{
+				run.color = vgui_text_widget_color(widget, paint && paint->color ? paint->color : base_color);
+				const auto* glow = sources[glow_channel];
+				run.glow = glow ? glow->glow : base_glow;
+				for (int k = 0; k < 3; ++k)
+				{
+					run.decor[k] = sources[underline_channel + k];
+					if (run.decor[k]) row.decorated |= decor_bits[k];
+				}
+			}
+			const auto m = metrics_for(widget, run.font);
+			run.ascent = layout_ascent(m);
+			run.line_height = m.line_height;
+			row.box.add(m);
+			run.width = vgui_widget_measure_text_styled(widget, run.text.c_str(),
+				run.font.size, run.font.weight, run.font.slant);
+			row.width += run.width;
+		};
+		auto finish_line = [&] {
+			if (row.runs.empty()) row.box.add(metrics_for(widget, font_for(nullptr, base_size)));
+			layout.width = std::max(layout.width, row.width);
+			layout.height += row.box.height();
+			if (for_draw) layout.lines.push_back(std::move(row));
+			row = {};
+		};
+		if (wrap_width > 0.0f)
+			walk_wrapped_lines(widget, text, spans, span_count, for_draw, base_size, wrap_width, append_run, finish_line);
+		else
+			walk_lines(text, spans, span_count, for_draw, append_run, finish_line);
+		return layout;
+	}
 
 	struct rect
 	{
@@ -508,50 +693,22 @@ namespace
 	}
 }
 
-void vgui_custom_draw_text_spans(vgui_widget* widget,
+static void draw_text_spans(vgui_widget* widget,
 	ovg_ctx_cb* cb, rvg_t* vg, const char* text,
 	const vgui_text_span* spans, int span_count,
 	float x, float y, float width, float height,
-	vgui_color base_color, float align_x, float align_y, float base_font_size)
+	vgui_color base_color, float align_x, float align_y, float base_font_size, bool wrap)
 {
 	if (!widget || !cb || !vg || !text || !*text || !base_color || !(width > 0 && height > 0)) return;
+	if (wrap && !std::isfinite(width)) return;
 	const rect clip = { x, y, x + width, y + height };
-	const auto base_glow = vgui_widget_get_text_glow(widget);
 	const float scale = vgui_context_get_ui_scale(vgui_widget_get_context(widget));
-	std::vector<text_line> lines;
-	text_line row;
-	float total_height = 0;
-	walk_lines(text, spans, span_count, true,
-		[&](const char* start, const char* end, const auto& sources) {
-			const auto* paint = sources[paint_channel];
-			auto& run = row.runs.emplace_back();
-			run.text.assign(start, end);
-			run.font = font_for(paint, base_font_size);
-			run.color = vgui_text_widget_color(widget, paint && paint->color ? paint->color : base_color);
-			const auto* glow = sources[glow_channel];
-			run.glow = glow ? glow->glow : base_glow;
-			for (int k = 0; k < 3; ++k)
-			{
-				run.decor[k] = sources[underline_channel + k];
-				if (run.decor[k]) row.decorated |= decor_bits[k];
-			}
-			const auto m = metrics_for(widget, run.font);
-			run.ascent = layout_ascent(m);
-			run.line_height = m.line_height;
-			row.box.add(m);
-			run.width = vgui_widget_measure_text_styled(widget, run.text.c_str(),
-				run.font.size, run.font.weight, run.font.slant);
-			row.width += run.width;
-		}, [&] {
-			if (row.runs.empty()) row.box.add(metrics_for(widget, font_for(nullptr, base_font_size)));
-			total_height += row.box.height();
-			lines.push_back(std::move(row));
-			row = {};
-		});
-	if (!(total_height > 0.0f)) return;
+	auto layout = layout_text(widget, text, spans, span_count, base_font_size, wrap ? width : 0, base_color);
+	auto& lines = layout.lines;
+	if (!(layout.height > 0.0f)) return;
 
 	const float ax = std::clamp(align_x, 0.0f, 1.0f);
-	const float pen_y = y + std::max(0.0f, (height - total_height) * std::clamp(align_y, 0.0f, 1.0f));
+	const float pen_y = y + std::max(0.0f, (height - layout.height) * std::clamp(align_y, 0.0f, 1.0f));
 	float y_offset = 0;
 	for (auto& line : lines)
 	{
@@ -658,6 +815,42 @@ void vgui_custom_draw_text_spans(vgui_widget* widget,
 	for (const auto& line : lines)
 		draw_decor_layer(widget, cb, vg, line, 1, clip, scale, base_font_size, base_color);
 	draw_glow(true); // Inner light is confined to the mask and overlays the body.
+}
+
+void vgui_custom_draw_text_spans(vgui_widget* widget,
+	ovg_ctx_cb* cb, rvg_t* vg, const char* text,
+	const vgui_text_span* spans, int span_count,
+	float x, float y, float width, float height,
+	vgui_color base_color, float align_x, float align_y, float base_font_size)
+{
+	draw_text_spans(widget, cb, vg, text, spans, span_count, x, y, width, height,
+		base_color, align_x, align_y, base_font_size, false);
+}
+
+void vgui_custom_draw_text_spans_wrapped(vgui_widget* widget,
+	ovg_ctx_cb* cb, rvg_t* vg, const char* text,
+	const vgui_text_span* spans, int span_count,
+	float x, float y, float width, float height,
+	vgui_color base_color, float align_x, float align_y, float base_font_size)
+{
+	draw_text_spans(widget, cb, vg, text, spans, span_count, x, y, width, height,
+		base_color, align_x, align_y, base_font_size, true);
+}
+
+void vgui_widget_measure_text_spans_wrapped(vgui_widget* widget,
+	const char* text, const vgui_text_span* spans, int span_count,
+	float max_width, float base_font_size, float* out_width, float* out_height)
+{
+	if (!out_width && !out_height) return;
+	float width = 0, height = 0;
+	if (widget && vgui_widget_get_context(widget) && text && *text && max_width > 0 && std::isfinite(max_width))
+	{
+		const auto layout = layout_text(widget, text, spans, span_count, base_font_size, max_width, 0);
+		width = layout.width;
+		height = layout.height;
+	}
+	if (out_width) *out_width = width;
+	if (out_height) *out_height = height;
 }
 
 float vgui_widget_measure_text_spans(vgui_widget* widget,

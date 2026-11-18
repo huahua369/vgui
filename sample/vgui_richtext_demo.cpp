@@ -1,6 +1,7 @@
 // Native SDL3 example: application-owned UTF-8 + spans in VGUI_CUSTOM.
 #include "pch.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -27,7 +28,15 @@ struct demo_state {
 	vgui_widget* sigma_label = nullptr;
 	vgui_widget* skip_ink = nullptr;
 	vgui_widget* previews[3] = {};
+	vgui_widget* wrap_width = nullptr;
+	vgui_widget* wrap_preview = nullptr;
 };
+
+float preview_alignment(const demo_state& state)
+{
+	return vgui_widget_get_checked(state.align[2]) ? 1.0f :
+		(vgui_widget_get_checked(state.align[1]) ? 0.5f : 0.0f);
+}
 
 // The C API takes byte offsets, not Unicode character counts.
 vgui_text_span span_for(const char* text, const char* part, vgui_color color = 0, float size = 0)
@@ -126,12 +135,55 @@ void draw_preview(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 	const auto& state = *static_cast<demo_state*>(user);
 	const bool halo = widget == state.previews[2];
 	const float inset = (halo ? 36.0f : 18.0f) * vgui_context_get_ui_scale(vgui_widget_get_context(widget));
-	const float align = vgui_widget_get_checked(state.align[2]) ? 1.0f :
-		(vgui_widget_get_checked(state.align[1]) ? 0.5f : 0.0f);
-	draw_area area{ widget, cb, vg, x + inset, y, w - 2 * inset, h, align };
+	draw_area area{ widget, cb, vg, x + inset, y, w - 2 * inset, h, preview_alignment(state) };
 	if (halo) draw_glow(area, state);
 	else if (widget == state.previews[0]) draw_type(area);
 	else draw_decor(area, vgui_widget_get_checked(state.skip_ink) != 0);
+}
+
+void draw_wrap_preview(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
+	float x, float y, float w, float h, float, void* user)
+{
+	const auto& state = *static_cast<demo_state*>(user);
+	const float scale = vgui_context_get_ui_scale(vgui_widget_get_context(widget));
+	const float pad = 12 * scale;
+	const float max_width = std::min(820 * scale, w - 2 * pad);
+	const float body_height = h - 2 * pad - 20 * scale;
+	if (max_width <= 0 || body_height <= 0) return;
+	const float min_width = std::min(185 * scale, max_width);
+	const float width = min_width + (max_width - min_width) * (vgui_widget_get_value(state.wrap_width) / 100);
+
+	// The highlighted area and its right edge show the actual wrapping bounds.
+	const float left = x + pad;
+	auto fill_rect = [&](float rect_x, float rect_width, uint32_t ovg_color) {
+		cb->rectangle(vg, rect_x, y + pad, rect_width, body_height);
+		cb->set_source_color(vg, ovg_color); // OVG uses AABBGGRR.
+		cb->fill(vg);
+	};
+	fill_rect(left, width, 0xFF35251Au);
+	fill_rect(left + width, scale, 0xFF847046u);
+
+	const char* text = "Drag the slider to reflow a caf\xC3\xA9 note. Bold text and a wavy underline keep their styles.\n"
+		"After the hard break.";
+	constexpr float font_size = 17;
+	vgui_text_span spans[] = {
+		span_for(text, "caf\xC3\xA9", lilac), span_for(text, "Bold text", gold, 19),
+		span_for(text, "wavy underline", cyan)
+	};
+	spans[1].font_weight = VGUI_FONT_WEIGHT_BOLD;
+	spans[2].decor = VGUI_TEXT_DECOR_UNDERLINE;
+	spans[2].decor_style = VGUI_TEXT_DECOR_STYLE_WAVY;
+	spans[2].decor_offset = 2;
+	constexpr int span_count = static_cast<int>(sizeof(spans) / sizeof(spans[0]));
+	float text_width = 0, text_height = 0;
+	vgui_widget_measure_text_spans_wrapped(widget, text, spans, span_count, width, font_size, &text_width, &text_height);
+	vgui_custom_draw_text_spans_wrapped(widget, cb, vg, text, spans, span_count,
+		left, y + pad, width, body_height, ink, preview_alignment(state), 0, font_size);
+
+	char metrics[88];
+	std::snprintf(metrics, sizeof(metrics), "Box %.0f px   /   Text %.0f x %.0f px", width, text_width, text_height);
+	vgui_custom_draw_text_sized(widget, cb, vg, metrics,
+		left, y + pad + body_height, w - 2 * pad, 20 * scale, muted, 0, 0.5f, 13);
 }
 
 void update_previews(vgui_widget*, float, void* user)
@@ -141,6 +193,7 @@ void update_previews(vgui_widget*, float, void* user)
 	std::snprintf(label, sizeof(label), "%.0f px", vgui_widget_get_value(state.sigma));
 	vgui_widget_set_text(state.sigma_label, label);
 	for (auto* preview : state.previews) vgui_widget_mark_dirty(preview);
+	if (state.wrap_preview) vgui_widget_mark_dirty(state.wrap_preview);
 }
 
 vgui_widget* panel(vgui_widget* parent, vgui_layout_kind layout, float gap, vgui_color color = 0)
@@ -197,6 +250,30 @@ void add_specimen(vgui_widget* parent, demo_state& state, int index,
 	label(card, hint, 13, muted);
 }
 
+void add_wrap_specimen(vgui_widget* root, demo_state& state)
+{
+	auto* card = panel(root, VGUI_LAYOUT_COLUMN, 6, card_bg);
+	vgui_widget_set_padding(card, 16, 12, 16, 14);
+	auto* bar = panel(card, VGUI_LAYOUT_ROW, 14);
+	vgui_widget_set_align_items(bar, VGUI_ALIGN_CENTER);
+	vgui_widget_set_grow(label(bar, "04 / AUTO WRAP", 15, cyan), 1);
+	label(bar, "WIDTH", 13, cyan);
+	state.wrap_width = vgui_widget_add(bar, VGUI_SLIDER, nullptr);
+	vgui_widget_set_size(state.wrap_width, 180, 22);
+	vgui_widget_set_range(state.wrap_width, 0, 100);
+	vgui_widget_set_value(state.wrap_width, 54);
+
+	auto* preview = state.wrap_preview = vgui_widget_add(card, VGUI_CUSTOM, nullptr);
+	vgui_widget_set_size(preview, 0, 174);
+	vgui_widget_set_background(preview, paper);
+	vgui_widget_set_border(preview, 0, 0);
+	vgui_widget_set_rounding(preview, 7);
+	vgui_custom_set_draw(preview, draw_wrap_preview, &state);
+	vgui_widget_on_value(state.wrap_width, [](vgui_widget*, float, void* user) {
+		vgui_widget_mark_dirty(static_cast<demo_state*>(user)->wrap_preview);
+	}, &state);
+}
+
 void build_ui(vgui_context* ui, demo_state& state)
 {
 	vgui_theme theme{};
@@ -247,7 +324,8 @@ void build_ui(vgui_context* ui, demo_state& state)
 	add_specimen(grid, state, 0, "01 / TYPOGRAPHY", "Weight, slant, size and color on shared baselines.", 134);
 	add_specimen(grid, state, 1, "02 / DECORATIONS", "Toggle Skip ink to see gaps around gypq and fj.", 134);
 	add_specimen(root, state, 2, "03 / GLOW", "Only the first span glows. Change mode or adjust the blur sigma.", 132);
-	label(root, "VGUI_CUSTOM  /  vgui_custom_draw_text_spans()  /  Explicit line breaks", 13, muted);
+	add_wrap_specimen(root, state);
+	label(root, "VGUI_CUSTOM  /  Explicit and automatic line breaks", 13, muted);
 }
 
 } // namespace
@@ -268,7 +346,7 @@ int main()
 		std::fprintf(stderr, "Cannot initialize the SDL3 Vulkan renderer: %s\n", SDL_GetError());
 		return 1;
 	}
-	auto* window = app.create("VGUI / Rich Text", 1060, 678, 0, true);
+	auto* window = app.create("VGUI / Rich Text", 1060, 926, 0, true);
 	if (!window) {
 		std::fprintf(stderr, "Cannot open the rich text demo: %s\n", SDL_GetError());
 		return 1;

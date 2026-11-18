@@ -47,6 +47,8 @@ target_link_libraries(libvgui
         glm::glm-header-only
         libovg
     PRIVATE
+        ICU::i18n
+        ICU::uc
         PkgConfig::Clipper2
         PkgConfig::Clipper2Z)
 
