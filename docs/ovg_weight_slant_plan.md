@@ -1512,7 +1512,27 @@ void vgui_draw_text_passes(vgui_widget* widget, ovg_ctx_cb* cb, rvg_t* vg,
 | 截图 | demo 叠副本 vs 真实 glow | 半径/亮度/边缘通过评审；默认截图不变 |
 | ASAN | 反复 draw/measure、span 重叠/越界、空轮廓 | 无越界/泄漏/悬空 effect |
 
-### 11.10 glow 风险与决策
+### 11.10 Release 光晕基准（10 / 50 个标签）
+
+在启用 OVG SDL3 GPU 渲染器的 Release 构建中运行：
+
+```text
+cmake --build <build-dir> --config Release --target ovg_text_glow_test
+out/bin/x64/ovg_text_glow_test.exe --bench
+```
+
+使用 OVG SDL3/Vulkan 离屏渲染，固定 1280×720 RGBA8、1× MSAA。每组绘制 10 或 50 个相同的 32 px DejaVu Sans 标签；对照组只关闭外光（开启时 `sigma=4`），正文、位置及目标不变。每组预热 30 帧，随后采样 180 帧。没有交换链、垂直同步或像素读回；设备缺少 Vulkan 或必要的纹理格式时返回 77，不报告假数据。
+
+| 标签数 | 外光 | CPU 命令生成 p50 / p95 (ms) | CPU 提交 p50 / p95 (ms) | 提交至 GPU 空闲 p50 / p95 (ms) | 每帧实际效果 | CPU 槽位丢弃 / GPU 未生成（组累计） |
+|---:|:---:|---:|---:|---:|---:|---:|
+| 10 | 关 | 0.010 / 0.013 | 0.050 / 0.087 | 0.137 / 0.218 | 0 | 0 / 0 |
+| 10 | 开 | 1.085 / 1.688 | 0.192 / 0.342 | 0.670 / 1.158 | 10 | 0 / 0 |
+| 50 | 关 | 0.077 / 0.095 | 0.101 / 0.141 | 0.246 / 0.315 | 0 | 0 / 0 |
+| 50 | 开 | 5.248 / 7.738 | 0.821 / 1.368 | 2.705 / 4.583 | 50 | 0 / 0 |
+
+本机实测：Windows / MSVC x64 Release / NVIDIA GeForce GTX 1650。开启外光时两组 ROI 分别为 103,680 和 518,400 像素/帧。「CPU 提交」包括 `ovg_render_frame()` 的编码与提交调用；「提交至 GPU 空闲」还包括 `SDL_WaitForGPUIdle()`，**不是硬件时间戳测得的纯 GPU 时间**，且逐帧等待不会反映多帧并行吞吐。CPU 槽位丢弃来自 `ovg_text_glow_budget_drops()`，GPU 未生成数是已分配槽位与 `frame_effects` 的差值，不能仅凭该差值断定是纹理预算耗尽。基准不设跨机器耗时阈值。
+
+### 11.11 glow 风险与决策
 
 | 风险 | 影响 | 缓解 |
 |---|---|---|

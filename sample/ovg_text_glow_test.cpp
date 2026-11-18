@@ -1,5 +1,6 @@
 // Standalone G1 regression. Default mode needs no GPU; --gpu exercises the
-// SDL3 OVG renderer and returns 77 if no Vulkan device is available.
+// SDL3 OVG renderer, and --bench compares 10/50 labels with and without glow.
+// Both GPU modes return 77 if no suitable Vulkan device is available.
 #include <glm/glm.hpp>
 #include "ovg.h"
 #include "ovg_fonts.h"
@@ -9,6 +10,8 @@
 #endif
 
 #include <algorithm>
+#include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -187,6 +190,142 @@ void check_recording(text_style_t style)
 }
 
 #ifndef VGUI_CORE_ONLY
+constexpr int bench_width = 1280, bench_height = 720;
+constexpr int bench_warmup = 30, bench_frames = 180;
+
+struct bench_renderer {
+    SDL_GPUDevice* gpu = nullptr;
+    ovg_device_t* device = nullptr;
+    ovg_ctx_t* ctx = nullptr;
+    vg_fbo_t fbo{};
+
+    ~bench_renderer() {
+        if (ctx) ovg_wait_idle(ctx);
+        if (fbo.ctx) free_vgfbo_sdl3(&fbo);
+        if (ctx) free_ovgctx_sdl3(ctx);
+        if (device) free_sdl3gpu_device(device);
+        if (gpu) SDL_DestroyGPUDevice(gpu);
+        SDL_Quit();
+    }
+};
+
+bool bench_labels(bench_renderer& renderer, drawing& d, text_style_t style, int labels, bool glow)
+{
+    style.color_glow = glow ? 0xffffb040u : 0;
+    style.glow_sigma = 4;
+    const size_t requested = glow ? (size_t)labels : 0;
+    using clock = std::chrono::steady_clock;
+    using ms = std::chrono::duration<double, std::milli>;
+    std::array<std::array<double, bench_frames>, 3> samples{};
+    size_t cpu_drops = 0, gpu_skips = 0, roi_pixels = 0;
+    size_t min_effects = requested, max_effects = 0;
+
+    for (int frame = -bench_warmup; frame < bench_frames; ++frame) {
+        const auto start = clock::now();
+        d.cb->clear(d.vg);
+        d.cb->reset_clip(d.vg, 1);
+        text_box_rt box{};
+        box.baseline = 32;
+        for (int i = 0; i < labels; ++i) {
+            auto label = text_at("Glow label", 32.0f + 246.0f * (i % 5), 18.0f + 68.0f * (i / 5));
+            d.cb->add_text(d.vg, &label, &style, &box);
+        }
+        auto data = get_draw_list(d.vg);
+        data.fbo = &renderer.fbo;
+        const auto recorded = clock::now();
+        ovg_render_frame(renderer.ctx, &data, 1);
+        const auto submitted = clock::now();
+        if (!SDL_WaitForGPUIdle(renderer.gpu)) {
+            std::fprintf(stderr, "GPU wait failed: %s\n", SDL_GetError());
+            return false;
+        }
+        const auto finished = clock::now();
+
+        size_t slots = 0;
+        for (size_t i = 0; i < data.count; ++i)
+            if (is_glow(data.d[i]) && data.d[i].vg.ref >= 0) ++slots;
+        const auto dropped = ovg_text_glow_budget_drops(d.vg);
+        ovg_fx_stats_t fx{};
+        ovg_fx_get_stats(renderer.ctx, &fx);
+        if (!data.v1_count || !data.ig_count || slots + dropped != requested || fx.frame_effects > slots) {
+            std::fprintf(stderr, "Invalid workload: %d labels, glow=%d, vertices=%zu, indices=%zu, "
+                "expected=%zu, slots=%zu, CPU drops=%zu, GPU effects=%zu\n", labels, int(glow),
+                data.v1_count, data.ig_count, requested, slots, dropped, fx.frame_effects);
+            return false;
+        }
+        if (frame < 0) continue;
+        samples[0][frame] = ms(recorded - start).count();
+        samples[1][frame] = ms(submitted - recorded).count();
+        samples[2][frame] = ms(finished - recorded).count();
+        cpu_drops += dropped;
+        gpu_skips += slots - fx.frame_effects;
+        roi_pixels += fx.frame_roi_pixels;
+        min_effects = std::min(min_effects, fx.frame_effects);
+        max_effects = std::max(max_effects, fx.frame_effects);
+    }
+    std::printf("%2d labels | %-3s |", labels, glow ? "on" : "off");
+    for (auto& segment : samples) {
+        std::sort(segment.begin(), segment.end());
+        const double p50 = (segment[bench_frames / 2 - 1] + segment[bench_frames / 2]) * 0.5;
+        const double p95 = segment[(bench_frames * 95 + 99) / 100 - 1];
+        std::printf(" %7.3f / %-7.3f |", p50, p95);
+    }
+    std::printf(" %zu-%zu | %zu | %zu | %.0f\n", min_effects, max_effects,
+        cpu_drops, gpu_skips, double(roi_pixels) / bench_frames);
+    if (glow && max_effects == 0) {
+        std::fprintf(stderr, "No GPU effects prepared on a format-capable device; timings are not a glow measurement.\n");
+        return false;
+    }
+    return true;
+}
+
+int benchmark_glow(text_style_t style)
+{
+    if (!SDL_Init(SDL_INIT_VIDEO)) {
+        std::printf("SKIP SDL video: %s\n", SDL_GetError());
+        return 77;
+    }
+    bench_renderer renderer;
+    renderer.gpu = SDL_CreateGPUDevice(SDL_GPU_SHADERFORMAT_SPIRV, false, "vulkan");
+    if (!renderer.gpu) {
+        std::printf("SKIP Vulkan device: %s\n", SDL_GetError());
+        return 77;
+    }
+    auto supports_format = [&](SDL_GPUTextureFormat format, SDL_GPUTextureUsageFlags usage) {
+        return SDL_GPUTextureSupportsFormat(renderer.gpu, format, SDL_GPU_TEXTURETYPE_2D, usage);
+    };
+    const auto mask_usage = SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
+    if ((!supports_format(SDL_GPU_TEXTUREFORMAT_R8_UNORM, mask_usage) &&
+         !supports_format(SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, mask_usage)) ||
+        !supports_format(SDL_GPU_TEXTUREFORMAT_R16_FLOAT,
+            SDL_GPU_TEXTUREUSAGE_SAMPLER | SDL_GPU_TEXTUREUSAGE_COMPUTE_STORAGE_WRITE)) {
+        std::puts("SKIP Vulkan device lacks OVG glow texture formats");
+        return 77;
+    }
+    renderer.device = new_sdl3gpu_device(renderer.gpu);
+    if (renderer.device) renderer.ctx = new_ovgctx_sdl3(renderer.device,
+        SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, SDL_GPU_TEXTUREFORMAT_D24_UNORM_S8_UINT, SDL_GPU_SAMPLECOUNT_1);
+    if (renderer.ctx) renderer.fbo = new_vgfbo_sdl3(renderer.ctx, bench_width, bench_height);
+    if (!renderer.fbo.ctx || !ovg_fbo_color_texture(&renderer.fbo)) {
+        std::fprintf(stderr, "Unable to create OVG benchmark framebuffer: %s\n", SDL_GetError());
+        return 1;
+    }
+    drawing d;
+    d.vg->width = bench_width;
+    d.vg->height = bench_height;
+#ifdef SDL_PROP_GPU_DEVICE_NAME_STRING
+    std::printf("GPU: %s\n", SDL_GetStringProperty(SDL_GetGPUDeviceProperties(renderer.gpu),
+        SDL_PROP_GPU_DEVICE_NAME_STRING, "unknown"));
+#endif
+    std::printf("OVG SDL3/%s: %dx%d RGBA8, 1x MSAA, 32px text, sigma=4, %d warmup + %d measured frames/case\n",
+        SDL_GetGPUDeviceDriver(renderer.gpu), bench_width, bench_height, bench_warmup, bench_frames);
+    std::puts("          |glow | record ms p50/p95  | submit ms p50/p95  | submit+wait p50/p95| FX/frame | CPU drops | GPU skips | ROI px/frame");
+    for (int labels : {10, 50})
+        for (bool glow : {false, true})
+            if (!bench_labels(renderer, d, style, labels, glow)) return 1;
+    return 0;
+}
+
 int check_pixels(text_style_t style)
 {
     SDL_Init(SDL_INIT_VIDEO);
@@ -261,9 +400,14 @@ int check_pixels(text_style_t style)
 int main(int argc, char** argv)
 {
     const bool gpu = argc == 2 && std::strcmp(argv[1], "--gpu") == 0;
+    const bool bench = argc == 2 && std::strcmp(argv[1], "--bench") == 0;
+    if (argc > 1 && !gpu && !bench) {
+        std::fprintf(stderr, "Usage: %s [--gpu | --bench]\n", argv[0]);
+        return 2;
+    }
 #ifdef VGUI_CORE_ONLY
-    if (gpu) {
-        std::puts("SKIP GPU mode is unavailable in VGUI_CORE_ONLY");
+    if (gpu || bench) {
+        std::puts("SKIP GPU modes are unavailable without the OVG SDL3 renderer");
         return 77;
     }
 #endif
@@ -276,7 +420,9 @@ int main(int argc, char** argv)
         text_style_t style = {};
         style.family = family; style.fontsize = 32; style.color = 0xffffffffu;
 #ifndef VGUI_CORE_ONLY
-        if (gpu)
+        if (bench)
+            result = benchmark_glow(style);
+        else if (gpu)
             result = check_pixels(style);
         else
 #endif
