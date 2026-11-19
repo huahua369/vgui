@@ -736,6 +736,8 @@ struct designer_workbench::impl {
 
     static localized_text property_label(const property_descriptor& desc)
     {
+        if (desc.key == "atlas")
+            return {"workbench.inspector.atlas_path", "Button atlas path"};
         if (desc.type == value_type::resource_key)
             return {"workbench.inspector.image_path", "Image path"};
         return {"workbench.inspector.property." + std::string(desc.key), desc.label.data()};
@@ -1266,7 +1268,9 @@ struct designer_workbench::impl {
                     const auto path = doc.resources.find(key);
                     row.value = path == doc.resources.end() ? std::string() : path->second;
                     row.placeholder = strings.text("workbench.inspector.image_path_example", "images/example.png");
-                    row.tooltip = strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
+                    row.tooltip = desc.key == "atlas" ? strings.text("workbench.inspector.atlas_path_hint",
+                        "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.") :
+                        strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
                     add(std::move(row));
                     add({.id = resource_key, .label = strings.text("workbench.inspector.resource_key", "Resource key"), .value = key,
                         .category = category, .read_only = true});

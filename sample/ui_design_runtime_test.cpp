@@ -2,12 +2,12 @@
 #include "runtime.h"
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -87,13 +87,11 @@ public:
     fs::path path;
 };
 
-// The runtime delegates decoding to its host. Use a tiny raw RGBA fixture so
-// this test loads actual file data and attaches a real CPU texture without SDL.
+// The runtime delegates decoding to its host. Use raw RGBA fixtures to load
+// actual file data and attach real CPU textures without SDL.
 constexpr int image_width = 19, image_height = 13;
-constexpr std::size_t image_bytes = image_width * image_height * 4;
-void write_image(const fs::path& file, bool valid = true) {
-    std::array<char, image_bytes> pixels;
-    pixels.fill(0x55);
+void write_image(const fs::path& file, bool valid = true, int width = image_width, int height = image_height) {
+    const std::vector<char> pixels(std::size_t(width) * height * 4, 0x55);
     std::ofstream out(file, std::ios::binary);
     out.write(pixels.data(), valid ? pixels.size() : 1);
     out.close();
@@ -108,19 +106,23 @@ struct image_call {
 };
 struct image_loader {
     std::vector<image_call> calls;
-    std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)> texture{nullptr, &vgui_texture_destroy};
+    std::map<std::string, std::pair<int, int>, std::less<>> sizes;
+    std::vector<std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>> textures;
+    action_log actions;
 
     static vgui_texture* load(vgui_context* ctx, std::string_view key, const fs::path& file, void* user) {
         auto& self = *static_cast<image_loader*>(user);
         self.calls.push_back({ctx, std::string(key), file});
-        std::array<char, image_bytes> pixels;
+        const auto size = self.sizes.find(key);
+        const auto [width, height] = size == self.sizes.end() ? std::pair{image_width, image_height} : size->second;
+        std::vector<char> pixels(std::size_t(width) * height * 4);
         std::ifstream in(file, std::ios::binary);
         if (!in.read(pixels.data(), pixels.size()) || in.peek() != std::char_traits<char>::eof())
             return nullptr;
-        const vgui_texture_desc desc{image_width, image_height, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels.data()};
-        self.texture.reset(vgui_texture_create(ctx, &desc));
-        check(bool(self.texture), "create CPU image texture");
-        return self.texture.get();
+        const vgui_texture_desc desc{width, height, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels.data()};
+        self.textures.emplace_back(vgui_texture_create(ctx, &desc), &vgui_texture_destroy);
+        check(bool(self.textures.back()), "create CPU image texture");
+        return self.textures.back().get();
     }
 
     ui::runtime_bindings bindings(const fs::path& root) {
@@ -137,18 +139,20 @@ void add_image(ui::document& doc, const std::string& id, const std::string& key)
     doc.nodes.emplace(id, ui::node{"image", "", {{"resource", key}}, {}});
 }
 
-void check_loaded(ui::runtime& rt, const ui::layout_snapshot& snapshot, const char* id) {
+void check_loaded(ui::runtime& rt, const ui::layout_snapshot& snapshot, const char* id,
+    int expected_width = image_width, int expected_height = image_height) {
     check(!node(snapshot, id).image_placeholder, std::string(id) + ": unexpected placeholder");
     float width = 0, height = 0;
     // A missing set_texture call also fails this check, even if placeholder
     // flags are correct: dimensions are implicit and come from the texture.
     vgui_widget_get_intrinsic_size(rt.widget(id), &width, &height);
-    check(near(width, image_width) && near(height, image_height), std::string(id) + ": CPU texture not attached");
+    check(near(width, expected_width) && near(height, expected_height), std::string(id) + ": CPU texture not attached");
 }
 
-void check_placeholder(const ui::runtime& rt, const ui::layout_snapshot& snapshot, const char* id) {
+void check_placeholder(const ui::runtime& rt, const ui::layout_snapshot& snapshot, const char* id,
+    const char* property = "resource") {
     check(node(snapshot, id).image_placeholder, std::string(id) + ": missing image placeholder");
-    const auto path = std::string("/nodes/") + id + "/props/resource";
+    const auto path = std::string("/nodes/") + id + "/props/" + property;
     for (const auto& d : rt.diagnostics()) if (d.path == path && !d.message.empty()) return;
     throw std::runtime_error("missing resource diagnostic for " + path);
 }
@@ -180,7 +184,7 @@ void test_image_loading() {
         {ctx.get(), "bad", fs::canonical(assets / "truncated.rgba")}};
     check(rt.mount(doc, 1, bindings), "mount image fixtures");
     check(std::ranges::is_permutation(loader.calls, expected), "loader should get only canonical regular files, once per key");
-    loader.texture.reset(); // The mounted images must keep their texture alive.
+    loader.textures.clear(); // The mounted images must keep their texture alive.
     auto snapshot = rt.layout({240, 180, 1});
     check(bool(snapshot), "layout loaded images");
     check_loaded(rt, *snapshot, "photo");
@@ -205,6 +209,81 @@ void test_image_loading() {
     check_loaded(rt, *snapshot, "bad");
     check_loaded(rt, *snapshot, "bad-repeat");
     check(rt.diagnostics().size() == 2, "remount should clear repaired resource diagnostics");
+}
+
+void test_button_atlases() {
+    temp_dir temp;
+    const auto assets = temp.path / "assets";
+    fs::create_directory(assets);
+    constexpr int width = 256, height = 96;
+    write_image(assets / "skin.rgba", true, width, height);
+    write_image(assets / "odd.rgba", true, width, height - 1);
+    write_image(assets / "bad.rgba", false);
+
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).props["layout"] = "column"s;
+    doc.resources = {{"skin", "assets/skin.rgba"}, {"odd", "assets/odd.rgba"}, {"bad", "assets/bad.rgba"},
+        {"missing", "assets/not-present.rgba"}, {"unused", "assets/skin.rgba"}};
+    const auto add_button = [&](const char* id, const char* key = nullptr) {
+        auto button = ui::node{"button", "", {{"text", "Send"s}, {"action", "form.send"s}}, {}};
+        if (key) button.props.emplace("atlas", std::string(key));
+        doc.nodes.at(doc.root).children.push_back(id);
+        doc.nodes.emplace(id, std::move(button));
+    };
+    add_button("skinned", "skin");
+    add_image(doc, "photo", "skin");
+    add_button("repeat", "skin");
+    add_button("plain");
+    add_button("odd", "odd");
+    add_image(doc, "odd-photo", "odd"); // Still a valid image after rejection as an atlas.
+    add_button("bad", "bad");
+    add_button("missing", "missing");
+
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create button atlas context");
+    image_loader loader;
+    loader.sizes = {{"skin", {width, height}}, {"odd", {width, height - 1}}};
+    auto bindings = loader.bindings(assets / "..");
+    bindings.on_action = [](std::string_view id, std::string_view action, void* user) noexcept {
+        on_action(id, action, &static_cast<image_loader*>(user)->actions);
+    };
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1, bindings), "mount button atlas fixtures");
+    const std::vector<image_call> expected = {{ctx.get(), "skin", fs::canonical(assets / "skin.rgba")},
+        {ctx.get(), "odd", fs::canonical(assets / "odd.rgba")}, {ctx.get(), "bad", fs::canonical(assets / "bad.rgba")}};
+    check(std::ranges::is_permutation(loader.calls, expected), "buttons and images must share one canonical load per key");
+    loader.textures.clear();
+    const auto snapshot = rt.layout({400, 600, 1});
+    check(bool(snapshot), "layout button atlas fixtures");
+    check_loaded(rt, *snapshot, "photo", width, height);
+    check_loaded(rt, *snapshot, "odd-photo", width, height - 1);
+    check(rt.diagnostics().size() == 3, "only unavailable button atlases should report diagnostics");
+    for (auto id : {"odd", "bad", "missing"}) check_placeholder(rt, *snapshot, id, "atlas");
+    for (auto id : {"skinned", "repeat", "plain"})
+        check(!node(*snapshot, id).image_placeholder, std::string(id) + ": unexpected button placeholder");
+
+    float plain_w, plain_h;
+    vgui_widget_get_intrinsic_size(rt.widget("plain"), &plain_w, &plain_h);
+    for (auto id : {"skinned", "repeat", "plain", "odd", "bad", "missing"}) {
+        auto* button = rt.widget(id);
+        check(button && vgui_widget_get_kind(button) == VGUI_BUTTON && std::string_view(vgui_widget_get_text(button)) == "Send",
+            std::string(id) + ": atlas changed the button kind or text");
+        float w, h;
+        vgui_widget_get_intrinsic_size(button, &w, &h);
+        const auto skinned = std::string_view(id) == "skinned" || std::string_view(id) == "repeat";
+        check(near(w, skinned ? width / 2.f : plain_w) && near(h, skinned ? height / 2.f : plain_h),
+            std::string(id) + ": expected one atlas frame or normal button sizing");
+
+        const auto& rect = node(*snapshot, id).rect_px;
+        const float x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+        const auto prior_calls = loader.actions.calls;
+        vgui_input_mouse_move(ctx.get(), x, y);
+        vgui_input_mouse_down(ctx.get(), 1, x, y, 0);
+        check(loader.actions.calls == prior_calls, "atlas button fired on pointer down");
+        vgui_input_mouse_up(ctx.get(), 1, x, y, 0);
+        check(loader.actions.calls == prior_calls + 1 && loader.actions.id == id && loader.actions.action == "form.send",
+            std::string(id) + ": atlas changed button action routing");
+    }
 }
 
 // On Windows an ordinary account can create directory junctions without
@@ -384,6 +463,7 @@ int main(int argc, char** argv) {
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
         test_image_loading();
+        test_button_atlases();
         std::puts("ui_design_runtime_test: ok");
         return 0;
     } catch (const std::exception& e) {

@@ -889,6 +889,7 @@ struct vgui_widget
 	std::unique_ptr<vgui_image_state> image;
 
 	// button icon (VGUI_BUTTON) --------------------------------------------
+	vgui_texture* button_atlas = nullptr;
 	vgui_texture* icon_tex = nullptr;
 	int icon_w = 0;
 	int icon_h = 0;
@@ -1492,6 +1493,12 @@ static bool vgui_texture_store_desc(vgui_texture* texture, const vgui_texture_de
 	texture->dirty = !texture->pixels.empty();
 	texture->upload_frame = ~0ull;
 	return true;
+}
+
+static bool vgui_button_atlas_valid(const vgui_texture* texture)
+{
+	return texture && texture->width > 0 && texture->height > 0 &&
+		texture->width % 2 == 0 && texture->height % 2 == 0;
 }
 
 static bool vgui_point_in(const vgui_widget* w, float x, float y)
@@ -5295,6 +5302,11 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 			w->intrinsic_w = tw + pl + pr + extra;
 			w->intrinsic_h = std::max(lh + pt + pb, st.button.min_height);
 		}
+		if (vgui_button_atlas_valid(w->button_atlas))
+		{
+			w->intrinsic_w = std::max(w->intrinsic_w, w->button_atlas->width * 0.5f * ctx->ui_scale);
+			w->intrinsic_h = std::max(w->intrinsic_h, w->button_atlas->height * 0.5f * ctx->ui_scale);
+		}
 	}
 	break;
 	case VGUI_CHECKBOX:
@@ -6643,6 +6655,7 @@ static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
 
 	// button icon texture — release ref before delete
 	if (w->icon_tex) { vgui_texture_release(w->icon_tex); w->icon_tex = nullptr; }
+	if (w->button_atlas) vgui_texture_release(w->button_atlas);
 
 	delete w;
 }
@@ -6851,7 +6864,7 @@ static std::string vgui_tooltip_owner_text(vgui_widget* owner, vgui_item_id item
 	return text;
 }
 
-static bool vgui_tooltip_effective_enabled(vgui_widget* w)
+static bool vgui_effective_enabled(vgui_widget* w)
 {
 	for (vgui_widget* p = w; p; p = p->parent)
 		if (!p->enabled) return false;
@@ -6914,7 +6927,7 @@ static vgui_widget* vgui_tooltip_resolve_at(vgui_context* ctx, vgui_widget* hit,
 			text = vgui_tooltip_widget_text(node);
 		if (text.empty())
 			continue;
-		if (!vgui_tooltip_effective_enabled(node) && !node->tooltip_when_disabled)
+		if (!vgui_effective_enabled(node) && !node->tooltip_when_disabled)
 			continue;
 
 		if (out_item) *out_item = item;
@@ -7194,7 +7207,7 @@ static void vgui_tooltip_update(vgui_context* ctx, float dt)
 		vgui_tooltip_clear_candidate(ctx);
 		return;
 	}
-	if (!vgui_tooltip_effective_enabled(t.candidate) && !t.candidate->tooltip_when_disabled)
+	if (!vgui_effective_enabled(t.candidate) && !t.candidate->tooltip_when_disabled)
 	{
 		vgui_tooltip_clear_candidate(ctx);
 		return;
@@ -12494,12 +12507,53 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	cb->restore(vg);
 }
 
+static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	auto* texture = w->button_atlas;
+	if (!vgui_button_atlas_valid(texture)) return false;
+	vgui_texture_ensure_upload(w->ctx, texture, cb, vg);
+	const bool native = !texture->cpu && texture->native.image.id != 0;
+	if (!native && texture->image.id == 0 &&
+		!(texture->cpu && texture->upload_frame == w->ctx->frame_index)) return false;
+
+	const int frame = !vgui_effective_enabled(w) ? 3 : w->pressed ? 2 : w->hovered ? 1 : 0;
+	const int sw = texture->width / 2, sh = texture->height / 2;
+	const glm::ivec4 src{(frame % 2) * sw, (frame / 2) * sh, sw, sh};
+	const glm::ivec4 dst{(int)std::lround(w->abs_x), (int)std::lround(w->abs_y),
+		(int)std::lround(w->abs_w), (int)std::lround(w->abs_h)};
+	const uint32_t tint = vgui_ovg_color(vgui_widget_color(w, 0xFFFFFFFF));
+	if (native && cb->add_texture)
+	{
+		ovg_texture_r draw = {};
+		draw.tex = &texture->native;
+		draw.rc = src;
+		draw.dst = dst;
+		draw.color = tint;
+		cb->add_texture(vg, &draw);
+	}
+	else if (cb->add_image)
+	{
+		ovg_image_r draw = {};
+		draw.img = native ? &texture->native.image : &texture->image;
+		draw.rc = src;
+		draw.dst = dst;
+		draw.color = tint;
+		cb->add_image(vg, &draw);
+	}
+	else return false;
+	return true;
+}
+
 static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	vgui_context* ctx = w->ctx;
 	const vgui_button_style& bs = ctx->style.button;
 
-	if (w->btn_style_kind == VGUI_BUTTON_STYLE_GRADIENT)
+	if (vgui_draw_button_atlas(w, cb, vg))
+	{
+		// The sprite replaces only the background; icon, text and focus follow.
+	}
+	else if (w->btn_style_kind == VGUI_BUTTON_STYLE_GRADIENT)
 	{
 		float thickness = w->border_width > 0 ? w->border_width : 1.0f;
 		float rounding = w->rounding > 0 ? w->rounding : bs.rounding;
@@ -16144,6 +16198,7 @@ extern "C" {
 	{
 		if (!widget) return;
 		enabled = enabled ? 1 : 0;
+		if (widget->enabled != enabled && widget->ctx) ++widget->ctx->paint_revision;
 		widget->enabled = enabled;
 		if (!enabled && widget->ctx)
 		{
@@ -17194,6 +17249,20 @@ extern "C" {
 	// -------------------------------------------------------------------------
 	// Button icon API
 	// -------------------------------------------------------------------------
+
+	int vgui_button_set_atlas(vgui_widget* widget, vgui_texture* texture)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON ||
+			(texture && (texture->ctx != widget->ctx || !vgui_button_atlas_valid(texture))))
+			return 0;
+		if (widget->button_atlas == texture) return 1;
+		if (texture) vgui_texture_retain(texture);
+		vgui_texture_release(widget->button_atlas);
+		widget->button_atlas = texture;
+		widget->ctx->layout_dirty = true;
+		vgui_mark_dirty(widget);
+		return 1;
+	}
 
 	void vgui_button_set_icon(vgui_widget* widget, vgui_texture* tex,
 		int icon_w, int icon_h, vgui_button_icon_pos pos)

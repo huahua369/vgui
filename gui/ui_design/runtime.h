@@ -8,8 +8,8 @@
 namespace vgui::ui_design {
 
 struct runtime_bindings {
-    // Borrowed texture from ctx, valid at least until the callback result is
-    // assigned to the image (which retains it). nullptr means unavailable.
+    // Borrowed texture from ctx. Keep it alive through mount(); images and
+    // buttons retain their assigned textures. nullptr means unavailable.
     // Only called for a canonical regular file inside the canonical project
     // directory, once per referenced resource key per mount. The host must
     // keep that directory stable during path resolution and loading.

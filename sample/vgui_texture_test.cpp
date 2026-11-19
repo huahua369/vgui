@@ -3,7 +3,8 @@
 // Offscreen readback test for the vgui texture path:
 // create -> VGUI_IMAGE draw -> source crop / tint / flip -> update -> release.
 // V10 adds nine-slice, rotation and arbitrary matrix coverage for both native
-// (ovg::add_texture) and CPU (generated add_geometry) textures.
+// (ovg::add_texture) and CPU (generated add_geometry) textures. Also exercises
+// the VGUI_BUTTON atlas with public input events and GPU readback.
 //
 // The image widget geometry and vgui clip state are handled by vgui; the
 // sampled pixels verify that VGUI_IMAGE maps its state onto the draw paths
@@ -22,6 +23,8 @@
 #include "gpu_test_util.h"
 
 #include <cstdio>
+#include <filesystem>
+#include <memory>
 #include <vector>
 
 struct vgui_test_context
@@ -85,6 +88,150 @@ static bool render_vgui(vgui_test_context& t, vgui_context* ui)
 
 	return download_texture(t.device, vgpu_fbo_color_texture(&t.fbo),
 		t.width, t.height, t.pixels);
+}
+
+static void test_button_atlas(vgui_test_context& t, vgui_context* ui,
+	vgui_texture* native_icon, vgui_texture* native_2x2)
+{
+	auto expect = [&](bool ok, const char* label) {
+		++t.checks;
+		if (!ok)
+		{
+			std::printf("FAIL %s\n", label);
+			++t.failures;
+		}
+		return ok;
+	};
+	auto capture = [&](const char* label) {
+		if (render_vgui(t, ui)) return true;
+		return expect(false, label);
+	};
+
+	constexpr int x = 216, y = 50, w = 136, h = 64;
+	vgui_widget* panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(panel, x - 16, y - 10);
+	vgui_widget_set_size(panel, w + 32, h + 20);
+	vgui_widget_set_padding(panel, 0, 0, 0, 0);
+	vgui_widget_set_background(panel, 0xFF602080u);
+	vgui_widget_set_border(panel, 0, 0);
+
+	vgui_widget* button = vgui_widget_add(panel, VGUI_BUTTON, "H");
+	vgui_widget_set_pos(button, 16, 10);
+	vgui_widget_set_size(button, w, h);
+	vgui_widget_set_background(button, 0xFF804020u);
+	vgui_widget_set_border(button, 0, 0);
+	vgui_widget_set_padding(button, 44, 0, 0, 0);
+	vgui_widget_set_text_align(button, 0.0f, 0.5f);
+	vgui_widget_set_text_color(button, 0xFFFFFFFFu);
+	vgui_widget_set_font_size(button, 24.0f);
+	vgui_widget_set_focus_alpha(button, 1.0f);
+	vgui_button_set_icon(button, native_icon, 12, 12, VGUI_BUTTON_ICON_LEFT);
+
+	// Four 16x12 cells with clear strips on the left. Sample well inside
+	// the solid/clear areas so linear filtering at texel boundaries is irrelevant.
+	const uint32_t colors[] = { rgba(255, 0, 0), rgba(0, 255, 0),
+		rgba(0, 0, 255), rgba(255, 255, 0) };
+	uint32_t pixels[32 * 24];
+	for (int py = 0; py < 24; ++py)
+		for (int px = 0; px < 32; ++px)
+			pixels[py * 32 + px] = px % 16 < 4 ? 0 : colors[(py / 12) * 2 + px / 16];
+
+	using texture_ptr = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
+	auto make_texture = [](vgui_context* ctx, int width, int height, const uint32_t* data) {
+		const vgui_texture_desc desc{width, height, 0, VGUI_TEXTURE_FORMAT_RGBA8, data};
+		return texture_ptr(vgui_texture_create(ctx, &desc), vgui_texture_destroy);
+	};
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> foreign_ui(vgui_create(nullptr, 16.0f), vgui_destroy);
+	const uint32_t wrong_pixels[] = { 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu,
+		0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu };
+	auto atlas = make_texture(ui, 32, 24, pixels);
+	auto odd_width = make_texture(ui, 3, 2, wrong_pixels);
+	auto odd_height = make_texture(ui, 2, 3, wrong_pixels);
+	auto foreign = make_texture(foreign_ui.get(), 2, 2, wrong_pixels);
+	if (!expect(atlas && odd_width && odd_height && foreign, "button atlas texture setup")) return;
+
+	// Reuse the checked-in screenshot font rather than relying on system fonts.
+	std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> font_cache(new_font_cache(), free_font_cache);
+	const auto font_path = std::filesystem::path(__FILE__).parent_path() / "res/fonts/DejaVuSans.ttf";
+	if (!expect(font_cache && load_font_from_path(font_cache.get(), font_path.string().c_str(), "AtlasTest"),
+		"button atlas font setup")) return;
+	std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(
+		new_font_family(font_cache.get(), "AtlasTest", nullptr), delete_font_family);
+	if (!expect(font && font->count > 0, "button atlas font resolve")) return;
+	vgui_context_set_font(ui, font.get(), 16.0f);
+
+	expect(vgui_button_set_atlas(nullptr, atlas.get()) == 0, "button atlas rejects null widget");
+	expect(vgui_button_set_atlas(panel, atlas.get()) == 0, "button atlas rejects panel");
+	expect(vgui_button_set_atlas(button, atlas.get()) == 1, "button atlas binds CPU texture");
+	atlas.reset();  // The button must keep the binding alive without the caller's reference.
+	vgui_layout(ui);
+
+	auto frame = [&](uint32_t color, const char* label) {
+		if (!capture(label)) return false;
+		expect_pixel(t, x + w - 24, y + 12, color, label);
+		return true;
+	};
+	auto contains = [&](int x0, int y0, int x1, int y1, auto matches) {
+		for (int py = y0; py < y1; ++py)
+			for (int px = x0; px < x1; ++px)
+				if (matches(t.pixels[(size_t)py * t.width + px])) return true;
+		return false;
+	};
+	if (frame(colors[0], "button atlas normal"))
+	{
+		expect_pixel(t, x + 43, y + h - 12, colors[0], "button atlas stretched");
+		expect_pixel(t, x + 12, y + h / 2, rgba(96, 32, 128), "button atlas replaces fill");
+		// The native icon fixture has a green center, distinct from the red frame.
+		expect_pixel(t, x + 50, y + h / 2, rgba(0, 255, 0), "button atlas icon overlay");
+		expect(contains(x + 60, y + 16, x + 100, y + 48, [](uint32_t p) {
+			return (p & 255u) > 224 && ((p >> 8) & 255u) > 224 && ((p >> 16) & 255u) > 224;
+		}), "button atlas text overlay");
+	}
+
+	for (vgui_texture* invalid : { odd_width.get(), odd_height.get(), foreign.get() })
+	{
+		const char* label = invalid == odd_width.get() ? "button atlas rejects odd width"
+			: invalid == odd_height.get() ? "button atlas rejects odd height" : "button atlas rejects foreign texture";
+		expect(vgui_button_set_atlas(button, invalid) == 0, label);
+		frame(colors[0], label);  // The failed setter must leave the sampled binding unchanged.
+	}
+
+	const int mx = x + w / 2, my = y + h / 2;
+	auto focus_visible = [&] {
+		return contains(x + 50, y, x + w - 12, y + 6,
+			[](uint32_t p) { return ((p >> 16) & 255u) > 100; });
+	};
+	vgui_input_mouse_move(ui, mx, my);
+	if (frame(colors[1], "button atlas hovered"))
+		expect(!focus_visible(), "button atlas unfocused edge");
+	vgui_input_mouse_down(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	frame(colors[2], "button atlas pressed over hovered");
+	vgui_input_mouse_up(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	if (frame(colors[1], "button atlas release inside"))
+		expect(focus_visible(), "button atlas focus overlay");
+
+	vgui_input_mouse_down(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	vgui_widget_set_enabled(button, 0);
+	frame(colors[3], "button atlas disabled during press");
+	vgui_input_mouse_up(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	vgui_widget_set_enabled(button, 1);
+	vgui_input_mouse_move(ui, mx, my);
+	vgui_widget_set_enabled(panel, 0);
+	frame(colors[3], "button atlas disabled by parent");
+	vgui_widget_set_enabled(panel, 1);
+
+	vgui_input_mouse_move(ui, mx, my);
+	vgui_input_mouse_down(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	vgui_input_mouse_move(ui, x - 6, my);
+	vgui_input_mouse_up(ui, SDL_BUTTON_LEFT, x - 6, my, 1);
+	frame(colors[0], "button atlas release outside");
+
+	expect(vgui_button_set_atlas(button, nullptr) == 1, "button atlas clears");
+	frame(rgba(128, 64, 32), "button atlas restores default fill");
+	expect(vgui_button_set_atlas(button, native_2x2) == 1, "button atlas binds minimum native 2x2");
+	frame(rgba(255, 128, 0), "button atlas native 2x2");
+	vgui_widget_remove(panel);
+	vgui_context_set_font(ui, nullptr, 16.0f);
 }
 
 int main()
@@ -469,6 +616,8 @@ int main()
 		return 2;
 	}
 	expect_pixel(t, 196, 4, orange, "update new pixels");
+
+	test_button_atlas(t, ui, native_frame, native);
 
 	// Drop the creator reference first; the widgets still hold references.
 	vgui_texture_destroy(native);

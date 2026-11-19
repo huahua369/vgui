@@ -944,6 +944,60 @@ void exercise_runtime_input(os_window& win, vgui_context* shell, designer& edito
         "cancelling live inspector input did not restore the canvas and history");
 }
 
+void exercise_image_button(os_window& win, vgui_context* shell, designer& editor, const std::function<void()>& frame) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Native image button: ") + message);
+    };
+    require(editor.open(VGUI_SOURCE_DIR "/sample/res/image-button.vgui.json"), "cannot open the example");
+    frame();
+    auto& preview = editor.preview();
+    const auto click = [&](float x, float y) {
+        for (bool down : {true, false}) {
+            SDL_Event e{};
+            e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+            e.button.windowID = win.id;
+            e.button.button = SDL_BUTTON_LEFT;
+            e.button.down = down;
+            e.button.clicks = 1;
+            e.button.x = x / win.pixel_ratio();
+            e.button.y = y / win.pixel_ratio();
+            require(SDL_PushEvent(&e), "cannot enqueue pointer event");
+        }
+        frame();
+    };
+    const auto click_button = [&](std::string_view id, bool enabled) {
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(board && layout, "missing rendered sample");
+        const auto node = std::find_if(layout->nodes.begin(), layout->nodes.end(),
+            [id](const auto& entry) { return entry.id == id; });
+        require(node != layout->nodes.end() && node->visible && node->enabled == enabled && !node->image_placeholder,
+            "sample button is missing, misconfigured or has no atlas");
+        const auto& r = node->visible_px;
+        click(board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+            board->y + (r.y + r.height / 2) * board->height / layout->pixel_height);
+    };
+    auto* mode = find_widget(vgui_root(shell), "designer.preview.mode");
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(mode && status && !preview.running() && editor.preview_ready(false), "sample did not open in Design mode");
+    const auto& history = editor.history();
+    const auto doc = history.current();
+    const auto revision = history.revision();
+    const std::string before = vgui_widget_get_text(status);
+    click_button("play", true);
+    require(editor.selection() == "play" && before == vgui_widget_get_text(status), "Design click must select, not activate");
+    float x, y, width, height;
+    vgui_widget_get_rect(mode, &x, &y, &width, &height);
+    click(x + width / 2, y + height / 2);
+    require(preview.running(), "toolbar did not enter Run mode");
+    const std::string before_run_click = vgui_widget_get_text(status);
+    click_button("disabled", false);
+    require(before_run_click == vgui_widget_get_text(status), "disabled sample button unexpectedly activated");
+    click_button("play", true);
+    require(std::string_view(vgui_widget_get_text(status)).ends_with("demo.play [play]"), "Run click did not dispatch the sample action");
+    require(history.current() == doc && history.revision() == revision && !history.dirty(), "preview interaction modified the design");
+}
+
 void exercise_language_and_layout(os_window& win, vgui_context* shell, designer& editor,
                                   const fs::path& settings, const std::function<void()>& frame) {
     const auto require = [](bool passed, const char* message) {
@@ -1310,11 +1364,12 @@ int run(bool smoke, fs::path open_path) {
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
             ui::exercise_pages(*win, shell.get(), editor, advance, *picker, prompt, open_path, absolute_fixture);
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
+            exercise_image_button(*win, shell.get(), editor, advance);
         } catch (...) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, geometry, language, layout, multi-page save/close/exit and delivery isolation passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, layout, multi-page save/close/exit and delivery isolation passed");
     }
     app.wait_gpu();
     return 0;

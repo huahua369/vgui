@@ -770,6 +770,62 @@ void exercise_workbench()
         "inspector did not recover the saved image width");
 }
 
+void exercise_button_atlas()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "atlas.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const auto image = workbench.add("image", root);
+    const auto button = workbench.add("button", root);
+    const auto atlas_label = [&] {
+        return std::string_view(vgui_widget_get_text(workbench.widget("property:atlas", VGUI_LABEL)));
+    };
+    const auto atlas_path = [&] {
+        return std::string_view(vgui_edit_get_text(workbench.widget("property:atlas", VGUI_EDIT)));
+    };
+    check(atlas_label() == "四态图集路径" && atlas_path().empty(), "missing Chinese atlas label or empty default path");
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(atlas_label() == "Button atlas path", "atlas path label did not switch to English");
+
+    const auto before_atlas = model.current();
+    const auto revision = model.revision();
+    workbench.set_text("atlas", "../outside.png");
+    check(model.current() == before_atlas && model.revision() == revision, "invalid atlas path changed document or history");
+
+    constexpr char path[] = "images/button-states.png";
+    workbench.set_text("atlas", path);
+    const auto with_atlas = model.current();
+    const auto& key = std::get<std::string>(with_atlas.nodes.at(button).props.at("atlas"));
+    check(key.starts_with("image_") && with_atlas.resources.at(key) == path && atlas_path() == path,
+        "atlas path did not register an image key or display the resolved path");
+    workbench.edit("Undo");
+    check(model.current() == before_atlas && atlas_path().empty(), "one Undo did not remove the atlas binding and resource");
+    workbench.edit("Redo");
+    check(model.current() == with_atlas && atlas_path() == path, "Redo did not restore the atlas binding and path");
+
+    const auto select = [&](int index, std::string_view id) {
+        auto* tree = workbench.outline();
+        workbench.select_row(vgui_tree_get_child(tree, vgui_tree_get_root(tree, 0), index), id);
+    };
+    select(0, image);
+    workbench.set_text("resource", path);
+    check(model.current().nodes.at(image).props.at("resource") == ui::value{key} &&
+        model.current().resources == with_atlas.resources, "Image path did not reuse the button atlas resource key");
+
+    const auto saved = model.current();
+    workbench.file("Save As");
+    check(workbench.save_calls == 1 && workbench.io_ok && !model.dirty(),
+        "could not save the shared atlas resource: " + workbench.io_error.message);
+    workbench.file("Open Page");
+    check(workbench.open_calls == 1 && workbench.io_ok && model.current() == saved,
+        "reopening lost the shared atlas resource or binding");
+    select(1, button);
+    check(atlas_path() == path, "reopened atlas editor displayed the key instead of the path");
+}
+
 void exercise_live_properties()
 {
     temp_dir directory;
@@ -1137,6 +1193,7 @@ int main()
         exercise_side_resize();
         exercise_toolbar();
         exercise_workbench();
+        exercise_button_atlas();
         exercise_live_properties();
         exercise_outline_drag();
         exercise_menu_language();

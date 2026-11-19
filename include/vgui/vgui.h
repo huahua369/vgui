@@ -1283,6 +1283,14 @@ extern "C" {
 	VGUI_API void vgui_image_set_rotation_center(vgui_widget* widget, float x, float y, int enabled);
 	VGUI_API void vgui_image_set_matrix(vgui_widget* widget, const float* matrix6);
 
+	/* Optional background atlas for a VGUI_BUTTON. Four equal frames in 2×2
+	 * order: normal, hovered, pressed, disabled. The frame fills the button;
+	 * text, icon, focus and activation still work as for a regular button.
+	 * Auto-size uses at least one frame in logical units. The button retains
+	 * the same-context texture. NULL clears it. Returns 0 for an invalid
+	 * widget or texture (dimensions must both be positive and even). */
+	VGUI_API int vgui_button_set_atlas(vgui_widget* widget, vgui_texture* texture);
+
 	/* ------------------------------------------------------------------------- */
 	/* Button icon                                                               */
 	/* ------------------------------------------------------------------------- */

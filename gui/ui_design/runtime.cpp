@@ -73,6 +73,19 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
     const auto& root_node = doc.nodes.at(doc.root);
     next->width = number(root_node, "width"); next->height = number(root_node, "height");
     std::map<std::string, vgui_texture*, std::less<>> images;
+    const auto load_image = [&](const std::string& key) -> vgui_texture* {
+        auto [it, inserted] = images.emplace(key, nullptr);
+        if (inserted && bindings.load_image && !bindings.project_root.empty()) {
+            std::error_code ec;
+            auto root = std::filesystem::canonical(bindings.project_root, ec);
+            if (!ec && std::filesystem::is_directory(root, ec) && !ec) {
+                auto file = std::filesystem::canonical(root / std::filesystem::u8path(doc.resources.at(key)), ec);
+                if (!ec && inside(root, file) && std::filesystem::is_regular_file(file, ec) && !ec)
+                    it->second = bindings.load_image(ctx_, key, file, bindings.user);
+            }
+        }
+        return it->second;
+    };
     std::function<bool(const std::string&, vgui_widget*)> build = [&](const std::string& id, vgui_widget* parent) {
         const auto& n = doc.nodes.at(id);
         auto kind = n.type == "panel" ? VGUI_PANEL : n.type == "label" ? VGUI_LABEL :
@@ -100,17 +113,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         } else if (n.type == "image") {
             const auto& key = text(n,"resource");
             if (!key.empty()) {
-                auto [it, inserted] = images.emplace(key, nullptr);
-                if (inserted && bindings.load_image && !bindings.project_root.empty()) {
-                    std::error_code ec;
-                    auto root = std::filesystem::canonical(bindings.project_root, ec);
-                    if (!ec && std::filesystem::is_directory(root, ec) && !ec) {
-                        auto file = std::filesystem::canonical(root / std::filesystem::u8path(doc.resources.at(key)), ec);
-                        if (!ec && inside(root, file) && std::filesystem::is_regular_file(file, ec) && !ec)
-                            it->second = bindings.load_image(ctx_, key, file, bindings.user);
-                    }
-                }
-                if (it->second) vgui_image_set_texture(w, it->second);
+                if (auto* texture = load_image(key)) vgui_image_set_texture(w, texture);
                 else {
                     e.placeholder = true;
                     vgui_widget_set_background(w, 0xFFFF00FF);
@@ -123,9 +126,21 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                 vgui_edit_set_placeholder(w, text(n,"placeholder").c_str());
             } else vgui_widget_set_text(w, text(n,"text").c_str());
             if (!text(n,"text_key").empty()) vgui_widget_set_text_key(w, text(n,"text_key").c_str());
-            if (n.type == "button" && !text(n,"action").empty()) {
-                e.action = text(n,"action"); e.handler = bindings.on_action; e.user = bindings.user;
-                vgui_widget_on_event(w, mounted_tree::event, &e);
+            if (n.type == "button") {
+                const auto& key = text(n,"atlas");
+                if (!key.empty()) {
+                    auto* atlas = load_image(key);
+                    if (!atlas || !vgui_button_set_atlas(w, atlas)) {
+                        e.placeholder = true;
+                        next->diagnostics.push_back({"/nodes/" + id + "/props/atlas", !atlas ?
+                            "button atlas unavailable or outside project root: " + key :
+                            "button atlas requires an even-sized 2x2 image: " + key});
+                    }
+                }
+                if (!text(n,"action").empty()) {
+                    e.action = text(n,"action"); e.handler = bindings.on_action; e.user = bindings.user;
+                    vgui_widget_on_event(w, mounted_tree::event, &e);
+                }
             }
         }
         for (const auto& child : n.children) if (!build(child, w)) return false;

@@ -1,0 +1,23 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "demo",
+  "nodes": {
+    "demo": {
+      "type": "panel",
+      "name": "Image button example",
+      "props": {"layout": "column", "align_items": "center", "justify": "center", "gap": 10},
+      "children": ["heading", "instructions", "buttons"]
+    },
+    "heading": {"type": "label", "props": {"text": "Four-state image button", "width": 364, "height": 26}},
+    "instructions": {"type": "label", "props": {"text": "Switch to Run, then hover and hold.", "width": 364, "height": 24}},
+    "buttons": {"type": "panel", "props": {"layout": "row", "gap": 12}, "children": ["live_group", "disabled_group"]},
+    "live_group": {"type": "panel", "props": {"layout": "column", "width": 176, "gap": 6}, "children": ["live_label", "play"]},
+    "disabled_group": {"type": "panel", "props": {"layout": "column", "width": 176, "gap": 6}, "children": ["disabled_label", "disabled"]},
+    "live_label": {"type": "label", "props": {"text": "Interactive", "height": 22}},
+    "disabled_label": {"type": "label", "props": {"text": "Disabled", "height": 22}},
+    "play": {"type": "button", "name": "Play · interactive", "props": {"atlas": "play.states", "action": "demo.play", "width": 176, "height": 59}},
+    "disabled": {"type": "button", "name": "Play · disabled", "props": {"atlas": "play.states", "action": "demo.disabled", "width": 176, "height": 59, "enabled": false}}
+  },
+  "resources": {"play.states": "image-button-states.png"}
+}

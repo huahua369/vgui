@@ -84,6 +84,8 @@
   "workbench.inspector.category.geometry_state": "Geometry & state",
   "workbench.inspector.favorites_only": "Favorites only",
   "workbench.inspector.image_path": "Image path",
+  "workbench.inspector.atlas_path": "Button atlas path",
+  "workbench.inspector.atlas_path_hint": "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.",
   "workbench.inspector.image_path_example": "images/example.png",
   "workbench.inspector.image_path_hint": "Project-relative path, using /. Clear to detach the image.",
   "workbench.inspector.layout.absolute": "Absolute",

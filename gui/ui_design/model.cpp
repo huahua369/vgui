@@ -43,6 +43,7 @@ const property_descriptor label[] = {
 };
 const property_descriptor button[] = {
     label[0], label[1], {"action", "Action", value_type::action_key, std::string{}},
+    {"atlas", "Button atlas path", value_type::resource_key, std::string{}},
 };
 const property_descriptor edit_box[] = {
     label[0], label[1], {"placeholder", "Placeholder", value_type::text, std::string{}},
