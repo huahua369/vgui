@@ -7,18 +7,21 @@
 #include <algorithm>
 #include <cstdint>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace vgui::ui_design {
 
 // Run after opening the absolute fixture, with the edited form still open.
-// Drive the workbench through SDL apart from duplicate Open and mock chooser results.
-template <class Editor, class Picker>
+// Drive the workbench through SDL apart from host activation and native dialog results.
+template <class Editor, class Picker, class Prompt>
 void exercise_pages(os_window& win, vgui_context* shell, Editor& editor, const std::function<void()>& frame,
-                    Picker& picker, const std::filesystem::path& form_fixture,
+                    Picker& picker, Prompt& prompt, const std::filesystem::path& form_fixture,
                     const std::filesystem::path& absolute_fixture) {
     const native_menu_input menus(win, shell, frame);
     std::string_view step = "initial pages";
@@ -55,13 +58,14 @@ void exercise_pages(os_window& win, vgui_context* shell, Editor& editor, const s
             "tab has no pointer geometry");
         return r;
     };
-    const auto select = [&](vgui_item_id id) {
+    const auto reveal_tab = [&](vgui_item_id id, float right_margin = 0.f) {
         auto r = tab_rect(id);
+        const auto target_x = [&] { return right_margin > 0 ? r.x + r.width - right_margin : r.x + r.width / 2; };
         pixel_rect strip;
         vgui_widget_get_rect(tabs, &strip.x, &strip.y, &strip.width, &strip.height);
         const float x = strip.x + strip.width / 2, y = r.y + r.height / 2;
         // Save All can put more tabs on the strip than fit on screen.
-        for (int i = 0; i < 8 && (r.x + r.width / 2 < strip.x || r.x + r.width / 2 >= strip.x + strip.width); ++i) {
+        for (int i = 0; i < 8 && (target_x() < strip.x || target_x() >= strip.x + strip.width); ++i) {
             SDL_Event motion{}, wheel{};
             motion.type = SDL_EVENT_MOUSE_MOTION;
             motion.motion.windowID = win.id;
@@ -71,13 +75,26 @@ void exercise_pages(os_window& win, vgui_context* shell, Editor& editor, const s
             wheel.wheel.windowID = win.id;
             wheel.wheel.mouse_x = motion.motion.x;
             wheel.wheel.mouse_y = motion.motion.y;
-            wheel.wheel.y = r.x + r.width / 2 < x ? 3.f : -3.f;
+            wheel.wheel.y = target_x() < x ? 3.f : -3.f;
             require(SDL_PushEvent(&motion) && SDL_PushEvent(&wheel), "could not scroll the tab strip");
             frame();
             r = tab_rect(id);
         }
-        click(tabs, r.x + r.width / 2, y);
+        require(target_x() >= strip.x && target_x() < strip.x + strip.width, "could not reveal the tab target");
+        return r;
+    };
+    const auto select = [&](vgui_item_id id) {
+        const auto r = reveal_tab(id);
+        click(tabs, r.x + r.width / 2, r.y + r.height / 2);
         require(vgui_tab_get_active(tabs) == id, "pointer did not activate the requested tab");
+    };
+    const auto close_inactive_tab = [&](vgui_item_id id) {
+        require(vgui_tab_get_active(tabs) != id && vgui_tab_get_closeable(tabs, id),
+            "need an inactive, closeable tab");
+        // Default tab style: 12 px horizontal padding, 16 px close target.
+        const float margin = (12.f + 16.f) / 2 * vgui_context_get_ui_scale(shell);
+        const auto r = reveal_tab(id, margin);
+        click(tabs, r.x + r.width - margin, r.y + r.height / 2);
     };
     const auto dirty = [&](vgui_item_id id) { return vgui_tab_get_unsaved(tabs, id) != 0; };
     auto& preview = editor.preview();
@@ -410,6 +427,151 @@ void exercise_pages(os_window& win, vgui_context* shell, Editor& editor, const s
     require(!vgui_menu_get_item_enabled(clean_menu, vgui_menu_get_item_at(clean_menu, save_all_index)),
         "File > Save All is enabled even though every page is clean");
     menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    expect(label_tab, saved_label);
+
+    const auto tab_ids = [&] {
+        std::vector<vgui_item_id> ids;
+        for (int i = 0; i < vgui_tab_get_count(tabs); ++i) ids.push_back(vgui_tab_get_at(tabs, i));
+        return ids;
+    };
+    const auto file_bytes = [&](const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+        require(bool(file), "cannot read " + path.filename().string());
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    };
+    const auto request_exit = [&] {
+        SDL_Event event{};
+        event.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
+        event.window.windowID = win.id;
+        require(SDL_PushEvent(&event), "cannot enqueue the window close request");
+        frame();
+    };
+    const auto expect_no_dialog = [&] {
+        require(prompt.empty() && !editor.chooser_open() && !editor.quitting(),
+            "expected all prompts consumed, no pending chooser and the window still open");
+    };
+
+    step = "cancel then discard an inactive dirty tab";
+    auto expected_tabs = tab_ids();
+    const auto b_bytes = file_bytes(b_file);
+    const int saves_before_close = picker.save_requests;
+    select(b_tab);
+    menus.activate(menus.open(1), 1); // Make the saved B dirty without changing its path.
+    auto dirty_b = redone_b;
+    dirty_b.model.revision += 2;
+    expect(b_tab, dirty_b);
+    select(label_tab);
+    prompt.expect(title(b_tab), Prompt::cancel);
+    close_inactive_tab(b_tab);
+    expect_no_dialog();
+    expect(label_tab, saved_label);
+    require(tab_ids() == expected_tabs && file_bytes(b_file) == b_bytes, "cancel changed the tabs or wrote B");
+    select(b_tab);
+    expect(b_tab, dirty_b);
+    select(label_tab);
+    prompt.expect(title(b_tab), Prompt::discard);
+    close_inactive_tab(b_tab);
+    expect_no_dialog();
+    expect(label_tab, saved_label);
+    std::erase(expected_tabs, b_tab);
+    require(tab_ids() == expected_tabs && file_bytes(b_file) == b_bytes && picker.save_requests == saves_before_close,
+        "discard did not close just B without saving it");
+
+    step = "cancel Save As while closing an inactive tab";
+    const auto unnamed_tab = create(vgui_tab_get_count(tabs));
+    const auto unnamed = add(3, "edit", clean);
+    const std::string unnamed_title(title(unnamed_tab));
+    const auto with_unnamed = tab_ids();
+    const auto close_file = picker.sandbox / "closed-by-save.vgui.json";
+    select(label_tab);
+    picker.defer_saves = true;
+    const auto expect_save_prompt = [&](int requests) {
+        require(prompt.empty() && editor.chooser_open() && !editor.quitting() &&
+            picker.save_requests == saves_before_close + requests && tab_ids() == with_unnamed &&
+            dirty(unnamed_tab) && title(unnamed_tab) == unnamed_title && !fs::exists(close_file),
+            "expected a pending Save As without removing, renaming or writing a tab");
+        expect(label_tab, saved_label);
+    };
+    const auto complete_save = [&](const fs::path& path = {}) {
+        require(editor.chooser_open() && picker.complete_save(path), "cannot post the delayed Save As result");
+        for (int i = 0; i < 4 && editor.chooser_open(); ++i) frame();
+        expect_no_dialog();
+    };
+    const auto expect_cancelled_save = [&] {
+        expect(label_tab, saved_label);
+        require(tab_ids() == with_unnamed && title(unnamed_tab) == unnamed_title && !fs::exists(close_file),
+            "cancelled Save As renamed or closed a tab, or wrote a file");
+        select(unnamed_tab);
+        expect(unnamed_tab, unnamed);
+        select(label_tab);
+    };
+    prompt.expect(unnamed_title, Prompt::save);
+    close_inactive_tab(unnamed_tab);
+    expect_save_prompt(1);
+    complete_save();
+    expect_cancelled_save();
+
+    step = "cancel exit in the Save As picker";
+    prompt.expect(unnamed_title, Prompt::save);
+    request_exit();
+    expect_save_prompt(2);
+    complete_save();
+    expect_cancelled_save();
+
+    step = "late Save As closes only its original tab";
+    prompt.expect(unnamed_title, Prompt::save);
+    close_inactive_tab(unnamed_tab);
+    expect_save_prompt(3);
+    // The OS picker blocks interactive tab clicks. Simulate a host activation
+    // while it is pending by reopening the already-open absolute design.
+    require(editor.open(absolute_fixture), "could not activate the other page during Save As");
+    frame();
+    expect(absolute_tab, saved_state(absolute));
+    complete_save(close_file);
+    expect(absolute_tab, saved_state(absolute));
+    require(tab_ids() == expected_tabs && picker.save_requests == saves_before_close + 3,
+        "the late result did not close just the unnamed origin tab");
+    expect_file(close_file, unnamed);
+    expect_file(absolute_fixture, absolute);
+    picker.defer_saves = false;
+
+    step = "cancel exit after an earlier discard";
+    const auto a_bytes = file_bytes(a_file), c_bytes = file_bytes(c_file);
+    const auto undo = [&](vgui_item_id id) {
+        select(id);
+        menus.activate(menus.open(1), 0);
+        const auto undone = page();
+        require(undone.model.dirty && undone.model.redo, "expected an unsaved undo with redo history");
+        return undone;
+    };
+    const auto dirty_a = undo(a_tab), dirty_c = undo(c_tab);
+    select(label_tab);
+    prompt.expect(title(a_tab), Prompt::discard);
+    prompt.expect(title(c_tab), Prompt::cancel);
+    request_exit();
+    const auto expect_exit_cancelled = [&] {
+        expect_no_dialog();
+        expect(label_tab, saved_label);
+        require(tab_ids() == expected_tabs && file_bytes(a_file) == a_bytes && file_bytes(c_file) == c_bytes &&
+            picker.save_requests == saves_before_close + 3, "cancelled exit closed or wrote a page");
+        select(a_tab);
+        expect(a_tab, dirty_a);
+        select(c_tab);
+        expect(c_tab, dirty_c);
+        select(label_tab);
+    };
+    expect_exit_cancelled();
+
+    step = "retry exit asks again about the earlier discarded page";
+    prompt.expect(title(a_tab), Prompt::cancel);
+    menus.activate(menus.open(0), 8); // File > Exit
+    expect_exit_cancelled();
+    for (const auto id : {a_tab, c_tab}) {
+        select(id);
+        menus.activate(menus.open(1), 1); // Restore the saved revision's content for the export test.
+        require(!dirty(id), "redo did not return the page to its save point");
+    }
+    select(label_tab);
     expect(label_tab, saved_label);
 }
 

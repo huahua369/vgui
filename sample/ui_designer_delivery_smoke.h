@@ -18,8 +18,8 @@ namespace vgui::ui_design {
 // Run after the runtime smoke: the clean form fixture is still open and Submit is selected.
 // Drive the workbench through the real SDL event loop; only the folder picker is mocked.
 inline void exercise_delivery(os_window& win, vgui_context* shell, const session& history,
-                              const std::function<void()>& frame, const std::filesystem::path& parent,
-                              bool& cancel_folder, const designer_strings& strings) {
+                              const std::function<void()>& frame, const std::filesystem::path& source,
+                              const std::filesystem::path& parent, bool& cancel_folder, const designer_strings& strings) {
     const native_menu_input menus(win, shell, frame);
     namespace fs = std::filesystem;
     std::string_view step = "setup";
@@ -89,7 +89,6 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
         return state{history.current(), history.committed(), history.revision(), history.dirty(),
             history.can_undo(), history.can_redo(), SDL_GetWindowTitle(win.window)};
     };
-    const fs::path source = VGUI_SOURCE_DIR "/sample/res/form.vgui.json";
     const auto original_bytes = bytes(source);
     const auto original_mtime = fs::last_write_time(source);
     const auto unchanged = [&](const state& before) {

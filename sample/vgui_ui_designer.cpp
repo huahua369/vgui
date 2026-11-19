@@ -3,7 +3,9 @@
 
 #include "delivery.h"
 #include "ui_designer_delivery_smoke.h"
+#include "ui_designer_export_isolation_smoke.h"
 #include "ui_designer_geometry_smoke.h"
+#include "ui_designer_image_smoke_fixture.h"
 #include "ui_designer_locale.h"
 #include "ui_designer_menu_smoke.h"
 #include "ui_designer_pages_smoke.h"
@@ -60,9 +62,12 @@ vgui_widget* find_widget(vgui_widget* w, std::string_view id, std::optional<vgui
 
 class designer {
 public:
+    using message_box_fn = std::function<bool(const SDL_MessageBoxData*, int*)>;
+
     designer(os_window& window, vgpu_device_t* gpu, vgui_context* shell, font_familys_t* font,
-             const ui::designer_strings& strings, fs::path settings_path)
+             const ui::designer_strings& strings, fs::path settings_path, message_box_fn message_box)
         : window_(window), shell_(shell), strings_(strings), settings_path_(std::move(settings_path)),
+          message_box_(std::move(message_box)),
           workbench_(shell, session_, {
               [this] { request(command::create); }, [this] { request(command::open); },
               [this] { request(command::save); }, [this] { request(command::save_as); },
@@ -522,7 +527,7 @@ private:
         const SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING, window_.window, tr("file.unsaved", "Unsaved changes"),
             message.c_str(), 3, buttons, nullptr};
         int selected = 0;
-        if (!SDL_ShowMessageBox(&box, &selected)) {
+        if (!message_box_(&box, &selected)) {
             workbench_.status(std::string(tr("file.confirm_failed", "Cannot show unsaved-changes prompt: ")) + SDL_GetError());
             return 0;
         }
@@ -648,6 +653,7 @@ private:
     vgui_context* shell_;
     ui::designer_strings strings_;
     fs::path settings_path_;
+    message_box_fn message_box_;
     ui::designer_dock_widths saved_dock_widths_;
     bool layout_save_pending_ = false;
     std::optional<ui::designer_language> pending_language_;
@@ -674,17 +680,43 @@ private:
     ui::designer_preview preview_;
 };
 
+struct smoke_unsaved_prompt {
+    enum choice { cancel = 0, save = 1, discard = 2 };
+    std::deque<std::pair<std::string, choice>> expected;
+
+    void expect(std::string_view page, choice answer) { expected.emplace_back(page, answer); }
+    bool empty() const { return expected.empty(); }
+
+    bool show(const SDL_MessageBoxData* box, int* selected) {
+        const std::string_view message(box->message);
+        if (expected.empty()) throw std::runtime_error("Unexpected unsaved prompt: " + std::string(message));
+        const auto& [page, answer] = expected.front();
+        if (!message.starts_with(page + "\n\n"))
+            throw std::runtime_error("Expected unsaved prompt for " + page + ", got: " + std::string(message));
+        if (!box->window || box->numbuttons != 3)
+            throw std::runtime_error("Unsaved prompt needs a parent window and three choices");
+        const auto* buttons = box->buttons;
+        if (buttons[0].buttonID != cancel || buttons[0].flags != SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT ||
+            buttons[1].buttonID != discard || buttons[1].flags != 0 ||
+            buttons[2].buttonID != save || buttons[2].flags != SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT)
+            throw std::runtime_error("Unexpected choices or keyboard defaults in unsaved prompt");
+        *selected = answer;
+        expected.pop_front();
+        return true;
+    }
+};
+
 // Exercise the async file-result flow while keeping the smoke test unattended.
 // The platform chooser itself remains the normal provider in interactive use.
 struct smoke_file_picker {
     vgui_file_dialog_provider_fn previous;
     void* previous_user = nullptr;
-    int open_requests = 0;
-    vgui_file_dialog_fn delayed_open = nullptr, delayed_save = nullptr;
+    int open_requests = 0, save_requests = 0, folder_requests = 0;
+    vgui_file_dialog_fn delayed_open = nullptr, delayed_save = nullptr, delayed_folder = nullptr;
     void* delayed_open_user = nullptr;
     void* delayed_save_user = nullptr;
-    int save_requests = 0;
-    bool cancel_folder = false, defer_saves = false;
+    void* delayed_folder_user = nullptr;
+    bool cancel_folder = false, defer_saves = false, defer_folders = false;
     std::string save_suggestion;
     fs::path sandbox, package_parent, save_target;
 
@@ -720,23 +752,32 @@ struct smoke_file_picker {
     }
 
     bool complete_save(const fs::path& path = {}) {
-        auto callback = std::exchange(delayed_save, nullptr);
+        return post_path(VGUI_FILE_DIALOG_SAVE, std::exchange(delayed_save, nullptr), delayed_save_user, path);
+    }
+
+    bool complete_folder(const fs::path& path) {
+        return post_path(VGUI_FILE_DIALOG_FOLDER, std::exchange(delayed_folder, nullptr), delayed_folder_user, path);
+    }
+
+    static bool post_path(vgui_file_dialog_kind kind, vgui_file_dialog_fn callback, void* user, const fs::path& path) {
         if (!callback) return false;
         const auto name = utf8(path);
         const char* paths[] = {name.c_str()};
-        return vgui_file_dialog_post_result(VGUI_FILE_DIALOG_SAVE, callback, delayed_save_user,
-            path.empty() ? nullptr : paths, path.empty() ? 0 : 1, nullptr);
+        return vgui_file_dialog_post_result(kind, callback, user, path.empty() ? nullptr : paths, path.empty() ? 0 : 1, nullptr);
     }
 
     static int show(void* user, vgui_file_dialog_kind kind, const vgui_file_dialog_desc* desc,
                     vgui_file_dialog_fn callback, void* callback_user) {
         auto& self = *static_cast<smoke_file_picker*>(user);
         if (kind == VGUI_FILE_DIALOG_FOLDER) {
-            if (self.cancel_folder)
-                return vgui_file_dialog_post_result(kind, callback, callback_user, nullptr, 0, nullptr);
-            const auto location = utf8(self.package_parent);
-            const char* paths[] = {location.c_str()};
-            return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
+            ++self.folder_requests;
+            if (self.defer_folders) {
+                if (self.delayed_folder) return 0;
+                self.delayed_folder = callback;
+                self.delayed_folder_user = callback_user;
+                return 1;
+            }
+            return post_path(kind, callback, callback_user, self.cancel_folder ? fs::path{} : self.package_parent);
         }
         if (kind == VGUI_FILE_DIALOG_SAVE) {
             ++self.save_requests;
@@ -758,8 +799,8 @@ struct smoke_file_picker {
             self.delayed_open_user = callback_user;
             return 1;
         }
-        const char* paths[] = {VGUI_SOURCE_DIR "/sample/res/button.png"}; // Existing, but not a design.
-        return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
+        // Return an existing file in a non-design format.
+        return post_path(kind, callback, callback_user, self.sandbox / ui::smoke_badge_file);
     }
 };
 
@@ -1062,10 +1103,22 @@ int run(bool smoke, fs::path open_path) {
         const fs::path fixtures = VGUI_SOURCE_DIR "/sample/res";
         open_path = picker->sandbox / "form.vgui.json";
         absolute_fixture = picker->sandbox / "absolute-form.vgui.json";
-        // Save All may write both pages; never open the originals for this run.
-        fs::copy_file(fixtures / open_path.filename(), open_path);
+        // Save All may write both pages. Use scratch designs and attach a
+        // generated image only to the test's copy of the example form.
+        ui::document form;
+        ui::diagnostic error;
+        if (!ui::read_document(fixtures / open_path.filename(), form, &error))
+            throw std::runtime_error("Cannot read the form smoke fixture: " + describe(error));
+        form.nodes.emplace("mark", ui::node{"image", {}, {{"resource", std::string(ui::smoke_badge_key)},
+            {"width", 32.0}, {"height", 24.0}}, {}});
+        auto& footer = form.nodes.at("footer").children;
+        footer.insert(footer.begin(), "mark");
+        form.resources.emplace(ui::smoke_badge_key, ui::smoke_badge_file);
+        if (!ui::write_smoke_badge(picker->sandbox / ui::smoke_badge_file))
+            throw std::runtime_error("Cannot generate the image smoke fixture");
+        if (!ui::write_document(open_path, form, &error))
+            throw std::runtime_error("Cannot write the form smoke fixture: " + describe(error));
         fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
-        fs::copy_file(fixtures / "button.png", picker->sandbox / "button.png");
     }
     const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
     if (smoke && !ui::save_designer_dock_widths(settings, {280, 375}))
@@ -1101,7 +1154,10 @@ int run(bool smoke, fs::path open_path) {
         os_window* window;
         ~binding_guard() { window->viewport->ui = nullptr; }
     } detach{win};
-    designer editor(*win, app.vgdev, shell.get(), font.get(), strings, settings);
+    smoke_unsaved_prompt prompt;
+    designer::message_box_fn message_box = SDL_ShowMessageBox;
+    if (smoke) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
+    designer editor(*win, app.vgdev, shell.get(), font.get(), strings, settings, std::move(message_box));
     editor.preview().set_render_context(app.vgctx);
     if (open_path.empty() || !editor.open(open_path)) {
         if (smoke) return 1;
@@ -1244,7 +1300,7 @@ int run(bool smoke, fs::path open_path) {
                 snapshot->view.width < initial.view.width && snapshot->view.width < snapshot->view.height,
                 "preset change did not rebuild and present the preview");
             exercise_runtime_input(*win, shell.get(), editor, advance, submitted_windows);
-            ui::exercise_delivery(*win, shell.get(), editor.history(), advance,
+            ui::exercise_delivery(*win, shell.get(), editor.history(), advance, open_path,
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
             exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
@@ -1252,12 +1308,13 @@ int run(bool smoke, fs::path open_path) {
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
-            ui::exercise_pages(*win, shell.get(), editor, advance, *picker, open_path, absolute_fixture);
+            ui::exercise_pages(*win, shell.get(), editor, advance, *picker, prompt, open_path, absolute_fixture);
+            ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
         } catch (...) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: idle rendering, image, viewport presets, file-open isolation, runtime input, delivery, geometry, language, and layout reset passed");
+        std::puts("ui_designer_native: rendering, input, geometry, language, layout, multi-page save/close/exit and delivery isolation passed");
     }
     app.wait_gpu();
     return 0;
