@@ -52,6 +52,19 @@ public:
     vgui_widget* widget() const;
 
     enum class preset { desktop, tablet, phone };
+    struct view_state {
+        preset screen = preset::desktop;
+        bool fit = true;
+        float zoom = 1;
+        float pan_x = 0, pan_y = 0;
+        bool running = false;
+    };
+
+    view_state capture_view() const;
+    // Restore a saved or default view before syncing the next document.
+    // Discards live input; snapshot() stays null until sync and render.
+    void restore_view(const view_state&);
+
     void set_preset(preset);
     preset current_preset() const;
     void reset_zoom(bool fit);

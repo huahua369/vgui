@@ -34,6 +34,7 @@ constexpr vgui_color document_dirty = 0xFFF5BA63;
 constexpr float toolbar_padding_right = 10;
 constexpr float toolbar_gap = 10;
 constexpr float document_chrome_width = 33; // Left/right padding, marker, and gap.
+constexpr float page_tab_height = 32;
 
 std::string display_value(const value& data)
 {
@@ -119,6 +120,7 @@ struct designer_workbench::impl {
         vgui_item_id item;
         std::string command;
         localized_text label;
+        bool page_only = false; // For submenu entries, which have no command predicate.
     };
     // The native items keep stable pointers, even when the registry grows.
     std::vector<std::unique_ptr<menu_binding>> menu_commands;
@@ -156,7 +158,9 @@ struct designer_workbench::impl {
     bool sync_inspector_language = false;
     bool refreshing = false;
     bool invoking_command = false;
-    vgui_widget *shell = nullptr, *dock = nullptr, *preview = nullptr;
+    bool page_active = true;
+    vgui_widget *shell = nullptr, *dock = nullptr;
+    vgui_widget *preview_section = nullptr, *preview = nullptr, *page_tabs = nullptr;
     vgui_widget *title_label = nullptr, *document_chip = nullptr, *document_marker = nullptr;
     vgui_widget *status_label = nullptr, *pickup = nullptr;
     vgui_widget *menubar = nullptr, *quick_actions = nullptr;
@@ -193,8 +197,15 @@ struct designer_workbench::impl {
 
         auto* structure = page("structure", {"workbench.dock.structure", "Structure"}, VGUI_DOCK_LEFT);
         build_structure(structure);
-        preview = page("preview", {"workbench.dock.preview", "Preview"}, VGUI_DOCK_CENTER);
+        preview_section = page("preview", {"workbench.dock.preview", "Preview"}, VGUI_DOCK_CENTER);
+        preview = vgui_widget_add(preview_section, VGUI_PANEL, nullptr);
         vgui_widget_set_id(preview, "designer.preview.page");
+        vgui_widget_set_layout(preview, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_items(preview, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_grow(preview, 1);
+        vgui_widget_set_padding(preview, 0, 0, 0, 0);
+        vgui_widget_set_background(preview, 0);
+        vgui_widget_set_border(preview, 0, 0);
         auto* properties = page("inspector", {"workbench.dock.inspector", "Inspector"}, VGUI_DOCK_RIGHT);
         grid->build_with_labels(properties, inspector_labels());
         grid->set_change_listener([this](const std::string& key, const std::string& input) {
@@ -239,6 +250,11 @@ struct designer_workbench::impl {
     {
         set(widget, translate(text));
         widget_labels.push_back({widget, std::move(text), set});
+    }
+
+    kit::command_registry::predicate with_active_page(kit::command_registry::predicate enabled = {})
+    {
+        return [this, enabled = std::move(enabled)] { return page_active && (!enabled || enabled()); };
     }
 
     void define_command(const std::string& id, const char* title, kit::command_registry::action run,
@@ -305,6 +321,10 @@ struct designer_workbench::impl {
             if ((vgui_menu_get_item_checked(binding->menu, binding->item) != 0) != checked)
                 vgui_menu_set_item_checked(binding->menu, binding->item, checked);
         }
+        for (const auto& binding : submenu_labels) {
+            if (binding.page_only && (vgui_menu_get_item_enabled(binding.menu, binding.item) != 0) != page_active)
+                vgui_menu_set_item_enabled(binding.menu, binding.item, page_active);
+        }
     }
 
     void wire_menu(vgui_widget* menu)
@@ -327,11 +347,11 @@ struct designer_workbench::impl {
         return menu;
     }
 
-    vgui_widget* add_submenu(vgui_widget* menu, localized_text label)
+    vgui_widget* add_submenu(vgui_widget* menu, localized_text label, bool page_only = false)
     {
         vgui_widget* submenu = nullptr;
         const auto item = vgui_menu_add_submenu(menu, translate(label), &submenu);
-        submenu_labels.push_back({menu, item, {}, std::move(label)});
+        submenu_labels.push_back({menu, item, {}, std::move(label), page_only});
         wire_menu(submenu);
         return submenu;
     }
@@ -370,43 +390,51 @@ struct designer_workbench::impl {
         auto* file = add_menu({"workbench.menu.file", "File"});
         add_menu_command(file, "designer.file.new", {"workbench.menu.new_page", "New Page"}, std::move(callbacks.new_document), {}, "Ctrl+N");
         add_menu_command(file, "designer.file.open", {"workbench.menu.open_page", "Open Page"}, std::move(callbacks.open_document), {}, "Ctrl+O");
-        add_menu_command(file, "designer.file.save", {"workbench.toolbar.save", "Save"}, std::move(callbacks.save_document), {}, "Ctrl+S");
-        add_menu_command(file, "designer.file.save_as", {"workbench.toolbar.save_as", "Save As"}, std::move(callbacks.save_as), {}, "Ctrl+Shift+S");
+        add_menu_command(file, "designer.file.save", {"workbench.toolbar.save", "Save"}, std::move(callbacks.save_document),
+            with_active_page(), "Ctrl+S");
+        add_menu_command(file, "designer.file.save_as", {"workbench.toolbar.save_as", "Save As"}, std::move(callbacks.save_as),
+            with_active_page(), "Ctrl+Shift+S");
         vgui_menu_add_separator(file);
-        add_menu_command(file, "designer.file.export", {"workbench.toolbar.export", "Export Package"}, std::move(callbacks.export_package));
+        add_menu_command(file, "designer.file.export", {"workbench.toolbar.export", "Export Package"}, std::move(callbacks.export_package),
+            with_active_page());
         vgui_menu_add_separator(file);
         add_menu_command(file, "designer.file.exit", {"workbench.menu.exit", "Exit"}, std::move(callbacks.quit));
+        if (callbacks.close_document) {
+            vgui_menu_add_separator(file);
+            add_menu_command(file, "designer.file.close", {"workbench.menu.close_page", "Close Page"},
+                std::move(callbacks.close_document), with_active_page());
+        }
 
         auto* edit = add_menu({"workbench.menu.edit", "Edit"});
         add_menu_command(edit, "designer.undo", {"workbench.toolbar.undo", "Undo"}, [this] { replay(false); },
-            [this] { return history.can_undo(); }, "Ctrl+Z");
+            with_active_page([this] { return history.can_undo(); }), "Ctrl+Z");
         add_menu_command(edit, "designer.redo", {"workbench.toolbar.redo", "Redo"}, [this] { replay(true); },
-            [this] { return history.can_redo(); }, "Ctrl+Shift+Z");
+            with_active_page([this] { return history.can_redo(); }), "Ctrl+Shift+Z");
         vgui_menu_add_separator(edit);
         add_menu_command(edit, "designer.duplicate", {"workbench.outline.copy", "Copy"}, [this] { duplicate(); },
-            [this] { return can_duplicate(); });
+            with_active_page([this] { return can_duplicate(); }));
         add_menu_command(edit, "designer.delete", {"workbench.outline.delete", "Delete"}, [this] { erase(); },
-            [this] { return location(selected).has_value(); });
+            with_active_page([this] { return location(selected).has_value(); }));
         add_menu_command(edit, "designer.move.up", {"workbench.menu.move_up", "Move Up"}, [this] { reorder(-1); },
-            [this] { return can_reorder(-1); });
+            with_active_page([this] { return can_reorder(-1); }));
         add_menu_command(edit, "designer.move.down", {"workbench.menu.move_down", "Move Down"}, [this] { reorder(1); },
-            [this] { return can_reorder(1); });
+            with_active_page([this] { return can_reorder(1); }));
 
         auto* resources = add_menu({"workbench.menu.resources", "Resources"});
-        auto* new_control = add_submenu(resources, {"workbench.menu.new_control", "New Control"});
+        auto* new_control = add_submenu(resources, {"workbench.menu.new_control", "New Control"}, true);
         for (const auto& type : types()) {
             const std::string key(type.key);
             add_menu_command(new_control, "designer.add." + key, type_label(type), [this, key] { add_node(key); },
-                [this] { return history.current().nodes.size() < max_nodes; });
+                with_active_page([this] { return history.current().nodes.size() < max_nodes; }));
         }
 
         auto* view = add_menu({"workbench.menu.view", "View"});
         using action = designer_view_action;
         const auto add_view = [&](const char* id, localized_text label, action value, bool checkable = true) {
             kit::command_registry::predicate checked;
-            if (checkable) checked = [check = callbacks.view_checked, value] { return check && check(value); };
+            if (checkable) checked = with_active_page([check = callbacks.view_checked, value] { return check && check(value); });
             add_menu_command(view, id, std::move(label), [run = callbacks.view, value] { run(value); },
-                [available = bool(callbacks.view)] { return available; }, nullptr, std::move(checked));
+                with_active_page([available = bool(callbacks.view)] { return available; }), nullptr, std::move(checked));
         };
         add_view("designer.view.design", {"preview.mode.design", "Design"}, action::design);
         add_view("designer.view.run", {"preview.mode.run", "Run"}, action::run);
@@ -442,7 +470,7 @@ struct designer_workbench::impl {
                 "While a text field is focused, undo and redo apply to that field first.\n"});
         add_help("designer.help.about", {"workbench.menu.about", "About"},
             {"workbench.help.about", "VGUI UI Designer is the VGUI sample editor for .vgui.json design files. "
-                "It edits one page at a time; Run mode previews the page without editing the design."});
+                "Run mode previews the active page without changing its design."});
     }
 
     void build_toolbar(designer_commands callbacks)
@@ -522,10 +550,12 @@ struct designer_workbench::impl {
 
     void refresh_document_caption()
     {
-        const auto dirty = history.dirty();
+        const bool use_chip = page_active && !page_tabs;
+        const auto dirty = use_chip && history.dirty();
         const auto scale = vgui_context_get_ui_scale(ui);
         const auto language = strings.language();
-        const std::string_view filename = title ? std::string_view(*title) : strings.text("workbench.title.untitled", "Untitled");
+        const std::string_view filename = !use_chip ? std::string_view{} :
+            title ? std::string_view(*title) : strings.text("workbench.title.untitled", "Untitled");
         int context_width = 0;
         vgui_context_get_size(ui, &context_width, nullptr);
         if (filename == displayed_title && context_width == title_context_width && scale == title_scale &&
@@ -538,20 +568,21 @@ struct designer_workbench::impl {
 
         // Reserve the natural menu width first. Quick actions yield before
         // the document chip; the six menus do not compete with either.
-        const float chrome = (toolbar_padding_right + 2 * toolbar_gap) * scale;
+        const float chrome = (toolbar_padding_right + (use_chip ? 2 : 1) * toolbar_gap) * scale;
         float menu_width = 0, actions_width = 0;
         vgui_widget_get_intrinsic_size(menubar, &menu_width, nullptr);
         vgui_widget_get_intrinsic_size(quick_actions, &actions_width, nullptr);
         float available = context_width - menu_width - chrome;
         constexpr float min_chip_width = 64.f;
         const float quick_width = actions_width + toolbar_gap * scale;
-        const bool show_actions = context_width <= 0 || available >= quick_width + min_chip_width * scale;
+        const bool show_actions = context_width <= 0 || available >= quick_width + (use_chip ? min_chip_width * scale : 0);
         if ((vgui_widget_get_visible(quick_actions) != 0) != show_actions)
             vgui_widget_set_visible(quick_actions, show_actions);
         if (show_actions) available -= quick_width;
-        const bool show_document = context_width <= 0 || available >= min_chip_width * scale;
+        const bool show_document = use_chip && (context_width <= 0 || available >= min_chip_width * scale);
         if ((vgui_widget_get_visible(document_chip) != 0) != show_document)
             vgui_widget_set_visible(document_chip, show_document);
+        if (!use_chip) return;
         const float chip_width = context_width > 0 ? std::clamp(available / scale, min_chip_width, 200.f) : 200.f;
         const float label_width = chip_width - document_chrome_width;
         vgui_widget_set_size(document_chip, chip_width, 33);
@@ -574,6 +605,30 @@ struct designer_workbench::impl {
         vgui_widget_set_a11y_name(title_label, description.c_str());
         vgui_widget_set_background(document_marker, dirty ? document_dirty : document_ready);
         vgui_widget_set_tooltip(document_marker, dirty ? unsaved : nullptr);
+    }
+
+    vgui_widget* enable_page_tabs()
+    {
+        if (page_tabs) return page_tabs;
+        vgui_widget_set_visible(document_chip, 0);
+        title_context_width = -1;
+        vgui_widget_set_padding(preview_section, 0, 0, 0, 0);
+        vgui_widget_set_gap(preview_section, 0);
+        vgui_widget_set_rounding(preview_section, 0);
+
+        // Insert the strip ahead of the stable host, even if the preview is already mounted.
+        vgui_widget_remove(preview);
+        page_tabs = vgui_widget_add(preview_section, VGUI_TABVIEW, nullptr);
+        vgui_widget_set_id(page_tabs, "designer.page_tabs");
+        vgui_widget_set_align_self(page_tabs, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_padding(page_tabs, 0, 0, 0, 0);
+        vgui_widget_set_rounding(page_tabs, 0);
+        vgui_widget_set_border(page_tabs, 0, 0);
+        vgui_widget_set_size(page_tabs, 0, page_tab_height);
+        vgui_tab_set_tab_height(page_tabs, page_tab_height);
+        vgui_widget_attach(preview_section, preview);
+        refresh_document_caption();
+        return page_tabs;
     }
 
     kit::property_grid::ui_labels inspector_labels() const
@@ -681,7 +736,7 @@ struct designer_workbench::impl {
         vgui_widget_set_id(tree, "designer.outliner");
         bind_label(tree, {"workbench.outline.a11y", "Document outline"}, vgui_widget_set_a11y_name);
         outliner->set_selection_listener([this](kit::object_id object) {
-            if (refreshing || replaced) return;
+            if (refreshing || replaced || !page_active) return;
             const auto found = node_ids.find(object);
             if (found != node_ids.end()) select(found->second);
         });
@@ -701,7 +756,7 @@ struct designer_workbench::impl {
                 move_source.clear();
                 message = localized_text{"workbench.status.move_cancelled", "Move cancelled"};
             }
-        }, [this] { return !move_source.empty() || location(selected).has_value(); });
+        }, with_active_page([this] { return !move_source.empty() || location(selected).has_value(); }));
         pickup = make_button(row, "designer.move.pick", pickup_label(), true);
         bind_label(pickup, {"workbench.outline.pick_hint", "Pick up a node to move it to a different container"}, vgui_widget_set_tooltip);
         const localized_text move_here{"workbench.outline.move_here", "Move Here"};
@@ -709,10 +764,10 @@ struct designer_workbench::impl {
             if (apply({move_node{move_source, selected}}, moved_status())) {
                 select(std::exchange(move_source, {}));
             }
-        }, [this] {
+        }, with_active_page([this] {
             const auto place = location(move_source);
             return place && place->first != selected && can_move(move_source, selected);
-        });
+        }));
         add_button(row, "designer.move.here", move_here, true);
     }
 
@@ -735,6 +790,7 @@ struct designer_workbench::impl {
 
     void select(std::string id)
     {
+        if (!page_active) return;
         const auto& doc = history.current();
         if (!doc.nodes.contains(id)) id = doc.root;
         if (selected == id) return;
@@ -744,13 +800,54 @@ struct designer_workbench::impl {
         sync_inspector = true;
     }
 
-    void document_replaced()
+    void reset_document_transients()
     {
-        live.reset();
+        live.reset(); // The outgoing edit must be finished before swapping the session.
         replaced = sync_inspector = true;
-        selected = history.current().root;
         move_source.clear();
         field_errors.clear();
+        message = localized_text{"workbench.status.ready", "Ready"};
+
+        // Clear both an active payload and a press that has not started dragging yet.
+        auto* tree = outliner->widget();
+        vgui_cancel_drag(ui);
+        vgui_tree_set_row_drag(tree, nullptr, nullptr);
+        build_drag_drop(tree);
+        for (auto* focus = vgui_get_focus(ui); focus; focus = vgui_widget_get_parent(focus)) {
+            if (focus != tree && focus != grid->widget()) continue;
+            vgui_set_focus(ui, nullptr);
+            break;
+        }
+    }
+
+    void document_replaced(std::string selection)
+    {
+        reset_document_transients();
+        const auto& doc = history.current();
+        selected = !selection.empty() && doc.nodes.contains(selection) ? std::move(selection) : doc.root;
+    }
+
+    void set_page_active(bool active)
+    {
+        if (page_active == active) return;
+        page_active = active;
+        if (!active) {
+            reset_document_transients();
+            selected.clear();
+            vgui_dock_end_drag(dock);
+        }
+        // The Dock manages visibility of its immediate pages. Close the side
+        // panels rather than hiding their widgets; leave the strip in the center.
+        for (const auto* id : {"structure", "inspector"}) {
+            const auto panel = vgui_dock_find(dock, id);
+            if (active) vgui_dock_restore(dock, panel);
+            else vgui_dock_close(dock, panel);
+        }
+        vgui_widget_set_enabled(dock, active);
+        vgui_widget_set_visible(preview, active);
+        title_context_width = -1;
+        refresh_command_states();
+        refresh_captions();
     }
 
     void replay(bool redo)
@@ -875,7 +972,7 @@ struct designer_workbench::impl {
     std::optional<move_node> drop_move(const vgui_drag_payload* payload, float x, float y,
         kit::outliner_view::drop_location& location) const
     {
-        if (payload->kind != VGUI_DRAG_CUSTOM || payload->data != this || replaced ||
+        if (payload->kind != VGUI_DRAG_CUSTOM || payload->data != this || replaced || !page_active ||
             history.revision() != displayed_revision) return std::nullopt;
         const auto from = node_ids.find(payload->id);
         if (from == node_ids.end()) return std::nullopt;
@@ -895,7 +992,7 @@ struct designer_workbench::impl {
     {
         vgui_tree_set_row_drag(tree, [](void* user, vgui_item_id item, int, vgui_drag_payload* out) -> int {
             auto& self = *static_cast<impl*>(user);
-            if (self.replaced || self.history.revision() != self.displayed_revision) return 0;
+            if (self.replaced || !self.page_active || self.history.revision() != self.displayed_revision) return 0;
             const auto object = static_cast<kit::object_id>(reinterpret_cast<std::uintptr_t>(
                 vgui_tree_get_item_user(self.outliner->widget(), item)));
             const auto from = self.node_ids.find(object);
@@ -942,7 +1039,7 @@ struct designer_workbench::impl {
         kit::property_grid::text_edit_event event)
     {
         using text_event = kit::property_grid::text_edit_event;
-        if (refreshing || replaced || inspected.id != selected) return true;
+        if (refreshing || replaced || !page_active || inspected.id != selected) return true;
         if (event != text_event::change) {
             if (live && live->widget == widget) finish_property_edit(event == text_event::submit);
             return true;
@@ -956,7 +1053,7 @@ struct designer_workbench::impl {
 
     void edit_property(const std::string& key, const std::string& input, bool interactive = false)
     {
-        if (refreshing || replaced || inspected.id != selected) return;
+        if (refreshing || replaced || !page_active || inspected.id != selected) return;
         const auto& doc = interactive ? history.committed() : history.current();
         const auto found = doc.nodes.find(inspected.id);
         if (found == doc.nodes.end() || found->second.type != inspected.type) return;
@@ -1045,7 +1142,7 @@ struct designer_workbench::impl {
         }
 
         auto old = std::exchange(outline, {});
-        if (replaced) old.clear();
+        if (replaced) old.clear(); // New page, new objects even when node IDs match.
         std::vector<kit::object_id> expanded;
         for (const auto& [id, row] : old)
             if (vgui_tree_get_item_expanded(tree, row.item)) expanded.push_back(row.object);
@@ -1174,12 +1271,12 @@ struct designer_workbench::impl {
         }
         refresh_command_states();
         for (const auto& [id, label] : dock_labels) vgui_dock_set_title(dock, id, translate(label));
-        if (!replaced) refresh_outline_labels();
+        if (page_active && !replaced) refresh_outline_labels();
         sync_inspector_language = true;
         // Do not rebind a live text editor (or finish its undo transaction)
         // just because the language changed. Normal refresh catches up when
         // the edit ends or a pending document/selection change is projected.
-        if (!live && !replaced && inspected.id == selected) {
+        if (page_active && !live && !replaced && inspected.id == selected) {
             const auto item = history.current().nodes.find(selected);
             if (item != history.current().nodes.end() && item->second.type == inspected.type)
                 refresh_inspector(false);
@@ -1188,10 +1285,8 @@ struct designer_workbench::impl {
         refreshing = false;
     }
 
-    void refresh()
+    void refresh_page()
     {
-        if (refreshing || invoking_command) return;
-        refreshing = true;
         if (live && live->revision != history.revision()) finish_property_edit();
         const bool changed = replaced || displayed_revision != history.revision();
         if (changed) {
@@ -1225,7 +1320,13 @@ struct designer_workbench::impl {
             if (grid->property_error(key) != error) grid->set_property_error(key, error);
         }
         replaced = false;
+    }
 
+    void refresh()
+    {
+        if (refreshing || invoking_command) return;
+        refreshing = true;
+        if (page_active) refresh_page();
         refresh_command_states();
         refresh_captions();
         refreshing = false;
@@ -1240,9 +1341,12 @@ designer_workbench::designer_workbench(vgui_context* ui, session& history, desig
 
 designer_workbench::~designer_workbench() = default;
 vgui_widget* designer_workbench::preview_host() const { return impl_->preview; }
+vgui_widget* designer_workbench::enable_page_tabs() { return impl_->enable_page_tabs(); }
+void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }
 void designer_workbench::select(std::string id) { impl_->select(std::move(id)); }
-void designer_workbench::document_replaced() { impl_->document_replaced(); }
+void designer_workbench::finish_edit() { impl_->finish_property_edit(); }
+void designer_workbench::document_replaced(std::string selection) { impl_->document_replaced(std::move(selection)); }
 void designer_workbench::refresh() { impl_->refresh(); }
 void designer_workbench::refresh_language() { impl_->refresh_language(); }
 void designer_workbench::status(std::string message) { impl_->message = std::move(message); }

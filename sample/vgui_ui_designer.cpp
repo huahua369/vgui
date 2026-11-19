@@ -6,6 +6,7 @@
 #include "ui_designer_geometry_smoke.h"
 #include "ui_designer_locale.h"
 #include "ui_designer_menu_smoke.h"
+#include "ui_designer_pages_smoke.h"
 #include "ui_designer_preview.h"
 #include "ui_designer_workbench.h"
 
@@ -38,7 +39,7 @@ std::string describe(const ui::diagnostic& error) {
     return error.path.empty() ? error.message : error.path + ": " + error.message;
 }
 
-enum class command { none, create, open, save, save_as, export_package, quit };
+enum class command { none, create, open, save, save_as, export_package, quit, close };
 
 bool valid_package_name(std::string_view name) {
     // A single portable directory component; the parent is chosen separately.
@@ -60,33 +61,42 @@ public:
     designer(os_window& window, vgpu_device_t* gpu, vgui_context* shell, font_familys_t* font,
              const ui::designer_strings& strings, fs::path settings_path)
         : window_(window), shell_(shell), strings_(strings), settings_path_(std::move(settings_path)),
-          root_(new_root_),
           workbench_(shell, session_, {
               [this] { request(command::create); }, [this] { request(command::open); },
               [this] { request(command::save); }, [this] { request(command::save_as); },
               [this] { request(command::export_package); }, [this] { request(command::quit); },
               [this](ui::designer_language language) { pending_language_ = language; },
               [this](ui::designer_view_action action) { pending_view_ = action; },
-              [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); }}, strings_),
+              [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); },
+              [this] { request(command::close); }}, strings_),
           preview_(workbench_.preview_host(), gpu, font,
               [this](std::string id) { workbench_.select(std::move(id)); },
               [this](std::string message) { workbench_.status(std::move(message)); },
               [this](ui::geometry_edit change) { commit_geometry(std::move(change)); }, strings_) {
         preview_constructed_ = true;
-        workbench_.refresh();
-        workbench_.status(tr("file.new_hint", "New document. Save it in your project folder before adding relative image paths."));
+        tabs_ = workbench_.enable_page_tabs();
+        vgui_tab_on_select(tabs_, [](vgui_widget*, vgui_item_id item, void* user) {
+            auto& self = *static_cast<designer*>(user);
+            if (!self.projecting_tabs_) self.pending_tab_ = item;
+        }, this);
+        vgui_tab_on_close(tabs_, [](vgui_widget*, vgui_item_id item, void* user) {
+            static_cast<designer*>(user)->request(command::close, item);
+        }, this);
+        update_empty();
     }
 
-    void request(command action) {
-        if (chooser_ || pending_ != command::none) return;
+    void request(command action, vgui_item_id page = 0) {
+        if (chooser_ || pending_ != command::none || pending_tab_) return;
         if (package_parent_ && vgui_modal_active(shell_)) {
             if (action != command::quit) return;
             vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
         }
         pending_ = action;
+        command_page_ = page ? page : active_;
     }
     bool quitting() const { return quitting_; }
     bool chooser_open() const { return chooser_; }
+    bool tab_change_pending() const { return pending_tab_ != 0 || pending_ == command::close; }
     ui::designer_preview& preview() { return preview_; }
     const ui::designer_strings& strings() const { return strings_; }
     void report_bad_settings() {
@@ -98,23 +108,31 @@ public:
         // F10 belongs to the workbench even while a runtime input owns text focus.
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.key == SDLK_F10)
             return false;
-        return (last_revision_ == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
+        return active_ && (last_revision_ == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
             preview_.handle_event(event);
     }
 
     bool open(const fs::path& path) {
         const auto file = document_path(path);
         if (!file) return false;
-        ui::diagnostic error;
-        if (!session_.load(*file, &error)) {
-            workbench_.status(std::string(tr("file.open_failed", "Open failed: ")) + describe(error));
-            return false;
+        if (const auto existing = find_path(*file)) {
+            activate(existing);
+        } else {
+            ui::session loaded;
+            ui::diagnostic error;
+            if (!loaded.load(*file, &error)) {
+                workbench_.status(std::string(tr("file.open_failed", "Open failed: ")) + describe(error));
+                return false;
+            }
+            add_page(std::move(loaded), *file);
         }
-        path_ = *file;
-        root_ = path_.parent_path();
-        replaced();
-        workbench_.status(std::string(tr("file.opened", "Opened ")) + utf8(path_));
+        workbench_.status(std::string(tr("file.opened", "Opened ")) + utf8(*file));
         return true;
+    }
+
+    void new_page() {
+        add_page(ui::session{}, {});
+        workbench_.status(tr("file.new_hint", "New document. Save it in your project folder before adding relative image paths."));
     }
 
     void service() {
@@ -133,48 +151,60 @@ public:
                 workbench_.status(std::string(tr("settings.save_failed", "Cannot save language settings: ")) + utf8(settings_path_));
             }
         }
-        if (auto view = std::exchange(pending_view_, std::nullopt)) apply_view(*view);
-        auto action = std::exchange(pending_, command::none);
+        if (auto view = std::exchange(pending_view_, std::nullopt); view && active_) apply_view(*view);
+        if (const auto tab = std::exchange(pending_tab_, 0); tab && !chooser_ && !package_parent_) activate(tab);
+        sync_tab_selection();
+        const auto action = std::exchange(pending_, command::none);
+        const auto page = std::exchange(command_page_, 0);
         if (action == command::none) return;
-        if (action == command::export_package) {
-            choose(VGUI_FILE_DIALOG_FOLDER);
-            return;
+        workbench_.finish_edit();
+        switch (action) {
+        case command::create: new_page(); break;
+        case command::open: choose(VGUI_FILE_DIALOG_OPEN, page); break;
+        case command::save:
+        case command::save_as:
+            if (auto* entry = find_page(page)) {
+                if (action == command::save && !entry->path.empty()) save(page, entry->path);
+                else choose(VGUI_FILE_DIALOG_SAVE, page);
+            }
+            break;
+        case command::export_package:
+            if (find_page(page)) choose(VGUI_FILE_DIALOG_FOLDER, page);
+            break;
+        case command::close: close_page(page); break;
+        case command::quit:
+            exit_queue_.clear();
+            for (const auto& entry : pages_) if (page_session(entry).dirty()) exit_queue_.push_back(entry.id);
+            continue_exit();
+            break;
+        default: break;
         }
-        if (action == command::save || action == command::save_as) {
-            if (action == command::save && !path_.empty()) save(path_);
-            else choose(VGUI_FILE_DIALOG_SAVE);
-            return;
-        }
-        if (session_.dirty()) {
-            const auto answer = confirm_unsaved();
-            if (answer == 1) { // Save, then continue only after a successful write.
-                if (path_.empty()) {
-                    choose(VGUI_FILE_DIALOG_SAVE, action);
-                    return;
-                }
-                if (!save(path_)) return;
-            } else if (answer != 2) return; // Cancel or close prompt.
-        }
-        proceed(action);
     }
 
     void refresh() {
-        std::string title = path_.empty() ? tr("file.untitled", "Untitled") : utf8(path_.filename());
-        auto window_title = title + (session_.dirty() ? " * — " : " — ") + tr("app.title", "VGUI UI Designer");
-        if (window_title != window_title_) {
-            window_title_ = std::move(window_title);
+        auto title = std::string(tr("app.title", "VGUI UI Designer"));
+        if (const auto* page = find_page(active_))
+            title = page_title(*page) + (session_.dirty() ? " * — " : " — ") + title;
+        if (title != window_title_) {
+            window_title_ = std::move(title);
             SDL_SetWindowTitle(window_.window, window_title_.c_str());
-            workbench_.document_title(std::move(title));
+        }
+        for (const auto& page : pages_) {
+            const auto label = page_title(page);
+            if (label != vgui_tab_get_title(tabs_, page.id)) vgui_tab_set_title(tabs_, page.id, label.c_str());
+            const bool dirty = page_session(page).dirty();
+            if (dirty != (vgui_tab_get_unsaved(tabs_, page.id) != 0)) vgui_tab_set_unsaved(tabs_, page.id, dirty);
         }
         workbench_.refresh();
     }
 
     void render_preview(float dt) {
+        if (!active_) return;
         if (last_revision_ != session_.revision()) {
             last_revision_ = session_.revision();
             ++preview_revision_;
         }
-        preview_.sync(session_.current(), preview_revision_, root_, workbench_.selection());
+        preview_.sync(session_.current(), preview_revision_, resource_root(*find_page(active_)), workbench_.selection());
         preview_.render(dt);
     }
 
@@ -232,7 +262,7 @@ private:
     void commit_geometry(ui::geometry_edit change) {
         // Input may follow another edit in the same SDL event batch. Do not
         // apply deltas computed from a stale preview to the current document.
-        if (change.revision != preview_revision_ || last_revision_ != session_.revision()) return;
+        if (!active_ || change.revision != preview_revision_ || last_revision_ != session_.revision()) return;
         const auto& doc = session_.current();
         const auto target = doc.nodes.find(change.id);
         if (target == doc.nodes.end() || change.id == doc.root) return;
@@ -264,10 +294,106 @@ private:
         else workbench_.status(std::string(change.width || change.height ? tr("geometry.resized", "Resized ") : tr("geometry.moved", "Moved ")) + change.id);
     }
 
-    void replaced() {
-        // New may reset the session revision to a previously observed value.
-        ++preview_revision_;
-        workbench_.document_replaced();
+    struct page_state {
+        vgui_item_id id;
+        std::uint64_t untitled_number;
+        fs::path path;
+        // The active session resides in session_, whose address the workbench
+        // keeps. Park it here before switching; inactive pages never mount UI.
+        ui::session history;
+        std::string selection;
+        ui::designer_preview::view_state view;
+    };
+
+    page_state* find_page(vgui_item_id id) {
+        const auto it = std::find_if(pages_.begin(), pages_.end(), [id](const auto& page) { return page.id == id; });
+        return it == pages_.end() ? nullptr : &*it;
+    }
+
+    static bool same_path(const fs::path& a, const fs::path& b) {
+        if (a == b) return true;
+        std::error_code error;
+        return fs::equivalent(a, b, error);
+    }
+
+    vgui_item_id find_path(const fs::path& path) const {
+        for (const auto& page : pages_) if (!page.path.empty() && same_path(page.path, path)) return page.id;
+        return 0;
+    }
+
+    ui::session& page_session(page_state& page) { return page.id == active_ ? session_ : page.history; }
+    const ui::session& page_session(const page_state& page) const { return page.id == active_ ? session_ : page.history; }
+
+    fs::path resource_root(const page_state& page) const {
+        return page.path.empty() ? new_root_ : page.path.parent_path();
+    }
+
+    std::string page_title(const page_state& page) const {
+        if (!page.path.empty()) return utf8(page.path.filename());
+        return std::string(tr("file.untitled", "Untitled")) + " " + std::to_string(page.untitled_number);
+    }
+
+    void sync_tab_selection() {
+        if (!active_ || vgui_tab_get_active(tabs_) == active_) return;
+        projecting_tabs_ = true;
+        vgui_tab_set_active(tabs_, active_);
+        projecting_tabs_ = false;
+    }
+
+    void activate(vgui_item_id id) {
+        auto* next = find_page(id);
+        if (!next || id == active_) return;
+        workbench_.finish_edit();
+        if (auto* current = find_page(active_)) {
+            current->selection = workbench_.selection();
+            current->view = preview_.capture_view();
+            current->history = std::move(session_);
+        }
+        if (vgui_get_focus(shell_) != tabs_) vgui_set_focus(shell_, nullptr);
+        active_ = id;
+        session_ = std::move(next->history);
+        last_revision_ = session_.revision();
+        ++preview_revision_; // Revisions from different pages may be identical.
+        workbench_.set_page_active(true);
+        workbench_.document_replaced(next->selection);
+        preview_.restore_view(next->view);
+        // SDL text input may have been started by the shell before the preview
+        // gained focus. No editor on the new page should inherit that session.
+        window_.stop_text_input();
+        sync_tab_selection();
+    }
+
+    void add_page(ui::session page, fs::path path) {
+        const auto id = vgui_tab_add(tabs_, nullptr, nullptr);
+        vgui_tab_set_closeable(tabs_, id, 1);
+        const auto number = path.empty() ? next_untitled_++ : 0;
+        pages_.push_back({id, number, std::move(path), std::move(page), {}, {}});
+        activate(id);
+    }
+
+    void update_empty() {
+        workbench_.set_page_active(false);
+        workbench_.status(tr("file.empty_workspace", "No page open. Use File to open or create a page."));
+    }
+
+    void remove_page(vgui_item_id id) {
+        if (!find_page(id)) return;
+        if (id == active_) {
+            vgui_set_focus(shell_, nullptr);
+            active_ = 0;
+            session_ = ui::session{};
+            workbench_.document_replaced();
+            preview_.restore_view({});
+            window_.stop_text_input();
+        }
+        projecting_tabs_ = true;
+        vgui_tab_remove(tabs_, id);
+        projecting_tabs_ = false;
+        std::erase_if(pages_, [id](const auto& page) { return page.id == id; });
+        if (!active_) {
+            if (const auto next = vgui_tab_get_active(tabs_)) activate(next);
+            else update_empty();
+        }
     }
 
     std::optional<fs::path> document_path(const fs::path& path) {
@@ -281,47 +407,74 @@ private:
         return std::nullopt;
     }
 
-    bool save(const fs::path& path) {
+    bool save(vgui_item_id id, const fs::path& path) {
+        auto* page = find_page(id);
+        if (!page) return false;
         const auto file = document_path(path);
         if (!file) return false;
+        if (const auto other = find_path(*file); other && other != id) {
+            workbench_.status(tr("file.save_as_open", "Save As cannot replace another open page."));
+            return false;
+        }
+        auto& history = page_session(*page);
         // No implicit asset copying or reinterpretation of relative paths.
-        if (!session_.current().resources.empty() && file->parent_path() != root_) {
+        if (!history.current().resources.empty() && file->parent_path() != resource_root(*page)) {
             workbench_.status(tr("file.save_as_root", "Save As must stay in the project folder while relative assets are registered."));
             return false;
         }
         ui::diagnostic error;
-        if (!session_.save(*file, &error)) {
+        if (!history.save(*file, &error)) {
             workbench_.status(std::string(tr("file.save_failed", "Save failed: ")) + describe(error));
             return false;
         }
-        path_ = *file;
-        root_ = path_.parent_path();
-        workbench_.status(std::string(tr("file.saved", "Saved ")) + utf8(path_));
+        page->path = *file;
+        workbench_.status(std::string(tr("file.saved", "Saved ")) + utf8(*file));
         return true;
     }
 
-    void proceed(command action) {
-        switch (action) {
-        case command::create:
-            session_ = ui::session{};
-            path_.clear();
-            root_ = new_root_;
-            replaced();
-            workbench_.status(tr("file.new_hint", "New document. Save it in your project folder before adding relative image paths."));
-            break;
-        case command::open: choose(VGUI_FILE_DIALOG_OPEN); break;
-        case command::quit: quitting_ = true; break;
-        default: break;
+    void close_page(vgui_item_id id) {
+        auto* page = find_page(id);
+        if (!page) return;
+        if (page_session(*page).dirty()) {
+            const int answer = confirm_unsaved(*page);
+            if (answer == 1) {
+                if (page->path.empty()) { choose(VGUI_FILE_DIALOG_SAVE, id, command::close); return; }
+                if (!save(id, page->path)) return;
+            } else if (answer != 2) return;
         }
+        remove_page(id);
     }
 
-    int confirm_unsaved() {
+    void continue_exit() {
+        // Do not remove any pages until all decisions succeed. Discard choices
+        // cannot destroy a page if a subsequent prompt is cancelled.
+        while (!exit_queue_.empty()) {
+            const auto id = exit_queue_.front();
+            exit_queue_.erase(exit_queue_.begin());
+            auto* page = find_page(id);
+            if (!page || !page_session(*page).dirty()) continue;
+            const int answer = confirm_unsaved(*page);
+            if (answer == 1) {
+                if (page->path.empty()) {
+                    if (!choose(VGUI_FILE_DIALOG_SAVE, id, command::quit)) exit_queue_.clear();
+                    return;
+                }
+                if (save(id, page->path)) continue;
+            } else if (answer == 2) continue;
+            exit_queue_.clear();
+            return;
+        }
+        quitting_ = true;
+    }
+
+    int confirm_unsaved(const page_state& page) {
         const SDL_MessageBoxButtonData buttons[] = {
             {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, tr("common.cancel", "Cancel")},
             {0, 2, tr("file.discard", "Discard")},
             {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, tr("file.save", "Save")}};
+        const auto message = page_title(page) + "\n\n" + tr("file.confirm_save", "Save changes to this design before continuing?");
         const SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING, window_.window, tr("file.unsaved", "Unsaved changes"),
-            tr("file.confirm_save", "Save changes to this design before continuing?"), 3, buttons, nullptr};
+            message.c_str(), 3, buttons, nullptr};
         int selected = 0;
         if (!SDL_ShowMessageBox(&box, &selected)) {
             workbench_.status(std::string(tr("file.confirm_failed", "Cannot show unsaved-changes prompt: ")) + SDL_GetError());
@@ -336,10 +489,11 @@ private:
             paths && count > 0 ? paths[0] : "", error ? error : ""};
     }
 
-    void choose(vgui_file_dialog_kind kind, command after_save = command::none) {
+    bool choose(vgui_file_dialog_kind kind, vgui_item_id id, command after_save = command::none) {
+        const auto* page = find_page(id);
         const vgui_file_filter filters[] = {{tr("file.filter_design", "VGUI design"), "*.vgui.json"}, {tr("file.filter_all", "All files"), "*"}};
-        const auto location = utf8(root_);
-        const auto name = path_.empty() ? "untitled.vgui.json" : utf8(path_.filename());
+        const auto location = utf8(page ? resource_root(*page) : new_root_);
+        const auto name = page && !page->path.empty() ? utf8(page->path.filename()) : "untitled.vgui.json";
         vgui_file_dialog_desc desc;
         vgui_file_dialog_desc_init(&desc);
         desc.title = kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
@@ -352,8 +506,10 @@ private:
             desc.filter_count = 2;
         }
         chooser_ = vgui_file_dialog_show(kind, &desc, on_pick, this) != 0;
+        chooser_page_ = chooser_ ? id : 0;
         after_save_ = chooser_ ? after_save : command::none;
         if (!chooser_) workbench_.status(tr("file.chooser_failed", "The native file chooser could not be opened."));
+        return chooser_;
     }
 
     static void on_package_name(vgui_context* ctx, int result, const char* text, void* user) {
@@ -363,15 +519,18 @@ private:
         if (result == VGUI_MODAL_RESULT_CONFIRM) self.package_name_ = text ? text : "";
         else {
             self.package_parent_.reset();
+            self.package_page_ = 0;
             self.workbench_.status(self.tr("export.cancelled", "Package export cancelled."));
         }
     }
 
-    void choose_package_name(fs::path parent) {
-        auto name = path_.empty() ? std::string("untitled") : utf8(path_.filename());
+    void choose_package_name(vgui_item_id id, fs::path parent) {
+        const auto* page = find_page(id);
+        if (!page) return;
+        auto name = page->path.empty() ? std::string("untitled") : utf8(page->path.filename());
         constexpr std::string_view suffix = ".vgui.json";
         if (name.ends_with(suffix)) name.resize(name.size() - suffix.size());
-        else if (!path_.empty()) name = utf8(path_.stem());
+        else if (!page->path.empty()) name = utf8(page->path.stem());
         name += "-delivery";
         if (!valid_package_name(name)) name = "ui-delivery";
         const auto message = std::string(tr("export.prompt_text", "Create a new package folder in:\n")) + utf8(parent);
@@ -389,6 +548,7 @@ private:
             workbench_.status(tr("export.prompt_failed", "Cannot open the package name prompt."));
             return;
         }
+        package_page_ = id;
         package_parent_ = std::move(parent);
         if (!window_.text_input_active()) {
             window_.start_text_input();
@@ -403,13 +563,15 @@ private:
     void finish_package() {
         auto name = std::exchange(package_name_, std::nullopt);
         auto parent = std::exchange(package_parent_, std::nullopt);
+        auto* page = find_page(std::exchange(package_page_, 0));
+        if (!page) return;
         if (!parent || !valid_package_name(*name)) {
             workbench_.status(tr("export.bad_name", "Export failed: enter a single folder name (no path separators or trailing dots/spaces)."));
             return;
         }
         const auto destination = *parent / fs::u8path(*name);
         ui::diagnostic error;
-        if (!ui::export_delivery(session_.current(), root_, destination, &error))
+        if (!ui::export_delivery(page_session(*page).current(), resource_root(*page), destination, &error))
             workbench_.status(std::string(tr("export.failed", "Export failed: ")) + describe(error));
         else workbench_.status(std::string(tr("export.done", "Exported package to ")) + utf8(destination));
     }
@@ -419,11 +581,16 @@ private:
         picked_.reset();
         chooser_ = false;
         const auto next = std::exchange(after_save_, command::none);
+        const auto id = std::exchange(chooser_page_, 0);
         if (!selected.error.empty()) workbench_.status(std::string(tr("file.chooser_error", "File chooser: ")) + selected.error);
         else if (selected.path.empty()) workbench_.status(tr("file.chooser_cancelled", "File selection cancelled."));
         else if (selected.kind == VGUI_FILE_DIALOG_OPEN) open(fs::u8path(selected.path));
-        else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) choose_package_name(fs::u8path(selected.path));
-        else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(fs::u8path(selected.path))) proceed(next);
+        else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) choose_package_name(id, fs::u8path(selected.path));
+        else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(id, fs::u8path(selected.path))) {
+            if (next == command::close) remove_page(id);
+            if (next == command::quit) { continue_exit(); return; }
+        }
+        if (next == command::quit) exit_queue_.clear();
     }
 
     os_window& window_;
@@ -433,7 +600,12 @@ private:
     std::optional<ui::designer_language> pending_language_;
     std::optional<view_action> pending_view_;
     const fs::path new_root_ = fs::canonical(fs::current_path());
-    fs::path path_, root_;
+    std::vector<page_state> pages_;
+    std::vector<vgui_item_id> exit_queue_;
+    vgui_widget* tabs_ = nullptr;
+    vgui_item_id active_ = 0, pending_tab_ = 0, command_page_ = 0, chooser_page_ = 0, package_page_ = 0;
+    std::uint64_t next_untitled_ = 1;
+    bool projecting_tabs_ = false;
     ui::session session_;
     std::uint64_t last_revision_ = 0, preview_revision_ = 0;
     std::string window_title_;
@@ -457,7 +629,7 @@ struct smoke_file_picker {
     vgui_file_dialog_fn delayed_open = nullptr;
     void* delayed_open_user = nullptr;
     bool cancel_folder = false;
-    fs::path sandbox, package_parent;
+    fs::path sandbox, package_parent, save_target;
 
     smoke_file_picker() {
         const auto temp = fs::temp_directory_path();
@@ -498,6 +670,11 @@ struct smoke_file_picker {
                 return vgui_file_dialog_post_result(kind, callback, callback_user, nullptr, 0, nullptr);
             const auto location = utf8(self.package_parent);
             const char* paths[] = {location.c_str()};
+            return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
+        }
+        if (kind == VGUI_FILE_DIALOG_SAVE && !self.save_target.empty()) {
+            const auto path = utf8(std::exchange(self.save_target, fs::path{}));
+            const char* paths[] = {path.c_str()};
             return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
         }
         if (kind != VGUI_FILE_DIALOG_OPEN) return 0;
@@ -804,7 +981,10 @@ int run(bool smoke, const fs::path& open_path) {
     } detach{win};
     designer editor(*win, app.vgdev, shell.get(), font.get(), strings, settings);
     editor.preview().set_render_context(app.vgctx);
-    if (!open_path.empty() && !editor.open(open_path) && smoke) return 1;
+    if (open_path.empty() || !editor.open(open_path)) {
+        if (smoke) return 1;
+        if (open_path.empty()) editor.new_page();
+    }
     if (invalid_settings) {
         std::fprintf(stderr, "Invalid designer settings: %s\n", utf8(settings).c_str());
         editor.report_bad_settings();
@@ -829,7 +1009,19 @@ int run(bool smoke, const fs::path& open_path) {
     int submitted_windows = 0;
     const std::function<void()> advance = [&] {
         SDL_Event e;
-        while (SDL_PollEvent(&e)) dispatch(e);
+        // Commit a requested transition between SDL events, without leaving
+        // a mouse release queued on the other side of the poll boundary.
+        const auto switch_page = [&] {
+            if (editor.tab_change_pending()) {
+                editor.service();
+                editor.refresh();
+            }
+        };
+        switch_page();
+        while (!editor.quitting() && SDL_PollEvent(&e)) {
+            dispatch(e);
+            switch_page();
+        }
         // Native chooser callbacks are drained by vgui_update, not an SDL event.
         // If the shell has no frame due, pump the result without rendering it.
         if (editor.chooser_open() && !app.should_render(win)) vgui_update(shell.get(), 0.f);
@@ -924,6 +1116,7 @@ int run(bool smoke, const fs::path& open_path) {
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
+            ui::exercise_pages(*win, shell.get(), editor, advance, picker->save_target, picker->sandbox);
         } catch (...) {
             app.wait_gpu();
             throw;

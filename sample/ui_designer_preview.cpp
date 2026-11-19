@@ -427,6 +427,24 @@ struct designer_preview::impl {
         }
     }
 
+    void restore_view(const view_state& view) {
+        blur(); // Cancels the drag but leaves its matching release to be consumed.
+        screen = view.screen;
+        fit = view.fit;
+        zoom = view.zoom;
+        pan = {view.pan_x, view.pan_y};
+        run = view.running;
+        if (canvas) vgui_widget_set_focusable(canvas, run);
+        if (mounted) mounted->unmount();
+        is_mounted = false;
+        remount = true; // Next sync mounts document values, not live run state.
+        frame.reset();
+        ready = false;
+        dirty = true;
+        update_toolbar();
+        mark_canvas();
+    }
+
     void reset_zoom(bool fit_view) {
         cancel_geometry();
         fit = fit_view;
@@ -1050,6 +1068,10 @@ void designer_preview::render(float dt) { p_->render(dt); }
 bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
+designer_preview::view_state designer_preview::capture_view() const {
+    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run};
+}
+void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }
 designer_preview::preset designer_preview::current_preset() const { return p_->screen; }
 void designer_preview::reset_zoom(bool fit) { p_->reset_zoom(fit); }
