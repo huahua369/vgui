@@ -31,8 +31,7 @@ constexpr vgui_color toolbar_inset = 0xFF19202B;
 constexpr vgui_color toolbar_primary = 0xFF2F65CB;
 constexpr vgui_color document_ready = 0xFF7DAAFF;
 constexpr vgui_color document_dirty = 0xFFF5BA63;
-constexpr float toolbar_margin_x = 6;
-constexpr float toolbar_padding_x = 10;
+constexpr float toolbar_padding_right = 10;
 constexpr float toolbar_gap = 10;
 constexpr float document_chrome_width = 33; // Left/right padding, marker, and gap.
 
@@ -177,6 +176,7 @@ struct designer_workbench::impl {
         vgui_widget_set_grow(shell, 1);
         vgui_widget_set_align_self(shell, VGUI_ALIGN_STRETCH);
         vgui_widget_set_layout(shell, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_padding(shell, 0, 0, 0, 0);
         vgui_widget_set_gap(shell, 4);
 
         build_toolbar(std::move(file));
@@ -450,13 +450,12 @@ struct designer_workbench::impl {
         auto* bar = make_row(shell);
         vgui_widget_set_id(bar, "designer.toolbar");
         vgui_widget_set_size(bar, 0, 48);
-        vgui_widget_set_margin(bar, toolbar_margin_x, 6, toolbar_margin_x, 0);
-        vgui_widget_set_padding(bar, toolbar_padding_x, 0, toolbar_padding_x, 0);
+        vgui_widget_set_padding(bar, 0, 0, toolbar_padding_right, 0);
         vgui_widget_set_gap(bar, toolbar_gap);
         vgui_widget_set_align_items(bar, VGUI_ALIGN_CENTER);
         vgui_widget_set_background(bar, toolbar_bg);
-        vgui_widget_set_border(bar, toolbar_edge, 1);
-        vgui_widget_set_rounding(bar, 8);
+        vgui_widget_set_border(bar, 0, 0);
+        vgui_widget_set_rounding(bar, 0);
 
         menubar = vgui_widget_add(bar, VGUI_MENUBAR, nullptr);
         vgui_widget_set_id(menubar, "designer.menubar");
@@ -539,9 +538,7 @@ struct designer_workbench::impl {
 
         // Reserve the natural menu width first. Quick actions yield before
         // the document chip; the six menus do not compete with either.
-        vgui_style style{};
-        vgui_context_get_style(ui, &style);
-        const float chrome = 2 * style.panel.padding + (2 * (toolbar_margin_x + toolbar_padding_x) + 2 * toolbar_gap) * scale;
+        const float chrome = (toolbar_padding_right + 2 * toolbar_gap) * scale;
         float menu_width = 0, actions_width = 0;
         vgui_widget_get_intrinsic_size(menubar, &menu_width, nullptr);
         vgui_widget_get_intrinsic_size(quick_actions, &actions_width, nullptr);

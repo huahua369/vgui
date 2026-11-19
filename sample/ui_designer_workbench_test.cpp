@@ -461,7 +461,9 @@ void exercise_toolbar()
         const auto caption = bounds(title);
         auto* menubar = workbench.menubar();
         const auto menus = bounds(menubar);
-        check(inside(toolbar, {0, 0, 950, 650}), "toolbar extends beyond the narrow viewport");
+        check(inside(toolbar, {0, 0, 950, 650}) && toolbar.x == 0 && toolbar.y == 0 && toolbar.w == 950,
+            "toolbar must fill the top edge of the window content area");
+        check(menus.x == toolbar.x, "MenuBar has a left inset inside the toolbar");
         check(inside(caption, toolbar) && inside(menus, toolbar) && separate(caption, menus),
             "document title and MenuBar are clipped or overlapping");
         check(vgui_menubar_get_count(menubar) == 6, "narrow MenuBar must retain all six titles");

@@ -423,7 +423,7 @@ struct designer_preview::impl {
         else {
             const auto area = rect(self.canvas);
             self.change_zoom(w == self.zoom_in ? 1.25f : .8f,
-                {area.x + area.width / 2, area.y + area.height / 2}, /*stop_at_actual=*/true);
+                {area.x + area.width / 2, area.y + area.height / 2});
         }
     }
 
@@ -598,10 +598,12 @@ struct designer_preview::impl {
             selection.assign(selected);
             mark_canvas();
         }
+        const bool same_document = has_document && !remount && rev == revision;
+        if (same_document && project_root == root) return;
         std::error_code ec;
         auto abs_root = project_root.empty() ? project_root : std::filesystem::absolute(project_root, ec);
         if (ec) abs_root.clear();
-        if (has_document && !remount && rev == revision && root == abs_root) return;
+        if (same_document && root == abs_root) return;
         blur();
         has_document = true;
         remount = false;
@@ -671,11 +673,11 @@ struct designer_preview::impl {
 
     void render(float dt) {
         if (!is_mounted || remount) return;
-        vgui_update(ui.get(), std::isfinite(dt) ? std::clamp(dt, 0.f, .25f) : 0.f);
         if (dirty || !frame || vgui_context_paint_revision(ui.get()) != last_paint ||
             vgui_context_has_active_animation(ui.get())) {
             // Never let the standalone submit path reuse/submit the shell's cmd.
             if (renderer && vgpu_current_command_buffer(renderer)) return;
+            vgui_update(ui.get(), std::isfinite(dt) ? std::clamp(dt, 0.f, .25f) : 0.f);
             auto next = mounted->layout(view_for(screen));
             if (!next) { cancel_geometry(); return; }
             if (renderer && !draw_target(*next)) {
@@ -691,8 +693,8 @@ struct designer_preview::impl {
             dirty = false;
             mark_canvas();
         }
+        if (geometry || ime_window) vgui_layout(shell);
         if (geometry) {
-            vgui_layout(shell);
             const auto area = rect(canvas);
             if (!geometry_is_current(area, artboard(area))) cancel_geometry();
         }
@@ -747,7 +749,7 @@ struct designer_preview::impl {
             std::round(area.y + (area.height - h) / 2 + pan.y * shell_scale), w, h};
     }
 
-    void change_zoom(float factor, point anchor, bool stop_at_actual = false) {
+    void change_zoom(float factor, point anchor) {
         if (!canvas || !std::isfinite(factor)) return;
         cancel_geometry();
         const auto area = rect(canvas), old = artboard(area);
@@ -756,10 +758,10 @@ struct designer_preview::impl {
         // Pixel rounding belongs to artboard(), not the stored zoom factor.
         const float previous = fit ? fitted_scale(area, view, shell_scale) / shell_scale : zoom;
         const float requested = std::clamp(previous * factor, .05f, 4.f);
-        // On a button step, land exactly at 100% when crossing it, but
-        // allow stepping away from 100% in either direction.
+        // A button or wheel step crossing 100% lands there exactly. A step
+        // starting at 100% can continue in either direction.
         const bool crosses_actual = (previous < 1.f && requested > 1.f) || (previous > 1.f && requested < 1.f);
-        zoom = stop_at_actual && crosses_actual ? 1.f : requested;
+        zoom = crosses_actual ? 1.f : requested;
         fit = false;
         const auto next = artboard(area);
         pan.x = std::clamp(pan.x + (anchor.x - next.x - (anchor.x - old.x) / old.width * next.width) / shell_scale, -8192.f, 8192.f);

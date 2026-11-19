@@ -454,6 +454,8 @@ struct smoke_file_picker {
     vgui_file_dialog_provider_fn previous;
     void* previous_user = nullptr;
     int open_requests = 0;
+    vgui_file_dialog_fn delayed_open = nullptr;
+    void* delayed_open_user = nullptr;
     bool cancel_folder = false;
     fs::path sandbox, package_parent;
 
@@ -482,6 +484,12 @@ struct smoke_file_picker {
         fs::remove_all(sandbox, ignored);
     }
 
+    bool complete_cancelled_open() {
+        auto callback = std::exchange(delayed_open, nullptr);
+        return callback && vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, callback, delayed_open_user,
+            nullptr, 0, nullptr);
+    }
+
     static int show(void* user, vgui_file_dialog_kind kind, const vgui_file_dialog_desc*,
                     vgui_file_dialog_fn callback, void* callback_user) {
         auto& self = *static_cast<smoke_file_picker*>(user);
@@ -493,8 +501,11 @@ struct smoke_file_picker {
             return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
         }
         if (kind != VGUI_FILE_DIALOG_OPEN) return 0;
-        if (++self.open_requests == 1)
-            return vgui_file_dialog_post_result(kind, callback, callback_user, nullptr, 0, nullptr);
+        if (++self.open_requests == 1) {
+            self.delayed_open = callback;
+            self.delayed_open_user = callback_user;
+            return 1;
+        }
         const char* paths[] = {VGUI_SOURCE_DIR "/sample/res/button.png"}; // Existing, but not a design.
         return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
     }
@@ -503,7 +514,7 @@ struct smoke_file_picker {
 // Queue ordinary SDL events and advance the real host loop. Never write the
 // preview widget, invoke its input handler directly, or mutate the document.
 void exercise_runtime_input(os_window& win, vgui_context* shell, designer& editor,
-                            const std::function<void()>& frame) {
+                            const std::function<void()>& frame, const int& submitted_windows) {
     const auto require = [](bool passed, const char* message) {
         if (!passed) throw std::runtime_error(std::string("Native runtime input: ") + message);
     };
@@ -576,6 +587,11 @@ void exercise_runtime_input(os_window& win, vgui_context* shell, designer& edito
     require(preview.running(), "toolbar did not enter Run mode");
     click(center("name"));
     require(SDL_TextInputActive(win.window), "edit focus did not activate SDL text input");
+    require(preview.snapshot() != nullptr, "missing focused runtime preview");
+    const auto focused_serial = preview.snapshot()->serial;
+    frame();
+    require(preview.snapshot() && preview.snapshot()->serial != focused_serial && submitted_windows == 1,
+        "focused runtime animation did not repaint without input");
     text("Mira\xc3\xa9");
     require(preview.edit_text("name") == "Mira\xc3\xa9", "UTF-8 text did not reach the focused edit");
     key(SDLK_BACKSPACE);
@@ -780,6 +796,7 @@ int run(bool smoke, const fs::path& open_path) {
         std::fprintf(stderr, "Cannot initialize the designer shell\n");
         return 1;
     }
+    host.set_on_demand_render(true);
     // The viewport usually owns its UI; here the lifetime belongs to shell.
     struct binding_guard {
         os_window* window;
@@ -793,67 +810,112 @@ int run(bool smoke, const fs::path& open_path) {
         editor.report_bad_settings();
     }
 
+    const auto dispatch = [&](const SDL_Event& e) {
+        if (e.type == SDL_EVENT_QUIT ||
+            (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == win->id)) {
+            editor.request(command::quit);
+            return;
+        }
+        // Re-exposure must repaint even when a native chooser is blocking shell input.
+        if (e.type == SDL_EVENT_WINDOW_EXPOSED && e.window.windowID == win->id)
+            win->request_render(0);
+        const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
+        if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
+            !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
+            return;
+        if (!editor.chooser_open() || focus_lost) app.process_event(&e);
+    };
     auto last = SDL_GetTicks();
+    int submitted_windows = 0;
     const std::function<void()> advance = [&] {
         SDL_Event e;
-        while (SDL_PollEvent(&e)) {
-            if (e.type == SDL_EVENT_QUIT ||
-                (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == win->id)) {
-                editor.request(command::quit);
-                continue;
-            }
-            const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
-            if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
-                !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
-                continue;
-            if (!editor.chooser_open() || focus_lost) app.process_event(&e);
-        }
+        while (SDL_PollEvent(&e)) dispatch(e);
+        // Native chooser callbacks are drained by vgui_update, not an SDL event.
+        // If the shell has no frame due, pump the result without rendering it.
+        if (editor.chooser_open() && !app.should_render(win)) vgui_update(shell.get(), 0.f);
         editor.service();
         if (editor.quitting()) return;
-        editor.refresh();
         app.sync_ui_scales();
+        // The preview may need the current canvas layout for drag/IME positioning
+        // before begin_frame syncs the window's recording buffer.
+        int width = 0, height = 0, last_width = 0, last_height = 0;
+        vgui_context_get_size(shell.get(), &last_width, &last_height);
+        if (SDL_GetWindowSizeInPixels(win->window, &width, &height) && width > 0 && height > 0 &&
+            (width != last_width || height != last_height))
+            vgui_context_set_size(shell.get(), width, height);
+        editor.refresh();
         const auto now = SDL_GetTicks();
         const auto dt = std::clamp(float(now - last) / 1000.0f, 0.0f, 0.05f);
         last = now;
-        host.begin_frame(dt);
+        // The independent preview may be the only thing that changed. Let it
+        // invalidate the shell before begin_frame decides which canvases to clear.
         editor.render_preview(dt);
+        host.begin_frame(dt);
         host.draw_all();
-        host.end_frame();
+        submitted_windows = host.end_frame();
     };
-    const ui::native_menu_input menus(*win, shell.get(), advance);
-    int frames = 0;
-    bool preserved_on_cancel = false, preserved_on_error = false;
-    std::optional<std::uint64_t> original_revision;
-    int desktop_width = 0;
-    while (!editor.quitting()) {
-        advance();
-        if (!smoke || editor.quitting()) continue;
-        const auto* snapshot = editor.preview().snapshot();
-        if (++frames == 3 && editor.preview_ready(true)) {
-            original_revision = snapshot->revision;
-            desktop_width = snapshot->view.width;
-            menus.activate(menus.open(0), 1);
-        } else if (frames == 6) {
-            preserved_on_cancel = original_revision && snapshot && snapshot->revision == *original_revision &&
-                picker->open_requests == 1 && !editor.chooser_open();
-            menus.activate(menus.open(0), 1);
-        } else if (frames == 9) {
-            preserved_on_error = original_revision && snapshot && snapshot->revision == *original_revision &&
-                picker->open_requests == 2 && !editor.chooser_open();
-            menus.activate(menus.open(3), 4);
-        } else if (frames == 14) break;
-    }
-    if (smoke) {
-        const auto* snapshot = editor.preview().snapshot();
-        if (!preserved_on_cancel || !preserved_on_error || !editor.preview_ready(true) ||
-            !snapshot || !original_revision || snapshot->revision != *original_revision ||
-            snapshot->view.width >= desktop_width || snapshot->view.width >= snapshot->view.height) {
-            app.wait_gpu();
-            std::fprintf(stderr, "Designer smoke test failed: image, viewport switch, or file-open isolation\n");
-            return 1;
+    if (!smoke) {
+        host.idle_delay_ms = 0; // Wait for SDL events instead of sleeping and polling every 8 ms.
+        while (!editor.quitting()) {
+            advance();
+            if (!editor.quitting() && submitted_windows == 0) {
+                SDL_Event e;
+                // A worker can post a chooser result without waking SDL, so keep the wait bounded.
+                if (SDL_WaitEventTimeout(&e, editor.chooser_open() ? 16 : 50)) dispatch(e);
+            }
         }
+    } else {
+        const ui::native_menu_input menus(*win, shell.get(), advance);
+        const auto require = [](bool passed, const char* message) {
+            if (!passed) throw std::runtime_error(std::string("Native on-demand render: ") + message);
+        };
+        const auto wait_for_idle = [&] {
+            for (int i = 0; i < 60; ++i) {
+                advance();
+                if (submitted_windows == 0) return;
+            }
+            require(false, "window never stopped submitting frames");
+        };
         try {
-            exercise_runtime_input(*win, shell.get(), editor, advance);
+            advance();
+            require(submitted_windows == 1 && editor.preview_ready(true), "first frame did not present the form and image");
+            const auto initial = *editor.preview().snapshot();
+            const auto same_preview = [&] {
+                const auto* snapshot = editor.preview().snapshot();
+                return snapshot && snapshot->revision == initial.revision && snapshot->serial == initial.serial;
+            };
+            wait_for_idle();
+            for (int i = 0; i < 4; ++i) {
+                advance();
+                require(submitted_windows == 0 && same_preview(), "idle tick rendered the window or updated its preview texture");
+            }
+            menus.activate(menus.open(0), 1); // File > Open
+            require(editor.chooser_open() && picker->open_requests == 1, "file chooser did not open");
+            wait_for_idle();
+            SDL_Event expose{};
+            expose.type = SDL_EVENT_WINDOW_EXPOSED;
+            expose.window.windowID = win->id;
+            require(SDL_PushEvent(&expose), "cannot queue expose event");
+            advance();
+            require(submitted_windows == 1 && same_preview(), "expose during file selection did not repaint from the cached preview");
+
+            wait_for_idle();
+            require(editor.chooser_open() && picker->complete_cancelled_open(), "cannot post a delayed chooser result");
+            advance(); // No SDL event accompanies the worker's result.
+            require(!editor.chooser_open() && submitted_windows == 1 && same_preview(),
+                "idle file chooser did not process cancellation, repaint and preserve the document");
+            menus.activate(menus.open(0), 1); // Mock chooser returns a non-design file.
+            for (int i = 0; i < 4 && editor.chooser_open(); ++i) advance();
+            require(picker->open_requests == 2 && !editor.chooser_open() && same_preview(),
+                "invalid file selection changed the preview");
+
+            menus.activate(menus.open(3), 4); // View > Phone
+            const auto* snapshot = editor.preview().snapshot();
+            require(submitted_windows == 1 && editor.preview_ready(true) && snapshot &&
+                snapshot->revision == initial.revision && snapshot->serial != initial.serial &&
+                snapshot->view.width < initial.view.width && snapshot->view.width < snapshot->view.height,
+                "preset change did not rebuild and present the preview");
+            exercise_runtime_input(*win, shell.get(), editor, advance, submitted_windows);
             ui::exercise_delivery(*win, shell.get(), editor.history(), advance,
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
@@ -866,7 +928,7 @@ int run(bool smoke, const fs::path& open_path) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: image, viewport presets, file-open isolation, runtime input, delivery, geometry, and language passed");
+        std::puts("ui_designer_native: idle rendering, image, viewport presets, file-open isolation, runtime input, delivery, geometry, and language passed");
     }
     app.wait_gpu();
     return 0;

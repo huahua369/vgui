@@ -217,15 +217,21 @@ inline void exercise_geometry(os_window& win, vgui_context* shell, designer_prev
         return current.width == actual.width && current.height == actual.height &&
             std::string_view(vgui_widget_get_text(readout)) == "100%";
     };
+    const auto wheel_anchor = center + glm::vec2{52, -68};
     const auto wheel = [&](float delta) {
+        const auto before = board();
         SDL_Event e{};
         e.type = SDL_EVENT_MOUSE_WHEEL;
         e.wheel.windowID = win.id;
         e.wheel.y = delta;
-        e.wheel.mouse_x = center.x / win.pixel_ratio();
-        e.wheel.mouse_y = center.y / win.pixel_ratio();
+        e.wheel.mouse_x = wheel_anchor.x / win.pixel_ratio();
+        e.wheel.mouse_y = wheel_anchor.y / win.pixel_ratio();
         push(e);
         frame();
+        const auto after = board();
+        require(std::abs(after.x + (wheel_anchor.x - before.x) / before.width * after.width - wheel_anchor.x) <= 1.f &&
+                std::abs(after.y + (wheel_anchor.y - before.y) / before.height * after.height - wheel_anchor.y) <= 1.f,
+            "wheel zoom did not preserve the point under the pointer");
     };
 
     step = "zoom in across 100%";
@@ -245,8 +251,15 @@ inline void exercise_geometry(os_window& win, vgui_context* shell, designer_prev
     require(at_actual_size(), "zoom out skipped 100%");
     button("designer.preview.out");
     require(std::string_view(vgui_widget_get_text(readout)) == "80%", "zoom out got stuck at 100%");
-    wheel(2);
-    require(std::string_view(vgui_widget_get_text(readout)) == "106%", "button stop affected continuous wheel zoom");
+    step = "wheel crosses 100% in both directions";
+    wheel(2); // 80% -> 106% without the stop.
+    require(at_actual_size(), "zoom-in wheel delta skipped 100%");
+    wheel(.5f);
+    require(std::string_view(vgui_widget_get_text(readout)) == "107%", "zoom-in wheel got stuck at 100%");
+    wheel(-1); // 107% -> 93% without the stop.
+    require(at_actual_size(), "zoom-out wheel delta skipped 100%");
+    wheel(-1);
+    require(std::string_view(vgui_widget_get_text(readout)) == "87%", "zoom-out wheel got stuck at 100%");
     require(read() == initial, "zoom changed the document or undo history");
     button("designer.preview.fit");
     same_rect(board(), fitted, "Fit no longer restored the fitted view");
