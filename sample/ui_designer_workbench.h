@@ -13,6 +13,7 @@ namespace vgui::ui_design {
 class session;
 class designer_strings;
 enum class designer_language;
+struct designer_dock_widths;
 enum class designer_view_action { design, run, desktop, tablet, phone, fit, actual };
 
 struct designer_commands {
@@ -22,6 +23,7 @@ struct designer_commands {
     std::function<void(designer_view_action)> view;
     std::function<bool(designer_view_action)> view_checked;
     std::function<void()> close_document = {};
+    std::function<void()> layout_changed = {}; // The host can persist workbench layout commands.
 };
 
 // The shell context, working session and strings all outlive the workbench.
@@ -31,6 +33,9 @@ public:
     ~designer_workbench();
 
     vgui_widget* preview_host() const;
+    // Preferred side widths in logical pixels, even when the window constrains the actual layout.
+    designer_dock_widths dock_widths() const;
+    void set_dock_widths(designer_dock_widths widths);
     // Replaces the document chip with a native strip. The host owns tab state
     // and callbacks; add tabs with nullptr pages, not preview widgets.
     vgui_widget* enable_page_tabs();

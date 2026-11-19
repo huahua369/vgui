@@ -634,7 +634,20 @@ struct vgui_dock_state
 	int preview_zone = -1;
 	int preview_index = -1;
 	float drag_offset_x = 0.0f, drag_offset_y = 0.0f;
-	float zone_size[4] = { -1.0f, -1.0f, -1.0f, -1.0f };	// <0 -> style
+	float zone_size[4] = { -1.0f, -1.0f, -1.0f, -1.0f };	// logical pixels; <0 -> style
+	float side_min[4] = {};	// logical pixels; indexed by zone
+	struct sash_rect { float x, y, w, h; } sashes[2] = {};	// LEFT, RIGHT
+	int sash_hover = -1;
+	int sash_drag = -1;
+	float sash_grab = 0.0f;	// grab position as a fraction of the sash width
+	// A drag keeps the opposite actual width fixed, even if it was already
+	// squeezed. The pin is discarded when horizontal space or side occupancy
+	// changes; the opposite side's preferred width is never changed by a drag.
+	int pinned_side = -1;
+	float pinned_width = 0.0f;
+	float side_span = 0.0f;
+	float side_scale = 0.0f;
+	int side_mask = 0;
 	float zone_x[4] = {};
 	float zone_y[4] = {};
 	float zone_w[4] = {};
@@ -2576,7 +2589,7 @@ static float vgui_dock_resolved_zone_size(vgui_widget* w, int zone)
 	if (!st || !w || !w->ctx) return 0.0f;
 	const vgui_dock_style& ds = w->ctx->style.dock;
 	float value = (zone >= 0 && zone < 4) ? st->zone_size[zone] : -1.0f;
-	if (value >= 0.0f) return value;
+	if (value >= 0.0f) return value * w->ctx->ui_scale;
 	if (zone == VGUI_DOCK_LEFT) return ds.left_width;
 	if (zone == VGUI_DOCK_RIGHT) return ds.right_width;
 	if (zone == VGUI_DOCK_BOTTOM) return ds.bottom_height;
@@ -2769,6 +2782,57 @@ static vgui_dock_panel* vgui_dock_floating_at_point(vgui_widget* w, float x, flo
 	return nullptr;
 }
 
+static void vgui_recording_invalidate_chain(vgui_widget* w);
+
+static int vgui_dock_sash_at_point(vgui_widget* w, float x, float y)
+{
+	vgui_dock_state* st = vgui_dock_of(w);
+	if (!st || st->side_min[VGUI_DOCK_CENTER] <= 0.0f) return -1;
+	for (int side : { VGUI_DOCK_LEFT, VGUI_DOCK_RIGHT })
+	{
+		const auto& r = st->sashes[side];
+		if (x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h)
+			return vgui_dock_floating_at_point(w, x, y, nullptr, nullptr) ? -1 : side;
+	}
+	return -1;
+}
+
+static void vgui_dock_sash_repaint(vgui_widget* w)
+{
+	vgui_recording_invalidate_chain(w);
+	++w->ctx->paint_revision;
+}
+
+static void vgui_dock_set_sash_hover(vgui_widget* w, int side)
+{
+	vgui_dock_state* st = vgui_dock_of(w);
+	if (st && st->sash_hover != side)
+	{
+		st->sash_hover = side;
+		vgui_dock_sash_repaint(w);
+	}
+}
+
+static void vgui_dock_end_sash(vgui_widget* w)
+{
+	vgui_dock_state* st = vgui_dock_of(w);
+	if (!st || st->sash_drag < 0) return;
+	st->sash_drag = -1;
+	w->pressed = 0;
+	w->pressed_button = 0;
+	if (w->ctx->active == w)
+	{
+		w->ctx->active = nullptr;
+		w->ctx->cursor = VGUI_CURSOR_ARROW;
+	}
+	if (w->ctx->press_target == w)
+	{
+		w->ctx->press_target = nullptr;
+		w->ctx->press_button = 0;
+	}
+	vgui_dock_sash_repaint(w);
+}
+
 static bool vgui_dock_chrome_hit(vgui_widget* w, float x, float y)
 {
 	int zone = -1, index = -1;
@@ -2779,7 +2843,7 @@ static bool vgui_dock_chrome_hit(vgui_widget* w, float x, float y)
 	if (!st || !w->ctx) return false;
 	const vgui_dock_style& ds = w->ctx->style.dock;
 	vgui_dock_panel* panel = vgui_dock_floating_at_point(w, x, y, nullptr, nullptr);
-	if (!panel) return false;
+	if (!panel) return vgui_dock_sash_at_point(w, x, y) >= 0;
 	float title_h = std::min(ds.floating_title_height, panel->fh);
 	if (y < panel->fy + title_h) return true;
 	float cx = 0, cy = 0, cw = 0, ch = 0;
@@ -2794,6 +2858,7 @@ static void vgui_dock_update_hover(vgui_widget* w, float x, float y)
 	if (!st) return;
 	st->hover = 0;
 	st->close_hover = 0;
+	vgui_dock_set_sash_hover(w, vgui_dock_sash_at_point(w, x, y));
 	bool over_title = false;
 	bool over_close = false;
 	vgui_dock_panel* panel = vgui_dock_floating_at_point(w, x, y, &over_title, &over_close);
@@ -3012,6 +3077,16 @@ static void vgui_dock_notify_tear_off(vgui_widget* w, vgui_item_id item,
 static bool vgui_dock_alive(vgui_widget* w)
 {
 	return w && w->ctx && w->ctx->alive.count(w) != 0;
+}
+
+static void vgui_dock_set_preferred_size(vgui_widget* w, int zone, float logical_size)
+{
+	vgui_dock_state* st = w->dock.get();
+	st->zone_size[zone] = logical_size < 0.0f ? -1.0f : logical_size;
+	for (int z = 0; z < 4; ++z) st->scroll_active[z] = 1;
+	if (st->side_min[VGUI_DOCK_CENTER] > 0.0f) vgui_recording_invalidate_chain(w);
+	vgui_mark_dirty(w);
+	if (vgui_dock_alive(w)) vgui_dock_notify_change(w);
 }
 
 static bool vgui_dock_raise_float_internal(vgui_widget* w, vgui_item_id item)
@@ -5828,6 +5903,52 @@ static void vgui_layout_tabview(vgui_widget* w, vgui_context* ctx, float x, floa
 	}
 }
 
+static void vgui_dock_fit_side_widths(vgui_dock_state* st, float scale, float span,
+	int mask, float& left, float& right)
+{
+	if (span != st->side_span || scale != st->side_scale || mask != st->side_mask)
+		st->pinned_side = -1;
+	st->side_span = span;
+	st->side_scale = scale;
+	st->side_mask = mask;
+
+	const double min_left = (mask & 1) ? st->side_min[VGUI_DOCK_LEFT] * (double)scale : 0.0;
+	const double min_right = (mask & 2) ? st->side_min[VGUI_DOCK_RIGHT] * (double)scale : 0.0;
+	const double min_center = st->side_min[VGUI_DOCK_CENTER] * (double)scale;
+	const double total_min = min_left + min_right + min_center;
+	if (span < total_min)
+	{
+		// Impossible to fit every minimum: share the undersize proportionally.
+		left = (float)(span * min_left / total_min);
+		right = (float)(span * min_right / total_min);
+		return;
+	}
+	if (st->pinned_side >= 0)
+	{
+		const bool pin_left = st->pinned_side == VGUI_DOCK_LEFT;
+		float& fixed = pin_left ? left : right;
+		float& moving = pin_left ? right : left;
+		const double lo = pin_left ? min_right : min_left;
+		fixed = st->pinned_width;
+		moving = (float)std::clamp((double)moving, lo, std::max(lo, span - min_center - fixed));
+		return;
+	}
+	const double extra_left = std::max(0.0, left - min_left);
+	const double extra_right = std::max(0.0, right - min_right);
+	const double spare = span - total_min;
+	if (extra_left + extra_right > spare)
+	{
+		const double fraction = spare / (extra_left + extra_right);
+		left = (float)(min_left + extra_left * fraction);
+		right = (float)(min_right + extra_right * fraction);
+	}
+	else
+	{
+		left = std::max(left, (float)min_left);
+		right = std::max(right, (float)min_right);
+	}
+}
+
 static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y, float ww, float hh)
 {
 	vgui_dock_state* st = vgui_dock_of(w);
@@ -5857,11 +5978,26 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 	float right_w = has_right ? std::max(0.0f, vgui_dock_resolved_zone_size(w, VGUI_DOCK_RIGHT)) : 0.0f;
 	float bottom_h = has_bottom ? std::max(0.0f, vgui_dock_resolved_zone_size(w, VGUI_DOCK_BOTTOM)) : 0.0f;
 
-	if (left_w + right_w + gap * 2.0f > iw)
+	float left_gap = 0.0f, right_gap = 0.0f;
+	if (st->side_min[VGUI_DOCK_CENTER] > 0.0f)
 	{
-		right_w = std::max(0.0f, iw - left_w - gap * 2.0f);
+		const int sides = (int)has_left + (int)has_right;
+		const float side_gap = sides ? std::min(gap, iw / sides) : 0.0f;
+		left_gap = has_left ? side_gap : 0.0f;
+		right_gap = has_right ? side_gap : 0.0f;
+		vgui_dock_fit_side_widths(st, ctx->ui_scale, std::max(0.0f, iw - left_gap - right_gap),
+			(has_left ? 1 : 0) | (has_right ? 2 : 0), left_w, right_w);
+	}
+	else
+	{
 		if (left_w + right_w + gap * 2.0f > iw)
-			left_w = std::max(0.0f, iw - right_w - gap * 2.0f);
+		{
+			right_w = std::max(0.0f, iw - left_w - gap * 2.0f);
+			if (left_w + right_w + gap * 2.0f > iw)
+				left_w = std::max(0.0f, iw - right_w - gap * 2.0f);
+		}
+		left_gap = left_w > 0.0f ? gap : 0.0f;
+		right_gap = right_w > 0.0f ? gap : 0.0f;
 	}
 	if (bottom_h > ih) bottom_h = ih;
 
@@ -5880,10 +6016,17 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		st->zone_h[VGUI_DOCK_RIGHT] = ih;
 	}
 
-	float mid_x = ix + (left_w > 0.0f ? left_w + gap : 0.0f);
-	float mid_w = iw - (left_w > 0.0f ? left_w + gap : 0.0f)
-		- (right_w > 0.0f ? right_w + gap : 0.0f);
-	mid_w = std::max(0.0f, mid_w);
+	float mid_x = ix + (left_w + left_gap);
+	float mid_w = std::max(0.0f, iw - (left_w + left_gap) - (right_w + right_gap));
+	st->sashes[VGUI_DOCK_LEFT] = {};
+	st->sashes[VGUI_DOCK_RIGHT] = {};
+	if (st->side_min[VGUI_DOCK_CENTER] > 0.0f && mid_w > 0.0f)
+	{
+		st->sashes[VGUI_DOCK_LEFT] = { ix + left_w, iy, left_gap, ih };
+		st->sashes[VGUI_DOCK_RIGHT] = { ix + iw - right_w - right_gap, iy, right_gap, ih };
+	}
+	if (st->sash_drag >= 0 && (st->sashes[st->sash_drag].w <= 0.0f || ih <= 0.0f))
+		vgui_dock_end_sash(w);
 	float mid_h = ih - (bottom_h > 0.0f ? bottom_h + gap : 0.0f);
 	mid_h = std::max(0.0f, mid_h);
 
@@ -9673,6 +9816,26 @@ static void vgui_splitter_drag_to(vgui_widget* w, float x, float y)
 	}
 }
 
+static void vgui_dock_drag_sash_to(vgui_widget* w, float x)
+{
+	vgui_dock_state* st = w->dock.get();
+	const int side = st->sash_drag;
+	const auto& r = st->sashes[side];
+	if (r.w <= 0.0f || r.h <= 0.0f) return;
+	const int other = side == VGUI_DOCK_LEFT ? VGUI_DOCK_RIGHT : VGUI_DOCK_LEFT;
+	const float scale = w->ctx->ui_scale;
+	const float width = st->zone_w[side];
+	const float lo = st->side_min[side] * scale;
+	const float hi = st->side_span - st->zone_w[other] - st->side_min[VGUI_DOCK_CENTER] * scale;
+	if (hi < lo) return; // No legal move when the dock can't fit its minima.
+	const float delta = x - (r.x + r.w * st->sash_grab);
+	const float wanted = vgui_clampf(width + (side == VGUI_DOCK_LEFT ? delta : -delta), lo, hi);
+	if (std::fabs(wanted - width) < 0.0001f) return;
+	st->pinned_side = other;
+	st->pinned_width = st->zone_w[other];
+	vgui_dock_set_preferred_size(w, side, wanted / scale);
+}
+
 static bool vgui_tab_key(vgui_widget* w, int key, int down, int mods)
 {
 	vgui_tab_state* st = vgui_tabs_of(w);
@@ -9891,6 +10054,18 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	ctx->mouse_x = x;
 	ctx->mouse_y = y;
 
+	// A captured sash owns the pointer even outside the dock. Don't route a
+	// resize gesture through the dock pages (e.g. the Designer preview).
+	if (auto* st = vgui_dock_of(ctx->active); st && st->sash_drag >= 0)
+	{
+		vgui_widget* dock = ctx->active;
+		vgui_dock_drag_sash_to(dock, x);
+		if (ctx->active == dock) ctx->cursor = VGUI_CURSOR_SIZE_H;
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
+
 	// F03: 拖拽进行中时接管移动事件，悬停/tooltip/菜单语义全部抑制。
 	if (ctx->drag_kind != VGUI_DRAG_NONE)
 	{
@@ -9905,6 +10080,7 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 		if (ctx->hot && ctx->alive.count(ctx->hot))
 		{
 			ctx->hot->hovered = 0;
+			vgui_dock_set_sash_hover(ctx->hot, -1);
 			vgui_emit(ctx->hot, VGUI_EVENT_LEAVE, x - ctx->hot->abs_x, y - ctx->hot->abs_y);
 			ctx->hot = nullptr;
 		}
@@ -9978,6 +10154,7 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 			{
 				old->dock->hover = 0;
 				old->dock->close_hover = 0;
+				vgui_dock_set_sash_hover(old, -1);
 			}
 			vgui_emit(old, VGUI_EVENT_LEAVE, x - old->abs_x, y - old->abs_y);
 		}
@@ -10256,8 +10433,9 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 		else if (h->kind == VGUI_TABVIEW && vgui_tab_bar_hit(h, x, y))
 			ctx->cursor = VGUI_CURSOR_HAND;
 		else if (h->kind == VGUI_DOCK)
-			ctx->cursor = (h->dock && (h->dock->hover || h->dock->close_hover))
-			? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
+			ctx->cursor = h->dock && h->dock->sash_hover >= 0 ? VGUI_CURSOR_SIZE_H
+				: (h->dock && (h->dock->hover || h->dock->close_hover))
+				? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
 		else if (h->kind == VGUI_MENUBAR)
 			ctx->cursor = vgui_menubar_item_at_point(h, x, y)
 			? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
@@ -10280,6 +10458,12 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	ctx->mouse_y = y;
 	if (button >= 0 && button < 8) ctx->mouse_down[button] = 1;
 	vgui_tooltip_suppress(ctx);
+
+	if (auto* st = vgui_dock_of(ctx->active); st && st->sash_drag >= 0)
+	{
+		vgui_end_input(ctx);
+		return 1;
+	}
 
 	if (ctx->modal.active && ctx->modal.stage)
 	{
@@ -10441,6 +10625,38 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	if (h && h->enabled && h->kind == VGUI_DOCK)
 	{
 		vgui_dock_state* st = vgui_dock_of(h);
+		vgui_dock_end_sash(h); // A modal or visibility change may have dropped capture.
+		if (button == 1 && vgui_dock_sash_at_point(h, x, y) >= 0)
+		{
+			vgui_set_focus_internal(ctx, h);
+			vgui_ensure_layout(ctx);
+			if (!ctx->alive.count(h) || h->destroy_pending ||
+				vgui_hit_rec(vgui_active_root(ctx), x, y) != h)
+			{
+				vgui_end_input(ctx);
+				return 1;
+			}
+			const int sash = vgui_dock_sash_at_point(h, x, y);
+			if (sash < 0)
+			{
+				vgui_end_input(ctx);
+				return 1;
+			}
+			const auto& r = st->sashes[sash];
+			st->sash_drag = sash;
+			st->sash_grab = (x - r.x) / r.w;
+			h->pressed = 1;
+			h->pressed_button = 1;
+			ctx->active = ctx->press_target = h;
+			ctx->press_button = 1;
+			vgui_dock_update_hover(h, x, y);
+			vgui_dock_sash_repaint(h);
+			ctx->cursor = VGUI_CURSOR_SIZE_H;
+			ctx->want_mouse = 1;
+			vgui_emit(h, VGUI_EVENT_MOUSE_DOWN, x - h->abs_x, y - h->abs_y, button, clicks);
+			vgui_end_input(ctx);
+			return 1;
+		}
 		vgui_set_focus_internal(ctx, h);
 		h->pressed = 1;
 		h->pressed_button = button;
@@ -10770,6 +10986,28 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 	ctx->mouse_y = y;
 	if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
 	vgui_tooltip_suppress(ctx);
+
+	if (auto* st = vgui_dock_of(ctx->active); st && st->sash_drag >= 0)
+	{
+		if (button == 1)
+		{
+			vgui_widget* dock = ctx->active;
+			vgui_dock_drag_sash_to(dock, x);
+			if (ctx->active == dock)
+			{
+				vgui_dock_end_sash(dock);
+				vgui_ensure_layout(ctx);
+				vgui_widget* hit = vgui_hit_rec(vgui_active_root(ctx), x, y);
+				const int sash = hit == dock ? vgui_dock_sash_at_point(dock, x, y) : -1;
+				vgui_dock_set_sash_hover(dock, sash);
+				if (sash >= 0) ctx->cursor = VGUI_CURSOR_SIZE_H;
+				ctx->want_mouse = hit != nullptr;
+				vgui_emit(dock, VGUI_EVENT_MOUSE_UP, x - dock->abs_x, y - dock->abs_y, button, clicks);
+			}
+		}
+		vgui_end_input(ctx);
+		return 1;
+	}
 
 	// F03: 拖拽中的释放不再走任何控件点击路径，直接交付 drop。
 	if (ctx->drag_kind != VGUI_DRAG_NONE)
@@ -12420,34 +12658,11 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 			}
 		}
 
-		// 画 text — 用 tx/ty 作为 text 起点坐标，atx/aty 传给 draw_text
-		// 作为 text 可用区域左上角（draw_text 内部会按 text_align 在这个矩形内对齐）。
+		// tx/ty already position the text within the aligned icon/text group.
+		// Anchor this measured line box at its physical left edge, including in RTL.
 		if (draw_text)
-		{
-			float atx, aty, atw, ath;
-			if (horiz)
-			{
-				atw = std::max(0.0f, has_icon ? cw - iw - gap : cw);
-				ath = ch;
-				if (pos == VGUI_BUTTON_ICON_LEFT && has_icon)
-					atx = tx0 + iw + gap;
-				else
-					atx = tx0;
-				aty = ty;
-			}
-			else  // VGUI_BUTTON_ICON_TOP / BOTTOM
-			{
-				atw = cw;
-				ath = std::max(0.0f, has_icon ? ch - ih - gap : ch);
-				atx = tx0;
-				if (pos == VGUI_BUTTON_ICON_TOP && has_icon)
-					aty = ty + ih + gap;
-				else
-					aty = ty;
-			}
-			vgui_draw_text(ctx, cb, vg, w, w->text, atx, aty, atw, ath,
-				vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
+			vgui_draw_text(ctx, cb, vg, w, w->text, tx, ty, tw, th,
+				vgui_text_color(w), rtl ? 1.0f : 0.0f, 0.0f);
 	}
 	else
 	{
@@ -14517,6 +14732,24 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				vgui_widget_color(w, border), 1.0f);
 	}
 
+	if (st->side_min[VGUI_DOCK_CENTER] > 0.0f)
+	{
+		const int hover = ctx->hot == w && st->sash_hover >= 0
+			? vgui_dock_sash_at_point(w, ctx->mouse_x, ctx->mouse_y) : -1;
+		for (int side : { VGUI_DOCK_LEFT, VGUI_DOCK_RIGHT })
+		{
+			const auto& r = st->sashes[side];
+			if (r.w <= 0.0f || r.h <= 0.0f) continue;
+			const bool active = ctx->active == w && st->sash_drag == side;
+			const bool hot = hover == side;
+			const float line = std::min(r.w, (active ? 2.0f : 1.0f) * ctx->ui_scale);
+			const uint32_t color = active ? ctx->theme.accent
+				: hot ? vgui_alpha_color(ctx->theme.accent, 0.75f) : border;
+			vgui_fill_rect(cb, vg, r.x + (r.w - line) * 0.5f, r.y, line, r.h, 0.0f,
+				vgui_widget_color(w, color));
+		}
+	}
+
 	for (vgui_item_id id : st->float_order)
 	{
 		vgui_dock_panel* panel = vgui_dock_find(w, id);
@@ -15096,11 +15329,7 @@ namespace {
 			}
 			if (w->dock)
 			{
-				for (int z = 0; z < 4; ++z)
-				{
-					if (w->dock->zone_size[z] >= 0.0f) m(w->dock->zone_size[z]);
-					m(w->dock->tab_scroll[z]);
-				}
+				for (int z = 0; z < 4; ++z) m(w->dock->tab_scroll[z]);
 				for (vgui_dock_panel& panel : w->dock->panels)
 				{
 					m(panel.fx); m(panel.fy); m(panel.fw); m(panel.fh);
@@ -17921,6 +18150,9 @@ extern "C" {
 	{
 		vgui_dock_state* st = vgui_dock_of(dock);
 		if (!st) return;
+		vgui_dock_end_sash(dock);
+		vgui_dock_set_sash_hover(dock, -1);
+		st->pinned_side = -1;
 		std::vector<vgui_widget*> pages;
 		for (vgui_dock_panel& panel : st->panels)
 		{
@@ -18188,11 +18420,31 @@ extern "C" {
 		vgui_dock_state* st = vgui_dock_of(dock);
 		int z = (int)zone;
 		if (!st || z < 0 || z >(int)VGUI_DOCK_BOTTOM) return;
-		const float scale = dock->ctx ? dock->ctx->ui_scale : 1.0f;
-		st->zone_size[z] = size < 0.0f ? -1.0f : size * scale;
-		for (int i = 0; i < 4; ++i) st->scroll_active[i] = 1;
+		if (z != VGUI_DOCK_BOTTOM) st->pinned_side = -1;
+		vgui_dock_set_preferred_size(dock, z, size);
+	}
+
+	void vgui_dock_set_side_resize(vgui_widget* dock, float min_left, float min_center, float min_right)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		auto nonneg = [](float value) { return std::isfinite(value) && value > 0.0f ? value : 0.0f; };
+		min_center = nonneg(min_center);
+		min_left = min_center > 0.0f ? nonneg(min_left) : 0.0f;
+		min_right = min_center > 0.0f ? nonneg(min_right) : 0.0f;
+		if (st->side_min[VGUI_DOCK_CENTER] == min_center &&
+			st->side_min[VGUI_DOCK_LEFT] == min_left && st->side_min[VGUI_DOCK_RIGHT] == min_right)
+			return;
+		vgui_dock_end_sash(dock);
+		if (st->sash_hover >= 0 && dock->ctx->cursor == VGUI_CURSOR_SIZE_H)
+			dock->ctx->cursor = VGUI_CURSOR_ARROW;
+		vgui_dock_set_sash_hover(dock, -1);
+		st->side_min[VGUI_DOCK_CENTER] = min_center;
+		st->side_min[VGUI_DOCK_LEFT] = min_left;
+		st->side_min[VGUI_DOCK_RIGHT] = min_right;
+		st->pinned_side = -1;
+		vgui_recording_invalidate_chain(dock);
 		vgui_mark_dirty(dock);
-		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
 	}
 
 	float vgui_dock_get_zone_size(vgui_widget* dock, vgui_dock_zone zone)
@@ -20701,6 +20953,8 @@ extern "C" {
 			}
 			if (w->dock)
 			{
+				vgui_dock_end_sash(w);
+				vgui_dock_set_sash_hover(w, -1);
 				w->dock->hover = 0;
 				w->dock->pressed = 0;
 				w->dock->close_hover = 0;
@@ -20736,7 +20990,16 @@ extern "C" {
 		const bool pointer_busy = ctx->active != nullptr ||
 			ctx->press_target != nullptr || ctx->slider_drag != nullptr;
 		const bool drag_busy = ctx->drag_kind != VGUI_DRAG_NONE;
-		if (!pointer_busy && !drag_busy) return;
+		if (!pointer_busy && !drag_busy)
+		{
+			vgui_dock_state* st = vgui_dock_of(ctx->hot);
+			if (st && st->sash_hover >= 0)
+			{
+				vgui_dock_set_sash_hover(ctx->hot, -1);
+				ctx->cursor = VGUI_CURSOR_ARROW;
+			}
+			return;
+		}
 
 		const bool was_in_input = ctx->in_input;
 		if (!was_in_input)

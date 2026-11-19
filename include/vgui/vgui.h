@@ -1502,10 +1502,17 @@ extern "C" {
 	VGUI_API int vgui_dock_restore(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API int vgui_dock_is_open(vgui_widget* dock, vgui_item_id panel);
 
-	/* Zone size in pixels (left/right width, bottom height).  A negative size
-	 * restores the style default.  The centre zone ignores the value. */
+	/* Preferred zone size: the setter takes logical pixels (left/right width,
+	 * bottom height); a negative value restores the style default. The getter
+	 * returns the DPI-scaled preference, not the actual laid-out size. The
+	 * centre zone has no preferred size. */
 	VGUI_API void vgui_dock_set_zone_size(vgui_widget* dock, vgui_dock_zone zone, float size);
 	VGUI_API float vgui_dock_get_zone_size(vgui_widget* dock, vgui_dock_zone zone);
+	/* Opt in to dragging the vertical gaps beside open side zones. Minima are
+	 * logical pixels; min_center <= 0 disables side resizing. A zero style
+	 * gap leaves the minimum-width layout enabled but provides no hit target.
+	 * Narrow layouts can squeeze the panes without changing their preferences. */
+	VGUI_API void vgui_dock_set_side_resize(vgui_widget* dock, float min_left, float min_center, float min_right);
 	/* Absolute rectangles after layout.  Zone rects are zero when collapsed.
 	 * The tab rect of a floating panel is its title bar. */
 	VGUI_API int vgui_dock_get_zone_rect(vgui_widget* dock, vgui_dock_zone zone, float* x, float* y, float* width, float* height);

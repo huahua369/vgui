@@ -8,6 +8,7 @@
 #include <cmath>
 #include <functional>
 #include <initializer_list>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -53,10 +54,11 @@ inline void exercise_geometry(os_window& win, vgui_context* shell, designer_prev
         push(e);
     };
     const auto click = [&](glm::vec2 px) { px = rounded(px); mouse(true, px); mouse(false, px); frame(); };
-    const auto find = [](const auto& self, vgui_widget* w, std::string_view id) -> vgui_widget* {
-        if (!w || id == vgui_widget_get_id(w)) return w;
+    const auto find = [](const auto& self, vgui_widget* w, std::string_view id,
+                         std::optional<vgui_widget_kind> kind = {}) -> vgui_widget* {
+        if (!w || (id == vgui_widget_get_id(w) && (!kind || vgui_widget_get_kind(w) == *kind))) return w;
         for (std::size_t i = 0; i < vgui_widget_get_child_count(w); ++i)
-            if (auto* match = self(self, vgui_widget_get_child(w, i), id)) return match;
+            if (auto* match = self(self, vgui_widget_get_child(w, i), id, kind)) return match;
         return nullptr;
     };
     const auto shell_widget = [&](std::string_view id) {
@@ -272,9 +274,43 @@ inline void exercise_geometry(os_window& win, vgui_context* shell, designer_prev
     click(point(intrinsic, .5f, .5f));
     require(read() == initial, "selection or toolbar click changed the document");
 
+    step = "live CJK text in inspector and preview";
+    auto* edit = find(find, vgui_root(shell), "property:text", VGUI_EDIT);
+    require(edit != nullptr, "missing inspector text editor");
+    float tx, ty, tw, th;
+    vgui_widget_get_rect(edit, &tx, &ty, &tw, &th);
+    click({tx + tw / 2, ty + th / 2});
+    require(vgui_get_focus(shell) == edit && SDL_TextInputActive(win.window), "inspector did not start text input");
+    const auto input = [&](const char* value) {
+        vgui_edit_select_all(edit);
+        SDL_Event e{};
+        e.type = SDL_EVENT_TEXT_INPUT;
+        e.text.windowID = win.id;
+        e.text.text = value;
+        push(e);
+        frame();
+        require(std::string_view(vgui_edit_get_text(edit)) == value &&
+            std::get<std::string>(history.current().nodes.at(auto_id).props.at("text")) == value,
+            "submitted UTF-8 was not applied live to the text field and document");
+        return rect(auto_id).width;
+    };
+    const auto child_width = input("子");
+    const auto full_width = input("鞋子");
+    const auto edit_em = vgui_widget_get_font_size(edit);
+    require(vgui_widget_measure_text(edit, "鞋") >= .9f * edit_em &&
+        vgui_widget_measure_text(edit, "子") >= .9f * edit_em, "inspector did not measure both full-width glyphs");
+    // The auto-sized preview button must grow by a full CJK glyph, not the
+    // narrower missing-glyph advance of the Latin primary font.
+    require(full_width - child_width >= 12.f * layout()->view.scale,
+        "preview did not measure the newly entered CJK glyph");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(read().doc == initial.doc && !history.dirty() && !history.can_undo(), "cancelling CJK input changed the design");
+    same_rect(rect(auto_id), intrinsic, "cancelling CJK input did not restore English text metrics");
+    const auto before_move = read();
+
     step = "move auto-sized child at fit";
     const auto move = drag(point(intrinsic, .5f, .5f), {26, 34});
-    const auto moved = edited(initial, auto_id, {{"x", prop(initial.doc, auto_id, "x") + move.x},
+    const auto moved = edited(before_move, auto_id, {{"x", prop(initial.doc, auto_id, "x") + move.x},
         {"y", prop(initial.doc, auto_id, "y") + move.y}});
     check_rect(auto_id, intrinsic); // x/y only; width and height must remain auto.
 

@@ -36,6 +36,16 @@ constexpr float toolbar_gap = 10;
 constexpr float document_chrome_width = 33; // Left/right padding, marker, and gap.
 constexpr float page_tab_height = 32;
 
+// Seed new controls only. A missing or zero dimension in a design still means auto-size.
+constexpr std::pair<double, double> initial_control_size(std::string_view type)
+{
+    if (type == "panel") return {240, 160};
+    if (type == "label") return {120, 24};
+    if (type == "edit") return {200, 36};
+    if (type == "image") return {128, 128};
+    return {120, 36}; // Button and fallback for any newly registered type.
+}
+
 std::string display_value(const value& data)
 {
     if (const auto* b = std::get_if<bool>(&data)) return *b ? "true" : "false";
@@ -162,7 +172,8 @@ struct designer_workbench::impl {
     vgui_widget *shell = nullptr, *dock = nullptr;
     vgui_widget *preview_section = nullptr, *preview = nullptr, *page_tabs = nullptr;
     vgui_widget *title_label = nullptr, *document_chip = nullptr, *document_marker = nullptr;
-    vgui_widget *status_label = nullptr, *pickup = nullptr;
+    vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
+    float outline_actions_min_width = 0;
     vgui_widget *menubar = nullptr, *quick_actions = nullptr;
     std::string displayed_title;
     int title_context_width = -1;
@@ -192,8 +203,8 @@ struct designer_workbench::impl {
         vgui_widget_set_id(dock, "designer.dock");
         vgui_widget_set_grow(dock, 1);
         vgui_widget_set_align_self(dock, VGUI_ALIGN_STRETCH);
-        vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 240);
-        vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, 345);
+        set_dock_widths({});
+        vgui_dock_set_side_resize(dock, 150, 260, 220);
 
         auto* structure = page("structure", {"workbench.dock.structure", "Structure"}, VGUI_DOCK_LEFT);
         build_structure(structure);
@@ -443,6 +454,14 @@ struct designer_workbench::impl {
         add_view("designer.view.phone", {"preview.phone", "Phone"}, action::phone);
         add_view("designer.view.fit", {"preview.fit", "Fit"}, action::fit, false);
         add_view("designer.view.actual", {"workbench.menu.actual_size", "Actual Size"}, action::actual, false);
+        vgui_menu_add_separator(view);
+        add_menu_command(view, "designer.layout.restore_default",
+            {"workbench.menu.restore_default_layout", "Restore Default Layout"},
+            [this, changed = std::move(callbacks.layout_changed)] {
+                set_dock_widths({});
+                message = localized_text{"workbench.status.default_layout_restored", "Default layout restored."};
+                if (changed) changed();
+            });
 
         auto* tools = add_menu({"workbench.menu.tools", "Tools"});
         auto* language = add_submenu(tools, {"settings.language", "Language"});
@@ -525,8 +544,7 @@ struct designer_workbench::impl {
             vgui_widget_set_size(button, 0, 30);
             vgui_widget_set_padding(button, 9, 0, 9, 0);
             vgui_widget_set_font_size(button, 13);
-            // The stock button renderer applies vertical text alignment twice.
-            vgui_widget_set_text_align(button, .5f, .25f);
+            vgui_widget_set_text_align(button, .5f, .5f);
             vgui_widget_set_text_color(button, toolbar_text);
             vgui_widget_set_background(button, background);
             vgui_widget_set_border(button, edge, edge ? 1 : 0);
@@ -605,6 +623,19 @@ struct designer_workbench::impl {
         vgui_widget_set_a11y_name(title_label, description.c_str());
         vgui_widget_set_background(document_marker, dirty ? document_dirty : document_ready);
         vgui_widget_set_tooltip(document_marker, dirty ? unsaved : nullptr);
+    }
+
+    designer_dock_widths dock_widths() const
+    {
+        const float scale = vgui_context_get_ui_scale(ui);
+        return {vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT) / scale,
+                vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT) / scale};
+    }
+
+    void set_dock_widths(designer_dock_widths widths)
+    {
+        vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, widths.left);
+        vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, widths.right);
     }
 
     vgui_widget* enable_page_tabs()
@@ -733,6 +764,7 @@ struct designer_workbench::impl {
         bind_label(vgui_widget_add(panel, VGUI_LABEL, nullptr), {"workbench.outline.heading", "Outline"});
         outliner->build(editor, panel);
         auto* tree = outliner->widget();
+        vgui_widget_set_size(tree, 0, 0); // Stretch to the dock width instead of the tree's fixed default width.
         vgui_widget_set_id(tree, "designer.outliner");
         bind_label(tree, {"workbench.outline.a11y", "Document outline"}, vgui_widget_set_a11y_name);
         outliner->set_selection_listener([this](kit::object_id object) {
@@ -742,12 +774,32 @@ struct designer_workbench::impl {
         });
         build_drag_drop(tree);
 
-        auto* row = make_row(panel);
+        auto* actions_view = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(actions_view, "designer.outline.actions");
+        vgui_widget_set_layout(actions_view, VGUI_LAYOUT_COLUMN);
+        vgui_panel_set_scrollable(actions_view, 1, 0);
+        vgui_panel_set_scroll_listener(actions_view, [](vgui_widget* panel, float, float, void*) {
+            vgui_widget_mark_dirty(panel); // Refresh the on-demand frame after scrolling.
+        }, nullptr);
+        constexpr float bar_size = 8, bar_inset = 2;
+        vgui_panel_set_scrollbar_size(actions_view, bar_size, 0, bar_inset);
+        vgui_widget_set_padding(actions_view, 0, 0, 0, bar_size + bar_inset + 2);
+        vgui_widget_set_background(actions_view, 0);
+        vgui_widget_set_border(actions_view, 0, 0);
+        outline_actions = vgui_widget_add(actions_view, VGUI_PANEL, nullptr);
+        vgui_widget_set_layout(outline_actions, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_self(outline_actions, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_padding(outline_actions, 0, 0, 0, 0);
+        vgui_widget_set_gap(outline_actions, 4);
+        vgui_widget_set_background(outline_actions, 0);
+        vgui_widget_set_border(outline_actions, 0, 0);
+
+        auto* row = make_row(outline_actions);
         add_button(row, "designer.move.up", {"workbench.outline.up", "Up"}, true);
         add_button(row, "designer.move.down", {"workbench.outline.down", "Down"}, true);
         add_button(row, "designer.duplicate", {"workbench.outline.copy", "Copy"}, true);
         add_button(row, "designer.delete", {"workbench.outline.delete", "Delete"}, true);
-        row = make_row(panel);
+        row = make_row(outline_actions);
         define_command("designer.move.pick", pickup_label(), [this] {
             if (move_source.empty()) {
                 move_source = selected;
@@ -899,6 +951,9 @@ struct designer_workbench::impl {
         }
         auto id = fresh_key("node_", doc.nodes);
         const auto* descriptor = find_type(type);
+        const auto [width, height] = initial_control_size(type);
+        data.props.emplace("width", width);
+        data.props.emplace("height", height);
         if (apply({insert_node{id, parent, std::move(data)}},
                 formatted_status{{"workbench.status.added_type", "Added {value}"},
                     descriptor ? status_value{type_label(*descriptor)} : status_value{type}})) select(std::move(id));
@@ -1252,6 +1307,15 @@ struct designer_workbench::impl {
             vgui_widget_set_text(pickup, pick);
             commands.find(vgui_widget_get_id(pickup))->title = pick;
         }
+        // Size the scrollable content from the current captions (including
+        // the alternate pickup label), not from the dock's viewport width.
+        float width = 0;
+        vgui_widget_get_intrinsic_size(outline_actions, &width, nullptr);
+        const float min_width = width / vgui_context_get_ui_scale(ui);
+        if (min_width != outline_actions_min_width) {
+            outline_actions_min_width = min_width;
+            vgui_widget_set_min_size(outline_actions, min_width, 0);
+        }
         refresh_document_caption();
         update_text(status_label, message_text());
     }
@@ -1341,6 +1405,8 @@ designer_workbench::designer_workbench(vgui_context* ui, session& history, desig
 
 designer_workbench::~designer_workbench() = default;
 vgui_widget* designer_workbench::preview_host() const { return impl_->preview; }
+designer_dock_widths designer_workbench::dock_widths() const { return impl_->dock_widths(); }
+void designer_workbench::set_dock_widths(designer_dock_widths widths) { impl_->set_dock_widths(widths); }
 vgui_widget* designer_workbench::enable_page_tabs() { return impl_->enable_page_tabs(); }
 void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }

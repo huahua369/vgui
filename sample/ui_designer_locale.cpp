@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <fstream>
 #include <map>
 #include <random>
@@ -49,6 +50,44 @@ json read_settings(const fs::path& path) {
     return json::parse(buffer.begin(), end, nullptr, false);
 }
 
+bool write_settings(const fs::path& path, const json& config) {
+    const auto bytes = config.dump(2) + '\n';
+
+    // Write beside the destination, then replace it only after a successful close.
+    std::error_code ec;
+    const auto parent = path.has_parent_path() ? path.parent_path() : fs::path(".");
+    std::random_device random;
+    struct staging_dir {
+        fs::path path;
+        ~staging_dir() {
+            if (path.empty()) return;
+            std::error_code ec;
+            fs::remove(path / "settings.json", ec);
+            fs::remove(path, ec);
+        }
+    } staging;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        auto candidate = parent / (".vgui-designer-settings-" + std::to_string(random()));
+        if (fs::create_directory(candidate, ec)) {
+            staging.path = std::move(candidate);
+            break;
+        }
+        if (ec && ec != std::errc::file_exists) return false;
+    }
+    if (staging.path.empty()) return false;
+    const auto temp = staging.path / "settings.json";
+    std::ofstream output(temp, std::ios::binary);
+    output << bytes;
+    output.close();
+    if (!output) return false;
+    fs::rename(temp, path, ec);
+    return !ec;
+}
+
+bool valid_dock_width(double value) {
+    return std::isfinite(value) && value >= 1.0 && value <= 16384.0;
+}
+
 } // namespace
 
 const char* designer_strings::text(std::string_view key, const char* fallback) const {
@@ -81,37 +120,32 @@ bool save_designer_language(const fs::path& path, designer_language language) {
     auto config = read_settings(path);
     if (!config.is_object()) return false;
     config["language"] = language_code(language);
-    const auto bytes = config.dump(2) + '\n';
+    return write_settings(path, config);
+}
 
-    // Write beside the destination, then replace it only after a successful close.
-    std::error_code ec;
-    const auto parent = path.has_parent_path() ? path.parent_path() : fs::path(".");
-    std::random_device random;
-    struct staging_dir {
-        fs::path path;
-        ~staging_dir() {
-            if (path.empty()) return;
-            std::error_code ec;
-            fs::remove(path / "settings.json", ec);
-            fs::remove(path, ec);
-        }
-    } staging;
-    for (int attempt = 0; attempt < 16; ++attempt) {
-        auto candidate = parent / (".vgui-designer-settings-" + std::to_string(random()));
-        if (fs::create_directory(candidate, ec)) {
-            staging.path = std::move(candidate);
-            break;
-        }
-        if (ec && ec != std::errc::file_exists) return false;
-    }
-    if (staging.path.empty()) return false;
-    const auto temp = staging.path / "settings.json";
-    std::ofstream output(temp, std::ios::binary);
-    output << bytes;
-    output.close();
-    if (!output) return false;
-    fs::rename(temp, path, ec);
-    return !ec;
+designer_dock_widths load_designer_dock_widths(const fs::path& path) {
+    designer_dock_widths widths;
+    const auto config = read_settings(path);
+    const auto layout = config.find("layout");
+    if (layout == config.end() || !layout->is_object()) return widths;
+    const auto read_width = [&](const char* key, float fallback) {
+        const auto it = layout->find(key);
+        if (it == layout->end() || !it->is_number()) return fallback;
+        const auto value = it->get<double>();
+        return valid_dock_width(value) ? static_cast<float>(value) : fallback;
+    };
+    return {read_width("left_width", widths.left), read_width("right_width", widths.right)};
+}
+
+bool save_designer_dock_widths(const fs::path& path, designer_dock_widths widths) {
+    if (path.empty() || !valid_dock_width(widths.left) || !valid_dock_width(widths.right)) return false;
+    auto config = read_settings(path);
+    if (!config.is_object()) return false;
+    auto& layout = config["layout"];
+    if (!layout.is_object()) layout = json::object();
+    layout["left_width"] = widths.left;
+    layout["right_width"] = widths.right;
+    return write_settings(path, config);
 }
 
 } // namespace vgui::ui_design

@@ -135,7 +135,8 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
     const auto& children = edited.current.nodes.at("footer").children;
     require(children.size() == expected.nodes.at("footer").children.size() + 1, "Resources menu did not add a sibling of Submit");
     const auto& label_id = children.back();
-    require(expected.nodes.emplace(label_id, node{"label", {}, {}, {}}).second, "Resources menu did not create a fresh Label");
+    require(expected.nodes.emplace(label_id, node{"label", {}, {{"width", 120.0}, {"height", 24.0}}, {}}).second,
+        "Resources menu did not create a fresh Label with its initial size");
     expected.nodes.at("footer").children.push_back(label_id);
     require(edited.current == expected && edited.committed == expected && edited.revision == initial.revision + 1 &&
         edited.dirty && edited.undo && !edited.redo, "expected exactly one dirty structural edit");

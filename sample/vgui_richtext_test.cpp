@@ -23,6 +23,7 @@ struct command {
     vgui_color color = 0;
     float x = 0, y = 0;
     float font_size = 0;
+    vec2 text_align{};
 };
 constexpr ivec4 parent_clip{5, 4, 180, 100};
 ivec4 clip = parent_clip;
@@ -35,6 +36,12 @@ void check(bool ok, const char* message, const char* context = nullptr) {
         std::fprintf(stderr, "FAIL: %s%s%s\n", context ? context : "", context ? ": " : "", message);
         ++failures;
     }
+}
+
+void record_text(rvg_t*, text_st_t* t, text_style_t* st, text_box_rt* box) {
+    commands.push_back({st->color_glow ? 'G' : 'T', std::string(t->text, t->text_len),
+        clip, box->rc, box->rc.y + box->baseline, 0, 0,
+        st->color_glow ? st->color_glow : st->color, t->pos.x, t->pos.y, st->fontsize, box->text_align});
 }
 
 void test_international_spans(vgui_widget* widget, ovg_ctx_cb& cb, rvg_t& vg) {
@@ -402,6 +409,59 @@ void test_inline_images(vgui_widget* widget, ovg_ctx_cb cb, rvg_t& vg) {
     vgui_context_set_ui_scale(ctx, saved_scale);
     commands.clear();
 }
+
+void test_button_text_alignment(font_familys_t* font) {
+    // Full vgui_draw reads OVG's draw list, so use a real CPU draw context
+    // and intercept only text submissions. No GPU or window is needed.
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui(vgui_create(font, 16), vgui_destroy);
+    cb->add_text = record_text;
+    cb->image_update = nullptr;
+    vg->width = 200;
+    vg->height = 120;
+    vgui_context_set_size(ui.get(), vg->width, vg->height);
+
+    constexpr char label[] = "Run";
+    auto* button = vgui_widget_add(vgui_root(ui.get()), VGUI_BUTTON, label);
+    vgui_widget_set_pos(button, 12, 14);
+    vgui_widget_set_size(button, 140, 80);
+    vgui_widget_set_padding(button, 8, 6, 12, 10);
+    constexpr float left = 20, top = 20, width = 120, height = 64; // Padded content area.
+    const float text_w = vgui_widget_measure_text(button, label);
+    const float text_h = vgui_widget_get_line_height(button);
+    const auto check_position = [&](float x, float y, const char* context) {
+        cb->clear(vg.get());
+        commands.clear();
+        vgui_draw(ui.get(), cb.get(), vg.get());
+        check(commands.size() == 1 && commands.front().kind == 'T' && commands.front().text == label,
+            "expected one button label draw", context);
+        if (commands.size() != 1) return;
+        const auto& text = commands.front();
+        // OVG applies box alignment on top of the submitted origin. Checking
+        // the origin alone would miss a second vertical offset on the plain button.
+        check(std::fabs(text.x - x) < 0.01f && text.text_align.x == 0,
+            "incorrect final horizontal text position", context);
+        check(std::fabs(text.y - y) < 0.01f && text.text_align.y == 0,
+            "incorrect final vertical text position", context);
+    };
+    check_position(left + (width - text_w) * 0.5f, top + (height - text_h) * 0.5f,
+        "tall plain button at default alignment");
+
+    // The CPU texture reserves an icon slot even without a native texture.
+    const unsigned char pixels[] = {255, 255, 255, 255};
+    const vgui_texture_desc desc{1, 1, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels};
+    std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)> icon(
+        vgui_texture_create(ui.get(), &desc), vgui_texture_destroy);
+    check(!!icon, "button icon fixture texture creation");
+    if (!icon) return;
+    constexpr int icon_w = 56, icon_h = 16, gap = 6;
+    vgui_button_set_icon(button, icon.get(), icon_w, icon_h, VGUI_BUTTON_ICON_TOP);
+    vgui_button_set_icon_gap(button, gap);
+    vgui_widget_set_text_align(button, 0.0f, 0.5f);
+    check_position(left + (icon_w - text_w) * 0.5f, top + (height - text_h + icon_h + gap) * 0.5f,
+        "start-aligned stack with icon above text");
+}
 } // namespace
 
 int main() {
@@ -425,11 +485,7 @@ int main() {
     };
     cb.set_source_color = [](rvg_t*, uint32_t color) { decoration.color = color; };
     cb.fill = [](rvg_t*) { commands.push_back(decoration); };
-    cb.add_text = [](rvg_t*, text_st_t* t, text_style_t* st, text_box_rt* box) {
-        commands.push_back({st->color_glow ? 'G' : 'T', std::string(t->text, t->text_len),
-            clip, box->rc, box->rc.y + box->baseline, 0, 0,
-            st->color_glow ? st->color_glow : st->color, t->pos.x, t->pos.y, st->fontsize});
-    };
+    cb.add_text = record_text;
     test_international_spans(widget, cb, vg);
     test_wrapped_spans(widget, cb, vg);
     commands.clear();
@@ -568,5 +624,6 @@ int main() {
         "distinct segment intensity splits outer-glow batches and restores clip");
     vgui_widget_clear_text_glow(widget);
     test_inline_images(widget, cb, vg);
+    test_button_text_alignment(family.get());
     return failures != 0;
 }

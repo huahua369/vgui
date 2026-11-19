@@ -282,6 +282,7 @@ vgui_dock_on_close(dock, on_dock_close, app);
 
 - 拖动标签可重排或移到其他区域；拖拽期间 Dock 会画出目标罗盘（左/右/底/中央四块加正中的浮出方块），未命中低亮、命中高亮并在命中的停靠区显示标签插入竖线，拖影跟随指针。指针移出 Dock 矩形、落在浮动框架上或命中中央浮出方块都会把面板变成浮动框架——中央方块是某个区只剩一个标签时唯一的浮出入口。拖动浮动框架标题可移动窗口，拖到某区域的标签条（或已折叠区域的边缘带）即重新停靠。
 - `vgui_dock_close()` 只隐藏面板并保留区域/顺序，`vgui_dock_restore()` 重新打开并激活；关闭按钮可通过 `vgui_dock_set_closeable()` 控制。
+- `vgui_dock_set_side_resize()` 可启用左右停靠区的拖动分隔条，并指定左、中、右区的最小逻辑宽度；传入非正的中央最小宽度可关闭此功能。
 - `vgui_dock_get_zone()/get_index()/is_open()/get_floating_rect()` 可读取布局状态，配合字符串 id 与 `vgui_dock_panel_desc` 重建即可恢复布局；区域尺寸通过 `vgui_dock_set_zone_size()` 保存/恢复。
 - 标签条溢出时可用滚轮横向滚动；样式字段位于 `vgui_style.dock`，颜色位于 `vgui_theme.dock_*`，零值会回退到面板/按钮/菜单调色板。
 

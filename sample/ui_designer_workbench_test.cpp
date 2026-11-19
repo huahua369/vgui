@@ -7,6 +7,7 @@
 #include <ovg_c.h>
 #include <vgui/vgui.h>
 
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -378,14 +379,31 @@ void exercise_menus()
     check(model.revision() == initial_revision && !model.can_undo() && !model.dirty(),
         "cancelling New Control changed the document or its history");
 
+    struct control_size { std::string_view type; double width, height; };
+    constexpr control_size sizes[] = {{"panel", 240, 160}, {"label", 120, 24}, {"button", 120, 36},
+        {"edit", 200, 36}, {"image", 128, 128}};
+    const auto add_sized = [&](const control_size& size, const std::string& parent) {
+        const auto revision = model.revision();
+        const auto id = workbench.add(size.type, parent);
+        const auto& props = model.current().nodes.at(id).props;
+        const auto width = props.find("width"), height = props.find("height");
+        check(width != props.end() && width->second == ui::value{size.width} &&
+            height != props.end() && height->second == ui::value{size.height},
+            "New Control did not set the initial width and height: " + std::string(size.type));
+        check(std::string_view(vgui_edit_get_text(workbench.widget("property:width", VGUI_EDIT))) ==
+                std::to_string(static_cast<int>(size.width)) &&
+            std::string_view(vgui_edit_get_text(workbench.widget("property:height", VGUI_EDIT))) ==
+                std::to_string(static_cast<int>(size.height)), "inspector did not show the new control's size");
+        check(model.revision() == revision + 1, "setting the initial size must use the creation transaction");
+        return id;
+    };
     const auto root = model.current().root;
-    const auto panel = workbench.add("panel", root);
+    const auto panel = add_sized(sizes[0], root);
     std::vector<std::string> leaves;
-    for (const auto& type : ui::types()) {
-        if (type.key == "panel") continue;
+    for (std::size_t i = 1; i < std::size(sizes); ++i) {
         // The first leaf is added to the selected Panel. The others must be
         // added beside the selected leaf, without changing earlier siblings.
-        leaves.push_back(workbench.add(type.key, panel));
+        leaves.push_back(add_sized(sizes[i], panel));
     }
     check(model.current().nodes.at(panel).children == leaves && leaves.size() == 4,
         "the New Control choices did not create all five schema types");
@@ -422,6 +440,145 @@ void exercise_menus()
         "Edit > Delete did not remove the copy and select its parent");
     workbench.edit("Undo");
     expect_edit({"Undo", "Redo", "Copy", "Delete"});
+}
+
+void exercise_side_resize()
+{
+    // Use real label metrics, as the native editor does, to exercise genuine overflow.
+    std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache(new_font_cache(), free_font_cache);
+    check(cache && load_font_from_path(cache.get(), VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf", "WorkbenchLatin"),
+        "could not load the workbench layout test font");
+    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(
+        new_font_family(cache.get(), "WorkbenchLatin", nullptr), delete_font_family);
+    check(font && font->count == 1, "could not create the workbench layout test font family");
+    temp_dir directory;
+    test_workbench workbench(directory.path / "layout.vgui.json", ui::designer_language::english, font.get());
+    auto* ctx = workbench.ctx.get();
+    auto* dock = workbench.widget("designer.dock", VGUI_DOCK);
+    const auto initial = workbench.model.current();
+    const auto revision = workbench.model.revision();
+    struct rect { float x, y, w, h; };
+    const auto zone = [&](vgui_dock_zone which) {
+        rect r{};
+        check(vgui_dock_get_zone_rect(dock, which, &r.x, &r.y, &r.w, &r.h) != 0,
+            "resize hid a dock region");
+        return r;
+    };
+    const auto drag = [&](vgui_dock_zone left, vgui_dock_zone right, float delta) {
+        const auto a = zone(left), b = zone(right);
+        const float x = (a.x + a.w + b.x) * .5f, y = a.y + a.h * .5f;
+        check(a.x + a.w < b.x && vgui_hit_test(ctx, x, y) == dock, "dock divider does not have a hit region");
+        vgui_input_mouse_move(ctx, x, y);
+        check(vgui_context_get_cursor(ctx) == VGUI_CURSOR_SIZE_H, "hovering the divider did not change the pointer");
+        check(vgui_input_mouse_down(ctx, 1, x, y, 1) != 0, "dock divider did not accept a press");
+        vgui_input_mouse_move(ctx, x + delta, y);
+        workbench.frame(); // The layout must update during the drag, not only on release.
+        const float resized = zone(left).w;
+        vgui_input_mouse_up(ctx, 1, x + delta, y, 1);
+        vgui_input_mouse_move(ctx, x, y);
+        workbench.frame();
+        check(zone(left).w == resized, "the dock divider did not retain its width after release");
+        return resized;
+    };
+
+    const auto left = zone(VGUI_DOCK_LEFT), center = zone(VGUI_DOCK_CENTER), right = zone(VGUI_DOCK_RIGHT);
+    const auto paint = vgui_context_paint_revision(ctx);
+    vgui_input_mouse_move(ctx, (left.x + left.w + center.x) * .5f, left.y + left.h * .5f);
+    check(vgui_context_paint_revision(ctx) != paint, "divider hover did not invalidate the on-demand render");
+    check(drag(VGUI_DOCK_LEFT, VGUI_DOCK_CENTER, 72) == left.w + 72 &&
+        zone(VGUI_DOCK_CENTER).w == center.w - 72 && zone(VGUI_DOCK_RIGHT).w == right.w,
+        "left divider did not resize only the outline and center regions");
+    check(drag(VGUI_DOCK_CENTER, VGUI_DOCK_RIGHT, -63) == center.w - 72 - 63 &&
+        zone(VGUI_DOCK_LEFT).w == left.w + 72 && zone(VGUI_DOCK_RIGHT).w == right.w + 63,
+        "right divider did not resize only the inspector and center regions");
+
+    const auto before_cancel = zone(VGUI_DOCK_LEFT), beside_cancel = zone(VGUI_DOCK_CENTER);
+    const float cancel_x = (before_cancel.x + before_cancel.w + beside_cancel.x) * .5f;
+    const float cancel_y = before_cancel.y + before_cancel.h * .5f;
+    vgui_input_mouse_down(ctx, 1, cancel_x, cancel_y, 1);
+    vgui_input_cancel(ctx); // The SDL backend uses this path on window focus loss.
+    vgui_input_mouse_move(ctx, cancel_x - 70, cancel_y);
+    vgui_input_mouse_up(ctx, 1, cancel_x - 70, cancel_y, 1);
+    workbench.frame();
+    check(zone(VGUI_DOCK_LEFT).w == before_cancel.w, "a canceled divider drag kept following the pointer");
+
+    drag(VGUI_DOCK_LEFT, VGUI_DOCK_CENTER, 2000);
+    check(zone(VGUI_DOCK_CENTER).w >= 260 && zone(VGUI_DOCK_RIGHT).w == right.w + 63,
+        "dragging past the right edge collapsed the center or resized the other pane");
+    auto* remove = workbench.widget("designer.delete", VGUI_BUTTON);
+    auto* layout = workbench.widget("property:layout", VGUI_BUTTON);
+    const auto bounds = [](vgui_widget* widget) {
+        rect r{};
+        vgui_widget_get_rect(widget, &r.x, &r.y, &r.w, &r.h);
+        return r;
+    };
+    float remove_min = 0;
+    vgui_widget_get_intrinsic_size(remove, &remove_min, nullptr);
+
+    drag(VGUI_DOCK_LEFT, VGUI_DOCK_CENTER, -2000);
+    drag(VGUI_DOCK_CENTER, VGUI_DOCK_RIGHT, zone(VGUI_DOCK_RIGHT).w - 270);
+    const auto compact_layout = bounds(layout);
+    drag(VGUI_DOCK_CENTER, VGUI_DOCK_RIGHT, 2000);
+    check(zone(VGUI_DOCK_LEFT).w == 150 && zone(VGUI_DOCK_RIGHT).w == 220,
+        "side pane minimum widths were not applied");
+    check(bounds(remove).w >= remove_min - 0.01f, "narrow outline squeezed the Delete button below its natural width");
+    check(bounds(layout).w == compact_layout.w, "narrow inspector squeezed the Layout button below its scrollable width");
+
+    auto* actions = workbench.widget("designer.outline.actions", VGUI_PANEL);
+    const auto viewport = bounds(actions), hidden_button = bounds(remove);
+    const auto tree = bounds(workbench.outline());
+    check(hidden_button.x + hidden_button.w > viewport.x + viewport.w,
+        "outline button should extend past the viewport before scrolling (button right=" +
+        std::to_string(hidden_button.x + hidden_button.w) + ", viewport right=" +
+        std::to_string(viewport.x + viewport.w) + ")");
+    check(tree.x + tree.w <= zone(VGUI_DOCK_LEFT).x + zone(VGUI_DOCK_LEFT).w,
+        "the overflowing actions widened the tree");
+    // Drag the horizontal thumb to its right edge, then verify that the
+    // rightmost button came into view without changing size.
+    const float bar_x = viewport.x + viewport.w * .25f, bar_y = viewport.y + viewport.h - 6;
+    vgui_input_mouse_move(ctx, bar_x, bar_y);
+    const auto before_scroll = vgui_context_paint_revision(ctx);
+    check(vgui_input_mouse_down(ctx, 1, bar_x, bar_y, 1), "outline horizontal scrollbar did not accept a press");
+    vgui_input_mouse_move(ctx, bar_x + viewport.w, bar_y);
+    vgui_input_mouse_up(ctx, 1, bar_x + viewport.w, bar_y, 1);
+    workbench.frame();
+    float scroll = 0;
+    vgui_panel_get_scroll(actions, &scroll, nullptr);
+    const auto visible_button = bounds(remove);
+    check(scroll > 0, "dragging the outline scrollbar did not change its offset");
+    check(visible_button.x + visible_button.w <= viewport.x + viewport.w + 0.01f &&
+        std::abs(visible_button.w - hidden_button.w) < 0.01f,
+        "scrollbar did not reveal the rightmost outline button at the same width (offset=" +
+        std::to_string(scroll) + ", right=" + std::to_string(visible_button.x + visible_button.w) + ", viewport right=" +
+        std::to_string(viewport.x + viewport.w) + ")");
+    check(vgui_context_paint_revision(ctx) != before_scroll, "scrolling did not invalidate the on-demand render");
+    check(bounds(workbench.outline()).x == tree.x, "scrolling the actions also shifted the tree");
+
+    auto* inspector = vgui_dock_get_panel(dock, vgui_dock_find(dock, "inspector"));
+    auto* grid = vgui_widget_get_child(inspector, 0);
+    const auto layout_before_scroll = bounds(layout);
+    vgui_input_mouse_move(ctx, layout_before_scroll.x - 8, layout_before_scroll.y + layout_before_scroll.h / 2);
+    check(vgui_input_mouse_wheel(ctx, -5, 0), "inspector did not accept horizontal scrolling");
+    workbench.frame();
+    check(bounds(layout).x < layout_before_scroll.x && bounds(layout).w == layout_before_scroll.w,
+        "inspector scrolling did not reveal the property editor without squeezing it");
+
+    drag(VGUI_DOCK_LEFT, VGUI_DOCK_CENTER, left.w + 72 - zone(VGUI_DOCK_LEFT).w);
+    drag(VGUI_DOCK_CENTER, VGUI_DOCK_RIGHT, zone(VGUI_DOCK_RIGHT).w - (right.w + 63));
+    float grid_scroll = 0;
+    vgui_panel_get_scroll(actions, &scroll, nullptr);
+    vgui_panel_get_scroll(grid, &grid_scroll, nullptr);
+    check(scroll == 0 && grid_scroll == 0, "widening the side panes did not clear horizontal overflow");
+
+    vgui_context_set_size(ctx, 950, 650);
+    vgui_context_set_ui_scale(ctx, 1.25f);
+    workbench.frame();
+    drag(VGUI_DOCK_CENTER, VGUI_DOCK_RIGHT, -2000);
+    check(zone(VGUI_DOCK_LEFT).w >= 150 * 1.25f && zone(VGUI_DOCK_CENTER).w >= 260 * 1.25f &&
+        zone(VGUI_DOCK_RIGHT).w >= 220 * 1.25f, "minimum widths did not scale in a narrow window");
+
+    check(workbench.model.current() == initial && workbench.model.revision() == revision &&
+        !workbench.model.dirty() && !workbench.model.can_undo(), "sash resize changed the document or its history");
 }
 
 void exercise_toolbar()
@@ -818,6 +975,65 @@ void exercise_menu_language()
         "could not dismiss the reopened New Control popup chain");
 }
 
+void exercise_layout_preferences()
+{
+    temp_dir directory;
+    const auto settings = directory.path / "settings.json";
+    const auto write = [&](const char* text) { check(bool(std::ofstream(settings, std::ios::binary) << text), "cannot seed layout settings"); };
+    const auto read = [&] {
+        std::ifstream input(settings, std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(input), {});
+    };
+    constexpr ui::designer_dock_widths defaults{240, 345}, saved{304.5f, 390.f};
+    check(ui::load_designer_dock_widths(settings) == defaults && !fs::exists(settings),
+        "missing preferences did not use the default widths or created a file");
+    write(R"({"language":"en-US","layout":{"left_width":"invalid","right_width":390,"other":true}})");
+    check(ui::load_designer_dock_widths(settings) == ui::designer_dock_widths{240, 390},
+        "invalid width did not fall back independently");
+    check(ui::save_designer_dock_widths(settings, saved) && ui::load_designer_dock_widths(settings) == saved &&
+        ui::load_designer_language(settings) == ui::designer_language::english && read().find("\"other\": true") != std::string::npos,
+        "saving the widths lost other settings or truncated a fractional width");
+    check(ui::save_designer_language(settings, ui::designer_language::simplified_chinese) && ui::load_designer_dock_widths(settings) == saved,
+        "saving language overwrote the layout preference");
+
+    test_workbench restored(directory.path / "document.vgui.json");
+    auto* ctx = restored.ctx.get();
+    auto* dock = restored.widget("designer.dock", VGUI_DOCK);
+    vgui_context_set_ui_scale(ctx, 1.25f);
+    restored.bench.set_dock_widths(ui::load_designer_dock_widths(settings));
+    const auto actual_width = [&](vgui_dock_zone zone) {
+        float width = 0;
+        check(vgui_dock_get_zone_rect(dock, zone, nullptr, nullptr, &width, nullptr), "restored dock pane is missing");
+        return width;
+    };
+    restored.frame();
+    check(actual_width(VGUI_DOCK_LEFT) == saved.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) == saved.right * 1.25f,
+        "restored sizes did not scale to the display DPI");
+    vgui_context_set_size(ctx, 950, 650);
+    restored.frame();
+    check(actual_width(VGUI_DOCK_LEFT) < saved.left * 1.25f && restored.bench.dock_widths() == saved &&
+        !restored.model.dirty(), "temporary layout constraints changed the stored widths or document");
+
+    const auto revision = restored.model.revision();
+    restored.bench.set_page_active(false);
+    restored.frame();
+    restored.command("View", "Restore Default Layout");
+    check(restored.bench.dock_widths() == defaults, "reset without an open page did not restore preferred widths");
+    vgui_context_set_size(ctx, 1440, 1000);
+    restored.bench.set_page_active(true);
+    restored.frame();
+    check(actual_width(VGUI_DOCK_LEFT) == defaults.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) == defaults.right * 1.25f,
+        "reset did not restore both visible widths at the current DPI");
+    check(restored.model.revision() == revision && !restored.model.dirty() && !restored.model.can_undo(),
+        "resetting the layout changed the design or its history");
+
+    write(R"({"layout":{"left_width":-5,"right_width":100000}})");
+    check(ui::load_designer_dock_widths(settings) == defaults, "negative or excessive widths were not rejected");
+    write("{bad json");
+    check(ui::load_designer_dock_widths(settings) == defaults && !ui::save_designer_dock_widths(settings, saved) &&
+        read() == "{bad json", "saving the layout silently replaced a malformed settings file");
+}
+
 void exercise_language_preferences()
 {
     temp_dir directory;
@@ -911,12 +1127,14 @@ int main()
 {
     try {
         exercise_menus();
+        exercise_side_resize();
         exercise_toolbar();
         exercise_workbench();
         exercise_live_properties();
         exercise_outline_drag();
         exercise_menu_language();
         exercise_language_preferences();
+        exercise_layout_preferences();
         std::puts("UI Designer workbench smoke test passed");
         return 0;
     } catch (const std::exception& error) {

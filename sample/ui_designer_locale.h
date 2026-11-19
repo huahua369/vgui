@@ -23,4 +23,13 @@ designer_language load_designer_language(const std::filesystem::path& path, bool
 // Preserve unrelated keys, and do not replace unreadable or malformed settings.
 bool save_designer_language(const std::filesystem::path& path, designer_language language);
 
+struct designer_dock_widths {
+    float left = 240.f, right = 345.f; // Logical pixels, independent of DPI and window width.
+    bool operator==(const designer_dock_widths&) const = default;
+};
+
+// Missing or invalid individual widths fall back to the defaults.
+designer_dock_widths load_designer_dock_widths(const std::filesystem::path& path);
+bool save_designer_dock_widths(const std::filesystem::path& path, designer_dock_widths widths);
+
 } // namespace vgui::ui_design

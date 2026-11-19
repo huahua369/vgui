@@ -726,8 +726,7 @@ struct designer_preview::impl {
             vgui_render_target_desc_default(&desc);
             desc.width = next.pixel_width;
             desc.height = next.pixel_height;
-            desc.format = VGUI_TEXTURE_FORMAT_RGBA8;
-            desc.sample_count = 1;
+            // Inherit the color format and effective MSAA of the window context.
             target.reset(vgui_render_target_create(shell, renderer, cb.get(), &desc));
             if (!target) return gpu_error();
         }

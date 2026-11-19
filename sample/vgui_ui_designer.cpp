@@ -14,6 +14,7 @@
 #include <SDL3/SDL_main.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <filesystem>
 #include <functional>
@@ -68,12 +69,14 @@ public:
               [this](ui::designer_language language) { pending_language_ = language; },
               [this](ui::designer_view_action action) { pending_view_ = action; },
               [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); },
-              [this] { request(command::close); }}, strings_),
+              [this] { request(command::close); }, [this] { request_layout_save(); }}, strings_),
           preview_(workbench_.preview_host(), gpu, font,
               [this](std::string id) { workbench_.select(std::move(id)); },
               [this](std::string message) { workbench_.status(std::move(message)); },
               [this](ui::geometry_edit change) { commit_geometry(std::move(change)); }, strings_) {
         preview_constructed_ = true;
+        saved_dock_widths_ = ui::load_designer_dock_widths(settings_path_);
+        workbench_.set_dock_widths(saved_dock_widths_);
         tabs_ = workbench_.enable_page_tabs();
         vgui_tab_on_select(tabs_, [](vgui_widget*, vgui_item_id item, void* user) {
             auto& self = *static_cast<designer*>(user);
@@ -96,6 +99,7 @@ public:
     }
     bool quitting() const { return quitting_; }
     bool chooser_open() const { return chooser_; }
+    void request_layout_save() { layout_save_pending_ = true; }
     bool tab_change_pending() const { return pending_tab_ != 0 || pending_ == command::close; }
     ui::designer_preview& preview() { return preview_; }
     const ui::designer_strings& strings() const { return strings_; }
@@ -136,6 +140,7 @@ public:
     }
 
     void service() {
+        if (std::exchange(layout_save_pending_, false)) save_layout_widths();
         if (picked_) finish_chooser();
         if (package_name_) finish_package();
         if (auto selected = std::exchange(pending_language_, std::nullopt)) {
@@ -227,6 +232,15 @@ public:
 
 private:
     const char* tr(std::string_view key, const char* fallback) const { return strings_.text(key, fallback); }
+
+    void save_layout_widths() {
+        const auto widths = workbench_.dock_widths();
+        // Converting pixels back to logical widths can introduce DPI rounding noise.
+        if (std::abs(widths.left - saved_dock_widths_.left) < .01f &&
+            std::abs(widths.right - saved_dock_widths_.right) < .01f) return;
+        if (ui::save_designer_dock_widths(settings_path_, widths)) saved_dock_widths_ = widths;
+        else workbench_.status(std::string(tr("settings.layout_save_failed", "Cannot save layout widths: ")) + utf8(settings_path_));
+    }
 
     using view_action = ui::designer_view_action;
     using preset = ui::designer_preview::preset;
@@ -597,6 +611,8 @@ private:
     vgui_context* shell_;
     ui::designer_strings strings_;
     fs::path settings_path_;
+    ui::designer_dock_widths saved_dock_widths_;
+    bool layout_save_pending_ = false;
     std::optional<ui::designer_language> pending_language_;
     std::optional<view_action> pending_view_;
     const fs::path new_root_ = fs::canonical(fs::current_path());
@@ -828,10 +844,10 @@ void exercise_runtime_input(os_window& win, vgui_context* shell, designer& edito
         "cancelling live inspector input did not restore the canvas and history");
 }
 
-void exercise_language(os_window& win, vgui_context* shell, designer& editor,
-                       const fs::path& settings, const std::function<void()>& frame) {
+void exercise_language_and_layout(os_window& win, vgui_context* shell, designer& editor,
+                                  const fs::path& settings, const std::function<void()>& frame) {
     const auto require = [](bool passed, const char* message) {
-        if (!passed) throw std::runtime_error(std::string("Native language: ") + message);
+        if (!passed) throw std::runtime_error(std::string("Native language/layout: ") + message);
     };
     const auto widget = [&](const char* id) {
         auto* w = find_widget(vgui_root(shell), id);
@@ -871,7 +887,7 @@ void exercise_language(os_window& win, vgui_context* shell, designer& editor,
     require(!vgui_menu_get_item_checked(view, design_item) && vgui_menu_get_item_checked(view, run_item),
         "View menu did not reflect Run mode");
     menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
-    const auto board = preview.artboard_rect_px();
+    auto board = preview.artboard_rect_px();
     const auto* layout = preview.snapshot();
     require(board && layout, "missing runtime artboard");
     const auto field = std::find_if(layout->nodes.begin(), layout->nodes.end(), [](const auto& n) { return n.id == "name"; });
@@ -928,7 +944,42 @@ void exercise_language(os_window& win, vgui_context* shell, designer& editor,
             "switching language changed the design or its undo history");
     };
     switch_to(true);
+    auto* dock = widget("designer.dock");
+    const auto dock_width = [&](vgui_dock_zone zone) {
+        float width = 0;
+        require(vgui_dock_get_zone_rect(dock, zone, nullptr, nullptr, &width, nullptr),
+            "missing dock region");
+        return width / vgui_context_get_ui_scale(shell);
+    };
+    constexpr ui::designer_dock_widths defaults{};
+    require(dock_width(VGUI_DOCK_LEFT) > defaults.left && dock_width(VGUI_DOCK_RIGHT) > defaults.right,
+        "custom widths were not restored before layout reset");
+    const auto before = preview.capture_view();
+    auto* view_menu = menus.open(3);
+    const int reset_index = vgui_menu_get_count(view_menu) - 1;
+    require(std::string_view(vgui_menu_get_item_text(view_menu, vgui_menu_get_item_at(view_menu, reset_index))) ==
+        "Restore Default Layout", "layout command missing from the English View menu");
+    menus.activate(view_menu, reset_index);
+    require(std::abs(dock_width(VGUI_DOCK_LEFT) - defaults.left) < .01f &&
+        std::abs(dock_width(VGUI_DOCK_RIGHT) - defaults.right) < .01f,
+        "reset did not update both side widths immediately");
+    require(ui::load_designer_dock_widths(settings) == defaults &&
+        ui::load_designer_language(settings) == ui::designer_language::english &&
+        label("designer.status") == "Default layout restored.", "reset did not save widths without changing the language");
+    const auto after = preview.capture_view();
+    require(after.screen == before.screen && after.fit == before.fit && after.zoom == before.zoom &&
+        after.running && preview.edit_text("name") == "Keep this input" && editor.selection() == selection &&
+        history.current() == baseline && history.revision() == revision && history.dirty() == dirty &&
+        history.can_undo() == undo && history.can_redo() == redo, "layout reset changed the preview, selection or undo history");
+
+    // Continue the language test with the new canvas bounds.
+    board = preview.artboard_rect_px();
+    require(board.has_value(), "layout reset removed the artboard");
     switch_to(false);
+    view_menu = menus.open(3);
+    require(std::string_view(vgui_menu_get_item_text(view_menu, vgui_menu_get_item_at(view_menu, reset_index))) ==
+        "恢复默认布局", "layout command missing from the Chinese View menu");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
 }
 
 fs::path designer_settings_path() {
@@ -940,6 +991,7 @@ fs::path designer_settings_path() {
 
 int run(bool smoke, const fs::path& open_path) {
     app_mgr app;
+    app.msaa_samples = 8; // Request 8× before creating the window and its GPU context.
     if (!app.init_gpu(true)) {
         std::fprintf(stderr, "Cannot initialize SDL3 Vulkan: %s\n", SDL_GetError());
         return smoke ? 77 : 1;
@@ -947,16 +999,17 @@ int run(bool smoke, const fs::path& open_path) {
     std::optional<smoke_file_picker> picker;
     if (smoke) picker.emplace();
     const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
+    if (smoke && !ui::save_designer_dock_widths(settings, {280, 375}))
+        throw std::runtime_error("Cannot seed custom layout widths for the smoke test");
     bool invalid_settings = false;
     const ui::designer_strings strings(ui::load_designer_language(settings, &invalid_settings));
-    const char* font_path = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+    // The inspector and private artboard context need identical coverage,
+    // independent of the editor's selected language or installed OS fonts.
+    const bool fonts_loaded = load_font_from_path(app.font_ctx, VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf", "UIDesigner") &&
+        load_font_from_path(app.font_ctx, VGUI_SOURCE_DIR "/sample/res/fonts/DesignerSansSC.ttf", "UIDesignerSC");
     std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(
-        load_font_from_path(app.font_ctx, font_path, "UIDesigner") ?
-            new_font_family(app.font_ctx, "UIDesigner", nullptr) : nullptr, delete_font_family);
-    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> shell_font(
-        load_font_from_path(app.font_ctx, VGUI_SOURCE_DIR "/sample/res/fonts/DesignerSansSC.ttf", "UIDesignerSC") ?
-            new_font_family(app.font_ctx, "UIDesigner,UIDesignerSC", nullptr) : nullptr, delete_font_family);
-    if (!font || !shell_font || shell_font->count < 2) {
+        fonts_loaded ? new_font_family(app.font_ctx, "UIDesigner,UIDesignerSC", nullptr) : nullptr, delete_font_family);
+    if (!font || font->count < 2) {
         std::fprintf(stderr, "Cannot load the designer fonts\n");
         return 1;
     }
@@ -967,7 +1020,7 @@ int run(bool smoke, const fs::path& open_path) {
     }
     SDL_SetWindowMinimumSize(win->window, 950, 560);
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
-    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(shell_font.get(), 15), vgui_destroy);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(font.get(), 15), vgui_destroy);
     multiwindow_host host(&app, cb.get());
     if (!shell || !host.attach(win, shell.get())) {
         std::fprintf(stderr, "Cannot initialize the designer shell\n");
@@ -991,6 +1044,10 @@ int run(bool smoke, const fs::path& open_path) {
     }
 
     const auto dispatch = [&](const SDL_Event& e) {
+        // Compare widths after input dispatch, never write settings on drag motion.
+        if ((e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.windowID == win->id && e.button.button == SDL_BUTTON_LEFT) ||
+            (e.type == SDL_EVENT_WINDOW_FOCUS_LOST && e.window.windowID == win->id))
+            editor.request_layout_save();
         if (e.type == SDL_EVENT_QUIT ||
             (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == win->id)) {
             editor.request(command::quit);
@@ -1069,6 +1126,16 @@ int run(bool smoke, const fs::path& open_path) {
             require(false, "window never stopped submitting frames");
         };
         try {
+            auto expected_samples = SDL_GPU_SAMPLECOUNT_1;
+            for (const auto candidate : {SDL_GPU_SAMPLECOUNT_8, SDL_GPU_SAMPLECOUNT_4, SDL_GPU_SAMPLECOUNT_2}) {
+                if (SDL_GPUTextureSupportsSampleCount(app.device, vgpu_color_format(app.vgctx), candidate)) {
+                    expected_samples = candidate;
+                    break;
+                }
+            }
+            require(vgpu_context_samples(app.vgctx) == expected_samples && vgpu_fbo_samples(&win->fbo) == expected_samples,
+                "window did not use the highest supported MSAA setting up to 8x");
+            std::printf("ui_designer_native: requested 8x MSAA, using %ux\n", 1u << unsigned(expected_samples));
             advance();
             require(submitted_windows == 1 && editor.preview_ready(true), "first frame did not present the form and image");
             const auto initial = *editor.preview().snapshot();
@@ -1111,7 +1178,7 @@ int run(bool smoke, const fs::path& open_path) {
             ui::exercise_delivery(*win, shell.get(), editor.history(), advance,
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
-            exercise_language(*win, shell.get(), editor, settings, advance);
+            exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
             if (!editor.open(fs::path(VGUI_SOURCE_DIR "/sample/res/absolute-form.vgui.json")))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
@@ -1121,7 +1188,7 @@ int run(bool smoke, const fs::path& open_path) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: idle rendering, image, viewport presets, file-open isolation, runtime input, delivery, geometry, and language passed");
+        std::puts("ui_designer_native: idle rendering, image, viewport presets, file-open isolation, runtime input, delivery, geometry, language, and layout reset passed");
     }
     app.wait_gpu();
     return 0;
