@@ -143,7 +143,7 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
 
     step = "folder cancel";
     cancel_folder = true;
-    menus.activate(menus.open(0), 5);
+    menus.activate(menus.open(0), 6); // File > Export Package
     for (int i = 0; i < 4 && status() != strings.text("file.chooser_cancelled", "File selection cancelled."); ++i) frame();
     cancel_folder = false;
     require(status() == strings.text("file.chooser_cancelled", "File selection cancelled.") && !vgui_modal_active(shell) && fs::is_empty(parent),

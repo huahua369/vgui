@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <deque>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -40,7 +41,7 @@ std::string describe(const ui::diagnostic& error) {
     return error.path.empty() ? error.message : error.path + ": " + error.message;
 }
 
-enum class command { none, create, open, save, save_as, export_package, quit, close };
+enum class command { none, create, open, save, save_as, save_all, export_package, quit, close };
 
 bool valid_package_name(std::string_view name) {
     // A single portable directory component; the parent is chosen separately.
@@ -69,7 +70,8 @@ public:
               [this](ui::designer_language language) { pending_language_ = language; },
               [this](ui::designer_view_action action) { pending_view_ = action; },
               [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); },
-              [this] { request(command::close); }, [this] { request_layout_save(); }}, strings_),
+              [this] { request(command::close); }, [this] { request_layout_save(); },
+              [this] { request(command::save_all); }, [this] { return can_save_all(); }}, strings_),
           preview_(workbench_.preview_host(), gpu, font,
               [this](std::string id) { workbench_.select(std::move(id)); },
               [this](std::string message) { workbench_.status(std::move(message)); },
@@ -172,6 +174,11 @@ public:
                 if (action == command::save && !entry->path.empty()) save(page, entry->path);
                 else choose(VGUI_FILE_DIALOG_SAVE, page);
             }
+            break;
+        case command::save_all:
+            save_all_queue_.clear();
+            for (const auto& entry : pages_) if (page_session(entry).dirty()) save_all_queue_.push_back(entry.id);
+            continue_save_all();
             break;
         case command::export_package:
             if (find_page(page)) choose(VGUI_FILE_DIALOG_FOLDER, page);
@@ -446,6 +453,31 @@ private:
         return true;
     }
 
+    bool can_save_all() const {
+        return !chooser_ && std::any_of(pages_.begin(), pages_.end(),
+            [this](const auto& page) { return page_session(page).dirty(); });
+    }
+
+    void continue_save_all() {
+        // Iterate stable page IDs in tab order without switching the active page.
+        // Each completed save stands on its own if a later page cannot be saved.
+        while (!save_all_queue_.empty()) {
+            const auto id = save_all_queue_.front();
+            save_all_queue_.pop_front();
+            const auto* page = find_page(id);
+            if (!page || !page_session(*page).dirty()) continue;
+            if (page->path.empty()) {
+                if (!choose(VGUI_FILE_DIALOG_SAVE, id, command::save_all)) save_all_queue_.clear();
+                return;
+            }
+            if (!save(id, page->path)) {
+                save_all_queue_.clear();
+                return;
+            }
+        }
+        workbench_.status(tr("file.save_all_done", "All changes saved."));
+    }
+
     void close_page(vgui_item_id id) {
         auto* page = find_page(id);
         if (!page) return;
@@ -507,10 +539,13 @@ private:
         const auto* page = find_page(id);
         const vgui_file_filter filters[] = {{tr("file.filter_design", "VGUI design"), "*.vgui.json"}, {tr("file.filter_all", "All files"), "*"}};
         const auto location = utf8(page ? resource_root(*page) : new_root_);
-        const auto name = page && !page->path.empty() ? utf8(page->path.filename()) : "untitled.vgui.json";
+        const bool batch = page && after_save == command::save_all;
+        const auto name = page && !page->path.empty() ? utf8(page->path.filename()) : batch ?
+            "untitled-" + std::to_string(page->untitled_number) + ".vgui.json" : "untitled.vgui.json";
+        const auto batch_title = batch ? std::string(tr("file.save_page_prefix", "Save page: ")) + page_title(*page) : std::string{};
         vgui_file_dialog_desc desc;
         vgui_file_dialog_desc_init(&desc);
-        desc.title = kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
+        desc.title = batch ? batch_title.c_str() : kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
             kind == VGUI_FILE_DIALOG_SAVE ? tr("file.save_dialog", "Save UI design") : tr("file.open_dialog", "Open UI design");
         desc.default_location = location.c_str();
         if (kind == VGUI_FILE_DIALOG_FOLDER) desc.accept_label = tr("export.choose_folder", "Choose Folder");
@@ -603,8 +638,10 @@ private:
         else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(id, fs::u8path(selected.path))) {
             if (next == command::close) remove_page(id);
             if (next == command::quit) { continue_exit(); return; }
+            if (next == command::save_all) { continue_save_all(); return; }
         }
         if (next == command::quit) exit_queue_.clear();
+        if (next == command::save_all) save_all_queue_.clear();
     }
 
     os_window& window_;
@@ -617,6 +654,7 @@ private:
     std::optional<view_action> pending_view_;
     const fs::path new_root_ = fs::canonical(fs::current_path());
     std::vector<page_state> pages_;
+    std::deque<vgui_item_id> save_all_queue_;
     std::vector<vgui_item_id> exit_queue_;
     vgui_widget* tabs_ = nullptr;
     vgui_item_id active_ = 0, pending_tab_ = 0, command_page_ = 0, chooser_page_ = 0, package_page_ = 0;
@@ -642,9 +680,12 @@ struct smoke_file_picker {
     vgui_file_dialog_provider_fn previous;
     void* previous_user = nullptr;
     int open_requests = 0;
-    vgui_file_dialog_fn delayed_open = nullptr;
+    vgui_file_dialog_fn delayed_open = nullptr, delayed_save = nullptr;
     void* delayed_open_user = nullptr;
-    bool cancel_folder = false;
+    void* delayed_save_user = nullptr;
+    int save_requests = 0;
+    bool cancel_folder = false, defer_saves = false;
+    std::string save_suggestion;
     fs::path sandbox, package_parent, save_target;
 
     smoke_file_picker() {
@@ -678,7 +719,16 @@ struct smoke_file_picker {
             nullptr, 0, nullptr);
     }
 
-    static int show(void* user, vgui_file_dialog_kind kind, const vgui_file_dialog_desc*,
+    bool complete_save(const fs::path& path = {}) {
+        auto callback = std::exchange(delayed_save, nullptr);
+        if (!callback) return false;
+        const auto name = utf8(path);
+        const char* paths[] = {name.c_str()};
+        return vgui_file_dialog_post_result(VGUI_FILE_DIALOG_SAVE, callback, delayed_save_user,
+            path.empty() ? nullptr : paths, path.empty() ? 0 : 1, nullptr);
+    }
+
+    static int show(void* user, vgui_file_dialog_kind kind, const vgui_file_dialog_desc* desc,
                     vgui_file_dialog_fn callback, void* callback_user) {
         auto& self = *static_cast<smoke_file_picker*>(user);
         if (kind == VGUI_FILE_DIALOG_FOLDER) {
@@ -688,7 +738,16 @@ struct smoke_file_picker {
             const char* paths[] = {location.c_str()};
             return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
         }
-        if (kind == VGUI_FILE_DIALOG_SAVE && !self.save_target.empty()) {
+        if (kind == VGUI_FILE_DIALOG_SAVE) {
+            ++self.save_requests;
+            self.save_suggestion = desc && desc->default_name ? desc->default_name : "";
+            if (self.defer_saves) {
+                if (self.delayed_save) return 0;
+                self.delayed_save = callback;
+                self.delayed_save_user = callback_user;
+                return 1;
+            }
+            if (self.save_target.empty()) return 0;
             const auto path = utf8(std::exchange(self.save_target, fs::path{}));
             const char* paths[] = {path.c_str()};
             return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
@@ -989,7 +1048,7 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-int run(bool smoke, const fs::path& open_path) {
+int run(bool smoke, fs::path open_path) {
     app_mgr app;
     app.msaa_samples = 8; // Request 8× before creating the window and its GPU context.
     if (!app.init_gpu(true)) {
@@ -997,7 +1056,17 @@ int run(bool smoke, const fs::path& open_path) {
         return smoke ? 77 : 1;
     }
     std::optional<smoke_file_picker> picker;
-    if (smoke) picker.emplace();
+    fs::path absolute_fixture;
+    if (smoke) {
+        picker.emplace();
+        const fs::path fixtures = VGUI_SOURCE_DIR "/sample/res";
+        open_path = picker->sandbox / "form.vgui.json";
+        absolute_fixture = picker->sandbox / "absolute-form.vgui.json";
+        // Save All may write both pages; never open the originals for this run.
+        fs::copy_file(fixtures / open_path.filename(), open_path);
+        fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
+        fs::copy_file(fixtures / "button.png", picker->sandbox / "button.png");
+    }
     const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
     if (smoke && !ui::save_designer_dock_widths(settings, {280, 375}))
         throw std::runtime_error("Cannot seed custom layout widths for the smoke test");
@@ -1179,11 +1248,11 @@ int run(bool smoke, const fs::path& open_path) {
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
             exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
-            if (!editor.open(fs::path(VGUI_SOURCE_DIR "/sample/res/absolute-form.vgui.json")))
+            if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
-            ui::exercise_pages(*win, shell.get(), editor, advance, picker->save_target, picker->sandbox);
+            ui::exercise_pages(*win, shell.get(), editor, advance, *picker, open_path, absolute_fixture);
         } catch (...) {
             app.wait_gpu();
             throw;
@@ -1202,8 +1271,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test]\n");
             return 2;
         }
-        return run(smoke, smoke ? fs::path(VGUI_SOURCE_DIR "/sample/res/form.vgui.json") :
-            argc == 2 ? fs::u8path(argv[1]) : fs::path{});
+        return run(smoke, argc == 2 && !smoke ? fs::u8path(argv[1]) : fs::path{});
     } catch (const std::exception& error) {
         std::fprintf(stderr, "VGUI UI Designer: %s\n", error.what());
         return 1;

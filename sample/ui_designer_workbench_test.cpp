@@ -101,6 +101,8 @@ public:
               .save_as = [this] { save(); },
               .export_package = [this] { ++export_calls; },
               .quit = [this] { ++quit_calls; },
+              .save_all = [this] { ++save_all_calls; },
+              .can_save_all = [this] { return model.dirty(); },
           }, strings)
     {
         vgui_context_set_size(ctx.get(), 1440, 1000);
@@ -295,7 +297,7 @@ public:
     ui::session model;
     ui::diagnostic io_error;
     int save_calls = 0, open_calls = 0;
-    int new_calls = 0, quick_save_calls = 0, export_calls = 0, quit_calls = 0;
+    int new_calls = 0, quick_save_calls = 0, save_all_calls = 0, export_calls = 0, quit_calls = 0;
     bool io_ok = false;
     ui::designer_strings strings;
     ui::designer_workbench bench;
@@ -335,7 +337,8 @@ void exercise_menus()
     check_no_palette(vgui_root(ctx));
 
     auto* file = workbench.open_menu("File");
-    check_menu_items(file, {"New Page", "Open Page", "Save", "Save As", {}, "Export Package", {}, "Exit"});
+    check_menu_items(file, {"New Page", "Open Page", "Save", "Save As", "Save All", {}, "Export Package", {}, "Exit"});
+    check(!vgui_menu_get_item_enabled(file, menu_item(file, "Save All")), "Save All should be disabled without unsaved pages");
     check(workbench.key(VGUI_KEY_RIGHT), "MenuBar did not consume Right");
     auto* edit = vgui_context_get_open_menu(ctx);
     const auto edit_title = vgui_menubar_get_item_at(bar, 1);
@@ -440,6 +443,10 @@ void exercise_menus()
         "Edit > Delete did not remove the copy and select its parent");
     workbench.edit("Undo");
     expect_edit({"Undo", "Redo", "Copy", "Delete"});
+    const auto before_save_all = model.current();
+    workbench.file("Save All");
+    check(workbench.save_all_calls == 1 && model.current() == before_save_all && model.can_redo(),
+        "File > Save All did not dispatch without editing the document");
 }
 
 void exercise_side_resize()

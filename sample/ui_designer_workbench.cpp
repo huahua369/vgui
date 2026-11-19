@@ -405,6 +405,9 @@ struct designer_workbench::impl {
             with_active_page(), "Ctrl+S");
         add_menu_command(file, "designer.file.save_as", {"workbench.toolbar.save_as", "Save As"}, std::move(callbacks.save_as),
             with_active_page(), "Ctrl+Shift+S");
+        if (callbacks.save_all)
+            add_menu_command(file, "designer.file.save_all", {"workbench.menu.save_all", "Save All"},
+                std::move(callbacks.save_all), std::move(callbacks.can_save_all));
         vgui_menu_add_separator(file);
         add_menu_command(file, "designer.file.export", {"workbench.toolbar.export", "Export Package"}, std::move(callbacks.export_package),
             with_active_page());
