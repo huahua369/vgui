@@ -1,5 +1,8 @@
-// U1 runtime contract tests: core-only, no window, GPU or font required.
+// U1 runtime contract tests: core-only, no window or GPU required.
 #include "runtime.h"
+
+#include <glm/glm.hpp>
+#include <ovg_c.h>
 
 #include <algorithm>
 #include <cmath>
@@ -54,6 +57,54 @@ ui::document fixture() {
         {"photo", {"image", "", {{"resource", "missing"s}, {"width", 40.0}, {"height", 20.0}}, {}}}
     }, {{"missing", "assets/not-present.png"}}};
 }
+void test_font_properties() {
+    const struct {
+        const char* id;
+        const char* type;
+        float size;
+        const char* weight;
+        int expected_weight;
+        const char* slant;
+        int expected_slant;
+        const char* color;
+    } fonts[] = {
+        {"heading", "label", 23.5f, "semi_bold", VGUI_FONT_WEIGHT_SEMI_BOLD, "italic", VGUI_FONT_SLANT_ITALIC, "#aB01fE"},
+        {"submit", "button", 17.f, "bold", VGUI_FONT_WEIGHT_BOLD, "oblique", VGUI_FONT_SLANT_OBLIQUE, "#12345680"},
+        {"field", "edit", 21.f, "medium", VGUI_FONT_WEIGHT_MEDIUM, "normal", VGUI_FONT_SLANT_NORMAL, "#987654"},
+        {"caption", "label", 15.f, "regular", VGUI_FONT_WEIGHT_REGULAR, "default", VGUI_FONT_SLANT_DEFAULT, ""},
+        {"inherited", "edit", 0.f, "default", VGUI_FONT_WEIGHT_DEFAULT, "default", VGUI_FONT_SLANT_DEFAULT, ""},
+    };
+    auto doc = ui::make_document();
+    for (const auto& f : fonts) {
+        doc.nodes.at(doc.root).children.push_back(f.id);
+        doc.nodes.emplace(f.id, ui::node{f.type, "", {{"text", "Sample"s}, {"font_size", double(f.size)},
+            {"font_weight", std::string(f.weight)}, {"font_slant", std::string(f.slant)},
+            {"text_color", std::string(f.color)}}, {}});
+    }
+    const auto original = doc;
+
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 18), &vgui_destroy);
+    check(bool(ctx), "create font test context");
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1), "mount font overrides");
+    check(doc == original, "mount changed font properties in document");
+    for (const auto [scale, context_size] : {std::pair{1.f, 18.f}, {2.f, 20.f}, {1.f, 20.f}}) {
+        // Inherited size follows both the host font and DPI; overrides follow only DPI.
+        vgui_context_set_font(ctx.get(), nullptr, context_size);
+        check(rt.layout({240, 180, scale}).has_value(), "layout font overrides");
+        for (const auto& f : fonts) {
+            const auto detail = std::string(f.id) + " at scale " + std::to_string(scale);
+            auto* widget = rt.widget(f.id);
+            check(widget, detail + ": missing widget");
+            check(near(vgui_widget_get_font_size(widget), (f.size == 0 ? context_size : f.size) * scale),
+                detail + ": incorrect effective font size");
+            check(vgui_widget_get_font_weight(widget) == f.expected_weight, detail + ": incorrect font weight");
+            check(vgui_widget_get_font_slant(widget) == f.expected_slant, detail + ": incorrect font slant");
+        }
+    }
+    check(doc == original, "layout changed font properties in document");
+}
+
 struct action_log { int calls = 0; std::string id, action; };
 void on_action(std::string_view id, std::string_view action, void* user) noexcept {
     auto& log = *static_cast<action_log*>(user);
@@ -86,6 +137,108 @@ public:
     }
     fs::path path;
 };
+
+void test_font_families() {
+    temp_dir temp;
+    const auto assets = temp.path / "assets";
+    fs::create_directories(assets / "directory.otf");
+    const auto fixtures = fs::path(__FILE__).parent_path() / "res/fonts";
+    fs::copy_file(fixtures / "DesignerSansSC.ttf", assets / "Custom.TtF");
+    std::ofstream(assets / "broken.OTF").put('!');
+
+    std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache(new_font_cache(), free_font_cache);
+    check(cache && load_font_from_path(cache.get(), (fixtures / "DejaVuSans.ttf").string().c_str(), "RuntimeSans") &&
+        load_font_from_path(cache.get(), (assets / "Custom.TtF").string().c_str(), "RuntimeSansSC"), "load font fixtures");
+    using font_ptr = std::unique_ptr<font_familys_t, decltype(&delete_font_family)>;
+    font_ptr sans(new_font_family(cache.get(), "RuntimeSans", nullptr), delete_font_family);
+    font_ptr sans_sc(new_font_family(cache.get(), "RuntimeSansSC", nullptr), delete_font_family);
+    check(sans && sans->count && sans_sc && sans_sc->count, "resolve font fixtures");
+
+    using font_call = std::pair<std::string, fs::path>;
+    struct font_host {
+        font_familys_t* sans;
+        font_familys_t* custom;
+        std::vector<font_call> calls;
+    } host{sans.get(), sans_sc.get(), {}};
+    ui::runtime_bindings bindings;
+    bindings.project_root = assets / "..";
+    bindings.user = &host;
+    bindings.load_font = [](std::string_view key, const fs::path& file, void* user) -> font_familys_t* {
+        auto& h = *static_cast<font_host*>(user);
+        h.calls.emplace_back(key, file);
+        return key == "builtin.sans" ? h.sans : key == "custom" ? h.custom : nullptr;
+    };
+    auto doc = ui::make_document();
+    doc.resources = {{"custom", "assets/Custom.TtF"}, {"broken", "assets/broken.OTF"},
+        {"directory", "assets/directory.otf"}, {"missing", "assets/missing.ttf"}, {"image", "image.png"},
+        {"unused", "assets/Custom.TtF"}};
+    static constexpr char text[] = "Sample iii WWW";
+    const auto add = [&](const char* id, const char* type, const char* font) {
+        doc.nodes.at(doc.root).children.push_back(id);
+        doc.nodes.emplace(id, ui::node{type, "", {{"text", std::string(text)}, {"font_family", std::string(font)},
+            {"font_weight", "bold"s}, {"font_slant", "italic"s}}, {}});
+    };
+    add("custom", "label", "custom");
+    add("repeat", "edit", "custom");
+    add("builtin", "button", "builtin.sans");
+    add("builtin-sc", "label", "builtin.sans_sc");
+    add("broken", "label", "broken");
+    add("broken-repeat", "button", "broken");
+    add("directory", "label", "directory");
+    add("missing", "label", "missing");
+    add("inherit", "label", "");
+
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(sans.get(), 20), &vgui_destroy);
+    check(bool(ctx), "create family test context");
+    ui::runtime rt(ctx.get());
+    const std::vector<font_call> expected{{"custom", fs::canonical(assets / "Custom.TtF")}, {"builtin.sans", {}},
+        {"builtin.sans_sc", {}}, {"broken", fs::canonical(assets / "broken.OTF")}};
+    for (std::uint64_t revision : {1, 2}) {
+        host.calls.clear();
+        check(rt.mount(doc, revision, bindings), "mount font families");
+        check(std::ranges::is_permutation(host.calls, expected), "load only referenced keys once per mount, with canonical or empty paths");
+        check(vgui_widget_get_font_family(rt.widget("custom")) == sans_sc.get() &&
+            vgui_widget_get_font_family(rt.widget("repeat")) == sans_sc.get() &&
+            vgui_widget_get_font_family(rt.widget("builtin")) == sans.get(), "bind borrowed fonts to label, edit and button");
+        check(!vgui_widget_get_font_family(rt.widget("inherit")) && rt.diagnostics().size() == 5, "only unavailable fonts are diagnosed");
+        for (const auto* id : {"broken", "broken-repeat", "directory", "missing", "builtin-sc"}) {
+            check(!vgui_widget_get_font_family(rt.widget(id)), "unavailable font must inherit the context family");
+            const auto path = "/nodes/"s + id + "/props/font_family";
+            check(std::ranges::any_of(rt.diagnostics(), [&](const auto& d) { return d.path == path && !d.message.empty(); }),
+                "missing font diagnostic: " + path);
+        }
+    }
+    auto invalid = doc;
+    ui::diagnostic error;
+    for (const auto* key : {"typo", "image"}) {
+        invalid.nodes.at("custom").props.at("font_family") = std::string(key);
+        check(!ui::validate(invalid, &error) && error.path == "/nodes/custom/props/font_family",
+            "reject unknown key or non-font resource");
+    }
+
+    const auto width = [](const font_familys_t* font) { return vg_measure_text_width(font, 20, text, sizeof(text) - 1); };
+    const auto measure = [](vgui_widget* widget) { return vgui_widget_measure_text_styled(widget, text, 0, 0, 0); };
+    font_ptr styled_sans(font_familys_derive(sans.get(), VGUI_FONT_WEIGHT_BOLD, VGUI_FONT_SLANT_ITALIC), delete_font_family);
+    font_ptr styled_sc(font_familys_derive(sans_sc.get(), VGUI_FONT_WEIGHT_BOLD, VGUI_FONT_SLANT_ITALIC), delete_font_family);
+    check(styled_sans && styled_sc && !near(width(styled_sans.get()), width(styled_sc.get())), "test variants must have distinct widths");
+    auto* label = rt.widget("custom");
+    check(near(measure(label), width(styled_sc.get())) && near(measure(rt.widget("broken")), width(styled_sans.get())),
+        "measurement derives weight/slant from override or inherited family");
+    vgui_widget_set_font_family(label, sans.get());
+    check(near(measure(label), width(styled_sans.get())), "family switch invalidates the widget's derived variant");
+    vgui_widget_set_font_family(label, nullptr);
+    check(!vgui_widget_get_font_family(label) && near(measure(label), width(styled_sans.get())), "clearing the override restores inheritance");
+
+    vgui_context_set_font(ctx.get(), nullptr, 20);
+    struct text_capture : rvg_t { font_familys_t* family = nullptr; } capture{};
+    ovg_ctx_cb callbacks{};
+    callbacks.add_text = [](rvg_t* vg, text_st_t*, text_style_t* style, text_box_rt*) {
+        static_cast<text_capture*>(vg)->family = style->family;
+    };
+    vgui_custom_draw_text(rt.widget("repeat"), &callbacks, &capture, text, 0, 0, 240, 40, 0xffffffff, 0, 0);
+    check(capture.family && near(width(capture.family), width(styled_sc.get())),
+        "render uses the styled override even with no context family");
+}
 
 // The runtime delegates decoding to its host. Use raw RGBA fixtures to load
 // actual file data and attach real CPU textures without SDL.
@@ -420,6 +573,15 @@ void run() {
         auto heading = node(*snapshot, "heading").rect_px;
         auto button = node(*snapshot, "submit").rect_px;
         check(near(heading.width, 60 * view.scale) && near(button.width, 80 * view.scale), "DPI-scaled sizes");
+        // Older documents omit every font property; preserve the core defaults.
+        for (const auto* id : {"heading", "submit", "field"}) {
+            auto* widget = rt.widget(id);
+            check(near(vgui_widget_get_font_size(widget), vgui_context_get_font_size(ctx.get())),
+                std::string(id) + ": omitted font size should inherit the context size");
+            check(vgui_widget_get_font_weight(widget) == VGUI_FONT_WEIGHT_DEFAULT &&
+                vgui_widget_get_font_slant(widget) == VGUI_FONT_SLANT_DEFAULT,
+                std::string(id) + ": omitted font weight and slant should preserve the defaults");
+        }
         check(near(button.x - (heading.x + heading.width), 5 * view.scale), "row gap scales");
         auto row = node(*snapshot, "row").rect_px;
         if (view.scale == 1 && view.width == 240) narrow_row_width = row.width;
@@ -462,6 +624,8 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--links") return test_link_paths();
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
+        test_font_properties();
+        test_font_families();
         test_image_loading();
         test_button_atlases();
         std::puts("ui_design_runtime_test: ok");

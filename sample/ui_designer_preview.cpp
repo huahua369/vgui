@@ -1,5 +1,6 @@
 #include "ui_designer_preview.h"
 
+#include "ui_designer_font_file.h"
 #include "ui_designer_locale.h"
 
 #include <vgui/backend/vgui_render_target.h>
@@ -136,6 +137,122 @@ struct image_load {
     }
 };
 
+using font_ptr = std::unique_ptr<font_familys_t, decltype(&delete_font_family)>;
+
+constexpr std::size_t max_project_font_bytes = 64u << 20;
+constexpr std::size_t max_project_fonts = 32;
+constexpr std::size_t max_font_attempts = 32;
+constexpr char latin_alias[] = "vgui.preview.bundled.latin";
+constexpr char sc_alias[] = "vgui.preview.bundled.sc";
+const std::filesystem::path bundled_fonts = std::filesystem::u8path(VGUI_SOURCE_DIR) / "sample/res/fonts";
+
+bool register_font(font_cache_cx* cache, const std::filesystem::path& file, std::size_t size, const char* alias) {
+    if (!cache || size < 12 || size > max_project_font_file) return false;
+    // Use the native path overload: on Windows it opens non-ASCII paths without
+    // going through a code page. OVG copies the bytes into its HarfBuzz blob.
+    std::ifstream stream(file, std::ios::binary);
+    if (!stream) return false;
+    std::vector<unsigned char> bytes(size);
+    if (!stream.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(size)) ||
+        stream.peek() != std::char_traits<char>::eof() || stream.bad()) return false;
+    if (!valid_font_file(bytes)) return false;
+    return load_font_from_memory(cache, bytes.data(), static_cast<long>(size), alias);
+}
+
+struct font_version {
+    std::filesystem::path path;
+    std::uintmax_t size;
+    std::filesystem::file_time_type modified;
+    bool operator==(const font_version&) const = default;
+};
+
+struct preview_fonts {
+    // OVG owns the CPU atlas pages; the shared SDL renderer owns their uploaded
+    // textures and OVG cache destruction doesn't retire those textures. Keep a
+    // bounded set of registrations and their atlases for the preview lifetime
+    // rather than orphaning GPU textures on every page switch/resource edit.
+    // Declare the cache before all of its borrowing family lists.
+    std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache{nullptr, free_font_cache};
+    font_ptr sans{nullptr, delete_font_family}, sans_sc{nullptr, delete_font_family};
+    std::string fallbacks;
+    std::vector<std::pair<font_version, font_ptr>> registered;
+    std::vector<font_version> rejected;
+    std::size_t registered_bytes = 0, mount_bytes = 0, attempts = 0;
+    bool initialized = false;
+
+    void begin_mount() { mount_bytes = attempts = 0; }
+
+    void initialize() {
+        if (initialized) return;
+        initialized = true;
+        cache.reset(new_font_cache());
+        if (!cache) return;
+        const auto load_bundled = [&](const char* name, const char* alias) {
+            const auto file = bundled_fonts / name;
+            std::error_code ec;
+            const auto size = std::filesystem::file_size(file, ec);
+            return !ec && size <= max_project_font_file && register_font(cache.get(), file, static_cast<std::size_t>(size), alias);
+        };
+        const bool latin = load_bundled("DejaVuSans.ttf", latin_alias);
+        const bool sc = load_bundled("DesignerSansSC.ttf", sc_alias);
+        if (latin) fallbacks = latin_alias;
+        if (sc) {
+            if (latin) fallbacks += ',';
+            fallbacks += sc_alias;
+        }
+        if (latin) sans.reset(new_font_family(cache.get(), fallbacks.c_str(), nullptr));
+        if (sc) {
+            std::string sc_first = sc_alias;
+            if (latin) sc_first += std::string(",") + latin_alias;
+            sans_sc.reset(new_font_family(cache.get(), sc_first.c_str(), nullptr));
+        }
+    }
+
+    font_familys_t* load(std::string_view key, const std::filesystem::path& file) {
+        if (file.empty()) {
+            initialize();
+            return key == "builtin.sans" ? sans.get() : key == "builtin.sans_sc" ? sans_sc.get() : nullptr;
+        }
+        // Runtime has already checked containment of the canonical regular file.
+        // Use the canonical file and its metadata, not the model's key: an edited
+        // resource or a different project root must not keep yesterday's font.
+        const auto ext = file.extension().u8string();
+        if (ext.size() != 4) return nullptr;
+        const auto lower = [](char8_t c) { return c >= u8'A' && c <= u8'Z' ? c - u8'A' + u8'a' : c; };
+        if ((lower(ext[1]) != u8't' && lower(ext[1]) != u8'o') ||
+            lower(ext[2]) != u8't' || lower(ext[3]) != u8'f') return nullptr;
+        std::error_code ec;
+        const auto size = std::filesystem::file_size(file, ec);
+        if (ec || size < 12 || size > max_project_font_file) return nullptr;
+        const auto modified = std::filesystem::last_write_time(file, ec);
+        if (ec) return nullptr;
+        const font_version version{file, size, modified};
+        for (const auto& [existing, family] : registered)
+            if (existing == version) return family.get();
+        if (attempts >= max_font_attempts || registered.size() >= max_project_fonts ||
+            size > max_project_font_bytes - registered_bytes || size > max_project_font_bytes - mount_bytes ||
+            std::find(rejected.begin(), rejected.end(), version) != rejected.end()) return nullptr;
+        initialize();
+        if (!cache) return nullptr;
+        const auto bytes = static_cast<std::size_t>(size);
+        ++attempts;
+        mount_bytes += bytes;
+        const auto alias = "vgui.preview.project." + std::to_string(registered.size());
+        if (!register_font(cache.get(), file, bytes, alias.c_str())) {
+            // Remember recent malformed files across text-only remounts. They
+            // can be retried when their file version changes.
+            if (rejected.size() == max_font_attempts) rejected.erase(rejected.begin());
+            rejected.push_back(version);
+            return nullptr;
+        }
+        const auto names = fallbacks.empty() ? alias : alias + ',' + fallbacks;
+        registered_bytes += bytes;
+        auto& family = registered.emplace_back(version,
+            font_ptr(new_font_family(cache.get(), names.c_str(), nullptr), delete_font_family)).second;
+        return family.get();
+    }
+};
+
 std::string describe(const diagnostic& d) {
     return d.path.empty() ? d.message : d.path + ": " + d.message;
 }
@@ -253,6 +370,9 @@ struct designer_preview::impl {
     std::optional<geometry_drag> geometry;
     // Keep consuming the matching left-up even when the drag was canceled.
     std::optional<SDL_WindowID> geometry_release;
+    // Unlike the per-mount image loader, these families outlive all widgets
+    // and their derived weight/slant variants in the private UI context.
+    preview_fonts fonts;
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui{nullptr, vgui_destroy};
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb{nullptr, free_ctx_cb};
     std::unique_ptr<runtime> mounted;
@@ -327,6 +447,7 @@ struct designer_preview::impl {
         vgui_widget_set_min_size(canvas, 8, 8);
         vgui_custom_set_draw(canvas, draw_canvas, this);
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
+        vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);
         vgui_widget_set_padding(status, 6, 0, 6, 0);
         focus_listener = vgui_context_add_focus_listener(shell, shell_focus, this);
@@ -636,6 +757,9 @@ struct designer_preview::impl {
         bindings.load_image = [](vgui_context* ctx, std::string_view, const std::filesystem::path& file, void* user) {
             return static_cast<impl*>(user)->active_load->load(ctx, file);
         };
+        bindings.load_font = [](std::string_view key, const std::filesystem::path& file, void* user) {
+            return static_cast<impl*>(user)->fonts.load(key, file);
+        };
         bindings.on_action = [](std::string_view id, std::string_view action, void* user) noexcept {
             try {
                 auto& self = *static_cast<impl*>(user);
@@ -644,6 +768,7 @@ struct designer_preview::impl {
         };
         image_load load;
         active_load = &load;
+        fonts.begin_mount();
         mount_error = {};
         is_mounted = mounted && mounted->mount(doc, rev, bindings, &mount_error);
         active_load = nullptr;

@@ -709,6 +709,13 @@ struct vgui_image_state
 	}
 };
 
+struct vgui_font_variant_deleter
+{
+	void operator()(font_familys_t* font) const { delete_font_family(font); }
+};
+using vgui_font_variants = std::map<std::pair<int, int>,
+	std::unique_ptr<font_familys_t, vgui_font_variant_deleter>>;
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -764,6 +771,8 @@ struct vgui_widget
 	vgui_color track = 0;
 	float font_size = 0;		// effective size (0 = inherit context)
 	float base_font_size = 0;	// logical size supplied by the host
+	font_familys_t* font_family = nullptr;	// borrowed override (null = inherit context)
+	mutable std::unique_ptr<vgui_font_variants> font_variants;
 	int font_weight = 0;
 	int font_slant = 0;
 	vgui_text_glow text_glow = {};
@@ -1050,7 +1059,7 @@ struct vgui_context
 {
 	font_familys_t* font = nullptr;
 	uint64_t font_revision = 0;
-	std::map<std::pair<int, int>, font_familys_t*> font_variants;
+	vgui_font_variants font_variants;
 	float font_size = 16.0f;		// effective size (base_font_size * ui_scale)
 	float base_font_size = 16.0f;	// logical size supplied by the host
 	float ui_scale = 1.0f;
@@ -1583,30 +1592,33 @@ static bool vgui_valid_font_slant(int slant)
 	return slant >= VGUI_FONT_SLANT_DEFAULT && slant <= VGUI_FONT_SLANT_OBLIQUE;
 }
 
+static font_familys_t* vgui_base_font_for(vgui_context* ctx, const vgui_widget* w)
+{
+	return w && w->font_family ? w->font_family : (ctx ? ctx->font : nullptr);
+}
+
 static font_familys_t* vgui_font_for(vgui_context* ctx, const vgui_widget* w,
 	int weight = 0, int slant = 0)
 {
-	if (!ctx || !ctx->font) return nullptr;
+	if (!ctx) return nullptr;
+	auto* font = vgui_base_font_for(ctx, w);
+	if (!font) return nullptr;
 	if (w)
 	{
 		if (!weight || !vgui_valid_font_weight(weight)) weight = w->font_weight;
 		if (!slant || !vgui_valid_font_slant(slant)) slant = w->font_slant;
 	}
 	if ((!weight && !slant) || !vgui_valid_font_weight(weight) || !vgui_valid_font_slant(slant))
-		return ctx->font;
-	const auto key = std::make_pair(weight, slant);
-	auto it = ctx->font_variants.find(key);
-	if (it != ctx->font_variants.end()) return it->second ? it->second : ctx->font;
-	auto& variant = ctx->font_variants[key];
-	variant = font_familys_derive(ctx->font, weight, slant);
-	return variant ? variant : ctx->font;
-}
-
-static void vgui_free_font_variants(vgui_context* ctx)
-{
-	for (const auto& entry : ctx->font_variants)
-		if (entry.second) delete_font_family(entry.second);
-	ctx->font_variants.clear();
+		return font;
+	auto* variants = &ctx->font_variants;
+	if (w && w->font_family)
+	{
+		if (!w->font_variants) w->font_variants = std::make_unique<vgui_font_variants>();
+		variants = w->font_variants.get();
+	}
+	auto [it, inserted] = variants->try_emplace(std::make_pair(weight, slant));
+	if (inserted) it->second.reset(font_familys_derive(font, weight, slant));
+	return it->second ? it->second.get() : font;
 }
 
 static float vgui_font_size(vgui_context* ctx, vgui_widget* w)
@@ -12208,7 +12220,7 @@ static void vgui_text_submit(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_
 	uint32_t color, float ax, float ay, float fs, int weight, int slant,
 	const vgui_text_glow* glow, unsigned passes)
 {
-	if (!ctx || !ctx->font || !cb || !cb->add_text || !vg || text.empty()) return;
+	if (!ctx || !vgui_base_font_for(ctx, w) || !cb || !cb->add_text || !vg || text.empty()) return;
 	vg_text_glow_run_t run = {};
 	vgui_text_prepare(ctx, w, text, x, y, width, height, ax, ay, fs, weight, slant, run);
 	if (!glow && w) glow = &w->text_glow;
@@ -15498,7 +15510,7 @@ extern "C" {
 			free_flex_run(ctx->flex);
 			ctx->flex = nullptr;
 		}
-		vgui_free_font_variants(ctx);
+		ctx->font_variants.clear();
 		delete ctx;
 	}
 
@@ -15521,7 +15533,7 @@ extern "C" {
 		if (!ctx) return;
 		if (ctx->font != font)
 		{
-			vgui_free_font_variants(ctx);
+			ctx->font_variants.clear();
 			++ctx->font_revision;
 			for (auto* w : ctx->all_widgets)
 			{
@@ -16307,6 +16319,27 @@ extern "C" {
 		if (!widget) return 0.0f;
 		if (widget->font_size > 0.0f) return widget->font_size;
 		return widget->ctx ? widget->ctx->font_size : 0.0f;
+	}
+
+	void vgui_widget_set_font_family(vgui_widget* widget, struct font_familys_t* font)
+	{
+		if (!widget || widget->font_family == font) return;
+		widget->font_variants.reset();
+		widget->font_family = font;
+		vgui_edit_invalidate_content_width(widget);
+		if (widget->list) widget->list->content_w_valid = false;
+		if (widget->tree) widget->tree->content_w_valid = false;
+		if (widget->ctx)
+		{
+			++widget->ctx->font_revision;
+			++widget->ctx->style_epoch;
+		}
+		vgui_mark_dirty(widget);
+	}
+
+	struct font_familys_t* vgui_widget_get_font_family(vgui_widget* widget)
+	{
+		return widget ? widget->font_family : nullptr;
 	}
 
 	void vgui_widget_set_font_weight(vgui_widget* widget, int weight)

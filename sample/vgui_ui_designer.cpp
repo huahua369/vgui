@@ -4,6 +4,7 @@
 #include "delivery.h"
 #include "ui_designer_delivery_smoke.h"
 #include "ui_designer_export_isolation_smoke.h"
+#include "ui_designer_font_import.h"
 #include "ui_designer_geometry_smoke.h"
 #include "ui_designer_image_smoke_fixture.h"
 #include "ui_designer_locale.h"
@@ -20,7 +21,9 @@
 #include <cstdio>
 #include <deque>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -43,7 +46,7 @@ std::string describe(const ui::diagnostic& error) {
     return error.path.empty() ? error.message : error.path + ": " + error.message;
 }
 
-enum class command { none, create, open, save, save_as, save_all, export_package, quit, close };
+enum class command { none, create, open, save, save_as, save_all, export_package, quit, close, import_font };
 
 bool valid_package_name(std::string_view name) {
     // A single portable directory component; the parent is chosen separately.
@@ -76,7 +79,8 @@ public:
               [this](ui::designer_view_action action) { pending_view_ = action; },
               [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); },
               [this] { request(command::close); }, [this] { request_layout_save(); },
-              [this] { request(command::save_all); }, [this] { return can_save_all(); }}, strings_),
+              [this] { request(command::save_all); }, [this] { return can_save_all(); },
+              [this] { request(command::import_font); }}, strings_),
           preview_(workbench_.preview_host(), gpu, font,
               [this](std::string id) { workbench_.select(std::move(id)); },
               [this](std::string message) { workbench_.status(std::move(message)); },
@@ -187,6 +191,11 @@ public:
             break;
         case command::export_package:
             if (find_page(page)) choose(VGUI_FILE_DIALOG_FOLDER, page);
+            break;
+        case command::import_font:
+            if (const auto* entry = find_page(page); entry && !entry->path.empty())
+                choose(VGUI_FILE_DIALOG_OPEN, page, command::import_font);
+            else workbench_.status(tr("font.save_first", "Save this page before importing a project font."));
             break;
         case command::close: close_page(page); break;
         case command::quit:
@@ -540,17 +549,55 @@ private:
             paths && count > 0 ? paths[0] : "", error ? error : ""};
     }
 
-    bool choose(vgui_file_dialog_kind kind, vgui_item_id id, command after_save = command::none) {
+    void finish_font_import(vgui_item_id id, const fs::path& source) {
+        auto* page = find_page(id);
+        if (!page || page->path.empty()) return;
+        auto& history = page_session(*page);
+        std::string error;
+        auto imported = ui::import_project_font(resource_root(*page), source, error);
+        if (!imported) {
+            workbench_.status(std::string(tr("font.import_failed", "Font import failed: ")) + error);
+            return;
+        }
+        const auto& resources = history.current().resources;
+        const auto existing = std::find_if(resources.begin(), resources.end(), [&](const auto& entry) {
+            return !ui::is_builtin_font(entry.first) && entry.second == imported->relative_path;
+        });
+        if (existing == resources.end()) {
+            std::string key;
+            for (std::size_t i = 1; i <= ui::max_resources + 1; ++i) {
+                key = "font_" + std::to_string(i);
+                if (!resources.contains(key)) break;
+            }
+            ui::diagnostic diagnostic;
+            const ui::edit add = ui::set_resource{std::move(key), imported->relative_path};
+            if (!history.apply(std::span<const ui::edit>(&add, 1), &diagnostic)) {
+                if (!imported->copied_file.empty()) {
+                    std::error_code ignored;
+                    fs::remove(imported->copied_file, ignored);
+                }
+                workbench_.status(std::string(tr("font.import_failed", "Font import failed: ")) + describe(diagnostic));
+                return;
+            }
+        }
+        workbench_.status(std::string(tr("font.imported", "Project font available in the Font family list: ")) + imported->relative_path);
+    }
+
+    bool choose(vgui_file_dialog_kind kind, vgui_item_id id, command followup = command::none) {
         const auto* page = find_page(id);
-        const vgui_file_filter filters[] = {{tr("file.filter_design", "VGUI design"), "*.vgui.json"}, {tr("file.filter_all", "All files"), "*"}};
+        const bool import_font = followup == command::import_font;
+        const vgui_file_filter filters[] = {{import_font ? tr("font.filter", "TrueType/OpenType font") :
+            tr("file.filter_design", "VGUI design"), import_font ? "*.ttf;*.otf" : "*.vgui.json"},
+            {tr("file.filter_all", "All files"), "*"}};
         const auto location = utf8(page ? resource_root(*page) : new_root_);
-        const bool batch = page && after_save == command::save_all;
+        const bool batch = page && followup == command::save_all;
         const auto name = page && !page->path.empty() ? utf8(page->path.filename()) : batch ?
             "untitled-" + std::to_string(page->untitled_number) + ".vgui.json" : "untitled.vgui.json";
         const auto batch_title = batch ? std::string(tr("file.save_page_prefix", "Save page: ")) + page_title(*page) : std::string{};
         vgui_file_dialog_desc desc;
         vgui_file_dialog_desc_init(&desc);
-        desc.title = batch ? batch_title.c_str() : kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
+        desc.title = import_font ? tr("font.dialog", "Import Project Font") : batch ? batch_title.c_str() :
+            kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
             kind == VGUI_FILE_DIALOG_SAVE ? tr("file.save_dialog", "Save UI design") : tr("file.open_dialog", "Open UI design");
         desc.default_location = location.c_str();
         if (kind == VGUI_FILE_DIALOG_FOLDER) desc.accept_label = tr("export.choose_folder", "Choose Folder");
@@ -561,7 +608,7 @@ private:
         }
         chooser_ = vgui_file_dialog_show(kind, &desc, on_pick, this) != 0;
         chooser_page_ = chooser_ ? id : 0;
-        after_save_ = chooser_ ? after_save : command::none;
+        chooser_followup_ = chooser_ ? followup : command::none;
         if (!chooser_) workbench_.status(tr("file.chooser_failed", "The native file chooser could not be opened."));
         return chooser_;
     }
@@ -634,11 +681,14 @@ private:
         auto selected = std::move(*picked_);
         picked_.reset();
         chooser_ = false;
-        const auto next = std::exchange(after_save_, command::none);
+        const auto next = std::exchange(chooser_followup_, command::none);
         const auto id = std::exchange(chooser_page_, 0);
         if (!selected.error.empty()) workbench_.status(std::string(tr("file.chooser_error", "File chooser: ")) + selected.error);
         else if (selected.path.empty()) workbench_.status(tr("file.chooser_cancelled", "File selection cancelled."));
-        else if (selected.kind == VGUI_FILE_DIALOG_OPEN) open(fs::u8path(selected.path));
+        else if (selected.kind == VGUI_FILE_DIALOG_OPEN) {
+            if (next == command::import_font) finish_font_import(id, fs::u8path(selected.path));
+            else open(fs::u8path(selected.path));
+        }
         else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) choose_package_name(id, fs::u8path(selected.path));
         else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(id, fs::u8path(selected.path))) {
             if (next == command::close) remove_page(id);
@@ -669,7 +719,7 @@ private:
     ui::session session_;
     std::uint64_t last_revision_ = 0, preview_revision_ = 0;
     std::string window_title_;
-    command pending_ = command::none, after_save_ = command::none;
+    command pending_ = command::none, chooser_followup_ = command::none;
     bool chooser_ = false, quitting_ = false;
     std::optional<file_result> picked_;
     std::optional<fs::path> package_parent_;
@@ -711,7 +761,7 @@ struct smoke_unsaved_prompt {
 struct smoke_file_picker {
     vgui_file_dialog_provider_fn previous;
     void* previous_user = nullptr;
-    int open_requests = 0, save_requests = 0, folder_requests = 0;
+    int open_requests = 0, save_requests = 0, folder_requests = 0, font_requests = 0;
     vgui_file_dialog_fn delayed_open = nullptr, delayed_save = nullptr, delayed_folder = nullptr;
     void* delayed_open_user = nullptr;
     void* delayed_save_user = nullptr;
@@ -749,6 +799,10 @@ struct smoke_file_picker {
         auto callback = std::exchange(delayed_open, nullptr);
         return callback && vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, callback, delayed_open_user,
             nullptr, 0, nullptr);
+    }
+
+    bool complete_font_import(const fs::path& path = {}) {
+        return post_path(VGUI_FILE_DIALOG_OPEN, std::exchange(delayed_open, nullptr), delayed_open_user, path);
     }
 
     bool complete_save(const fs::path& path = {}) {
@@ -794,7 +848,11 @@ struct smoke_file_picker {
             return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
         }
         if (kind != VGUI_FILE_DIALOG_OPEN) return 0;
-        if (++self.open_requests == 1) {
+        const bool font = desc && desc->filters && desc->filter_count &&
+            std::string_view(desc->filters[0].pattern) == "*.ttf;*.otf";
+        if (font) ++self.font_requests;
+        if (font || ++self.open_requests == 1) {
+            if (self.delayed_open) return 0;
             self.delayed_open = callback;
             self.delayed_open_user = callback_user;
             return 1;
@@ -942,6 +1000,162 @@ void exercise_runtime_input(os_window& win, vgui_context* shell, designer& edito
     key(SDLK_ESCAPE);
     require(button_width() == old_width && history.current() == doc && !history.can_undo(),
         "cancelling live inspector input did not restore the canvas and history");
+
+    auto* size_edit = find_widget(vgui_root(shell), "property:font_size", VGUI_EDIT);
+    require(size_edit != nullptr, "missing inspector font size field");
+    vgui_widget_get_rect(size_edit, &x, &y, &w, &h);
+    click({x + w / 2, y + h / 2});
+    require(vgui_get_focus(shell) == size_edit && preview.snapshot(), "could not focus font size in the inspector");
+    const auto before_font_revision = preview.snapshot()->revision;
+    vgui_edit_select_all(size_edit);
+    text("24");
+    const auto& props = history.current().nodes.at("submit").props;
+    const auto size = props.find("font_size");
+    require(size != props.end() && size->second == ui::value{24.0} && preview.snapshot() &&
+        preview.snapshot()->revision != before_font_revision && submitted_windows == 1,
+        "font size did not update the document and repaint before Enter");
+    key(SDLK_ESCAPE);
+    require(history.current() == doc && !history.dirty() && !history.can_undo(),
+        "cancelling a live font change did not restore the original document");
+
+    auto* swatch = find_widget(vgui_root(shell), "property:text_color", VGUI_PANEL);
+    require(swatch != nullptr, "missing inspector color swatch");
+    const auto click_swatch = [&] {
+        vgui_widget_get_rect(swatch, &x, &y, &w, &h);
+        click({x + w / 2, y + h / 2});
+        require(vgui_popup_active(shell), "color swatch did not open a popup");
+    };
+    click_swatch();
+    auto* saturation = find_widget(vgui_popup_content(shell), "property-grid.color-picker.sv");
+    require(saturation && preview.snapshot(), "missing color picker or preview");
+    const auto before_color = preview.snapshot()->revision;
+    vgui_widget_get_rect(saturation, &x, &y, &w, &h);
+    const glm::vec2 pick{x + w * .6f, y + h * .4f};
+    require(vgui_hit_test(shell, pick.x, pick.y) == saturation, "picker surface is not hittable");
+    SDL_Event hover{};
+    hover.type = SDL_EVENT_MOUSE_MOTION;
+    hover.motion.windowID = win.id;
+    hover.motion.x = pick.x / win.pixel_ratio();
+    hover.motion.y = pick.y / win.pixel_ratio();
+    push(hover);
+    click(pick);
+    require(history.current().nodes.at("submit").props.contains("text_color"), "color gesture did not reach the document");
+    require(preview.snapshot() && preview.snapshot()->revision != before_color, "color gesture did not repaint the canvas");
+    require(history.committed() == doc && vgui_popup_active(shell), "color gesture committed or closed the picker prematurely");
+    key(SDLK_ESCAPE);
+    require(!vgui_popup_active(shell) && history.current() == doc && !history.dirty() && !history.can_undo(),
+        "Escape did not roll back the color preview");
+    click_swatch();
+    click(center("title"));
+    require(!vgui_popup_active(shell) && editor.selection() == "submit" && history.current() == doc,
+        "the click dismissing the picker leaked through to the artboard");
+}
+
+void exercise_project_fonts(os_window& win, vgui_context* shell, designer& editor, smoke_file_picker& picker,
+                            const std::function<void()>& frame, const fs::path& other_page) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Native project font: ") + message);
+    };
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto root = picker.sandbox / "font-project";
+    require(fs::create_directory(root), "cannot prepare project directory");
+    const auto file = root / "fonts.vgui.json";
+    fs::copy_file(VGUI_SOURCE_DIR "/sample/res/form.vgui.json", file);
+    const auto external = picker.sandbox / fs::u8path(u8"项目字体.ttf");
+    fs::copy_file(VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf", external);
+    const auto invalid = picker.sandbox / "invalid.ttf";
+    { std::ofstream stream(invalid, std::ios::binary); stream << "not a font"; }
+    require(editor.open(file), "cannot open saved project");
+    frame();
+    const auto& history = editor.history();
+    const auto source = history.current();
+    const auto start_import = [&](int count) {
+        menus.activate(menus.open(2), 1); // Resources > Import Project Font
+        require(editor.chooser_open() && picker.font_requests == count, "expected the font picker and its filter");
+    };
+    const auto finish = [&](const fs::path& path = {}) {
+        require(picker.complete_font_import(path), "failed to post font picker result");
+        for (int i = 0; i < 4 && editor.chooser_open(); ++i) frame();
+        require(!editor.chooser_open(), "picker remained open");
+    };
+    start_import(1);
+    finish();
+    start_import(2);
+    finish(invalid);
+    require(history.current() == source && !history.dirty() && !history.can_undo() && !fs::exists(root / "fonts"),
+        "cancel or invalid input changed the project");
+
+    start_import(3);
+    require(editor.open(other_page), "could not change the active page during the pending chooser");
+    frame();
+    const auto other = history.current();
+    finish(external);
+    require(history.current() == other && !history.dirty(), "late import changed the wrong page");
+    require(editor.open(file), "cannot return to the origin page");
+    frame();
+    const auto imported = history.current();
+    require(imported.resources.size() == 1 && imported.nodes == source.nodes && history.dirty(), "origin did not register one font");
+    const auto& [key, relative] = *imported.resources.begin();
+    const auto bytes = [&](const fs::path& path) {
+        std::ifstream input(path, std::ios::binary);
+        require(bool(input), "cannot read font for byte comparison");
+        return std::string(std::istreambuf_iterator<char>(input), std::istreambuf_iterator<char>());
+    };
+    const auto font_bytes = bytes(external);
+    require(relative.starts_with("fonts/") && bytes(root / fs::u8path(relative)) == font_bytes,
+        "project did not receive an exact font copy");
+
+    const auto click = [&](float x, float y) {
+        for (bool down : {true, false}) {
+            SDL_Event e{};
+            e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+            e.button.windowID = win.id;
+            e.button.button = SDL_BUTTON_LEFT;
+            e.button.down = down;
+            e.button.clicks = 1;
+            e.button.x = x / win.pixel_ratio();
+            e.button.y = y / win.pixel_ratio();
+            require(SDL_PushEvent(&e), "cannot queue inspector input");
+        }
+        frame();
+    };
+    const auto board = editor.preview().artboard_rect_px();
+    const auto* layout = editor.preview().snapshot();
+    require(board && layout, "missing project preview");
+    const auto title = std::find_if(layout->nodes.begin(), layout->nodes.end(),
+        [](const auto& node) { return node.id == "title"; });
+    require(title != layout->nodes.end() && title->visible, "missing selectable title");
+    const auto r = title->visible_px;
+    click(board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+        board->y + (r.y + r.height / 2) * board->height / layout->pixel_height);
+    require(editor.selection() == "title", "could not select the title from the canvas");
+    auto* field = find_widget(vgui_root(shell), "property:font_family", VGUI_BUTTON);
+    require(field != nullptr, "missing font family inspector field");
+    float x, y, w, h;
+    vgui_widget_get_rect(field, &x, &y, &w, &h);
+    require(w > 0 && h > 0, "font family is not visible");
+    click(x + w / 2, y + h / 2);
+    auto* choices = vgui_context_get_open_menu(shell);
+    require(choices && vgui_menu_get_count(choices) == 4 &&
+        std::string_view(vgui_menu_get_item_text(choices, vgui_menu_get_item_at(choices, 3))) == relative,
+        "imported font missing from the inspector");
+    menus.activate(choices, 3);
+    require(history.current().nodes.at("title").props.at("font_family") == ui::value{key} && editor.preview_ready(false),
+        "choosing the project font did not update and repaint the document");
+    auto* status = find_widget(editor.preview().widget(), "designer.preview.status");
+    require(status && std::string_view(vgui_widget_get_text(status)).find("/props/font_family") == std::string_view::npos,
+        "preview could not load the project font");
+    menus.activate(menus.open(0), 2); // File > Save
+    ui::document saved;
+    require(ui::read_document(file, saved) && saved == history.current() && !history.dirty(), "saved page lost its selected font");
+    ui::diagnostic error;
+    const auto package = picker.package_parent / "project-font-delivery";
+    ui::document delivered;
+    require(ui::export_delivery(saved, root, package, &error) && ui::read_delivery(package, delivered, &error),
+        "could not export or verify the project font");
+    require(delivered.nodes == saved.nodes && delivered.resources.at(key).starts_with("assets/") &&
+        bytes(package / fs::u8path(delivered.resources.at(key))) == font_bytes,
+        "delivery did not preserve the selected font and embed its asset");
 }
 
 void exercise_image_button(os_window& win, vgui_context* shell, designer& editor, const std::function<void()>& frame) {
@@ -1236,8 +1450,9 @@ int run(bool smoke, fs::path open_path) {
         if (e.type == SDL_EVENT_WINDOW_EXPOSED && e.window.windowID == win->id)
             win->request_render(0);
         const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
+        // Shell overlays own input even when the pointer is over the artboard.
         if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
-            !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
+            !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
             return;
         if (!editor.chooser_open() || focus_lost) app.process_event(&e);
     };
@@ -1365,6 +1580,7 @@ int run(bool smoke, fs::path open_path) {
             ui::exercise_pages(*win, shell.get(), editor, advance, *picker, prompt, open_path, absolute_fixture);
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
             exercise_image_button(*win, shell.get(), editor, advance);
+            exercise_project_fonts(*win, shell.get(), editor, *picker, advance, absolute_fixture);
         } catch (...) {
             app.wait_gpu();
             throw;

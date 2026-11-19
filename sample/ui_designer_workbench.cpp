@@ -113,7 +113,7 @@ struct designer_workbench::impl {
     };
     struct inspector_state {
         std::string id, type;
-        std::map<std::string, std::string, std::less<>> values;
+        std::map<std::string, std::string, std::less<>> values, font_resources;
         bool operator==(const inspector_state&) const = default;
     };
 
@@ -158,6 +158,7 @@ struct designer_workbench::impl {
         vgui_widget* widget;
         std::string key;
         std::uint64_t revision;
+        bool popup;
     };
     std::optional<live_field> live;
     int focus_listener = 0;
@@ -218,6 +219,7 @@ struct designer_workbench::impl {
         vgui_widget_set_background(preview, 0);
         vgui_widget_set_border(preview, 0, 0);
         auto* properties = page("inspector", {"workbench.dock.inspector", "Inspector"}, VGUI_DOCK_RIGHT);
+        grid->set_edit_field_background(0xFF2A3443);
         grid->build_with_labels(properties, inspector_labels());
         grid->set_change_listener([this](const std::string& key, const std::string& input) {
             finish_property_edit();
@@ -227,9 +229,15 @@ struct designer_workbench::impl {
             kit::property_grid::text_edit_event event) {
             return on_property_text(widget, key, input, event);
         });
+        grid->set_color_popup_edit_listener([this](vgui_widget* widget, const std::string& key,
+            const std::string& input, kit::property_grid::text_edit_event event) {
+            return on_property_text(widget, key, input, event, true);
+        });
         focus_listener = vgui_context_add_focus_listener(ui, [](vgui_context*, vgui_widget* old, vgui_widget*, void* user) {
             auto& self = *static_cast<impl*>(user);
-            if (self.live && self.live->widget == old) self.finish_property_edit();
+            // The picker owns its transaction until the popup closes, even
+            // when focus moves between the picker controls.
+            if (self.live && !self.live->popup && self.live->widget == old) self.finish_property_edit();
         }, this);
 
         status_label = vgui_widget_add(shell, VGUI_LABEL, nullptr);
@@ -441,6 +449,10 @@ struct designer_workbench::impl {
             add_menu_command(new_control, "designer.add." + key, type_label(type), [this, key] { add_node(key); },
                 with_active_page([this] { return history.current().nodes.size() < max_nodes; }));
         }
+
+        if (callbacks.import_font)
+            add_menu_command(resources, "designer.resource.import_font", {"workbench.menu.import_font", "Import Project Font…"},
+                std::move(callbacks.import_font), with_active_page());
 
         auto* view = add_menu({"workbench.menu.view", "View"});
         using action = designer_view_action;
@@ -679,8 +691,10 @@ struct designer_workbench::impl {
                 {"General", strings.text("workbench.inspector.category.general", "General")},
                 {"Container", strings.text("workbench.inspector.category.container", "Container")},
                 {"Content", strings.text("workbench.inspector.category.content", "Content")},
+                {"Font", strings.text("workbench.inspector.category.font", "Font")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
             },
+            .pick_color = strings.text("workbench.inspector.font.pick_color", "Pick color"),
         };
     }
 
@@ -758,6 +772,15 @@ struct designer_workbench::impl {
             if (value == "stretch") return strings.text("workbench.inspector.alignment.stretch", "Stretch");
             if (value == "space-between") return strings.text("workbench.inspector.alignment.space_between", "Space between");
             if (value == "space-around") return strings.text("workbench.inspector.alignment.space_around", "Space around");
+        } else if (desc.key == "font_weight" || desc.key == "font_slant") {
+            if (value == "default") return strings.text("workbench.inspector.font.default", "Use default");
+            if (value == "regular") return strings.text("workbench.inspector.font.regular", "Regular");
+            if (value == "medium") return strings.text("workbench.inspector.font.medium", "Medium");
+            if (value == "semi_bold") return strings.text("workbench.inspector.font.semi_bold", "Semi-bold");
+            if (value == "bold") return strings.text("workbench.inspector.font.bold", "Bold");
+            if (value == "normal") return strings.text("workbench.inspector.font.normal", "Upright");
+            if (value == "italic") return strings.text("workbench.inspector.font.italic", "Italic");
+            if (value == "oblique") return strings.text("workbench.inspector.font.oblique", "Oblique");
         }
         return std::string(value);
     }
@@ -1096,16 +1119,17 @@ struct designer_workbench::impl {
     }
 
     bool on_property_text(vgui_widget* widget, const std::string& key, const std::string& input,
-        kit::property_grid::text_edit_event event)
+        kit::property_grid::text_edit_event event, bool popup = false)
     {
         using text_event = kit::property_grid::text_edit_event;
         if (refreshing || replaced || !page_active || inspected.id != selected) return true;
         if (event != text_event::change) {
-            if (live && live->widget == widget) finish_property_edit(event == text_event::submit);
+            if (live && live->widget == widget && live->popup == popup)
+                finish_property_edit(event == text_event::submit);
             return true;
         }
         if (live && (live->widget != widget || live->revision != history.revision())) finish_property_edit();
-        if (!live) live = live_field{widget, key, history.revision()};
+        if (!live) live = live_field{widget, key, history.revision(), popup};
         edit_property(key, input, true);
         live->revision = history.revision();
         return true;
@@ -1229,7 +1253,7 @@ struct designer_workbench::impl {
     {
         const auto& doc = history.current();
         const auto& item = doc.nodes.at(selected);
-        inspector_state next{selected, item.type, {}};
+        inspector_state next{selected, item.type, {}, {}};
         std::vector<kit::property_desc> rows;
         const auto add = [&](kit::property_desc row) {
             next.values.emplace(row.id, row.value);
@@ -1242,7 +1266,7 @@ struct designer_workbench::impl {
                 kit::property_desc row;
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
-                row.category = category;
+                row.category = desc.key.starts_with("font_") || desc.type == value_type::color ? "Font" : category;
                 row.value = display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
@@ -1255,12 +1279,37 @@ struct designer_workbench::impl {
                     row.has_range = true;
                     row.min_value = desc.min;
                     row.max_value = desc.max;
+                    if (desc.key == "font_size") row.tooltip = strings.text("workbench.inspector.font.size_hint",
+                        "0 uses the default size. Custom size: 4–256 logical pixels.");
+                    break;
+                case value_type::color:
+                    row.type = kit::property_type::color;
+                    row.allow_empty = true;
+                    row.placeholder = "#RRGGBB";
+                    row.tooltip = strings.text("workbench.inspector.font.color_hint",
+                        "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the theme text color.");
                     break;
                 case value_type::choice:
                     row.type = kit::property_type::enumeration;
                     for (const auto choice : desc.choices) {
                         row.choices.push_back(choice_label(desc, choice));
                         row.choice_values.emplace_back(choice);
+                    }
+                    break;
+                case value_type::font_key:
+                    row.type = kit::property_type::enumeration;
+                    row.allow_empty = true;
+                    row.placeholder = strings.text("workbench.inspector.font.default", "Use default");
+                    row.tooltip = strings.text("workbench.inspector.font.family_hint",
+                        "Choose a bundled family or use Resources > Import Project Font to add one.");
+                    row.choices = {strings.text("workbench.inspector.font.builtin_sans", "DejaVu Sans"),
+                        strings.text("workbench.inspector.font.builtin_sans_sc", "Designer Sans SC (Chinese first)")};
+                    row.choice_values = {"builtin.sans", "builtin.sans_sc"};
+                    for (const auto& [key, path] : doc.resources) {
+                        if (!is_font_path(path) || is_builtin_font(key)) continue;
+                        row.choices.push_back(path);
+                        row.choice_values.push_back(key);
+                        next.font_resources.emplace(key, path);
                     }
                     break;
                 case value_type::resource_key: {

@@ -26,6 +26,7 @@ struct designer_commands {
     std::function<void()> layout_changed = {}; // The host can persist workbench layout commands.
     std::function<void()> save_all = {};
     std::function<bool()> can_save_all = {};
+    std::function<void()> import_font = {};
 };
 
 // The shell context, working session and strings all outlive the workbench.

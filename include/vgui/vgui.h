@@ -1050,7 +1050,14 @@ extern "C" {
 	VGUI_API void vgui_widget_set_font_size(vgui_widget* widget, float size);
 	VGUI_API float vgui_widget_get_font_size(vgui_widget* widget);
 
-	/* CSS weight (100..900) and slant. Zero preserves the context font style. */
+	/* Overrides the context family on this widget only; NULL restores inheritance.
+	 * The widget borrows font: keep it alive until the override is replaced,
+	 * cleared, or the widget is destroyed. The getter returns the borrowed
+	 * override, or NULL when the widget inherits the context family. */
+	VGUI_API void vgui_widget_set_font_family(vgui_widget* widget, struct font_familys_t* font);
+	VGUI_API struct font_familys_t* vgui_widget_get_font_family(vgui_widget* widget);
+
+	/* CSS weight (100..900) and slant. Zero preserves the selected font family's style. */
 	typedef enum vgui_font_weight
 	{
 		VGUI_FONT_WEIGHT_DEFAULT = 0,

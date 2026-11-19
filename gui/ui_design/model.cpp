@@ -1,6 +1,7 @@
 #include "model.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <set>
 #include <type_traits>
@@ -37,16 +38,26 @@ const property_descriptor panel[] = {
     {"pad_right", "Right padding", value_type::number, 0.0, 0, max_geometry},
     {"pad_bottom", "Bottom padding", value_type::number, 0.0, 0, max_geometry},
 };
+constexpr sv font_weights[] = {"default", "regular", "medium", "semi_bold", "bold"};
+constexpr sv font_slants[] = {"default", "normal", "italic", "oblique"};
+const property_descriptor font_family = {"font_family", "Font family", value_type::font_key, std::string{}};
 const property_descriptor label[] = {
     {"text", "Text", value_type::text, std::string{}},
     {"text_key", "Localization key", value_type::localization_key, std::string{}},
+    {"font_size", "Font size", value_type::number, 0.0, 0.0, 256.0},
+    {"font_weight", "Font weight", value_type::choice, std::string("default"), 0, 0, font_weights},
+    {"font_slant", "Font slant", value_type::choice, std::string("default"), 0, 0, font_slants},
+    {"text_color", "Text color", value_type::color, std::string{}},
+    font_family,
 };
 const property_descriptor button[] = {
     label[0], label[1], {"action", "Action", value_type::action_key, std::string{}},
     {"atlas", "Button atlas path", value_type::resource_key, std::string{}},
+    label[2], label[3], label[4], label[5], font_family,
 };
 const property_descriptor edit_box[] = {
     label[0], label[1], {"placeholder", "Placeholder", value_type::text, std::string{}},
+    label[2], label[3], label[4], label[5], font_family,
 };
 const property_descriptor image[] = {
     {"resource", "Resource key", value_type::resource_key, std::string{}},
@@ -129,18 +140,30 @@ bool check_value(const document& doc, const property_descriptor& desc, const val
         return std::holds_alternative<bool>(val) || fail(error, path, "expected a boolean");
     if (desc.type == value_type::number) {
         const auto* n = std::get_if<double>(&val);
-        return (n && std::isfinite(*n) && *n >= desc.min && *n <= desc.max) ||
-            fail(error, path, "number outside valid range");
+        if (!n || !std::isfinite(*n) || *n < desc.min || *n > desc.max)
+            return fail(error, path, "number outside valid range");
+        // 0 inherits the context font. 4 logical pixels still produce at least
+        // one device pixel at the runtime's smallest supported scale (0.25).
+        return desc.key != "font_size" || *n == 0 || *n >= 4 ||
+            fail(error, path, "font size must be 0 (default) or at least 4");
     }
     const auto* text = std::get_if<std::string>(&val);
     if (!text) return fail(error, path, "expected a string");
     if (desc.type == value_type::text)
         return valid_text(*text, max_text_bytes) || fail(error, path, "invalid or too long UTF-8 text");
+    if (desc.type == value_type::color)
+        return text->empty() || parse_text_color(*text).has_value() ||
+            fail(error, path, "expected #RRGGBB or #RRGGBBAA");
     if (desc.type == value_type::choice)
         return std::find(desc.choices.begin(), desc.choices.end(), *text) != desc.choices.end() ||
             fail(error, path, "unknown choice");
     if (text->empty()) return true;
     if (!is_key(*text)) return fail(error, path, "invalid key");
+    if (desc.type == value_type::font_key && !is_builtin_font(*text)) {
+        const auto resource = doc.resources.find(*text);
+        if (resource == doc.resources.end()) return fail(error, path, "unknown font resource key");
+        return is_font_path(resource->second) || fail(error, path, "font resource must be a .ttf or .otf file");
+    }
     return desc.type != value_type::resource_key || doc.resources.contains(*text) ||
         fail(error, path, "unknown resource key");
 }
@@ -272,6 +295,33 @@ std::optional<document> apply_batch(const document& base, std::span<const edit> 
 }
 
 } // namespace
+
+bool is_font_path(sv path)
+{
+    const auto slash = path.find_last_of("/\\");
+    if (slash != sv::npos) path.remove_prefix(slash + 1);
+    // A leading dot alone doesn't introduce an extension (as in export).
+    if (path.size() <= 4 || path[path.size() - 4] != '.') return false;
+    const auto lower = [](char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c; };
+    const auto ext = path.substr(path.size() - 3);
+    return (lower(ext[0]) == 't' || lower(ext[0]) == 'o') && lower(ext[1]) == 't' && lower(ext[2]) == 'f';
+}
+
+bool is_builtin_font(sv key)
+{
+    return key == "builtin.sans" || key == "builtin.sans_sc";
+}
+
+std::optional<std::uint32_t> parse_text_color(sv text)
+{
+    if ((text.size() != 7 && text.size() != 9) || text.front() != '#') return std::nullopt;
+    const auto* end = text.data() + text.size();
+    std::uint32_t color = 0;
+    const auto parsed = std::from_chars(text.data() + 1, end, color, 16);
+    if (parsed.ec != std::errc{} || parsed.ptr != end) return std::nullopt;
+    if (text.size() == 7) return 0xff000000u | color;
+    return (color >> 8) | ((color & 0xffu) << 24);
+}
 
 std::span<const type_descriptor> types() { return descriptors; }
 std::span<const property_descriptor> common_properties() { return common; }

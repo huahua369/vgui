@@ -231,6 +231,27 @@ namespace vgui_editor_kit {
 			return -1;
 		}
 
+		vgui_color theme_text_color(vgui_widget* widget)
+		{
+			vgui_theme theme{};
+			vgui_context_get_theme(vgui_widget_get_context(widget), &theme);
+			return theme.text;
+		}
+
+		std::string format_color(vgui_color color)
+		{
+			const unsigned int r = (color >> 16) & 0xFFu;
+			const unsigned int g = (color >> 8) & 0xFFu;
+			const unsigned int b = color & 0xFFu;
+			const unsigned int a = (color >> 24) & 0xFFu;
+			char buffer[16];
+			if (a == 255)
+				std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X", r, g, b);
+			else
+				std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X%02X", r, g, b, a);
+			return buffer;
+		}
+
 		bool parse_color(std::string text, vgui_color& out, std::string& canonical)
 		{
 			std::string digits = trim_copy(std::move(text));
@@ -301,12 +322,7 @@ namespace vgui_editor_kit {
 
 			out = ((vgui_color)a << 24) | ((vgui_color)r << 16) |
 				((vgui_color)g << 8) | (vgui_color)b;
-			char buffer[16];
-			if (a == 255)
-				std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X", r, g, b);
-			else
-				std::snprintf(buffer, sizeof(buffer), "#%02X%02X%02X%02X", r, g, b, a);
-			canonical = buffer;
+			canonical = format_color(out);
 			return true;
 		}
 
@@ -457,6 +473,11 @@ namespace vgui_editor_kit {
 			}
 			case property_type::color:
 			{
+				if (desc.allow_empty && trim_copy(text).empty())
+				{
+					result.ok = true;
+					break;
+				}
 				vgui_color color = 0;
 				std::string canonical;
 				if (!parse_color(std::move(text), color, canonical))
@@ -555,11 +576,9 @@ namespace vgui_editor_kit {
 
 	property_grid::~property_grid()
 	{
-		if (popup_session_active_ && panel_)
-		{
-			popup_session_active_ = false;
-			vgui_popup_close(vgui_widget_get_context(panel_));
-		}
+		close_popup_session();
+		if (color_picker_)
+			vgui_widget_destroy(color_picker_->widget());
 		unbind_selection();
 		for (row& item : rows_)
 			release_row(item);
@@ -699,6 +718,15 @@ namespace vgui_editor_kit {
 		update_visibility();
 	}
 
+	void property_grid::set_edit_field_background(vgui_color color)
+	{
+		if (edit_field_background_ == color)
+			return;
+		edit_field_background_ = color;
+		for (row& item : rows_)
+			update_edit_field_background(item);
+	}
+
 	void property_grid::refresh_grid_labels()
 	{
 		vgui_widget_set_a11y_name(panel_, labels_.properties.c_str());
@@ -717,17 +745,16 @@ namespace vgui_editor_kit {
 		vgui_widget_set_text(item.reset, labels_.reset_button.c_str());
 		vgui_widget_set_tooltip(item.reset, labels_.reset_to_default.c_str());
 		vgui_widget_set_a11y_name(item.reset, labels_.reset_to_default.c_str());
+		if (item.swatch)
+		{
+			vgui_widget_set_tooltip(item.swatch, labels_.pick_color.c_str());
+			vgui_widget_set_a11y_name(item.swatch, labels_.pick_color.c_str());
+		}
 	}
 
 	void property_grid::clear()
 	{
-		if (popup_session_active_)
-		{
-			popup_session_active_ = false;
-			if (panel_)
-				vgui_popup_close(vgui_widget_get_context(panel_));
-			reset_popup_session();
-		}
+		close_popup_session();
 
 		for (row& item : rows_)
 			release_row(item);
@@ -903,13 +930,7 @@ namespace vgui_editor_kit {
 	std::size_t property_grid::set_properties(
 		std::vector<property_desc> properties)
 	{
-		if (popup_session_active_)
-		{
-			popup_session_active_ = false;
-			if (panel_)
-				vgui_popup_close(vgui_widget_get_context(panel_));
-			reset_popup_session();
-		}
+		close_popup_session();
 
 		std::vector<property_desc> incoming;
 		std::unordered_set<std::string> incoming_ids;
@@ -1148,6 +1169,8 @@ namespace vgui_editor_kit {
 		row* item = find_row(id);
 		if (!item)
 			return false;
+		if (read_only && popup_session_listener_ && popup_session_token_ == item->token)
+			close_popup_session();
 		item->desc.read_only = read_only;
 		update_row_ui(*item, false);
 		return true;
@@ -1157,6 +1180,8 @@ namespace vgui_editor_kit {
 	{
 		if (read_only_ == read_only)
 			return;
+		if (read_only && popup_session_listener_)
+			close_popup_session();
 		read_only_ = read_only;
 		for (row& item : rows_)
 			update_row_ui(item, false);
@@ -1319,6 +1344,8 @@ namespace vgui_editor_kit {
 
 	void property_grid::set_multi_targets(std::vector<object_id> targets)
 	{
+		if (popup_session_listener_ && multi_targets_ != targets)
+			close_popup_session();
 		multi_targets_ = std::move(targets);
 		for (row& item : rows_)
 		{
@@ -1697,6 +1724,11 @@ private:
 		text_edit_listener_ = std::move(listener);
 	}
 
+	void property_grid::set_color_popup_edit_listener(text_edit_listener listener)
+	{
+		color_popup_edit_listener_ = std::move(listener);
+	}
+
 	void property_grid::set_value_source(value_source source)
 	{
 		value_source_ = std::move(source);
@@ -1752,6 +1784,8 @@ private:
 		selection_context_ = &context;
 		selection_bind_ = std::move(binder);
 		selection_token_ = context.add_selection_listener([this](object_id id) {
+			if (popup_session_listener_)
+				close_popup_session();
 			if (selection_bind_)
 				selection_bind_(*this, id);
 		});
@@ -1767,6 +1801,8 @@ private:
 
 	void property_grid::unbind_selection()
 	{
+		if (popup_session_listener_)
+			close_popup_session();
 		if (selection_context_ && selection_token_)
 			selection_context_->remove_selection_listener(selection_token_);
 		selection_context_ = nullptr;
@@ -2026,14 +2062,6 @@ private:
 				vgui_widget_set_size(item.vector_ui->widget(), 0, kRowHeight);
 				vgui_widget_set_min_size(item.vector_ui->widget(), 80,
 					kRowHeight);
-				/* Let the row background show through the value fields. */
-				for (int i = 0; i < item.vector_ui->dimension(); ++i)
-				{
-					vgui_widget* edit =
-						item.vector_ui->component_edit_widget(i);
-					if (edit)
-						vgui_edit_set_background_transparent(edit, 1);
-				}
 				vector_editor::vector_value values{};
 				std::string error;
 				if (vector_editor::parse_value(item.value, dimension,
@@ -2089,7 +2117,6 @@ private:
 			vgui_widget_set_grow(item.editor, 1.0f);
 			vgui_widget_set_size(item.editor, 0, 24);
 			vgui_widget_set_font_size(item.editor, 13);
-			vgui_edit_set_background_transparent(item.editor, 1);
 			if (!item.desc.placeholder.empty())
 				vgui_edit_set_placeholder(item.editor, item.desc.placeholder.c_str());
 			vgui_widget_on_event(item.editor, &property_grid::on_edit_event, this);
@@ -2129,8 +2156,6 @@ private:
 			vgui_widget_set_tooltip(item.panel, item.desc.tooltip.c_str());
 			vgui_widget_set_tooltip(item.label, item.desc.tooltip.c_str());
 			vgui_widget_set_tooltip(item.editor, item.desc.tooltip.c_str());
-			if (item.swatch)
-				vgui_widget_set_tooltip(item.swatch, item.desc.tooltip.c_str());
 			if (item.vector_ui)
 			{
 				for (int i = 0; i < vector_dimension(item.desc.type); ++i)
@@ -2144,6 +2169,28 @@ private:
 		}
 
 		update_row_ui(item, true);
+	}
+
+	void property_grid::update_edit_field_background(row& item)
+	{
+		if (!item.editor)
+			return;
+		const vgui_color color = item.visible && !read_only_ && !item.desc.read_only
+			? edit_field_background_ : 0;
+		const auto style_edit = [color](vgui_widget* edit) {
+			if (!edit || vgui_widget_get_kind(edit) != VGUI_EDIT)
+				return;
+			vgui_widget_set_background(edit, color);
+			// The edit style already supplies a subtle rounded frame by default.
+			vgui_edit_set_background_transparent(edit, color == 0);
+		};
+		if (item.vector_ui)
+		{
+			for (int i = 0; i < item.vector_ui->dimension(); ++i)
+				style_edit(item.vector_ui->component_edit_widget(i));
+		}
+		else
+			style_edit(item.editor);
 	}
 
 	void property_grid::update_row_ui(row& item, bool sync_editor)
@@ -2174,6 +2221,7 @@ private:
 		if (item.fav_btn)
 			vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
 
+		update_edit_field_background(item);
 		if (item.mixed)
 		{
 			update_row_mixed_ui(item);
@@ -2226,10 +2274,12 @@ private:
 		{
 			vgui_color color = 0;
 			std::string canonical;
-			if (parse_color(item.value, color, canonical))
-				vgui_widget_set_background(item.swatch, color);
-			else
-				vgui_widget_set_background(item.swatch, kPanelBg);
+			if (item.desc.allow_empty && item.value.empty())
+				color = theme_text_color(item.swatch);
+			else if (!parse_color(item.value, color, canonical))
+				color = kPanelBg;
+			vgui_widget_set_background(item.swatch, color);
+			vgui_widget_invalidate_recording(item.swatch);
 		}
 
 		update_row_error_ui(item);
@@ -2417,6 +2467,8 @@ private:
 
 	void property_grid::release_row(row& item)
 	{
+		if (popup_session_listener_ && popup_session_token_ == item.token)
+			close_popup_session();
 		if (item.menu)
 		{
 			vgui_widget_destroy(item.menu);
@@ -2885,6 +2937,13 @@ private:
 		popup_session_mixed_ = item.mixed;
 		popup_session_start_ = item.value;
 		popup_session_id_ = item.desc.id;
+		popup_session_token_ = item.token;
+		if (kind == popup_kind::color && color_picker_managed_)
+		{
+			popup_session_listener_ = color_popup_edit_listener_;
+			popup_session_value_ = item.value;
+			popup_session_changed_ = false;
+		}
 		popup_drag_active_ = false;
 		popup_drag_value_.clear();
 	}
@@ -2896,19 +2955,56 @@ private:
 		popup_session_mixed_ = false;
 		popup_session_start_.clear();
 		popup_session_id_.clear();
+		popup_session_token_ = 0;
+		popup_session_listener_ = nullptr;
+		popup_session_value_.clear();
 		popup_drag_active_ = false;
 		popup_drag_value_.clear();
+	}
+
+	void property_grid::close_popup_session()
+	{
+		if (!popup_session_active_)
+			return;
+		vgui_context* ctx = vgui_widget_get_context(panel_);
+		if (popup_session_listener_)
+		{
+			vgui_popup_close(ctx);
+			return;
+		}
+		// Legacy teardown discards the session; never leave the context's
+		// persistent callback pointing at a grid that can now be destroyed.
+		vgui_popup_on_close(ctx, nullptr, nullptr);
+		reset_popup_session();
+		vgui_popup_close(ctx);
 	}
 
 	void property_grid::preview_popup_value(const std::string& id,
 		const std::string& value)
 	{
-		row* target = find_row(id);
+		if (!popup_session_active_ || id != popup_session_id_)
+			return;
+		row* target = find_row_by_token(popup_session_token_);
 		if (!target)
 			return;
 		normalized_value normalized = normalize_value(target->desc, value);
 		if (!normalized.ok)
 			return;
+		if (popup_session_listener_)
+		{
+			if (normalized.value == popup_session_value_ && !target->mixed)
+				return;
+			popup_session_value_ = normalized.value;
+			popup_session_changed_ = true;
+			target->mixed = false;
+			target->value = normalized.value;
+			update_row_ui(*target, true);
+			// Do not re-filter on the preview: a value-based search could
+			// otherwise destroy the session's swatch during its own gesture.
+			auto listener = popup_session_listener_;
+			(void)listener(target->swatch, id, normalized.value, text_edit_event::change);
+			return;
+		}
 		if (!popup_drag_active_)
 		{
 			/* 第一次预览:快照手势起点,提交时作为 undo 记录的 old。 */
@@ -2924,7 +3020,14 @@ private:
 	void property_grid::commit_popup_value(const std::string& id,
 		const std::string& value)
 	{
-		row* target = find_row(id);
+		if (!popup_session_active_ || id != popup_session_id_)
+			return;
+		if (popup_session_listener_)
+		{
+			preview_popup_value(id, value);
+			return;
+		}
+		row* target = find_row_by_token(popup_session_token_);
 		if (!target)
 			return;
 		normalized_value normalized = normalize_value(target->desc, value);
@@ -2953,16 +3056,44 @@ private:
 	{
 		if (read_only_ || item.desc.read_only)
 			return;
-		if (!item.editor)
+		if (!item.editor || !item.swatch)
 			return;
 		vgui_context* ctx = vgui_widget_get_context(item.editor);
 		if (!ctx)
 			return;
+		const bool managed = (bool)color_popup_edit_listener_;
+		if (popup_session_active_ && (managed || popup_session_listener_))
+			close_popup_session();
+		if (managed && vgui_get_focus(ctx))
+			vgui_set_focus(ctx, nullptr);
+		// The managed hex field replaces the stock field's event handling.
+		// Rebuild it for each managed session, also dropping any interrupted
+		// gesture state that may have survived a close during a mouse press.
+		if (color_picker_ && (managed || color_picker_managed_))
+		{
+			vgui_widget_destroy(color_picker_->widget());
+			color_picker_.reset();
+		}
 		if (!color_picker_)
 		{
+			color_picker_managed_ = managed;
 			color_picker_ = std::make_unique<color_picker>();
 			color_picker_->set_id("property-grid.color-picker");
 			color_picker_->build(ctx);
+			if (managed)
+			{
+				// The picker preview row contains the swatches and hex edit.
+				vgui_widget* preview = vgui_widget_get_child(color_picker_->widget(), 0);
+				for (std::size_t i = 0; i < vgui_widget_get_child_count(preview); ++i)
+				{
+					vgui_widget* child = vgui_widget_get_child(preview, i);
+					if (vgui_widget_get_kind(child) != VGUI_EDIT)
+						continue;
+					vgui_widget_on_event(child, &property_grid::on_popup_hex_event, this);
+					vgui_widget_on_text(child, &property_grid::on_popup_hex_text, this);
+					break;
+				}
+			}
 		}
 
 		static const char* const kPresets[] = {
@@ -2983,19 +3114,58 @@ private:
 		color_picker_->set_on_commit([this, id](const std::string& hex) {
 			commit_popup_value(id, hex);
 		});
-		color_picker_->set_value(item.value);
-		color_picker_->set_current(item.value);
+		const std::string picker_color = item.desc.allow_empty && item.value.empty()
+			? format_color(theme_text_color(item.swatch)) : item.value;
+		color_picker_->set_value(picker_color);
+		color_picker_->set_current(picker_color);
 
 		float ax = 0, ay = 0, aw = 0, ah = 0;
-		if (item.swatch)
-			vgui_widget_get_rect(item.swatch, &ax, &ay, &aw, &ah);
-		else
-			vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
+		vgui_widget_get_rect(item.swatch, &ax, &ay, &aw, &ah);
 		(void)aw;
 		if (!vgui_popup_open(ctx, color_picker_->widget(), ax, ay + ah + 4.0f))
 			return;
 		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
 		begin_popup_session(item, popup_kind::color);
+	}
+
+	void property_grid::on_popup_hex_event(vgui_widget* widget, const vgui_event* event,
+		void* user)
+	{
+		auto* self = static_cast<property_grid*>(user);
+		if (!event || !self->popup_session_listener_)
+			return;
+		// The core routes the first Escape to a focused edit instead of
+		// closing the popup. In a managed session it cancels the whole edit.
+		if (event->type == VGUI_EVENT_CANCEL && event->key == VGUI_KEY_ESCAPE)
+			self->close_popup_session();
+		else if (event->type == VGUI_EVENT_SUBMIT)
+			self->preview_color_popup_hex(widget, vgui_edit_get_text(widget), true);
+	}
+
+	void property_grid::on_popup_hex_text(vgui_widget* widget, const char* text, void* user)
+	{
+		static_cast<property_grid*>(user)->preview_color_popup_hex(widget, text, false);
+	}
+
+	void property_grid::preview_color_popup_hex(vgui_widget* widget, const char* text,
+		bool submit)
+	{
+		if (!popup_session_listener_)
+			return;
+		vgui_color color = 0;
+		std::string canonical;
+		if (!text || !parse_color(text, color, canonical))
+			return; // Keep the partial/invalid text in the field, not in the row.
+		if (submit)
+		{
+			// Submitting the untouched theme fallback doesn't assign a color.
+			if (popup_session_value_.empty() && canonical == color_picker_->value())
+				return;
+			vgui_edit_set_text(widget, canonical.c_str());
+		}
+		color_picker_->set_value(canonical);
+		const std::string id = popup_session_id_;
+		preview_popup_value(id, canonical);
 	}
 
 	void property_grid::open_curve_editor(row& item)
@@ -3068,8 +3238,33 @@ private:
 		auto* self = static_cast<property_grid*>(user);
 		if (!self || !self->popup_session_active_)
 			return;
+		vgui_popup_on_close(vgui_widget_get_context(self->panel_), nullptr, nullptr);
 		self->popup_session_active_ = false;
 		const std::string id = self->popup_session_id_;
+		if (self->popup_session_listener_)
+		{
+			const bool submit = reason == VGUI_POPUP_CLOSE_OUTSIDE ||
+				reason == VGUI_POPUP_CLOSE_WHEEL;
+			const std::string value = submit ? self->popup_session_value_ : self->popup_session_start_;
+			const bool has_preview = self->popup_session_changed_;
+			const bool mixed = self->popup_session_mixed_ && (!submit || !has_preview);
+			row* target = self->find_row_by_token(self->popup_session_token_);
+			auto listener = std::move(self->popup_session_listener_);
+			self->reset_popup_session();
+			if (!target)
+				return;
+			const bool changed = target->mixed != mixed || target->value != value;
+			target->mixed = mixed;
+			target->value = value;
+			self->update_row_ui(*target, true);
+			if (submit && has_preview)
+				self->add_recent_color(value);
+			(void)listener(target->swatch, id, value,
+				submit ? text_edit_event::submit : text_edit_event::cancel);
+			if (submit && (changed || !self->filter_.empty()))
+				self->update_visibility();
+			return;
+		}
 		/* 未提交的预览(Esc/外点/替换)回到会话起点;已提交的手势保留
 		 * 新值,但 Esc 仍回滚显示(与合并链顶相接,undo 一次恢复)。 */
 		const bool rollback = reason == VGUI_POPUP_CLOSE_ESCAPE ||
@@ -3093,6 +3288,8 @@ private:
 
 	void property_grid::add_recent_color(const std::string& color)
 	{
+		if (color.empty())
+			return;
 		auto found = std::find(recent_colors_.begin(), recent_colors_.end(), color);
 		if (found != recent_colors_.end())
 			recent_colors_.erase(found);

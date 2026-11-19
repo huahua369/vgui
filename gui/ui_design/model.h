@@ -29,7 +29,15 @@ struct diagnostic {
 };
 
 using value = std::variant<bool, double, std::string>;
-enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key };
+enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key };
+
+// Test the filename extension (.ttf or .otf, ASCII case-insensitive).
+// This does not otherwise validate a resource path.
+bool is_font_path(std::string_view path);
+bool is_builtin_font(std::string_view key);
+
+// Parse a concrete #RRGGBB or #RRGGBBAA into 0xAARRGGBB. Empty is not a color.
+std::optional<std::uint32_t> parse_text_color(std::string_view text);
 
 struct property_descriptor {
     std::string_view key;

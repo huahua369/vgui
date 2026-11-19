@@ -16,6 +16,27 @@ const value& property(const node& n, std::string_view key) {
 float number(const node& n, std::string_view key) { return static_cast<float>(std::get<double>(property(n, key))); }
 const std::string& text(const node& n, std::string_view key) { return std::get<std::string>(property(n, key)); }
 bool boolean(const node& n, std::string_view key) { return std::get<bool>(property(n, key)); }
+void apply_font(vgui_widget* widget, const node& n) {
+    const float size = number(n, "font_size");
+    if (size != 0) vgui_widget_set_font_size(widget, size);
+
+    const auto& weight = text(n, "font_weight");
+    if (weight == "regular") vgui_widget_set_font_weight(widget, VGUI_FONT_WEIGHT_REGULAR);
+    else if (weight == "medium") vgui_widget_set_font_weight(widget, VGUI_FONT_WEIGHT_MEDIUM);
+    else if (weight == "semi_bold") vgui_widget_set_font_weight(widget, VGUI_FONT_WEIGHT_SEMI_BOLD);
+    else if (weight == "bold") vgui_widget_set_font_weight(widget, VGUI_FONT_WEIGHT_BOLD);
+
+    const auto& slant = text(n, "font_slant");
+    if (slant == "normal") vgui_widget_set_font_slant(widget, VGUI_FONT_SLANT_NORMAL);
+    else if (slant == "italic") vgui_widget_set_font_slant(widget, VGUI_FONT_SLANT_ITALIC);
+    else if (slant == "oblique") vgui_widget_set_font_slant(widget, VGUI_FONT_SLANT_OBLIQUE);
+
+    if (const auto color = parse_text_color(text(n, "text_color"))) {
+        // VGUI reserves 0 for theme inheritance. Transparent black still
+        // needs a nonzero RGB bit to represent an explicit transparent color.
+        vgui_widget_set_text_color(widget, *color == 0 ? 1u : *color);
+    }
+}
 pixel_rect intersect(pixel_rect a, pixel_rect b) {
     float x = std::max(a.x, b.x), y = std::max(a.y, b.y);
     return {x, y, std::max(0.f, std::min(a.x+a.width,b.x+b.width)-x),
@@ -26,6 +47,16 @@ bool inside(const std::filesystem::path& root, const std::filesystem::path& file
     auto r = root.begin(), f = file.begin();
     for (; r != root.end(); ++r, ++f) if (f == file.end() || *r != *f) return false;
     return f != file.end();
+}
+
+std::filesystem::path resolve_resource(const std::filesystem::path& project_root, const std::string& relative) {
+    if (project_root.empty()) return {};
+    std::error_code ec;
+    const auto root = std::filesystem::canonical(project_root, ec);
+    if (ec || !std::filesystem::is_directory(root, ec)) return {};
+    auto file = std::filesystem::canonical(root / std::filesystem::u8path(relative), ec);
+    if (ec || !inside(root, file) || !std::filesystem::is_regular_file(file, ec)) return {};
+    return file;
 }
 }
 
@@ -75,13 +106,20 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
     std::map<std::string, vgui_texture*, std::less<>> images;
     const auto load_image = [&](const std::string& key) -> vgui_texture* {
         auto [it, inserted] = images.emplace(key, nullptr);
-        if (inserted && bindings.load_image && !bindings.project_root.empty()) {
-            std::error_code ec;
-            auto root = std::filesystem::canonical(bindings.project_root, ec);
-            if (!ec && std::filesystem::is_directory(root, ec) && !ec) {
-                auto file = std::filesystem::canonical(root / std::filesystem::u8path(doc.resources.at(key)), ec);
-                if (!ec && inside(root, file) && std::filesystem::is_regular_file(file, ec) && !ec)
-                    it->second = bindings.load_image(ctx_, key, file, bindings.user);
+        if (inserted && bindings.load_image) {
+            const auto file = resolve_resource(bindings.project_root, doc.resources.at(key));
+            if (!file.empty()) it->second = bindings.load_image(ctx_, key, file, bindings.user);
+        }
+        return it->second;
+    };
+    std::map<std::string, font_familys_t*, std::less<>> fonts;
+    const auto load_font = [&](const std::string& key) -> font_familys_t* {
+        auto [it, inserted] = fonts.emplace(key, nullptr);
+        if (inserted && bindings.load_font) {
+            if (is_builtin_font(key)) it->second = bindings.load_font(key, {}, bindings.user);
+            else {
+                const auto file = resolve_resource(bindings.project_root, doc.resources.at(key));
+                if (!file.empty()) it->second = bindings.load_font(key, file, bindings.user);
             }
         }
         return it->second;
@@ -121,6 +159,13 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                 }
             }
         } else {
+            const auto& family = text(n, "font_family");
+            if (!family.empty()) {
+                if (auto* font = load_font(family)) vgui_widget_set_font_family(w, font);
+                else next->diagnostics.push_back({"/nodes/" + id + "/props/font_family",
+                    "font unavailable; using the context family: " + family});
+            }
+            apply_font(w, n);
             if (n.type == "edit") {
                 vgui_edit_set_text(w, text(n,"text").c_str());
                 vgui_edit_set_placeholder(w, text(n,"placeholder").c_str());

@@ -73,8 +73,9 @@ namespace vgui_editor_kit {
 	 * used for both labels and values.  choice_enabled is optional; when set
 	 * it must contain one entry per choice.  allow_empty lets an enumeration
 	 * hold the empty value, shown as placeholder (or "(None)" when no
-	 * placeholder is set) and offered as the first menu entry.  Vector rows
-	 * use a compact component editor: has_range/step apply to every
+	 * placeholder is set) and offered as the first menu entry. For colors,
+	 * allow_empty means the empty string follows the context theme's text color.
+	 * Vector rows use a compact component editor: has_range/step apply to every
 	 * component, semantic selects the axis labels/colors, and the optional
 	 * component_labels/component_colors override them.  get_value/set_value
 	 * are optional per-property bindings; a grid-level value source/listener
@@ -154,11 +155,15 @@ namespace vgui_editor_kit {
 			std::string reset_button = "R";
 			std::string reset_to_default = "Reset to default";
 			std::map<std::string, std::string> categories;
+			std::string pick_color = "Pick color";
 		};
 		void build_with_labels(vgui_widget* parent, ui_labels labels);
 		/* Relabels the built grid and rechecks the current search against the
 		 * new category labels. Does not reset the search, favorites or collapse state. */
 		void set_ui_labels(ui_labels labels);
+		/* Fill editable row edit fields, including vector components; 0 restores
+		 * transparency. Does not style the search or popup fields. */
+		void set_edit_field_background(vgui_color color);
 
 		/* Removes all rows.  Category collapse state and the search filter are
 		 * kept so rebuilding for another object does not lose the user's view
@@ -316,6 +321,12 @@ namespace vgui_editor_kit {
 		using text_edit_listener = std::function<bool(vgui_widget*, const std::string& id,
 			const std::string& text, text_edit_event)>;
 		void set_text_edit_listener(text_edit_listener listener);
+		/* Optional host-managed color popup. The listener is captured when the
+		 * popup opens and receives the swatch as widget identity. Valid changes
+		 * preview without recording commands; outside click/wheel submits the
+		 * last value, and Escape/explicit close cancels to the starting value.
+		 * The return value is ignored. Defer structural changes during callbacks. */
+		void set_color_popup_edit_listener(text_edit_listener listener);
 		void set_value_source(value_source source);
 		void refresh();
 
@@ -410,6 +421,7 @@ namespace vgui_editor_kit {
 		category_ui* ensure_category(const std::string& name);
 		void ensure_row_ui(row& item);
 		void update_row_ui(row& item, bool sync_editor = true);
+		void update_edit_field_background(row& item);
 		void update_row_error_ui(row& item);
 		void update_visibility();
 		bool row_matches(const row& item) const;
@@ -460,9 +472,13 @@ namespace vgui_editor_kit {
 		 * command via commit_value(); Escape restores the session start. */
 		void begin_popup_session(row& item, popup_kind kind);
 		void reset_popup_session();
+		void close_popup_session();
 		void preview_popup_value(const std::string& id, const std::string& value);
 		void commit_popup_value(const std::string& id, const std::string& value);
 		void open_color_picker(row& item);
+		static void on_popup_hex_event(vgui_widget* widget, const vgui_event* event, void* user);
+		static void on_popup_hex_text(vgui_widget* widget, const char* text, void* user);
+		void preview_color_popup_hex(vgui_widget* widget, const char* text, bool submit);
 		static void on_popup_close(void* user, int reason);
 		void add_recent_color(const std::string& color);
 		/* P09 row previews (VGUI_CUSTOM). */
@@ -524,12 +540,17 @@ namespace vgui_editor_kit {
 		std::uint64_t next_row_id_ = 1;
 		std::vector<std::string> recent_colors_;
 		std::unique_ptr<color_picker> color_picker_;
+		bool color_picker_managed_ = false;
 		std::unique_ptr<curve_editor> curve_editor_;
 		std::unique_ptr<gradient_editor> gradient_editor_;
 		popup_kind popup_kind_ = popup_kind::none;
 		bool popup_session_active_ = false;
 		bool popup_session_mixed_ = false;
 		std::string popup_session_start_;
+		std::string popup_session_value_;
+		bool popup_session_changed_ = false;
+		std::uint64_t popup_session_token_ = 0;
+		text_edit_listener popup_session_listener_;
 		bool popup_drag_active_ = false;
 		std::string popup_drag_value_;
 		std::string popup_session_id_;
@@ -538,7 +559,9 @@ namespace vgui_editor_kit {
 		command_stack* command_stack_ = nullptr;
 		change_listener change_listener_;
 		text_edit_listener text_edit_listener_;
+		text_edit_listener color_popup_edit_listener_;
 		value_source value_source_;
+		vgui_color edit_field_background_ = 0;
 		bool read_only_ = false;
 
 		editor_context* selection_context_ = nullptr;

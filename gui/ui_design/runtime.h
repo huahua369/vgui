@@ -21,6 +21,14 @@ struct runtime_bindings {
     image_loader load_image = nullptr;
     action_handler on_action = nullptr; // Button activation, not pointer down/up.
     void* user = nullptr; // Host-owned; must outlive action dispatch.
+
+    // Borrowed family; keep it alive until the mounted widgets are destroyed
+    // (including during remount). nullptr falls back to the context family.
+    // Called once per referenced font key per mount. Built-ins get an empty
+    // path; resources get a canonical regular file inside the project root,
+    // with the same directory stability requirement as image_loader.
+    using font_loader = font_familys_t* (*)(std::string_view key, const std::filesystem::path& file, void* user);
+    font_loader load_font = nullptr;
 };
 
 struct viewport {

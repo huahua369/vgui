@@ -878,6 +878,354 @@ void exercise_live_properties()
     check(model.current() == base && !model.can_undo(), "cancelled text left an undo entry");
 }
 
+void exercise_text_color_picker()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "text-color.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    vgui_theme theme{};
+    vgui_context_get_theme(ctx, &theme);
+    theme.text = 0xFF3489B7u;
+    vgui_context_set_theme(ctx, &theme);
+    const auto id = workbench.add("label", model.current().root);
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && !model.can_undo() && !model.dirty(), "could not reopen the color fixture without history");
+    auto* tree = workbench.outline();
+    workbench.select_row(vgui_tree_get_child(tree, vgui_tree_get_root(tree, 0), 0), id);
+    const auto inherited = model.current();
+
+    constexpr auto row_id = "property:text_color";
+    const std::string picker_id = "property-grid.color-picker";
+    const auto row_edit = [&] { return workbench.widget(row_id, VGUI_EDIT); };
+    const auto row_text = [&] { return std::string_view(vgui_edit_get_text(row_edit())); };
+    const auto color = [&](const ui::document& doc) {
+        const auto& props = doc.nodes.at(id).props;
+        const auto it = props.find("text_color");
+        return it == props.end() ? std::string{} : std::get<std::string>(it->second);
+    };
+    const auto open_picker = [&] {
+        auto* swatch = workbench.widget(row_id, VGUI_PANEL);
+        float w, h;
+        vgui_widget_get_rect(swatch, nullptr, nullptr, &w, &h);
+        check(w == 20 && h == 20, "text-color swatch is not 20x20");
+        workbench.click(swatch);
+        workbench.frame();
+        auto* popup = vgui_popup_content(ctx);
+        check(popup && picker_id == vgui_widget_get_id(popup), "text-color swatch did not open the grid picker");
+        return popup;
+    };
+    const auto picker_hex = [&](vgui_widget* popup) {
+        auto* hex = find_widget(popup, picker_id + ".hex", VGUI_EDIT);
+        check(hex, "grid picker is missing its hex field");
+        return ui::parse_text_color(vgui_edit_get_text(hex));
+    };
+    const auto adjust = [&](vgui_widget* popup, const char* control, float fx, float fy) {
+        const auto previous = color(model.current());
+        const auto committed = color(model.committed());
+        auto* surface = find_widget(popup, picker_id + control, VGUI_CUSTOM);
+        check(surface, std::string("grid picker is missing ") + control);
+        float x, y, w, h;
+        vgui_widget_get_rect(surface, &x, &y, &w, &h);
+        check(w > 0 && h > 0, "picker control has no layout rect");
+        workbench.click_at(x + w * fx, y + h * fy);
+        workbench.frame();
+        const auto preview = color(model.current());
+        check(vgui_popup_content(ctx) == popup && preview != previous && ui::parse_text_color(preview) &&
+            row_text() == preview, std::string("picker did not preview ") + control + " in the document and row");
+        check(color(model.committed()) == committed, std::string("picker committed ") + control + " before dismissal");
+    };
+
+    check(!inherited.nodes.at(id).props.contains("text_color") && row_text().empty(),
+        "default text color should inherit rather than store a hex override");
+    auto* popup = open_picker();
+    check(picker_hex(popup) == theme.text && model.current() == inherited && !model.can_undo(),
+        "opening the inherited picker did not use the theme color without setting an override");
+    adjust(popup, ".sv", 0.75f, 0.25f);
+    adjust(popup, ".hue", 0.33f, 0.5f);
+    adjust(popup, ".alpha", 0.4f, 0.5f);
+    check(model.committed() == inherited, "picker adjustments committed before dismissal");
+    check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_popup_active(ctx), "Escape did not dismiss the color picker");
+    check(model.current() == inherited && row_text().empty() && !model.can_undo() && !model.dirty(),
+        "Escape did not restore inheritance without adding an undo entry");
+
+    popup = open_picker();
+    adjust(popup, ".sv", 0.6f, 0.15f);
+    adjust(popup, ".hue", 0.8f, 0.5f);
+    adjust(popup, ".alpha", 0.65f, 0.5f);
+    const auto picked = model.current();
+    check(model.committed() == inherited && picker_hex(popup) == ui::parse_text_color(color(picked)),
+        "final RGBA preview committed early or disagreed with the picker hex field");
+    workbench.click(workbench.outline());
+    workbench.frame();
+    check(!vgui_popup_active(ctx) && model.committed() == picked && model.current() == picked && model.can_undo(),
+        "clicking outside did not dismiss the picker and commit the final preview");
+    workbench.edit("Undo");
+    check(model.current() == inherited && row_text().empty() && !model.can_undo() && !model.dirty(),
+        "one Undo did not restore the inherited color and clean history");
+    workbench.edit("Redo");
+    check(model.current() == picked && row_text() == color(picked), "Redo did not restore the final picked color");
+
+    popup = open_picker();
+    check(picker_hex(popup) == ui::parse_text_color(color(picked)), "picker did not reopen with the stored color");
+    adjust(popup, ".alpha", 0.2f, 0.5f);
+    check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_popup_active(ctx) && model.current() == picked &&
+        model.committed() == picked && row_text() == color(picked), "Escape did not restore the explicit starting color");
+
+    workbench.click(row_edit());
+    check(vgui_get_focus(ctx) == row_edit(), "manual color field did not receive focus");
+    const bool selected = vgui_input_key(ctx, 'A', 1, VGUI_MOD_CTRL);
+    vgui_input_key(ctx, 'A', 0, VGUI_MOD_CTRL);
+    check(selected && workbench.key(VGUI_KEY_BACKSPACE) && row_text().empty() && model.current() == inherited &&
+        model.committed() == picked, "clearing the hex field did not preview inherited text color");
+    workbench.key(VGUI_KEY_ENTER);
+    check(model.committed() == inherited && row_text().empty(), "clearing the hex field did not commit inheritance");
+    workbench.edit("Undo");
+    check(model.current() == picked, "Undo did not restore the color cleared by typing");
+
+    // The favorite button shares the row ID; select Reset by its action label.
+    auto* line = vgui_widget_get_parent(row_edit());
+    vgui_widget* reset = nullptr;
+    for (std::size_t i = 0; i < vgui_widget_get_child_count(line); ++i) {
+        auto* child = vgui_widget_get_child(line, i);
+        if (vgui_widget_get_kind(child) == VGUI_BUTTON &&
+            std::string_view(vgui_widget_get_tooltip(child)) == "Reset to default") reset = child;
+    }
+    check(reset, "text-color row is missing its Reset button");
+    workbench.click(reset);
+    workbench.frame();
+    check(model.current() == inherited && model.committed() == inherited && row_text().empty(),
+        "reset did not clear the override and restore inherited text color");
+}
+
+void exercise_font_properties()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "font.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const auto panel = workbench.add("panel", root);
+    workbench.select_row(workbench.panel_item(), panel);
+    const auto label = workbench.add("label", panel);
+    workbench.select_row(workbench.panel_item(), panel);
+    const auto button = workbench.add("button", panel);
+    workbench.select_row(workbench.panel_item(), panel);
+    const auto edit = workbench.add("edit", panel);
+
+    // Remove fixture history so live edits and the single Undo below are exact.
+    workbench.file("Save As");
+    check(workbench.io_ok, "could not save font inspector fixture: " + workbench.io_error.message);
+    workbench.file("Open Page");
+    check(workbench.io_ok && !model.dirty() && !model.can_undo() && workbench.bench.selection() == root,
+        "could not reopen font inspector fixture without history");
+    const auto baseline = model.current();
+
+    const auto check_surface = [&](std::string_view category, std::string_view size_label,
+                                   std::string_view weight_label, std::string_view slant_label,
+                                   std::string_view color_label, std::string_view default_choice) {
+        auto* category_button = workbench.widget("category:Font", VGUI_BUTTON);
+        check(std::string_view(vgui_widget_get_text(category_button)) == "v  " + std::string(category),
+            "font inspector category has the wrong visible label");
+        check(std::string_view(vgui_widget_get_text(workbench.widget("property:font_size", VGUI_LABEL))) == size_label &&
+            std::string_view(vgui_widget_get_text(workbench.widget("property:font_weight", VGUI_LABEL))) == weight_label &&
+            std::string_view(vgui_widget_get_text(workbench.widget("property:font_slant", VGUI_LABEL))) == slant_label &&
+            std::string_view(vgui_widget_get_text(workbench.widget("property:text_color", VGUI_LABEL))) == color_label,
+            "font inspector field labels are incomplete or untranslated");
+        check(std::string_view(vgui_edit_get_text(workbench.widget("property:font_size", VGUI_EDIT))) == "0" &&
+            std::string_view(vgui_widget_get_text(workbench.widget("property:font_weight", VGUI_BUTTON))) == default_choice &&
+            std::string_view(vgui_widget_get_text(workbench.widget("property:font_slant", VGUI_BUTTON))) == default_choice &&
+            std::string_view(vgui_edit_get_text(workbench.widget("property:text_color", VGUI_EDIT))).empty(),
+            "font inspector did not expose the expected inherited defaults");
+    };
+    const auto open_choices = [&](std::string_view property) {
+        workbench.click(workbench.widget("property:" + std::string(property), VGUI_BUTTON));
+        workbench.frame();
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "font choice editor did not open a menu: " + std::string(property));
+        return menu;
+    };
+    const auto check_choices = [&](std::string_view property, std::initializer_list<std::string_view> labels) {
+        check_menu_items(open_choices(property), labels);
+        check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_context_get_open_menu(ctx),
+            "font choice menu did not close: " + std::string(property));
+    };
+
+    const std::string controls[] = {label, button, edit};
+    for (int index = 0; index < 3; ++index) {
+        workbench.select_child(index, controls[index]);
+        check_surface("Font", "Font size", "Font weight", "Font slant", "Text color", "Use default");
+    }
+
+    workbench.select_child(0, label);
+    check_choices("font_weight", {"Use default", "Regular", "Medium", "Semi-bold", "Bold"});
+    check_choices("font_slant", {"Use default", "Upright", "Italic", "Oblique"});
+    const auto focus_text = [&](const char* id) {
+        auto* editor = workbench.widget(id, VGUI_EDIT);
+        workbench.click(editor);
+        check(vgui_get_focus(ctx) == editor, std::string("font editor did not receive focus: ") + id);
+        vgui_edit_select_all(editor);
+        return editor;
+    };
+    const auto type = [&](const char* text) {
+        check(vgui_input_text(ctx, text), "font inspector did not consume live text");
+        workbench.frame();
+    };
+    auto* size = focus_text("property:font_size");
+    type("2");
+    check(model.current() == baseline && std::string_view(vgui_edit_get_text(size)) == "2",
+        "out-of-range intermediate font size changed the document");
+    type("4");
+    check(model.current().nodes.at(label).props.at("font_size") == ui::value{24.0},
+        "valid font size did not apply before Enter");
+    type("0");
+    check(model.current().nodes.at(label).props.at("font_size") == ui::value{240.0},
+        "subsequent valid font size did not apply before Enter");
+    type("0");
+    check(model.current().nodes.at(label).props.at("font_size") == ui::value{240.0} &&
+        std::string_view(vgui_edit_get_text(size)) == "2400", "invalid font size replaced the last valid value");
+    vgui_set_focus(ctx, nullptr);
+    workbench.frame();
+    workbench.edit("Undo");
+    check(model.current() == baseline && !model.dirty() && !model.can_undo(),
+        "one Undo did not remove the live font size edit");
+    workbench.edit("Redo");
+    check(model.current().nodes.at(label).props.at("font_size") == ui::value{240.0},
+        "Redo did not restore the final valid font size");
+
+    workbench.activate(open_choices("font_weight"), "Bold");
+    workbench.activate(open_choices("font_slant"), "Italic");
+    focus_text("property:text_color");
+    type("#12AB34EF");
+    const auto saved = model.current();
+    const auto& props = saved.nodes.at(label).props;
+    check(props.at("font_weight") == ui::value{std::string("bold")} &&
+        props.at("font_slant") == ui::value{std::string("italic")} &&
+        props.at("text_color") == ui::value{std::string("#12AB34EF")},
+        "font choices or live hex text did not reach the model");
+    workbench.file("Save As");
+    check(workbench.io_ok && !model.dirty(), "could not save font properties: " + workbench.io_error.message);
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved && workbench.bench.selection() == root,
+        "reopening lost font properties or selection state");
+    workbench.select_child(0, label);
+    check(std::string_view(vgui_edit_get_text(workbench.widget("property:font_size", VGUI_EDIT))) == "240" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_weight", VGUI_BUTTON))) == "Bold" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_slant", VGUI_BUTTON))) == "Italic" &&
+        std::string_view(vgui_edit_get_text(workbench.widget("property:text_color", VGUI_EDIT))) == "#12AB34EF",
+        "reopened font inspector did not display the saved values");
+
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    const auto chinese_category = std::string_view(vgui_widget_get_text(workbench.widget("category:Font", VGUI_BUTTON)));
+    check(chinese_category == "v  字体", "font inspector category did not translate to Chinese");
+    check(std::string_view(vgui_widget_get_text(workbench.widget("property:font_size", VGUI_LABEL))) == "字号" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_weight", VGUI_LABEL))) == "字重" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_slant", VGUI_LABEL))) == "字形" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:text_color", VGUI_LABEL))) == "文字颜色" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_weight", VGUI_BUTTON))) == "粗体" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:font_slant", VGUI_BUTTON))) == "斜体",
+        "reopened font inspector did not translate its fields or values");
+    check_choices("font_weight", {"使用默认", "常规", "中等", "半粗", "粗体"});
+    check_choices("font_slant", {"使用默认", "直立", "斜体", "倾斜"});
+}
+
+void exercise_font_family()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "font-family.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const ui::edit fixture[] = {
+        ui::insert_node{"label", root, {"label", "", {}, {}}},
+        ui::insert_node{"button", root, {"button", "", {}, {}}},
+        ui::insert_node{"edit", root, {"edit", "", {}, {}}},
+        ui::set_resource{"logo", "assets/logo.png"},
+    };
+    check(model.apply(fixture), "could not seed the font family inspector fixture");
+    workbench.frame();
+
+    const auto select = [&](int index, std::string_view id) {
+        auto* tree = workbench.outline();
+        workbench.select_row(vgui_tree_get_child(tree, vgui_tree_get_root(tree, 0), index), id);
+    };
+    const auto caption = [&] {
+        return std::string_view(vgui_widget_get_text(workbench.widget("property:font_family", VGUI_BUTTON)));
+    };
+    const auto open_choices = [&] {
+        workbench.press("property:font_family");
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "font family editor did not open its choice menu");
+        return menu;
+    };
+    const auto check_choices = [&](std::initializer_list<std::string_view> labels) {
+        check_menu_items(open_choices(), labels);
+        check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_context_get_open_menu(ctx), "font family menu did not close");
+    };
+    const auto family = [&](const char* id) {
+        const auto& props = model.current().nodes.at(id).props;
+        const auto found = props.find("font_family");
+        return found == props.end() ? ui::value{std::string{}} : found->second;
+    };
+    constexpr auto default_label = "Use default";
+    constexpr auto sans_label = "DejaVu Sans";
+    constexpr auto sans_sc_label = "Designer Sans SC (Chinese first)";
+    constexpr auto font_path = "assets/fonts/Editorial.oTf";
+    constexpr auto font_key = "project.editorial";
+
+    select(0, "label");
+    check(caption() == default_label, "label font family did not inherit by default");
+    workbench.activate(open_choices(), sans_label);
+    check(family("label") == ui::value{std::string("builtin.sans")} && caption() == sans_label,
+        "selecting DejaVu Sans did not set the label's built-in family");
+    select(1, "button");
+    check(caption() == default_label, "button font family did not inherit by default");
+    workbench.activate(open_choices(), sans_sc_label);
+    check(family("button") == ui::value{std::string("builtin.sans_sc")} && caption() == sans_sc_label,
+        "selecting Designer Sans SC did not set the button's built-in family");
+    select(2, "edit");
+    check(caption() == default_label, "edit font family did not inherit by default");
+    check_choices({default_label, sans_label, sans_sc_label});
+
+    // Simulate the host registering a font while the edit control stays inspected.
+    const ui::edit add_font = ui::set_resource{font_key, font_path};
+    check(model.apply({&add_font, 1}), "could not register the project font");
+    workbench.frame();
+    check(workbench.bench.selection() == "edit" && caption() == default_label,
+        "registering a font disturbed the inspected control or its value");
+    auto* menu = open_choices();
+    check_menu_items(menu, {default_label, sans_label, sans_sc_label, font_path});
+    workbench.activate(menu, font_path);
+    check(family("edit") == ui::value{std::string(font_key)} && caption() == font_path,
+        "the imported family must display the relative path but store the resource key");
+    const auto saved = model.current();
+    workbench.edit("Undo");
+    check(workbench.bench.selection() == "edit" && caption() == default_label &&
+        family("edit") == ui::value{std::string{}} && model.current().resources.contains(font_key),
+        "Undo did not clear just the edit control's family choice");
+    workbench.edit("Redo");
+    check(model.current() == saved && caption() == font_path, "Redo did not restore the imported font choice");
+
+    workbench.file("Save As");
+    check(workbench.io_ok && !model.dirty(), "could not save the font family fixture");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved, "reopening lost font family choices or resource paths");
+    select(2, "edit");
+    check(caption() == font_path, "the reopened inspector did not show the font's relative path");
+
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    menu = open_choices();
+    check_menu_items(menu, {"使用默认", sans_label, "Designer Sans SC（中文优先）", font_path});
+    workbench.activate(menu, "使用默认");
+    check(family("edit") == ui::value{std::string{}} && caption() == "使用默认",
+        "the translated default choice did not clear the imported font");
+}
+
 void exercise_outline_drag()
 {
     temp_dir directory;
@@ -1195,6 +1543,9 @@ int main()
         exercise_workbench();
         exercise_button_atlas();
         exercise_live_properties();
+        exercise_text_color_picker();
+        exercise_font_properties();
+        exercise_font_family();
         exercise_outline_drag();
         exercise_menu_language();
         exercise_language_preferences();

@@ -192,6 +192,103 @@ void canonical_round_trip()
         "canonical encoding must not sort or discard ordered children");
 }
 
+void font_properties_round_trip()
+{
+    const ui::document doc{"root", {
+        {"root", {"panel", "", {}, {"heading", "submit", "field", "caption", "inherited"}}},
+        {"heading", {"label", "", {{"font_size", 4.0}, {"font_weight", "regular"s},
+            {"font_slant", "normal"s}, {"text_color", "#aB01fE"s}}, {}}},
+        {"submit", {"button", "", {{"font_size", 256.0}, {"font_weight", "medium"s},
+            {"font_slant", "italic"s}, {"text_color", "#123456aB"s}}, {}}},
+        {"field", {"edit", "", {{"font_size", 17.5}, {"font_weight", "semi_bold"s},
+            {"font_slant", "oblique"s}, {"text_color", "#ABCDEf00"s}}, {}}},
+        {"caption", {"label", "", {{"font_weight", "bold"s}}, {}}},
+        {"inherited", {"edit", "", {{"font_size", 0.0}, {"font_weight", "default"s},
+            {"font_slant", "default"s}, {"text_color", ""s}}, {}}},
+    }, {}};
+    const auto canonical = encode(doc);
+    const auto reopened = decode(canonical);
+    check(reopened == doc, "font overrides and explicit defaults survive a v1 round trip");
+    check(encode(reopened) == canonical, "font property encoding is byte stable");
+    check(ui::parse_text_color("#12AbEF") == 0xff12abefu, "RGB text color uses opaque alpha and preserves channel order");
+    check(ui::parse_text_color("#12AbEF80") == 0x8012abefu, "RGBA suffix is moved to the runtime alpha byte");
+    check(ui::parse_text_color("#00000000") == 0u && !ui::parse_text_color(""),
+        "an explicit transparent color is different from theme inheritance");
+
+    for (const auto* type : {"label", "button", "edit"}) {
+        const struct { const char* key; ui::value value; } defaults[] = {
+            {"font_size", 0.0}, {"font_weight", "default"s}, {"font_slant", "default"s}, {"text_color", ""s},
+        };
+        for (const auto& [key, value] : defaults) {
+            const auto* property = ui::find_property(type, key);
+            check(property && property->default_value == value, std::string(type) + ": default " + key);
+        }
+    }
+}
+
+void reject_bad_font_properties()
+{
+    const auto reject = [](const char* type, const char* key, const char* json_value) {
+        const auto nodes = R"({"root":{"type":"panel","children":["sample"]},"sample":{"type":")"s + type +
+            R"(","props":{")" + key + "\":" + json_value + "}}}";
+        const auto context = std::string(type) + ": " + key + " = " + json_value;
+        const auto error = reject_json(json_document(nodes), context);
+        check(error.path == "/nodes/sample/props/"s + key, context + ": diagnostic identifies the property");
+    };
+    const struct { const char* key; const char* json_value; } invalid[] = {
+        {"font_size", "-1"}, {"font_size", "0.5"}, {"font_size", "3.99"}, {"font_size", "256.01"},
+        {"font_size", R"("16")"}, {"font_size", "true"},
+        {"font_weight", "700"}, {"font_weight", R"("black")"}, {"font_weight", R"("semi-bold")"},
+        {"font_slant", "2"}, {"font_slant", R"("Italic")"}, {"font_slant", R"("slanted")"},
+        {"text_color", "123456"}, {"text_color", R"("123456")"}, {"text_color", R"("#123")"},
+        {"text_color", R"("#1234567")"}, {"text_color", R"("#123456789")"}, {"text_color", R"("#12345g")"},
+        {"text_color", R"("#123456z0")"}, {"text_color", R"("#123456 ")"},
+    };
+    for (const auto* type : {"label", "button", "edit"})
+        for (const auto& [key, json_value] : invalid) reject(type, key, json_value);
+
+    for (const auto* type : {"panel", "image"}) {
+        reject(type, "font_size", "18");
+        reject(type, "font_weight", R"("bold")");
+        reject(type, "font_slant", R"("italic")");
+        reject(type, "text_color", R"("#aB01fE")");
+    }
+}
+
+void font_family_validation()
+{
+    constexpr std::string_view resources = R"({
+        "project.body":"assets/fonts/Body.TtF",
+        "project.heading":"assets/fonts/Heading.oTf",
+        "not-a-font.ttf":"assets/preview.png",
+        "font-preview":"assets/fonts/Body.ttf.png"
+    })";
+    const auto font_document = [&](const char* type, std::string_view json_value) {
+        const auto nodes = R"({"root":{"type":"panel","children":["sample"]},"sample":{"type":")"s + type +
+            R"(","props":{"font_family":)" + std::string(json_value) + "}}}";
+        return json_document(nodes, "root", resources);
+    };
+    const auto reject = [&](const char* type, const char* json_value) {
+        const auto context = std::string(type) + ": font_family = " + json_value;
+        const auto error = reject_json(font_document(type, json_value), context);
+        check(error.path == "/nodes/sample/props/font_family", context + ": diagnostic identifies the property");
+    };
+
+    for (const auto* type : {"label", "button", "edit"}) {
+        const auto* property = ui::find_property(type, "font_family");
+        check(property && property->default_value == ui::value{""s}, std::string(type) + ": font family defaults to empty");
+        for (const auto* family : {"", "builtin.sans", "builtin.sans_sc", "project.body", "project.heading"}) {
+            const auto doc = decode(font_document(type, '"' + std::string(family) + '"'));
+            check(doc.nodes.at("sample").props.at("font_family") == ui::value{std::string(family)} &&
+                decode(encode(doc)) == doc, std::string(type) + ": font family does not round trip: " + family);
+        }
+        for (const auto* invalid : {"16", R"("missing-font")", R"("builtin.serif")", R"("assets/fonts/Body.TtF")",
+                R"("not-a-font.ttf")", R"("font-preview")"})
+            reject(type, invalid);
+    }
+    for (const auto* type : {"panel", "image"}) reject(type, R"("builtin.sans")");
+}
+
 void reject_bad_schema_and_tree()
 {
     struct example { std::string_view name, json; };
@@ -635,6 +732,9 @@ int main()
 {
     const struct { const char* name; void (*run)(); } tests[] = {
         {"canonical v1 JSON", canonical_round_trip},
+        {"optional font properties round trip", font_properties_round_trip},
+        {"font property validation", reject_bad_font_properties},
+        {"font family resource validation and round trip", font_family_validation},
         {"schema, duplicates and hierarchy", reject_bad_schema_and_tree},
         {"IDs, keys and resource paths", keys_and_paths},
         {"input limits", input_limits},
