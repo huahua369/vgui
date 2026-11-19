@@ -584,11 +584,16 @@ namespace vgui_editor_kit {
 
 	void property_grid::build(vgui_widget* parent)
 	{
+		build_with_labels(parent, {});
+	}
+
+	void property_grid::build_with_labels(vgui_widget* parent, ui_labels labels)
+	{
 		if (panel_ || !parent)
 			return;
 
+		labels_ = std::move(labels);
 		panel_ = vgui_widget_add(parent, VGUI_PANEL, nullptr);
-		vgui_widget_set_a11y_name(panel_, "Properties");
 		vgui_widget_set_grow(panel_, 1.0f);
 		/* GROW only takes the main axis in a column parent.  The grid used to
 		 * size itself from its widest row (vector rows) and overflow the dock
@@ -623,8 +628,6 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(search_, 0, 24);
 		vgui_widget_set_font_size(search_, 12);
 		vgui_widget_set_id(search_, "__property_search");
-		vgui_widget_set_a11y_name(search_, "Search properties");
-		vgui_edit_set_placeholder(search_, "Search properties");
 		vgui_edit_set_background_transparent(search_, 1);
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
 
@@ -632,9 +635,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(fav_filter_, 24, 24);
 		vgui_widget_set_font_size(fav_filter_, 12);
 		vgui_widget_set_id(fav_filter_, "__property_fav_filter");
-		vgui_widget_set_a11y_name(fav_filter_, "Favorites only");
 		vgui_widget_set_a11y_role(fav_filter_, VGUI_A11Y_ROLE_TOGGLE);
-		vgui_widget_set_tooltip(fav_filter_, "Favorites only");
 		vgui_widget_on_event(fav_filter_,
 			&property_grid::on_fav_filter_click, this);
 
@@ -667,6 +668,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(bottom_spacer_, 0, 0);
 		vgui_widget_set_visible(bottom_spacer_, 0);
 
+		refresh_grid_labels();
 		vgui_panel_set_scroll_listener(panel_, &property_grid::on_scroll, this);
 
 		/* Before the first layout we only know the context size.  Use it as a
@@ -683,6 +685,38 @@ namespace vgui_editor_kit {
 			viewport_h_ = 200.0f;
 
 		update_visibility();
+	}
+
+	void property_grid::set_ui_labels(ui_labels labels)
+	{
+		labels_ = std::move(labels);
+		if (!panel_)
+			return;
+		refresh_grid_labels();
+		for (row& item : rows_)
+			refresh_row_button_labels(item);
+		// Also refreshes materialized category headers with their existing keys.
+		update_visibility();
+	}
+
+	void property_grid::refresh_grid_labels()
+	{
+		vgui_widget_set_a11y_name(panel_, labels_.properties.c_str());
+		vgui_widget_set_a11y_name(search_, labels_.search.c_str());
+		vgui_edit_set_placeholder(search_, labels_.search.c_str());
+		vgui_widget_set_a11y_name(fav_filter_, labels_.favorites_only.c_str());
+		vgui_widget_set_tooltip(fav_filter_, labels_.favorites_only.c_str());
+	}
+
+	void property_grid::refresh_row_button_labels(row& item)
+	{
+		if (!item.panel)
+			return;
+		vgui_widget_set_tooltip(item.fav_btn, labels_.toggle_favorite_hint.c_str());
+		vgui_widget_set_a11y_name(item.fav_btn, labels_.toggle_favorite.c_str());
+		vgui_widget_set_text(item.reset, labels_.reset_button.c_str());
+		vgui_widget_set_tooltip(item.reset, labels_.reset_to_default.c_str());
+		vgui_widget_set_a11y_name(item.reset, labels_.reset_to_default.c_str());
 	}
 
 	void property_grid::clear()
@@ -815,6 +849,30 @@ namespace vgui_editor_kit {
 		return true;
 	}
 
+	void property_grid::refresh_row_a11y(row& item)
+	{
+		if (!item.editor)
+			return;
+		const std::string a11y_label = item.desc.label.empty()
+			? item.desc.id : item.desc.label;
+		vgui_widget_set_a11y_name(item.editor, a11y_label.c_str());
+		if (item.vector_ui)
+		{
+			for (int i = 0; i < item.vector_ui->dimension(); ++i)
+			{
+				vgui_widget* component = item.vector_ui->component_edit_widget(i);
+				if (!component)
+					component = item.vector_ui->component_widget(i);
+				const std::vector<std::string>& axis_labels =
+					item.vector_ui->axis_labels();
+				const std::string axis = i < (int)axis_labels.size()
+					? axis_labels[(size_t)i] : std::to_string(i);
+				const std::string component_name = a11y_label + " " + axis;
+				vgui_widget_set_a11y_name(component, component_name.c_str());
+			}
+		}
+	}
+
 	void property_grid::refresh_row_desc(row& item)
 	{
 		if (item.label)
@@ -839,6 +897,7 @@ namespace vgui_editor_kit {
 			item.vector_ui->set_read_only(read_only_ || item.desc.read_only);
 			item.vector_ui->set_enabled(!(read_only_ || item.desc.read_only));
 		}
+		refresh_row_a11y(item);
 	}
 
 	std::size_t property_grid::set_properties(
@@ -1633,6 +1692,11 @@ private:
 		change_listener_ = std::move(listener);
 	}
 
+	void property_grid::set_text_edit_listener(text_edit_listener listener)
+	{
+		text_edit_listener_ = std::move(listener);
+	}
+
 	void property_grid::set_value_source(value_source source)
 	{
 		value_source_ = std::move(source);
@@ -1772,6 +1836,12 @@ private:
 		return find_row(id.substr(9));
 	}
 
+	const std::string& property_grid::category_label(const std::string& name) const
+	{
+		const auto it = labels_.categories.find(name);
+		return it == labels_.categories.end() ? name : it->second;
+	}
+
 	property_grid::category_ui* property_grid::ensure_category(const std::string& name)
 	{
 		auto found = categories_.find(name);
@@ -1784,7 +1854,7 @@ private:
 			if (!ctx)
 				return nullptr;
 			ui.header = vgui_widget_create(ctx, VGUI_BUTTON,
-				category_header_text(name, category_collapsed(name)).c_str());
+				category_header_text(category_label(name), category_collapsed(name)).c_str());
 			if (!ui.header)
 				return nullptr;
 			vgui_widget_set_size(ui.header, 0, kCategoryHeight);
@@ -1798,7 +1868,7 @@ private:
 			vgui_widget_on_event(ui.header, &property_grid::on_category_click, this);
 		}
 		vgui_widget_set_text(ui.header,
-			category_header_text(name, category_collapsed(name)).c_str());
+			category_header_text(category_label(name), category_collapsed(name)).c_str());
 		return &ui;
 	}
 
@@ -2027,24 +2097,7 @@ private:
 			break;
 		}
 		vgui_widget_set_id(item.editor, property_widget_id(item.desc.id).c_str());
-		const std::string a11y_label = item.desc.label.empty()
-			? item.desc.id : item.desc.label;
-		vgui_widget_set_a11y_name(item.editor, a11y_label.c_str());
-		if (item.vector_ui)
-		{
-			for (int i = 0; i < item.vector_ui->dimension(); ++i)
-			{
-				vgui_widget* component = item.vector_ui->component_edit_widget(i);
-				if (!component)
-					component = item.vector_ui->component_widget(i);
-				const std::vector<std::string>& axis_labels =
-					item.vector_ui->axis_labels();
-				const std::string axis = i < (int)axis_labels.size()
-					? axis_labels[(size_t)i] : std::to_string(i);
-				const std::string component_name = a11y_label + " " + axis;
-				vgui_widget_set_a11y_name(component, component_name.c_str());
-			}
-		}
+		refresh_row_a11y(item);
 
 		/* P08:收藏星标(reset 左侧),点击切换 favorites_only 过滤范围。 */
 		item.favorite = property_favorite(item.desc.id);
@@ -2054,18 +2107,15 @@ private:
 		vgui_widget_set_id(item.fav_btn, property_widget_id(item.desc.id).c_str());
 		vgui_widget_on_event(item.fav_btn, &property_grid::on_row_event, this);
 		vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
-		vgui_widget_set_tooltip(item.fav_btn, "Toggle favorite (common filter)");
-		vgui_widget_set_a11y_name(item.fav_btn, "Toggle favorite");
 		vgui_widget_set_a11y_role(item.fav_btn, VGUI_A11Y_ROLE_TOGGLE);
 
-		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, "R");
+		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, nullptr);
 		vgui_widget_set_size(item.reset, kResetWidth, 24);
 		vgui_widget_set_font_size(item.reset, 11);
 		vgui_widget_set_id(item.reset, property_widget_id(item.desc.id).c_str());
 		vgui_widget_on_event(item.reset, &property_grid::on_reset_click, this);
 		vgui_widget_set_visible(item.reset, item.desc.has_default ? 1 : 0);
-		vgui_widget_set_tooltip(item.reset, "Reset to default");
-		vgui_widget_set_a11y_name(item.reset, "Reset to default");
+		refresh_row_button_labels(item);
 
 		item.error_label = vgui_widget_add(item.panel, VGUI_LABEL, nullptr);
 		vgui_widget_set_size(item.error_label, 0, kErrorHeight);
@@ -2562,8 +2612,14 @@ private:
 		auto contains = [&needle](const std::string& text) {
 			return lower_copy(text).find(needle) != std::string::npos;
 		};
-		return contains(item.desc.id) || contains(item.desc.label) ||
-			contains(item.desc.category) || contains(item.value);
+		if (contains(item.desc.id) || contains(item.desc.label) ||
+			contains(item.desc.category) || contains(item.value))
+			return true;
+		const auto& label = category_label(item.desc.category);
+		if (&label != &item.desc.category && contains(label))
+			return true;
+		return item.desc.type == property_type::enumeration &&
+			!item.desc.choice_values.empty() && contains(display_text(item));
 	}
 
 	void property_grid::set_row_error(row& item, std::string error)
@@ -3124,7 +3180,7 @@ private:
 	void property_grid::on_edit_event(vgui_widget* widget, const vgui_event* event,
 		void* user)
 	{
-		if (!event || event->type != VGUI_EVENT_SUBMIT)
+		if (!event || (event->type != VGUI_EVENT_SUBMIT && event->type != VGUI_EVENT_CANCEL))
 			return;
 		auto* self = static_cast<property_grid*>(user);
 		if (!self)
@@ -3132,8 +3188,14 @@ private:
 		row* item = self->row_for_widget(widget);
 		if (!item)
 			return;
-		const std::string label = item->desc.label.empty() ? item->desc.id : item->desc.label;
 		const char* text = vgui_edit_get_text(widget);
+		if (self->text_edit_listener_ && !self->read_only_ && !item->desc.read_only &&
+			self->text_edit_listener_(widget, item->desc.id, text ? text : "",
+				event->type == VGUI_EVENT_SUBMIT ? text_edit_event::submit : text_edit_event::cancel))
+			return;
+		if (event->type != VGUI_EVENT_SUBMIT)
+			return;
+		const std::string label = item->desc.label.empty() ? item->desc.id : item->desc.label;
 		/* Keep invalid text in the editor so the user can correct it; the row
 		 * error border/message is set by commit_value(). */
 		(void)self->commit_value(*item, text ? text : "", "Set " + label);
@@ -3141,13 +3203,16 @@ private:
 
 	void property_grid::on_edit_text(vgui_widget* widget, const char* text, void* user)
 	{
-		(void)text;
 		auto* self = static_cast<property_grid*>(user);
 		if (!self)
 			return;
 		row* item = self->row_for_widget(widget);
-		if (item)
-			self->clear_row_error(*item);
+		if (!item)
+			return;
+		if (self->text_edit_listener_ && !self->read_only_ && !item->desc.read_only &&
+			self->text_edit_listener_(widget, item->desc.id, text ? text : "", text_edit_event::change))
+			return;
+		self->clear_row_error(*item);
 	}
 
 	void property_grid::on_bool_value(vgui_widget* widget, float value, void* user)

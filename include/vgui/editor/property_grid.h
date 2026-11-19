@@ -142,6 +142,24 @@ namespace vgui_editor_kit {
 
 		void build(vgui_widget* parent);
 
+		/* Optional presentation strings for this grid, copied/moved at build.
+		 * Category labels do not change category IDs or collapse state keys. */
+		struct ui_labels
+		{
+			std::string properties = "Properties";
+			std::string search = "Search properties";
+			std::string favorites_only = "Favorites only";
+			std::string toggle_favorite = "Toggle favorite";
+			std::string toggle_favorite_hint = "Toggle favorite (common filter)";
+			std::string reset_button = "R";
+			std::string reset_to_default = "Reset to default";
+			std::map<std::string, std::string> categories;
+		};
+		void build_with_labels(vgui_widget* parent, ui_labels labels);
+		/* Relabels the built grid and rechecks the current search against the
+		 * new category labels. Does not reset the search, favorites or collapse state. */
+		void set_ui_labels(ui_labels labels);
+
 		/* Removes all rows.  Category collapse state and the search filter are
 		 * kept so rebuilding for another object does not lose the user's view
 		 * state. */
@@ -290,6 +308,14 @@ namespace vgui_editor_kit {
 		void set_favorites_only(bool only);
 
 		void set_change_listener(change_listener listener);
+
+		/* Optional host-managed inline editing. Returning true replaces the
+		 * default handling of that event for editable text-backed rows. The
+		 * host must defer structural grid changes until after input dispatch. */
+		enum class text_edit_event { change, submit, cancel };
+		using text_edit_listener = std::function<bool(vgui_widget*, const std::string& id,
+			const std::string& text, text_edit_event)>;
+		void set_text_edit_listener(text_edit_listener listener);
 		void set_value_source(value_source source);
 		void refresh();
 
@@ -371,6 +397,9 @@ namespace vgui_editor_kit {
 		 * rules, ranges) so add_property() and set_properties() share the same
 		 * acceptance rules.  Returns false when the descriptor is invalid. */
 		bool prepare_desc(property_desc& desc);
+		void refresh_grid_labels();
+		void refresh_row_button_labels(row& item);
+		void refresh_row_a11y(row& item);
 		void refresh_row_desc(row& item);
 
 		row* find_row(const std::string& id);
@@ -405,6 +434,7 @@ namespace vgui_editor_kit {
 		void push_value_command(std::uint64_t token, std::string old_value,
 			std::string new_value, std::string command_name);
 		bool commit_value(row& item, std::string value, std::string command_name);
+		const std::string& category_label(const std::string& name) const;
 		std::string display_text(const row& item) const;
 
 		void open_enum_menu(row& item);
@@ -507,6 +537,7 @@ namespace vgui_editor_kit {
 
 		command_stack* command_stack_ = nullptr;
 		change_listener change_listener_;
+		text_edit_listener text_edit_listener_;
 		value_source value_source_;
 		bool read_only_ = false;
 
@@ -529,6 +560,8 @@ namespace vgui_editor_kit {
 		std::vector<object_id> multi_targets_;
 		multi_getter_fn multi_getter_;
 		multi_setter_fn multi_setter_;
+
+		ui_labels labels_;
 		bool favorites_only_ = false;
 		/* Favorites are keyed by property id and survive clear()/rebuild. */
 		std::map<std::string, bool> favorites_;

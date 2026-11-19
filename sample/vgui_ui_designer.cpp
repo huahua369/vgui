@@ -1,0 +1,889 @@
+// Standalone SDL3 workbench; the document and preview own no OS window.
+#include "pch.h"
+
+#include "delivery.h"
+#include "ui_designer_delivery_smoke.h"
+#include "ui_designer_geometry_smoke.h"
+#include "ui_designer_locale.h"
+#include "ui_designer_menu_smoke.h"
+#include "ui_designer_preview.h"
+#include "ui_designer_workbench.h"
+
+#include <vgui/backend/vgui_multiwindow.h>
+#include <SDL3/SDL_main.h>
+
+#include <algorithm>
+#include <cstdio>
+#include <filesystem>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <random>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+namespace {
+namespace fs = std::filesystem;
+namespace ui = vgui::ui_design;
+
+std::string utf8(const fs::path& path) {
+    const auto text = path.u8string();
+    return {text.begin(), text.end()};
+}
+
+std::string describe(const ui::diagnostic& error) {
+    return error.path.empty() ? error.message : error.path + ": " + error.message;
+}
+
+enum class command { none, create, open, save, save_as, export_package, quit };
+
+bool valid_package_name(std::string_view name) {
+    // A single portable directory component; the parent is chosen separately.
+    return !name.empty() && name.size() <= 120 && name.front() != ' ' &&
+        name.back() != '.' && name.back() != ' ' &&
+        name.find_first_of("/\\:<>\"|?*") == std::string_view::npos &&
+        std::none_of(name.begin(), name.end(), [](unsigned char c) { return c < 32 || c == 127; });
+}
+
+vgui_widget* find_widget(vgui_widget* w, std::string_view id, std::optional<vgui_widget_kind> kind = {}) {
+    if (!w || (id == vgui_widget_get_id(w) && (!kind || vgui_widget_get_kind(w) == *kind))) return w;
+    for (std::size_t i = 0; i < vgui_widget_get_child_count(w); ++i)
+        if (auto* match = find_widget(vgui_widget_get_child(w, i), id, kind)) return match;
+    return nullptr;
+}
+
+class designer {
+public:
+    designer(os_window& window, vgpu_device_t* gpu, vgui_context* shell, font_familys_t* font,
+             const ui::designer_strings& strings, fs::path settings_path)
+        : window_(window), shell_(shell), strings_(strings), settings_path_(std::move(settings_path)),
+          root_(new_root_),
+          workbench_(shell, session_, {
+              [this] { request(command::create); }, [this] { request(command::open); },
+              [this] { request(command::save); }, [this] { request(command::save_as); },
+              [this] { request(command::export_package); }, [this] { request(command::quit); },
+              [this](ui::designer_language language) { pending_language_ = language; },
+              [this](ui::designer_view_action action) { pending_view_ = action; },
+              [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); }}, strings_),
+          preview_(workbench_.preview_host(), gpu, font,
+              [this](std::string id) { workbench_.select(std::move(id)); },
+              [this](std::string message) { workbench_.status(std::move(message)); },
+              [this](ui::geometry_edit change) { commit_geometry(std::move(change)); }, strings_) {
+        preview_constructed_ = true;
+        workbench_.refresh();
+        workbench_.status(tr("file.new_hint", "New document. Save it in your project folder before adding relative image paths."));
+    }
+
+    void request(command action) {
+        if (chooser_ || pending_ != command::none) return;
+        if (package_parent_ && vgui_modal_active(shell_)) {
+            if (action != command::quit) return;
+            vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
+        }
+        pending_ = action;
+    }
+    bool quitting() const { return quitting_; }
+    bool chooser_open() const { return chooser_; }
+    ui::designer_preview& preview() { return preview_; }
+    const ui::designer_strings& strings() const { return strings_; }
+    void report_bad_settings() {
+        workbench_.status(tr("settings.invalid", "Invalid language settings; using Simplified Chinese."));
+    }
+    const ui::session& history() const { return session_; }
+    std::string_view selection() const { return workbench_.selection(); }
+    bool preview_event(const SDL_Event& event) {
+        // F10 belongs to the workbench even while a runtime input owns text focus.
+        if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.key == SDLK_F10)
+            return false;
+        return (last_revision_ == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
+            preview_.handle_event(event);
+    }
+
+    bool open(const fs::path& path) {
+        const auto file = document_path(path);
+        if (!file) return false;
+        ui::diagnostic error;
+        if (!session_.load(*file, &error)) {
+            workbench_.status(std::string(tr("file.open_failed", "Open failed: ")) + describe(error));
+            return false;
+        }
+        path_ = *file;
+        root_ = path_.parent_path();
+        replaced();
+        workbench_.status(std::string(tr("file.opened", "Opened ")) + utf8(path_));
+        return true;
+    }
+
+    void service() {
+        if (picked_) finish_chooser();
+        if (package_name_) finish_package();
+        if (auto selected = std::exchange(pending_language_, std::nullopt)) {
+            if (ui::save_designer_language(settings_path_, *selected)) {
+                if (*selected != strings_.language()) {
+                    // Relabel after input dispatch; keep the document, dock and runtime alive.
+                    strings_ = ui::designer_strings(*selected);
+                    workbench_.refresh_language();
+                    preview_.refresh_language();
+                }
+                workbench_.status(tr("settings.saved", "Language preference applied and saved."));
+            } else {
+                workbench_.status(std::string(tr("settings.save_failed", "Cannot save language settings: ")) + utf8(settings_path_));
+            }
+        }
+        if (auto view = std::exchange(pending_view_, std::nullopt)) apply_view(*view);
+        auto action = std::exchange(pending_, command::none);
+        if (action == command::none) return;
+        if (action == command::export_package) {
+            choose(VGUI_FILE_DIALOG_FOLDER);
+            return;
+        }
+        if (action == command::save || action == command::save_as) {
+            if (action == command::save && !path_.empty()) save(path_);
+            else choose(VGUI_FILE_DIALOG_SAVE);
+            return;
+        }
+        if (session_.dirty()) {
+            const auto answer = confirm_unsaved();
+            if (answer == 1) { // Save, then continue only after a successful write.
+                if (path_.empty()) {
+                    choose(VGUI_FILE_DIALOG_SAVE, action);
+                    return;
+                }
+                if (!save(path_)) return;
+            } else if (answer != 2) return; // Cancel or close prompt.
+        }
+        proceed(action);
+    }
+
+    void refresh() {
+        std::string title = path_.empty() ? tr("file.untitled", "Untitled") : utf8(path_.filename());
+        auto window_title = title + (session_.dirty() ? " * — " : " — ") + tr("app.title", "VGUI UI Designer");
+        if (window_title != window_title_) {
+            window_title_ = std::move(window_title);
+            SDL_SetWindowTitle(window_.window, window_title_.c_str());
+            workbench_.document_title(std::move(title));
+        }
+        workbench_.refresh();
+    }
+
+    void render_preview(float dt) {
+        if (last_revision_ != session_.revision()) {
+            last_revision_ = session_.revision();
+            ++preview_revision_;
+        }
+        preview_.sync(session_.current(), preview_revision_, root_, workbench_.selection());
+        preview_.render(dt);
+    }
+
+    bool preview_ready(bool require_image) const {
+        const auto* snapshot = preview_.snapshot();
+        if (!snapshot || snapshot->revision != preview_revision_ || snapshot->nodes.size() != session_.current().nodes.size())
+            return false;
+        // The texture can render successfully even if a shell layout bug
+        // collapses its canvas. Assert that the native viewport is usable too.
+        auto* canvas = find_widget(preview_.widget(), "designer.preview.canvas");
+        if (!canvas) return false;
+        float x, y, w, h;
+        vgui_widget_get_rect(canvas, &x, &y, &w, &h);
+        if (w < 100 || h < 100 || vgui_hit_test(vgui_widget_get_context(canvas), x + w / 2, y + h / 2) != canvas)
+            return false;
+        return !require_image || std::any_of(snapshot->nodes.begin(), snapshot->nodes.end(), [this](const auto& n) {
+            return session_.current().nodes.at(n.id).type == "image" && n.visible && !n.image_placeholder;
+        });
+    }
+
+private:
+    const char* tr(std::string_view key, const char* fallback) const { return strings_.text(key, fallback); }
+
+    using view_action = ui::designer_view_action;
+    using preset = ui::designer_preview::preset;
+
+    void apply_view(view_action action) {
+        switch (action) {
+        case view_action::design: preview_.set_running(false); break;
+        case view_action::run: preview_.set_running(true); break;
+        case view_action::desktop: preview_.set_preset(preset::desktop); break;
+        case view_action::tablet: preview_.set_preset(preset::tablet); break;
+        case view_action::phone: preview_.set_preset(preset::phone); break;
+        case view_action::fit: preview_.reset_zoom(true); break;
+        case view_action::actual: preview_.reset_zoom(false); break;
+        }
+    }
+
+    bool view_checked(view_action action) const {
+        switch (action) {
+        case view_action::design: return !preview_.running();
+        case view_action::run: return preview_.running();
+        case view_action::desktop: return preview_.current_preset() == preset::desktop;
+        case view_action::tablet: return preview_.current_preset() == preset::tablet;
+        case view_action::phone: return preview_.current_preset() == preset::phone;
+        default: return false;
+        }
+    }
+
+    struct file_result {
+        vgui_file_dialog_kind kind;
+        std::string path, error;
+    };
+
+    void commit_geometry(ui::geometry_edit change) {
+        // Input may follow another edit in the same SDL event batch. Do not
+        // apply deltas computed from a stale preview to the current document.
+        if (change.revision != preview_revision_ || last_revision_ != session_.revision()) return;
+        const auto& doc = session_.current();
+        const auto target = doc.nodes.find(change.id);
+        if (target == doc.nodes.end() || change.id == doc.root) return;
+        const auto parent = std::find_if(doc.nodes.begin(), doc.nodes.end(), [&](const auto& entry) {
+            const auto& children = entry.second.children;
+            return std::find(children.begin(), children.end(), change.id) != children.end();
+        });
+        if (parent == doc.nodes.end() || parent->second.type != "panel") return;
+        const auto layout = parent->second.props.find("layout");
+        const auto& mode = layout == parent->second.props.end() ?
+            ui::find_property("panel", "layout")->default_value : layout->second;
+        if (std::get<std::string>(mode) != "absolute") return;
+
+        std::vector<ui::edit> batch;
+        for (const auto& [key, number] : {std::pair{"x", change.x}, std::pair{"y", change.y},
+                                         std::pair{"width", change.width}, std::pair{"height", change.height}}) {
+            if (!number) continue;
+            const auto& old = target->second.props;
+            const auto& def = ui::find_property(target->second.type, key)->default_value;
+            const auto it = old.find(key);
+            const ui::value next = *number;
+            if ((it == old.end() ? def : it->second) == next) continue;
+            batch.emplace_back(ui::set_property{change.id, key,
+                next == def ? std::nullopt : std::optional<ui::value>(next)});
+        }
+        if (batch.empty()) return;
+        ui::diagnostic error;
+        if (!session_.apply(batch, &error)) workbench_.status(std::string(tr("geometry.failed", "Geometry edit failed: ")) + describe(error));
+        else workbench_.status(std::string(change.width || change.height ? tr("geometry.resized", "Resized ") : tr("geometry.moved", "Moved ")) + change.id);
+    }
+
+    void replaced() {
+        // New may reset the session revision to a previously observed value.
+        ++preview_revision_;
+        workbench_.document_replaced();
+    }
+
+    std::optional<fs::path> document_path(const fs::path& path) {
+        std::error_code ec;
+        const auto absolute = fs::absolute(path, ec);
+        if (!ec) {
+            auto folder = fs::canonical(absolute.parent_path(), ec);
+            if (!ec) return folder / absolute.filename();
+        }
+        workbench_.status(std::string(tr("file.resolve_failed", "Cannot resolve document folder: ")) + ec.message());
+        return std::nullopt;
+    }
+
+    bool save(const fs::path& path) {
+        const auto file = document_path(path);
+        if (!file) return false;
+        // No implicit asset copying or reinterpretation of relative paths.
+        if (!session_.current().resources.empty() && file->parent_path() != root_) {
+            workbench_.status(tr("file.save_as_root", "Save As must stay in the project folder while relative assets are registered."));
+            return false;
+        }
+        ui::diagnostic error;
+        if (!session_.save(*file, &error)) {
+            workbench_.status(std::string(tr("file.save_failed", "Save failed: ")) + describe(error));
+            return false;
+        }
+        path_ = *file;
+        root_ = path_.parent_path();
+        workbench_.status(std::string(tr("file.saved", "Saved ")) + utf8(path_));
+        return true;
+    }
+
+    void proceed(command action) {
+        switch (action) {
+        case command::create:
+            session_ = ui::session{};
+            path_.clear();
+            root_ = new_root_;
+            replaced();
+            workbench_.status(tr("file.new_hint", "New document. Save it in your project folder before adding relative image paths."));
+            break;
+        case command::open: choose(VGUI_FILE_DIALOG_OPEN); break;
+        case command::quit: quitting_ = true; break;
+        default: break;
+        }
+    }
+
+    int confirm_unsaved() {
+        const SDL_MessageBoxButtonData buttons[] = {
+            {SDL_MESSAGEBOX_BUTTON_ESCAPEKEY_DEFAULT, 0, tr("common.cancel", "Cancel")},
+            {0, 2, tr("file.discard", "Discard")},
+            {SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT, 1, tr("file.save", "Save")}};
+        const SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING, window_.window, tr("file.unsaved", "Unsaved changes"),
+            tr("file.confirm_save", "Save changes to this design before continuing?"), 3, buttons, nullptr};
+        int selected = 0;
+        if (!SDL_ShowMessageBox(&box, &selected)) {
+            workbench_.status(std::string(tr("file.confirm_failed", "Cannot show unsaved-changes prompt: ")) + SDL_GetError());
+            return 0;
+        }
+        return selected;
+    }
+
+    static void on_pick(void* user, vgui_file_dialog_kind kind,
+                        const char* const* paths, int count, const char* error) {
+        static_cast<designer*>(user)->picked_ = file_result{kind,
+            paths && count > 0 ? paths[0] : "", error ? error : ""};
+    }
+
+    void choose(vgui_file_dialog_kind kind, command after_save = command::none) {
+        const vgui_file_filter filters[] = {{tr("file.filter_design", "VGUI design"), "*.vgui.json"}, {tr("file.filter_all", "All files"), "*"}};
+        const auto location = utf8(root_);
+        const auto name = path_.empty() ? "untitled.vgui.json" : utf8(path_.filename());
+        vgui_file_dialog_desc desc;
+        vgui_file_dialog_desc_init(&desc);
+        desc.title = kind == VGUI_FILE_DIALOG_FOLDER ? tr("export.choose_parent", "Choose parent folder for the package") :
+            kind == VGUI_FILE_DIALOG_SAVE ? tr("file.save_dialog", "Save UI design") : tr("file.open_dialog", "Open UI design");
+        desc.default_location = location.c_str();
+        if (kind == VGUI_FILE_DIALOG_FOLDER) desc.accept_label = tr("export.choose_folder", "Choose Folder");
+        else {
+            desc.default_name = name.c_str();
+            desc.filters = filters;
+            desc.filter_count = 2;
+        }
+        chooser_ = vgui_file_dialog_show(kind, &desc, on_pick, this) != 0;
+        after_save_ = chooser_ ? after_save : command::none;
+        if (!chooser_) workbench_.status(tr("file.chooser_failed", "The native file chooser could not be opened."));
+    }
+
+    static void on_package_name(vgui_context* ctx, int result, const char* text, void* user) {
+        auto& self = *static_cast<designer*>(user);
+        if (std::exchange(self.package_text_input_, false) && !vgui_context_wants_text_input(ctx))
+            self.window_.stop_text_input();
+        if (result == VGUI_MODAL_RESULT_CONFIRM) self.package_name_ = text ? text : "";
+        else {
+            self.package_parent_.reset();
+            self.workbench_.status(self.tr("export.cancelled", "Package export cancelled."));
+        }
+    }
+
+    void choose_package_name(fs::path parent) {
+        auto name = path_.empty() ? std::string("untitled") : utf8(path_.filename());
+        constexpr std::string_view suffix = ".vgui.json";
+        if (name.ends_with(suffix)) name.resize(name.size() - suffix.size());
+        else if (!path_.empty()) name = utf8(path_.stem());
+        name += "-delivery";
+        if (!valid_package_name(name)) name = "ui-delivery";
+        const auto message = std::string(tr("export.prompt_text", "Create a new package folder in:\n")) + utf8(parent);
+        vgui_dialog_desc desc;
+        vgui_dialog_desc_default(&desc);
+        desc.kind = VGUI_DIALOG_PROMPT;
+        desc.title = tr("file.export", "Export Package");
+        desc.message = message.c_str();
+        desc.confirm_text = tr("export.confirm", "Export");
+        desc.cancel_text = tr("common.cancel", "Cancel");
+        desc.initial_text = name.c_str();
+        desc.on_result = on_package_name;
+        desc.user = this;
+        if (!vgui_dialog_show(shell_, &desc)) {
+            workbench_.status(tr("export.prompt_failed", "Cannot open the package name prompt."));
+            return;
+        }
+        package_parent_ = std::move(parent);
+        if (!window_.text_input_active()) {
+            window_.start_text_input();
+            package_text_input_ = window_.text_input_active();
+        }
+        vgui_layout(shell_);
+        glm::ivec4 area{};
+        if (vgui_context_get_text_input_rect(shell_, &area.x, &area.y, &area.z, &area.w))
+            window_.set_ime_pos(area);
+    }
+
+    void finish_package() {
+        auto name = std::exchange(package_name_, std::nullopt);
+        auto parent = std::exchange(package_parent_, std::nullopt);
+        if (!parent || !valid_package_name(*name)) {
+            workbench_.status(tr("export.bad_name", "Export failed: enter a single folder name (no path separators or trailing dots/spaces)."));
+            return;
+        }
+        const auto destination = *parent / fs::u8path(*name);
+        ui::diagnostic error;
+        if (!ui::export_delivery(session_.current(), root_, destination, &error))
+            workbench_.status(std::string(tr("export.failed", "Export failed: ")) + describe(error));
+        else workbench_.status(std::string(tr("export.done", "Exported package to ")) + utf8(destination));
+    }
+
+    void finish_chooser() {
+        auto selected = std::move(*picked_);
+        picked_.reset();
+        chooser_ = false;
+        const auto next = std::exchange(after_save_, command::none);
+        if (!selected.error.empty()) workbench_.status(std::string(tr("file.chooser_error", "File chooser: ")) + selected.error);
+        else if (selected.path.empty()) workbench_.status(tr("file.chooser_cancelled", "File selection cancelled."));
+        else if (selected.kind == VGUI_FILE_DIALOG_OPEN) open(fs::u8path(selected.path));
+        else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) choose_package_name(fs::u8path(selected.path));
+        else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(fs::u8path(selected.path))) proceed(next);
+    }
+
+    os_window& window_;
+    vgui_context* shell_;
+    ui::designer_strings strings_;
+    fs::path settings_path_;
+    std::optional<ui::designer_language> pending_language_;
+    std::optional<view_action> pending_view_;
+    const fs::path new_root_ = fs::canonical(fs::current_path());
+    fs::path path_, root_;
+    ui::session session_;
+    std::uint64_t last_revision_ = 0, preview_revision_ = 0;
+    std::string window_title_;
+    command pending_ = command::none, after_save_ = command::none;
+    bool chooser_ = false, quitting_ = false;
+    std::optional<file_result> picked_;
+    std::optional<fs::path> package_parent_;
+    std::optional<std::string> package_name_;
+    bool package_text_input_ = false;
+    bool preview_constructed_ = false;
+    ui::designer_workbench workbench_;
+    ui::designer_preview preview_;
+};
+
+// Exercise the async file-result flow while keeping the smoke test unattended.
+// The platform chooser itself remains the normal provider in interactive use.
+struct smoke_file_picker {
+    vgui_file_dialog_provider_fn previous;
+    void* previous_user = nullptr;
+    int open_requests = 0;
+    bool cancel_folder = false;
+    fs::path sandbox, package_parent;
+
+    smoke_file_picker() {
+        const auto temp = fs::temp_directory_path();
+        std::random_device random;
+        for (int attempt = 0; attempt < 32; ++attempt) {
+            auto path = temp / ("vgui-package-smoke-" + std::to_string(random()) + "-" + std::to_string(random()));
+            if (fs::create_directory(path)) {
+                sandbox = std::move(path);
+                break;
+            }
+        }
+        if (sandbox.empty()) throw std::runtime_error("Cannot reserve a package smoke test directory");
+        package_parent = sandbox / "chosen";
+        if (std::error_code ec; !fs::create_directory(package_parent, ec)) {
+            fs::remove(sandbox);
+            throw std::runtime_error("Cannot create the package smoke test parent: " + ec.message());
+        }
+        previous = vgui_file_dialog_get_provider(&previous_user);
+        vgui_file_dialog_set_provider(show, this);
+    }
+    ~smoke_file_picker() {
+        vgui_file_dialog_set_provider(previous, previous_user);
+        std::error_code ignored;
+        fs::remove_all(sandbox, ignored);
+    }
+
+    static int show(void* user, vgui_file_dialog_kind kind, const vgui_file_dialog_desc*,
+                    vgui_file_dialog_fn callback, void* callback_user) {
+        auto& self = *static_cast<smoke_file_picker*>(user);
+        if (kind == VGUI_FILE_DIALOG_FOLDER) {
+            if (self.cancel_folder)
+                return vgui_file_dialog_post_result(kind, callback, callback_user, nullptr, 0, nullptr);
+            const auto location = utf8(self.package_parent);
+            const char* paths[] = {location.c_str()};
+            return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
+        }
+        if (kind != VGUI_FILE_DIALOG_OPEN) return 0;
+        if (++self.open_requests == 1)
+            return vgui_file_dialog_post_result(kind, callback, callback_user, nullptr, 0, nullptr);
+        const char* paths[] = {VGUI_SOURCE_DIR "/sample/res/button.png"}; // Existing, but not a design.
+        return vgui_file_dialog_post_result(kind, callback, callback_user, paths, 1, nullptr);
+    }
+};
+
+// Queue ordinary SDL events and advance the real host loop. Never write the
+// preview widget, invoke its input handler directly, or mutate the document.
+void exercise_runtime_input(os_window& win, vgui_context* shell, designer& editor,
+                            const std::function<void()>& frame) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Native runtime input: ") + message);
+    };
+    const auto push = [&](SDL_Event e) { require(SDL_PushEvent(&e), "failed to queue SDL event"); };
+    const auto mouse = [&](bool down, glm::vec2 px) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = win.id;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        const auto points = px / win.pixel_ratio();
+        e.button.x = points.x;
+        e.button.y = points.y;
+        push(e);
+    };
+    const auto click = [&](glm::vec2 px) { mouse(true, px); mouse(false, px); frame(); };
+    const auto key = [&](SDL_Keycode code) {
+        for (bool down : {true, false}) {
+            SDL_Event e{};
+            e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+            e.key.windowID = win.id;
+            e.key.key = code;
+            e.key.down = down;
+            push(e);
+        }
+        frame();
+    };
+    const auto text = [&](const char* utf8) {
+        SDL_Event e{};
+        e.type = SDL_EVENT_TEXT_INPUT;
+        e.text.windowID = win.id;
+        e.text.text = utf8;
+        push(e);
+        frame();
+    };
+    const auto center = [&](std::string_view id) {
+        const auto board = editor.preview().artboard_rect_px();
+        const auto* layout = editor.preview().snapshot();
+        require(board && layout, "missing presented artboard/layout");
+        const auto it = std::find_if(layout->nodes.begin(), layout->nodes.end(),
+            [id](const auto& n) { return n.id == id && n.visible; });
+        require(it != layout->nodes.end(), "test node is missing or clipped");
+        const auto& r = it->visible_px;
+        return glm::vec2{board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+            board->y + (r.y + r.height / 2) * board->height / layout->pixel_height};
+    };
+    const auto toggle_mode = [&] {
+        auto* mode = find_widget(vgui_root(shell), "designer.preview.mode");
+        require(mode != nullptr, "missing Design/Run button");
+        float x, y, w, h;
+        vgui_widget_get_rect(mode, &x, &y, &w, &h);
+        click({x + w / 2, y + h / 2});
+    };
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(status != nullptr, "missing workbench status");
+    const auto& history = editor.history();
+    const auto doc = history.current();
+    const auto revision = history.revision();
+    const std::string before_action = vgui_widget_get_text(status);
+    auto& preview = editor.preview();
+    const auto original_name = preview.edit_text("name"), original_email = preview.edit_text("email");
+    require(original_name == "" && original_email == "", "expected the empty form fixture");
+
+    require(!preview.running(), "expected the initial Design mode");
+    click(center("submit"));
+    require(editor.selection() == "submit" && before_action == vgui_widget_get_text(status),
+        "Design click must select the button without activating it");
+    toggle_mode();
+    require(preview.running(), "toolbar did not enter Run mode");
+    click(center("name"));
+    require(SDL_TextInputActive(win.window), "edit focus did not activate SDL text input");
+    text("Mira\xc3\xa9");
+    require(preview.edit_text("name") == "Mira\xc3\xa9", "UTF-8 text did not reach the focused edit");
+    key(SDLK_BACKSPACE);
+    require(preview.edit_text("name") == "Mira", "Backspace did not remove the full character");
+    key(SDLK_TAB);
+    text("mira@example.test");
+    require(preview.edit_text("email") == "mira@example.test" && preview.edit_text("name") == "Mira",
+        "Tab did not move focus to the next runtime edit");
+
+    const auto submit = center("submit");
+    mouse(true, submit);
+    frame();
+    require(before_action == vgui_widget_get_text(status), "button activated before mouse-up");
+    SDL_Event lost{};
+    lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+    lost.window.windowID = win.id;
+    push(lost);
+    mouse(false, submit);
+    frame();
+    require(before_action == vgui_widget_get_text(status), "lost focus did not cancel the pending click");
+    click(submit);
+    require(std::string_view(vgui_widget_get_text(status)) ==
+        std::string(editor.strings().text("preview.status.action_prefix", "Action: ")) + "contact.submit [submit]",
+        "button mouse-up did not publish the action");
+    click(center("email"));
+    require(SDL_TextInputActive(win.window), "could not restore edit focus before leaving Run mode");
+    toggle_mode();
+    require(!preview.running() && !SDL_TextInputActive(win.window), "return to Design did not release text input");
+    require(preview.edit_text("name") == original_name && preview.edit_text("email") == original_email,
+        "return to Design did not restore document text");
+    require(history.current() == doc && history.revision() == revision &&
+        !history.dirty() && !history.can_undo() && !history.can_redo(),
+        "runtime input changed the design document or its history");
+
+    // The previous Design selection was Submit. Type into the actual inspector
+    // and check the real canvas layout before Enter or even a focus change.
+    const auto button_width = [&] {
+        if (const auto* layout = preview.snapshot()) {
+            for (const auto& item : layout->nodes) if (item.id == "submit") return item.rect_px.width;
+        }
+        throw std::runtime_error("Live inspector: missing preview button");
+    };
+    const float old_width = button_width();
+    auto* width_edit = find_widget(vgui_root(shell), "property:width", VGUI_EDIT);
+    require(width_edit != nullptr, "missing inspector width field");
+    float x, y, w, h;
+    vgui_widget_get_rect(width_edit, &x, &y, &w, &h);
+    click({x + w / 2, y + h / 2});
+    require(vgui_get_focus(shell) == width_edit, "inspector width field did not receive focus");
+    vgui_edit_select_all(width_edit);
+    text("104");
+    require(button_width() == 104.f && history.dirty(), "inspector change did not reach the canvas without Enter");
+    text("x");
+    require(button_width() == 104.f, "invalid inspector input replaced the previous valid preview");
+    key(SDLK_ESCAPE);
+    require(button_width() == old_width && history.current() == doc && !history.can_undo(),
+        "cancelling live inspector input did not restore the canvas and history");
+}
+
+void exercise_language(os_window& win, vgui_context* shell, designer& editor,
+                       const fs::path& settings, const std::function<void()>& frame) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Native language: ") + message);
+    };
+    const auto widget = [&](const char* id) {
+        auto* w = find_widget(vgui_root(shell), id);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto push = [&](SDL_Event e) { require(SDL_PushEvent(&e), "cannot enqueue SDL event"); };
+    const auto click = [&](float x, float y) {
+        for (bool down : {true, false}) {
+            SDL_Event e{};
+            e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+            e.button.windowID = win.id;
+            e.button.button = SDL_BUTTON_LEFT;
+            e.button.down = down;
+            e.button.clicks = 1;
+            e.button.x = x / win.pixel_ratio();
+            e.button.y = y / win.pixel_ratio();
+            push(e);
+        }
+        frame();
+    };
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto label = [&](const char* id) { return std::string_view(vgui_widget_get_text(widget(id))); };
+
+    auto& preview = editor.preview();
+    const auto& history = editor.history();
+    require(label("designer.file.save") == "保存" &&
+        label("designer.preview.mode") == "设计", "expected the default Chinese UI");
+    require(history.dirty() && history.can_undo(), "expected unsaved edits from the delivery test");
+    auto* view = menus.open(3);
+    const auto design_item = vgui_menu_get_item_at(view, 0), run_item = vgui_menu_get_item_at(view, 1);
+    require(vgui_menu_get_item_checked(view, design_item) && !vgui_menu_get_item_checked(view, run_item),
+        "View menu did not reflect Design mode");
+    menus.activate(view, 1);
+    require(preview.running(), "View menu did not enter Run mode");
+    view = menus.open(3);
+    require(!vgui_menu_get_item_checked(view, design_item) && vgui_menu_get_item_checked(view, run_item),
+        "View menu did not reflect Run mode");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout, "missing runtime artboard");
+    const auto field = std::find_if(layout->nodes.begin(), layout->nodes.end(), [](const auto& n) { return n.id == "name"; });
+    require(field != layout->nodes.end() && field->visible, "missing runtime input field");
+    const auto& r = field->visible_px;
+    click(board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+          board->y + (r.y + r.height / 2) * board->height / layout->pixel_height);
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = "Keep this input";
+    push(text);
+    frame();
+    require(preview.edit_text("name") == "Keep this input", "runtime edit did not receive text");
+    menus.key(SDLK_F10, SDL_SCANCODE_F10);
+    require(vgui_context_get_open_menu(shell), "F10 did not open the main menu during runtime text input");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(!vgui_context_get_open_menu(shell) && preview.edit_text("name") == "Keep this input",
+        "menu dismissal changed runtime input");
+
+    const auto revision = history.revision();
+    const auto baseline = history.current(), committed = history.committed();
+    const std::string selection(editor.selection());
+    const bool dirty = history.dirty(), undo = history.can_undo(), redo = history.can_redo();
+    const auto* canvas = widget("designer.preview.canvas");
+    const auto* outline = widget("designer.outliner");
+    const auto switch_to = [&](bool english) {
+        auto* tools = menus.open(4);
+        require(std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, 0))) ==
+            (english ? "语言" : "Language"), "Tools menu was not translated");
+        auto* menu = menus.activate(tools, 0);
+        require(menu && vgui_menu_get_count(menu) == 2, "language menu did not open");
+        const auto zh = vgui_menu_get_item_at(menu, 0), en = vgui_menu_get_item_at(menu, 1);
+        require(std::string_view(vgui_menu_get_item_text(menu, zh)) == "简体中文" &&
+            std::string_view(vgui_menu_get_item_text(menu, en)) == "English" &&
+            vgui_menu_get_item_checked(menu, english ? zh : en) &&
+            !vgui_menu_get_item_checked(menu, english ? en : zh), "wrong active locale in the menu");
+        menus.activate(menu, english ? 1 : 0);
+        require(!vgui_context_get_open_menu(shell) && ui::load_designer_language(settings) ==
+            (english ? ui::designer_language::english : ui::designer_language::simplified_chinese), "wrong saved preference");
+        require(label("designer.file.save") == (english ? "Save" : "保存") &&
+            label("designer.preview.phone") == (english ? "Phone" : "手机") &&
+            label("designer.preview.mode") == (english ? "Run" : "运行") &&
+            label("designer.status") == (english ? "Language preference applied and saved." : "语言设置已保存并生效。") &&
+            std::string_view(SDL_GetWindowTitle(win.window)) == (english ? "form.vgui.json * — VGUI UI Designer" :
+                "form.vgui.json * — VGUI 界面设计器"), "language did not apply to the same window immediately");
+        const auto now = preview.artboard_rect_px();
+        require(widget("designer.preview.canvas") == canvas && widget("designer.outliner") == outline &&
+            now && now->x == board->x && now->y == board->y && now->width == board->width && now->height == board->height &&
+            preview.running() && preview.edit_text("name") == "Keep this input" && editor.selection() == selection,
+            "switching language reset the preview or selection");
+        require(history.revision() == revision && history.current() == baseline && history.committed() == committed &&
+            history.dirty() == dirty && history.can_undo() == undo && history.can_redo() == redo,
+            "switching language changed the design or its undo history");
+    };
+    switch_to(true);
+    switch_to(false);
+}
+
+fs::path designer_settings_path() {
+    if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
+        return fs::u8path(override_path);
+    std::unique_ptr<char, decltype(&SDL_free)> pref(SDL_GetPrefPath("vgui", "ui_designer"), SDL_free);
+    return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
+}
+
+int run(bool smoke, const fs::path& open_path) {
+    app_mgr app;
+    if (!app.init_gpu(true)) {
+        std::fprintf(stderr, "Cannot initialize SDL3 Vulkan: %s\n", SDL_GetError());
+        return smoke ? 77 : 1;
+    }
+    std::optional<smoke_file_picker> picker;
+    if (smoke) picker.emplace();
+    const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
+    bool invalid_settings = false;
+    const ui::designer_strings strings(ui::load_designer_language(settings, &invalid_settings));
+    const char* font_path = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
+    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(
+        load_font_from_path(app.font_ctx, font_path, "UIDesigner") ?
+            new_font_family(app.font_ctx, "UIDesigner", nullptr) : nullptr, delete_font_family);
+    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> shell_font(
+        load_font_from_path(app.font_ctx, VGUI_SOURCE_DIR "/sample/res/fonts/DesignerSansSC.ttf", "UIDesignerSC") ?
+            new_font_family(app.font_ctx, "UIDesigner,UIDesignerSC", nullptr) : nullptr, delete_font_family);
+    if (!font || !shell_font || shell_font->count < 2) {
+        std::fprintf(stderr, "Cannot load the designer fonts\n");
+        return 1;
+    }
+    auto* win = app.create(strings.text("app.title", "VGUI UI Designer"), 1370, 850, 0, true);
+    if (!win) {
+        std::fprintf(stderr, "Cannot open the designer window: %s\n", SDL_GetError());
+        return smoke ? 77 : 1;
+    }
+    SDL_SetWindowMinimumSize(win->window, 950, 560);
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(shell_font.get(), 15), vgui_destroy);
+    multiwindow_host host(&app, cb.get());
+    if (!shell || !host.attach(win, shell.get())) {
+        std::fprintf(stderr, "Cannot initialize the designer shell\n");
+        return 1;
+    }
+    // The viewport usually owns its UI; here the lifetime belongs to shell.
+    struct binding_guard {
+        os_window* window;
+        ~binding_guard() { window->viewport->ui = nullptr; }
+    } detach{win};
+    designer editor(*win, app.vgdev, shell.get(), font.get(), strings, settings);
+    editor.preview().set_render_context(app.vgctx);
+    if (!open_path.empty() && !editor.open(open_path) && smoke) return 1;
+    if (invalid_settings) {
+        std::fprintf(stderr, "Invalid designer settings: %s\n", utf8(settings).c_str());
+        editor.report_bad_settings();
+    }
+
+    auto last = SDL_GetTicks();
+    const std::function<void()> advance = [&] {
+        SDL_Event e;
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_EVENT_QUIT ||
+                (e.type == SDL_EVENT_WINDOW_CLOSE_REQUESTED && e.window.windowID == win->id)) {
+                editor.request(command::quit);
+                continue;
+            }
+            const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
+            if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
+                !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
+                continue;
+            if (!editor.chooser_open() || focus_lost) app.process_event(&e);
+        }
+        editor.service();
+        if (editor.quitting()) return;
+        editor.refresh();
+        app.sync_ui_scales();
+        const auto now = SDL_GetTicks();
+        const auto dt = std::clamp(float(now - last) / 1000.0f, 0.0f, 0.05f);
+        last = now;
+        host.begin_frame(dt);
+        editor.render_preview(dt);
+        host.draw_all();
+        host.end_frame();
+    };
+    const ui::native_menu_input menus(*win, shell.get(), advance);
+    int frames = 0;
+    bool preserved_on_cancel = false, preserved_on_error = false;
+    std::optional<std::uint64_t> original_revision;
+    int desktop_width = 0;
+    while (!editor.quitting()) {
+        advance();
+        if (!smoke || editor.quitting()) continue;
+        const auto* snapshot = editor.preview().snapshot();
+        if (++frames == 3 && editor.preview_ready(true)) {
+            original_revision = snapshot->revision;
+            desktop_width = snapshot->view.width;
+            menus.activate(menus.open(0), 1);
+        } else if (frames == 6) {
+            preserved_on_cancel = original_revision && snapshot && snapshot->revision == *original_revision &&
+                picker->open_requests == 1 && !editor.chooser_open();
+            menus.activate(menus.open(0), 1);
+        } else if (frames == 9) {
+            preserved_on_error = original_revision && snapshot && snapshot->revision == *original_revision &&
+                picker->open_requests == 2 && !editor.chooser_open();
+            menus.activate(menus.open(3), 4);
+        } else if (frames == 14) break;
+    }
+    if (smoke) {
+        const auto* snapshot = editor.preview().snapshot();
+        if (!preserved_on_cancel || !preserved_on_error || !editor.preview_ready(true) ||
+            !snapshot || !original_revision || snapshot->revision != *original_revision ||
+            snapshot->view.width >= desktop_width || snapshot->view.width >= snapshot->view.height) {
+            app.wait_gpu();
+            std::fprintf(stderr, "Designer smoke test failed: image, viewport switch, or file-open isolation\n");
+            return 1;
+        }
+        try {
+            exercise_runtime_input(*win, shell.get(), editor, advance);
+            ui::exercise_delivery(*win, shell.get(), editor.history(), advance,
+                                  picker->package_parent, picker->cancel_folder, editor.strings());
+            // Preserve the delivery test's unsaved edit and actual Run-mode input.
+            exercise_language(*win, shell.get(), editor, settings, advance);
+            if (!editor.open(fs::path(VGUI_SOURCE_DIR "/sample/res/absolute-form.vgui.json")))
+                throw std::runtime_error("Cannot open the absolute geometry test fixture");
+            advance();
+            ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
+        } catch (...) {
+            app.wait_gpu();
+            throw;
+        }
+        std::puts("ui_designer_native: image, viewport presets, file-open isolation, runtime input, delivery, geometry, and language passed");
+    }
+    app.wait_gpu();
+    return 0;
+}
+} // namespace
+
+int main(int argc, char** argv) {
+    try {
+        const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
+        if (argc > 2) {
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test]\n");
+            return 2;
+        }
+        return run(smoke, smoke ? fs::path(VGUI_SOURCE_DIR "/sample/res/form.vgui.json") :
+            argc == 2 ? fs::u8path(argv[1]) : fs::path{});
+    } catch (const std::exception& error) {
+        std::fprintf(stderr, "VGUI UI Designer: %s\n", error.what());
+        return 1;
+    }
+}

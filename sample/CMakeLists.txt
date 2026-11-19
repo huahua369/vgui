@@ -215,6 +215,23 @@ if(VGUI_CORE_ONLY)
 endif()
 add_test(NAME vgui_model COMMAND vgui_model_test)
 
+# U0: document model tests run without a VGUI context or a rendering backend.
+add_executable(ui_design_model_test ui_design_model_test.cpp)
+target_link_libraries(ui_design_model_test PRIVATE ui_design_model)
+add_test(NAME ui_design_model COMMAND ui_design_model_test)
+
+# U1: real VGUI layout/input, without a window, renderer or editor kit.
+add_executable(ui_design_runtime_test ui_design_runtime_test.cpp)
+target_link_libraries(ui_design_runtime_test PRIVATE ui_design_runtime)
+add_test(NAME ui_design_runtime COMMAND ui_design_runtime_test)
+add_test(NAME ui_design_runtime_links COMMAND ui_design_runtime_test --links)
+set_tests_properties(ui_design_runtime_links PROPERTIES SKIP_RETURN_CODE 77)
+
+# U3: verify/relocate a package and mount it as an independent core consumer.
+add_executable(ui_design_delivery_test ui_design_delivery_test.cpp)
+target_link_libraries(ui_design_delivery_test PRIVATE vgui::ui_design_export vgui::ui_design_runtime)
+add_test(NAME ui_design_delivery COMMAND ui_design_delivery_test)
+
 # R0 运行时嵌入测试：core-only 与完整构建都编译（不触碰 SDL）。
 add_executable(vgui_runtime_embed_test ${SRC_RUNTIME_EMBED_TEST})
 target_link_libraries(vgui_runtime_embed_test PRIVATE vgui_sample_common vgui::vgui)
@@ -249,7 +266,34 @@ target_link_libraries(vgui_editor_c_api_test PRIVATE
 set_target_properties(vgui_editor_c_api_test PROPERTIES LINKER_LANGUAGE CXX)
 add_test(NAME vgui_editor_c_api COMMAND vgui_editor_c_api_test)
 
+set(designer_zh_catalog "${CMAKE_CURRENT_SOURCE_DIR}/res/ui-designer/zh-CN.json")
+set(designer_en_catalog "${CMAKE_CURRENT_SOURCE_DIR}/res/ui-designer/en-US.json")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${designer_zh_catalog}" "${designer_en_catalog}")
+file(READ "${designer_zh_catalog}" VGUI_DESIGNER_ZH_JSON)
+file(READ "${designer_en_catalog}" VGUI_DESIGNER_EN_JSON)
+configure_file(ui_designer_catalogs.h.in ui_designer_catalogs.h @ONLY)
+add_library(ui_designer_locale STATIC ui_designer_locale.cpp)
+target_include_directories(ui_designer_locale PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+target_link_libraries(ui_designer_locale PRIVATE nlohmann_json::nlohmann_json)
+target_compile_features(ui_designer_locale PUBLIC cxx_std_20)
+
+add_executable(ui_designer_workbench_test ui_designer_workbench_test.cpp ui_designer_workbench.cpp)
+target_link_libraries(ui_designer_workbench_test PRIVATE ui_design_model vgui::editor_kit ui_designer_locale)
+target_compile_definitions(ui_designer_workbench_test PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+add_test(NAME ui_designer_workbench COMMAND ui_designer_workbench_test)
+
 if(NOT VGUI_CORE_ONLY)
+find_path(VGUI_DESIGNER_STB_INCLUDE_DIR NAMES stb_image.h PATH_SUFFIXES stb)
+if(NOT VGUI_DESIGNER_STB_INCLUDE_DIR)
+    message(FATAL_ERROR "vgui_ui_designer needs stb_image.h (stb)")
+endif()
+add_executable(vgui_ui_designer vgui_ui_designer.cpp ui_designer_workbench.cpp ui_designer_preview.cpp)
+target_link_libraries(vgui_ui_designer PRIVATE vgui_sample_common vgui::ui_design_export ui_design_runtime vgui::editor_kit SDL3::SDL3 ui_designer_locale)
+target_include_directories(vgui_ui_designer SYSTEM PRIVATE ${VGUI_DESIGNER_STB_INCLUDE_DIR})
+target_compile_definitions(vgui_ui_designer PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+add_test(NAME ui_designer_native COMMAND vgui_ui_designer --smoke-test)
+set_tests_properties(ui_designer_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
 target_link_libraries(vgui_game_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)
 

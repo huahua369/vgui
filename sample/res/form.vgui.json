@@ -1,0 +1,29 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "form",
+  "nodes": {
+    "form": {
+      "type": "panel",
+      "name": "Contact form",
+      "props": {"layout": "column", "align_items": "stretch", "gap": 12, "pad_left": 24, "pad_top": 24, "pad_right": 24},
+      "children": ["title", "body", "footer"]
+    },
+    "title": {"type": "label", "props": {"text": "Contact us", "height": 32}},
+    "body": {
+      "type": "panel",
+      "name": "Fields",
+      "props": {"layout": "column", "align_items": "stretch", "height": 136, "gap": 8, "pad_left": 12, "pad_top": 12, "pad_right": 12},
+      "children": ["name_label", "name", "email_label", "email"]
+    },
+    "name_label": {"type": "label", "props": {"text": "Name", "height": 18}},
+    "name": {"type": "edit", "props": {"placeholder": "Your name", "height": 26}},
+    "email_label": {"type": "label", "props": {"text": "Email", "height": 18}},
+    "email": {"type": "edit", "props": {"placeholder": "you@example.com", "height": 26}},
+    "footer": {"type": "panel", "props": {"layout": "row", "height": 40, "align_items": "center", "gap": 10}, "children": ["mark", "hint", "submit"]},
+    "mark": {"type": "image", "props": {"resource": "badge", "width": 32, "height": 24}},
+    "hint": {"type": "label", "props": {"text": "Ready to send", "grow": 1}},
+    "submit": {"type": "button", "props": {"text": "Submit", "action": "contact.submit", "width": 88, "height": 30}}
+  },
+  "resources": {"badge": "button.png"}
+}

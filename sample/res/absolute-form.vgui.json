@@ -1,0 +1,28 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "absolute_form",
+  "nodes": {
+    "absolute_form": {
+      "type": "panel",
+      "name": "Absolute form",
+      "props": {"layout": "absolute", "pad_left": 17, "pad_top": 13},
+      "children": ["geometry_panel"]
+    },
+    "geometry_panel": {
+      "type": "panel",
+      "name": "Padded absolute panel",
+      "props": {"layout": "absolute", "x": 30, "y": 190, "width": 300, "height": 420,
+        "pad_left": 23, "pad_top": 31, "pad_right": 19, "pad_bottom": 17},
+      "children": ["auto_button", "fixed_button", "flow_panel"]
+    },
+    "auto_button": {"type": "button", "props": {"text": "Auto-sized button", "x": 18, "y": 30, "width": 0, "height": 0}},
+    "fixed_button": {"type": "button", "props": {"text": "Fixed size", "x": 65, "y": 138, "width": 114, "height": 52}},
+    "flow_panel": {
+      "type": "panel",
+      "props": {"layout": "row", "x": 22, "y": 250, "width": 240, "height": 88, "pad_left": 10, "pad_top": 12},
+      "children": ["flow_button"]
+    },
+    "flow_button": {"type": "button", "props": {"text": "Flow child", "width": 150, "height": 42}}
+  }
+}
