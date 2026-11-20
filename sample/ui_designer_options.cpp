@@ -137,12 +137,75 @@ constexpr vgui_color dialog_background = 0xFF1B1E24;
 constexpr vgui_color edge = 0xFF374150;
 constexpr vgui_color accent = 0xFF294C72;
 
+std::string with_value(std::string label, std::string_view value)
+{
+    constexpr std::string_view token = "{value}";
+    if (const auto at = label.find(token); at != std::string::npos)
+        label.replace(at, token.size(), value);
+    return label;
+}
+
+void build_configuration(vgui_widget* page, const designer_strings& strings, designer_dock_widths layout,
+    std::string_view settings_path)
+{
+    vgui_widget_set_padding(page, 18, 16, 18, 16);
+    vgui_widget_set_gap(page, 10);
+    vgui_widget_set_background(page, dialog_background);
+    vgui_panel_set_scrollable(page, 0, 1);
+    const auto add_label = [page](const char* id, const std::string& text) {
+        auto* label = vgui_widget_add(page, VGUI_LABEL, text.c_str());
+        vgui_widget_set_id(label, id);
+        vgui_widget_set_padding(label, 0, 0, 0, 0);
+        vgui_widget_set_text_align(label, 0, .5f);
+        return label;
+    };
+    auto* heading = add_label("designer.options.configuration.title", strings.text("settings.info", "Configuration Information"));
+    vgui_widget_set_font_size(heading, 18);
+    vgui_widget_set_font_weight(heading, 600);
+    const auto describe_side = [&](float width, bool collapsed) {
+        char buf[32];
+        const auto end = std::to_chars(buf, buf + sizeof(buf), width, std::chars_format::fixed, 1).ptr;
+        std::string number(buf, end);
+        if (number.ends_with(".0")) number.resize(number.size() - 2);
+        const auto* state = collapsed ? strings.text("settings.info.collapsed", "Collapsed")
+                                      : strings.text("settings.info.expanded", "Expanded");
+        return number + " " + strings.text("settings.info.logical_pixels", "logical px") + " · " + state;
+    };
+    const auto* language = strings.language() == designer_language::english
+        ? strings.text("settings.en-US", "English") : strings.text("settings.zh-CN", "简体中文");
+    add_label("designer.options.configuration.language",
+        with_value(strings.text("settings.info.language", "Interface language: {value}"), language));
+    add_label("designer.options.configuration.left",
+        with_value(strings.text("settings.info.left", "Left sidebar: {value}"), describe_side(layout.left, layout.left_collapsed)));
+    add_label("designer.options.configuration.right",
+        with_value(strings.text("settings.info.right", "Right sidebar: {value}"), describe_side(layout.right, layout.right_collapsed)));
+
+    const auto* path_label = strings.text("settings.info.path", "Settings file (JSON)");
+    auto* label = add_label("designer.options.configuration.path_label", path_label);
+    vgui_widget_set_margin(label, 0, 6, 0, 0);
+    if (settings_path.empty()) {
+        add_label("designer.options.configuration.path", strings.text("settings.info.path_unavailable", "No settings file path available"));
+    } else {
+        const std::string path(settings_path);
+        auto* value = vgui_widget_add(page, VGUI_EDIT, nullptr);
+        vgui_widget_set_id(value, "designer.options.configuration.path");
+        vgui_widget_set_size(value, 0, 30);
+        vgui_widget_set_min_size(value, 0, 0);
+        vgui_widget_set_a11y_name(value, path_label);
+        vgui_widget_set_tooltip(value, path.c_str());
+        vgui_edit_set_text(value, path.c_str());
+        vgui_edit_set_readonly(value, 1);
+    }
+}
+
 } // namespace
 
 struct designer_options::impl {
     vgui_context* ui = nullptr;
     vgui_widget* panel = nullptr;
     vgui_widget* status = nullptr;
+    vgui_widget *grid_page = nullptr, *info_page = nullptr;
+    vgui_widget *grid_nav = nullptr, *info_nav = nullptr, *reset = nullptr;
     int focus_listener = 0;
     bool closing = false;
     std::optional<std::size_t> pending_inline;
@@ -232,8 +295,26 @@ struct designer_options::impl {
         self.finish_inline();
     }
 
+    void show_page(bool info)
+    {
+        finish_inline();
+        vgui_widget_set_visible(grid_page, !info);
+        vgui_widget_set_visible(info_page, info);
+        const auto select = [](vgui_widget* item, bool selected) {
+            vgui_widget_set_background(item, selected ? accent : 0xFF171A20);
+            vgui_widget_set_border(item, selected ? 0xFF5483B0 : 0, selected ? 1 : 0);
+        };
+        select(grid_nav, !info);
+        select(info_nav, info);
+        vgui_widget_set_enabled(reset, !info);
+    }
+
     void on_button(vgui_widget* button)
     {
+        if (button == grid_nav || button == info_nav) {
+            show_page(button == info_nav);
+            return;
+        }
         const std::string_view id = vgui_widget_get_id(button);
         if (id == "designer.options.cancel") {
             vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
@@ -243,7 +324,7 @@ struct designer_options::impl {
             grid->refresh();
         } else if (id == "designer.options.ok") {
             finish_inline();
-            if (save && !save(draft)) {
+            if (draft != initial && save && !save(draft)) {
                 vgui_widget_set_text(status, save_error);
                 vgui_widget_set_visible(status, 1);
             } else {
@@ -271,7 +352,7 @@ struct designer_options::impl {
         // The kit closes its managed popup and unsets its context callback.
         // Keep the panel alive until its grid has been destroyed.
         grid.reset();
-        panel = status = nullptr;
+        panel = status = grid_page = info_page = grid_nav = info_nav = reset = nullptr;
         ui = nullptr;
         closing = false;
     }
@@ -288,6 +369,7 @@ struct designer_options::impl {
     }
 
     void show(vgui_context* ctx, const designer_strings& strings, settings start,
+        designer_dock_widths layout, std::string_view settings_path,
         std::function<void(settings)> preview_fn, std::function<bool(settings)> save_fn)
     {
         if (!ctx || panel || vgui_modal_active(ctx)) return;
@@ -321,7 +403,7 @@ struct designer_options::impl {
         vgui_widget_set_grow(body, 1);
         auto* nav = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(nav, "designer.options.navigation");
-        vgui_widget_set_size(nav, 132, 0);
+        vgui_widget_set_size(nav, strings.language() == designer_language::english ? 220 : 132, 0);
         vgui_widget_set_background(nav, 0xFF171A20);
         vgui_widget_set_padding(nav, 8, 8, 8, 8);
         auto* canvas = vgui_widget_add(nav, VGUI_LABEL, strings.text("options.canvas", "Canvas"));
@@ -329,16 +411,26 @@ struct designer_options::impl {
         vgui_widget_set_padding(canvas, 6, 0, 6, 0);
         vgui_widget_set_text_align(canvas, 0, .5f);
         vgui_widget_set_font_weight(canvas, 600);
-        auto* selected = vgui_widget_add(nav, VGUI_LABEL, strings.text("options.grid", "Grid"));
-        vgui_widget_set_size(selected, 0, 28);
-        vgui_widget_set_padding(selected, 18, 0, 6, 0);
-        vgui_widget_set_text_align(selected, 0, .5f);
-        vgui_widget_set_background(selected, accent);
+        const auto add_nav = [&](const char* id, const char* label, float indent) {
+            auto* item = button(nav, id, label, 0);
+            vgui_widget_set_padding(item, indent, 0, 6, 0);
+            vgui_widget_set_text_align(item, 0, .5f);
+            vgui_widget_set_border(item, 0, 0);
+            return item;
+        };
+        grid_nav = add_nav("designer.options.nav.grid", strings.text("options.grid", "Grid"), 18);
+        info_nav = add_nav("designer.options.nav.configuration", strings.text("settings.info", "Configuration Information"), 6);
+        vgui_widget_set_margin(info_nav, 0, 6, 0, 0);
 
-        auto* area = make_panel(body, VGUI_LAYOUT_COLUMN);
-        vgui_widget_set_grow(area, 1);
+        grid_page = make_panel(body, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_id(grid_page, "designer.options.grid");
+        vgui_widget_set_grow(grid_page, 1);
+        info_page = make_panel(body, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_id(info_page, "designer.options.configuration");
+        vgui_widget_set_grow(info_page, 1);
+        build_configuration(info_page, strings, layout, settings_path);
         grid = std::make_unique<kit::property_grid>();
-        grid->build_with_labels(area, {
+        grid->build_with_labels(grid_page, {
             .properties = strings.text("options.grid", "Grid"),
             .search = strings.text("options.search", "Search settings"),
             .favorites_only = strings.text("workbench.inspector.favorites_only", "Favorites only"),
@@ -379,7 +471,7 @@ struct designer_options::impl {
         vgui_widget_set_gap(footer, 8);
         vgui_widget_set_align_items(footer, VGUI_ALIGN_CENTER);
         vgui_widget_set_background(footer, chrome);
-        button(footer, "designer.options.reset", strings.text("options.reset", "Restore defaults"), 130);
+        reset = button(footer, "designer.options.reset", strings.text("options.reset", "Restore defaults"), 130);
         auto* status_slot = make_panel(footer, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_grow(status_slot, 1);
         status = vgui_widget_add(status_slot, VGUI_LABEL, "");
@@ -388,6 +480,7 @@ struct designer_options::impl {
         button(footer, "designer.options.cancel", strings.text("common.cancel", "Cancel"), 76);
         auto* ok = button(footer, "designer.options.ok", strings.text("common.ok", "OK"), 76);
         vgui_widget_set_background(ok, accent);
+        show_page(false);
 
         vgui_modal_options options;
         vgui_modal_options_default(&options);
@@ -412,9 +505,10 @@ designer_options::designer_options() : impl_(std::make_unique<impl>()) {}
 designer_options::~designer_options() = default;
 
 void designer_options::show(vgui_context* ctx, const designer_strings& strings, settings initial,
+    designer_dock_widths layout, std::string_view settings_path,
     std::function<void(settings)> preview, std::function<bool(settings)> save)
 {
-    impl_->show(ctx, strings, initial, std::move(preview), std::move(save));
+    impl_->show(ctx, strings, initial, layout, settings_path, std::move(preview), std::move(save));
 }
 
 } // namespace vgui::ui_design

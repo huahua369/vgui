@@ -33,9 +33,7 @@ struct designer_commands {
 // The shell context, working session and strings all outlive the workbench.
 class designer_workbench {
 public:
-    // settings_path is the UTF-8 location shown in the read-only Tools dialog.
-    designer_workbench(vgui_context*, session&, designer_commands, const designer_strings&,
-        std::string settings_path = {});
+    designer_workbench(vgui_context*, session&, designer_commands, const designer_strings&);
     ~designer_workbench();
 
     // The host adds one center dock panel per open document.

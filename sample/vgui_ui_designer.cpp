@@ -83,7 +83,7 @@ public:
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
               [this] { request(command::import_font); },
-              [this] { request(command::options); }}, strings_, utf8(settings_path_)), dock_(workbench_.document_dock()) {
+              [this] { request(command::options); }}, strings_), dock_(workbench_.document_dock()) {
         grid_settings_ = ui::load_designer_grid_settings(settings_path_);
         saved_layout_ = ui::load_designer_dock_widths(settings_path_);
         workbench_.set_dock_widths(saved_layout_);
@@ -217,7 +217,7 @@ public:
             break;
         case command::close: close_page(page); break;
         case command::options:
-            options_.show(shell_, strings_, grid_settings_,
+            options_.show(shell_, strings_, grid_settings_, workbench_.dock_widths(), utf8(settings_path_),
                 [this](ui::designer_grid_settings grid) { apply_grid_settings(grid); },
                 [this](ui::designer_grid_settings grid) { return ui::save_designer_grid_settings(settings_path_, grid); });
             break;
@@ -1430,36 +1430,49 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
         const auto saved = read_settings();
         const std::string_view title = english ? "Configuration Information" : "配置信息";
         auto* tools = menus.open(4);
-        require(std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, 1))) == title,
-            "configuration menu entry was not localized");
+        require(vgui_menu_get_count(tools) == 2 &&
+            std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, 1))) == (english ? "Options" : "选项"),
+            "configuration should only be accessible through Options");
         menus.activate(tools, 1);
         auto* panel = vgui_modal_panel(shell);
-        require(panel && std::string_view(vgui_widget_get_text(vgui_widget_get_child(panel, 0))) == title,
-            "configuration dialog did not open with the localized title");
-        const std::string_view body = vgui_widget_get_text(vgui_widget_get_child(panel, 1));
-        require(body.find(english ? "Interface language: English" : "界面语言：简体中文") != std::string_view::npos &&
-            body.find(english ? "Left sidebar: 280 logical px · Collapsed" : "左侧栏：280 逻辑像素 · 已展开") != std::string_view::npos &&
-            body.find(english ? "Right sidebar: 375 logical px · Expanded" : "右侧栏：375 逻辑像素 · 已展开") != std::string_view::npos,
-            "configuration dialog did not show the current language and preferred dock sizes/states");
-        const std::string_view path_label = english ? "Settings file (JSON)\n" : "配置文件（JSON）\n";
-        const auto path_start = body.find(path_label);
-        const auto without_whitespace = [](std::string text) {
-            std::erase_if(text, [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; });
-            return text;
+        require(panel && std::string_view(vgui_widget_get_id(panel)) == "designer.options", "options dialog did not open");
+        const auto child = [&](std::string_view id) {
+            auto* item = find_widget(panel, id);
+            require(item != nullptr, "missing configuration widget in Options");
+            return item;
         };
-        require(path_start != std::string_view::npos &&
-            without_whitespace(std::string(body.substr(path_start + path_label.size()))) == without_whitespace(utf8(settings)),
-            "configuration dialog did not show the settings path");
-        auto* ok = vgui_widget_get_child(vgui_widget_get_child(panel, 2), 0);
-        require(ok && vgui_widget_get_kind(ok) == VGUI_BUTTON &&
-            std::string_view(vgui_widget_get_text(ok)) == (english ? "OK" : "确定"), "configuration dialog is missing its localized button");
-        if (english) {
-            float x, y, w, h;
-            vgui_widget_get_rect(ok, &x, &y, &w, &h);
-            click(x + w / 2, y + h / 2);
-        } else {
-            menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
-        }
+        const auto press = [&](vgui_widget* w) {
+            float x, y, width, height;
+            vgui_widget_get_rect(w, &x, &y, &width, &height);
+            require(width > 0 && height > 0, "configuration widget is not laid out");
+            click(x + width / 2, y + height / 2);
+        };
+        auto* entry = child("designer.options.nav.configuration");
+        auto* config = child("designer.options.configuration");
+        auto* grid = child("designer.options.grid");
+        require(std::string_view(vgui_widget_get_text(entry)) == title && !vgui_widget_get_visible(config) &&
+            vgui_widget_get_visible(grid), "grid should be the default Options page");
+        press(entry);
+        require(vgui_modal_panel(shell) == panel && vgui_widget_get_visible(config) && !vgui_widget_get_visible(grid) &&
+            !vgui_widget_get_enabled(child("designer.options.reset")) &&
+            std::string_view(vgui_widget_get_text(child("designer.options.configuration.title"))) == title,
+            "clicking Configuration Information did not switch the current dialog to a read-only page");
+        const auto text = [&](std::string_view id) { return std::string_view(vgui_widget_get_text(child(id))); };
+        require(text("designer.options.configuration.language") == (english ? "Interface language: English" : "界面语言：简体中文") &&
+            text("designer.options.configuration.left") == (english ? "Left sidebar: 280 logical px · Collapsed" : "左侧栏：280 逻辑像素 · 已展开") &&
+            text("designer.options.configuration.right") == (english ? "Right sidebar: 375 logical px · Expanded" : "右侧栏：375 逻辑像素 · 已展开"),
+            "configuration page did not show the current language and preferred dock sizes/states");
+        auto* path = child("designer.options.configuration.path");
+        vgui_a11y_info path_info{};
+        vgui_widget_get_a11y_info(path, &path_info);
+        require(vgui_widget_get_kind(path) == VGUI_EDIT && (path_info.states & VGUI_A11Y_READONLY) &&
+            text("designer.options.configuration.path_label") == (english ? "Settings file (JSON)" : "配置文件（JSON）") &&
+            std::string_view(vgui_edit_get_text(path)) == utf8(settings), "configuration path was missing or not read-only");
+        auto* ok = child("designer.options.ok");
+        require(std::string_view(vgui_widget_get_text(ok)) == (english ? "OK" : "确定"),
+            "configuration page is missing its localized dialog button");
+        if (english) press(ok);
+        else menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
         require(!vgui_modal_active(shell) && read_settings() == saved && preview.running() &&
             preview.edit_text("name") == "Keep this input" && editor.selection() == selection &&
             history.revision() == revision && history.current() == baseline && history.committed() == committed &&
@@ -1623,6 +1636,14 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
         "typing a valid spacing did not preview it before Enter or incorrectly saved it");
     replace_text("property:spacing", "0");
     require(editor.preview().grid_settings().spacing == 36.5f, "invalid spacing overwrote the last valid preview");
+    click(widget("designer.options.nav.configuration", VGUI_BUTTON));
+    require(vgui_modal_panel(shell) == panel && editor.preview().grid_settings().spacing == 36.5f &&
+        ui::load_designer_grid_settings(settings) == original, "switching to configuration changed or saved the grid draft");
+    click(widget("designer.options.nav.grid", VGUI_BUTTON));
+    require(vgui_widget_get_visible(widget("designer.options.grid", VGUI_PANEL)) &&
+        vgui_widget_get_enabled(widget("designer.options.reset", VGUI_BUTTON)) &&
+        std::string_view(vgui_edit_get_text(widget("property:spacing", VGUI_EDIT))) == "36.5",
+        "returning to the grid did not restore the last valid draft");
     click(widget("property:visible", VGUI_CHECKBOX));
     require(!editor.preview().grid_settings().visible, "checkbox did not preview the visibility change");
     click(widget("designer.options.cancel", VGUI_BUTTON));
@@ -1658,6 +1679,7 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
     menus.activate(vgui_context_get_open_menu(shell), 1);
     expected.style = ui::designer_grid_style::dots;
     require(editor.preview().grid_settings() == expected, "grid style did not preview the selected option");
+    click(widget("designer.options.nav.configuration", VGUI_BUTTON));
     click(widget("designer.options.ok", VGUI_BUTTON));
     require(!vgui_modal_active(shell) && editor.preview().grid_settings() == expected &&
         ui::load_designer_grid_settings(settings) == expected, "OK did not persist the current live values");

@@ -164,13 +164,11 @@ struct designer_workbench::impl {
     struct information_dialog {
         const char* command;
         std::function<std::string()> message;
-        float width;
     };
 
     vgui_context* ui;
     session& history;
     const designer_strings& strings;
-    const std::string settings_path;
     kit::editor_context editor;
     kit::command_registry commands;
     std::function<void()> layout_changed;
@@ -231,8 +229,8 @@ struct designer_workbench::impl {
     float toolbar_scale = 0;
     std::optional<designer_language> toolbar_language;
 
-    impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale, std::string path)
-        : ui(context), history(model), strings(locale), settings_path(std::move(path)), editor(context),
+    impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale)
+        : ui(context), history(model), strings(locale), editor(context),
           layout_changed(std::move(file.layout_changed)), selected(model.current().root)
     {
         auto* root = vgui_root(ui);
@@ -432,10 +430,10 @@ struct designer_workbench::impl {
     }
 
     void add_information_command(vgui_widget* menu, const char* id, localized_text title,
-        std::function<std::string()> make_message, float width = 0)
+        std::function<std::string()> make_message)
     {
         add_menu_command(menu, id, std::move(title),
-            [this, dialog = information_dialog{id, std::move(make_message), width}] {
+            [this, dialog = information_dialog{id, std::move(make_message)}] {
                 // Let menu activation close the popup chain before opening the dialog.
                 pending_dialog = dialog;
             });
@@ -449,31 +447,7 @@ struct designer_workbench::impl {
         desc.title = commands.find(dialog.command)->title.c_str();
         desc.message = body.c_str();
         desc.confirm_text = strings.text("common.ok", "OK");
-        desc.width = dialog.width;
         vgui_dialog_show(ui, &desc);
-    }
-
-    std::string configuration_information() const
-    {
-        const auto language = strings.language() == designer_language::english
-            ? strings.text("settings.en-US", "English") : strings.text("settings.zh-CN", "简体中文");
-        const auto describe_side = [&](float width, bool collapsed) {
-            char buf[32];
-            const auto end = std::to_chars(buf, buf + sizeof(buf), width, std::chars_format::fixed, 1).ptr;
-            std::string number(buf, end);
-            if (number.ends_with(".0")) number.resize(number.size() - 2);
-            const auto* state = collapsed ? strings.text("settings.info.collapsed", "Collapsed")
-                                          : strings.text("settings.info.expanded", "Expanded");
-            return number + " " + strings.text("settings.info.logical_pixels", "logical px") + " · " + state;
-        };
-        const auto layout = dock_widths();
-        return status_with_value(strings.text("settings.info.language", "Interface language: {value}"), language) + "\n" +
-            status_with_value(strings.text("settings.info.left", "Left sidebar: {value}"),
-                describe_side(layout.left, layout.left_collapsed)) + "\n" +
-            status_with_value(strings.text("settings.info.right", "Right sidebar: {value}"),
-                describe_side(layout.right, layout.right_collapsed)) + "\n\n" +
-            strings.text("settings.info.path", "Settings file (JSON)") + "\n" +
-            (settings_path.empty() ? strings.text("settings.info.path_unavailable", "No settings file path available") : settings_path);
     }
 
     void build_menus(designer_commands callbacks)
@@ -568,8 +542,6 @@ struct designer_workbench::impl {
         };
         add_language("designer.language.zh-CN", {"settings.zh-CN", "简体中文"}, designer_language::simplified_chinese);
         add_language("designer.language.en-US", {"settings.en-US", "English"}, designer_language::english);
-        add_information_command(tools, "designer.tools.configuration", {"settings.info", "Configuration Information"},
-            [this] { return configuration_information(); }, 560);
         add_menu_command(tools, "designer.tools.options", {"options.title", "Options"}, std::move(callbacks.open_options));
 
         auto* help = add_menu({"workbench.menu.help", "Help"});
@@ -1531,8 +1503,8 @@ struct designer_workbench::impl {
 };
 
 designer_workbench::designer_workbench(vgui_context* ui, session& history, designer_commands commands,
-    const designer_strings& strings, std::string settings_path)
-    : impl_(std::make_unique<impl>(ui, history, std::move(commands), strings, std::move(settings_path))) {}
+    const designer_strings& strings)
+    : impl_(std::make_unique<impl>(ui, history, std::move(commands), strings)) {}
 
 designer_workbench::~designer_workbench() = default;
 vgui_widget* designer_workbench::document_dock() const { return impl_->dock; }

@@ -4,6 +4,7 @@
 
 #include <functional>
 #include <memory>
+#include <string_view>
 #include <vgui/vgui.h>
 
 namespace vgui::ui_design {
@@ -15,6 +16,7 @@ public:
     ~designer_options();
 
     void show(vgui_context*, const designer_strings&, designer_grid_settings initial,
+        designer_dock_widths layout, std::string_view settings_path,
         std::function<void(designer_grid_settings)> preview,
         std::function<bool(designer_grid_settings)> save);
 
