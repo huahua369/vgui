@@ -82,8 +82,8 @@ public:
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
               [this] { request(command::import_font); }}, strings_), dock_(workbench_.document_dock()) {
-        saved_dock_widths_ = ui::load_designer_dock_widths(settings_path_);
-        workbench_.set_dock_widths(saved_dock_widths_);
+        saved_layout_ = ui::load_designer_dock_widths(settings_path_);
+        workbench_.set_dock_widths(saved_layout_);
         vgui_dock_on_activate(dock_, [](vgui_widget*, vgui_item_id item, void* user) {
             auto& self = *static_cast<designer*>(user);
             if (!self.projecting_tabs_ && item != self.active_ && self.find_page(item)) self.pending_tab_ = item;
@@ -167,7 +167,7 @@ public:
     }
 
     void service() {
-        if (std::exchange(layout_save_pending_, false)) save_layout_widths();
+        if (std::exchange(layout_save_pending_, false)) save_layout();
         if (picked_) finish_chooser();
         if (package_name_) finish_package();
         if (auto selected = std::exchange(pending_language_, std::nullopt)) {
@@ -284,12 +284,14 @@ public:
 private:
     const char* tr(std::string_view key, const char* fallback) const { return strings_.text(key, fallback); }
 
-    void save_layout_widths() {
+    void save_layout() {
         const auto widths = workbench_.dock_widths();
         // Converting pixels back to logical widths can introduce DPI rounding noise.
-        if (std::abs(widths.left - saved_dock_widths_.left) < .01f &&
-            std::abs(widths.right - saved_dock_widths_.right) < .01f) return;
-        if (ui::save_designer_dock_widths(settings_path_, widths)) saved_dock_widths_ = widths;
+        if (std::abs(widths.left - saved_layout_.left) < .01f &&
+            std::abs(widths.right - saved_layout_.right) < .01f &&
+            widths.left_collapsed == saved_layout_.left_collapsed &&
+            widths.right_collapsed == saved_layout_.right_collapsed) return;
+        if (ui::save_designer_dock_widths(settings_path_, widths)) saved_layout_ = widths;
         else workbench_.status(std::string(tr("settings.layout_save_failed", "Cannot save layout widths: ")) + utf8(settings_path_));
     }
 
@@ -795,7 +797,7 @@ private:
     ui::designer_strings strings_;
     fs::path settings_path_;
     message_box_fn message_box_;
-    ui::designer_dock_widths saved_dock_widths_;
+    ui::designer_dock_widths saved_layout_;
     bool layout_save_pending_ = false;
     std::optional<ui::designer_language> pending_language_;
     std::optional<view_action> pending_view_;
@@ -1413,7 +1415,36 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
     constexpr ui::designer_dock_widths defaults{};
     require(dock_width(VGUI_DOCK_LEFT) > defaults.left && dock_width(VGUI_DOCK_RIGHT) > defaults.right,
         "custom widths were not restored before layout reset");
+    const auto custom = ui::load_designer_dock_widths(settings);
+    const auto saved_sides = [&](bool left, bool right) {
+        const auto saved = ui::load_designer_dock_widths(settings);
+        return std::abs(saved.left - custom.left) < .01f && std::abs(saved.right - custom.right) < .01f &&
+            saved.left_collapsed == left && saved.right_collapsed == right;
+    };
+    const auto original_center = dock_width(VGUI_DOCK_CENTER);
+    const auto press_side = [&](const char* id) {
+        auto* button = widget(id);
+        ui::pixel_rect bounds{};
+        vgui_widget_get_rect(button, &bounds.x, &bounds.y, &bounds.width, &bounds.height);
+        const float x = bounds.x + bounds.width * .5f, y = bounds.y + bounds.height * .5f;
+        require(bounds.width > 0 && bounds.height > 0 && vgui_hit_test(shell, x, y) == button,
+            "side panel toggle is not clickable");
+        click(x, y);
+    };
     const auto before = preview.capture_view();
+    press_side("designer.dock.collapse_left");
+    require(dock_width(VGUI_DOCK_LEFT) < 60 && std::abs(dock_width(VGUI_DOCK_RIGHT) - custom.right) < .01f &&
+        dock_width(VGUI_DOCK_CENTER) > original_center &&
+        saved_sides(true, false),
+        "folding Outline did not widen the board, changed Inspector, or preferences were not saved");
+    press_side("designer.dock.collapse_right");
+    require(dock_width(VGUI_DOCK_RIGHT) < 60 &&
+        saved_sides(true, true),
+        "Inspector did not fold independently");
+    press_side("designer.dock.collapse_left");
+    require(std::abs(dock_width(VGUI_DOCK_LEFT) - custom.left) < .01f && dock_width(VGUI_DOCK_RIGHT) < 60 &&
+        saved_sides(false, true),
+        "reopening Outline did not restore its preferred width or changed Inspector");
     auto* view_menu = menus.open(3);
     const int reset_index = vgui_menu_get_count(view_menu) - 1;
     require(std::string_view(vgui_menu_get_item_text(view_menu, vgui_menu_get_item_at(view_menu, reset_index))) ==

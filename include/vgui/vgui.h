@@ -1541,8 +1541,21 @@ extern "C" {
 	 * gap leaves the minimum-width layout enabled but provides no hit target.
 	 * Narrow layouts can squeeze the panes without changing their preferences. */
 	VGUI_API void vgui_dock_set_side_resize(vgui_widget* dock, float min_left, float min_center, float min_right);
-	/* Absolute rectangles after layout.  Zone rects are zero when collapsed.
-	 * The tab rect of a floating panel is its title bar. */
+	/* LEFT/RIGHT only. Assign an existing direct VGUI_BUTTON child that is not
+	 * a dock page or assigned to the other side. The dock controls its layout
+	 * and visibility while assigned; the host handles its actions. NULL removes
+	 * only the role and restores the button's prior visibility. Destroying or
+	 * reparenting the button also clears the role. Normal child ownership applies:
+	 * vgui_dock_clear() leaves buttons attached; destroying the dock destroys them. */
+	VGUI_API void vgui_dock_set_side_button(vgui_widget* dock, vgui_dock_zone zone, vgui_widget* button);
+	/* LEFT/RIGHT only. Collapsing hides the pages without closing them or
+	 * changing the preferred width. An open collapsed side uses a narrow rail,
+	 * with its assigned button (if any) at the top. An empty side stays hidden. */
+	VGUI_API void vgui_dock_set_side_collapsed(vgui_widget* dock, vgui_dock_zone zone, int collapsed);
+	VGUI_API int vgui_dock_get_side_collapsed(vgui_widget* dock, vgui_dock_zone zone);
+	/* Absolute rectangles after layout. Empty side zones have no rect; an open
+	 * collapsed side returns its rail rect. The tab rect of a floating panel
+	 * is its title bar. */
 	VGUI_API int vgui_dock_get_zone_rect(vgui_widget* dock, vgui_dock_zone zone, float* x, float* y, float* width, float* height);
 	VGUI_API int vgui_dock_get_tab_rect(vgui_widget* dock, vgui_item_id panel, float* x, float* y, float* width, float* height);
 	/* External cross-window drop preview: a host dragging a panel from ANOTHER

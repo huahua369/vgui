@@ -7,7 +7,9 @@
 #include <vgui/editor/property_grid.h>
 
 #include <algorithm>
+#include <array>
 #include <charconv>
+#include <cmath>
 #include <initializer_list>
 #include <map>
 #include <optional>
@@ -71,9 +73,56 @@ vgui_widget* make_row(vgui_widget* parent)
     return row;
 }
 
+struct icon_stroke { float x0, y0, x1, y1; };
+using outline_texture = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
+constexpr int outline_icon_size = 18;
+
+// A small antialiased white mask keeps the icons independent of platform fonts.
+outline_texture make_outline_icon(vgui_context* ui, std::initializer_list<icon_stroke> strokes)
+{
+    constexpr int size = 48;
+    constexpr float density = size / 16.f;
+    std::array<unsigned char, size * size * 4> pixels;
+    pixels.fill(255);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            float coverage = 0;
+            for (const auto& s : strokes) {
+                const float dx = s.x1 - s.x0, dy = s.y1 - s.y0;
+                const float px = (x + .5f) / density - s.x0, py = (y + .5f) / density - s.y0;
+                const float t = std::clamp((px * dx + py * dy) / (dx * dx + dy * dy), 0.f, 1.f);
+                const float distance = std::hypot(px - t * dx, py - t * dy);
+                coverage = std::max(coverage, std::clamp((.72f - distance) * density + .5f, 0.f, 1.f));
+            }
+            pixels[4 * (y * size + x) + 3] = static_cast<unsigned char>(coverage * 255.f + .5f);
+        }
+    }
+    const vgui_texture_desc desc{size, size, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels.data()};
+    return {vgui_texture_create(ui, &desc), vgui_texture_destroy};
+}
+
+void describe_outline_button(vgui_widget* button, const char* label)
+{
+    vgui_widget_set_tooltip(button, label);
+    vgui_widget_set_a11y_name(button, label);
+}
+
 struct localized_text {
     std::string key;
     const char* fallback;
+};
+
+struct dock_side {
+    vgui_dock_zone zone;
+    const char* command;
+    localized_text title, collapse, expand;
+};
+
+const dock_side sides[] = {
+    {VGUI_DOCK_LEFT, "designer.dock.collapse_left", {"workbench.outline.heading", "Outline"},
+        {"workbench.dock.collapse_outline", "Collapse Outline"}, {"workbench.dock.expand_outline", "Expand Outline"}},
+    {VGUI_DOCK_RIGHT, "designer.dock.collapse_right", {"workbench.dock.inspector", "Inspector"},
+        {"workbench.dock.collapse_inspector", "Collapse Inspector"}, {"workbench.dock.expand_inspector", "Expand Inspector"}},
 };
 
 using status_value = std::variant<std::string, localized_text>;
@@ -117,6 +166,7 @@ struct designer_workbench::impl {
     const designer_strings& strings;
     kit::editor_context editor;
     kit::command_registry commands;
+    std::function<void()> layout_changed;
     std::optional<kit::outliner_view> outliner{std::in_place};
     std::optional<kit::property_grid> grid{std::in_place};
     std::vector<vgui_widget*> buttons;
@@ -165,7 +215,9 @@ struct designer_workbench::impl {
     bool invoking_command = false;
     bool page_active = true;
     vgui_widget *shell = nullptr, *dock = nullptr;
+    std::array<vgui_widget*, std::size(sides)> side_buttons{};
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
+    outline_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
     vgui_widget *menubar = nullptr, *quick_actions = nullptr;
     int toolbar_width = -1;
@@ -173,7 +225,8 @@ struct designer_workbench::impl {
     std::optional<designer_language> toolbar_language;
 
     impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale)
-        : ui(context), history(model), strings(locale), editor(context), selected(model.current().root)
+        : ui(context), history(model), strings(locale), editor(context),
+          layout_changed(std::move(file.layout_changed)), selected(model.current().root)
     {
         auto* root = vgui_root(ui);
         vgui_widget_set_layout(root, VGUI_LAYOUT_COLUMN);
@@ -198,9 +251,10 @@ struct designer_workbench::impl {
         vgui_dock_set_side_resize(dock, 150, 260, 220);
         vgui_dock_set_document_tabs(dock, 1);
 
-        auto* structure = page("structure", {"workbench.outline.heading", "Outline"}, VGUI_DOCK_LEFT);
+        auto* structure = page("structure", sides[0].title, VGUI_DOCK_LEFT);
         build_structure(structure);
-        auto* properties = page("inspector", {"workbench.dock.inspector", "Inspector"}, VGUI_DOCK_RIGHT);
+        auto* properties = page("inspector", sides[1].title, VGUI_DOCK_RIGHT);
+        build_side_buttons();
         grid->set_edit_field_background(0xFF2A3443);
         grid->build_with_labels(properties, inspector_labels());
         grid->set_change_listener([this](const std::string& key, const std::string& input) {
@@ -452,12 +506,21 @@ struct designer_workbench::impl {
         add_view("designer.view.fit", {"preview.fit", "Fit"}, action::fit, false);
         add_view("designer.view.actual", {"workbench.menu.actual_size", "Actual Size"}, action::actual, false);
         vgui_menu_add_separator(view);
+        for (const auto& side : sides) {
+            add_menu_command(view, side.command, side.title, [this, zone = side.zone] {
+                vgui_dock_set_side_collapsed(dock, zone, !vgui_dock_get_side_collapsed(dock, zone));
+                refresh_side_buttons();
+                if (layout_changed) layout_changed();
+            }, with_active_page(), nullptr, with_active_page([this, zone = side.zone] {
+                return !vgui_dock_get_side_collapsed(dock, zone);
+            }));
+        }
+        vgui_menu_add_separator(view);
         add_menu_command(view, "designer.layout.restore_default",
-            {"workbench.menu.restore_default_layout", "Restore Default Layout"},
-            [this, changed = std::move(callbacks.layout_changed)] {
+            {"workbench.menu.restore_default_layout", "Restore Default Layout"}, [this] {
                 set_dock_widths({});
                 message = localized_text{"workbench.status.default_layout_restored", "Default layout restored."};
-                if (changed) changed();
+                if (layout_changed) layout_changed();
             });
 
         auto* tools = add_menu({"workbench.menu.tools", "Tools"});
@@ -563,13 +626,51 @@ struct designer_workbench::impl {
     {
         const float scale = vgui_context_get_ui_scale(ui);
         return {vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT) / scale,
-                vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT) / scale};
+                vgui_dock_get_zone_size(dock, VGUI_DOCK_RIGHT) / scale,
+                vgui_dock_get_side_collapsed(dock, VGUI_DOCK_LEFT) != 0,
+                vgui_dock_get_side_collapsed(dock, VGUI_DOCK_RIGHT) != 0};
     }
 
     void set_dock_widths(designer_dock_widths widths)
     {
         vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, widths.left);
         vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, widths.right);
+        vgui_dock_set_side_collapsed(dock, VGUI_DOCK_LEFT, widths.left_collapsed);
+        vgui_dock_set_side_collapsed(dock, VGUI_DOCK_RIGHT, widths.right_collapsed);
+        refresh_side_buttons();
+    }
+
+    void build_side_buttons()
+    {
+        for (std::size_t i = 0; i < side_buttons.size(); ++i) {
+            const auto& side = sides[i];
+            auto* button = side_buttons[i] = make_button(dock, side.command, nullptr, false);
+            vgui_widget_set_padding(button, 0, 0, 0, 0);
+            vgui_widget_set_text_align(button, .5f, .5f);
+            vgui_widget_set_font_size(button, 17);
+            vgui_widget_set_background(button, toolbar_bg);
+            vgui_widget_set_border(button, toolbar_edge, 1);
+            vgui_widget_set_rounding(button, 4);
+            vgui_widget_set_cursor(button, VGUI_CURSOR_HAND);
+            vgui_widget_set_tooltip_anchor(button, VGUI_TOOLTIP_ANCHOR_WIDGET);
+            vgui_dock_set_side_button(dock, side.zone, button);
+        }
+        refresh_side_buttons();
+    }
+
+    void refresh_side_buttons()
+    {
+        for (std::size_t i = 0; i < side_buttons.size(); ++i) {
+            auto* button = side_buttons[i];
+            if (!button) continue;
+            const auto& side = sides[i];
+            const bool collapsed = vgui_dock_get_side_collapsed(dock, side.zone) != 0;
+            const char* label = translate(collapsed ? side.expand : side.collapse);
+            const bool arrow_left = (side.zone == VGUI_DOCK_LEFT) != collapsed;
+            vgui_widget_set_text(button, arrow_left ? "«" : "»");
+            vgui_widget_set_tooltip(button, label);
+            vgui_widget_set_a11y_name(button, label);
+        }
     }
 
     kit::property_grid::ui_labels inspector_labels() const
@@ -627,6 +728,39 @@ struct designer_workbench::impl {
         }, this);
         buttons.push_back(button);
         return button;
+    }
+
+    vgui_widget* make_outline_button(vgui_widget* row, const char* id, vgui_texture* icon)
+    {
+        auto* button = make_button(row, id, nullptr, true);
+        vgui_widget_set_size(button, 38, 32);
+        vgui_widget_set_padding(button, 0, 0, 0, 0);
+        vgui_widget_set_text_align(button, .5f, .5f);
+        vgui_widget_set_tooltip_anchor(button, VGUI_TOOLTIP_ANCHOR_WIDGET);
+        vgui_button_set_icon(button, icon, outline_icon_size, outline_icon_size, VGUI_BUTTON_ICON_LEFT);
+        vgui_button_set_icon_tint(button, toolbar_text);
+        return button;
+    }
+
+    void add_outline_button(vgui_widget* row, const char* id, localized_text label,
+        std::initializer_list<icon_stroke> strokes)
+    {
+        const auto icon = make_outline_icon(ui, strokes);
+        bind_label(make_outline_button(row, id, icon.get()), std::move(label), describe_outline_button);
+    }
+
+    void refresh_pickup_button()
+    {
+        const char* label = pickup_label();
+        if (std::string_view(label) == vgui_widget_get_a11y_name(pickup)) return;
+        describe_outline_button(pickup, label);
+        commands.find(vgui_widget_get_id(pickup))->title = label;
+        const bool moving = !move_source.empty();
+        auto* icon = moving ? cancel_move_icon.get() : pick_icon.get();
+        vgui_button_set_icon(pickup, icon, outline_icon_size, outline_icon_size, VGUI_BUTTON_ICON_LEFT);
+        vgui_button_set_icon_tint(pickup, moving ? 0xFF88B9FF : toolbar_text);
+        if (!moving)
+            vgui_widget_set_tooltip(pickup, strings.text("workbench.outline.pick_hint", "Pick up a node to move it to a different container"));
     }
 
     const char* pickup_label() const
@@ -717,10 +851,16 @@ struct designer_workbench::impl {
         vgui_widget_set_border(outline_actions, 0, 0);
 
         auto* row = make_row(outline_actions);
-        add_button(row, "designer.move.up", {"workbench.outline.up", "Up"}, true);
-        add_button(row, "designer.move.down", {"workbench.outline.down", "Down"}, true);
-        add_button(row, "designer.duplicate", {"workbench.outline.copy", "Copy"}, true);
-        add_button(row, "designer.delete", {"workbench.outline.delete", "Delete"}, true);
+        add_outline_button(row, "designer.move.up", {"workbench.outline.up", "Up"},
+            {{8, 13, 8, 3}, {4, 7, 8, 3}, {8, 3, 12, 7}});
+        add_outline_button(row, "designer.move.down", {"workbench.outline.down", "Down"},
+            {{8, 3, 8, 13}, {4, 9, 8, 13}, {8, 13, 12, 9}});
+        add_outline_button(row, "designer.duplicate", {"workbench.outline.copy", "Copy"},
+            {{3, 10, 3, 2.5f}, {3, 2.5f, 10, 2.5f}, {6, 5.5f, 13, 5.5f},
+             {13, 5.5f, 13, 13.5f}, {13, 13.5f, 6, 13.5f}, {6, 13.5f, 6, 5.5f}});
+        add_outline_button(row, "designer.delete", {"workbench.outline.delete", "Delete"},
+            {{2.5f, 4.5f, 13.5f, 4.5f}, {6, 2.5f, 10, 2.5f}, {4, 5, 5, 13.5f},
+             {5, 13.5f, 11, 13.5f}, {11, 13.5f, 12, 5}, {7, 7.5f, 7, 11}, {9, 7.5f, 9, 11}});
         row = make_row(outline_actions);
         define_command("designer.move.pick", pickup_label(), [this] {
             if (move_source.empty()) {
@@ -731,8 +871,10 @@ struct designer_workbench::impl {
                 message = localized_text{"workbench.status.move_cancelled", "Move cancelled"};
             }
         }, with_active_page([this] { return !move_source.empty() || location(selected).has_value(); }));
-        pickup = make_button(row, "designer.move.pick", pickup_label(), true);
-        bind_label(pickup, {"workbench.outline.pick_hint", "Pick up a node to move it to a different container"}, vgui_widget_set_tooltip);
+        pick_icon = make_outline_icon(ui, {{3, 6, 3, 13}, {3, 13, 10, 13}, {10, 13, 10, 10}, {3, 6, 6, 6},
+            {7, 9, 13, 3}, {8.5f, 3, 13, 3}, {13, 3, 13, 7.5f}});
+        cancel_move_icon = make_outline_icon(ui, {{4, 4, 12, 12}, {4, 12, 12, 4}});
+        pickup = make_outline_button(row, "designer.move.pick", pick_icon.get());
         const localized_text move_here{"workbench.outline.move_here", "Move Here"};
         define_command("designer.move.here", translate(move_here), [this] {
             if (apply({move_node{move_source, selected}}, moved_status())) {
@@ -742,7 +884,9 @@ struct designer_workbench::impl {
             const auto place = location(move_source);
             return place && place->first != selected && can_move(move_source, selected);
         }));
-        add_button(row, "designer.move.here", move_here, true);
+        add_outline_button(row, "designer.move.here", move_here,
+            {{3, 9, 3, 13}, {3, 13, 13, 13}, {13, 13, 13, 9}, {8, 2.5f, 8, 10},
+             {5.5f, 7.5f, 8, 10}, {8, 10, 10.5f, 7.5f}});
     }
 
     bool apply(std::initializer_list<edit> edits, status_message success, std::string_view field = {}, bool interactive = false)
@@ -1250,13 +1394,8 @@ struct designer_workbench::impl {
 
     void refresh_captions()
     {
-        const char* pick = pickup_label();
-        if (std::string_view(pick) != vgui_widget_get_text(pickup)) {
-            vgui_widget_set_text(pickup, pick);
-            commands.find(vgui_widget_get_id(pickup))->title = pick;
-        }
-        // Size the scrollable content from the current captions (including
-        // the alternate pickup label), not from the dock's viewport width.
+        refresh_pickup_button();
+        // Keep the icon hit targets at their natural size when the dock narrows.
         float width = 0;
         vgui_widget_get_intrinsic_size(outline_actions, &width, nullptr);
         const float min_width = width / vgui_context_get_ui_scale(ui);
@@ -1283,6 +1422,7 @@ struct designer_workbench::impl {
         }
         refresh_command_states();
         for (const auto& [id, label] : dock_labels) vgui_dock_set_title(dock, id, translate(label));
+        refresh_side_buttons();
         if (page_active && !replaced) refresh_outline_labels();
         sync_inspector_language = true;
         // Do not rebind a live text editor (or finish its undo transaction)

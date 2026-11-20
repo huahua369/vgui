@@ -461,6 +461,20 @@ void test_button_text_alignment(font_familys_t* font) {
     vgui_widget_set_text_align(button, 0.0f, 0.5f);
     check_position(left + (icon_w - text_w) * 0.5f, top + (height - text_h + icon_h + gap) * 0.5f,
         "start-aligned stack with icon above text");
+
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    cb->add_image = [](rvg_t*, ovg_image_r* img) {
+        commands.push_back({'I', {}, img->rc, img->dst, 0, 0, 0, img->color});
+    };
+    vgui_widget_set_text(button, "");
+    vgui_widget_set_text_align(button, 0.5f, 0.5f);
+    vgui_button_set_icon_tint(button, 0xff668866);
+    cb->clear(vg.get());
+    commands.clear();
+    vgui_draw(ui.get(), cb.get(), vg.get());
+    check(commands.size() == 1 && commands[0].kind == 'I' && commands[0].clip == ivec4(0, 0, 1, 1) &&
+        commands[0].box == ivec4(52, 44, icon_w, icon_h) && commands[0].color == 0xff668866,
+        "icon-only button submits its CPU texture, centered at the requested size and tint");
 }
 } // namespace
 

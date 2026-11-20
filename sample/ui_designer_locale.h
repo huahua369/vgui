@@ -25,10 +25,11 @@ bool save_designer_language(const std::filesystem::path& path, designer_language
 
 struct designer_dock_widths {
     float left = 240.f, right = 345.f; // Logical pixels, independent of DPI and window width.
+    bool left_collapsed = false, right_collapsed = false;
     bool operator==(const designer_dock_widths&) const = default;
 };
 
-// Missing or invalid individual widths fall back to the defaults.
+// Missing or invalid individual layout fields fall back to their defaults.
 designer_dock_widths load_designer_dock_widths(const std::filesystem::path& path);
 bool save_designer_dock_widths(const std::filesystem::path& path, designer_dock_widths widths);
 

@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <initializer_list>
 #include <iterator>
 #include <memory>
@@ -101,6 +102,7 @@ public:
               .save_as = [this] { save(); },
               .export_package = [this] { ++export_calls; },
               .quit = [this] { ++quit_calls; },
+              .layout_changed = [this] { if (on_layout_changed) on_layout_changed(); },
               .save_all = [this] { ++save_all_calls; },
               .can_save_all = [this] { return model.dirty(); },
           }, strings)
@@ -299,6 +301,7 @@ public:
     int save_calls = 0, open_calls = 0;
     int new_calls = 0, quick_save_calls = 0, save_all_calls = 0, export_calls = 0, quit_calls = 0;
     bool io_ok = false;
+    std::function<void()> on_layout_changed;
     ui::designer_strings strings;
     ui::designer_workbench bench;
 };
@@ -586,6 +589,142 @@ void exercise_side_resize()
 
     check(workbench.model.current() == initial && workbench.model.revision() == revision &&
         !workbench.model.dirty() && !workbench.model.can_undo(), "sash resize changed the document or its history");
+}
+
+float dock_zone_width(vgui_widget* dock, vgui_dock_zone zone)
+{
+    float width = 0;
+    check(vgui_dock_get_zone_rect(dock, zone, nullptr, nullptr, &width, nullptr) && width > 0,
+        "expected a nonempty dock zone rect");
+    return width;
+}
+
+void exercise_side_collapse()
+{
+    temp_dir directory;
+    std::vector<ui::designer_dock_widths> changes;
+    test_workbench workbench(directory.path / "collapse.vgui.json");
+    auto* ctx = workbench.ctx.get();
+    auto* dock = workbench.widget("designer.dock", VGUI_DOCK);
+    const auto initial = workbench.model.current();
+    const auto revision = workbench.model.revision();
+    workbench.on_layout_changed = [&] { changes.push_back(workbench.bench.dock_widths()); };
+
+    constexpr ui::designer_dock_widths defaults{}, expanded{304.5f, 390.f},
+        left_only{expanded.left, expanded.right, true, false},
+        right_only{expanded.left, expanded.right, false, true}, both{expanded.left, expanded.right, true, true};
+    constexpr std::string_view left_id = "designer.dock.collapse_left", right_id = "designer.dock.collapse_right";
+    const auto button = [&](std::string_view id) { return workbench.widget(id, VGUI_BUTTON); };
+    const auto arrow = [&](std::string_view id) { return std::string(vgui_widget_get_text(button(id))); };
+    const auto expanded_left = arrow(left_id), expanded_right = arrow(right_id);
+    const auto check_state = [&](ui::designer_dock_widths expected) {
+        check(workbench.bench.dock_widths() == expected &&
+            bool(vgui_dock_get_side_collapsed(dock, VGUI_DOCK_LEFT)) == expected.left_collapsed &&
+            bool(vgui_dock_get_side_collapsed(dock, VGUI_DOCK_RIGHT)) == expected.right_collapsed,
+            "dock collapse state or preferred widths do not match");
+        const auto left = arrow(left_id), right = arrow(right_id);
+        check(!left.empty() && !right.empty() && (left != expanded_left) == expected.left_collapsed &&
+            (right != expanded_right) == expected.right_collapsed, "dock buttons do not indicate their side's state");
+    };
+    const auto check_geometry = [&](ui::designer_dock_widths expected, float scale = 1.f) {
+        const float left = dock_zone_width(dock, VGUI_DOCK_LEFT), right = dock_zone_width(dock, VGUI_DOCK_RIGHT);
+        const float left_full = expected.left * scale, right_full = expected.right * scale;
+        check(expected.left_collapsed ? left < left_full * .5f : left == left_full, "incorrect Outline zone width");
+        check(expected.right_collapsed ? right < right_full * .5f : right == right_full, "incorrect Inspector zone width");
+        return dock_zone_width(dock, VGUI_DOCK_CENTER);
+    };
+    const auto change = [&](ui::designer_dock_widths expected, const auto& input) {
+        const auto before = changes.size();
+        input();
+        check(changes.size() == before + 1 && changes.back() == expected,
+            "layout input did not immediately notify the host once with the updated preferences");
+        check_state(expected);
+        workbench.frame();
+    };
+    const auto click_side = [&](std::string_view id, ui::designer_dock_widths expected) {
+        change(expected, [&] {
+            auto* target = button(id);
+            float x = 0, y = 0, w = 0, h = 0;
+            vgui_widget_get_rect(target, &x, &y, &w, &h);
+            x += w * .5f;
+            y += h * .5f;
+            check(w > 0 && h > 0 && vgui_widget_get_enabled(target) && vgui_hit_test(ctx, x, y) == target,
+                "dock button is not clickable: " + std::string(id));
+            workbench.click_at(x, y);
+        });
+    };
+    const auto check_view = [&](vgui_widget* menu, ui::designer_dock_widths expected) {
+        const auto outline = menu_item(menu, "Outline"), inspector = menu_item(menu, "Inspector");
+        check(vgui_menu_get_item_checkable(menu, outline) && vgui_menu_get_item_checkable(menu, inspector) &&
+            bool(vgui_menu_get_item_checked(menu, outline)) == !expected.left_collapsed &&
+            bool(vgui_menu_get_item_checked(menu, inspector)) == !expected.right_collapsed,
+            "View menu checks do not track expanded sides");
+    };
+    const auto activate = [&](vgui_widget* menu, std::string_view label, ui::designer_dock_widths expected) {
+        workbench.highlight(menu, label);
+        change(expected, [&] {
+            check(vgui_input_key(ctx, VGUI_KEY_ENTER, 1, 0), "View command did not consume Enter");
+            vgui_input_key(ctx, VGUI_KEY_ENTER, 0, 0);
+            check(!vgui_context_get_open_menu(ctx), "View command did not dismiss the menu");
+        });
+    };
+
+    check_state(defaults);
+    workbench.bench.set_dock_widths(expanded);
+    workbench.frame();
+    const float center_expanded = check_geometry(expanded);
+    click_side(left_id, left_only);
+    const float center_left = check_geometry(left_only);
+    check(center_left > center_expanded, "collapsing Outline did not widen the center");
+    check_view(workbench.open_menu("View"), left_only);
+    check(workbench.key(VGUI_KEY_ESCAPE), "could not dismiss View");
+    click_side(right_id, both);
+    const float center_both = check_geometry(both);
+    check(center_both > center_left, "collapsing Inspector did not widen the center");
+    click_side(left_id, right_only);
+    const float center_right = check_geometry(right_only);
+    check(center_right > center_expanded && center_right < center_both, "center did not track independent side collapses");
+    click_side(right_id, expanded);
+    check(check_geometry(expanded) == center_expanded, "expanding both sides did not restore the original center width");
+
+    auto* view = workbench.open_menu("View");
+    check_view(view, expanded);
+    check(vgui_menu_get_item_at(view, vgui_menu_get_count(view) - 1) == menu_item(view, "Restore Default Layout"),
+        "Restore Default Layout is not the last View command");
+    activate(view, "Outline", left_only);
+    view = workbench.open_menu("View");
+    check_view(view, left_only);
+    activate(view, "Inspector", both);
+
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_tooltip(button(left_id))) == "展开大纲" &&
+        std::string_view(vgui_widget_get_tooltip(button(right_id))) == "展开属性检查器",
+        "collapsed dock buttons did not get localized expand hints");
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+
+    workbench.bench.set_page_active(false);
+    workbench.frame();
+    check_state(both);
+    workbench.bench.set_page_active(true);
+    workbench.frame();
+    check_state(both);
+    check(check_geometry(both) == center_both, "reopening the workspace lost the collapsed side rails");
+
+    workbench.bench.set_page_active(false);
+    vgui_context_set_ui_scale(ctx, 1.25f);
+    workbench.frame();
+    activate(workbench.open_menu("View"), "Restore Default Layout", defaults);
+    workbench.bench.set_page_active(true);
+    workbench.frame();
+    check_state(defaults);
+    check_geometry(defaults, 1.25f);
+    check_view(workbench.open_menu("View"), defaults);
+    check(workbench.key(VGUI_KEY_ESCAPE), "could not dismiss View after layout reset");
+    check(workbench.model.current() == initial && workbench.model.revision() == revision &&
+        !workbench.model.dirty() && !workbench.model.can_undo(), "side layout commands changed the design or its history");
 }
 
 void exercise_toolbar()
@@ -1213,6 +1352,67 @@ void exercise_font_family()
         "the translated default choice did not clear the imported font");
 }
 
+void exercise_outline_icons()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "outline-icons.vgui.json");
+    const auto button = [&](std::string_view id) { return workbench.widget(id, VGUI_BUTTON); };
+    constexpr std::pair<std::string_view, std::string_view> labels[] = {
+        {"designer.move.up", "Up"}, {"designer.move.down", "Down"},
+        {"designer.duplicate", "Copy"}, {"designer.delete", "Delete"},
+        {"designer.move.pick", "Pick Up"}, {"designer.move.here", "Move Here"}};
+    for (const auto& [id, label] : labels) {
+        auto* icon = button(id);
+        check(std::string_view(vgui_widget_get_text(icon)).empty() &&
+            std::string_view(vgui_widget_get_a11y_name(icon)) == label && *vgui_widget_get_tooltip(icon),
+            "outline button must be icon-only with an accessible name and tooltip");
+    }
+    auto* pick = button("designer.move.pick");
+    auto* move = button("designer.move.here");
+    check(!vgui_widget_get_enabled(pick) && !vgui_widget_get_enabled(move), "root must not be movable");
+
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const auto target = workbench.add("panel", root);
+    workbench.bench.select(root);
+    workbench.frame();
+    const auto leaf = workbench.add("label", root);
+    workbench.bench.select(leaf);
+    workbench.frame();
+    workbench.press("designer.move.up");
+    check(model.current().nodes.at(root).children.front() == leaf, "up icon did not move the node");
+    workbench.press("designer.move.down");
+    check(model.current().nodes.at(root).children.back() == leaf, "down icon did not move the node");
+    workbench.press("designer.duplicate");
+    const std::string copy(workbench.bench.selection());
+    check(copy != leaf && model.current().nodes.size() == 4, "copy icon did not duplicate the node");
+    workbench.press("designer.delete");
+    check(!model.current().nodes.contains(copy) && model.current().nodes.contains(leaf), "delete icon removed the wrong node");
+
+    workbench.bench.select(leaf);
+    workbench.frame();
+    const auto revision = model.revision();
+    workbench.press("designer.move.pick");
+    check(std::string_view(vgui_widget_get_tooltip(pick)) == "Cancel Move" &&
+        !vgui_widget_get_enabled(move) && model.revision() == revision, "pickup did not enter cancel mode safely");
+    workbench.press("designer.move.pick");
+    check(std::string_view(vgui_widget_get_a11y_name(pick)) == "Pick Up" && model.revision() == revision,
+        "cancel icon did not clear the pending move");
+
+    workbench.press("designer.move.pick");
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_tooltip(pick)) == "取消移动" &&
+        std::string_view(vgui_widget_get_tooltip(button("designer.delete"))) == "删除", "tooltips did not switch language");
+    workbench.bench.select(target);
+    workbench.frame();
+    workbench.press("designer.move.here");
+    check(model.current().nodes.at(target).children == std::vector<std::string>{leaf} && model.revision() == revision + 1 &&
+        std::string_view(vgui_widget_get_a11y_name(pick)) == "拾取" && !vgui_widget_get_enabled(move),
+        "move-here icon did not commit one move and reset pickup state");
+}
+
 void exercise_outline_drag()
 {
     temp_dir directory;
@@ -1382,53 +1582,52 @@ void exercise_layout_preferences()
         std::ifstream input(settings, std::ios::binary);
         return std::string(std::istreambuf_iterator<char>(input), {});
     };
-    constexpr ui::designer_dock_widths defaults{240, 345}, saved{304.5f, 390.f};
+    constexpr ui::designer_dock_widths defaults{240, 345}, expanded{304.5f, 390.f},
+        saved_left{expanded.left, expanded.right, true, false}, saved_right{expanded.left, expanded.right, false, true};
     check(ui::load_designer_dock_widths(settings) == defaults && !fs::exists(settings),
-        "missing preferences did not use the default widths or created a file");
-    write(R"({"language":"en-US","layout":{"left_width":"invalid","right_width":390,"other":true}})");
-    check(ui::load_designer_dock_widths(settings) == ui::designer_dock_widths{240, 390},
-        "invalid width did not fall back independently");
-    check(ui::save_designer_dock_widths(settings, saved) && ui::load_designer_dock_widths(settings) == saved &&
-        ui::load_designer_language(settings) == ui::designer_language::english && read().find("\"other\": true") != std::string::npos,
-        "saving the widths lost other settings or truncated a fractional width");
-    check(ui::save_designer_language(settings, ui::designer_language::simplified_chinese) && ui::load_designer_dock_widths(settings) == saved,
-        "saving language overwrote the layout preference");
+        "missing preferences did not use the defaults or created a file");
+    write(R"({"layout":{"left_width":304.5,"right_width":390}})");
+    check(ui::load_designer_dock_widths(settings) == expanded, "legacy width-only preferences did not default to expanded sides");
+    write(R"({"layout":{"left_width":304.5,"right_width":[],"left_collapsed":true,"right_collapsed":1}})");
+    check(ui::load_designer_dock_widths(settings) == ui::designer_dock_widths{304.5f, 345, true, false},
+        "malformed right-side members did not default independently of the valid left-side members");
+    write(R"({"language":"en-US","theme":"custom","layout":{)"
+          R"("left_width":"invalid","right_width":390,"left_collapsed":"true","right_collapsed":true,"other":true}})");
+    check(ui::load_designer_dock_widths(settings) == ui::designer_dock_widths{240, 390, false, true},
+        "malformed left-side members did not default independently of the valid right-side members");
+    check(ui::save_designer_dock_widths(settings, saved_left) && ui::load_designer_dock_widths(settings) == saved_left &&
+        ui::save_designer_dock_widths(settings, saved_right) && ui::load_designer_dock_widths(settings) == saved_right,
+        "side preferences did not round-trip independent flags and fractional widths");
+    const auto saved_settings = read();
+    check(ui::load_designer_language(settings) == ui::designer_language::english &&
+        saved_settings.find("\"theme\": \"custom\"") != std::string::npos &&
+        saved_settings.find("\"other\": true") != std::string::npos, "saving the side preferences lost unrelated settings");
+    check(ui::save_designer_language(settings, ui::designer_language::simplified_chinese) &&
+        ui::load_designer_dock_widths(settings) == saved_right, "saving language overwrote the layout preference");
 
     test_workbench restored(directory.path / "document.vgui.json");
     auto* ctx = restored.ctx.get();
     auto* dock = restored.widget("designer.dock", VGUI_DOCK);
+    const auto actual_width = [&](vgui_dock_zone zone) { return dock_zone_width(dock, zone); };
     vgui_context_set_ui_scale(ctx, 1.25f);
     restored.bench.set_dock_widths(ui::load_designer_dock_widths(settings));
-    const auto actual_width = [&](vgui_dock_zone zone) {
-        float width = 0;
-        check(vgui_dock_get_zone_rect(dock, zone, nullptr, nullptr, &width, nullptr), "restored dock pane is missing");
-        return width;
-    };
     restored.frame();
-    check(actual_width(VGUI_DOCK_LEFT) == saved.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) == saved.right * 1.25f,
+    check(restored.bench.dock_widths() == saved_right &&
+        actual_width(VGUI_DOCK_LEFT) == expanded.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) < expanded.right * 1.25f,
+        "applying saved preferences did not restore the Inspector rail and scaled Outline width");
+    restored.bench.set_dock_widths(expanded);
+    restored.frame();
+    check(actual_width(VGUI_DOCK_LEFT) == expanded.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) == expanded.right * 1.25f,
         "restored sizes did not scale to the display DPI");
     vgui_context_set_size(ctx, 950, 650);
     restored.frame();
-    check(actual_width(VGUI_DOCK_LEFT) < saved.left * 1.25f && restored.bench.dock_widths() == saved &&
+    check(actual_width(VGUI_DOCK_LEFT) < expanded.left * 1.25f && restored.bench.dock_widths() == expanded &&
         !restored.model.dirty(), "temporary layout constraints changed the stored widths or document");
 
-    const auto revision = restored.model.revision();
-    restored.bench.set_page_active(false);
-    restored.frame();
-    restored.command("View", "Restore Default Layout");
-    check(restored.bench.dock_widths() == defaults, "reset without an open page did not restore preferred widths");
-    vgui_context_set_size(ctx, 1440, 1000);
-    restored.bench.set_page_active(true);
-    restored.frame();
-    check(actual_width(VGUI_DOCK_LEFT) == defaults.left * 1.25f && actual_width(VGUI_DOCK_RIGHT) == defaults.right * 1.25f,
-        "reset did not restore both visible widths at the current DPI");
-    check(restored.model.revision() == revision && !restored.model.dirty() && !restored.model.can_undo(),
-        "resetting the layout changed the design or its history");
-
-    write(R"({"layout":{"left_width":-5,"right_width":100000}})");
-    check(ui::load_designer_dock_widths(settings) == defaults, "negative or excessive widths were not rejected");
+    write(R"({"layout":{"left_width":-5,"right_width":100000,"left_collapsed":null,"right_collapsed":[]}})");
+    check(ui::load_designer_dock_widths(settings) == defaults, "out-of-range widths or invalid collapse flags were not rejected");
     write("{bad json");
-    check(ui::load_designer_dock_widths(settings) == defaults && !ui::save_designer_dock_widths(settings, saved) &&
+    check(ui::load_designer_dock_widths(settings) == defaults && !ui::save_designer_dock_widths(settings, saved_right) &&
         read() == "{bad json", "saving the layout silently replaced a malformed settings file");
 }
 
@@ -1526,6 +1725,7 @@ int main()
     try {
         exercise_menus();
         exercise_side_resize();
+        exercise_side_collapse();
         exercise_toolbar();
         exercise_workbench();
         exercise_button_atlas();
@@ -1533,6 +1733,7 @@ int main()
         exercise_text_color_picker();
         exercise_font_properties();
         exercise_font_family();
+        exercise_outline_icons();
         exercise_outline_drag();
         exercise_menu_language();
         exercise_language_preferences();

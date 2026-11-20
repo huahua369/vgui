@@ -134,7 +134,12 @@ designer_dock_widths load_designer_dock_widths(const fs::path& path) {
         const auto value = it->get<double>();
         return valid_dock_width(value) ? static_cast<float>(value) : fallback;
     };
-    return {read_width("left_width", widths.left), read_width("right_width", widths.right)};
+    const auto read_collapsed = [&](const char* key) {
+        const auto it = layout->find(key);
+        return it != layout->end() && it->is_boolean() && it->get<bool>();
+    };
+    return {read_width("left_width", widths.left), read_width("right_width", widths.right),
+            read_collapsed("left_collapsed"), read_collapsed("right_collapsed")};
 }
 
 bool save_designer_dock_widths(const fs::path& path, designer_dock_widths widths) {
@@ -145,6 +150,8 @@ bool save_designer_dock_widths(const fs::path& path, designer_dock_widths widths
     if (!layout.is_object()) layout = json::object();
     layout["left_width"] = widths.left;
     layout["right_width"] = widths.right;
+    layout["left_collapsed"] = widths.left_collapsed;
+    layout["right_collapsed"] = widths.right_collapsed;
     return write_settings(path, config);
 }
 

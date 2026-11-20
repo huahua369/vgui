@@ -639,6 +639,8 @@ struct vgui_dock_state
 	int preview_index = -1;
 	float drag_offset_x = 0.0f, drag_offset_y = 0.0f;
 	float zone_size[4] = { -1.0f, -1.0f, -1.0f, -1.0f };	// logical pixels; <0 -> style
+	struct side_button_slot { vgui_widget* widget = nullptr; bool was_visible = false; } side_buttons[2];
+	bool side_collapsed[2] = {};
 	float side_min[4] = {};	// logical pixels; indexed by zone
 	struct sash_rect { float x, y, w, h; } sashes[2] = {};	// LEFT, RIGHT
 	int sash_hover = -1;
@@ -656,6 +658,7 @@ struct vgui_dock_state
 	float zone_y[4] = {};
 	float zone_w[4] = {};
 	float zone_h[4] = {};
+	float tab_view_w[4] = {};
 	float tab_scroll[4] = {};
 	int scroll_active[4] = {};	// auto-scroll the active tab once after activation
 	std::vector<vgui_dock_tab_geom> tabs[4];
@@ -2507,6 +2510,7 @@ static int vgui_tab_drop_index(vgui_widget* w, float x)
 //----------------------------------------------------------------------------
 
 static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w);
+static void vgui_recording_invalidate_chain(vgui_widget* w);
 
 static void vgui_dock_forget_focus(vgui_widget* w, vgui_widget* page)
 {
@@ -2515,6 +2519,33 @@ static void vgui_dock_forget_focus(vgui_widget* w, vgui_widget* page)
 	{
 		if (f != page) continue;
 		vgui_set_focus_internal(w->ctx, nullptr);
+		return;
+	}
+}
+
+static bool vgui_dock_is_side(int zone)
+{
+	return zone == VGUI_DOCK_LEFT || zone == VGUI_DOCK_RIGHT;
+}
+
+static bool vgui_dock_side_collapsed(const vgui_dock_state* st, int zone)
+{
+	return vgui_dock_is_side(zone) && st->side_collapsed[zone];
+}
+
+// Called before a child leaves the dock's tree (including pending destruction).
+// A slot is a role, not a separate owner.
+static void vgui_dock_release_side_button(vgui_widget* dock, vgui_widget* button)
+{
+	vgui_dock_state* st = vgui_dock_of(dock);
+	if (!st || !button) return;
+	for (auto& slot : st->side_buttons)
+	{
+		if (slot.widget != button) continue;
+		button->visible = slot.was_visible;
+		button->abs_w = button->abs_h = 0.0f;
+		slot = {};
+		vgui_recording_invalidate_chain(dock);
 		return;
 	}
 }
@@ -2728,7 +2759,7 @@ static bool vgui_dock_tab_at_point(vgui_widget* w, float x, float y,
 	{
 		if (st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f) continue;
 		float bar_h = std::min(ds.tab_height, st->zone_h[zone]);
-		if (x < st->zone_x[zone] || x >= st->zone_x[zone] + st->zone_w[zone] ||
+		if (x < st->zone_x[zone] || x >= st->zone_x[zone] + st->tab_view_w[zone] ||
 			y < st->zone_y[zone] || y >= st->zone_y[zone] + bar_h)
 			continue;
 		for (size_t i = 0; i < st->tabs[zone].size(); ++i)
@@ -2762,7 +2793,7 @@ static int vgui_dock_zone_tab_bar_at(vgui_widget* w, float x, float y)
 	{
 		if (st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f) continue;
 		float bar_h = std::min(ds.tab_height, st->zone_h[zone]);
-		if (x >= st->zone_x[zone] && x < st->zone_x[zone] + st->zone_w[zone] &&
+		if (x >= st->zone_x[zone] && x < st->zone_x[zone] + st->tab_view_w[zone] &&
 			y >= st->zone_y[zone] && y < st->zone_y[zone] + bar_h)
 			return zone;
 	}
@@ -2809,8 +2840,6 @@ static vgui_dock_panel* vgui_dock_floating_at_point(vgui_widget* w, float x, flo
 	}
 	return nullptr;
 }
-
-static void vgui_recording_invalidate_chain(vgui_widget* w);
 
 static int vgui_dock_sash_at_point(vgui_widget* w, float x, float y)
 {
@@ -3115,10 +3144,41 @@ static void vgui_dock_notify_close(vgui_widget* w, vgui_item_id item)
 	if (fn) fn(w, item, user);
 }
 
+static void vgui_dock_sync_side_visibility(vgui_widget* w)
+{
+	vgui_dock_state* st = w->dock.get();
+	vgui_widget* defocus = nullptr;
+	auto set_visible = [&](vgui_widget* widget, bool show)
+		{
+			if (!widget) return;
+			if (widget->visible != show) vgui_recording_invalidate_chain(w);
+			if (!show && vgui_is_within(widget, w->ctx->focus)) defocus = widget;
+			else vgui_widget_set_visible(widget, show);
+		};
+	for (int side : { VGUI_DOCK_LEFT, VGUI_DOCK_RIGHT })
+		if (vgui_widget* button = st->side_buttons[side].widget)
+			set_visible(button, vgui_dock_zone_has_open(st, side));
+	if (st->side_collapsed[VGUI_DOCK_LEFT] || st->side_collapsed[VGUI_DOCK_RIGHT])
+		for (const auto& panel : st->panels)
+			if (vgui_dock_side_collapsed(st, panel.zone)) set_visible(panel.page, false);
+
+	// Focus listeners can change or destroy widgets. Finish the other updates
+	// before hiding the focused subtree and don't touch the dock afterward.
+	if (defocus && defocus->visible) vgui_widget_set_visible(defocus, 0);
+	else vgui_dock_forget_focus(w, defocus);
+}
+
 static void vgui_dock_notify_change(vgui_widget* w)
 {
 	vgui_dock_state* st = vgui_dock_of(w);
 	if (!st) return;
+	if (st->side_buttons[VGUI_DOCK_LEFT].widget || st->side_buttons[VGUI_DOCK_RIGHT].widget ||
+		st->side_collapsed[VGUI_DOCK_LEFT] || st->side_collapsed[VGUI_DOCK_RIGHT])
+	{
+		vgui_context* ctx = w->ctx;
+		vgui_dock_sync_side_visibility(w);
+		if (!ctx->alive.count(w) || w->destroy_pending) return;
+	}
 	vgui_item_fn fn = st->change_fn;
 	void* user = st->change_user;
 	if (fn) fn(w, 0, user);
@@ -6097,13 +6157,20 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 
 	for (int z = 0; z < 4; ++z)
 	{
-		st->zone_x[z] = st->zone_y[z] = st->zone_w[z] = st->zone_h[z] = 0.0f;
+		st->zone_x[z] = st->zone_y[z] = st->zone_w[z] = st->zone_h[z] = st->tab_view_w[z] = 0.0f;
 		st->tabs[z].clear();
 	}
 
-	bool has_left = vgui_dock_zone_has_open(st, VGUI_DOCK_LEFT);
-	bool has_right = vgui_dock_zone_has_open(st, VGUI_DOCK_RIGHT);
-	bool has_bottom = vgui_dock_zone_has_open(st, VGUI_DOCK_BOTTOM);
+	const bool open_left = vgui_dock_zone_has_open(st, VGUI_DOCK_LEFT);
+	const bool open_right = vgui_dock_zone_has_open(st, VGUI_DOCK_RIGHT);
+	const bool rail_left = open_left && st->side_collapsed[VGUI_DOCK_LEFT];
+	const bool rail_right = open_right && st->side_collapsed[VGUI_DOCK_RIGHT];
+	const bool has_left = open_left && !rail_left;
+	const bool has_right = open_right && !rail_right;
+	const bool has_bottom = vgui_dock_zone_has_open(st, VGUI_DOCK_BOTTOM);
+	const int rails = (int)rail_left + (int)rail_right;
+	const float rail_w = rails ? std::min(ds.tab_height, iw / rails) : 0.0f;
+	const float pane_span = std::max(0.0f, iw - rails * rail_w);
 	float left_w = has_left ? std::max(0.0f, vgui_dock_resolved_zone_size(w, VGUI_DOCK_LEFT)) : 0.0f;
 	float right_w = has_right ? std::max(0.0f, vgui_dock_resolved_zone_size(w, VGUI_DOCK_RIGHT)) : 0.0f;
 	float bottom_h = has_bottom ? std::max(0.0f, vgui_dock_resolved_zone_size(w, VGUI_DOCK_BOTTOM)) : 0.0f;
@@ -6112,23 +6179,25 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 	if (st->side_min[VGUI_DOCK_CENTER] > 0.0f)
 	{
 		const int sides = (int)has_left + (int)has_right;
-		const float side_gap = sides ? std::min(gap, iw / sides) : 0.0f;
+		const float side_gap = sides ? std::min(gap, pane_span / sides) : 0.0f;
 		left_gap = has_left ? side_gap : 0.0f;
 		right_gap = has_right ? side_gap : 0.0f;
-		vgui_dock_fit_side_widths(st, ctx->ui_scale, std::max(0.0f, iw - left_gap - right_gap),
+		vgui_dock_fit_side_widths(st, ctx->ui_scale, std::max(0.0f, pane_span - left_gap - right_gap),
 			(has_left ? 1 : 0) | (has_right ? 2 : 0), left_w, right_w);
 	}
 	else
 	{
-		if (left_w + right_w + gap * 2.0f > iw)
+		if (left_w + right_w + gap * 2.0f > pane_span)
 		{
-			right_w = std::max(0.0f, iw - left_w - gap * 2.0f);
-			if (left_w + right_w + gap * 2.0f > iw)
-				left_w = std::max(0.0f, iw - right_w - gap * 2.0f);
+			right_w = std::max(0.0f, pane_span - left_w - gap * 2.0f);
+			if (left_w + right_w + gap * 2.0f > pane_span)
+				left_w = std::max(0.0f, pane_span - right_w - gap * 2.0f);
 		}
 		left_gap = left_w > 0.0f ? gap : 0.0f;
 		right_gap = right_w > 0.0f ? gap : 0.0f;
 	}
+	if (rail_left) left_w = rail_w;
+	if (rail_right) right_w = rail_w;
 	if (bottom_h > ih) bottom_h = ih;
 
 	if (left_w > 0.0f)
@@ -6177,11 +6246,25 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		bool has_open = vgui_dock_zone_has_open(st, zone);
 		vgui_item_id active = has_open ? vgui_dock_pick_active(st, zone) : 0;
 		st->active[zone] = active;
-		if (!has_open || st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f)
+		const bool collapsed = vgui_dock_side_collapsed(st, zone);
+		const float tab_h = std::max(0.0f, std::min(ds.tab_height, st->zone_h[zone]));
+		float tab_w = st->zone_w[zone];
+		if (vgui_dock_is_side(zone))
+		{
+			if (vgui_widget* button = st->side_buttons[zone].widget)
+			{
+				const float button_w = has_open ? std::min(ds.tab_height, tab_w) : 0.0f;
+				tab_w -= button_w;
+				// The dock owns the button's exact rectangle, even in a squeezed pane.
+				button->abs_x = st->zone_x[zone] + tab_w;
+				button->abs_y = st->zone_y[zone];
+				button->abs_w = button_w;
+				button->abs_h = has_open ? tab_h : 0.0f;
+			}
+		}
+		st->tab_view_w[zone] = collapsed ? 0.0f : tab_w;
+		if (!has_open || collapsed || st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f)
 			continue;
-
-		float tab_h = std::min(ds.tab_height, st->zone_h[zone]);
-		if (tab_h < 0.0f) tab_h = 0.0f;
 
 		std::vector<vgui_item_id> ids;
 		std::vector<float> widths;
@@ -6198,7 +6281,7 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		if (ids.size() > 1)
 			total_w += ds.tab_gap * (float)(ids.size() - 1);
 
-		float max_scroll = std::max(0.0f, total_w - st->zone_w[zone]);
+		float max_scroll = std::max(0.0f, total_w - tab_w);
 		float active_x = 0.0f, active_w = 0.0f;
 		for (size_t i = 0; i < ids.size(); ++i)
 		{
@@ -6214,8 +6297,8 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		{
 			if (active_x - st->tab_scroll[zone] < 0.0f)
 				st->tab_scroll[zone] = active_x;
-			else if (active_x - st->tab_scroll[zone] + active_w > st->zone_w[zone])
-				st->tab_scroll[zone] = active_x + active_w - st->zone_w[zone];
+			else if (active_x - st->tab_scroll[zone] + active_w > tab_w)
+				st->tab_scroll[zone] = active_x + active_w - tab_w;
 		}
 		st->scroll_active[zone] = 0;
 		st->tab_scroll[zone] = vgui_clampf(st->tab_scroll[zone], 0.0f, max_scroll);
@@ -6282,6 +6365,7 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		vgui_dock_panel* active_panel = vgui_dock_find(w, st->active[zone]);
 		if (active_panel) add_page(active_panel->page);
 	}
+	for (const auto& slot : st->side_buttons) add_page(slot.widget);
 	for (vgui_item_id id : st->float_order)
 	{
 		vgui_dock_panel* panel = vgui_dock_find(w, id);
@@ -6820,6 +6904,7 @@ static void vgui_schedule_destroy(vgui_widget* w)
 		vgui_modal_close_internal(ctx, VGUI_MODAL_RESULT_CANCEL);
 	if (w->kind == VGUI_MENU)
 		vgui_menu_close_internal(w);
+	vgui_dock_release_side_button(w->parent, w);
 	w->destroy_pending = true;
 	w->visible = 0;
 	vgui_tooltip_forget_widget(ctx, w);
@@ -6922,7 +7007,9 @@ static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
 		return w;
 	if (w->kind == VGUI_DOCK)
 	{
-		if (w->dock && w->dock->document_tabs)
+		const vgui_dock_state* st = w->dock.get();
+		if (st && (st->document_tabs ||
+			st->side_buttons[VGUI_DOCK_LEFT].widget || st->side_buttons[VGUI_DOCK_RIGHT].widget))
 		{
 			bool on_title = false;
 			const auto* frame = vgui_dock_floating_at_point(w, x, y, &on_title, nullptr);
@@ -6933,6 +7020,9 @@ static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
 				return hit ? hit : w;
 			}
 		}
+		if (st)
+			for (const auto& slot : st->side_buttons)
+				if (vgui_widget* hit = vgui_hit_rec(slot.widget, x, y)) return hit;
 		if (vgui_dock_chrome_hit(w, x, y)) return w;
 	}
 	for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
@@ -10045,13 +10135,16 @@ static void vgui_dock_drag_sash_to(vgui_widget* w, float x)
 	const float scale = w->ctx->ui_scale;
 	const float width = st->zone_w[side];
 	const float lo = st->side_min[side] * scale;
-	const float hi = st->side_span - st->zone_w[other] - st->side_min[VGUI_DOCK_CENTER] * scale;
+	// A collapsed rail was already deducted from side_span by layout.
+	const bool other_collapsed = st->side_collapsed[other];
+	const float other_w = other_collapsed ? 0.0f : st->zone_w[other];
+	const float hi = st->side_span - other_w - st->side_min[VGUI_DOCK_CENTER] * scale;
 	if (hi < lo) return; // No legal move when the dock can't fit its minima.
 	const float delta = x - (r.x + r.w * st->sash_grab);
 	const float wanted = vgui_clampf(width + (side == VGUI_DOCK_LEFT ? delta : -delta), lo, hi);
 	if (std::fabs(wanted - width) < 0.0001f) return;
-	st->pinned_side = other;
-	st->pinned_width = st->zone_w[other];
+	st->pinned_side = other_collapsed ? -1 : other;
+	st->pinned_width = other_w;
 	vgui_dock_set_preferred_size(w, side, wanted / scale);
 }
 
@@ -11766,7 +11859,7 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 				int zone = vgui_dock_zone_tab_bar_at(p, ctx->mouse_x, ctx->mouse_y);
 				if (zone < 0) continue;
 				float max_scroll = std::max(0.0f,
-					vgui_dock_tab_bar_width(p, zone) - p->dock->zone_w[zone]);
+					vgui_dock_tab_bar_width(p, zone) - p->dock->tab_view_w[zone]);
 				float delta = wx != 0.0f ? wx : wy;
 				p->dock->tab_scroll[zone] = vgui_clampf(
 					p->dock->tab_scroll[zone] - delta * 40.0f, 0.0f, max_scroll);
@@ -12979,20 +13072,27 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 			}
 			tint = vgui_ovg_color(tint ? tint : 0xFFFFFFFF);
 
-			if (tex->native.image.id != 0 && cb->add_texture)
+			const glm::ivec4 src{0, 0, tex->width, tex->height};
+			const glm::ivec4 dst{(int)std::lround(ix), (int)std::lround(iy),
+				(int)std::lround(iw), (int)std::lround(ih)};
+			if (!tex->cpu && tex->native.image.id != 0 && cb->add_texture)
 			{
 				ovg_texture_r r = {};
 				r.tex = &tex->native;
-				r.rc = { 0, 0, tex->width, tex->height };
-				r.dst = { (int)std::lround(ix), (int)std::lround(iy),
-					(int)std::lround(iw), (int)std::lround(ih) };
+				r.rc = src;
+				r.dst = dst;
 				r.color = tint;
 				cb->add_texture(vg, &r);
 			}
-			else if (tex->cpu)
+			else if (tex->cpu && cb->add_image &&
+				(tex->image.id != 0 || tex->upload_frame == ctx->frame_index))
 			{
-				// CPU 纹理暂时不支持直接在按钮上画 — 用户需先上传到 GPU 或使用 native 纹理。
-				// 这里留空避免 crash；下次可以像 vgui_draw_image 那样走 geometry 路径。
+				ovg_image_r r = {};
+				r.img = &tex->image;
+				r.rc = src;
+				r.dst = dst;
+				r.color = tint;
+				cb->add_image(vg, &r);
 			}
 		}
 
@@ -15035,10 +15135,11 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				vgui_widget_color(w, border));
 
 		cb->save(vg);
-		vgui_clip_push(clips, cb, vg, zx, zy, zw, tab_h);
+		const float tab_w = st->tab_view_w[zone];
+		vgui_clip_push(clips, cb, vg, zx, zy, tab_w, tab_h);
 		for (const vgui_dock_tab_geom& tab : st->tabs[zone])
 		{
-			if (tab.x + tab.w < zx || tab.x > zx + zw) continue;
+			if (tab.x + tab.w < zx || tab.x > zx + tab_w) continue;
 			const vgui_item_id selected = st->document_tabs && zone == VGUI_DOCK_CENTER
 				? st->active_document : st->active[zone];
 			bool active = tab.id == selected;
@@ -15110,7 +15211,7 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		cb->restore(vg);
 
 		vgui_dock_panel* active = vgui_dock_find(w, st->active[zone]);
-		if (active && active->page && content_h > 0.0f)
+		if (active && active->page && content_h > 0.0f && !vgui_dock_side_collapsed(st, zone))
 		{
 			cb->save(vg);
 			vgui_clip_push(clips, cb, vg, zx, zy + tab_h, zw, content_h);
@@ -15139,6 +15240,18 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_fill_rect(cb, vg, r.x + (r.w - line) * 0.5f, r.y, line, r.h, 0.0f,
 				vgui_widget_color(w, color));
 		}
+	}
+
+	for (const auto& slot : st->side_buttons)
+	{
+		vgui_widget* button = slot.widget;
+		if (!button || !button->visible || button->abs_w <= 0.0f || button->abs_h <= 0.0f)
+			continue;
+		cb->save(vg);
+		vgui_clip_push(clips, cb, vg, button->abs_x, button->abs_y, button->abs_w, button->abs_h);
+		vgui_draw_widget(button, cb, vg, clips);
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
 	}
 
 	for (vgui_item_id id : st->float_order)
@@ -16371,6 +16484,7 @@ extern "C" {
 
 		if (child->parent)
 		{
+			vgui_dock_release_side_button(child->parent, child);
 			auto& old = child->parent->children;
 			old.erase(std::remove(old.begin(), old.end(), child), old.end());
 		}
@@ -16384,6 +16498,7 @@ extern "C" {
 	{
 		if (!widget || !widget->parent) return;
 		vgui_widget* parent = widget->parent;
+		vgui_dock_release_side_button(parent, widget);
 		auto& v = parent->children;
 		v.erase(std::remove(v.begin(), v.end(), widget), v.end());
 		widget->parent = nullptr;
@@ -18465,6 +18580,8 @@ extern "C" {
 				return 0;
 			for (vgui_widget* p = dock; p; p = p->parent)
 				if (p == page) return 0;
+			for (const auto& slot : st->side_buttons)
+				if (slot.widget == page) return 0;
 			for (const vgui_dock_panel& existing : st->panels)
 				if (existing.page == page) return 0;
 		}
@@ -18923,6 +19040,62 @@ extern "C" {
 		return vgui_dock_resolved_zone_size(dock, z);
 	}
 
+	void vgui_dock_set_side_button(vgui_widget* dock, vgui_dock_zone zone, vgui_widget* button)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st || !vgui_dock_is_side(zone) || dock->destroy_pending) return;
+		auto& slot = st->side_buttons[zone];
+		vgui_widget* previous = slot.widget;
+		if (previous == button) return;
+		if (button)
+		{
+			if (button->parent != dock || button->kind != VGUI_BUTTON || button->destroy_pending ||
+				st->side_buttons[zone == VGUI_DOCK_LEFT ? VGUI_DOCK_RIGHT : VGUI_DOCK_LEFT].widget == button)
+				return;
+			for (const auto& panel : st->panels)
+				if (panel.page == button) return;
+		}
+		vgui_dock_release_side_button(dock, previous);
+		if (button) slot = { button, button->visible != 0 };
+		st->scroll_active[zone] = 1;
+		vgui_recording_invalidate_chain(dock);
+		vgui_mark_dirty(dock);
+		// If the previous button held focus, showing/hiding the new button
+		// cannot call a focus listener (only one subtree can contain focus).
+		const bool defocus_previous = vgui_is_within(previous, dock->ctx->focus);
+		if (button) vgui_widget_set_visible(button, vgui_dock_zone_has_open(st, zone));
+		if (defocus_previous) vgui_dock_forget_focus(dock, previous);
+	}
+
+	void vgui_dock_set_side_collapsed(vgui_widget* dock, vgui_dock_zone zone, int collapsed)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st || !vgui_dock_is_side(zone) || dock->destroy_pending ||
+			st->side_collapsed[zone] == (collapsed != 0)) return;
+		st->side_collapsed[zone] = collapsed != 0;
+		st->pinned_side = -1;
+		if (collapsed)
+		{
+			if (st->sash_drag == zone) vgui_dock_end_sash(dock);
+			if (st->sash_hover == zone)
+			{
+				if (dock->ctx->cursor == VGUI_CURSOR_SIZE_H) dock->ctx->cursor = VGUI_CURSOR_ARROW;
+				vgui_dock_set_sash_hover(dock, -1);
+			}
+			st->sashes[zone] = {};
+		}
+		for (int& scroll : st->scroll_active) scroll = 1;
+		vgui_recording_invalidate_chain(dock);
+		vgui_mark_dirty(dock);
+		if (collapsed) vgui_dock_sync_side_visibility(dock);
+	}
+
+	int vgui_dock_get_side_collapsed(vgui_widget* dock, vgui_dock_zone zone)
+	{
+		const vgui_dock_state* st = vgui_dock_of(dock);
+		return st && vgui_dock_side_collapsed(st, zone);
+	}
+
 	int vgui_dock_get_zone_rect(vgui_widget* dock, vgui_dock_zone zone,
 		float* x, float* y, float* width, float* height)
 	{
@@ -18962,9 +19135,16 @@ extern "C" {
 		for (const vgui_dock_tab_geom& tab : st->tabs[z])
 		{
 			if (tab.id != panel_id) continue;
-			if (x) *x = tab.x;
+			float tx = tab.x, tw = tab.w;
+			if (st->tab_view_w[z] < st->zone_w[z])
+			{
+				tx = std::max(tx, st->zone_x[z]);
+				tw = std::min(tab.x + tab.w, st->zone_x[z] + st->tab_view_w[z]) - tx;
+				if (tw <= 0.0f) return 0;
+			}
+			if (x) *x = tx;
 			if (y) *y = tab.y;
-			if (width) *width = tab.w;
+			if (width) *width = tw;
 			if (height) *height = tab.h;
 			return 1;
 		}
