@@ -1025,6 +1025,11 @@ struct vgui_modal_state
 	vgui_widget* panel = nullptr;
 	vgui_widget* restore_focus = nullptr;
 	vgui_modal_options options = {};
+	vgui_widget* drag_handle = nullptr;
+	enum { DRAG_NONE, DRAG_MOVING, DRAG_CANCELLED } drag = DRAG_NONE;
+	bool drag_positioned = false;
+	float drag_x = 0.0f, drag_y = 0.0f;
+	float drag_grab_x = 0.0f, drag_grab_y = 0.0f;
 };
 
 // context 级通用弹出面板(vgui_popup_open):无遮罩的轻量模态。
@@ -6720,6 +6725,24 @@ static float vgui_overlay_height(vgui_context* ctx)
 	return std::max(ctx->root ? ctx->root->intrinsic_h : 1.0f, 1.0f);
 }
 
+// Keep the whole panel in the viewport when it fits. Otherwise keep its
+// leading edge visible, including the title bar at the top of the panel.
+static void vgui_modal_place(vgui_context* ctx, float x, float y)
+{
+	vgui_modal_state& modal = ctx->modal;
+	vgui_widget* panel = modal.panel;
+	const float px = vgui_clampf(x, 0.0f, std::max(0.0f, modal.stage->abs_w - panel->abs_w));
+	const float py = vgui_clampf(y, 0.0f, std::max(0.0f, modal.stage->abs_h - panel->abs_h));
+	modal.drag_x = px;
+	modal.drag_y = py;
+	if (px != panel->abs_x || py != panel->abs_y)
+	{
+		modal.drag_positioned = true;
+		vgui_layout_widget(panel, ctx, px, py, panel->abs_w, panel->abs_h);
+		++ctx->paint_revision;
+	}
+}
+
 static void vgui_modal_layout(vgui_context* ctx)
 {
 	if (!ctx || !ctx->modal.active || !ctx->modal.stage || !ctx->modal.panel)
@@ -6753,9 +6776,12 @@ static void vgui_modal_layout(vgui_context* ctx)
 	if (avail_h > 0.0f) ph = std::min(ph, avail_h);
 	pw = std::max(0.0f, pw);
 	ph = std::max(0.0f, ph);
-	float px = std::floor((cw - pw) * 0.5f);
-	float py = std::floor((ch - ph) * 0.5f);
+	const bool positioned = ctx->modal.drag_positioned;
+	float px = positioned ? ctx->modal.drag_x : std::floor((cw - pw) * 0.5f);
+	float py = positioned ? ctx->modal.drag_y : std::floor((ch - ph) * 0.5f);
 	vgui_layout_widget(panel, ctx, px, py, pw, ph);
+	if (positioned && panel->visible)
+		vgui_modal_place(ctx, px, py); // Clamp using the actual laid-out size.
 }
 
 // ---- context 级通用弹出面板 ------------------------------------------------
@@ -6946,6 +6972,12 @@ static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
 	{
 		vgui_tooltip_forget_widget(ctx, w);
 		vgui_dialog_forget_widget(ctx, w);
+		if (ctx->modal.drag_handle == w)
+		{
+			ctx->modal.drag_handle = nullptr;
+			if (ctx->modal.drag == vgui_modal_state::DRAG_MOVING)
+				ctx->modal.drag = vgui_modal_state::DRAG_CANCELLED;
+		}
 		if (ctx->modal.panel == w)
 		{
 			ctx->modal.active = 0;
@@ -7137,12 +7169,10 @@ static void vgui_modal_close_internal(vgui_context* ctx, int result)
 		ctx->dialog = vgui_dialog_state();
 	}
 
-	ctx->modal.active = 0;
-	ctx->modal.stage = nullptr;
-	ctx->modal.panel = nullptr;
-	ctx->modal.restore_focus = nullptr;
+	const bool swallow_up = ctx->modal.swallow_up || ctx->modal.drag != vgui_modal_state::DRAG_NONE;
+	ctx->modal = vgui_modal_state();
 	ctx->modal.result = result;
-	ctx->modal.options = vgui_modal_options();
+	ctx->modal.swallow_up = swallow_up;
 
 	if (panel_alive)
 		vgui_widget_remove(panel);
@@ -10552,12 +10582,41 @@ static void vgui_row_drag_try_begin(vgui_widget* w, float x, float y)
 	}
 }
 
+static void vgui_modal_drag_to(vgui_context* ctx, float x, float y)
+{
+	vgui_modal_state& modal = ctx->modal;
+	if (modal.drag != vgui_modal_state::DRAG_MOVING) return;
+	if (!modal.active || ctx->popup.content || ctx->open_menu ||
+		!vgui_is_within(modal.panel, modal.drag_handle) || modal.panel->parent != modal.stage)
+	{
+		modal.drag = vgui_modal_state::DRAG_CANCELLED;
+		return;
+	}
+	for (vgui_widget* w = modal.drag_handle; w != modal.stage; w = w->parent)
+	{
+		if (!w->visible || !w->enabled || !w->input_enabled || w->destroy_pending)
+		{
+			modal.drag = vgui_modal_state::DRAG_CANCELLED;
+			return;
+		}
+	}
+	vgui_modal_place(ctx, x - modal.drag_grab_x, y - modal.drag_grab_y);
+}
+
 static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 {
 	if (!ctx) return 0;
 	vgui_begin_input(ctx);
 	ctx->mouse_x = x;
 	ctx->mouse_y = y;
+
+	if (ctx->modal.drag != vgui_modal_state::DRAG_NONE)
+	{
+		vgui_modal_drag_to(ctx, x, y);
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
 
 	// A captured sash owns the pointer even outside the dock. Don't route a
 	// resize gesture through the dock pages (e.g. the Designer preview).
@@ -10986,6 +11045,13 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	if (button >= 0 && button < 8) ctx->mouse_down[button] = 1;
 	vgui_tooltip_suppress(ctx);
 
+	if (ctx->modal.drag != vgui_modal_state::DRAG_NONE)
+	{
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
+
 	if (auto* st = vgui_dock_of(ctx->active); st && st->sash_drag >= 0)
 	{
 		vgui_end_input(ctx);
@@ -11132,6 +11198,21 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 	if (button == 1 && over_scrollbar)
 	{
 		vgui_scrollbar_begin(ctx, sw, axis, x, y);
+		vgui_end_input(ctx);
+		return 1;
+	}
+
+	vgui_modal_state& modal = ctx->modal;
+	if (button == 1 && modal.active && root == modal.stage && modal.drag_handle &&
+		!ctx->press_target && !ctx->active && ctx->drag_kind == VGUI_DRAG_NONE &&
+		(h == modal.drag_handle || (h && h->kind == VGUI_LABEL && vgui_is_within(modal.drag_handle, h))) &&
+		vgui_is_within(modal.panel, modal.drag_handle))
+	{
+		// Capture before dispatching a normal press; the title must not change
+		// keyboard focus or generate a click when released over another widget.
+		modal.drag = vgui_modal_state::DRAG_MOVING;
+		modal.drag_grab_x = x - modal.panel->abs_x;
+		modal.drag_grab_y = y - modal.panel->abs_y;
 		vgui_end_input(ctx);
 		return 1;
 	}
@@ -11540,6 +11621,18 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 	ctx->mouse_y = y;
 	if (button >= 0 && button < 8) ctx->mouse_down[button] = 0;
 	vgui_tooltip_suppress(ctx);
+
+	if (ctx->modal.drag != vgui_modal_state::DRAG_NONE)
+	{
+		if (button == 1)
+		{
+			vgui_modal_drag_to(ctx, x, y);
+			ctx->modal.drag = vgui_modal_state::DRAG_NONE;
+		}
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
 
 	if (auto* st = vgui_dock_of(ctx->active); st && st->sash_drag >= 0)
 	{
@@ -12009,6 +12102,12 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 	if (!ctx) return 0;
 	vgui_begin_input(ctx);
 	vgui_tooltip_suppress(ctx);
+	if (ctx->modal.drag != vgui_modal_state::DRAG_NONE)
+	{
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
 	// popup:内容外的滚轮关闭弹出层;内容内走正常路由。
 	if (ctx->popup.content &&
 		!vgui_hit_rec(ctx->popup.content, ctx->mouse_x, ctx->mouse_y))
@@ -12176,7 +12275,10 @@ static int vgui_key_impl(vgui_context* ctx, int key, int down, int mods)
 		return 1;
 	}
 
-	if (ctx->modal.active && down && key == VGUI_KEY_ESCAPE)
+	// A menu or popup opened inside the modal owns Escape first, including
+	// the focused edit's cancellation path in a popup.
+	if (ctx->modal.active && !ctx->popup.content && !ctx->open_menu &&
+		down && key == VGUI_KEY_ESCAPE)
 	{
 		if (ctx->modal.options.close_on_escape)
 			vgui_modal_close_internal(ctx, ctx->modal.options.escape_result);
@@ -17536,9 +17638,8 @@ extern "C" {
 			return 0;
 		}
 
+		ctx->modal = vgui_modal_state();
 		ctx->modal.active = 1;
-		ctx->modal.swallow_up = 0;
-		ctx->modal.result = VGUI_MODAL_RESULT_NONE;
 		ctx->modal.stage = stage;
 		ctx->modal.panel = panel;
 		ctx->modal.restore_focus = restore;
@@ -17549,6 +17650,19 @@ extern "C" {
 		vgui_widget* first = keep_focus ? keep_focus : vgui_first_focusable(panel);
 		vgui_set_focus_internal(ctx, first);
 		return 1;
+	}
+
+	void vgui_modal_set_drag_handle(vgui_context* ctx, vgui_widget* handle)
+	{
+		if (!ctx || !ctx->modal.active) return;
+		vgui_modal_state& modal = ctx->modal;
+		if (handle && (!ctx->alive.count(handle) || handle->destroy_pending ||
+			handle == modal.panel || !vgui_is_within(modal.panel, handle)))
+			return;
+		if (modal.drag_handle == handle) return;
+		modal.drag_handle = handle;
+		if (modal.drag == vgui_modal_state::DRAG_MOVING)
+			modal.drag = vgui_modal_state::DRAG_CANCELLED;
 	}
 
 	void vgui_modal_close(vgui_context* ctx, int result)
@@ -21898,6 +22012,7 @@ extern "C" {
 	void vgui_input_clear(vgui_context* ctx)
 	{
 		if (!ctx) return;
+		ctx->modal.drag = vgui_modal_state::DRAG_NONE;
 		vgui_menu_close_all(ctx);
 		vgui_tooltip_clear_candidate(ctx);
 		for (int i = 0; i < 8; i++)
@@ -21981,7 +22096,8 @@ extern "C" {
 	{
 		if (!ctx) return;
 		const bool pointer_busy = ctx->active != nullptr ||
-			ctx->press_target != nullptr || ctx->slider_drag != nullptr;
+			ctx->press_target != nullptr || ctx->slider_drag != nullptr ||
+			ctx->modal.drag != vgui_modal_state::DRAG_NONE;
 		const bool drag_busy = ctx->drag_kind != VGUI_DRAG_NONE;
 		if (!pointer_busy && !drag_busy)
 		{

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../gui/ui_design/runtime.h"
+#include "ui_designer_locale.h"
 
 #include <cstdint>
 #include <functional>
@@ -13,8 +14,6 @@ struct vgpu_device_t;
 struct vgpu_ctx_t;
 
 namespace vgui::ui_design {
-
-class designer_strings;
 
 // Share glyph atlases and the bounded project-font cache across visible pages.
 // The cache must outlive the previews borrowing its fonts.
@@ -87,6 +86,9 @@ public:
     void reset_zoom(bool fit);
     void set_running(bool);
     bool running() const;
+    // Workspace-only appearance; independent of the document and saved view.
+    void set_grid_settings(designer_grid_settings settings);
+    designer_grid_settings grid_settings() const;
     // Borrowed; invalidated by sync/render or a preset/mode change.
     const layout_snapshot* snapshot() const;
     // Read-only views of the displayed board and private runtime widget state.

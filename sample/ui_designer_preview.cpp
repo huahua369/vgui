@@ -1,7 +1,6 @@
 #include "ui_designer_preview.h"
 
 #include "ui_designer_font_file.h"
-#include "ui_designer_locale.h"
 
 #include <vgui/backend/vgui_render_target.h>
 
@@ -277,6 +276,124 @@ pixel_rect intersect(pixel_rect a, pixel_rect b) {
         std::max(0.f, std::min(a.y + a.height, b.y + b.height) - y)};
 }
 
+std::uint32_t to_ovg(std::uint32_t argb) {
+    return (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) | ((argb >> 16) & 0xFFu);
+}
+
+bool has_area(pixel_rect r) { return r.width > 0 && r.height > 0; }
+
+std::array<pixel_rect, 4> workspace_around(pixel_rect area, pixel_rect board) {
+    const auto covered = intersect(area, board);
+    if (!has_area(covered)) return {area};
+    const float right = covered.x + covered.width, bottom = covered.y + covered.height;
+    return {{
+        {area.x, area.y, area.width, covered.y - area.y},
+        {area.x, bottom, area.width, area.y + area.height - bottom},
+        {area.x, covered.y, covered.x - area.x, covered.height},
+        {right, covered.y, area.x + area.width - right, covered.height},
+    }};
+}
+
+struct grid_range {
+    std::int64_t first = 0, end = 0;
+    double count() const { return double(end - first); }
+};
+
+// Include centers just outside the clip whose snapped stroke can straddle it.
+grid_range grid_indices(float start, float extent, double origin, double step, float width) {
+    const double pad = width * .5 + 1;
+    const double first = std::ceil((start - pad - origin) / step);
+    const double last = std::floor((start + extent + pad - origin) / step);
+    constexpr double index_limit = 1e12; // Also bounds conversion before indexing extreme views.
+    if (!(first >= -index_limit && last <= index_limit && last >= first)) return {};
+    return {static_cast<std::int64_t>(first), static_cast<std::int64_t>(last) + 1};
+}
+
+float grid_edge(double center, float width) {
+    return float(std::floor(center + .5) - std::floor(width * .5));
+}
+
+void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pixel_rect frame,
+        viewport view, float ui_scale, const designer_grid_settings& settings) {
+    if (!std::isfinite(board.x) || !std::isfinite(board.y) || !std::isfinite(board.width) ||
+        !std::isfinite(board.height) || !std::isfinite(ui_scale) || ui_scale <= 0) return;
+    const auto workspace = workspace_around(area, frame);
+    if (std::none_of(workspace.begin(), workspace.end(), has_area)) return;
+
+    // Spacing is in artboard units. The width is in shell units, snapped to
+    // full device pixels so thin strokes and dots stay legible without MSAA.
+    const double step_x = double(settings.spacing) * board.width / view.width;
+    const double step_y = double(settings.spacing) * board.height / view.height;
+    const float width = std::max(1.f, std::round(settings.line_width * ui_scale));
+    const double min_step = std::max(settings.hide_below, width + 1.f);
+    const bool dots = settings.style == designer_grid_style::dots;
+    const auto layer = [&](bool major) {
+        const auto color = major ? settings.major_color : settings.minor_color;
+        if (!(color >> 24) || (!major && settings.major_every == 1)) return;
+        const int stride = major ? settings.major_every : 1;
+        const double sx = step_x * stride, sy = step_y * stride;
+        if (std::min(sx, sy) < min_step) return;
+        struct span { grid_range x, y; };
+        std::array<span, 4> spans{};
+        double marks = 0;
+        for (std::size_t i = 0; i < workspace.size(); ++i) {
+            const auto r = workspace[i];
+            if (!has_area(r)) continue;
+            auto& [x, y] = spans[i];
+            x = grid_indices(r.x, r.width, board.x, sx, width);
+            y = grid_indices(r.y, r.height, board.y, sy, width);
+            marks += dots ? x.count() * y.count() : x.count() + y.count();
+        }
+        // Bound generation over the whole viewport, not per row or strip.
+        // The major pass has its own coarser spacing and can still be drawn.
+        if (marks > (dots ? 8192 : 1024)) return;
+        cb->set_source_color(vg, to_ovg(color));
+        int queued = 0;
+        const auto add = [&](pixel_rect mark, pixel_rect clip) {
+            const auto r = intersect(mark, clip);
+            if (!has_area(r)) return;
+            cb->rectangle(vg, r.x, r.y, r.width, r.height);
+            if (++queued == 64) { cb->fill(vg); queued = 0; }
+        };
+        const auto flush = [&] { if (queued) { cb->fill(vg); queued = 0; } };
+        const auto is_major = [&](std::int64_t i) { return i % settings.major_every == 0; };
+        for (std::size_t i = 0; i < workspace.size(); ++i) {
+            const auto r = workspace[i];
+            const auto [xs, ys] = spans[i];
+            if (dots && (xs.first == xs.end || ys.first == ys.end)) continue;
+            for (auto x = xs.first; x < xs.end; ++x) {
+                if (x == 0 || (!dots && !major && is_major(x))) continue;
+                const float px = grid_edge(board.x + x * sx, width);
+                if (!dots) { add({px, r.y, width, r.height}, r); continue; }
+                for (auto y = ys.first; y < ys.end; ++y) {
+                    if (y == 0 || (!major && is_major(x) && is_major(y))) continue;
+                    add({px, grid_edge(board.y + y * sy, width), width, width}, r);
+                }
+            }
+            if (!dots) {
+                // Keep perpendicular lines in separate paths to avoid tessellating all their crossings.
+                flush();
+                for (auto y = ys.first; y < ys.end; ++y)
+                    if (y != 0 && (major || !is_major(y)))
+                        add({r.x, grid_edge(board.y + y * sy, width), r.width, width}, r);
+            }
+            flush();
+        }
+    };
+    layer(false);
+    layer(true);
+
+    if (settings.axis_color >> 24) {
+        const auto color = to_ovg(settings.axis_color);
+        const float x = grid_edge(board.x, width), y = grid_edge(board.y, width);
+        for (const auto r : workspace) {
+            if (!has_area(r)) continue;
+            fill(cb, vg, intersect({x, r.y, width, r.height}, r), color);
+            fill(cb, vg, intersect({r.x, y, r.width, width}, r), color);
+        }
+    }
+}
+
 void outline(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect r, pixel_rect clip, unsigned color) {
     const float dx = std::min(r.width, 2.f), dy = std::min(r.height, 2.f);
     fill(cb, vg, intersect({r.x, r.y, r.width, dy}, clip), color);
@@ -393,6 +510,7 @@ struct designer_preview::impl {
     std::optional<std::string> render_error;
     image_load* active_load = nullptr;
     preset screen = preset::desktop;
+    designer_grid_settings grid;
     float zoom = 1;
     point pan{};
     SDL_WindowID pointer_window = 0, run_window = 0, ime_window = 0;
@@ -919,11 +1037,17 @@ struct designer_preview::impl {
             float x, float y, float width, float height, float, void* user) {
         const auto& self = *static_cast<impl*>(user);
         const pixel_rect area{x, y, width, height};
-        fill(cb, vg, area, 0xFF241D19);
+        fill(cb, vg, area, self.run ? 0xFF241D19u : to_ovg(self.grid.background));
         if (!self.ready || !self.frame) return;
         const auto board = self.artboard(area);
         const auto visible = intersect(board, area);
-        fill(cb, vg, {board.x - 1, board.y - 1, board.width + 2, board.height + 2}, 0xFF6E5E53);
+        const pixel_rect board_frame{board.x - 1, board.y - 1, board.width + 2, board.height + 2};
+        // The target contains the unmodified runtime. Draw workspace guides
+        // only in Design, leaving both the board and its frame untouched.
+        if (!self.run && self.grid.visible)
+            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
+                vgui_context_get_ui_scale(self.shell), self.grid);
+        fill(cb, vg, board_frame, 0xFF6E5E53);
         fill(cb, vg, visible, 0xFF352B26);
         if (self.target && visible.width > 0 && visible.height > 0)
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
@@ -1211,6 +1335,26 @@ designer_preview::preset designer_preview::current_preset() const { return p_->s
 void designer_preview::reset_zoom(bool fit) { p_->reset_zoom(fit); }
 void designer_preview::set_running(bool run) { p_->set_run(run); }
 bool designer_preview::running() const { return p_->run; }
+
+void designer_preview::set_grid_settings(designer_grid_settings settings) {
+    const designer_grid_settings defaults;
+    const auto valid = [](float value, float lo, float hi) { return value >= lo && value <= hi; };
+    if (settings.style != designer_grid_style::lines && settings.style != designer_grid_style::dots)
+        settings.style = defaults.style;
+    if (!valid(settings.spacing, designer_grid_min_spacing, designer_grid_max_spacing))
+        settings.spacing = defaults.spacing;
+    if (settings.major_every < designer_grid_min_major_every || settings.major_every > designer_grid_max_major_every)
+        settings.major_every = defaults.major_every;
+    if (!valid(settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below))
+        settings.hide_below = defaults.hide_below;
+    if (!valid(settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width))
+        settings.line_width = defaults.line_width;
+    if (settings == p_->grid) return;
+    p_->grid = settings;
+    if (!p_->run) p_->mark_canvas(); // Shell paint only; keep the runtime frame and input state.
+}
+
+designer_grid_settings designer_preview::grid_settings() const { return p_->grid; }
 const layout_snapshot* designer_preview::snapshot() const { return p_->frame ? &*p_->frame : nullptr; }
 
 std::optional<pixel_rect> designer_preview::artboard_rect_px() const {

@@ -2515,8 +2515,107 @@ static void on_modal_close(vgui_context* ctx, vgui_widget* panel, int result,
 	}
 }
 
+static void test_modal_drag_and_overlays()
+{
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16.0f), vgui_destroy);
+	vgui_context* ui = ctx.get();
+	vgui_context_set_size(ui, 500, 360);
+	vgui_widget* panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(panel, 200, 130);
+	vgui_widget* handle = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(handle, 160, 42);
+	vgui_widget* label = vgui_widget_add(handle, VGUI_LABEL, "Title");
+	vgui_widget_set_size(label, 90, 24);
+	vgui_widget* button = vgui_widget_add(panel, VGUI_BUTTON, "OK");
+	vgui_widget_set_pos(button, 20, 65);
+	vgui_widget_set_size(button, 80, 30);
+	int clicks = 0;
+	vgui_widget_on_event(button, on_button_click_only, &clicks);
+	vgui_modal_options opts;
+	vgui_modal_options_default(&opts);
+	opts.close_on_backdrop = 1;
+	check(vgui_modal_show(ui, panel, &opts) == 1, "modal drag: show");
+	vgui_modal_set_drag_handle(ui, handle);
+
+	auto center = [](vgui_widget* w, float& x, float& y) {
+		float width = 0, height = 0;
+		vgui_widget_get_rect(w, &x, &y, &width, &height);
+		x += width * 0.5f;
+		y += height * 0.5f;
+	};
+	auto at = [&](float x, float y) {
+		float px = 0, py = 0;
+		vgui_widget_get_rect(panel, &px, &py, nullptr, nullptr);
+		return near(px, x) && near(py, y);
+	};
+	float x = 0, y = 0;
+	check(at(150, 115), "modal drag: opens centered");
+	center(label, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	const uint64_t revision = vgui_context_paint_revision(ui);
+	check(vgui_input_mouse_move(ui, x + 120, y + 100) == 1 && at(270, 215) &&
+		vgui_context_paint_revision(ui) > revision, "modal drag: label captures motion beyond old title");
+	check(vgui_input_mouse_up(ui, 1, 540, 450, 1) == 1 && at(300, 230) &&
+		vgui_modal_active(ui) && vgui_get_focus(ui) == button && clicks == 0,
+		"modal drag: outside release clamps position without backdrop close or click");
+	vgui_input_mouse_move(ui, 75, 75);
+	check(at(300, 230), "modal drag: release ends capture");
+	vgui_context_set_size(ui, 420, 300);
+	check(at(220, 170), "modal drag: resize reclamps position");
+	center(button, x, y);
+	click_at(ui, x, y);
+	check(clicks == 1, "modal drag: controls hit at new position");
+
+	center(label, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	vgui_input_mouse_move(ui, x - 70, y - 45);
+	vgui_input_cancel(ui);
+	vgui_input_mouse_move(ui, 10, 10);
+	vgui_input_mouse_up(ui, 1, 10, 10, 1);
+	check(at(150, 125), "modal drag: focus-loss cancellation stops motion");
+	center(label, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	vgui_modal_set_drag_handle(ui, nullptr);
+	vgui_input_mouse_up(ui, 1, 10, 10, 1);
+	check(at(150, 125), "modal drag: disabling cancels without recentering");
+	vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
+	check(vgui_modal_show(ui, panel, &opts) == 1, "modal drag: reopen");
+	center(label, x, y);
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	vgui_input_mouse_move(ui, x - 55, y - 55);
+	vgui_input_mouse_up(ui, 1, x - 55, y - 55, 1);
+	check(at(110, 85), "modal drag: reopening resets both position and handle");
+
+	auto escape = [&]() {
+		check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1, "modal overlays: Escape consumed");
+		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
+	};
+	vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_menu_add_item(menu, "Choice");
+	vgui_menu_open(menu, 100, 100);
+	escape();
+	check(!vgui_menu_is_open(menu) && vgui_modal_active(ui), "modal overlays: Escape closes menu only");
+	vgui_widget* content = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(content, 160, 70);
+	vgui_widget* edit = vgui_widget_add(content, VGUI_EDIT, nullptr);
+	vgui_widget_set_size(edit, 100, 28);
+	check(vgui_popup_open(ui, content, 100, 100) == 1, "modal overlays: open popup");
+	center(edit, x, y);
+	click_at(ui, x, y);
+	check(vgui_get_focus(ui) == edit, "modal overlays: focus popup edit");
+	escape();
+	check(vgui_get_focus(ui) == nullptr && vgui_popup_active(ui) && vgui_modal_active(ui),
+		"modal overlays: first Escape cancels edit only");
+	escape();
+	check(!vgui_popup_active(ui) && vgui_modal_active(ui), "modal overlays: next Escape closes popup only");
+	escape();
+	check(!vgui_modal_active(ui) && vgui_modal_result(ui) == VGUI_MODAL_RESULT_CANCEL,
+		"modal overlays: Escape closes modal after overlays");
+}
+
 static void test_modal(vgui_context* ui)
 {
+	test_modal_drag_and_overlays();
 	vgui_modal_close(ui, 0);
 	vgui_set_focus(ui, nullptr);
 	vgui_toast_clear(ui);

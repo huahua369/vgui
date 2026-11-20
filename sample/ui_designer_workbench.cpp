@@ -532,6 +532,7 @@ struct designer_workbench::impl {
         };
         add_language("designer.language.zh-CN", {"settings.zh-CN", "简体中文"}, designer_language::simplified_chinese);
         add_language("designer.language.en-US", {"settings.en-US", "English"}, designer_language::english);
+        add_menu_command(tools, "designer.tools.options", {"options.title", "Options"}, std::move(callbacks.open_options));
 
         auto* help = add_menu({"workbench.menu.help", "Help"});
         const auto add_help = [&](const char* id, localized_text label, localized_text explanation) {

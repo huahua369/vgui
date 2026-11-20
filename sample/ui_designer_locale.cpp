@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <fstream>
 #include <map>
@@ -35,6 +36,8 @@ catalog parse_catalog(const char* source) {
 }
 
 // Missing settings are normal. Limit reads to what a per-user preferences file should need.
+constexpr std::size_t max_settings_bytes = 65536;
+
 json read_settings(const fs::path& path) {
     if (path.empty()) return json::object();
     std::error_code ec;
@@ -42,7 +45,7 @@ json read_settings(const fs::path& path) {
     if (status.type() == fs::file_type::not_found) return json::object();
     if (ec || !fs::is_regular_file(status)) return {};
     std::ifstream input(path, std::ios::binary);
-    std::array<char, 65537> buffer;
+    std::array<char, max_settings_bytes + 1> buffer;
     input.read(buffer.data(), buffer.size());
     if (!input.eof() || input.bad()) return {};
     const auto end = buffer.begin() + input.gcount();
@@ -52,6 +55,7 @@ json read_settings(const fs::path& path) {
 
 bool write_settings(const fs::path& path, const json& config) {
     const auto bytes = config.dump(2) + '\n';
+    if (bytes.size() > max_settings_bytes) return false;
 
     // Write beside the destination, then replace it only after a successful close.
     std::error_code ec;
@@ -86,6 +90,35 @@ bool write_settings(const fs::path& path, const json& config) {
 
 bool valid_dock_width(double value) {
     return std::isfinite(value) && value >= 1.0 && value <= 16384.0;
+}
+
+bool valid_grid_number(double value, double minimum, double maximum) {
+    return std::isfinite(value) && value >= minimum && value <= maximum;
+}
+
+std::uint32_t read_grid_color(const json& grid, const char* key, std::uint32_t fallback) {
+    const auto it = grid.find(key);
+    if (it == grid.end()) return fallback;
+    const auto* text = it->get_ptr<const std::string*>();
+    if (!text || (text->size() != 7 && text->size() != 9) || text->front() != '#') return fallback;
+    std::uint32_t value = 0;
+    const auto end = text->data() + text->size();
+    const auto parsed = std::from_chars(text->data() + 1, end, value, 16);
+    if (parsed.ec != std::errc{} || parsed.ptr != end) return fallback;
+    return text->size() == 7 ? (0xff000000u | value) : ((value >> 8) | ((value & 0xffu) << 24));
+}
+
+std::string write_grid_color(std::uint32_t argb) {
+    constexpr char hex[] = "0123456789ABCDEF";
+    const auto alpha = argb >> 24;
+    const bool opaque = alpha == 0xffu;
+    auto value = opaque ? (argb & 0x00ffffffu) : ((argb << 8) | alpha);
+    std::string text(opaque ? 7 : 9, '#');
+    for (auto i = text.size() - 1; i > 0; --i) {
+        text[i] = hex[value & 0xfu];
+        value >>= 4;
+    }
+    return text;
 }
 
 } // namespace
@@ -152,6 +185,65 @@ bool save_designer_dock_widths(const fs::path& path, designer_dock_widths widths
     layout["right_width"] = widths.right;
     layout["left_collapsed"] = widths.left_collapsed;
     layout["right_collapsed"] = widths.right_collapsed;
+    return write_settings(path, config);
+}
+
+designer_grid_settings load_designer_grid_settings(const fs::path& path) {
+    designer_grid_settings settings;
+    const auto config = read_settings(path);
+    const auto grid = config.find("canvas_grid");
+    if (grid == config.end() || !grid->is_object()) return settings;
+
+    if (const auto it = grid->find("visible"); it != grid->end() && it->is_boolean())
+        settings.visible = it->get<bool>();
+    if (const auto it = grid->find("style"); it != grid->end()) {
+        if (const auto* style = it->get_ptr<const std::string*>()) {
+            if (*style == "lines") settings.style = designer_grid_style::lines;
+            else if (*style == "dots") settings.style = designer_grid_style::dots;
+        }
+    }
+    const auto read_float = [&](const char* key, float fallback, float minimum, float maximum) {
+        const auto it = grid->find(key);
+        if (it == grid->end() || !it->is_number()) return fallback;
+        const auto value = it->get<double>();
+        return valid_grid_number(value, minimum, maximum) ? static_cast<float>(value) : fallback;
+    };
+    settings.spacing = read_float("spacing", settings.spacing, designer_grid_min_spacing, designer_grid_max_spacing);
+    if (const auto it = grid->find("major_every"); it != grid->end() && it->is_number_integer()) {
+        const auto value = it->get<double>();
+        if (valid_grid_number(value, designer_grid_min_major_every, designer_grid_max_major_every))
+            settings.major_every = static_cast<int>(value);
+    }
+    settings.hide_below = read_float("hide_below", settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below);
+    settings.line_width = read_float("line_width", settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width);
+    settings.background = read_grid_color(*grid, "background", settings.background);
+    settings.minor_color = read_grid_color(*grid, "minor_color", settings.minor_color);
+    settings.major_color = read_grid_color(*grid, "major_color", settings.major_color);
+    settings.axis_color = read_grid_color(*grid, "axis_color", settings.axis_color);
+    return settings;
+}
+
+bool save_designer_grid_settings(const fs::path& path, designer_grid_settings settings) {
+    if (path.empty() || (settings.style != designer_grid_style::lines && settings.style != designer_grid_style::dots) ||
+        !valid_grid_number(settings.spacing, designer_grid_min_spacing, designer_grid_max_spacing) ||
+        !valid_grid_number(settings.major_every, designer_grid_min_major_every, designer_grid_max_major_every) ||
+        !valid_grid_number(settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below) ||
+        !valid_grid_number(settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width)) return false;
+
+    auto config = read_settings(path);
+    if (!config.is_object()) return false;
+    auto& grid = config["canvas_grid"];
+    if (!grid.is_object()) grid = json::object();
+    grid["visible"] = settings.visible;
+    grid["style"] = settings.style == designer_grid_style::dots ? "dots" : "lines";
+    grid["spacing"] = settings.spacing;
+    grid["major_every"] = settings.major_every;
+    grid["hide_below"] = settings.hide_below;
+    grid["line_width"] = settings.line_width;
+    grid["background"] = write_grid_color(settings.background);
+    grid["minor_color"] = write_grid_color(settings.minor_color);
+    grid["major_color"] = write_grid_color(settings.major_color);
+    grid["axis_color"] = write_grid_color(settings.axis_color);
     return write_settings(path, config);
 }
 

@@ -418,6 +418,11 @@ extern "C" {
 	/* Shows panel as the context modal.  Returns 0 when the context already has
 	 * an open modal or panel is invalid/owned by another context. */
 	VGUI_API int vgui_modal_show(vgui_context* ctx, vgui_widget* panel, const vgui_modal_options* options);
+	/* Call after a successful show, once per open. A primary-button press on the
+	 * handle or one of its label descendants drags the panel. The handle must
+	 * be a descendant of the active panel; invalid handles are ignored. NULL
+	 * disables dragging without resetting the panel's current position. */
+	VGUI_API void vgui_modal_set_drag_handle(vgui_context* ctx, vgui_widget* handle);
 	/* result is passed to the close callback; use VGUI_MODAL_RESULT_* values or
 	 * an application-defined integer.  Esc/backdrop use the configured results.
 	 * Calling close while no modal is active is a no-op. */

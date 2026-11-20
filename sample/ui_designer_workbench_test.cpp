@@ -105,6 +105,7 @@ public:
               .layout_changed = [this] { if (on_layout_changed) on_layout_changed(); },
               .save_all = [this] { ++save_all_calls; },
               .can_save_all = [this] { return model.dirty(); },
+              .open_options = [this] { ++options_calls; },
           }, strings)
     {
         vgui_context_set_size(ctx.get(), 1440, 1000);
@@ -299,7 +300,7 @@ public:
     ui::session model;
     ui::diagnostic io_error;
     int save_calls = 0, open_calls = 0;
-    int new_calls = 0, quick_save_calls = 0, save_all_calls = 0, export_calls = 0, quit_calls = 0;
+    int new_calls = 0, quick_save_calls = 0, save_all_calls = 0, export_calls = 0, quit_calls = 0, options_calls = 0;
     bool io_ok = false;
     std::function<void()> on_layout_changed;
     ui::designer_strings strings;
@@ -372,6 +373,12 @@ void exercise_menus()
         check(vgui_modal_active(ctx), "Help did not show a dialog: " + std::string(topic));
         check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_modal_active(ctx), "could not dismiss Help dialog");
     }
+
+    workbench.bench.set_page_active(false);
+    workbench.command("Tools", "Options");
+    check(workbench.options_calls == 1, "Tools did not request Options without an active page");
+    workbench.bench.set_page_active(true);
+    workbench.frame();
 
     auto* submenu = workbench.open_new_control();
     auto* resources = vgui_context_get_open_menu(ctx);

@@ -27,6 +27,7 @@ struct designer_commands {
     std::function<void()> save_all = {};
     std::function<bool()> can_save_all = {};
     std::function<void()> import_font = {};
+    std::function<void()> open_options = {};
 };
 
 // The shell context, working session and strings all outlive the workbench.

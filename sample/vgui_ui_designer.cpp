@@ -9,6 +9,7 @@
 #include "ui_designer_image_smoke_fixture.h"
 #include "ui_designer_locale.h"
 #include "ui_designer_menu_smoke.h"
+#include "ui_designer_options.h"
 #include "ui_designer_pages_smoke.h"
 #include "ui_designer_preview.h"
 #include "ui_designer_workbench.h"
@@ -46,7 +47,7 @@ std::string describe(const ui::diagnostic& error) {
     return error.path.empty() ? error.message : error.path + ": " + error.message;
 }
 
-enum class command { none, create, open, save, save_as, save_all, export_package, quit, close, import_font };
+enum class command { none, create, open, save, save_as, save_all, export_package, quit, close, import_font, options };
 
 bool valid_package_name(std::string_view name) {
     // A single portable directory component; the parent is chosen separately.
@@ -81,7 +82,9 @@ public:
               [this](ui::designer_view_action action) { return active_ && view_checked(action); },
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
-              [this] { request(command::import_font); }}, strings_), dock_(workbench_.document_dock()) {
+              [this] { request(command::import_font); },
+              [this] { request(command::options); }}, strings_), dock_(workbench_.document_dock()) {
+        grid_settings_ = ui::load_designer_grid_settings(settings_path_);
         saved_layout_ = ui::load_designer_dock_widths(settings_path_);
         workbench_.set_dock_widths(saved_layout_);
         vgui_dock_on_activate(dock_, [](vgui_widget*, vgui_item_id item, void* user) {
@@ -213,6 +216,11 @@ public:
             else workbench_.status(tr("font.save_first", "Save this page before importing a project font."));
             break;
         case command::close: close_page(page); break;
+        case command::options:
+            options_.show(shell_, strings_, grid_settings_,
+                [this](ui::designer_grid_settings grid) { apply_grid_settings(grid); },
+                [this](ui::designer_grid_settings grid) { return ui::save_designer_grid_settings(settings_path_, grid); });
+            break;
         case command::quit:
             exit_queue_.clear();
             queue_dirty_pages(exit_queue_);
@@ -283,6 +291,12 @@ public:
 
 private:
     const char* tr(std::string_view key, const char* fallback) const { return strings_.text(key, fallback); }
+
+    void apply_grid_settings(ui::designer_grid_settings grid) {
+        if (grid_settings_ == grid) return;
+        grid_settings_ = grid;
+        for (auto& page : pages_) if (page.preview) page.preview->set_grid_settings(grid_settings_);
+    }
 
     void save_layout() {
         const auto widths = workbench_.dock_widths();
@@ -431,6 +445,7 @@ private:
             [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
             [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_);
         page.preview->set_render_context(renderer_);
+        page.preview->set_grid_settings(grid_settings_);
         page.preview->restore_view(page.view);
         page.last_model_revision.reset();
         return *page.preview;
@@ -798,6 +813,7 @@ private:
     fs::path settings_path_;
     message_box_fn message_box_;
     ui::designer_dock_widths saved_layout_;
+    ui::designer_grid_settings grid_settings_;
     bool layout_save_pending_ = false;
     std::optional<ui::designer_language> pending_language_;
     std::optional<view_action> pending_view_;
@@ -821,6 +837,7 @@ private:
     ui::designer_preview_fonts preview_fonts_;
     ui::designer_workbench workbench_;
     vgui_widget* dock_;
+    ui::designer_options options_;
 };
 
 struct smoke_unsaved_prompt {
@@ -1472,6 +1489,135 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
     menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
 }
 
+void exercise_options(os_window& win, vgui_context* shell, designer& editor, const fs::path& settings,
+                      const std::function<void()>& frame) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Native options: ") + message);
+    };
+    const auto push = [&](SDL_Event e) { require(SDL_PushEvent(&e), "cannot enqueue SDL event"); };
+    const auto button = [&](bool down, float x, float y) {
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = win.id;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = x / win.pixel_ratio();
+        e.button.y = y / win.pixel_ratio();
+        push(e);
+    };
+    const auto widget = [&](std::string_view id, vgui_widget_kind kind) {
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w != nullptr, "could not find the requested options control");
+        return w;
+    };
+    const auto click = [&](vgui_widget* w) {
+        float x, y, width, height;
+        vgui_widget_get_rect(w, &x, &y, &width, &height);
+        require(width > 0 && height > 0, "options control is not laid out");
+        button(true, x + width / 2, y + height / 2);
+        button(false, x + width / 2, y + height / 2);
+        frame();
+    };
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto open = [&] {
+        auto* tools = menus.open(4);
+        const int count = vgui_menu_get_count(tools);
+        int index = 0;
+        for (; index < count; ++index) {
+            if (std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, index))) == "选项") break;
+        }
+        require(index < count, "localized entry missing from Tools");
+        menus.activate(tools, index);
+        require(vgui_modal_active(shell) && std::string_view(vgui_widget_get_id(vgui_modal_panel(shell))) == "designer.options",
+            "activating the Tools item did not open the options modal");
+    };
+    const auto original = editor.preview().grid_settings();
+    const auto before = editor.history().current();
+    const auto revision = editor.history().revision();
+    require(original.spacing == 24 && ui::load_designer_grid_settings(settings) == original,
+        "startup settings were not applied to the canvas");
+    open();
+    auto* panel = vgui_modal_panel(shell);
+    auto* title = find_widget(panel, "designer.options.title");
+    require(title != nullptr, "missing title drag handle");
+    float x, y, w, h, panel_x, panel_y;
+    vgui_widget_get_rect(panel, &panel_x, &panel_y, nullptr, nullptr);
+    vgui_widget_get_rect(title, &x, &y, &w, &h);
+    x += w / 2; y += h / 2;
+    button(true, x, y);
+    SDL_Event motion{};
+    motion.type = SDL_EVENT_MOUSE_MOTION;
+    motion.motion.windowID = win.id;
+    motion.motion.state = SDL_BUTTON_LMASK;
+    motion.motion.x = (x + 36) / win.pixel_ratio();
+    motion.motion.y = (y + 50) / win.pixel_ratio();
+    push(motion);
+    button(false, x + 36, y + 50);
+    frame();
+    vgui_widget_get_rect(panel, &x, &y, nullptr, nullptr);
+    require(x > panel_x + 20 && y > panel_y + 20, "dragging the title did not move the modal");
+
+    const auto replace_text = [&](std::string_view id, const char* text) {
+        auto* edit = widget(id, VGUI_EDIT);
+        click(edit);
+        require(vgui_get_focus(shell) == edit, "options entry did not receive focus");
+        vgui_edit_select_all(edit);
+        menus.key(SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE);
+        SDL_Event e{};
+        e.type = SDL_EVENT_TEXT_INPUT;
+        e.text.windowID = win.id;
+        e.text.text = text;
+        push(e);
+        frame();
+    };
+    replace_text("property:spacing", "36.5");
+    require(editor.preview().grid_settings().spacing == 36.5f && ui::load_designer_grid_settings(settings) == original,
+        "typing a valid spacing did not preview it before Enter or incorrectly saved it");
+    replace_text("property:spacing", "0");
+    require(editor.preview().grid_settings().spacing == 36.5f, "invalid spacing overwrote the last valid preview");
+    click(widget("property:visible", VGUI_CHECKBOX));
+    require(!editor.preview().grid_settings().visible, "checkbox did not preview the visibility change");
+    click(widget("designer.options.cancel", VGUI_BUTTON));
+    require(!vgui_modal_active(shell) && editor.preview().grid_settings() == original &&
+        ui::load_designer_grid_settings(settings) == original, "Cancel did not restore settings without writing them");
+
+    open();
+    click(widget("designer.options.reset", VGUI_BUTTON));
+    require(editor.preview().grid_settings() == ui::designer_grid_settings{} &&
+        ui::load_designer_grid_settings(settings) == original, "Restore Defaults did not preview without writing");
+    replace_text("property:spacing", "32");
+    replace_text("property:axis_color", "#12345680");
+    auto expected = ui::designer_grid_settings{};
+    expected.spacing = 32;
+    expected.axis_color = 0x80123456u;
+    require(editor.preview().grid_settings() == expected, "typing an RGBA color did not immediately preview it");
+    auto* color_swatch = widget("property:axis_color", VGUI_PANEL);
+    click(color_swatch);
+    auto* picker = vgui_popup_content(shell);
+    auto* red = find_widget(picker, "property-grid.color-picker.swatch.2", VGUI_PANEL);
+    require(red, "color picker did not open over the options modal");
+    click(red);
+    require(editor.preview().grid_settings().axis_color == 0xFFFF0000u, "color picker did not preview its preset");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(vgui_modal_active(shell) && !vgui_popup_active(shell) && editor.preview().grid_settings() == expected,
+        "Escape did not cancel only the nested color picker");
+    auto* style = widget("property:style", VGUI_BUTTON);
+    click(style);
+    require(vgui_context_get_open_menu(shell) != nullptr, "style menu did not open over the options modal");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(vgui_modal_active(shell) && !vgui_context_get_open_menu(shell), "Escape did not close only the style menu");
+    click(style);
+    menus.activate(vgui_context_get_open_menu(shell), 1);
+    expected.style = ui::designer_grid_style::dots;
+    require(editor.preview().grid_settings() == expected, "grid style did not preview the selected option");
+    click(widget("designer.options.ok", VGUI_BUTTON));
+    require(!vgui_modal_active(shell) && editor.preview().grid_settings() == expected &&
+        ui::load_designer_grid_settings(settings) == expected, "OK did not persist the current live values");
+    require(editor.history().revision() == revision && editor.history().current() == before,
+        "changing application-level options modified the design");
+}
+
 fs::path designer_settings_path() {
     if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
         return fs::u8path(override_path);
@@ -1511,8 +1657,9 @@ int run(bool smoke, fs::path open_path) {
         fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
     }
     const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
-    if (smoke && !ui::save_designer_dock_widths(settings, {280, 375}))
-        throw std::runtime_error("Cannot seed custom layout widths for the smoke test");
+    if (smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
+                  !ui::save_designer_grid_settings(settings, {.spacing = 24})))
+        throw std::runtime_error("Cannot seed custom workbench settings for the smoke test");
     bool invalid_settings = false;
     const ui::designer_strings strings(ui::load_designer_language(settings, &invalid_settings));
     // The inspector and private artboard context need identical coverage,
@@ -1700,6 +1847,7 @@ int run(bool smoke, fs::path open_path) {
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
             exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
+            exercise_options(*win, shell.get(), editor, settings, advance);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
