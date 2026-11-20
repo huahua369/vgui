@@ -1149,6 +1149,21 @@ void exercise_text_color_picker()
         check(hex, "grid picker is missing its hex field");
         return ui::parse_text_color(vgui_edit_get_text(hex));
     };
+    const auto swatch = [&](vgui_widget* popup, int index) {
+        auto* widget = find_widget(popup, picker_id + ".swatch." + std::to_string(index), VGUI_PANEL);
+        check(widget, "grid picker is missing a color swatch");
+        return widget;
+    };
+    const auto choose_swatch = [&](vgui_widget* popup, int index, vgui_color expected) {
+        const auto committed = model.committed();
+        workbench.click(swatch(popup, index));
+        workbench.frame();
+        const auto preview = color(model.current());
+        check(vgui_popup_content(ctx) == popup && picker_hex(popup) == expected &&
+            ui::parse_text_color(preview) == expected && row_text() == preview,
+            "clicking a swatch did not preview its color in the picker, document and property row");
+        check(model.committed() == committed, "clicking a swatch committed before dismissal");
+    };
     const auto adjust = [&](vgui_widget* popup, const char* control, float fx, float fy) {
         const auto previous = color(model.current());
         const auto committed = color(model.committed());
@@ -1170,6 +1185,11 @@ void exercise_text_color_picker()
     auto* popup = open_picker();
     check(picker_hex(popup) == theme.text && model.current() == inherited && !model.can_undo(),
         "opening the inherited picker did not use the theme color without setting an override");
+    choose_swatch(popup, 2, 0xFFFF0000u);
+    float first_x, first_y, last_x, last_y;
+    vgui_widget_get_rect(swatch(popup, 0), &first_x, &first_y, nullptr, nullptr);
+    vgui_widget_get_rect(swatch(popup, 9), &last_x, &last_y, nullptr, nullptr);
+    check(last_x > first_x && last_y == first_y, "the ten presets should fit in one horizontal row");
     adjust(popup, ".sv", 0.75f, 0.25f);
     adjust(popup, ".hue", 0.33f, 0.5f);
     adjust(popup, ".alpha", 0.4f, 0.5f);
@@ -1197,6 +1217,14 @@ void exercise_text_color_picker()
 
     popup = open_picker();
     check(picker_hex(popup) == ui::parse_text_color(color(picked)), "picker did not reopen with the stored color");
+    float preset_y, recent_y;
+    vgui_widget_get_rect(swatch(popup, 9), nullptr, &preset_y, nullptr, nullptr);
+    vgui_widget_get_rect(swatch(popup, 10), nullptr, &recent_y, nullptr, nullptr);
+    check(recent_y > preset_y, "recent colors should have a separate row below the presets");
+    choose_swatch(popup, 3, 0xFF00FF00u);
+    const auto picked_argb = ui::parse_text_color(color(picked));
+    check(picked_argb && (*picked_argb >> 24) != 0xFFu, "recent color fixture should have a non-opaque alpha");
+    choose_swatch(popup, 10, *picked_argb);
     adjust(popup, ".alpha", 0.2f, 0.5f);
     check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_popup_active(ctx) && model.current() == picked &&
         model.committed() == picked && row_text() == color(picked), "Escape did not restore the explicit starting color");

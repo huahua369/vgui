@@ -9,8 +9,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
-#include <cstdlib>
-#include <cstring>
 
 namespace vgui_editor_kit {
 
@@ -201,9 +199,11 @@ namespace vgui_editor_kit {
 
 		swatch_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_id(swatch_row_, (id_ + ".swatches").c_str());
-		vgui_widget_set_layout(swatch_row_, VGUI_LAYOUT_WRAP);
+		vgui_widget_set_layout(swatch_row_, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_padding(swatch_row_, 0, 0, 0, 0);
-		vgui_widget_set_gap(swatch_row_, 4.0f);
+		vgui_widget_set_background(swatch_row_, 0);
+		vgui_widget_set_border(swatch_row_, 0, 0);
+		vgui_widget_set_gap(swatch_row_, 6.0f);
 		build_swatch_row();
 	}
 
@@ -221,37 +221,43 @@ namespace vgui_editor_kit {
 	{
 		if (!swatch_row_)
 			return;
-		swatch_hexes_.clear();
+		swatch_values_.clear();
 		/* destroy 是延迟销毁,child_count 不会立即变;用 clear 一次性清空。 */
 		vgui_widget_clear(swatch_row_);
-		const auto add_swatch = [&](const std::string& hex)
+		const float sw = editor_row_inner(ctx_);
+		constexpr std::size_t columns = 10;
+		const auto add_palette = [&](const std::vector<std::string>& colors)
 		{
-			uint32_t argb = 0;
-			if (!parse_hex_color(hex, &argb))
-				return;
-			const int index = (int)swatch_hexes_.size();
-			swatch_hexes_.push_back(hex);
-			vgui_widget* swatch = vgui_widget_add(swatch_row_, VGUI_PANEL, nullptr);
-			char widget_id[32];
-			std::snprintf(widget_id, sizeof(widget_id), "%s.swatch.%d",
-				id_.c_str(), index);
-			vgui_widget_set_id(swatch, widget_id);
-			const float sw = editor_row_inner(vgui_widget_get_context(swatch_row_));
-			vgui_widget_set_size(swatch, sw, sw);
-			vgui_widget_set_background(swatch, argb);
-			vgui_widget_set_tooltip(swatch, hex.c_str());
-			vgui_widget_on_event(swatch, &color_picker::on_swatch_click, this);
+			vgui_widget* row = nullptr;
+			std::size_t count = 0;
+			for (const auto& hex : colors)
+			{
+				vgui_color argb = 0;
+				if (!parse_hex_color(hex, &argb))
+					continue;
+				if (count++ % columns == 0)
+				{
+					row = vgui_widget_add(swatch_row_, VGUI_PANEL, nullptr);
+					vgui_widget_set_layout(row, VGUI_LAYOUT_ROW);
+					vgui_widget_set_padding(row, 0, 0, 0, 0);
+					vgui_widget_set_background(row, 0);
+					vgui_widget_set_border(row, 0, 0);
+					vgui_widget_set_gap(row, 4.0f);
+				}
+				vgui_widget* swatch = vgui_widget_add(row, VGUI_PANEL, nullptr);
+				const auto index = swatch_values_.size();
+				vgui_widget_set_id(swatch, (id_ + ".swatch." + std::to_string(index)).c_str());
+				vgui_widget_set_size(swatch, sw, sw);
+				vgui_widget_set_background(swatch, argb);
+				vgui_widget_set_tooltip(swatch, hex.c_str());
+				vgui_widget_set_cursor(swatch, VGUI_CURSOR_HAND);
+				vgui_widget_on_event(swatch, &color_picker::on_swatch_click, this);
+				swatch_values_.push_back({swatch, argb});
+			}
 		};
-		for (const std::string& hex : presets_)
-			add_swatch(hex);
-		if (!presets_.empty() && !recent_.empty())
-		{
-			vgui_widget* sep = vgui_widget_add(swatch_row_, VGUI_PANEL, nullptr);
-			vgui_widget_set_size(sep, 2.0f, editor_row_inner(vgui_widget_get_context(swatch_row_)));
-			vgui_widget_set_background(sep, 0xFF3A424E);
-		}
-		for (const std::string& hex : recent_)
-			add_swatch(hex);
+		add_palette(presets_);
+		add_palette(recent_);
+		vgui_widget_set_visible(swatch_row_, !swatch_values_.empty());
 	}
 
 	void color_picker::set_swatch_background(vgui_widget* swatch,
@@ -397,22 +403,14 @@ namespace vgui_editor_kit {
 		const vgui_event* event, void* user)
 	{
 		auto* self = static_cast<color_picker*>(user);
-		if (!self || event->type != VGUI_EVENT_CLICK || event->button != 1)
+		if (!self || !event || event->type != VGUI_EVENT_CLICK || event->button != 1)
 			return;
-		/* widget id 形如 "<id>.swatch.N",N 是 swatch_hexes_ 的下标。 */
-		const char* widget_id = vgui_widget_get_id(widget);
-		if (!widget_id)
+		const auto& values = self->swatch_values_;
+		const auto swatch = std::find_if(values.begin(), values.end(),
+			[widget](const swatch_value& entry) { return entry.widget == widget; });
+		if (swatch == values.end())
 			return;
-		const char* dot = std::strrchr(widget_id, '.');
-		if (!dot || std::strncmp(dot, ".swatch.", 8) != 0)
-			return;
-		const int index = std::atoi(dot + 8);
-		if (index < 0 || (std::size_t)index >= self->swatch_hexes_.size())
-			return;
-		uint32_t argb = 0;
-		const std::string& hex = self->swatch_hexes_[(std::size_t)index];
-		if (!parse_hex_color(hex, &argb))
-			return;
+		const vgui_color argb = swatch->argb;
 		const float r = (float)((argb >> 16) & 0xFFu) / 255.0f;
 		const float g = (float)((argb >> 8) & 0xFFu) / 255.0f;
 		const float b = (float)(argb & 0xFFu) / 255.0f;

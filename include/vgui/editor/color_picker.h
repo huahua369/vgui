@@ -4,8 +4,8 @@
  *
  * Layout (top to bottom): a preview row (new/current swatches + hex edit),
  * the saturation/value box, the hue bar and the alpha bar (all custom-drawn
- * through the ovg tools picker primitives), and a row of preset/recent
- * swatches.  Dragging inside the SV box or the bars fires the change listener
+ * through the ovg tools picker primitives), then preset and recent swatch
+ * rows.  Dragging inside the SV box or the bars fires the change listener
  * for every update; releasing, pressing a swatch or committing the hex edit
  * fires the commit listener once.  Programmatic set_value() is silent.
  *
@@ -120,7 +120,12 @@ namespace vgui_editor_kit {
 
 		std::vector<std::string> presets_;
 		std::vector<std::string> recent_;
-		std::vector<std::string> swatch_hexes_;
+		struct swatch_value
+		{
+			vgui_widget* widget;
+			vgui_color argb;
+		};
+		std::vector<swatch_value> swatch_values_;
 		transform_fn to_edit_;
 		transform_fn from_edit_;
 
