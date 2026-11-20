@@ -1373,10 +1373,13 @@ static void vgui_tooltip_forget_widget(vgui_context* ctx, vgui_widget* w)
 static vgui_widget* vgui_active_root(vgui_context* ctx)
 {
 	if (!ctx) return nullptr;
-	if (ctx->modal.active && ctx->modal.stage)
-		return ctx->modal.stage;
+	/* A context-level popup is the topmost interactive surface, also when it
+	 * was opened from a control inside an active modal (dropdown editors,
+	 * color pickers).  Checking it first keeps those usable in dialogs. */
 	if (ctx->popup.content)
 		return ctx->popup.content;
+	if (ctx->modal.active && ctx->modal.stage)
+		return ctx->modal.stage;
 	return ctx->root;
 }
 
@@ -10970,8 +10973,16 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 
 	if (ctx->modal.active && ctx->modal.stage)
 	{
-		vgui_widget* mh = vgui_hit_rec(ctx->modal.stage, x, y);
-		if (!mh || mh == ctx->modal.stage)
+		/* Menus and context popups opened from a control inside the modal are
+		 * laid out in the base stage, so the modal hit test cannot see them.
+		 * Give the overlay the click first; otherwise the backdrop would
+		 * swallow it and the dropdown inside a dialog would be dead. */
+		const bool over_overlay =
+			(ctx->open_menu && vgui_menu_hit_rec(ctx->open_menu, x, y)) ||
+			(ctx->popup.content && vgui_hit_rec(ctx->popup.content, x, y));
+		vgui_widget* mh = over_overlay ? nullptr
+			: vgui_hit_rec(ctx->modal.stage, x, y);
+		if (!over_overlay && (!mh || mh == ctx->modal.stage))
 		{
 			ctx->want_mouse = 1;
 			ctx->cursor = VGUI_CURSOR_ARROW;
@@ -22337,6 +22348,14 @@ extern "C" {
 		while (!clips.stack.empty())
 			vgui_clip_pop(&clips, cb, vg);
 
+		// The modal stage covers and dims the background tree, so it is drawn
+		// before the floating overlays.  Menus (and context popups) opened from
+		// a control inside the modal live in the base stage; drawing them above
+		// the modal keeps dropdowns and color pickers inside a dialog visible
+		// and clickable.  No-op when no modal is open, where it only has to
+		// stay above the background tree.
+		vgui_draw_modal(ctx, cb, vg, &clips);
+
 		// Menus float above the whole tree.  They are not layout children, so
 		// they are drawn after the root has finished (and after restoring its
 		// clipping state).
@@ -22347,17 +22366,13 @@ extern "C" {
 				vgui_clip_pop(&clips, cb, vg);
 		}
 
-		// context 级 popup 画在菜单之上;modal 层再压过 popup。
+		// context 级 popup 画在菜单之上。
 		if (ctx->popup.content)
 		{
 			vgui_draw_widget(ctx->popup.content, cb, vg, &clips);
 			while (!clips.stack.empty())
 				vgui_clip_pop(&clips, cb, vg);
 		}
-
-		// The modal stage sits above the background tree and menus but below
-		// tooltips and notifications.
-		vgui_draw_modal(ctx, cb, vg, &clips);
 
 		// F03 drag ghost and drop hints float above the modal stage.
 		vgui_draw_drag(ctx, cb, vg);
