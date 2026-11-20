@@ -3180,8 +3180,10 @@ private:
 
 		float ax = 0, ay = 0, aw = 0, ah = 0;
 		vgui_widget_get_rect(item.swatch, &ax, &ay, &aw, &ah);
-		(void)aw;
-		if (!vgui_popup_open(ctx, color_picker_->widget(), ax, ay + ah + 4.0f))
+		/* Rect anchor: the picker opens below the swatch and flips above it
+		 * when it would run past the window bottom. */
+		if (!vgui_popup_open_anchored(ctx, color_picker_->widget(),
+			ax, ay, aw, ah, 4.0f))
 			return;
 		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
 		begin_popup_session(item, popup_kind::color);
@@ -3251,8 +3253,8 @@ private:
 
 		float ax = 0, ay = 0, aw = 0, ah = 0;
 		vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
-		(void)aw;
-		if (!vgui_popup_open(ctx, curve_editor_->widget(), ax, ay + ah + 4.0f))
+		if (!vgui_popup_open_anchored(ctx, curve_editor_->widget(),
+			ax, ay, aw, ah, 4.0f))
 			return;
 		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
 		begin_popup_session(item, popup_kind::curve);
@@ -3284,9 +3286,8 @@ private:
 
 		float ax = 0, ay = 0, aw = 0, ah = 0;
 		vgui_widget_get_rect(item.editor, &ax, &ay, &aw, &ah);
-		(void)aw;
-		if (!vgui_popup_open(ctx, gradient_editor_->widget(),
-			ax, ay + ah + 4.0f))
+		if (!vgui_popup_open_anchored(ctx, gradient_editor_->widget(),
+			ax, ay, aw, ah, 4.0f))
 			return;
 		vgui_popup_on_close(ctx, &property_grid::on_popup_close, this);
 		begin_popup_session(item, popup_kind::gradient);

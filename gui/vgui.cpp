@@ -1031,7 +1031,11 @@ struct vgui_modal_state
 struct vgui_popup_state
 {
 	vgui_widget* content = nullptr;	// detached 子树,宿主拥有
-	float x = 0.0f, y = 0.0f;		// 请求锚点(左上角)
+	float x = 0.0f, y = 0.0f;		// 锚点矩形左上角
+	float anchor_w = 0.0f;			// 锚点矩形尺寸(点锚点为 0)
+	float anchor_h = 0.0f;
+	float gap = 0.0f;				// 与锚点矩形的间距
+	int flipped = 0;				// 当前摆放:0 在锚点下方,1 在上方
 	int swallow_up = 0;
 	vgui_popup_close_fn close_fn = nullptr;
 	void* close_user = nullptr;
@@ -6756,8 +6760,8 @@ static void vgui_modal_layout(vgui_context* ctx)
 
 // ---- context 级通用弹出面板 ------------------------------------------------
 
-// 度量 content、按请求锚点定位并钳制到窗口内。每次布局都会重跑,
-// 内容尺寸变化(如 hex 编辑出错行变高)后位置自动修正。
+// 度量 content、按锚点矩形定位(下方优先,放不下则翻到上方)并钳制到窗口内。
+// 每次布局都会重跑,内容尺寸变化(如 hex 编辑出错行变高)后位置自动修正。
 static void vgui_popup_update_layout(vgui_context* ctx)
 {
 	if (!ctx || !ctx->popup.content) return;
@@ -6786,13 +6790,30 @@ static void vgui_popup_update_layout(vgui_context* ctx)
 	}
 	else
 		content->abs_x = ctx->popup.x;
+
+	/* 上下摆放:优先放在锚点矩形下方(与请求一致);下方放不下就翻到上方
+	 * (底边贴锚点上沿并留出 gap),这样贴着窗口底部的拾色器/编辑器不会被
+	 * 裁掉。两侧都放不下时选空间大的一侧,再由下面的钳制兜底。判定只看
+	 * 当前可用空间,不记忆上一次的摆放,内容变高变矮后位置自然重算。 */
+	float below_top = ctx->popup.y + ctx->popup.anchor_h + ctx->popup.gap;
+	float above_bottom = ctx->popup.y - ctx->popup.gap;
+	float abs_y = below_top;
 	if (ctx->height > 0)
 	{
-		content->abs_y = vgui_clampf(ctx->popup.y, margin,
-			std::max(margin, (float)ctx->height - ph - margin));
+		const float h = (float)ctx->height;
+		const float space_below = h - margin - below_top;
+		const float space_above = above_bottom - margin;
+		if (space_below >= ph)
+			ctx->popup.flipped = 0;
+		else if (space_above >= ph)
+			ctx->popup.flipped = 1;
+		else
+			ctx->popup.flipped = space_above > space_below ? 1 : 0;
+		abs_y = ctx->popup.flipped ? above_bottom - ph : below_top;
+		abs_y = vgui_clampf(abs_y, margin,
+			std::max(margin, h - ph - margin));
 	}
-	else
-		content->abs_y = ctx->popup.y;
+	content->abs_y = abs_y;
 	content->abs_w = pw;
 	content->abs_h = ph;
 
@@ -17859,7 +17880,8 @@ extern "C" {
 
 	// ---- context 级通用弹出面板 -----------------------------------------------
 
-	int vgui_popup_open(vgui_context* ctx, vgui_widget* content, float x, float y)
+	int vgui_popup_open_anchored(vgui_context* ctx, vgui_widget* content,
+		float ax, float ay, float aw, float ah, float gap)
 	{
 		if (!ctx || !content || content->ctx != ctx) return 0;
 		if (content->parent) return 0;	/* 只接受 detached 子树 */
@@ -17870,8 +17892,11 @@ extern "C" {
 		if (ctx->popup.content == content)
 		{
 			/* 重复打开同一个内容:仅更新锚点。 */
-			ctx->popup.x = x;
-			ctx->popup.y = y;
+			ctx->popup.x = ax;
+			ctx->popup.y = ay;
+			ctx->popup.anchor_w = aw;
+			ctx->popup.anchor_h = ah;
+			ctx->popup.gap = gap;
 			vgui_popup_update_layout(ctx);
 			return 1;
 		}
@@ -17889,13 +17914,22 @@ extern "C" {
 		ctx->popup.close_fn = fn;
 		ctx->popup.close_user = user;
 		ctx->popup.content = content;
-		ctx->popup.x = x;
-		ctx->popup.y = y;
+		ctx->popup.x = ax;
+		ctx->popup.y = ay;
+		ctx->popup.anchor_w = std::max(0.0f, aw);
+		ctx->popup.anchor_h = std::max(0.0f, ah);
+		ctx->popup.gap = gap;
 		content->visible = 1;
 		content->focus_trap = 1;
 		ctx->layout_dirty = true;
 		vgui_ensure_layout(ctx);
 		return 1;
+	}
+
+	int vgui_popup_open(vgui_context* ctx, vgui_widget* content, float x, float y)
+	{
+		/* 点锚点:等价于零尺寸锚点矩形,翻转时底边贴 y。 */
+		return vgui_popup_open_anchored(ctx, content, x, y, 0.0f, 0.0f, 0.0f);
 	}
 
 	void vgui_popup_close(vgui_context* ctx)

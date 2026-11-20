@@ -4278,6 +4278,25 @@ static void test_popup(vgui_context* ui)
 	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
 	check(px + pw <= 900.0f + 0.5f && py + ph <= 700.0f + 0.5f,		"popup: clamped to window");
 
+	/* 下方放不下就向上翻:点锚点,底边贴锚点 y。 */
+	vgui_popup_open(ui, content, 100.0f, 660.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	check(near(py, 570.0f) && near(py + ph, 660.0f),		"popup: flips above a low point anchor");
+
+	/* 矩形锚点:先放在控件下方留 gap;底部放不下时翻到控件上方。 */
+	vgui_popup_open_anchored(ui, content, 300.0f, 300.0f, 200.0f, 24.0f, 4.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	check(near(px, 300.0f) && near(py, 328.0f),			"popup: rect anchor opens below");
+	vgui_popup_open_anchored(ui, content, 300.0f, 600.0f, 200.0f, 24.0f, 4.0f);
+	vgui_update(ui, 0.016f);
+	vgui_layout(ui);
+	vgui_widget_get_rect(content, &px, &py, &pw, &ph);
+	check(near(py + ph, 596.0f) && py >= 8.0f - 0.5f,	"popup: rect anchor flips above near bottom");
+
 	/* 内容大于窗口:框保持内容尺寸(边框穿过内容的回归),只钳位置。 */
 	vgui_widget_set_size(content, 1200.0f, 900.0f);
 	vgui_popup_open(ui, content, 100.0f, 100.0f);

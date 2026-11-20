@@ -531,9 +531,20 @@ extern "C" {
 	typedef void (*vgui_popup_close_fn)(void* user, int reason);
 
 	/* content must be a detached widget (vgui_widget_create).  x/y is the
-	 * requested anchor of its top-left corner, clamped to the window.  Returns
-	 * 0 when a modal is open or content is not detached. */
+	 * requested anchor of its top-left corner, clamped to the window.  When the
+	 * panel does not fit below y it is flipped above y instead (bottom edge at
+	 * y), so a popup anchored near the bottom edge stays fully visible.
+	 * Returns 0 when content is not detached. */
 	VGUI_API int vgui_popup_open(vgui_context* ctx, vgui_widget* content, float x, float y);
+
+	/* Same, anchored to a rectangle (the invoking control: a swatch row, an
+	 * edit box, a cell) instead of a point.  The panel is placed below the
+	 * rectangle with its left edge at ax, leaving `gap` pixels; when there is
+	 * not enough room below it is flipped above the rectangle (bottom edge at
+	 * ay - gap) as long as that fits.  Placement also survives content size
+	 * changes: the side is re-evaluated on every layout. */
+	VGUI_API int vgui_popup_open_anchored(vgui_context* ctx, vgui_widget* content,
+		float ax, float ay, float aw, float ah, float gap);
 	VGUI_API void vgui_popup_close(vgui_context* ctx);
 	VGUI_API int vgui_popup_active(vgui_context* ctx);
 	/* The open popup's content widget, or NULL. */
