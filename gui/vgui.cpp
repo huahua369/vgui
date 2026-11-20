@@ -10971,6 +10971,25 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 		return 1;
 	}
 
+	// popup 是 context 级浮层，优先级高于模态：点内容外面先关 popup
+	// (模态里的颜色拾取器/下拉编辑器据此才能正确关闭)。
+	if (ctx->popup.content)
+	{
+		vgui_widget* mh = vgui_hit_rec(ctx->popup.content, x, y);
+		if (!mh)
+		{
+			ctx->want_mouse = 1;
+			ctx->cursor = VGUI_CURSOR_ARROW;
+			if (button == 1)
+			{
+				ctx->popup.swallow_up = 1;
+				vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_OUTSIDE);
+			}
+			vgui_end_input(ctx);
+			return 1;
+		}
+	}
+
 	if (ctx->modal.active && ctx->modal.stage)
 	{
 		/* Menus and context popups opened from a control inside the modal are
@@ -10991,25 +11010,6 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			{
 				vgui_modal_close_internal(ctx, ctx->modal.options.backdrop_result);
 				ctx->modal.swallow_up = 1;
-			}
-			vgui_end_input(ctx);
-			return 1;
-		}
-	}
-
-	// popup:内容矩形之外的按下关闭并吞掉;内容内部(含面板自身空白)
-	// 走正常路由(active_root 已指向 content)。
-	if (ctx->popup.content)
-	{
-		vgui_widget* mh = vgui_hit_rec(ctx->popup.content, x, y);
-		if (!mh)
-		{
-			ctx->want_mouse = 1;
-			ctx->cursor = VGUI_CURSOR_ARROW;
-			if (button == 1)
-			{
-				ctx->popup.swallow_up = 1;
-				vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_OUTSIDE);
 			}
 			vgui_end_input(ctx);
 			return 1;
@@ -11568,13 +11568,10 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 		vgui_end_input(ctx);
 		return 1;
 	}
-	if (ctx->modal.active && !ctx->press_target)
-	{
-		ctx->want_mouse = 1;
-		vgui_end_input(ctx);
-		return 1;
-	}
-
+	/* An open menu owns the release before the modal fallback below: a menu is
+	 * not a layout child of the modal stage, so a click on one never sets
+	 * press_target.  Handling the modal first swallowed the release and the
+	 * item could never activate (dropdowns inside a dialog were dead). */
 	if (ctx->menu_swallow_up)
 	{
 		ctx->menu_swallow_up = 0;
@@ -11590,6 +11587,13 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 			ctx->active = nullptr;
 		}
 		vgui_menu_mouse_up(ctx, button, x, y);
+		ctx->want_mouse = 1;
+		vgui_end_input(ctx);
+		return 1;
+	}
+
+	if (ctx->modal.active && !ctx->press_target)
+	{
 		ctx->want_mouse = 1;
 		vgui_end_input(ctx);
 		return 1;
@@ -17859,7 +17863,10 @@ extern "C" {
 	{
 		if (!ctx || !content || content->ctx != ctx) return 0;
 		if (content->parent) return 0;	/* 只接受 detached 子树 */
-		if (ctx->modal.active) return 0;
+		/* A popup (color picker, dropdown editor) may be opened from a control
+		 * inside a modal dialog.  The modal stage owns input, but the popup is
+		 * a context-level surface drawn above it, so it is allowed here; the
+		 * overlay ordering and hit tests already give it priority. */
 		if (ctx->popup.content == content)
 		{
 			/* 重复打开同一个内容:仅更新锚点。 */
