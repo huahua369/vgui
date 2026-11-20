@@ -2,13 +2,19 @@
 #include "pch.h" // ovg_c.h uses glm types
 #include <ovg_c.h>
 #include <ovg_fonts.h>
+#include <hb-raster.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <memory>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#include <cstdlib>
+#include <filesystem>
+#endif
 
 static int failures = 0;
 static void check(bool ok, const char* message) {
@@ -16,6 +22,66 @@ static void check(bool ok, const char* message) {
 }
 
 using layout_ptr = std::unique_ptr<vg_text_rgba_layout, decltype(&vg_free_text_rgba_layout)>;
+
+static void test_small_glyph(font_familys_t* family, const char* name, char ch, int size) {
+    constexpr int w = 32, h = 32, pen_x = 8, pen_y = 4;
+    const char str[] = {ch, '\0'};
+    text_st_t text{};
+    text.pos = {pen_x, pen_y}; text.size = {w, h}; text.text = str; text.text_len = 1;
+    text_style_t style{};
+    style.family = family; style.fontsize = (float)size; style.color = 0xffffffff;
+    text_box_rt box{};
+    box.baseline = 12;
+    std::array<uint8_t, w * h * 4> pixels{};
+    if (!vg_render_text_rgba8(&text, &style, &box, pixels.data(), w, h, w * 4, nullptr)) {
+        check(false, "render small grayscale glyph");
+        return;
+    }
+
+    // Render the same face directly, with no OVG atlas or manual raster bounds.
+    std::unique_ptr<hb_font_t, decltype(&hb_font_destroy)> font(
+        hb_font_create(hb_font_get_face(family->familys[0]->font)), hb_font_destroy);
+    std::unique_ptr<hb_raster_draw_t, decltype(&hb_raster_draw_destroy)> draw(
+        hb_raster_draw_create_or_fail(), hb_raster_draw_destroy);
+    hb_font_set_scale(font.get(), size, size);
+    hb_codepoint_t gid = 0;
+    if (!draw || !hb_font_get_nominal_glyph(font.get(), (unsigned char)ch, &gid)) {
+        check(false, "resolve small-glyph HarfBuzz reference");
+        return;
+    }
+    hb_raster_draw_set_transform(draw.get(), 1, 0, 0, -1, 0, 0);
+    hb_raster_draw_glyph(draw.get(), font.get(), gid);
+    std::unique_ptr<hb_raster_image_t, decltype(&hb_raster_image_destroy)> image(
+        hb_raster_draw_render(draw.get()), hb_raster_image_destroy);
+    if (!image || hb_raster_image_get_format(image.get()) != HB_RASTER_FORMAT_A8) {
+        check(false, "rasterize small-glyph A8 reference");
+        return;
+    }
+    hb_raster_extents_t ext{};
+    hb_raster_image_get_extents(image.get(), &ext);
+    const auto* a8 = hb_raster_image_get_buffer(image.get());
+    const int left = pen_x + ext.x_origin, top = pen_y + box.baseline + ext.y_origin;
+    if (!a8 || left < 0 || top < 0 || left + (int)ext.width > w || top + (int)ext.height > h) {
+        check(false, "small-glyph reference fits entirely in the destination");
+        return;
+    }
+    std::array<uint8_t, w * h> expected{};
+    for (unsigned y = 0; y < ext.height; ++y)
+        std::memcpy(expected.data() + (top + y) * w + left, a8 + y * ext.stride, ext.width);
+
+    int actual_sum = 0, expected_sum = 0, mismatches = 0;
+    for (size_t i = 0; i < expected.size(); ++i) {
+        const uint8_t alpha = pixels[4 * i + 3];
+        actual_sum += alpha;
+        expected_sum += expected[i];
+        mismatches += alpha != expected[i];
+    }
+    if (!expected_sum || mismatches) {
+        std::fprintf(stderr, "FAIL: %s %dpx '%c' coverage: OVG %d, HarfBuzz %d, %d differing alpha pixels\n",
+            name, size, ch, actual_sum, expected_sum, mismatches);
+        ++failures;
+    }
+}
 
 static void test_layout(font_cache_cx* cache, const char* path) {
     constexpr int w = 192, h = 128, stride = w * 4 + 13, dx = -8, dy = 7;
@@ -79,6 +145,24 @@ int main() {
     font_familys_t* family = loaded ? new_font_family(cache, "RgbaTestDejaVu", nullptr) : nullptr;
     check(family && family->count > 0, "resolve bundled font");
     if (!family || family->count <= 0) { if (family) delete_font_family(family); free_font_cache(cache); return 1; }
+
+    // In the old manual bounds, even the bundled 12px period loses its bottom row.
+    for (int size : {12, 13, 14})
+        for (char ch : {'.', ',', 'g'}) test_small_glyph(family, "DejaVu Sans", ch, size);
+#ifdef _WIN32
+    if (const char* root = std::getenv("SystemRoot")) {
+        const auto yahei_path = std::filesystem::path(root) / "Fonts" / "msyh.ttc";
+        std::error_code ec;
+        if (std::filesystem::is_regular_file(yahei_path, ec)) {
+            // A named file registration selects face zero (Microsoft YaHei Regular).
+            const bool registered = load_font_from_path(cache, yahei_path.generic_string().c_str(), "RgbaTestYaHei");
+            std::unique_ptr<font_familys_t, decltype(&delete_font_family)> yahei(
+                registered ? new_font_family(cache, "RgbaTestYaHei", nullptr) : nullptr, delete_font_family);
+            check(yahei && yahei->count == 1, "resolve installed Microsoft YaHei Regular");
+            if (yahei && yahei->count == 1) test_small_glyph(yahei.get(), "Microsoft YaHei", '.', 13);
+        }
+    }
+#endif
 
     const int w = 192, h = 128, stride = w * 4 + 13;
     text_st_t text{};
