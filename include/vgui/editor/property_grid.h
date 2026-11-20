@@ -409,6 +409,7 @@ namespace vgui_editor_kit {
 		 * acceptance rules.  Returns false when the descriptor is invalid. */
 		bool prepare_desc(property_desc& desc);
 		void refresh_grid_labels();
+		void update_favorite_button(vgui_widget* button, bool checked) const;
 		void refresh_row_button_labels(row& item);
 		void refresh_row_a11y(row& item);
 		void refresh_row_desc(row& item);
@@ -518,7 +519,8 @@ namespace vgui_editor_kit {
 
 		vgui_widget* panel_ = nullptr;
 		vgui_widget* search_ = nullptr;
-		vgui_widget* fav_filter_ = nullptr;	// P08 favorites filter toggle
+		vgui_widget* fav_filter_ = nullptr;
+		vgui_texture* favorite_icons_[2] = {}; // Outline and filled masks, shared by all rows.
 		vgui_widget* content_ = nullptr;
 		vgui_widget* top_spacer_ = nullptr;
 		vgui_widget* window_ = nullptr;

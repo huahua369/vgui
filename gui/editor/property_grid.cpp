@@ -5,6 +5,7 @@
 #include "ui_scale.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cerrno>
 #include <charconv>
@@ -47,6 +48,59 @@ namespace vgui_editor_kit {
 		constexpr float kSearchLead = 28.0f;	// search 24 + gap 4
 		constexpr float kOverscan = 96.0f;
 		constexpr std::size_t kMinWindowEntries = 4;
+
+		constexpr int kFavoriteIconSize = 14;
+		constexpr vgui_color kFavoriteOff = 0xFF9FB0C4;
+		constexpr vgui_color kFavoriteOn = 0xFFFFC766;
+
+		vgui_texture* make_favorite_icon(vgui_context* ctx, bool filled)
+		{
+			// The path bounds are centered on (7, 7) in both states. Rasterize
+			// once per grid so the icon does not depend on a font's baseline.
+			struct point { float x, y; };
+			constexpr point star[] = {{7, 1}, {8.85f, 5}, {13.2f, 5.5f}, {10, 8.75f}, {11, 13},
+				{7, 10.78f}, {3, 13}, {4, 8.75f}, {.8f, 5.5f}, {5.15f, 5}};
+			constexpr int density = 4;
+			constexpr int size = kFavoriteIconSize * density;
+			std::array<unsigned char, size * size * 4> pixels;
+			pixels.fill(255);
+			for (int y = 0; y < size; ++y)
+			{
+				for (int x = 0; x < size; ++x)
+				{
+					const point p{(x + .5f) / density, (y + .5f) / density};
+					bool inside = false;
+					float distance_sq = 2.0f;
+					for (std::size_t i = 0; i < std::size(star); ++i)
+					{
+						const auto a = star[i], b = star[(i + 1) % std::size(star)];
+						const float dx = b.x - a.x, dy = b.y - a.y;
+						const float px = p.x - a.x, py = p.y - a.y;
+						if ((a.y > p.y) != (b.y > p.y) && px < dx * py / dy) inside = !inside;
+						const float t = std::clamp((px * dx + py * dy) / (dx * dx + dy * dy), 0.0f, 1.0f);
+						const float ex = px - t * dx, ey = py - t * dy;
+						distance_sq = std::min(distance_sq, ex * ex + ey * ey);
+					}
+					const float signed_distance = (inside ? 1.0f : -1.0f) * std::sqrt(distance_sq);
+					float coverage = std::clamp(.5f + signed_distance * density, 0.0f, 1.0f);
+					if (!filled)
+						coverage = std::min(coverage, std::clamp(.5f + (1.15f - signed_distance) * density, 0.0f, 1.0f));
+					pixels[4 * (y * size + x) + 3] = static_cast<unsigned char>(coverage * 255.0f + .5f);
+				}
+			}
+			const vgui_texture_desc desc{size, size, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels.data()};
+			return vgui_texture_create(ctx, &desc);
+		}
+
+		vgui_widget* make_favorite_button(vgui_widget* parent, float width)
+		{
+			auto* button = vgui_widget_add(parent, VGUI_BUTTON, nullptr);
+			vgui_widget_set_size(button, width, 24);
+			vgui_widget_set_padding(button, 0, 0, 0, 0);
+			vgui_widget_set_text_align(button, .5f, .5f);
+			vgui_widget_set_a11y_role(button, VGUI_A11Y_ROLE_TOGGLE);
+			return button;
+		}
 
 		using normalized_value = property_value_result;
 
@@ -591,11 +645,13 @@ namespace vgui_editor_kit {
 			vgui_widget_destroy(panel_);
 			panel_ = nullptr;
 			search_ = nullptr;
+			fav_filter_ = nullptr;
 			content_ = nullptr;
 			top_spacer_ = nullptr;
 			window_ = nullptr;
 			bottom_spacer_ = nullptr;
 		}
+		for (auto* icon : favorite_icons_) vgui_texture_destroy(icon);
 		rows_.clear();
 		display_.clear();
 		category_order_.clear();
@@ -650,11 +706,12 @@ namespace vgui_editor_kit {
 		vgui_edit_set_background_transparent(search_, 1);
 		vgui_widget_on_text(search_, &property_grid::on_search_text, this);
 
-		fav_filter_ = vgui_widget_add(search_row, VGUI_BUTTON, "*");
-		vgui_widget_set_size(fav_filter_, 24, 24);
-		vgui_widget_set_font_size(fav_filter_, 12);
+		auto* ctx = vgui_widget_get_context(panel_);
+		favorite_icons_[0] = make_favorite_icon(ctx, false);
+		favorite_icons_[1] = make_favorite_icon(ctx, true);
+		fav_filter_ = make_favorite_button(search_row, 24);
 		vgui_widget_set_id(fav_filter_, "__property_fav_filter");
-		vgui_widget_set_a11y_role(fav_filter_, VGUI_A11Y_ROLE_TOGGLE);
+		update_favorite_button(fav_filter_, favorites_only_);
 		vgui_widget_on_event(fav_filter_,
 			&property_grid::on_fav_filter_click, this);
 
@@ -693,7 +750,6 @@ namespace vgui_editor_kit {
 		/* Before the first layout we only know the context size.  Use it as a
 		 * generous viewport estimate so a freshly built grid is populated even
 		 * when the host never scrolls it. */
-		vgui_context* ctx = vgui_widget_get_context(panel_);
 		int cw = 0, ch = 0;
 		if (ctx)
 			vgui_context_get_size(ctx, &cw, &ch);
@@ -734,6 +790,14 @@ namespace vgui_editor_kit {
 		vgui_edit_set_placeholder(search_, labels_.search.c_str());
 		vgui_widget_set_a11y_name(fav_filter_, labels_.favorites_only.c_str());
 		vgui_widget_set_tooltip(fav_filter_, labels_.favorites_only.c_str());
+	}
+
+	void property_grid::update_favorite_button(vgui_widget* button, bool checked) const
+	{
+		if (!button) return;
+		vgui_widget_set_checked(button, checked);
+		vgui_button_set_icon(button, favorite_icons_[checked], kFavoriteIconSize, kFavoriteIconSize, VGUI_BUTTON_ICON_LEFT);
+		vgui_button_set_icon_tint(button, checked ? kFavoriteOn : kFavoriteOff);
 	}
 
 	void property_grid::refresh_row_button_labels(row& item)
@@ -1514,11 +1578,10 @@ namespace vgui_editor_kit {
 	{
 		favorites_[id] = favorite;
 		row* item = find_row(id);
-		if (item)
+		if (item && item->favorite != favorite)
 		{
 			item->favorite = favorite;
-			if (item->fav_btn)
-				vgui_widget_set_checked(item->fav_btn, favorite ? 1 : 0);
+			update_favorite_button(item->fav_btn, favorite);
 			update_visibility();
 		}
 	}
@@ -1543,7 +1606,9 @@ namespace vgui_editor_kit {
 
 	void property_grid::set_favorites_only(bool only)
 	{
+		if (favorites_only_ == only) return;
 		favorites_only_ = only;
+		update_favorite_button(fav_filter_, only);
 		update_visibility();
 	}
 
@@ -2126,15 +2191,12 @@ private:
 		vgui_widget_set_id(item.editor, property_widget_id(item.desc.id).c_str());
 		refresh_row_a11y(item);
 
-		/* P08:收藏星标(reset 左侧),点击切换 favorites_only 过滤范围。 */
+		// One toggle per property; the header can filter to these rows.
 		item.favorite = property_favorite(item.desc.id);
-		item.fav_btn = vgui_widget_add(item.line, VGUI_BUTTON, "*");
-		vgui_widget_set_size(item.fav_btn, 20, 24);
-		vgui_widget_set_font_size(item.fav_btn, 12);
+		item.fav_btn = make_favorite_button(item.line, 20);
 		vgui_widget_set_id(item.fav_btn, property_widget_id(item.desc.id).c_str());
 		vgui_widget_on_event(item.fav_btn, &property_grid::on_row_event, this);
-		vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
-		vgui_widget_set_a11y_role(item.fav_btn, VGUI_A11Y_ROLE_TOGGLE);
+		update_favorite_button(item.fav_btn, item.favorite);
 
 		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, nullptr);
 		vgui_widget_set_size(item.reset, kResetWidth, 24);
@@ -2218,9 +2280,6 @@ private:
 			vgui_widget_set_enabled(item.reset, readonly ? 0 : 1);
 			vgui_widget_set_visible(item.reset, item.desc.has_default ? 1 : 0);
 		}
-		if (item.fav_btn)
-			vgui_widget_set_checked(item.fav_btn, item.favorite ? 1 : 0);
-
 		update_edit_field_background(item);
 		if (item.mixed)
 		{
@@ -3369,9 +3428,6 @@ private:
 		if (!self || !event || event->type != VGUI_EVENT_CLICK)
 			return;
 		self->set_favorites_only(!self->favorites_only_);
-		if (self->fav_filter_)
-			vgui_widget_set_checked(self->fav_filter_,
-				self->favorites_only_ ? 1 : 0);
 	}
 
 	void property_grid::on_edit_event(vgui_widget* widget, const vgui_event* event,

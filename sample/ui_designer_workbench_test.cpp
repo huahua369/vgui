@@ -1004,6 +1004,108 @@ void exercise_live_properties()
     check(model.current() == base && !model.can_undo(), "cancelled text left an undo entry");
 }
 
+void exercise_property_favorites()
+{
+    // Keep the real OVG draw list and intercept only the CPU image calls.
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    check(cb != nullptr, "could not create the favorites draw context");
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    check(vg != nullptr, "could not create the favorites draw list");
+    struct image_draw { ivec4 dst; vgui_color tint; uint32_t id; };
+    static std::vector<image_draw> images;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) {
+        static uint32_t next_id = 1;
+        img->id = next_id++;
+    };
+    cb->add_image = [](rvg_t*, ovg_image_r* img) {
+        images.push_back({img->dst, img->color, img->img->id});
+    };
+
+    temp_dir directory;
+    test_workbench workbench(directory.path / "favorites.vgui.json");
+    auto* ctx = workbench.ctx.get();
+    vgui_context_get_size(ctx, &vg->width, &vg->height);
+    const auto baseline = workbench.model.current();
+    const auto revision = workbench.model.revision();
+    constexpr auto x_id = "property:x";
+    constexpr auto y_id = "property:y";
+    constexpr auto filter_id = "__property_fav_filter";
+    const auto filter = [&] { return workbench.widget(filter_id, VGUI_BUTTON); };
+    const auto star = [&](std::string_view id) -> vgui_widget* {
+        auto* line = vgui_widget_get_parent(workbench.widget(id, VGUI_LABEL));
+        for (std::size_t i = 0; i < vgui_widget_get_child_count(line); ++i) {
+            auto* child = vgui_widget_get_child(line, i);
+            if (vgui_widget_get_kind(child) == VGUI_BUTTON &&
+                vgui_widget_get_a11y_role(child) == VGUI_A11Y_ROLE_TOGGLE &&
+                id == vgui_widget_get_id(child)) return child;
+        }
+        throw std::runtime_error("missing favorite toggle: " + std::string(id));
+    };
+    const auto draw = [&] {
+        check(workbench.model.current() == baseline && workbench.model.revision() == revision &&
+            !workbench.model.dirty() && !workbench.model.can_undo() && !workbench.model.can_redo(),
+            "property favorites changed the document or its history");
+        images.clear();
+        cb->clear(vg.get());
+        vgui_draw(ctx, cb.get(), vg.get());
+    };
+    const auto check_icon = [&](vgui_widget* button, bool checked) {
+        const std::string id = vgui_widget_get_id(button);
+        check(!!vgui_widget_get_checked(button) == checked, "wrong checked state: " + id);
+        check(std::string_view(vgui_widget_get_text(button)).empty(), "favorite toggle still draws text: " + id);
+        float x, y, w, h;
+        vgui_widget_get_rect(button, &x, &y, &w, &h);
+        constexpr int size = 14;
+        const ivec4 expected{static_cast<int>(std::lround(x + (w - size) * 0.5f)),
+            static_cast<int>(std::lround(y + (h - size) * 0.5f)), size, size};
+        // OVG receives 0xAABBGGRR, unlike VGUI's public 0xAARRGGBB colors.
+        constexpr vgui_color gray = 0xffc4b09f, gold = 0xff66c7ff;
+        uint32_t id_drawn = 0;
+        for (const auto& image : images) {
+            const float cx = image.dst.x + image.dst.z * 0.5f;
+            const float cy = image.dst.y + image.dst.w * 0.5f;
+            if (cx < x || cx >= x + w || cy < y || cy >= y + h) continue;
+            check(!id_drawn && image.id && image.dst == expected, "expected one centered 14px favorite icon: " + id);
+            check(image.tint == (checked ? gold : gray), "wrong favorite icon tint: " + id);
+            id_drawn = image.id;
+        }
+        check(id_drawn, "missing favorite icon draw: " + id);
+        return id_drawn;
+    };
+    const auto click = [&](vgui_widget* button) {
+        workbench.click(button);
+        workbench.frame();
+        draw();
+    };
+
+    draw();
+    const auto row_outline = check_icon(star(x_id), false);
+    check_icon(star(y_id), false);
+    const auto filter_outline = check_icon(filter(), false);
+    check(std::string_view(vgui_widget_get_a11y_name(star(x_id))) == "Toggle favorite" &&
+        std::string_view(vgui_widget_get_a11y_name(filter())) == "Favorites only",
+        "favorite toggles lost their accessible labels");
+
+    click(star(x_id));
+    check(check_icon(star(x_id), true) != row_outline, "starred row did not switch CPU textures");
+    check_icon(star(y_id), false);
+    check_icon(filter(), false);
+
+    click(filter());
+    check(check_icon(filter(), true) != filter_outline, "active favorites filter did not switch CPU textures");
+    check_icon(star(x_id), true);
+    check(!find_widget(vgui_root(ctx), y_id, VGUI_LABEL), "favorites filter kept the unstarred row");
+
+    click(filter());
+    check_icon(filter(), false);
+    check_icon(star(x_id), true);
+    check_icon(star(y_id), false);
+
+    click(star(x_id));
+    check_icon(star(x_id), false);
+    check_icon(star(y_id), false);
+}
+
 void exercise_text_color_picker()
 {
     temp_dir directory;
@@ -1730,6 +1832,7 @@ int main()
         exercise_workbench();
         exercise_button_atlas();
         exercise_live_properties();
+        exercise_property_favorites();
         exercise_text_color_picker();
         exercise_font_properties();
         exercise_font_family();
