@@ -375,6 +375,20 @@ void exercise_menus()
     }
 
     workbench.bench.set_page_active(false);
+    auto* tools = workbench.open_menu("Tools");
+    const auto language_item = vgui_menu_get_item_at(tools, 0);
+    const auto info_item = vgui_menu_get_item_at(tools, 1);
+    check(language_item && info_item &&
+        vgui_menu_get_item_type(tools, language_item) == VGUI_MENU_ITEM_SUBMENU &&
+        std::string_view(vgui_menu_get_item_text(tools, language_item)) == "Language" &&
+        vgui_menu_get_item_type(tools, info_item) == VGUI_MENU_ITEM_NORMAL &&
+        std::string_view(vgui_menu_get_item_text(tools, info_item)) == "Configuration Information",
+        "Tools should keep the Language submenu and add Configuration Information after it");
+    workbench.activate(tools, "Configuration Information");
+    auto* configuration = vgui_modal_panel(ctx);
+    check(configuration && std::string_view(vgui_widget_get_text(vgui_widget_get_child(configuration, 0))) ==
+        "Configuration Information", "Tools did not show the configuration dialog without an active page");
+    check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_modal_active(ctx), "could not dismiss the configuration dialog");
     workbench.command("Tools", "Options");
     check(workbench.options_calls == 1, "Tools did not request Options without an active page");
     workbench.bench.set_page_active(true);

@@ -161,9 +161,16 @@ struct designer_workbench::impl {
         bool operator==(const inspector_state&) const = default;
     };
 
+    struct information_dialog {
+        const char* command;
+        std::function<std::string()> message;
+        float width;
+    };
+
     vgui_context* ui;
     session& history;
     const designer_strings& strings;
+    const std::string settings_path;
     kit::editor_context editor;
     kit::command_registry commands;
     std::function<void()> layout_changed;
@@ -196,7 +203,7 @@ struct designer_workbench::impl {
     std::uint64_t displayed_revision = 0;
     std::string selected, outlined_selection, move_source;
     status_message message = localized_text{"workbench.status.ready", "Ready"};
-    std::optional<std::pair<const char*, localized_text>> pending_help;
+    std::optional<information_dialog> pending_dialog;
     inspector_state inspected;
     struct live_field {
         vgui_widget* widget;
@@ -224,8 +231,8 @@ struct designer_workbench::impl {
     float toolbar_scale = 0;
     std::optional<designer_language> toolbar_language;
 
-    impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale)
-        : ui(context), history(model), strings(locale), editor(context),
+    impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale, std::string path)
+        : ui(context), history(model), strings(locale), settings_path(std::move(path)), editor(context),
           layout_changed(std::move(file.layout_changed)), selected(model.current().root)
     {
         auto* root = vgui_root(ui);
@@ -424,20 +431,49 @@ struct designer_workbench::impl {
         menu_commands.push_back(std::move(binding));
     }
 
-    void show_help(const char* id, localized_text explanation)
+    void add_information_command(vgui_widget* menu, const char* id, localized_text title,
+        std::function<std::string()> make_message, float width = 0)
     {
-        std::string message = translate(explanation);
-        if (std::string_view(id) == "designer.help.shortcuts") {
-            for (const auto& command : commands.entries()) {
-                if (command.shortcut.valid()) message += "\n" + shortcut_text(command.shortcut) + " — " + command.title;
-            }
-        }
+        add_menu_command(menu, id, std::move(title),
+            [this, dialog = information_dialog{id, std::move(make_message), width}] {
+                // Let menu activation close the popup chain before opening the dialog.
+                pending_dialog = dialog;
+            });
+    }
+
+    void show_information(const information_dialog& dialog)
+    {
+        const auto body = dialog.message();
         vgui_dialog_desc desc;
         vgui_dialog_desc_default(&desc);
-        desc.title = commands.find(id)->title.c_str();
-        desc.message = message.c_str();
+        desc.title = commands.find(dialog.command)->title.c_str();
+        desc.message = body.c_str();
         desc.confirm_text = strings.text("common.ok", "OK");
+        desc.width = dialog.width;
         vgui_dialog_show(ui, &desc);
+    }
+
+    std::string configuration_information() const
+    {
+        const auto language = strings.language() == designer_language::english
+            ? strings.text("settings.en-US", "English") : strings.text("settings.zh-CN", "简体中文");
+        const auto describe_side = [&](float width, bool collapsed) {
+            char buf[32];
+            const auto end = std::to_chars(buf, buf + sizeof(buf), width, std::chars_format::fixed, 1).ptr;
+            std::string number(buf, end);
+            if (number.ends_with(".0")) number.resize(number.size() - 2);
+            const auto* state = collapsed ? strings.text("settings.info.collapsed", "Collapsed")
+                                          : strings.text("settings.info.expanded", "Expanded");
+            return number + " " + strings.text("settings.info.logical_pixels", "logical px") + " · " + state;
+        };
+        const auto layout = dock_widths();
+        return status_with_value(strings.text("settings.info.language", "Interface language: {value}"), language) + "\n" +
+            status_with_value(strings.text("settings.info.left", "Left sidebar: {value}"),
+                describe_side(layout.left, layout.left_collapsed)) + "\n" +
+            status_with_value(strings.text("settings.info.right", "Right sidebar: {value}"),
+                describe_side(layout.right, layout.right_collapsed)) + "\n\n" +
+            strings.text("settings.info.path", "Settings file (JSON)") + "\n" +
+            (settings_path.empty() ? strings.text("settings.info.path_unavailable", "No settings file path available") : settings_path);
     }
 
     void build_menus(designer_commands callbacks)
@@ -532,22 +568,28 @@ struct designer_workbench::impl {
         };
         add_language("designer.language.zh-CN", {"settings.zh-CN", "简体中文"}, designer_language::simplified_chinese);
         add_language("designer.language.en-US", {"settings.en-US", "English"}, designer_language::english);
+        add_information_command(tools, "designer.tools.configuration", {"settings.info", "Configuration Information"},
+            [this] { return configuration_information(); }, 560);
         add_menu_command(tools, "designer.tools.options", {"options.title", "Options"}, std::move(callbacks.open_options));
 
         auto* help = add_menu({"workbench.menu.help", "Help"});
         const auto add_help = [&](const char* id, localized_text label, localized_text explanation) {
-            add_menu_command(help, id, std::move(label), [this, id, explanation = std::move(explanation)] {
-                // Activation returns to core before it closes the popup chain.
-                pending_help.emplace(id, explanation);
+            add_information_command(help, id, std::move(label), [this, explanation = std::move(explanation)] {
+                return std::string(translate(explanation));
             });
         };
         add_help("designer.help.instructions", {"workbench.menu.instructions", "Instructions"},
             {"workbench.help.instructions", "Add controls from Resources > New Control. A selected container receives a child; a selected leaf receives a sibling.\n\n"
                 "Select a control in the Outline and edit its properties in the Inspector. Use View > Run to try the page. "
                 "Save writes the design; Export Package creates a separate folder without saving the design."});
-        add_help("designer.help.shortcuts", {"workbench.menu.shortcuts", "Shortcuts"},
-            {"workbench.help.shortcuts", "F10 opens the menu bar. Use the arrow keys and Enter to navigate, or Esc to close it. "
-                "While a text field is focused, undo and redo apply to that field first.\n"});
+        add_information_command(help, "designer.help.shortcuts", {"workbench.menu.shortcuts", "Shortcuts"}, [this] {
+            std::string body = strings.text("workbench.help.shortcuts", "F10 opens the menu bar. Use the arrow keys and Enter to navigate, or Esc to close it. "
+                "While a text field is focused, undo and redo apply to that field first.\n");
+            for (const auto& command : commands.entries()) {
+                if (command.shortcut.valid()) body += "\n" + shortcut_text(command.shortcut) + " — " + command.title;
+            }
+            return body;
+        });
         add_help("designer.help.about", {"workbench.menu.about", "About"},
             {"workbench.help.about", "VGUI UI Designer is the VGUI sample editor for .vgui.json design files. "
                 "Run mode previews the active page without changing its design."});
@@ -1483,14 +1525,14 @@ struct designer_workbench::impl {
         refresh_command_states();
         refresh_captions();
         refreshing = false;
-        if (auto help = std::exchange(pending_help, std::nullopt))
-            show_help(help->first, help->second);
+        if (auto dialog = std::exchange(pending_dialog, std::nullopt))
+            show_information(*dialog);
     }
 };
 
 designer_workbench::designer_workbench(vgui_context* ui, session& history, designer_commands commands,
-    const designer_strings& strings)
-    : impl_(std::make_unique<impl>(ui, history, std::move(commands), strings)) {}
+    const designer_strings& strings, std::string settings_path)
+    : impl_(std::make_unique<impl>(ui, history, std::move(commands), strings, std::move(settings_path))) {}
 
 designer_workbench::~designer_workbench() = default;
 vgui_widget* designer_workbench::document_dock() const { return impl_->dock; }

@@ -83,7 +83,7 @@ public:
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
               [this] { request(command::import_font); },
-              [this] { request(command::options); }}, strings_), dock_(workbench_.document_dock()) {
+              [this] { request(command::options); }}, strings_, utf8(settings_path_)), dock_(workbench_.document_dock()) {
         grid_settings_ = ui::load_designer_grid_settings(settings_path_);
         saved_layout_ = ui::load_designer_dock_widths(settings_path_);
         workbench_.set_dock_widths(saved_layout_);
@@ -1421,6 +1421,52 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
             history.dirty() == dirty && history.can_undo() == undo && history.can_redo() == redo,
             "switching language changed the design or its undo history");
     };
+    const auto check_configuration = [&](bool english) {
+        const auto read_settings = [&] {
+            std::ifstream in(settings, std::ios::binary);
+            require(in.is_open(), "configuration fixture is missing");
+            return std::string(std::istreambuf_iterator<char>(in), {});
+        };
+        const auto saved = read_settings();
+        const std::string_view title = english ? "Configuration Information" : "配置信息";
+        auto* tools = menus.open(4);
+        require(std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, 1))) == title,
+            "configuration menu entry was not localized");
+        menus.activate(tools, 1);
+        auto* panel = vgui_modal_panel(shell);
+        require(panel && std::string_view(vgui_widget_get_text(vgui_widget_get_child(panel, 0))) == title,
+            "configuration dialog did not open with the localized title");
+        const std::string_view body = vgui_widget_get_text(vgui_widget_get_child(panel, 1));
+        require(body.find(english ? "Interface language: English" : "界面语言：简体中文") != std::string_view::npos &&
+            body.find(english ? "Left sidebar: 280 logical px · Collapsed" : "左侧栏：280 逻辑像素 · 已展开") != std::string_view::npos &&
+            body.find(english ? "Right sidebar: 375 logical px · Expanded" : "右侧栏：375 逻辑像素 · 已展开") != std::string_view::npos,
+            "configuration dialog did not show the current language and preferred dock sizes/states");
+        const std::string_view path_label = english ? "Settings file (JSON)\n" : "配置文件（JSON）\n";
+        const auto path_start = body.find(path_label);
+        const auto without_whitespace = [](std::string text) {
+            std::erase_if(text, [](char c) { return c == ' ' || c == '\n' || c == '\r' || c == '\t'; });
+            return text;
+        };
+        require(path_start != std::string_view::npos &&
+            without_whitespace(std::string(body.substr(path_start + path_label.size()))) == without_whitespace(utf8(settings)),
+            "configuration dialog did not show the settings path");
+        auto* ok = vgui_widget_get_child(vgui_widget_get_child(panel, 2), 0);
+        require(ok && vgui_widget_get_kind(ok) == VGUI_BUTTON &&
+            std::string_view(vgui_widget_get_text(ok)) == (english ? "OK" : "确定"), "configuration dialog is missing its localized button");
+        if (english) {
+            float x, y, w, h;
+            vgui_widget_get_rect(ok, &x, &y, &w, &h);
+            click(x + w / 2, y + h / 2);
+        } else {
+            menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+        }
+        require(!vgui_modal_active(shell) && read_settings() == saved && preview.running() &&
+            preview.edit_text("name") == "Keep this input" && editor.selection() == selection &&
+            history.revision() == revision && history.current() == baseline && history.committed() == committed &&
+            history.dirty() == dirty && history.can_undo() == undo && history.can_redo() == redo,
+            "opening or closing configuration changed settings, runtime input, selection or history");
+    };
+    check_configuration(false);
     switch_to(true);
     auto* dock = widget("designer.dock");
     const auto dock_width = [&](vgui_dock_zone zone) {
@@ -1454,6 +1500,7 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
         dock_width(VGUI_DOCK_CENTER) > original_center &&
         saved_sides(true, false),
         "folding Outline did not widen the board, changed Inspector, or preferences were not saved");
+    check_configuration(true);
     press_side("designer.dock.collapse_right");
     require(dock_width(VGUI_DOCK_RIGHT) < 60 &&
         saved_sides(true, true),
