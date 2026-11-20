@@ -663,6 +663,9 @@ struct vgui_dock_state
 	float tab_scroll[4] = {};
 	int scroll_active[4] = {};	// auto-scroll the active tab once after activation
 	std::vector<vgui_dock_tab_geom> tabs[4];
+	// Kept separate from horizontal tabs so drag/drop and wheel scrolling do
+	// not treat the collapsed rail as a horizontal insertion strip.
+	std::vector<vgui_dock_tab_geom> rail_tabs[2];
 	vgui_item_fn close_request_fn = nullptr;
 	void* close_request_user = nullptr;
 	vgui_item_fn close_fn = nullptr;
@@ -2769,6 +2772,11 @@ static bool vgui_dock_floating_close_rect(vgui_widget* w, const vgui_dock_panel&
 	return true;
 }
 
+static const std::vector<vgui_dock_tab_geom>& vgui_dock_visible_tabs(const vgui_dock_state* st, int zone)
+{
+	return vgui_dock_side_collapsed(st, zone) ? st->rail_tabs[zone] : st->tabs[zone];
+}
+
 static bool vgui_dock_tab_at_point(vgui_widget* w, float x, float y,
 	int* out_zone, int* out_index, bool* over_close)
 {
@@ -2781,13 +2789,16 @@ static bool vgui_dock_tab_at_point(vgui_widget* w, float x, float y,
 	for (int zone = 0; zone < 4; ++zone)
 	{
 		if (st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f) continue;
-		float bar_h = std::min(ds.tab_height, st->zone_h[zone]);
-		if (x < st->zone_x[zone] || x >= st->zone_x[zone] + st->tab_view_w[zone] ||
+		const bool rail = vgui_dock_side_collapsed(st, zone);
+		const float bar_w = rail ? st->zone_w[zone] : st->tab_view_w[zone];
+		const float bar_h = rail ? st->zone_h[zone] : std::min(ds.tab_height, st->zone_h[zone]);
+		if (x < st->zone_x[zone] || x >= st->zone_x[zone] + bar_w ||
 			y < st->zone_y[zone] || y >= st->zone_y[zone] + bar_h)
 			continue;
-		for (size_t i = 0; i < st->tabs[zone].size(); ++i)
+		const auto& tabs = vgui_dock_visible_tabs(st, zone);
+		for (size_t i = 0; i < tabs.size(); ++i)
 		{
-			const vgui_dock_tab_geom& tab = st->tabs[zone][i];
+			const auto& tab = tabs[i];
 			if (x < tab.x || x >= tab.x + tab.w || y < tab.y || y >= tab.y + tab.h)
 				continue;
 			if (out_zone) *out_zone = zone;
@@ -2949,10 +2960,9 @@ static void vgui_dock_update_hover(vgui_widget* w, float x, float y)
 		return;
 	}
 	int zone = -1, index = -1;
-	if (vgui_dock_tab_at_point(w, x, y, &zone, &index, &over_close) &&
-		zone >= 0 && index >= 0 && index < (int)st->tabs[zone].size())
+	if (vgui_dock_tab_at_point(w, x, y, &zone, &index, &over_close))
 	{
-		st->hover = st->tabs[zone][(size_t)index].id;
+		st->hover = vgui_dock_visible_tabs(st, zone)[(size_t)index].id;
 		if (over_close) st->close_hover = st->hover;
 	}
 }
@@ -6264,6 +6274,38 @@ static void vgui_dock_fit_side_widths(vgui_dock_state* st, float scale, float sp
 	}
 }
 
+static float vgui_dock_rail_line_height(vgui_widget* w)
+{
+	return std::ceil(std::max(vgui_line_height(w->ctx, w), vgui_font_size(w->ctx, w)));
+}
+
+static float vgui_dock_rail_padding(const vgui_widget* w)
+{
+	return std::ceil(4.0f * w->ctx->ui_scale);
+}
+
+static void vgui_layout_dock_rail(vgui_widget* w, int zone, float button_h)
+{
+	auto* st = w->dock.get();
+	const float pad = vgui_dock_rail_padding(w);
+	const float gap = std::max(2.0f * w->ctx->ui_scale, w->ctx->style.dock.tab_gap);
+	const float line_h = vgui_dock_rail_line_height(w);
+	const float x = st->zone_x[zone], width = st->zone_w[zone];
+	const float bottom = st->zone_y[zone] + st->zone_h[zone];
+	float y = st->zone_y[zone] + button_h + gap;
+	for (auto id : st->order[zone])
+	{
+		const auto* panel = vgui_dock_find(w, id);
+		if (!panel || !panel->open) continue;
+		const float available = bottom - y - gap;
+		if (available < 2.0f * pad + line_h) break;
+		const float height = 2.0f * pad + line_h * std::max(1, vgui_u8_count(panel->title));
+		if (height > available) break; // Leave out the non-fitting suffix; never scroll the rail.
+		st->rail_tabs[zone].push_back({id, x, y, width, height});
+		y += height + gap;
+	}
+}
+
 static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y, float ww, float hh)
 {
 	vgui_dock_state* st = vgui_dock_of(w);
@@ -6285,6 +6327,7 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 		st->zone_x[z] = st->zone_y[z] = st->zone_w[z] = st->zone_h[z] = st->tab_view_w[z] = 0.0f;
 		st->tabs[z].clear();
 	}
+	for (auto& tabs : st->rail_tabs) tabs.clear();
 
 	const bool open_left = vgui_dock_zone_has_open(st, VGUI_DOCK_LEFT);
 	const bool open_right = vgui_dock_zone_has_open(st, VGUI_DOCK_RIGHT);
@@ -6388,8 +6431,13 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 			}
 		}
 		st->tab_view_w[zone] = collapsed ? 0.0f : tab_w;
-		if (!has_open || collapsed || st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f)
+		if (!has_open || st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f)
 			continue;
+		if (collapsed)
+		{
+			vgui_layout_dock_rail(w, zone, st->side_buttons[zone].widget ? tab_h : 0.0f);
+			continue;
+		}
 
 		std::vector<vgui_item_id> ids;
 		std::vector<float> widths;
@@ -7197,7 +7245,7 @@ static vgui_item_id vgui_dock_tooltip_item_at(vgui_widget* w, float x, float y)
 		return title && !close ? frame->id : 0;
 	int zone = -1, index = -1;
 	if (vgui_dock_tab_at_point(w, x, y, &zone, &index, &close) && !close)
-		return w->dock->tabs[zone][(size_t)index].id;
+		return vgui_dock_visible_tabs(w->dock.get(), zone)[(size_t)index].id;
 	return 0;
 }
 
@@ -7220,7 +7268,8 @@ static std::string vgui_tooltip_item_text(vgui_widget* w, vgui_item_id item)
 		if (panel && panel->open)
 		{
 			if (!panel->tooltip.empty()) return panel->tooltip;
-			if (w->dock->document_tabs && (panel->zone == VGUI_DOCK_CENTER || panel->zone == VGUI_DOCK_FLOATING))
+			if (vgui_dock_side_collapsed(w->dock.get(), panel->zone) ||
+				(w->dock->document_tabs && (panel->zone == VGUI_DOCK_CENTER || panel->zone == VGUI_DOCK_FLOATING)))
 				return panel->title;
 		}
 	}
@@ -11184,9 +11233,9 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 					if (h->destroy_pending) { vgui_end_input(ctx); return 1; }
 				}
 			}
-			else if (on_tab && zone >= 0 && index >= 0 && index < (int)st->tabs[zone].size())
+			else if (on_tab)
 			{
-				vgui_item_id item = st->tabs[zone][(size_t)index].id;
+				vgui_item_id item = vgui_dock_visible_tabs(st, zone)[(size_t)index].id;
 				ev_item = item;
 				ev_index = index;
 				if (button == 1 && over_close)
@@ -11200,7 +11249,7 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 					st->press_zone = zone;
 					st->press_x = x;
 					st->press_y = y;
-					if (!st->document_tabs || zone == VGUI_DOCK_CENTER)
+					if (!vgui_dock_side_collapsed(st, zone) && (!st->document_tabs || zone == VGUI_DOCK_CENTER))
 					{
 						st->drag_panel = item;
 						st->drag_x = x;
@@ -15243,6 +15292,55 @@ static void vgui_draw_dock_unsaved(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	text_w = std::max(0.0f, text_w - vgui_dock_unsaved_space);
 }
 
+static void vgui_draw_dock_rail(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips,
+	int zone, uint32_t tab_bg, uint32_t tab_text, uint32_t border)
+{
+	auto* ctx = w->ctx;
+	const auto* st = w->dock.get();
+	const float x = st->zone_x[zone], y = st->zone_y[zone];
+	const float width = st->zone_w[zone], height = st->zone_h[zone];
+	const float scale = ctx->ui_scale, pad = vgui_dock_rail_padding(w);
+	const float line_h = vgui_dock_rail_line_height(w);
+	const float inset = std::min(2.0f * scale, width * 0.5f);
+	const uint32_t accent = w->enabled ? ctx->theme.accent : ctx->theme.disabled;
+	const uint32_t text = vgui_widget_color(w, w->enabled ? tab_text : ctx->theme.disabled);
+	for (const auto& tab : st->rail_tabs[zone])
+	{
+		const auto* panel = vgui_dock_find(w, tab.id);
+		if (!panel) continue;
+		const bool active = tab.id == st->active[zone];
+		const auto fill = tab.id == st->pressed ? ctx->theme.button_active
+			: tab.id == st->hover ? ctx->theme.button_hover
+			: active ? vgui_mix_color(tab_bg, accent, 0.18f) : tab_bg;
+		vgui_clip_push(clips, cb, vg, tab.x, tab.y, tab.w, tab.h);
+		if (vgui_clip_visible(clips))
+		{
+			vgui_fill_rect(cb, vg, tab.x + inset, tab.y, tab.w - inset * 2.0f, tab.h, 3.0f * scale,
+				vgui_widget_color(w, fill));
+			if (active && tab.w > 2.0f * inset && tab.h > 2.0f * pad)
+			{
+				const float bar_x = zone == VGUI_DOCK_LEFT ? tab.x + tab.w - inset - scale : tab.x + inset;
+				vgui_fill_rect(cb, vg, bar_x, tab.y + pad, scale, tab.h - 2.0f * pad,
+					0.0f, vgui_widget_color(w, accent));
+			}
+			float ty = tab.y + pad;
+			const auto& title = panel->title;
+			for (int i = 0; i < (int)title.size();)
+			{
+				const int next = vgui_u8_next(title, i);
+				if (title[i] != '\n' && title[i] != '\r')
+					vgui_text_submit(ctx, cb, vg, w, std::string_view(title).substr(i, next - i),
+						tab.x, ty, tab.w, line_h, text, 0.5f, 0.5f, vgui_font_size(ctx, w),
+						0, 0, nullptr, VGUI_TEXT_PASS_TEXT);
+				ty += line_h;
+				i = next;
+			}
+		}
+		vgui_clip_pop(clips, cb, vg);
+	}
+	vgui_stroke_frame(cb, vg, x, y, width, height, 0.0f, vgui_widget_color(w, border), 1.0f);
+}
+
 static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 {
 	vgui_context* ctx = w->ctx;
@@ -15283,6 +15381,11 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		float content_h = std::max(0.0f, zh - tab_h);
 
 		vgui_fill_rect(cb, vg, zx, zy, zw, zh, 0.0f, vgui_widget_color(w, tab_active));
+		if (vgui_dock_side_collapsed(st, zone))
+		{
+			vgui_draw_dock_rail(w, cb, vg, clips, zone, tab_bg, tab_text, border);
+			continue;
+		}
 		vgui_fill_rect(cb, vg, zx, zy, zw, tab_h, 0.0f, vgui_widget_color(w, tab_bg));
 		if (tab_h > 0.0f && border)
 			vgui_fill_rect(cb, vg, zx, zy + tab_h - 1.0f, zw, 1.0f, 0.0f,
@@ -15368,7 +15471,7 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		cb->restore(vg);
 
 		vgui_dock_panel* active = vgui_dock_find(w, st->active[zone]);
-		if (active && active->page && content_h > 0.0f && !vgui_dock_side_collapsed(st, zone))
+		if (active && active->page && content_h > 0.0f)
 		{
 			cb->save(vg);
 			vgui_clip_push(clips, cb, vg, zx, zy + tab_h, zw, content_h);
@@ -18905,6 +19008,7 @@ extern "C" {
 			st->tabs[z].clear();
 			st->tab_scroll[z] = 0.0f;
 		}
+		for (auto& tabs : st->rail_tabs) tabs.clear();
 		st->float_order.clear();
 		st->active_document = 0;
 		st->hover = 0;
@@ -19309,11 +19413,11 @@ extern "C" {
 		}
 		int z = (int)panel->zone;
 		if (z < 0 || z >= 4) return 0;
-		for (const vgui_dock_tab_geom& tab : st->tabs[z])
+		for (const auto& tab : vgui_dock_visible_tabs(st, z))
 		{
 			if (tab.id != panel_id) continue;
 			float tx = tab.x, tw = tab.w;
-			if (st->tab_view_w[z] < st->zone_w[z])
+			if (!vgui_dock_side_collapsed(st, z) && st->tab_view_w[z] < st->zone_w[z])
 			{
 				tx = std::max(tx, st->zone_x[z]);
 				tw = std::min(tab.x + tab.w, st->zone_x[z] + st->tab_view_w[z]) - tx;

@@ -4439,6 +4439,155 @@ static void test_focus_navigate(vgui_context* ui, font_familys_t* familys)
 	vgui_destroy(ctx);
 }
 
+static void test_dock_collapsed_rail(font_familys_t* fonts, const vgui_style& base)
+{
+	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+	std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(fonts, 16.0f), vgui_destroy);
+	auto* ui = ctx.get();
+	vg->width = 900;
+	vg->height = 700;
+	vgui_context_set_size(ui, vg->width, vg->height);
+	vgui_widget_set_layout(vgui_root(ui), VGUI_LAYOUT_ABSOLUTE);
+	vgui_style style = base;
+	style.dock.tab_height = 28.0f;
+	style.dock.tab_min_width = 42.0f;
+	style.dock.tab_max_width = 64.0f; // All four tabs fit horizontally after expansion.
+	vgui_context_set_style(ui, &style);
+
+	// Capture real text submissions on the CPU, independent of the theme or atlas.
+	struct text_draw { std::string text; float y; };
+	static std::vector<text_draw> calls;
+	cb->add_text = [](rvg_t*, text_st_t* text, text_style_t*, text_box_rt*) {
+		if (text->text && text->text_len > 0)
+			calls.push_back({std::string(text->text, text->text_len), text->pos.y});
+	};
+
+	struct rect {
+		float x = 0, y = 0, w = 0, h = 0;
+		float right() const { return x + w; }
+		float bottom() const { return y + h; }
+	};
+	constexpr float x = 20, y = 30, width = 760, tall = 440;
+	for (auto zone : {VGUI_DOCK_LEFT, VGUI_DOCK_RIGHT})
+	{
+		const bool left = zone == VGUI_DOCK_LEFT;
+		const float preferred = left ? 300.0f : 330.0f;
+		auto* dock = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+		vgui_widget_set_pos(dock, x, y);
+		vgui_widget_set_size(dock, width, tall);
+		vgui_widget_set_padding(dock, 0, 0, 0, 0);
+		vgui_dock_set_zone_size(dock, zone, preferred);
+		auto* arrow = vgui_widget_add(dock, VGUI_BUTTON, left ? ">" : "<");
+		vgui_dock_set_side_button(dock, zone, arrow);
+		vgui_widget_on_event(arrow, [](vgui_widget* button, const vgui_event* e, void* user) {
+			if (e->type == VGUI_EVENT_CLICK)
+				vgui_dock_set_side_collapsed(vgui_widget_get_parent(button), *static_cast<vgui_dock_zone*>(user), 0);
+		}, &zone);
+
+		const auto add = [&](const char* title, int index = -1) {
+			vgui_dock_panel_desc d;
+			vgui_dock_panel_desc_default(&d);
+			d.title = title;
+			d.zone = zone;
+			d.index = index;
+			d.panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+			return vgui_dock_add(dock, &d);
+		};
+		// Insert the first title ahead of an earlier-created panel. The two short
+		// titles each have two code points, but different UTF-8 byte lengths.
+		const auto second = add("\xe2\x98\x85" "m");
+		const auto closed = add("Closed");
+		const auto first = add("J\xc3\xa9", 0);
+		const auto floating = add("Floating");
+		const auto overflow = add("ZXCVBNMASDFG");
+		const auto tail = add("T");
+		check(vgui_dock_close(dock, closed) && vgui_dock_float(dock, floating, 320, 160, 220, 125) &&
+			vgui_dock_activate(dock, overflow), "dock rail: closed, floating and active-overflow fixtures");
+		const auto tab_rect = [&](vgui_item_id id, rect& r) {
+			return vgui_dock_get_tab_rect(dock, id, &r.x, &r.y, &r.w, &r.h) != 0;
+		};
+		const auto zone_rect = [&](rect& r) {
+			return vgui_dock_get_zone_rect(dock, zone, &r.x, &r.y, &r.w, &r.h) != 0;
+		};
+		vgui_dock_set_side_collapsed(dock, zone, 1);
+		vgui_layout(ui);
+		rect rail, button, first_tab, second_tab, long_tab, tail_tab, floating_tab;
+		vgui_widget_get_rect(arrow, &button.x, &button.y, &button.w, &button.h);
+		check(zone_rect(rail) && near(rail.w, style.dock.tab_height) && near(rail.y, y) && near(rail.h, tall) &&
+			(left ? near(rail.x, x) : near(rail.right(), x + width)), "dock rail: narrow strip at the dock edge");
+		check(vgui_widget_get_visible(arrow) && near(button.x, rail.x) && near(button.y, rail.y) &&
+			near(button.w, rail.w) && button.h > 0, "dock rail: arrow stays at the top");
+		const auto in_rail = [&](const rect& tab) {
+			return tab.w > 0 && tab.h > 0 && tab.x >= rail.x && tab.right() <= rail.right() &&
+				tab.y >= button.bottom() && tab.bottom() <= rail.bottom();
+		};
+		const bool have_first = tab_rect(first, first_tab), have_second = tab_rect(second, second_tab);
+		const bool have_long = tab_rect(overflow, long_tab), have_tail = tab_rect(tail, tail_tab);
+		check(have_first && have_second && have_long && have_tail && in_rail(first_tab) &&
+			in_rail(second_tab) && in_rail(long_tab) && in_rail(tail_tab) && near(first_tab.h, second_tab.h) &&
+			first_tab.bottom() < second_tab.y && second_tab.bottom() < long_tab.y && long_tab.bottom() < tail_tab.y,
+			"dock rail: open tabs are separated vertically in dock order below the arrow");
+		check(!vgui_dock_get_tab_rect(dock, closed, nullptr, nullptr, nullptr, nullptr) &&
+			tab_rect(floating, floating_tab) && (left ? floating_tab.x >= rail.right() : floating_tab.right() <= rail.x),
+			"dock rail: closed tab is absent and floating tab stays in its frame");
+		check(vgui_dock_get_active(dock, zone) == overflow && near(vgui_dock_get_zone_size(dock, zone), preferred) &&
+			!vgui_widget_get_visible(vgui_dock_get_panel(dock, overflow)), "dock rail: collapse hides the active page without losing it or the preferred width");
+
+		// Leave room for another short tab but not the whole long title. A later
+		// short title must be omitted too, rather than jumping the queue.
+		const float short_h = have_long ? std::floor(long_tab.y - rail.y + long_tab.h * 0.5f) : 150.0f;
+		check(have_long && have_tail && short_h > long_tab.y - rail.y + tail_tab.h,
+			"dock rail: short-height fixture has room for the trailing short tab alone");
+		vgui_widget_set_size(dock, width, short_h);
+		rect short_first, short_second, omitted;
+		const bool short_has_first = tab_rect(first, short_first), short_has_second = tab_rect(second, short_second);
+		check(short_has_first && short_has_second && !tab_rect(overflow, omitted) && !tab_rect(tail, omitted),
+			"dock rail: short height hides the entire non-fitting suffix");
+		check(vgui_dock_get_active(dock, zone) == overflow && near(vgui_dock_get_zone_size(dock, zone), preferred),
+			"dock rail: overflow preserves active tab and preferred width");
+
+		cb->clear(vg.get());
+		calls.clear();
+		vgui_draw(ui, cb.get(), vg.get());
+		calls.erase(std::remove_if(calls.begin(), calls.end(), [](const text_draw& call) {
+			return call.text == ">" || call.text == "<" || call.text == "Floating";
+		}), calls.end());
+		std::sort(calls.begin(), calls.end(), [](const text_draw& a, const text_draw& b) { return a.y < b.y; });
+		const char* expected[] = {"J", "\xc3\xa9", "\xe2\x98\x85", "m"};
+		bool stacked = short_has_first && short_has_second && calls.size() == 4;
+		for (size_t i = 0; stacked && i < calls.size(); ++i)
+		{
+			const rect& tab = i < 2 ? short_first : short_second;
+			stacked = calls[i].text == expected[i] && calls[i].y >= tab.y && calls[i].y < tab.bottom() &&
+				(i == 0 || calls[i].y > calls[i - 1].y);
+		}
+		check(stacked, "dock rail: only fitting titles submit whole UTF-8 characters from top to bottom");
+		calls.clear();
+
+		if (short_has_first) click_at(ui, short_first.x + short_first.w * 0.5f, short_first.y + short_first.h * 0.5f);
+		check(vgui_dock_get_active(dock, zone) == first && vgui_dock_get_side_collapsed(dock, zone) &&
+			!vgui_widget_get_visible(vgui_dock_get_panel(dock, first)), "dock rail: clicking a title selects without expanding");
+		click_at(ui, button.x + button.w * 0.5f, button.y + button.h * 0.5f);
+		vgui_layout(ui);
+		rect expanded;
+		check(!vgui_dock_get_side_collapsed(dock, zone) && zone_rect(expanded) && near(expanded.w, preferred) &&
+			vgui_dock_get_active(dock, zone) == first && vgui_widget_get_visible(vgui_dock_get_panel(dock, first)),
+			"dock rail: top arrow restores preferred width and shows selected page");
+		bool horizontal = true;
+		float next_x = expanded.x;
+		for (auto id : {first, second, overflow, tail})
+		{
+			rect tab;
+			horizontal = horizontal && tab_rect(id, tab) && near(tab.y, expanded.y) &&
+				near(tab.h, style.dock.tab_height) && tab.x >= next_x;
+			next_x = tab.right();
+		}
+		check(horizontal, "dock rail: expansion restores horizontal order including overflow tabs");
+		vgui_widget_destroy(dock);
+	}
+}
+
 // Regression probe: for each drop target (LEFT/RIGHT/CENTER/FLOATING),
 // drag the BOTTOM panel there and then back to the BOTTOM zone.
 static void test_dock_bottom_roundtrip(vgui_context* ui, const vgui_style& base)
@@ -6197,6 +6346,7 @@ int main()
 	test_dialog(ui);
 	test_toast(ui, style);
 	test_dock(ui, style);
+	test_dock_collapsed_rail(familys, style);
 	test_dock_bottom_roundtrip(ui, style);
 	test_dock_float_square(ui, style);
 	test_dock_document_tabs(ui, style);

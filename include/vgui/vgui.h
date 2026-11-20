@@ -1551,8 +1551,9 @@ extern "C" {
 	 * vgui_dock_clear() leaves buttons attached; destroying the dock destroys them. */
 	VGUI_API void vgui_dock_set_side_button(vgui_widget* dock, vgui_dock_zone zone, vgui_widget* button);
 	/* LEFT/RIGHT only. Collapsing hides the pages without closing them or
-	 * changing the preferred width. An open collapsed side uses a narrow rail,
-	 * with its assigned button (if any) at the top. An empty side stays hidden. */
+	 * changing the preferred width. A collapsed side shows its assigned button
+	 * (if any), then vertical tabs for the open panels that fit, in dock order.
+	 * A rail tab selects its panel without expanding the side. Empty sides stay hidden. */
 	VGUI_API void vgui_dock_set_side_collapsed(vgui_widget* dock, vgui_dock_zone zone, int collapsed);
 	VGUI_API int vgui_dock_get_side_collapsed(vgui_widget* dock, vgui_dock_zone zone);
 	/* Absolute rectangles after layout. Empty side zones have no rect; an open
