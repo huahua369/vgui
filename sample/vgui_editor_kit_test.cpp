@@ -32,6 +32,8 @@
 #pragma comment(lib, "dbghelp.lib")
 #include <crtdbg.h>
 
+#include <glm/glm.hpp>
+#include <ovg_c.h>
 #include <vgui/vgui.h>
 #include <vgui/editor/vgui_editor_kit.h>
 #include "editor_transform.h"
@@ -13849,6 +13851,72 @@ static int test_console_view()
 	return 0;
 }
 
+static int test_table_view_parent_clip()
+{
+	using namespace vgui_editor_kit;
+
+	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+	if (!cb)
+		return fail("table parent clip OVG callbacks");
+	std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui(
+		vgui_create(nullptr, 16.0f), vgui_destroy);
+	if (!vg || !ui)
+		return fail("table parent clip headless setup");
+	vgui_context_set_size(ui.get(), 400, 240);
+	vgui_context_get_size(ui.get(), &vg->width, &vg->height);
+
+	// Distinct fill colors with R == B survive vgui's conversion to OVG.
+	constexpr vgui_color header_color = 0xFF127112u;
+	constexpr vgui_color cell_color = 0xFF9C309Cu;
+	vgui_theme theme{};
+	vgui_context_get_theme(ui.get(), &theme);
+	theme.button_bg = header_color;
+	vgui_context_set_theme(ui.get(), &theme);
+	static const auto set_source = cb->set_source_color;
+	static const auto fill = cb->fill;
+	static uint32_t color = 0;
+	static bool header_painted = false, cell_painted = false;
+	cb->set_source_color = [](rvg_t* v, uint32_t c) { color = c; set_source(v, c); };
+	cb->fill = [](rvg_t* v) {
+		header_painted |= color == header_color;
+		cell_painted |= color == cell_color;
+		fill(v);
+	};
+
+	vgui_widget* host = vgui_widget_add(vgui_root(ui.get()), VGUI_PANEL, nullptr);
+	vgui_widget_set_padding(host, 0, 0, 0, 0);
+	vgui_widget_set_border(host, 0, 0);
+	vgui_panel_set_scrollable(host, 0, 1);
+	table_view table;
+	table.build(host);
+	vgui_widget_set_size(table.widget(), 220, 120);
+	table_column column;
+	column.id = "value";
+	table.add_column(std::move(column));
+	table_source source;
+	source.row_count = [] { return std::size_t{1}; };
+	source.cell_text = [](std::size_t, const std::string&) { return "value"; };
+	source.cell_style = [](std::size_t, const std::string&) {
+		return table_cell_style{0, cell_color};
+	};
+	table.set_source(std::move(source));
+
+	const auto paint = [&](float host_height) {
+		vgui_widget_set_size(host, 260, host_height);
+		cb->clear(vg.get());
+		header_painted = cell_painted = false;
+		vgui_draw(ui.get(), cb.get(), vg.get());
+	};
+	paint(18); // Table keeps its full height, but only its header intersects the parent scissor.
+	if (!header_painted || cell_painted || table.last_render_cell_queries() != 0)
+		return fail("table parent clip: header paints without querying or painting cells");
+	paint(150);
+	if (!header_painted || !cell_painted || table.last_render_cell_queries() != 1)
+		return fail("table parent clip: expanding the viewport restores body paint");
+	return 0;
+}
+
 int test_table_view()
 {
 	using namespace vgui_editor_kit;
@@ -15597,6 +15665,8 @@ int main()
 	if (int rc = test_property_grid_set_properties())
 		return rc;
 	if (int rc = test_table_view())
+		return rc;
+	if (int rc = test_table_view_parent_clip())
 		return rc;
 	if (int rc = test_timeline_view())
 		return rc;

@@ -8,6 +8,7 @@
 #include <vgui/editor/vector_editor.h>
 
 #include "tools/tools.hpp"
+#include "view_clip.h"
 
 #include <algorithm>
 #include <cctype>
@@ -148,58 +149,6 @@ namespace vgui_editor_kit {
 			default: return 0;
 			}
 		}
-
-		/* Scissor rectangles do not participate in save/restore, so custom
-		 * table painting intersects the current clip and restores it. */
-		class clip_guard
-		{
-		public:
-			clip_guard(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w,
-				float h) : cb_(cb), vg_(vg)
-			{
-				if (!cb_ || !vg_ || !cb_->clip_rect)
-					return;
-				if (cb_->get_clip_rect)
-				{
-					cb_->get_clip_rect(vg_, saved_);
-					has_saved_ = true;
-				}
-				int x0 = (int)std::floor(x);
-				int y0 = (int)std::floor(y);
-				int x1 = (int)std::ceil(x + w);
-				int y1 = (int)std::ceil(y + h);
-				if (has_saved_ && saved_[2] > 0 && saved_[3] > 0)
-				{
-					x0 = std::max(x0, saved_[0]);
-					y0 = std::max(y0, saved_[1]);
-					x1 = std::min(x1, saved_[0] + saved_[2]);
-					y1 = std::min(y1, saved_[1] + saved_[3]);
-				}
-				cb_->clip_rect(vg_, x0, y0, std::max(0, x1 - x0),
-					std::max(0, y1 - y0));
-				active_ = true;
-			}
-
-			~clip_guard()
-			{
-				if (!active_ || !cb_ || !vg_)
-					return;
-				if (has_saved_ && cb_->set_clip_rect)
-					cb_->set_clip_rect(vg_, saved_);
-				else if (cb_->clip_rect)
-					cb_->clip_rect(vg_, 0, 0, -1, -1);
-			}
-
-			clip_guard(const clip_guard&) = delete;
-			clip_guard& operator=(const clip_guard&) = delete;
-
-		private:
-			ovg_ctx_cb* cb_ = nullptr;
-			rvg_t* vg_ = nullptr;
-			int saved_[4] = { 0, 0, 0, 0 };
-			bool has_saved_ = false;
-			bool active_ = false;
-		};
 
 		/* Shorten `text` with a trailing ellipsis so it fits `max_width`,
 		 * measured with the same font/metric the text is drawn with.  Truncate
@@ -3369,8 +3318,6 @@ namespace vgui_editor_kit {
 			(theme.panel_border ? theme.panel_border : 0xFF2E3440u);
 		ovg_tools::fill_rect(cb, vg, m.x, m.y, m.width, m.height,
 			to_ovg(background));
-		ovg_tools::stroke_rect(cb, vg, m.x, m.y, m.width, m.height,
-			to_ovg(border), 1.0f);
 
 		render_cell_queries_ = 0;
 		render_cell_image_queries_ = 0;
@@ -3378,6 +3325,10 @@ namespace vgui_editor_kit {
 		draw_body(cb, vg, widget, m);
 		draw_drawings(cb, vg, widget, m);
 		draw_scrollbars(cb, vg, m);
+		/* Paint the frame after the header, body and tracks so their fills
+		 * cannot cover its inner edge. */
+		ovg_tools::stroke_rect(cb, vg, m.x, m.y, m.width, m.height,
+			to_ovg(border), 1.0f);
 	}
 
 	void table_view::draw_header(ovg_ctx_cb* cb, rvg_t* vg,
@@ -3403,8 +3354,10 @@ namespace vgui_editor_kit {
 			m.header_x + m.header_width, m.header_y + m.header_height - 0.5f,
 			to_ovg(border), 1.0f, VG_LINE_CAP_BUTT);
 
-		clip_guard clip(cb, vg, m.header_x, m.header_y, m.body_width,
+		scoped_view_clip clip(cb, vg, m.header_x, m.header_y, m.body_width,
 			m.header_height);
+		if (!clip.visible())
+			return;
 		const float scale = ui_scale();
 		float offset = -scroll_x_;
 		for (std::size_t i = 0; i < columns_.size(); ++i)
@@ -3476,6 +3429,11 @@ namespace vgui_editor_kit {
 	void table_view::draw_body(ovg_ctx_cb* cb, rvg_t* vg,
 		vgui_widget* widget, const layout_metrics& m)
 	{
+		scoped_view_clip clip(cb, vg, m.body_x, m.body_y, m.body_width,
+			m.body_height);
+		if (!clip.visible())
+			return;
+
 		vgui_theme theme = {};
 		if (context_)
 			vgui_context_get_theme(context_, &theme);
@@ -3494,8 +3452,6 @@ namespace vgui_editor_kit {
 		const vgui_color accent = theme.accent ? theme.accent : 0xFF409EFFu;
 		const uint32_t grid_color = to_ovg(with_alpha(border, 0x55));
 
-		clip_guard clip(cb, vg, m.body_x, m.body_y, m.body_width,
-			m.body_height);
 		ovg_tools::fill_rect(cb, vg, m.body_x, m.body_y, m.body_width,
 			m.body_height, to_ovg(background));
 
@@ -3684,14 +3640,17 @@ namespace vgui_editor_kit {
 		if (drawings_.empty())
 			return;
 
+		scoped_view_clip clip(cb, vg, m.body_x, m.body_y, m.body_width,
+			m.body_height);
+		if (!clip.visible())
+			return;
+
 		vgui_theme theme = {};
 		if (context_)
 			vgui_context_get_theme(context_, &theme);
 		const vgui_color accent = theme.accent ? theme.accent : 0xFF409EFFu;
 		const float scale = ui_scale();
 
-		clip_guard clip(cb, vg, m.body_x, m.body_y, m.body_width,
-			m.body_height);
 		for (const table_drawing& d : drawings_)
 		{
 			float ax = 0.0f, ay = 0.0f, aw = 0.0f, ah = 0.0f;

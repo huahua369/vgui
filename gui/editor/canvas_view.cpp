@@ -3,6 +3,7 @@
 #include "pch.h"
 #include "tools/tools.hpp"
 #include "ui_scale.h"
+#include "view_clip.h"
 
 #include <algorithm>
 #include <cmath>
@@ -1418,8 +1419,15 @@ namespace vgui_editor_kit {
 		if (!self || !widget || !cb || !vg)
 			return;
 		const float border = kBorderInset * self->ui_scale();
-		self->draw(cb, vg, widget, abs_x + border, abs_y + border,
-			abs_w - border * 2.0f, abs_h - border * 2.0f, delta_time);
+		// Round inward so a fractional layout edge cannot expose the frame.
+		const float left = std::ceil(abs_x + border);
+		const float top = std::ceil(abs_y + border);
+		scoped_view_clip clip(cb, vg, left, top,
+			std::floor(abs_x + abs_w - border) - left,
+			std::floor(abs_y + abs_h - border) - top);
+		if (clip.visible())
+			self->draw(cb, vg, widget, abs_x + border, abs_y + border,
+				abs_w - border * 2.0f, abs_h - border * 2.0f, delta_time);
 	}
 
 	void canvas_view::draw(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,

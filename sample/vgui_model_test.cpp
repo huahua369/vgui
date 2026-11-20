@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -564,6 +565,16 @@ static void test_tree_virtual(vgui_context* ui, const vgui_style& style)
 	vgui_panel_get_content_size(wide, &wcw, &wch);
 	(void)wch;
 	check(wcw > 330.0f, "tree virtual: row_max_width feeds the content width");
+
+	// The style fallback is for auto sizing; only the hint gives a scroll range.
+	vgui_widget_set_size(plain, 100.0f, 200.0f);
+	vgui_widget_set_size(wide, 100.0f, 200.0f);
+	vgui_panel_set_scroll(plain, 80.0f, 0.0f);
+	vgui_panel_set_scroll(wide, 80.0f, 0.0f);
+	vgui_panel_get_scroll(plain, &sx, nullptr);
+	check(near(sx, 0.0f), "tree virtual: no horizontal range without a width hint");
+	vgui_panel_get_scroll(wide, &sx, nullptr);
+	check(sx > 0.0f, "tree virtual: width hint gives a horizontal range");
 
 	vgui_tree_set_row_source(wide, nullptr);
 	vgui_tree_set_row_source(plain, nullptr);
@@ -1119,6 +1130,316 @@ static void test_tree(vgui_context* ui, const vgui_style& style)
 	check(std::string(vgui_tree_get_item_text(tree, a1)).empty(), "tree: descendant removed");
 	check(vgui_tree_remove_node(tree, b) == 1, "tree: remove last root");
 	check(vgui_tree_get_node_count(tree) == 0, "tree: empty tree");
+}
+
+static void test_tree_horizontal_scroll(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* tree = vgui_widget_add(vgui_root(ui), VGUI_TREE, nullptr);
+	const float narrow_w = 136.0f;
+	const float row_h = style.tree.row_height;
+	const float height = 4.0f * row_h + 2.0f * style.tree.padding_y;
+	vgui_widget_set_pos(tree, 10.0f, 10.0f);
+	vgui_widget_set_size(tree, narrow_w, height);
+
+	// main() supplies DejaVu Sans; only the wide child needs horizontal space.
+	const std::string wide_label(36, 'W');
+	const vgui_item_id root = vgui_tree_add_node(tree, 0, "Root", nullptr);
+	vgui_tree_add_node(tree, root, "Short", nullptr);
+	const vgui_item_id child = vgui_tree_add_node(tree, root, wide_label.c_str(), nullptr);
+	const vgui_item_id next = vgui_tree_add_node(tree, root, "Short", nullptr);
+	for (int i = 0; i < 7; ++i)
+		vgui_tree_add_node(tree, root, "Short", nullptr);
+	vgui_tree_expand(tree, root);
+	vgui_update(ui, 0.016f);
+
+	float tx = 0.0f, ty = 0.0f, tw = 0.0f, th = 0.0f;
+	vgui_widget_get_rect(tree, &tx, &ty, &tw, &th);
+	float content_w = 0.0f;
+	vgui_panel_get_content_size(tree, &content_w, nullptr);
+	check(content_w > tw, "tree hscroll: wide visible child exceeds the viewport");
+
+	const float bar_y = ty + th - style.panel.scrollbar_inset - style.panel.scrollbar_width * 0.75f;
+	const float thumb_x = tx + style.tree.padding_x + 4.0f;
+	vgui_input_mouse_move(ui, thumb_x, bar_y);
+	vgui_input_mouse_down(ui, 1, thumb_x, bar_y, 1);
+	vgui_input_mouse_move(ui, thumb_x + 16.0f, bar_y);
+	vgui_input_mouse_up(ui, 1, thumb_x + 16.0f, bar_y, 1);
+	float sx = 0.0f, sy = 0.0f;
+	vgui_panel_get_scroll(tree, &sx, &sy);
+	check(sx > 0.0f && near(sy, 0.0f), "tree hscroll: thumb drag scrolls horizontally only");
+	const float dragged_x = sx;
+
+	click_at(ui, tx + tw * 0.75f, bar_y);
+	vgui_panel_get_scroll(tree, &sx, &sy);
+	check(sx > dragged_x && near(sy, 0.0f), "tree hscroll: track click moves the horizontal thumb");
+	check(vgui_tree_get_selected_count(tree) == 0, "tree hscroll: scrollbar input does not select a row");
+	const float track_x = sx;
+
+	const float mid_x = tx + tw * 0.5f;
+	const float child_y = ty + style.tree.padding_y + 2.5f * row_h;
+	vgui_input_mouse_move(ui, mid_x, child_y);
+	vgui_input_mouse_wheel(ui, 0.0f, -1.0f);
+	vgui_panel_get_scroll(tree, &sx, &sy);
+	check(sy > 0.0f && near(sx, track_x), "tree hscroll: vertical scrolling preserves the horizontal offset");
+	click_at(ui, mid_x, child_y - sy);
+	check(vgui_tree_is_selected(tree, child), "tree hscroll: mouse selects the expected row after scrolling");
+
+	vgui_tree_collapse(tree, root);
+	vgui_panel_get_scroll(tree, &sx, &sy);
+	check(near(sx, 0.0f) && near(sy, 0.0f), "tree hscroll: collapse clears both scroll offsets");
+
+	vgui_tree_expand(tree, root);
+	vgui_input_mouse_move(ui, mid_x, child_y);
+	vgui_input_mouse_wheel(ui, -1.0f, 0.0f);
+	vgui_panel_get_scroll(tree, &sx, nullptr);
+	check(sx > 0.0f, "tree hscroll: horizontal wheel scrolls after re-expansion");
+	vgui_widget_set_size(tree, 800.0f, height);
+	vgui_panel_get_scroll(tree, &sx, nullptr);
+	check(near(sx, 0.0f), "tree hscroll: widening to fit clears horizontal offset");
+	click_at(ui, mid_x, bar_y);
+	check(vgui_tree_is_selected(tree, next), "tree hscroll: former track area selects a row after widening");
+
+	vgui_widget_set_size(tree, narrow_w, height);
+	vgui_input_mouse_move(ui, mid_x, child_y);
+	vgui_input_mouse_wheel(ui, -1.0f, 0.0f);
+	vgui_panel_get_scroll(tree, &sx, nullptr);
+	check(sx > 0.0f, "tree hscroll: narrowing restores the horizontal range");
+	vgui_tree_set_item_text(tree, child, "Short");
+	vgui_panel_get_scroll(tree, &sx, nullptr);
+	check(near(sx, 0.0f), "tree hscroll: renaming the widest row clears horizontal offset");
+
+	float normal_width = 0.0f, decorated_width = 0.0f;
+	vgui_panel_get_content_size(tree, &normal_width, nullptr);
+	const unsigned char pixel[] = {255, 255, 255, 255};
+	const vgui_texture_desc desc{1, 1, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixel};
+	auto* icon = vgui_texture_create(ui, &desc);
+	vgui_tree_set_item_icon(tree, child, icon);
+	vgui_tree_set_item_buttons(tree, child, 4);
+	vgui_panel_get_content_size(tree, &decorated_width, nullptr);
+	check(icon && decorated_width > normal_width && decorated_width > tw,
+		"tree hscroll: icon and inline buttons invalidate the cached width");
+	vgui_tree_set_item_icon(tree, child, nullptr);
+	vgui_tree_set_item_buttons(tree, child, 0);
+	vgui_texture_destroy(icon);
+
+	vgui_tree_add_node(tree, child, wide_label.c_str(), nullptr);
+	vgui_tree_expand(tree, child);
+	vgui_context_set_direction(ui, VGUI_DIRECTION_RTL);
+	vgui_input_mouse_move(ui, mid_x, child_y);
+	vgui_input_mouse_wheel(ui, -0.3f, 0.0f); // Move 12 pixels towards the trailing edge.
+	vgui_panel_get_scroll(tree, &sx, nullptr);
+	const float old_arrow_right = tx + tw - style.tree.padding_x - style.tree.indent;
+	click_at(ui, old_arrow_right + 3.0f, child_y);
+	check(sx > 0.0f && !vgui_tree_get_item_expanded(tree, child),
+		"tree hscroll: RTL clicks the translated arrow instead of its old position");
+	vgui_context_set_direction(ui, VGUI_DIRECTION_LTR);
+	vgui_widget_destroy(tree);
+}
+
+static void test_scroll_frame(font_familys_t* fonts, const vgui_style& style)
+{
+	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+	std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+	// The context borrows the OVG callbacks for recording cleanup.
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(fonts, 16.0f), vgui_destroy);
+	auto* ui = ctx.get();
+	vg->width = 900;
+	vg->height = 700;
+	vgui_context_set_size(ui, vg->width, vg->height);
+	vgui_context_set_style(ui, &style);
+	vgui_widget_set_layout(vgui_root(ui), VGUI_LAYOUT_ABSOLUTE);
+
+	// Capture the scissor active for real OVG draw commands, not just layout.
+	struct draw { char kind; uint32_t color; ivec4 clip; };
+	static std::vector<draw> commands;
+	static uint32_t color = 0;
+	static const auto get_clip = cb->get_clip_rect;
+	static const auto source = cb->set_source_color;
+	static const auto fill = cb->fill;
+	static const auto stroke = cb->stroke;
+	cb->set_source_color = [](rvg_t* v, uint32_t c) { color = c; source(v, c); };
+	cb->fill = [](rvg_t* v) {
+		draw cmd{'f', color, {}};
+		get_clip(v, &cmd.clip);
+		commands.push_back(cmd);
+		fill(v);
+	};
+	cb->stroke = [](rvg_t* v) {
+		draw cmd{'s', color, {}};
+		get_clip(v, &cmd.clip);
+		commands.push_back(cmd);
+		stroke(v);
+	};
+
+	constexpr vgui_color frame_color = 0xffaa22aa;
+	constexpr vgui_color body_color = 0xff33cc33;
+	constexpr vgui_color track_color = 0xff992299;
+	vgui_theme theme{};
+	vgui_context_get_theme(ui, &theme);
+	theme.row_selected = body_color;
+	theme.track = track_color;
+	theme.menu_hover = body_color;
+	vgui_context_set_theme(ui, &theme);
+
+	constexpr int x = 20, y = 30, w = 170, h = 125;
+	for (auto kind : {VGUI_PANEL, VGUI_TREE, VGUI_LIST, VGUI_MENU, VGUI_TABVIEW})
+	{
+		const bool tree = kind == VGUI_TREE;
+		const bool list = kind == VGUI_LIST;
+		const bool menu = kind == VGUI_MENU;
+		const bool tabs = kind == VGUI_TABVIEW;
+		const bool vertical_only = list || menu;
+		float vx = x, vy = y, vw = w, vh = h;
+		vgui_item_id first_tab = 0;
+		float first_tab_x = 0;
+		auto* view = vgui_widget_add(vgui_root(ui), kind, nullptr);
+		vgui_widget_set_pos(view, x, y);
+		vgui_widget_set_size(view, w, h);
+		vgui_widget_set_rounding(view, 0);
+		const int border = menu ? 8 : 4;
+		vgui_widget_set_border(view, frame_color, border);
+		if (!tabs) vgui_panel_set_scrollable(view, !vertical_only, 1);
+		vgui_panel_set_scrollbar_size(view, 8, 7, 0);
+		vgui_widget* child = nullptr;
+		int nested_draws = 0;
+		if (tree || list)
+		{
+			vgui_widget_set_padding(view, 0, 0, 0, 0);
+			for (int i = 0; i < 10; ++i)
+			{
+				const char* label = "A row too wide to fit in the narrow viewport";
+				const auto row = tree ? vgui_tree_add_node(view, 0, label, nullptr) : vgui_list_add_item(view, label, nullptr);
+				if (i == 2)
+				{
+					if (tree) vgui_tree_select(view, row, 1);
+					else vgui_list_select(view, row, 1);
+				}
+			}
+		}
+		else if (menu)
+		{
+			for (int i = 0; i < 12; ++i) vgui_menu_add_item(view, "Long menu entry");
+			vgui_menu_set_max_height(view, h);
+			vgui_menu_open(view, x, y);
+			vgui_widget_get_rect(view, &vx, &vy, &vw, &vh);
+		}
+		else if (tabs)
+		{
+			vgui_widget_set_padding(view, 0, 0, 0, 0);
+			for (int i = 0; i < 6; ++i)
+			{
+				auto* page = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+				vgui_widget_set_background(page, body_color);
+				const auto id = vgui_tab_add(view, "Long tab title", page);
+				if (i == 0) first_tab = id;
+			}
+			vgui_layout(ui);
+			vgui_tab_get_rect(view, first_tab, &first_tab_x, nullptr, nullptr, nullptr);
+		}
+		else
+		{
+			vgui_widget_set_padding(view, 7, 9, 14, 16);
+			vgui_widget_set_layout(view, VGUI_LAYOUT_ABSOLUTE);
+			child = vgui_widget_add(view, VGUI_PANEL, nullptr);
+			vgui_widget_set_size(child, 280, 240);
+			vgui_widget_set_background(child, body_color);
+			vgui_widget_set_layout(child, VGUI_LAYOUT_ABSOLUTE);
+			vgui_widget_set_padding(child, 0, 0, 0, 0);
+			for (const auto& pos : {ivec2{0, 60}, ivec2{60, 0}})
+			{
+				auto* row = vgui_widget_add(child, VGUI_PANEL, nullptr);
+				vgui_widget_set_pos(row, (float)pos.x, (float)pos.y);
+				vgui_widget_set_size(row, 16, 16);
+				vgui_widget_set_padding(row, 0, 0, 0, 0);
+				auto* cell = vgui_widget_add(row, VGUI_CUSTOM, nullptr);
+				vgui_widget_set_size(cell, 16, 16);
+				vgui_custom_set_draw(cell, [](vgui_widget*, ovg_ctx_cb*, rvg_t*, float, float, float, float, float, void* user) {
+					++*static_cast<int*>(user);
+				}, &nested_draws);
+			}
+		}
+
+		ivec4 first_clip{};
+		for (const auto offset : {0.f, 25.f})
+		{
+			if (tabs)
+			{
+				if (offset) {
+					vgui_input_mouse_move(ui, x + 20, y + 20);
+					vgui_input_mouse_wheel(ui, -1, 0);
+				}
+				float tx, ty;
+				vgui_tab_get_rect(view, first_tab, &tx, &ty, nullptr, nullptr);
+				check(near(ty, y + border) && (offset ? tx < first_tab_x : near(tx, x + border)),
+					"scroll frame: tab strip scrolls horizontally from inside its frame");
+			}
+			else
+			{
+				vgui_panel_set_scroll(view, vertical_only ? 0.f : offset, offset);
+				vgui_layout(ui);
+				float sx, sy;
+				vgui_panel_get_scroll(view, &sx, &sy);
+				check(near(sx, vertical_only ? 0.f : offset) && near(sy, offset),
+					"scroll frame: scroll offsets are applied on the enabled axes");
+				if (menu) vgui_input_mouse_move(ui, vx + 30, vy + vh / 2 + offset / 10);
+			}
+			cb->clear(vg.get());
+			commands.clear();
+			nested_draws = 0;
+			vgui_draw(ui, cb.get(), vg.get());
+			if (child)
+				check(nested_draws == (offset == 0 ? 2 : 0),
+					"scroll frame: no draw submitted for nested content wholly outside either axis");
+			const auto body = std::find_if(commands.begin(), commands.end(), [](const auto& cmd) {
+				return cmd.kind == 'f' && cmd.color == body_color;
+			});
+			const auto frame = std::find_if(commands.begin(), commands.end(), [](const auto& cmd) {
+				return cmd.kind == 's' && cmd.color == frame_color;
+			});
+			check(body != commands.end() && frame != commands.end() && body < frame,
+				"scroll frame: the stationary frame is painted after the scrolling content");
+			if (body != commands.end())
+			{
+				const auto rc = body->clip;
+				if (offset == 0) first_clip = rc;
+				check(rc == first_clip, "scroll frame: the content scissor does not move with the rows");
+				if (tree)
+					check(rc.x == x + 4 && rc.y == y + 4 && rc.z > 0 && rc.w > 0 &&
+						rc.x + rc.z <= x + w - 4 - 7 && rc.y + rc.w <= y + h - 4 - 8,
+						"scroll frame: tree rows are clipped inside the border and both tracks");
+				else if (list || menu)
+					check(rc == ivec4(vx + border, vy + border, vw - 2 * border, vh - 2 * border),
+						"scroll frame: list or popup rows are clipped inside the frame");
+				else if (tabs)
+					check(rc.x == x + border && rc.z == w - 2 * border && rc.y > y + border &&
+						rc.y + rc.w == y + h - border, "scroll frame: tab page stays inside the frame");
+				else
+					check(rc == ivec4(27, 39, 149, 100), "scroll frame: panel rows are clipped to the padded viewport");
+			}
+			if (frame != commands.end())
+			{
+				const auto rc = frame->clip;
+				check((menu && rc.z < 0 && rc.w < 0) || (rc.x <= vx && rc.y <= vy && rc.x + rc.z >= vx + vw && rc.y + rc.w >= vy + vh),
+					"scroll frame: the outer border is not drawn under the content scissor");
+			}
+			check(std::count_if(commands.begin(), frame, [](const auto& cmd) {
+				return cmd.kind == 'f' && cmd.color == track_color;
+			}) == (tabs ? 0 : vertical_only ? 1 : 2),
+				"scroll frame: enabled scrollbar tracks are painted before the outer border");
+		}
+		if (child)
+		{
+			check(vgui_hit_test(ui, x + 5, y + 20) == view && vgui_hit_test(ui, x + 20, y + 5) == view,
+				"scroll frame: clipped panel children do not intercept hits in left or top padding");
+			check(vgui_hit_test(ui, x + 20, y + 20) == child,
+				"scroll frame: the visible scrolling child remains interactive");
+		}
+		if (list)
+			check(vgui_list_item_at_point(view, 1, h / 2) == 0 && vgui_list_item_at_point(view, 20, h / 2) != 0,
+				"scroll frame: list frame does not select a scrolled row");
+		if (menu) vgui_menu_close(view);
+		vgui_widget_destroy(view);
+	}
 }
 
 static void test_menu(vgui_context* ui, const vgui_style& style)
@@ -5854,6 +6175,8 @@ int main()
 
 	test_list(ui, style);
 	test_tree(ui, style);
+	test_tree_horizontal_scroll(ui, style);
+	test_scroll_frame(familys, style);
 	test_menu(ui, style);
 	test_menubar(ui, style);
 	test_key_handlers(ui);

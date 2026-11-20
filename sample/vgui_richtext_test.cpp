@@ -410,6 +410,35 @@ void test_inline_images(vgui_widget* widget, ovg_ctx_cb cb, rvg_t& vg) {
     commands.clear();
 }
 
+void test_texture_viewport(vgui_widget* widget) {
+    auto* ctx = vgui_widget_get_context(widget);
+    const unsigned char pixels[] = {255, 255, 255, 255};
+    const vgui_texture_desc desc{1, 1, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels};
+    std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)> tex(vgui_texture_create(ctx, &desc), vgui_texture_destroy);
+    check(tex != nullptr, "texture viewport fixture creation");
+    if (!tex) return;
+    ovg_ctx_cb cb{};
+    rvg_t vg{};
+    cb.get_clip_rect = [](rvg_t*, void* out) { *static_cast<ivec4*>(out) = clip; };
+    cb.set_clip_rect = [](rvg_t*, void* rect) { clip = *static_cast<ivec4*>(rect); };
+    cb.clip_rect = [](rvg_t*, int x, int y, int w, int h) { clip = {x, y, w, h}; };
+    cb.image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    cb.add_image = [](rvg_t*, ovg_image_r* img) { commands.push_back({'I', {}, clip, img->dst}); };
+
+    clip = {20, 30, 15, 12};
+    const auto viewport = clip;
+    commands.clear();
+    vgui_custom_draw_texture_fit(widget, &cb, &vg, tex.get(), 5, 30, 12, 12, VGUI_IMAGE_FIT_STRETCH, 0);
+    vgui_custom_draw_texture_fit(widget, &cb, &vg, tex.get(), 20, 10, 12, 16, VGUI_IMAGE_FIT_STRETCH, 0);
+    check(commands.empty() && clip == viewport, "texture outside either axis does not submit an image or change the scissor");
+    vgui_custom_draw_texture_fit(widget, &cb, &vg, tex.get(), 13, 35, 12, 16, VGUI_IMAGE_FIT_STRETCH, 0);
+    check(commands.size() == 1 && commands[0].clip == ivec4(20, 35, 5, 7) &&
+        commands[0].box == ivec4(13, 35, 12, 16) && clip == viewport,
+        "overlapping texture retains fit geometry, uses the intersection, and restores the scissor");
+    clip = parent_clip;
+    commands.clear();
+}
+
 void test_button_text_alignment(font_familys_t* font) {
     // Full vgui_draw reads OVG's draw list, so use a real CPU draw context
     // and intercept only text submissions. No GPU or window is needed.
@@ -639,5 +668,6 @@ int main() {
     vgui_widget_clear_text_glow(widget);
     test_inline_images(widget, cb, vg);
     test_button_text_alignment(family.get());
+    test_texture_viewport(widget);
     return failures != 0;
 }

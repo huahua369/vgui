@@ -1376,7 +1376,9 @@ extern "C" {
 	VGUI_API int vgui_widget_get_checked(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_vertical(vgui_widget* widget, int vertical);
 
-	/* Panels: scrolling.  Scroll offsets are clamped to the content extent. */
+	/* Scrolling for panels, lists and trees. Scroll offsets are clamped to
+	 * the content extent. Trees enable both axes by default; disable an axis
+	 * with set_scrollable() to clip instead. */
 	VGUI_API void vgui_panel_set_scrollable(vgui_widget* panel, int horizontal, int vertical);
 	/* Per-panel scrollbar thickness and edge inset in logical units.  A width
 	 * <= 0 keeps the style thickness for that axis; inset < 0 keeps the style
@@ -1804,6 +1806,10 @@ extern "C" {
 	 *                             must update its own expansion state and call
 	 *                             vgui_tree_source_changed().
 	 *   - row_info's detail is ignored by trees.
+	 *   - row_max_width returns the widest projected row in effective pixels
+	 *     (including indentation and row decorations, excluding widget padding).
+	 *     Supply it for horizontal scrolling in a virtual tree; absent a hint,
+	 *     the tree does not scan or scroll the virtual rows horizontally.
 	 * Tree mutation APIs (add_node / remove_node / clear / set_item_expanded /
 	 * expand* / collapse*) are no-ops while a source is attached. */
 

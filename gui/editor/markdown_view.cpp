@@ -6,6 +6,7 @@
 #include "markdown_lex.h"
 #include "ui_scale.h"
 #include "vgui_text_draw.h"
+#include "view_clip.h"
 
 #include "tools/tools.hpp"
 
@@ -1489,59 +1490,6 @@ namespace vgui_editor_kit {
 				theme.scrollbar_hover : theme.scrollbar;
 			return theme;
 		}
-
-		/* Scissor rects ignore the OVG save/restore stack: intersect with the
-		 * active clip and put the caller's clip back when leaving. */
-		class clip_guard
-		{
-		public:
-			clip_guard(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w,
-				float h) : cb_(cb), vg_(vg)
-			{
-				if (!cb_ || !vg_ || !cb_->clip_rect)
-					return;
-				if (cb_->get_clip_rect)
-				{
-					cb_->get_clip_rect(vg_, saved_);
-					has_saved_ = true;
-				}
-				int x0 = (int)std::floor(x);
-				int y0 = (int)std::floor(y);
-				int x1 = (int)std::ceil(x + w);
-				int y1 = (int)std::ceil(y + h);
-				if (has_saved_ && saved_[2] > 0 && saved_[3] > 0)
-				{
-					x0 = std::max(x0, saved_[0]);
-					y0 = std::max(y0, saved_[1]);
-					x1 = std::min(x1, saved_[0] + saved_[2]);
-					y1 = std::min(y1, saved_[1] + saved_[3]);
-				}
-				cb_->clip_rect(vg_, x0, y0, std::max(0, x1 - x0),
-					std::max(0, y1 - y0));
-				active_ = true;
-			}
-
-			~clip_guard()
-			{
-				if (!active_ || !cb_ || !vg_)
-					return;
-				if (has_saved_ && cb_->set_clip_rect)
-					cb_->set_clip_rect(vg_, saved_);
-				else if (cb_->clip_rect)
-					cb_->clip_rect(vg_, 0, 0, -1, -1);
-			}
-
-			clip_guard(const clip_guard&) = delete;
-			clip_guard& operator=(const clip_guard&) = delete;
-
-		private:
-			ovg_ctx_cb* cb_ = nullptr;
-			rvg_t* vg_ = nullptr;
-			int saved_[4] = { 0, 0, 0, 0 };
-			bool has_saved_ = false;
-			bool active_ = false;
-		};
-
 	} // namespace
 
 	struct markdown_view::impl
@@ -2558,13 +2506,13 @@ namespace vgui_editor_kit {
 			const float my = top + block.media_y;
 			const float mw = block.media_w;
 			const float mh = block.media_h;
-			if (mw <= 0.0f || mh <= 0.0f)
+			scoped_view_clip clip(cb, vg, mx, my, mw, mh);
+			if (!clip.visible())
 				return;
 			const bool ready = block.media.status == md_media_status::ready &&
 				block.media.texture != nullptr;
 			if (ready && surface)
 			{
-				clip_guard clip(cb, vg, mx, my, mw, mh);
 				vgui_custom_draw_texture(surface, cb, vg,
 					block.media.texture, mx, my, mw, mh, 0xFFFFFFFF);
 			}
@@ -2588,7 +2536,6 @@ namespace vgui_editor_kit {
 					const std::string status = failed ?
 						(block.media.error.empty() ? "unavailable" :
 							block.media.error) : "loading...";
-					clip_guard clip(cb, vg, mx, my, mw, mh);
 					vgui_custom_draw_text_sized(surface, cb, vg,
 						label.c_str(), mx + 8.0f * s,
 						my + mh * 0.5f - block.line_height,
@@ -2732,81 +2679,86 @@ namespace vgui_editor_kit {
 		if (blocks.empty())
 			return;
 
-		clip_guard clip(cb, vg, abs_x, abs_y, abs_w, abs_h);
-		const float ox = abs_x + pad_left();
-		const float oy = abs_y + pad_top() - scroll;
-		const float content_w = std::max(1.0f, abs_w - pad_left() -
-			pad_right() - scrollbar_width());
-
-		for (md_block& block : blocks)
+		/* Layout reserves a scrollbar strip even when its thumb is hidden.
+		 * Keep scrolled blocks in their viewport without clipping the chrome. */
+		if (scoped_view_clip clip{cb, vg, abs_x, abs_y,
+			abs_w - scrollbar_width(), abs_h}; clip.visible())
 		{
-			const float top = oy + block.top;
-			if (top > abs_y + abs_h)
-				break;
-			if (top + block.height < abs_y)
-				continue;
-			draw_block_background(cb, vg, block, ox, oy, content_w, s);
-		}
+			const float ox = abs_x + pad_left();
+			const float oy = abs_y + pad_top() - scroll;
+			const float content_w = std::max(1.0f, abs_w - pad_left() -
+				pad_right() - scrollbar_width());
 
-		position sel_first;
-		position sel_last;
-		if (ordered_selection(&sel_first, &sel_last))
-		{
-			const vgui_color selection = ui.edit_selection;
+			for (md_block& block : blocks)
+			{
+				const float top = oy + block.top;
+				if (top > abs_y + abs_h)
+					break;
+				if (top + block.height < abs_y)
+					continue;
+				draw_block_background(cb, vg, block, ox, oy, content_w, s);
+			}
+
+			position sel_first;
+			position sel_last;
+			if (ordered_selection(&sel_first, &sel_last))
+			{
+				const vgui_color selection = ui.edit_selection;
+				for (const md_line& line : lines)
+				{
+					if (line.block < sel_first.block ||
+						line.block > sel_last.block)
+						continue;
+					const md_block& block = blocks[(std::size_t)line.block];
+					const float top = oy + block.top + line.y;
+					if (top > abs_y + abs_h)
+						break;
+					if (top + line.height < abs_y || line.segments.empty())
+						continue;
+					int from = 0;
+					int to = (int)block.text.size();
+					if (line.block == sel_first.block)
+						from = sel_first.offset;
+					if (line.block == sel_last.block)
+						to = sel_last.offset;
+					const int line_start = line.segments.front().start;
+					const int line_end = line.segments.back().end;
+					if (to <= line_start || from >= line_end)
+						continue;
+					float x1 = 0.0f;
+					float x2 = 0.0f;
+					if (from <= line_start && to >= line_end)
+					{
+						x1 = line.x;
+						x2 = line.x + line.width;
+					}
+					else
+					{
+						const int a = std::max(from, line_start);
+						const int b = std::min(to, line_end);
+						if (a >= b)
+							continue;
+						x1 = x_at_offset(block, line, a);
+						x2 = x_at_offset(block, line, b);
+						if (x2 < x1)
+							std::swap(x1, x2);
+					}
+					if (x2 - x1 > 0.5f)
+						ovg_tools::fill_rect(cb, vg, ox + x1, top,
+							x2 - x1, line.height, to_ovg(selection));
+				}
+			}
+
 			for (const md_line& line : lines)
 			{
-				if (line.block < sel_first.block ||
-					line.block > sel_last.block)
-					continue;
-				const md_block& block = blocks[(std::size_t)line.block];
+				md_block& block = blocks[(std::size_t)line.block];
 				const float top = oy + block.top + line.y;
 				if (top > abs_y + abs_h)
 					break;
-				if (top + line.height < abs_y || line.segments.empty())
+				if (top + line.height < abs_y)
 					continue;
-				int from = 0;
-				int to = (int)block.text.size();
-				if (line.block == sel_first.block)
-					from = sel_first.offset;
-				if (line.block == sel_last.block)
-					to = sel_last.offset;
-				const int line_start = line.segments.front().start;
-				const int line_end = line.segments.back().end;
-				if (to <= line_start || from >= line_end)
-					continue;
-				float x1 = 0.0f;
-				float x2 = 0.0f;
-				if (from <= line_start && to >= line_end)
-				{
-					x1 = line.x;
-					x2 = line.x + line.width;
-				}
-				else
-				{
-					const int a = std::max(from, line_start);
-					const int b = std::min(to, line_end);
-					if (a >= b)
-						continue;
-					x1 = x_at_offset(block, line, a);
-					x2 = x_at_offset(block, line, b);
-					if (x2 < x1)
-						std::swap(x1, x2);
-				}
-				if (x2 - x1 > 0.5f)
-					ovg_tools::fill_rect(cb, vg, ox + x1, top,
-						x2 - x1, line.height, to_ovg(selection));
+				draw_line_text(cb, vg, block, line, ox, oy, content_w, s);
 			}
-		}
-
-		for (const md_line& line : lines)
-		{
-			md_block& block = blocks[(std::size_t)line.block];
-			const float top = oy + block.top + line.y;
-			if (top > abs_y + abs_h)
-				break;
-			if (top + line.height < abs_y)
-				continue;
-			draw_line_text(cb, vg, block, line, ox, oy, content_w, s);
 		}
 
 		if (max_scroll > 0.5f)

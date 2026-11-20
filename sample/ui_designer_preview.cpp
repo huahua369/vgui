@@ -922,10 +922,12 @@ struct designer_preview::impl {
         fill(cb, vg, area, 0xFF241D19);
         if (!self.ready || !self.frame) return;
         const auto board = self.artboard(area);
+        const auto visible = intersect(board, area);
         fill(cb, vg, {board.x - 1, board.y - 1, board.width + 2, board.height + 2}, 0xFF6E5E53);
-        fill(cb, vg, board, 0xFF352B26);
-        if (self.target) vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
-            board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
+        fill(cb, vg, visible, 0xFF352B26);
+        if (self.target && visible.width > 0 && visible.height > 0)
+            vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
+                board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
         if (self.run) return;
         const auto t = self.transform_for(board);
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.

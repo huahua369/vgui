@@ -2,6 +2,7 @@
 
 #include "tools/tools.hpp"
 #include "ui_scale.h"
+#include "view_clip.h"
 
 #include <algorithm>
 #include <cctype>
@@ -3275,9 +3276,17 @@ namespace vgui_editor_kit {
 		auto* self = static_cast<node_graph_view*>(user);
 		if (!self || !widget || !cb || !vg)
 			return;
-		self->draw(cb, vg, widget, abs_x + kBorderInset,
-			abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
-			abs_h - kBorderInset * 2.0f, delta_time);
+		// The widget frame scales with DPI; the graph's coordinate inset stays fixed.
+		const float border = kBorderInset * std::max(1.0f, self->ui_scale());
+		const float left = std::ceil(abs_x + border);
+		const float top = std::ceil(abs_y + border);
+		scoped_view_clip clip(cb, vg, left, top,
+			std::floor(abs_x + abs_w - border) - left,
+			std::floor(abs_y + abs_h - border) - top);
+		if (clip.visible())
+			self->draw(cb, vg, widget, abs_x + kBorderInset,
+				abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
+				abs_h - kBorderInset * 2.0f, delta_time);
 	}
 
 	void node_graph_view::draw(ovg_ctx_cb* cb, rvg_t* vg,

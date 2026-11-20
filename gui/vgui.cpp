@@ -424,6 +424,7 @@ struct vgui_tree_state
 	float content_w_font_size = 0.0f;
 	float content_w_indent = 0.0f;
 	float content_w_arrow = 0.0f;
+	float content_w_row_height = 0.0f;
 
 	// 可选虚拟数据源：行是"可见行投影"，展开状态由应用维护。
 	vgui_row_source source = {};
@@ -2412,26 +2413,48 @@ static float vgui_tab_bar_width(vgui_widget* w)
 	return width;
 }
 
+struct vgui_content_rect
+{
+	float x, y, w, h;
+};
+
+static bool vgui_is_scroll_panel(const vgui_widget* w)
+{
+	return w->kind == VGUI_PANEL && (w->scrollable_x || w->scrollable_y);
+}
+
+static float vgui_scroll_frame_width(const vgui_widget* w)
+{
+	if (w->kind == VGUI_TREE || w->kind == VGUI_LIST)
+		return (w->border || w->ctx->theme.list_border || w->ctx->theme.panel_border) ? w->border_width : 0.0f;
+	return (vgui_is_scroll_panel(w) || w->kind == VGUI_TABVIEW) && w->border ? w->border_width : 0.0f;
+}
+
+static vgui_content_rect vgui_scroll_content_rect(const vgui_widget* w)
+{
+	const float frame = vgui_scroll_frame_width(w);
+	const bool scroll_view = w->kind == VGUI_TREE || w->kind == VGUI_LIST || w->kind == VGUI_TABVIEW || vgui_is_scroll_panel(w);
+	const auto inset = [&](int side) { return scroll_view ? std::max(frame, w->padding[side]) : w->padding[side]; };
+	const float l = inset(0), t = inset(1), r = inset(2), b = inset(3);
+	return {w->abs_x + l, w->abs_y + t, std::max(0.0f, w->abs_w - l - r), std::max(0.0f, w->abs_h - t - b)};
+}
+
 static bool vgui_tab_bar_hit(vgui_widget* w, float x, float y)
 {
 	vgui_tab_state* st = vgui_tabs_of(w);
 	if (!st) return false;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
 	float th = std::min(st->tab_height, ih);
-	return x >= ix && x <= ix + iw && y >= iy && y <= iy + th;
+	return iw > 0 && th > 0 && x >= ix && x < ix + iw && y >= iy && y < iy + th;
 }
 
 static bool vgui_tab_rect(vgui_widget* w, int index, float* x, float* y, float* width, float* height)
 {
 	vgui_tab_state* st = vgui_tabs_of(w);
 	if (!st || index < 0 || index >= (int)st->tabs.size()) return false;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
 	float th = std::min(st->tab_height, ih);
 	float tx = ix - w->scroll_x;
 	if (vgui_is_rtl(w->ctx))
@@ -4897,6 +4920,7 @@ static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, co
 		w->text_align_x = 0.0f;
 		w->focusable = 1;
 		w->cursor_type = VGUI_CURSOR_HAND;
+		w->scrollable_x = 1;
 		w->scrollable_y = 1;
 		break;
 	case VGUI_MENU:
@@ -5036,12 +5060,23 @@ static bool vgui_menu_has_icon(vgui_widget* w)
 	return false;
 }
 
+static vgui_color vgui_menu_border(const vgui_widget* w)
+{
+	const auto& theme = w->ctx->theme;
+	return w->border ? w->border : (theme.menu_border ? theme.menu_border : theme.button_border);
+}
+
+static float vgui_menu_frame_width(const vgui_widget* w)
+{
+	return vgui_menu_border(w) ? w->border_width : 0.0f;
+}
+
 static void vgui_menu_content_size(vgui_widget* w, float* out_w, float* out_h)
 {
 	vgui_menu_state* st = vgui_menu_of(w);
 	const vgui_menu_style& ms = w->ctx->style.menu;
 	float width = ms.min_width;
-	float height = ms.padding_y * 2.0f;
+	float height = std::max(ms.padding_y, vgui_menu_frame_width(w)) * 2.0f;
 	bool any_check = vgui_menu_has_checkable(w);
 	bool any_icon = vgui_menu_has_icon(w);
 	if (st)
@@ -5050,7 +5085,7 @@ static void vgui_menu_content_size(vgui_widget* w, float* out_w, float* out_h)
 		{
 			height += vgui_menu_item_height(w, it);
 			if (it.type == VGUI_MENU_ITEM_SEPARATOR) continue;
-			float cw = ms.padding_x * 2.0f + ms.item_padding_x * 2.0f;
+			float cw = (std::max(ms.padding_x, vgui_menu_frame_width(w)) + ms.item_padding_x) * 2.0f;
 			if (any_check) cw += ms.check_width;
 			if (any_icon) cw += ms.icon_size + 6.0f;
 			cw += vgui_text_width(w, it.text);
@@ -5341,6 +5376,94 @@ static float vgui_list_content_width(vgui_widget* w, vgui_list_state* st)
 	return cw;
 }
 
+// Panel scrollbar thickness/inset in effective pixels for one axis
+// (1 = vertical, 2 = horizontal): the widget override (stored in logical
+// units) when set, otherwise the context style.
+static void vgui_panel_scrollbar_metrics(vgui_widget* w, int axis, float* width,
+	float* inset)
+{
+	const vgui_panel_style& ps = w->ctx->style.panel;
+	const float scale = w->ctx->ui_scale > 0.0f ? w->ctx->ui_scale : 1.0f;
+	const float override_w = axis == 2 ? w->scrollbar_width_h
+		: w->scrollbar_width_v;
+	*width = override_w > 0.0f ? override_w * scale : ps.scrollbar_width;
+	*inset = w->scrollbar_inset >= 0.0f
+		? w->scrollbar_inset * scale : ps.scrollbar_inset;
+}
+
+static float vgui_row_button_size(float row_h)
+{
+	return std::max(10.0f, std::min(18.0f, row_h - 8.0f));
+}
+
+static float vgui_tree_icon_size(float row_h)
+{
+	return std::max(8.0f, std::min(18.0f, row_h - 10.0f));
+}
+
+static constexpr float vgui_tree_row_end_pad = 4.0f;
+
+static float vgui_tree_buttons_width(int count, float row_h)
+{
+	return count > 0 ? count * (vgui_row_button_size(row_h) + 4.0f) : 0.0f;
+}
+
+struct vgui_tree_viewport
+{
+	float x, y, w, h;
+	bool horizontal = false, vertical = false;
+};
+
+static vgui_tree_viewport vgui_tree_view(vgui_widget* w)
+{
+	const auto& panel = w->ctx->style.panel;
+	const auto* tree = w->tree.get();
+	const auto content = vgui_scroll_content_rect(w);
+	const float iw = content.w, ih = content.h;
+	vgui_tree_viewport view{content.x, content.y, iw, ih};
+	float vw = 0.0f, vi = 0.0f, hh = 0.0f, hi = 0.0f;
+	vgui_panel_scrollbar_metrics(w, 1, &vw, &vi);
+	vgui_panel_scrollbar_metrics(w, 2, &hh, &hi);
+	// Keep the existing distance between inline buttons and the vertical bar.
+	const float frame = vgui_scroll_frame_width(w);
+	const float reserve_v = vw + vi + panel.scrollbar_hit_padding + 2.0f;
+	const float reserve_h = std::max(0.0f, hh + std::max(hi - frame, 0.0f) + panel.scrollbar_hit_padding
+		- std::max(w->padding[3] - frame, 0.0f));
+	// Let either bar appear on its own even when there is no room for both.
+	const bool can_v = w->scrollable_y && vw > 0.0f && ih > panel.scrollbar_min_track && iw > reserve_v;
+	const float height_with_h = ih - reserve_h;
+	view.vertical = can_v && w->content_h > ih + 0.5f;
+	const float width_without_v = iw - (view.vertical ? reserve_v : 0.0f);
+	view.horizontal = w->scrollable_x && (!tree->virtual_mode || tree->source.row_max_width) && hh > 0.0f &&
+		width_without_v > panel.scrollbar_min_track && w->content_w > width_without_v + 0.5f &&
+		height_with_h > (view.vertical ? panel.scrollbar_min_track : 0.0f);
+	if (view.horizontal && can_v && height_with_h > panel.scrollbar_min_track &&
+		iw - reserve_v > panel.scrollbar_min_track && w->content_h > height_with_h + 0.5f)
+		view.vertical = true;
+	if (view.vertical)
+	{
+		if (vgui_is_rtl(w->ctx)) view.x += reserve_v;
+		view.w -= reserve_v;
+	}
+	if (view.horizontal) view.h -= reserve_h;
+	return view;
+}
+
+static float vgui_tree_scroll_width(vgui_widget* w, const vgui_tree_viewport& view)
+{
+	// Virtual trees without an explicit width hint keep the old intrinsic
+	// width fallback, but must not show a scrollbar for an estimated extent.
+	const auto& tree = *w->tree;
+	if (!w->scrollable_x || (tree.virtual_mode && !tree.source.row_max_width)) return 0.0f;
+	const float extra = w->content_w - view.w;
+	return extra > 0.5f ? extra : 0.0f;
+}
+
+static float vgui_tree_row_leading_x(vgui_widget* w, const vgui_tree_viewport& view)
+{
+	return vgui_is_rtl(w->ctx) ? view.x + view.w + w->scroll_x : view.x - w->scroll_x;
+}
+
 // 树最宽可见行宽度（带缓存）。可见行集合由 rows_dirty 失效，缩进和
 // 箭头尺寸来自主题，一并作为缓存键。
 static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
@@ -5357,10 +5480,11 @@ static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 	const font_familys_t* font = vgui_font_for(w->ctx, w);
 	float fs = vgui_font_size(w->ctx, w);
 	float indent = w->ctx ? w->ctx->style.tree.indent : 0.0f;
-	float arrow = w->ctx ? w->ctx->style.tree.arrow_size + w->ctx->style.tree.arrow_gap : 0.0f;
+	float arrow = w->ctx ? w->ctx->style.tree.arrow_size + 2.0f * w->ctx->style.tree.arrow_gap : 0.0f;
+	const float row_h = vgui_tree_row_height(w);
 	if (st->content_w_valid && st->content_w_font == font &&
 		st->content_w_font_size == fs && st->content_w_indent == indent &&
-		st->content_w_arrow == arrow)
+		st->content_w_arrow == arrow && st->content_w_row_height == row_h)
 		return st->content_w;
 
 	float cw = 0.0f;
@@ -5368,7 +5492,9 @@ static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 	{
 		vgui_tree_node* n = vgui_tree_node_find(w, row.id);
 		if (!n) continue;
-		float iw = row.depth * indent + arrow + vgui_text_width(w, n->text);
+		float iw = row.depth * indent + arrow + vgui_text_width(w, n->text) +
+			vgui_tree_row_end_pad + vgui_tree_buttons_width(n->button_count, row_h);
+		if (n->icon) iw += vgui_tree_icon_size(row_h) + 4.0f;
 		cw = std::max(cw, iw);
 	}
 	st->content_w = cw;
@@ -5376,6 +5502,7 @@ static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 	st->content_w_font_size = fs;
 	st->content_w_indent = indent;
 	st->content_w_arrow = arrow;
+	st->content_w_row_height = row_h;
 	st->content_w_valid = true;
 	return cw;
 }
@@ -6007,8 +6134,8 @@ static void vgui_tab_ensure_visible(vgui_widget* w, vgui_item_id item)
 	vgui_tab_state* st = vgui_tabs_of(w);
 	int index = vgui_tab_find_index(w, item);
 	if (!st || index < 0 || w->abs_w <= 0.0f) return;
-	float ix = w->abs_x + w->padding[0];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iw = view.w;
 	float tx = 0, ty = 0, tw = 0, th = 0;
 	if (!vgui_tab_rect(w, index, &tx, &ty, &tw, &th)) return;
 	float max_scroll = std::max(0.0f, vgui_tab_bar_width(w) - iw);
@@ -6067,14 +6194,12 @@ static void vgui_tab_request_close(vgui_widget* w, vgui_item_id item)
 	vgui_tab_remove(w, item);
 }
 
-static void vgui_layout_tabview(vgui_widget* w, vgui_context* ctx, float x, float y, float ww, float hh)
+static void vgui_layout_tabview(vgui_widget* w, vgui_context* ctx)
 {
 	vgui_tab_state* st = vgui_tabs_of(w);
 	if (!st) return;
-	float ix = x + w->padding[0];
-	float iy = y + w->padding[1];
-	float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
 	float tab_h = std::min(st->tab_height, ih);
 	float content_h = std::max(0.0f, ih - tab_h);
 	float tab_w = vgui_tab_bar_width(w);
@@ -6395,19 +6520,20 @@ static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float
 	w->abs_w = ww;
 	w->abs_h = hh;
 
-	if (w->kind == VGUI_LIST || w->kind == VGUI_TREE)
+	if (w->kind == VGUI_TREE)
 	{
-		float ix = x + w->padding[0];
-		float iy = y + w->padding[1];
-		float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
-		float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
-		float max_sx = std::max(0.0f, w->content_w - iw);
-		float max_sy = std::max(0.0f, w->content_h - ih);
-		if (w->scrollable_x) w->scroll_x = vgui_clampf(w->scroll_x, 0.0f, max_sx);
-		else w->scroll_x = 0;
-		if (w->scrollable_y) w->scroll_y = vgui_clampf(w->scroll_y, 0.0f, max_sy);
-		else w->scroll_y = 0;
-		(void)ix; (void)iy;
+		const auto view = vgui_tree_view(w);
+		w->scroll_x = vgui_clampf(w->scroll_x, 0.0f, vgui_tree_scroll_width(w, view));
+		w->scroll_y = w->scrollable_y
+			? vgui_clampf(w->scroll_y, 0.0f, std::max(0.0f, w->content_h - view.h)) : 0.0f;
+		return;
+	}
+	if (w->kind == VGUI_LIST)
+	{
+		const auto view = vgui_scroll_content_rect(w);
+		const float iw = view.w, ih = view.h;
+		w->scroll_x = w->scrollable_x ? vgui_clampf(w->scroll_x, 0.0f, std::max(0.0f, w->content_w - iw)) : 0.0f;
+		w->scroll_y = w->scrollable_y ? vgui_clampf(w->scroll_y, 0.0f, std::max(0.0f, w->content_h - ih)) : 0.0f;
 		return;
 	}
 
@@ -6418,7 +6544,7 @@ static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float
 	}
 	if (w->kind == VGUI_TABVIEW)
 	{
-		vgui_layout_tabview(w, ctx, x, y, ww, hh);
+		vgui_layout_tabview(w, ctx);
 		return;
 	}
 	if (w->kind == VGUI_DOCK)
@@ -6438,11 +6564,8 @@ static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float
 
 	if (w->kind != VGUI_PANEL) return;
 
-	float ix = x + w->padding[0];
-	float iy = y + w->padding[1];
-	float iw = std::max(0.0f, ww - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, hh - w->padding[1] - w->padding[3]);
-	vgui_arrange_children(w, ctx, ix, iy, iw, ih);
+	const auto content = vgui_scroll_content_rect(w);
+	vgui_arrange_children(w, ctx, content.x, content.y, content.w, content.h);
 }
 
 static float vgui_menu_row_top(vgui_widget* menu, vgui_item_id item)
@@ -6450,7 +6573,7 @@ static float vgui_menu_row_top(vgui_widget* menu, vgui_item_id item)
 	vgui_menu_state* st = vgui_menu_of(menu);
 	if (!st) return menu->abs_y;
 	const vgui_menu_style& ms = menu->ctx->style.menu;
-	float y = menu->abs_y + ms.padding_y - menu->scroll_y;
+	float y = menu->abs_y + std::max(ms.padding_y, vgui_menu_frame_width(menu)) - menu->scroll_y;
 	for (const vgui_menu_item& it : st->items)
 	{
 		if (it.id == item) return y;
@@ -7025,6 +7148,12 @@ static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
 				if (vgui_widget* hit = vgui_hit_rec(slot.widget, x, y)) return hit;
 		if (vgui_dock_chrome_hit(w, x, y)) return w;
 	}
+	if (w->clip_children && vgui_is_scroll_panel(w))
+	{
+		const auto content = vgui_scroll_content_rect(w);
+		if (x < content.x || x >= content.x + content.w || y < content.y || y >= content.y + content.h)
+			return w; // Frame, padding and scrollbar strips do not hit scrolled children.
+	}
 	for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
 	{
 		vgui_widget* r = vgui_hit_rec(*it, x, y);
@@ -7292,9 +7421,10 @@ static bool vgui_tooltip_item_rect(vgui_widget* w, vgui_item_id item,
 		int index = vgui_list_row_index(w, w->list.get(), item);
 		if (index < 0) return false;
 		float row_h = vgui_list_row_height(w);
-		*x = w->abs_x + w->padding[0];
-		*y = w->abs_y + w->padding[1] + (float)index * row_h - w->scroll_y;
-		*width = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		const auto view = vgui_scroll_content_rect(w);
+		*x = view.x;
+		*y = view.y + (float)index * row_h - w->scroll_y;
+		*width = view.w;
 		*height = row_h;
 		return true;
 	}
@@ -7303,9 +7433,10 @@ static bool vgui_tooltip_item_rect(vgui_widget* w, vgui_item_id item,
 		int index = vgui_tree_visible_index(w, item);
 		if (index < 0) return false;
 		float row_h = vgui_tree_row_height(w);
-		*x = w->abs_x + w->padding[0];
-		*y = w->abs_y + w->padding[1] + (float)index * row_h - w->scroll_y;
-		*width = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+		const auto view = vgui_tree_view(w);
+		*x = view.x;
+		*y = view.y + (float)index * row_h - w->scroll_y;
+		*width = view.w;
 		*height = row_h;
 		return true;
 	}
@@ -8577,43 +8708,36 @@ struct vgui_scrollbar_info
 	float scroll = 0;
 };
 
-// Panel scrollbar thickness/inset in effective pixels for one axis
-// (1 = vertical, 2 = horizontal): the widget override (stored in logical
-// units) when set, otherwise the context style.
-static void vgui_panel_scrollbar_metrics(vgui_widget* w, int axis, float* width,
-	float* inset)
-{
-	const vgui_panel_style& ps = w->ctx->style.panel;
-	const float scale = w->ctx->ui_scale > 0.0f ? w->ctx->ui_scale : 1.0f;
-	const float override_w = axis == 2 ? w->scrollbar_width_h
-		: w->scrollbar_width_v;
-	*width = override_w > 0.0f ? override_w * scale : ps.scrollbar_width;
-	*inset = w->scrollbar_inset >= 0.0f
-		? w->scrollbar_inset * scale : ps.scrollbar_inset;
-}
-
 // Computes the geometry of a visible scrollbar.  The values mirror the drawing
 // code so what the user grabs is exactly what is painted.
 static bool vgui_scrollbar_geom(vgui_widget* w, int axis, vgui_scrollbar_info* g)
 {
 	if (!w || !g) return false;
 	const vgui_style& st = w->ctx->style;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto content = vgui_scroll_content_rect(w);
+	float ix = content.x, iy = content.y, iw = content.w, ih = content.h;
+	const float frame = w->kind == VGUI_MENU ? vgui_menu_frame_width(w) : vgui_scroll_frame_width(w);
+	if (w->kind == VGUI_TREE && (axis == 1 || axis == 2))
+	{
+		const auto view = vgui_tree_view(w);
+		if (!(axis == 1 ? view.vertical : view.horizontal)) return false;
+		ix = view.x; iy = view.y; iw = view.w; ih = view.h;
+	}
 	g->axis = axis;
 	if (axis == 1)
 	{
 		if (!w->scrollable_y || w->content_h <= ih + 0.5f || ih <= st.panel.scrollbar_min_track) return false;
 		float bar_w = 0.0f, bar_inset = 0.0f;
 		vgui_panel_scrollbar_metrics(w, 1, &bar_w, &bar_inset);
+		if (w->abs_w - frame * 2.0f < bar_w) return false;
 		g->track = vgui_is_rtl(w->ctx)
-			? w->abs_x
-			: w->abs_x + w->abs_w - (bar_w + bar_inset);
-		g->start = iy;
-		g->span = ih;
-		g->thumb_len = std::min(ih, std::max(st.panel.scrollbar_min_thumb, ih * ih / w->content_h));
+			? w->abs_x + frame
+			: w->abs_x + w->abs_w - bar_w - std::max(bar_inset, frame);
+		const float menu_inset = w->kind == VGUI_MENU ? frame : 0.0f;
+		g->start = iy + menu_inset;
+		g->span = ih - 2.0f * menu_inset;
+		if (g->span <= st.panel.scrollbar_min_track) return false;
+		g->thumb_len = std::min(g->span, std::max(st.panel.scrollbar_min_thumb, g->span * ih / w->content_h));
 		g->max_scroll = w->content_h - ih;
 		g->scroll = w->scroll_y;
 	}
@@ -8622,7 +8746,8 @@ static bool vgui_scrollbar_geom(vgui_widget* w, int axis, vgui_scrollbar_info* g
 		if (!w->scrollable_x || w->content_w <= iw + 0.5f || iw <= st.panel.scrollbar_min_track) return false;
 		float bar_w = 0.0f, bar_inset = 0.0f;
 		vgui_panel_scrollbar_metrics(w, 2, &bar_w, &bar_inset);
-		g->track = w->abs_y + w->abs_h - (bar_w + bar_inset);
+		if (w->abs_h - frame * 2.0f < bar_w) return false;
+		g->track = w->abs_y + w->abs_h - bar_w - std::max(bar_inset, frame);
 		g->start = ix;
 		g->span = iw;
 		g->thumb_len = std::min(iw, std::max(st.panel.scrollbar_min_thumb, iw * iw / w->content_w));
@@ -8725,8 +8850,9 @@ static bool vgui_scrollbar_hit(vgui_widget* from, float x, float y, vgui_widget*
 		float panel_w_v = 0.0f, panel_w_h = 0.0f, panel_inset = 0.0f;
 		vgui_panel_scrollbar_metrics(w, 1, &panel_w_v, &panel_inset);
 		vgui_panel_scrollbar_metrics(w, 2, &panel_w_h, &panel_inset);
-		float panel_hit_v = panel_w_v + panel_inset + st.panel.scrollbar_hit_padding;
-		float panel_hit_h = panel_w_h + panel_inset + st.panel.scrollbar_hit_padding;
+		const float panel_edge = std::max(panel_inset, vgui_scroll_frame_width(w));
+		float panel_hit_v = panel_w_v + panel_edge + st.panel.scrollbar_hit_padding;
+		float panel_hit_h = panel_w_h + panel_edge + st.panel.scrollbar_hit_padding;
 		if (w->kind == VGUI_EDIT &&
 			x >= (vgui_is_rtl(w->ctx) ? w->abs_x : w->abs_x + w->abs_w - edit_hit) &&
 			x <= (vgui_is_rtl(w->ctx) ? w->abs_x + edit_hit : w->abs_x + w->abs_w) &&
@@ -8849,12 +8975,9 @@ static int vgui_list_index_at(vgui_widget* w, float x, float y)
 {
 	vgui_list_state* st = vgui_list_of(w);
 	if (!st) return -1;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = w->abs_w - w->padding[0] - w->padding[2];
-	float ih = w->abs_h - w->padding[1] - w->padding[3];
-	if (x < ix || x >= ix + iw || y < iy || y >= iy + ih) return -1;
-	float local = y - iy + w->scroll_y;
+	const auto view = vgui_scroll_content_rect(w);
+	if (x < view.x || x >= view.x + view.w || y < view.y || y >= view.y + view.h) return -1;
+	float local = y - view.y + w->scroll_y;
 	if (local < 0) return -1;
 	int idx = (int)(local / vgui_list_row_height(w));
 	return (idx >= 0 && idx < vgui_list_row_count(w, st)) ? idx : -1;
@@ -8864,12 +8987,9 @@ static int vgui_tree_row_at(vgui_widget* w, float x, float y)
 {
 	vgui_tree_state* st = vgui_tree_of(w);
 	if (!st) return -1;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = w->abs_w - w->padding[0] - w->padding[2];
-	float ih = w->abs_h - w->padding[1] - w->padding[3];
-	if (x < ix || x >= ix + iw || y < iy || y >= iy + ih) return -1;
-	float local = y - iy + w->scroll_y;
+	const auto view = vgui_tree_view(w);
+	if (x < view.x || x >= view.x + view.w || y < view.y || y >= view.y + view.h) return -1;
+	float local = y - view.y + w->scroll_y;
 	if (local < 0) return -1;
 	int idx = (int)(local / vgui_tree_row_height(w));
 	return (idx >= 0 && idx < vgui_tree_row_count(w, st)) ? idx : -1;
@@ -8881,29 +9001,30 @@ static bool vgui_tree_arrow_hit(vgui_widget* w, int row, float x)
 	if (!st || row < 0 || row >= vgui_tree_row_count(w, st)) return false;
 	if (!vgui_tree_row_has_children(w, st, row)) return false;
 	const vgui_tree_style& ts = w->ctx->style.tree;
-	float depth = (float)vgui_tree_row_depth_at(w, st, row) * ts.indent;
+	const auto view = vgui_tree_view(w);
+	const auto* node = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, row));
+	const float buttons = node ? vgui_tree_buttons_width(node->button_count, vgui_tree_row_height(w)) : 0.0f;
+	const bool rtl = vgui_is_rtl(w->ctx);
+	if (x < view.x + (rtl ? buttons : 0.f) || x >= view.x + view.w - (rtl ? 0.f : buttons)) return false;
+	const float leading = vgui_tree_row_leading_x(w, view);
+	const float depth = (float)vgui_tree_row_depth_at(w, st, row) * ts.indent;
 	if (vgui_is_rtl(w->ctx))
 	{
-		float right = w->abs_x + w->abs_w - w->padding[2] - depth;
-		return x <= right && x >= right - ts.arrow_size - ts.arrow_gap;
+		float right = leading - depth;
+		return x <= right && x >= right - ts.arrow_size - 2.0f * ts.arrow_gap;
 	}
-	float tx = w->abs_x + w->padding[0] + depth;
-	return x >= tx && x <= tx + ts.arrow_size + ts.arrow_gap;
+	float tx = leading + depth;
+	return x >= tx && x <= tx + ts.arrow_size + 2.0f * ts.arrow_gap;
 }
 
 // F04 行内按钮几何：按钮贴行尾（RTL 时贴行首），纵向居中，固定边距。
 // 可见垂直滚动条会占用行尾的命中区（scrollbar_hit 优先于行点击），
 // 按钮整体向内避让，避免永远点不到。
-static float vgui_row_button_size(vgui_widget* w, float row_h)
-{
-	(void)w;
-	return std::max(10.0f, std::min(18.0f, row_h - 8.0f));
-}
-
 static float vgui_row_scrollbar_reserve(vgui_widget* w)
 {
+	if (w->kind == VGUI_TREE) return 0.0f; // The tree viewport has already reserved the strip.
 	const vgui_style& st = w->ctx->style;
-	const float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const float ih = vgui_scroll_content_rect(w).h;
 	if (w->scrollable_y && w->content_h > ih + 0.5f &&
 		ih > st.panel.scrollbar_min_track)
 	{
@@ -8918,7 +9039,7 @@ static void vgui_row_button_rect(vgui_widget* w, float ix, float iw,
 	float row_y, float row_h, int button, int total,
 	float* out_x, float* out_size)
 {
-	const float size = vgui_row_button_size(w, row_h);
+	const float size = vgui_row_button_size(row_h);
 	const float gap = 4.0f;
 	const float margin = 4.0f;
 	const float bar = vgui_row_scrollbar_reserve(w);
@@ -8935,7 +9056,7 @@ static int vgui_row_buttons_hit_at(vgui_widget* w, float ix, float iw,
 	float row_y, float row_h, int total, float x, float y)
 {
 	if (total <= 0) return -1;
-	const float size = vgui_row_button_size(w, row_h);
+	const float size = vgui_row_button_size(row_h);
 	const float cy = row_y + (row_h - size) * 0.5f;
 	if (y < cy || y >= cy + size) return -1;
 	for (int b = 0; b < total; ++b)
@@ -8953,12 +9074,10 @@ static int vgui_list_button_hit(vgui_widget* w, int index, float x, float y)
 	if (!st || index < 0) return -1;
 	vgui_list_item* item = vgui_list_item_at(w, index, nullptr);
 	if (!item || item->button_count <= 0) return -1;
-	const float ix = w->abs_x + w->padding[0];
-	const float iy = w->abs_y + w->padding[1];
-	const float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	const auto view = vgui_scroll_content_rect(w);
 	const float row_h = vgui_list_row_height(w);
-	const float row_y = iy - w->scroll_y + (float)index * row_h;
-	return vgui_row_buttons_hit_at(w, ix, iw, row_y, row_h,
+	const float row_y = view.y - w->scroll_y + (float)index * row_h;
+	return vgui_row_buttons_hit_at(w, view.x, view.w, row_y, row_h,
 		item->button_count, x, y);
 }
 
@@ -8968,12 +9087,10 @@ static int vgui_tree_button_hit(vgui_widget* w, int row, float x, float y)
 	if (!st || row < 0) return -1;
 	vgui_tree_node* node = vgui_tree_node_find(w, vgui_tree_row_id_at(w, st, row));
 	if (!node || node->button_count <= 0) return -1;
-	const float ix = w->abs_x + w->padding[0];
-	const float iy = w->abs_y + w->padding[1];
-	const float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	const auto view = vgui_tree_view(w);
 	const float row_h = vgui_tree_row_height(w);
-	const float row_y = iy - w->scroll_y + (float)row * row_h;
-	return vgui_row_buttons_hit_at(w, ix, iw, row_y, row_h,
+	const float row_y = view.y - w->scroll_y + (float)row * row_h;
+	return vgui_row_buttons_hit_at(w, view.x, view.w, row_y, row_h,
 		node->button_count, x, y);
 }
 
@@ -8984,7 +9101,7 @@ static void vgui_list_ensure_visible(vgui_widget* w, vgui_item_id id, vgui_scrol
 	int row_index = vgui_list_row_index(w, st, id);
 	if (row_index < 0) return;
 	float row_h = vgui_list_row_height(w);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	float ih = vgui_scroll_content_rect(w).h;
 	float top = (float)row_index * row_h;
 	float bottom = top + row_h;
 	float scroll = w->scroll_y;
@@ -9013,7 +9130,7 @@ static void vgui_tree_ensure_visible(vgui_widget* w, vgui_item_id id, vgui_scrol
 	int index = vgui_tree_visible_index(w, id);
 	if (!st || index < 0) return;
 	float row_h = vgui_tree_row_height(w);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const float ih = vgui_tree_view(w).h;
 	float top = (float)index * row_h;
 	float bottom = top + row_h;
 	float scroll = w->scroll_y;
@@ -9791,7 +9908,7 @@ static int vgui_menu_index_at(vgui_widget* menu, float y)
 	vgui_menu_state* st = vgui_menu_of(menu);
 	if (!st) return -1;
 	const vgui_menu_style& ms = menu->ctx->style.menu;
-	float top = menu->abs_y + ms.padding_y - menu->scroll_y;
+	float top = menu->abs_y + std::max(ms.padding_y, vgui_menu_frame_width(menu)) - menu->scroll_y;
 	for (size_t i = 0; i < st->items.size(); ++i)
 	{
 		float h = vgui_menu_item_height(menu, st->items[i]);
@@ -9803,7 +9920,10 @@ static int vgui_menu_index_at(vgui_widget* menu, float y)
 
 static vgui_item_id vgui_menu_item_at(vgui_widget* menu, float x, float y, int* out_index = nullptr)
 {
-	if (!menu || !vgui_point_in(menu, x, y)) return 0;
+	if (!menu) return 0;
+	const float frame = vgui_menu_frame_width(menu);
+	if (x < menu->abs_x + frame || x >= menu->abs_x + menu->abs_w - frame ||
+		y < menu->abs_y + frame || y >= menu->abs_y + menu->abs_h - frame) return 0;
 	int idx = vgui_menu_index_at(menu, y);
 	vgui_menu_state* st = vgui_menu_of(menu);
 	if (!st || idx < 0 || idx >= (int)st->items.size()) return 0;
@@ -11730,12 +11850,17 @@ static vgui_widget* vgui_find_scroll_panel(vgui_widget* w, bool vertical)
 {
 	for (vgui_widget* p = w; p; p = p->parent)
 	{
-		if (p->kind == VGUI_PANEL || p->kind == VGUI_LIST || p->kind == VGUI_TREE)
+		if (p->kind == VGUI_TREE)
 		{
-			if (vertical && p->scrollable_y && p->content_h > p->abs_h - p->padding[1] - p->padding[3])
-				return p;
-			if (!vertical && p->scrollable_x && p->content_w > p->abs_w - p->padding[0] - p->padding[2])
-				return p;
+			const auto view = vgui_tree_view(p);
+			if (p->enabled && (vertical ? p->scrollable_y && p->content_h > view.h
+				: vgui_tree_scroll_width(p, view) > 0.0f)) return p;
+		}
+		else if (p->kind == VGUI_PANEL || p->kind == VGUI_LIST)
+		{
+			const auto content = vgui_scroll_content_rect(p);
+			if (vertical ? p->scrollable_y && p->content_h > content.h
+				: p->scrollable_x && p->content_w > content.w) return p;
 		}
 	}
 	return nullptr;
@@ -11870,7 +11995,7 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 			}
 			if (p->kind != VGUI_TABVIEW || !vgui_tab_bar_hit(p, ctx->mouse_x, ctx->mouse_y))
 				continue;
-			float iw = std::max(0.0f, p->abs_w - p->padding[0] - p->padding[2]);
+			const float iw = vgui_scroll_content_rect(p).w;
 			float max_scroll = std::max(0.0f, vgui_tab_bar_width(p) - iw);
 			float delta = wx != 0.0f ? wx : wy;
 			p->scroll_x = vgui_clampf(p->scroll_x - delta * 40.0f, 0.0f, max_scroll);
@@ -11887,7 +12012,8 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 		if (p)
 		{
 			p->scroll_y -= wy * 40.0f;
-			ctx->layout_dirty = true;
+			if (p->kind == VGUI_TREE) vgui_mark_dirty(p);
+			else ctx->layout_dirty = true;
 			vgui_ensure_layout(ctx);
 			vgui_notify_scroll(p);
 			consumed = 1;
@@ -11899,7 +12025,8 @@ static int vgui_mouse_wheel_impl(vgui_context* ctx, float wx, float wy)
 		if (p)
 		{
 			p->scroll_x -= wx * 40.0f;
-			ctx->layout_dirty = true;
+			if (p->kind == VGUI_TREE) vgui_mark_dirty(p);
+			else ctx->layout_dirty = true;
 			vgui_ensure_layout(ctx);
 			vgui_notify_scroll(p);
 			consumed = 1;
@@ -12285,6 +12412,11 @@ struct vgui_clip_state
 	glm::ivec4 external = {};
 	bool has_external = false;
 };
+
+static bool vgui_clip_visible(const vgui_clip_state* clips)
+{
+	return clips->stack.empty() || (clips->stack.back().z > 0 && clips->stack.back().w > 0);
+}
 
 static glm::ivec4 vgui_clip_intersect(const glm::ivec4& a, const glm::ivec4& b)
 {
@@ -13472,6 +13604,12 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	cb->save(vg);
 	vgui_edit_clamp_scroll(w);
 	vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
+	if (!vgui_clip_visible(clips))
+	{
+		vgui_clip_pop(clips, cb, vg);
+		cb->restore(vg);
+		return;
+	}
 
 	int sel_a = std::min(w->edit_cursor, w->edit_anchor);
 	int sel_b = std::max(w->edit_cursor, w->edit_anchor);
@@ -13628,36 +13766,26 @@ static void vgui_draw_edit(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 
 static void vgui_draw_scrollbars(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
-	vgui_context* ctx = w->ctx;
-	const vgui_panel_style& ps = ctx->style.panel;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
-	float bar_w_v = 0.0f, bar_w_h = 0.0f, bar_inset = 0.0f;
-	vgui_panel_scrollbar_metrics(w, 1, &bar_w_v, &bar_inset);
-	vgui_panel_scrollbar_metrics(w, 2, &bar_w_h, &bar_inset);
-	float bar_r = ps.scrollbar_rounding;
-	if (w->scrollable_y && w->content_h > ih + 0.5f && ih > ps.scrollbar_min_track)
+	const auto* ctx = w->ctx;
+	const float rounding = ctx->style.panel.scrollbar_rounding;
+	const auto track_color = vgui_widget_color(w, ctx->theme.track);
+	for (int axis : {1, 2})
 	{
-		float track_x = vgui_is_rtl(ctx) ? w->abs_x
-			: w->abs_x + w->abs_w - (bar_w_v + bar_inset);
-		float th = std::min(ih, std::max(ps.scrollbar_min_thumb, ih * ih / w->content_h));
-		float max_scroll = w->content_h - ih;
-		float ty = iy + (max_scroll > 0 ? (w->scroll_y / max_scroll) * (ih - th) : 0);
-		vgui_fill_rect(cb, vg, track_x, iy, bar_w_v, ih, bar_r, vgui_widget_color(w, ctx->theme.track));
-		vgui_fill_rect(cb, vg, track_x, ty, bar_w_v, th, bar_r, vgui_scrollbar_thumb_color(w, 1));
-	}
-	if (w->scrollable_x && w->content_w > iw + 0.5f && iw > ps.scrollbar_min_track)
-	{
-		float track_y = w->abs_y + w->abs_h - (bar_w_h + bar_inset);
-		float tw = std::min(iw, std::max(ps.scrollbar_min_thumb, iw * iw / w->content_w));
-		float max_scroll = w->content_w - iw;
-		float ratio = max_scroll > 0 ? (w->scroll_x / max_scroll) : 0.0f;
-		if (vgui_is_rtl(ctx)) ratio = 1.0f - ratio;
-		float tx = ix + ratio * (iw - tw);
-		vgui_fill_rect(cb, vg, ix, track_y, iw, bar_w_h, bar_r, vgui_widget_color(w, ctx->theme.track));
-		vgui_fill_rect(cb, vg, tx, track_y, tw, bar_w_h, bar_r, vgui_scrollbar_thumb_color(w, 2));
+		vgui_scrollbar_info bar;
+		if (!vgui_scrollbar_geom(w, axis, &bar)) continue;
+		float thickness = 0.0f, inset = 0.0f;
+		vgui_panel_scrollbar_metrics(w, axis, &thickness, &inset);
+		const auto thumb_color = vgui_scrollbar_thumb_color(w, axis);
+		if (axis == 1)
+		{
+			vgui_fill_rect(cb, vg, bar.track, bar.start, thickness, bar.span, rounding, track_color);
+			vgui_fill_rect(cb, vg, bar.track, bar.thumb, thickness, bar.thumb_len, rounding, thumb_color);
+		}
+		else
+		{
+			vgui_fill_rect(cb, vg, bar.start, bar.track, bar.span, thickness, rounding, track_color);
+			vgui_fill_rect(cb, vg, bar.thumb, bar.track, bar.thumb_len, thickness, rounding, thumb_color);
+		}
 	}
 }
 
@@ -13668,7 +13796,8 @@ static void vgui_draw_text_clipped(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg,
 	if (width <= 0.0f || color == 0) return;
 	cb->save(vg);
 	vgui_clip_push(clips, cb, vg, x, y, width, height);
-	vgui_draw_text(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay);
+	if (vgui_clip_visible(clips))
+		vgui_draw_text(ctx, cb, vg, w, text, x, y, width, height, color, ax, ay);
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
 }
@@ -13968,6 +14097,12 @@ static void vgui_draw_image(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip
 		{
 			cb->save(vg);
 			vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
+			if (!vgui_clip_visible(clips))
+			{
+				vgui_clip_pop(clips, cb, vg);
+				cb->restore(vg);
+				return;
+			}
 			const bool native = !texture->cpu && texture->native.image.id != 0;
 			const bool transformed = vgui_image_has_transform(image);
 			if (native && cb->add_texture)
@@ -14109,14 +14244,17 @@ static void vgui_draw_row_buttons(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	}
 }
 
-static void vgui_draw_model_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+static void vgui_draw_model_background(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
-	vgui_context* ctx = w->ctx;
-	uint32_t bg = w->bg ? w->bg : (ctx->theme.list_bg ? ctx->theme.list_bg : ctx->theme.panel_bg);
-	uint32_t border = w->border ? w->border
-		: (ctx->theme.list_border ? ctx->theme.list_border : ctx->theme.panel_border);
-	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
-		vgui_widget_color(w, bg));
+	const auto& theme = w->ctx->theme;
+	const auto bg = w->bg ? w->bg : (theme.list_bg ? theme.list_bg : theme.panel_bg);
+	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, bg));
+}
+
+static void vgui_draw_model_border(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	const auto& theme = w->ctx->theme;
+	const auto border = w->border ? w->border : (theme.list_border ? theme.list_border : theme.panel_border);
 	if (w->border_width > 0)
 	{
 		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
@@ -14154,17 +14292,15 @@ static void vgui_draw_list(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	vgui_list_state* st = vgui_list_of(w);
 	if (!st) return;
 	const vgui_list_style& ls = ctx->style.list;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
 	float row_h = vgui_list_row_height(w);
 
-	vgui_draw_model_frame(w, cb, vg);
+	vgui_draw_model_background(w, cb, vg);
 	cb->save(vg);
 	vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
 	const int row_count = vgui_list_row_count(w, st);
-	vgui_row_window win = vgui_row_window_of(w, row_count, ih, row_h);
+	const auto win = vgui_clip_visible(clips) ? vgui_row_window_of(w, row_count, ih, row_h) : vgui_row_window{};
 	for (int i = win.first; i < win.last; ++i)
 	{
 		vgui_list_item* row = vgui_list_row_materialize(w, st, i);
@@ -14197,7 +14333,7 @@ static void vgui_draw_list(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		float buttons_w = 0.0f;
 		if (item.button_count > 0)
 		{
-			const float bsize = vgui_row_button_size(w, row_h);
+			const float bsize = vgui_row_button_size(row_h);
 			buttons_w = 4.0f + (float)item.button_count * bsize
 				+ (float)(item.button_count - 1) * 4.0f;
 		}
@@ -14239,13 +14375,14 @@ static void vgui_draw_list(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, item.id,
 			st->hover, st->hover_button, item.button_count, item.button_icons, color);
 	}
-	if (row_count == 0 && !st->empty_text.empty())
+	if (row_count == 0 && !st->empty_text.empty() && vgui_clip_visible(clips))
 		vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
 			vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
 			0.5f, 0.5f);
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
 	vgui_draw_scrollbars(w, cb, vg);
+	vgui_draw_model_border(w, cb, vg);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -14333,10 +14470,10 @@ static void vgui_draw_tree(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	if (!st) return;
 	vgui_tree_rebuild_rows(w);
 	const vgui_tree_style& ts = ctx->style.tree;
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto view = vgui_tree_view(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
+	const float leading = vgui_tree_row_leading_x(w, view);
+	const float content_width = iw + vgui_tree_scroll_width(w, view);
 
 	float row_h = vgui_tree_row_height(w);
 	bool rtl = vgui_is_rtl(ctx);
@@ -14344,11 +14481,17 @@ static void vgui_draw_tree(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		ctx->theme.tree_guide ? ctx->theme.tree_guide : ctx->theme.panel_border,
 		ts.guide_alpha);
 
-	vgui_draw_model_frame(w, cb, vg);
+	vgui_draw_model_background(w, cb, vg);
+	if (iw <= 0.0f || ih <= 0.0f)
+	{
+		vgui_draw_model_border(w, cb, vg);
+		vgui_draw_focus(w, cb, vg);
+		return;
+	}
 	cb->save(vg);
 	vgui_clip_push(clips, cb, vg, ix, iy, iw, ih);
 	const int row_count = vgui_tree_row_count(w, st);
-	vgui_row_window win = vgui_row_window_of(w, row_count, ih, row_h);
+	const auto win = vgui_clip_visible(clips) ? vgui_row_window_of(w, row_count, ih, row_h) : vgui_row_window{};
 	for (int i = win.first; i < win.last; ++i)
 	{
 		vgui_item_id row_id = vgui_tree_row_id_at(w, st, i);
@@ -14366,49 +14509,57 @@ static void vgui_draw_tree(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_fill_rect(cb, vg, ix, y, iw, row_h, ts.rounding,
 				vgui_widget_color(w, ctx->theme.row_hover ? ctx->theme.row_hover : 0x334A4A4A));
 
+		// Inline buttons stay attached to the viewport edge while row content
+		// (indentation, arrow, icon and label) moves underneath its own clip.
+		const float buttons_w = vgui_tree_buttons_width(node->button_count, row_h);
+		if (buttons_w > 0.0f)
+		{
+			cb->save(vg);
+			vgui_clip_push(clips, cb, vg, ix + (rtl ? buttons_w : 0.0f), iy,
+				std::max(0.0f, iw - buttons_w), ih);
+			if (!vgui_clip_visible(clips))
+			{
+				vgui_clip_pop(clips, cb, vg);
+				cb->restore(vg);
+				vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, node->id,
+					st->hover, st->hover_button, node->button_count, node->button_icons,
+					vgui_row_text_color_of(w, node->text_color, selected, node->enabled != 0));
+				continue;
+			}
+		}
 		for (int depth = 0; depth < row_depth; ++depth)
 		{
 			float gx = rtl
-				? ix + iw - (float)depth * ts.indent - ts.arrow_size * 0.5f
-				: ix + (float)depth * ts.indent + ts.arrow_size * 0.5f;
+				? leading - (float)depth * ts.indent - ts.arrow_size * 0.5f
+				: leading + (float)depth * ts.indent + ts.arrow_size * 0.5f;
 			vgui_fill_rect(cb, vg, gx, y + 4.0f, 1.0f,
 				std::max(0.0f, row_h - 8.0f), 0, vgui_widget_color(w, guide));
 		}
 
 		float tx = rtl
-			? ix + iw - ts.arrow_gap - (float)row_depth * ts.indent - ts.arrow_size
-			: ix + ts.arrow_gap + (float)row_depth * ts.indent;
-		float text_x = rtl ? ix + 4.0f : tx + ts.arrow_size + ts.arrow_gap;
+			? leading - ts.arrow_gap - (float)row_depth * ts.indent - ts.arrow_size
+			: leading + ts.arrow_gap + (float)row_depth * ts.indent;
+		const float content_x = rtl ? leading - content_width : leading;
+		float text_x = rtl ? content_x + vgui_tree_row_end_pad + buttons_w : tx + ts.arrow_size + ts.arrow_gap;
 		uint32_t color = vgui_row_text_color_of(w, node->text_color, selected, node->enabled != 0);
 		if (st->virtual_mode ? vgui_tree_row_has_children(w, st, i) : !node->children.empty())
 			vgui_draw_tree_arrow(w, cb, vg, tx + ts.arrow_size * 0.5f,
 				y + row_h * 0.5f, ts.arrow_size,
 				st->virtual_mode ? vgui_tree_row_expanded(w, st, i) : node->expanded != 0, color, rtl);
 
-		// F04 行尾按钮占用的宽度，文本区避让（RTL 时按钮贴行首）。
-		float buttons_w = 0.0f;
-		if (node->button_count > 0)
-		{
-			const float bsize = vgui_row_button_size(w, row_h);
-			buttons_w = 4.0f + (float)node->button_count * bsize
-				+ (float)(node->button_count - 1) * 4.0f;
-		}
-		if (rtl)
-			text_x += buttons_w;
-
 		// F04 自定义行绘制：替换文本绘制；引导线/箭头与按钮仍由控件管理。
 		if (st->virtual_mode && st->source.row_draw)
 		{
-			st->source.row_draw(st->source.user, i, cb, vg, ix, y, iw, row_h);
+			st->source.row_draw(st->source.user, i, cb, vg, content_x, y, content_width, row_h);
 		}
 		else
 		{
 			float text_w = rtl
 				? std::max(0.0f, tx - ts.arrow_gap - text_x)
-				: std::max(0.0f, iw - (text_x - ix) - 4.0f - buttons_w);
+				: std::max(0.0f, leading + content_width - text_x - vgui_tree_row_end_pad - buttons_w);
 			if (node->icon)
 			{
-				const float isize = std::max(8.0f, std::min(18.0f, row_h - 10.0f));
+				const float isize = vgui_tree_icon_size(row_h);
 				const float icy = y + (row_h - isize) * 0.5f;
 				if (rtl)
 				{
@@ -14426,16 +14577,22 @@ static void vgui_draw_tree(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_draw_tree_text(ctx, cb, vg, w, st, node->text, text_x, y,
 				std::max(0.0f, text_w), row_h, color, clips);
 		}
+		if (buttons_w > 0.0f)
+		{
+			vgui_clip_pop(clips, cb, vg);
+			cb->restore(vg);
+		}
 		vgui_draw_row_buttons(w, cb, vg, ix, iw, y, row_h, node->id,
 			st->hover, st->hover_button, node->button_count, node->button_icons, color);
 	}
-	if (row_count == 0 && !st->empty_text.empty())
+	if (row_count == 0 && !st->empty_text.empty() && vgui_clip_visible(clips))
 		vgui_draw_text(ctx, cb, vg, w, st->empty_text, ix, iy, iw, ih,
 			vgui_widget_color(w, ctx->theme.disabled ? ctx->theme.disabled : ctx->theme.text),
 			0.5f, 0.5f);
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
 	vgui_draw_scrollbars(w, cb, vg);
+	vgui_draw_model_border(w, cb, vg);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -14498,30 +14655,28 @@ static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	bool any_check = vgui_menu_has_checkable(w);
 	bool any_icon = vgui_menu_has_icon(w);
 	uint32_t bg = w->bg ? w->bg : (ctx->theme.menu_bg ? ctx->theme.menu_bg : ctx->theme.panel_bg);
-	uint32_t border = w->border ? w->border
-		: (ctx->theme.menu_border ? ctx->theme.menu_border : ctx->theme.button_border);
+	const auto border = vgui_menu_border(w);
+	const float frame = vgui_menu_frame_width(w);
 	uint32_t text = ctx->theme.row_text ? ctx->theme.row_text : ctx->theme.text;
 	uint32_t disabled = ctx->theme.menu_disabled_text ? ctx->theme.menu_disabled_text : ctx->theme.disabled;
 	uint32_t hover = ctx->theme.menu_hover ? ctx->theme.menu_hover : ctx->theme.button_hover;
 
 	vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
 		vgui_widget_color(w, bg));
-	if (w->border_width > 0)
-	{
-		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
-			w->rounding, vgui_widget_color(w, border), w->border_width);
-	}
 
 	cb->save(vg);
-	vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
-	float y = w->abs_y + ms.padding_y - w->scroll_y;
-	float row_x = w->abs_x + ms.padding_x;
-	float row_w = std::max(0.0f, w->abs_w - ms.padding_x * 2.0f);
-	for (size_t i = 0; i < st->items.size(); ++i)
+	vgui_clip_push(clips, cb, vg, w->abs_x + frame, w->abs_y + frame,
+		w->abs_w - 2.0f * frame, w->abs_h - 2.0f * frame);
+	float y = w->abs_y + std::max(ms.padding_y, frame) - w->scroll_y;
+	const float pad_x = std::max(ms.padding_x, frame);
+	const float row_x = w->abs_x + pad_x;
+	const float row_w = std::max(0.0f, w->abs_w - 2.0f * pad_x);
+	const size_t count = vgui_clip_visible(clips) ? st->items.size() : 0;
+	for (size_t i = 0; i < count; ++i)
 	{
 		vgui_menu_item& item = st->items[i];
 		float h = vgui_menu_item_height(w, item);
-		if (y + h <= w->abs_y || y >= w->abs_y + w->abs_h)
+		if (y + h <= w->abs_y + frame || y >= w->abs_y + w->abs_h - frame)
 		{
 			y += h;
 			continue;
@@ -14543,8 +14698,8 @@ static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		if (!item.enabled && item.enabled == 0)
 			color = vgui_mix_color(text, disabled, ms.disabled_mix);
 		bool rtl = vgui_is_rtl(ctx);
-		float right = w->abs_x + w->abs_w - ms.padding_x - ms.item_padding_x;
-		float left = w->abs_x + ms.padding_x + ms.item_padding_x;
+		float right = w->abs_x + w->abs_w - pad_x - ms.item_padding_x;
+		float left = row_x + ms.item_padding_x;
 		float text_x, text_end;
 		float shortcut_x = right;
 		float check_x = row_x + ms.item_padding_x + ms.check_width * 0.5f;
@@ -14641,6 +14796,8 @@ static void vgui_draw_menu(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
 	vgui_draw_scrollbars(w, cb, vg);
+	vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+		vgui_widget_color(w, border), w->border_width);
 }
 
 static void vgui_draw_menu_chain(vgui_widget* menu, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
@@ -14936,21 +15093,14 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 	if (w->bg)
 		vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
 			vgui_widget_color(w, w->bg));
-	if (w->border_width > 0 && w->border)
-	{
-		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
-			w->rounding, vgui_widget_color(w, w->border), w->border_width);
-	}
 
-	float ix = w->abs_x + w->padding[0];
-	float iy = w->abs_y + w->padding[1];
-	float iw = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
-	float ih = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const auto view = vgui_scroll_content_rect(w);
+	const float ix = view.x, iy = view.y, iw = view.w, ih = view.h;
 	float tab_h = std::min(st->tab_height, ih);
 	float content_h = std::max(0.0f, ih - tab_h);
 
 	cb->save(vg);
-	if (content_h > 0.0f)
+	if (iw > 0.0f && content_h > 0.0f)
 	{
 		vgui_clip_push(clips, cb, vg, ix, iy + tab_h, iw, content_h);
 		for (vgui_widget* c : w->children)
@@ -14962,17 +15112,19 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 	uint32_t bar_bg = ctx->theme.button_bg ? ctx->theme.button_bg : ctx->theme.panel_bg;
 	uint32_t border = w->border ? w->border : ctx->theme.panel_border;
 	vgui_fill_rect(cb, vg, ix, iy, iw, tab_h, 0.0f, vgui_widget_color(w, bar_bg));
-	vgui_fill_rect(cb, vg, ix, iy + std::max(0.0f, tab_h - 1.0f), iw, 1.0f, 0.0f,
-		vgui_widget_color(w, border));
+	if (tab_h > 0.0f)
+		vgui_fill_rect(cb, vg, ix, iy + std::max(0.0f, tab_h - 1.0f), iw, std::min(tab_h, 1.0f), 0.0f,
+			vgui_widget_color(w, border));
 
 	cb->save(vg);
 	vgui_clip_push(clips, cb, vg, ix, iy, iw, tab_h);
-	for (int i = 0; i < (int)st->tabs.size(); ++i)
+	const int count = vgui_clip_visible(clips) ? (int)st->tabs.size() : 0;
+	for (int i = 0; i < count; ++i)
 	{
 		const vgui_tab_item& tab = st->tabs[(size_t)i];
 		float tx = 0, ty = 0, tw = 0, th = 0;
 		if (!vgui_tab_rect(w, i, &tx, &ty, &tw, &th)) continue;
-		if (tx + tw < ix || tx > ix + iw) continue;
+		if (tx + tw <= ix || tx >= ix + iw) continue;
 
 		bool active = tab.id == st->active;
 		bool hover = tab.id == st->hover;
@@ -15038,6 +15190,8 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 	}
 	vgui_clip_pop(clips, cb, vg);
 	cb->restore(vg);
+	vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
+		w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -15137,9 +15291,12 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		cb->save(vg);
 		const float tab_w = st->tab_view_w[zone];
 		vgui_clip_push(clips, cb, vg, zx, zy, tab_w, tab_h);
-		for (const vgui_dock_tab_geom& tab : st->tabs[zone])
+		const auto& tabs = st->tabs[zone];
+		const size_t count = vgui_clip_visible(clips) ? tabs.size() : 0;
+		for (size_t i = 0; i < count; ++i)
 		{
-			if (tab.x + tab.w < zx || tab.x > zx + tab_w) continue;
+			const auto& tab = tabs[i];
+			if (tab.x + tab.w <= zx || tab.x >= zx + tab_w) continue;
 			const vgui_item_id selected = st->document_tabs && zone == VGUI_DOCK_CENTER
 				? st->active_document : st->active[zone];
 			bool active = tab.id == selected;
@@ -15272,11 +15429,6 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		if (st->document_tabs && st->active_document == id && title_h > 2.0f)
 			vgui_fill_rect(cb, vg, fx + 1.0f, fy + title_h - 2.0f, std::max(0.0f, fw - 2.0f),
 				2.0f, 0.0f, vgui_widget_color(w, ctx->theme.accent));
-		if (ds.floating_border_width > 0.0f && float_border)
-		{
-			vgui_stroke_frame(cb, vg, fx, fy, fw, fh, rounding,
-				vgui_widget_color(w, float_border), ds.floating_border_width);
-		}
 
 		float text_x = fx + ds.tab_padding;
 		float close_space = panel->closeable ? ds.close_size + ds.tab_padding : 0.0f;
@@ -15332,6 +15484,11 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_draw_widget(panel->page, cb, vg, clips);
 			vgui_clip_pop(clips, cb, vg);
 			cb->restore(vg);
+		}
+		if (ds.floating_border_width > 0.0f && float_border)
+		{
+			vgui_stroke_frame(cb, vg, fx, fy, fw, fh, rounding,
+				vgui_widget_color(w, float_border), ds.floating_border_width);
 		}
 	}
 
@@ -15487,21 +15644,31 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	{
 		if (w->bg)
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
-		if (w->border_width > 0 && w->border)
+		const bool scrolling = vgui_is_scroll_panel(w);
+		const auto draw_border = [&]
 		{
 			vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
 				w->rounding, vgui_widget_color(w, w->border), w->border_width);
-		}
+		};
+		if (!scrolling) draw_border();
 
-		cb->save(vg);
-		if (w->clip_children)
-			vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
-		for (vgui_widget* c : w->children)
-			vgui_draw_widget(c, cb, vg, clips);
-		if (w->clip_children)
-			vgui_clip_pop(clips, cb, vg);
-		cb->restore(vg);
+		// Scroll only the content box. Padding, tracks and the frame are
+		// stationary chrome; keep their pixels out of the children's clip.
+		const auto view = scrolling ? vgui_scroll_content_rect(w)
+			: vgui_content_rect{w->abs_x, w->abs_y, w->abs_w, w->abs_h};
+		if (!w->clip_children || (view.w > 0.0f && view.h > 0.0f))
+		{
+			cb->save(vg);
+			if (w->clip_children)
+				vgui_clip_push(clips, cb, vg, view.x, view.y, view.w, view.h);
+			for (vgui_widget* c : w->children)
+				vgui_draw_widget(c, cb, vg, clips);
+			if (w->clip_children)
+				vgui_clip_pop(clips, cb, vg);
+			cb->restore(vg);
+		}
 		vgui_draw_scrollbars(w, cb, vg);
+		if (scrolling) draw_border();
 		vgui_draw_focus(w, cb, vg);
 		return;
 	}
@@ -15546,7 +15713,7 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 			vgui_clip_push(clips, cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h);
 
 		// 3) 用户回调：直接拿到 ovg_ctx_cb* 和 rvg_t*
-		if (w->custom_draw)
+		if (w->custom_draw && vgui_clip_visible(clips))
 			w->custom_draw(w, cb, vg,
 				w->abs_x, w->abs_y, w->abs_w, w->abs_h,
 				w->custom_dt, w->custom_draw_user);
@@ -15660,6 +15827,10 @@ static void vgui_update_impl(vgui_context* ctx, float dt)
 static void vgui_draw_widget(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	vgui_clip_state* clips)
 {
+	// An empty scissor is not portable: OVG's CPU image path treats a
+	// zero extent as unclipped, and the SDL backend ignores the command.
+	// Do not submit or replay a subtree after its viewport disappears.
+	if (!vgui_clip_visible(clips)) return;
 	if (w && w->recording_hint && w->ctx
 		&& w->ctx->recording_depth == 0
 		&& cb->replay && cb->start_recording && cb->stop_recording
@@ -15767,8 +15938,10 @@ static bool vgui_custom_clip_begin(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, 
 		x1 = std::min(x1, saved->x + saved->z);
 		y1 = std::min(y1, saved->y + saved->w);
 	}
-	cb->clip_rect(vg, x0, y0, std::max(0, x1 - x0), std::max(0, y1 - y0));
-	return x1 > x0 && y1 > y0;
+	// Zero extents are not an empty scissor on every OVG path.
+	if (x1 <= x0 || y1 <= y0) return false;
+	cb->clip_rect(vg, x0, y0, x1 - x0, y1 - y0);
+	return true;
 }
 
 static void vgui_custom_clip_end(ovg_ctx_cb* cb, rvg_t* vg, const glm::ivec4& saved, int has_saved)
@@ -16976,9 +17149,13 @@ extern "C" {
 	void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width)
 	{
 		if (!widget) return;
+		const bool menu = widget->kind == VGUI_MENU;
+		const float old_frame = menu ? vgui_menu_frame_width(widget) : vgui_scroll_frame_width(widget);
 		widget->border = color;
 		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
 		widget->border_width = width > 0 ? width * scale : 0;
+		if (old_frame != (menu ? vgui_menu_frame_width(widget) : vgui_scroll_frame_width(widget)))
+			vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_rounding(vgui_widget* widget, float radius)
@@ -19988,9 +20165,10 @@ extern "C" {
 		const int index = vgui_tree_visible_index(tree, node);
 		if (index < 0) return 0;
 		const float row_h = vgui_tree_row_height(tree);
-		*x = tree->abs_x + tree->padding[0];
-		*w = std::max(0.0f, tree->abs_w - tree->padding[0] - tree->padding[2]);
-		*y = tree->abs_y + tree->padding[1] - tree->scroll_y + (float)index * row_h;
+		const auto view = vgui_tree_view(tree);
+		*x = view.x;
+		*w = view.w;
+		*y = view.y - tree->scroll_y + (float)index * row_h;
 		*h = row_h;
 		return 1;
 	}
@@ -20346,6 +20524,7 @@ extern "C" {
 		vgui_tree_node* n = vgui_tree_node_find(tree, node);
 		if (!n || n->icon == icon) return;
 		n->icon = icon;
+		st->content_w_valid = false;
 		vgui_mark_dirty(tree);
 	}
 
@@ -20380,6 +20559,7 @@ extern "C" {
 		count = std::min(VGUI_MAX_ROW_BUTTONS, std::max(0, count));
 		if (n->button_count == count) return;
 		n->button_count = count;
+		st->content_w_valid = false;
 		n->button_icons.assign((size_t)count, nullptr);
 		vgui_mark_dirty(tree);
 	}
@@ -20576,6 +20756,7 @@ extern "C" {
 	{
 		if (tree) vgui_ensure_layout(tree->ctx);
 		vgui_tree_expand_to(tree, node);
+		if (tree) vgui_ensure_layout(tree->ctx);
 		vgui_tree_ensure_visible(tree, node, align);
 	}
 
@@ -22265,7 +22446,6 @@ extern "C" {
 	void vgui_custom_draw_texture_fit(vgui_widget* widget, struct ovg_ctx_cb* cb, struct rvg_t* vg, vgui_texture* texture, float x, float y, float width, float height, vgui_image_fit fit, vgui_color tint)
 	{
 		if (!widget || !widget->ctx || !cb || !vg || !texture || width <= 0.0f || height <= 0.0f) return;
-		vgui_texture_ensure_upload(widget->ctx, texture, cb, vg);
 		const int tex_w = texture->width;
 		const int tex_h = texture->height;
 		if (tex_w <= 0 || tex_h <= 0) return;
@@ -22307,7 +22487,8 @@ extern "C" {
 		 * outside it and must be cropped; STRETCH/CONTAIN already fit. */
 		glm::ivec4 saved = {};
 		int has_saved = 0;
-		vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved);
+		if (!vgui_custom_clip_begin(cb, vg, x, y, width, height, &saved, &has_saved)) return;
+		vgui_texture_ensure_upload(widget->ctx, texture, cb, vg);
 		const uint32_t color = vgui_ovg_color(vgui_widget_color(widget, tint ? tint : 0xFFFFFFFF));
 		const bool native = !texture->cpu && texture->native.image.id != 0;
 		if (native && cb->add_texture)

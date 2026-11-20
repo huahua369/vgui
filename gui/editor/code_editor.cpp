@@ -3,6 +3,7 @@
 #include "markdown_lex.h"
 #include "tools/tools.hpp"
 #include "ui_scale.h"
+#include "view_clip.h"
 
 #include <algorithm>
 #include <cctype>
@@ -38,58 +39,6 @@ namespace vgui_editor_kit {
 		{
 			return (color & 0x00FFFFFFu) | ((alpha & 0xFFu) << 24);
 		}
-
-		/* Scissor rectangles do not participate in the OVG save/restore stack,
-		 * so custom painting intersects the active clip and restores it. */
-		class clip_guard
-		{
-		public:
-			clip_guard(ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float w,
-				float h) : cb_(cb), vg_(vg)
-			{
-				if (!cb_ || !vg_ || !cb_->clip_rect)
-					return;
-				if (cb_->get_clip_rect)
-				{
-					cb_->get_clip_rect(vg_, saved_);
-					has_saved_ = true;
-				}
-				int x0 = (int)std::floor(x);
-				int y0 = (int)std::floor(y);
-				int x1 = (int)std::ceil(x + w);
-				int y1 = (int)std::ceil(y + h);
-				if (has_saved_ && saved_[2] > 0 && saved_[3] > 0)
-				{
-					x0 = std::max(x0, saved_[0]);
-					y0 = std::max(y0, saved_[1]);
-					x1 = std::min(x1, saved_[0] + saved_[2]);
-					y1 = std::min(y1, saved_[1] + saved_[3]);
-				}
-				cb_->clip_rect(vg_, x0, y0, std::max(0, x1 - x0),
-					std::max(0, y1 - y0));
-				active_ = true;
-			}
-
-			~clip_guard()
-			{
-				if (!active_ || !cb_ || !vg_)
-					return;
-				if (has_saved_ && cb_->set_clip_rect)
-					cb_->set_clip_rect(vg_, saved_);
-				else if (cb_->clip_rect)
-					cb_->clip_rect(vg_, 0, 0, -1, -1);
-			}
-
-			clip_guard(const clip_guard&) = delete;
-			clip_guard& operator=(const clip_guard&) = delete;
-
-		private:
-			ovg_ctx_cb* cb_ = nullptr;
-			rvg_t* vg_ = nullptr;
-			int saved_[4] = { 0, 0, 0, 0 };
-			bool has_saved_ = false;
-			bool active_ = false;
-		};
 
 		vgui_color theme_color(vgui_color color, vgui_color fallback)
 		{
@@ -3448,7 +3397,7 @@ namespace vgui_editor_kit {
 			scroll_y_ = bottom - g.text_height;
 
 		const float x = x_for_column(caret_.line, caret_.column);
-		const float margin = 2.0f * ui_scale();
+		const float margin = std::max(2.0f * ui_scale(), (float)caret_width);
 		if (x < scroll_x_)
 			scroll_x_ = x;
 		else if (x > scroll_x_ + g.text_width - margin)
@@ -3539,18 +3488,20 @@ namespace vgui_editor_kit {
 	{
 		if (!editor_)
 			return 0.0f;
+		// Leave room for the caret at the right edge of the text viewport.
+		const float end_pad = (float)caret_width;
 		float width = 0.0f;
 		if (lines_.size() <= 1200)
 		{
 			for (int line = 0; line < (int)lines_.size(); ++line)
 				width = std::max(width,
 					x_for_column(line, line_length(line)));
-			return width;
+			return width + end_pad;
 		}
 		const float character = vgui_widget_measure_text(editor_, "M");
 		const float unit = character > 0.0f ? character :
 			font_size_ * ui_scale() * 0.6f;
-		return (float)max_line_bytes_ * unit;
+		return (float)max_line_bytes_ * unit + end_pad;
 	}
 
 	std::string code_editor::display_prefix(int line, int column) const
@@ -4058,58 +4009,58 @@ namespace vgui_editor_kit {
 			(int)std::ceil((self->scroll_y_ + g.text_height) /
 				std::max(1.0f, line_height)));
 
-		/* Current-line band. */
-		if (self->focused() && !self->read_only_)
+		/* Keep all scrolling text paint, including bands and the caret, out
+		 * of the gutter and scrollbars. */
+		if (scoped_view_clip clip{cb, vg, g.text_x, g.y, g.text_width,
+			g.text_height}; clip.visible())
 		{
-			const float y = g.y + (float)self->caret_.line * line_height -
-				self->scroll_y_;
-			if (y + line_height > g.y && y < g.y + g.text_height)
+			/* Current-line band. */
+			if (self->focused() && !self->read_only_)
 			{
-				ovg_tools::fill_rect(cb, vg, g.text_x, y, g.text_width,
-					line_height, to_ovg(with_alpha(theme.accent, 0x0C)));
-			}
-		}
-
-		/* Selection bands. */
-		code_position sel_start;
-		code_position sel_end;
-		if (self->selection_range(&sel_start, &sel_end))
-		{
-			const vgui_color selection = with_alpha(theme.edit_selection, 0x60);
-			for (int line = first_line; line <= last_line; ++line)
-			{
-				if (line < sel_start.line || line > sel_end.line)
-					continue;
-				int start_column = line == sel_start.line ?
-					sel_start.column : 0;
-				int end_column = line == sel_end.line ?
-					sel_end.column : self->line_length(line);
-				if (line == sel_end.line && end_column == 0 &&
-					line > sel_start.line)
-					continue;
-				if (end_column <= start_column)
-					continue;
-				const float x0 = g.text_x +
-					self->x_for_column(line, start_column) - self->scroll_x_;
-				const float x1 = g.text_x +
-					self->x_for_column(line, end_column) - self->scroll_x_;
-				const float left = std::max(x0, g.text_x);
-				const float right = std::min(x1, g.text_x + g.text_width);
-				if (right <= left)
-					continue;
-				const float y = g.y + (float)line * line_height -
+				const float y = g.y + (float)self->caret_.line * line_height -
 					self->scroll_y_;
-				ovg_tools::fill_rect(cb, vg, left, y, right - left,
-					line_height, to_ovg(selection));
+				if (y + line_height > g.y && y < g.y + g.text_height)
+				{
+					ovg_tools::fill_rect(cb, vg, g.text_x, y, g.text_width,
+						line_height, to_ovg(with_alpha(theme.accent, 0x0C)));
+				}
 			}
-		}
 
-		/* Text runs live inside the text viewport.  Horizontal scrolling moves
-		 * runs to the left of the gutter, so they are scissored to the
-		 * viewport instead of relying on later fills to cover them. */
-		{
-			clip_guard clip(cb, vg, g.text_x, g.y, g.text_width,
-				g.text_height);
+			/* Selection bands. */
+			code_position sel_start;
+			code_position sel_end;
+			if (self->selection_range(&sel_start, &sel_end))
+			{
+				const vgui_color selection = with_alpha(theme.edit_selection, 0x60);
+				for (int line = first_line; line <= last_line; ++line)
+				{
+					if (line < sel_start.line || line > sel_end.line)
+						continue;
+					int start_column = line == sel_start.line ?
+						sel_start.column : 0;
+					int end_column = line == sel_end.line ?
+						sel_end.column : self->line_length(line);
+					if (line == sel_end.line && end_column == 0 &&
+						line > sel_start.line)
+						continue;
+					if (end_column <= start_column)
+						continue;
+					const float x0 = g.text_x +
+						self->x_for_column(line, start_column) - self->scroll_x_;
+					const float x1 = g.text_x +
+						self->x_for_column(line, end_column) - self->scroll_x_;
+					const float left = std::max(x0, g.text_x);
+					const float right = std::min(x1, g.text_x + g.text_width);
+					if (right <= left)
+						continue;
+					const float y = g.y + (float)line * line_height -
+						self->scroll_y_;
+					ovg_tools::fill_rect(cb, vg, left, y, right - left,
+						line_height, to_ovg(selection));
+				}
+			}
+
+			/* Text runs. */
 			for (int line = first_line; line <= last_line; ++line)
 			{
 				const float y = g.y + (float)line * line_height -
@@ -4157,6 +4108,31 @@ namespace vgui_editor_kit {
 				if (cursor < length)
 					draw_run(cursor, length, plain_text);
 			}
+
+			if (self->loading_)
+			{
+				const float progress = self->load_progress();
+				ovg_tools::fill_rect(cb, vg, g.text_x,
+					g.y + g.text_height - 3.0f, g.text_width * progress, 3.0f,
+					to_ovg(theme.accent));
+			}
+
+			/* Caret. */
+			if (!self->read_only_ && self->focused() && caret_blink_on(self->tick_time_))
+			{
+				const float x = g.text_x +
+					self->x_for_column(self->caret_.line,
+						self->caret_.column) - self->scroll_x_;
+				const float y = g.y + (float)self->caret_.line *
+					line_height - self->scroll_y_;
+				if (x >= g.text_x - 1.0f &&
+					x <= g.text_x + g.text_width + 1.0f &&
+					y + line_height > g.y && y < g.y + g.text_height)
+				{
+					ovg_tools::fill_rect(cb, vg, x, y, self->caret_width,
+						line_height, to_ovg(plain_text));
+				}
+			}
 		}
 
 		/* Gutter overlay and line numbers.  The tint is composited over an
@@ -4172,18 +4148,22 @@ namespace vgui_editor_kit {
 				g.height, to_ovg(with_alpha(theme.panel_border, 0xB0)));
 			if (self->show_line_numbers_)
 			{
-				for (int line = first_line; line <= last_line; ++line)
+				scoped_view_clip clip(cb, vg, g.x, g.y, g.gutter, g.text_height);
+				if (clip.visible())
 				{
-					const std::string number = std::to_string(line + 1);
-					const vgui_color color = line == self->caret_.line &&
-						self->focused() ? plain_text :
-						(self->highlight_bg_ ?
-							with_alpha(plain_text, 0x99) : theme.disabled);
-					const float y = g.y + (float)line * line_height -
-						self->scroll_y_;
-					vgui_custom_draw_text(self->editor_, cb, vg,
-						number.c_str(), g.x, y, g.gutter - 7.0f,
-						line_height, color, 1.0f, 0.0f);
+					for (int line = first_line; line <= last_line; ++line)
+					{
+						const std::string number = std::to_string(line + 1);
+						const vgui_color color = line == self->caret_.line &&
+							self->focused() ? plain_text :
+							(self->highlight_bg_ ?
+								with_alpha(plain_text, 0x99) : theme.disabled);
+						const float y = g.y + (float)line * line_height -
+							self->scroll_y_;
+						vgui_custom_draw_text(self->editor_, cb, vg,
+							number.c_str(), g.x, y, g.gutter - 7.0f,
+							line_height, color, 1.0f, 0.0f);
+					}
 				}
 			}
 		}
@@ -4238,31 +4218,6 @@ namespace vgui_editor_kit {
 			ovg_tools::fill_rect(cb, vg, g.x + g.width - g.vertical_bar,
 				g.y + g.height - g.horizontal_bar, g.vertical_bar,
 				g.horizontal_bar, to_ovg(track_tint));
-		}
-
-		if (self->loading_)
-		{
-			const float progress = self->load_progress();
-			ovg_tools::fill_rect(cb, vg, g.text_x,
-				g.y + g.text_height - 3.0f, g.text_width * progress, 3.0f,
-				to_ovg(theme.accent));
-		}
-
-		/* Caret. */
-		if (!self->read_only_ && self->focused() && caret_blink_on(self->tick_time_))
-		{
-			const float x = g.text_x +
-				self->x_for_column(self->caret_.line,
-					self->caret_.column) - self->scroll_x_;
-			const float y = g.y + (float)self->caret_.line *
-				line_height - self->scroll_y_;
-			if (x >= g.text_x - 1.0f &&
-				x <= g.text_x + g.text_width + 1.0f &&
-				y + line_height > g.y && y < g.y + g.text_height)
-			{
-				ovg_tools::fill_rect(cb, vg, x, y, self->caret_width,
-					line_height, to_ovg(plain_text));
-			}
 		}
 
 		const vgui_color border = self->focused() ?

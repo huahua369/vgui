@@ -2,6 +2,7 @@
 
 #include "tools/tools.hpp"
 #include "ui_scale.h"
+#include "view_clip.h"
 
 #include <algorithm>
 #include <cmath>
@@ -2391,9 +2392,17 @@ namespace vgui_editor_kit {
 		auto* self = static_cast<timeline_view*>(user);
 		if (!self || !widget || !cb || !vg)
 			return;
-		self->draw(cb, vg, widget, abs_x + kBorderInset,
-			abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
-			abs_h - kBorderInset * 2.0f, delta_time);
+		// Protect the DPI-scaled frame without changing timeline coordinates.
+		const float border = kBorderInset * std::max(1.0f, self->ui_scale());
+		const float left = std::ceil(abs_x + border);
+		const float top = std::ceil(abs_y + border);
+		scoped_view_clip clip(cb, vg, left, top,
+			std::floor(abs_x + abs_w - border) - left,
+			std::floor(abs_y + abs_h - border) - top);
+		if (clip.visible())
+			self->draw(cb, vg, widget, abs_x + kBorderInset,
+				abs_y + kBorderInset, abs_w - kBorderInset * 2.0f,
+				abs_h - kBorderInset * 2.0f, delta_time);
 	}
 
 	void timeline_view::draw(ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* widget,
@@ -2423,6 +2432,8 @@ namespace vgui_editor_kit {
 		draw_transport(cb, vg, widget, x, y, m);
 
 		const float scale = ui_scale();
+		const float lane_left = std::ceil(x + m.lanes_x);
+		const float lane_clip_w = x + m.width - lane_left;
 		if (m.lanes_width > 0.0f)
 		{
 			const float px = x + m.lanes_x +
@@ -2430,17 +2441,25 @@ namespace vgui_editor_kit {
 			if (px >= x + m.lanes_x - 8.0f * scale &&
 				px <= x + m.lanes_x + m.lanes_width + 8.0f * scale)
 			{
-				ovg_tools::playhead(cb, vg, px, y + m.ruler_y,
-					y + m.height, to_ovg(accent));
+				const float top = std::ceil(y + m.ruler_y);
+				scoped_view_clip clip(cb, vg, lane_left, top,
+					lane_clip_w, y + m.height - top);
+				if (clip.visible())
+					ovg_tools::playhead(cb, vg, px, y + m.ruler_y,
+						y + m.height, to_ovg(accent));
 			}
 		}
 
 		if (gesture_ == timeline_gesture::marquee)
 		{
 			marquee_offset_ += std::max(0.0f, delta_time) * 24.0f * scale;
-			ovg_tools::marquee(cb, vg, x + press_x_, y + press_y_,
-				x + marquee_x_, y + marquee_y_,
-				to_ovg(accent_hover), 1.0f, marquee_offset_);
+			const float top = std::ceil(y + m.lanes_y);
+			scoped_view_clip clip(cb, vg, lane_left, top,
+				lane_clip_w, y + m.height - top);
+			if (clip.visible())
+				ovg_tools::marquee(cb, vg, x + press_x_, y + press_y_,
+					x + marquee_x_, y + marquee_y_,
+					to_ovg(accent_hover), 1.0f, marquee_offset_);
 		}
 
 		(void)text;
@@ -2463,53 +2482,70 @@ namespace vgui_editor_kit {
 		const vgui_color lane1 = theme_color(theme.button_bg, 0xFF181D25u);
 		const float scale = ui_scale();
 
-		ovg_tools::fill_rect(cb, vg, x + m.lanes_x, y + m.lanes_y,
-			m.lanes_width, m.lanes_height, to_ovg(lane0));
-
-		for (std::size_t i = 0; i < tracks_.size(); ++i)
+		const float lanes_top = std::ceil(y + m.lanes_y);
+		const float lanes_height = y + m.height - lanes_top;
+		const float lane_left = std::ceil(x + m.lanes_x);
+		// Vertical scrolling moves both columns, but only the right column
+		// contains time-space geometry. Keep it out of the track headers.
+		if (scoped_view_clip clip{cb, vg, lane_left, lanes_top,
+			x + m.width - lane_left, lanes_height}; clip.visible())
 		{
-			const float row_y = track_y(m, i);
-			const float row_height = track_height_at(i);
-			if (row_y + row_height < m.lanes_y ||
-				row_y > m.height)
-				continue;
-			ovg_tools::track_lane(cb, vg, x + m.lanes_x, y + row_y,
-				m.lanes_width, row_height, (int)i, to_ovg(lane0),
-				to_ovg(lane1));
-		}
+			ovg_tools::fill_rect(cb, vg, x + m.lanes_x, y + m.lanes_y,
+				m.lanes_width, m.lanes_height, to_ovg(lane0));
 
-		/* Time grid. */
-		const double step = choose_time_step();
-		const double end = x_to_time(m.lanes_width);
-		double time = std::ceil(view_.view_start / step - 1e-9) * step;
-		long long index = (long long)std::llround(time / step);
-		const uint32_t minor = to_ovg(with_alpha(panel_border, 0x18));
-		const uint32_t major = to_ovg(with_alpha(panel_border, 0x38));
-		for (int guard = 0; guard < 4096 && time <= end + 1e-9;
-			++guard, time += step, ++index)
-		{
-			const float px = x + m.lanes_x + (float)time_to_x(time);
-			if (px < x + m.lanes_x - 1.0f ||
-				px > x + m.lanes_x + m.lanes_width + 1.0f)
-				continue;
-			ovg_tools::line(cb, vg, px, y + m.lanes_y, px,
-				y + m.lanes_y + m.lanes_height,
-				((index % 5) + 5) % 5 == 0 ? major : minor, 1.0f,
-				VG_LINE_CAP_BUTT);
-		}
+			for (std::size_t i = 0; i < tracks_.size(); ++i)
+			{
+				const float row_y = track_y(m, i);
+				const float row_height = track_height_at(i);
+				if (row_y + row_height < m.lanes_y || row_y > m.height)
+					continue;
+				ovg_tools::track_lane(cb, vg, x + m.lanes_x, y + row_y,
+					m.lanes_width, row_height, (int)i, to_ovg(lane0),
+					to_ovg(lane1));
+			}
 
-		for (std::size_t i = 0; i < tracks_.size(); ++i)
-		{
-			const float row_y = track_y(m, i);
-			const float row_height = track_height_at(i);
-			ovg_tools::line(cb, vg, x + m.lanes_x, y + row_y,
-				x + m.lanes_x + m.lanes_width, y + row_y,
-				to_ovg(with_alpha(panel_border, 0x55)), 1.0f,
-				VG_LINE_CAP_BUTT);
-			(void)row_height;
+			/* Time grid. */
+			const double step = choose_time_step();
+			const double end = x_to_time(m.lanes_width);
+			double time = std::ceil(view_.view_start / step - 1e-9) * step;
+			long long index = (long long)std::llround(time / step);
+			const uint32_t minor = to_ovg(with_alpha(panel_border, 0x18));
+			const uint32_t major = to_ovg(with_alpha(panel_border, 0x38));
+			for (int guard = 0; guard < 4096 && time <= end + 1e-9;
+				++guard, time += step, ++index)
+			{
+				const float px = x + m.lanes_x + (float)time_to_x(time);
+				if (px < x + m.lanes_x - 1.0f ||
+					px > x + m.lanes_x + m.lanes_width + 1.0f)
+					continue;
+				ovg_tools::line(cb, vg, px, y + m.lanes_y, px,
+					y + m.lanes_y + m.lanes_height,
+					((index % 5) + 5) % 5 == 0 ? major : minor, 1.0f,
+					VG_LINE_CAP_BUTT);
+			}
+
+			for (std::size_t i = 0; i < tracks_.size(); ++i)
+			{
+				const float row_y = track_y(m, i);
+				ovg_tools::line(cb, vg, x + m.lanes_x, y + row_y,
+					x + m.lanes_x + m.lanes_width, y + row_y,
+					to_ovg(with_alpha(panel_border, 0x55)), 1.0f,
+					VG_LINE_CAP_BUTT);
+			}
+
+			if (tracks_.empty())
+			{
+				vgui_custom_draw_text(widget, cb, vg,
+					"No tracks - add a timeline_track", x + m.lanes_x,
+					y + m.lanes_y, m.lanes_width, m.lanes_height,
+					with_alpha(text, 0x80), 0.5f, 0.5f);
+			}
 		}
 
 		/* Header column. */
+		scoped_view_clip clip(cb, vg, x, lanes_top, lane_left - x, lanes_height);
+		if (!clip.visible())
+			return;
 		ovg_tools::fill_rect(cb, vg, x, y + m.lanes_y, m.header_width,
 			m.lanes_height, to_ovg(theme_color(theme.button_bg,
 				0xFF181D25u)));
@@ -2546,20 +2582,16 @@ namespace vgui_editor_kit {
 				std::max(1.0f, m.header_width - 26.0f * scale),
 				row_height, row_text, 0.0f, 0.5f);
 		}
-
-		if (tracks_.empty())
-		{
-			vgui_custom_draw_text(widget, cb, vg,
-				"No tracks - add a timeline_track", x + m.lanes_x,
-				y + m.lanes_y, m.lanes_width, m.lanes_height,
-				with_alpha(text, 0x80), 0.5f, 0.5f);
-		}
 	}
 
 	void timeline_view::draw_keyframes(ovg_ctx_cb* cb, rvg_t* vg, float x,
 		float y, const metrics& m) const
 	{
-		if (m.lanes_width <= 0.0f || m.lanes_height <= 0.0f)
+		const float left = std::ceil(x + m.lanes_x);
+		const float top = std::ceil(y + m.lanes_y);
+		scoped_view_clip clip(cb, vg, left, top,
+			x + m.width - left, y + m.height - top);
+		if (!clip.visible())
 			return;
 
 		vgui_theme theme = {};
@@ -2649,7 +2681,11 @@ namespace vgui_editor_kit {
 			y + m.ruler_y, std::max(1.0f, m.header_width - 16.0f * scale),
 			m.ruler_height, with_alpha(text, 0xA0), 0.0f, 0.5f);
 
-		if (m.lanes_width <= 0.0f)
+		const float left = std::ceil(x + m.lanes_x);
+		const float top = std::ceil(y + m.ruler_y);
+		scoped_view_clip clip(cb, vg, left, top,
+			x + m.width - left, std::ceil(y + m.lanes_y) - top);
+		if (!clip.visible())
 			return;
 
 		const double step = choose_time_step();
