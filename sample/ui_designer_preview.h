@@ -16,6 +16,21 @@ namespace vgui::ui_design {
 
 class designer_strings;
 
+// Share glyph atlases and the bounded project-font cache across visible pages.
+// The cache must outlive the previews borrowing its fonts.
+class designer_preview_fonts {
+public:
+    designer_preview_fonts();
+    ~designer_preview_fonts();
+    designer_preview_fonts(const designer_preview_fonts&) = delete;
+    designer_preview_fonts& operator=(const designer_preview_fonts&) = delete;
+
+private:
+    friend class designer_preview;
+    struct impl;
+    std::unique_ptr<impl> p_;
+};
+
 // Logical model values; an empty field keeps the source property unchanged.
 struct geometry_edit {
     std::string id;
@@ -27,7 +42,7 @@ struct geometry_edit {
 // The strings provider must outlive the preview.
 class designer_preview {
 public:
-    designer_preview(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font,
+    designer_preview(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font, designer_preview_fonts&,
         std::function<void(std::string)> select, std::function<void(std::string)> notify,
         std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings);
     ~designer_preview();
@@ -46,6 +61,8 @@ public:
     // Raw SDL events in window points, before shell shortcut/input dispatch.
     // Do not forward consumed events. DPI is read from the event's SDL window.
     bool handle_event(const SDL_Event&);
+    // Drop pointer and keyboard ownership without invalidating a cached frame.
+    void cancel_interaction();
     // Call after event dispatch, once the existing strings provider has been
     // assigned a new locale. Relabels shell controls without changing the mounted preview.
     void refresh_language();

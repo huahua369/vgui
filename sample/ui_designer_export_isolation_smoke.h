@@ -34,20 +34,23 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
         require(bool(in), "missing or unreadable file: " + path.generic_string());
         return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     };
-    const auto find_tabs = [](const auto& self, vgui_widget* widget) -> vgui_widget* {
-        if (std::string_view(vgui_widget_get_id(widget)) == "designer.page_tabs") return widget;
+    const auto find_dock = [](const auto& self, vgui_widget* widget) -> vgui_widget* {
+        if (!widget || std::string_view(vgui_widget_get_id(widget)) == "designer.dock") return widget;
         for (std::size_t i = 0; i < vgui_widget_get_child_count(widget); ++i)
             if (auto* found = self(self, vgui_widget_get_child(widget, i))) return found;
         return nullptr;
     };
-    auto* tabs = find_tabs(find_tabs, vgui_root(shell));
-    require(tabs && vgui_widget_get_kind(tabs) == VGUI_TABVIEW, "missing page tabs");
-    const auto prior_count = vgui_tab_get_count(tabs);
+    auto* dock = find_dock(find_dock, vgui_root(shell));
+    require(dock && vgui_widget_get_kind(dock) == VGUI_DOCK, "missing editor dock");
+    const auto count = [&] { return vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER); };
+    const auto active = [&] { return vgui_dock_get_active(dock, VGUI_DOCK_CENTER); };
+    const auto prior_count = count();
     const auto tab_state = [&] {
         std::vector<std::tuple<vgui_item_id, std::string, bool>> result;
-        for (int i = 0; i < vgui_tab_get_count(tabs); ++i) {
-            const auto id = vgui_tab_get_at(tabs, i);
-            result.emplace_back(id, vgui_tab_get_title(tabs, id), vgui_tab_get_unsaved(tabs, id) != 0);
+        for (int i = 0; i < count(); ++i) {
+            const auto id = vgui_dock_get_zone_at(dock, VGUI_DOCK_CENTER, i);
+            require(vgui_dock_is_open(dock, id), "a center page tab is hidden");
+            result.emplace_back(id, vgui_dock_get_title(dock, id), vgui_dock_get_unsaved(dock, id) != 0);
         }
         return result;
     };
@@ -75,7 +78,7 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
         frame();
     };
     const auto expect_active = [&](vgui_item_id id, const page_state& state) {
-        require(vgui_tab_get_active(tabs) == id && page() == state,
+        require(active() == id && page() == state,
             "wrong active tab or changed document, history, selection or view");
     };
 
@@ -101,9 +104,9 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     step = "independent dirty pages";
     const auto open_scratch = [&](const fs::path& path, int index) {
         open(path);
-        const auto id = vgui_tab_get_at(tabs, index);
+        const auto id = vgui_dock_get_zone_at(dock, VGUI_DOCK_CENTER, index);
         const auto clean = page();
-        require(id && vgui_tab_get_count(tabs) == index + 1 && vgui_tab_get_active(tabs) == id &&
+        require(id && count() == index + 1 && active() == id &&
             clean.current == saved && clean.committed == saved && !clean.dirty && !clean.undo && !clean.redo,
             "expected a new clean copy of the saved form");
         expected_tabs.emplace_back(id, filename, true); // Both must be dirty before export.
@@ -142,9 +145,12 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     // host-driven activation without creating or reloading a tab.
     open(b_file);
     expect_active(b_tab, b);
-    const auto* preview = editor.preview().snapshot();
-    require(preview != nullptr, "missing B preview after host activation");
-    const auto preview_revision = preview->revision;
+    const auto preview_revision = [&] {
+        const auto* preview = editor.preview().snapshot();
+        require(preview != nullptr, "missing active B preview");
+        return preview->revision;
+    };
+    const auto b_preview_revision = preview_revision();
     require(editor.chooser_open() && !vgui_modal_active(shell) && picker.complete_folder(picker.package_parent),
         "could not post the delayed folder result while B was active");
     picker.defer_folders = false;
@@ -153,14 +159,13 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     require(!editor.chooser_open() && vgui_modal_active(shell) && input && vgui_get_focus(shell) == input &&
         std::string_view(vgui_widget_get_text(input)) == package_name && !fs::exists(package),
         "expected a focused prompt with the shared default name and no package before confirmation");
-    require(vgui_tab_get_active(tabs) == b_tab, "completing the chooser switched away from B");
+    require(active() == b_tab, "completing the chooser switched away from B");
 
     step = "confirm and verify A's delivery";
     menus.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
     require(!vgui_modal_active(shell), "Enter did not confirm the package name");
     expect_active(b_tab, b);
-    preview = editor.preview().snapshot();
-    require(preview && preview->revision == preview_revision && tab_state() == expected_tabs,
+    require(preview_revision() == b_preview_revision && tab_state() == expected_tabs,
         "export remounted B or changed the tab order, titles or unsaved markers");
     document delivered;
     diagnostic error;

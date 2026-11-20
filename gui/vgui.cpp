@@ -571,6 +571,7 @@ struct vgui_dock_panel
 	vgui_dock_zone zone = VGUI_DOCK_CENTER;
 	int open = 1;
 	int closeable = 1;
+	int unsaved = 0;
 	float fx = 0.0f, fy = 0.0f, fw = 0.0f, fh = 0.0f;
 	vgui_texture* icon = nullptr;
 	std::string emoji;
@@ -610,6 +611,8 @@ struct vgui_dock_state
 	std::vector<vgui_item_id> order[4];	// LEFT, RIGHT, BOTTOM, CENTER
 	std::vector<vgui_item_id> float_order;	// bottom-to-top stacking
 	vgui_item_id active[4] = {};
+	bool document_tabs = false;
+	vgui_item_id active_document = 0; // Across the centre strip and floating frames
 	vgui_item_id next_id = 1;
 	vgui_item_id hover = 0;
 	vgui_item_id pressed = 0;
@@ -618,7 +621,7 @@ struct vgui_dock_state
 	vgui_item_id press_panel = 0;
 	int press_zone = -1;
 	float press_x = 0.0f, press_y = 0.0f;
-	int drag_mode = 0;	// 0 none, 1 tab pending, 2 tab dragging, 3 frame dragging
+	int drag_mode = 0;	// 0 none, 1 tab pending, 2 tab drag, 3 frame drag, 4 frame pending
 	vgui_item_id drag_panel = 0;
 	float drag_x = 0.0f, drag_y = 0.0f;
 	int drop_zone = -1;
@@ -655,6 +658,8 @@ struct vgui_dock_state
 	float tab_scroll[4] = {};
 	int scroll_active[4] = {};	// auto-scroll the active tab once after activation
 	std::vector<vgui_dock_tab_geom> tabs[4];
+	vgui_item_fn close_request_fn = nullptr;
+	void* close_request_user = nullptr;
 	vgui_item_fn close_fn = nullptr;
 	void* close_user = nullptr;
 	vgui_item_fn activate_fn = nullptr;
@@ -2643,6 +2648,8 @@ static bool vgui_dock_panel_has_icon(const vgui_dock_panel& panel)
 	return panel.icon != nullptr || !panel.emoji.empty();
 }
 
+static constexpr float vgui_dock_unsaved_space = 10.0f;
+
 static float vgui_dock_tab_item_width(vgui_widget* w, const vgui_dock_panel& panel)
 {
 	if (!w || !w->ctx) return 0.0f;
@@ -2650,6 +2657,7 @@ static float vgui_dock_tab_item_width(vgui_widget* w, const vgui_dock_panel& pan
 	float width = vgui_text_width(w, panel.title) + ds.tab_padding * 2.0f;
 	if (vgui_dock_panel_has_icon(panel)) width += ds.tab_icon_size + 6.0f;
 	if (panel.closeable) width += ds.close_size + 4.0f;
+	if (panel.unsaved) width += vgui_dock_unsaved_space;
 	return vgui_clampf(width, ds.tab_min_width, ds.tab_max_width);
 }
 
@@ -2962,6 +2970,20 @@ static void vgui_dock_update_drop_targets(vgui_widget* w, float x, float y,
 	if (cw <= 0.0f || ch <= 0.0f) return;
 	if (x < cx || x >= cx + cw || y < cy || y >= cy + ch) return;
 
+	if (st->document_tabs)
+	{
+		// The strip remains a target even when empty or covered by a frame.
+		const int z = VGUI_DOCK_CENTER;
+		const float h = std::min(ds.tab_height, st->zone_h[z]);
+		if (st->zone_w[z] <= 0.0f || h <= 0.0f) return;
+		st->drop_targets[0] = { z, st->zone_x[z], st->zone_y[z], st->zone_w[z], h };
+		st->drop_target_count = 1;
+		const auto& t = st->drop_targets[0];
+		if (x >= t.x && x < t.x + t.w && y >= t.y && y < t.y + t.h)
+			st->drop_target = 0;
+		return;
+	}
+
 	const float strip = std::min(ds.tab_height, ch);
 	const float band_left =
 		std::min(vgui_dock_resolved_zone_size(w, VGUI_DOCK_LEFT), cw * 0.3f);
@@ -3056,10 +3078,28 @@ static void vgui_dock_update_drop_targets(vgui_widget* w, float x, float y,
 	}
 }
 
+static void vgui_dock_update_document_drop(vgui_widget* w, float x, float y, bool frame)
+{
+	vgui_dock_state* st = w->dock.get();
+	vgui_dock_update_drop_targets(w, x, y, frame);
+	st->drop_zone = st->drop_target >= 0 ? VGUI_DOCK_CENTER : -1;
+	st->drop_index = st->drop_zone >= 0 ? vgui_dock_drop_index_at(w, st->drop_zone, x) : -1;
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	vgui_dock_content_rect(w, &bx, &by, &bw, &bh);
+	st->drop_floating = !frame && st->drop_zone < 0 &&
+		x >= bx && x < bx + bw && y >= by && y < by + bh;
+}
+
 static void vgui_dock_notify_activate(vgui_widget* w, vgui_item_id item)
 {
 	vgui_dock_state* st = vgui_dock_of(w);
 	if (!st) return;
+	if (st->document_tabs)
+	{
+		const vgui_dock_panel* panel = vgui_dock_find(w, item);
+		if (panel && (panel->zone == VGUI_DOCK_CENTER || panel->zone == VGUI_DOCK_FLOATING))
+			st->active_document = item;
+	}
 	vgui_item_fn fn = st->activate_fn;
 	void* user = st->activate_user;
 	if (fn) fn(w, item, user);
@@ -3125,14 +3165,15 @@ static bool vgui_dock_activate_internal(vgui_widget* w, vgui_item_id item, bool 
 	vgui_dock_state* st = vgui_dock_of(w);
 	vgui_dock_panel* panel = vgui_dock_find(w, item);
 	if (!st || !panel || !panel->open) return false;
-	bool changed = false;
+	bool changed = st->document_tabs && st->active_document != item &&
+		(panel->zone == VGUI_DOCK_CENTER || panel->zone == VGUI_DOCK_FLOATING);
 	if (panel->zone == VGUI_DOCK_FLOATING)
 	{
-		changed = vgui_dock_raise_float_internal(w, item);
+		changed = vgui_dock_raise_float_internal(w, item) || changed;
 	}
 	else if (panel->zone >= 0 && panel->zone < 4)
 	{
-		changed = (st->active[panel->zone] != item);
+		changed = changed || (st->active[panel->zone] != item);
 		st->active[panel->zone] = item;
 		if (changed) st->scroll_active[panel->zone] = 1;
 	}
@@ -3225,12 +3266,65 @@ static bool vgui_dock_move_internal(vgui_widget* w, vgui_item_id item,
 	return true;
 }
 
+static void vgui_dock_float_document_at(vgui_widget* w, vgui_item_id item, float x, float y)
+{
+	const vgui_dock_state* st = w->dock.get();
+	const vgui_dock_style& ds = w->ctx->style.dock;
+	float by = 0, bh = 0;
+	vgui_dock_content_rect(w, nullptr, &by, nullptr, &bh);
+	const int z = VGUI_DOCK_CENTER;
+	const float strip_end = st->zone_y[z] + std::min(ds.tab_height, st->zone_h[z]);
+	const float available = by + bh - strip_end;
+	float height = ds.floating_height;
+	x -= std::min(ds.floating_width * 0.25f, 32.0f * w->ctx->ui_scale);
+	y -= ds.floating_title_height * 0.5f;
+	// Start below the strip and leave it exposed for the next document drag.
+	if (available > 0.0f && available >= ds.floating_min_height)
+	{
+		y = std::max(y, strip_end);
+		height = std::min(height, available);
+	}
+	vgui_dock_float_internal(w, item, x, y, ds.floating_width, height, true, true);
+}
+
+static void vgui_dock_insert_document(vgui_widget* w, vgui_item_id item, int slot)
+{
+	if (slot < 0) return;
+	const int z = VGUI_DOCK_CENTER;
+	const int current = vgui_dock_open_index(w, z, item);
+	if (current >= 0 && (slot == current || slot == current + 1)) return;
+
+	// Strip slots count visible tabs, but the stored order includes closed ones.
+	const vgui_dock_state* st = w->dock.get();
+	const auto& tabs = st->tabs[z];
+	const auto& order = st->order[z];
+	const bool at_end = slot >= (int)tabs.size();
+	int index = (int)order.size();
+	if (!tabs.empty())
+	{
+		const vgui_item_id anchor = at_end ? tabs.back().id : tabs[(size_t)slot].id;
+		auto it = std::find(order.begin(), order.end(), anchor);
+		if (it != order.end()) index = (int)(it - order.begin()) + (int)at_end;
+	}
+	if (current >= 0 && std::find(order.begin(), order.end(), item) < order.begin() + index)
+		--index;
+	vgui_dock_move_internal(w, item, z, index, true, true);
+}
+
+static bool vgui_dock_drag_moved(vgui_widget* w, float x, float y)
+{
+	const vgui_dock_state* st = w->dock.get();
+	const float threshold = w->ctx->style.dock.drag_threshold;
+	return std::fabs(x - st->press_x) > threshold || std::fabs(y - st->press_y) > threshold;
+}
+
 static bool vgui_dock_close_internal(vgui_widget* w, vgui_item_id item, bool notify)
 {
 	vgui_dock_state* st = vgui_dock_of(w);
 	vgui_dock_panel* panel = vgui_dock_find(w, item);
 	if (!st || !panel || !panel->open) return false;
 	panel->open = 0;
+	if (st->active_document == item) st->active_document = 0;
 	if (panel->zone >= 0 && panel->zone < 4 && st->active[panel->zone] == item)
 	{
 		st->active[panel->zone] = vgui_dock_pick_active(st, panel->zone);
@@ -3246,6 +3340,17 @@ static bool vgui_dock_close_internal(vgui_widget* w, vgui_item_id item, bool not
 		vgui_dock_notify_change(w);
 	}
 	return true;
+}
+
+static void vgui_dock_request_close(vgui_widget* w, vgui_item_id item)
+{
+	vgui_dock_state* st = vgui_dock_of(w);
+	const vgui_dock_panel* panel = vgui_dock_find(w, item);
+	if (!panel || !panel->open || !panel->closeable) return;
+	if (st->close_request_fn)
+		st->close_request_fn(w, item, st->close_request_user);
+	else
+		vgui_dock_close_internal(w, item, true);
 }
 
 static bool vgui_dock_restore_internal(vgui_widget* w, vgui_item_id item, bool notify)
@@ -6814,8 +6919,21 @@ static vgui_widget* vgui_hit_rec(vgui_widget* w, float x, float y)
 		return w;
 	if (w->kind == VGUI_TABVIEW && vgui_tab_bar_hit(w, x, y))
 		return w;
-	if (w->kind == VGUI_DOCK && vgui_dock_chrome_hit(w, x, y))
-		return w;
+	if (w->kind == VGUI_DOCK)
+	{
+		if (w->dock && w->dock->document_tabs)
+		{
+			bool on_title = false;
+			const auto* frame = vgui_dock_floating_at_point(w, x, y, &on_title, nullptr);
+			if (frame)
+			{
+				// The top frame occludes the dock beneath both its title and page.
+				vgui_widget* hit = !on_title ? vgui_hit_rec(frame->page, x, y) : nullptr;
+				return hit ? hit : w;
+			}
+		}
+		if (vgui_dock_chrome_hit(w, x, y)) return w;
+	}
 	for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
 	{
 		vgui_widget* r = vgui_hit_rec(*it, x, y);
@@ -9841,6 +9959,26 @@ static void vgui_splitter_drag_to(vgui_widget* w, float x, float y)
 	}
 }
 
+static bool vgui_dock_document_key(vgui_widget* dock, int key, int down, int mods)
+{
+	vgui_dock_state* st = dock->dock.get();
+	if (!st || !down || mods || (key != VGUI_KEY_LEFT && key != VGUI_KEY_RIGHT))
+		return false;
+	const int z = VGUI_DOCK_CENTER;
+	const auto& order = st->order[z];
+	const int count = (int)order.size();
+	const int step = key == VGUI_KEY_LEFT ? -1 : 1;
+	const auto it = std::find(order.begin(), order.end(), st->active[z]);
+	int index = it != order.end() ? (int)(it - order.begin()) : (step > 0 ? -1 : 0);
+	for (int tried = 0; tried < count; ++tried)
+	{
+		index = (index + step + count) % count;
+		if (vgui_dock_panel_open(st, order[(size_t)index]))
+			return vgui_dock_activate_internal(dock, order[(size_t)index], true);
+	}
+	return false;
+}
+
 static void vgui_dock_drag_sash_to(vgui_widget* w, float x)
 {
 	vgui_dock_state* st = w->dock.get();
@@ -10322,13 +10460,8 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 		else if (a->kind == VGUI_DOCK && a->dock && a->dock->drag_mode)
 		{
 			vgui_dock_state* ds = a->dock.get();
-			if (ds->drag_mode == 1)
-			{
-				float threshold = ctx->style.dock.drag_threshold;
-				if (std::fabs(x - ds->press_x) > threshold ||
-					std::fabs(y - ds->press_y) > threshold)
-					ds->drag_mode = 2;
-			}
+			if (ds->drag_mode == 1 && vgui_dock_drag_moved(a, x, y)) ds->drag_mode = 2;
+			if (ds->drag_mode == 4 && vgui_dock_drag_moved(a, x, y)) ds->drag_mode = 3;
 			if (ds->drag_mode == 2)
 			{
 				ds->drag_x = x;
@@ -10354,36 +10487,48 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 						ds->drag_out_fired = 0;
 					}
 				}
-				ds->drop_zone = -1;
-				ds->drop_index = -1;
-				ds->drop_floating = 0;
-				vgui_dock_update_drop_targets(a, x, y, false);
-				float bx = 0, by = 0, bw = 0, bh = 0;
-				vgui_dock_content_rect(a, &bx, &by, &bw, &bh);
-				const bool outside =
-					x < bx || x >= bx + bw || y < by || y >= by + bh;
-				if (outside || vgui_dock_floating_at_point(a, x, y, nullptr, nullptr))
+				if (ds->document_tabs)
 				{
-					ds->drop_floating = 1;
-				}
-				else if (ds->drop_target >= 0)
-				{
-					const int zone = ds->drop_targets[(size_t)ds->drop_target].zone;
-					if (zone == VGUI_DOCK_FLOATING)
-						ds->drop_floating = 1;
-					else
+					if (a->destroy_pending || ds->drag_mode != 2)
 					{
-						ds->drop_zone = zone;
-						ds->drop_index = vgui_dock_drop_index_any(a, zone, x);
+						vgui_end_input(ctx);
+						return 1;
 					}
+					vgui_dock_update_document_drop(a, x, y, false);
 				}
 				else
 				{
-					const int fallback = vgui_dock_fallback_zone(a, x, y);
-					if (fallback >= 0)
+					ds->drop_zone = -1;
+					ds->drop_index = -1;
+					ds->drop_floating = 0;
+					vgui_dock_update_drop_targets(a, x, y, false);
+					float bx = 0, by = 0, bw = 0, bh = 0;
+					vgui_dock_content_rect(a, &bx, &by, &bw, &bh);
+					const bool outside =
+						x < bx || x >= bx + bw || y < by || y >= by + bh;
+					if (outside || vgui_dock_floating_at_point(a, x, y, nullptr, nullptr))
 					{
-						ds->drop_zone = fallback;
-						ds->drop_index = vgui_dock_drop_index_any(a, fallback, x);
+						ds->drop_floating = 1;
+					}
+					else if (ds->drop_target >= 0)
+					{
+						const int zone = ds->drop_targets[(size_t)ds->drop_target].zone;
+						if (zone == VGUI_DOCK_FLOATING)
+							ds->drop_floating = 1;
+						else
+						{
+							ds->drop_zone = zone;
+							ds->drop_index = vgui_dock_drop_index_any(a, zone, x);
+						}
+					}
+					else
+					{
+						const int fallback = vgui_dock_fallback_zone(a, x, y);
+						if (fallback >= 0)
+						{
+							ds->drop_zone = fallback;
+							ds->drop_index = vgui_dock_drop_index_any(a, fallback, x);
+						}
 					}
 				}
 				vgui_mark_dirty(a);
@@ -10473,6 +10618,21 @@ static int vgui_mouse_move_impl(vgui_context* ctx, float x, float y)
 	vgui_tooltip_on_mouse_move(ctx, x, y);
 	vgui_end_input(ctx);
 	return ret;
+}
+
+static bool vgui_dock_raise_pressed_child(vgui_widget* hit, float x, float y)
+{
+	for (vgui_widget* page = hit; page && page->parent; page = page->parent)
+	{
+		vgui_widget* dock = page->parent;
+		const vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st || !st->document_tabs) continue;
+		const vgui_dock_panel* frame = vgui_dock_floating_at_point(dock, x, y, nullptr, nullptr);
+		if (!frame || frame->page != page) continue;
+		vgui_dock_activate_internal(dock, frame->id, true);
+		return true;
+	}
+	return false;
 }
 
 static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y, int clicks)
@@ -10574,7 +10734,18 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 		return 1;
 	}
 
-	vgui_widget* h = vgui_hit_rec(vgui_active_root(ctx), x, y);
+	vgui_widget* root = vgui_active_root(ctx);
+	vgui_widget* h = vgui_hit_rec(root, x, y);
+	if (button == 1 && vgui_dock_raise_pressed_child(h, x, y))
+	{
+		// Activation callbacks can close the page or switch to a modal.
+		if (ctx->layout_dirty) vgui_ensure_layout(ctx);
+		if (vgui_active_root(ctx) != root || vgui_hit_rec(root, x, y) != h)
+		{
+			vgui_end_input(ctx);
+			return 1;
+		}
+	}
 	vgui_widget* sw = nullptr;
 	int axis = 0;
 	bool over_scrollbar = vgui_scrollbar_hit(h, x, y, &sw, &axis);
@@ -10710,15 +10881,15 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 			bool over_title = false;
 			bool float_close = false;
 			vgui_dock_panel* fp = vgui_dock_floating_at_point(h, x, y, &over_title, &float_close);
-				if (fp)
+			if (fp)
+			{
+				if (over_title)
 				{
-					if (over_title)
-					{
-						ev_item = fp->id;
-						ev_index = -1;
-					}
-					if (over_title && button == 1)
-					{
+					ev_item = fp->id;
+					ev_index = -1;
+				}
+				if (over_title && button == 1)
+				{
 					st->pressed = fp->id;
 					st->press_panel = fp->id;
 					st->press_zone = VGUI_DOCK_FLOATING;
@@ -10730,13 +10901,18 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 					}
 					else
 					{
-						st->drag_mode = 3;
+						st->drag_mode = st->document_tabs ? 4 : 3;
 						st->drag_panel = fp->id;
 						st->drag_offset_x = x - fp->fx;
 						st->drag_offset_y = y - fp->fy;
 						vgui_dock_activate_internal(h, fp->id, true);
-						if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
+						if (h->destroy_pending) { vgui_end_input(ctx); return 1; }
 					}
+				}
+				else if (st->document_tabs && button == 1)
+				{
+					vgui_dock_activate_internal(h, fp->id, true);
+					if (h->destroy_pending) { vgui_end_input(ctx); return 1; }
 				}
 			}
 			else if (on_tab && zone >= 0 && index >= 0 && index < (int)st->tabs[zone].size())
@@ -10755,10 +10931,13 @@ static int vgui_mouse_down_impl(vgui_context* ctx, int button, float x, float y,
 					st->press_zone = zone;
 					st->press_x = x;
 					st->press_y = y;
-					st->drag_panel = item;
-					st->drag_x = x;
-					st->drag_y = y;
-					st->drag_mode = 1;
+					if (!st->document_tabs || zone == VGUI_DOCK_CENTER)
+					{
+						st->drag_panel = item;
+						st->drag_x = x;
+						st->drag_y = y;
+						st->drag_mode = 1;
+					}
 					vgui_dock_activate_internal(h, item, true);
 					if (!ctx->alive.count(h)) { vgui_end_input(ctx); return 1; }
 				}
@@ -11105,6 +11284,10 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 	{
 		vgui_dock_state* st = vgui_dock_of(target);
 		int drag_mode = st ? st->drag_mode : 0;
+		const bool document_tabs = st && st->document_tabs;
+		if (document_tabs && (drag_mode == 1 || drag_mode == 4) &&
+			vgui_dock_drag_moved(target, x, y))
+			drag_mode = drag_mode == 1 ? 2 : 3;
 		vgui_item_id drag_panel = st ? st->drag_panel : 0;
 		int drop_zone = st ? st->drop_zone : -1;
 		int drop_index = st ? st->drop_index : -1;
@@ -11129,7 +11312,7 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 			st->drop_target = -1;
 		}
 		vgui_emit(target, VGUI_EVENT_MOUSE_UP, lx, ly, button, clicks);
-		if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
+		if (!ctx->alive.count(target) || target->destroy_pending) { vgui_end_input(ctx); return 1; }
 
 		if (close_pressed)
 		{
@@ -11137,7 +11320,8 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 			int zone = -1, index = -1;
 			bool over_close = false;
 			vgui_dock_state* st2 = vgui_dock_of(target);
-			if (st2 && vgui_dock_tab_at_point(target, x, y, &zone, &index, &over_close) &&
+			if (st2 && (!document_tabs || !vgui_dock_floating_at_point(target, x, y, nullptr, nullptr)) &&
+				vgui_dock_tab_at_point(target, x, y, &zone, &index, &over_close) &&
 				over_close && zone >= 0 && index >= 0 &&
 				index < (int)st2->tabs[zone].size() &&
 				st2->tabs[zone][(size_t)index].id == close_pressed)
@@ -11151,11 +11335,38 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 			}
 			if (still_close)
 			{
-				vgui_dock_close_internal(target, close_pressed, true);
-				if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
+				vgui_dock_request_close(target, close_pressed);
+				if (!ctx->alive.count(target) || target->destroy_pending) { vgui_end_input(ctx); return 1; }
 			}
 		}
-		else if (drag_mode == 2 && drag_panel)
+		else if (document_tabs && st->document_tabs && drag_panel && st->drag_panel == drag_panel &&
+			(drag_mode == 2 || drag_mode == 3))
+		{
+			const bool frame = drag_mode == 3;
+			vgui_dock_panel* panel = vgui_dock_find(target, drag_panel);
+			if (panel && panel->open && panel->zone == (frame ? VGUI_DOCK_FLOATING : VGUI_DOCK_CENTER))
+			{
+				vgui_dock_update_document_drop(target, x, y, frame);
+				const int slot = st->drop_index;
+				const bool floating = st->drop_floating != 0;
+				st->drop_zone = st->drop_index = st->drop_target = -1;
+				st->drop_floating = st->drop_target_count = 0;
+				const bool outside_win = x < 0.0f || y < 0.0f ||
+					(ctx->width > 0 && x >= (float)ctx->width) ||
+					(ctx->height > 0 && y >= (float)ctx->height);
+				if (!frame && outside_win)
+					vgui_dock_notify_tear_off(target, drag_panel, lx, ly);
+				else if (slot >= 0 && !outside_win)
+					vgui_dock_insert_document(target, drag_panel, slot);
+				else if (floating)
+					vgui_dock_float_document_at(target, drag_panel, x, y);
+				else if (frame)
+					vgui_dock_clamp_rect(target, panel, x - st->drag_offset_x, y - st->drag_offset_y,
+						panel->fw, panel->fh, false);
+				if (!ctx->alive.count(target) || target->destroy_pending) { vgui_end_input(ctx); return 1; }
+			}
+		}
+		else if (!document_tabs && drag_mode == 2 && drag_panel)
 		{
 			/* Dropped outside the dock's window: tear the panel off into its
 			 * own OS window.  The host only queues this; it creates the window
@@ -11185,7 +11396,7 @@ static int vgui_mouse_up_impl(vgui_context* ctx, int button, float x, float y, i
 			}
 			if (!ctx->alive.count(target)) { vgui_end_input(ctx); return 1; }
 		}
-		else if (drag_mode == 3 && drag_panel)
+		else if (!document_tabs && drag_mode == 3 && drag_panel)
 		{
 			/* Re-derive the target from the release point with the same
 			 * frame-drag compass that was drawn during the drag: an occupied
@@ -11740,6 +11951,11 @@ static int vgui_key_impl(vgui_context* ctx, int key, int down, int mods)
 	else if (f->kind == VGUI_TABVIEW)
 	{
 		handled = vgui_tab_key(f, key, down, mods) ? 1 : 0;
+		if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
+	}
+	else if (f->kind == VGUI_DOCK && f->dock && f->dock->document_tabs)
+	{
+		handled = vgui_dock_document_key(f, key, down, mods) ? 1 : 0;
 		if (!ctx->alive.count(f)) { vgui_end_input(ctx); return handled; }
 	}
 	else
@@ -14669,6 +14885,17 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 	vgui_draw_focus(w, cb, vg);
 }
 
+static void vgui_draw_dock_unsaved(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+	float& text_x, float& text_w, float y, float h)
+{
+	const float size = std::min(4.0f, h);
+	if (size > 0.0f && text_w >= size)
+		vgui_fill_rect(cb, vg, text_x, y + (h - size) * 0.5f, size, size, size * 0.5f,
+			vgui_widget_color(w, w->enabled ? w->ctx->theme.accent : w->ctx->theme.disabled));
+	text_x += vgui_dock_unsaved_space;
+	text_w = std::max(0.0f, text_w - vgui_dock_unsaved_space);
+}
+
 static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_state* clips)
 {
 	vgui_context* ctx = w->ctx;
@@ -14701,7 +14928,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	for (int zone = 0; zone < 4; ++zone)
 	{
 		if (st->zone_w[zone] <= 0.0f || st->zone_h[zone] <= 0.0f) continue;
-		if (!vgui_dock_zone_has_open(st, zone)) continue;
+		if (!vgui_dock_zone_has_open(st, zone) && !(st->document_tabs && zone == VGUI_DOCK_CENTER))
+			continue;
 		float zx = st->zone_x[zone], zy = st->zone_y[zone];
 		float zw = st->zone_w[zone], zh = st->zone_h[zone];
 		float tab_h = std::min(ds.tab_height, zh);
@@ -14718,7 +14946,9 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		for (const vgui_dock_tab_geom& tab : st->tabs[zone])
 		{
 			if (tab.x + tab.w < zx || tab.x > zx + zw) continue;
-			bool active = tab.id == st->active[zone];
+			const vgui_item_id selected = st->document_tabs && zone == VGUI_DOCK_CENTER
+				? st->active_document : st->active[zone];
+			bool active = tab.id == selected;
 			bool hover = tab.id == st->hover;
 			bool pressed = tab.id == st->pressed;
 			uint32_t fill = active ? tab_active
@@ -14760,6 +14990,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 					text_x += icon_space;
 					text_w = std::max(0.0f, text_w - icon_space);
 				}
+				if (panel->unsaved)
+					vgui_draw_dock_unsaved(w, cb, vg, text_x, text_w, tab.y, tab.h);
 				vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, tab.y,
 					text_w, tab.h, vgui_widget_color(w, text_color), 0.0f, 0.5f, clips);
 			}
@@ -14831,6 +15063,9 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			vgui_widget_color(w, float_bg));
 		vgui_fill_rect(cb, vg, fx, fy, fw, title_h, rounding,
 			vgui_widget_color(w, float_title));
+		if (st->document_tabs && st->active_document == id && title_h > 2.0f)
+			vgui_fill_rect(cb, vg, fx + 1.0f, fy + title_h - 2.0f, std::max(0.0f, fw - 2.0f),
+				2.0f, 0.0f, vgui_widget_color(w, ctx->theme.accent));
 		if (ds.floating_border_width > 0.0f && float_border)
 		{
 			vgui_stroke_frame(cb, vg, fx, fy, fw, fh, rounding,
@@ -14859,6 +15094,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 			text_x += icon_space;
 			text_w = std::max(0.0f, text_w - icon_space);
 		}
+		if (panel->unsaved)
+			vgui_draw_dock_unsaved(w, cb, vg, text_x, text_w, fy, title_h);
 		vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, fy, text_w,
 			title_h, title_color, 0.0f, 0.5f, clips);
 
@@ -18113,6 +18350,16 @@ extern "C" {
 		desc->open = 1;
 	}
 
+	void vgui_dock_set_document_tabs(vgui_widget* dock, int enabled)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st || st->document_tabs == (enabled != 0)) return;
+		st->document_tabs = enabled != 0;
+		st->active_document = st->active[VGUI_DOCK_CENTER];
+		if (st->drag_mode) vgui_dock_end_drag(dock);
+		else vgui_mark_dirty(dock);
+	}
+
 	vgui_item_id vgui_dock_add(vgui_widget* dock, const vgui_dock_panel_desc* desc)
 	{
 		vgui_dock_state* st = vgui_dock_of(dock);
@@ -18272,6 +18519,7 @@ extern "C" {
 			st->tab_scroll[z] = 0.0f;
 		}
 		st->float_order.clear();
+		st->active_document = 0;
 		st->hover = 0;
 		st->pressed = 0;
 		st->close_hover = 0;
@@ -18393,6 +18641,20 @@ extern "C" {
 			st->scroll_active[panel->zone] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
+	}
+
+	int vgui_dock_get_unsaved(vgui_widget* dock, vgui_item_id panel_id)
+	{
+		const vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		return panel ? panel->unsaved : 0;
+	}
+
+	void vgui_dock_set_unsaved(vgui_widget* dock, vgui_item_id panel_id, int unsaved)
+	{
+		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
+		if (!panel || panel->unsaved == (unsaved != 0)) return;
+		panel->unsaved = unsaved != 0;
+		vgui_mark_dirty(dock);
 	}
 
 	int vgui_dock_get_zone_count(vgui_widget* dock, vgui_dock_zone zone)
@@ -18620,6 +18882,14 @@ extern "C" {
 			st->preview_index = index;
 		}
 		if (dock) vgui_mark_dirty(dock);
+	}
+
+	void vgui_dock_on_close_request(vgui_widget* dock, vgui_item_fn fn, void* user)
+	{
+		vgui_dock_state* st = vgui_dock_of(dock);
+		if (!st) return;
+		st->close_request_fn = fn;
+		st->close_request_user = user;
 	}
 
 	void vgui_dock_on_close(vgui_widget* dock, vgui_item_fn fn, void* user)

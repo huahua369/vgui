@@ -599,10 +599,6 @@ void exercise_toolbar()
     check(font && font->count == 2, "could not create toolbar test font family");
     temp_dir directory;
     test_workbench workbench(directory.path / "form.vgui.json", ui::designer_language::simplified_chinese, font.get());
-    const std::string filename = "界面设计器界面设计器界面设计器界面设计器界面设计器界面设计器.vgui.json";
-    workbench.bench.document_title(filename);
-    auto* title = workbench.widget("designer.title", VGUI_LABEL);
-    auto* marker = workbench.widget("designer.document.state", VGUI_PANEL);
     auto* bar = workbench.widget("designer.toolbar", VGUI_PANEL);
     auto* dock = workbench.widget("designer.dock", VGUI_DOCK);
     auto* ctx = workbench.ctx.get();
@@ -622,14 +618,12 @@ void exercise_toolbar()
             return a.x + a.w <= b.x + 0.5f || b.x + b.w <= a.x + 0.5f;
         };
         const auto toolbar = bounds(bar);
-        const auto caption = bounds(title);
         auto* menubar = workbench.menubar();
         const auto menus = bounds(menubar);
         check(inside(toolbar, {0, 0, 950, 650}) && toolbar.x == 0 && toolbar.y == 0 && toolbar.w == 950,
             "toolbar must fill the top edge of the window content area");
         check(menus.x == toolbar.x, "MenuBar has a left inset inside the toolbar");
-        check(inside(caption, toolbar) && inside(menus, toolbar) && separate(caption, menus),
-            "document title and MenuBar are clipped or overlapping");
+        check(inside(menus, toolbar), "MenuBar is clipped");
         check(vgui_menubar_get_count(menubar) == 6, "narrow MenuBar must retain all six titles");
         float previous_right = menus.x;
         for (int i = 0; i < vgui_menubar_get_count(menubar); ++i) {
@@ -655,7 +649,7 @@ void exercise_toolbar()
                 return;
             }
             const auto r = bounds(button);
-            check(inside(r, toolbar) && separate(r, menus) && separate(r, caption),
+            check(inside(r, toolbar) && separate(r, menus),
                 std::string("toolbar action clipped or overlapping: ") + id);
             workbench.press(id);
         };
@@ -671,23 +665,16 @@ void exercise_toolbar()
     vgui_context_set_size(ctx, 950, 650);
     workbench.frame();
     check_layout("文件", "保存", "导出交付包");
-    const std::string_view shortened = vgui_widget_get_text(title);
-    check(shortened.ends_with("…") && filename.starts_with(shortened.substr(0, shortened.size() - 3)) &&
-        std::string_view(vgui_widget_get_tooltip(title)) == filename,
-        "long document name was not shortened while retaining the complete name");
-    check(std::string_view(vgui_widget_get_tooltip(marker)).empty(), "clean document has an unsaved marker");
-    workbench.add("label", workbench.model.current().root);
-    check(std::string_view(vgui_widget_get_tooltip(marker)) == "未保存的修改" &&
-        std::string_view(vgui_widget_get_a11y_name(title)) == filename + " — 未保存的修改",
-        "dirty document status was not exposed independently of its name");
+    const auto outline = vgui_dock_get_active(dock, VGUI_DOCK_LEFT);
+    check(outline && std::string_view(vgui_dock_get_title(dock, outline)) == "大纲" &&
+        !vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER), "unexpected workspace headings in Chinese");
     workbench.strings = ui::designer_strings(ui::designer_language::english);
     workbench.bench.refresh_language();
     vgui_context_set_ui_scale(ctx, 1.25f);
     workbench.frame();
     check_layout("File", "Save", "Export Package");
-    check(std::string_view(vgui_widget_get_tooltip(marker)) == "Unsaved changes", "dirty marker did not translate");
-    workbench.edit("Undo");
-    check(!workbench.model.dirty() && std::string_view(vgui_widget_get_tooltip(marker)).empty(), "undo did not clear the dirty marker");
+    check(std::string_view(vgui_dock_get_title(dock, outline)) == "Outline",
+        "outline dock heading did not translate");
 }
 
 void exercise_workbench()
@@ -695,7 +682,7 @@ void exercise_workbench()
     temp_dir directory;
     test_workbench workbench(directory.path / "form.vgui.json");
     auto& model = workbench.model;
-    check(workbench.bench.preview_host(), "workbench must provide a preview host");
+    check(workbench.bench.document_dock(), "workbench must provide a document dock");
     const auto root = model.current().root;
     check(workbench.bench.selection() == root, "initial selection must be the root");
 

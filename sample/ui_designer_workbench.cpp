@@ -27,14 +27,9 @@ constexpr auto resource_key = "@resource-key";
 constexpr vgui_color toolbar_bg = 0xFF202733;
 constexpr vgui_color toolbar_edge = 0xFF354151;
 constexpr vgui_color toolbar_text = 0xFFE5ECF6;
-constexpr vgui_color toolbar_inset = 0xFF19202B;
 constexpr vgui_color toolbar_primary = 0xFF2F65CB;
-constexpr vgui_color document_ready = 0xFF7DAAFF;
-constexpr vgui_color document_dirty = 0xFFF5BA63;
 constexpr float toolbar_padding_right = 10;
 constexpr float toolbar_gap = 10;
-constexpr float document_chrome_width = 33; // Left/right padding, marker, and gap.
-constexpr float page_tab_height = 32;
 
 // Seed new controls only. A missing or zero dimension in a design still means auto-size.
 constexpr std::pair<double, double> initial_control_size(std::string_view type)
@@ -150,7 +145,6 @@ struct designer_workbench::impl {
     std::uint64_t next_generated_id = 1;
     std::uint64_t displayed_revision = 0;
     std::string selected, outlined_selection, move_source;
-    std::optional<std::string> title;
     status_message message = localized_text{"workbench.status.ready", "Ready"};
     std::optional<std::pair<const char*, localized_text>> pending_help;
     inspector_state inspected;
@@ -171,16 +165,12 @@ struct designer_workbench::impl {
     bool invoking_command = false;
     bool page_active = true;
     vgui_widget *shell = nullptr, *dock = nullptr;
-    vgui_widget *preview_section = nullptr, *preview = nullptr, *page_tabs = nullptr;
-    vgui_widget *title_label = nullptr, *document_chip = nullptr, *document_marker = nullptr;
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
     float outline_actions_min_width = 0;
     vgui_widget *menubar = nullptr, *quick_actions = nullptr;
-    std::string displayed_title;
-    int title_context_width = -1;
-    float title_scale = 0;
-    std::optional<bool> title_dirty;
-    std::optional<designer_language> title_language;
+    int toolbar_width = -1;
+    float toolbar_scale = 0;
+    std::optional<designer_language> toolbar_language;
 
     impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale)
         : ui(context), history(model), strings(locale), editor(context), selected(model.current().root)
@@ -206,18 +196,10 @@ struct designer_workbench::impl {
         vgui_widget_set_align_self(dock, VGUI_ALIGN_STRETCH);
         set_dock_widths({});
         vgui_dock_set_side_resize(dock, 150, 260, 220);
+        vgui_dock_set_document_tabs(dock, 1);
 
-        auto* structure = page("structure", {"workbench.dock.structure", "Structure"}, VGUI_DOCK_LEFT);
+        auto* structure = page("structure", {"workbench.outline.heading", "Outline"}, VGUI_DOCK_LEFT);
         build_structure(structure);
-        preview_section = page("preview", {"workbench.dock.preview", "Preview"}, VGUI_DOCK_CENTER);
-        preview = vgui_widget_add(preview_section, VGUI_PANEL, nullptr);
-        vgui_widget_set_id(preview, "designer.preview.page");
-        vgui_widget_set_layout(preview, VGUI_LAYOUT_COLUMN);
-        vgui_widget_set_align_items(preview, VGUI_ALIGN_STRETCH);
-        vgui_widget_set_grow(preview, 1);
-        vgui_widget_set_padding(preview, 0, 0, 0, 0);
-        vgui_widget_set_background(preview, 0);
-        vgui_widget_set_border(preview, 0, 0);
         auto* properties = page("inspector", {"workbench.dock.inspector", "Inspector"}, VGUI_DOCK_RIGHT);
         grid->set_edit_field_background(0xFF2A3443);
         grid->build_with_labels(properties, inspector_labels());
@@ -526,35 +508,6 @@ struct designer_workbench::impl {
         vgui_widget_set_text_color(menubar, toolbar_text);
         build_menus(std::move(callbacks));
 
-        const auto group = [&](const char* id, vgui_color background = 0) {
-            auto* row = make_row(bar);
-            vgui_widget_set_id(row, id);
-            vgui_widget_set_align_self(row, VGUI_ALIGN_CENTER);
-            vgui_widget_set_align_items(row, VGUI_ALIGN_CENTER);
-            vgui_widget_set_padding(row, 3, 0, 3, 0);
-            vgui_widget_set_background(row, background);
-            vgui_widget_set_border(row, 0, 0);
-            vgui_widget_set_rounding(row, 7);
-            return row;
-        };
-        auto* document = document_chip = group("designer.toolbar.document", toolbar_inset);
-        vgui_widget_set_padding(document, 10, 0, 8, 0);
-        vgui_widget_set_gap(document, 8);
-        vgui_widget_set_size(document, 200, 33);
-        document_marker = vgui_widget_add(document, VGUI_PANEL, nullptr);
-        vgui_widget_set_id(document_marker, "designer.document.state");
-        vgui_widget_set_size(document_marker, 7, 7);
-        vgui_widget_set_padding(document_marker, 0, 0, 0, 0);
-        vgui_widget_set_border(document_marker, 0, 0);
-        vgui_widget_set_rounding(document_marker, 3.5f);
-        title_label = vgui_widget_add(document, VGUI_LABEL, nullptr);
-        vgui_widget_set_id(title_label, "designer.title");
-        vgui_widget_set_size(title_label, 200 - document_chrome_width, 30);
-        vgui_widget_set_padding(title_label, 0, 0, 0, 0);
-        vgui_widget_set_font_size(title_label, 14);
-        vgui_widget_set_font_weight(title_label, VGUI_FONT_WEIGHT_SEMI_BOLD);
-        vgui_widget_set_text_color(title_label, toolbar_text);
-
         const auto style_action = [](vgui_widget* button, vgui_color background, vgui_color edge = 0) {
             vgui_widget_set_size(button, 0, 30);
             vgui_widget_set_padding(button, 9, 0, 9, 0);
@@ -571,7 +524,13 @@ struct designer_workbench::impl {
         vgui_widget_set_padding(spacer, 0, 0, 0, 0);
         vgui_widget_set_background(spacer, 0);
         vgui_widget_set_border(spacer, 0, 0);
-        auto* actions = quick_actions = group("designer.toolbar.actions");
+        auto* actions = quick_actions = make_row(bar);
+        vgui_widget_set_id(actions, "designer.toolbar.actions");
+        vgui_widget_set_align_self(actions, VGUI_ALIGN_CENTER);
+        vgui_widget_set_align_items(actions, VGUI_ALIGN_CENTER);
+        vgui_widget_set_padding(actions, 3, 0, 3, 0);
+        vgui_widget_set_background(actions, 0);
+        vgui_widget_set_border(actions, 0, 0);
         vgui_widget_set_gap(actions, 8);
         style_action(add_button(actions, "designer.file.save", {"workbench.toolbar.save", "Save"}), toolbar_bg, toolbar_edge);
         auto* export_button = style_action(add_button(actions, "designer.file.export", {"workbench.toolbar.export", "Export Package"}), toolbar_primary);
@@ -581,63 +540,23 @@ struct designer_workbench::impl {
         bind_label(export_button, {"workbench.toolbar.export_hint", "Export the current design and resources to a new folder (does not save the design)."}, vgui_widget_set_tooltip);
     }
 
-    void refresh_document_caption()
+    void refresh_toolbar_layout()
     {
-        const bool use_chip = page_active && !page_tabs;
-        const auto dirty = use_chip && history.dirty();
         const auto scale = vgui_context_get_ui_scale(ui);
         const auto language = strings.language();
-        const std::string_view filename = !use_chip ? std::string_view{} :
-            title ? std::string_view(*title) : strings.text("workbench.title.untitled", "Untitled");
         int context_width = 0;
         vgui_context_get_size(ui, &context_width, nullptr);
-        if (filename == displayed_title && context_width == title_context_width && scale == title_scale &&
-            dirty == title_dirty && language == title_language) return;
-        displayed_title = filename;
-        title_context_width = context_width;
-        title_scale = scale;
-        title_dirty = dirty;
-        title_language = language;
+        if (context_width == toolbar_width && scale == toolbar_scale && language == toolbar_language) return;
+        toolbar_width = context_width;
+        toolbar_scale = scale;
+        toolbar_language = language;
 
-        // Reserve the natural menu width first. Quick actions yield before
-        // the document chip; the six menus do not compete with either.
-        const float chrome = (toolbar_padding_right + (use_chip ? 2 : 1) * toolbar_gap) * scale;
         float menu_width = 0, actions_width = 0;
         vgui_widget_get_intrinsic_size(menubar, &menu_width, nullptr);
         vgui_widget_get_intrinsic_size(quick_actions, &actions_width, nullptr);
-        float available = context_width - menu_width - chrome;
-        constexpr float min_chip_width = 64.f;
-        const float quick_width = actions_width + toolbar_gap * scale;
-        const bool show_actions = context_width <= 0 || available >= quick_width + (use_chip ? min_chip_width * scale : 0);
-        if ((vgui_widget_get_visible(quick_actions) != 0) != show_actions)
-            vgui_widget_set_visible(quick_actions, show_actions);
-        if (show_actions) available -= quick_width;
-        const bool show_document = use_chip && (context_width <= 0 || available >= min_chip_width * scale);
-        if ((vgui_widget_get_visible(document_chip) != 0) != show_document)
-            vgui_widget_set_visible(document_chip, show_document);
-        if (!use_chip) return;
-        const float chip_width = context_width > 0 ? std::clamp(available / scale, min_chip_width, 200.f) : 200.f;
-        const float label_width = chip_width - document_chrome_width;
-        vgui_widget_set_size(document_chip, chip_width, 33);
-        vgui_widget_set_size(title_label, label_width, 30);
-        std::string caption(filename);
-        const float width = label_width * scale;
-        if (!caption.empty() && vgui_widget_measure_text(title_label, caption.c_str()) > width) {
-            // Trim only on UTF-8 character boundaries. The full name stays in the tooltip.
-            auto end = caption.size();
-            do {
-                do { --end; } while (end && (static_cast<unsigned char>(filename[end]) & 0xC0) == 0x80);
-                caption.assign(filename.substr(0, end));
-                caption += "…";
-            } while (end && vgui_widget_measure_text(title_label, caption.c_str()) > width);
-        }
-        update_text(title_label, caption);
-        const auto* unsaved = strings.text("file.unsaved", "Unsaved changes");
-        const auto description = dirty ? displayed_title + " — " + unsaved : displayed_title;
-        vgui_widget_set_tooltip(title_label, description.c_str());
-        vgui_widget_set_a11y_name(title_label, description.c_str());
-        vgui_widget_set_background(document_marker, dirty ? document_dirty : document_ready);
-        vgui_widget_set_tooltip(document_marker, dirty ? unsaved : nullptr);
+        const float chrome = (toolbar_padding_right + 2 * toolbar_gap) * scale;
+        const bool show = context_width <= 0 || context_width >= menu_width + actions_width + chrome;
+        if ((vgui_widget_get_visible(quick_actions) != 0) != show) vgui_widget_set_visible(quick_actions, show);
     }
 
     designer_dock_widths dock_widths() const
@@ -651,30 +570,6 @@ struct designer_workbench::impl {
     {
         vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, widths.left);
         vgui_dock_set_zone_size(dock, VGUI_DOCK_RIGHT, widths.right);
-    }
-
-    vgui_widget* enable_page_tabs()
-    {
-        if (page_tabs) return page_tabs;
-        vgui_widget_set_visible(document_chip, 0);
-        title_context_width = -1;
-        vgui_widget_set_padding(preview_section, 0, 0, 0, 0);
-        vgui_widget_set_gap(preview_section, 0);
-        vgui_widget_set_rounding(preview_section, 0);
-
-        // Insert the strip ahead of the stable host, even if the preview is already mounted.
-        vgui_widget_remove(preview);
-        page_tabs = vgui_widget_add(preview_section, VGUI_TABVIEW, nullptr);
-        vgui_widget_set_id(page_tabs, "designer.page_tabs");
-        vgui_widget_set_align_self(page_tabs, VGUI_ALIGN_STRETCH);
-        vgui_widget_set_padding(page_tabs, 0, 0, 0, 0);
-        vgui_widget_set_rounding(page_tabs, 0);
-        vgui_widget_set_border(page_tabs, 0, 0);
-        vgui_widget_set_size(page_tabs, 0, page_tab_height);
-        vgui_tab_set_tab_height(page_tabs, page_tab_height);
-        vgui_widget_attach(preview_section, preview);
-        refresh_document_caption();
-        return page_tabs;
     }
 
     kit::property_grid::ui_labels inspector_labels() const
@@ -789,7 +684,6 @@ struct designer_workbench::impl {
     {
         vgui_widget_set_padding(panel, 6, 5, 6, 5);
         vgui_widget_set_gap(panel, 4);
-        bind_label(vgui_widget_add(panel, VGUI_LABEL, nullptr), {"workbench.outline.heading", "Outline"});
         outliner->build(editor, panel);
         auto* tree = outliner->widget();
         vgui_widget_set_size(tree, 0, 0); // Stretch to the dock width instead of the tree's fixed default width.
@@ -917,15 +811,13 @@ struct designer_workbench::impl {
             vgui_dock_end_drag(dock);
         }
         // The Dock manages visibility of its immediate pages. Close the side
-        // panels rather than hiding their widgets; leave the strip in the center.
+        // panels rather than hiding their widgets; the host owns the document pages.
         for (const auto* id : {"structure", "inspector"}) {
             const auto panel = vgui_dock_find(dock, id);
             if (active) vgui_dock_restore(dock, panel);
             else vgui_dock_close(dock, panel);
         }
         vgui_widget_set_enabled(dock, active);
-        vgui_widget_set_visible(preview, active);
-        title_context_width = -1;
         refresh_command_states();
         refresh_captions();
     }
@@ -1372,7 +1264,7 @@ struct designer_workbench::impl {
             outline_actions_min_width = min_width;
             vgui_widget_set_min_size(outline_actions, min_width, 0);
         }
-        refresh_document_caption();
+        refresh_toolbar_layout();
         update_text(status_label, message_text());
     }
 
@@ -1460,10 +1352,9 @@ designer_workbench::designer_workbench(vgui_context* ui, session& history, desig
     : impl_(std::make_unique<impl>(ui, history, std::move(commands), strings)) {}
 
 designer_workbench::~designer_workbench() = default;
-vgui_widget* designer_workbench::preview_host() const { return impl_->preview; }
+vgui_widget* designer_workbench::document_dock() const { return impl_->dock; }
 designer_dock_widths designer_workbench::dock_widths() const { return impl_->dock_widths(); }
 void designer_workbench::set_dock_widths(designer_dock_widths widths) { impl_->set_dock_widths(widths); }
-vgui_widget* designer_workbench::enable_page_tabs() { return impl_->enable_page_tabs(); }
 void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }
 void designer_workbench::select(std::string id) { impl_->select(std::move(id)); }
@@ -1472,6 +1363,5 @@ void designer_workbench::document_replaced(std::string selection) { impl_->docum
 void designer_workbench::refresh() { impl_->refresh(); }
 void designer_workbench::refresh_language() { impl_->refresh_language(); }
 void designer_workbench::status(std::string message) { impl_->message = std::move(message); }
-void designer_workbench::document_title(std::string title) { impl_->title = std::move(title); }
 
 } // namespace vgui::ui_design

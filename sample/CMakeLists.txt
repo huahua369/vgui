@@ -292,7 +292,8 @@ target_link_libraries(vgui_ui_designer PRIVATE vgui_sample_common vgui::ui_desig
 target_include_directories(vgui_ui_designer SYSTEM PRIVATE ${VGUI_DESIGNER_STB_INCLUDE_DIR})
 target_compile_definitions(vgui_ui_designer PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 add_test(NAME ui_designer_native COMMAND vgui_ui_designer --smoke-test)
-set_tests_properties(ui_designer_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 30)
+# The full native suite now exercises multiple visible GPU previews and docking gestures.
+set_tests_properties(ui_designer_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
 
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
 target_link_libraries(vgui_game_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)

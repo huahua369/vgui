@@ -166,10 +166,12 @@ struct font_version {
     bool operator==(const font_version&) const = default;
 };
 
-struct preview_fonts {
+} // namespace
+
+struct designer_preview_fonts::impl {
     // OVG owns the CPU atlas pages; the shared SDL renderer owns their uploaded
     // textures and OVG cache destruction doesn't retire those textures. Keep a
-    // bounded set of registrations and their atlases for the preview lifetime
+    // bounded set of registrations and their atlases for the workbench lifetime
     // rather than orphaning GPU textures on every page switch/resource edit.
     // Declare the cache before all of its borrowing family lists.
     std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache{nullptr, free_font_cache};
@@ -253,6 +255,7 @@ struct preview_fonts {
     }
 };
 
+namespace {
 std::string describe(const diagnostic& d) {
     return d.path.empty() ? d.message : d.path + ": " + d.message;
 }
@@ -372,7 +375,7 @@ struct designer_preview::impl {
     std::optional<SDL_WindowID> geometry_release;
     // Unlike the per-mount image loader, these families outlive all widgets
     // and their derived weight/slant variants in the private UI context.
-    preview_fonts fonts;
+    designer_preview_fonts::impl& fonts;
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ui{nullptr, vgui_destroy};
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb{nullptr, free_ctx_cb};
     std::unique_ptr<runtime> mounted;
@@ -398,12 +401,12 @@ struct designer_preview::impl {
     int focus_listener = 0;
     point drag_last{};
 
-    impl(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font,
+    impl(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font, designer_preview_fonts::impl& cache,
             std::function<void(std::string)> s, std::function<void(std::string)> n,
             std::function<void(geometry_edit)> commit, const designer_strings& locale)
         : strings(locale), shell(parent ? vgui_widget_get_context(parent) : nullptr),
           select(std::move(s)), notify(std::move(n)), commit_geometry(std::move(commit)),
-          ui(vgui_create(font, 14), vgui_destroy), device(gpu) {
+          fonts(cache), ui(vgui_create(font, 14), vgui_destroy), device(gpu) {
         if (ui) mounted = std::make_unique<runtime>(ui.get());
         if (!shell) return;
         panel = vgui_widget_add(parent, VGUI_PANEL, nullptr);
@@ -1178,10 +1181,14 @@ struct designer_preview::impl {
     }
 };
 
+designer_preview_fonts::designer_preview_fonts() : p_(std::make_unique<impl>()) {}
+designer_preview_fonts::~designer_preview_fonts() = default;
+
 designer_preview::designer_preview(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font,
+        designer_preview_fonts& fonts,
         std::function<void(std::string)> select, std::function<void(std::string)> notify,
         std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings)
-    : p_(std::make_unique<impl>(parent, gpu, font, std::move(select), std::move(notify),
+    : p_(std::make_unique<impl>(parent, gpu, font, *fonts.p_, std::move(select), std::move(notify),
         std::move(commit_geometry), strings)) {}
 designer_preview::~designer_preview() = default;
 void designer_preview::sync(const document& doc, uint64_t rev, const std::filesystem::path& root, std::string_view selection) {
@@ -1190,6 +1197,7 @@ void designer_preview::sync(const document& doc, uint64_t rev, const std::filesy
 void designer_preview::set_render_context(vgpu_ctx_t* ctx) { p_->set_renderer(ctx); }
 void designer_preview::render(float dt) { p_->render(dt); }
 bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
+void designer_preview::cancel_interaction() { p_->blur(); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 designer_preview::view_state designer_preview::capture_view() const {

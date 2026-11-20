@@ -68,8 +68,9 @@ public:
     using message_box_fn = std::function<bool(const SDL_MessageBoxData*, int*)>;
 
     designer(os_window& window, vgpu_device_t* gpu, vgui_context* shell, font_familys_t* font,
-             const ui::designer_strings& strings, fs::path settings_path, message_box_fn message_box)
-        : window_(window), shell_(shell), strings_(strings), settings_path_(std::move(settings_path)),
+             vgpu_ctx_t* renderer, const ui::designer_strings& strings, fs::path settings_path, message_box_fn message_box)
+        : window_(window), shell_(shell), gpu_(gpu), font_(font), renderer_(renderer),
+          strings_(strings), settings_path_(std::move(settings_path)),
           message_box_(std::move(message_box)),
           workbench_(shell, session_, {
               [this] { request(command::create); }, [this] { request(command::open); },
@@ -77,26 +78,26 @@ public:
               [this] { request(command::export_package); }, [this] { request(command::quit); },
               [this](ui::designer_language language) { pending_language_ = language; },
               [this](ui::designer_view_action action) { pending_view_ = action; },
-              [this](ui::designer_view_action action) { return preview_constructed_ && view_checked(action); },
+              [this](ui::designer_view_action action) { return active_ && view_checked(action); },
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
-              [this] { request(command::import_font); }}, strings_),
-          preview_(workbench_.preview_host(), gpu, font,
-              [this](std::string id) { workbench_.select(std::move(id)); },
-              [this](std::string message) { workbench_.status(std::move(message)); },
-              [this](ui::geometry_edit change) { commit_geometry(std::move(change)); }, strings_) {
-        preview_constructed_ = true;
+              [this] { request(command::import_font); }}, strings_), dock_(workbench_.document_dock()) {
         saved_dock_widths_ = ui::load_designer_dock_widths(settings_path_);
         workbench_.set_dock_widths(saved_dock_widths_);
-        tabs_ = workbench_.enable_page_tabs();
-        vgui_tab_on_select(tabs_, [](vgui_widget*, vgui_item_id item, void* user) {
+        vgui_dock_on_activate(dock_, [](vgui_widget*, vgui_item_id item, void* user) {
             auto& self = *static_cast<designer*>(user);
-            if (!self.projecting_tabs_) self.pending_tab_ = item;
+            if (!self.projecting_tabs_ && item != self.active_ && self.find_page(item)) self.pending_tab_ = item;
         }, this);
-        vgui_tab_on_close(tabs_, [](vgui_widget*, vgui_item_id item, void* user) {
+        vgui_dock_on_close_request(dock_, [](vgui_widget*, vgui_item_id item, void* user) {
             static_cast<designer*>(user)->request(command::close, item);
         }, this);
         update_empty();
+    }
+
+    ~designer() {
+        vgui_dock_on_activate(dock_, nullptr, nullptr);
+        vgui_dock_on_close_request(dock_, nullptr, nullptr);
+        pages_.clear(); // Destroy previews before the workbench destroys their parents.
     }
 
     void request(command action, vgui_item_id page = 0) {
@@ -112,7 +113,7 @@ public:
     bool chooser_open() const { return chooser_; }
     void request_layout_save() { layout_save_pending_ = true; }
     bool tab_change_pending() const { return pending_tab_ != 0 || pending_ == command::close; }
-    ui::designer_preview& preview() { return preview_; }
+    ui::designer_preview& preview() { return *find_page(active_)->preview; }
     const ui::designer_strings& strings() const { return strings_; }
     void report_bad_settings() {
         workbench_.status(tr("settings.invalid", "Invalid language settings; using Simplified Chinese."));
@@ -123,8 +124,23 @@ public:
         // F10 belongs to the workbench even while a runtime input owns text focus.
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.key == SDLK_F10)
             return false;
-        return active_ && (last_revision_ == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
-            preview_.handle_event(event);
+        // Canvas input is dispatched before the shell. Activate the page under
+        // a press so that clicking a visible background page (or any floating
+        // canvas) works without first having to click its title.
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.windowID == window_.id &&
+            (event.button.button == SDL_BUTTON_LEFT || event.button.button == SDL_BUTTON_MIDDLE)) {
+            const float ratio = window_.pixel_ratio();
+            auto* hit = vgui_hit_test(shell_, std::round(event.button.x * ratio), std::round(event.button.y * ratio));
+            for (; hit && hit != dock_; hit = vgui_widget_get_parent(hit)) {
+                if (vgui_widget_get_parent(hit) != dock_) continue;
+                const auto it = std::find_if(pages_.begin(), pages_.end(), [hit](const auto& page) { return page.host == hit; });
+                if (it != pages_.end()) activate(it->id);
+                break;
+            }
+        }
+        auto* page = find_page(active_);
+        return page && (page->last_model_revision == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
+            page->preview->handle_event(event);
     }
 
     bool open(const fs::path& path) {
@@ -160,7 +176,7 @@ public:
                     // Relabel after input dispatch; keep the document, dock and runtime alive.
                     strings_ = ui::designer_strings(*selected);
                     workbench_.refresh_language();
-                    preview_.refresh_language();
+                    for (auto& page : pages_) if (page.preview) page.preview->refresh_language();
                 }
                 workbench_.status(tr("settings.saved", "Language preference applied and saved."));
             } else {
@@ -169,7 +185,6 @@ public:
         }
         if (auto view = std::exchange(pending_view_, std::nullopt); view && active_) apply_view(*view);
         if (const auto tab = std::exchange(pending_tab_, 0); tab && !chooser_ && !package_parent_) activate(tab);
-        sync_tab_selection();
         const auto action = std::exchange(pending_, command::none);
         const auto page = std::exchange(command_page_, 0);
         if (action == command::none) return;
@@ -186,7 +201,7 @@ public:
             break;
         case command::save_all:
             save_all_queue_.clear();
-            for (const auto& entry : pages_) if (page_session(entry).dirty()) save_all_queue_.push_back(entry.id);
+            queue_dirty_pages(save_all_queue_);
             continue_save_all();
             break;
         case command::export_package:
@@ -200,7 +215,7 @@ public:
         case command::close: close_page(page); break;
         case command::quit:
             exit_queue_.clear();
-            for (const auto& entry : pages_) if (page_session(entry).dirty()) exit_queue_.push_back(entry.id);
+            queue_dirty_pages(exit_queue_);
             continue_exit();
             break;
         default: break;
@@ -217,30 +232,45 @@ public:
         }
         for (const auto& page : pages_) {
             const auto label = page_title(page);
-            if (label != vgui_tab_get_title(tabs_, page.id)) vgui_tab_set_title(tabs_, page.id, label.c_str());
+            if (label != vgui_dock_get_title(dock_, page.id)) vgui_dock_set_title(dock_, page.id, label.c_str());
             const bool dirty = page_session(page).dirty();
-            if (dirty != (vgui_tab_get_unsaved(tabs_, page.id) != 0)) vgui_tab_set_unsaved(tabs_, page.id, dirty);
+            if (dirty != (vgui_dock_get_unsaved(dock_, page.id) != 0)) vgui_dock_set_unsaved(dock_, page.id, dirty);
         }
         workbench_.refresh();
     }
 
     void render_preview(float dt) {
-        if (!active_) return;
-        if (last_revision_ != session_.revision()) {
-            last_revision_ = session_.revision();
-            ++preview_revision_;
+        const auto center = vgui_dock_get_active(dock_, VGUI_DOCK_CENTER);
+        // Keep at most one recently used hidden preview, to avoid reallocating
+        // the MSAA texture on every back-and-forth tab switch. Don't render it.
+        for (auto& page : pages_) {
+            if (page.id != center && !vgui_dock_is_floating(dock_, page.id)) {
+                if (page.preview && page.id != cached_tab_) {
+                    page.view = page.preview->capture_view();
+                    page.preview.reset();
+                }
+                continue;
+            }
+            auto& view = ensure_preview(page);
+            const auto& model = page_session(page);
+            if (page.last_model_revision != model.revision()) {
+                page.last_model_revision = model.revision();
+                page.preview_revision = ++next_preview_revision_;
+            }
+            const auto selected = page.id == active_ ? workbench_.selection() : std::string_view(page.selection);
+            view.sync(model.current(), page.preview_revision, resource_root(page), selected);
+            view.render(dt);
         }
-        preview_.sync(session_.current(), preview_revision_, resource_root(*find_page(active_)), workbench_.selection());
-        preview_.render(dt);
     }
 
     bool preview_ready(bool require_image) const {
-        const auto* snapshot = preview_.snapshot();
-        if (!snapshot || snapshot->revision != preview_revision_ || snapshot->nodes.size() != session_.current().nodes.size())
+        const auto* page = find_page(active_);
+        const auto* snapshot = page && page->preview ? page->preview->snapshot() : nullptr;
+        if (!snapshot || snapshot->revision != page->preview_revision || snapshot->nodes.size() != session_.current().nodes.size())
             return false;
         // The texture can render successfully even if a shell layout bug
         // collapses its canvas. Assert that the native viewport is usable too.
-        auto* canvas = find_widget(preview_.widget(), "designer.preview.canvas");
+        auto* canvas = find_widget(page->preview->widget(), "designer.preview.canvas");
         if (!canvas) return false;
         float x, y, w, h;
         vgui_widget_get_rect(canvas, &x, &y, &w, &h);
@@ -268,23 +298,24 @@ private:
 
     void apply_view(view_action action) {
         switch (action) {
-        case view_action::design: preview_.set_running(false); break;
-        case view_action::run: preview_.set_running(true); break;
-        case view_action::desktop: preview_.set_preset(preset::desktop); break;
-        case view_action::tablet: preview_.set_preset(preset::tablet); break;
-        case view_action::phone: preview_.set_preset(preset::phone); break;
-        case view_action::fit: preview_.reset_zoom(true); break;
-        case view_action::actual: preview_.reset_zoom(false); break;
+        case view_action::design: preview().set_running(false); break;
+        case view_action::run: preview().set_running(true); break;
+        case view_action::desktop: preview().set_preset(preset::desktop); break;
+        case view_action::tablet: preview().set_preset(preset::tablet); break;
+        case view_action::phone: preview().set_preset(preset::phone); break;
+        case view_action::fit: preview().reset_zoom(true); break;
+        case view_action::actual: preview().reset_zoom(false); break;
         }
     }
 
     bool view_checked(view_action action) const {
+        const auto& view = *find_page(active_)->preview;
         switch (action) {
-        case view_action::design: return !preview_.running();
-        case view_action::run: return preview_.running();
-        case view_action::desktop: return preview_.current_preset() == preset::desktop;
-        case view_action::tablet: return preview_.current_preset() == preset::tablet;
-        case view_action::phone: return preview_.current_preset() == preset::phone;
+        case view_action::design: return !view.running();
+        case view_action::run: return view.running();
+        case view_action::desktop: return view.current_preset() == preset::desktop;
+        case view_action::tablet: return view.current_preset() == preset::tablet;
+        case view_action::phone: return view.current_preset() == preset::phone;
         default: return false;
         }
     }
@@ -294,10 +325,12 @@ private:
         std::string path, error;
     };
 
-    void commit_geometry(ui::geometry_edit change) {
+    void commit_geometry(vgui_item_id id, ui::geometry_edit change) {
         // Input may follow another edit in the same SDL event batch. Do not
         // apply deltas computed from a stale preview to the current document.
-        if (!active_ || change.revision != preview_revision_ || last_revision_ != session_.revision()) return;
+        const auto* page = find_page(id);
+        if (!page || id != active_ || change.revision != page->preview_revision ||
+            page->last_model_revision != session_.revision()) return;
         const auto& doc = session_.current();
         const auto target = doc.nodes.find(change.id);
         if (target == doc.nodes.end() || change.id == doc.root) return;
@@ -330,19 +363,39 @@ private:
     }
 
     struct page_state {
-        vgui_item_id id;
-        std::uint64_t untitled_number;
+        vgui_item_id id = 0;
+        std::uint64_t untitled_number = 0;
         fs::path path;
         // The active session resides in session_, whose address the workbench
-        // keeps. Park it here before switching; inactive pages never mount UI.
+        // keeps. Park it here before switching; hidden pages never render.
         ui::session history;
         std::string selection;
         ui::designer_preview::view_state view;
+        vgui_widget* host = nullptr; // Owned by the dock.
+        std::unique_ptr<ui::designer_preview> preview;
+        std::optional<std::uint64_t> last_model_revision;
+        std::uint64_t preview_revision = 0;
     };
 
     page_state* find_page(vgui_item_id id) {
         const auto it = std::find_if(pages_.begin(), pages_.end(), [id](const auto& page) { return page.id == id; });
         return it == pages_.end() ? nullptr : &*it;
+    }
+
+    const page_state* find_page(vgui_item_id id) const {
+        const auto it = std::find_if(pages_.begin(), pages_.end(), [id](const auto& page) { return page.id == id; });
+        return it == pages_.end() ? nullptr : &*it;
+    }
+
+    void queue_dirty_pages(auto& queue) const {
+        const int count = vgui_dock_get_zone_count(dock_, VGUI_DOCK_CENTER);
+        for (int i = 0; i < count; ++i) {
+            const auto id = vgui_dock_get_zone_at(dock_, VGUI_DOCK_CENTER, i);
+            if (const auto* page = find_page(id); page && page_session(*page).dirty()) queue.push_back(id);
+        }
+        // Focus raises floating frames; it must not change the order of Save All or Exit.
+        for (const auto& page : pages_)
+            if (vgui_dock_is_floating(dock_, page.id) && page_session(page).dirty()) queue.push_back(page.id);
     }
 
     static bool same_path(const fs::path& a, const fs::path& b) {
@@ -368,11 +421,17 @@ private:
         return std::string(tr("file.untitled", "Untitled")) + " " + std::to_string(page.untitled_number);
     }
 
-    void sync_tab_selection() {
-        if (!active_ || vgui_tab_get_active(tabs_) == active_) return;
-        projecting_tabs_ = true;
-        vgui_tab_set_active(tabs_, active_);
-        projecting_tabs_ = false;
+    ui::designer_preview& ensure_preview(page_state& page) {
+        if (page.preview) return *page.preview;
+        const auto id = page.id;
+        page.preview = std::make_unique<ui::designer_preview>(page.host, gpu_, font_, preview_fonts_,
+            [this, id](std::string node) { if (active_ == id) workbench_.select(std::move(node)); },
+            [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
+            [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_);
+        page.preview->set_render_context(renderer_);
+        page.preview->restore_view(page.view);
+        page.last_model_revision.reset();
+        return *page.preview;
     }
 
     void activate(vgui_item_id id) {
@@ -380,29 +439,52 @@ private:
         if (!next || id == active_) return;
         workbench_.finish_edit();
         if (auto* current = find_page(active_)) {
+            // When a tab switch hides this canvas, keep it as the single
+            // cache entry. Floating previews do not occupy that slot.
+            if (!vgui_dock_is_floating(dock_, active_) && !vgui_dock_is_floating(dock_, id))
+                cached_tab_ = current->id;
             current->selection = workbench_.selection();
-            current->view = preview_.capture_view();
+            current->view = current->preview->capture_view();
+            // Cancel the old capture/IME. As before, switching pages resets
+            // temporary runtime input without touching the design document.
+            if (current->view.running) current->preview->restore_view(current->view);
+            else current->preview->cancel_interaction();
             current->history = std::move(session_);
         }
-        if (vgui_get_focus(shell_) != tabs_) vgui_set_focus(shell_, nullptr);
+        if (vgui_get_focus(shell_) != dock_) vgui_set_focus(shell_, nullptr);
         active_ = id;
         session_ = std::move(next->history);
-        last_revision_ = session_.revision();
-        ++preview_revision_; // Revisions from different pages may be identical.
+        projecting_tabs_ = true;
+        vgui_dock_activate(dock_, id);
+        projecting_tabs_ = false;
+        ensure_preview(*next);
         workbench_.set_page_active(true);
         workbench_.document_replaced(next->selection);
-        preview_.restore_view(next->view);
-        // SDL text input may have been started by the shell before the preview
-        // gained focus. No editor on the new page should inherit that session.
+        // An edit in the outgoing inspector must not retain an SDL text session.
         window_.stop_text_input();
-        sync_tab_selection();
     }
 
-    void add_page(ui::session page, fs::path path) {
-        const auto id = vgui_tab_add(tabs_, nullptr, nullptr);
-        vgui_tab_set_closeable(tabs_, id, 1);
+    void add_page(ui::session model, fs::path path) {
+        auto* host = vgui_widget_create(shell_, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(host, "designer.preview.page");
+        vgui_widget_set_layout(host, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_items(host, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_padding(host, 0, 0, 0, 0);
+        vgui_widget_set_background(host, 0);
+        vgui_widget_set_border(host, 0, 0);
         const auto number = path.empty() ? next_untitled_++ : 0;
-        pages_.push_back({id, number, std::move(path), std::move(page), {}, {}});
+        page_state page{.untitled_number = number, .path = std::move(path),
+            .history = std::move(model), .host = host};
+        const auto label = page_title(page);
+        vgui_dock_panel_desc desc;
+        vgui_dock_panel_desc_default(&desc);
+        desc.title = label.c_str();
+        desc.panel = host;
+        desc.zone = VGUI_DOCK_CENTER;
+        page.id = vgui_dock_add(dock_, &desc);
+        if (!page.id) { vgui_widget_destroy(host); return; }
+        const auto id = page.id;
+        pages_.push_back(std::move(page));
         activate(id);
     }
 
@@ -412,21 +494,24 @@ private:
     }
 
     void remove_page(vgui_item_id id) {
-        if (!find_page(id)) return;
+        auto* page = find_page(id);
+        if (!page) return;
         if (id == active_) {
             vgui_set_focus(shell_, nullptr);
             active_ = 0;
             session_ = ui::session{};
             workbench_.document_replaced();
-            preview_.restore_view({});
             window_.stop_text_input();
         }
+        if (cached_tab_ == id) cached_tab_ = 0;
+        page->preview.reset(); // Before its dock parent is destroyed.
         projecting_tabs_ = true;
-        vgui_tab_remove(tabs_, id);
+        vgui_dock_remove(dock_, id);
         projecting_tabs_ = false;
         std::erase_if(pages_, [id](const auto& page) { return page.id == id; });
         if (!active_) {
-            if (const auto next = vgui_tab_get_active(tabs_)) activate(next);
+            if (const auto next = vgui_dock_get_active(dock_, VGUI_DOCK_CENTER)) activate(next);
+            else if (const auto floating = vgui_dock_get_active(dock_, VGUI_DOCK_FLOATING)) activate(floating);
             else update_empty();
         }
     }
@@ -701,6 +786,9 @@ private:
 
     os_window& window_;
     vgui_context* shell_;
+    vgpu_device_t* gpu_;
+    font_familys_t* font_;
+    vgpu_ctx_t* renderer_;
     ui::designer_strings strings_;
     fs::path settings_path_;
     message_box_fn message_box_;
@@ -712,12 +800,12 @@ private:
     std::vector<page_state> pages_;
     std::deque<vgui_item_id> save_all_queue_;
     std::vector<vgui_item_id> exit_queue_;
-    vgui_widget* tabs_ = nullptr;
     vgui_item_id active_ = 0, pending_tab_ = 0, command_page_ = 0, chooser_page_ = 0, package_page_ = 0;
     std::uint64_t next_untitled_ = 1;
+    vgui_item_id cached_tab_ = 0;
     bool projecting_tabs_ = false;
     ui::session session_;
-    std::uint64_t last_revision_ = 0, preview_revision_ = 0;
+    std::uint64_t next_preview_revision_ = 0;
     std::string window_title_;
     command pending_ = command::none, chooser_followup_ = command::none;
     bool chooser_ = false, quitting_ = false;
@@ -725,9 +813,9 @@ private:
     std::optional<fs::path> package_parent_;
     std::optional<std::string> package_name_;
     bool package_text_input_ = false;
-    bool preview_constructed_ = false;
+    ui::designer_preview_fonts preview_fonts_;
     ui::designer_workbench workbench_;
-    ui::designer_preview preview_;
+    vgui_widget* dock_;
 };
 
 struct smoke_unsaved_prompt {
@@ -1416,6 +1504,12 @@ int run(bool smoke, fs::path open_path) {
         std::fprintf(stderr, "Cannot initialize the designer shell\n");
         return 1;
     }
+    vgui_style style;
+    vgui_style_default(&style);
+    // Leave room for the full preview toolbar in both UI languages.
+    style.dock.floating_width = 480;
+    style.dock.floating_height = 320;
+    vgui_context_set_style(shell.get(), &style);
     host.set_on_demand_render(true);
     // The viewport usually owns its UI; here the lifetime belongs to shell.
     struct binding_guard {
@@ -1425,8 +1519,7 @@ int run(bool smoke, fs::path open_path) {
     smoke_unsaved_prompt prompt;
     designer::message_box_fn message_box = SDL_ShowMessageBox;
     if (smoke) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
-    designer editor(*win, app.vgdev, shell.get(), font.get(), strings, settings, std::move(message_box));
-    editor.preview().set_render_context(app.vgctx);
+    designer editor(*win, app.vgdev, shell.get(), font.get(), app.vgctx, strings, settings, std::move(message_box));
     if (open_path.empty() || !editor.open(open_path)) {
         if (smoke) return 1;
         if (open_path.empty()) editor.new_page();
@@ -1578,6 +1671,7 @@ int run(bool smoke, fs::path open_path) {
             advance();
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
             ui::exercise_pages(*win, shell.get(), editor, advance, *picker, prompt, open_path, absolute_fixture);
+            ui::exercise_page_docking(*win, shell.get(), editor, advance);
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
             exercise_image_button(*win, shell.get(), editor, advance);
             exercise_project_fonts(*win, shell.get(), editor, *picker, advance, absolute_fixture);
@@ -1585,7 +1679,7 @@ int run(bool smoke, fs::path open_path) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, layout, multi-page save/close/exit and delivery isolation passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, layout, page docking, multi-page save/close/exit and delivery isolation passed");
     }
     app.wait_gpu();
     return 0;

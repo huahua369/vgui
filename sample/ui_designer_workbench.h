@@ -35,13 +35,11 @@ public:
     designer_workbench(vgui_context*, session&, designer_commands, const designer_strings&);
     ~designer_workbench();
 
-    vgui_widget* preview_host() const;
+    // The host adds one center dock panel per open document.
+    vgui_widget* document_dock() const;
     // Preferred side widths in logical pixels, even when the window constrains the actual layout.
     designer_dock_widths dock_widths() const;
     void set_dock_widths(designer_dock_widths widths);
-    // Replaces the document chip with a native strip. The host owns tab state
-    // and callbacks; add tabs with nullptr pages, not preview widgets.
-    vgui_widget* enable_page_tabs();
     // Hide/show the document UI without replacing the working session. Call
     // between event dispatch and layout/render, after finishing outgoing edits.
     void set_page_active(bool active);
@@ -60,7 +58,6 @@ public:
     // its labels update on the first refresh() after that edit ends.
     void refresh_language();
     void status(std::string message);
-    void document_title(std::string title);
 
 private:
     struct impl;

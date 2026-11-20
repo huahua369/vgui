@@ -4289,6 +4289,92 @@ static void test_dock_float_square(vgui_context* ui, const vgui_style& base)
 	vgui_context_set_style(ui, &base);
 }
 
+static void test_dock_document_tabs(vgui_context* ui, const vgui_style& style)
+{
+	vgui_widget* dock = vgui_widget_add(vgui_root(ui), VGUI_DOCK, nullptr);
+	vgui_widget_set_pos(dock, 20.0f, 20.0f);
+	vgui_widget_set_size(dock, 700.0f, 480.0f);
+	vgui_dock_set_document_tabs(dock, 1);
+	vgui_dock_set_zone_size(dock, VGUI_DOCK_LEFT, 140.0f);
+	vgui_dock_panel_desc d;
+	vgui_dock_panel_desc_default(&d);
+	d.title = "Outline";
+	d.zone = VGUI_DOCK_LEFT;
+	const vgui_item_id tool = vgui_dock_add(dock, &d);
+	d.title = "Page A";
+	d.zone = VGUI_DOCK_CENTER;
+	const vgui_item_id a = vgui_dock_add(dock, &d);
+	d.title = "Page B";
+	d.panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_layout(d.panel, VGUI_LAYOUT_ABSOLUTE);
+	vgui_widget* child = vgui_widget_add(d.panel, VGUI_BUTTON, "Child");
+	vgui_widget_set_pos(child, 8.0f, 8.0f);
+	vgui_widget_set_size(child, 80.0f, 24.0f);
+	const vgui_item_id b = vgui_dock_add(dock, &d);
+	vgui_layout(ui);
+
+	const auto drag_title = [&](vgui_item_id item, float x, float y) {
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		vgui_layout(ui);
+		check(vgui_dock_get_tab_rect(dock, item, &tx, &ty, &tw, &th), "document dock: title geometry");
+		vgui_input_mouse_move(ui, tx + tw * 0.25f, ty + th * 0.5f);
+		vgui_input_mouse_down(ui, 1, tx + tw * 0.25f, ty + th * 0.5f, 1);
+		vgui_input_mouse_move(ui, x, y);
+		vgui_input_mouse_up(ui, 1, x, y, 1);
+	};
+	float zx = 0, zy = 0, zw = 0, zh = 0;
+	vgui_dock_get_zone_rect(dock, VGUI_DOCK_CENTER, &zx, &zy, &zw, &zh);
+	drag_title(tool, zx + zw * 0.5f, zy + zh * 0.5f);
+	check(vgui_dock_get_zone(dock, tool) == VGUI_DOCK_LEFT, "document dock: tool tabs do not drag");
+	vgui_input_key(ui, VGUI_KEY_LEFT, 1, 0);
+	vgui_input_key(ui, VGUI_KEY_LEFT, 0, 0);
+	check(vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == a, "document dock: focused arrows select centre tabs");
+
+	vgui_dock_set_unsaved(dock, a, 1);
+	vgui_dock_float(dock, b, zx + 160.0f, zy, 240.0f, 160.0f); // Cover part of the centre strip.
+	drag_title(a, zx + 120.0f, zy + zh * 0.65f);
+	float fy = 0;
+	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER) == 0 &&
+		vgui_dock_get_floating_rect(dock, a, nullptr, &fy, nullptr, nullptr) && fy >= zy + style.dock.tab_height,
+		"document dock: last tab floats below the strip");
+
+	vgui_item_id activated = 0;
+	vgui_dock_on_activate(dock, [](vgui_widget*, vgui_item_id id, void* user) {
+		*static_cast<vgui_item_id*>(user) = id;
+	}, &activated);
+	vgui_layout(ui);
+	float cx = 0, cy = 0;
+	vgui_widget_get_rect(child, &cx, &cy, nullptr, nullptr);
+	vgui_input_mouse_move(ui, cx + 4.0f, cy + 4.0f);
+	vgui_input_mouse_down(ui, 1, cx + 4.0f, cy + 4.0f, 1);
+	vgui_input_mouse_up(ui, 1, cx + 4.0f, cy + 4.0f, 1);
+	check(activated == b && vgui_get_focus(ui) == child &&
+		vgui_dock_get_active(dock, VGUI_DOCK_FLOATING) == b, "document dock: a child press raises its frame and reaches the child");
+
+	drag_title(a, zx + 200.0f, zy + style.dock.tab_height * 0.5f);
+	check(vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == a && vgui_dock_get_unsaved(dock, a) &&
+		std::string(vgui_dock_get_title(dock, a)) == "Page A", "document dock: redock on the covered empty strip with state intact");
+
+	vgui_item_id requested = 0;
+	vgui_dock_on_close_request(dock, [](vgui_widget*, vgui_item_id id, void* user) {
+		*static_cast<vgui_item_id*>(user) = id;
+	}, &requested);
+	vgui_layout(ui);
+	float bx = 0, by = 0, bw = 0, bh = 0;
+	vgui_dock_get_tab_rect(dock, b, &bx, &by, &bw, &bh);
+	const float x = bx + bw - (style.dock.close_size + style.dock.tab_padding) * 0.5f;
+	const float y = by + bh * 0.5f;
+	vgui_input_mouse_down(ui, 1, x, y, 1);
+	vgui_input_mouse_up(ui, 1, x, y, 1);
+	check(requested == b && vgui_dock_is_open(dock, b), "document dock: floating X requests close without hiding");
+	requested = 0;
+	check(vgui_dock_close(dock, b) && !vgui_dock_is_open(dock, b) && !requested,
+		"document dock: programmatic close bypasses the request handler");
+
+	vgui_set_focus(ui, nullptr);
+	vgui_widget_destroy(dock);
+}
+
 static void test_ui_scale(vgui_context* ui)
 	{
 		vgui_context_set_ui_scale(ui, 1.0f);
@@ -5756,6 +5842,7 @@ int main()
 	test_dock(ui, style);
 	test_dock_bottom_roundtrip(ui, style);
 	test_dock_float_square(ui, style);
+	test_dock_document_tabs(ui, style);
 	test_dock_multi_context(familys);
 	test_i18n_rtl(ui);
 	test_tree_filter_and_focus(ui, style);

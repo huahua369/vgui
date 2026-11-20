@@ -1471,6 +1471,12 @@ extern "C" {
 
 	VGUI_API void vgui_dock_panel_desc_default(vgui_dock_panel_desc* desc);
 
+	/* Opt in to document tabs. Only centre tabs can be dragged: drop on the
+	 * centre strip to reorder, or elsewhere inside the dock to float. Floating
+	 * frames redock only onto that strip, even when it has no tabs. Left/Right
+	 * select centre tabs while the dock itself has keyboard focus. */
+	VGUI_API void vgui_dock_set_document_tabs(vgui_widget* dock, int enabled);
+
 	VGUI_API vgui_item_id vgui_dock_add(vgui_widget* dock, const vgui_dock_panel_desc* desc);
 	/* Destroys the panel and its page. */
 	VGUI_API int vgui_dock_remove(vgui_widget* dock, vgui_item_id panel);
@@ -1492,6 +1498,9 @@ extern "C" {
 	VGUI_API void vgui_dock_set_emoji(vgui_widget* dock, vgui_item_id panel, const char* emoji);
 	VGUI_API int vgui_dock_get_closeable(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API void vgui_dock_set_closeable(vgui_widget* dock, vgui_item_id panel, int closeable);
+	/* Show an unsaved dot in the tab or floating title without changing the title. */
+	VGUI_API int vgui_dock_get_unsaved(vgui_widget* dock, vgui_item_id panel);
+	VGUI_API void vgui_dock_set_unsaved(vgui_widget* dock, vgui_item_id panel, int unsaved);
 
 	/* Zone queries and persistence helpers.  Zone order includes closed panels
 	 * so a saved order can be restored before reopening them. */
@@ -1541,8 +1550,13 @@ extern "C" {
 
 	/* on_close runs after the panel has been hidden; the panel remains valid.
 	 * on_activate runs when a tab becomes active or a floating frame is raised.
+	 * In document mode it also tracks activation between tabs and frames.
 	 * on_change runs after any add/remove/move/float/close/restore/size change. */
 	VGUI_API void vgui_dock_on_close(vgui_widget* dock, vgui_item_fn fn, void* user);
+	/* When installed, clicking a tab/frame X calls this instead of hiding the
+	 * panel. The handler may call vgui_dock_close(), remove it, or defer/veto.
+	 * Pass NULL to restore the default. Programmatic close is unaffected. */
+	VGUI_API void vgui_dock_on_close_request(vgui_widget* dock, vgui_item_fn fn, void* user);
 	VGUI_API void vgui_dock_on_activate(vgui_widget* dock, vgui_item_fn fn, void* user);
 	VGUI_API void vgui_dock_on_change(vgui_widget* dock, vgui_item_fn fn, void* user);
 	/* Tear-off: fired (via vgui_dock_on_tear_off) when a tab is dragged out of
