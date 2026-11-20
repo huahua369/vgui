@@ -4330,8 +4330,42 @@ static void test_dock_document_tabs(vgui_context* ui, const vgui_style& style)
 	vgui_input_key(ui, VGUI_KEY_LEFT, 0, 0);
 	check(vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == a, "document dock: focused arrows select centre tabs");
 
+	vgui_widget_set_tooltip_delay(dock, 0.2f);
+	vgui_widget_set_tooltip_anchor(dock, VGUI_TOOLTIP_ANCHOR_WIDGET);
+	const auto hover_title = [&](vgui_item_id item) {
+		float tx = 0, ty = 0, tw = 0, th = 0;
+		vgui_layout(ui);
+		check(vgui_dock_get_tab_rect(dock, item, &tx, &ty, &tw, &th), "document dock: title hover geometry");
+		vgui_input_mouse_move(ui, tx + tw * 0.25f, ty + th * 0.5f);
+		return ty + th;
+	};
+	const float tab_bottom = hover_title(a);
+	vgui_update(ui, 0.3f);
+	float tooltip_y = 0.0f;
+	check(vgui_context_tooltip_owner(ui) == dock &&
+		std::string(vgui_context_tooltip_text(ui)) == "Page A" &&
+		vgui_context_tooltip_rect(ui, nullptr, &tooltip_y, nullptr, nullptr) && tooltip_y >= tab_bottom,
+		"document dock: hover shows the full title and anchors to the tab rather than the dock");
+	hover_title(b);
+	vgui_update(ui, 0.1f);
+	check(!vgui_context_tooltip_visible(ui), "document dock: moving between tabs starts a new hover delay");
+	vgui_dock_set_tooltip(dock, b, "B/project/Page B.vgui.json");
+	vgui_update(ui, 0.3f);
+	check(std::string(vgui_context_tooltip_text(ui)) == "B/project/Page B.vgui.json" &&
+		vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == a,
+		"document dock: a pending tooltip uses updated text without activating the hovered tab");
+
 	vgui_dock_set_unsaved(dock, a, 1);
 	vgui_dock_float(dock, b, zx + 160.0f, zy, 240.0f, 160.0f); // Cover part of the centre strip.
+	vgui_update(ui, 0.3f);
+	check(!vgui_context_tooltip_visible(ui), "document dock: moving the tab away dismisses its stale path");
+	hover_title(b);
+	vgui_update(ui, 0.3f);
+	check(std::string(vgui_context_tooltip_text(ui)) == "B/project/Page B.vgui.json",
+		"document dock: floating title retains the same path");
+	vgui_dock_set_tooltip(dock, b, "B/renamed.vgui.json");
+	check(std::string(vgui_context_tooltip_text(ui)) == "B/renamed.vgui.json",
+		"document dock: changing the displayed path refreshes a visible tooltip");
 	drag_title(a, zx + 120.0f, zy + zh * 0.65f);
 	float fy = 0;
 	check(vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER) == 0 &&

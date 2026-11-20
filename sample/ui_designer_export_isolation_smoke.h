@@ -3,6 +3,7 @@
 #include "delivery.h"
 #include "ui_designer_image_smoke_fixture.h"
 #include "ui_designer_menu_smoke.h"
+#include "ui_designer_pages_smoke.h"
 #include "ui_designer_preview.h"
 
 #include <cstdint>
@@ -29,19 +30,18 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     const auto require = [&](bool passed, std::string_view message) {
         if (!passed) throw std::runtime_error("Native export isolation (" + std::string(step) + "): " + std::string(message));
     };
+    const auto path_utf8 = [](const fs::path& path) {
+        const auto text = path.u8string();
+        return std::string(text.begin(), text.end());
+    };
     const auto bytes = [&](const fs::path& path) {
         std::ifstream in(path, std::ios::binary);
-        require(bool(in), "missing or unreadable file: " + path.generic_string());
+        require(bool(in), "missing or unreadable file: " + path_utf8(path));
         return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     };
-    const auto find_dock = [](const auto& self, vgui_widget* widget) -> vgui_widget* {
-        if (!widget || std::string_view(vgui_widget_get_id(widget)) == "designer.dock") return widget;
-        for (std::size_t i = 0; i < vgui_widget_get_child_count(widget); ++i)
-            if (auto* found = self(self, vgui_widget_get_child(widget, i))) return found;
-        return nullptr;
-    };
-    auto* dock = find_dock(find_dock, vgui_root(shell));
+    auto* dock = find_page_smoke_widget(vgui_root(shell), "designer.dock");
     require(dock && vgui_widget_get_kind(dock) == VGUI_DOCK, "missing editor dock");
+    const native_page_dock_input dock_input(win, shell, dock, frame, require);
     const auto count = [&] { return vgui_dock_get_zone_count(dock, VGUI_DOCK_CENTER); };
     const auto active = [&] { return vgui_dock_get_active(dock, VGUI_DOCK_CENTER); };
     const auto prior_count = count();
@@ -74,7 +74,7 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
             {v.screen, v.fit, v.zoom, v.pan_x, v.pan_y, v.running}};
     };
     const auto open = [&](const fs::path& path) {
-        require(editor.open(path), "could not activate " + path.generic_string());
+        require(editor.open(path), "could not activate " + path_utf8(path));
         frame();
     };
     const auto expect_active = [&](vgui_item_id id, const page_state& state) {
@@ -82,11 +82,13 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
             "wrong active tab or changed document, history, selection or view");
     };
 
-    constexpr auto filename = "isolation.vgui.json";
-    constexpr auto package_name = "isolation-delivery";
+    const fs::path filename{u8"界面设计器项目资源隔离测试使用的同名长文档设置页面布局预览.vgui.json"};
+    const auto title = path_utf8(filename);
+    constexpr auto path_suffix = std::string_view(".vgui.json");
+    const auto package_name = title.substr(0, title.size() - path_suffix.size()) + "-delivery";
     const auto a_file = picker.sandbox / "export-a" / filename;
     const auto b_file = picker.sandbox / "export-b" / filename;
-    const auto package = picker.package_parent / package_name;
+    const auto package = picker.package_parent / fs::u8path(package_name);
     document saved;
     require(read_document(form_fixture, saved) && saved.resources.size() == 1 &&
         saved.resources.contains(smoke_badge_key) && saved.resources.at(smoke_badge_key) == smoke_badge_file,
@@ -103,13 +105,14 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
 
     step = "independent dirty pages";
     const auto open_scratch = [&](const fs::path& path, int index) {
-        open(path);
+        // Open through a non-canonical spelling to check the displayed path is normalized.
+        open(path.parent_path() / "." / path.filename());
         const auto id = vgui_dock_get_zone_at(dock, VGUI_DOCK_CENTER, index);
         const auto clean = page();
         require(id && count() == index + 1 && active() == id &&
             clean.current == saved && clean.committed == saved && !clean.dirty && !clean.undo && !clean.redo,
             "expected a new clean copy of the saved form");
-        expected_tabs.emplace_back(id, filename, true); // Both must be dirty before export.
+        expected_tabs.emplace_back(id, title, true); // Both must be dirty before export.
         return id;
     };
     const auto add = [&](int index) { menus.activate(menus.activate(menus.open(2), 0), index); };
@@ -133,9 +136,35 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
         b.selection == saved.root && b.selection != a.selection && b.view != a.view && tab_state() == expected_tabs,
         "expected B to be independently dirty with a different selection, view and redo entry");
 
-    step = "late folder result";
-    open(a_file);
+    vgui_style style{};
+    vgui_context_get_style(shell, &style);
+    const float delay = vgui_widget_get_tooltip_delay(dock);
+    const auto expect_path_tooltip = [&](vgui_item_id id, const fs::path& path,
+                                        vgui_item_id active_id, const page_state& state) {
+        require(active() == active_id && id != active_id, "expected an inactive hover target");
+        const auto r = dock_input.reveal_tab(id);
+        const float x = r.x + r.width / 2, y = r.y + r.height / 2;
+        require(vgui_hit_test(shell, x, y) == dock, "pointer does not hit the tab strip");
+        vgui_input_mouse_move(shell, x, y);
+        // Advance the normal tooltip delay without rendering or waiting on SDL time.
+        vgui_update(shell, delay >= 0 ? delay : style.tooltip.delay);
+        const auto expected = path_utf8(fs::canonical(path));
+        require(vgui_context_tooltip_visible(shell) && vgui_context_tooltip_owner(shell) == dock &&
+            std::string_view(vgui_context_tooltip_text(shell)) == expected,
+            "expected the hovered tab's exact path tooltip: " + expected);
+        expect_active(active_id, state);
+        require(tab_state() == expected_tabs, "hover changed the tab order, titles or unsaved markers");
+    };
+
+    step = "hover A while B is active";
+    expect_path_tooltip(a_tab, a_file, b_tab, b);
+    step = "hover B while A is active";
+    open(a_file); // The existing activation before the export request.
     expect_active(a_tab, a);
+    expect_path_tooltip(b_tab, b_file, a_tab, a);
+    vgui_context_hide_tooltip(shell);
+
+    step = "late folder result";
     picker.defer_folders = true;
     const auto requests = picker.folder_requests;
     menus.activate(menus.open(0), 6); // File > Export Package

@@ -567,6 +567,7 @@ struct vgui_dock_panel
 	vgui_item_id id = 0;
 	std::string string_id;
 	std::string title;
+	std::string tooltip;
 	vgui_widget* page = nullptr;
 	vgui_dock_zone zone = VGUI_DOCK_CENTER;
 	int open = 1;
@@ -6970,6 +6971,17 @@ static std::string vgui_tooltip_widget_text(vgui_widget* w)
 	return w->tooltip;
 }
 
+static vgui_item_id vgui_dock_tooltip_item_at(vgui_widget* w, float x, float y)
+{
+	bool title = false, close = false;
+	if (const auto* frame = vgui_dock_floating_at_point(w, x, y, &title, &close))
+		return title && !close ? frame->id : 0;
+	int zone = -1, index = -1;
+	if (vgui_dock_tab_at_point(w, x, y, &zone, &index, &close) && !close)
+		return w->dock->tabs[zone][(size_t)index].id;
+	return 0;
+}
+
 static std::string vgui_tooltip_item_text(vgui_widget* w, vgui_item_id item)
 {
 	if (!w || !item || !w->tooltip_enabled) return {};
@@ -6982,6 +6994,16 @@ static std::string vgui_tooltip_item_text(vgui_widget* w, vgui_item_id item)
 	{
 		vgui_tree_node* node = vgui_tree_node_find(w, item);
 		if (node) return node->tooltip;
+	}
+	else if (w->kind == VGUI_DOCK)
+	{
+		const auto* panel = vgui_dock_find(w, item);
+		if (panel && panel->open)
+		{
+			if (!panel->tooltip.empty()) return panel->tooltip;
+			if (w->dock->document_tabs && (panel->zone == VGUI_DOCK_CENTER || panel->zone == VGUI_DOCK_FLOATING))
+				return panel->title;
+		}
 	}
 	return {};
 }
@@ -7014,6 +7036,17 @@ static vgui_widget* vgui_tooltip_hit_rec(vgui_widget* w, float x, float y)
 {
 	if (!w || !w->visible || w->destroy_pending) return nullptr;
 	if (!vgui_point_in(w, x, y)) return nullptr;
+	if (w->kind == VGUI_DOCK && w->dock)
+	{
+		bool title = false;
+		if (const auto* frame = vgui_dock_floating_at_point(w, x, y, &title, nullptr))
+		{
+			// Use the frame stack, not the child insertion order. Its title
+			// must block help from buttons and tabs behind it.
+			auto* child = !title ? vgui_tooltip_hit_rec(frame->page, x, y) : nullptr;
+			return child ? child : w;
+		}
+	}
 	for (auto it = w->children.rbegin(); it != w->children.rend(); ++it)
 	{
 		vgui_widget* r = vgui_tooltip_hit_rec(*it, x, y);
@@ -7052,6 +7085,12 @@ static vgui_widget* vgui_tooltip_resolve_at(vgui_context* ctx, vgui_widget* hit,
 					if (!text.empty()) item = id;
 				}
 			}
+		}
+		else if (node == hit && node->kind == VGUI_DOCK)
+		{
+			const auto id = vgui_dock_tooltip_item_at(node, x, y);
+			text = vgui_tooltip_item_text(node, id);
+			if (!text.empty()) item = id;
 		}
 		if (text.empty())
 			text = vgui_tooltip_widget_text(node);
@@ -7180,6 +7219,8 @@ static bool vgui_tooltip_item_rect(vgui_widget* w, vgui_item_id item,
 		*height = row_h;
 		return true;
 	}
+	if (w->kind == VGUI_DOCK && w->dock)
+		return vgui_dock_get_tab_rect(w, item, x, y, width, height) != 0;
 	return false;
 }
 
@@ -7343,6 +7384,16 @@ static void vgui_tooltip_update(vgui_context* ctx, float dt)
 		return;
 	}
 
+	// Layout, scrolling or a programmatic close can change which tab is under
+	// a stationary pointer. Don't retain the previous document's path.
+	if (t.candidate_item && t.candidate->kind == VGUI_DOCK &&
+		(vgui_tooltip_hit_rec(vgui_active_root(ctx), ctx->mouse_x, ctx->mouse_y) != t.candidate ||
+		vgui_dock_tooltip_item_at(t.candidate, ctx->mouse_x, ctx->mouse_y) != t.candidate_item))
+	{
+		vgui_tooltip_clear_candidate(ctx);
+		return;
+	}
+
 	if (t.visible)
 	{
 		if (t.owner != t.candidate || t.owner_item != t.candidate_item ||
@@ -7374,8 +7425,13 @@ static void vgui_tooltip_update(vgui_context* ctx, float dt)
 // Re-reads the text of the visible tooltip after a model / property change.
 static void vgui_tooltip_refresh(vgui_context* ctx, vgui_widget* owner, vgui_item_id item)
 {
-	if (!ctx || ctx->tooltip.owner != owner || ctx->tooltip.owner_item != item)
+	if (!ctx) return;
+	if (ctx->tooltip.owner != owner || ctx->tooltip.owner_item != item)
+	{
+		if (ctx->tooltip.candidate == owner && ctx->tooltip.candidate_item == item)
+			ctx->tooltip.hover_time = 0.0f;
 		return;
+	}
 	ctx->tooltip.text = vgui_tooltip_owner_text(owner, item);
 	if (ctx->tooltip.text.empty())
 		vgui_tooltip_hide(ctx);
@@ -14885,6 +14941,43 @@ static void vgui_draw_tabview(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_cl
 	vgui_draw_focus(w, cb, vg);
 }
 
+static void vgui_draw_dock_title(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* dock,
+	const std::string& title, float x, float y, float width, float height,
+	uint32_t color, bool ellipsize, vgui_clip_state* clips)
+{
+	if (width <= 0.0f) return;
+	if (!ellipsize || vgui_text_width(dock, title) <= width)
+	{
+		vgui_draw_text_clipped(ctx, cb, vg, dock, title, x, y, width, height, color, 0.0f, 0.5f, clips);
+		return;
+	}
+
+	const std::string dots = "\xE2\x80\xA6"; // U+2026
+	if (vgui_text_width(dock, dots) > width) return;
+	std::vector<int> ends{0};
+	for (int end = 0; end < (int)title.size(); )
+	{
+		end = vgui_u8_next(title, end);
+		ends.push_back(end);
+	}
+	// Search at UTF-8 boundaries and measure the prefix with its ellipsis
+	// using the same font cascade as the dock.
+	size_t lo = 0, hi = ends.size();
+	std::string caption = dots;
+	while (lo + 1 < hi)
+	{
+		const size_t mid = lo + (hi - lo) / 2;
+		auto candidate = title.substr(0, (size_t)ends[mid]) + dots;
+		if (vgui_text_width(dock, candidate) <= width)
+		{
+			lo = mid;
+			caption = std::move(candidate);
+		}
+		else hi = mid;
+	}
+	vgui_draw_text_clipped(ctx, cb, vg, dock, caption, x, y, width, height, color, 0.0f, 0.5f, clips);
+}
+
 static void vgui_draw_dock_unsaved(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	float& text_x, float& text_w, float y, float h)
 {
@@ -14992,8 +15085,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 				}
 				if (panel->unsaved)
 					vgui_draw_dock_unsaved(w, cb, vg, text_x, text_w, tab.y, tab.h);
-				vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, tab.y,
-					text_w, tab.h, vgui_widget_color(w, text_color), 0.0f, 0.5f, clips);
+				vgui_draw_dock_title(ctx, cb, vg, w, panel->title, text_x, tab.y, text_w, tab.h,
+					vgui_widget_color(w, text_color), st->document_tabs && zone == VGUI_DOCK_CENTER, clips);
 			}
 			if (tab.close_w > 0.0f && tab.close_h > 0.0f)
 			{
@@ -15096,8 +15189,8 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 		}
 		if (panel->unsaved)
 			vgui_draw_dock_unsaved(w, cb, vg, text_x, text_w, fy, title_h);
-		vgui_draw_text_clipped(ctx, cb, vg, w, panel->title, text_x, fy, text_w,
-			title_h, title_color, 0.0f, 0.5f, clips);
+		vgui_draw_dock_title(ctx, cb, vg, w, panel->title, text_x, fy, text_w, title_h,
+			title_color, st->document_tabs, clips);
 
 		float cx = 0, cy = 0, cw = 0, ch = 0;
 		if (vgui_dock_floating_close_rect(w, *panel, &cx, &cy, &cw, &ch))
@@ -18588,11 +18681,22 @@ extern "C" {
 		vgui_dock_panel* panel = vgui_dock_find(dock, panel_id);
 		if (!panel) return;
 		panel->title = title ? title : "";
+		vgui_tooltip_refresh(dock->ctx, dock, panel_id);
 		vgui_dock_state* st = vgui_dock_of(dock);
 		if (st && panel->zone >= 0 && panel->zone < 4)
 			st->scroll_active[panel->zone] = 1;
 		vgui_mark_dirty(dock);
 		if (vgui_dock_alive(dock)) vgui_dock_notify_change(dock);
+	}
+
+	void vgui_dock_set_tooltip(vgui_widget* dock, vgui_item_id panel_id, const char* text)
+	{
+		auto* panel = vgui_dock_find(dock, panel_id);
+		if (!panel) return;
+		const char* next = text ? text : "";
+		if (panel->tooltip == next) return;
+		panel->tooltip = next;
+		vgui_tooltip_refresh(dock->ctx, dock, panel_id);
 	}
 
 	vgui_texture* vgui_dock_get_icon(vgui_widget* dock, vgui_item_id panel_id)

@@ -483,6 +483,7 @@ private:
         desc.zone = VGUI_DOCK_CENTER;
         page.id = vgui_dock_add(dock_, &desc);
         if (!page.id) { vgui_widget_destroy(host); return; }
+        if (!page.path.empty()) vgui_dock_set_tooltip(dock_, page.id, utf8(page.path).c_str());
         const auto id = page.id;
         pages_.push_back(std::move(page));
         activate(id);
@@ -548,7 +549,9 @@ private:
             return false;
         }
         page->path = *file;
-        workbench_.status(std::string(tr("file.saved", "Saved ")) + utf8(*file));
+        const auto path_text = utf8(*file);
+        vgui_dock_set_tooltip(dock_, id, path_text.c_str());
+        workbench_.status(std::string(tr("file.saved", "Saved ")) + path_text);
         return true;
     }
 

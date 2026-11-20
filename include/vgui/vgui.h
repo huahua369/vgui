@@ -1474,7 +1474,8 @@ extern "C" {
 	/* Opt in to document tabs. Only centre tabs can be dragged: drop on the
 	 * centre strip to reorder, or elsewhere inside the dock to float. Floating
 	 * frames redock only onto that strip, even when it has no tabs. Left/Right
-	 * select centre tabs while the dock itself has keyboard focus. */
+	 * select centre tabs while the dock itself has keyboard focus. Long document
+	 * titles use an ellipsis and remain available in the hover tooltip. */
 	VGUI_API void vgui_dock_set_document_tabs(vgui_widget* dock, int enabled);
 
 	VGUI_API vgui_item_id vgui_dock_add(vgui_widget* dock, const vgui_dock_panel_desc* desc);
@@ -1490,6 +1491,9 @@ extern "C" {
 	VGUI_API const char* vgui_dock_get_id(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API const char* vgui_dock_get_title(vgui_widget* dock, vgui_item_id panel);
 	VGUI_API void vgui_dock_set_title(vgui_widget* dock, vgui_item_id panel, const char* title);
+	/* Tooltip for a tab/frame title, excluding the close button. NULL or empty
+	 * clears it (document tabs then fall back to the full title). */
+	VGUI_API void vgui_dock_set_tooltip(vgui_widget* dock, vgui_item_id panel, const char* text);
 	/* Panel icon shown in the tab and floating frame title.  Texture icons are
 	 * retained by the dock; emoji uses the menu item emoji path (UTF-8 glyph). */
 	VGUI_API vgui_texture* vgui_dock_get_icon(vgui_widget* dock, vgui_item_id panel);
