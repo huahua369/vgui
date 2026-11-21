@@ -9,6 +9,7 @@ inline constexpr std::string_view primitive_font_weights[] = {"default", "regula
 inline constexpr std::string_view primitive_font_slants[] = {"default", "normal", "italic", "oblique"};
 inline constexpr std::string_view text_alignment_x[] = {"start", "center", "end"};
 inline constexpr std::string_view text_alignment_y[] = {"top", "center", "bottom"};
+inline constexpr std::string_view label_text_orientations[] = {"horizontal", "vertical"};
 inline constexpr std::string_view content_alignment[] = {
     "start", "center", "end", "space-between", "space-around", "space-evenly", "stretch"
 };
@@ -76,7 +77,10 @@ inline const property_descriptor extra_panel_properties[] = {
     {"scrollbar_width_y", "Vertical scrollbar thickness", value_type::number, 0.0, 0, primitive_extent},
     {"scrollbar_inset", "Scrollbar inset", value_type::number, -1.0, -1, primitive_extent},
 };
-inline const property_descriptor extra_label_properties[] = {text_align_start, text_align_middle};
+inline const property_descriptor extra_label_properties[] = {
+    {"text_orientation", "Text orientation", value_type::choice, std::string("horizontal"), 0, 0, label_text_orientations},
+    text_align_start, text_align_middle,
+};
 inline const property_descriptor extra_button_properties[] = {
     text_align_center, text_align_middle,
     {"button_style", "Button style", value_type::choice, std::string("solid"), 0, 0, button_styles},

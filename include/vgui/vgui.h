@@ -1240,6 +1240,19 @@ extern "C" {
 	/* align 0/1 mean start/end, so they swap when the context direction is RTL;
 	 * 0.5 stays centred. */
 	VGUI_API void vgui_widget_set_text_align(vgui_widget* widget, float align_x, float align_y);
+
+	/* LABEL text is horizontal by default. Vertical labels stack upright UTF-8
+	 * grapheme clusters in one top-to-bottom column; each LF, CRLF or CR adds
+	 * one blank row. Text alignment positions the whole column in the padded
+	 * content box, and the text is clipped to that box within the label. */
+	typedef enum vgui_label_text_orientation {
+		VGUI_LABEL_TEXT_HORIZONTAL = 0,
+		VGUI_LABEL_TEXT_VERTICAL
+	} vgui_label_text_orientation;
+	VGUI_API void vgui_label_set_text_orientation(vgui_widget* widget, vgui_label_text_orientation orientation);
+	/* Returns horizontal for NULL and non-label widgets. */
+	VGUI_API vgui_label_text_orientation vgui_label_get_text_orientation(const vgui_widget* widget);
+
 	VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 	VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);
 

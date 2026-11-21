@@ -1760,6 +1760,50 @@ void exercise_control_schema()
     check(workbench.io_ok && model.current() == preview, "new control/item edits did not survive save and reopen");
 }
 
+void exercise_label_orientation()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "vertical-label.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const ui::edit controls[] = {
+        ui::insert_node{"caption", root, {"label", {}, {{"text", std::string("纵向标签")}}, {}}},
+        ui::insert_node{"button", root, {"button", {}, {}, {}}},
+    };
+    check(model.apply(controls), "could not seed the label inspector fixture");
+    workbench.bench.select("caption");
+    workbench.frame();
+    const auto initial = model.current();
+    constexpr auto property = "property:text_orientation";
+    check(std::string_view(vgui_widget_get_text(workbench.widget(property, VGUI_LABEL))) == "文字方向" &&
+        std::string_view(vgui_widget_get_text(workbench.widget(property, VGUI_BUTTON))) == "横排",
+        "label inspector did not expose localized horizontal default");
+    workbench.press(property);
+    auto* menu = vgui_context_get_open_menu(workbench.ctx.get());
+    check(menu, "text orientation choices did not open");
+    check_menu_items(menu, {"横排", "竖排（单列）"});
+    workbench.activate(menu, "竖排（单列）");
+    const auto vertical = model.current();
+    check(vertical.nodes.at("caption").props.at("text_orientation") == ui::value{std::string("vertical")} &&
+        model.committed() == vertical, "orientation choice did not apply immediately with the stable JSON value");
+    check(model.undo() && model.current() == initial && model.redo() && model.current() == vertical,
+        "orientation selection must be one undoable edit without changing geometry or content");
+    workbench.bench.select("button");
+    workbench.frame();
+    check(!find_widget(vgui_root(workbench.ctx.get()), property, VGUI_BUTTON), "non-label inspector exposes label-only orientation");
+
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == vertical, "vertical label was lost on save/reopen");
+    workbench.bench.select("caption");
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_text(workbench.widget(property, VGUI_BUTTON))) == "Vertical (single column)",
+        "reopened label did not display the localized vertical choice");
+}
+
 void exercise_radio_group_inspector()
 {
     temp_dir directory;
@@ -2040,6 +2084,7 @@ int main()
         exercise_outline_icons();
         exercise_outline_drag();
         exercise_control_schema();
+        exercise_label_orientation();
         exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_language_preferences();

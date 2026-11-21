@@ -57,6 +57,32 @@ ui::document fixture() {
         {"photo", {"image", "", {{"resource", "missing"s}, {"width", 40.0}, {"height", 20.0}}, {}}}
     }, {{"missing", "assets/not-present.png"}}};
 }
+void test_label_orientation() {
+    ui::document doc;
+    ui::diagnostic error;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["default","vertical","horizontal"]},
+        "default":{"type":"label","props":{"text":"纵向标签"}},
+        "vertical":{"type":"label","props":{"text":"纵向标签","text_orientation":"vertical","x":100}},
+        "horizontal":{"type":"label","props":{"text":"纵向标签","text_orientation":"horizontal","x":200}}
+    }})", doc, &error), "decode labels with optional text orientation");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create label context");
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1, {}, &error), "mount label orientations");
+    check(vgui_label_get_text_orientation(rt.widget("default")) == VGUI_LABEL_TEXT_HORIZONTAL &&
+        vgui_label_get_text_orientation(rt.widget("horizontal")) == VGUI_LABEL_TEXT_HORIZONTAL &&
+        vgui_label_get_text_orientation(rt.widget("vertical")) == VGUI_LABEL_TEXT_VERTICAL,
+        "runtime must apply serialized orientation and preserve the old default");
+    for (const float scale : {1.0f, 1.5f}) {
+        const auto layout = rt.layout({320, 240, scale});
+        check(layout.has_value(), "layout the vertical label");
+        const auto unset = node(*layout, "default").rect_px.height;
+        check(unset > 0 && near(node(*layout, "horizontal").rect_px.height, unset) &&
+            near(node(*layout, "vertical").rect_px.height, unset * 4), "vertical labels must auto-size for one glyph per row");
+    }
+}
+
 void test_font_properties() {
     const struct {
         const char* id;
@@ -1038,6 +1064,7 @@ int main(int argc, char** argv) {
         test_declarative_widgets();
         test_progress_colors();
         test_radio_group_input();
+        test_label_orientation();
         test_font_properties();
         test_font_families();
         test_image_loading();

@@ -6037,6 +6037,106 @@ static void test_binding_slider_range(font_familys_t* familys)
 	vgui_destroy(ctx);
 }
 
+static void test_label_orientation(font_familys_t* fonts)
+{
+	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+	std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(fonts, 16.0f), vgui_destroy);
+	vg->width = 320;
+	vg->height = 240;
+	vgui_context_set_size(ctx.get(), vg->width, vg->height);
+	auto* root = vgui_root(ctx.get());
+	vgui_widget_set_layout(root, VGUI_LAYOUT_ABSOLUTE);
+	auto* label = vgui_widget_add(root, VGUI_LABEL, "WiWi");
+	vgui_widget_set_pos(label, 20, 30);
+	vgui_widget_set_padding(label, 3, 4, 5, 6);
+	const float line = vgui_widget_get_line_height(label);
+	float w = 0, h = 0;
+	vgui_widget_get_rect(label, nullptr, nullptr, &w, &h);
+	check(vgui_label_get_text_orientation(label) == VGUI_LABEL_TEXT_HORIZONTAL &&
+		near(w, vgui_widget_measure_text(label, "WiWi") + 8) && near(h, line + 10),
+		"label orientation: horizontal is the default with unchanged intrinsic size");
+
+	// Use combining acute and a woman-technologist emoji ZWJ sequence: each
+	// is one row even if the fixture font does not cover the whole cluster.
+	const char* expected[] = {"e\xcc\x81", "\xf0\x9f\x91\xa9\xe2\x80\x8d\xf0\x9f\x92\xbb", "i"};
+	const std::string text = std::string(expected[0]) + "\r\n" + expected[1] + "\n\r" + expected[2];
+	vgui_widget_set_text(label, text.c_str());
+	vgui_label_set_text_orientation(label, VGUI_LABEL_TEXT_VERTICAL);
+	float column_width = 0;
+	for (const char* cluster : expected)
+		column_width = std::max(column_width, vgui_widget_measure_text(label, cluster));
+	vgui_widget_get_rect(label, nullptr, nullptr, &w, &h);
+	check(vgui_label_get_text_orientation(label) == VGUI_LABEL_TEXT_VERTICAL &&
+		near(w, column_width + 8) && near(h, 6 * line + 10),
+		"label orientation: autosize uses the widest grapheme and one row per grapheme or hard break");
+
+	struct text_draw { std::string text; glm::vec2 pos; float width, align_x; uint32_t color; glm::ivec4 clip; };
+	static std::vector<text_draw> calls;
+	static const auto get_clip = cb->get_clip_rect;
+	cb->add_text = [](rvg_t* v, text_st_t* t, text_style_t* s, text_box_rt* b) {
+		text_draw draw{std::string(t->text, t->text_len), t->pos, (float)b->rc.z, b->text_align.x, s->color, {}};
+		get_clip(v, &draw.clip);
+		calls.push_back(std::move(draw));
+	};
+	const auto draw = [&] {
+		cb->clear(vg.get());
+		calls.clear();
+		vgui_draw(ctx.get(), cb.get(), vg.get());
+	};
+	vgui_widget_set_size(label, 80, 55); // shorter than the natural column
+	vgui_widget_set_text_align(label, 0.25f, 0.75f);
+	vgui_widget_set_text_color(label, 0xFF123456u);
+	vgui_label_set_text_orientation(label, VGUI_LABEL_TEXT_HORIZONTAL);
+	vgui_widget_set_recording_hint(root, 1);
+	vgui_widget_set_recording_hint(label, 1); // nested hint does not capture separately
+	draw();
+	const bool horizontal = calls.size() == 1 && calls[0].text == text;
+	draw();
+	check(horizontal && calls.empty(), "label orientation: the fixed horizontal label is submitted once and then replayed");
+	vgui_label_set_text_orientation(label, VGUI_LABEL_TEXT_VERTICAL);
+
+	const auto matches_column = [&](float ax) {
+		float x, y, width, height;
+		vgui_widget_get_rect(label, &x, &y, &width, &height);
+		const float left = x + 3 + (width - 8 - column_width) * ax;
+		const float top = y + 4 + (height - 10 - 6 * line) * 0.75f;
+		const int rows[] = {0, 2, 5};
+		const glm::ivec4 clip((int)x + 3, (int)y + 4, 72, 45);
+		if (calls.size() != 3 || !(top < y)) return false;
+		for (size_t i = 0; i < calls.size(); ++i)
+		{
+			const auto& c = calls[i];
+			if (c.text != expected[i] || !near(c.pos.x, left) || !near(c.pos.y, top + rows[i] * line) ||
+				!near(c.width, column_width) || !near(c.align_x, 0.5f) || c.color != 0xFF563412u || c.clip != clip)
+				return false;
+		}
+		return true;
+	};
+	draw();
+	check(matches_column(0.25f), "label orientation: switch invalidates the cached ancestor; upright graphemes are centered and clipped");
+	vgui_context_set_direction(ctx.get(), VGUI_DIRECTION_RTL);
+	draw();
+	check(matches_column(0.75f), "label orientation: RTL mirrors column alignment without reversing row order");
+
+	vgui_context_set_string(ctx.get(), "en", "label", "AB");
+	vgui_context_set_language(ctx.get(), "en");
+	vgui_widget_set_text_key(label, "label");
+	draw();
+	check(calls.size() == 2 && calls.front().text == "A" && calls.back().text == "B",
+		"label orientation: a localized label uses the translated text");
+	vgui_context_set_string(ctx.get(), "en", "label", "W");
+	draw();
+	check(calls.size() == 1 && calls.front().text == "W",
+		"label orientation: active translation changes invalidate both layout and the cached recording");
+	vgui_widget_set_size(label, 0, 0);
+	vgui_widget_set_font_size(label, 24);
+	vgui_widget_get_rect(label, nullptr, nullptr, &w, &h);
+	check(near(w, vgui_widget_measure_text(label, "W") + 8) && near(h, vgui_widget_get_line_height(label) + 10) && h > line + 10,
+		"label orientation: font size and localization update intrinsic geometry");
+	calls.clear();
+}
+
 // ---------------------------------------------------------------------------
 // Core rich-text span primitives: byte-ranged spans -> styled runs, measured
 // and laid out without a renderer.  These are headless assertions on the
@@ -6546,6 +6646,7 @@ int main()
 	test_binding_collection(familys);
 	test_binding_expr(familys);
 	test_binding_slider_range(familys);
+	test_label_orientation(familys);
 	test_richtext_spans(familys);
 	test_file_dialog(ui);
 	test_recent_dirs(ui);
