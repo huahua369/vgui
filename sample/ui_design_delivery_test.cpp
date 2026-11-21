@@ -189,11 +189,42 @@ void test_delivery() {
     reject_tamper(design, canonical);
     reject_tamper(manifest, files.at(manifest) + '\n');
 }
+
+void test_row_icon_delivery() {
+    temp_dir temp;
+    const auto project = temp.path / "source";
+    fs::create_directory(project);
+    write_bytes(project / "row.rgba", rgba);
+    auto doc = ui::make_document();
+    doc.resources.emplace("photo", "row.rgba");
+    doc.nodes.at(doc.root).children.push_back("rows");
+    doc.nodes.emplace("rows", ui::node{"tree", "", {{"items",
+        R"([{"children":[{"buttons":[{"action":"row.open","icon":"photo"}],"text":"Child"}],"expanded":true,"text":"Parent"}])"s}}, {}});
+
+    ui::diagnostic error;
+    const auto package = temp.path / "package";
+    check(ui::export_delivery(doc, project, package, &error), "export a resource referenced only by a nested row button");
+    ui::document restored;
+    check(ui::read_delivery(package, restored, &error) && restored.nodes == doc.nodes &&
+        restored.resources.at("photo") == "assets/1.rgba", "verify a relocated row icon and preserve its reference");
+
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create context for delivery row icon");
+    image_loader loader{fs::canonical(package / restored.resources.at("photo"))};
+    ui::runtime rt(ctx.get());
+    check(rt.mount(restored, 1, {package, image_loader::load, nullptr, &loader}, &error) && rt.diagnostics().empty(),
+        "mount row icon from the exported resource root");
+    auto* tree = rt.widget("rows");
+    const auto child = vgui_tree_get_child(tree, vgui_tree_get_root(tree, 0), 0);
+    check(child && loader.calls == 1 && loader.texture && vgui_tree_get_item_button_icon(tree, child, 0) == loader.texture.get(),
+        "the exported asset must reach the nested row button as a texture");
+}
 } // namespace
 
 int main() {
     try {
         test_delivery();
+        test_row_icon_delivery();
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "ui_design_delivery_test: %s\n", e.what());

@@ -33,16 +33,6 @@ constexpr vgui_color toolbar_primary = 0xFF2F65CB;
 constexpr float toolbar_padding_right = 10;
 constexpr float toolbar_gap = 10;
 
-// Seed new controls only. A missing or zero dimension in a design still means auto-size.
-constexpr std::pair<double, double> initial_control_size(std::string_view type)
-{
-    if (type == "panel") return {240, 160};
-    if (type == "label") return {120, 24};
-    if (type == "edit") return {200, 36};
-    if (type == "image") return {128, 128};
-    return {120, 36}; // Button and fallback for any newly registered type.
-}
-
 std::string display_value(const value& data)
 {
     if (const auto* b = std::get_if<bool>(&data)) return *b ? "true" : "false";
@@ -493,7 +483,7 @@ struct designer_workbench::impl {
         for (const auto& type : types()) {
             const std::string key(type.key);
             add_menu_command(new_control, "designer.add." + key, type_label(type), [this, key] { add_node(key); },
-                with_active_page([this] { return history.current().nodes.size() < max_nodes; }));
+                with_active_page([this, key] { return insertion_parent(key).has_value(); }));
         }
 
         if (callbacks.import_font)
@@ -703,6 +693,11 @@ struct designer_workbench::impl {
                 {"Container", strings.text("workbench.inspector.category.container", "Container")},
                 {"Content", strings.text("workbench.inspector.category.content", "Content")},
                 {"Font", strings.text("workbench.inspector.category.font", "Font")},
+                {"Appearance", strings.text("workbench.inspector.category.appearance", "Appearance")},
+                {"Image", strings.text("workbench.inspector.category.image", "Image")},
+                {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
+                {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
+                {"Pages", strings.text("workbench.inspector.category.pages", "Pages")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
             },
             .pick_color = strings.text("workbench.inspector.font.pick_color", "Pick color"),
@@ -796,6 +791,8 @@ struct designer_workbench::impl {
     {
         if (desc.key == "atlas")
             return {"workbench.inspector.atlas_path", "Button atlas path"};
+        if (desc.key == "icon")
+            return {"workbench.inspector.icon_path", "Button icon path"};
         if (desc.type == value_type::resource_key)
             return {"workbench.inspector.image_path", "Image path"};
         return {"workbench.inspector.property." + std::string(desc.key), desc.label.data()};
@@ -809,7 +806,8 @@ struct designer_workbench::impl {
             if (value == "absolute") return strings.text("workbench.inspector.layout.absolute", "Absolute");
             if (value == "row") return strings.text("workbench.inspector.layout.row", "Row");
             if (value == "column") return strings.text("workbench.inspector.layout.column", "Column");
-        } else if (desc.key == "align_items" || desc.key == "justify") {
+            if (value == "wrap") return strings.text("workbench.inspector.layout.wrap", "Wrap");
+        } else if (desc.key == "align_items" || desc.key == "justify" || desc.key == "align_self" || desc.key == "align_content" || desc.key == "text_align_x") {
             if (value == "start") return strings.text("workbench.inspector.alignment.start", "Start");
             if (value == "center") return strings.text("workbench.inspector.alignment.center", "Center");
             if (value == "end") return strings.text("workbench.inspector.alignment.end", "End");
@@ -826,7 +824,8 @@ struct designer_workbench::impl {
             if (value == "italic") return strings.text("workbench.inspector.font.italic", "Italic");
             if (value == "oblique") return strings.text("workbench.inspector.font.oblique", "Oblique");
         }
-        return std::string(value);
+        const std::string fallback(value);
+        return strings.text("workbench.inspector.choice." + fallback, fallback.c_str());
     }
 
     void build_structure(vgui_widget* panel)
@@ -906,8 +905,12 @@ struct designer_workbench::impl {
 
     bool apply(std::initializer_list<edit> edits, status_message success, std::string_view field = {}, bool interactive = false)
     {
+        return apply_batch({edits.begin(), edits.size()}, std::move(success), field, interactive);
+    }
+
+    bool apply_batch(std::span<const edit> batch, status_message success, std::string_view field, bool interactive)
+    {
         diagnostic error;
-        const std::span<const edit> batch{edits.begin(), edits.size()};
         const bool ok = interactive ? history.apply_live(batch, &error) : history.apply(batch, &error);
         if (!ok) {
             message = error.path.empty() ? error.message : error.path + ": " + error.message;
@@ -1015,27 +1018,35 @@ struct designer_workbench::impl {
         return std::nullopt;
     }
 
-    void add_node(const std::string& type)
+    std::optional<std::string> insertion_parent(std::string_view type) const
     {
         const auto& doc = history.current();
-        const auto target = doc.nodes.find(selected);
-        if (target == doc.nodes.end()) return;
-        node data;
-        data.type = type;
-        std::string parent = selected;
+        if (doc.nodes.size() >= max_nodes) return std::nullopt;
+        auto target = doc.nodes.find(selected);
+        if (target == doc.nodes.end()) return std::nullopt;
         if (!is_container(target->second)) {
             const auto place = location(selected);
-            if (!place) return;
-            parent = place->first;
+            if (!place) return std::nullopt;
+            target = doc.nodes.find(place->first);
         }
-        auto id = fresh_key("node_", doc.nodes);
+        const auto* parent = find_type(target->second.type);
+        if (!parent || !accepts_child(*parent, type, target->second.children.size())) return std::nullopt;
+        return target->first;
+    }
+
+    void add_node(const std::string& type)
+    {
+        const auto parent = insertion_parent(type);
         const auto* descriptor = find_type(type);
-        const auto [width, height] = initial_control_size(type);
-        data.props.emplace("width", width);
-        data.props.emplace("height", height);
-        if (apply({insert_node{id, parent, std::move(data)}},
-                formatted_status{{"workbench.status.added_type", "Added {value}"},
-                    descriptor ? status_value{type_label(*descriptor)} : status_value{type}})) select(std::move(id));
+        if (!parent || !descriptor) return;
+        node data;
+        data.type = type;
+        auto id = fresh_key("node_", history.current().nodes);
+        // Seed fresh controls; zero or missing dimensions in existing documents still mean auto-size.
+        data.props.emplace("width", descriptor->initial_width);
+        data.props.emplace("height", descriptor->initial_height);
+        if (apply({insert_node{id, *parent, std::move(data)}},
+                formatted_status{{"workbench.status.added_type", "Added {value}"}, type_label(*descriptor)})) select(std::move(id));
     }
 
     void erase()
@@ -1047,8 +1058,11 @@ struct designer_workbench::impl {
 
     bool can_duplicate() const
     {
+        const auto place = location(selected);
         const auto& doc = history.current();
-        if (!location(selected) || doc.nodes.size() >= max_nodes) return false;
+        if (!place || doc.nodes.size() >= max_nodes) return false;
+        const auto& parent = doc.nodes.at(place->first);
+        if (!accepts_child(*find_type(parent.type), doc.nodes.at(selected).type, parent.children.size())) return false;
         auto remaining = max_nodes - doc.nodes.size();
         const auto fits = [&](const auto& visit, const std::string& id) -> bool {
             if (!remaining) return false;
@@ -1064,7 +1078,7 @@ struct designer_workbench::impl {
     {
         const auto& doc = history.current();
         const auto place = location(selected);
-        if (!place) return;
+        if (!place || !can_duplicate()) return;
         copy_subtree copy{selected, place->first, {}, place->second + 1};
         const auto walk = [&](const auto& visit, const std::string& id) -> void {
             copy.ids.emplace(id, fresh_key("node_", doc.nodes));
@@ -1094,8 +1108,11 @@ struct designer_workbench::impl {
     {
         const auto& doc = history.current();
         const auto target = doc.nodes.find(parent);
-        if (id == doc.root || !doc.nodes.contains(id) || target == doc.nodes.end() ||
-            !is_container(target->second)) return false;
+        if (id == doc.root || !doc.nodes.contains(id) || target == doc.nodes.end()) return false;
+        const auto* descriptor = find_type(target->second.type);
+        const auto already_child = std::find(target->second.children.begin(), target->second.children.end(), id) != target->second.children.end();
+        if (!descriptor || !accepts_child(*descriptor, doc.nodes.find(id)->second.type,
+                target->second.children.size() - (already_child ? 1 : 0))) return false;
         for (auto it = outline.find(parent); it != outline.end(); it = outline.find(it->second.parent))
             if (it->first == id) return false;
         return true;
@@ -1218,6 +1235,22 @@ struct designer_workbench::impl {
             return;
         }
 
+        const auto updated = formatted_status{{"workbench.status.updated_property", "Updated {value}"}, property_label(*desc)};
+        if (desc->type == value_type::items) {
+            std::string canonical, reason;
+            std::vector<edit> batch;
+            if (!prepare_items_edit(doc, found->second.type, input, canonical, batch, reason)) {
+                field_errors[key] = reason;
+                message = formatted_status{{"workbench.status.invalid_items", "Invalid items: {value}"}, std::move(reason)};
+                sync_inspector = true;
+                return;
+            }
+            auto stored = canonical == std::get<std::string>(desc->default_value) ? std::nullopt :
+                std::optional<value>(std::move(canonical));
+            batch.emplace_back(set_property{inspected.id, key, std::move(stored)});
+            apply_batch(batch, updated, key, interactive);
+            return;
+        }
         value data = input;
         if (desc->type == value_type::boolean) data = (input == "true");
         if (desc->type == value_type::number) {
@@ -1233,8 +1266,29 @@ struct designer_workbench::impl {
             data = number;
         }
         auto stored = data == desc->default_value ? std::nullopt : std::optional<value>(std::move(data));
-        apply({set_property{inspected.id, key, std::move(stored)}},
-            formatted_status{{"workbench.status.updated_property", "Updated {value}"}, property_label(*desc)}, key, interactive);
+        const auto& item = found->second;
+        if (item.type == "radio" && (key == "radio_group" || key == "checked")) {
+            const auto* group_property = find_property("radio", "radio_group");
+            const auto* checked_property = find_property("radio", "checked");
+            const bool checked = key == "checked" ? input == "true" : std::get<bool>(property_value(item, *checked_property));
+            const auto place = location(inspected.id);
+            if (checked && place) {
+                const auto& group = key == "radio_group" ? input : std::get<std::string>(property_value(item, *group_property));
+                for (const auto& peer_id : doc.nodes.at(place->first).children) {
+                    if (peer_id == inspected.id) continue;
+                    const auto& peer = doc.nodes.at(peer_id);
+                    if (peer.type == "radio" && std::get<bool>(property_value(peer, *checked_property)) &&
+                        std::get<std::string>(property_value(peer, *group_property)) == group) {
+                        // A valid group has at most one checked member. Transfer
+                        // the choice in the same edit, including live renames.
+                        apply({set_property{peer_id, "checked", std::nullopt}, set_property{inspected.id, key, std::move(stored)}},
+                            updated, key, interactive);
+                        return;
+                    }
+                }
+            }
+        }
+        apply({set_property{inspected.id, key, std::move(stored)}}, updated, key, interactive);
     }
 
     std::string outline_label(const std::string& id, const node& item) const
@@ -1312,18 +1366,43 @@ struct designer_workbench::impl {
         };
         add({.id = node_id, .label = strings.text("workbench.inspector.node_id", "Node ID"), .value = selected, .read_only = true});
         add({.id = node_name, .label = strings.text("workbench.inspector.name", "Name"), .value = item.name, .has_default = true});
+        const auto place = location(selected);
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 kit::property_desc row;
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
-                row.category = desc.key.starts_with("font_") || desc.type == value_type::color ? "Font" : category;
+                row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
+                if (desc.key.starts_with("dock_") || desc.key == "page_title" || desc.key == "tab_enabled") {
+                    if (!place) continue;
+                    const auto& parent = doc.nodes.at(place->first).type;
+                    if (desc.key == "page_title" ? (parent != "dock" && parent != "tabview") :
+                        (desc.key == "tab_enabled" ? parent != "tabview" : parent != "dock")) continue;
+                    row.category = "Pages";
+                } else if (desc.key.starts_with("tooltip") || desc.key.starts_with("focus") || desc.key == "input_enabled" ||
+                           desc.key == "cursor" || desc.key == "a11y_name") row.category = "Interaction";
+                else if (item.type == "image" && desc.key != "resource" && std::string_view(category) == "Content")
+                    row.category = "Image";
+                else if (desc.key.starts_with("scroll") || desc.key.starts_with("margin_") || desc.key == "max_width" ||
+                         desc.key == "max_height" || desc.key == "min_width" || desc.key == "min_height" || desc.key == "align_self" || desc.key == "align_content")
+                    row.category = "Layout details";
+                else if ((desc.type == value_type::color && desc.key != "text_color") || desc.key == "border_width" ||
+                         desc.key == "rounding" || desc.key == "opacity" || desc.key == "button_style" || desc.key == "icon" ||
+                         desc.key.starts_with("icon_") || desc.key.starts_with("text_align_")) row.category = "Appearance";
                 row.value = display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
+                if (desc.key == "radio_group") {
+                    row.placeholder = strings.text("workbench.inspector.radio_group.default", "Default group");
+                    row.tooltip = strings.text("workbench.inspector.radio_group.hint",
+                        "Only radio buttons with the same group name in this container exclude one another. Leave blank for the default group.");
+                }
                 switch (desc.type) {
                 case value_type::boolean:
                     row.type = kit::property_type::boolean;
+                    if (item.type == "radio" && desc.key == "checked")
+                        row.tooltip = strings.text("workbench.inspector.radio_group.checked_hint",
+                            "Selecting this as the initial choice clears the previous choice in the same group.");
                     break;
                 case value_type::number:
                     row.type = kit::property_type::number;
@@ -1337,8 +1416,18 @@ struct designer_workbench::impl {
                     row.type = kit::property_type::color;
                     row.allow_empty = true;
                     row.placeholder = "#RRGGBB";
-                    row.tooltip = strings.text("workbench.inspector.font.color_hint",
-                        "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the theme text color.");
+                    row.tooltip = desc.key == "text_color" ? strings.text("workbench.inspector.font.color_hint",
+                        "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the theme text color.") :
+                        strings.text("workbench.inspector.color_hint", "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the default color.");
+                    break;
+                case value_type::items:
+                    row.multiline = true;
+                    row.value = format_items(row.value);
+                    row.tooltip = item.type == "list" || item.type == "tree" ?
+                        strings.text("workbench.inspector.row_icons_hint",
+                            R"(Optional row "icon" and up to four "buttons": [{"icon":"icons/open.png","action":"row.open"}]. Use a project-relative path or resource key. Valid edits apply immediately.)") :
+                        strings.text("workbench.inspector.menu_icons_hint",
+                            R"(Add "icon":"icons/open.png" to a menu item or submenu. Use a project-relative path or resource key. Valid edits apply immediately.)");
                     break;
                 case value_type::choice:
                     row.type = kit::property_type::enumeration;
@@ -1371,9 +1460,12 @@ struct designer_workbench::impl {
                     row.tooltip = desc.key == "atlas" ? strings.text("workbench.inspector.atlas_path_hint",
                         "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.") :
                         strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
+                    auto resource_category = row.category;
                     add(std::move(row));
-                    add({.id = resource_key, .label = strings.text("workbench.inspector.resource_key", "Resource key"), .value = key,
-                        .category = category, .read_only = true});
+                    add({.id = desc.key == "icon" ? std::string("@icon-resource-key") : resource_key,
+                        .label = strings.text(desc.key == "icon" ? "workbench.inspector.icon_resource_key" : "workbench.inspector.resource_key",
+                            desc.key == "icon" ? "Icon resource key" : "Resource key"), .value = key,
+                        .category = std::move(resource_category), .read_only = true});
                     continue;
                 }
                 default:
@@ -1384,6 +1476,14 @@ struct designer_workbench::impl {
         };
         if (const auto* type = find_type(item.type)) add_descriptors(type->properties, type->container ? "Container" : "Content");
         add_descriptors(common_properties(), "Geometry & state");
+        // Keep common authoring fields above optional chrome, regardless of
+        // the order in which the schema registers a kind's appearance rows.
+        constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Geometry & state", "Pages",
+            "Appearance", "Image", "Layout details", "Interaction"};
+        const auto rank = [&](const kit::property_desc& row) {
+            return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
+        };
+        std::stable_sort(rows.begin(), rows.end(), [&](const auto& left, const auto& right) { return rank(left) < rank(right); });
 
         if (replaced || inspected.id != next.id || inspected.type != next.type) grid->clear();
         if (sync_inspector_language) grid->set_ui_labels(inspector_labels());

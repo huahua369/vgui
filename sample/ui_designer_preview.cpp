@@ -915,8 +915,8 @@ struct designer_preview::impl {
             return {std::get<double>(property(n, *p)), p, find_property(n.type, size)};
         };
         for (const auto& [id, parent] : doc.nodes) {
-            if (parent.children.empty() || std::get<std::string>(property(parent, *find_property(parent.type, "layout"))) != "absolute")
-                continue;
+            const auto* layout = find_property(parent.type, "layout");
+            if (parent.children.empty() || !layout || std::get<std::string>(property(parent, *layout)) != "absolute") continue;
             for (const auto& child_id : parent.children) {
                 const auto& child = doc.nodes.at(child_id);
                 geometry_sources.emplace(child_id, geometry_source{axis(child, "x", "width"), axis(child, "y", "height")});

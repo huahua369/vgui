@@ -27,6 +27,8 @@ namespace vgui_editor_kit {
 		constexpr vgui_color kErrorText = 0xFFE06C75;
 		constexpr vgui_color kCategoryBg = 0xFF232831;
 		constexpr float kRowHeight = 28.0f;
+		constexpr float kMultilineEditHeight = 108.0f;
+		constexpr float kMultilineRowInset = 2.0f;
 		constexpr float kErrorHeight = 16.0f;
 		constexpr float kLabelWidth = 112.0f;
 		constexpr float kResetWidth = 24.0f;
@@ -48,6 +50,17 @@ namespace vgui_editor_kit {
 		constexpr float kSearchLead = 28.0f;	// search 24 + gap 4
 		constexpr float kOverscan = 96.0f;
 		constexpr std::size_t kMinWindowEntries = 4;
+
+		bool is_multiline_text(const property_desc& desc)
+		{
+			return desc.type == property_type::text && desc.multiline;
+		}
+
+		float row_line_height(const property_desc& desc)
+		{
+			return is_multiline_text(desc)
+				? kMultilineEditHeight + 2.0f * kMultilineRowInset : kRowHeight;
+		}
 
 		constexpr int kFavoriteIconSize = 14;
 		constexpr vgui_color kFavoriteOff = 0xFF9FB0C4;
@@ -1035,6 +1048,8 @@ namespace vgui_editor_kit {
 				 * choice ids.  Rebuild the cache when the incoming descriptor
 				 * changes the menu's contents. */
 				const property_desc& old = item.desc;
+				const bool multiline_changed =
+					is_multiline_text(old) != is_multiline_text(desc);
 				const bool menu_stale = item.menu &&
 					old.type == property_type::enumeration &&
 					(old.choices != desc.choices ||
@@ -1051,6 +1066,8 @@ namespace vgui_editor_kit {
 				item.desc = std::move(desc);
 				item.value = item.desc.value;
 				item.mixed = false;
+				if (multiline_changed)
+					update_row_layout(item);
 				refresh_row_desc(item);
 				sync_row_from_targets(item);
 				update_row_ui(item, true);
@@ -1987,23 +2004,16 @@ private:
 		if (!item.panel)
 			return;
 
-		// Rows use a fixed height; the style panel padding would make the
-		// 24px controls overflow the row and break hit testing.
+		// Skip the style's panel padding so the controls fit the row height.
 		vgui_widget_set_align_self(item.panel, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.panel, VGUI_LAYOUT_COLUMN);
 		vgui_widget_set_gap(item.panel, 0);
 		vgui_widget_set_padding(item.panel, 0, 0, 0, 0);
-		vgui_widget_set_size(item.panel, 0, kRowHeight);
 
 		item.line = vgui_widget_add(item.panel, VGUI_PANEL, nullptr);
-		vgui_widget_set_size(item.line, 0, kRowHeight);
 		vgui_widget_set_align_self(item.line, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_layout(item.line, VGUI_LAYOUT_ROW);
-		/* 24px controls sit in a 28px row; centering keeps the 2px slack on
-		 * both edges so labels and values share one baseline. */
-		vgui_widget_set_align_items(item.line, VGUI_ALIGN_CENTER);
 		vgui_widget_set_gap(item.line, 6);
-		vgui_widget_set_padding(item.line, 0, 0, 0, 0);
 
 		item.label = vgui_widget_add(item.line, VGUI_LABEL, item.desc.label.c_str());
 		vgui_widget_set_size(item.label, kLabelWidth, 24);
@@ -2180,7 +2190,6 @@ private:
 		default:
 			item.editor = vgui_widget_add(item.line, VGUI_EDIT, item.value.c_str());
 			vgui_widget_set_grow(item.editor, 1.0f);
-			vgui_widget_set_size(item.editor, 0, 24);
 			vgui_widget_set_font_size(item.editor, 13);
 			if (!item.desc.placeholder.empty())
 				vgui_edit_set_placeholder(item.editor, item.desc.placeholder.c_str());
@@ -2230,7 +2239,29 @@ private:
 			}
 		}
 
+		update_row_layout(item);
 		update_row_ui(item, true);
+	}
+
+	void property_grid::update_row_layout(row& item)
+	{
+		if (!item.panel)
+			return;
+		const bool multiline = is_multiline_text(item.desc);
+		const float inset = multiline ? kMultilineRowInset : 0.0f;
+		vgui_widget_set_size(item.panel, 0, row_height(item));
+		vgui_widget_set_size(item.line, 0, row_line_height(item.desc));
+		/* Keep compact controls centered on single-line rows and beside the
+		 * first line of a multiline editor. */
+		vgui_widget_set_align_items(item.line,
+			multiline ? VGUI_ALIGN_START : VGUI_ALIGN_CENTER);
+		vgui_widget_set_padding(item.line, 0, inset, 0, inset);
+		if (item.editor && vgui_widget_get_kind(item.editor) == VGUI_EDIT)
+		{
+			if (item.desc.type == property_type::text)
+				vgui_edit_set_multiline(item.editor, multiline ? 1 : 0);
+			vgui_widget_set_size(item.editor, 0, multiline ? kMultilineEditHeight : 24.0f);
+		}
 	}
 
 	void property_grid::update_edit_field_background(row& item)
@@ -2354,8 +2385,7 @@ private:
 			vgui_widget_set_text(item.error_label, item.error.c_str());
 			vgui_widget_set_visible(item.error_label, has_error ? 1 : 0);
 		}
-		vgui_widget_set_size(item.panel, 0,
-			has_error ? kRowHeight + kErrorHeight + 2.0f : kRowHeight);
+		vgui_widget_set_size(item.panel, 0, row_height(item));
 
 		const std::string& tip = has_error ? item.error : item.desc.tooltip;
 		vgui_widget_set_tooltip(item.panel, tip.c_str());
@@ -2384,7 +2414,8 @@ private:
 
 	float property_grid::row_height(const row& item) const
 	{
-		return item.error.empty() ? kRowHeight : kRowHeight + kErrorHeight + 2.0f;
+		return row_line_height(item.desc) +
+			(item.error.empty() ? 0.0f : kErrorHeight + 2.0f);
 	}
 
 	void property_grid::rebuild_display()
@@ -2740,6 +2771,14 @@ private:
 		update_row_error_ui(item);
 		if (height_changed && content_)
 		{
+			// Keep the virtual offsets in sync with the actual row height.
+			const auto entry = std::find_if(display_.begin(), display_.end(),
+				[&item](const display_entry& candidate) {
+					return candidate.token == item.token;
+				});
+			if (entry == display_.end())
+				return;
+			entry->height = row_height(item);
 			recompute_display_layout();
 			sync_scroll_to_content();
 			update_window();
@@ -2748,16 +2787,8 @@ private:
 
 	void property_grid::clear_row_error(row& item)
 	{
-		if (item.error.empty())
-			return;
-		item.error.clear();
-		update_row_error_ui(item);
-		if (content_)
-		{
-			recompute_display_layout();
-			sync_scroll_to_content();
-			update_window();
-		}
+		if (!item.error.empty())
+			set_row_error(item, {});
 	}
 
 	void property_grid::reset_drag_state(row& item)

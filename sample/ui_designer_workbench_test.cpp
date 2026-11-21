@@ -14,6 +14,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <random>
 #include <stdexcept>
@@ -391,7 +392,8 @@ void exercise_menus()
 
     auto* submenu = workbench.open_new_control();
     auto* resources = vgui_context_get_open_menu(ctx);
-    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image"});
+    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+        "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
     check(vgui_menu_get_count(submenu) == static_cast<int>(ui::types().size()), "New Control does not match the schema");
     workbench.highlight(submenu, "Image");
     check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_menu_is_open(submenu) &&
@@ -1676,6 +1678,155 @@ void exercise_outline_drag()
     verify_move("cross-Panel reparent", reparented, reparent_revision);
 }
 
+void exercise_control_schema()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "controls.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    std::map<std::string, std::string, std::less<>> created;
+    for (const auto& type : ui::types()) {
+        workbench.bench.select(root);
+        workbench.frame();
+        const auto id = workbench.add(type.key, root);
+        const auto& node = model.current().nodes.at(id);
+        check(std::get<double>(node.props.at("width")) > 0 && std::get<double>(node.props.at("height")) > 0,
+            "new schema control has no default size: " + std::string(type.key));
+        created.emplace(type.key, id);
+    }
+    check(created.size() == 18, "some declarative core controls are missing from the Resource menu");
+
+    const auto tabs = created.at("tabview");
+    workbench.bench.select(tabs);
+    workbench.frame();
+    auto* submenu = workbench.open_new_control();
+    check(!vgui_menu_get_item_enabled(submenu, menu_item(submenu, "Label")) &&
+        vgui_menu_get_item_enabled(submenu, menu_item(submenu, "Panel")), "Tab View should accept panels only");
+    check(workbench.key(VGUI_KEY_ESCAPE) && workbench.key(VGUI_KEY_ESCAPE), "could not close the restricted creation menu");
+    workbench.add("panel", tabs);
+    auto* search = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(search);
+    check(vgui_input_text(ctx, "Page title"), "could not search for the tab page title property");
+    workbench.frame();
+    workbench.set_text("page_title", "Overview");
+    check(std::get<std::string>(model.current().nodes.at(std::string(workbench.bench.selection())).props.at("page_title")) ==
+        "Overview", "tab page title did not apply in the Inspector");
+    workbench.click(search);
+    vgui_edit_select_all(search);
+    check(workbench.key(VGUI_KEY_BACKSPACE), "could not clear the Inspector search");
+
+    const auto list = created.at("list");
+    workbench.bench.select(list);
+    workbench.frame();
+    auto* editor = workbench.widget("property:items", VGUI_EDIT);
+    vgui_a11y_info info{};
+    vgui_widget_get_a11y_info(editor, &info);
+    check(info.role == VGUI_A11Y_ROLE_MULTILINE_EDIT, "items should have a multiline inspector field");
+    workbench.click(editor);
+    vgui_edit_select_all(editor);
+    const auto baseline = model.current();
+    check(vgui_input_text(ctx, R"(["First",{"text":"Second","selected":true,"icon":"icons/open.png","buttons":[{"icon":"icons/open.png","action":"row.open"}]}])"),
+        "could not edit list icon and inline button");
+    workbench.frame();
+    const auto preview = model.current();
+    check(preview.resources.size() == 1, "the live inspector must register a single shared image");
+    const auto icon_key = preview.resources.begin()->first;
+    const auto item_json = std::string(R"(["First",{"buttons":[{"action":"row.open","icon":")") + icon_key +
+        R"("}],"icon":")" + icon_key + R"(","selected":true,"text":"Second"}])";
+    check(preview.resources.begin()->second == "icons/open.png" &&
+        std::get<std::string>(preview.nodes.at(list).props.at("items")) == item_json && model.committed() == baseline,
+        "the live inspector registers a shared image and rewrites both icon references before commit");
+    vgui_edit_select_all(editor);
+    check(vgui_input_text(ctx, R"([{"text":"Invalid","icon":"icons/new.png","buttons":[{"icon":"../outside.png"}]}])"),
+        "could not enter an unsafe icon path");
+    workbench.frame();
+    check(model.current() == preview, "invalid nested icon path overwrote the last valid preview or registered other resources");
+    vgui_edit_select_all(editor);
+    check(vgui_input_text(ctx, "["), "could not enter invalid item JSON");
+    workbench.frame();
+    check(model.current() == preview, "invalid item JSON overwrote the last valid values");
+    workbench.bench.select(root);
+    workbench.frame();
+    check(model.committed() == preview, "leaving the item field did not commit the last valid configuration");
+    check(model.undo() && model.current() == baseline && model.redo() && model.current() == preview,
+        "the item edit and its newly registered image must undo and redo as one step");
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == preview, "new control/item edits did not survive save and reopen");
+}
+
+void exercise_radio_group_inspector()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "radio-groups.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const ui::edit radios[] = {
+        ui::insert_node{"light", root, {"radio", "Light", {{"radio_group", std::string("主题")}, {"checked", true}}, {}}},
+        ui::insert_node{"dark", root, {"radio", "Dark", {{"radio_group", std::string("主题")}}, {}}},
+        ui::insert_node{"language", root, {"radio", "Language", {{"radio_group", std::string("语言")}, {"checked", true}}, {}}},
+        ui::insert_node{"unnamed", root, {"radio", "Default", {{"checked", true}}, {}}},
+    };
+    check(model.apply(radios), "could not seed same-container independent radio groups");
+    workbench.bench.select("dark");
+    workbench.frame();
+    const auto checked = [&](const char* id) {
+        const auto& props = model.current().nodes.at(id).props;
+        const auto value = props.find("checked");
+        return value != props.end() && std::get<bool>(value->second);
+    };
+    const auto initial = model.current();
+    workbench.click(workbench.widget("property:checked", VGUI_CHECKBOX));
+    workbench.frame();
+    const auto changed = model.current();
+    check(checked("dark") && !checked("light") && checked("language") && checked("unnamed"),
+        "Initially checked must transfer the default choice only within the named group");
+    check(model.undo() && model.current() == initial && model.redo() && model.current() == changed,
+        "transferring the default choice is one undo/redo operation");
+    workbench.frame();
+
+    const auto type_group = [&](const char* group) {
+        auto* edit = workbench.widget("property:radio_group", VGUI_EDIT);
+        workbench.click(edit);
+        vgui_edit_select_all(edit);
+        check(vgui_input_text(ctx, group), "group editor did not accept a name");
+        workbench.frame();
+    };
+    type_group("语言");
+    const auto moved = model.current();
+    check(model.committed() == changed && moved != changed && checked("dark") && !checked("language") && checked("unnamed") &&
+        std::get<std::string>(moved.nodes.at("dark").props.at("radio_group")) == "语言",
+        "moving a checked radio into a group must update peer selection live without Enter");
+    check(workbench.key(VGUI_KEY_ESCAPE) && model.current() == changed, "Escape must revert the live group and its peer's check state");
+    workbench.frame();
+    type_group("语言");
+    workbench.bench.select(root);
+    workbench.frame();
+    check(model.committed() == moved && model.undo() && model.current() == changed && model.redo() && model.current() == moved,
+        "changing group membership and the destination choice commits and undoes atomically");
+    workbench.bench.select("dark");
+    workbench.frame();
+    auto* group_edit = workbench.widget("property:radio_group", VGUI_EDIT);
+    workbench.click(group_edit);
+    vgui_edit_select_all(group_edit);
+    check(workbench.key(VGUI_KEY_BACKSPACE) && !model.current().nodes.at("dark").props.contains("radio_group") &&
+        checked("dark") && !checked("unnamed"), "clearing a checked radio's name moves it to the default group");
+    check(workbench.key(VGUI_KEY_ESCAPE) && model.current() == moved, "cancelling default regroup restores named and default choices");
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == moved, "group names and updated initial choices must survive save/reopen");
+    workbench.bench.select("dark");
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_a11y_name(workbench.widget("property:radio_group", VGUI_EDIT))) == "组名",
+        "the radio group field must have a localized Chinese label");
+}
+
 void exercise_menu_language()
 {
     using ui::designer_language;
@@ -1693,7 +1844,8 @@ void exercise_menu_language()
     check(workbench.key(VGUI_KEY_ESCAPE), "could not dismiss localized Edit menu");
 
     auto* submenu = workbench.open_new_control();
-    check_menu_items(submenu, {"面板", "标签", "按钮", "输入框", "图片"});
+    check_menu_items(submenu, {"面板", "标签", "按钮", "输入框", "图片", "复选框", "单选按钮", "开关",
+        "滑块", "进度条", "分隔线", "列表", "树", "菜单", "菜单栏", "分栏", "选项卡", "停靠容器"});
     workbench.highlight(submenu, "按钮");
     const auto revision = workbench.model.revision();
     workbench.strings = ui::designer_strings(designer_language::english);
@@ -1704,7 +1856,8 @@ void exercise_menu_language()
         // If the popup stays open, its labels must not lag behind the bar.
         const auto item = menu_item(resources, "New Control");
         submenu = vgui_menu_get_submenu(resources, item);
-        check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image"});
+        check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+            "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
         if (vgui_menu_is_open(submenu))
             check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_menu_is_open(submenu),
                 "translated New Control popup did not dismiss with Escape");
@@ -1714,7 +1867,8 @@ void exercise_menu_language()
     check(workbench.model.revision() == revision && !workbench.model.dirty(),
         "translating the active menu changed the document");
     submenu = workbench.open_new_control();
-    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image"});
+    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+        "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
     check(workbench.key(VGUI_KEY_ESCAPE) && workbench.key(VGUI_KEY_ESCAPE) && !vgui_context_get_open_menu(ctx),
         "could not dismiss the reopened New Control popup chain");
 }
@@ -1882,6 +2036,8 @@ int main()
         exercise_font_family();
         exercise_outline_icons();
         exercise_outline_drag();
+        exercise_control_schema();
+        exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_language_preferences();
         exercise_layout_preferences();

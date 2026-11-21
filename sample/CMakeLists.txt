@@ -272,6 +272,8 @@ set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${designer_zh_ca
 file(READ "${designer_zh_catalog}" VGUI_DESIGNER_ZH_JSON)
 file(READ "${designer_en_catalog}" VGUI_DESIGNER_EN_JSON)
 configure_file(ui_designer_catalogs.h.in ui_designer_catalogs.h @ONLY)
+set_property(SOURCE ui_designer_locale.cpp APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/ui_designer_catalogs.h")
 add_library(ui_designer_locale STATIC ui_designer_locale.cpp)
 target_include_directories(ui_designer_locale PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(ui_designer_locale PRIVATE nlohmann_json::nlohmann_json)

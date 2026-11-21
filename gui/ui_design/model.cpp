@@ -1,4 +1,9 @@
 #include "model.h"
+#include "primitive_schema.h"
+#include "collection_schema.h"
+#include "container_schema.h"
+
+#include <array>
 
 #include <algorithm>
 #include <charconv>
@@ -15,6 +20,10 @@ constexpr std::size_t max_text_bytes = 16384;
 constexpr std::size_t max_path_bytes = 1024;
 constexpr std::size_t max_name_bytes = 256;
 constexpr double max_geometry = 1000000;
+constexpr sv align_self_choices[] = {"auto", "start", "center", "end", "stretch"};
+constexpr sv cursor_choices[] = {"default", "arrow", "text", "wait", "no", "hand", "size_h", "size_v"};
+constexpr sv tooltip_anchors[] = {"pointer", "widget"};
+constexpr sv focus_choices[] = {"default", "yes", "no"};
 
 const property_descriptor common[] = {
     {"x", "X", value_type::number, 0.0, -max_geometry, max_geometry},
@@ -24,8 +33,32 @@ const property_descriptor common[] = {
     {"grow", "Grow", value_type::number, 0.0, 0, max_geometry},
     {"visible", "Visible", value_type::boolean, true},
     {"enabled", "Enabled", value_type::boolean, true},
+    {"min_width", "Minimum width", value_type::number, 0.0, 0, max_geometry},
+    {"min_height", "Minimum height", value_type::number, 0.0, 0, max_geometry},
+    {"max_width", "Maximum width", value_type::number, 0.0, 0, max_geometry},
+    {"max_height", "Maximum height", value_type::number, 0.0, 0, max_geometry},
+    {"margin_left", "Left margin", value_type::number, 0.0, 0, max_geometry},
+    {"margin_top", "Top margin", value_type::number, 0.0, 0, max_geometry},
+    {"margin_right", "Right margin", value_type::number, 0.0, 0, max_geometry},
+    {"margin_bottom", "Bottom margin", value_type::number, 0.0, 0, max_geometry},
+    {"align_self", "Align self", value_type::choice, std::string("auto"), 0, 0, align_self_choices},
+    {"background", "Background", value_type::color, std::string{}},
+    {"border_color", "Border color", value_type::color, std::string{}},
+    {"border_width", "Border width", value_type::number, 0.0, 0, 256},
+    {"rounding", "Corner radius", value_type::number, 0.0, 0, max_geometry},
+    {"opacity", "Opacity", value_type::number, 1.0, 0, 1},
+    {"input_enabled", "Accept input", value_type::boolean, true},
+    {"focusable", "Keyboard focus", value_type::choice, std::string("default"), 0, 0, focus_choices},
+    {"focus_alpha", "Focus ring opacity", value_type::number, 1.0, 0, 1},
+    {"cursor", "Mouse cursor", value_type::choice, std::string("default"), 0, 0, cursor_choices},
+    {"tooltip", "Tooltip", value_type::text, std::string{}},
+    {"tooltip_enabled", "Enable tooltip", value_type::boolean, true},
+    {"tooltip_delay", "Tooltip delay (s)", value_type::number, -1.0, -1, 60},
+    {"tooltip_anchor", "Tooltip anchor", value_type::choice, std::string("pointer"), 0, 0, tooltip_anchors},
+    {"tooltip_when_disabled", "Tooltip even when disabled", value_type::boolean, true},
+    {"a11y_name", "Accessible name", value_type::text, std::string{}},
 };
-constexpr sv layouts[] = {"absolute", "row", "column"};
+constexpr sv layouts[] = {"absolute", "row", "column", "wrap"};
 constexpr sv alignment[] = {"start", "center", "end", "stretch"};
 constexpr sv justification[] = {"start", "center", "end", "space-between", "space-around"};
 const property_descriptor panel[] = {
@@ -62,10 +95,39 @@ const property_descriptor edit_box[] = {
 const property_descriptor image[] = {
     {"resource", "Resource key", value_type::resource_key, std::string{}},
 };
+template <class... Groups>
+auto properties(const Groups&... groups)
+{
+    std::array<property_descriptor, (std::extent_v<Groups> + ...)> result;
+    auto next = result.begin();
+    ((next = std::copy(std::begin(groups), std::end(groups), next)), ...);
+    return result;
+}
+
+const auto panel_properties = properties(panel, detail::extra_panel_properties, detail::page_properties);
+const auto label_properties = properties(label, detail::extra_label_properties);
+const auto button_properties = properties(button, detail::extra_button_properties);
+const auto edit_properties = properties(edit_box, detail::extra_edit_properties);
+const auto image_properties = properties(image, detail::extra_image_properties);
 const type_descriptor descriptors[] = {
-    {"panel", "Panel", true, panel}, {"label", "Label", false, label},
-    {"button", "Button", false, button}, {"edit", "Edit", false, edit_box},
-    {"image", "Image", false, image},
+    {"panel", "Panel", true, panel_properties, 240, 160},
+    {"label", "Label", false, label_properties, 120, 24},
+    {"button", "Button", false, button_properties, 120, 36},
+    {"edit", "Edit", false, edit_properties, 200, 36},
+    {"image", "Image", false, image_properties, 128, 128},
+    {"checkbox", "Checkbox", false, detail::checkbox_properties, 144, 28},
+    {"radio", "Radio Button", false, detail::radio_properties, 144, 28},
+    {"switch", "Switch", false, detail::switch_properties, 144, 28},
+    {"slider", "Slider", false, detail::slider_properties, 180, 28},
+    {"progress", "Progress Bar", false, detail::progress_properties, 180, 24},
+    {"separator", "Separator", false, detail::separator_properties, 160, 8},
+    {"list", "List", false, detail::list_properties, 210, 165},
+    {"tree", "Tree", false, detail::tree_properties, 210, 180},
+    {"menu", "Menu", false, detail::menu_properties, 120, 32},
+    {"menubar", "Menu Bar", false, detail::menubar_properties, 240, 32},
+    {"splitter", "Splitter", true, detail::splitter_properties, 300, 180, 2},
+    {"tabview", "Tab View", true, detail::tabview_properties, 300, 180, max_nodes, true},
+    {"dock", "Dock", true, detail::dock_properties, 400, 240, max_nodes, true},
 };
 
 bool fail(diagnostic* error, std::string path, std::string message)
@@ -149,6 +211,10 @@ bool check_value(const document& doc, const property_descriptor& desc, const val
     }
     const auto* text = std::get_if<std::string>(&val);
     if (!text) return fail(error, path, "expected a string");
+    if (desc.key == "radio_group")
+        return (valid_text(*text, max_name_bytes) && std::none_of(text->begin(), text->end(), [](unsigned char c) {
+            return c < 32 || c == 127;
+        })) || fail(error, path, "expected a single-line UTF-8 group name of at most 256 bytes");
     if (desc.type == value_type::text)
         return valid_text(*text, max_text_bytes) || fail(error, path, "invalid or too long UTF-8 text");
     if (desc.type == value_type::color)
@@ -341,12 +407,58 @@ const property_descriptor* find_property(sv type, sv key)
     return nullptr;
 }
 
+bool accepts_child(const type_descriptor& parent, std::string_view child_type, std::size_t existing_children)
+{
+    return parent.container && existing_children < parent.max_children &&
+        (!parent.panel_children_only || child_type == "panel");
+}
+
 document make_document()
 {
     document doc;
     doc.root = "root";
     doc.nodes.emplace(doc.root, node{"panel", "Root", {}, {}});
     return doc;
+}
+
+bool prepare_items_edit(const document& doc, sv type, sv input, std::string& result,
+    std::vector<edit>& batch, std::string& reason)
+{
+    namespace collection = detail::collection_items;
+    collection::json items;
+    if (!collection::parse(type, input, items, reason)) return false;
+    std::vector<edit> resources;
+    std::optional<std::map<std::string, std::string, std::less<>>> keys_by_path;
+    std::size_t sequence = 0;
+    if (!collection::visit_icons(items, "items", [&](collection::json& icon, const std::string& path) {
+        const auto& image = icon.get_ref<const std::string&>();
+        if (doc.resources.contains(image)) return true;
+        if (!valid_resource_path(image)) {
+            reason = path + ": expected an existing resource key or a project-relative image path";
+            return false;
+        }
+        if (!keys_by_path) {
+            keys_by_path.emplace();
+            for (const auto& [key, file] : doc.resources) keys_by_path->try_emplace(file, key);
+        }
+        auto key = keys_by_path->find(image);
+        if (key == keys_by_path->end()) {
+            if (doc.resources.size() + resources.size() >= max_resources) {
+                reason = path + ": too many resources";
+                return false;
+            }
+            std::string generated;
+            do generated = "image_" + std::to_string(++sequence);
+            while (doc.resources.contains(generated));
+            key = keys_by_path->emplace(image, generated).first;
+            resources.emplace_back(set_resource{std::move(generated), image});
+        }
+        icon = key->second;
+        return true;
+    })) return false;
+    result = items.dump();
+    batch = std::move(resources);
+    return true;
 }
 
 bool validate(const document& doc, diagnostic* error)
@@ -373,14 +485,57 @@ bool validate(const document& doc, diagnostic* error)
             const auto prop_path = path + "/props/" + pointer_token(key);
             const auto* prop = find_property(item.type, key);
             if (!prop) return fail(error, prop_path, "unknown property");
-            if (!check_value(doc, *prop, val, prop_path, error)) return false;
+            if (prop->type == value_type::items) {
+                const auto* source = std::get_if<std::string>(&val);
+                std::string reason;
+                if (!source) return fail(error, prop_path, "expected an item array");
+                namespace collection = detail::collection_items;
+                collection::json items;
+                if (!collection::parse(item.type, *source, items, reason)) return fail(error, prop_path, std::move(reason));
+                if (!collection::visit_icons(items, prop_path, [&](const collection::json& icon, const std::string& icon_path) {
+                    const auto& image = icon.get_ref<const std::string&>();
+                    return (is_key(image) && doc.resources.contains(image)) ||
+                        fail(error, icon_path, "unknown image resource key");
+                })) return false;
+            } else if (!check_value(doc, *prop, val, prop_path, error)) return false;
+        }
+        const auto n = [&](std::string_view key) {
+            const auto it = item.props.find(key);
+            return std::get<double>(it == item.props.end() ? find_property(item.type, key)->default_value : it->second);
+        };
+        if ((n("max_width") > 0 && n("min_width") > n("max_width")) ||
+            (n("max_height") > 0 && n("min_height") > n("max_height")))
+            return fail(error, path + "/props", "maximum size must be at least minimum size, or zero for no limit");
+        if (item.type == "slider" || item.type == "progress") {
+            const auto low = static_cast<float>(n("min_value")), high = static_cast<float>(n("max_value"));
+            if (!(low < high)) return fail(error, path + "/props/min_value", "minimum must be less than maximum");
+            if (item.props.contains("value") && (static_cast<float>(n("value")) < low || static_cast<float>(n("value")) > high))
+                return fail(error, path + "/props/value", "value outside configured range");
+            if (n("step") > double(high) - low)
+                return fail(error, path + "/props/step", "step must not exceed the configured range");
         }
         if (!type->container && !item.children.empty()) return fail(error, path + "/children", "node cannot contain children");
+        std::set<sv> checked_radio_groups;
         for (std::size_t i = 0; i < item.children.size(); ++i) {
             const auto& child = item.children[i];
-            if (child == doc.root || !doc.nodes.contains(child) || !parented.insert(child).second)
-                return fail(error, path + "/children/" + std::to_string(i),
-                    "child is missing, is the root, or already has a parent");
+            const auto child_path = path + "/children/" + std::to_string(i);
+            const auto target = doc.nodes.find(child);
+            if (child == doc.root || target == doc.nodes.end() || !parented.insert(child).second)
+                return fail(error, child_path, "child is missing, is the root, or already has a parent");
+            if (!accepts_child(*type, target->second.type, i))
+                return fail(error, child_path, "child type or count is not supported by this container");
+            if (target->second.type == "radio") {
+                const auto flag = target->second.props.find("checked");
+                const bool* checked = flag == target->second.props.end() ? nullptr : std::get_if<bool>(&flag->second);
+                if (checked && *checked) {
+                    const auto name = target->second.props.find("radio_group");
+                    const auto* group = name == target->second.props.end() ? nullptr : std::get_if<std::string>(&name->second);
+                    // A child may not have had its own property types checked yet.
+                    if (name != target->second.props.end() && !group) continue;
+                    if (!checked_radio_groups.emplace(group ? sv(*group) : sv{}).second)
+                        return fail(error, node_path(child) + "/props/checked", "only one radio in a group can be initially checked under the same parent");
+                }
+            }
         }
     }
 

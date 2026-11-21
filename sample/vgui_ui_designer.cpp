@@ -1926,6 +1926,10 @@ int run(bool smoke, fs::path open_path) {
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
             exercise_image_button(*win, shell.get(), editor, advance);
             exercise_project_fonts(*win, shell.get(), editor, *picker, advance, absolute_fixture);
+            require(editor.open(fs::path(VGUI_SOURCE_DIR) / "sample/res/control-gallery.vgui.json"), "could not open the core control gallery");
+            advance();
+            require(editor.preview_ready(true) && editor.preview().snapshot()->nodes.size() == editor.history().current().nodes.size(),
+                "control gallery did not render the full design");
         } catch (...) {
             app.wait_gpu();
             throw;

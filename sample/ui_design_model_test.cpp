@@ -192,6 +192,96 @@ void canonical_round_trip()
         "canonical encoding must not sort or discard ordered children");
 }
 
+void collection_json_round_trip()
+{
+    const auto doc = decode(json_document(R"({
+        "root":{"type":"panel","children":["rows","tree","menu","bar"]},
+        "rows":{"type":"list","props":{"items":["First",{"text":"Second","selected":true,"icon":"open","buttons":[
+            {"icon":"open","action":"row.open"},{"action":"row.details"}]}]}},
+        "tree":{"type":"tree","props":{"items":[{"text":"Parent","expanded":true,
+            "children":[{"text":"Child","selected":true,"buttons":[{"icon":"open"}]}]}]}},
+        "menu":{"type":"menu","props":{"items":[{"separator":true},{"text":"Run","action":"file.run","icon":"open"}]}},
+        "bar":{"type":"menubar","props":{"items":[{"text":"File","children":[{"text":"Open","icon":"open"}]}]}}
+    })", "root", R"({"open":"icons/open.png"})"));
+    const auto encoded = encode(doc);
+    std::size_t offset = 0;
+    for (int collections = 0; collections < 4; ++collections) {
+        offset = encoded.find("\"items\": [", offset);
+        check(offset != std::string::npos, "each collection must encode items as a natural JSON array");
+        ++offset;
+    }
+    const auto reopened = decode(encoded);
+    check(reopened == doc && encode(reopened) == encoded, "collection JSON canonical round trip");
+
+    const struct { const char* kind; const char* items; } invalid[] = {
+        {"list", R"("[]")"}, // A file must not contain a string with embedded JSON.
+        {"list", R"([{"text":"Row","selected":1}])"},
+        {"list", R"([{"text":"Row","icon":""}])"},
+        {"list", R"([{"text":"Row","buttons":[1]}])"},
+        {"list", R"([{"text":"Row","buttons":[{},{},{},{},{}]}])"},
+        {"tree", R"([{"text":"Row","buttons":[{"action":"bad/key"}]}])"},
+        {"menu", R"([{"text":"Row","buttons":[]}])"},
+        {"menubar", R"([{"text":"Title","children":[],"icon":"open"}])"},
+        {"tree", R"([{"text":"Parent","children":{}}])"},
+        {"menu", R"([{"separator":true,"action":"bad.extra"}])"},
+        {"menu", R"([{"text":"Run","action":"file/run"}])"},
+        {"menubar", R"([{"text":"Missing children"}])"},
+    };
+    for (const auto& [kind, items] : invalid) {
+        const auto nodes = R"({"root":{"type":"panel","children":["widget"]},"widget":{"type":")"s + kind +
+            R"(","props":{"items":)" + items + "}}}";
+        const auto error = reject_json(json_document(nodes), std::string(kind) + " malformed items " + items);
+        check(error.path == "/nodes/widget/props/items", "collection diagnostic points to the items property");
+    }
+    check(reject_json(json_document(R"({"root":{"type":"panel","children":["tree"]},
+        "tree":{"type":"tree","props":{"items":[{"text":"Root","children":[
+        {"text":"Leaf","buttons":[{"icon":"unregistered"}]}]}]}}})"), "dangling nested button icon").path ==
+        "/nodes/tree/props/items/0/children/0/buttons/0/icon", "dangling icon reports the exact nested field");
+
+    auto broken = doc;
+    broken.resources.clear();
+    ui::diagnostic error;
+    check(!ui::validate(broken, &error) && error.path == "/nodes/bar/props/items/0/children/0/icon",
+        "an icon referenced by a popup entry prevents removing its resource");
+
+    // The deepest supported tree item can still contain a button object.
+    std::string deep = R"([{"text":"Leaf","buttons":[{"icon":"open"}]}])";
+    for (int i = 1; i < 12; ++i) deep = R"([{"text":"Parent","children":)" + deep + "}]";
+    auto full_depth = doc;
+    full_depth.nodes.at("tree").props["items"] = deep;
+    check(encode(decode(encode(full_depth))) == encode(full_depth), "deepest supported row round trips with buttons");
+}
+
+void named_radio_groups()
+{
+    const auto doc = decode(json_document(R"({
+        "root":{"type":"panel","children":["light","dark","language","default","unnamed","nested"]},
+        "light":{"type":"radio","props":{"radio_group":"主题","checked":true}},
+        "dark":{"type":"radio","props":{"radio_group":"主题"}},
+        "language":{"type":"radio","props":{"radio_group":"语言","checked":true}},
+        "default":{"type":"radio","props":{"radio_group":"","checked":true}},
+        "unnamed":{"type":"radio"},
+        "nested":{"type":"panel","children":["other"]},
+        "other":{"type":"radio","props":{"radio_group":"主题","checked":true}}
+    })"));
+    check(decode(encode(doc)) == doc, "named and default groups round trip without changing the tree");
+    ui::diagnostic error;
+    auto invalid = doc;
+    invalid.nodes.at("dark").props["checked"] = true;
+    check(!ui::validate(invalid, &error) && error.path == "/nodes/dark/props/checked",
+        "two checked radios cannot share a named group under one parent");
+    invalid = doc;
+    invalid.nodes.at("unnamed").props["checked"] = true;
+    check(!ui::validate(invalid, &error) && error.path == "/nodes/unnamed/props/checked",
+        "an omitted name and an explicit empty name are the same group");
+    invalid = doc;
+    for (const ui::value& name : {ui::value{true}, ui::value{"multi\nline"s}, ui::value{std::string(257, 'a')}}) {
+        invalid.nodes.at("light").props["radio_group"] = name;
+        check(!ui::validate(invalid, &error) && error.path == "/nodes/light/props/radio_group",
+            "a group name is a bounded single-line string");
+    }
+}
+
 void font_properties_round_trip()
 {
     const ui::document doc{"root", {
@@ -457,6 +547,30 @@ ui::diagnostic reject_edit(ui::session& s, std::initializer_list<ui::edit> edits
     expect_failure(s.apply({edits.begin(), edits.size()}, &error), error, context);
     check(snapshot(s) == before, std::string(context) + ": mutated session on failure");
     return error;
+}
+
+void declarative_container_constraints()
+{
+    ui::session s;
+    const auto& root = s.current().root;
+    apply(s, {ui::insert_node{"split", root, {"splitter", "", {}, {}}},
+        ui::insert_node{"first", "split", {"panel", "", {}, {}}},
+        ui::insert_node{"label", "split", {"label", "", {}, {}}},
+        ui::insert_node{"tabs", root, {"tabview", "", {}, {}}},
+        ui::insert_node{"tab_page", "tabs", {"panel", "", {}, {}}},
+        ui::insert_node{"dock", root, {"dock", "", {}, {}}},
+        ui::insert_node{"dock_page", "dock", {"panel", "", {}, {}}},
+        ui::insert_node{"rows", root, {"list", "", {{"items", R"(["Row"])"s}}, {}}}});
+    check(s.current().nodes.at("split").children == std::vector<std::string>{"first", "label"},
+        "a splitter accepts two children in order, including a non-panel");
+    check(reject_edit(s, {ui::insert_node{"third", "split", {"panel", "", {}, {}}}},
+        "third splitter child").path == "/nodes/split/children/2", "splitter diagnostic points to the extra pane");
+    check(reject_edit(s, {ui::move_node{"label", "tabs"}}, "tab view requires a panel page").path ==
+        "/nodes/tabs/children/1", "tab view diagnostic points to the non-panel page");
+    check(reject_edit(s, {ui::copy_subtree{"label", "dock", {{"label", "copied"}}}},
+        "dock requires a panel page").path == "/nodes/dock/children/1", "dock diagnostic points to the non-panel page");
+    check(reject_edit(s, {ui::set_property{"rows", "items", ui::value{"["s}}},
+        "malformed inspector item array").path == "/nodes/rows/props/items", "malformed item text reports its property");
 }
 
 void atomic_transactions()
@@ -736,6 +850,9 @@ int main()
         {"font property validation", reject_bad_font_properties},
         {"font family resource validation and round trip", font_family_validation},
         {"schema, duplicates and hierarchy", reject_bad_schema_and_tree},
+        {"collection JSON arrays", collection_json_round_trip},
+        {"named radio groups", named_radio_groups},
+        {"declarative container constraints", declarative_container_constraints},
         {"IDs, keys and resource paths", keys_and_paths},
         {"input limits", input_limits},
         {"atomic transactions", atomic_transactions},

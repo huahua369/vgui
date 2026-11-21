@@ -108,6 +108,8 @@ namespace vgui_editor_kit {
 		std::string asset_filter;
 		std::function<std::string()> get_value;
 		std::function<void(const std::string&)> set_value;
+		/* Text rows only: use a taller editor where Enter inserts a newline. */
+		bool multiline = false;
 	};
 
 	/* Result of property_normalize_value(): validates a candidate value for a
@@ -315,8 +317,10 @@ namespace vgui_editor_kit {
 		void set_change_listener(change_listener listener);
 
 		/* Optional host-managed inline editing. Returning true replaces the
-		 * default handling of that event for editable text-backed rows. The
-		 * host must defer structural grid changes until after input dispatch. */
+		 * default handling of that event for editable text-backed rows. Enter
+		 * emits a change instead of a submit in multiline editors; hosts can
+		 * still finish the edit on focus loss. Defer structural grid changes
+		 * until after input dispatch. */
 		enum class text_edit_event { change, submit, cancel };
 		using text_edit_listener = std::function<bool(vgui_widget*, const std::string& id,
 			const std::string& text, text_edit_event)>;
@@ -421,6 +425,7 @@ namespace vgui_editor_kit {
 
 		category_ui* ensure_category(const std::string& name);
 		void ensure_row_ui(row& item);
+		void update_row_layout(row& item);
 		void update_row_ui(row& item, bool sync_editor = true);
 		void update_edit_field_background(row& item);
 		void update_row_error_ui(row& item);

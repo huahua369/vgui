@@ -391,9 +391,18 @@ void test_button_atlases() {
     add_image(doc, "odd-photo", "odd"); // Still a valid image after rejection as an atlas.
     add_button("bad", "bad");
     add_button("missing", "missing");
+    add_button("with-icon");
+    auto& icon = doc.nodes.at("with-icon").props;
+    icon.emplace("icon", "skin"s);
+    icon.emplace("icon_width", 20.0);
+    icon.emplace("icon_height", 16.0);
+    icon.emplace("icon_position", "right"s);
+    icon.emplace("icon_gap", 5.0);
+    add_button("missing-icon");
+    doc.nodes.at("missing-icon").props.emplace("icon", "missing"s);
 
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
-    check(bool(ctx), "create button atlas context");
+    check(bool(ctx), "create button image context");
     image_loader loader;
     loader.sizes = {{"skin", {width, height}}, {"odd", {width, height - 1}}};
     auto bindings = loader.bindings(assets / "..");
@@ -404,19 +413,24 @@ void test_button_atlases() {
     check(rt.mount(doc, 1, bindings), "mount button atlas fixtures");
     const std::vector<image_call> expected = {{ctx.get(), "skin", fs::canonical(assets / "skin.rgba")},
         {ctx.get(), "odd", fs::canonical(assets / "odd.rgba")}, {ctx.get(), "bad", fs::canonical(assets / "bad.rgba")}};
-    check(std::ranges::is_permutation(loader.calls, expected), "buttons and images must share one canonical load per key");
+    check(std::ranges::is_permutation(loader.calls, expected), "button atlases, icons and images must share one canonical load per key");
     loader.textures.clear();
     const auto snapshot = rt.layout({400, 600, 1});
     check(bool(snapshot), "layout button atlas fixtures");
     check_loaded(rt, *snapshot, "photo", width, height);
     check_loaded(rt, *snapshot, "odd-photo", width, height - 1);
-    check(rt.diagnostics().size() == 3, "only unavailable button atlases should report diagnostics");
+    check(rt.diagnostics().size() == 4, "only unavailable button atlases and icons should report diagnostics");
     for (auto id : {"odd", "bad", "missing"}) check_placeholder(rt, *snapshot, id, "atlas");
-    for (auto id : {"skinned", "repeat", "plain"})
+    check(std::ranges::any_of(rt.diagnostics(), [](const auto& d) { return d.path == "/nodes/missing-icon/props/icon"; }),
+        "missing button icon reports its own property path");
+    for (auto id : {"skinned", "repeat", "plain", "with-icon", "missing-icon"})
         check(!node(*snapshot, id).image_placeholder, std::string(id) + ": unexpected button placeholder");
 
     float plain_w, plain_h;
     vgui_widget_get_intrinsic_size(rt.widget("plain"), &plain_w, &plain_h);
+    float icon_w, icon_h;
+    vgui_widget_get_intrinsic_size(rt.widget("with-icon"), &icon_w, &icon_h);
+    check(near(icon_w, plain_w + 25), "explicit icon width and gap contribute to button sizing");
     for (auto id : {"skinned", "repeat", "plain", "odd", "bad", "missing"}) {
         auto* button = rt.widget(id);
         check(button && vgui_widget_get_kind(button) == VGUI_BUTTON && std::string_view(vgui_widget_get_text(button)) == "Send",
@@ -437,6 +451,182 @@ void test_button_atlases() {
         check(loader.actions.calls == prior_calls + 1 && loader.actions.id == id && loader.actions.action == "form.send",
             std::string(id) + ": atlas changed button action routing");
     }
+}
+
+void test_collection_icons_and_actions() {
+    temp_dir temp;
+    const auto assets = temp.path / "assets";
+    fs::create_directory(assets);
+    write_image(assets / "shared.rgba");
+    write_image(assets / "accent.rgba", true, image_width + 1);
+    write_image(assets / "bad.rgba", false);
+
+    ui::document doc;
+    ui::diagnostic error;
+    const bool decoded = ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root",
+        "resources":{"shared":"assets/shared.rgba","accent":"assets/accent.rgba",
+            "missing":"assets/missing.rgba","bad":"assets/bad.rgba"},"nodes":{
+        "root":{"type":"panel","children":["rows","tree","menu","bar","photo"]},
+        "rows":{"type":"list","props":{"width":200,"height":125,"scrollable_y":false,"items":[
+            {"text":"First","icon":"shared","buttons":[{"icon":"accent","action":"rows.left"},
+                {"icon":"shared"},{},{"icon":"missing","action":"rows.right"}]},
+            {"text":"Other","selected":true,"buttons":[{"action":"rows.other"}]},
+            {"text":"Disabled","enabled":false,"buttons":[{"action":"rows.disabled"}]},"Plain"]}},
+        "tree":{"type":"tree","props":{"x":215,"width":200,"height":125,"scrollable_x":false,"scrollable_y":false,
+            "items":[{"text":"Branch","expanded":true,"icon":"accent","buttons":[{"action":"tree.root"}],"children":[
+                {"text":"Leaf","selected":true,"icon":"missing","buttons":[{"icon":"shared","action":"tree.leaf.left"},
+                    {"icon":"bad","action":"tree.leaf.right"}]},
+                {"text":"Disabled","enabled":false,"buttons":[{"action":"tree.disabled"}]}]}]}},
+        "menu":{"type":"menu","props":{"y":140,"width":150,"height":32,"close_on_activate":false,"items":[
+            {"text":"Pin","icon":"shared","checked":true,"action":"tools.pin"},{"separator":true},
+            {"text":"More","icon":"accent","children":[{"text":"Export","icon":"bad","action":"tools.export"}]}]}},
+        "bar":{"type":"menubar","props":{"x":215,"y":140,"width":200,"height":32,"items":[
+            {"text":"File","children":[{"text":"Open","icon":"accent","action":"tools.open"},
+                {"text":"Print","icon":"missing"}]}]}},
+        "photo":{"type":"image","props":{"y":185,"resource":"shared"}}
+    }})", doc, &error);
+    check(decoded, "decode decorated collections: " + error.path + " " + error.message);
+    const auto original = doc;
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    // VGUI borrows the drawing callbacks through context destruction.
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create collection icon context");
+    vgui_style style{};
+    vgui_context_get_style(ctx.get(), &style);
+    style.list.row_height = 24.f;
+    style.tree.row_height = 26.f;
+    vgui_context_set_style(ctx.get(), &style);
+    image_loader loader;
+    loader.sizes = {{"accent", {image_width + 1, image_height}}};
+    auto bindings = loader.bindings(assets / "..");
+    bindings.on_action = [](std::string_view id, std::string_view action, void* user) noexcept {
+        on_action(id, action, &static_cast<image_loader*>(user)->actions);
+    };
+    ui::runtime rt(ctx.get());
+    const bool mounted = rt.mount(doc, 1, bindings, &error);
+    check(mounted, "mount decorated collections: " + error.path + " " + error.message);
+    const std::vector<image_call> expected = {{ctx.get(), "shared", fs::canonical(assets / "shared.rgba")},
+        {ctx.get(), "accent", fs::canonical(assets / "accent.rgba")}, {ctx.get(), "bad", fs::canonical(assets / "bad.rgba")}};
+    check(std::ranges::is_permutation(loader.calls, expected), "collection icons and images share one canonical load per key");
+    const auto snap = rt.layout({460, 240, 1});
+    check(bool(snap), "layout decorated collections");
+    check_loaded(rt, *snap, "photo");
+    for (const auto* id : {"rows", "tree", "menu", "bar"})
+        check(!node(*snap, id).image_placeholder, std::string(id) + ": a missing item icon is not a widget placeholder");
+    const std::vector<std::string> paths = {"/nodes/rows/props/items/0/buttons/3/icon", "/nodes/tree/props/items/0/children/0/icon",
+        "/nodes/tree/props/items/0/children/0/buttons/1/icon", "/nodes/menu/props/items/2/children/0/icon",
+        "/nodes/bar/props/items/0/children/1/icon"};
+    check(rt.diagnostics().size() == paths.size(), "one diagnostic per unavailable icon use");
+    for (const auto& path : paths)
+        check(std::ranges::any_of(rt.diagnostics(), [&](const auto& d) { return d.path == path && !d.message.empty(); }),
+            "missing icon diagnostic at " + path);
+
+    auto* rows = rt.widget("rows");
+    const auto first = vgui_list_get_item_at(rows, 0), other = vgui_list_get_item_at(rows, 1);
+    const auto disabled_row = vgui_list_get_item_at(rows, 2), plain = vgui_list_get_item_at(rows, 3);
+    const auto* shared = vgui_list_get_item_icon(rows, first);
+    const auto* accent = vgui_list_get_item_button_icon(rows, first, 0);
+    check(shared && accent && shared != accent && vgui_list_get_count(rows) == 4 &&
+        std::string_view(vgui_list_get_item_text(rows, first)) == "First" && !vgui_list_get_item_icon(rows, plain) &&
+        vgui_list_get_item_buttons(rows, plain) == 0, "decorate object rows without changing text or the string shorthand");
+    check(vgui_list_get_item_buttons(rows, first) == 4 && vgui_list_get_item_button_icon(rows, first, 1) == shared &&
+        !vgui_list_get_item_button_icon(rows, first, 2) && !vgui_list_get_item_button_icon(rows, first, 3),
+        "keep native button order/count and leave an unavailable button icon unset");
+
+    auto* tree = rt.widget("tree");
+    const auto branch = vgui_tree_get_root(tree, 0), leaf = vgui_tree_get_child(tree, branch, 0);
+    const auto disabled_leaf = vgui_tree_get_child(tree, branch, 1);
+    check(vgui_tree_get_node_count(tree) == 3 && vgui_tree_get_item_icon(tree, branch) == accent &&
+        !vgui_tree_get_item_icon(tree, leaf) && vgui_tree_get_item_buttons(tree, leaf) == 2 &&
+        vgui_tree_get_item_button_icon(tree, leaf, 0) == shared && !vgui_tree_get_item_button_icon(tree, leaf, 1),
+        "project tree icons and preserve the child after failed loads");
+
+    auto* host = rt.widget("menu");
+    const auto heading = vgui_menubar_get_item_at(host, 0);
+    auto* menu = vgui_menubar_get_menu(host, heading);
+    const auto pin = vgui_menu_get_item_at(menu, 0), more = vgui_menu_get_item_at(menu, 2);
+    auto* submenu = vgui_menu_get_submenu(menu, more);
+    const auto export_item = vgui_menu_get_item_at(submenu, 0);
+    auto* bar = rt.widget("bar");
+    const auto file = vgui_menubar_get_item_at(bar, 0);
+    auto* popup = vgui_menubar_get_menu(bar, file);
+    const auto open = vgui_menu_get_item_at(popup, 0);
+    check(vgui_menu_get_item_icon(menu, pin) == shared && vgui_menu_get_item_icon(menu, more) == accent &&
+        !vgui_menu_get_item_icon(submenu, export_item) && vgui_menu_get_item_icon(popup, open) == accent &&
+        !vgui_menu_get_item_icon(popup, vgui_menu_get_item_at(popup, 1)), "attach icons to the actual popup entries");
+
+    // Use the native trailing button geometry (no scrollbars, 1x, LTR).
+    const auto click = [&](std::string_view id, int row, int index, int count, std::string_view expected_action) {
+        const auto& rect = node(*snap, id).rect_px;
+        const auto padding_x = id == "tree" ? style.tree.padding_x : style.list.padding_x;
+        const auto padding_y = id == "tree" ? style.tree.padding_y : style.list.padding_y;
+        const auto row_h = id == "tree" ? style.tree.row_height : style.list.row_height;
+        const float size = std::clamp(row_h - 8.f, 10.f, 18.f);
+        const float x = rect.x + rect.width - std::max(1.f, padding_x) - 4.f - size / 2 - (count - 1 - index) * (size + 4.f);
+        const float y = rect.y + std::max(1.f, padding_y) + (row + 0.5f) * row_h;
+        const auto prior_calls = loader.actions.calls;
+        vgui_input_mouse_move(ctx.get(), x, y);
+        vgui_input_mouse_down(ctx.get(), 1, x, y, 0);
+        vgui_input_mouse_up(ctx.get(), 1, x, y, 0);
+        check(expected_action.empty() ? loader.actions.calls == prior_calls :
+            loader.actions.calls == prior_calls + 1 && loader.actions.id == id && loader.actions.action == expected_action,
+            std::string(id) + " row " + std::to_string(row) + " button " + std::to_string(index) + ": action mismatch");
+    };
+    click("rows", 0, 0, 4, "rows.left");
+    click("rows", 0, 1, 4, ""); // Icon-only, no action.
+    click("rows", 0, 2, 4, ""); // Native fallback button without an action.
+    click("rows", 0, 3, 4, "rows.right"); // Missing icon, action still works.
+    click("rows", 1, 0, 1, "rows.other");
+    click("rows", 2, 0, 1, "");
+    vgui_list_set_item_enabled(rows, disabled_row, 1);
+    click("rows", 2, 0, 1, "rows.disabled"); // Same hit, now enabled.
+    check(vgui_list_get_selected_count(rows) == 1 && vgui_list_get_selected(rows, 0) == other,
+        "list buttons do not change selection");
+    click("tree", 0, 0, 1, "tree.root");
+    click("tree", 1, 0, 2, "tree.leaf.left");
+    click("tree", 1, 1, 2, "tree.leaf.right");
+    click("tree", 2, 0, 1, "");
+    vgui_tree_set_item_enabled(tree, disabled_leaf, 1);
+    click("tree", 2, 0, 1, "tree.disabled");
+    check(vgui_tree_get_selected_count(tree) == 1 && vgui_tree_get_selected(tree, 0) == leaf &&
+        vgui_tree_get_item_expanded(tree, branch), "tree buttons do not change selection or expansion");
+
+    const auto press = [&](vgui_key key) { vgui_input_key(ctx.get(), key, 1, 0); vgui_input_key(ctx.get(), key, 0, 0); };
+    const auto activate = [&](vgui_widget* popup_owner, vgui_item_id item, std::string_view id, std::string_view action) {
+        const auto prior_calls = loader.actions.calls;
+        vgui_menu_set_cursor(popup_owner, item);
+        press(VGUI_KEY_ENTER);
+        check(loader.actions.calls == prior_calls + 1 && loader.actions.id == id && loader.actions.action == action,
+            "decorated popup action does not route to its document owner");
+    };
+    check(vgui_menubar_open_item(host, heading), "open decorated standalone popup");
+    activate(menu, pin, "menu", "tools.pin");
+    vgui_menu_set_cursor(menu, more);
+    press(VGUI_KEY_RIGHT);
+    check(vgui_menu_is_open(submenu), "open decorated submenu");
+    activate(submenu, export_item, "menu", "tools.export");
+    vgui_menubar_close(host);
+    check(vgui_menubar_open_item(bar, file), "open decorated menubar popup");
+    activate(popup, open, "bar", "tools.open");
+    check(doc == original, "row buttons and menu icons/actions leave the document unchanged");
+
+    // Exercise upload/retirement without a renderer. Unlike shared, accent
+    // has no ordinary image widget to keep it alive after the loader drops it.
+    static int retired = 0;
+    retired = 0;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t* desc) { img->id = desc->width; };
+    cb->image_destroy = [](rvg_t*, vg_image_t*) { ++retired; };
+    vgui_draw(ctx.get(), cb.get(), vg.get());
+    loader.textures.clear();
+    cb->clear(vg.get());
+    vgui_draw(ctx.get(), cb.get(), vg.get());
+    check(retired == 0 && vgui_texture_get_width(accent) == image_width + 1,
+        "mounted collection must retain icons after the loader releases them");
+    rt.unmount();
+    cb->clear(vg.get());
+    vgui_draw(ctx.get(), cb.get(), vg.get());
+    check(retired == 2, "unmount releases both uploaded resource textures");
 }
 
 // On Windows an ordinary account can create directory junctions without
@@ -517,6 +707,227 @@ int test_link_paths() {
     check_placeholder(rt, *snapshot, "escape");
     check(rt.diagnostics().size() == 1, "only the escaped image should report a diagnostic");
     return 0;
+}
+
+void test_declarative_widgets() {
+    ui::document doc;
+    ui::diagnostic error;
+    const bool decoded = ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["field","photo","radio","switch","slider","progress","rule",
+            "rows","tree","menu","bar","split","tabs","dock"]},
+        "heading":{"type":"label","props":{"text":"Active page"}},
+        "submit":{"type":"button","props":{"text":"Send","button_style":"gradient","tooltip":"Send form"}},
+        "field":{"type":"edit","props":{"text":"<b>literal</b>\nsecond line","width":180,"height":50,
+            "multiline":true,"readonly":true,"selection_color":"#12345680"}},
+        "photo":{"type":"image"},
+        "check":{"type":"checkbox","props":{"text":"Choice","checked":true}},
+        "radio":{"type":"radio","props":{"text":"Option","checked":true}},
+        "switch":{"type":"switch","props":{"text":"Switch","checked":true}},
+        "slider":{"type":"slider","props":{"min_value":10,"max_value":30,"value":17,"step":5}},
+        "progress":{"type":"progress","props":{"min_value":10,"max_value":30,"value":22}},
+        "rule":{"type":"separator","props":{"width":28,"thickness":3}},
+        "rows":{"type":"list","props":{"selection_mode":"multiple","items":["Plain",
+            {"text":"Earlier","selected":true},{"text":"Disabled","enabled":false},{"text":"Last","selected":true}]}},
+        "tree":{"type":"tree","props":{"items":[{"text":"Parent","expanded":true,"selected":true,
+            "children":[{"text":"Child","selected":true}]}]}},
+        "menu":{"type":"menu","props":{"text":"Commands","y":60,"height":30,"menu_width":145,
+            "close_on_activate":false,"items":[{"text":"Pin","checked":true,"action":"tools.pin"},
+            {"separator":true},{"text":"More","children":[{"text":"Export","action":"tools.export"}]}]}},
+        "bar":{"type":"menubar","props":{"items":[{"text":"File","children":[]},
+            {"text":"Unavailable","enabled":false,"children":[]}]}},
+        "split":{"type":"splitter","props":{"x":200,"width":180,"height":108,"orientation":"vertical",
+            "ratio":0.25,"sash_size":8},"children":["submit","check"]},
+        "tabs":{"type":"tabview","props":{"y":120,"width":180,"height":120,"active_index":1,"tab_height":26},
+            "children":["page_a","page_b"]},
+        "page_a":{"type":"panel","name":"Overview"},
+        "page_b":{"type":"panel","props":{"page_title":"Details"},"children":["heading"]},
+        "dock":{"type":"dock","props":{"x":210,"y":120,"width":420,"height":145,"left_width":112,
+            "right_collapsed":true},"children":["dock_tools","dock_main"]},
+        "dock_tools":{"type":"panel","props":{"page_title":"Tools","dock_zone":"left","dock_closeable":true}},
+        "dock_main":{"type":"panel","name":"Main","props":{"dock_open":false}}
+    }})", doc, &error);
+    check(decoded, "decode declarative widgets: " + error.path + " " + error.message);
+    const auto original = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create declarative widget context");
+    action_log actions;
+    ui::runtime_bindings bindings;
+    bindings.on_action = on_action;
+    bindings.user = &actions;
+    ui::runtime rt(ctx.get());
+    const bool mounted = rt.mount(doc, 1, bindings, &error);
+    check(mounted, "mount declarative widgets: " + error.path + " " + error.message);
+    const struct { const char* id; vgui_widget_kind kind; } kinds[] = {
+        {"root", VGUI_PANEL}, {"heading", VGUI_LABEL}, {"submit", VGUI_BUTTON}, {"field", VGUI_EDIT}, {"photo", VGUI_IMAGE},
+        {"check", VGUI_CHECKBOX}, {"radio", VGUI_RADIO}, {"switch", VGUI_SWITCH}, {"slider", VGUI_SLIDER},
+        {"progress", VGUI_PROGRESS}, {"rule", VGUI_SEPARATOR}, {"rows", VGUI_LIST}, {"tree", VGUI_TREE},
+        {"menu", VGUI_MENUBAR}, {"bar", VGUI_MENUBAR}, {"split", VGUI_SPLITTER}, {"tabs", VGUI_TABVIEW}, {"dock", VGUI_DOCK},
+    };
+    for (const auto& [id, kind] : kinds)
+        check(rt.widget(id) && vgui_widget_get_kind(rt.widget(id)) == kind, std::string("native kind of ") + id);
+    const auto snap = rt.layout({720, 360, 1});
+    check(snap && snap->nodes.size() == doc.nodes.size(), "every declarative widget appears in layout");
+    for (const auto* id : {"check", "radio", "switch"})
+        check(vgui_widget_get_checked(rt.widget(id)), std::string(id) + " initial check state");
+    check(near(vgui_widget_get_value(rt.widget("slider")), 15) && near(vgui_widget_get_value(rt.widget("progress")), 22),
+        "range values use document units and slider step");
+    check(vgui_button_get_style(rt.widget("submit")) == VGUI_BUTTON_STYLE_GRADIENT &&
+        std::string_view(vgui_widget_get_tooltip(rt.widget("submit"))) == "Send form" &&
+        near(node(*snap, "rule").rect_px.height, 3), "declarative appearance and separator thickness");
+    auto* field = rt.widget("field");
+    vgui_set_focus(ctx.get(), field);
+    check(vgui_get_focus(ctx.get()) == field, "edit accepts keyboard focus");
+    vgui_input_text(ctx.get(), "replacement");
+    check(std::string_view(vgui_edit_get_text(field)) == "<b>literal</b>\nsecond line",
+        "read-only edit preserves literal markup and line breaks");
+    vgui_set_focus(ctx.get(), nullptr);
+
+    auto* rows = rt.widget("rows");
+    const auto row = [&](int index) { return vgui_list_get_item_at(rows, index); };
+    check(vgui_list_get_count(rows) == 4 && std::string_view(vgui_list_get_item_text(rows, row(0))) == "Plain" &&
+        !vgui_list_get_item_enabled(rows, row(2)), "list rows and enabled state");
+    check(vgui_list_get_selection_mode(rows) == VGUI_SELECTION_MULTIPLE && vgui_list_get_selected_count(rows) == 2 &&
+        vgui_list_is_selected(rows, row(1)) && vgui_list_is_selected(rows, row(3)), "list initial multiple selection");
+    auto* tree = rt.widget("tree");
+    const auto branch = vgui_tree_get_root(tree, 0);
+    const auto leaf = vgui_tree_get_child(tree, branch, 0);
+    check(vgui_tree_get_node_count(tree) == 2 && vgui_tree_get_item_expanded(tree, branch) &&
+        std::string_view(vgui_tree_get_item_text(tree, leaf)) == "Child" && vgui_tree_get_parent(tree, leaf) == branch,
+        "tree hierarchy and expansion");
+    check(vgui_tree_get_selected_count(tree) == 1 && vgui_tree_get_selected(tree, 0) == leaf,
+        "tree initial single selection uses the last selected node");
+
+    auto* bar = rt.widget("bar");
+    const auto unavailable = vgui_menubar_get_item_at(bar, 1);
+    check(vgui_menubar_get_count(bar) == 2 && !vgui_menubar_get_item_enabled(bar, unavailable) &&
+        !vgui_menubar_open_item(bar, unavailable), "menubar headings and disabled state");
+    auto* host = rt.widget("menu");
+    const auto heading = vgui_menubar_get_item_at(host, 0);
+    auto* menu = vgui_menubar_get_menu(host, heading);
+    check(vgui_menubar_get_count(host) == 1 && std::string_view(vgui_menubar_get_item_text(host, heading)) == "Commands" &&
+        menu && vgui_widget_get_kind(menu) == VGUI_MENU && vgui_menu_get_count(menu) == 3 &&
+        near(vgui_menu_get_width(menu), 145), "standalone menu mounts a native popup under a one-title bar");
+    const auto pin = vgui_menu_get_item_at(menu, 0);
+    const auto more = vgui_menu_get_item_at(menu, 2);
+    auto* submenu = vgui_menu_get_submenu(menu, more);
+    check(vgui_menu_get_item_checkable(menu, pin) && vgui_menu_get_item_checked(menu, pin) &&
+        vgui_menu_get_item_type(menu, vgui_menu_get_item_at(menu, 1)) == VGUI_MENU_ITEM_SEPARATOR &&
+        submenu && vgui_menu_get_count(submenu) == 1, "menu check item, separator, and submenu");
+    const auto press = [&](vgui_key key) { vgui_input_key(ctx.get(), key, 1, 0); vgui_input_key(ctx.get(), key, 0, 0); };
+    check(vgui_menubar_open_item(host, heading), "open declarative standalone popup");
+    vgui_menu_set_cursor(menu, pin);
+    press(VGUI_KEY_ENTER);
+    check(actions.calls == 1 && actions.id == "menu" && actions.action == "tools.pin" && vgui_menu_is_open(menu),
+        "popup action routes to its document node without closing the popup");
+    vgui_menu_set_cursor(menu, more);
+    press(VGUI_KEY_RIGHT);
+    check(vgui_menu_is_open(submenu), "open declarative submenu");
+    vgui_menu_set_cursor(submenu, vgui_menu_get_item_at(submenu, 0));
+    press(VGUI_KEY_ENTER);
+    check(actions.calls == 2 && actions.id == "menu" && actions.action == "tools.export", "submenu action routes separately");
+    vgui_menubar_close(host);
+
+    const auto& top = node(*snap, "submit").rect_px;
+    const auto& bottom = node(*snap, "check").rect_px;
+    check(vgui_splitter_get_vertical(rt.widget("split")) && near(top.height, 25) &&
+        near(bottom.y - top.y - top.height, 8), "splitter uses initial pane ratio, orientation, and sash size");
+    auto* tabs = rt.widget("tabs");
+    const auto first = vgui_tab_get_at(tabs, 0), last = vgui_tab_get_at(tabs, 1);
+    check(vgui_tab_get_count(tabs) == 2 && vgui_tab_get_active(tabs) == last && near(vgui_tab_get_tab_height(tabs), 26) &&
+        vgui_tab_get_page(tabs, first) == rt.widget("page_a") && vgui_tab_get_page(tabs, last) == rt.widget("page_b") &&
+        std::string_view(vgui_tab_get_title(tabs, first)) == "Overview" &&
+        std::string_view(vgui_tab_get_title(tabs, last)) == "Details" && !vgui_tab_get_closeable(tabs, last) &&
+        !node(*snap, "page_a").visible && node(*snap, "page_b").visible, "tab registration and zero-based initial selection");
+    auto* dock = rt.widget("dock");
+    const auto left = vgui_dock_find(dock, "dock_tools"), center = vgui_dock_find(dock, "dock_main");
+    check(vgui_dock_get_count(dock) == 2 && vgui_dock_get_panel(dock, left) == rt.widget("dock_tools") &&
+        vgui_dock_get_panel(dock, center) == rt.widget("dock_main") && vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == left &&
+        std::string_view(vgui_dock_get_title(dock, left)) == "Tools" && vgui_dock_get_closeable(dock, left) &&
+        !vgui_dock_is_open(dock, center) && near(vgui_dock_get_zone_size(dock, VGUI_DOCK_LEFT), 112) &&
+        vgui_dock_get_side_collapsed(dock, VGUI_DOCK_RIGHT), "dock registration and initial zone settings");
+    check(doc == original, "projection and native interactions leave the document unchanged");
+}
+
+void test_progress_colors() {
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create progress color context");
+    vg->width = vg->height = 120;
+    static std::vector<uint32_t> colors;
+    static const auto source = cb->set_source_color;
+    cb->set_source_color = [](rvg_t* view, uint32_t color) {
+        colors.push_back(color);
+        source(view, color);
+    };
+    ui::runtime rt(ctx.get());
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).children.push_back("progress");
+    auto& progress = doc.nodes.emplace("progress", ui::node{"progress", "", {{"width", 80.0}, {"height", 60.0},
+        {"value", 0.7}, {"show_text", false}}, {}}).first->second;
+    const auto expect = [&](std::uint64_t revision, uint32_t fill, uint32_t track, const char* message) {
+        check(rt.mount(doc, revision) && rt.layout({120, 120, 1}), "mount and lay out the progress bar");
+        cb->clear(vg.get());
+        colors.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        // OVG receives packed AABBGGRR through the same callbacks used by native preview.
+        check(std::ranges::find(colors, fill) != colors.end() && std::ranges::find(colors, track) != colors.end(), message);
+    };
+    expect(1, 0xFFFFCB8Cu, 0xFF303030u, "default horizontal progress draws pale blue and a neutral track");
+    progress.props["radial"] = true;
+    progress.props["accent_color"] = ""s;
+    progress.props["track_color"] = "#234567"s;
+    expect(2, 0xFFFFCB8Cu, 0xFF674523u, "clearing a radial progress fill restores pale blue without swapping channels");
+    progress.props.erase("radial");
+    progress.props["vertical"] = true;
+    progress.props["accent_color"] = "#257693"s;
+    expect(3, 0xFF937625u, 0xFF674523u, "vertical progress preserves explicitly configured fill and track channels");
+}
+
+void test_radio_group_input() {
+    const auto radio = [](double x, std::string group, bool checked) {
+        ui::node item{"radio", "", {{"x", x}, {"width", 80.0}, {"height", 28.0}, {"checked", checked}}, {}};
+        if (!group.empty()) item.props["radio_group"] = std::move(group);
+        return item;
+    };
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).children = {"first", "second", "independent", "default", "default-other", "nested"};
+    doc.nodes.emplace("first", radio(0, "主题", true));
+    doc.nodes.emplace("second", radio(80, "主题", false));
+    doc.nodes.emplace("independent", radio(160, "语言", true));
+    doc.nodes.emplace("default", radio(240, {}, true));
+    doc.nodes.emplace("default-other", radio(320, {}, false));
+    doc.nodes.emplace("nested", ui::node{"panel", "", {{"y", 40.0}, {"width", 100.0}, {"height", 40.0}}, {"other-parent"}});
+    doc.nodes.emplace("other-parent", radio(0, "主题", true));
+    const auto original = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create radio group context");
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1), "mount independent radio groups");
+    const auto layout = rt.layout({420, 120, 1});
+    check(bool(layout), "layout radio groups");
+    const auto checked = [&](const char* id) { return vgui_widget_get_checked(rt.widget(id)) != 0; };
+    check(checked("first") && !checked("second") && checked("independent") && checked("default") && checked("other-parent"),
+        "initial choices must survive in all groups");
+    const auto click = [&](const char* id) {
+        const auto& bounds = node(*layout, id).rect_px;
+        const float x = bounds.x + bounds.width / 2, y = bounds.y + bounds.height / 2;
+        vgui_input_mouse_down(ctx.get(), 1, x, y, 1);
+        vgui_input_mouse_up(ctx.get(), 1, x, y, 1);
+    };
+    click("second");
+    check(checked("second") && !checked("first") && checked("independent") && checked("default") && checked("other-parent"),
+        "mouse selection must only clear the matching group under the same parent");
+    vgui_set_focus(ctx.get(), rt.widget("first"));
+    check(vgui_input_key(ctx.get(), ' ', 1, 0), "focused radio did not handle Space");
+    vgui_input_key(ctx.get(), ' ', 0, 0);
+    check(checked("first") && !checked("second") && checked("independent") && checked("default"),
+        "keyboard activation must use the same named-group scope");
+    click("default-other");
+    check(!checked("default") && checked("default-other") && checked("first") && checked("independent") && checked("other-parent"),
+        "unnamed siblings remain mutually exclusive without affecting named groups");
+    check(doc == original && rt.mount(doc, 2) && checked("first") && checked("default") && !checked("default-other"),
+        "runtime input does not change saved initial selections");
 }
 
 void run() {
@@ -624,10 +1035,14 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--links") return test_link_paths();
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
+        test_declarative_widgets();
+        test_progress_colors();
+        test_radio_group_input();
         test_font_properties();
         test_font_families();
         test_image_loading();
         test_button_atlases();
+        test_collection_icons_and_actions();
         std::puts("ui_design_runtime_test: ok");
         return 0;
     } catch (const std::exception& e) {

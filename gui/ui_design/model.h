@@ -29,7 +29,8 @@ struct diagnostic {
 };
 
 using value = std::variant<bool, double, std::string>;
-enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key };
+enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items };
+// An items value holds canonical JSON text internally; page files use an array.
 
 // Test the filename extension (.ttf or .otf, ASCII case-insensitive).
 // This does not otherwise validate a resource path.
@@ -53,12 +54,18 @@ struct type_descriptor {
     std::string_view label;
     bool container;
     std::span<const property_descriptor> properties; // Kind-specific; see common_properties().
+    double initial_width, initial_height; // Used by the editor, not by V1 documents with omitted sizes.
+    std::size_t max_children = max_nodes;
+    bool panel_children_only = false;
 };
 
 std::span<const type_descriptor> types();
 std::span<const property_descriptor> common_properties();
 const type_descriptor* find_type(std::string_view type);
 const property_descriptor* find_property(std::string_view type, std::string_view key);
+bool accepts_child(const type_descriptor& parent, std::string_view child_type, std::size_t existing_children);
+// Format an already valid collection value for the Inspector.
+std::string format_items(std::string_view input);
 
 struct node {
     std::string type;
@@ -97,6 +104,12 @@ struct rename_node { std::string id, name; };
 struct set_property { std::string id, key; std::optional<value> data; }; // nullopt restores the default.
 struct set_resource { std::string key; std::optional<std::string> path; }; // nullopt removes it.
 using edit = std::variant<insert_node, erase_node, move_node, copy_subtree, rename_node, set_property, set_resource>;
+
+// Prepare an Inspector item edit. Existing image keys are kept, and project-
+// relative image paths become resource keys. Commit batch together with the
+// returned items value; neither output is modified on failure.
+bool prepare_items_edit(const document& doc, std::string_view type, std::string_view input,
+    std::string& result, std::vector<edit>& batch, std::string& reason);
 
 class session {
 public:

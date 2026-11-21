@@ -1392,6 +1392,13 @@ extern "C" {
 	VGUI_API int vgui_widget_get_checked(vgui_widget* widget);
 	VGUI_API void vgui_widget_set_vertical(vgui_widget* widget, int vertical);
 
+	/* Radios only; other widgets and NULL radios are ignored. The name is copied
+	 * and matched exactly among radios with the same direct parent. NULL and
+	 * empty strings use the legacy unnamed group. Changing a checked radio's
+	 * group keeps it checked and unchecks any checked members of its new group
+	 * without emitting value-change notifications. Does not affect layout. */
+	VGUI_API void vgui_radio_set_group(vgui_widget* radio, const char* group);
+
 	/* Scrolling for panels, lists and trees. Scroll offsets are clamped to
 	 * the content extent. Trees enable both axes by default; disable an axis
 	 * with set_scrollable() to clip instead. */

@@ -155,8 +155,14 @@ node decode_node(const json& input, const std::string& path)
     if (const auto props = input.find("props"); props != input.end()) {
         const auto props_path = path + "/props";
         if (!props->is_object()) reject(props_path, "expected an object");
-        for (auto it = props->begin(); it != props->end(); ++it)
-            result.props.emplace(it.key(), as_property(*it, member_path(props_path, it.key())));
+        for (auto it = props->begin(); it != props->end(); ++it) {
+            const auto prop_path = member_path(props_path, it.key());
+            const auto* desc = find_property(result.type, it.key());
+            if (desc && desc->type == value_type::items) {
+                if (!it->is_array()) reject(prop_path, "expected an item array");
+                result.props.emplace(it.key(), it->dump());
+            } else result.props.emplace(it.key(), as_property(*it, prop_path));
+        }
     }
     if (const auto children = input.find("children"); children != input.end()) {
         const auto children_path = path + "/children";
@@ -350,6 +356,11 @@ bool decode_json(std::string_view text, document& out, diagnostic* error)
     }
 }
 
+std::string format_items(std::string_view input)
+{
+    return json::parse(input.begin(), input.end()).dump(2);
+}
+
 bool encode_json(const document& doc, std::string& out, diagnostic* error)
 {
     if (!validate(doc, error)) return false;
@@ -357,8 +368,12 @@ bool encode_json(const document& doc, std::string& out, diagnostic* error)
         json nodes = json::object();
         for (const auto& [id, item] : doc.nodes) {
             json props = json::object();
-            for (const auto& [key, prop] : item.props)
-                std::visit([&](const auto& data) { props[key] = data; }, prop);
+            for (const auto& [key, prop] : item.props) {
+                if (find_property(item.type, key)->type == value_type::items) {
+                    const auto& text = std::get<std::string>(prop);
+                    props[key] = json::parse(text.begin(), text.end());
+                } else std::visit([&](const auto& data) { props[key] = data; }, prop);
+            }
             nodes[id] = {{"type", item.type}, {"name", item.name},
                 {"props", std::move(props)}, {"children", item.children}};
         }

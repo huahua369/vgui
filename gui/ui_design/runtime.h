@@ -8,8 +8,8 @@
 namespace vgui::ui_design {
 
 struct runtime_bindings {
-    // Borrowed texture from ctx. Keep it alive through mount(); images and
-    // buttons retain their assigned textures. nullptr means unavailable.
+    // Borrowed texture from ctx. Keep it alive through mount(); the mounted
+    // tree retains assigned textures. nullptr means unavailable.
     // Only called for a canonical regular file inside the canonical project
     // directory, once per referenced resource key per mount. The host must
     // keep that directory stable during path resolution and loading.
@@ -19,7 +19,7 @@ struct runtime_bindings {
 
     std::filesystem::path project_root;
     image_loader load_image = nullptr;
-    action_handler on_action = nullptr; // Button activation, not pointer down/up.
+    action_handler on_action = nullptr; // Button/menu activation or a native row-button press.
     void* user = nullptr; // Host-owned; must outlive action dispatch.
 
     // Borrowed family; keep it alive until the mounted widgets are destroyed
@@ -67,8 +67,9 @@ public:
     runtime& operator=(const runtime&) = delete;
 
     // Rebuilds just the document subtree. An invalid document leaves the old
-    // mount intact. Recoverable image errors instead install a placeholder and
-    // appear in diagnostics(). The document is not stored or mutated.
+    // mount intact. Recoverable image errors are reported in diagnostics();
+    // collection rows stay mounted with default rendering for missing icons.
+    // The document is not stored or mutated.
     bool mount(const document& doc, std::uint64_t revision, const runtime_bindings& bindings = {},
         diagnostic* error = nullptr);
     void unmount();

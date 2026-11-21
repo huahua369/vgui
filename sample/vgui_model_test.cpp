@@ -1951,6 +1951,71 @@ static void test_wrap(vgui_context* ui)
 	vgui_widget_destroy(panel);
 }
 
+static void test_radio_groups(vgui_context* ui)
+{
+	vgui_widget* panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget* nested = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	value_cb callbacks;
+	auto add_radio = [&](vgui_widget* parent, const char* group) {
+		vgui_widget* radio = vgui_widget_add(parent, VGUI_RADIO, nullptr);
+		vgui_widget_on_value(radio, on_value_changed, &callbacks);
+		vgui_widget_on_event(radio, [](vgui_widget*, const vgui_event* event, void* user) {
+			if (event->type == VGUI_EVENT_VALUE_CHANGED) ++((value_cb*)user)->changes;
+		}, &callbacks);
+		if (group) vgui_radio_set_group(radio, group);
+		return radio;
+	};
+	char name[] = "Choice";
+	vgui_widget* named1 = add_radio(panel, name);
+	name[0] = 'c'; // the radio owns a copy of "Choice"
+	vgui_widget* named2 = add_radio(panel, "Choice");
+	vgui_widget* other_name = add_radio(panel, name);
+	vgui_widget* unnamed1 = add_radio(panel, nullptr);
+	vgui_widget* unnamed2 = add_radio(panel, "");
+	vgui_widget* other_parent = add_radio(nested, "Choice");
+	vgui_widget* checkbox = vgui_widget_add(panel, VGUI_CHECKBOX, nullptr);
+	vgui_radio_set_group(checkbox, "Choice");
+	vgui_widget_set_checked(checkbox, 1);
+
+	vgui_widget_set_checked(named1, 1);
+	vgui_widget_set_value(other_name, 1.0f);
+	vgui_widget_set_checked(unnamed1, 1);
+	vgui_widget_set_checked(other_parent, 1);
+	check(vgui_widget_get_checked(named1) && vgui_widget_get_checked(other_name) &&
+		vgui_widget_get_checked(unnamed1) && vgui_widget_get_checked(other_parent),
+		"radio groups: exact names, the default group, and different parents are independent");
+
+	vgui_widget_set_value(named2, 0.5f);
+	check(vgui_widget_get_checked(named2) && !vgui_widget_get_checked(named1) &&
+		vgui_widget_get_checked(other_name) && vgui_widget_get_checked(unnamed1) &&
+		vgui_widget_get_checked(other_parent) && vgui_widget_get_checked(checkbox),
+		"radio groups: value setter unchecks only same-name radios with the same parent");
+	vgui_widget_set_checked(unnamed2, 1);
+	check(vgui_widget_get_checked(unnamed2) && !vgui_widget_get_checked(unnamed1) &&
+		vgui_widget_get_checked(named2), "radio groups: empty and unset names share the legacy group");
+
+	const uint64_t revision = vgui_context_paint_revision(ui);
+	vgui_radio_set_group(named2, "choice");
+	check(vgui_widget_get_checked(named2) && !vgui_widget_get_checked(other_name) &&
+		vgui_widget_get_checked(unnamed2) && vgui_widget_get_checked(other_parent),
+		"radio groups: moving a checked radio makes it the selection in the destination group");
+	check(vgui_context_paint_revision(ui) > revision,
+		"radio groups: unchecking the destination peer schedules a repaint");
+
+	vgui_radio_set_group(named2, nullptr);
+	check(vgui_widget_get_checked(named2) && !vgui_widget_get_checked(unnamed2),
+		"radio groups: NULL resets a checked radio to the legacy group");
+	vgui_radio_set_group(named1, "");
+	check(!vgui_widget_get_checked(named1) && vgui_widget_get_checked(named2),
+		"radio groups: moving an unchecked radio leaves the destination selection intact");
+	vgui_widget_set_value(named2, 0.0f);
+	check(!vgui_widget_get_checked(named2) && !vgui_widget_get_checked(named1),
+		"radio groups: programmatic deselection need not select another radio");
+	check(callbacks.changes == 0, "radio groups: programmatic value and group changes are silent");
+
+	vgui_widget_destroy(panel);
+}
+
 static void test_splitter(vgui_context* ui)
 {
 	vgui_widget* splitter = vgui_widget_add(vgui_root(ui), VGUI_SPLITTER, nullptr);
@@ -6449,6 +6514,7 @@ int main()
 	test_key_handlers(ui);
 	test_texture_image(ui);
 	test_wrap(ui);
+	test_radio_groups(ui);
 	test_splitter(ui);
 	test_scroll_listener(ui);
 	test_tabview(ui);

@@ -741,6 +741,7 @@ struct vgui_widget
 	std::string edit_text;
 	std::string ime_text;
 	std::string id;
+	std::string radio_group;
 
 	void* user = nullptr;
 	vgui_event_fn event_fn = nullptr;
@@ -8524,24 +8525,30 @@ static bool vgui_edit_key(vgui_widget* w, int key, int down, int mods)
 // values / activation
 //----------------------------------------------------------------------------
 
-static void vgui_radio_select(vgui_widget* w)
+static void vgui_radio_set_checked_internal(vgui_widget* w, bool checked, bool notify)
 {
-	if (!w) return;
+	if (w->checked == checked) return;
+	w->checked = checked;
+	vgui_recording_invalidate_chain(w);
+	vgui_widget_mark_dirty(w);
+	if (notify) vgui_notify_value(w);
+}
+
+static void vgui_radio_select(vgui_widget* w, bool notify)
+{
+	vgui_context* ctx = w->ctx;
 	if (w->parent)
 	{
 		for (vgui_widget* s : w->parent->children)
 		{
-			if (s != w && s->kind == VGUI_RADIO && s->checked)
+			if (s != w && s->kind == VGUI_RADIO && s->checked && s->radio_group == w->radio_group)
 			{
-				s->checked = 0;
-				vgui_notify_value(s);
-				if (!w->ctx || !w->ctx->alive.count(w)) return;
+				vgui_radio_set_checked_internal(s, false, notify);
+				if (notify && (!ctx || !ctx->alive.count(w))) return;
 			}
 		}
 	}
-	bool changed = !w->checked;
-	w->checked = 1;
-	if (changed) vgui_notify_value(w);
+	vgui_radio_set_checked_internal(w, true, notify);
 }
 
 static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
@@ -8559,16 +8566,11 @@ static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
 	}
 	break;
 	case VGUI_RADIO:
-	{
 		if (v >= 0.5f)
-		{
-			vgui_radio_select(w);
-			return;
-		}
-		changed = (w->checked != 0);
-		w->checked = 0;
-	}
-	break;
+			vgui_radio_select(w, notify);
+		else
+			vgui_radio_set_checked_internal(w, false, notify);
+		return;
 	case VGUI_SLIDER:
 	case VGUI_PROGRESS:
 	{
@@ -8605,7 +8607,7 @@ static void vgui_activate_widget(vgui_widget* w, int clicks)
 		}
 		break;
 	case VGUI_RADIO:
-		vgui_radio_select(w);
+		vgui_radio_select(w, true);
 		break;
 	default:
 		break;
@@ -13692,8 +13694,8 @@ static void vgui_draw_progress(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	float y = w->abs_y + w->padding[1];
 	float rounding = w->rounding > 0 ? w->rounding : ps.rounding;
 
-	const float fill_accent = vgui_widget_color(w, accent);
-	const float fill_track = vgui_widget_color(w, track);
+	const vgui_color fill_accent = vgui_widget_color(w, accent);
+	const vgui_color fill_track = vgui_widget_color(w, track);
 	if (w->radial)
 	{
 		// R4-2: ring track + value sweep.  The sweep starts at 12
@@ -13704,13 +13706,13 @@ static void vgui_draw_progress(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 			std::min(inner_w, inner_h) * 0.5f - 2.0f);
 		const float lw = std::max(2.0f, ring_r * 0.28f);
 		cb->set_line_width(vg, lw);
-		cb->set_source_color(vg, fill_track);
+		cb->set_source_color(vg, vgui_ovg_color(fill_track));
 		cb->circle(vg, cx, cy, ring_r);
 		cb->stroke(vg);
 		if (t > 0.004f)
 		{
 			const float a0 = -1.5707963f;
-			cb->set_source_color(vg, fill_accent);
+			cb->set_source_color(vg, vgui_ovg_color(fill_accent));
 			cb->arc(vg, cx, cy, ring_r, a0, a0 + t * 6.2831853f);
 			cb->stroke(vg);
 		}
@@ -18422,25 +18424,8 @@ extern "C" {
 	void vgui_widget_set_value(vgui_widget* widget, float value)
 	{
 		if (!widget) return;
-		vgui_recording_invalidate_chain(widget);
-		if (widget->kind == VGUI_RADIO)
-		{
-			if (value >= 0.5f)
-			{
-				// Selecting a radio unchecks its siblings without notifying them.
-				if (widget->parent)
-				{
-					for (vgui_widget* s : widget->parent->children)
-						if (s != widget && s->kind == VGUI_RADIO) s->checked = 0;
-				}
-				widget->checked = 1;
-			}
-			else
-			{
-				widget->checked = 0;
-			}
-			return;
-		}
+		if (widget->kind != VGUI_RADIO)
+			vgui_recording_invalidate_chain(widget);
 		if (widget->kind == VGUI_SLIDER || widget->kind == VGUI_PROGRESS)
 		{
 			float span = widget->range_max - widget->range_min;
@@ -18472,13 +18457,13 @@ extern "C" {
 	void vgui_widget_set_checked(vgui_widget* widget, int checked)
 	{
 		if (!widget) return;
-		vgui_recording_invalidate_chain(widget);
 		checked = checked ? 1 : 0;
 		if (widget->kind == VGUI_RADIO)
 		{
 			vgui_widget_set_value(widget, checked ? 1.0f : 0.0f);
 			return;
 		}
+		vgui_recording_invalidate_chain(widget);
 		widget->checked = checked;
 		vgui_mark_dirty(widget);
 	}
@@ -18486,6 +18471,15 @@ extern "C" {
 	int vgui_widget_get_checked(vgui_widget* widget)
 	{
 		return widget ? widget->checked : 0;
+	}
+
+	void vgui_radio_set_group(vgui_widget* radio, const char* group)
+	{
+		if (!radio || radio->kind != VGUI_RADIO) return;
+		const char* name = group ? group : "";
+		if (radio->radio_group == name) return;
+		radio->radio_group = name;
+		if (radio->checked) vgui_radio_select(radio, false);
 	}
 
 	//------------------------------------------------------------------------
