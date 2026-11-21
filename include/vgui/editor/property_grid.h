@@ -18,6 +18,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -110,6 +111,8 @@ namespace vgui_editor_kit {
 		std::function<void(const std::string&)> set_value;
 		/* Text rows only: use a taller editor where Enter inserts a newline. */
 		bool multiline = false;
+		/* Empty color rows can show an inherited color without storing it as their value. */
+		std::optional<vgui_color> inherited_color;
 	};
 
 	/* Result of property_normalize_value(): validates a candidate value for a

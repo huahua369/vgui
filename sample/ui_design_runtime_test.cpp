@@ -5,6 +5,7 @@
 #include <ovg_c.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -874,6 +875,187 @@ void test_declarative_widgets() {
     check(doc == original, "projection and native interactions leave the document unchanged");
 }
 
+void test_button_gradients() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["button"]},
+        "button":{"type":"button","props":{"width":100,"height":42,"button_style":"gradient","gradient_preset":"blue"}}
+    }})", doc), "read a JSON button with the blue gradient preset");
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = 120;
+    vg->height = 80;
+    static std::vector<uint32_t> stops, solids;
+    static const auto solid_source = cb->set_source_color;
+    cb->set_source_color = [](rvg_t* view, uint32_t color) {
+        solids.push_back(color);
+        solid_source(view, color);
+    };
+    static const auto add_stop = cb->pattern_add_color_stop;
+    cb->pattern_add_color_stop = [](vg_pattern_t* pattern, float t, float r, float g, float b, float a) {
+        const auto byte = [](float value) { return static_cast<uint32_t>(std::lround(value * 255)); };
+        stops.push_back((byte(a) << 24) | (byte(r) << 16) | (byte(g) << 8) | byte(b));
+        return add_stop(pattern, t, r, g, b, a);
+    };
+    ui::runtime rt(ctx.get());
+    const auto mount = [&](std::uint64_t revision) {
+        check(rt.mount(doc, revision) && rt.layout({120, 80, 1}), "mount the styled button");
+    };
+    const auto paint = [&] {
+        cb->clear(vg.get());
+        stops.clear();
+        solids.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+    };
+    mount(1);
+    paint();
+    check(stops == std::vector<uint32_t>{0xFF4A8FE7, 0xFF2D6FD9}, "normal state paints the blue gradient, not the dark default");
+    vgui_input_mouse_move(ctx.get(), 40, 20);
+    paint();
+    check(stops == std::vector<uint32_t>{0xFF6AA8F2, 0xFF3E82E0}, "hover paints its own blue gradient");
+    vgui_input_mouse_down(ctx.get(), 1, 40, 20, 1);
+    paint();
+    check(stops.size() == 2 && (stops[0] & 0xFFFFFF) == 0x1E4FB0 && (stops[1] & 0xFFFFFF) == 0x163D99,
+        "pressed state paints its own blue gradient");
+    vgui_input_cancel(ctx.get());
+    vgui_input_mouse_move(ctx.get(), 110, 60);
+    auto& props = doc.nodes.at("button").props;
+    props["button_style"] = "solid"s;
+    mount(2);
+    paint();
+    check(stops.empty(), "selecting a preset must not turn a solid button into a gradient");
+    props["button_style"] = "gradient"s;
+    props.erase("gradient_preset");
+    mount(3);
+    paint();
+    check(stops == std::vector<uint32_t>{0xFF4A4A4A, 0xFF3A3A3A}, "old designs keep the native dark gradient");
+
+    props["gradient_preset"] = "green"s;
+    props["gradient_normal_top"] = "#ABC12380"s;
+    props["gradient_normal_bottom"] = ""s;
+    props["gradient_hover_top"] = "#231ABC42"s;
+    props["gradient_hover_bottom"] = "#4713AA"s;
+    props["gradient_pressed_top"] = "#41325980"s;
+    props["gradient_pressed_bottom"] = "#00000000"s;
+    props["gradient_border_light"] = "#AABBCCAA"s;
+    props["gradient_border_dark"] = "#124B5C62"s;
+    props["opacity"] = 0.5;
+    mount(4);
+    paint();
+    check(stops == std::vector<uint32_t>{0x40ABC123, 0x8016A34A},
+        "override one normal stop and inherit the other from the selected preset");
+    check(std::ranges::find(solids, 0x55CCBBAAu) != solids.end() &&
+        std::ranges::find(solids, 0x315C4B12u) != solids.end(), "paint both custom edges with the widget opacity");
+    vgui_input_mouse_move(ctx.get(), 40, 20);
+    paint();
+    check(stops == std::vector<uint32_t>{0x21231ABC, 0x804713AA}, "paint both hover overrides");
+    vgui_input_mouse_down(ctx.get(), 1, 40, 20, 1);
+    paint();
+    check(stops == std::vector<uint32_t>{0x33413259, 0}, "press feedback must multiply, not replace, both stop alphas");
+    vgui_input_cancel(ctx.get());
+    vgui_input_mouse_move(ctx.get(), 110, 60);
+    props["enabled"] = false;
+    props["gradient_normal_top"] = "#00000000"s;
+    mount(5);
+    paint();
+    check(stops.size() == 2 && (stops[0] >> 24) == 0 && (stops[1] >> 24) == 0x80,
+        "disabled tint must not make a transparent stop visible");
+    props["gradient_normal_top"] = "#ZZ3245"s;
+    ui::diagnostic error;
+    check(!rt.mount(doc, 6, {}, &error) && error.path == "/nodes/button/props/gradient_normal_top",
+        "malformed gradient colors must fail at the corresponding property");
+}
+
+void test_panel_gradients() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["surface"]},
+        "surface":{"type":"panel","props":{"x":14,"y":20,"width":100,"height":60,"background":"#792B14",
+            "background_style":"gradient","background_gradient_end":"#12345600","scrollable_y":true,
+            "rounding":7,"border_color":"#0099BB","border_width":2,"opacity":0.5},"children":["content"]},
+        "content":{"type":"panel","props":{"width":60,"height":160,"background":"#00000000","border_width":0}}
+    }})", doc), "read a scrollable panel with a native gradient");
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = 160;
+    vg->height = 120;
+    using axis = std::array<float, 4>;
+    static std::vector<axis> axes;
+    static std::vector<uint32_t> stops, solids;
+    static std::vector<float> radii;
+    static const auto linear = cb->new_pattern_linear;
+    cb->new_pattern_linear = [](rvg_t* view, float x0, float y0, float x1, float y1) {
+        axes.push_back({x0, y0, x1, y1});
+        return linear(view, x0, y0, x1, y1);
+    };
+    static const auto round_rect = cb->rounded_rectangle;
+    cb->rounded_rectangle = [](rvg_t* view, float x, float y, float w, float h, float r) {
+        radii.push_back(r);
+        round_rect(view, x, y, w, h, r);
+    };
+    static const auto stop = cb->pattern_add_color_stop;
+    cb->pattern_add_color_stop = [](vg_pattern_t* pattern, float t, float r, float g, float b, float a) {
+        const auto byte = [](float value) { return static_cast<uint32_t>(std::lround(value * 255)); };
+        stops.push_back((byte(a) << 24) | (byte(r) << 16) | (byte(g) << 8) | byte(b));
+        return stop(pattern, t, r, g, b, a);
+    };
+    static const auto solid = cb->set_source_color;
+    cb->set_source_color = [](rvg_t* view, uint32_t color) { solids.push_back(color); solid(view, color); };
+    const auto paint = [&] {
+        cb->clear(vg.get());
+        axes.clear();
+        stops.clear();
+        solids.clear();
+        radii.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+    };
+    ui::runtime rt(ctx.get());
+    const auto mount = [&](std::uint64_t revision) {
+        check(rt.mount(doc, revision) && rt.layout({160, 120, 1}), "mount the gradient panel");
+        return rt.widget("surface");
+    };
+    auto* surface = mount(1);
+    paint();
+    check(axes == std::vector<axis>{{14, 20, 14, 80}} && stops == std::vector<uint32_t>{0x8043576B, 0x00123456},
+        "vertical background spans the entire panel and preserves endpoint alpha");
+    check(!radii.empty() && radii.front() == 7 && std::ranges::find(solids, 0x80BB9900u) != solids.end() &&
+        std::ranges::find(solids, 0x80142B79u) == solids.end(), "gradient keeps panel rounding and border, but replaces the solid fill");
+    vgui_panel_set_scroll(surface, 0, 30);
+    float scroll = 0;
+    vgui_panel_get_scroll(surface, nullptr, &scroll);
+    paint();
+    check(scroll > 0 && axes == std::vector<axis>{{14, 20, 14, 80}}, "scrolling content must not move the panel gradient");
+
+    auto& props = doc.nodes.at("surface").props;
+    props["background_gradient_direction"] = "horizontal"s;
+    props["background_gradient_start"] = "#56789A"s;
+    surface = mount(2);
+    vgui_widget_set_recording_hint(vgui_root(ctx.get()), 1);
+    paint();
+    check(axes == std::vector<axis>{{14, 20, 114, 20}} && stops == std::vector<uint32_t>{0x8056789A, 0x00123456},
+        "horizontal background runs from left to right");
+    paint();
+    check(axes.empty(), "unchanged ancestor should replay its recording");
+    const auto before = vgui_context_paint_revision(ctx.get());
+    vgui_panel_set_background_gradient(surface, 0xFF56789A, 0x00123456, 1);
+    check(vgui_context_paint_revision(ctx.get()) == before, "same gradient should not request a new frame");
+    vgui_panel_set_background_gradient(surface, 0xFF113355, 0x00123456, 1);
+    paint();
+    check(vgui_context_paint_revision(ctx.get()) > before && !stops.empty() && stops.front() == 0x80113355,
+        "new gradient must request a frame and invalidate the ancestor recording");
+    vgui_panel_clear_background_gradient(surface);
+    paint();
+    check(axes.empty() && std::ranges::find(solids, 0x80142B79u) != solids.end(),
+        "clearing the gradient should redraw the original solid background");
+    props["background_style"] = "solid"s;
+    mount(3);
+    paint();
+    check(axes.empty() && std::ranges::find(solids, 0x80142B79u) != solids.end(),
+        "solid style ignores saved gradient endpoints");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1062,6 +1244,8 @@ int main(int argc, char** argv) {
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
         test_declarative_widgets();
+        test_button_gradients();
+        test_panel_gradients();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

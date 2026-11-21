@@ -132,6 +132,29 @@ cmake --build <build-dir> --target vgui_ui_designer
 
 这是普通按钮的可选皮肤，不是新的控件类型。选择按钮后，在属性检查器填写 **四态图集路径**（相对于页面文件，示例为 `image-button-states.png`），清空则恢复普通按钮外观。图集宽高必须为偶数；无法加载时预览会报告问题并使用普通按钮外观。[示例图集](../sample/res/image-button-states.png) 是一张 **384 × 128** 的透明 PNG，每帧 **192 × 64**。从左上角开始依次为普通 `(0, 0)`、悬停 `(192, 0)`、按下 `(0, 64)`、禁用 `(192, 64)`。每次只绘制其中一帧，文字、键盘焦点和动作仍由按钮处理。导出交付包时整张图集作为一个资源交付。
 
+### 拟物化控件示例
+
+在编辑器中打开 [skeuomorphic-controls.vgui.json](../sample/res/skeuomorphic-controls.vgui.json)，切换到 **运行**，悬停或按住按钮看状态变化。三组控件可以在设计态分别拆开修改：
+
+- **按钮**：科技蓝、夕阳红、森林绿三种原生渐变预设，另有禁用对照和四态图集。属性检查器的 **外观 → 按钮样式** 设为 **渐变** 后，**渐变预设** 才会生效。不指定预设时保持原来的深灰样式。
+- **面板**：中央卡片使用原生纵向渐变，内槽使用横向渐变，不依赖背景图片。左右卡片仍保留九宫格[金属底板](../sample/res/skeuomorphic/metal-face.png)，可对照两种做法。
+- **进度条**：生命、能量、经验值仍是真实进度条；圆角外框和半透明[表面高光](../sample/res/skeuomorphic/bar-glass.png)是独立装饰，移除后不影响数值和读数。进度条本身仍使用纯色填充。
+
+选择渐变按钮后，可展开属性检查器的 **渐变颜色** 分组，分别覆盖普通、悬停、按下的顶色和底色，以及高光边和阴影边。颜色支持 `#RRGGBB` / `#RRGGBBAA`；留空或重置即跟随当前预设，色块显示继承值，拾色器也从该颜色开始。切回纯色只隐藏这些字段，不删除原有设置。若按钮设有可用的四态图集，仍优先绘制图集。示例中的「完成」按钮展示了自定义配色。
+
+在 JSON 的按钮 `props` 中可使用 `gradient_normal_top` / `gradient_normal_bottom`、`gradient_hover_top` / `gradient_hover_bottom`、`gradient_pressed_top` / `gradient_pressed_bottom`、`gradient_border_light` / `gradient_border_dark`。可只写需要修改的一项，例如 `"button_style": "gradient", "gradient_preset": "blue", "gradient_border_light": "#C0E2FF"`。
+
+面板在 **外观 → 背景样式** 选择 **渐变** 后，可在 **渐变颜色** 中设置方向、起始色和结束色（支持透明度）。未填的端点使用默认蓝灰色；切回 **纯色** 时恢复原背景色，并保留渐变参数。背景覆盖整个圆角面板，滚动只移动内容。
+
+```json
+{
+  "background_style": "gradient",
+  "background_gradient_direction": "horizontal",
+  "background_gradient_start": "#465B70",
+  "background_gradient_end": "#1A2431"
+}
+```
+
 ## 9. U3 交付文档与资源清单
 
 **在工作台**：选择 **文件 → 导出交付包（File → Export Package）**，或点击顶部导出快捷按钮，先打开可移动的「导出配置」。选择格式、目标目录和包名后点击 **导出**；对话框显示来源页面、资源数量和原始字节数，单文件模式额外显示 Base64 资源体积（不含 JSON 结构）。默认选目录包，默认目标目录为发起页的资源根；可用 **浏览…** 改选位置。导出使用发起时的文档快照（包括未保存的修改），不会保存原文档、改变当前路径、清除未保存标记或修改撤销历史。写入成功后自动重新读取并校验；取消不会创建产物。

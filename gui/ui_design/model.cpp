@@ -106,7 +106,7 @@ auto properties(const Groups&... groups)
 
 const auto panel_properties = properties(panel, detail::extra_panel_properties, detail::page_properties);
 const auto label_properties = properties(label, detail::extra_label_properties);
-const auto button_properties = properties(button, detail::extra_button_properties);
+const auto button_properties = properties(button, detail::extra_button_properties, detail::extra_button_gradient_properties);
 const auto edit_properties = properties(edit_box, detail::extra_edit_properties);
 const auto image_properties = properties(image, detail::extra_image_properties);
 const type_descriptor descriptors[] = {

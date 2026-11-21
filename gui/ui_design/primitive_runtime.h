@@ -1,6 +1,7 @@
 #pragma once
 
-#include "model.h"
+#include "button_gradient.h"
+#include "primitive_schema.h"
 
 #include <cmath>
 #include <vgui/vgui.h>
@@ -51,6 +52,16 @@ void apply_primitive_text_alignment(vgui_widget* widget, const Access& props)
         y == "top" ? 0.0f : y == "bottom" ? 1.0f : 0.5f);
 }
 
+template<class Access>
+void apply_button_gradient(vgui_widget* widget, const Access& props)
+{
+    auto colors = button_gradient_palette(props.text("gradient_preset"));
+    static_assert(std::size(extra_button_gradient_properties) == colors.size());
+    for (std::size_t i = 0; i < colors.size(); ++i)
+        if (const auto color = props.color(extra_button_gradient_properties[i].key)) colors[i] = *color;
+    vgui_button_set_gradient(widget, colors[0], colors[1], colors[2], colors[3], colors[4], colors[5], colors[6], colors[7]);
+}
+
 // Apply after the caller resolves a same-context button icon texture.
 // A missing texture leaves the newly created button's native defaults alone.
 template<class Access>
@@ -73,6 +84,11 @@ void apply_primitive(vgui_widget* widget, const node& n, const Access& props)
 {
     const std::string_view type = n.type;
     if (type == "panel") {
+        if (props.text("background_style") == "gradient")
+            vgui_panel_set_background_gradient(widget,
+                props.color("background_gradient_start").value_or(default_panel_gradient_start),
+                props.color("background_gradient_end").value_or(default_panel_gradient_end),
+                props.text("background_gradient_direction") == "horizontal");
         if (props.has("align_content"))
             vgui_widget_set_align_content(widget, primitive_content_alignment(props.text("align_content")));
         if (props.has("scrollable_x") || props.has("scrollable_y"))
@@ -86,8 +102,11 @@ void apply_primitive(vgui_widget* widget, const node& n, const Access& props)
         apply_primitive_text_alignment(widget, props);
     } else if (type == "button") {
         apply_primitive_text_alignment(widget, props);
-        if (props.has("button_style")) vgui_button_set_style(widget,
-            props.text("button_style") == "gradient" ? VGUI_BUTTON_STYLE_GRADIENT : VGUI_BUTTON_STYLE_SOLID);
+        const bool gradient = props.text("button_style") == "gradient";
+        if (gradient) {
+            vgui_button_set_style(widget, VGUI_BUTTON_STYLE_GRADIENT);
+            apply_button_gradient(widget, props);
+        }
         if (props.has("checked")) vgui_widget_set_checked(widget, props.boolean("checked"));
     } else if (type == "edit") {
         if (props.has("multiline")) vgui_edit_set_multiline(widget, props.boolean("multiline"));

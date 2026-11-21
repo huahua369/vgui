@@ -312,8 +312,9 @@ namespace vgui_editor_kit {
 			return -1;
 		}
 
-		vgui_color theme_text_color(vgui_widget* widget)
+		vgui_color inherited_color(const property_desc& desc, vgui_widget* widget)
 		{
+			if (desc.inherited_color) return *desc.inherited_color;
 			vgui_theme theme{};
 			vgui_context_get_theme(vgui_widget_get_context(widget), &theme);
 			return theme.text;
@@ -2423,7 +2424,7 @@ private:
 			vgui_color color = 0;
 			std::string canonical;
 			if (item.desc.allow_empty && item.value.empty())
-				color = theme_text_color(item.swatch);
+				color = inherited_color(item.desc, item.swatch);
 			else if (!parse_color(item.value, color, canonical))
 				color = kDarkPalette.panel;
 			vgui_widget_set_background(item.swatch, color);
@@ -3277,7 +3278,7 @@ private:
 			commit_popup_value(id, hex);
 		});
 		const std::string picker_color = item.desc.allow_empty && item.value.empty()
-			? format_color(theme_text_color(item.swatch)) : item.value;
+			? format_color(inherited_color(item.desc, item.swatch)) : item.value;
 		color_picker_->set_value(picker_color);
 		color_picker_->set_current(picker_color);
 

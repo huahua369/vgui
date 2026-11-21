@@ -1235,6 +1235,13 @@ extern "C" {
 	VGUI_API void vgui_spawn_float_text(vgui_context* ctx, float x, float y,
 		const char* text, vgui_color color, float lifetime, float rise);
 	VGUI_API void vgui_widget_set_background(vgui_widget* widget, vgui_color color);
+	/* Panels only. Replaces the solid background with an AARRGGBB gradient over
+	 * the panel bounds, top to bottom (horizontal=0) or left to right. The
+	 * gradient stays fixed while content scrolls. Clear restores the solid fill.
+	 * Endpoint alpha is multiplied by the panel opacity. */
+	VGUI_API void vgui_panel_set_background_gradient(vgui_widget* panel,
+		vgui_color start, vgui_color end, int horizontal);
+	VGUI_API void vgui_panel_clear_background_gradient(vgui_widget* panel);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);
 	/* align 0/1 mean start/end, so they swap when the context direction is RTL;

@@ -1,6 +1,7 @@
 #include "ui_designer_workbench.h"
 
-#include "model.h"
+#include "button_gradient.h"
+#include "primitive_schema.h"
 #include "ui_designer_locale.h"
 #include <vgui/editor/command_registry.h>
 #include <vgui/editor/outliner_view.h>
@@ -737,6 +738,7 @@ struct designer_workbench::impl {
                 {"Content", strings.text("workbench.inspector.category.content", "Content")},
                 {"Font", strings.text("workbench.inspector.category.font", "Font")},
                 {"Appearance", strings.text("workbench.inspector.category.appearance", "Appearance")},
+                {"Gradient colors", strings.text("workbench.inspector.category.gradient_colors", "Gradient colors")},
                 {"Image", strings.text("workbench.inspector.category.image", "Image")},
                 {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
@@ -858,6 +860,9 @@ struct designer_workbench::impl {
             if (value == "stretch") return strings.text("workbench.inspector.alignment.stretch", "Stretch");
             if (value == "space-between") return strings.text("workbench.inspector.alignment.space_between", "Space between");
             if (value == "space-around") return strings.text("workbench.inspector.alignment.space_around", "Space around");
+        } else if (desc.key == "background_gradient_direction") {
+            if (value == "horizontal") return strings.text("workbench.inspector.gradient_direction.horizontal", "Left to right");
+            if (value == "vertical") return strings.text("workbench.inspector.gradient_direction.vertical", "Top to bottom");
         } else if (desc.key == "text_orientation") {
             if (value == "horizontal") return strings.text("workbench.inspector.text_orientation.horizontal", "Horizontal");
             if (value == "vertical") return strings.text("workbench.inspector.text_orientation.vertical", "Vertical (single column)");
@@ -1414,13 +1419,24 @@ struct designer_workbench::impl {
         add({.id = node_id, .label = strings.text("workbench.inspector.node_id", "Node ID"), .value = selected, .read_only = true});
         add({.id = node_name, .label = strings.text("workbench.inspector.name", "Name"), .value = item.name, .has_default = true});
         const auto place = location(selected);
+        std::optional<std::array<vgui_color, 8>> gradient;
+        if (item.type == "button" && std::get<std::string>(property_value(item, *find_property("button", "button_style"))) == "gradient")
+            gradient = detail::button_gradient_palette(std::get<std::string>(property_value(item, *find_property("button", "gradient_preset"))));
+        const auto gradient_fields = std::span(detail::extra_button_gradient_properties);
+        const bool panel_gradient = item.type == "panel" &&
+            std::get<std::string>(property_value(item, *find_property("panel", "background_style"))) == "gradient";
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
+                const auto gradient_field = std::ranges::find(gradient_fields, desc.key, &property_descriptor::key);
+                const bool gradient_color = gradient_field != gradient_fields.end();
+                const bool panel_gradient_field = desc.key.starts_with("background_gradient_");
+                if ((gradient_color && !gradient) || (panel_gradient_field && !panel_gradient)) continue;
                 kit::property_desc row;
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (desc.key.starts_with("dock_") || desc.key == "page_title" || desc.key == "tab_enabled") {
+                if (gradient_color || panel_gradient_field) row.category = "Gradient colors";
+                else if (desc.key.starts_with("dock_") || desc.key == "page_title" || desc.key == "tab_enabled") {
                     if (!place) continue;
                     const auto& parent = doc.nodes.at(place->first).type;
                     if (desc.key == "page_title" ? (parent != "dock" && parent != "tabview") :
@@ -1434,8 +1450,9 @@ struct designer_workbench::impl {
                          desc.key == "max_height" || desc.key == "min_width" || desc.key == "min_height" || desc.key == "align_self" || desc.key == "align_content")
                     row.category = "Layout details";
                 else if ((desc.type == value_type::color && desc.key != "text_color") || desc.key == "border_width" ||
-                         desc.key == "rounding" || desc.key == "opacity" || desc.key == "button_style" || desc.key == "icon" ||
-                         desc.key.starts_with("icon_") || desc.key.starts_with("text_align_")) row.category = "Appearance";
+                         desc.key == "rounding" || desc.key == "opacity" || desc.key == "background_style" || desc.key == "button_style" ||
+                         desc.key == "gradient_preset" || desc.key == "icon" || desc.key.starts_with("icon_") ||
+                         desc.key.starts_with("text_align_")) row.category = "Appearance";
                 row.value = display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
@@ -1443,6 +1460,8 @@ struct designer_workbench::impl {
                     row.placeholder = strings.text("workbench.inspector.radio_group.default", "Default group");
                     row.tooltip = strings.text("workbench.inspector.radio_group.hint",
                         "Only radio buttons with the same group name in this container exclude one another. Leave blank for the default group.");
+                } else if (desc.key == "gradient_preset") {
+                    row.tooltip = strings.text("workbench.inspector.gradient_preset.hint", "Applies when Button style is Gradient.");
                 } else if (desc.key == "text_orientation") {
                     row.tooltip = strings.text("workbench.inspector.text_orientation.hint",
                         "Vertical text uses one column. Increase the height or set it to 0 for automatic sizing.");
@@ -1465,10 +1484,20 @@ struct designer_workbench::impl {
                 case value_type::color:
                     row.type = kit::property_type::color;
                     row.allow_empty = true;
-                    row.placeholder = "#RRGGBB";
-                    row.tooltip = desc.key == "text_color" ? strings.text("workbench.inspector.font.color_hint",
-                        "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the theme text color.") :
-                        strings.text("workbench.inspector.color_hint", "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the default color.");
+                    if (gradient_color) {
+                        row.inherited_color = (*gradient)[gradient_field - gradient_fields.begin()];
+                        row.placeholder = strings.text("workbench.inspector.gradient_color.inherit", "Use preset");
+                        row.tooltip = strings.text("workbench.inspector.gradient_color.hint",
+                            "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear to use the selected preset color.");
+                    } else {
+                        if (panel_gradient_field)
+                            row.inherited_color = desc.key == "background_gradient_start"
+                                ? detail::default_panel_gradient_start : detail::default_panel_gradient_end;
+                        row.placeholder = "#RRGGBB";
+                        row.tooltip = desc.key == "text_color" ? strings.text("workbench.inspector.font.color_hint",
+                            "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the theme text color.") :
+                            strings.text("workbench.inspector.color_hint", "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the default color.");
+                    }
                     break;
                 case value_type::items:
                     row.multiline = true;
@@ -1529,7 +1558,7 @@ struct designer_workbench::impl {
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
         constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Geometry & state", "Pages",
-            "Appearance", "Image", "Layout details", "Interaction"};
+            "Appearance", "Gradient colors", "Image", "Layout details", "Interaction"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

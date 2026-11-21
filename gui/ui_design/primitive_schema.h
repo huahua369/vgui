@@ -13,7 +13,11 @@ inline constexpr std::string_view label_text_orientations[] = {"horizontal", "ve
 inline constexpr std::string_view content_alignment[] = {
     "start", "center", "end", "space-between", "space-around", "space-evenly", "stretch"
 };
-inline constexpr std::string_view button_styles[] = {"solid", "gradient"};
+inline constexpr std::string_view fill_styles[] = {"solid", "gradient"};
+inline constexpr std::string_view gradient_directions[] = {"vertical", "horizontal"};
+inline constexpr std::uint32_t default_panel_gradient_start = 0xFF43576B;
+inline constexpr std::uint32_t default_panel_gradient_end = 0xFF192532;
+inline constexpr std::string_view button_gradient_presets[] = {"default", "blue", "sunset", "green"};
 inline constexpr std::string_view button_icon_positions[] = {"left", "right", "top", "bottom"};
 inline constexpr std::string_view image_fits[] = {"stretch", "contain", "cover", "none"};
 
@@ -70,6 +74,10 @@ inline const property_descriptor separator_properties[] = {
 };
 
 inline const property_descriptor extra_panel_properties[] = {
+    {"background_style", "Background style", value_type::choice, std::string("solid"), 0, 0, fill_styles},
+    {"background_gradient_direction", "Gradient direction", value_type::choice, std::string("vertical"), 0, 0, gradient_directions},
+    {"background_gradient_start", "Gradient start", value_type::color, std::string{}},
+    {"background_gradient_end", "Gradient end", value_type::color, std::string{}},
     {"align_content", "Align wrapped rows", value_type::choice, std::string("start"), 0, 0, content_alignment},
     {"scrollable_x", "Scroll horizontally", value_type::boolean, false},
     {"scrollable_y", "Scroll vertically", value_type::boolean, false},
@@ -83,7 +91,8 @@ inline const property_descriptor extra_label_properties[] = {
 };
 inline const property_descriptor extra_button_properties[] = {
     text_align_center, text_align_middle,
-    {"button_style", "Button style", value_type::choice, std::string("solid"), 0, 0, button_styles},
+    {"button_style", "Button style", value_type::choice, std::string("solid"), 0, 0, fill_styles},
+    {"gradient_preset", "Gradient preset", value_type::choice, std::string("default"), 0, 0, button_gradient_presets},
     {"checked", "Initially active", value_type::boolean, false},
     {"icon", "Button icon path", value_type::resource_key, std::string{}},
     {"icon_width", "Icon width", value_type::number, 0.0, 0, primitive_extent},
@@ -91,6 +100,16 @@ inline const property_descriptor extra_button_properties[] = {
     {"icon_position", "Icon position", value_type::choice, std::string("left"), 0, 0, button_icon_positions},
     {"icon_gap", "Icon gap", value_type::number, 0.0, 0, primitive_extent},
     {"icon_tint", "Icon tint", value_type::color, std::string{}},
+};
+inline const property_descriptor extra_button_gradient_properties[] = {
+    {"gradient_normal_top", "Normal top", value_type::color, std::string{}},
+    {"gradient_normal_bottom", "Normal bottom", value_type::color, std::string{}},
+    {"gradient_hover_top", "Hover top", value_type::color, std::string{}},
+    {"gradient_hover_bottom", "Hover bottom", value_type::color, std::string{}},
+    {"gradient_pressed_top", "Pressed top", value_type::color, std::string{}},
+    {"gradient_pressed_bottom", "Pressed bottom", value_type::color, std::string{}},
+    {"gradient_border_light", "Highlight edge", value_type::color, std::string{}},
+    {"gradient_border_dark", "Shadow edge", value_type::color, std::string{}},
 };
 inline const property_descriptor extra_edit_properties[] = {
     {"multiline", "Multiline", value_type::boolean, false},

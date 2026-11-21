@@ -1,0 +1,51 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "workshop",
+  "nodes": {
+    "workshop": {"type":"panel", "name":"铸造工坊 · 拟物化控件", "props":{"width":900,"height":448,"background":"#131B25"}, "children":["eyebrow","title","subtitle","buttons","panel","gauges","footer"]},
+    "eyebrow": {"type":"label", "props":{"x":30,"y":18,"width":420,"height":20,"text":"VGUI / FOUNDRY     ·     01","font_size":12,"font_weight":"bold","text_color":"#E5B875"}},
+    "title": {"type":"label", "props":{"x":28,"y":42,"width":420,"height":38,"text":"铸造工坊","font_size":28,"font_weight":"bold","text_color":"#F0F4F8"}},
+    "subtitle": {"type":"label", "props":{"x":542,"y":50,"width":328,"height":28,"text":"拟物化控件样式 / 按钮 · 面板 · 进度条","font_size":14,"text_color":"#AEBFCD","text_align_x":"end"}},
+
+    "buttons": {"type":"panel", "name":"三态按钮", "props":{"x":30,"y":100,"width":268,"height":280,"background":"#263445","rounding":13}, "children":["buttons_face","buttons_title","blue_button","red_button","green_button","disabled_button","atlas_button","buttons_hint"]},
+    "buttons_face": {"type":"image", "name":"金属底板", "props":{"width":268,"height":280,"resource":"metal.face","slice_left":14,"slice_top":20,"slice_right":14,"slice_bottom":14,"border_width":0,"input_enabled":false}},
+    "buttons_title": {"type":"label", "props":{"x":18,"y":16,"width":232,"height":28,"text":"01  /  渐变按钮","font_size":17,"font_weight":"bold","text_color":"#E5EDF4"}},
+    "blue_button": {"type":"button", "name":"科技蓝", "props":{"x":18,"y":64,"width":110,"height":40,"text":"确定","button_style":"gradient","gradient_preset":"blue","rounding":7,"text_color":"#FFFFFF","action":"foundry.confirm"}},
+    "red_button": {"type":"button", "name":"夕阳红", "props":{"x":140,"y":64,"width":110,"height":40,"text":"警告","button_style":"gradient","gradient_preset":"sunset","rounding":7,"text_color":"#1D1209","action":"foundry.warn"}},
+    "green_button": {"type":"button", "name":"森林绿 · 自定义", "props":{"x":18,"y":114,"width":110,"height":40,"text":"完成","button_style":"gradient","gradient_preset":"green","rounding":7,"text_color":"#FFFFFF","action":"foundry.complete",
+      "gradient_normal_top":"#298755","gradient_normal_bottom":"#155D3D","gradient_hover_top":"#2A945D","gradient_hover_bottom":"#197149","gradient_pressed_top":"#135D40","gradient_pressed_bottom":"#09432D","gradient_border_light":"#92E8B6","gradient_border_dark":"#092D22"}},
+    "disabled_button": {"type":"button", "name":"禁用对照", "props":{"x":140,"y":114,"width":110,"height":40,"text":"禁用","button_style":"gradient","enabled":false,"rounding":7,"text_color":"#CFD8E2"}},
+    "atlas_button": {"type":"button", "name":"四态纹理按钮", "props":{"x":18,"y":178,"width":156,"height":52,"atlas":"button.states","action":"foundry.atlas","a11y_name":"四态纹理按钮"}},
+    "buttons_hint": {"type":"label", "props":{"x":18,"y":240,"width":232,"height":22,"text":"悬停、按住，再松开试试看","font_size":13,"text_color":"#B9C9D7"}},
+
+    "panel": {"type":"panel", "name":"原生渐变面板", "props":{"x":316,"y":100,"width":268,"height":280,"background":"#263445","background_style":"gradient","background_gradient_start":"#465B70","background_gradient_end":"#1A2431","border_color":"#597084","border_width":1,"rounding":13}, "children":["panel_title","panel_well","panel_hint"]},
+    "panel_title": {"type":"label", "props":{"x":18,"y":16,"width":232,"height":28,"text":"02  /  原生渐变面板","font_size":17,"font_weight":"bold","text_color":"#E5EDF4"}},
+    "panel_well": {"type":"panel", "name":"凹入的仪表槽", "props":{"x":18,"y":64,"width":232,"height":166,"background":"#13202C","background_style":"gradient","background_gradient_direction":"horizontal","background_gradient_start":"#101A24","background_gradient_end":"#213242","border_color":"#0F161F","border_width":2,"rounding":9}, "children":["well_glint","well_label","well_value","well_detail"]},
+    "well_glint": {"type":"panel", "name":"内槽下沿反光", "props":{"x":9,"y":160,"width":214,"height":1,"background":"#526476","border_color":"#00000000","border_width":0,"input_enabled":false}},
+    "well_label": {"type":"label", "props":{"x":16,"y":18,"width":200,"height":22,"text":"工坊仪表 / 核心温度","font_size":13,"text_color":"#BBCBD8"}},
+    "well_value": {"type":"label", "props":{"x":15,"y":52,"width":202,"height":54,"text":"062 °C","font_size":36,"font_weight":"bold","text_color":"#EDC786"}},
+    "well_detail": {"type":"label", "props":{"x":16,"y":121,"width":200,"height":22,"text":"●  运转正常","font_size":13,"text_color":"#9DDBBB"}},
+    "panel_hint": {"type":"label", "props":{"x":18,"y":240,"width":232,"height":22,"text":"纵向底板 + 横向内槽 · 无底图","font_size":13,"text_color":"#B9C9D7"}},
+
+    "gauges": {"type":"panel", "name":"光泽进度条", "props":{"x":602,"y":100,"width":268,"height":280,"background":"#263445","rounding":13}, "children":["gauges_face","gauges_title","health_label","health_track","energy_label","energy_track","experience_label","experience_track","gauges_hint"]},
+    "gauges_face": {"type":"image", "name":"金属底板", "props":{"width":268,"height":280,"resource":"metal.face","slice_left":14,"slice_top":20,"slice_right":14,"slice_bottom":14,"border_width":0,"input_enabled":false}},
+    "gauges_title": {"type":"label", "props":{"x":18,"y":16,"width":232,"height":28,"text":"03  /  光泽进度条","font_size":17,"font_weight":"bold","text_color":"#E5EDF4"}},
+    "health_label": {"type":"label", "props":{"x":18,"y":54,"width":232,"height":20,"text":"生命值","font_size":13,"text_color":"#F4D0D4"}},
+    "health_track": {"type":"panel", "props":{"x":18,"y":77,"width":232,"height":26,"background":"#111922","border_color":"#687689","border_width":1,"rounding":7}, "children":["health","health_glass"]},
+    "health": {"type":"progress", "props":{"x":2,"y":2,"width":228,"height":22,"value":0.72,"accent_color":"#BE5460","track_color":"#3B2630","rounding":5,"text_color":"#FFFFFF","font_size":12}},
+    "health_glass": {"type":"image", "name":"可移除的表面高光", "props":{"x":2,"y":2,"width":228,"height":22,"resource":"bar.glass","border_width":0,"input_enabled":false}},
+    "energy_label": {"type":"label", "props":{"x":18,"y":115,"width":232,"height":20,"text":"能量值","font_size":13,"text_color":"#C8E3FF"}},
+    "energy_track": {"type":"panel", "props":{"x":18,"y":138,"width":232,"height":26,"background":"#111922","border_color":"#687689","border_width":1,"rounding":7}, "children":["energy","energy_glass"]},
+    "energy": {"type":"progress", "props":{"x":2,"y":2,"width":228,"height":22,"value":0.48,"accent_color":"#428AC1","track_color":"#213A50","rounding":5,"text_color":"#FFFFFF","font_size":12}},
+    "energy_glass": {"type":"image", "name":"可移除的表面高光", "props":{"x":2,"y":2,"width":228,"height":22,"resource":"bar.glass","border_width":0,"input_enabled":false}},
+    "experience_label": {"type":"label", "props":{"x":18,"y":176,"width":232,"height":20,"text":"经验值","font_size":13,"text_color":"#C3ECD8"}},
+    "experience_track": {"type":"panel", "props":{"x":18,"y":199,"width":232,"height":26,"background":"#111922","border_color":"#687689","border_width":1,"rounding":7}, "children":["experience","experience_glass"]},
+    "experience": {"type":"progress", "props":{"x":2,"y":2,"width":228,"height":22,"value":0.86,"accent_color":"#3D8A65","track_color":"#233D34","rounding":5,"text_color":"#FFFFFF","font_size":12}},
+    "experience_glass": {"type":"image", "name":"可移除的表面高光", "props":{"x":2,"y":2,"width":228,"height":22,"resource":"bar.glass","border_width":0,"input_enabled":false}},
+    "gauges_hint": {"type":"label", "props":{"x":18,"y":240,"width":232,"height":22,"text":"进度值可编辑，高光独立叠加","font_size":13,"text_color":"#B9C9D7"}},
+
+    "footer": {"type":"label", "props":{"x":30,"y":396,"width":840,"height":28,"text":"设计态可拆解每一层；切换到运行态可体验按钮反馈。","font_size":13,"text_color":"#9FB2C4"}}
+  },
+  "resources": {"metal.face":"skeuomorphic/metal-face.png","bar.glass":"skeuomorphic/bar-glass.png","button.states":"image-button-states.png"}
+}

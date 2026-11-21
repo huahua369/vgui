@@ -6,6 +6,7 @@ gui实现
 
 #include "pch.h"
 #include "vgui_internal.h"
+#include "vgui_button_gradient.h"
 #include <vgui/vgui.h>
 #include "vgui_text_draw.h"
 
@@ -790,6 +791,8 @@ struct vgui_widget
 
 	// visual ---------------------------------------------------------------
 	vgui_color bg = 0;
+	vgui_color panel_gradient_start = 0, panel_gradient_end = 0;
+	bool panel_gradient_enabled = false, panel_gradient_horizontal = false;
 	vgui_color border = 0;
 	vgui_color text_color = 0;
 	vgui_color accent = 0;
@@ -934,12 +937,7 @@ struct vgui_widget
 
 	// button gradient (VGUI_BUTTON, GRADIENT style) ------------------------
 	vgui_button_style_kind btn_style_kind = VGUI_BUTTON_STYLE_SOLID;
-	// 三组起止色（default / hover / active），0xAARRGGBB 存储
-	vgui_color grad_top[3] = { 0xFF4a4a4a, 0x80404040, 0xFF292929 };
-	vgui_color grad_bot[3] = { 0xFF3a3a3a, 0x80303030, 0xFF1d1d1d };
-	vgui_color gradient_border_light = 0xFF5c5c5c;
-	vgui_color gradient_border_dark = 0xFF1d1d1d;
-	float gradient_opacity = 1.0f;
+	std::array<vgui_color, 8> button_gradient = vgui::detail::default_button_gradient;
 
 	// custom (VGUI_CUSTOM) -------------------------------------------------
 	vgui_custom_draw_fn custom_draw = nullptr;
@@ -13142,38 +13140,13 @@ static void vgui_texture_ensure_upload(vgui_context* ctx, vgui_texture* texture,
 // Gradient button helpers (ported from vgui_legacy.cpp)
 // -------------------------------------------------------------------
 
-// 把 0xAARRGGBB 的 alpha 按比例乘一遍，返回新颜色（保留 RGB 分量的乘性缩放语义）。
-static uint32_t vgui_set_alpha_xf(uint32_t c, double af)
-{
-	if (af < 0) af = 0;
-	uint8_t a = (c >> 24) & 0xFF;
-	double na = a * af + 0.5;
-	if (na > 255) na = 255;
-	a = (uint8_t)na;
-	return (c & 0x00FFFFFFu) | ((uint32_t)a << 24);
-}
-
-// 直接写 alpha 通道（0..1）。
-static uint32_t vgui_set_alpha_f(uint32_t c, double af)
-{
-	if (af > 1) af = 1;
-	if (af < 0) af = 0;
-	uint8_t a = (uint8_t)(af * 255.0 + 0.5);
-	return (c & 0x00FFFFFFu) | ((uint32_t)a << 24);
-}
-
-static double vgui_get_alpha_f(vgui_color c)
-{
-	return ((c >> 24) & 0xFF) / 255.0;
-}
-
-// 构造垂直线性渐变 pattern 并对给定矩形填充。
+// 使用同一套圆角轮廓绘制横向或纵向线性渐变。
 static void vgui_paint_linear_rect(ovg_ctx_cb* cb, rvg_t* vg,
 	float x, float y, float w, float h, float rounding,
-	vgui_color top, vgui_color bot)
+	vgui_color start, vgui_color end, bool horizontal = false)
 {
 	ovg_tools::fill_round_rect_gradient(cb, vg, x, y, w, h, rounding,
-		vgui_ovg_color(top), vgui_ovg_color(bot));
+		vgui_ovg_color(start), vgui_ovg_color(end), horizontal);
 }
 
 static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
@@ -13187,35 +13160,22 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	else if (w->hovered || w->hover_anim > 0.01f) state_idx = 1;
 	else state_idx = 0;
 
-	uint32_t gradTop = w->grad_top[state_idx];
-	uint32_t gradBot = w->grad_bot[state_idx];
-	uint32_t borderLight = w->gradient_border_light;
-	uint32_t borderDark = w->gradient_border_dark;
-	double oa = w->gradient_opacity;
-
-	// 禁用态：整体向 disabled 色混合，相当于降低 opacity
-	if (!w->enabled)
-	{
-		float disabled_mix = ctx->style.button.disabled_mix;
-		gradTop = vgui_mix_color(gradTop, ctx->theme.disabled, disabled_mix);
-		gradBot = vgui_mix_color(gradBot, ctx->theme.disabled, disabled_mix);
-		borderLight = vgui_mix_color(borderLight, ctx->theme.disabled, disabled_mix);
-		borderDark = vgui_mix_color(borderDark, ctx->theme.disabled, disabled_mix);
-	}
-
-	// 按下态：整体内移 thickness + 渐变透明度略微降低
-	bool pushed = w->pressed;
-	if (pushed)
-	{
-		gradTop = vgui_set_alpha_f(gradTop, 0.8);
-		gradBot = vgui_set_alpha_f(gradBot, 0.8);
-	}
-
-	// 应用全局 opacity
-	gradTop = vgui_set_alpha_xf(gradTop, oa);
-	gradBot = vgui_set_alpha_xf(gradBot, oa);
-	borderLight = vgui_set_alpha_xf(borderLight, oa);
-	borderDark = vgui_set_alpha_xf(borderDark, oa);
+	const auto& colors = w->button_gradient;
+	const auto tint = [&](vgui_color color) {
+		if (!w->enabled)
+		{
+			// 禁用态只混合 RGB，不让选定的透明色重新变为可见。
+			const auto disabled = (ctx->theme.disabled & 0x00FFFFFFu) | (color & 0xFF000000u);
+			color = vgui_mix_color(color, disabled, ctx->style.button.disabled_mix);
+		}
+		return color;
+	};
+	const bool pushed = w->pressed;
+	const float fill_opacity = w->opacity * (pushed ? 0.8f : 1.0f);
+	const auto gradTop = vgui_alpha_color(tint(colors[state_idx * 2]), fill_opacity);
+	const auto gradBot = vgui_alpha_color(tint(colors[state_idx * 2 + 1]), fill_opacity);
+	const auto borderLight = vgui_widget_color(w, tint(colors[6]));
+	const auto borderDark = vgui_widget_color(w, tint(colors[7]));
 
 	float x = w->abs_x, y = w->abs_y, ww = w->abs_w, hh = w->abs_h;
 
@@ -13235,10 +13195,11 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	cb->translate(vg, 0.0f, translate_y);
 
 	// 1) 可选的底色（legacy light 风格用）：沿用 bg 字段
-	if (w->bg && vgui_get_alpha_f(w->bg) > 0.001)
+	const auto bg = vgui_widget_color(w, w->bg);
+	if (bg >> 24)
 	{
 		float t2 = thickness > 1 ? thickness : 0.0f;
-		cb->set_source_color(vg, vgui_ovg_color(w->bg));
+		cb->set_source_color(vg, vgui_ovg_color(bg));
 		cb->rounded_rectangle(vg, x + t2, y + t2, ww - t2 * 2, hh - t2 * 2,
 			ink_radius(t2, hh - t2 * 2));
 		cb->fill(vg);
@@ -15982,7 +15943,15 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 
 	if (w->kind == VGUI_PANEL)
 	{
-		if (w->bg)
+		if (w->panel_gradient_enabled)
+		{
+			const auto start = vgui_widget_color(w, w->panel_gradient_start);
+			const auto end = vgui_widget_color(w, w->panel_gradient_end);
+			if ((start | end) >> 24)
+				vgui_paint_linear_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding,
+					start, end, w->panel_gradient_horizontal);
+		}
+		else if (w->bg)
 			vgui_fill_rect(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h, w->rounding, vgui_widget_color(w, w->bg));
 		const bool scrolling = vgui_is_scroll_panel(w);
 		const auto draw_border = [&]
@@ -17494,6 +17463,28 @@ extern "C" {
 		if (widget) widget->bg = color;
 	}
 
+	void vgui_panel_set_background_gradient(vgui_widget* panel, vgui_color start, vgui_color end, int horizontal)
+	{
+		if (!panel || panel->kind != VGUI_PANEL) return;
+		const bool across = horizontal != 0;
+		if (panel->panel_gradient_enabled && panel->panel_gradient_start == start &&
+			panel->panel_gradient_end == end && panel->panel_gradient_horizontal == across) return;
+		panel->panel_gradient_enabled = true;
+		panel->panel_gradient_start = start;
+		panel->panel_gradient_end = end;
+		panel->panel_gradient_horizontal = across;
+		vgui_recording_invalidate_chain(panel, true);
+		vgui_widget_mark_dirty(panel);
+	}
+
+	void vgui_panel_clear_background_gradient(vgui_widget* panel)
+	{
+		if (!panel || panel->kind != VGUI_PANEL || !panel->panel_gradient_enabled) return;
+		panel->panel_gradient_enabled = false;
+		vgui_recording_invalidate_chain(panel, true);
+		vgui_widget_mark_dirty(panel);
+	}
+
 	void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width)
 	{
 		if (!widget) return;
@@ -18382,14 +18373,8 @@ extern "C" {
 		vgui_color border_light, vgui_color border_dark)
 	{
 		if (!widget || widget->kind != VGUI_BUTTON) return;
-		widget->grad_top[0] = grad_top_default;
-		widget->grad_top[1] = grad_top_hover;
-		widget->grad_top[2] = grad_top_active;
-		widget->grad_bot[0] = grad_bot_default;
-		widget->grad_bot[1] = grad_bot_hover;
-		widget->grad_bot[2] = grad_bot_active;
-		widget->gradient_border_light = border_light;
-		widget->gradient_border_dark = border_dark;
+		widget->button_gradient = {grad_top_default, grad_bot_default, grad_top_hover, grad_bot_hover,
+			grad_top_active, grad_bot_active, border_light, border_dark};
 		vgui_mark_dirty(widget);
 	}
 

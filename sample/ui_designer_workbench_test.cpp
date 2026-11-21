@@ -1804,6 +1804,139 @@ void exercise_label_orientation()
         "reopened label did not display the localized vertical choice");
 }
 
+void exercise_button_gradients()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "button-gradient.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    auto* root = vgui_root(ctx);
+    const ui::edit design[] = {ui::insert_node{"button", model.current().root,
+        {"button", {}, {{"gradient_preset", std::string("blue")}}, {}}}};
+    check(model.apply(design), "could not seed the gradient inspector");
+    workbench.bench.select("button");
+    workbench.frame();
+    constexpr auto row = "property:gradient_normal_top";
+    const auto filter = [&](const char* label) {
+        auto* edit = workbench.widget("__property_search", VGUI_EDIT);
+        workbench.click(edit);
+        vgui_edit_select_all(edit);
+        check(vgui_input_text(ctx, label), "could not filter the inspector");
+        workbench.frame();
+    };
+    const auto choose = [&](const char* label, const char* property, const char* choice) {
+        filter(label);
+        workbench.press(property);
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "gradient inspector choices did not open");
+        workbench.activate(menu, choice);
+    };
+    const auto open_picker = [&] {
+        workbench.click(workbench.widget(row, VGUI_PANEL));
+        workbench.frame();
+        auto* hex = find_widget(vgui_popup_content(ctx), "property-grid.color-picker.hex", VGUI_EDIT);
+        check(hex, "gradient swatch did not open the color picker");
+        return hex;
+    };
+    check(!find_widget(root, row, VGUI_EDIT), "solid buttons should not show gradient color rows");
+    choose("Button style", "property:button_style", "Gradient");
+    filter("Normal top");
+    const auto inherited = model.committed();
+    check(!inherited.nodes.at("button").props.contains("gradient_normal_top"), "showing inherited color should not create an override");
+    auto* hex = open_picker();
+    check(ui::parse_text_color(vgui_edit_get_text(hex)) == 0xFF4A8FE7u && model.current() == inherited,
+        "empty gradient color should start from the current preset, not the theme color");
+    workbench.click(hex);
+    vgui_edit_select_all(hex);
+    check(vgui_input_text(ctx, "#12345680"), "picker did not consume the RGBA value");
+    workbench.frame();
+    const auto custom = model.current();
+    check(custom.nodes.at("button").props.at("gradient_normal_top") == ui::value{std::string("#12345680")} &&
+        model.committed() == inherited, "gradient color should preview without Enter or an early commit");
+    workbench.click(workbench.outline());
+    workbench.frame();
+    check(model.committed() == custom, "closing the picker should commit the custom color");
+    check(model.undo() && model.current() == inherited && model.redo() && model.current() == custom,
+        "one undo/redo should restore inheritance and the custom color");
+    workbench.frame();
+    choose("Button style", "property:button_style", "Solid");
+    filter("Normal top");
+    check(!find_widget(root, row, VGUI_EDIT) && model.current().nodes.at("button").props.contains("gradient_normal_top"),
+        "switching to solid should hide, not remove, custom gradient colors");
+    choose("Button style", "property:button_style", "Gradient");
+    choose("Gradient preset", "property:gradient_preset", "Forest green");
+    const auto saved = model.current();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved, "custom gradient state was lost on save/reopen");
+    workbench.bench.select("button");
+    workbench.frame();
+    filter("Normal top");
+    auto* edit = workbench.widget(row, VGUI_EDIT);
+    check(std::string_view(vgui_edit_get_text(edit)) == "#12345680", "preset changes must keep explicit overrides");
+    workbench.click(edit);
+    vgui_edit_select_all(edit);
+    check(workbench.key(VGUI_KEY_BACKSPACE) && !model.current().nodes.at("button").props.contains("gradient_normal_top"),
+        "clearing the override should restore inheritance without Enter");
+    vgui_set_focus(ctx, nullptr);
+    workbench.frame();
+    check(ui::parse_text_color(vgui_edit_get_text(open_picker())) == 0xFF22C55Eu,
+        "clearing the override should pick up the newly selected preset color");
+    workbench.key(VGUI_KEY_ESCAPE);
+}
+
+void exercise_panel_gradient()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "panel-gradient.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    constexpr auto style = "property:background_style";
+    constexpr auto direction = "property:background_gradient_direction";
+    constexpr auto end = "property:background_gradient_end";
+    const auto filter = [&](const char* text) {
+        auto* search = workbench.widget("__property_search", VGUI_EDIT);
+        workbench.click(search);
+        vgui_edit_select_all(search);
+        check(vgui_input_text(ctx, text), "could not filter the panel inspector");
+        workbench.frame();
+    };
+    const auto choose = [&](const char* field, const char* option) {
+        workbench.press(field);
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "panel gradient choices did not open");
+        workbench.activate(menu, option);
+    };
+    filter("background");
+    check(!find_widget(vgui_root(ctx), direction, VGUI_BUTTON), "solid panel shows gradient-only settings");
+    choose(style, "Gradient");
+    check(std::string_view(vgui_widget_get_text(workbench.widget(direction, VGUI_BUTTON))) == "Top to bottom",
+        "new gradients should show the default vertical direction");
+    choose(direction, "Left to right");
+    const auto before = model.committed();
+    auto* edit = workbench.widget(end, VGUI_EDIT);
+    workbench.click(edit);
+    vgui_edit_select_all(edit);
+    check(vgui_input_text(ctx, "#25A4387F"), "gradient color edit did not receive input");
+    workbench.frame();
+    const auto after = model.current();
+    const auto& props = after.nodes.at(root).props;
+    check(model.committed() == before && props.at("background_style") == ui::value{std::string("gradient")} &&
+        props.at("background_gradient_direction") == ui::value{std::string("horizontal")} &&
+        props.at("background_gradient_end") == ui::value{std::string("#25A4387F")},
+        "panel gradient properties should preview instantly using stable JSON keys");
+    vgui_set_focus(ctx, nullptr);
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == after, "panel gradient did not survive save/reopen");
+    choose(style, "Solid");
+    check(!find_widget(vgui_root(ctx), direction, VGUI_BUTTON) &&
+        model.current().nodes.at(root).props.at("background_gradient_end") == props.at("background_gradient_end"),
+        "returning to solid should hide, not discard, gradient properties");
+}
+
 void exercise_radio_group_inspector()
 {
     temp_dir directory;
@@ -2085,6 +2218,8 @@ int main()
         exercise_outline_drag();
         exercise_control_schema();
         exercise_label_orientation();
+        exercise_button_gradients();
+        exercise_panel_gradient();
         exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_language_preferences();
