@@ -1992,6 +1992,107 @@ void exercise_decorative_gradient()
     check(workbench.io_ok && model.current() == saved, "gradient kind and stops did not survive reopening");
 }
 
+void exercise_gradient_stop_list()
+{
+    temp_dir dir;
+    test_workbench workbench(dir.path / "dense-gradient.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto id = workbench.add("gradient", model.current().root);
+    std::vector<ui::gradient_stop> seed{{0, "#121212"}, {0.00011f, "#FF0000"}, {0.00035f, "#00FF00"}};
+    for (int i = 3; i < 31; ++i) seed.push_back({float(i) / 30, "#375A80"});
+    const ui::edit fixture[] = {ui::set_property{id, "gradient_stops", ui::encode_gradient_stops(seed)}};
+    check(model.apply(fixture), "could not create a gradient with closely spaced stops");
+    workbench.frame();
+    workbench.click(workbench.widget("property:gradient_stops", VGUI_CUSTOM));
+    workbench.frame();
+    auto* popup = vgui_popup_content(ctx);
+    check(popup != nullptr, "gradient stop list did not open");
+    const auto control = [&](const char* suffix, vgui_widget_kind kind) {
+        auto* w = find_widget(popup, std::string("property-grid.gradient-editor") + suffix, kind);
+        check(w != nullptr, std::string("missing gradient popup control: ") + suffix);
+        return w;
+    };
+    auto* list = control(".stops", VGUI_LIST);
+    auto* count = control(".count", VGUI_LABEL);
+    auto* offset = control(".time_edit", VGUI_EDIT);
+    auto* add = control(".add", VGUI_BUTTON);
+    check(std::string_view(vgui_widget_get_text(control(".time_label", VGUI_LABEL))) == "Offset" &&
+        std::string_view(vgui_widget_get_text(count)).ends_with("31 / 32"), "missing offset label or initial count");
+    const auto select = [&](int index) {
+        const auto id = vgui_list_get_item_at(list, index);
+        float x, y, width, height;
+        vgui_widget_get_rect(list, &x, &y, &width, &height);
+        for (int yy = 4; yy + 4 < height; ++yy) {
+            if (vgui_list_item_at_point(list, width * 0.5f, float(yy)) != id) continue;
+            workbench.click_at(x + width * 0.5f, y + yy + 4.f);
+            workbench.frame();
+            check(vgui_list_get_selected(list, 0) == id, "list selected the wrong stop");
+            return;
+        }
+        throw std::runtime_error("gradient stop was not visible in the list");
+    };
+    const auto edit = [&](vgui_widget* w, const char* text) {
+        workbench.click(w);
+        check(vgui_get_focus(ctx) == w, "gradient popup field did not receive focus");
+        vgui_edit_select_all(w);
+        check(vgui_input_text(ctx, text) && workbench.key(VGUI_KEY_ENTER), "gradient field did not accept the edit");
+        check(vgui_popup_content(ctx) == popup, "editing a gradient closed the popup");
+    };
+    const auto baseline = model.committed();
+    select(1);
+    check(std::string_view(vgui_edit_get_text(offset)) == "0.00011", "first close stop did not load its offset");
+    select(2);
+    check(std::string_view(vgui_edit_get_text(offset)) == "0.00035", "could not select the adjacent stop independently");
+    edit(offset, "0.00042");
+    edit(control(".picker.hex", VGUI_EDIT), "#33557780");
+    std::vector<ui::gradient_stop> next;
+    std::string error;
+    const auto read = [&] {
+        const auto& text = std::get<std::string>(model.current().nodes.at(id).props.at("gradient_stops"));
+        check(ui::decode_gradient_stops(text, next, error), error);
+    };
+    read();
+    check(next[1].offset == seed[1].offset && next[1].color == seed[1].color && next[2].offset == .00042f &&
+        next[2].color == "#33557780" && next.back().offset == seed.back().offset && model.committed() == baseline,
+        "editing a selected stop must not round or overwrite its neighbors");
+    check(std::string_view(vgui_list_get_item_text(list, vgui_list_get_item_at(list, 2))).find("0.00042    #33557780") != std::string_view::npos,
+        "the selected row did not update after editing its offset and color");
+    workbench.click(add);
+    workbench.frame();
+    check(vgui_list_get_count(list) == 32 && !vgui_widget_get_enabled(add) &&
+        std::string_view(vgui_widget_get_text(count)).ends_with("32 / 32"), "adding a color stop must refresh the list, counter and limit");
+    float x, y, w, h;
+    vgui_widget_get_rect(list, &x, &y, &w, &h);
+    vgui_input_mouse_move(ctx, x + w * .5f, y + h * .5f);
+    check(vgui_input_mouse_wheel(ctx, 0, -60) && vgui_popup_content(ctx) == popup,
+        "scrolling the stop list should not dismiss the popup");
+    workbench.frame();
+    select(31);
+    check(std::string_view(vgui_edit_get_text(offset)) == "1", "last stop was not selectable by scrolling at the limit");
+    workbench.click(control(".remove", VGUI_BUTTON));
+    workbench.frame();
+    check(vgui_list_get_count(list) == 31 && vgui_widget_get_enabled(add) &&
+        std::string_view(vgui_widget_get_text(count)).ends_with("31 / 32"), "removing a stop should restore Add and update the count");
+    workbench.click(workbench.widget("designer.outliner", VGUI_TREE));
+    workbench.frame();
+    check(!vgui_popup_content(ctx) && model.committed() != baseline, "closing the list should commit the selected stop edits");
+    const auto saved = model.committed();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved, "gradient stop list did not round-trip through save and reopen");
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.bench.select(id);
+    workbench.frame();
+    workbench.click(workbench.widget("property:gradient_stops", VGUI_CUSTOM));
+    workbench.frame();
+    popup = vgui_popup_content(ctx);
+    check(popup && std::string_view(vgui_widget_get_text(control(".time_label", VGUI_LABEL))) == "偏移" &&
+        std::string_view(vgui_widget_get_text(control(".count", VGUI_LABEL))).starts_with("色标"),
+        "reopened gradient popup should use the current locale");
+}
+
 void exercise_gradient_animation()
 {
     temp_dir directory;
@@ -2330,6 +2431,7 @@ int main()
         exercise_button_gradients();
         exercise_panel_gradient();
         exercise_decorative_gradient();
+        exercise_gradient_stop_list();
         exercise_gradient_animation();
         exercise_radio_group_inspector();
         exercise_menu_language();

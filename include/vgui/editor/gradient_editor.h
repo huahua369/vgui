@@ -79,6 +79,9 @@ namespace vgui_editor_kit {
 		bool enabled() const noexcept;
 		/* Optional limit for adding stops interactively (2..64). */
 		void set_stop_limit(std::size_t limit);
+		/* Configure the optional stop list before build(). Labels may change live. */
+		void set_show_stop_list(bool show);
+		void set_stop_labels(std::string offset, std::string stops);
 
 		/* Selection is by index into the sorted stop list.  Returns false
 		 * when the index is out of range. */
@@ -128,6 +131,9 @@ namespace vgui_editor_kit {
 
 		void apply_ids();
 		void sync_controls();
+		void sync_stop_list();
+		float clamp_stop_offset(float t) const;
+		static void on_stop_selected(vgui_widget*, vgui_item_id item, int selected, void* user);
 		void begin_gesture();
 		void end_gesture();
 		void notify_change();
@@ -156,6 +162,8 @@ namespace vgui_editor_kit {
 		vgui_widget* root_ = nullptr;
 		vgui_widget* bar_ = nullptr;
 		vgui_widget* stop_row_ = nullptr;
+		vgui_widget* stop_count_ = nullptr;
+		vgui_widget* stop_list_ = nullptr;
 		vgui_widget* preset_row_ = nullptr;
 		vgui_widget* add_ = nullptr;
 		vgui_widget* remove_ = nullptr;
@@ -166,6 +174,8 @@ namespace vgui_editor_kit {
 		std::string id_ = "gradient_editor";
 		gradient_value value_;
 		std::size_t stop_limit_ = 64;
+		bool show_stop_list_ = false;
+		std::string offset_label_ = "Offset", stops_label_ = "Stops";
 		int selected_ = 0;
 		bool read_only_ = false;
 		bool enabled_ = true;

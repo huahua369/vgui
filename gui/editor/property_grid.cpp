@@ -792,6 +792,8 @@ namespace vgui_editor_kit {
 	void property_grid::set_ui_labels(ui_labels labels)
 	{
 		labels_ = std::move(labels);
+		if (gradient_editor_)
+			gradient_editor_->set_stop_labels(labels_.gradient_offset, labels_.gradient_stops);
 		if (!panel_)
 			return;
 		refresh_grid_labels();
@@ -3383,8 +3385,17 @@ private:
 		{
 			gradient_editor_ = std::make_unique<gradient_editor>();
 			gradient_editor_->set_id("property-grid.gradient-editor");
+			gradient_editor_->set_show_stop_list(true);
+			gradient_editor_->set_stop_labels(labels_.gradient_offset, labels_.gradient_stops);
 			gradient_editor_->build(ctx);
+			vgui_panel_set_scrollable(gradient_editor_->widget(), 0, 1);
 		}
+		int height = 0;
+		vgui_context_get_size(ctx, nullptr, &height);
+		const float scale = vgui_context_get_ui_scale(ctx);
+		vgui_widget_set_max_size(gradient_editor_->widget(), 0,
+			height > 16 && scale > 0 ? (height - 16.f) / scale : 0.f);
+		vgui_panel_set_scroll(gradient_editor_->widget(), 0, 0);
 		const std::string id = item.desc.id;
 		gradient_editor_->set_on_change(
 			[this, id](const gradient_value& v) {

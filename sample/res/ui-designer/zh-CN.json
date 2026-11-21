@@ -292,6 +292,8 @@
   "workbench.inspector.gradient_angle.hint": "从右侧起顺时针计角（0–360 度）；交换起止角可反转扫掠。",
   "workbench.inspector.gradient_radius.hint": "使用控件短边的比例；0.5 表示短边的一半。",
   "workbench.inspector.gradient_position.hint": "使用相对控件的坐标：0 为左边或上边，1 为右边或下边。",
+  "workbench.inspector.gradient_popup.offset": "偏移",
+  "workbench.inspector.gradient_popup.stops": "色标",
   "workbench.inspector.gradient_stops.hint": "点击编辑色标和透明度，最多 32 个色标。修改会即时预览。",
   "workbench.inspector.gradient_direction.vertical": "从上到下",
   "workbench.inspector.gradient_direction.horizontal": "从左到右",

@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@ namespace vgui_editor_kit {
 		constexpr float kBarPadY = 4.0f;
 		constexpr float kBarGradientH = 28.0f;
 		constexpr float kStopRadius = 5.0f;
+		constexpr float kStopSeparation = 1e-4f;
 
 		struct preset_def
 		{
@@ -68,16 +70,20 @@ namespace vgui_editor_kit {
 
 		std::string format_float(float value)
 		{
-			if (std::fabs(value) < 0.00005f)
-				value = 0.0f;
-			char buffer[32];
-			std::snprintf(buffer, sizeof(buffer), "%.4f", (double)value);
-			std::string text = buffer;
-			while (!text.empty() && text.back() == '0')
-				text.pop_back();
-			if (!text.empty() && text.back() == '.')
-				text.pop_back();
-			return text.empty() ? std::string("0") : text;
+			// Shortest decimal that round-trips to the same float. A color edit
+			// must not quantize the offsets of nearby, untouched stops.
+			char buffer[64];
+			const auto result = std::to_chars(buffer, buffer + sizeof(buffer), value == 0 ? 0.f : value,
+				std::chars_format::fixed);
+			return std::string(buffer, result.ptr);
+		}
+
+		double display_offset(float value)
+		{
+			const auto text = format_float(value);
+			double offset = value;
+			std::from_chars(text.data(), text.data() + text.size(), offset);
+			return offset;
 		}
 
 		std::vector<std::string> split(const std::string& text, char separator)
@@ -238,7 +244,7 @@ namespace vgui_editor_kit {
 				});
 			for (std::size_t i = 1; i < value.stops.size(); ++i)
 			{
-				if (value.stops[i].t - value.stops[i - 1].t < 1e-4f)
+				if (value.stops[i].t - value.stops[i - 1].t < kStopSeparation)
 				{
 					if (error)
 						*error = "gradient stops need distinct times";
@@ -371,12 +377,12 @@ namespace vgui_editor_kit {
 
 		time_spin_ = std::make_unique<spinbox>();
 		time_spin_->set_font_size(kChromeFont);
-		time_spin_->build(stop_row_, "T");
+		time_spin_->build(stop_row_, offset_label_);
 		time_spin_->set_value_type(spinbox::value_type::number);
 		time_spin_->set_range(0.0, 1.0);
-		time_spin_->set_step(0.01);
+		time_spin_->set_step(kStopSeparation);
 		time_spin_->set_label_width(
-			editor_label_width(time_spin_->label_widget(), "T"));
+			editor_label_width(time_spin_->label_widget(), offset_label_.c_str()));
 		time_spin_->set_buttons_visible(false);
 		/* 弹窗里的紧凑数值框:不被宿主 style.edit.min_width 撑大。 */
 		time_spin_->set_edit_min_width(48.0f);
@@ -386,7 +392,7 @@ namespace vgui_editor_kit {
 		time_spin_->set_on_commit([this](double) { on_time_commit(); });
 		vgui_widget_set_grow(time_spin_->widget(), 1.0f);
 		vgui_widget_set_size(time_spin_->widget(), 0, row_h);
-		vgui_widget_set_tooltip(time_spin_->edit_widget(), "Selected stop time");
+		vgui_widget_set_tooltip(time_spin_->edit_widget(), offset_label_.c_str());
 
 		add_ = vgui_widget_add(stop_row_, VGUI_BUTTON, "Add");
 		vgui_widget_set_font_size(add_, kChromeFont);
@@ -402,24 +408,49 @@ namespace vgui_editor_kit {
 		vgui_widget_on_event(remove_, &gradient_editor::on_remove_click, this);
 		vgui_widget_set_tooltip(remove_, "Delete the selected stop");
 
+		if (show_stop_list_)
+		{
+			stop_count_ = vgui_widget_add(root_, VGUI_LABEL, nullptr);
+			vgui_widget_set_font_size(stop_count_, kChromeFont);
+			vgui_widget_set_size(stop_count_, 0, 18);
+			vgui_widget_set_input_enabled(stop_count_, 0);
+			stop_list_ = vgui_widget_add(root_, VGUI_LIST, nullptr);
+			vgui_widget_set_font_size(stop_list_, kChromeFont);
+			vgui_widget_set_size(stop_list_, 0, 88);
+			vgui_widget_set_align_self(stop_list_, VGUI_ALIGN_STRETCH);
+			vgui_widget_set_padding(stop_list_, 2, 2, 2, 2);
+			vgui_panel_set_scrollable(stop_list_, 0, 1);
+			vgui_list_set_selection_mode(stop_list_, VGUI_SELECTION_SINGLE);
+			vgui_list_on_select(stop_list_, &gradient_editor::on_stop_selected, this);
+			vgui_widget_set_a11y_name(stop_list_, stops_label_.c_str());
+		}
+
 		preset_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(preset_row_, VGUI_LAYOUT_WRAP);
+		// The detached stop-list popup has room for all four presets in a
+		// row. Keep that row compact so the picker stays in view.
+		vgui_widget_set_layout(preset_row_, show_stop_list_ ? VGUI_LAYOUT_ROW : VGUI_LAYOUT_WRAP);
+		if (show_stop_list_) vgui_widget_set_size(preset_row_, 0, row_h);
 		/* 行面板自带 8px 默认 padding + 裁剪,不清零会把 row_h 高的
 		 * 子项上下各裁 8px。 */
 		vgui_widget_set_padding(preset_row_, 0, 0, 0, 0);
 		vgui_widget_set_gap(preset_row_, 4.0f);
 		vgui_widget_set_align_self(preset_row_, VGUI_ALIGN_STRETCH);
+		float preset_width = 0;
 		for (std::size_t i = 0; i < preset_count(); ++i)
 		{
 			presets_[i] = vgui_widget_add(preset_row_, VGUI_BUTTON,
 				preset_name(i));
 			vgui_widget_set_font_size(presets_[i], kChromeFont);
 			vgui_widget_set_size(presets_[i], 0, row_h);
-			vgui_widget_set_min_size(presets_[i],
-				editor_button_min_w(presets_[i], 24.0f), row_h);
+			const float width = editor_button_min_w(presets_[i], 24.0f);
+			preset_width += width;
+			vgui_widget_set_min_size(presets_[i], width, row_h);
 			vgui_widget_on_event(presets_[i], &gradient_editor::on_preset_click,
 				this);
 		}
+
+		if (show_stop_list_)
+			vgui_widget_set_min_size(root_, std::max(300.f, preset_width + 4.f * (preset_count() - 1) + 16.f), 0);
 
 		picker_ = std::make_unique<color_picker>();
 		picker_->set_id(id_ + ".picker");
@@ -475,6 +506,10 @@ namespace vgui_editor_kit {
 			vgui_widget_set_id(add_, (id_ + ".add").c_str());
 		if (remove_)
 			vgui_widget_set_id(remove_, (id_ + ".remove").c_str());
+		if (stop_count_)
+			vgui_widget_set_id(stop_count_, (id_ + ".count").c_str());
+		if (stop_list_)
+			vgui_widget_set_id(stop_list_, (id_ + ".stops").c_str());
 		if (time_spin_)
 			time_spin_->set_id(id_ + ".time");
 		for (std::size_t i = 0; i < preset_count(); ++i)
@@ -548,6 +583,29 @@ namespace vgui_editor_kit {
 		sync_controls();
 	}
 
+	void gradient_editor::set_show_stop_list(bool show)
+	{
+		if (!root_) show_stop_list_ = show;
+	}
+
+	void gradient_editor::set_stop_labels(std::string offset, std::string stops)
+	{
+		offset_label_ = std::move(offset);
+		stops_label_ = std::move(stops);
+		if (time_spin_)
+		{
+			time_spin_->set_label(offset_label_);
+			time_spin_->set_label_width(editor_label_width(time_spin_->label_widget(), offset_label_.c_str()));
+			vgui_widget_set_tooltip(time_spin_->edit_widget(), offset_label_.c_str());
+			vgui_widget_set_a11y_name(time_spin_->edit_widget(), offset_label_.c_str());
+		}
+		if (stop_list_)
+		{
+			vgui_widget_set_a11y_name(stop_list_, stops_label_.c_str());
+			sync_stop_list();
+		}
+	}
+
 	void gradient_editor::select_clamped(int index)
 	{
 		if (value_.stops.empty())
@@ -572,6 +630,49 @@ namespace vgui_editor_kit {
 		return selected_;
 	}
 
+	void gradient_editor::sync_stop_list()
+	{
+		if (!stop_list_) return;
+		const bool was_syncing = syncing_;
+		syncing_ = true;
+		const int count = static_cast<int>(value_.stops.size());
+		const auto caption = stops_label_ + "  " + std::to_string(count) + " / " + std::to_string(stop_limit_);
+		if (caption != vgui_widget_get_text(stop_count_)) vgui_widget_set_text(stop_count_, caption.c_str());
+		while (vgui_list_get_count(stop_list_) > count)
+			vgui_list_remove_item(stop_list_, vgui_list_get_item_at(stop_list_, vgui_list_get_count(stop_list_) - 1));
+		for (int i = 0; i < count; ++i)
+		{
+			const auto& stop = value_.stops[static_cast<std::size_t>(i)];
+			const auto text = std::string(i < 9 ? "0" : "") + std::to_string(i + 1) + "    " + format_float(stop.t) + "    " + stop.color;
+			if (const auto item = vgui_list_get_item_at(stop_list_, i))
+			{
+				if (text != vgui_list_get_item_text(stop_list_, item)) vgui_list_set_item_text(stop_list_, item, text.c_str());
+			}
+			else vgui_list_add_item(stop_list_, text.c_str(), nullptr);
+		}
+		const auto item = vgui_list_get_item_at(stop_list_, selected_);
+		if (item && !vgui_list_is_selected(stop_list_, item))
+		{
+			vgui_list_select(stop_list_, item, 1);
+			vgui_list_set_cursor(stop_list_, item);
+			vgui_list_scroll_to_item(stop_list_, item, VGUI_SCROLL_ALIGN_NEAREST);
+		}
+		syncing_ = was_syncing;
+	}
+
+	void gradient_editor::on_stop_selected(vgui_widget* list, vgui_item_id item, int selected, void* user)
+	{
+		auto& self = *static_cast<gradient_editor*>(user);
+		if (!selected || self.syncing_) return;
+		for (int i = 0; i < vgui_list_get_count(list); ++i)
+			if (vgui_list_get_item_at(list, i) == item)
+			{
+				self.select_stop(i);
+				vgui_widget_mark_dirty(self.bar_);
+				break;
+			}
+	}
+
 	void gradient_editor::sync_controls()
 	{
 		if (!root_)
@@ -587,7 +688,7 @@ namespace vgui_editor_kit {
 			time_spin_->set_enabled(editable && has_stop);
 			time_spin_->set_read_only(read_only_);
 			if (has_stop)
-				time_spin_->set_value(value_.stops[(std::size_t)selected_].t);
+				time_spin_->set_value(display_offset(value_.stops[(std::size_t)selected_].t));
 		}
 		if (add_)
 			vgui_widget_set_enabled(add_, editable && value_.stops.size() < stop_limit_ ? 1 : 0);
@@ -608,6 +709,7 @@ namespace vgui_editor_kit {
 				picker_->set_current(value_.stops[(std::size_t)selected_].color);
 			}
 		}
+		sync_stop_list();
 		syncing_ = false;
 	}
 
@@ -631,6 +733,8 @@ namespace vgui_editor_kit {
 
 	void gradient_editor::notify_change()
 	{
+		sync_stop_list();
+		vgui_widget_mark_dirty(bar_);
 		if (change_listener_)
 			change_listener_(value_);
 	}
@@ -724,7 +828,7 @@ namespace vgui_editor_kit {
 		t = std::clamp(t, 0.0f, 1.0f);
 		for (const gradient_stop& stop : value_.stops)
 		{
-			if (std::fabs(stop.t - t) < 1e-4f)
+			if (std::fabs(stop.t - t) < kStopSeparation)
 				return false;
 		}
 		std::string color;
@@ -834,22 +938,36 @@ namespace vgui_editor_kit {
 		return best;
 	}
 
+	float gradient_editor::clamp_stop_offset(float t) const
+	{
+		const auto index = static_cast<std::size_t>(selected_);
+		float lo = 0.f, hi = 1.f;
+		if (index > 0)
+		{
+			const float previous = value_.stops[index - 1].t;
+			lo = previous + kStopSeparation;
+			if (lo - previous < kStopSeparation) lo = std::nextafter(lo, 1.f);
+		}
+		if (index + 1 < value_.stops.size())
+		{
+			const float next = value_.stops[index + 1].t;
+			hi = next - kStopSeparation;
+			if (next - hi < kStopSeparation) hi = std::nextafter(hi, 0.f);
+		}
+		return lo <= hi ? std::clamp(t, lo, hi) : value_.stops[index].t;
+	}
+
 	void gradient_editor::on_time_change(double value)
 	{
 		if (syncing_ || read_only_ || !enabled_ || selected_ < 0 ||
 			(std::size_t)selected_ >= value_.stops.size())
 			return;
 		begin_gesture();
-		float t = (float)value;
+		const float t = clamp_stop_offset(static_cast<float>(value));
 		const int index = selected_;
-		if (index > 0)
-			t = std::max(t, value_.stops[(std::size_t)index - 1].t + 1e-3f);
-		if ((std::size_t)index + 1 < value_.stops.size())
-			t = std::min(t, value_.stops[(std::size_t)index + 1].t - 1e-3f);
-		t = std::clamp(t, 0.0f, 1.0f);
 		value_.stops[(std::size_t)index].t = t;
 		if (time_spin_)
-			time_spin_->set_value(t);
+			time_spin_->set_value(display_offset(t));
 		notify_change();
 	}
 
@@ -916,17 +1034,10 @@ namespace vgui_editor_kit {
 			const int index = self->selected_;
 			if (index < 0 || (std::size_t)index >= self->value_.stops.size())
 				return 0;
-			float t = self->bar_t(event->x);
-			if (index > 0)
-				t = std::max(t,
-					self->value_.stops[(std::size_t)index - 1].t + 1e-3f);
-			if ((std::size_t)index + 1 < self->value_.stops.size())
-				t = std::min(t,
-					self->value_.stops[(std::size_t)index + 1].t - 1e-3f);
-			t = std::clamp(t, 0.0f, 1.0f);
+			const float t = self->clamp_stop_offset(self->bar_t(event->x));
 			self->value_.stops[(std::size_t)index].t = t;
 			if (self->time_spin_)
-				self->time_spin_->set_value(t);
+				self->time_spin_->set_value(display_offset(t));
 			self->notify_change();
 			return 1;
 		}

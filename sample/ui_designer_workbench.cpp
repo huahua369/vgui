@@ -752,6 +752,8 @@ struct designer_workbench::impl {
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
             },
             .pick_color = strings.text("workbench.inspector.font.pick_color", "Pick color"),
+            .gradient_offset = strings.text("workbench.inspector.gradient_popup.offset", "Offset"),
+            .gradient_stops = strings.text("workbench.inspector.gradient_popup.stops", "Stops"),
         };
     }
 

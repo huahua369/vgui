@@ -163,6 +163,8 @@ namespace vgui_editor_kit {
 			std::string reset_to_default = "Reset to default";
 			std::map<std::string, std::string> categories;
 			std::string pick_color = "Pick color";
+			std::string gradient_offset = "Offset";
+			std::string gradient_stops = "Stops";
 		};
 		void build_with_labels(vgui_widget* parent, ui_labels labels);
 		/* Relabels the built grid and rechecks the current search against the
