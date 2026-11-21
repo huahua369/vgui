@@ -2,12 +2,18 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string_view>
 
 namespace vgui::ui_design {
 
 enum class designer_language { simplified_chinese, english };
 inline constexpr auto default_designer_language = designer_language::simplified_chinese;
+
+enum class designer_theme { dark, light };
+inline constexpr auto default_designer_theme = designer_theme::dark;
+designer_theme load_designer_theme(const std::filesystem::path& path);
+bool save_designer_theme(const std::filesystem::path& path, designer_theme theme);
 
 class designer_strings {
 public:
@@ -57,5 +63,8 @@ struct designer_grid_settings {
 designer_grid_settings load_designer_grid_settings(const std::filesystem::path& path);
 // Reject invalid settings or unreadable/malformed files; preserve unrelated members on save.
 bool save_designer_grid_settings(const std::filesystem::path& path, designer_grid_settings settings);
+// Options can change both values in one atomic write. Omitted values are preserved.
+bool save_designer_options(const std::filesystem::path& path, std::optional<designer_grid_settings> grid,
+    std::optional<designer_theme> theme);
 
 } // namespace vgui::ui_design

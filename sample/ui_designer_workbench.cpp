@@ -26,10 +26,14 @@ constexpr auto node_id = "@id";
 constexpr auto resource_key = "@resource-key";
 
 // Workbench chrome only; these colors never enter the design or its preview.
-constexpr vgui_color toolbar_bg = 0xFF202733;
-constexpr vgui_color toolbar_edge = 0xFF354151;
-constexpr vgui_color toolbar_text = 0xFFE5ECF6;
-constexpr vgui_color toolbar_primary = 0xFF2F65CB;
+struct chrome_palette {
+    vgui_color background, edge, text, primary_background, primary_text, move_active, edit_background;
+};
+constexpr chrome_palette dark_chrome{
+    0xFF202733, 0xFF354151, 0xFFE5ECF6, 0xFF2F65CB, 0xFFFFFFFF, 0xFF88B9FF, 0xFF2A3443};
+// The foreground must also contrast against the native light hover/press fills.
+constexpr chrome_palette light_chrome{
+    0xFFEAF0F7, 0xFFBCC8D8, 0xFF22364E, 0xFFAECDF6, 0xFF173E76, 0xFF1C60BE, 0xFFF5F8FC};
 constexpr float toolbar_padding_right = 10;
 constexpr float toolbar_gap = 10;
 
@@ -209,12 +213,15 @@ struct designer_workbench::impl {
     bool refreshing = false;
     bool invoking_command = false;
     bool page_active = true;
+    designer_theme theme = default_designer_theme;
     vgui_widget *shell = nullptr, *dock = nullptr;
     std::array<vgui_widget*, std::size(sides)> side_buttons{};
+    std::vector<vgui_widget*> outline_buttons;
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
     outline_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
-    vgui_widget *menubar = nullptr, *quick_actions = nullptr;
+    vgui_widget *toolbar = nullptr, *menubar = nullptr, *quick_actions = nullptr;
+    vgui_widget *save_button = nullptr, *export_button = nullptr;
     int toolbar_width = -1;
     float toolbar_scale = 0;
     std::optional<designer_language> toolbar_language;
@@ -250,7 +257,6 @@ struct designer_workbench::impl {
         build_structure(structure);
         auto* properties = page("inspector", sides[1].title, VGUI_DOCK_RIGHT);
         build_side_buttons();
-        grid->set_edit_field_background(0xFF2A3443);
         grid->build_with_labels(properties, inspector_labels());
         grid->set_change_listener([this](const std::string& key, const std::string& input) {
             finish_property_edit();
@@ -274,6 +280,7 @@ struct designer_workbench::impl {
         status_label = vgui_widget_add(shell, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status_label, "designer.status");
         vgui_widget_set_margin(status_label, 6, 0, 6, 4);
+        apply_chrome_palette();
         refresh();
     }
 
@@ -534,6 +541,15 @@ struct designer_workbench::impl {
         add_language("designer.language.en-US", {"settings.en-US", "English"}, designer_language::english);
         add_menu_command(tools, "designer.tools.options", {"options.title", "Options"}, std::move(callbacks.open_options));
 
+        auto* themes = add_submenu(tools, {"settings.theme", "Theme"});
+        const auto add_theme = [&](const char* id, localized_text label, designer_theme value) {
+            add_menu_command(themes, id, std::move(label), [set = callbacks.set_theme, value] { set(value); },
+                [available = bool(callbacks.set_theme)] { return available; }, nullptr,
+                [this, value] { return theme == value; });
+        };
+        add_theme("designer.theme.dark", {"settings.theme.dark", "Dark"}, designer_theme::dark);
+        add_theme("designer.theme.light", {"settings.theme.light", "Light"}, designer_theme::light);
+
         auto* help = add_menu({"workbench.menu.help", "Help"});
         const auto add_help = [&](const char* id, localized_text label, localized_text explanation) {
             add_information_command(help, id, std::move(label), [this, explanation = std::move(explanation)] {
@@ -559,13 +575,12 @@ struct designer_workbench::impl {
 
     void build_toolbar(designer_commands callbacks)
     {
-        auto* bar = make_row(shell);
+        auto* bar = toolbar = make_row(shell);
         vgui_widget_set_id(bar, "designer.toolbar");
         vgui_widget_set_size(bar, 0, 48);
         vgui_widget_set_padding(bar, 0, 0, toolbar_padding_right, 0);
         vgui_widget_set_gap(bar, toolbar_gap);
         vgui_widget_set_align_items(bar, VGUI_ALIGN_CENTER);
-        vgui_widget_set_background(bar, toolbar_bg);
         vgui_widget_set_border(bar, 0, 0);
         vgui_widget_set_rounding(bar, 0);
 
@@ -573,17 +588,13 @@ struct designer_workbench::impl {
         vgui_widget_set_id(menubar, "designer.menubar");
         vgui_widget_set_background(menubar, 0);
         vgui_widget_set_border(menubar, 0, 0);
-        vgui_widget_set_text_color(menubar, toolbar_text);
         build_menus(std::move(callbacks));
 
-        const auto style_action = [](vgui_widget* button, vgui_color background, vgui_color edge = 0) {
+        const auto style_action = [](vgui_widget* button) {
             vgui_widget_set_size(button, 0, 30);
             vgui_widget_set_padding(button, 9, 0, 9, 0);
             vgui_widget_set_font_size(button, 13);
             vgui_widget_set_text_align(button, .5f, .5f);
-            vgui_widget_set_text_color(button, toolbar_text);
-            vgui_widget_set_background(button, background);
-            vgui_widget_set_border(button, edge, edge ? 1 : 0);
             vgui_widget_set_rounding(button, 5);
             return button;
         };
@@ -600,12 +611,46 @@ struct designer_workbench::impl {
         vgui_widget_set_background(actions, 0);
         vgui_widget_set_border(actions, 0, 0);
         vgui_widget_set_gap(actions, 8);
-        style_action(add_button(actions, "designer.file.save", {"workbench.toolbar.save", "Save"}), toolbar_bg, toolbar_edge);
-        auto* export_button = style_action(add_button(actions, "designer.file.export", {"workbench.toolbar.export", "Export Package"}), toolbar_primary);
+        save_button = style_action(add_button(actions, "designer.file.save", {"workbench.toolbar.save", "Save"}));
+        export_button = style_action(add_button(actions, "designer.file.export", {"workbench.toolbar.export", "Export Package"}));
+        vgui_widget_set_border(export_button, 0, 0);
         vgui_widget_set_padding(export_button, 13, 0, 13, 0);
-        vgui_widget_set_text_color(export_button, 0xFFFFFFFF);
         vgui_widget_set_font_weight(export_button, VGUI_FONT_WEIGHT_SEMI_BOLD);
         bind_label(export_button, {"workbench.toolbar.export_hint", "Export the current design and resources to a new folder (does not save the design)."}, vgui_widget_set_tooltip);
+    }
+
+    const chrome_palette& palette() const
+    {
+        return theme == designer_theme::light ? light_chrome : dark_chrome;
+    }
+
+    void apply_chrome_palette()
+    {
+        const auto& colors = palette();
+        vgui_widget_set_background(toolbar, colors.background);
+        vgui_widget_set_text_color(menubar, colors.text);
+        vgui_widget_set_text_color(save_button, colors.text);
+        vgui_widget_set_background(export_button, colors.primary_background);
+        vgui_widget_set_text_color(export_button, colors.primary_text);
+        const auto style_neutral_button = [&](vgui_widget* button) {
+            vgui_widget_set_background(button, colors.background);
+            vgui_widget_set_border(button, colors.edge, 1);
+        };
+        style_neutral_button(save_button);
+        for (auto* button : side_buttons) style_neutral_button(button);
+        for (auto* button : outline_buttons)
+            vgui_button_set_icon_tint(button, button == pickup && !move_source.empty() ? colors.move_active : colors.text);
+        grid->set_light_theme(theme == designer_theme::light);
+        grid->set_edit_field_background(colors.edit_background);
+        vgui_widget_mark_dirty(shell);
+    }
+
+    void set_theme(designer_theme value)
+    {
+        if (theme == value) return;
+        theme = value;
+        apply_chrome_palette();
+        refresh_command_states();
     }
 
     void refresh_toolbar_layout()
@@ -653,8 +698,6 @@ struct designer_workbench::impl {
             vgui_widget_set_padding(button, 0, 0, 0, 0);
             vgui_widget_set_text_align(button, .5f, .5f);
             vgui_widget_set_font_size(button, 17);
-            vgui_widget_set_background(button, toolbar_bg);
-            vgui_widget_set_border(button, toolbar_edge, 1);
             vgui_widget_set_rounding(button, 4);
             vgui_widget_set_cursor(button, VGUI_CURSOR_HAND);
             vgui_widget_set_tooltip_anchor(button, VGUI_TOOLTIP_ANCHOR_WIDGET);
@@ -748,7 +791,7 @@ struct designer_workbench::impl {
         vgui_widget_set_text_align(button, .5f, .5f);
         vgui_widget_set_tooltip_anchor(button, VGUI_TOOLTIP_ANCHOR_WIDGET);
         vgui_button_set_icon(button, icon, outline_icon_size, outline_icon_size, VGUI_BUTTON_ICON_LEFT);
-        vgui_button_set_icon_tint(button, toolbar_text);
+        outline_buttons.push_back(button);
         return button;
     }
 
@@ -768,7 +811,8 @@ struct designer_workbench::impl {
         const bool moving = !move_source.empty();
         auto* icon = moving ? cancel_move_icon.get() : pick_icon.get();
         vgui_button_set_icon(pickup, icon, outline_icon_size, outline_icon_size, VGUI_BUTTON_ICON_LEFT);
-        vgui_button_set_icon_tint(pickup, moving ? 0xFF88B9FF : toolbar_text);
+        const auto& colors = palette();
+        vgui_button_set_icon_tint(pickup, moving ? colors.move_active : colors.text);
         if (!moving)
             vgui_widget_set_tooltip(pickup, strings.text("workbench.outline.pick_hint", "Pick up a node to move it to a different container"));
     }
@@ -1617,6 +1661,7 @@ void designer_workbench::finish_edit() { impl_->finish_property_edit(); }
 void designer_workbench::document_replaced(std::string selection) { impl_->document_replaced(std::move(selection)); }
 void designer_workbench::refresh() { impl_->refresh(); }
 void designer_workbench::refresh_language() { impl_->refresh_language(); }
+void designer_workbench::set_theme(designer_theme theme) { impl_->set_theme(theme); }
 void designer_workbench::status(std::string message) { impl_->message = std::move(message); }
 
 } // namespace vgui::ui_design

@@ -132,10 +132,34 @@ vgui_widget* make_panel(vgui_widget* parent, vgui_layout_kind layout)
     return panel;
 }
 
-constexpr vgui_color chrome = 0xFF232831;
-constexpr vgui_color dialog_background = 0xFF1B1E24;
-constexpr vgui_color edge = 0xFF374150;
-constexpr vgui_color accent = 0xFF294C72;
+struct options_palette {
+    vgui_color chrome, background, navigation, edge, accent, selection_edge, field, hint, error;
+};
+
+constexpr options_palette dark_palette{
+    0xFF232831, 0xFF1B1E24, 0xFF171A20, 0xFF374150, 0xFF294C72, 0xFF5483B0,
+    0xFF15181E, 0xFFABB7C6, 0xFFF08D96,
+};
+constexpr options_palette light_palette{
+    0xFFE7ECF2, 0xFFF7F9FC, 0xFFEFF3F8, 0xFFB8C7D8, 0xFFCCE0F8, 0xFF4677AB,
+    0xFFFFFFFF, 0xFF4A5A70, 0xFFA62B39,
+};
+
+vgui_widget* add_page_label(vgui_widget* page, const char* id, const std::string& text)
+{
+    auto* label = vgui_widget_add(page, VGUI_LABEL, text.c_str());
+    vgui_widget_set_id(label, id);
+    vgui_widget_set_padding(label, 0, 0, 0, 0);
+    vgui_widget_set_text_align(label, 0, .5f);
+    return label;
+}
+
+void add_page_heading(vgui_widget* page, const char* id, const char* text)
+{
+    auto* heading = add_page_label(page, id, text);
+    vgui_widget_set_font_size(heading, 18);
+    vgui_widget_set_font_weight(heading, 600);
+}
 
 std::string with_value(std::string label, std::string_view value)
 {
@@ -145,23 +169,16 @@ std::string with_value(std::string label, std::string_view value)
     return label;
 }
 
-void build_configuration(vgui_widget* page, const designer_strings& strings, designer_dock_widths layout,
+vgui_widget* build_configuration(vgui_widget* page, const designer_strings& strings, designer_dock_widths layout,
     std::string_view settings_path)
 {
     vgui_widget_set_padding(page, 18, 16, 18, 16);
     vgui_widget_set_gap(page, 10);
-    vgui_widget_set_background(page, dialog_background);
     vgui_panel_set_scrollable(page, 0, 1);
+    add_page_heading(page, "designer.options.configuration.title", strings.text("settings.info", "Configuration Information"));
     const auto add_label = [page](const char* id, const std::string& text) {
-        auto* label = vgui_widget_add(page, VGUI_LABEL, text.c_str());
-        vgui_widget_set_id(label, id);
-        vgui_widget_set_padding(label, 0, 0, 0, 0);
-        vgui_widget_set_text_align(label, 0, .5f);
-        return label;
+        return add_page_label(page, id, text);
     };
-    auto* heading = add_label("designer.options.configuration.title", strings.text("settings.info", "Configuration Information"));
-    vgui_widget_set_font_size(heading, 18);
-    vgui_widget_set_font_weight(heading, 600);
     const auto describe_side = [&](float width, bool collapsed) {
         char buf[32];
         const auto end = std::to_chars(buf, buf + sizeof(buf), width, std::chars_format::fixed, 1).ptr;
@@ -175,6 +192,7 @@ void build_configuration(vgui_widget* page, const designer_strings& strings, des
         ? strings.text("settings.en-US", "English") : strings.text("settings.zh-CN", "简体中文");
     add_label("designer.options.configuration.language",
         with_value(strings.text("settings.info.language", "Interface language: {value}"), language));
+    auto* theme_label = add_label("designer.options.configuration.theme", "");
     add_label("designer.options.configuration.left",
         with_value(strings.text("settings.info.left", "Left sidebar: {value}"), describe_side(layout.left, layout.left_collapsed)));
     add_label("designer.options.configuration.right",
@@ -196,24 +214,33 @@ void build_configuration(vgui_widget* page, const designer_strings& strings, des
         vgui_edit_set_text(value, path.c_str());
         vgui_edit_set_readonly(value, 1);
     }
+    return theme_label;
 }
 
 } // namespace
 
 struct designer_options::impl {
+    enum class page { grid, appearance, configuration };
+    using save_callback = std::function<bool(std::optional<settings>, std::optional<designer_theme>)>;
+
     vgui_context* ui = nullptr;
-    vgui_widget* panel = nullptr;
-    vgui_widget* status = nullptr;
-    vgui_widget *grid_page = nullptr, *info_page = nullptr;
-    vgui_widget *grid_nav = nullptr, *info_nav = nullptr, *reset = nullptr;
+    vgui_widget *panel = nullptr, *title = nullptr, *nav = nullptr, *footer = nullptr;
+    vgui_widget *status = nullptr, *hint = nullptr, *info_theme = nullptr;
+    vgui_widget *grid_page = nullptr, *appearance_page = nullptr, *info_page = nullptr;
+    vgui_widget *grid_nav = nullptr, *appearance_nav = nullptr, *info_nav = nullptr;
+    vgui_widget *dark = nullptr, *light = nullptr, *reset = nullptr, *cancel = nullptr, *ok = nullptr;
+    page active_page = page::grid;
     int focus_listener = 0;
     bool closing = false;
     std::optional<std::size_t> pending_inline;
     std::unique_ptr<kit::property_grid> grid;
     settings initial, draft;
-    std::function<void(settings)> preview;
-    std::function<bool(settings)> save;
+    designer_theme initial_theme = default_designer_theme, draft_theme = default_designer_theme;
+    std::function<void(settings)> preview_grid;
+    std::function<void(designer_theme)> preview_theme;
+    save_callback save;
     const char* save_error = nullptr;
+    const char* info_theme_format = nullptr;
 
     ~impl()
     {
@@ -225,7 +252,7 @@ struct designer_options::impl {
     {
         if (draft == next) return;
         draft = next;
-        if (preview) preview(draft);
+        if (preview_grid) preview_grid(draft);
     }
 
     void apply(std::size_t i, const std::string& canonical)
@@ -295,41 +322,100 @@ struct designer_options::impl {
         self.finish_inline();
     }
 
-    void show_page(bool info)
+    const options_palette& palette() const
+    {
+        return draft_theme == designer_theme::light ? light_palette : dark_palette;
+    }
+
+    void style_navigation()
+    {
+        const auto& colors = palette();
+        const auto select = [&colors](vgui_widget* item, bool selected) {
+            vgui_widget_set_background(item, selected ? colors.accent : colors.navigation);
+            vgui_widget_set_border(item, selected ? colors.selection_edge : 0, selected ? 1 : 0);
+        };
+        select(grid_nav, active_page == page::grid);
+        select(appearance_nav, active_page == page::appearance);
+        select(info_nav, active_page == page::configuration);
+    }
+
+    void style_dialog()
+    {
+        const bool light_theme = draft_theme == designer_theme::light;
+        const auto& colors = palette();
+        vgui_widget_set_background(panel, colors.background);
+        vgui_widget_set_border(panel, colors.edge, 1);
+        vgui_widget_set_background(title, colors.chrome);
+        vgui_widget_set_background(nav, colors.navigation);
+        vgui_widget_set_background(footer, colors.chrome);
+        vgui_widget_set_background(info_page, colors.background);
+        vgui_widget_set_background(appearance_page, colors.background);
+        vgui_widget_set_background(ok, colors.accent);
+        vgui_widget_set_text_color(hint, colors.hint);
+        vgui_widget_set_text_color(status, colors.error);
+        const auto theme_summary = with_value(info_theme_format, vgui_widget_get_text(light_theme ? light : dark));
+        vgui_widget_set_text(info_theme, theme_summary.c_str());
+        const auto select_theme = [&colors](vgui_widget* item, bool selected) {
+            vgui_widget_set_checked(item, selected);
+            vgui_widget_set_background(item, selected ? colors.accent : colors.navigation);
+            vgui_widget_set_border(item, selected ? colors.selection_edge : colors.edge, 1);
+        };
+        select_theme(dark, !light_theme);
+        select_theme(light, light_theme);
+        style_navigation();
+        grid->set_light_theme(light_theme);
+        grid->set_edit_field_background(colors.field);
+    }
+
+    void update_theme(designer_theme next)
+    {
+        if (draft_theme == next) return;
+        draft_theme = next;
+        if (preview_theme) preview_theme(draft_theme);
+        style_dialog();
+    }
+
+    void show_page(page next)
     {
         finish_inline();
-        vgui_widget_set_visible(grid_page, !info);
-        vgui_widget_set_visible(info_page, info);
-        const auto select = [](vgui_widget* item, bool selected) {
-            vgui_widget_set_background(item, selected ? accent : 0xFF171A20);
-            vgui_widget_set_border(item, selected ? 0xFF5483B0 : 0, selected ? 1 : 0);
-        };
-        select(grid_nav, !info);
-        select(info_nav, info);
-        vgui_widget_set_enabled(reset, !info);
+        active_page = next;
+        vgui_widget_set_visible(grid_page, next == page::grid);
+        vgui_widget_set_visible(appearance_page, next == page::appearance);
+        vgui_widget_set_visible(info_page, next == page::configuration);
+        vgui_widget_set_enabled(reset, next != page::configuration);
+        style_navigation();
     }
 
     void on_button(vgui_widget* button)
     {
-        if (button == grid_nav || button == info_nav) {
-            show_page(button == info_nav);
-            return;
-        }
-        const std::string_view id = vgui_widget_get_id(button);
-        if (id == "designer.options.cancel") {
-            vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
-        } else if (id == "designer.options.reset") {
-            pending_inline.reset();
-            update(settings{});
-            grid->refresh();
-        } else if (id == "designer.options.ok") {
+        if (button == grid_nav) {
+            show_page(page::grid);
+        } else if (button == appearance_nav) {
+            show_page(page::appearance);
+        } else if (button == info_nav) {
+            show_page(page::configuration);
+        } else if (button == dark || button == light) {
+            update_theme(button == light ? designer_theme::light : designer_theme::dark);
+        } else if (button == reset) {
+            if (active_page == page::grid) {
+                pending_inline.reset();
+                update(settings{});
+                grid->refresh();
+            } else if (active_page == page::appearance) {
+                update_theme(default_designer_theme);
+            }
+        } else if (button == ok) {
             finish_inline();
-            if (draft != initial && save && !save(draft)) {
+            const auto changed_grid = draft == initial ? std::nullopt : std::optional{draft};
+            const auto changed_theme = draft_theme == initial_theme ? std::nullopt : std::optional{draft_theme};
+            if ((changed_grid || changed_theme) && save && !save(changed_grid, changed_theme)) {
                 vgui_widget_set_text(status, save_error);
                 vgui_widget_set_visible(status, 1);
             } else {
                 vgui_modal_close(ui, VGUI_MODAL_RESULT_CONFIRM);
             }
+        } else if (button == cancel) {
+            vgui_modal_close(ui, VGUI_MODAL_RESULT_CANCEL);
         }
     }
 
@@ -352,7 +438,9 @@ struct designer_options::impl {
         // The kit closes its managed popup and unsets its context callback.
         // Keep the panel alive until its grid has been destroyed.
         grid.reset();
-        panel = status = grid_page = info_page = grid_nav = info_nav = reset = nullptr;
+        panel = title = nav = footer = status = hint = info_theme = nullptr;
+        grid_page = appearance_page = info_page = grid_nav = appearance_nav = info_nav = nullptr;
+        dark = light = reset = cancel = ok = nullptr;
         ui = nullptr;
         closing = false;
     }
@@ -361,23 +449,31 @@ struct designer_options::impl {
     {
         auto& self = *static_cast<impl*>(user);
         const auto initial = self.initial;
-        const bool rollback = result != VGUI_MODAL_RESULT_CONFIRM && self.draft != initial;
-        auto preview = std::move(self.preview);
+        const auto initial_theme = self.initial_theme;
+        const bool cancel = result != VGUI_MODAL_RESULT_CONFIRM;
+        const bool rollback_grid = cancel && self.draft != initial;
+        const bool rollback_theme = cancel && self.draft_theme != initial_theme;
+        auto preview_grid = std::move(self.preview_grid);
+        auto preview_theme = std::move(self.preview_theme);
         self.save = {};
         self.teardown();
-        if (rollback && preview) preview(initial);
+        if (rollback_theme && preview_theme) preview_theme(initial_theme);
+        if (rollback_grid && preview_grid) preview_grid(initial);
     }
 
-    void show(vgui_context* ctx, const designer_strings& strings, settings start,
+    void show(vgui_context* ctx, const designer_strings& strings, settings start, designer_theme theme,
         designer_dock_widths layout, std::string_view settings_path,
-        std::function<void(settings)> preview_fn, std::function<bool(settings)> save_fn)
+        std::function<void(settings)> preview_grid_fn, std::function<void(designer_theme)> preview_theme_fn,
+        save_callback save_fn)
     {
         if (!ctx || panel || vgui_modal_active(ctx)) return;
         ui = ctx;
         initial = draft = start;
-        preview = std::move(preview_fn);
+        initial_theme = draft_theme = theme;
+        preview_grid = std::move(preview_grid_fn);
+        preview_theme = std::move(preview_theme_fn);
         save = std::move(save_fn);
-        save_error = strings.text("options.save_failed", "Could not save grid settings.");
+        save_error = strings.text("options.save_failed", "Could not save settings.");
 
         panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
         vgui_widget_set_id(panel, "designer.options");
@@ -386,25 +482,21 @@ struct designer_options::impl {
         vgui_widget_set_padding(panel, 0, 0, 0, 0);
         vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
         vgui_widget_set_size(panel, 750, 565);
-        vgui_widget_set_background(panel, dialog_background);
-        vgui_widget_set_border(panel, edge, 1);
         vgui_widget_set_rounding(panel, 4);
 
-        auto* title = vgui_widget_add(panel, VGUI_LABEL, strings.text("options.title", "Options"));
+        title = vgui_widget_add(panel, VGUI_LABEL, strings.text("options.title", "Options"));
         vgui_widget_set_id(title, "designer.options.title");
         vgui_widget_set_size(title, 0, 38);
         vgui_widget_set_padding(title, 14, 0, 14, 0);
         vgui_widget_set_text_align(title, 0, .5f);
         vgui_widget_set_font_size(title, 16);
         vgui_widget_set_font_weight(title, 600);
-        vgui_widget_set_background(title, chrome);
 
         auto* body = make_panel(panel, VGUI_LAYOUT_ROW);
         vgui_widget_set_grow(body, 1);
-        auto* nav = make_panel(body, VGUI_LAYOUT_COLUMN);
+        nav = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(nav, "designer.options.navigation");
         vgui_widget_set_size(nav, strings.language() == designer_language::english ? 220 : 132, 0);
-        vgui_widget_set_background(nav, 0xFF171A20);
         vgui_widget_set_padding(nav, 8, 8, 8, 8);
         auto* canvas = vgui_widget_add(nav, VGUI_LABEL, strings.text("options.canvas", "Canvas"));
         vgui_widget_set_size(canvas, 0, 28);
@@ -419,16 +511,36 @@ struct designer_options::impl {
             return item;
         };
         grid_nav = add_nav("designer.options.nav.grid", strings.text("options.grid", "Grid"), 18);
+        appearance_nav = add_nav("designer.options.nav.appearance", strings.text("options.appearance", "Appearance"), 6);
+        vgui_widget_set_margin(appearance_nav, 0, 6, 0, 0);
         info_nav = add_nav("designer.options.nav.configuration", strings.text("settings.info", "Configuration Information"), 6);
         vgui_widget_set_margin(info_nav, 0, 6, 0, 0);
 
         grid_page = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(grid_page, "designer.options.grid");
         vgui_widget_set_grow(grid_page, 1);
+        appearance_page = make_panel(body, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_id(appearance_page, "designer.options.appearance");
+        vgui_widget_set_grow(appearance_page, 1);
+        vgui_widget_set_padding(appearance_page, 18, 16, 18, 16);
+        vgui_widget_set_gap(appearance_page, 10);
+        add_page_heading(appearance_page, "designer.options.appearance.title", strings.text("options.appearance", "Appearance"));
+        add_page_label(appearance_page, "designer.options.theme", strings.text("settings.theme", "Theme"));
+        auto* choices = make_panel(appearance_page, VGUI_LAYOUT_ROW);
+        vgui_widget_set_gap(choices, 8);
+        vgui_widget_set_background(choices, 0);
+        dark = button(choices, "designer.options.theme.dark", strings.text("settings.theme.dark", "Dark"), 100);
+        light = button(choices, "designer.options.theme.light", strings.text("settings.theme.light", "Light"), 100);
+        vgui_widget_set_a11y_role(dark, VGUI_A11Y_ROLE_TOGGLE);
+        vgui_widget_set_a11y_role(light, VGUI_A11Y_ROLE_TOGGLE);
+        hint = add_page_label(appearance_page, "designer.options.theme.hint",
+            strings.text("options.theme_hint", "Preview the theme for the entire editor."));
+
         info_page = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(info_page, "designer.options.configuration");
         vgui_widget_set_grow(info_page, 1);
-        build_configuration(info_page, strings, layout, settings_path);
+        info_theme = build_configuration(info_page, strings, layout, settings_path);
+        info_theme_format = strings.text("settings.info.theme", "Interface theme: {value}");
         grid = std::make_unique<kit::property_grid>();
         grid->build_with_labels(grid_page, {
             .properties = strings.text("options.grid", "Grid"),
@@ -442,7 +554,6 @@ struct designer_options::impl {
                 {"colors", strings.text("options.colors", "Colors")}},
             .pick_color = strings.text("workbench.inspector.font.pick_color", "Pick color"),
         });
-        grid->set_edit_field_background(0xFF15181E);
         for (const auto& item : fields)
             grid->add_property(describe(item, strings, draft));
         grid->set_property_favorite("visible", true);
@@ -465,22 +576,22 @@ struct designer_options::impl {
             return true;
         });
 
-        auto* footer = make_panel(panel, VGUI_LAYOUT_ROW);
+        footer = make_panel(panel, VGUI_LAYOUT_ROW);
         vgui_widget_set_size(footer, 0, 50);
         vgui_widget_set_padding(footer, 12, 6, 12, 6);
         vgui_widget_set_gap(footer, 8);
         vgui_widget_set_align_items(footer, VGUI_ALIGN_CENTER);
-        vgui_widget_set_background(footer, chrome);
         reset = button(footer, "designer.options.reset", strings.text("options.reset", "Restore defaults"), 130);
         auto* status_slot = make_panel(footer, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_grow(status_slot, 1);
+        vgui_widget_set_background(status_slot, 0);
         status = vgui_widget_add(status_slot, VGUI_LABEL, "");
-        vgui_widget_set_text_color(status, 0xFFF08D96);
+        vgui_widget_set_id(status, "designer.options.status");
         vgui_widget_set_visible(status, 0);
-        button(footer, "designer.options.cancel", strings.text("common.cancel", "Cancel"), 76);
-        auto* ok = button(footer, "designer.options.ok", strings.text("common.ok", "OK"), 76);
-        vgui_widget_set_background(ok, accent);
-        show_page(false);
+        cancel = button(footer, "designer.options.cancel", strings.text("common.cancel", "Cancel"), 76);
+        ok = button(footer, "designer.options.ok", strings.text("common.ok", "OK"), 76);
+        show_page(page::grid);
+        style_dialog();
 
         vgui_modal_options options;
         vgui_modal_options_default(&options);
@@ -491,7 +602,8 @@ struct designer_options::impl {
             auto* failed_panel = panel;
             teardown();
             vgui_widget_destroy(failed_panel);
-            preview = {};
+            preview_grid = {};
+            preview_theme = {};
             save = {};
             return;
         }
@@ -504,11 +616,13 @@ struct designer_options::impl {
 designer_options::designer_options() : impl_(std::make_unique<impl>()) {}
 designer_options::~designer_options() = default;
 
-void designer_options::show(vgui_context* ctx, const designer_strings& strings, settings initial,
+void designer_options::show(vgui_context* ctx, const designer_strings& strings, settings initial, designer_theme theme,
     designer_dock_widths layout, std::string_view settings_path,
-    std::function<void(settings)> preview, std::function<bool(settings)> save)
+    std::function<void(settings)> preview_grid, std::function<void(designer_theme)> preview_theme,
+    std::function<bool(std::optional<settings>, std::optional<designer_theme>)> save)
 {
-    impl_->show(ctx, strings, initial, layout, settings_path, std::move(preview), std::move(save));
+    impl_->show(ctx, strings, initial, theme, layout, settings_path,
+        std::move(preview_grid), std::move(preview_theme), std::move(save));
 }
 
 } // namespace vgui::ui_design

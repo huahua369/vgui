@@ -87,6 +87,7 @@ public:
     void set_running(bool);
     bool running() const;
     // Workspace-only appearance; independent of the document and saved view.
+    void set_theme(designer_theme theme);
     void set_grid_settings(designer_grid_settings settings);
     designer_grid_settings grid_settings() const;
     // Borrowed; invalidated by sync/render or a preset/mode change.

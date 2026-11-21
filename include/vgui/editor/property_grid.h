@@ -163,6 +163,9 @@ namespace vgui_editor_kit {
 		/* Relabels the built grid and rechecks the current search against the
 		 * new category labels. Does not reset the search, favorites or collapse state. */
 		void set_ui_labels(ui_labels labels);
+		/* Opt into light grid chrome without rebuilding live editors. Stock
+		 * controls and their placeholders still follow the context theme. */
+		void set_light_theme(bool light);
 		/* Fill editable row edit fields, including vector components; 0 restores
 		 * transparency. Does not style the search or popup fields. */
 		void set_edit_field_background(vgui_color color);
@@ -413,6 +416,10 @@ namespace vgui_editor_kit {
 		 * acceptance rules.  Returns false when the descriptor is invalid. */
 		bool prepare_desc(property_desc& desc);
 		void refresh_grid_labels();
+		void update_panel_palette();
+		void update_row_palette(row& item);
+		void update_reference_text_color(row& item);
+		void update_color_picker_palette();
 		void update_favorite_button(vgui_widget* button, bool checked) const;
 		void refresh_row_button_labels(row& item);
 		void refresh_row_a11y(row& item);
@@ -570,6 +577,7 @@ namespace vgui_editor_kit {
 		value_source value_source_;
 		vgui_color edit_field_background_ = 0;
 		bool read_only_ = false;
+		bool light_theme_ = false;
 
 		editor_context* selection_context_ = nullptr;
 		std::size_t selection_token_ = 0;

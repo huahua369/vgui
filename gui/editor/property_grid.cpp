@@ -21,11 +21,27 @@
 namespace vgui_editor_kit {
 
 	namespace {
-		constexpr vgui_color kPanelBg = 0xFF1B1E24;
-		constexpr vgui_color kBorder = 0xFF2E3440;
-		constexpr vgui_color kLabelText = 0xFF9FB0C4;
-		constexpr vgui_color kErrorText = 0xFFE06C75;
-		constexpr vgui_color kCategoryBg = 0xFF232831;
+		struct grid_palette
+		{
+			vgui_color panel;
+			vgui_color border;
+			vgui_color label;
+			vgui_color error;
+			vgui_color category;
+			vgui_color favorite_on;
+		};
+		constexpr grid_palette kDarkPalette = {
+			0xFF1B1E24, 0xFF2E3440, 0xFF9FB0C4, 0xFFE06C75, 0xFF232831, 0xFFFFC766
+		};
+		constexpr grid_palette kLightPalette = {
+			0xFFF5F7FA, 0xFFC7D0DE, 0xFF465469, 0xFFA2293D, 0xFFE8EDF4, 0xFF845200
+		};
+
+		const grid_palette& palette_for(bool light)
+		{
+			return light ? kLightPalette : kDarkPalette;
+		}
+
 		constexpr float kRowHeight = 28.0f;
 		constexpr float kMultilineEditHeight = 108.0f;
 		constexpr float kMultilineRowInset = 2.0f;
@@ -63,8 +79,6 @@ namespace vgui_editor_kit {
 		}
 
 		constexpr int kFavoriteIconSize = 14;
-		constexpr vgui_color kFavoriteOff = 0xFF9FB0C4;
-		constexpr vgui_color kFavoriteOn = 0xFFFFC766;
 
 		vgui_texture* make_favorite_icon(vgui_context* ctx, bool filled)
 		{
@@ -692,8 +706,7 @@ namespace vgui_editor_kit {
 		vgui_widget_set_padding(panel_, kPanelPadding, kPanelPadding,
 			kPanelPaddingRight, kPanelPaddingBottom);
 		vgui_widget_set_gap(panel_, kItemGap);
-		vgui_widget_set_background(panel_, kPanelBg);
-		vgui_widget_set_border(panel_, kBorder, 1);
+		update_panel_palette();
 		/* Narrow hosts keep rows usable: below this width the panel scrolls
 		 * horizontally instead of squeezing the editor fields to nothing. */
 		vgui_panel_set_scrollable(panel_, 1, 1);
@@ -787,6 +800,32 @@ namespace vgui_editor_kit {
 		update_visibility();
 	}
 
+	void property_grid::set_light_theme(bool light)
+	{
+		if (light_theme_ == light)
+			return;
+		light_theme_ = light;
+		if (!panel_)
+			return;
+		update_panel_palette();
+		update_favorite_button(fav_filter_, favorites_only_);
+		const auto& palette = palette_for(light);
+		for (auto& entry : categories_)
+			vgui_widget_set_background(entry.second.header, palette.category);
+		// Recolor materialized rows without syncing or recreating their editors.
+		for (row& item : rows_)
+			update_row_palette(item);
+		update_color_picker_palette();
+		vgui_widget_invalidate_recording(panel_);
+	}
+
+	void property_grid::update_panel_palette()
+	{
+		const auto& palette = palette_for(light_theme_);
+		vgui_widget_set_background(panel_, palette.panel);
+		vgui_widget_set_border(panel_, palette.border, 1);
+	}
+
 	void property_grid::set_edit_field_background(vgui_color color)
 	{
 		if (edit_field_background_ == color)
@@ -810,7 +849,8 @@ namespace vgui_editor_kit {
 		if (!button) return;
 		vgui_widget_set_checked(button, checked);
 		vgui_button_set_icon(button, favorite_icons_[checked], kFavoriteIconSize, kFavoriteIconSize, VGUI_BUTTON_ICON_LEFT);
-		vgui_button_set_icon_tint(button, checked ? kFavoriteOn : kFavoriteOff);
+		const auto& palette = palette_for(light_theme_);
+		vgui_button_set_icon_tint(button, checked ? palette.favorite_on : palette.label);
 	}
 
 	void property_grid::refresh_row_button_labels(row& item)
@@ -1527,10 +1567,8 @@ namespace vgui_editor_kit {
 		case property_type::asset:
 		case property_type::object_ref:
 			if (item.editor)
-			{
 				vgui_widget_set_text(item.editor, "(mixed)");
-				vgui_widget_set_text_color(item.editor, kLabelText);
-			}
+			update_reference_text_color(item);
 			if (item.thumb)
 				vgui_widget_set_background(item.thumb, 0xFF6C7A89);
 			break;
@@ -1715,7 +1753,7 @@ private:
 		if (item.mixed)
 		{
 			vgui_widget_set_text(item.editor, "(mixed)");
-			vgui_widget_set_text_color(item.editor, kLabelText);
+			update_reference_text_color(item);
 			if (item.thumb)
 				vgui_widget_set_background(item.thumb, 0xFF6C7A89);
 			return;
@@ -1745,8 +1783,7 @@ private:
 		}
 
 		vgui_widget_set_text(item.editor, display_text(item).c_str());
-		vgui_widget_set_text_color(item.editor,
-			item.missing ? kErrorText : kLabelText);
+		update_reference_text_color(item);
 		if (item.missing)
 		{
 			const std::string tip = "missing " +
@@ -1774,10 +1811,10 @@ private:
 			else if (item.desc.type == property_type::object_ref)
 				vgui_widget_set_background(item.thumb, 0xFF7090C0);
 			else if (item.missing)
-				vgui_widget_set_background(item.thumb, kErrorText);
+				vgui_widget_set_background(item.thumb, kDarkPalette.error);
 			else
 				vgui_widget_set_background(item.thumb, item.value.empty()
-					? kPanelBg : 0xFF40E0D0);
+					? kDarkPalette.panel : 0xFF40E0D0);
 		}
 		vgui_widget_set_enabled(item.clear_btn,
 			(read_only_ || item.desc.read_only) ? 0 : 1);
@@ -1981,7 +2018,7 @@ private:
 			/* Collapse arrows and names read as a column label, not a button
 			 * caption, so the header text hugs the left edge like the row labels. */
 			vgui_widget_set_text_align(ui.header, 0.0f, 0.5f);
-			vgui_widget_set_background(ui.header, kCategoryBg);
+			vgui_widget_set_background(ui.header, palette_for(light_theme_).category);
 			vgui_widget_set_id(ui.header, category_widget_id(name).c_str());
 			vgui_widget_on_event(ui.header, &property_grid::on_category_click, this);
 		}
@@ -2018,7 +2055,6 @@ private:
 		item.label = vgui_widget_add(item.line, VGUI_LABEL, item.desc.label.c_str());
 		vgui_widget_set_size(item.label, kLabelWidth, 24);
 		vgui_widget_set_font_size(item.label, 13);
-		vgui_widget_set_text_color(item.label, kLabelText);
 		vgui_widget_set_text_align(item.label, 0.0f, 0.5f);
 		vgui_widget_set_id(item.label, property_widget_id(item.desc.id).c_str());
 
@@ -2026,7 +2062,6 @@ private:
 		{
 			item.swatch = vgui_widget_add(item.line, VGUI_PANEL, nullptr);
 			vgui_widget_set_size(item.swatch, 20, 20);
-			vgui_widget_set_border(item.swatch, kBorder, 1);
 			vgui_widget_set_id(item.swatch, property_widget_id(item.desc.id).c_str());
 			vgui_widget_on_event(item.swatch, &property_grid::on_row_event, this);
 		}
@@ -2073,7 +2108,6 @@ private:
 			/* 缩略图 + 名称(占 editor 槽) + 清空 + 浏览。 */
 			item.thumb = vgui_widget_add(item.line, VGUI_PANEL, nullptr);
 			vgui_widget_set_size(item.thumb, 24, 24);
-			vgui_widget_set_border(item.thumb, kBorder, 1);
 			vgui_widget_set_id(item.thumb,
 				property_widget_id(item.desc.id).c_str());
 			vgui_widget_on_event(item.thumb,
@@ -2084,7 +2118,6 @@ private:
 			vgui_widget_set_size(item.editor, 0, 24);
 			vgui_widget_set_font_size(item.editor, 13);
 			vgui_widget_set_text_align(item.editor, 0.0f, 0.5f);
-			vgui_widget_set_text_color(item.editor, kLabelText);
 			vgui_widget_on_event(item.editor,
 				&property_grid::on_row_event, this);
 
@@ -2205,7 +2238,6 @@ private:
 		item.fav_btn = make_favorite_button(item.line, 20);
 		vgui_widget_set_id(item.fav_btn, property_widget_id(item.desc.id).c_str());
 		vgui_widget_on_event(item.fav_btn, &property_grid::on_row_event, this);
-		update_favorite_button(item.fav_btn, item.favorite);
 
 		item.reset = vgui_widget_add(item.line, VGUI_BUTTON, nullptr);
 		vgui_widget_set_size(item.reset, kResetWidth, 24);
@@ -2219,8 +2251,8 @@ private:
 		vgui_widget_set_size(item.error_label, 0, kErrorHeight);
 		vgui_widget_set_align_self(item.error_label, VGUI_ALIGN_STRETCH);
 		vgui_widget_set_font_size(item.error_label, 11);
-		vgui_widget_set_text_color(item.error_label, kErrorText);
 		vgui_widget_set_visible(item.error_label, 0);
+		update_row_palette(item);
 
 		if (!item.desc.tooltip.empty())
 		{
@@ -2241,6 +2273,32 @@ private:
 
 		update_row_layout(item);
 		update_row_ui(item, true);
+	}
+
+	void property_grid::update_row_palette(row& item)
+	{
+		if (!item.panel)
+			return;
+		const auto& palette = palette_for(light_theme_);
+		vgui_widget_set_text_color(item.label, palette.label);
+		vgui_widget_set_text_color(item.error_label, palette.error);
+		if (item.swatch)
+			vgui_widget_set_border(item.swatch, palette.border, 1);
+		if (item.thumb)
+		{
+			vgui_widget_set_border(item.thumb, palette.border, 1);
+			update_reference_text_color(item);
+		}
+		if (vgui_widget_get_visible(item.error_label))
+			vgui_widget_set_border(item.editor, palette.error, 1);
+		update_favorite_button(item.fav_btn, item.favorite);
+	}
+
+	void property_grid::update_reference_text_color(row& item)
+	{
+		const auto& palette = palette_for(light_theme_);
+		vgui_widget_set_text_color(item.editor,
+			item.missing && !item.mixed ? palette.error : palette.label);
 	}
 
 	void property_grid::update_row_layout(row& item)
@@ -2367,7 +2425,7 @@ private:
 			if (item.desc.allow_empty && item.value.empty())
 				color = theme_text_color(item.swatch);
 			else if (!parse_color(item.value, color, canonical))
-				color = kPanelBg;
+				color = kDarkPalette.panel;
 			vgui_widget_set_background(item.swatch, color);
 			vgui_widget_invalidate_recording(item.swatch);
 		}
@@ -2406,7 +2464,7 @@ private:
 		if (item.editor)
 		{
 			if (has_error)
-				vgui_widget_set_border(item.editor, kErrorText, 1.0f);
+				vgui_widget_set_border(item.editor, palette_for(light_theme_).error, 1.0f);
 			else
 				vgui_widget_set_border(item.editor, 0, 0.0f);
 		}
@@ -3142,6 +3200,18 @@ private:
 		(void)commit_value(*target, normalized.value, "Set " + label);
 	}
 
+	void property_grid::update_color_picker_palette()
+	{
+		if (!color_picker_)
+			return;
+		auto* popup = color_picker_->widget();
+		// The shared picker hardcodes its frame. Leave its swatches and
+		// core-themed hex editor alone, and restore its stock dark frame.
+		vgui_widget_set_background(popup, light_theme_ ? kLightPalette.panel : 0xFF22262E);
+		vgui_widget_set_border(popup, light_theme_ ? kLightPalette.border : 0xFF3A424E, 1);
+		vgui_widget_invalidate_recording(popup);
+	}
+
 	void property_grid::open_color_picker(row& item)
 	{
 		if (read_only_ || item.desc.read_only)
@@ -3170,6 +3240,8 @@ private:
 			color_picker_ = std::make_unique<color_picker>();
 			color_picker_->set_id("property-grid.color-picker");
 			color_picker_->build(ctx);
+			if (light_theme_)
+				update_color_picker_palette();
 			if (managed)
 			{
 				// The picker preview row contains the swatches and hex edit.

@@ -282,8 +282,10 @@ std::uint32_t to_ovg(std::uint32_t argb) {
 
 bool has_area(pixel_rect r) { return r.width > 0 && r.height > 0; }
 
-std::array<pixel_rect, 4> workspace_around(pixel_rect area, pixel_rect board) {
-    const auto covered = intersect(area, board);
+// Split the visible viewport into four strips outside the frame and the
+// artboard interior, leaving the one-pixel frame clear of grid guides.
+std::array<pixel_rect, 5> grid_clips(pixel_rect area, pixel_rect board, pixel_rect frame) {
+    const auto covered = intersect(area, frame);
     if (!has_area(covered)) return {area};
     const float right = covered.x + covered.width, bottom = covered.y + covered.height;
     return {{
@@ -291,6 +293,7 @@ std::array<pixel_rect, 4> workspace_around(pixel_rect area, pixel_rect board) {
         {area.x, bottom, area.width, area.y + area.height - bottom},
         {area.x, covered.y, covered.x - area.x, covered.height},
         {right, covered.y, area.x + area.width - right, covered.height},
+        intersect(area, board),
     }};
 }
 
@@ -314,11 +317,11 @@ float grid_edge(double center, float width) {
 }
 
 void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pixel_rect frame,
-        viewport view, float ui_scale, const designer_grid_settings& settings) {
+        viewport view, float ui_scale, const designer_grid_settings& settings, const designer_grid_settings& on_board) {
     if (!std::isfinite(board.x) || !std::isfinite(board.y) || !std::isfinite(board.width) ||
         !std::isfinite(board.height) || !std::isfinite(ui_scale) || ui_scale <= 0) return;
-    const auto workspace = workspace_around(area, frame);
-    if (std::none_of(workspace.begin(), workspace.end(), has_area)) return;
+    const auto clips = grid_clips(area, board, frame);
+    if (std::none_of(clips.begin(), clips.end(), has_area)) return;
 
     // Spacing is in artboard units. The width is in shell units, snapped to
     // full device pixels so thin strokes and dots stay legible without MSAA.
@@ -330,14 +333,15 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
     const auto layer = [&](bool major) {
         const auto color = major ? settings.major_color : settings.minor_color;
         if (!(color >> 24) || (!major && settings.major_every == 1)) return;
+        const auto overlay_color = major ? on_board.major_color : on_board.minor_color;
         const int stride = major ? settings.major_every : 1;
         const double sx = step_x * stride, sy = step_y * stride;
         if (std::min(sx, sy) < min_step) return;
         struct span { grid_range x, y; };
-        std::array<span, 4> spans{};
+        std::array<span, clips.size()> spans{};
         double marks = 0;
-        for (std::size_t i = 0; i < workspace.size(); ++i) {
-            const auto r = workspace[i];
+        for (std::size_t i = 0; i < clips.size(); ++i) {
+            const auto r = clips[i];
             if (!has_area(r)) continue;
             auto& [x, y] = spans[i];
             x = grid_indices(r.x, r.width, board.x, sx, width);
@@ -347,7 +351,6 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
         // Bound generation over the whole viewport, not per row or strip.
         // The major pass has its own coarser spacing and can still be drawn.
         if (marks > (dots ? 8192 : 1024)) return;
-        cb->set_source_color(vg, to_ovg(color));
         int queued = 0;
         const auto add = [&](pixel_rect mark, pixel_rect clip) {
             const auto r = intersect(mark, clip);
@@ -357,10 +360,12 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
         };
         const auto flush = [&] { if (queued) { cb->fill(vg); queued = 0; } };
         const auto is_major = [&](std::int64_t i) { return i % settings.major_every == 0; };
-        for (std::size_t i = 0; i < workspace.size(); ++i) {
-            const auto r = workspace[i];
+        for (std::size_t i = 0; i < clips.size(); ++i) {
+            const auto r = clips[i];
+            if (!has_area(r)) continue;
             const auto [xs, ys] = spans[i];
             if (dots && (xs.first == xs.end || ys.first == ys.end)) continue;
+            cb->set_source_color(vg, to_ovg(i == clips.size() - 1 ? overlay_color : color));
             for (auto x = xs.first; x < xs.end; ++x) {
                 if (x == 0 || (!dots && !major && is_major(x))) continue;
                 const float px = grid_edge(board.x + x * sx, width);
@@ -384,10 +389,11 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
     layer(true);
 
     if (settings.axis_color >> 24) {
-        const auto color = to_ovg(settings.axis_color);
         const float x = grid_edge(board.x, width), y = grid_edge(board.y, width);
-        for (const auto r : workspace) {
+        for (std::size_t i = 0; i < clips.size(); ++i) {
+            const auto r = clips[i];
             if (!has_area(r)) continue;
+            const auto color = to_ovg(i == clips.size() - 1 ? on_board.axis_color : settings.axis_color);
             fill(cb, vg, intersect({x, r.y, width, r.height}, r), color);
             fill(cb, vg, intersect({r.x, y, r.width, width}, r), color);
         }
@@ -472,7 +478,7 @@ axis_edit edit_axis(source_axis source, double actual_size, double delta, bool r
 struct designer_preview::impl {
     const designer_strings& strings;
     vgui_context* shell = nullptr;
-    vgui_widget *panel = nullptr, *canvas = nullptr, *status = nullptr, *zoom_text = nullptr;
+    vgui_widget *panel = nullptr, *toolbar = nullptr, *canvas = nullptr, *status = nullptr, *zoom_text = nullptr;
     std::array<vgui_widget*, 3> presets{};
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
     std::function<void(std::string)> select, notify;
@@ -511,6 +517,7 @@ struct designer_preview::impl {
     image_load* active_load = nullptr;
     preset screen = preset::desktop;
     designer_grid_settings grid;
+    designer_theme theme = default_designer_theme;
     float zoom = 1;
     point pan{};
     SDL_WindowID pointer_window = 0, run_window = 0, ime_window = 0;
@@ -535,7 +542,8 @@ struct designer_preview::impl {
         vgui_widget_set_padding(panel, 0, 0, 0, 0);
         vgui_widget_set_gap(panel, 0);
         vgui_widget_set_background(panel, 0xFF242933);
-        auto* toolbar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        toolbar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(toolbar, "designer.preview.toolbar");
         vgui_widget_set_layout(toolbar, VGUI_LAYOUT_ROW);
         vgui_widget_set_size(toolbar, 0, 34);
         vgui_widget_set_padding(toolbar, 5, 3, 5, 3);
@@ -638,13 +646,27 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(status, message.c_str());
     }
 
+    void set_theme(designer_theme next) {
+        if (theme == next) return;
+        theme = next;
+        if (!panel) return;
+        const bool light = theme == designer_theme::light;
+        vgui_widget_set_background(panel, light ? 0xFFF1F5FA : 0xFF242933);
+        vgui_widget_set_background(toolbar, light ? 0xFFE7EFF8 : 0xFF303846);
+        update_toolbar();
+        mark_canvas(); // Shell paint only; the page texture and live input are unchanged.
+    }
+
     void update_toolbar() {
         if (!panel) return;
+        const bool light = theme == designer_theme::light;
+        const vgui_color inactive = light ? 0xFFEEF4FC : 0xFF394454;
+        const vgui_color active = light ? 0xFFCFE2FA : 0xFF3A668E;
         for (unsigned i = 0; i < presets.size(); ++i)
-            vgui_widget_set_background(presets[i], i == static_cast<unsigned>(screen) ? 0xFF3A668E : 0xFF394454);
+            vgui_widget_set_background(presets[i], i == static_cast<unsigned>(screen) ? active : inactive);
         vgui_widget_set_text(mode, run ? strings.text("preview.mode.run", "Run") :
             strings.text("preview.mode.design", "Design"));
-        vgui_widget_set_background(mode, run ? 0xFF33765A : 0xFF394454);
+        vgui_widget_set_background(mode, run ? (light ? 0xFFCBECDD : 0xFF33765A) : inactive);
         char label[24]{};
         if (fit) vgui_widget_set_text(zoom_text, strings.text("preview.zoom_auto", "Auto"));
         else {
@@ -1037,22 +1059,40 @@ struct designer_preview::impl {
             float x, float y, float width, float height, float, void* user) {
         const auto& self = *static_cast<impl*>(user);
         const pixel_rect area{x, y, width, height};
-        fill(cb, vg, area, self.run ? 0xFF241D19u : to_ovg(self.grid.background));
+        const bool light = self.theme == designer_theme::light;
+        auto grid_appearance = self.grid;
+        if (light) {
+            // The built-in grid palette follows the shell. Non-default colors
+            // remain user choices and are never changed in settings.
+            constexpr designer_grid_settings defaults;
+            if (grid_appearance.background == defaults.background) grid_appearance.background = 0xFFE9EFF7;
+            if (grid_appearance.minor_color == defaults.minor_color) grid_appearance.minor_color = 0xFFDBE4F0;
+            if (grid_appearance.major_color == defaults.major_color) grid_appearance.major_color = 0xFFC4D2E4;
+        }
+        const auto matte = self.run ? (light ? 0xFFE4ECF7u : 0xFF191D24u) : grid_appearance.background;
+        fill(cb, vg, area, to_ovg(matte));
         if (!self.ready || !self.frame) return;
         const auto board = self.artboard(area);
         const auto visible = intersect(board, area);
         const pixel_rect board_frame{board.x - 1, board.y - 1, board.width + 2, board.height + 2};
-        // The target contains the unmodified runtime. Draw workspace guides
-        // only in Design, leaving both the board and its frame untouched.
-        if (!self.run && self.grid.visible)
-            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
-                vgui_context_get_ui_scale(self.shell), self.grid);
-        fill(cb, vg, board_frame, 0xFF6E5E53);
-        fill(cb, vg, visible, 0xFF352B26);
+        fill(cb, vg, board_frame, to_ovg(light ? 0xFF849BB6u : 0xFF535E6Eu));
+        fill(cb, vg, visible, to_ovg(light ? 0xFFD7E2F0u : 0xFF262B35u));
         if (self.target && visible.width > 0 && visible.height > 0)
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
                 board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
         if (self.run) return;
+        // Overlay Design guides after the opaque page texture, but below
+        // selection/drag feedback. Soften built-in colors over page content;
+        // explicit user colors retain their configured alpha.
+        if (self.grid.visible) {
+            constexpr designer_grid_settings defaults;
+            auto overlay = self.grid;
+            if (overlay.minor_color == defaults.minor_color) overlay.minor_color = 0x527287A3;
+            if (overlay.major_color == defaults.major_color) overlay.major_color = 0x8090ABC9;
+            if (overlay.axis_color == defaults.axis_color) overlay.axis_color = 0xB0E7122D;
+            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
+                vgui_context_get_ui_scale(self.shell), grid_appearance, overlay);
+        }
         const auto t = self.transform_for(board);
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {
@@ -1335,6 +1375,8 @@ designer_preview::preset designer_preview::current_preset() const { return p_->s
 void designer_preview::reset_zoom(bool fit) { p_->reset_zoom(fit); }
 void designer_preview::set_running(bool run) { p_->set_run(run); }
 bool designer_preview::running() const { return p_->run; }
+
+void designer_preview::set_theme(designer_theme theme) { p_->set_theme(theme); }
 
 void designer_preview::set_grid_settings(designer_grid_settings settings) {
     const designer_grid_settings defaults;

@@ -13,6 +13,7 @@ namespace vgui::ui_design {
 class session;
 class designer_strings;
 enum class designer_language;
+enum class designer_theme;
 struct designer_dock_widths;
 enum class designer_view_action { design, run, desktop, tablet, phone, fit, actual };
 
@@ -28,6 +29,7 @@ struct designer_commands {
     std::function<bool()> can_save_all = {};
     std::function<void()> import_font = {};
     std::function<void()> open_options = {};
+    std::function<void(designer_theme)> set_theme = {};
 };
 
 // The shell context, working session and strings all outlive the workbench.
@@ -58,6 +60,8 @@ public:
     // between event dispatch and layout/render. If an inspector edit is live,
     // its labels update on the first refresh() after that edit ends.
     void refresh_language();
+    // Apply workbench-only colors after the host updates the context theme.
+    void set_theme(designer_theme);
     void status(std::string message);
 
 private:

@@ -379,12 +379,15 @@ void exercise_menus()
     auto* tools = workbench.open_menu("Tools");
     const auto language_item = vgui_menu_get_item_at(tools, 0);
     const auto options_item = vgui_menu_get_item_at(tools, 1);
-    check(vgui_menu_get_count(tools) == 2 && language_item && options_item &&
+    const auto theme_item = vgui_menu_get_item_at(tools, 2);
+    check(vgui_menu_get_count(tools) == 3 && language_item && options_item && theme_item &&
         vgui_menu_get_item_type(tools, language_item) == VGUI_MENU_ITEM_SUBMENU &&
         std::string_view(vgui_menu_get_item_text(tools, language_item)) == "Language" &&
         vgui_menu_get_item_type(tools, options_item) == VGUI_MENU_ITEM_NORMAL &&
-        std::string_view(vgui_menu_get_item_text(tools, options_item)) == "Options",
-        "Tools should offer Language and Options without a separate configuration entry");
+        std::string_view(vgui_menu_get_item_text(tools, options_item)) == "Options" &&
+        vgui_menu_get_item_type(tools, theme_item) == VGUI_MENU_ITEM_SUBMENU &&
+        std::string_view(vgui_menu_get_item_text(tools, theme_item)) == "Theme",
+        "Tools should offer Language, Options and Theme without a separate configuration entry");
     workbench.activate(tools, "Options");
     check(workbench.options_calls == 1, "Tools did not request Options without an active page");
     workbench.bench.set_page_active(true);

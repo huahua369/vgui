@@ -134,11 +134,41 @@ void test_grid_preferences(const fs::path& path) {
     check(!ui::save_designer_grid_settings({}, high) && !ui::save_designer_grid_settings(path.parent_path(), high),
         "empty or directory preferences path was accepted");
 }
+void test_theme_preferences(const fs::path& path) {
+    check(ui::load_designer_theme(path) == ui::designer_theme::dark && !fs::exists(path),
+        "a missing theme uses dark without creating settings");
+    for (auto invalid : {R"({"theme":"custom"})", R"({"theme":false})", R"([])", "{bad JSON"}) {
+        write(path, invalid);
+        check(ui::load_designer_theme(path) == ui::designer_theme::dark && read(path) == invalid,
+            "invalid theme settings must default without rewriting");
+    }
+    check(!ui::save_designer_theme(path, ui::designer_theme::light) && read(path) == "{bad JSON",
+        "theme save must not overwrite malformed settings");
+    write(path, R"({"language":"en-US","layout":{"left_width":300},"canvas_grid":{"spacing":28},"extension":true})");
+    check(ui::save_designer_theme(path, ui::designer_theme::light) &&
+        ui::load_designer_theme(path) == ui::designer_theme::light &&
+        ui::load_designer_language(path) == ui::designer_language::english &&
+        ui::load_designer_dock_widths(path).left == 300 && ui::load_designer_grid_settings(path).spacing == 28 &&
+        read(path).find("\"extension\": true") != std::string::npos, "theme-only save preserves other preferences");
+
+    auto grid = ui::load_designer_grid_settings(path);
+    grid.spacing = 36;
+    check(ui::save_designer_options(path, grid, ui::designer_theme::dark) &&
+        ui::load_designer_theme(path) == ui::designer_theme::dark && ui::load_designer_grid_settings(path) == grid,
+        "theme and grid changes commit together");
+    const auto saved = read(path);
+    grid.spacing = 0;
+    check(!ui::save_designer_options(path, grid, ui::designer_theme::light) && read(path) == saved,
+        "rejecting a grid change must also leave the theme unchanged");
+    check(!ui::save_designer_theme(path, static_cast<ui::designer_theme>(-1)) && read(path) == saved,
+        "an invalid theme cannot be saved");
+}
 } // namespace
 
 int main() try {
     const temp_dir test_dir;
     test_grid_preferences(test_dir.path / "settings.json");
+    test_theme_preferences(test_dir.path / "theme.json");
     std::puts("ui_designer_locale_persistence_test passed");
     return 0;
 } catch (const std::exception& error) {

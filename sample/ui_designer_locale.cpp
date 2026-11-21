@@ -156,6 +156,20 @@ bool save_designer_language(const fs::path& path, designer_language language) {
     return write_settings(path, config);
 }
 
+designer_theme load_designer_theme(const fs::path& path) {
+    const auto config = read_settings(path);
+    const auto it = config.find("theme");
+    if (it != config.end()) {
+        if (const auto* value = it->get_ptr<const std::string*>(); value && *value == "light")
+            return designer_theme::light;
+    }
+    return default_designer_theme;
+}
+
+bool save_designer_theme(const fs::path& path, designer_theme theme) {
+    return save_designer_options(path, std::nullopt, theme);
+}
+
 designer_dock_widths load_designer_dock_widths(const fs::path& path) {
     designer_dock_widths widths;
     const auto config = read_settings(path);
@@ -224,26 +238,39 @@ designer_grid_settings load_designer_grid_settings(const fs::path& path) {
 }
 
 bool save_designer_grid_settings(const fs::path& path, designer_grid_settings settings) {
-    if (path.empty() || (settings.style != designer_grid_style::lines && settings.style != designer_grid_style::dots) ||
-        !valid_grid_number(settings.spacing, designer_grid_min_spacing, designer_grid_max_spacing) ||
-        !valid_grid_number(settings.major_every, designer_grid_min_major_every, designer_grid_max_major_every) ||
-        !valid_grid_number(settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below) ||
-        !valid_grid_number(settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width)) return false;
+    return save_designer_options(path, settings, std::nullopt);
+}
 
+bool save_designer_options(const fs::path& path, std::optional<designer_grid_settings> grid_settings,
+    std::optional<designer_theme> theme) {
+    if (!grid_settings && !theme) return true;
+    if (path.empty() || (theme && *theme != designer_theme::dark && *theme != designer_theme::light)) return false;
+    if (grid_settings) {
+        const auto& settings = *grid_settings;
+        if ((settings.style != designer_grid_style::lines && settings.style != designer_grid_style::dots) ||
+            !valid_grid_number(settings.spacing, designer_grid_min_spacing, designer_grid_max_spacing) ||
+            !valid_grid_number(settings.major_every, designer_grid_min_major_every, designer_grid_max_major_every) ||
+            !valid_grid_number(settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below) ||
+            !valid_grid_number(settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width)) return false;
+    }
     auto config = read_settings(path);
     if (!config.is_object()) return false;
-    auto& grid = config["canvas_grid"];
-    if (!grid.is_object()) grid = json::object();
-    grid["visible"] = settings.visible;
-    grid["style"] = settings.style == designer_grid_style::dots ? "dots" : "lines";
-    grid["spacing"] = settings.spacing;
-    grid["major_every"] = settings.major_every;
-    grid["hide_below"] = settings.hide_below;
-    grid["line_width"] = settings.line_width;
-    grid["background"] = write_grid_color(settings.background);
-    grid["minor_color"] = write_grid_color(settings.minor_color);
-    grid["major_color"] = write_grid_color(settings.major_color);
-    grid["axis_color"] = write_grid_color(settings.axis_color);
+    if (theme) config["theme"] = *theme == designer_theme::light ? "light" : "dark";
+    if (grid_settings) {
+        const auto& settings = *grid_settings;
+        auto& grid = config["canvas_grid"];
+        if (!grid.is_object()) grid = json::object();
+        grid["visible"] = settings.visible;
+        grid["style"] = settings.style == designer_grid_style::dots ? "dots" : "lines";
+        grid["spacing"] = settings.spacing;
+        grid["major_every"] = settings.major_every;
+        grid["hide_below"] = settings.hide_below;
+        grid["line_width"] = settings.line_width;
+        grid["background"] = write_grid_color(settings.background);
+        grid["minor_color"] = write_grid_color(settings.minor_color);
+        grid["major_color"] = write_grid_color(settings.major_color);
+        grid["axis_color"] = write_grid_color(settings.axis_color);
+    }
     return write_settings(path, config);
 }
 

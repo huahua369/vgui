@@ -64,6 +64,31 @@ vgui_widget* find_widget(vgui_widget* w, std::string_view id, std::optional<vgui
     return nullptr;
 }
 
+// The shell context is distinct from each page's document/render context.
+vgui_theme light_shell_theme() {
+    return {
+        .text = 0xFF202D40, .panel_bg = 0xFFF4F7FB, .panel_border = 0xFFCCD6E2,
+        .button_bg = 0xFFE8EEF6, .button_hover = 0xFFDBE8FA, .button_active = 0xFFC7DAF3,
+        .button_border = 0xFFBACADC, .accent = 0xFF5886CD, .accent_hover = 0xFF4479C8,
+        .track = 0xFFDAE1EB, .edit_bg = 0xFFFFFFFF, .edit_selection = 0x55387FD4,
+        .scrollbar = 0xFFA4B1C3, .disabled = 0xFF68768A, .scrollbar_hover = 0xFF8093AC,
+        // Menus and checkboxes share this ink color: contrast with both the
+        // light menu surface and the checked control's blue fill.
+        .checkmark = 0xFF14263E, .switch_thumb = 0xFFFFFFFF,
+        .list_bg = 0xFFFFFFFF, .list_border = 0xFFCCD6E2, .row_text = 0xFF26354B,
+        .row_hover = 0xFFF0F5FC, .row_selected = 0xFFD5E6FD, .row_selected_text = 0xFF173E76,
+        .tree_guide = 0xFFCFD9E5,
+        .menu_bg = 0xFFFFFFFF, .menu_border = 0xFFBFCBDD, .menu_hover = 0xFFE3EEFD,
+        .menu_disabled_text = 0xFF68768A, .tooltip_bg = 0xFFFFFDF5,
+        .tooltip_border = 0xFFCCC2A8, .tooltip_text = 0xFF273143,
+        .modal_bg = 0xFFFFFFFF, .modal_border = 0xFFBFCBDD, .modal_danger = 0xFFB52939,
+        .dock_bg = 0xFFEAF0F7, .dock_border = 0xFFCAD6E5, .dock_tab_bg = 0xFFE5EDF7,
+        .dock_tab_active = 0xFFFFFFFF, .dock_tab_text = 0xFF273A55,
+        .dock_floating_bg = 0xFFF5F8FC, .dock_floating_border = 0xFFBFCBDD,
+        .dock_floating_title = 0xFFE2ECF8,
+    };
+}
+
 class designer {
 public:
     using message_box_fn = std::function<bool(const SDL_MessageBoxData*, int*)>;
@@ -83,7 +108,10 @@ public:
               [this] { request(command::close); }, [this] { request_layout_save(); },
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
               [this] { request(command::import_font); },
-              [this] { request(command::options); }}, strings_), dock_(workbench_.document_dock()) {
+              [this] { request(command::options); },
+              [this](ui::designer_theme theme) { pending_theme_ = theme; }}, strings_), dock_(workbench_.document_dock()) {
+        vgui_context_get_theme(shell_, &dark_shell_theme_);
+        apply_theme(ui::load_designer_theme(settings_path_));
         grid_settings_ = ui::load_designer_grid_settings(settings_path_);
         saved_layout_ = ui::load_designer_dock_widths(settings_path_);
         workbench_.set_dock_widths(saved_layout_);
@@ -186,6 +214,14 @@ public:
                 workbench_.status(std::string(tr("settings.save_failed", "Cannot save language settings: ")) + utf8(settings_path_));
             }
         }
+        if (auto theme = std::exchange(pending_theme_, std::nullopt); theme && *theme != theme_) {
+            if (ui::save_designer_theme(settings_path_, *theme)) {
+                apply_theme(*theme);
+                workbench_.status(tr("settings.theme_saved", "Theme applied and saved."));
+            } else {
+                workbench_.status(std::string(tr("settings.theme_save_failed", "Cannot save theme: ")) + utf8(settings_path_));
+            }
+        }
         if (auto view = std::exchange(pending_view_, std::nullopt); view && active_) apply_view(*view);
         if (const auto tab = std::exchange(pending_tab_, 0); tab && !chooser_ && !package_parent_) activate(tab);
         const auto action = std::exchange(pending_, command::none);
@@ -217,9 +253,12 @@ public:
             break;
         case command::close: close_page(page); break;
         case command::options:
-            options_.show(shell_, strings_, grid_settings_, workbench_.dock_widths(), utf8(settings_path_),
+            options_.show(shell_, strings_, grid_settings_, theme_, workbench_.dock_widths(), utf8(settings_path_),
                 [this](ui::designer_grid_settings grid) { apply_grid_settings(grid); },
-                [this](ui::designer_grid_settings grid) { return ui::save_designer_grid_settings(settings_path_, grid); });
+                [this](ui::designer_theme theme) { apply_theme(theme); },
+                [this](std::optional<ui::designer_grid_settings> grid, std::optional<ui::designer_theme> theme) {
+                    return ui::save_designer_options(settings_path_, grid, theme);
+                });
             break;
         case command::quit:
             exit_queue_.clear();
@@ -291,6 +330,16 @@ public:
 
 private:
     const char* tr(std::string_view key, const char* fallback) const { return strings_.text(key, fallback); }
+
+    void apply_theme(ui::designer_theme theme) {
+        if (theme_ == theme) return;
+        theme_ = theme;
+        const auto palette = theme_ == ui::designer_theme::light ? light_shell_theme() : dark_shell_theme_;
+        vgui_context_set_theme(shell_, &palette);
+        workbench_.set_theme(theme_);
+        for (auto& page : pages_) if (page.preview) page.preview->set_theme(theme_);
+        vgui_widget_mark_dirty(vgui_root(shell_));
+    }
 
     void apply_grid_settings(ui::designer_grid_settings grid) {
         if (grid_settings_ == grid) return;
@@ -446,6 +495,7 @@ private:
             [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_);
         page.preview->set_render_context(renderer_);
         page.preview->set_grid_settings(grid_settings_);
+        page.preview->set_theme(theme_);
         page.preview->restore_view(page.view);
         page.last_model_revision.reset();
         return *page.preview;
@@ -814,8 +864,11 @@ private:
     message_box_fn message_box_;
     ui::designer_dock_widths saved_layout_;
     ui::designer_grid_settings grid_settings_;
+    ui::designer_theme theme_ = ui::default_designer_theme;
+    vgui_theme dark_shell_theme_{};
     bool layout_save_pending_ = false;
     std::optional<ui::designer_language> pending_language_;
+    std::optional<ui::designer_theme> pending_theme_;
     std::optional<view_action> pending_view_;
     const fs::path new_root_ = fs::canonical(fs::current_path());
     std::vector<page_state> pages_;
@@ -1430,7 +1483,7 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
         const auto saved = read_settings();
         const std::string_view title = english ? "Configuration Information" : "配置信息";
         auto* tools = menus.open(4);
-        require(vgui_menu_get_count(tools) == 2 &&
+        require(vgui_menu_get_count(tools) == 3 &&
             std::string_view(vgui_menu_get_item_text(tools, vgui_menu_get_item_at(tools, 1))) == (english ? "Options" : "选项"),
             "configuration should only be accessible through Options");
         menus.activate(tools, 1);
@@ -1459,9 +1512,10 @@ void exercise_language_and_layout(os_window& win, vgui_context* shell, designer&
             "clicking Configuration Information did not switch the current dialog to a read-only page");
         const auto text = [&](std::string_view id) { return std::string_view(vgui_widget_get_text(child(id))); };
         require(text("designer.options.configuration.language") == (english ? "Interface language: English" : "界面语言：简体中文") &&
+            text("designer.options.configuration.theme") == (english ? "Interface theme: Light" : "界面主题：浅色") &&
             text("designer.options.configuration.left") == (english ? "Left sidebar: 280 logical px · Collapsed" : "左侧栏：280 逻辑像素 · 已展开") &&
             text("designer.options.configuration.right") == (english ? "Right sidebar: 375 logical px · Expanded" : "右侧栏：375 逻辑像素 · 已展开"),
-            "configuration page did not show the current language and preferred dock sizes/states");
+            "configuration page did not show the current language, theme and preferred dock sizes/states");
         auto* path = child("designer.options.configuration.path");
         vgui_a11y_info path_info{};
         vgui_widget_get_a11y_info(path, &path_info);
@@ -1592,11 +1646,42 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
         require(vgui_modal_active(shell) && std::string_view(vgui_widget_get_id(vgui_modal_panel(shell))) == "designer.options",
             "activating the Tools item did not open the options modal");
     };
+    using ui::designer_theme;
     const auto original = editor.preview().grid_settings();
     const auto before = editor.history().current();
     const auto revision = editor.history().revision();
+    const auto selection = std::string(editor.selection());
+    const auto live_name = editor.preview().edit_text("name");
+    const auto shell_is_light = [&] {
+        vgui_theme palette{};
+        vgui_context_get_theme(shell, &palette);
+        return palette.panel_bg == light_shell_theme().panel_bg;
+    };
+    const auto theme_menu = [&](designer_theme checked) {
+        auto* menu = menus.activate(menus.open(4), 2); // Tools > Theme.
+        require(menu && vgui_menu_get_count(menu) == 2, "could not open the Theme submenu");
+        const auto dark = vgui_menu_get_item_at(menu, 0), light = vgui_menu_get_item_at(menu, 1);
+        require(std::string_view(vgui_menu_get_item_text(menu, dark)) == "深色" &&
+            std::string_view(vgui_menu_get_item_text(menu, light)) == "浅色" &&
+            bool(vgui_menu_get_item_checked(menu, dark)) == (checked == designer_theme::dark) &&
+            bool(vgui_menu_get_item_checked(menu, light)) == (checked == designer_theme::light),
+            "Theme menu did not mark the current appearance");
+        return menu;
+    };
+    const auto options_theme = [&](const char* id) {
+        click(widget("designer.options.nav.appearance", VGUI_BUTTON));
+        require(vgui_widget_get_visible(widget("designer.options.appearance", VGUI_PANEL)), "Appearance page did not open");
+        auto* choice = widget(id, VGUI_BUTTON);
+        click(choice);
+        require(vgui_widget_get_checked(choice), "Options theme picker did not mark the selected appearance");
+    };
     require(original.spacing == 24 && ui::load_designer_grid_settings(settings) == original,
         "startup settings were not applied to the canvas");
+    require(shell_is_light() && ui::load_designer_theme(settings) == designer_theme::light,
+        "startup did not restore the saved light theme");
+    menus.activate(theme_menu(designer_theme::light), 0);
+    require(!shell_is_light() && ui::load_designer_theme(settings) == designer_theme::dark &&
+        ui::load_designer_grid_settings(settings) == original, "Tools > Theme did not apply and save dark independently of grid settings");
     open();
     auto* panel = vgui_modal_panel(shell);
     auto* title = find_widget(panel, "designer.options.title");
@@ -1646,9 +1731,13 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
         "returning to the grid did not restore the last valid draft");
     click(widget("property:visible", VGUI_CHECKBOX));
     require(!editor.preview().grid_settings().visible, "checkbox did not preview the visibility change");
+    options_theme("designer.options.theme.light");
+    require(vgui_modal_panel(shell) == panel && shell_is_light() && ui::load_designer_theme(settings) == designer_theme::dark,
+        "switching the theme in Options did not preview it without saving or recreated the dialog");
     click(widget("designer.options.cancel", VGUI_BUTTON));
     require(!vgui_modal_active(shell) && editor.preview().grid_settings() == original &&
-        ui::load_designer_grid_settings(settings) == original, "Cancel did not restore settings without writing them");
+        ui::load_designer_grid_settings(settings) == original && !shell_is_light() &&
+        ui::load_designer_theme(settings) == designer_theme::dark, "Cancel did not restore theme and grid without writing them");
 
     open();
     click(widget("designer.options.reset", VGUI_BUTTON));
@@ -1679,12 +1768,29 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
     menus.activate(vgui_context_get_open_menu(shell), 1);
     expected.style = ui::designer_grid_style::dots;
     require(editor.preview().grid_settings() == expected, "grid style did not preview the selected option");
+    options_theme("designer.options.theme.light");
     click(widget("designer.options.nav.configuration", VGUI_BUTTON));
+    require(std::string_view(vgui_widget_get_text(widget("designer.options.configuration.theme", VGUI_LABEL))) == "界面主题：浅色",
+        "configuration summary did not follow the live theme draft");
     click(widget("designer.options.ok", VGUI_BUTTON));
-    require(!vgui_modal_active(shell) && editor.preview().grid_settings() == expected &&
-        ui::load_designer_grid_settings(settings) == expected, "OK did not persist the current live values");
-    require(editor.history().revision() == revision && editor.history().current() == before,
-        "changing application-level options modified the design");
+    require(!vgui_modal_active(shell) && editor.preview().grid_settings() == expected && shell_is_light() &&
+        ui::load_designer_theme(settings) == designer_theme::light && ui::load_designer_grid_settings(settings) == expected,
+        "OK did not persist the current theme and grid values");
+    open();
+    click(widget("designer.options.nav.appearance", VGUI_BUTTON));
+    require(vgui_widget_get_checked(widget("designer.options.theme.light", VGUI_BUTTON)),
+        "opening Options did not show the saved theme selection");
+    click(widget("designer.options.reset", VGUI_BUTTON));
+    require(!shell_is_light() && editor.preview().grid_settings() == expected &&
+        ui::load_designer_theme(settings) == designer_theme::light, "Appearance Restore Defaults also changed the grid or saved prematurely");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(!vgui_modal_active(shell) && shell_is_light(), "Escape did not restore the previous appearance");
+    menus.activate(theme_menu(designer_theme::light), 0);
+    require(!shell_is_light() && ui::load_designer_theme(settings) == designer_theme::dark &&
+        ui::load_designer_grid_settings(settings) == expected, "Tools theme choice did not reflect Options or preserve its grid changes");
+    require(editor.history().revision() == revision && editor.history().current() == before &&
+        editor.selection() == selection && editor.preview().edit_text("name") == live_name,
+        "changing application-level options modified the design, selection or runtime input");
 }
 
 fs::path designer_settings_path() {
@@ -1727,7 +1833,7 @@ int run(bool smoke, fs::path open_path) {
     }
     const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
     if (smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
-                  !ui::save_designer_grid_settings(settings, {.spacing = 24})))
+                  !ui::save_designer_options(settings, ui::designer_grid_settings{.spacing = 24}, ui::designer_theme::light)))
         throw std::runtime_error("Cannot seed custom workbench settings for the smoke test");
     bool invalid_settings = false;
     const ui::designer_strings strings(ui::load_designer_language(settings, &invalid_settings));
@@ -1934,7 +2040,7 @@ int run(bool smoke, fs::path open_path) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, layout, page docking, multi-page save/close/exit and delivery isolation passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, layout, page docking, multi-page save/close/exit and delivery isolation passed");
     }
     app.wait_gpu();
     return 0;
