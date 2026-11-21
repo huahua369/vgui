@@ -187,6 +187,18 @@ add_executable(vgui_richtext_demo vgui_richtext_demo.cpp)
 target_link_libraries(vgui_richtext_demo PRIVATE vgui_sample_common vgui::vgui SDL3::SDL3)
 target_compile_definitions(vgui_richtext_demo PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 
+# Standalone JSON runtime sample (no editor kit); smoke tests need no GPU.
+find_path(VGUI_JSON_DEMO_STB_INCLUDE_DIR NAMES stb_image.h PATH_SUFFIXES stb)
+if(NOT VGUI_JSON_DEMO_STB_INCLUDE_DIR)
+    message(FATAL_ERROR "vgui_ui_json_demo needs stb_image.h (stb)")
+endif()
+add_executable(vgui_ui_json_demo vgui_ui_json_demo.cpp)
+target_link_libraries(vgui_ui_json_demo PRIVATE vgui_sample_common vgui::ui_design_runtime vgui::ui_design_export SDL3::SDL3)
+target_include_directories(vgui_ui_json_demo SYSTEM PRIVATE ${VGUI_JSON_DEMO_STB_INCLUDE_DIR})
+target_compile_definitions(vgui_ui_json_demo PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+add_test(NAME ui_json_demo COMMAND vgui_ui_json_demo --smoke-test)
+add_test(NAME ui_json_demo_package COMMAND vgui_ui_json_demo --smoke-test-package)
+
 # 双窗口验证：每个窗口独立的 vgui_context / FBO / rvg，一帧统一提交。
 # 需要真实 GPU 窗口，因此不注册到 ctest（CI 未必有显示设备）；用
 # VGUI_MW_FRAMES=90 跑有界自检，GPU/窗口创建失败时返回 77。

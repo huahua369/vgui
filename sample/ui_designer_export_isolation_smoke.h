@@ -88,7 +88,7 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     const auto package_name = title.substr(0, title.size() - path_suffix.size()) + "-delivery";
     const auto a_file = picker.sandbox / "export-a" / filename;
     const auto b_file = picker.sandbox / "export-b" / filename;
-    const auto package = picker.package_parent / fs::u8path(package_name);
+    const auto package = picker.package_parent / fs::u8path(package_name + std::string(json_delivery_suffix));
     document saved;
     require(read_document(form_fixture, saved) && saved.resources.size() == 1 &&
         saved.resources.contains(smoke_badge_key) && saved.resources.at(smoke_badge_key) == smoke_badge_file,
@@ -168,8 +168,24 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     picker.defer_folders = true;
     const auto requests = picker.folder_requests;
     menus.activate(menus.open(0), 6); // File > Export Package
-    require(editor.chooser_open() && picker.folder_requests == requests + 1 && !vgui_modal_active(shell),
-        "export did not leave a folder request outstanding");
+    const auto widget = [&](std::string_view id) {
+        auto* w = find_page_smoke_widget(vgui_modal_panel(shell), id);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto click = [&](std::string_view id) {
+        auto* w = widget(id);
+        float x, y, width, height;
+        vgui_widget_get_rect(w, &x, &y, &width, &height);
+        dock_input.click(w, x + width / 2, y + height / 2);
+    };
+    click("designer.export.single");
+    require(vgui_widget_get_checked(widget("designer.export.single")) &&
+        std::string_view(vgui_widget_get_text(widget("designer.export.summary"))).find("Base64") != std::string_view::npos,
+        "the single JSON format did not update the resource summary");
+    click("designer.export.browse");
+    require(editor.chooser_open() && picker.folder_requests == requests + 1 && vgui_modal_active(shell),
+        "export did not leave a folder request outstanding under the options dialog");
     // The picker blocks interactive SDL tab selection. Duplicate Open models a
     // host-driven activation without creating or reloading a tab.
     open(b_file);
@@ -180,12 +196,13 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
         return preview->revision;
     };
     const auto b_preview_revision = preview_revision();
-    require(editor.chooser_open() && !vgui_modal_active(shell) && picker.complete_folder(picker.package_parent),
+    require(editor.chooser_open() && vgui_modal_active(shell) && picker.complete_folder(picker.package_parent),
         "could not post the delayed folder result while B was active");
     picker.defer_folders = false;
     for (int i = 0; i < 4 && editor.chooser_open(); ++i) frame();
-    auto* input = vgui_dialog_input(shell);
-    require(!editor.chooser_open() && vgui_modal_active(shell) && input && vgui_get_focus(shell) == input &&
+    auto* input = widget("designer.export.name");
+    require(!editor.chooser_open() && vgui_get_focus(shell) == input &&
+        fs::u8path(vgui_edit_get_text(widget("designer.export.location"))) == picker.package_parent &&
         std::string_view(vgui_widget_get_text(input)) == package_name && !fs::exists(package),
         "expected a focused prompt with the shared default name and no package before confirmation");
     require(active() == b_tab, "completing the chooser switched away from B");
@@ -196,13 +213,15 @@ void exercise_export_isolation(os_window& win, vgui_context* shell, Editor& edit
     expect_active(b_tab, b);
     require(preview_revision() == b_preview_revision && tab_state() == expected_tabs,
         "export remounted B or changed the tab order, titles or unsaved markers");
-    document delivered;
+    embedded_delivery embedded;
     diagnostic error;
-    // read_delivery validates the canonical manifest and recomputes the SHA-256 of the document and assets.
-    if (!read_delivery(package, delivered, &error)) require(false, error.path + ": " + error.message);
+    if (!read_json_delivery(package, embedded, &error)) require(false, error.path + ": " + error.message);
+    auto& delivered = embedded.design;
     const auto badge = delivered.resources.find(smoke_badge_key);
     require(badge != delivered.resources.end() && badge->second != smoke_badge_file, "badge was not remapped");
-    const auto exported_bytes = bytes(package / fs::u8path(badge->second));
+    require(embedded.images.contains(smoke_badge_key), "single JSON is missing A's embedded badge");
+    const auto& data = embedded.images.at(smoke_badge_key);
+    const std::string exported_bytes(data.begin(), data.end());
     require(exported_bytes == a_bytes && exported_bytes != b_bytes, "packaged badge did not come from A's project root");
     delivered.resources.at(smoke_badge_key) = smoke_badge_file;
     require(delivered == a.current && delivered != b.current && delivered != saved, "export did not contain A's unsaved edits");

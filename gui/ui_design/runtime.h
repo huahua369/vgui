@@ -29,6 +29,13 @@ struct runtime_bindings {
     // with the same directory stability requirement as image_loader.
     using font_loader = font_familys_t* (*)(std::string_view key, const std::filesystem::path& file, void* user);
     font_loader load_font = nullptr;
+
+    // Alternative borrowed texture loader for images held by the host in
+    // memory. Called once per referenced image key per mount, with no path
+    // resolution or fallback to load_image (even if this returns nullptr).
+    // Same lifetime and context requirements as image_loader.
+    using embedded_image_loader = vgui_texture* (*)(vgui_context* ctx, std::string_view key, void* user);
+    embedded_image_loader load_embedded_image = nullptr;
 };
 
 struct viewport {

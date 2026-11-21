@@ -39,7 +39,7 @@ vgui_align alignment(std::string_view value) {
     return VGUI_ALIGN_AUTO;
 }
 
-void apply_widget_properties(vgui_widget* widget, const widget_properties& p) {
+void apply_widget_properties(vgui_widget* widget, const widget_properties& p, bool document_root) {
     vgui_widget_set_pos(widget, p.number("x"), p.number("y"));
     vgui_widget_set_size(widget, p.number("width"), p.number("height"));
     vgui_widget_set_grow(widget, p.number("grow"));
@@ -50,7 +50,11 @@ void apply_widget_properties(vgui_widget* widget, const widget_properties& p) {
     if (p.has("margin_left") || p.has("margin_top") || p.has("margin_right") || p.has("margin_bottom"))
         vgui_widget_set_margin(widget, p.number("margin_left"), p.number("margin_top"), p.number("margin_right"), p.number("margin_bottom"));
     if (p.has("align_self")) vgui_widget_set_align_self(widget, alignment(p.text("align_self")));
-    if (const auto color = p.color("background")) vgui_widget_set_background(widget, *color ? *color : 1u);
+    // An unset page background leaves backing content visible, without
+    // changing the normal panel defaults or overall widget opacity.
+    const auto background = p.color("background");
+    if (background || document_root)
+        vgui_widget_set_background(widget, detail::primitive_theme_override(background.value_or(0)));
     const auto border = p.color("border_color");
     if (border || p.has("border_width"))
         vgui_widget_set_border(widget, border ? (*border ? *border : 1u) : 0,
@@ -192,15 +196,22 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
     std::map<std::string, vgui_texture*, std::less<>> images;
     const auto load_image = [&](const std::string& key) -> vgui_texture* {
         auto [it, inserted] = images.emplace(key, nullptr);
-        if (inserted && bindings.load_image) {
+        if (!inserted) return it->second;
+        if (bindings.load_embedded_image) {
+            it->second = bindings.load_embedded_image(ctx_, key, bindings.user);
+        } else if (bindings.load_image) {
             const auto file = resolve_resource(bindings.project_root, doc.resources.at(key));
             if (!file.empty()) it->second = bindings.load_image(ctx_, key, file, bindings.user);
         }
         return it->second;
     };
+    const auto image_unavailable = [&](std::string_view what, const std::string& key) {
+        return std::string(what) + (bindings.load_embedded_image
+            ? " unavailable: " : " unavailable or outside project root: ") + key;
+    };
     const auto load_collection_icon = [&](const std::string& key, std::string path) -> vgui_texture* {
         auto* texture = load_image(key);
-        if (!texture) next->diagnostics.push_back({std::move(path), "image resource unavailable or outside project root: " + key});
+        if (!texture) next->diagnostics.push_back({std::move(path), image_unavailable("image resource", key)});
         // Native list/tree/menu item icon setters borrow the raw texture.
         else if (next->collection_textures.insert(texture).second) vgui_texture_retain(texture);
         return texture;
@@ -238,7 +249,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         next->order.push_back(id);
         vgui_widget_set_id(w, id.c_str());
         const widget_properties p{n};
-        apply_widget_properties(w, p);
+        apply_widget_properties(w, p, !parent_node);
         detail::apply_container(w, n, p);
         if (n.type == "panel") {
             const auto& l = text(n,"layout");
@@ -256,7 +267,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                 else {
                     e.placeholder = true;
                     vgui_widget_set_background(w, 0xFFFF00FF);
-                    next->diagnostics.push_back({"/nodes/" + id + "/props/resource", "image resource unavailable or outside project root: " + key});
+                    next->diagnostics.push_back({"/nodes/" + id + "/props/resource", image_unavailable("image resource", key)});
                 }
             }
         } else if (find_property(n.type, "font_family")) {
@@ -280,7 +291,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                     if (!atlas || !vgui_button_set_atlas(w, atlas)) {
                         e.placeholder = true;
                         next->diagnostics.push_back({"/nodes/" + id + "/props/atlas", !atlas ?
-                            "button atlas unavailable or outside project root: " + key :
+                            image_unavailable("button atlas", key) :
                             "button atlas requires an even-sized 2x2 image: " + key});
                     }
                 }
@@ -288,7 +299,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                 if (!icon.empty()) {
                     if (auto* texture = load_image(icon)) detail::apply_button_icon(w, p, texture);
                     else next->diagnostics.push_back({"/nodes/" + id + "/props/icon",
-                        "button icon unavailable or outside project root: " + icon});
+                        image_unavailable("button icon", icon)});
                 }
                 if (!text(n,"action").empty()) {
                     e.action = text(n,"action"); e.handler = bindings.on_action; e.user = bindings.user;

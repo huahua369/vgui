@@ -4,7 +4,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <stdexcept>
-#include <string_view>
+#include <utility>
 
 namespace {
 namespace fs = std::filesystem;
@@ -14,7 +14,8 @@ void usage(FILE* file)
 {
     std::fputs("Usage:\n"
         "  vgui_ui_pack export <design.vgui.json> <new-delivery-directory>\n"
-        "  vgui_ui_pack verify <delivery-directory>\n", file);
+        "  vgui_ui_pack export --single-json <design.vgui.json> <new.vgui.package.json>\n"
+        "  vgui_ui_pack verify <delivery-directory-or-file>\n", file);
 }
 
 int failure(const ui::diagnostic& error)
@@ -34,17 +35,30 @@ int run(int argc, Char** argv)
         }
         ui::diagnostic error;
         ui::document doc;
-        if (argc == 4 && fs::path(argv[1]) == "export") {
-            const auto source = fs::absolute(fs::path(argv[2]));
+        const bool single_json = argc == 5 && fs::path(argv[2]) == "--single-json";
+        if ((argc == 4 || single_json) && fs::path(argv[1]) == "export") {
+            const auto source = fs::absolute(fs::path(argv[single_json ? 3 : 2]));
             if (!fs::is_regular_file(source)) return failure({{}, "source is not a regular design file"});
-            if (!ui::read_document(source, doc, &error) ||
-                !ui::export_delivery(doc, source.parent_path(), fs::path(argv[3]), &error))
-                return failure(error);
+            if (!ui::read_document(source, doc, &error)) return failure(error);
+            const fs::path destination(argv[single_json ? 4 : 3]);
+            if (single_json) {
+                if (!ui::export_json_delivery(doc, source.parent_path(), destination, &error)) return failure(error);
+                std::printf("Exported %zu nodes to a standalone package.\n", doc.nodes.size());
+                return 0;
+            }
+            if (!ui::export_delivery(doc, source.parent_path(), destination, &error)) return failure(error);
             std::printf("Exported %zu nodes and %zu resources.\n", doc.nodes.size(), doc.resources.size());
             return 0;
         }
         if (argc == 3 && fs::path(argv[1]) == "verify") {
-            if (!ui::read_delivery(fs::path(argv[2]), doc, &error)) return failure(error);
+            const fs::path package(argv[2]);
+            if (fs::is_directory(package)) {
+                if (!ui::read_delivery(package, doc, &error)) return failure(error);
+            } else {
+                ui::embedded_delivery embedded;
+                if (!ui::read_json_delivery(package, embedded, &error)) return failure(error);
+                doc = std::move(embedded.design);
+            }
             std::printf("Verified %zu nodes and %zu resources.\n", doc.nodes.size(), doc.resources.size());
             return 0;
         }

@@ -134,7 +134,10 @@ cmake --build <build-dir> --target vgui_ui_designer
 
 ## 9. U3 交付文档与资源清单
 
-**在工作台**：选择 **文件 → 导出交付包（File → Export Package）**，或点击顶部导出快捷按钮，选择一个已存在的父目录，在弹窗里填写新目录名并点击 **导出（Export）**。导出使用当前文档（包括未保存的修改），不会保存原文档、改变当前路径、清除未保存标记或修改撤销历史。
+**在工作台**：选择 **文件 → 导出交付包（File → Export Package）**，或点击顶部导出快捷按钮，先打开可移动的「导出配置」。选择格式、目标目录和包名后点击 **导出**；对话框显示来源页面、资源数量和原始字节数，单文件模式额外显示 Base64 资源体积（不含 JSON 结构）。默认选目录包，默认目标目录为发起页的资源根；可用 **浏览…** 改选位置。导出使用发起时的文档快照（包括未保存的修改），不会保存原文档、改变当前路径、清除未保存标记或修改撤销历史。写入成功后自动重新读取并校验；取消不会创建产物。
+
+- **目录包（默认）**：保持现有格式，支持项目图片和项目字体。
+- **单文件 JSON（Base64）**：生成 `*.vgui.package.json`，设计、图片原始字节和 SHA-256 校验信息都在同一个文件里，不需要 `assets/`。包括普通图片、图标和按钮图集，不压缩图片；Base64 数据本身约为原始资源字节数的 4/3。页面引用了项目字体时请改用目录包，不会静默替换字体。这是交付格式，不改写编辑器保存的 `.vgui.json`。
 
 **在命令行**：`vgui_ui_pack export` 读取磁盘上**已保存**的 `.vgui.json`，无需启动工作台。完整或 Core-only 构建均可使用；关闭样例时单独开启 `VGUI_BUILD_UI_DESIGN=ON`。两种方式生成相同格式的交付包，均可用 `vgui_ui_pack verify` 校验。
 
@@ -142,11 +145,13 @@ cmake --build <build-dir> --target vgui_ui_designer
 cmake --build <build-dir> --target vgui_ui_pack
 vgui_ui_pack export sample/res/form.vgui.json out/contact-delivery
 vgui_ui_pack verify out/contact-delivery
+vgui_ui_pack export --single-json sample/res/control-gallery.vgui.json out/gallery.vgui.package.json
+vgui_ui_pack verify out/gallery.vgui.package.json
 ```
 
-目标目录必须尚不存在，父目录须已存在。导出以设计文件的父目录解析项目资源（尚未保存的工作台文档使用启动时的工作目录）；缺失、非普通文件或解析后越出项目根的资源会拒绝出包。两种方式都不会修改原文档或资源，也不会覆盖已有的交付目录。
+输出文件或目录必须尚不存在，父目录须已存在。导出以设计文件的父目录解析项目资源（尚未保存的工作台文档使用启动时的工作目录）；缺失、非普通文件或解析后越出项目根的资源会拒绝出包。两种格式都不会修改原文档或资源，也不会覆盖已有产物。
 
-`ui_designer_native` 通过 SDL 输入测试工作台导出：输入新目录名、取消、拒绝路径和同名目录，并校验包内的未保存修改及资源；导出前后核对原文件与撤销历史。测试模拟系统目录选择器的返回结果。
+`ui_designer_native` 通过 SDL 输入测试工作台的配置切换、目录选择及取消、包名验证、拒绝覆盖与跨页单文件导出；系统目录选择器的返回结果由测试模拟。
 
 交付目录中包括：
 
@@ -154,9 +159,27 @@ vgui_ui_pack verify out/contact-delivery
 - `resources.vgui.json`：`vgui-ui-delivery` V1 清单，包含设计文档与每个已登记资源的相对路径、字节数和小写十六进制 SHA-256。相同文档与资源字节生成相同产物，不记录时间或工作区路径。
 - `assets/`（有资源时）：按资源键顺序命名的普通文件副本，不携带项目中的符号链接。
 
-`verify` 检查设计文档的模型约束和规范字节，重算清单并比较；缺失、篡改或清单不一致时返回非零。清单校验用于检查完整性，不是签名或来源认证，也不解码图片；解码及 action/localization 的实现仍由使用方决定。复制/移动整个交付目录后可直接验证。交付目录需在校验和后续加载期间保持不变。
+`verify` 检查设计文档的模型约束和规范字节，重算并比较 SHA-256；单文件包还严格检查 Base64 及解码后长度，保留规范 V1 设计文字的散列。缺失、篡改或清单不一致时返回非零。单文件包上限 96 MiB（图片原始字节累计上限 64 MiB）；超过时请使用目录包。这是完整性检查，不是签名或来源认证；校验不会解码 PNG/JPEG，也不会把内嵌资源写到磁盘。交付产物需在校验和加载期间保持不变。
 
-独立 C++ 宿主可用 `add_subdirectory` 引入本库，关闭样例与 editor kit、开启 `VGUI_BUILD_UI_DESIGN`（需要无 SDL 时再启用 `VGUI_CORE_ONLY`），链接**构建树内部目标** `vgui::ui_design_export` 和 `vgui::ui_design_runtime`。先调用 `read_delivery(directory, doc, &error)`，成功后将同一目录传入 `runtime_bindings::project_root` 并挂载 `doc`。运行时使用和预览相同的 VGUI 布局，不需要编辑器外壳。本阶段不生成 C++ 源码，也不发布新的安装包 ABI。
+独立 C++ 宿主可用 `add_subdirectory` 引入本库，关闭样例与 editor kit、开启 `VGUI_BUILD_UI_DESIGN`（需要无 SDL 时再启用 `VGUI_CORE_ONLY`），链接**构建树内部目标** `vgui::ui_design_export` 和 `vgui::ui_design_runtime`。目录包调用 `read_delivery(directory, doc, &error)`，成功后将同一目录传入 `runtime_bindings::project_root`；单文件包调用 `read_json_delivery(file, package, &error)`，`runtime_bindings::load_embedded_image` 可按资源键从 `package.images` 解码图片，再挂载 `package.design`，无需把图片解包到磁盘。两种方式均不需要编辑器外壳，不引入新的安装包 ABI。
+
+后续配置建议按优先级加入，首版不显示未实现的开关：
+
+1. **资源范围**：全部登记资源（默认）或仅当前页引用；精确提取容器、按钮皮肤、图标及列表/树/菜单内的资源引用，并保留完整性校验。
+2. **完成后的操作**：显示实际产物大小，并可手动打开输出位置。后续如需批量使用，再提供可选导出预设；不把导出配置写入源设计。
+
+### 直接运行设计 JSON（C++ 示例）
+
+[`vgui_ui_json_demo`](../sample/vgui_ui_json_demo.cpp) 是独立 SDL3 窗口示例，不链接编辑器，也不需要先导出交付包。启用 `VGUI_BUILD_SAMPLES`、关闭 `VGUI_CORE_ONLY` 即可构建，`VGUI_BUILD_EDITOR_KIT` 可以关闭。Windows Debug 在仓库根目录执行：
+
+```text
+bld_full.bat vgui_ui_json_demo
+out/bin/x64d/vgui_ui_json_demo.exe sample/res/form.vgui.json
+```
+
+不传文件时打开随仓库附带的联系表单。在 **Name** 输入姓名后点击 **Submit**，状态标签会更新为 `Demo submitted for <姓名>`。示例用 `read_document` 读取 JSON，再用 `runtime::mount` 创建控件树；`runtime_bindings::on_action` 把 JSON 中的 `contact.submit` 路由到 C++，事件派发结束后通过控件 ID `name`、`hint` 读取和更新运行态控件。没有网络请求，也不会写回设计文件。
+
+传入普通 `.vgui.json` 时，宿主以该文件的父目录作为资源根；示例不为该模式加载外部图片或自定义字体。也可直接传入 `*.vgui.package.json`，宿主先校验包，再从内存解码其中的 PNG/JPEG，不会解包到磁盘。两种模式都仅绑定 `contact.submit` 业务逻辑。无窗口回归可以用 `--smoke-test`（普通表单）或 `--smoke-test-package`（内嵌 PNG 与按钮）。
 
 ## 10. U4-A 顶部菜单与多页面工作台
 
@@ -205,6 +228,8 @@ vgui_ui_pack verify out/contact-delivery
 ### 编辑器主题
 
 **工具 → 主题** 可直接在深色和浅色之间切换并保存；**工具 → 选项 → 外观** 可预览主题，确定后保存，取消或按 Esc 恢复原主题。偏好保存到同一个设置 JSON 的 `theme` 项（`dark` / `light`），下次启动自动恢复，缺省使用深色。主题只影响编辑器与默认网格配色，不改变页面的控件样式、运行态或用户自定义的网格颜色。
+
+设计模式的网格绘制在页面控件后方，运行模式不显示。新页面的 Root 背景色默认是透明的 `#00000000`；现有页面未指定 Root 背景色时也按透明处理。若要为页面着色又保留网格，在属性检查器调低 Root **背景色**的 Alpha（例如 `#22334480`），无需调低控件整体透明度。显式设置的不透明背景会盖住其下方的网格。
 
 ## 11. 声明式控件与属性
 

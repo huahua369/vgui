@@ -1475,7 +1475,9 @@ pwsh sample/shaders/compile.ps1
 
 ### 运行示例
 
-独立可视化 UI 编辑器已以 `vgui_ui_designer` 重建：通过**资源 → 新建控件**和大纲搭建控件树、在检查器编辑属性，并在画板切换桌面/平板/手机尺寸及设计/运行模式。完整 SDL3 构建启用 editor kit 时可构建此目标；可用 `vgui_ui_designer sample/res/form.vgui.json` 直接打开带图片的示例。操作说明见 [UI 编辑器路线图 §8](docs/ui_editor_roadmap.md#8-u2-独立工作台)。**文件 → 导出交付包**（也可用顶栏快捷按钮）可将当前设计（包括未保存的修改）及资源导出到新目录，不会保存或覆盖原文档；也可用 `vgui_ui_pack export` 从磁盘上已保存的设计出包。两种方式生成的交付包均可用 `vgui_ui_pack verify` 校验，见 [交付文档与资源清单](docs/ui_editor_roadmap.md#9-u3-交付文档与资源清单)。
+独立可视化 UI 编辑器已以 `vgui_ui_designer` 重建：通过**资源 → 新建控件**和大纲搭建控件树、在检查器编辑属性，并在画板切换桌面/平板/手机尺寸及设计/运行模式。完整 SDL3 构建启用 editor kit 时可构建此目标；可用 `vgui_ui_designer sample/res/form.vgui.json` 直接打开联系表单示例。操作说明见 [UI 编辑器路线图 §8](docs/ui_editor_roadmap.md#8-u2-独立工作台)。**文件 → 导出交付包**（也可用顶栏快捷按钮）可将当前设计（包括未保存的修改）及资源导出到新目录，不会保存或覆盖原文档；也可用 `vgui_ui_pack export` 从磁盘上已保存的设计出包。两种方式生成的交付包均可用 `vgui_ui_pack verify` 校验，见 [交付文档与资源清单](docs/ui_editor_roadmap.md#9-u3-交付文档与资源清单)。
+
+`vgui_ui_json_demo` 不依赖编辑器，可直接打开 `.vgui.json` 并绑定 C++ 按钮事件。运行方式和事件路由见 [C++ JSON 示例](docs/ui_editor_roadmap.md#直接运行设计-jsonc-示例)。
 
 Debug 输出目录为 `out/bin/x64d/`：
 

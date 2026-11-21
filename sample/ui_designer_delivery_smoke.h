@@ -36,7 +36,8 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
         return nullptr;
     };
     const auto widget = [&](std::string_view id) {
-        auto* w = find(find, vgui_root(shell), id);
+        auto* w = find(find, vgui_modal_panel(shell), id);
+        if (!w) w = find(find, vgui_root(shell), id);
         require(w != nullptr, id);
         return w;
     };
@@ -101,12 +102,16 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
     constexpr auto default_name = "form-delivery";
     const auto open_prompt = [&] {
         click(export_id);
-        // The mock result is posted asynchronously and serviced on a later frame.
-        for (int i = 0; i < 4 && !vgui_modal_active(shell); ++i) frame();
-        auto* input = vgui_dialog_input(shell);
-        require(input && vgui_get_focus(shell) == input, "folder selection did not open a focused prompt");
-        require(SDL_TextInputActive(win.window), "focused prompt did not enable native text input");
+        auto* input = widget("designer.export.name");
+        require(vgui_get_focus(shell) == input && SDL_TextInputActive(win.window), "export options did not focus the package name");
+        require(vgui_widget_get_checked(widget("designer.export.directory")) &&
+            !vgui_widget_get_checked(widget("designer.export.single")), "directory should be the default export format");
         require(std::string_view(vgui_widget_get_text(input)) == default_name, "wrong default package name");
+        click("designer.export.browse");
+        auto* location = widget("designer.export.location");
+        for (int i = 0; i < 4 && fs::u8path(vgui_edit_get_text(location)) != parent; ++i) frame();
+        require(fs::u8path(vgui_edit_get_text(location)) == parent && vgui_get_focus(shell) == input,
+            "folder selection did not update the destination and return focus");
         return input;
     };
     const auto replace_prompt_name = [&](vgui_widget* input, const char* name) {
@@ -117,7 +122,7 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
         text.text.text = name;
         push(text);
         frame();
-        auto* typed_input = vgui_dialog_input(shell);
+        auto* typed_input = widget("designer.export.name");
         require(typed_input == input && std::string_view(vgui_widget_get_text(typed_input)) == name,
             "native text did not replace the prompt value");
     };
@@ -141,12 +146,15 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
         edited.dirty && edited.undo && !edited.redo, "expected exactly one dirty structural edit");
 
     step = "folder cancel";
+    const auto folder_error = [&] { return std::string_view(vgui_widget_get_text(widget("designer.export.error"))); };
     cancel_folder = true;
     menus.activate(menus.open(0), 6); // File > Export Package
-    for (int i = 0; i < 4 && status() != strings.text("file.chooser_cancelled", "File selection cancelled."); ++i) frame();
+    click("designer.export.browse");
+    for (int i = 0; i < 4 && folder_error().empty(); ++i) frame();
     cancel_folder = false;
-    require(status() == strings.text("file.chooser_cancelled", "File selection cancelled.") && !vgui_modal_active(shell) && fs::is_empty(parent),
-        "cancelling the folder chooser did not end the export without creating files");
+    require(folder_error() == strings.text("file.chooser_cancelled", "File selection cancelled.") &&
+        vgui_modal_active(shell) && fs::is_empty(parent), "cancelling the folder chooser wrote files or closed the configuration");
+    key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
     unchanged(edited);
 
     step = "prompt cancel";
@@ -158,8 +166,9 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
     step = "reject path components";
     replace_prompt_name(open_prompt(), "../escaped-delivery");
     key(SDLK_RETURN, SDL_SCANCODE_RETURN);
-    require(!vgui_modal_active(shell) && status() == strings.text("export.bad_name", "Export failed: enter a single folder name (no path separators or trailing dots/spaces).") && fs::is_empty(parent) &&
-        !fs::exists(parent.parent_path() / "escaped-delivery"), "package name was treated as a path");
+    require(vgui_modal_active(shell) && folder_error() == strings.text("export.bad_name", "Enter one name without path separators or trailing dots/spaces.") &&
+        fs::is_empty(parent) && !fs::exists(parent.parent_path() / "escaped-delivery"), "package name was treated as a path");
+    key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
     unchanged(edited);
 
     step = "export current document";
@@ -168,7 +177,7 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
     require(fs::is_empty(parent), "export started before confirmation");
     key(SDLK_RETURN, SDL_SCANCODE_RETURN);
     require(!vgui_modal_active(shell), "Enter did not close the prompt");
-    require(status().starts_with(strings.text("export.done", "Exported package to ")), "successful export did not report the package location");
+    require(status().starts_with(strings.text("export.done", "Exported and verified: ")), "successful export did not report verification and location");
     const auto package = parent / package_name;
     document delivered;
     diagnostic error;
@@ -194,7 +203,8 @@ inline void exercise_delivery(os_window& win, vgui_context* shell, const session
         "export did not preserve the undo transaction");
     replace_prompt_name(open_prompt(), package_name);
     key(SDLK_RETURN, SDL_SCANCODE_RETURN);
-    require(!vgui_modal_active(shell) && status().starts_with(strings.text("export.failed", "Export failed: ")), "same-name export was not rejected");
+    require(vgui_modal_active(shell) && folder_error().starts_with(strings.text("export.failed", "Export failed: ")), "same-name export was not rejected");
+    key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
     document after_retry;
     require(read_delivery(package, after_retry) && after_retry == delivered &&
         bytes(package / delivery_manifest) == manifest, "second export changed the existing package");

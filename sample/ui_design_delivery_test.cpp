@@ -1,5 +1,6 @@
 // U3: export, relocate, verify, and mount without a window or editor kit.
 #include "delivery.h"
+#include "delivery_hash.h"
 #include "runtime.h"
 
 #include <array>
@@ -190,6 +191,148 @@ void test_delivery() {
     reject_tamper(manifest, files.at(manifest) + '\n');
 }
 
+std::string replace_once(std::string text, std::string_view original, std::string_view replacement) {
+    const auto at = text.find(original);
+    check(at != std::string::npos, "expected fixture bytes to tamper: " + std::string(original));
+    text.replace(at, original.size(), replacement);
+    return text;
+}
+
+std::string digest(std::string_view text) {
+    ui::detail::sha256 hash;
+    hash.update(text);
+    return hash.hex_digest();
+}
+
+void test_json_delivery() {
+    temp_dir temp;
+    const auto project = temp.path / "source";
+    fs::create_directories(project / "art with spaces");
+    auto doc = fixture();
+    doc.resources.insert({{"atlas", "button.PNG"}, {"icon", "mark.png"}, {"row", "row.rgba"},
+        {"custom_font", "family.OTF"}});
+    auto& send = doc.nodes.at("send");
+    send.props.insert({{"atlas", "atlas"s}, {"icon", "icon"s}, {"font_family", "builtin.sans_sc"s}});
+    doc.nodes.at(doc.root).children.push_back("rows");
+    doc.nodes.emplace("rows", ui::node{"tree", "", {{"items",
+        R"([{"children":[{"buttons":[{"icon":"row"}],"text":"Child"}],"text":"Parent"}])"s}}, {}});
+    const std::map<std::string, std::string, std::less<>> input{
+        {"atlas", "x"}, {"custom_font", "font"}, {"icon", "\0\r\n"s}, {"photo", rgba}, {"row", ""}, {"unused", "abc"}};
+    for (const auto& [key, bytes] : input) write_bytes(project / doc.resources.at(key), bytes);
+    const auto original = doc;
+    const auto source_files = bundle_files(project);
+    const auto first = temp.path / "first.vgui.package.json";
+    const auto second = temp.path / "second.vgui.package.json";
+    const auto rejected = temp.path / "rejected.vgui.package.json";
+    ui::diagnostic error;
+    ui::delivery_summary summary;
+    check(ui::summarize_delivery(doc, project, false, summary, &error) && summary.resource_count == 6 &&
+        summary.resource_bytes == 19 && summary.base64_bytes == 0, "directory summary must count every registered asset");
+    check(ui::summarize_delivery(doc, project, true, summary, &error) && summary.resource_count == 5 &&
+        summary.resource_bytes == 15 && summary.base64_bytes == 24, "standalone summary must count all non-font assets");
+
+    auto font_design = doc;
+    font_design.nodes.at("send").props.at("font_family") = "custom_font"s;
+    check(!ui::summarize_delivery(font_design, project, true, summary, &error) && summary.resource_count == 5 &&
+        summary.resource_bytes == 15 && summary.base64_bytes == 24, "failed summary must leave output unchanged");
+    check(!ui::export_json_delivery(font_design, project, rejected, &error) && !fs::exists(rejected) &&
+        error.path == "/nodes/send/props/font_family" && error.message.find("use directory delivery") != std::string::npos,
+        "project fonts must report the referring property and suggest directory delivery");
+    const auto directory = temp.path / "font-directory";
+    ui::document directory_doc;
+    check(ui::export_delivery(font_design, project, directory, &error) && ui::read_delivery(directory, directory_doc, &error) &&
+        directory_doc.nodes == font_design.nodes && read_bytes(directory / directory_doc.resources.at("custom_font")) == "font",
+        "directory delivery must still carry project fonts without changing their references");
+    auto missing_image = doc;
+    missing_image.resources.at("atlas") = "missing.png";
+    check(!ui::export_json_delivery(missing_image, project, rejected, &error) && !fs::exists(rejected) &&
+        error.path == "/resources/atlas", "a missing referenced atlas must not yield a partial export");
+    missing_image.resources.at("atlas") = "../outside.png";
+    check(!ui::summarize_delivery(missing_image, project, true, summary, &error) && error.path == "/resources/atlas",
+        "a traversal resource must fail the standalone preflight");
+    const auto outside = temp.path / "outside.png";
+    write_bytes(outside, "x");
+    std::error_code link_error;
+    fs::create_symlink(outside, project / "escape.png", link_error);
+    if (!link_error) {
+        missing_image.resources.at("atlas") = "escape.png";
+        check(!ui::summarize_delivery(missing_image, project, true, summary, &error) &&
+            !ui::export_json_delivery(missing_image, project, rejected, &error) && !fs::exists(rejected),
+            "standalone export must not follow an asset link outside the project");
+        fs::remove(project / "escape.png");
+    }
+    check(!ui::export_json_delivery(doc, project, temp.path / "not-a-package.json", &error), "require the standalone export suffix");
+    for (const auto& path : {first, second}) {
+        if (!ui::export_json_delivery(doc, project, path, &error))
+            throw std::runtime_error("standalone export: " + error.path + ": " + error.message);
+    }
+    const auto content = read_bytes(first);
+    check(content == read_bytes(second) && content.find("AQANCoCq/0Q=") != std::string::npos,
+        "standalone bytes are not deterministic canonical Base64");
+    check(!ui::export_json_delivery(doc, project, first, &error) && content == read_bytes(first),
+        "standalone export must not overwrite an existing destination");
+    check(doc == original && bundle_files(project) == source_files, "delivery changed the source document or project files");
+
+    auto expected = doc;
+    expected.resources = {{"atlas", "assets/1.png"}, {"icon", "assets/2.png"}, {"photo", "assets/3.rgba"},
+        {"row", "assets/4.rgba"}, {"unused", "assets/5.bin"}};
+    const auto recipient = temp.path / "recipient";
+    fs::create_directory(recipient);
+    const auto moved = recipient / "renamed package.vgui.package.json";
+    fs::rename(first, moved);
+    fs::remove_all(project);
+    ui::embedded_delivery received;
+    if (!ui::read_json_delivery(moved, received, &error))
+        throw std::runtime_error("verify moved standalone: " + error.path + ": " + error.message);
+    check(received.design == expected && received.images.size() == expected.resources.size(),
+        "standalone verification must preserve the non-font registry and omit the unused project font");
+    for (const auto& [key, name] : expected.resources) {
+        const auto& bytes = input.at(key);
+        check(received.images.at(key) == std::vector<std::uint8_t>(bytes.begin(), bytes.end()), "image bytes changed: " + key);
+    }
+    check(bundle_files(recipient).size() == 1, "standalone verification extracted assets on disk");
+
+    const ui::embedded_delivery sentinel{doc, {{"unrelated", {42}}}};
+    const auto reject_tamper = [&](std::string_view tamper, std::string_view diagnostic_text) {
+        write_bytes(second, tamper);
+        auto out = sentinel;
+        check(!ui::read_json_delivery(second, out, &error) && error.message.find(diagnostic_text) != std::string::npos,
+            "standalone verification did not reject tampering as expected: " + std::string(diagnostic_text) + ": " + error.message);
+        check(out.design == sentinel.design && out.images == sentinel.images, "failed standalone verification changed out");
+    };
+    reject_tamper(content + '\n', "canonical JSON");
+    auto raw_nul = content;
+    raw_nul.push_back('\0');
+    reject_tamper(raw_nul, "raw NUL");
+    reject_tamper("{\"version\":1," + content.substr(1), "canonical JSON");
+    reject_tamper(replace_once(content, "\"version\":1}", "\"version\":2}"), "format, version or fields");
+    reject_tamper(replace_once(content, "AQANCoCq/0Q=", "BQANCoCq/0Q="), "image SHA-256");
+    reject_tamper(replace_once(content, "AQANCoCq/0Q=", "A_ANCoCq/0Q="), "Base64 character");
+    reject_tamper(replace_once(content, "AQANCoCq/0Q=", "AQANCoCq/0=="), "Base64 character");
+    reject_tamper(replace_once(content, "AQANCoCq/0Q=", "AQANCoCq/0R="), "Base64 padding");
+    reject_tamper(replace_once(content, "eA==", "eB=="), "Base64 padding");
+    reject_tamper(replace_once(content, "eA==", "eA"), "Base64 length");
+    reject_tamper(replace_once(content, "\"bytes\":8", "\"bytes\":67108865"), "size limit");
+    reject_tamper(replace_once(content, "assets/3.rgba", "assetx/3.rgba"), "design SHA-256");
+    // An internally consistent design hash is not authorization to introduce a nonportable asset path.
+    std::string design_text;
+    check(ui::encode_json(expected, design_text), "encode standalone design for an unsafe path mutation");
+    const auto wrong_path_design = replace_once(design_text, "assets/3.rgba", "outside.rgba");
+    auto wrong_path_package = replace_once(content, "assets/3.rgba", "outside.rgba");
+    reject_tamper(replace_once(wrong_path_package, digest(design_text), digest(wrong_path_design)), "non-canonical delivery asset path");
+    const auto font_path_design = replace_once(design_text, "assets/5.bin", "assets/5.otf");
+    auto font_path_package = replace_once(content, "assets/5.bin", "assets/5.otf");
+    reject_tamper(replace_once(font_path_package, digest(design_text), digest(font_path_design)), "does not accept project font assets");
+
+    fs::resize_file(second, 96 * 1024 * 1024 + 1);
+    auto unchanged = sentinel;
+    check(!ui::read_json_delivery(second, unchanged, &error) && error.message.find("size limit") != std::string::npos &&
+        unchanged.design == sentinel.design && unchanged.images == sentinel.images, "an oversized package must be rejected before parsing");
+    fs::create_symlink(moved, recipient / "linked.vgui.package.json", link_error);
+    if (!link_error)
+        check(!ui::read_json_delivery(recipient / "linked.vgui.package.json", unchanged, &error), "delivery file link must not verify");
+}
+
 void test_row_icon_delivery() {
     temp_dir temp;
     const auto project = temp.path / "source";
@@ -224,6 +367,7 @@ void test_row_icon_delivery() {
 int main() {
     try {
         test_delivery();
+        test_json_delivery();
         test_row_icon_delivery();
         return 0;
     } catch (const std::exception& e) {

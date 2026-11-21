@@ -15,6 +15,7 @@
 #include "ui_designer_workbench.h"
 
 #include <vgui/backend/vgui_multiwindow.h>
+#include <vgui/backend/vgui_render_target.h>
 #include <SDL3/SDL_main.h>
 
 #include <algorithm>
@@ -50,7 +51,7 @@ std::string describe(const ui::diagnostic& error) {
 enum class command { none, create, open, save, save_as, save_all, export_package, quit, close, import_font, options };
 
 bool valid_package_name(std::string_view name) {
-    // A single portable directory component; the parent is chosen separately.
+    // A single portable name component; the parent is chosen separately.
     return !name.empty() && name.size() <= 120 && name.front() != ' ' &&
         name.back() != '.' && name.back() != ' ' &&
         name.find_first_of("/\\:<>\"|?*") == std::string_view::npos &&
@@ -126,6 +127,8 @@ public:
     }
 
     ~designer() {
+        if (package_ && vgui_modal_panel(shell_) == package_->panel)
+            vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
         vgui_dock_on_activate(dock_, nullptr, nullptr);
         vgui_dock_on_close_request(dock_, nullptr, nullptr);
         pages_.clear(); // Destroy previews before the workbench destroys their parents.
@@ -133,7 +136,7 @@ public:
 
     void request(command action, vgui_item_id page = 0) {
         if (chooser_ || pending_ != command::none || pending_tab_) return;
-        if (package_parent_ && vgui_modal_active(shell_)) {
+        if (package_ && vgui_modal_panel(shell_) == package_->panel) {
             if (action != command::quit) return;
             vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
         }
@@ -200,6 +203,8 @@ public:
     void service() {
         if (std::exchange(layout_save_pending_, false)) save_layout();
         if (picked_) finish_chooser();
+        if (std::exchange(package_browse_, false) && package_ && !chooser_)
+            choose(VGUI_FILE_DIALOG_FOLDER, package_->page, command::export_package);
         if (package_name_) finish_package();
         if (auto selected = std::exchange(pending_language_, std::nullopt)) {
             if (ui::save_designer_language(settings_path_, *selected)) {
@@ -223,7 +228,7 @@ public:
             }
         }
         if (auto view = std::exchange(pending_view_, std::nullopt); view && active_) apply_view(*view);
-        if (const auto tab = std::exchange(pending_tab_, 0); tab && !chooser_ && !package_parent_) activate(tab);
+        if (const auto tab = std::exchange(pending_tab_, 0); tab && !chooser_ && !package_) activate(tab);
         const auto action = std::exchange(pending_, command::none);
         const auto page = std::exchange(command_page_, 0);
         if (action == command::none) return;
@@ -243,9 +248,7 @@ public:
             queue_dirty_pages(save_all_queue_);
             continue_save_all();
             break;
-        case command::export_package:
-            if (find_page(page)) choose(VGUI_FILE_DIALOG_FOLDER, page);
-            break;
+        case command::export_package: show_package_options(page); break;
         case command::import_font:
             if (const auto* entry = find_page(page); entry && !entry->path.empty())
                 choose(VGUI_FILE_DIALOG_OPEN, page, command::import_font);
@@ -744,7 +747,8 @@ private:
         const vgui_file_filter filters[] = {{import_font ? tr("font.filter", "TrueType/OpenType font") :
             tr("file.filter_design", "VGUI design"), import_font ? "*.ttf;*.otf" : "*.vgui.json"},
             {tr("file.filter_all", "All files"), "*"}};
-        const auto location = utf8(page ? resource_root(*page) : new_root_);
+        const auto location = utf8(followup == command::export_package && package_ ? package_->parent :
+            page ? resource_root(*page) : new_root_);
         const bool batch = page && followup == command::save_all;
         const auto name = page && !page->path.empty() ? utf8(page->path.filename()) : batch ?
             "untitled-" + std::to_string(page->untitled_number) + ".vgui.json" : "untitled.vgui.json";
@@ -768,44 +772,189 @@ private:
         return chooser_;
     }
 
-    static void on_package_name(vgui_context* ctx, int result, const char* text, void* user) {
+    struct package_request {
+        vgui_item_id page;
+        ui::document doc;
+        fs::path root, parent;
+        bool embedded = false;
+        vgui_widget *panel = nullptr, *directory = nullptr, *single = nullptr, *location = nullptr;
+        vgui_widget *name = nullptr, *summary = nullptr, *hint = nullptr, *error = nullptr;
+        vgui_widget *browse = nullptr, *cancel = nullptr, *confirm = nullptr;
+    };
+
+    static void package_closed(vgui_context* ctx, vgui_widget*, int result, void* user) {
         auto& self = *static_cast<designer*>(user);
+        self.package_.reset();
+        self.package_name_.reset();
+        self.package_browse_ = false;
         if (std::exchange(self.package_text_input_, false) && !vgui_context_wants_text_input(ctx))
             self.window_.stop_text_input();
-        if (result == VGUI_MODAL_RESULT_CONFIRM) self.package_name_ = text ? text : "";
-        else {
-            self.package_parent_.reset();
-            self.package_page_ = 0;
+        if (result != VGUI_MODAL_RESULT_CONFIRM)
             self.workbench_.status(self.tr("export.cancelled", "Package export cancelled."));
+    }
+
+    static void package_event(vgui_widget* widget, const vgui_event* event, void* user) {
+        auto& self = *static_cast<designer*>(user);
+        if (!self.package_ || self.chooser_) return;
+        auto& p = *self.package_;
+        if ((event->type == VGUI_EVENT_CLICK && widget == p.confirm) ||
+            (event->type == VGUI_EVENT_SUBMIT && widget == p.name)) {
+            if (vgui_widget_get_enabled(p.confirm)) self.package_name_ = vgui_edit_get_text(p.name);
+        } else if (event->type == VGUI_EVENT_CLICK) {
+            if (widget == p.browse) self.package_browse_ = true;
+            else if (widget == p.cancel) vgui_modal_close(self.shell_, VGUI_MODAL_RESULT_CANCEL);
+            else if (widget == p.directory || widget == p.single) {
+                p.embedded = widget == p.single;
+                self.refresh_package_summary();
+            }
         }
     }
 
-    void choose_package_name(vgui_item_id id, fs::path parent) {
+    void package_error(const std::string& message) {
+        vgui_widget_set_text(package_->error, message.c_str());
+        vgui_widget_set_tooltip(package_->error, message.c_str());
+    }
+
+    void refresh_package_summary() {
+        auto& p = *package_;
+        vgui_widget_set_checked(p.directory, !p.embedded);
+        vgui_widget_set_checked(p.single, p.embedded);
+        vgui_theme palette{};
+        vgui_context_get_theme(shell_, &palette);
+        vgui_widget_set_border(p.directory, p.embedded ? palette.button_border : palette.accent, 1);
+        vgui_widget_set_border(p.single, p.embedded ? palette.accent : palette.button_border, 1);
+        vgui_widget_set_text(p.hint, p.embedded ?
+            tr("export.single_hint", "Adds .vgui.package.json. Use a directory package for project fonts.") :
+            tr("export.directory_hint", "Creates a new folder with design, manifest and assets."));
+        ui::delivery_summary summary;
+        ui::diagnostic error;
+        const bool ready = ui::summarize_delivery(p.doc, p.root, p.embedded, summary, &error);
+        vgui_widget_set_enabled(p.confirm, ready);
+        if (!ready) {
+            vgui_widget_set_text(p.summary, "");
+            package_error(std::string(tr("export.failed", "Export failed: ")) + describe(error));
+            return;
+        }
+        const auto bytes = [](std::size_t size) {
+            if (size < 1024) return std::to_string(size) + " B";
+            char formatted[40];
+            std::snprintf(formatted, sizeof(formatted), "%.1f %s", size < (1u << 20) ? size / 1024.0 : size / 1048576.0,
+                size < (1u << 20) ? "KiB" : "MiB");
+            return std::string(formatted);
+        };
+        std::string text = std::to_string(summary.resource_count) + " " + tr("export.resource_count", "resources") +
+            " · " + tr("export.source_size", "Raw: ") + bytes(summary.resource_bytes);
+        if (p.embedded) text += " · " + std::string(tr("export.encoded_size", "Base64 (assets): ")) + bytes(summary.base64_bytes);
+        vgui_widget_set_text(p.summary, text.c_str());
+        package_error("");
+    }
+
+    void show_package_options(vgui_item_id id) {
         const auto* page = find_page(id);
-        if (!page) return;
+        if (!page || vgui_modal_active(shell_)) return;
         auto name = page->path.empty() ? std::string("untitled") : utf8(page->path.filename());
         constexpr std::string_view suffix = ".vgui.json";
         if (name.ends_with(suffix)) name.resize(name.size() - suffix.size());
         else if (!page->path.empty()) name = utf8(page->path.stem());
         name += "-delivery";
         if (!valid_package_name(name)) name = "ui-delivery";
-        const auto message = std::string(tr("export.prompt_text", "Create a new package folder in:\n")) + utf8(parent);
-        vgui_dialog_desc desc;
-        vgui_dialog_desc_default(&desc);
-        desc.kind = VGUI_DIALOG_PROMPT;
-        desc.title = tr("file.export", "Export Package");
-        desc.message = message.c_str();
-        desc.confirm_text = tr("export.confirm", "Export");
-        desc.cancel_text = tr("common.cancel", "Cancel");
-        desc.initial_text = name.c_str();
-        desc.on_result = on_package_name;
-        desc.user = this;
-        if (!vgui_dialog_show(shell_, &desc)) {
-            workbench_.status(tr("export.prompt_failed", "Cannot open the package name prompt."));
+        // Freeze the initiating page and resource root before the first dialog or chooser.
+        auto root = resource_root(*page);
+        auto& p = package_.emplace(package_request{id, page_session(*page).current(), root, root});
+        p.panel = vgui_widget_create(shell_, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(p.panel, "designer.export");
+        vgui_widget_set_layout(p.panel, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_items(p.panel, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_padding(p.panel, 16, 14, 16, 14);
+        vgui_widget_set_size(p.panel, 590, 355);
+        vgui_widget_set_gap(p.panel, 8);
+        vgui_theme palette{};
+        vgui_context_get_theme(shell_, &palette);
+        vgui_widget_set_border(p.panel, palette.panel_border, 1);
+        vgui_widget_set_rounding(p.panel, 6);
+        const auto label = [&](const char* text, float size = 0.f) {
+            auto* w = vgui_widget_add(p.panel, VGUI_LABEL, text);
+            vgui_widget_set_text_align(w, 0, .5f);
+            if (size) vgui_widget_set_font_size(w, size);
+            return w;
+        };
+        const auto row = [&] {
+            auto* w = vgui_widget_add(p.panel, VGUI_PANEL, nullptr);
+            vgui_widget_set_background(w, 0);
+            vgui_widget_set_border(w, 0, 0);
+            vgui_widget_set_padding(w, 0, 0, 0, 0);
+            vgui_widget_set_layout(w, VGUI_LAYOUT_ROW);
+            vgui_widget_set_align_items(w, VGUI_ALIGN_CENTER);
+            vgui_widget_set_gap(w, 8);
+            return w;
+        };
+        const auto button = [&](vgui_widget* parent, const char* id, const char* text, float width) {
+            auto* w = vgui_widget_add(parent, VGUI_BUTTON, text);
+            vgui_widget_set_id(w, id);
+            vgui_widget_set_size(w, width, 30);
+            vgui_widget_set_text_align(w, .5f, .5f);
+            vgui_widget_on_event(w, &package_event, this);
+            return w;
+        };
+        const auto edit = [](vgui_widget* parent, const char* id, const char* text) {
+            auto* w = vgui_widget_add(parent, VGUI_EDIT, nullptr);
+            vgui_widget_set_id(w, id);
+            vgui_widget_set_size(w, 0, 30);
+            vgui_widget_set_min_size(w, 0, 0);
+            vgui_edit_set_text(w, text);
+            return w;
+        };
+        auto* title = label(tr("export.options", "Export Configuration"), 18);
+        vgui_widget_set_font_weight(title, 600);
+        const std::string from = std::string(tr("export.source_page", "Source page: ")) + page_title(*page);
+        auto* source = label(from.c_str());
+        vgui_widget_set_tooltip(source, page->path.empty() ? from.c_str() : utf8(page->path).c_str());
+        auto* formats = row();
+        p.directory = button(formats, "designer.export.directory", tr("export.directory", "Directory package"), 166);
+        p.single = button(formats, "designer.export.single", tr("export.single", "Single JSON (Base64)"), 193);
+        p.hint = label("");
+        label(tr("export.destination", "Destination folder"));
+        auto* locations = row();
+        const auto location = utf8(p.parent);
+        p.location = edit(locations, "designer.export.location", location.c_str());
+        vgui_widget_set_a11y_name(p.location, tr("export.destination", "Destination folder"));
+        vgui_widget_set_grow(p.location, 1);
+        vgui_edit_set_readonly(p.location, 1);
+        vgui_widget_set_tooltip(p.location, location.c_str());
+        p.browse = button(locations, "designer.export.browse", tr("export.browse", "Browse…"), 100);
+        label(tr("export.name", "Package name"));
+        p.name = edit(p.panel, "designer.export.name", name.c_str());
+        vgui_widget_set_a11y_name(p.name, tr("export.name", "Package name"));
+        vgui_widget_on_event(p.name, &package_event, this);
+        p.summary = label("");
+        vgui_widget_set_id(p.summary, "designer.export.summary");
+        p.error = label("");
+        vgui_widget_set_id(p.error, "designer.export.error");
+        vgui_widget_set_text_color(p.error, theme_ == ui::designer_theme::light ? 0xFFA62B39u : 0xFFF08D96u);
+        auto* footer = row();
+        vgui_widget_set_justify(footer, VGUI_JUSTIFY_END);
+        p.cancel = button(footer, "designer.export.cancel", tr("common.cancel", "Cancel"), 88);
+        p.confirm = button(footer, "designer.export.confirm", tr("export.confirm", "Export"), 88);
+        vgui_widget_set_border(p.confirm, palette.accent, 1);
+        refresh_package_summary();
+        vgui_modal_options options;
+        vgui_modal_options_default(&options);
+        options.close_on_backdrop = 0;
+        options.destroy_on_close = 1;
+        options.on_close = &package_closed;
+        options.user = this;
+        if (!vgui_modal_show(shell_, p.panel, &options)) {
+            vgui_widget_destroy(p.panel);
+            package_.reset();
+            workbench_.status(tr("export.prompt_failed", "Cannot open the export configuration."));
             return;
         }
-        package_page_ = id;
-        package_parent_ = std::move(parent);
+        vgui_modal_set_drag_handle(shell_, title);
+        focus_package_name();
+    }
+
+    void focus_package_name() {
+        vgui_set_focus(shell_, package_->name);
         if (!window_.text_input_active()) {
             window_.start_text_input();
             package_text_input_ = window_.text_input_active();
@@ -818,18 +967,32 @@ private:
 
     void finish_package() {
         auto name = std::exchange(package_name_, std::nullopt);
-        auto parent = std::exchange(package_parent_, std::nullopt);
-        auto* page = find_page(std::exchange(package_page_, 0));
-        if (!page) return;
-        if (!parent || !valid_package_name(*name)) {
-            workbench_.status(tr("export.bad_name", "Export failed: enter a single folder name (no path separators or trailing dots/spaces)."));
+        if (!package_ || !find_page(package_->page)) return;
+        auto& p = *package_;
+        if (!valid_package_name(*name)) {
+            package_error(tr("export.bad_name", "Enter one name without path separators or trailing dots/spaces."));
+            focus_package_name();
             return;
         }
-        const auto destination = *parent / fs::u8path(*name);
+        if (p.embedded && !name->ends_with(ui::json_delivery_suffix)) *name += ui::json_delivery_suffix;
+        const auto destination = p.parent / fs::u8path(*name);
         ui::diagnostic error;
-        if (!ui::export_delivery(page_session(*page).current(), resource_root(*page), destination, &error))
-            workbench_.status(std::string(tr("export.failed", "Export failed: ")) + describe(error));
-        else workbench_.status(std::string(tr("export.done", "Exported package to ")) + utf8(destination));
+        const bool written = p.embedded ? ui::export_json_delivery(p.doc, p.root, destination, &error) :
+            ui::export_delivery(p.doc, p.root, destination, &error);
+        if (!written) {
+            const auto message = std::string(tr("export.failed", "Export failed: ")) + describe(error);
+            package_error(message);
+            workbench_.status(message);
+            return;
+        }
+        ui::embedded_delivery embedded;
+        ui::document directory;
+        const bool verified = p.embedded ? ui::read_json_delivery(destination, embedded, &error) :
+            ui::read_delivery(destination, directory, &error);
+        const auto message = verified ? std::string(tr("export.done", "Exported and verified: ")) + utf8(destination) :
+            std::string(tr("export.verify_failed", "Package written, but verification failed: ")) + describe(error);
+        vgui_modal_close(shell_, VGUI_MODAL_RESULT_CONFIRM);
+        workbench_.status(message);
     }
 
     void finish_chooser() {
@@ -838,13 +1001,26 @@ private:
         chooser_ = false;
         const auto next = std::exchange(chooser_followup_, command::none);
         const auto id = std::exchange(chooser_page_, 0);
+        if (next == command::export_package && package_ && package_->page == id) {
+            if (!selected.error.empty())
+                package_error(std::string(tr("file.chooser_error", "File chooser: ")) + selected.error);
+            else if (selected.path.empty())
+                package_error(tr("file.chooser_cancelled", "File selection cancelled."));
+            else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) {
+                package_->parent = fs::u8path(selected.path);
+                vgui_edit_set_text(package_->location, selected.path.c_str());
+                vgui_widget_set_tooltip(package_->location, selected.path.c_str());
+                refresh_package_summary();
+            }
+            focus_package_name();
+            return;
+        }
         if (!selected.error.empty()) workbench_.status(std::string(tr("file.chooser_error", "File chooser: ")) + selected.error);
         else if (selected.path.empty()) workbench_.status(tr("file.chooser_cancelled", "File selection cancelled."));
         else if (selected.kind == VGUI_FILE_DIALOG_OPEN) {
             if (next == command::import_font) finish_font_import(id, fs::u8path(selected.path));
             else open(fs::u8path(selected.path));
         }
-        else if (selected.kind == VGUI_FILE_DIALOG_FOLDER) choose_package_name(id, fs::u8path(selected.path));
         else if (selected.kind == VGUI_FILE_DIALOG_SAVE && save(id, fs::u8path(selected.path))) {
             if (next == command::close) remove_page(id);
             if (next == command::quit) { continue_exit(); return; }
@@ -874,7 +1050,7 @@ private:
     std::vector<page_state> pages_;
     std::deque<vgui_item_id> save_all_queue_;
     std::vector<vgui_item_id> exit_queue_;
-    vgui_item_id active_ = 0, pending_tab_ = 0, command_page_ = 0, chooser_page_ = 0, package_page_ = 0;
+    vgui_item_id active_ = 0, pending_tab_ = 0, command_page_ = 0, chooser_page_ = 0;
     std::uint64_t next_untitled_ = 1;
     vgui_item_id cached_tab_ = 0;
     bool projecting_tabs_ = false;
@@ -884,9 +1060,9 @@ private:
     command pending_ = command::none, chooser_followup_ = command::none;
     bool chooser_ = false, quitting_ = false;
     std::optional<file_result> picked_;
-    std::optional<fs::path> package_parent_;
+    std::optional<package_request> package_;
     std::optional<std::string> package_name_;
-    bool package_text_input_ = false;
+    bool package_browse_ = false, package_text_input_ = false;
     ui::designer_preview_fonts preview_fonts_;
     ui::designer_workbench workbench_;
     vgui_widget* dock_;
@@ -1793,6 +1969,106 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
         "changing application-level options modified the design, selection or runtime input");
 }
 
+void exercise_grid_layers(app_mgr& app, font_familys_t* font, const ui::designer_strings& strings) {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Canvas grid: ") + message);
+    };
+    constexpr int width = 640, height = 440;
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(font, 14), vgui_destroy);
+    require(cb && shell, "cannot create readback context");
+    vgui_context_set_size(shell.get(), width, height);
+    ui::designer_preview_fonts fonts;
+    ui::designer_preview preview(vgui_root(shell.get()), app.vgdev, font, fonts, {}, {}, {}, strings);
+    vgui_widget_set_size(preview.widget(), width, height);
+    preview.set_render_context(app.vgctx);
+
+    vgui_render_target_desc desc;
+    vgui_render_target_desc_default(&desc);
+    desc.width = width;
+    desc.height = height;
+    desc.sample_count = 1;
+    std::unique_ptr<vgui_render_target, decltype(&vgui_render_target_destroy)> target(
+        vgui_render_target_create(shell.get(), app.vgctx, cb.get(), &desc), vgui_render_target_destroy);
+    require(bool(target), "cannot create readback target");
+    std::vector<uint32_t> pixels(width * height);
+    ui::designer_grid_settings grid{.spacing = 80, .line_width = 3, .minor_color = 0xFFFF0000u};
+    auto doc = ui::make_document();
+    auto& root = doc.nodes.at(doc.root);
+    const auto default_props = root.props;
+    root.props["background"] = std::string("#00000000");
+    root.children = {"solid"};
+    doc.nodes.emplace("solid", ui::node{"panel", {}, {{"x", 160.0}, {"y", 40.0},
+        {"width", 160.0}, {"height", 160.0}, {"background", std::string("#2458D0")}}, {}});
+    uint64_t revision = 0;
+    const auto mount = [&] {
+        preview.sync(doc, ++revision, {}, {});
+        preview.render(0);
+        require(preview.artboard_rect_px().has_value(), "preview did not render");
+    };
+    struct samples { uint32_t guide, plain, control; };
+    const auto sample = [&](bool visible) {
+        grid.visible = visible;
+        preview.set_grid_settings(grid);
+        require(vgui_render_target_submit_context(target.get(), shell.get()), "cannot composite preview");
+        const size_t bytes = pixels.size() * sizeof(pixels[0]);
+        require(vgui_render_target_download(target.get(), pixels.data(), bytes) == bytes, "cannot read compositor pixels");
+        const auto board = *preview.artboard_rect_px();
+        const auto view = preview.snapshot()->view;
+        const auto pixel = [&](float x, float y) {
+            const int px = int(std::lround(board.x + x * board.width / view.width));
+            const int py = int(std::lround(board.y + y * board.height / view.height));
+            return pixels.at(size_t(py) * width + px);
+        };
+        return samples{pixel(80, 80), pixel(110, 110), pixel(240, 80)};
+    };
+    mount();
+    const auto with_grid = sample(true), no_grid = sample(false);
+    require(no_grid.control != no_grid.plain, "fixture's opaque control did not render");
+    require(with_grid.control == no_grid.control, "lines painted over an opaque control");
+    require(with_grid.guide != no_grid.guide && with_grid.plain == no_grid.plain,
+        "lines did not show through a transparent root");
+    grid.style = ui::designer_grid_style::dots;
+    const auto dots = sample(true);
+    require(dots.control == no_grid.control && dots.guide != no_grid.guide,
+        "dots did not stay behind the controls");
+
+    root.props = default_props;
+    const auto entry = root.props.find("background");
+    require(entry != root.props.end() && entry->second == ui::value{std::string("#00000000")},
+        "new documents should expose a transparent root background in the inspector");
+    mount();
+    require(sample(true).guide != sample(false).guide, "new document root hid the grid");
+    root.props.erase("background");
+    mount();
+    require(sample(true).guide != sample(false).guide, "unset root background hid the grid");
+    root.props["background"] = std::string("#21306580");
+    mount();
+    const auto translucent = sample(true), translucent_base = sample(false);
+    // The offscreen target follows the renderer's 8-bit format, which can
+    // be either RGBA or BGRA. Measure the RGB difference in either order.
+    const auto contrast = [](uint32_t a, uint32_t b) {
+        int difference = 0;
+        for (int shift : {0, 8, 16})
+            difference += std::abs(int((a >> shift) & 255u) - int((b >> shift) & 255u));
+        return difference;
+    };
+    const int full = contrast(dots.guide, no_grid.guide);
+    const int through_root = contrast(translucent.guide, translucent_base.guide);
+    require(translucent_base.guide != no_grid.guide && through_root > 0 && through_root < full,
+        "a translucent root did not tint and attenuate the grid");
+    root.props["background"] = std::string("#213065");
+    mount();
+    require(sample(true).guide == sample(false).guide, "opaque root did not cover the grid");
+
+    root.props = default_props;
+    mount();
+    preview.set_running(true);
+    const auto run_grid = sample(true), run_clear = sample(false);
+    require(run_grid.guide == run_clear.guide && run_grid.plain == run_clear.plain,
+        "Run mode rendered design-only guides");
+}
+
 fs::path designer_settings_path() {
     if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
         return fs::u8path(override_path);
@@ -2022,6 +2298,7 @@ int run(bool smoke, fs::path open_path) {
                                   picker->package_parent, picker->cancel_folder, editor.strings());
             // Preserve the delivery test's unsaved edit and actual Run-mode input.
             exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
+            exercise_grid_layers(app, font.get(), strings);
             exercise_options(*win, shell.get(), editor, settings, advance);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
@@ -2040,7 +2317,7 @@ int run(bool smoke, fs::path open_path) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, layout, page docking, multi-page save/close/exit and delivery isolation passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit and delivery isolation passed");
     }
     app.wait_gpu();
     return 0;

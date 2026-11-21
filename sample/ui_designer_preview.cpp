@@ -317,7 +317,7 @@ float grid_edge(double center, float width) {
 }
 
 void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pixel_rect frame,
-        viewport view, float ui_scale, const designer_grid_settings& settings, const designer_grid_settings& on_board) {
+        viewport view, float ui_scale, const designer_grid_settings& settings) {
     if (!std::isfinite(board.x) || !std::isfinite(board.y) || !std::isfinite(board.width) ||
         !std::isfinite(board.height) || !std::isfinite(ui_scale) || ui_scale <= 0) return;
     const auto clips = grid_clips(area, board, frame);
@@ -331,9 +331,8 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
     const double min_step = std::max(settings.hide_below, width + 1.f);
     const bool dots = settings.style == designer_grid_style::dots;
     const auto layer = [&](bool major) {
-        const auto color = major ? settings.major_color : settings.minor_color;
+        const auto color = to_ovg(major ? settings.major_color : settings.minor_color);
         if (!(color >> 24) || (!major && settings.major_every == 1)) return;
-        const auto overlay_color = major ? on_board.major_color : on_board.minor_color;
         const int stride = major ? settings.major_every : 1;
         const double sx = step_x * stride, sy = step_y * stride;
         if (std::min(sx, sy) < min_step) return;
@@ -365,7 +364,7 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
             if (!has_area(r)) continue;
             const auto [xs, ys] = spans[i];
             if (dots && (xs.first == xs.end || ys.first == ys.end)) continue;
-            cb->set_source_color(vg, to_ovg(i == clips.size() - 1 ? overlay_color : color));
+            cb->set_source_color(vg, color);
             for (auto x = xs.first; x < xs.end; ++x) {
                 if (x == 0 || (!dots && !major && is_major(x))) continue;
                 const float px = grid_edge(board.x + x * sx, width);
@@ -390,18 +389,17 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
 
     if (settings.axis_color >> 24) {
         const float x = grid_edge(board.x, width), y = grid_edge(board.y, width);
-        for (std::size_t i = 0; i < clips.size(); ++i) {
-            const auto r = clips[i];
+        const auto color = to_ovg(settings.axis_color);
+        for (const auto r : clips) {
             if (!has_area(r)) continue;
-            const auto color = to_ovg(i == clips.size() - 1 ? on_board.axis_color : settings.axis_color);
             fill(cb, vg, intersect({x, r.y, width, r.height}, r), color);
             fill(cb, vg, intersect({r.x, y, r.width, width}, r), color);
         }
     }
 }
 
-void outline(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect r, pixel_rect clip, unsigned color) {
-    const float dx = std::min(r.width, 2.f), dy = std::min(r.height, 2.f);
+void outline(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect r, pixel_rect clip, unsigned color, float width = 2.f) {
+    const float dx = std::min(r.width, width), dy = std::min(r.height, width);
     fill(cb, vg, intersect({r.x, r.y, r.width, dy}, clip), color);
     fill(cb, vg, intersect({r.x, r.y + r.height - dy, r.width, dy}, clip), color);
     fill(cb, vg, intersect({r.x, r.y, dx, r.height}, clip), color);
@@ -1075,24 +1073,19 @@ struct designer_preview::impl {
         const auto board = self.artboard(area);
         const auto visible = intersect(board, area);
         const pixel_rect board_frame{board.x - 1, board.y - 1, board.width + 2, board.height + 2};
-        fill(cb, vg, board_frame, to_ovg(light ? 0xFF849BB6u : 0xFF535E6Eu));
-        fill(cb, vg, visible, to_ovg(light ? 0xFFD7E2F0u : 0xFF262B35u));
-        if (self.target && visible.width > 0 && visible.height > 0)
+        outline(cb, vg, board_frame, area, to_ovg(light ? 0xFF849BB6u : 0xFF535E6Eu), 1.f);
+        if (self.run) {
+            fill(cb, vg, visible, to_ovg(light ? 0xFFD7E2F0u : 0xFF262B35u));
+        } else if (grid_appearance.visible) {
+            // Guides are part of the Design backdrop. The preview texture's
+            // alpha determines which parts, if any, show through the page.
+            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
+                vgui_context_get_ui_scale(self.shell), grid_appearance);
+        }
+        if (self.target && has_area(visible))
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
                 board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
         if (self.run) return;
-        // Overlay Design guides after the opaque page texture, but below
-        // selection/drag feedback. Soften built-in colors over page content;
-        // explicit user colors retain their configured alpha.
-        if (self.grid.visible) {
-            constexpr designer_grid_settings defaults;
-            auto overlay = self.grid;
-            if (overlay.minor_color == defaults.minor_color) overlay.minor_color = 0x527287A3;
-            if (overlay.major_color == defaults.major_color) overlay.major_color = 0x8090ABC9;
-            if (overlay.axis_color == defaults.axis_color) overlay.axis_color = 0xB0E7122D;
-            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
-                vgui_context_get_ui_scale(self.shell), grid_appearance, overlay);
-        }
         const auto t = self.transform_for(board);
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {

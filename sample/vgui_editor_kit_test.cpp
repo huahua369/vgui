@@ -4357,20 +4357,22 @@ static int test_color_picker_drag()
 		if (hex_byte(last, 1) + hex_byte(last, 3) + hex_byte(last, 5) < 200)
 			return fail("picker sv drag reaches bright color");
 
-		/* 2) 透明条:右侧(a≈1)拖到中点(a≈0.5),提交值带 alpha。 */
-		picker.set_value("#FF0000");
+		/* 2) 透明度条:左侧 0% -> 中点约 50% -> 右侧 100%，实时更新，松手只提交一次。 */
+		picker.set_value("#FF000080");
 		const int commits_before_alpha = commits;
-		vgui_input_mouse_move(ui, ax + aw - 2.0f, ay + 4.0f);
-		vgui_input_mouse_down(ui, 1, ax + aw - 2.0f, ay + 4.0f, 1);
+		vgui_input_mouse_move(ui, ax, ay + 4.0f);
+		vgui_input_mouse_down(ui, 1, ax, ay + 4.0f, 1);
+		if (last != "#FF000000" || commits != commits_before_alpha)
+			return fail("picker alpha left edge is fully transparent");
 		vgui_input_mouse_move(ui, ax + aw * 0.5f, ay + 4.0f);
-		vgui_input_mouse_up(ui, 1, ax + aw * 0.5f, ay + 4.0f, 1);
-		if (commits != commits_before_alpha + 1 || last.size() != 9)
-			return fail("picker alpha drag commits");
-		{
-			const int a = hex_byte(last, 7);
-			if (a < 100 || a > 160)
-				return fail("picker alpha drag value");
-		}
+		if (last.size() != 9 || hex_byte(last, 7) < 126 || hex_byte(last, 7) > 130)
+			return fail("picker alpha drag previews the midpoint");
+		vgui_input_mouse_move(ui, ax + aw - 1.0f, ay + 4.0f);
+		if (last != "#FF0000" || commits != commits_before_alpha)
+			return fail("picker alpha right edge is fully opaque");
+		vgui_input_mouse_up(ui, 1, ax + aw - 1.0f, ay + 4.0f, 1);
+		if (commits != commits_before_alpha + 1 || last != "#FF0000")
+			return fail("picker alpha drag commits once");
 
 		/* 3) 色相拖动;拖过 SV 盒时悬停也会收到 MOUSE_MOVE，不能改 s/v。 */
 		picker.set_value("#FF0000");

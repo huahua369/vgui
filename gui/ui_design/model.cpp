@@ -417,7 +417,7 @@ document make_document()
 {
     document doc;
     doc.root = "root";
-    doc.nodes.emplace(doc.root, node{"panel", "Root", {}, {}});
+    doc.nodes.emplace(doc.root, node{"panel", "Root", {{"background", std::string("#00000000")}}, {}});
     return doc;
 }
 
