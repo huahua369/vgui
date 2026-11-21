@@ -1369,21 +1369,26 @@ picker.show(VGUI_FILE_DIALOG_OPEN, &desc, on_picked, my_state);
 
 ### 构建
 
-```bash
+```bat
 git clone --recursive https://github.com/huahua369/vgui.git
 cd vgui
 
-# 在 Visual Studio 开发者命令行中运行；需要 vcpkg 依赖可用
+rem 在 Visual Studio 开发者命令提示符中运行；需要 vcpkg 依赖可用
+set VSLANG=1033
 cmake --preset x64-debug
 cmake --build out/build/x64-debug
 ```
 
 如果克隆时没有带上子模块，执行 `git submodule update --init --recursive`。
 
+在同一个开发者命令行中配置和构建，让 MSVC 的 `/showIncludes` 输出语言保持一致；否则 Ninja 可能漏掉头文件依赖，链接到旧的运行时库。如果现有构建目录曾用不同的语言配置，请用新的构建目录重新配置并构建。
+
 如果 CMake 找不到 vcpkg 依赖，可显式指定工具链：
 
-```bash
-cmake --preset x64-debug -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+```bat
+rem 把 C:\vcpkg 换成实际安装目录
+set "VSLANG=1033"
+cmake --preset x64-debug -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake
 cmake --build out/build/x64-debug
 ```
 
