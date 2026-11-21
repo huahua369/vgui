@@ -19,13 +19,21 @@
 // share a single submission (SDL3 does not serialize submissions; separate
 // ones would race on the shared vertex buffers).
 //
-// Run with --smoke to render both modes for a few frames and exit.
+// The screen HUD is loaded from an editor design or delivery package; the host
+// supplies simulation values, action handlers and custom minimap/crosshair draws.
+// Run with --smoke to render both modes or --check-design for a no-window check.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <memory>
+#include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pch.h"
@@ -36,23 +44,71 @@
 #include <ovg_fonts.h>
 
 #include "phase0_renderer.h"
+#include "delivery.h"
+#include "runtime.h"
+#include "ui_json_images.h"
 
-static const int kEntityCount = 12;
+namespace ui = vgui::ui_design;
+namespace fs = std::filesystem;
+
+static constexpr int kDesignWidth = 1280;
+static constexpr int kDesignHeight = 800;
+static constexpr int kEntityCount = 12;
+static constexpr std::array kSkillActions = {
+	"hud.skill.1", "hud.skill.2", "hud.skill.3", "hud.skill.4", "hud.skill.5", "hud.skill.6"
+};
+
+struct hud_input
+{
+	ui::embedded_delivery content;
+	fs::path project_root;
+	bool embedded = false;
+};
+
+static bool read_hud(const fs::path& source, hud_input& input, ui::diagnostic& error)
+{
+	std::error_code ec;
+	if (fs::is_directory(source, ec))
+	{
+		input.project_root = source;
+		return ui::read_delivery(source, input.content.design, &error);
+	}
+	input.embedded = source.native().ends_with(fs::path(ui::json_delivery_suffix).native());
+	if (input.embedded) return ui::read_json_delivery(source, input.content, &error);
+	input.project_root = source.has_parent_path() ? source.parent_path() : fs::path(".");
+	return ui::read_document(source, input.content.design, &error);
+}
+
+struct hud_mount_assets
+{
+	const hud_input& input;
+	font_cache_cx* fonts;
+	vgui_sample::json_image_decoder images;
+	std::size_t font_bytes = 0;
+};
+
+struct hud_anchor
+{
+	vgui_widget* widget = nullptr;
+	float viewport_x = 0, viewport_y = 0;
+	float x = 0, y = 0, width = 0, height = 0;
+};
 
 struct hud_state
 {
 	vgui_context* ui = nullptr;
+	std::unique_ptr<ui::runtime> design;
+	hud_mount_assets* loading = nullptr; // Only during the synchronous mount.
+	std::vector<std::unique_ptr<font_familys_t, decltype(&delete_font_family)>> design_fonts;
 	phase0_renderer* renderer = nullptr;
 
 	// HUD widgets bound to simulated game state.
 	vgui_widget* hp = nullptr;
 	vgui_widget* shield = nullptr;
 	vgui_widget* status = nullptr;
-	vgui_widget* status_plate = nullptr;
-	vgui_widget* minimap = nullptr;
-	vgui_widget* crosshair = nullptr;
-	vgui_widget* hotbar = nullptr;
+	std::array<hud_anchor, 5> anchors{};
 	vgui_widget* cooldown[6] = {};
+	std::array<bool, kSkillActions.size()> pending_skills{};
 
 	// R4-2 demo: radial ultimate cooldown + safe-area cycling.
 	vgui_widget* ult = nullptr;
@@ -85,12 +141,10 @@ struct hud_state
 	int mode = 0;
 	bool quit = false;
 
-	// Font family for text measurement; the status plate auto-fits its text
-	// and keeps its right edge anchored.
-	font_familys_t* font = nullptr;
-	float status_w = 280.0f;
 	int last_w = 0;
 	int last_h = 0;
+	float page_pad_left = 0.0f;
+	float page_pad_top = 0.0f;
 
 	// Mode B offscreen target: the rendered HUD, borrowed as a texture.
 	vg_fbo_t ui_fbo{};
@@ -170,13 +224,27 @@ static void draw_crosshair(vgui_widget*, ovg_ctx_cb* cb, rvg_t* vg,
 }
 
 // ---------------------------------------------------------------------------
-// Input: M toggles the compositing mode, 1-6 use hotbar skills
+// Input: M toggles the compositing mode, Q/W/E/R/T/Y use hotbar skills
 // (TAB itself is consumed by the core as the focus-traversal key, so app key
 // handlers never see it.)
 // ---------------------------------------------------------------------------
 
 static const char kSkillKeys[6] = { 'Q', 'W', 'E', 'R', 'T', 'Y' };
-static const char* kSkillNames[6] = { "Q", "W", "E", "R", "T", "Y" };
+static void activate_skill(hud_state* st, int slot)
+{
+	st->skill_cd[slot] = 3.0f;
+	// R4-2 floating text demo: report the fresh cooldown above the slot.
+	float x, y, width, height;
+	vgui_widget_get_rect(st->cooldown[slot], &x, &y, &width, &height);
+	vgui_spawn_float_text(st->ui, x + width * 0.5f, y - 6.0f, "3.0s", 0xFFFFE080, 1.2f, 26.0f);
+}
+
+static void apply_hud_actions(hud_state* st)
+{
+	// The JSON callback runs during input dispatch; update live widgets afterward.
+	for (int i = 0; i < (int)st->pending_skills.size(); ++i)
+		if (std::exchange(st->pending_skills[i], false)) activate_skill(st, i);
+}
 
 static void apply_safe_area(hud_state* st);
 static void layout_anchors(hud_state* st, int width, int height);
@@ -220,14 +288,7 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 	{
 		if (key == (int)(unsigned char)kSkillKeys[i])
 		{
-			st->skill_cd[i] = 3.0f;
-			// R4-2 floating text demo: report the fresh cooldown above the slot.
-			float rx = 0, ry = 0, rw = 0, rh = 0;
-			vgui_widget_get_rect(st->cooldown[i], &rx, &ry, &rw, &rh);
-			char ftext[16] = {};
-			std::snprintf(ftext, sizeof(ftext), "3.0s");
-			vgui_spawn_float_text(st->ui, rx + rw * 0.5f, ry - 6.0f, ftext,
-				0xFFFFE080, 1.2f, 26.0f);
+			st->pending_skills[i] = true;
 			return 1;
 		}
 	}
@@ -250,98 +311,132 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 // HUD tree
 // ---------------------------------------------------------------------------
 
-static void layout_anchors(hud_state* st, int width, int height);
-
-static void build_hud(hud_state* st, font_familys_t* familys, int width, int height)
+static font_familys_t* load_hud_font(std::string_view key, const fs::path& path, void* user)
 {
-	st->font = familys;
-	st->ui = vgui_create(familys, 16.0f);
-	vgui_context_set_size(st->ui, width, height);
-	// The root never paints and never takes mouse input away from the game;
-	// widgets are placed absolutely like a real HUD layer.
-	vgui_widget* root = vgui_root(st->ui);
-	vgui_widget_set_layout(root, VGUI_LAYOUT_ABSOLUTE);
-	vgui_widget_set_background(root, 0);
-
-
-	// Top-left vitals plate.
-	vgui_widget* vitals = vgui_widget_add(root, VGUI_PANEL, nullptr);
-	vgui_widget_set_pos(vitals, 16.0f, 16.0f);
-	vgui_widget_set_size(vitals, 266, 90.0f);
-	vgui_widget_set_layout(vitals, VGUI_LAYOUT_COLUMN);
-	vgui_widget_set_padding(vitals, 8, 8, 8, 8);
-	vgui_widget_set_gap(vitals, 6.0f);
-	vgui_widget_set_background(vitals, 0x98101418);
-
-	vgui_widget* hp_row = vgui_widget_add(vitals, VGUI_PANEL, nullptr);
-	vgui_widget_set_layout(hp_row, VGUI_LAYOUT_ROW);
-	vgui_widget_set_gap(hp_row, 8.0f);
-	vgui_widget_set_background(hp_row, 0);
-	vgui_widget* hp_label = vgui_widget_add(hp_row, VGUI_LABEL, "HP");
-	vgui_widget_set_size(hp_label, 48.0f, 0.0f);
-	st->hp = vgui_widget_add(hp_row, VGUI_PROGRESS, nullptr);
-	vgui_widget_set_grow(st->hp, 1.0f);
-	vgui_widget_set_size(st->hp, 0.0f, 14.0f);
-	vgui_widget_set_value(st->hp, 1.0f);
-
-	vgui_widget* sh_row = vgui_widget_add(vitals, VGUI_PANEL, nullptr);
-	vgui_widget_set_layout(sh_row, VGUI_LAYOUT_ROW);
-	vgui_widget_set_gap(sh_row, 8.0f);
-	vgui_widget_set_background(sh_row, 0);
-	vgui_widget* sh_label = vgui_widget_add(sh_row, VGUI_LABEL, "SHLD");
-	vgui_widget_set_size(sh_label, 48.0f, 0.0f);
-	st->shield = vgui_widget_add(sh_row, VGUI_PROGRESS, nullptr);
-	vgui_widget_set_grow(st->shield, 1.0f);
-	vgui_widget_set_size(st->shield, 0.0f, 14.0f);
-	vgui_widget_set_value(st->shield, 0.5f);
-
-	// Top-right status plate (updated once every few frames).
-	st->status_plate = vgui_widget_add(root, VGUI_PANEL, nullptr);
-	vgui_widget_set_padding(st->status_plate, 10, 8, 10, 8);
-	vgui_widget_set_background(st->status_plate, 0x98101418);
-	st->status = vgui_widget_add(st->status_plate, VGUI_LABEL,
-		"M: compositing mode");
-	vgui_widget_set_id(st->status, "hud.status");
-
-	// Bottom-left minimap.
-	st->minimap = vgui_widget_add(root, VGUI_CUSTOM, nullptr);
-	vgui_widget_set_size(st->minimap, 180.0f, 180.0f);
-	vgui_custom_set_draw(st->minimap, draw_minimap, st);
-
-	// Bottom-centre hotbar: digit button + cooldown bar per slot.
-	st->hotbar = vgui_widget_add(root, VGUI_PANEL, nullptr);
-	vgui_widget_set_size(st->hotbar, 488.0f, 80.0f);
-	vgui_widget_set_layout(st->hotbar, VGUI_LAYOUT_ROW);
-	vgui_widget_set_gap(st->hotbar, 8.0f);
-	vgui_widget_set_padding(st->hotbar, 8, 8, 8, 8);
-	vgui_widget_set_background(st->hotbar, 0x80101418);
-	for (int i = 0; i < 6; ++i)
+	auto* st = static_cast<hud_state*>(user);
+	auto& assets = *st->loading;
+	if (!assets.fonts) return nullptr;
+	const std::string alias = key == "builtin.sans" ? "HudBundled" : "hud.design." + std::string(key);
+	if (key != "builtin.sans")
 	{
-		vgui_widget* slot = vgui_widget_add(st->hotbar, VGUI_PANEL, nullptr);
-		vgui_widget_set_layout(slot, VGUI_LAYOUT_COLUMN);
-		vgui_widget_set_gap(slot, 4.0f);
-		vgui_widget_set_background(slot, 0);
-		vgui_widget* key = vgui_widget_add(slot, VGUI_BUTTON, kSkillNames[i]);
-		vgui_widget_set_size(key, 56.0f, 36.0f);
-		st->cooldown[i] = vgui_widget_add(slot, VGUI_PROGRESS, nullptr);
-		// 16px tall: the built-in percentage label fits inside the bar
-		// instead of overflowing below the plate and getting clipped.
-		vgui_widget_set_size(st->cooldown[i], 56.0f, 16.0f);
-		vgui_widget_set_value(st->cooldown[i], 0.0f);
+		const auto file = path.empty() ? fs::u8path(VGUI_SOURCE_DIR) / "sample/res/fonts/DesignerSansSC.ttf" : path;
+		constexpr std::size_t max_font_file = 16u << 20, max_font_bytes = 64u << 20;
+		auto bytes = vgui_sample::read_asset(file, std::min(max_font_file, max_font_bytes - assets.font_bytes));
+		assets.font_bytes += bytes.size();
+		if (bytes.empty() || !load_font_from_memory(assets.fonts, bytes.data(), (long)bytes.size(), alias.c_str()))
+			return nullptr;
+	}
+	std::unique_ptr<font_familys_t, decltype(&delete_font_family)> family(
+		new_font_family(assets.fonts, alias.c_str(), nullptr), delete_font_family);
+	if (!family || family->count <= 0) return nullptr;
+	return st->design_fonts.emplace_back(std::move(family)).get();
+}
+
+static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cache, font_familys_t* family)
+{
+	st->ui = vgui_create(family, 16.0f);
+	if (!st->ui) return false;
+	st->design = std::make_unique<ui::runtime>(st->ui);
+	const auto& document = input.content.design;
+	ui::runtime_bindings bindings;
+	bindings.project_root = input.project_root;
+	bindings.user = st;
+	bindings.load_font = load_hud_font;
+	if (input.embedded)
+		bindings.load_embedded_image = [](vgui_context* ctx, std::string_view key, void* user) -> vgui_texture* {
+			auto& assets = *static_cast<hud_state*>(user)->loading;
+			const auto it = assets.input.content.images.find(key);
+			return it == assets.input.content.images.end() ? nullptr :
+				assets.images.load(ctx, std::span<const std::uint8_t>(it->second));
+		};
+	else
+		bindings.load_image = [](vgui_context* ctx, std::string_view, const fs::path& file, void* user) {
+			return static_cast<hud_state*>(user)->loading->images.load(ctx, file);
+		};
+	bindings.on_action = [](std::string_view, std::string_view action, void* user) noexcept {
+		auto* state = static_cast<hud_state*>(user);
+		for (std::size_t i = 0; i < kSkillActions.size(); ++i)
+			if (action == kSkillActions[i]) state->pending_skills[i] = true;
+	};
+	ui::diagnostic error;
+	bool mounted = false;
+	{
+		hud_mount_assets assets{input, cache, {}, 0};
+		st->loading = &assets;
+		mounted = st->design->mount(document, 1, bindings, &error);
+		st->loading = nullptr;
+	} // Drop loader refs; the mounted widgets retain assigned textures.
+	if (!mounted)
+	{
+		std::fprintf(stderr, "hud: cannot mount design (%s): %s\n", error.path.c_str(), error.message.c_str());
+		return false;
+	}
+	for (const auto& warning : st->design->diagnostics())
+		std::fprintf(stderr, "hud: resource warning (%s): %s\n", warning.path.c_str(), warning.message.c_str());
+
+	const auto require = [&](const char* id, vgui_widget_kind kind) -> vgui_widget* {
+		auto* w = st->design->widget(id);
+		if (w && vgui_widget_get_kind(w) == kind) return w;
+		std::fprintf(stderr, "hud: missing or incompatible widget ID '%s'\n", id);
+		return nullptr;
+	};
+	auto* root = vgui_root(st->ui);
+	auto* page = st->design->widget(document.root);
+	const auto& root_props = document.nodes.at(document.root).props;
+	const auto root_number = [&](const char* key) {
+		const auto it = root_props.find(key);
+		return it == root_props.end() ? 0.0f : (float)std::get<double>(it->second);
+	};
+	for (const auto* key : {"x", "y", "width", "height"})
+		if (root_number(key) != 0.0f)
+		{
+			std::fprintf(stderr, "hud: root must fill the viewport at (0, 0); set '%s' to zero\n", key);
+			return false;
+		}
+	if (const auto it = root_props.find("layout"); it != root_props.end() && std::get<std::string>(it->second) != "absolute")
+	{
+		std::fprintf(stderr, "hud: root must use absolute layout\n");
+		return false;
+	}
+	st->page_pad_left = root_number("pad_left");
+	st->page_pad_top = root_number("pad_top");
+	st->hp = require("hp", VGUI_PROGRESS);
+	st->shield = require("shield", VGUI_PROGRESS);
+	st->status = require("status", VGUI_LABEL);
+	st->ult = require("ult", VGUI_PROGRESS);
+	for (int i = 0; i < 6; ++i)
+		st->cooldown[i] = require(("cooldown" + std::to_string(i + 1)).c_str(), VGUI_PROGRESS);
+	if (!st->hp || !st->shield || !st->status || !st->ult ||
+		std::any_of(std::begin(st->cooldown), std::end(st->cooldown), [](auto* w) { return !w; })) return false;
+
+	auto* minimap = require("minimap", VGUI_PANEL);
+	auto* crosshair = require("crosshair", VGUI_PANEL);
+	st->anchors = {{
+		{require("status_plate", VGUI_PANEL), 1.0f, 0.0f}, {minimap, 0.0f, 1.0f},
+		{require("hotbar", VGUI_PANEL), 0.5f, 1.0f}, {st->ult, 0.5f, 1.0f}, {crosshair, 0.5f, 0.5f}
+	}};
+	if (!st->design->layout({kDesignWidth, kDesignHeight, 1.0f})) return false;
+	for (auto& anchor : st->anchors)
+	{
+		if (!anchor.widget) return false;
+		if (vgui_widget_get_parent(anchor.widget) != page)
+		{
+			std::fprintf(stderr, "hud: anchored widget '%s' must be a direct child of the design root\n",
+				vgui_widget_get_id(anchor.widget));
+			return false;
+		}
+		vgui_widget_get_rect(anchor.widget, &anchor.x, &anchor.y, &anchor.width, &anchor.height);
 	}
 
-	// R4-2 demo: radial ultimate cooldown ring to the right of the hotbar.
-	st->ult = vgui_widget_add(root, VGUI_PROGRESS, nullptr);
-	vgui_widget_set_size(st->ult, 44.0f, 44.0f);
-	vgui_widget_set_radial(st->ult, 1);
-	vgui_widget_set_accent(st->ult, 0xFF40A0FF);
-	vgui_widget_set_track(st->ult, 0x50202840);
-	vgui_widget_set_value(st->ult, 0.0f);
-
-	// Centre crosshair.
-	st->crosshair = vgui_widget_add(root, VGUI_CUSTOM, nullptr);
-	vgui_widget_set_size(st->crosshair, 32.0f, 32.0f);
-	vgui_custom_set_draw(st->crosshair, draw_crosshair, st);
+	// JSON owns the bounds; these two panels host the engine's custom draws.
+	const auto add_canvas = [&](vgui_widget* panel, vgui_custom_draw_fn draw) {
+		auto* canvas = vgui_widget_add(panel, VGUI_CUSTOM, nullptr);
+		vgui_widget_set_grow(canvas, 1.0f);
+		vgui_widget_set_align_self(canvas, VGUI_ALIGN_STRETCH);
+		vgui_custom_set_draw(canvas, draw, st);
+	};
+	add_canvas(minimap, draw_minimap);
+	add_canvas(crosshair, draw_crosshair);
 
 	// World-anchored nameplates: name + health bar + mana bar, one group per
 	// entity, repositioned every frame from the projected world position.
@@ -387,10 +482,19 @@ static void build_hud(hud_state* st, font_familys_t* familys, int width, int hei
 	// panel; the handler unprojects them into the scene and selects the
 	// entity under the cursor.  Right click clears the selection.
 	vgui_widget_on_event(root, on_root_event, st);
+	vgui_widget_on_event(page, on_root_event, st); // The loaded panel covers the built-in root.
 
 	vgui_context_add_key_handler(st->ui, on_key, st);
-	layout_anchors(st, width, height);
+	layout_anchors(st, kDesignWidth, kDesignHeight);
 	vgui_update(st->ui, 0.0f);
+	return true;
+}
+
+static void destroy_hud(hud_state* st)
+{
+	st->design.reset(); // Mounted widgets borrow the context and the fonts.
+	vgui_destroy(st->ui);
+	st->design_fonts.clear();
 }
 
 // Builds the same view-projection the phase0 camera renders with (RH_ZO
@@ -523,17 +627,23 @@ static void layout_anchors(hud_state* st, int width, int height)
 		const float hi = (float)height - (float)sb - h;
 		return std::max(lo, std::min(y, std::max(lo, hi)));
 	};
-	vgui_widget_set_pos(st->status_plate,
-		clamp_x((float)width - st->status_w - 16.0f, st->status_w), 16.0f);
-	vgui_widget_set_size(st->status_plate, st->status_w, 56.0f);
-	vgui_widget_set_pos(st->minimap, 16.0f,
-		clamp_y((float)height - 196.0f, 180.0f));
-	vgui_widget_set_pos(st->hotbar, clamp_x((float)width * 0.5f - 244.0f, 488.0f),
-		clamp_y((float)height - 96.0f, 80.0f));
-	vgui_widget_set_pos(st->ult, clamp_x((float)width * 0.5f + 252.0f, 44.0f),
-		clamp_y((float)height - 96.0f, 44.0f));
-	vgui_widget_set_pos(st->crosshair, (float)width * 0.5f - 16.0f,
-		(float)height * 0.5f - 16.0f);
+	for (const auto& anchor : st->anchors)
+	{
+		const float x = anchor.x + (width - kDesignWidth) * anchor.viewport_x;
+		const float y = anchor.y + (height - kDesignHeight) * anchor.viewport_y;
+		const bool centered = anchor.viewport_y == 0.5f; // Reticle follows the viewport center, not safe area.
+		vgui_widget_set_pos(anchor.widget,
+			(centered ? x : clamp_x(x, anchor.width)) - st->page_pad_left,
+			(centered ? y : clamp_y(y, anchor.height)) - st->page_pad_top);
+	}
+}
+
+static bool resize_hud(hud_state* st, int width, int height)
+{
+	if (st->last_w == width && st->last_h == height) return true;
+	if (!st->design->layout({width, height, 1.0f})) return false;
+	layout_anchors(st, width, height);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -649,28 +759,89 @@ static void draw_status(hud_state* st, FpsCounter* fps, float upms, float drawms
 		std::strncat(text, sel, sizeof(text) - std::strlen(text) - 1);
 	}
 	vgui_widget_set_text(st->status, text);
+}
 
-	// Fit the plate to the text so the status never overflows the window
-	// edge: measure with the same family and effective (scaled) font size
-	// the UI draws with.
-	float tw = vg_measure_text_width(st->font,
-		(int)(vgui_context_get_font_size(st->ui) + 0.5f),
-		text, (int)std::strlen(text));
-	float want = tw + 44.0f;	// plate padding (2x10) + anchor margin + rounding
-	if (want < 200.0f) want = 200.0f;
-	if (std::fabs(want - st->status_w) > 2.0f)
+static int check_hud(const hud_input& input)
+{
+	hud_state st;
+	if (!build_hud(&st, input, nullptr, nullptr))
 	{
-		st->status_w = want;
-		layout_anchors(st, st->last_w, st->last_h);
+		destroy_hud(&st);
+		return 1;
 	}
+	bool ok = true;
+	const auto check = [&](bool pass, const char* message) {
+		if (!pass) std::fprintf(stderr, "hud design check: %s\n", message);
+		ok = ok && pass;
+	};
+	auto* skill = st.design->widget("skill1");
+	check(skill && vgui_widget_get_kind(skill) == VGUI_BUTTON, "expected a mounted skill1 button");
+	if (skill)
+	{
+		const float initial_hp = vgui_widget_get_value(st.hp);
+		float x, y, w, h;
+		vgui_widget_get_rect(skill, &x, &y, &w, &h);
+		x += w * 0.5f;
+		y += h * 0.5f;
+		vgui_input_mouse_move(st.ui, x, y);
+		vgui_input_mouse_down(st.ui, 1, x, y, 1);
+		check(!st.pending_skills[0], "skill cannot activate until the click completes");
+		vgui_input_mouse_up(st.ui, 1, x, y, 1);
+		check(st.pending_skills[0] && st.skill_cd[0] == 0, "click must queue the JSON action without updating in dispatch");
+		apply_hud_actions(&st);
+		simulate(&st, 0.1f);
+		check(vgui_widget_get_value(st.cooldown[0]) > 0.9f, "JSON action did not start the live cooldown");
+		check(std::abs(vgui_widget_get_value(st.hp) - initial_hp) > 0.001f, "simulation did not change the mounted HP");
+		const float hp = vgui_widget_get_value(st.hp);
+		check(resize_hud(&st, 1600, 900), "could not resize the mounted design");
+		vgui_update(st.ui, 0.0f);
+		const auto& hotbar = st.anchors[2];
+		vgui_widget_get_rect(hotbar.widget, &x, &y, &w, &h);
+		check(x == hotbar.x + 160 && y == hotbar.y + 100 && w == hotbar.width && h == hotbar.height,
+			"hotbar should follow the enlarged viewport without losing authored size");
+		const auto& reticle = st.anchors[4];
+		float reticle_w, reticle_h;
+		vgui_widget_get_rect(vgui_widget_get_child(reticle.widget, 0), &x, &y, &reticle_w, &reticle_h);
+		check(reticle_w == reticle.width && reticle_h == reticle.height,
+			"engine canvas should fill the authored reticle panel");
+		check(st.design->widget("skill1") == skill && vgui_widget_get_value(st.hp) == hp,
+			"viewport updates must not remount the HUD or reset live state");
+	}
+	destroy_hud(&st);
+	if (ok) std::puts("hud design check: ok");
+	return ok ? 0 : 1;
 }
 
 int main(int argc, char** argv)
 {
-	bool smoke = false;
+	bool smoke = false, check = false;
+	fs::path source;
 	for (int i = 1; i < argc; ++i)
-		if (std::strcmp(argv[i], "--smoke") == 0)
-			smoke = true;
+	{
+		const std::string_view arg = argv[i];
+		if (arg == "--smoke") smoke = true;
+		else if (arg == "--check-design") check = true;
+		else if (arg == "--help")
+		{
+			std::puts("Usage: vgui_runtime_hud [--smoke | --check-design] [design.vgui.json | package.vgui.package.json | delivery-directory]");
+			return 0;
+		}
+		else if (!arg.starts_with('-') && source.empty()) source = fs::u8path(arg);
+		else
+		{
+			std::fprintf(stderr, "hud: unexpected argument '%s' (see --help)\n", argv[i]);
+			return 2;
+		}
+	}
+	if (source.empty()) source = fs::u8path(VGUI_SOURCE_DIR) / "sample/res/game-hud.vgui.json";
+	hud_input input;
+	ui::diagnostic error;
+	if (!read_hud(source, input, error))
+	{
+		std::fprintf(stderr, "hud: cannot load design (%s): %s\n", error.path.c_str(), error.message.c_str());
+		return 1;
+	}
+	if (check) return check_hud(input);
 
 	auto* wg = new app_mgr();
 	// Runtime apps bundle their fonts (sample/res/fonts, see
@@ -679,18 +850,8 @@ int main(int argc, char** argv)
 	// to the system lookup if the bundled file is unavailable.
 	font_familys_t* familys = nullptr;
 	{
-		const char* ttf = VGUI_SOURCE_DIR "/sample/res/fonts/DejaVuSans.ttf";
-		FILE* f = fopen(ttf, "rb");
-		if (f)
-		{
-			fseek(f, 0, SEEK_END);
-			long size = ftell(f);
-			fseek(f, 0, SEEK_SET);
-			std::vector<unsigned char> buf((size_t)size);
-			if (fread(buf.data(), 1, (size_t)size, f) == (size_t)size)
-				load_font_from_memory(wg->font_ctx, buf.data(), size, "HudBundled");
-			fclose(f);
-		}
+		auto bytes = vgui_sample::read_asset(fs::u8path(VGUI_SOURCE_DIR) / "sample/res/fonts/DejaVuSans.ttf", 16u << 20);
+		if (!bytes.empty()) load_font_from_memory(wg->font_ctx, bytes.data(), (long)bytes.size(), "HudBundled");
 		familys = new_font_family(wg->font_ctx, "HudBundled", nullptr);
 		if (!familys || familys->count <= 0)
 			familys = new_font_family(wg->font_ctx,
@@ -698,48 +859,48 @@ int main(int argc, char** argv)
 	}
 	if (!familys || familys->count <= 0)
 		std::fprintf(stderr, "hud: font family has no faces, text is disabled\n");
-	auto* cb = new_ctx_cb();
-	rvg_t* vg = cb->new_rvg(cb->ac);
-	rvg_t* vg_composite = cb->new_rvg(cb->ac);	// mode B composite recording
-
+	hud_state st;
+	const auto destroy_host = [&] {
+		destroy_hud(&st);
+		delete_font_family(familys);
+		delete wg;
+	};
+	if (!build_hud(&st, input, wg->font_ctx, familys))
+	{
+		destroy_host();
+		return 1;
+	}
 	if (!wg->init_gpu(true))
 	{
 		std::fprintf(stderr, "hud: init_gpu failed\n");
-		return 2;
+		destroy_host();
+		return smoke ? 77 : 2;
 	}
 
-	const int win_w = 1280;
-	const int win_h = 800;
 	os_window* form = wg->create("vgui runtime HUD (M toggles compositing)",
-		win_w, win_h, 0, true);
+		kDesignWidth, kDesignHeight, ef_resizable, true);
 	if (!form || !form->viewport)
 	{
 		std::fprintf(stderr, "hud: window creation failed\n");
-		return 2;
+		destroy_host();
+		return smoke ? 77 : 2;
 	}
-
-	hud_state st;
-	build_hud(&st, familys, win_w, win_h);
-	form->viewport->ui = st.ui;
-
 	st.renderer = phase0_renderer_create(wg->device);
-	// R5-1: the world panel's FBO (cycle_target: rewritten every frame and
-	// sampled by phase0 one submission earlier) and the billboard hookup.
-	st.panel_fbo = vgpu_create_fbo(wg->vgctx, 256, 128, nullptr);
-	st.panel_fbo.cycle_target = true;
 	if (!st.renderer)
 	{
 		std::fprintf(stderr, "hud: 3D renderer creation failed\n");
 		wg->wait_gpu();
-		vgui_destroy(st.ui);
-		form->viewport->ui = nullptr;
-		delete_font_family(familys);
-		cb->destroy_rvg(vg);
-		cb->destroy_rvg(vg_composite);
-		free_ctx_cb(cb);
-		delete wg;
+		destroy_host();
 		return 2;
 	}
+	form->viewport->ui = st.ui;
+	auto* cb = new_ctx_cb();
+	rvg_t* vg = cb->new_rvg(cb->ac);
+	rvg_t* vg_composite = cb->new_rvg(cb->ac);
+	// R5-1: the world panel's FBO (cycle_target: rewritten every frame and
+	// sampled by phase0 one submission earlier) and the billboard hookup.
+	st.panel_fbo = vgpu_create_fbo(wg->vgctx, 256, 128, nullptr);
+	st.panel_fbo.cycle_target = true;
 	// Player camera: slightly above the arena looking at the centre.  The
 	// nameplate projection uses the same parameters.
 	phase0_camera cam;
@@ -778,9 +939,8 @@ int main(int argc, char** argv)
 	vg_fbo_t* fbo = &form->fbo;
 	FpsCounter fps;
 	runtime_cx rtc;
-	int last_w = win_w;
-	int last_h = win_h;
 	int smoke_frames = 0;
+	bool ok = true;
 	float upms = 0.0f, drawms = 0.0f;
 
 	// Startup mode can be pinned with VGUI_HUD_MODE=0/1; with it set the smoke
@@ -803,12 +963,11 @@ int main(int argc, char** argv)
 
 		const int cw = (int)fbo->display_size.x;
 		const int ch = (int)fbo->display_size.y;
-		if (cw != last_w || ch != last_h)
+		if (!resize_hud(&st, cw, ch))
 		{
-			last_w = cw;
-			last_h = ch;
-			vgui_context_set_size(st.ui, cw, ch);
-			layout_anchors(&st, cw, ch);
+			std::fprintf(stderr, "hud: invalid viewport %dx%d\n", cw, ch);
+			ok = false;
+			break;
 		}
 		if (fbo->upsize)
 		{
@@ -821,6 +980,7 @@ int main(int argc, char** argv)
 		if (st.mode == 1)
 			sync_ui_fbo(wg->vgctx, &st, cw, ch);
 
+		apply_hud_actions(&st);
 		simulate(&st, delta);
 		update_nameplates(&st, cw, ch);
 		rtc.begin();
@@ -931,8 +1091,11 @@ int main(int argc, char** argv)
 				}
 			}
 			if (smoke_frames == 15)
+			{
+				ok = ok && st.selected >= 0;
 				std::printf("pick self-test: %s (selected=%d)\n",
 					st.selected >= 0 ? "ok" : "FAIL", st.selected);
+			}
 			if (smoke_frames == 18)
 			{
 				vgui_input_mouse_move(st.ui, 4.0f, 4.0f);
@@ -940,8 +1103,11 @@ int main(int argc, char** argv)
 				vgui_input_mouse_up(st.ui, 3, 4.0f, 4.0f, 0);
 			}
 			if (smoke_frames == 19)
+			{
+				ok = ok && st.selected == -1;
 				std::printf("deselect self-test: %s (selected=%d)\n",
 					st.selected == -1 ? "ok" : "FAIL", st.selected);
+			}
 			// Exercise both modes before exiting (unless pinned).
 			if (!mode_pinned && st.frames == 20) st.mode = 1;
 			if (++smoke_frames >= 40)
@@ -949,7 +1115,7 @@ int main(int argc, char** argv)
 		}
 	}
 
-	const bool ok = st.frames > 0;
+	if (smoke) ok = ok && smoke_frames == 40;
 	wg->wait_gpu();
 	if (st.ui_tex_ready)
 		vgpu_texture_fini_native(wg->vgctx, &st.ui_tex);
@@ -960,8 +1126,8 @@ int main(int argc, char** argv)
 		vgpu_destroy_fbo(&st.panel_fbo);
 	vgui_destroy(st.panel_ui);
 	cb->destroy_rvg(st.vg_panel);
-	vgui_destroy(st.ui);
 	form->viewport->ui = nullptr;
+	destroy_hud(&st);
 	delete_font_family(familys);
 	cb->destroy_rvg(vg);
 	cb->destroy_rvg(vg_composite);
@@ -969,10 +1135,7 @@ int main(int argc, char** argv)
 	delete wg;
 
 	if (smoke)
-	{
 		std::printf("hud smoke: %s (%d frames, mode %d)\n",
 			ok ? "ok" : "failed", st.frames, st.mode);
-		return ok ? 0 : 1;
-	}
-	return 0;
+	return ok ? 0 : 1;
 }
