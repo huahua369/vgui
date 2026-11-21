@@ -858,6 +858,9 @@ struct designer_workbench::impl {
             if (value == "stretch") return strings.text("workbench.inspector.alignment.stretch", "Stretch");
             if (value == "space-between") return strings.text("workbench.inspector.alignment.space_between", "Space between");
             if (value == "space-around") return strings.text("workbench.inspector.alignment.space_around", "Space around");
+        } else if (desc.key == "text_orientation") {
+            if (value == "horizontal") return strings.text("workbench.inspector.text_orientation.horizontal", "Horizontal");
+            if (value == "vertical") return strings.text("workbench.inspector.text_orientation.vertical", "Vertical (single column)");
         } else if (desc.key == "font_weight" || desc.key == "font_slant") {
             if (value == "default") return strings.text("workbench.inspector.font.default", "Use default");
             if (value == "regular") return strings.text("workbench.inspector.font.regular", "Regular");
@@ -1440,6 +1443,9 @@ struct designer_workbench::impl {
                     row.placeholder = strings.text("workbench.inspector.radio_group.default", "Default group");
                     row.tooltip = strings.text("workbench.inspector.radio_group.hint",
                         "Only radio buttons with the same group name in this container exclude one another. Leave blank for the default group.");
+                } else if (desc.key == "text_orientation") {
+                    row.tooltip = strings.text("workbench.inspector.text_orientation.hint",
+                        "Vertical text uses one column. Increase the height or set it to 0 for automatic sizing.");
                 }
                 switch (desc.type) {
                 case value_type::boolean:

@@ -23,6 +23,9 @@ gui实现
 #include <unordered_set>
 
 #include <ovg_c.h>
+#include <unicode/ubrk.h>
+#include <unicode/utext.h>
+#include <unicode/utf8.h>
 #include "tools/tools.hpp"
 
 #include <clipper2/clipper.h>
@@ -729,6 +732,14 @@ struct vgui_font_variant_deleter
 using vgui_font_variants = std::map<std::pair<int, int>,
 	std::unique_ptr<font_familys_t, vgui_font_variant_deleter>>;
 
+struct vgui_label_column
+{
+	struct cell { int32_t start, length; }; // UTF-8 byte range; length 0 is a blank row
+	std::vector<cell> cells;
+	float width = 0.0f;
+	float row_height = 0.0f;
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -796,6 +807,7 @@ struct vgui_widget
 	float focus_alpha = 0.0f;	// 负数则共用ctx的值 < 0 -> use the context value; 0 hides the ring
 	float text_align_x = 0.5f;
 	float text_align_y = 0.5f;
+	std::unique_ptr<vgui_label_column> label_column; // only for vertical labels
 
 	vgui_cursor cursor_type = VGUI_CURSOR_ARROW;
 	// R3-1 subtree display-list cache (opt-in via set_recording_hint).
@@ -1308,6 +1320,8 @@ static void vgui_a11y_notify(vgui_context* ctx, vgui_widget* w, vgui_a11y_event 
 	}
 }
 
+static void vgui_mark_dirty(vgui_widget* w);
+
 // Re-applies every text-key binding after the language or table changes.
 static void vgui_i18n_refresh(vgui_context* ctx)
 {
@@ -1316,6 +1330,7 @@ static void vgui_i18n_refresh(vgui_context* ctx)
 	{
 		if (!w || w->text_key.empty()) continue;
 		const char* tr = vgui_translate(ctx, w->text_key.c_str());
+		if (w->label_column && w->text != (tr ? tr : "")) vgui_mark_dirty(w);
 		w->text = tr ? tr : "";
 		if (w->kind == VGUI_EDIT)
 		{
@@ -1880,10 +1895,13 @@ static bool vgui_edit_vbar_visible(vgui_widget* w, float ih)
 	return (float)vgui_text_lines(w->edit_text) * lh > ih + 0.5f;
 }
 
+static void vgui_recording_invalidate_chain(vgui_widget* w, bool all_ancestors = false);
+
 static void vgui_mark_dirty(vgui_widget* w)
 {
 	if (w && w->ctx)
 	{
+		if (w->label_column) vgui_recording_invalidate_chain(w, true);
 		w->ctx->layout_dirty = true;
 		++w->ctx->paint_revision;
 	}
@@ -2549,7 +2567,6 @@ static int vgui_tab_drop_index(vgui_widget* w, float x)
 //----------------------------------------------------------------------------
 
 static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w);
-static void vgui_recording_invalidate_chain(vgui_widget* w);
 
 static void vgui_dock_forget_focus(vgui_widget* w, vgui_widget* page)
 {
@@ -5530,11 +5547,58 @@ static float vgui_tree_content_width(vgui_widget* w, vgui_tree_state* st)
 	return cw;
 }
 
+static void vgui_measure_label_column(vgui_widget* w, float row_height)
+{
+	auto& column = *w->label_column;
+	column.cells.clear();
+	column.width = 0.0f;
+	column.row_height = row_height;
+	if (w->text.empty() || w->text.size() > INT32_MAX) return;
+
+	auto* font = vgui_font_for(w->ctx, w);
+	const int fs = (int)vgui_font_size(w->ctx, w);
+	const char* text = w->text.data();
+	const int32_t size = (int32_t)w->text.size();
+	const auto append = [&](int32_t start, int32_t end) {
+		const int32_t length = text[start] == '\r' || text[start] == '\n' ? 0 : end - start;
+		column.cells.push_back({start, length});
+		if (length)
+			column.width = std::max(column.width, vgui_measure_text_range(font, fs, text + start, length));
+	};
+
+	// UText keeps the break offsets in UTF-8 bytes. Save them with the measured
+	// column so drawing uses exactly the same rows without segmenting again.
+	UErrorCode status = U_ZERO_ERROR;
+	std::unique_ptr<UText, decltype(&utext_close)> input(
+		utext_openUTF8(nullptr, text, size, &status), utext_close);
+	std::unique_ptr<UBreakIterator, decltype(&ubrk_close)> breaks(
+		ubrk_open(UBRK_CHARACTER, "root", nullptr, 0, &status), ubrk_close);
+	if (U_SUCCESS(status)) ubrk_setUText(breaks.get(), input.get(), &status);
+	if (U_SUCCESS(status))
+	{
+		for (int32_t start = ubrk_first(breaks.get()), end = ubrk_next(breaks.get());
+			end != UBRK_DONE; start = end, end = ubrk_next(breaks.get()))
+			append(start, end);
+		return;
+	}
+
+	// If ICU cannot initialize, fall back to UTF-8 code points and keep CRLF
+	// as one blank row. This path still never splits a valid code point.
+	for (int32_t start = 0; start < size;)
+	{
+		int32_t end = start;
+		U8_FWD_1(text, end, size);
+		if (text[start] == '\r' && end < size && text[end] == '\n') ++end;
+		append(start, end);
+		start = end;
+	}
+}
+
 static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 {
 	if (!w) return;
 	float lh = vgui_line_height(ctx, w);
-	float tw = vgui_text_width(w, w->text);
+	float tw = w->label_column ? 0.0f : vgui_text_width(w, w->text);
 	float pl = w->padding[0], pt = w->padding[1], pr = w->padding[2], pb = w->padding[3];
 	const vgui_style& st = ctx->style;
 
@@ -5597,8 +5661,17 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	}
 	break;
 	case VGUI_LABEL:
-		w->intrinsic_w = tw + pl + pr;
-		w->intrinsic_h = lh * vgui_text_lines(w->text) + pt + pb;
+		if (auto* column = w->label_column.get())
+		{
+			vgui_measure_label_column(w, lh);
+			w->intrinsic_w = column->width + pl + pr;
+			w->intrinsic_h = lh * column->cells.size() + pt + pb;
+		}
+		else
+		{
+			w->intrinsic_w = tw + pl + pr;
+			w->intrinsic_h = lh * vgui_text_lines(w->text) + pt + pb;
+		}
 		break;
 	case VGUI_BUTTON:
 	{
@@ -13015,7 +13088,7 @@ static void vgui_draw_text_raw(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgu
 /* Direction-aware text drawing: 0/1 alignment means start/end, so it swaps
  * in RTL while centre alignment is unchanged. */
 static void vgui_draw_text(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg, vgui_widget* w,
-	const std::string& text, float x, float y, float width, float height,
+	std::string_view text, float x, float y, float width, float height,
 	uint32_t color, float ax = 0.0f, float ay = 0.5f)
 {
 	if (vgui_is_rtl(ctx))
@@ -13443,11 +13516,37 @@ static void vgui_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		vgui_stroke_frame(cb, vg, w->abs_x, w->abs_y, w->abs_w, w->abs_h,
 			w->rounding, vgui_widget_color(w, w->border), w->border_width);
 	}
-	vgui_draw_text(ctx, cb, vg, w, w->text,
-		w->abs_x + w->padding[0], w->abs_y + w->padding[1],
-		std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]),
-		std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]),
-		vgui_text_color(w), w->text_align_x, w->text_align_y);
+	const float x = w->abs_x + w->padding[0], y = w->abs_y + w->padding[1];
+	const float width = std::max(0.0f, w->abs_w - w->padding[0] - w->padding[2]);
+	const float height = std::max(0.0f, w->abs_h - w->padding[1] - w->padding[3]);
+	const vgui_color color = vgui_text_color(w);
+	const auto* column = w->label_column.get();
+	if (!column)
+	{
+		vgui_draw_text(ctx, cb, vg, w, w->text, x, y, width, height, color, w->text_align_x, w->text_align_y);
+		return;
+	}
+	if (column->cells.empty() || width <= 0 || height <= 0 || !color) return;
+
+	const float ax = vgui_is_rtl(ctx) ? 1.0f - w->text_align_x : w->text_align_x;
+	const float column_x = x + (width - column->width) * ax;
+	const float column_h = column->row_height * column->cells.size();
+	const float column_y = y + (height - column_h) * w->text_align_y;
+	const float clip_x = std::max(w->abs_x, x), clip_y = std::max(w->abs_y, y);
+	const float clip_w = std::min(w->abs_x + w->abs_w, x + width) - clip_x;
+	const float clip_h = std::min(w->abs_y + w->abs_h, y + height) - clip_y;
+	glm::ivec4 saved = {};
+	int has_saved = 0;
+	if (clip_w <= 0 || clip_h <= 0 || !vgui_custom_clip_begin(cb, vg, clip_x, clip_y, clip_w, clip_h, &saved, &has_saved)) return;
+	const std::string_view text = w->text;
+	for (size_t row = 0; row < column->cells.size(); ++row)
+	{
+		const auto cell = column->cells[row];
+		if (cell.length)
+			vgui_draw_text(ctx, cb, vg, w, text.substr(cell.start, cell.length), column_x,
+				column_y + column->row_height * row, column->width, column->row_height, color, 0.5f, 0.0f);
+	}
+	vgui_custom_clip_end(cb, vg, saved, has_saved);
 }
 
 static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
@@ -15090,18 +15189,16 @@ static void vgui_draw_tooltip(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 	cb->restore(vg);
 }
 
-// R3-1: content changes inside a hinted subtree invalidate the nearest
-// enclosing recording (set_text/set_value/set_checked hook this too).
-static void vgui_recording_invalidate_chain(vgui_widget* w)
+// Most content updates invalidate the nearest hinted widget. Vertical label
+// changes also reach enclosing recordings: a nested hint does not record
+// separately while its ancestor is recording.
+static void vgui_recording_invalidate_chain(vgui_widget* w, bool all_ancestors)
 {
 	for (vgui_widget* p = w; p; p = p->parent)
 	{
-		if (p->recording_hint)
-		{
-			if (p->cached_recording)
-				p->cache_dirty = true;
-			break;	// nearest enclosing hint only
-		}
+		if (!p->recording_hint) continue;
+		if (p->cached_recording) p->cache_dirty = true;
+		if (!all_ancestors) break;
 	}
 }
 
@@ -16783,6 +16880,8 @@ extern "C" {
 		if (ctx->direction == dir) return;
 		ctx->direction = dir;
 		ctx->layout_dirty = true;
+		++ctx->style_epoch;
+		++ctx->paint_revision;
 	}
 
 	vgui_direction vgui_context_get_direction(vgui_context* ctx)
@@ -17268,7 +17367,13 @@ extern "C" {
 
 	void vgui_widget_set_text_color(vgui_widget* widget, vgui_color color)
 	{
-		if (widget) widget->text_color = color;
+		if (!widget || widget->text_color == color) return;
+		widget->text_color = color;
+		if (widget->label_column)
+		{
+			vgui_recording_invalidate_chain(widget, true);
+			vgui_widget_mark_dirty(widget);
+		}
 	}
 
 	void vgui_widget_set_accent(vgui_widget* widget, vgui_color color)
@@ -17413,6 +17518,31 @@ extern "C" {
 		if (!widget) return;
 		widget->text_align_x = vgui_clampf(align_x, 0.0f, 1.0f);
 		widget->text_align_y = vgui_clampf(align_y, 0.0f, 1.0f);
+		if (widget->label_column)
+		{
+			vgui_recording_invalidate_chain(widget, true);
+			vgui_widget_mark_dirty(widget);
+		}
+	}
+
+	void vgui_label_set_text_orientation(vgui_widget* widget, vgui_label_text_orientation orientation)
+	{
+		if (!widget || widget->kind != VGUI_LABEL) return;
+		if (orientation != VGUI_LABEL_TEXT_HORIZONTAL && orientation != VGUI_LABEL_TEXT_VERTICAL) return;
+		if (orientation == vgui_label_get_text_orientation(widget)) return;
+		if (orientation == VGUI_LABEL_TEXT_VERTICAL)
+			widget->label_column = std::make_unique<vgui_label_column>();
+		else
+		{
+			widget->label_column.reset();
+			vgui_recording_invalidate_chain(widget, true);
+		}
+		vgui_mark_dirty(widget);
+	}
+
+	vgui_label_text_orientation vgui_label_get_text_orientation(const vgui_widget* widget)
+	{
+		return widget && widget->label_column ? VGUI_LABEL_TEXT_VERTICAL : VGUI_LABEL_TEXT_HORIZONTAL;
 	}
 
 	void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor)

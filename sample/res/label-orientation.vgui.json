@@ -1,0 +1,30 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "root",
+  "nodes": {
+    "root": {
+      "type": "panel",
+      "name": "标签排版示例",
+      "props": {"layout": "column", "align_items": "stretch", "gap": 14, "pad_left": 24, "pad_top": 20, "pad_right": 24, "background": "#18263A"},
+      "children": ["title", "labels"]
+    },
+    "title": {"type": "label", "props": {"text": "标签排版：横排与单列竖排", "font_size": 26, "text_color": "#E2ECFA"}},
+    "labels": {
+      "type": "panel",
+      "props": {"layout": "row", "align_items": "start", "gap": 16, "background": "#00000000"},
+      "children": ["horizontal", "vertical"]
+    },
+    "horizontal": {
+      "type": "label",
+      "name": "默认横排",
+      "props": {"text": "文字方向", "width": 182, "font_size": 32, "text_align_x": "center", "text_color": "#273D60", "background": "#DDEAFF", "rounding": 5}
+    },
+    "vertical": {
+      "type": "label",
+      "name": "单列竖排",
+      "props": {"text": "文字方向", "text_orientation": "vertical", "width": 64, "font_size": 32, "text_align_x": "center", "text_color": "#273D60", "background": "#DDEAFF", "rounding": 5}
+    }
+  },
+  "resources": {}
+}

@@ -81,6 +81,8 @@ void apply_primitive(vgui_widget* widget, const node& n, const Access& props)
             vgui_panel_set_scrollbar_size(widget, props.number("scrollbar_width_x"),
                 props.number("scrollbar_width_y"), props.number("scrollbar_inset"));
     } else if (type == "label") {
+        if (props.text("text_orientation") == "vertical")
+            vgui_label_set_text_orientation(widget, VGUI_LABEL_TEXT_VERTICAL);
         apply_primitive_text_alignment(widget, props);
     } else if (type == "button") {
         apply_primitive_text_alignment(widget, props);

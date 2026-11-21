@@ -282,6 +282,28 @@ void named_radio_groups()
     }
 }
 
+void label_text_orientation()
+{
+    const auto* descriptor = ui::find_property("label", "text_orientation");
+    check(descriptor && descriptor->default_value == ui::value{"horizontal"s} && descriptor->choices.size() == 2,
+        "label text orientation must default to horizontal");
+    const auto doc = decode(json_document(R"({"root":{"type":"panel","children":["caption","legacy"]},
+        "caption":{"type":"label","props":{"text":"联络我们","text_orientation":"vertical"}},
+        "legacy":{"type":"label"}})"));
+    check(doc.nodes.at("caption").props.at("text_orientation") == ui::value{"vertical"s} &&
+        !doc.nodes.at("legacy").props.contains("text_orientation") && decode(encode(doc)) == doc,
+        "vertical labels must round trip without serializing an omitted default");
+    for (const std::string_view node : {
+        R"({"type":"label","props":{"text_orientation":"rotated"}})",
+        R"({"type":"label","props":{"text_orientation":true}})",
+        R"({"type":"button","props":{"text_orientation":"vertical"}})"}) {
+        const auto invalid = std::string(R"({"root":{"type":"panel","children":["caption"]},"caption":)") +
+            std::string(node) + '}';
+        check(reject_json(json_document(invalid), "invalid label orientation").path == "/nodes/caption/props/text_orientation",
+            "label orientation validation must report the invalid property");
+    }
+}
+
 void font_properties_round_trip()
 {
     const ui::document doc{"root", {
@@ -846,6 +868,7 @@ int main()
 {
     const struct { const char* name; void (*run)(); } tests[] = {
         {"canonical v1 JSON", canonical_round_trip},
+        {"label text orientation", label_text_orientation},
         {"optional font properties round trip", font_properties_round_trip},
         {"font property validation", reject_bad_font_properties},
         {"font family resource validation and round trip", font_family_validation},

@@ -1,39 +1,21 @@
 // Standalone SDL3 host for saved .vgui.json designs and .vgui.package.json deliveries.
 #include "delivery.h"
 #include "runtime.h"
+#include "ui_json_images.h"
 
 #include <vgui/backend/vgui_multiwindow.h>
 
-// One private decoder in this TU; a delivery never needs image files on disk.
-#if defined(_MSC_VER)
-#pragma warning(push, 0)
-#endif
-#define STB_IMAGE_STATIC
-#define STB_IMAGE_IMPLEMENTATION
-#define STBI_NO_STDIO
-#define STBI_NO_SIMD
-#define STBI_ONLY_PNG
-#define STBI_ONLY_JPEG
-#define STBI_MAX_DIMENSIONS 4096
-#include <stb_image.h>
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <cstdio>
 #include <exception>
 #include <filesystem>
 #include <memory>
 #include <random>
-#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <vector>
 
 namespace {
 namespace ui = vgui::ui_design;
@@ -56,36 +38,6 @@ bool read_form(const fs::path& file, form_input& input, ui::diagnostic& error) {
     input.project_root = file.has_parent_path() ? file.parent_path() : fs::path(".");
     return ui::read_document(file, input.content.design, &error);
 }
-
-using image_ptr = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
-
-struct image_decoder {
-    std::vector<image_ptr> textures;
-    std::size_t decoded = 0;
-
-    vgui_texture* load(vgui_context* ctx, std::span<const std::uint8_t> bytes) {
-        // Match the preview's per-image input and total per-mount RGBA limits.
-        constexpr std::size_t max_image_bytes = 16u << 20;
-        constexpr std::size_t max_mount_bytes = 64u << 20;
-        if (bytes.empty() || bytes.size() > max_image_bytes) return nullptr;
-        int w = 0, h = 0, channels = 0;
-        const int count = static_cast<int>(bytes.size());
-        if (!stbi_info_from_memory(bytes.data(), count, &w, &h, &channels) || w < 1 || h < 1 ||
-            w > STBI_MAX_DIMENSIONS || h > STBI_MAX_DIMENSIONS) return nullptr;
-        const auto rgba_bytes = std::size_t(w) * h * 4;
-        if (rgba_bytes > max_mount_bytes - decoded) return nullptr;
-        decoded += rgba_bytes;
-        int decoded_w = 0, decoded_h = 0;
-        std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(stbi_load_from_memory(
-            bytes.data(), count, &decoded_w, &decoded_h, &channels, STBI_rgb_alpha), stbi_image_free);
-        if (!pixels || decoded_w != w || decoded_h != h) return nullptr;
-        const vgui_texture_desc desc{w, h, w * 4, VGUI_TEXTURE_FORMAT_RGBA8, pixels.get()};
-        image_ptr texture(vgui_texture_create(ctx, &desc), vgui_texture_destroy);
-        auto* result = texture.get();
-        if (result) textures.push_back(std::move(texture));
-        return result;
-    }
-};
 
 struct form_host {
     form_host(vgui_context* context, const form_input& input) : input(input), tree(context) {}
@@ -134,7 +86,7 @@ struct form_host {
     }
 
     const form_input& input;
-    image_decoder decoder;
+    vgui_sample::json_image_decoder decoder;
     ui::runtime tree;
     bool submit_pending = false;
 };

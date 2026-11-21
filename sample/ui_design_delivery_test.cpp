@@ -362,6 +362,46 @@ void test_row_icon_delivery() {
     check(child && loader.calls == 1 && loader.texture && vgui_tree_get_item_button_icon(tree, child, 0) == loader.texture.get(),
         "the exported asset must reach the nested row button as a texture");
 }
+void test_label_orientation_delivery() {
+    const auto source = fs::path(__FILE__).parent_path() / "res/label-orientation.vgui.json";
+    ui::diagnostic error;
+    ui::document design;
+    if (!ui::read_document(source, design, &error))
+        throw std::runtime_error("read label orientation example: " + error.message);
+    temp_dir temp;
+    const auto folder = temp.path / "labels";
+    const auto file = temp.path / "labels.vgui.package.json";
+    check(ui::export_delivery(design, source.parent_path(), folder, &error), "export labels as a directory");
+    check(ui::export_json_delivery(design, source.parent_path(), file, &error), "export labels as a single JSON file");
+    ui::document directory;
+    ui::embedded_delivery single;
+    check(ui::read_delivery(folder, directory, &error), "verify label directory delivery");
+    check(ui::read_json_delivery(file, single, &error), "verify label standalone delivery");
+    check(directory == design && single.design == design && single.images.empty(), "delivery changed the label example");
+
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create label delivery context");
+    ui::runtime rt(ctx.get());
+    const auto mounted_labels = [&](const ui::document& doc) {
+        check(rt.mount(doc, 1, {}, &error) && rt.layout({460, 300, 1}), "mount and lay out the label example");
+        std::array<ui::pixel_rect, 2> bounds;
+        auto* horizontal = rt.widget("horizontal");
+        auto* vertical = rt.widget("vertical");
+        check(horizontal && vertical && vgui_label_get_text_orientation(horizontal) == VGUI_LABEL_TEXT_HORIZONTAL &&
+            vgui_label_get_text_orientation(vertical) == VGUI_LABEL_TEXT_VERTICAL, "delivered labels have the wrong text orientation");
+        auto& [h, v] = bounds;
+        vgui_widget_get_rect(horizontal, &h.x, &h.y, &h.width, &h.height);
+        vgui_widget_get_rect(vertical, &v.x, &v.y, &v.width, &v.height);
+        check(h.height > 0 && v.height > 3 * h.height, "the four-character label is not laid out as a vertical column");
+        return bounds;
+    };
+    const auto expected = mounted_labels(design);
+    for (const auto* restored : {&directory, &single.design}) {
+        const auto actual = mounted_labels(*restored);
+        check(same_rect(actual[0], expected[0]) && same_rect(actual[1], expected[1]),
+            "delivered label layout does not match the source design");
+    }
+}
 } // namespace
 
 int main() {
@@ -369,6 +409,7 @@ int main() {
         test_delivery();
         test_json_delivery();
         test_row_icon_delivery();
+        test_label_orientation_delivery();
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "ui_design_delivery_test: %s\n", e.what());

@@ -49,7 +49,7 @@
 - [x] **R1-1 load-op 公共 API**：`vg_fbo_t::clear`（默认 true）。置 false 后 UI pass 以 `SDL_GPU_LOADOP_LOAD` 打开，HUD 直接 blend 在引擎已渲染的 swapchain 内容之上（`backends/vgui_renderer_sdl3.cpp` `begin_pass`）。
 - [x] **R1-2 引擎侧帧内编码接口**：`vgpu_current_command_buffer(ctx)` 返回 vgpu 当前命令缓冲（`vgpu_acquire_swapchain` 获取、`vgpu_render_frame` 提交），引擎可在两者之间用 `SDL_BlitGPUTexture` 把 3D 场景 blit 进 swapchain，保证 blit 与 UI pass 同一提交内有序；`vgpu_color_format(ctx)` 供离屏 FBO 与原生纹理借用对齐格式。
 - [x] **R1-3 UI→引擎纹理路径**：HUD 渲入离屏 FBO（`vgpu_create_fbo(ctx, w, h, nullptr)`），再经 `vgpu_texture_init_native/update_native` 把 `vgpu_fbo_color_texture()` 借为 ovg 纹理，由引擎合成 pass 当普通图像采样。
-- [x] **R1-4 HUD 示例**：`sample/vgui_runtime_hud.cpp`——3D 场景 + 血条/护盾、小地图与准星（`VGUI_CUSTOM`）、快捷栏冷却条、状态面板；TAB 切换两种合成模式；`--smoke` 渲染 30 帧（两种模式各 15 帧）自动退出。
+- [x] **R1-4 HUD 示例**：[vgui_runtime_hud.cpp](../sample/vgui_runtime_hud.cpp)——编辑器 JSON 驱动血量/护盾、状态栏、技能栏和冷却条；3D 场景、小地图与准星由宿主绘制。M 切换两种合成模式，`--smoke` 渲染 40 帧后退出。
 
 ### 4.1 帧顺序约束（运行时集成必读）
 
@@ -78,6 +78,21 @@ ovg_draw_data_t dd = get_draw_list(vg);             /* 交给引擎渲染器 */
 ```
 
 参考实现：`sample/vgui_runtime_embed_test.cpp`。
+
+### 4.3 用编辑器设计替换 HUD
+
+在编辑器中打开 [game-hud.vgui.json](../sample/res/game-hud.vgui.json) 并保存，或用 **文件 → 导出交付包** 导出成目录或单文件 JSON。示例不依赖编辑器外壳。无参数时加载仓库里的设计文件；传路径时可以直接加载设计文件、交付目录或 `*.vgui.package.json`。后两种会先验证交付包。
+
+```text
+bld_full.bat vgui_runtime_hud
+out/bin/x64d/vgui_runtime_hud.exe
+out/bin/x64d/vgui_runtime_hud.exe path/to/arena.vgui.package.json
+out/bin/x64d/vgui_runtime_hud.exe --smoke path/to/arena-delivery
+```
+
+沿用模板中的运行时 ID：`hp`、`shield`、`ult`、`cooldown1` 至 `cooldown6` 是进度条（值域 0–1），`status` 是状态标签，`status_plate` 和 `hotbar` 是面板。`minimap`、`crosshair` 为留给宿主绘图的面板（纵向布局，保留尺寸）；根节点保持 `absolute`，X/Y 和宽高为 0。`status_plate`、`hotbar`、`ult`、`minimap`、`crosshair` 需留在根节点下：宿主以 1280×800 为设计参考，按边缘或中心平移这些控件，保留设计尺寸和偏移。可在编辑器中调整样式和位置，也可添加图片等其他控件。
+
+点击技能按钮会把 `hud.skill.1` 至 `hud.skill.6` 交给宿主；对应 Q/W/E/R/T/Y 快捷键，U 触发大招冷却，B 切换安全区。宿主只挂载一次并更新实时进度，不写回设计。世界空间名牌和公告牌仍属于 3D 示例的宿主代码。`ctest -R runtime_hud_design` 无需打开窗口，检查 JSON 的技能动作、实时值和视口变化时的状态保留。
 
 ## 5. R2 手柄/键盘方向导航（已实现；焦点环待接实机手柄确认）
 

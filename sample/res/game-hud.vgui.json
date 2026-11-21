@@ -1,0 +1,66 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "hud",
+  "nodes": {
+    "hud": {
+      "type": "panel",
+      "name": "Arena HUD",
+      "props": {"layout": "absolute"},
+      "children": ["vitals", "status_plate", "minimap", "hotbar", "ult", "crosshair"]
+    },
+    "vitals": {
+      "type": "panel",
+      "name": "Vitals",
+      "props": {"x": 16, "y": 16, "width": 266, "height": 66, "layout": "column", "gap": 6,
+        "pad_left": 8, "pad_top": 8, "pad_right": 8, "pad_bottom": 8, "background": "#18141098", "input_enabled": false},
+      "children": ["hp_row", "shield_row"]
+    },
+    "hp_row": {"type": "panel", "props": {"layout": "row", "gap": 8, "align_items": "center", "background": "#00000000"}, "children": ["hp_label", "hp"]},
+    "hp_label": {"type": "label", "props": {"text": "HP", "width": 48}},
+    "hp": {"type": "progress", "props": {"grow": 1, "height": 16, "value": 1, "accent_color": "#E66C6C"}},
+    "shield_row": {"type": "panel", "props": {"layout": "row", "gap": 8, "align_items": "center", "background": "#00000000"}, "children": ["shield_label", "shield"]},
+    "shield_label": {"type": "label", "props": {"text": "SHLD", "width": 48}},
+    "shield": {"type": "progress", "props": {"grow": 1, "height": 16, "value": 0.5}},
+    "status_plate": {
+      "type": "panel",
+      "name": "Runtime status",
+      "props": {"x": 744, "y": 16, "width": 520, "height": 38, "layout": "column", "align_items": "stretch",
+        "pad_left": 10, "pad_top": 8, "pad_right": 10, "pad_bottom": 8, "background": "#18141098", "input_enabled": false},
+      "children": ["status"]
+    },
+    "status": {"type": "label", "props": {"text": "M: compositing mode", "font_size": 14}},
+    "minimap": {"type": "panel", "name": "Minimap (host draws)", "props": {
+      "x": 16, "y": 604, "width": 180, "height": 180, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}},
+    "hotbar": {
+      "type": "panel",
+      "name": "Skills",
+      "props": {"x": 392, "y": 704, "width": 488, "height": 80, "layout": "row", "gap": 8,
+        "pad_left": 8, "pad_top": 8, "pad_right": 8, "pad_bottom": 8, "background": "#18141080"},
+      "children": ["slot1", "slot2", "slot3", "slot4", "slot5", "slot6"]
+    },
+    "slot1": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill1", "cooldown1"]},
+    "skill1": {"type": "button", "props": {"text": "Q", "width": 56, "height": 36, "action": "hud.skill.1"}},
+    "cooldown1": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "slot2": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill2", "cooldown2"]},
+    "skill2": {"type": "button", "props": {"text": "W", "width": 56, "height": 36, "action": "hud.skill.2"}},
+    "cooldown2": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "slot3": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill3", "cooldown3"]},
+    "skill3": {"type": "button", "props": {"text": "E", "width": 56, "height": 36, "action": "hud.skill.3"}},
+    "cooldown3": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "slot4": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill4", "cooldown4"]},
+    "skill4": {"type": "button", "props": {"text": "R", "width": 56, "height": 36, "action": "hud.skill.4"}},
+    "cooldown4": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "slot5": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill5", "cooldown5"]},
+    "skill5": {"type": "button", "props": {"text": "T", "width": 56, "height": 36, "action": "hud.skill.5"}},
+    "cooldown5": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "slot6": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill6", "cooldown6"]},
+    "skill6": {"type": "button", "props": {"text": "Y", "width": 56, "height": 36, "action": "hud.skill.6"}},
+    "cooldown6": {"type": "progress", "props": {"width": 56, "height": 16}},
+    "ult": {"type": "progress", "name": "Ultimate", "props": {"x": 892, "y": 704, "width": 44, "height": 44,
+      "radial": true, "accent_color": "#FFA040", "track_color": "#40282050", "input_enabled": false}},
+    "crosshair": {"type": "panel", "name": "Crosshair (host draws)", "props": {
+      "x": 624, "y": 384, "width": 32, "height": 32, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}}
+  },
+  "resources": {}
+}
