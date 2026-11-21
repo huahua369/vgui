@@ -76,7 +76,8 @@ extern "C" {
 		VGUI_SPLITTER,
 		VGUI_TABVIEW,
 		VGUI_MENUBAR,
-		VGUI_DOCK
+		VGUI_DOCK,
+		VGUI_GRADIENT                 /* Decorative leaf; input always passes through. */
 	} vgui_widget_kind;
 
 	typedef enum vgui_layout_kind {
@@ -1242,6 +1243,37 @@ extern "C" {
 	VGUI_API void vgui_panel_set_background_gradient(vgui_widget* panel,
 		vgui_color start, vgui_color end, int horizontal);
 	VGUI_API void vgui_panel_clear_background_gradient(vgui_widget* panel);
+	/* Decorative gradients use widget-local relative coordinates (0..1 is the
+	 * widget rectangle), radii relative to its shorter side, and clockwise
+	 * degrees from +X for sweep angles. The affine maps normalized gradient
+	 * coordinates into widget coordinates: {xx,yx,xy,yy,tx,ty}. It transforms
+	 * the paint, not the rounded rectangle. Zero-initialize via _desc_default.
+	 * _set copies 2..32 sorted RGBA stops (packed AARRGGBB); it returns 0 on
+	 * invalid/degenerate input and never changes layout. Identical updates do
+	 * not invalidate the drawing cache. */
+	typedef enum vgui_gradient_kind {
+		VGUI_GRADIENT_LINEAR = 0, VGUI_GRADIENT_RADIAL, VGUI_GRADIENT_SWEEP
+	} vgui_gradient_kind;
+	typedef enum vgui_gradient_extend {
+		VGUI_GRADIENT_PAD = 0, VGUI_GRADIENT_REPEAT, VGUI_GRADIENT_REFLECT
+	} vgui_gradient_extend;
+	enum { VGUI_GRADIENT_MAX_STOPS = 32 };
+	typedef struct vgui_gradient_stop {
+		float offset;
+		vgui_color color;
+	} vgui_gradient_stop;
+	typedef struct vgui_gradient_desc {
+		vgui_gradient_kind kind;
+		vgui_gradient_extend extend;
+		float x0, y0, x1, y1;       /* Sweep uses x0 and y0 only. */
+		float radius0, radius1;     /* Radial only. */
+		int ellipse;                /* Radial only; doubles the horizontal scale. */
+		float start_degrees, end_degrees; /* Sweep only. */
+		float affine[6];
+	} vgui_gradient_desc;
+	VGUI_API void vgui_gradient_desc_default(vgui_gradient_desc* desc);
+	VGUI_API int vgui_gradient_set(vgui_widget* widget, const vgui_gradient_desc* desc,
+		const vgui_gradient_stop* stops, size_t count);
 	VGUI_API void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width);
 	VGUI_API void vgui_widget_set_rounding(vgui_widget* widget, float radius);
 	/* align 0/1 mean start/end, so they swap when the context direction is RTL;

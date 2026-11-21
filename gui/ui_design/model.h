@@ -29,8 +29,15 @@ struct diagnostic {
 };
 
 using value = std::variant<bool, double, std::string>;
-enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items };
-// An items value holds canonical JSON text internally; page files use an array.
+enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items, gradient_stops };
+// Array-valued properties hold JSON text internally; page files use arrays.
+inline constexpr std::size_t max_gradient_stops = 32;
+struct gradient_stop {
+    float offset;
+    std::string color;
+};
+bool decode_gradient_stops(std::string_view input, std::vector<gradient_stop>& out, std::string& error);
+std::string encode_gradient_stops(std::span<const gradient_stop> stops);
 
 // Test the filename extension (.ttf or .otf, ASCII case-insensitive).
 // This does not otherwise validate a resource path.

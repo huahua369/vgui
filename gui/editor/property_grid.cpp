@@ -1849,6 +1849,11 @@ private:
 		color_popup_edit_listener_ = std::move(listener);
 	}
 
+	void property_grid::set_gradient_popup_edit_listener(text_edit_listener listener)
+	{
+		gradient_popup_edit_listener_ = std::move(listener);
+	}
+
 	void property_grid::set_value_source(value_source source)
 	{
 		value_source_ = std::move(source);
@@ -3088,8 +3093,11 @@ private:
 		popup_session_id_ = item.desc.id;
 		popup_session_token_ = item.token;
 		if (kind == popup_kind::color && color_picker_managed_)
-		{
 			popup_session_listener_ = color_popup_edit_listener_;
+		else if (kind == popup_kind::gradient)
+			popup_session_listener_ = gradient_popup_edit_listener_;
+		if (popup_session_listener_)
+		{
 			popup_session_value_ = item.value;
 			popup_session_changed_ = false;
 		}
@@ -3151,7 +3159,7 @@ private:
 			// Do not re-filter on the preview: a value-based search could
 			// otherwise destroy the session's swatch during its own gesture.
 			auto listener = popup_session_listener_;
-			(void)listener(target->swatch, id, normalized.value, text_edit_event::change);
+			(void)listener(target->swatch ? target->swatch : target->editor, id, normalized.value, text_edit_event::change);
 			return;
 		}
 		if (!popup_drag_active_)
@@ -3386,6 +3394,7 @@ private:
 			[this, id](const gradient_value& v) {
 				commit_popup_value(id, gradient_editor::format_value(v));
 			});
+		gradient_editor_->set_stop_limit(item.desc.gradient_stop_limit);
 		(void)gradient_editor_->set_value_text(item.value);
 
 		float ax = 0, ay = 0, aw = 0, ah = 0;
@@ -3413,6 +3422,7 @@ private:
 			const bool has_preview = self->popup_session_changed_;
 			const bool mixed = self->popup_session_mixed_ && (!submit || !has_preview);
 			row* target = self->find_row_by_token(self->popup_session_token_);
+			const bool color = self->popup_kind_ == popup_kind::color;
 			auto listener = std::move(self->popup_session_listener_);
 			self->reset_popup_session();
 			if (!target)
@@ -3421,9 +3431,9 @@ private:
 			target->mixed = mixed;
 			target->value = value;
 			self->update_row_ui(*target, true);
-			if (submit && has_preview)
+			if (color && submit && has_preview)
 				self->add_recent_color(value);
-			(void)listener(target->swatch, id, value,
+			(void)listener(target->swatch ? target->swatch : target->editor, id, value,
 				submit ? text_edit_event::submit : text_edit_event::cancel);
 			if (submit && (changed || !self->filter_.empty()))
 				self->update_visibility();

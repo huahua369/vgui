@@ -31,6 +31,34 @@ struct widget_properties {
     std::optional<std::uint32_t> color(std::string_view key) const { return parse_text_color(text(key)); }
 };
 
+bool apply_gradient(vgui_widget* widget, const widget_properties& props) {
+    static_assert(max_gradient_stops == VGUI_GRADIENT_MAX_STOPS);
+    vgui_gradient_desc paint;
+    vgui_gradient_desc_default(&paint);
+    const auto& kind = props.text("gradient_kind");
+    const auto& spread = props.text("gradient_extend");
+    paint.kind = kind == "radial" ? VGUI_GRADIENT_RADIAL : kind == "sweep" ? VGUI_GRADIENT_SWEEP : VGUI_GRADIENT_LINEAR;
+    paint.extend = spread == "repeat" ? VGUI_GRADIENT_REPEAT : spread == "reflect" ? VGUI_GRADIENT_REFLECT : VGUI_GRADIENT_PAD;
+    paint.x0 = props.number(kind == "linear" ? "gradient_x0" : "gradient_center_x");
+    paint.y0 = props.number(kind == "linear" ? "gradient_y0" : "gradient_center_y");
+    paint.x1 = props.number(kind == "linear" ? "gradient_x1" : "gradient_outer_x");
+    paint.y1 = props.number(kind == "linear" ? "gradient_y1" : "gradient_outer_y");
+    paint.radius0 = props.number("gradient_radius0");
+    paint.radius1 = props.number("gradient_radius1");
+    paint.ellipse = props.boolean("gradient_ellipse");
+    paint.start_degrees = props.number("gradient_angle0");
+    paint.end_degrees = props.number("gradient_angle1");
+    constexpr std::string_view affine[] = {"gradient_affine_xx", "gradient_affine_yx", "gradient_affine_xy",
+        "gradient_affine_yy", "gradient_affine_tx", "gradient_affine_ty"};
+    for (std::size_t i = 0; i < std::size(affine); ++i) paint.affine[i] = props.number(affine[i]);
+    std::vector<gradient_stop> decoded;
+    std::string error;
+    if (!decode_gradient_stops(props.text("gradient_stops"), decoded, error)) return false;
+    vgui_gradient_stop stops[max_gradient_stops];
+    for (std::size_t i = 0; i < decoded.size(); ++i) stops[i] = {decoded[i].offset, *parse_text_color(decoded[i].color)};
+    return vgui_gradient_set(widget, &paint, stops, decoded.size()) != 0;
+}
+
 vgui_align alignment(std::string_view value) {
     if (value == "start") return VGUI_ALIGN_START;
     if (value == "end") return VGUI_ALIGN_END;
@@ -237,6 +265,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             if (n.type == "button") return VGUI_BUTTON;
             if (n.type == "edit") return VGUI_EDIT;
             if (n.type == "image") return VGUI_IMAGE;
+            if (n.type == "gradient") return VGUI_GRADIENT;
             if (const auto result = detail::primitive_kind(n.type)) return result;
             if (const auto result = detail::collection_mount_kind(n.type)) return result;
             return detail::container_kind(n.type);
@@ -250,6 +279,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         vgui_widget_set_id(w, id.c_str());
         const widget_properties p{n};
         apply_widget_properties(w, p, !parent_node);
+        if (*kind == VGUI_GRADIENT && !apply_gradient(w, p)) return false;
         detail::apply_container(w, n, p);
         if (n.type == "panel") {
             const auto& l = text(n,"layout");

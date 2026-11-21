@@ -158,8 +158,8 @@ node decode_node(const json& input, const std::string& path)
         for (auto it = props->begin(); it != props->end(); ++it) {
             const auto prop_path = member_path(props_path, it.key());
             const auto* desc = find_property(result.type, it.key());
-            if (desc && desc->type == value_type::items) {
-                if (!it->is_array()) reject(prop_path, "expected an item array");
+            if (desc && (desc->type == value_type::items || desc->type == value_type::gradient_stops)) {
+                if (!it->is_array()) reject(prop_path, desc->type == value_type::items ? "expected an item array" : "expected a color stop array");
                 result.props.emplace(it.key(), it->dump());
             } else result.props.emplace(it.key(), as_property(*it, prop_path));
         }
@@ -369,7 +369,8 @@ bool encode_json(const document& doc, std::string& out, diagnostic* error)
         for (const auto& [id, item] : doc.nodes) {
             json props = json::object();
             for (const auto& [key, prop] : item.props) {
-                if (find_property(item.type, key)->type == value_type::items) {
+                const auto kind = find_property(item.type, key)->type;
+                if (kind == value_type::items || kind == value_type::gradient_stops) {
                     const auto& text = std::get<std::string>(prop);
                     props[key] = json::parse(text.begin(), text.end());
                 } else std::visit([&](const auto& data) { props[key] = data; }, prop);

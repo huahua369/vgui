@@ -113,6 +113,8 @@ namespace vgui_editor_kit {
 		bool multiline = false;
 		/* Empty color rows can show an inherited color without storing it as their value. */
 		std::optional<vgui_color> inherited_color;
+		/* Gradient rows: maximum number of color stops in the popup. */
+		std::size_t gradient_stop_limit = 64;
 	};
 
 	/* Result of property_normalize_value(): validates a candidate value for a
@@ -337,6 +339,8 @@ namespace vgui_editor_kit {
 		 * last value, and Escape/explicit close cancels to the starting value.
 		 * The return value is ignored. Defer structural changes during callbacks. */
 		void set_color_popup_edit_listener(text_edit_listener listener);
+		/* Opt in to live preview with commit/cancel on closing a gradient popup. */
+		void set_gradient_popup_edit_listener(text_edit_listener listener);
 		void set_value_source(value_source source);
 		void refresh();
 
@@ -577,6 +581,7 @@ namespace vgui_editor_kit {
 		change_listener change_listener_;
 		text_edit_listener text_edit_listener_;
 		text_edit_listener color_popup_edit_listener_;
+		text_edit_listener gradient_popup_edit_listener_;
 		value_source value_source_;
 		vgui_color edit_field_background_ = 0;
 		bool read_only_ = false;

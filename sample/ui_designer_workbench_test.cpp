@@ -395,7 +395,7 @@ void exercise_menus()
 
     auto* submenu = workbench.open_new_control();
     auto* resources = vgui_context_get_open_menu(ctx);
-    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Gradient", "Checkbox", "Radio Button", "Switch",
         "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
     check(vgui_menu_get_count(submenu) == static_cast<int>(ui::types().size()), "New Control does not match the schema");
     workbench.highlight(submenu, "Image");
@@ -1698,7 +1698,7 @@ void exercise_control_schema()
             "new schema control has no default size: " + std::string(type.key));
         created.emplace(type.key, id);
     }
-    check(created.size() == 18, "some declarative core controls are missing from the Resource menu");
+    check(created.size() == 19 && created.contains("gradient"), "some declarative core controls are missing from the Resource menu");
 
     const auto tabs = created.at("tabview");
     workbench.bench.select(tabs);
@@ -1937,6 +1937,61 @@ void exercise_panel_gradient()
         "returning to solid should hide, not discard, gradient properties");
 }
 
+void exercise_decorative_gradient()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "gradient.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const auto id = workbench.add("gradient", root);
+    auto* filter = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(filter);
+    check(vgui_input_text(ctx, "gradient"), "could not search for gradient parameters");
+    workbench.frame();
+    constexpr auto field = "property:gradient_kind";
+    constexpr auto stops_id = "property:gradient_stops";
+    const auto choose = [&](const char* option) {
+        workbench.press(field);
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "gradient type choices did not open");
+        workbench.activate(menu, option);
+    };
+    choose("Radial");
+    check(find_widget(vgui_root(ctx), "property:gradient_radius1", VGUI_EDIT) &&
+        !find_widget(vgui_root(ctx), "property:gradient_angle0", VGUI_EDIT), "radial inspector exposed the wrong geometry fields");
+    choose("Sweep (conic)");
+    check(find_widget(vgui_root(ctx), "property:gradient_angle0", VGUI_EDIT) &&
+        !find_widget(vgui_root(ctx), "property:gradient_radius1", VGUI_EDIT), "sweep inspector exposed the wrong geometry fields");
+    const auto open = [&] {
+        workbench.click(workbench.widget(stops_id, VGUI_CUSTOM));
+        workbench.frame();
+        auto* popup = vgui_popup_content(ctx);
+        check(popup && std::string_view(vgui_widget_get_id(popup)) == "property-grid.gradient-editor", "gradient swatch did not open the color-stop editor");
+        return popup;
+    };
+    const auto preset = [&](vgui_widget* popup) {
+        auto* button = find_widget(popup, "property-grid.gradient-editor.preset.1", VGUI_BUTTON);
+        check(button, "gradient popup did not expose its presets");
+        workbench.click(button);
+        workbench.frame();
+    };
+    const auto baseline = model.committed();
+    preset(open());
+    check(model.current().nodes.at(id).props.contains("gradient_stops") && model.committed() == baseline,
+        "gradient stop changes must preview before the popup closes");
+    check(workbench.key(VGUI_KEY_ESCAPE) && model.current() == baseline, "Escape should cancel pending changes to gradient stops");
+    preset(open());
+    workbench.click(workbench.widget("designer.outliner", VGUI_TREE));
+    workbench.frame();
+    check(!vgui_popup_content(ctx) && model.committed().nodes.at(id).props.contains("gradient_stops"),
+        "dismissing the gradient popup should commit its last preview");
+    const auto saved = model.committed();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved, "gradient kind and stops did not survive reopening");
+}
+
 void exercise_radio_group_inspector()
 {
     temp_dir directory;
@@ -2024,7 +2079,7 @@ void exercise_menu_language()
     check(workbench.key(VGUI_KEY_ESCAPE), "could not dismiss localized Edit menu");
 
     auto* submenu = workbench.open_new_control();
-    check_menu_items(submenu, {"面板", "标签", "按钮", "输入框", "图片", "复选框", "单选按钮", "开关",
+    check_menu_items(submenu, {"面板", "标签", "按钮", "输入框", "图片", "渐变", "复选框", "单选按钮", "开关",
         "滑块", "进度条", "分隔线", "列表", "树", "菜单", "菜单栏", "分栏", "选项卡", "停靠容器"});
     workbench.highlight(submenu, "按钮");
     const auto revision = workbench.model.revision();
@@ -2036,7 +2091,7 @@ void exercise_menu_language()
         // If the popup stays open, its labels must not lag behind the bar.
         const auto item = menu_item(resources, "New Control");
         submenu = vgui_menu_get_submenu(resources, item);
-        check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+        check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Gradient", "Checkbox", "Radio Button", "Switch",
             "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
         if (vgui_menu_is_open(submenu))
             check(workbench.key(VGUI_KEY_ESCAPE) && !vgui_menu_is_open(submenu),
@@ -2047,7 +2102,7 @@ void exercise_menu_language()
     check(workbench.model.revision() == revision && !workbench.model.dirty(),
         "translating the active menu changed the document");
     submenu = workbench.open_new_control();
-    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Checkbox", "Radio Button", "Switch",
+    check_menu_items(submenu, {"Panel", "Label", "Button", "Edit", "Image", "Gradient", "Checkbox", "Radio Button", "Switch",
         "Slider", "Progress Bar", "Separator", "List", "Tree", "Menu", "Menu Bar", "Splitter", "Tab View", "Dock"});
     check(workbench.key(VGUI_KEY_ESCAPE) && workbench.key(VGUI_KEY_ESCAPE) && !vgui_context_get_open_menu(ctx),
         "could not dismiss the reopened New Control popup chain");
@@ -2220,6 +2275,7 @@ int main()
         exercise_label_orientation();
         exercise_button_gradients();
         exercise_panel_gradient();
+        exercise_decorative_gradient();
         exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_language_preferences();

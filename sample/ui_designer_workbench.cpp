@@ -4,6 +4,7 @@
 #include "primitive_schema.h"
 #include "ui_designer_locale.h"
 #include <vgui/editor/command_registry.h>
+#include <vgui/editor/gradient_editor.h>
 #include <vgui/editor/outliner_view.h>
 #include <vgui/editor/property_grid.h>
 
@@ -267,10 +268,12 @@ struct designer_workbench::impl {
             kit::property_grid::text_edit_event event) {
             return on_property_text(widget, key, input, event);
         });
-        grid->set_color_popup_edit_listener([this](vgui_widget* widget, const std::string& key,
+        const auto preview_paint = [this](vgui_widget* widget, const std::string& key,
             const std::string& input, kit::property_grid::text_edit_event event) {
             return on_property_text(widget, key, input, event, true);
-        });
+        };
+        grid->set_color_popup_edit_listener(preview_paint);
+        grid->set_gradient_popup_edit_listener(preview_paint);
         focus_listener = vgui_context_add_focus_listener(ui, [](vgui_context*, vgui_widget* old, vgui_widget*, void* user) {
             auto& self = *static_cast<impl*>(user);
             // The picker owns its transaction until the popup closes, even
@@ -739,6 +742,8 @@ struct designer_workbench::impl {
                 {"Font", strings.text("workbench.inspector.category.font", "Font")},
                 {"Appearance", strings.text("workbench.inspector.category.appearance", "Appearance")},
                 {"Gradient colors", strings.text("workbench.inspector.category.gradient_colors", "Gradient colors")},
+                {"Gradient paint", strings.text("workbench.inspector.category.gradient_paint", "Gradient paint")},
+                {"Gradient transform", strings.text("workbench.inspector.category.gradient_transform", "Gradient transform")},
                 {"Image", strings.text("workbench.inspector.category.image", "Image")},
                 {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
@@ -1288,6 +1293,22 @@ struct designer_workbench::impl {
         }
 
         const auto updated = formatted_status{{"workbench.status.updated_property", "Updated {value}"}, property_label(*desc)};
+        if (desc->type == value_type::gradient_stops) {
+            kit::gradient_value input_stops;
+            std::string reason;
+            if (!kit::gradient_editor::parse_value(input, input_stops, &reason)) {
+                field_errors[key] = reason;
+                sync_inspector = true;
+                return;
+            }
+            std::vector<gradient_stop> stops;
+            for (const auto& stop : input_stops.stops) stops.push_back({stop.t, stop.color});
+            auto canonical = encode_gradient_stops(stops);
+            auto stored = canonical == std::get<std::string>(desc->default_value) ? std::nullopt :
+                std::optional<value>(std::move(canonical));
+            apply({set_property{inspected.id, key, std::move(stored)}}, updated, key, interactive);
+            return;
+        }
         if (desc->type == value_type::items) {
             std::string canonical, reason;
             std::vector<edit> batch;
@@ -1425,8 +1446,20 @@ struct designer_workbench::impl {
         const auto gradient_fields = std::span(detail::extra_button_gradient_properties);
         const bool panel_gradient = item.type == "panel" &&
             std::get<std::string>(property_value(item, *find_property("panel", "background_style"))) == "gradient";
+        const bool decorative_gradient = item.type == "gradient";
+        const auto kind = decorative_gradient ? std::string_view(std::get<std::string>(property_value(item, *find_property("gradient", "gradient_kind")))) : std::string_view{};
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
+                const auto key = desc.key;
+                const bool interaction = key.starts_with("tooltip") || key.starts_with("focus") || key == "input_enabled" ||
+                    key == "cursor" || key == "a11y_name";
+                if (decorative_gradient) {
+                    if (interaction || key == "enabled") continue;
+                    if ((key == "gradient_x0" || key == "gradient_x1" || key == "gradient_y0" || key == "gradient_y1") && kind != "linear") continue;
+                    if (key.starts_with("gradient_center_") && kind == "linear") continue;
+                    if ((key.starts_with("gradient_outer_") || key.starts_with("gradient_radius") || key == "gradient_ellipse") && kind != "radial") continue;
+                    if (key.starts_with("gradient_angle") && kind != "sweep") continue;
+                }
                 const auto gradient_field = std::ranges::find(gradient_fields, desc.key, &property_descriptor::key);
                 const bool gradient_color = gradient_field != gradient_fields.end();
                 const bool panel_gradient_field = desc.key.starts_with("background_gradient_");
@@ -1435,15 +1468,16 @@ struct designer_workbench::impl {
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (gradient_color || panel_gradient_field) row.category = "Gradient colors";
+                if (decorative_gradient && key.starts_with("gradient_"))
+                    row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
+                else if (gradient_color || panel_gradient_field) row.category = "Gradient colors";
                 else if (desc.key.starts_with("dock_") || desc.key == "page_title" || desc.key == "tab_enabled") {
                     if (!place) continue;
                     const auto& parent = doc.nodes.at(place->first).type;
                     if (desc.key == "page_title" ? (parent != "dock" && parent != "tabview") :
                         (desc.key == "tab_enabled" ? parent != "tabview" : parent != "dock")) continue;
                     row.category = "Pages";
-                } else if (desc.key.starts_with("tooltip") || desc.key.starts_with("focus") || desc.key == "input_enabled" ||
-                           desc.key == "cursor" || desc.key == "a11y_name") row.category = "Interaction";
+                } else if (interaction) row.category = "Interaction";
                 else if (item.type == "image" && desc.key != "resource" && std::string_view(category) == "Content")
                     row.category = "Image";
                 else if (desc.key.starts_with("scroll") || desc.key.starts_with("margin_") || desc.key == "max_width" ||
@@ -1466,6 +1500,14 @@ struct designer_workbench::impl {
                     row.tooltip = strings.text("workbench.inspector.text_orientation.hint",
                         "Vertical text uses one column. Increase the height or set it to 0 for automatic sizing.");
                 }
+                if (decorative_gradient && row.category == "Gradient transform")
+                    row.tooltip = strings.text("workbench.inspector.gradient_transform.hint", "Transforms the paint, not the shape. Translation is relative to the widget size.");
+                else if (decorative_gradient && key.starts_with("gradient_angle"))
+                    row.tooltip = strings.text("workbench.inspector.gradient_angle.hint", "Degrees clockwise from the right (0–360). Reverse the angles to reverse the sweep.");
+                else if (decorative_gradient && key.starts_with("gradient_radius"))
+                    row.tooltip = strings.text("workbench.inspector.gradient_radius.hint", "Relative to the shorter side; 0.5 is half of that side.");
+                else if (decorative_gradient && desc.type == value_type::number && row.category == "Gradient paint")
+                    row.tooltip = strings.text("workbench.inspector.gradient_position.hint", "Relative to the widget. 0 is the left or top edge; 1 is the right or bottom edge.");
                 switch (desc.type) {
                 case value_type::boolean:
                     row.type = kit::property_type::boolean;
@@ -1499,6 +1541,22 @@ struct designer_workbench::impl {
                             strings.text("workbench.inspector.color_hint", "Enter #RRGGBB or #RRGGBBAA, or use the swatch. Clear for the default color.");
                     }
                     break;
+                case value_type::gradient_stops: {
+                    const auto editor_text = [](const std::string& json) {
+                        std::vector<gradient_stop> stops;
+                        std::string error;
+                        kit::gradient_value value;
+                        if (decode_gradient_stops(json, stops, error))
+                            for (const auto& stop : stops) value.stops.push_back({stop.offset, stop.color});
+                        return kit::gradient_editor::format_value(value);
+                    };
+                    row.type = kit::property_type::gradient;
+                    row.value = editor_text(row.value);
+                    row.default_value = editor_text(row.default_value);
+                    row.gradient_stop_limit = max_gradient_stops;
+                    row.tooltip = strings.text("workbench.inspector.gradient_stops.hint", "Click to edit up to 32 color stops and their opacity. Changes preview immediately.");
+                    break;
+                }
                 case value_type::items:
                     row.multiline = true;
                     row.value = format_items(row.value);
@@ -1557,8 +1615,8 @@ struct designer_workbench::impl {
         add_descriptors(common_properties(), "Geometry & state");
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
-        constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Geometry & state", "Pages",
-            "Appearance", "Gradient colors", "Image", "Layout details", "Interaction"};
+        constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Geometry & state", "Pages",
+            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

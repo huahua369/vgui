@@ -20,6 +20,7 @@ gui实现
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -741,6 +742,12 @@ struct vgui_label_column
 	float row_height = 0.0f;
 };
 
+struct vgui_gradient_paint
+{
+	vgui_gradient_desc desc{};
+	std::vector<vgui_gradient_stop> stops;
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
@@ -793,6 +800,7 @@ struct vgui_widget
 	vgui_color bg = 0;
 	vgui_color panel_gradient_start = 0, panel_gradient_end = 0;
 	bool panel_gradient_enabled = false, panel_gradient_horizontal = false;
+	std::unique_ptr<vgui_gradient_paint> gradient_paint;
 	vgui_color border = 0;
 	vgui_color text_color = 0;
 	vgui_color accent = 0;
@@ -4867,6 +4875,7 @@ static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, co
 
 	switch (kind)
 	{
+	case VGUI_GRADIENT: w->input_enabled = 0; break;
 	case VGUI_PANEL:
 		w->bg = th.panel_bg;
 		w->border = th.panel_border;
@@ -15916,6 +15925,84 @@ static void vgui_draw_dock(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, vgui_clip_
 	vgui_draw_focus(w, cb, vg);
 }
 
+static void vgui_draw_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	const float x = w->abs_x, y = w->abs_y, width = w->abs_w, height = w->abs_h;
+	if (w->bg) vgui_fill_rect(cb, vg, x, y, width, height, w->rounding, vgui_widget_color(w, w->bg));
+	if (w->gradient_paint && w->opacity > 0.0f)
+	{
+		const auto& paint = *w->gradient_paint;
+		const auto& d = paint.desc;
+		const auto& a = d.affine;
+		const float px = d.x0 * width, py = d.y0 * height;
+		const float ex = d.x1 * width, ey = d.y1 * height;
+		const float s = std::min(width, height);
+		vg_pattern_t* pat = nullptr;
+		switch (d.kind)
+		{
+		case VGUI_GRADIENT_LINEAR:
+			pat = cb->new_pattern_linear(vg, px, py, ex, ey);
+			break;
+		case VGUI_GRADIENT_RADIAL:
+		{
+			// OVG leaves a 1-unit margin around the focal circle but divides
+			// by the distance between centers if the margin is exactly met.
+			const auto outer = std::max(2.0f, d.radius1 * s);
+			const auto inner = std::min(d.radius0 * s, outer - 1.01f);
+			pat = cb->new_pattern_radial(vg, px, py, inner, ex, ey, outer, false);
+			break;
+		}
+		case VGUI_GRADIENT_SWEEP:
+			// The OVG shader measures atan2 in half-turns, not radians.
+			pat = cb->new_pattern_sweep(vg, px, py, d.start_degrees / 180.0f, d.end_degrees / 180.0f);
+			break;
+		}
+		if (pat && pat->data)
+		{
+			auto& g = *static_cast<vg_gradient_t*>(pat->data);
+			const int extend = d.extend == VGUI_GRADIENT_REPEAT ? VG_EXTEND_REPEAT :
+				d.extend == VGUI_GRADIENT_REFLECT ? VG_EXTEND_REFLECT : VG_EXTEND_PAD;
+			cb->pattern_set_extend(pat, extend);
+			// This OVG version changes only vg_pattern_t::extend, but SDL3
+			// uploads the value from the gradient payload.
+			g.extend = extend;
+
+			// Keep canonical axes/radii/angles for the shader and move only the
+			// reference origin. The paint's inverse linear transform is sampled
+			// in the native Q10 matrix, avoiding OVG's control-point-only affine
+			// path (which would also transform sweep angles as if they were radii).
+			const float det = a[0] * a[3] - a[1] * a[2];
+			const float ellipse = d.kind == VGUI_GRADIENT_RADIAL && d.ellipse ? 2.0f : 1.0f;
+			const auto q10 = [](double v) { return static_cast<int>(std::round(std::clamp(v * 1024, -2147483647.0, 2147483647.0))); };
+			g.m = {q10(a[3] / (det * ellipse)), q10(-double(a[2]) * width / (height * det * ellipse)),
+				q10(-double(a[1]) * height / (width * det)), q10(a[0] / det)};
+			// Ellipse scaling is centred at the outer circle before the affine.
+			const float center_x = (ellipse == 1.0f ? g.cp[0].x : ex + (g.cp[0].x - ex) * ellipse) / width;
+			const float center_y = g.cp[0].y / height;
+			const float dx = x + width * (a[0] * center_x + a[2] * center_y + a[4]) - g.cp[0].x;
+			const float dy = y + height * (a[1] * center_x + a[3] * center_y + a[5]) - g.cp[0].y;
+			g.cp[0].x += dx;
+			g.cp[0].y += dy;
+			if (d.kind == VGUI_GRADIENT_LINEAR) { g.cp[0].z += dx; g.cp[0].w += dy; }
+			if (d.kind == VGUI_GRADIENT_RADIAL) { g.cp[1].x += dx; g.cp[1].y += dy; }
+			for (const auto& stop : paint.stops)
+			{
+				float r, g, b, alpha;
+				ovg_tools::color_to_f(vgui_ovg_color(vgui_widget_color(w, stop.color)), r, g, b, alpha);
+				cb->pattern_add_color_stop(pat, stop.offset, r, g, b, alpha);
+			}
+			cb->save(vg);
+			const auto radius = ovg_tools::round_rect_radius(width, height, w->rounding);
+			if (radius > 0) cb->rounded_rectangle(vg, x, y, width, height, radius);
+			else cb->rectangle(vg, x, y, width, height);
+			cb->set_source(vg, pat);
+			cb->fill(vg);
+			cb->restore(vg);
+		}
+	}
+	vgui_stroke_frame(cb, vg, x, y, width, height, w->rounding, vgui_widget_color(w, w->border), w->border_width);
+}
+
 static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	vgui_clip_state* clips)
 {
@@ -15997,6 +16084,7 @@ static void vgui_draw_widget_inner(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 			std::max(ctx->style.separator.thickness, w->abs_h), 0,
 			vgui_widget_color(w, w->bg ? w->bg : ctx->theme.panel_border));
 		break;
+	case VGUI_GRADIENT: vgui_draw_gradient(w, cb, vg); break;
 	case VGUI_LIST: vgui_draw_list(w, cb, vg, clips); break;
 	case VGUI_TREE: vgui_draw_tree(w, cb, vg, clips); break;
 	case VGUI_MENU: vgui_draw_menu(w, cb, vg, clips); break;
@@ -17164,7 +17252,7 @@ extern "C" {
 
 	void vgui_widget_set_focusable(vgui_widget* widget, int focusable)
 	{
-		if (widget) widget->focusable = focusable ? 1 : 0;
+		if (widget && widget->kind != VGUI_GRADIENT) widget->focusable = focusable ? 1 : 0;
 	}
 
 	int vgui_widget_get_focusable(vgui_widget* widget)
@@ -17358,7 +17446,7 @@ extern "C" {
 
 	void vgui_widget_set_input_enabled(vgui_widget* widget, int enabled)
 	{
-		if (widget) widget->input_enabled = enabled ? 1 : 0;
+		if (widget && widget->kind != VGUI_GRADIENT) widget->input_enabled = enabled ? 1 : 0;
 	}
 
 	void vgui_widget_set_multi_click_flags(vgui_widget* widget, int flags)
@@ -17483,6 +17571,50 @@ extern "C" {
 		panel->panel_gradient_enabled = false;
 		vgui_recording_invalidate_chain(panel, true);
 		vgui_widget_mark_dirty(panel);
+	}
+
+	void vgui_gradient_desc_default(vgui_gradient_desc* desc)
+	{
+		if (desc) *desc = {VGUI_GRADIENT_LINEAR, VGUI_GRADIENT_PAD, 0.5f, 0, 0.5f, 1,
+			0, 0.5f, 0, 0, 360, {1, 0, 0, 1, 0, 0}};
+	}
+
+	int vgui_gradient_set(vgui_widget* widget, const vgui_gradient_desc* desc,
+		const vgui_gradient_stop* stops, size_t count)
+	{
+		static_assert(VGUI_GRADIENT_MAX_STOPS <= MAX_STOPS);
+		if (!widget || widget->kind != VGUI_GRADIENT || !desc || !stops || count < 2 || count > VGUI_GRADIENT_MAX_STOPS)
+			return 0;
+		const auto& d = *desc;
+		const auto& a = d.affine;
+		const auto bounded = [](float v) { return std::isfinite(v) && std::abs(v) <= 16.f; };
+		if (d.kind < VGUI_GRADIENT_LINEAR || d.kind > VGUI_GRADIENT_SWEEP ||
+			d.extend < VGUI_GRADIENT_PAD || d.extend > VGUI_GRADIENT_REFLECT ||
+			!bounded(d.x0) || !bounded(d.y0) || !bounded(d.x1) || !bounded(d.y1) ||
+			!std::all_of(std::begin(a), std::end(a), bounded) || std::abs(a[0] * a[3] - a[1] * a[2]) < 0.0001f)
+			return 0;
+		if ((d.kind == VGUI_GRADIENT_LINEAR && std::hypot(d.x1 - d.x0, d.y1 - d.y0) < 0.0001f) ||
+			(d.kind == VGUI_GRADIENT_RADIAL && (!bounded(d.radius0) || !bounded(d.radius1) || d.radius0 < 0 || d.radius1 <= d.radius0)) ||
+			(d.kind == VGUI_GRADIENT_SWEEP && (!std::isfinite(d.start_degrees) || !std::isfinite(d.end_degrees) ||
+				d.start_degrees < 0 || d.start_degrees > 360 || d.end_degrees < 0 || d.end_degrees > 360 ||
+				std::abs(d.end_degrees - d.start_degrees) < 0.001f))) return 0;
+		for (size_t i = 0; i < count; ++i)
+			if (!(stops[i].offset >= 0 && stops[i].offset <= 1) || (i && stops[i].offset <= stops[i - 1].offset)) return 0;
+		if (auto* current = widget->gradient_paint.get())
+		{
+			const auto key = [](const vgui_gradient_desc& v) {
+				return std::tie(v.kind, v.extend, v.x0, v.y0, v.x1, v.y1, v.radius0, v.radius1, v.ellipse, v.start_degrees, v.end_degrees);
+			};
+			if (key(current->desc) == key(d) && std::equal(std::begin(a), std::end(a), current->desc.affine) &&
+				std::equal(current->stops.begin(), current->stops.end(), stops, stops + count,
+					[](const auto& lhs, const auto& rhs) { return lhs.offset == rhs.offset && lhs.color == rhs.color; })) return 1;
+		}
+		else widget->gradient_paint = std::make_unique<vgui_gradient_paint>();
+		widget->gradient_paint->desc = d;
+		widget->gradient_paint->stops.assign(stops, stops + count);
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_widget_mark_dirty(widget);
+		return 1;
 	}
 
 	void vgui_widget_set_border(vgui_widget* widget, vgui_color color, float width)

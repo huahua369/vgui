@@ -1056,6 +1056,110 @@ void test_panel_gradients() {
         "solid style ignores saved gradient endpoints");
 }
 
+void test_decorative_gradients() {
+    ui::document doc;
+    ui::diagnostic error;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["button","paint"]},
+        "button":{"type":"button","props":{"x":14,"y":20,"width":80,"height":60,"action":"button.run"}},
+        "paint":{"type":"gradient","props":{"x":14,"y":20,"width":80,"height":60,"input_enabled":true,"focusable":"yes",
+            "rounding":6,"opacity":0.5,"gradient_extend":"reflect","gradient_affine_xx":2,"gradient_affine_yx":0.25,"gradient_affine_tx":0.125,
+            "gradient_stops":[{"offset":0,"color":"#923050"},{"offset":0.4,"color":"#0955AE80"},{"offset":1,"color":"#FFE06400"}]}}
+    }})", doc, &error), "read a resource-free gradient overlay");
+    std::string json;
+    ui::document reloaded;
+    check(ui::encode_json(doc, json) && ui::decode_json(json, reloaded) && reloaded == doc,
+        "multistop colors should survive JSON array roundtrip with alpha");
+    const auto invalid = [&](const char* field, ui::value value) {
+        auto broken = doc;
+        broken.nodes.at("paint").props[field] = std::move(value);
+        check(!ui::validate(broken), std::string("gradient validator accepted invalid ") + field);
+    };
+    invalid("gradient_stops", R"([{"offset":0,"color":"#123456"},{"offset":0,"color":"#654321"}])"s);
+    invalid("gradient_stops", R"([{"offset":0,"color":"#123456"},{"offset":1,"color":"bad"}])"s);
+    std::vector<ui::gradient_stop> excess(33);
+    for (std::size_t i = 0; i < excess.size(); ++i) excess[i] = {float(i) / 32, "#123456"};
+    invalid("gradient_stops", ui::encode_gradient_stops(excess));
+    invalid("gradient_affine_yy", 0.0);
+    invalid("gradient_y1", 0.0);
+
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = 160;
+    vg->height = 120;
+    static std::vector<vg_gradient_t> fills;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* p) {
+        if (p && p->type >= VG_PATTERN_TYPE_LINEAR && p->data) fills.push_back(*static_cast<vg_gradient_t*>(p->data));
+        set_source(view, p);
+    };
+    const auto draw = [&] {
+        cb->clear(vg.get());
+        fills.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+    };
+    ui::runtime rt(ctx.get());
+    action_log log;
+    const auto mount = [&](std::uint64_t revision) {
+        ui::runtime_bindings bindings;
+        bindings.on_action = on_action;
+        bindings.user = &log;
+        check(rt.mount(doc, revision, bindings) && rt.layout({160, 120, 1}), "mount gradient widget");
+    };
+    mount(1);
+    draw();
+    check(fills.size() == 1, "gradient overlay must emit exactly one native brush");
+    const auto& linear = fills.front();
+    check(linear.count == 3 && near(linear.stops[1], 0.4f) && near(linear.colors[0].a, 128.f / 255) &&
+        near(linear.colors[1].a, 64.f / 255) && near(linear.colors[2].a, 0) && linear.extend == VG_EXTEND_REFLECT,
+        "three OVG color stops should preserve offsets, opacity and reflect mode");
+    check(linear.m.x == 512 && linear.m.z == -96 && near(linear.cp[0].x, 104) && near(linear.cp[0].y, 27.5f),
+        "gradient transform must use local dimensions and preserve the canonical gradient axis");
+    auto* widget = rt.widget("paint");
+    vgui_widget_set_input_enabled(widget, 1);
+    vgui_widget_set_focusable(widget, 1);
+    vgui_set_focus(ctx.get(), widget);
+    check(vgui_get_focus(ctx.get()) != widget, "gradient overlay must never take keyboard focus");
+    vgui_input_mouse_down(ctx.get(), 1, 40, 40, 1);
+    vgui_input_mouse_up(ctx.get(), 1, 40, 40, 1);
+    check(log.calls == 1 && log.id == "button" && log.action == "button.run", "gradient overlay swallowed the click on the button below it");
+
+    auto& p = doc.nodes.at("paint").props;
+    p.erase("gradient_affine_xx"); p.erase("gradient_affine_yx"); p.erase("gradient_affine_tx");
+    p["gradient_kind"] = "radial"s;
+    p["gradient_ellipse"] = true;
+    p["gradient_radius0"] = 0.1;
+    p["gradient_radius1"] = 0.45;
+    mount(2);
+    draw();
+    check(fills.size() == 1 && fills[0].type == VG_PATTERN_TYPE_RADIAL && fills[0].m.x == 512 &&
+        near(fills[0].cp[0].x, 54) && near(fills[0].cp[0].z, 6) && near(fills[0].cp[1].z, 27),
+        "radial gradients must use both radii and stretch their paint horizontally when elliptical");
+    p["gradient_kind"] = "sweep"s;
+    p["gradient_extend"] = "repeat"s;
+    p["gradient_angle0"] = 90.0;
+    p["gradient_angle1"] = 270.0;
+    mount(3);
+    auto* root = vgui_root(ctx.get());
+    vgui_widget_set_recording_hint(root, 1);
+    draw();
+    check(fills.size() == 1 && fills[0].type == VG_PATTERN_TYPE_SWEEP && fills[0].extend == VG_EXTEND_REPEAT &&
+        near(fills[0].cp[0].z, 0.5f) && near(fills[0].cp[0].w, 1.5f), "sweep angles must reach OVG in half-turns");
+    draw();
+    check(fills.empty(), "static gradient should be cached with its ancestor");
+    vgui_gradient_desc paint;
+    vgui_gradient_desc_default(&paint);
+    const vgui_gradient_stop stops[] = {{0, 0xFFFF0012}, {1, 0x00080602}};
+    widget = rt.widget("paint");
+    check(vgui_gradient_set(widget, &paint, stops, 2), "could not change gradient from host code");
+    const auto revision = vgui_context_paint_revision(ctx.get());
+    check(vgui_gradient_set(widget, &paint, stops, 2) && vgui_context_paint_revision(ctx.get()) == revision,
+        "same gradient update should not request another frame");
+    draw();
+    check(fills.size() == 1 && fills[0].type == VG_PATTERN_TYPE_LINEAR, "new paint must invalidate its recorded ancestor");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1246,6 +1350,7 @@ int main(int argc, char** argv) {
         test_declarative_widgets();
         test_button_gradients();
         test_panel_gradients();
+        test_decorative_gradients();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

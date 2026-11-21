@@ -542,6 +542,12 @@ namespace vgui_editor_kit {
 		return enabled_;
 	}
 
+	void gradient_editor::set_stop_limit(std::size_t limit)
+	{
+		stop_limit_ = std::clamp<std::size_t>(limit, 2, 64);
+		sync_controls();
+	}
+
 	void gradient_editor::select_clamped(int index)
 	{
 		if (value_.stops.empty())
@@ -584,7 +590,7 @@ namespace vgui_editor_kit {
 				time_spin_->set_value(value_.stops[(std::size_t)selected_].t);
 		}
 		if (add_)
-			vgui_widget_set_enabled(add_, editable ? 1 : 0);
+			vgui_widget_set_enabled(add_, editable && value_.stops.size() < stop_limit_ ? 1 : 0);
 		if (remove_)
 			vgui_widget_set_enabled(remove_,
 				editable && value_.stops.size() > 2 ? 1 : 0);
@@ -713,7 +719,7 @@ namespace vgui_editor_kit {
 
 	bool gradient_editor::add_stop(float t)
 	{
-		if (read_only_ || !enabled_ || value_.stops.size() >= 64)
+		if (read_only_ || !enabled_ || value_.stops.size() >= stop_limit_)
 			return false;
 		t = std::clamp(t, 0.0f, 1.0f);
 		for (const gradient_stop& stop : value_.stops)

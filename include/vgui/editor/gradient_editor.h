@@ -77,6 +77,8 @@ namespace vgui_editor_kit {
 		bool read_only() const noexcept;
 		void set_enabled(bool enabled);
 		bool enabled() const noexcept;
+		/* Optional limit for adding stops interactively (2..64). */
+		void set_stop_limit(std::size_t limit);
 
 		/* Selection is by index into the sorted stop list.  Returns false
 		 * when the index is out of range. */
@@ -163,6 +165,7 @@ namespace vgui_editor_kit {
 
 		std::string id_ = "gradient_editor";
 		gradient_value value_;
+		std::size_t stop_limit_ = 64;
 		int selected_ = 0;
 		bool read_only_ = false;
 		bool enabled_ = true;

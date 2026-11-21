@@ -1,6 +1,7 @@
 #include "model.h"
 #include "primitive_schema.h"
 #include "collection_schema.h"
+#include "gradient_schema.h"
 #include "container_schema.h"
 
 #include <array>
@@ -115,6 +116,7 @@ const type_descriptor descriptors[] = {
     {"button", "Button", false, button_properties, 120, 36},
     {"edit", "Edit", false, edit_properties, 200, 36},
     {"image", "Image", false, image_properties, 128, 128},
+    {"gradient", "Gradient", false, detail::gradient_properties, 160, 90},
     {"checkbox", "Checkbox", false, detail::checkbox_properties, 144, 28},
     {"radio", "Radio Button", false, detail::radio_properties, 144, 28},
     {"switch", "Switch", false, detail::switch_properties, 144, 28},
@@ -389,6 +391,39 @@ std::optional<std::uint32_t> parse_text_color(sv text)
     return (color >> 8) | ((color & 0xffu) << 24);
 }
 
+bool decode_gradient_stops(sv input, std::vector<gradient_stop>& out, std::string& error)
+{
+    using json = detail::collection_items::json;
+    const auto reject = [&](const char* reason) { error = reason; return false; };
+    if (input.size() > 4096) return reject("color stop data is too long");
+    const auto stops = json::parse(input, nullptr, false);
+    if (!stops.is_array() || stops.size() < 2 || stops.size() > max_gradient_stops)
+        return reject("expected 2–32 color stops");
+    std::vector<gradient_stop> next;
+    for (const auto& stop : stops) {
+        if (!stop.is_object() || stop.size() != 2 || !stop.contains("offset") || !stop["offset"].is_number() ||
+            !stop.contains("color") || !stop["color"].is_string()) return reject("expected {offset, color} for each stop");
+        const double n = stop["offset"].get<double>();
+        const auto offset = static_cast<float>(n);
+        const auto& color = stop["color"].get_ref<const std::string&>();
+        if (!(n >= 0 && n <= 1) || (!next.empty() && offset - next.back().offset < 1e-4f))
+            return reject("color stop offsets must be ordered and at least 0.0001 apart in [0, 1]");
+        if (!parse_text_color(color)) return reject("expected #RRGGBB or #RRGGBBAA for each stop color");
+        next.push_back({offset, color});
+    }
+    out = std::move(next);
+    error.clear();
+    return true;
+}
+
+std::string encode_gradient_stops(std::span<const gradient_stop> stops)
+{
+    using json = detail::collection_items::json;
+    auto array = json::array();
+    for (const auto& stop : stops) array.push_back({{"offset", stop.offset}, {"color", stop.color}});
+    return array.dump();
+}
+
 std::span<const type_descriptor> types() { return descriptors; }
 std::span<const property_descriptor> common_properties() { return common; }
 
@@ -497,6 +532,12 @@ bool validate(const document& doc, diagnostic* error)
                     return (is_key(image) && doc.resources.contains(image)) ||
                         fail(error, icon_path, "unknown image resource key");
                 })) return false;
+            } else if (prop->type == value_type::gradient_stops) {
+                const auto* source = std::get_if<std::string>(&val);
+                std::vector<gradient_stop> stops;
+                std::string reason;
+                if (!source) return fail(error, prop_path, "expected a color stop array");
+                if (!decode_gradient_stops(*source, stops, reason)) return fail(error, prop_path, std::move(reason));
             } else if (!check_value(doc, *prop, val, prop_path, error)) return false;
         }
         const auto n = [&](std::string_view key) {
@@ -506,6 +547,20 @@ bool validate(const document& doc, diagnostic* error)
         if ((n("max_width") > 0 && n("min_width") > n("max_width")) ||
             (n("max_height") > 0 && n("min_height") > n("max_height")))
             return fail(error, path + "/props", "maximum size must be at least minimum size, or zero for no limit");
+        if (item.type == "gradient") {
+            const auto f = [&](sv key) { return static_cast<float>(n(key)); };
+            const auto it = item.props.find("gradient_kind");
+            const auto& kind = std::get<std::string>(it == item.props.end() ?
+                find_property(item.type, "gradient_kind")->default_value : it->second);
+            if (kind == "linear" && std::hypot(f("gradient_x1") - f("gradient_x0"), f("gradient_y1") - f("gradient_y0")) < 1e-4f)
+                return fail(error, path + "/props/gradient_x1", "linear start and end points must be different");
+            if (kind == "radial" && f("gradient_radius1") <= f("gradient_radius0"))
+                return fail(error, path + "/props/gradient_radius1", "outer radius must be larger than inner radius");
+            if (kind == "sweep" && std::abs(f("gradient_angle1") - f("gradient_angle0")) < 0.001f)
+                return fail(error, path + "/props/gradient_angle1", "sweep angles must be different");
+            if (std::abs(f("gradient_affine_xx") * f("gradient_affine_yy") - f("gradient_affine_yx") * f("gradient_affine_xy")) < 1e-4f)
+                return fail(error, path + "/props/gradient_affine_xx", "gradient transform must be invertible");
+        }
         if (item.type == "slider" || item.type == "progress") {
             const auto low = static_cast<float>(n("min_value")), high = static_cast<float>(n("max_value"));
             if (!(low < high)) return fail(error, path + "/props/min_value", "minimum must be less than maximum");
