@@ -957,14 +957,22 @@ struct designer_preview::impl {
 
     void render(float dt) {
         if (!is_mounted || remount) return;
-        if (dirty || !frame || vgui_context_paint_revision(ui.get()) != last_paint ||
-            vgui_context_has_active_animation(ui.get())) {
-            // Never let the standalone submit path reuse/submit the shell's cmd.
-            if (renderer && vgpu_current_command_buffer(renderer)) return;
-            vgui_update(ui.get(), std::isfinite(dt) ? std::clamp(dt, 0.f, .25f) : 0.f);
+        // Never let the standalone submit path reuse/submit the shell's cmd.
+        if (renderer && vgpu_current_command_buffer(renderer)) return;
+        const float step = std::isfinite(dt) ? std::clamp(dt, 0.f, .05f) : 0.f;
+        const bool layout_needed = dirty || !frame || vgui_context_paint_revision(ui.get()) != last_paint ||
+            vgui_context_has_active_animation(ui.get());
+        if (layout_needed) {
+            vgui_update(ui.get(), step);
             auto next = mounted->layout(view_for(screen));
             if (!next) { cancel_geometry(); return; }
-            if (renderer && !draw_target(*next)) {
+            frame = std::move(next);
+        }
+        // The authored paint belongs to Design. Run samples it without
+        // remounting or rebuilding the layout snapshot for paint-only updates.
+        if (run) mounted->advance_animations(dt);
+        if (layout_needed || vgui_context_paint_revision(ui.get()) != last_paint) {
+            if (renderer && !draw_target(*frame)) {
                 cancel_geometry();
                 ready = false;
                 frame.reset();
@@ -972,7 +980,6 @@ struct designer_preview::impl {
                 return;
             }
             last_paint = vgui_context_paint_revision(ui.get());
-            frame = std::move(next);
             ready = true;
             dirty = false;
             mark_canvas();

@@ -165,11 +165,21 @@ cmake --build <build-dir> --target vgui_ui_designer
 - **仿射、圆角和边框**：`gradient_affine_xx/yx/xy/yy/tx/ty` 六个系数只变换渐变填充，不变换控件轮廓；圆角和边框作为独立外观属性。透明度同时可设在单个色标和整个控件上。
 - **JSON**：新增叶节点 `type: "gradient"`；`gradient_stops` 为包含 2–32 个 `{ "offset": 0, "color": "#FFFFFF40" }` 对象的数组。色标位置在 0–1，按升序排列并留出至少 0.0001 的间距。
 
-#### 动画可行性（尚未接入工作台）
+#### 扫光与变色
 
-建议先做扫光和变色：用现有 `TimelineView` 的标量采样和 `CurveEditor` 的缓动编辑，给节点绑定端点、圆心、半径、角跨度、仿射平移、色标位置及 RGBA 轨道。先固定色标数量和身份，插值后保持位置有序；颜色宜在线性光空间用预乘 Alpha 插值。渐变类型、延展模式切换用阶跃，需平滑切换时再做交叉淡化。运行时采样直接更新渐变画笔（`vgui_gradient_set`），不逐帧写回 JSON 或重新挂载；只在可见动画活跃且值改变时请求绘制，结束后恢复按需渲染。现有时间轴还缺少 UI 文档轨道持久化及运行时绑定。
+打开 [gradient-animation.vgui.json](../sample/res/gradient-animation.vgui.json)。选中渐变控件，在 **渐变动画 → 动画效果** 选 **扫光** 或 **变色**。切到 **运行** 自动播放；切回 **设计** 恢复原始渐变，下次进入运行时从头开始。单次播放停在终点，隐藏的控件和不可见的页签不推进。JSON 未设置动画时保持静止。
 
-位置、非等比缩放、旋转和斜切属于变换，动画化圆角等尺寸参数可以改变规则轮廓；让任意路径连续变形则需要对应的路径命令、轮廓控制点和重新细分，不应与渐变动画放在同一期。若要在运行中缩放或移动大面积、多层渐变，先测 GPU 预览与重绘成本，再确定层数预算。
+| JSON 属性 | 默认值 | 含义 |
+|---|---|---|
+| `gradient_animation` | `"none"` | `"shine"` 扫光，`"color"` 变色 |
+| `gradient_animation_duration` | `2` | 总时长，0.1–60 秒。循环变色时包括去程和回程 |
+| `gradient_animation_loop` | `true` | 扫光从头重复；变色往返播放。关闭时只播一次 |
+| `gradient_animation_dx` / `gradient_animation_dy` | `2` / `0` | 扫光总位移，以控件宽／高为单位，原渐变位置是中点。让高光两端透明，循环接缝不显眼 |
+| `gradient_animation_color` | `"#70BFFF"` | 变色目标，接受 `#RRGGBB` / `#RRGGBBAA`。以预乘 Alpha、线性光做颜色插值；仍保留原色标的透明度分布 |
+
+动画属性随文档保存和导出。宿主可在 `layout()` 之后、绘制之前每帧调用 `ui_design::runtime::advance_animations(dt)`（`dt` 以秒计）；不调用则保持静止。播放只改当前画笔，不写回 JSON、不重建控件。只在画笔实际改变时请求新帧。
+
+完整的时间轴、任意路径变形不在这一版。后续可复用 `TimelineView` 和 `CurveEditor`，为 UI 文档加入轨道持久化和播放器绑定。扫光和仿射只移动色场；轮廓变形需要独立的路径插值。
 
 ## 9. U3 交付文档与资源清单
 

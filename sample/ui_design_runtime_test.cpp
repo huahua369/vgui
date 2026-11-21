@@ -1160,6 +1160,89 @@ void test_decorative_gradients() {
     check(fills.size() == 1 && fills[0].type == VG_PATTERN_TYPE_LINEAR, "new paint must invalidate its recorded ancestor");
 }
 
+void test_gradient_animations() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["shine","group"]},
+        "shine":{"type":"gradient","props":{"x":10,"y":20,"width":100,"height":30,
+            "gradient_animation":"shine","gradient_animation_duration":2,"gradient_animation_loop":false}},
+        "group":{"type":"panel","props":{"x":10,"y":70,"width":100,"height":30},"children":["color"]},
+        "color":{"type":"gradient","props":{"width":100,"height":30,
+            "gradient_animation":"color","gradient_animation_color":"#0000FF80",
+            "gradient_stops":[{"offset":0,"color":"#FF0000"},{"offset":0.4,"color":"#00FF0080"},{"offset":1,"color":"#00FF0000"}]}}
+    }})", doc), "decode two animated gradients");
+    std::string json;
+    ui::document reloaded;
+    check(ui::encode_json(doc, json) && ui::decode_json(json, reloaded) && reloaded == doc,
+        "gradient animation settings should round-trip through JSON");
+    auto invalid = doc;
+    invalid.nodes.at("shine").props["gradient_animation_duration"] = 0.0;
+    check(!ui::validate(invalid), "zero animation duration must be rejected");
+    invalid = doc;
+    invalid.nodes.at("shine").props["gradient_affine_tx"] = 16.0;
+    check(!ui::validate(invalid), "translation and animated travel cannot exceed the paint bounds");
+
+    const auto authored = doc;
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = vg->height = 200;
+    static std::vector<vg_gradient_t> layers;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* p) {
+        if (p && p->type == VG_PATTERN_TYPE_LINEAR && p->data) layers.push_back(*static_cast<vg_gradient_t*>(p->data));
+        set_source(view, p);
+    };
+    const auto draw = [&](std::size_t count = 2) {
+        cb->clear(vg.get());
+        layers.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(layers.size() == count, "draw expected number of gradient layers");
+    };
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1) && rt.layout({200, 200, 1}), "mount animations without playing");
+    auto* original = rt.widget("shine");
+    draw();
+    check(near(layers[0].cp[0].x, 60) && near(layers[1].colors[0].r, 1.f), "layout without a host tick stays authored");
+    rt.advance_animations(0);
+    draw();
+    check(near(layers[0].cp[0].x, -40), "sweep starts half a travel before the authored origin");
+    rt.advance_animations(.5);
+    draw();
+    const auto mix = layers[1].colors[0];
+    check(near(layers[0].cp[0].x, 10) && near(layers[0].cp[0].y, 20), "a quarter sweep translates paint at constant speed");
+    check(near(mix.r, .836f) && near(mix.b, .613f) && near(mix.a, .751f) && near(layers[1].colors[2].a, 0),
+        "mid-fade uses linear-light premultiplied colors, even on transparent stops");
+    rt.advance_animations(.5);
+    draw();
+    check(near(layers[0].cp[0].x, 60) && near(layers[1].colors[0].b, 1) && near(layers[1].colors[1].a, .252f),
+        "the half-cycle reaches the target color while preserving the alpha envelope");
+    rt.advance_animations(1);
+    draw();
+    check(near(layers[0].cp[0].x, 160) && near(layers[1].colors[0].r, 1), "single sweep holds the endpoint; loop returns to the original color");
+
+    auto* group = rt.widget("group");
+    vgui_widget_set_visible(group, 0);
+    const auto paused = vgui_context_paint_revision(ctx.get());
+    rt.advance_animations(7);
+    check(vgui_context_paint_revision(ctx.get()) == paused, "hidden animations and finished one-shots must not request frames");
+    draw(1);
+    check(near(layers[0].cp[0].x, 160) && rt.widget("shine") == original && doc == authored,
+        "sampling and stopping never remount widgets or edit the document");
+    vgui_widget_set_visible(group, 1);
+    rt.advance_animations(.5);
+    draw();
+    check(near(layers[1].colors[0].r, mix.r), "showing an animated child resumes from its previous phase");
+    const auto frame = vgui_context_paint_revision(ctx.get());
+    rt.advance_animations(-1);
+    rt.advance_animations(std::numeric_limits<double>::quiet_NaN());
+    rt.advance_animations(0);
+    check(vgui_context_paint_revision(ctx.get()) == frame, "invalid or unchanged sample times never dirty the paint");
+    check(rt.mount(doc, 2) && rt.layout({200, 200, 1}), "remount the animation document");
+    draw();
+    check(near(layers[0].cp[0].x, 60) && near(layers[1].colors[0].r, 1), "remount restores the authored gradient");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1351,6 +1434,7 @@ int main(int argc, char** argv) {
         test_button_gradients();
         test_panel_gradients();
         test_decorative_gradients();
+        test_gradient_animations();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

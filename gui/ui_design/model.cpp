@@ -549,9 +549,11 @@ bool validate(const document& doc, diagnostic* error)
             return fail(error, path + "/props", "maximum size must be at least minimum size, or zero for no limit");
         if (item.type == "gradient") {
             const auto f = [&](sv key) { return static_cast<float>(n(key)); };
-            const auto it = item.props.find("gradient_kind");
-            const auto& kind = std::get<std::string>(it == item.props.end() ?
-                find_property(item.type, "gradient_kind")->default_value : it->second);
+            const auto choice = [&](sv key) -> const std::string& {
+                const auto it = item.props.find(key);
+                return std::get<std::string>(it == item.props.end() ? find_property(item.type, key)->default_value : it->second);
+            };
+            const auto& kind = choice("gradient_kind");
             if (kind == "linear" && std::hypot(f("gradient_x1") - f("gradient_x0"), f("gradient_y1") - f("gradient_y0")) < 1e-4f)
                 return fail(error, path + "/props/gradient_x1", "linear start and end points must be different");
             if (kind == "radial" && f("gradient_radius1") <= f("gradient_radius0"))
@@ -560,6 +562,13 @@ bool validate(const document& doc, diagnostic* error)
                 return fail(error, path + "/props/gradient_angle1", "sweep angles must be different");
             if (std::abs(f("gradient_affine_xx") * f("gradient_affine_yy") - f("gradient_affine_yx") * f("gradient_affine_xy")) < 1e-4f)
                 return fail(error, path + "/props/gradient_affine_xx", "gradient transform must be invertible");
+            if (choice("gradient_animation") == "shine") {
+                const auto within = [&](sv axis, sv travel) {
+                    return std::abs(n(axis)) + std::abs(n(travel)) * 0.5 <= detail::gradient_limit;
+                };
+                if (!within("gradient_affine_tx", "gradient_animation_dx") || !within("gradient_affine_ty", "gradient_animation_dy"))
+                    return fail(error, path + "/props/gradient_animation", "shine travel exceeds the supported gradient translation range");
+            }
         }
         if (item.type == "slider" || item.type == "progress") {
             const auto low = static_cast<float>(n("min_value")), high = static_cast<float>(n("max_value"));

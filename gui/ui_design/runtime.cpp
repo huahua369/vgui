@@ -5,6 +5,7 @@
 #include "../vgui_internal.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 #include <limits>
@@ -31,9 +32,14 @@ struct widget_properties {
     std::optional<std::uint32_t> color(std::string_view key) const { return parse_text_color(text(key)); }
 };
 
-bool apply_gradient(vgui_widget* widget, const widget_properties& props) {
+struct gradient_paint {
+    vgui_gradient_desc desc{};
+    std::vector<vgui_gradient_stop> stops;
+};
+
+bool read_gradient(gradient_paint& result, const widget_properties& props) {
     static_assert(max_gradient_stops == VGUI_GRADIENT_MAX_STOPS);
-    vgui_gradient_desc paint;
+    auto& paint = result.desc;
     vgui_gradient_desc_default(&paint);
     const auto& kind = props.text("gradient_kind");
     const auto& spread = props.text("gradient_extend");
@@ -54,10 +60,70 @@ bool apply_gradient(vgui_widget* widget, const widget_properties& props) {
     std::vector<gradient_stop> decoded;
     std::string error;
     if (!decode_gradient_stops(props.text("gradient_stops"), decoded, error)) return false;
-    vgui_gradient_stop stops[max_gradient_stops];
-    for (std::size_t i = 0; i < decoded.size(); ++i) stops[i] = {decoded[i].offset, *parse_text_color(decoded[i].color)};
-    return vgui_gradient_set(widget, &paint, stops, decoded.size()) != 0;
+    result.stops.reserve(decoded.size());
+    for (const auto& stop : decoded) result.stops.push_back({stop.offset, *parse_text_color(stop.color)});
+    return true;
 }
+
+using linear_color = std::array<float, 4>;
+linear_color linear_rgba(vgui_color c) {
+    const auto linear_channel = [](unsigned x) {
+        const float srgb = float(x & 255u) / 255.f;
+        return srgb <= .04045f ? srgb / 12.92f : std::pow((srgb + .055f) / 1.055f, 2.4f);
+    };
+    return {linear_channel(c >> 16), linear_channel(c >> 8), linear_channel(c), float(c >> 24) / 255.f};
+}
+
+vgui_color fade_color(const linear_color& source, const linear_color& target, float t) {
+    // Keep the original alpha envelope. A partially transparent target can
+    // dim a highlight, but can never turn its transparent endpoints opaque.
+    const float target_alpha = source[3] * target[3];
+    const float alpha = std::lerp(source[3], target_alpha, t);
+    const auto byte = [](float x) { return static_cast<std::uint32_t>(std::lround(std::clamp(x, 0.f, 1.f) * 255.f)); };
+    std::uint32_t packed = byte(alpha);
+    for (int i = 0; i < 3; ++i) {
+        const float channel = alpha > 0.f ? std::lerp(source[i] * source[3], target[i] * target_alpha, t) / alpha
+            : std::lerp(source[i], target[i], t);
+        const float srgb = channel <= .0031308f ? 12.92f * channel : 1.055f * std::pow(channel, 1.f / 2.4f) - .055f;
+        packed = (packed << 8) | byte(srgb);
+    }
+    return packed;
+}
+
+struct gradient_animation {
+    vgui_widget* widget;
+    gradient_paint source;
+    double duration;
+    bool loop, shine;
+    float dx = 0, dy = 0;
+    linear_color target{};
+    std::vector<linear_color> base_colors;
+    double elapsed = 0;
+    bool sampled = false;
+
+    void advance(double delta) {
+        const double next = loop ? std::fmod(elapsed + std::fmod(delta, duration), duration)
+            : std::min(elapsed + delta, duration);
+        if (sampled && next == elapsed) return;
+        elapsed = next;
+        sampled = true;
+        const auto phase = static_cast<float>(elapsed / duration);
+        const auto& stops = source.stops;
+        auto paint = source.desc;
+        if (shine) {
+            paint.affine[4] += dx * (phase - .5f);
+            paint.affine[5] += dy * (phase - .5f);
+            vgui_gradient_set(widget, &paint, stops.data(), stops.size());
+        } else {
+            const float leg = loop ? 1.f - std::abs(2.f * phase - 1.f) : phase;
+            const float t = leg * leg * (3.f - 2.f * leg);
+            std::array<vgui_gradient_stop, max_gradient_stops> frame;
+            for (std::size_t i = 0; i < stops.size(); ++i)
+                frame[i] = {stops[i].offset, t == 0.f ? stops[i].color : fade_color(base_colors[i], target, t)};
+            vgui_gradient_set(widget, &paint, frame.data(), stops.size());
+        }
+    }
+};
 
 vgui_align alignment(std::string_view value) {
     if (value == "start") return VGUI_ALIGN_START;
@@ -172,6 +238,7 @@ struct runtime::mounted_tree {
     std::set<vgui_texture*> collection_textures;
     std::vector<std::string> order;
     std::vector<diagnostic> diagnostics;
+    std::vector<gradient_animation> gradient_animations;
     std::uint64_t revision = 0;
     float width = 0, height = 0;
     ~mounted_tree() {
@@ -209,6 +276,23 @@ vgui_widget* runtime::widget(std::string_view id) const {
 }
 std::span<const diagnostic> runtime::diagnostics() const {
     return tree_ ? std::span<const diagnostic>(tree_->diagnostics) : std::span<const diagnostic>();
+}
+
+void runtime::advance_animations(double delta_seconds) {
+    if (!tree_ || tree_->gradient_animations.empty() || !std::isfinite(delta_seconds) || delta_seconds < 0) return;
+    int width = 0, height = 0;
+    vgui_context_get_size(ctx_, &width, &height);
+    if (width <= 0 || height <= 0) return;
+    for (auto& animation : tree_->gradient_animations) {
+        if (!animation.loop && animation.sampled && animation.elapsed >= animation.duration) continue;
+        auto* ancestor = animation.widget;
+        while (ancestor && vgui_widget_get_visible(ancestor)) ancestor = vgui_widget_get_parent(ancestor);
+        if (ancestor) continue;
+        pixel_rect rect;
+        vgui_widget_get_rect(animation.widget, &rect.x, &rect.y, &rect.width, &rect.height);
+        const auto clipped = intersect(rect, {0, 0, float(width), float(height)});
+        if (clipped.width > 0 && clipped.height > 0) animation.advance(delta_seconds);
+    }
 }
 
 bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_bindings& bindings, diagnostic* error) {
@@ -279,7 +363,23 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         vgui_widget_set_id(w, id.c_str());
         const widget_properties p{n};
         apply_widget_properties(w, p, !parent_node);
-        if (*kind == VGUI_GRADIENT && !apply_gradient(w, p)) return false;
+        if (*kind == VGUI_GRADIENT) {
+            gradient_paint paint;
+            if (!read_gradient(paint, p) || !vgui_gradient_set(w, &paint.desc, paint.stops.data(), paint.stops.size())) return false;
+            const auto& mode = p.text("gradient_animation");
+            if (mode != "none") {
+                auto& animation = next->gradient_animations.emplace_back(w, std::move(paint),
+                    std::get<double>(property(n, "gradient_animation_duration")), p.boolean("gradient_animation_loop"), mode == "shine");
+                if (animation.shine) {
+                    animation.dx = p.number("gradient_animation_dx");
+                    animation.dy = p.number("gradient_animation_dy");
+                } else {
+                    const auto& fallback = std::get<std::string>(find_property(n.type, "gradient_animation_color")->default_value);
+                    animation.target = linear_rgba(p.color("gradient_animation_color").value_or(*parse_text_color(fallback)));
+                    for (const auto& stop : animation.source.stops) animation.base_colors.push_back(linear_rgba(stop.color));
+                }
+            }
+        }
         detail::apply_container(w, n, p);
         if (n.type == "panel") {
             const auto& l = text(n,"layout");

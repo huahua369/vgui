@@ -241,7 +241,9 @@ int run_window(const form_input& input) {
         form.apply_actions();
         layout_window();
         const Uint64 now = SDL_GetTicks();
-        host.begin_frame(static_cast<float>(now - last_frame) / 1000.0f);
+        const float delta = static_cast<float>(now - last_frame) / 1000.0f;
+        form.tree.advance_animations(delta);
+        host.begin_frame(delta);
         last_frame = now;
         host.draw_all();
         host.end_frame();

@@ -743,6 +743,7 @@ struct designer_workbench::impl {
                 {"Appearance", strings.text("workbench.inspector.category.appearance", "Appearance")},
                 {"Gradient colors", strings.text("workbench.inspector.category.gradient_colors", "Gradient colors")},
                 {"Gradient paint", strings.text("workbench.inspector.category.gradient_paint", "Gradient paint")},
+                {"Gradient animation", strings.text("workbench.inspector.category.gradient_animation", "Gradient animation")},
                 {"Gradient transform", strings.text("workbench.inspector.category.gradient_transform", "Gradient transform")},
                 {"Image", strings.text("workbench.inspector.category.image", "Image")},
                 {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
@@ -868,6 +869,10 @@ struct designer_workbench::impl {
         } else if (desc.key == "background_gradient_direction") {
             if (value == "horizontal") return strings.text("workbench.inspector.gradient_direction.horizontal", "Left to right");
             if (value == "vertical") return strings.text("workbench.inspector.gradient_direction.vertical", "Top to bottom");
+        } else if (desc.key == "gradient_animation") {
+            if (value == "none") return strings.text("workbench.inspector.gradient_animation.none", "None");
+            if (value == "shine") return strings.text("workbench.inspector.gradient_animation.shine", "Shine sweep");
+            if (value == "color") return strings.text("workbench.inspector.gradient_animation.color", "Color fade");
         } else if (desc.key == "text_orientation") {
             if (value == "horizontal") return strings.text("workbench.inspector.text_orientation.horizontal", "Horizontal");
             if (value == "vertical") return strings.text("workbench.inspector.text_orientation.vertical", "Vertical (single column)");
@@ -1448,6 +1453,7 @@ struct designer_workbench::impl {
             std::get<std::string>(property_value(item, *find_property("panel", "background_style"))) == "gradient";
         const bool decorative_gradient = item.type == "gradient";
         const auto kind = decorative_gradient ? std::string_view(std::get<std::string>(property_value(item, *find_property("gradient", "gradient_kind")))) : std::string_view{};
+        const auto animation = decorative_gradient ? std::string_view(std::get<std::string>(property_value(item, *find_property("gradient", "gradient_animation")))) : std::string_view{};
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
@@ -1459,6 +1465,11 @@ struct designer_workbench::impl {
                     if (key.starts_with("gradient_center_") && kind == "linear") continue;
                     if ((key.starts_with("gradient_outer_") || key.starts_with("gradient_radius") || key == "gradient_ellipse") && kind != "radial") continue;
                     if (key.starts_with("gradient_angle") && kind != "sweep") continue;
+                    if (key.starts_with("gradient_animation_")) {
+                        if (animation == "none") continue;
+                        if (key == "gradient_animation_color" && animation != "color") continue;
+                        if ((key == "gradient_animation_dx" || key == "gradient_animation_dy") && animation != "shine") continue;
+                    }
                 }
                 const auto gradient_field = std::ranges::find(gradient_fields, desc.key, &property_descriptor::key);
                 const bool gradient_color = gradient_field != gradient_fields.end();
@@ -1468,7 +1479,8 @@ struct designer_workbench::impl {
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (decorative_gradient && key.starts_with("gradient_"))
+                if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
+                else if (decorative_gradient && key.starts_with("gradient_"))
                     row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
                 else if (gradient_color || panel_gradient_field) row.category = "Gradient colors";
                 else if (desc.key.starts_with("dock_") || desc.key == "page_title" || desc.key == "tab_enabled") {
@@ -1500,7 +1512,13 @@ struct designer_workbench::impl {
                     row.tooltip = strings.text("workbench.inspector.text_orientation.hint",
                         "Vertical text uses one column. Increase the height or set it to 0 for automatic sizing.");
                 }
-                if (decorative_gradient && row.category == "Gradient transform")
+                if (key == "gradient_animation")
+                    row.tooltip = strings.text("workbench.inspector.gradient_animation.hint", "Plays automatically in Run. Design shows the original gradient.");
+                else if (key == "gradient_animation_dx" || key == "gradient_animation_dy")
+                    row.tooltip = strings.text("workbench.inspector.gradient_animation.travel_hint", "Total travel relative to the widget size, centred on the original gradient. Use transparent endpoint colors for a moving highlight.");
+                else if (key == "gradient_animation_duration")
+                    row.tooltip = strings.text("workbench.inspector.gradient_animation.duration_hint", "Seconds for one sweep, one fade, or one complete out-and-back color loop.");
+                else if (decorative_gradient && row.category == "Gradient transform")
                     row.tooltip = strings.text("workbench.inspector.gradient_transform.hint", "Transforms the paint, not the shape. Translation is relative to the widget size.");
                 else if (decorative_gradient && key.starts_with("gradient_angle"))
                     row.tooltip = strings.text("workbench.inspector.gradient_angle.hint", "Degrees clockwise from the right (0–360). Reverse the angles to reverse the sweep.");
@@ -1526,7 +1544,11 @@ struct designer_workbench::impl {
                 case value_type::color:
                     row.type = kit::property_type::color;
                     row.allow_empty = true;
-                    if (gradient_color) {
+                    if (key == "gradient_animation_color") {
+                        row.inherited_color = parse_text_color(std::get<std::string>(desc.default_value));
+                        row.placeholder = std::get<std::string>(desc.default_value);
+                        row.tooltip = strings.text("workbench.inspector.gradient_animation.color_hint", "Fades all stops toward this color. Alpha dims the original gradient without making transparent stops opaque.");
+                    } else if (gradient_color) {
                         row.inherited_color = (*gradient)[gradient_field - gradient_fields.begin()];
                         row.placeholder = strings.text("workbench.inspector.gradient_color.inherit", "Use preset");
                         row.tooltip = strings.text("workbench.inspector.gradient_color.hint",
@@ -1615,7 +1637,7 @@ struct designer_workbench::impl {
         add_descriptors(common_properties(), "Geometry & state");
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
-        constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Geometry & state", "Pages",
+        constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Gradient animation", "Geometry & state", "Pages",
             "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);

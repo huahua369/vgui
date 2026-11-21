@@ -90,6 +90,12 @@ public:
     // Relayout keeps live edit/focus state; remount restores document values.
     std::optional<layout_snapshot> layout(viewport view);
 
+    // Advance mounted gradient animations on the host clock, after layout and
+    // before drawing. Mount and layout alone always keep the authored paint.
+    // Use 0 to sample the start pose. Hidden/off-screen layers pause, one-shot
+    // effects hold their last value, and this never mutates the document.
+    void advance_animations(double delta_seconds);
+
 private:
     struct mounted_tree;
     vgui_context* ctx_;

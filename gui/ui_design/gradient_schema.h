@@ -6,6 +6,7 @@ namespace vgui::ui_design::detail {
 
 inline constexpr std::string_view gradient_kinds[] = {"linear", "radial", "sweep"};
 inline constexpr std::string_view gradient_extends[] = {"pad", "repeat", "reflect"};
+inline constexpr std::string_view gradient_animations[] = {"none", "shine", "color"};
 inline constexpr double gradient_limit = 16.0;
 inline const property_descriptor gradient_properties[] = {
     {"gradient_kind", "Gradient type", value_type::choice, std::string("linear"), 0, 0, gradient_kinds},
@@ -31,6 +32,12 @@ inline const property_descriptor gradient_properties[] = {
     {"gradient_affine_yy", "YY (Y scale)", value_type::number, 1.0, -gradient_limit, gradient_limit},
     {"gradient_affine_tx", "X translation", value_type::number, 0.0, -gradient_limit, gradient_limit},
     {"gradient_affine_ty", "Y translation", value_type::number, 0.0, -gradient_limit, gradient_limit},
+    {"gradient_animation", "Animation", value_type::choice, std::string("none"), 0, 0, gradient_animations},
+    {"gradient_animation_duration", "Duration (s)", value_type::number, 2.0, 0.1, 60.0},
+    {"gradient_animation_loop", "Loop", value_type::boolean, true},
+    {"gradient_animation_dx", "Shine travel X", value_type::number, 2.0, -4.0, 4.0},
+    {"gradient_animation_dy", "Shine travel Y", value_type::number, 0.0, -4.0, 4.0},
+    {"gradient_animation_color", "Target color", value_type::color, std::string("#70BFFF")},
 };
 
 } // namespace vgui::ui_design::detail

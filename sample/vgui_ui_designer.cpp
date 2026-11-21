@@ -2213,11 +2213,12 @@ int run(bool smoke, fs::path open_path) {
             vgui_context_set_size(shell.get(), width, height);
         editor.refresh();
         const auto now = SDL_GetTicks();
-        const auto dt = std::clamp(float(now - last) / 1000.0f, 0.0f, 0.05f);
+        const float elapsed = float(now - last) / 1000.0f;
+        const auto dt = std::clamp(elapsed, 0.0f, 0.05f);
         last = now;
         // The independent preview may be the only thing that changed. Let it
         // invalidate the shell before begin_frame decides which canvases to clear.
-        editor.render_preview(dt);
+        editor.render_preview(elapsed);
         host.begin_frame(dt);
         host.draw_all();
         submitted_windows = host.end_frame();

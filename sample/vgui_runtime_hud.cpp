@@ -984,6 +984,7 @@ int main(int argc, char** argv)
 		simulate(&st, delta);
 		update_nameplates(&st, cw, ch);
 		rtc.begin();
+		st.design->advance_animations(delta);
 		vgui_update(st.ui, delta);
 		upms = (float)rtc.end();
 

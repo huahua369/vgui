@@ -1992,6 +1992,60 @@ void exercise_decorative_gradient()
     check(workbench.io_ok && model.current() == saved, "gradient kind and stops did not survive reopening");
 }
 
+void exercise_gradient_animation()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "gradient-animation.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const auto id = workbench.add("gradient", root);
+    auto* filter = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(filter);
+    check(vgui_input_text(ctx, "gradient_animation"), "could not filter the animation inspector");
+    workbench.frame();
+    constexpr auto effect = "property:gradient_animation";
+    constexpr auto dx = "property:gradient_animation_dx";
+    constexpr auto color = "property:gradient_animation_color";
+    constexpr auto duration = "property:gradient_animation_duration";
+    constexpr auto loop = "property:gradient_animation_loop";
+    const auto choose = [&](const char* name) {
+        workbench.press(effect);
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "animation presets did not open");
+        workbench.activate(menu, name);
+    };
+    check(!find_widget(vgui_root(ctx), duration, VGUI_EDIT), "disabled animations must hide playback configuration");
+    choose("Shine sweep");
+    check(find_widget(vgui_root(ctx), dx, VGUI_EDIT) && !find_widget(vgui_root(ctx), color, VGUI_EDIT),
+        "shine must expose travel but not a target color");
+    auto* seconds = workbench.widget(duration, VGUI_EDIT);
+    workbench.click(seconds);
+    vgui_edit_select_all(seconds);
+    check(vgui_input_text(ctx, "3.25"), "could not type animation duration");
+    workbench.frame();
+    check(model.current().nodes.at(id).props.at("gradient_animation_duration") == ui::value{3.25} &&
+        !model.committed().nodes.at(id).props.contains("gradient_animation_duration"), "duration did not apply before Enter");
+    vgui_set_focus(ctx, nullptr);
+    workbench.frame();
+    workbench.click(workbench.widget(loop, VGUI_CHECKBOX));
+    workbench.frame();
+    workbench.set_text("gradient_animation_dx", "-1.5");
+    choose("Color fade");
+    check(!find_widget(vgui_root(ctx), dx, VGUI_EDIT) && find_widget(vgui_root(ctx), color, VGUI_EDIT),
+        "color animation must expose the target instead of travel");
+    workbench.set_text("gradient_animation_color", "#D2388F80");
+    const auto& props = model.committed().nodes.at(id).props;
+    check(props.at("gradient_animation") == ui::value{std::string("color")} &&
+        props.at("gradient_animation_loop") == ui::value{false} && props.at("gradient_animation_dx") == ui::value{-1.5} &&
+        ui::parse_text_color(std::get<std::string>(props.at("gradient_animation_color"))) == 0x80D2388Fu,
+        "inspector must retain previous travel when changing mode and save loop and alpha settings");
+    const auto saved = model.committed();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved, "animation inspector settings did not survive save/reopen");
+}
+
 void exercise_radio_group_inspector()
 {
     temp_dir directory;
@@ -2276,6 +2330,7 @@ int main()
         exercise_button_gradients();
         exercise_panel_gradient();
         exercise_decorative_gradient();
+        exercise_gradient_animation();
         exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_language_preferences();

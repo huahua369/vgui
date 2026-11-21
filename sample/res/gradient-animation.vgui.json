@@ -1,0 +1,26 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "lab",
+  "nodes": {
+    "lab": {"type":"panel","name":"渐变动画实验台","props":{"width":760,"height":400,"background":"#111C2B","border_width":0},"children":["title","hint","sweep_card","tint_card","footnote"]},
+    "title": {"type":"label","props":{"x":32,"y":22,"width":696,"height":42,"text":"渐变动画实验台","font_size":28,"font_weight":"bold","text_color":"#ECF6FF"}},
+    "hint": {"type":"label","props":{"x":32,"y":70,"width":696,"height":28,"text":"切换到运行模式自动播放；设计模式显示原始渐变。","font_size":15,"text_color":"#AFC5DD"}},
+    "sweep_card": {"type":"panel","name":"01 / 循环扫光","props":{"x":32,"y":126,"width":336,"height":200,"background":"#20334A","border_color":"#3B556D","border_width":1,"rounding":14},"children":["sweep_plate","sweep","sweep_title","sweep_desc"]},
+    "sweep_plate": {"type":"panel","props":{"x":20,"y":62,"width":296,"height":64,"background":"#255C78","border_width":0,"rounding":12}},
+    "sweep": {"type":"gradient","name":"扫光图层","props":{"x":20,"y":62,"width":296,"height":64,"rounding":12,
+      "gradient_x0":0.32,"gradient_y0":0.1,"gradient_x1":0.68,"gradient_y1":0.9,
+      "gradient_stops":[{"offset":0,"color":"#A8F3FF00"},{"offset":0.42,"color":"#BFF8FF26"},{"offset":0.5,"color":"#EBFFFFCF"},{"offset":0.58,"color":"#BFF8FF26"},{"offset":1,"color":"#A8F3FF00"}],
+      "gradient_animation":"shine","gradient_animation_duration":2.4}},
+    "sweep_title": {"type":"label","props":{"x":20,"y":18,"width":296,"height":30,"text":"01  /  循环扫光","font_size":20,"text_color":"#ECF6FF"}},
+    "sweep_desc": {"type":"label","props":{"x":20,"y":141,"width":296,"height":27,"text":"横向移动色场，外框保持不变","font_size":14,"text_color":"#B5CFE8"}},
+    "tint_card": {"type":"panel","name":"02 / 往返变色","props":{"x":392,"y":126,"width":336,"height":200,"background":"#20334A","border_color":"#3B556D","border_width":1,"rounding":14},"children":["tint_plate","tint","tint_title","tint_desc"]},
+    "tint_plate": {"type":"panel","props":{"x":20,"y":62,"width":296,"height":64,"background":"#162335","border_width":0,"rounding":12}},
+    "tint": {"type":"gradient","name":"变色图层","props":{"x":20,"y":62,"width":296,"height":64,"rounding":12,
+      "gradient_stops":[{"offset":0,"color":"#EBA864"},{"offset":0.48,"color":"#CD6338D9"},{"offset":1,"color":"#80351A8F"}],
+      "gradient_animation":"color","gradient_animation_color":"#56E9C7","gradient_animation_duration":3.2}},
+    "tint_title": {"type":"label","props":{"x":20,"y":18,"width":296,"height":30,"text":"02  /  往返变色","font_size":20,"text_color":"#ECF6FF"}},
+    "tint_desc": {"type":"label","props":{"x":20,"y":141,"width":296,"height":27,"text":"琥珀色 → 薄荷绿 → 琥珀色","font_size":14,"text_color":"#B5CFE8"}},
+    "footnote": {"type":"label","props":{"x":32,"y":344,"width":696,"height":28,"text":"纯矢量渐变 · 无图片 · 不拦截输入","font_size":14,"text_color":"#96AFC9"}}
+  }
+}
