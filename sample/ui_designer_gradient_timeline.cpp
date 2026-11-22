@@ -33,6 +33,7 @@ kit::timeline_interpolation mode(std::string_view name) {
 struct gradient_track {
     std::string node, name;
     double duration, tx, ty;
+    bool loop = true;
     std::vector<gradient_keyframe> frames;
     bool operator==(const gradient_track&) const = default;
 };
@@ -43,9 +44,10 @@ struct designer_gradient_timeline::impl {
     gradient_timeline_commit commit;
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
-    vgui_widget *panel, *add, *remove, *fit, *info, *fields, *tint;
+    vgui_widget *panel, *add, *remove, *fit, *info, *fields, *tint, *loop_widget;
     vgui_context* shell;
     kit::timeline_view timeline;
+    kit::spinbox duration_box;
     kit::spinbox x, y, opacity;
     kit::combo_box easing;
     kit::color_picker picker;
@@ -73,7 +75,21 @@ struct designer_gradient_timeline::impl {
         add = button(header, "designer.timeline.add");
         remove = button(header, "designer.timeline.delete");
         fit = button(header, "designer.timeline.fit");
+        duration_box.set_id("designer.timeline.duration");
+        duration_box.set_label_width(62);
+        duration_box.set_edit_min_width(48);
+        duration_box.set_buttons_visible(false);
+        duration_box.set_range(.1, 60);
+        duration_box.set_step(.1);
+        duration_box.build(header);
+        vgui_widget_set_size(duration_box.widget(), 124, 0);
+        duration_box.set_on_commit([this](double value) { edit_track_duration(value); });
+        loop_widget = vgui_widget_add(header, VGUI_CHECKBOX, nullptr);
+        vgui_widget_set_id(loop_widget, "designer.timeline.loop");
+        vgui_widget_set_size(loop_widget, 72, 22);
+        vgui_widget_on_value(loop_widget, on_loop_value, this);
         info = vgui_widget_add(header, VGUI_LABEL, nullptr);
+        vgui_widget_set_grow(info, 1);
         timeline.build(panel);
         timeline.set_transport_visible(false);
         timeline.set_clipboard_shortcuts_enabled(false);
@@ -149,6 +165,11 @@ struct designer_gradient_timeline::impl {
         return w;
     }
 
+    static void on_loop_value(vgui_widget*, float, void* user) {
+        auto& self = *static_cast<impl*>(user);
+        if (!self.updating) self.edit_track_loop(vgui_widget_get_checked(self.loop_widget) != 0);
+    }
+
     static void event(vgui_widget* w, const vgui_event* e, void* user) {
         if (e->type != VGUI_EVENT_CLICK) return;
         auto& self = *static_cast<impl*>(user);
@@ -162,9 +183,13 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_text(add, tr("timeline.add", "Add Key"));
         vgui_widget_set_text(remove, tr("timeline.delete", "Delete Key"));
         vgui_widget_set_text(fit, tr("timeline.fit", "Fit Time"));
+        duration_box.set_label(tr("timeline.duration", "Duration"));
+        vgui_widget_set_text(loop_widget, tr("timeline.loop", "Loop"));
         timeline.set_track_header(tr("timeline.tracks", "Tracks"));
         vgui_widget_set_a11y_name(timeline.widget(), tr("timeline.title", "Gradient Timeline"));
         vgui_widget_set_tooltip(timeline.widget(), tr("timeline.hint", "Drag the ruler to preview. Drag a diamond to move a key. Scroll to see more tracks."));
+        vgui_widget_set_tooltip(duration_box.widget(), tr("timeline.duration_hint", "Duration of the selected gradient animation, in seconds (0.1–60)."));
+        vgui_widget_set_tooltip(loop_widget, tr("timeline.loop_hint", "Repeat the selected gradient animation independently."));
         vgui_widget_set_tooltip(tint, tr("timeline.tint", "Edit multiply tint and opacity"));
         x.set_label("X");
         y.set_label("Y");
@@ -178,7 +203,20 @@ struct designer_gradient_timeline::impl {
     std::optional<std::pair<id, gradient_keyframe>> shown_pose;
 
     void refresh_fields() {
-        const auto key = timeline.primary_selection();
+        const auto primary = timeline.primary_selection();
+        id selected_lane = 0;
+        timeline.find_keyframe(primary, &selected_lane);
+        if (!selected_lane) selected_lane = timeline.selected_track();
+        const bool has_track = tracks.contains(selected_lane) && !rejected;
+        vgui_widget_set_enabled(duration_box.widget(), has_track);
+        vgui_widget_set_enabled(loop_widget, has_track);
+        if (has_track) {
+            const auto& selected_layer = model.at(tracks.at(selected_lane));
+            duration_box.set_value(selected_layer.duration);
+            vgui_widget_set_checked(loop_widget, selected_layer.loop ? 1 : 0);
+            timeline.set_loop(selected_layer.loop);
+        }
+        const auto key = primary;
         const auto it = poses.find(key);
         const bool has_key = it != poses.end() && !rejected;
         const auto to_show = has_key ? std::optional(std::pair{key, it->second}) : std::nullopt;
@@ -203,6 +241,9 @@ struct designer_gradient_timeline::impl {
         timeline.find_keyframe(key, &track);
         const auto& layer = model.at(tracks.at(track));
         const auto& frame = it->second;
+        duration_box.set_value(layer.duration);
+        vgui_widget_set_checked(loop_widget, layer.loop ? 1 : 0);
+        timeline.set_loop(layer.loop);
         x.set_range(std::max(-16., -16. - layer.tx), std::min(16., 16. - layer.tx));
         y.set_range(std::max(-16., -16. - layer.ty), std::min(16., 16. - layer.ty));
         x.set_value(frame.x);
@@ -233,7 +274,8 @@ struct designer_gradient_timeline::impl {
                 gradient_track layer{node_id, item.name.empty() ? node_id : item.name,
                     std::get<double>(property(item, "gradient_animation_duration")),
                     std::get<double>(property(item, "gradient_affine_tx")),
-                    std::get<double>(property(item, "gradient_affine_ty")), {}};
+                    std::get<double>(property(item, "gradient_affine_ty")),
+                    std::get<bool>(property(item, "gradient_animation_loop")), {}};
                 std::string error;
                 decode_gradient_keyframes(std::get<std::string>(property(item, property_key)), layer.frames, error);
                 next.push_back(std::move(layer));
@@ -350,6 +392,56 @@ struct designer_gradient_timeline::impl {
             timeline.update_keyframe(lane, display);
             seek_key(display);
         }
+    }
+
+    static set_property set_animation_duration(const gradient_track& layer, double value) {
+        const auto* desc = find_property("gradient", "gradient_animation_duration");
+        return {layer.node, "gradient_animation_duration", value == std::get<double>(desc->default_value)
+            ? std::nullopt : std::optional<vgui::ui_design::value>(value)};
+    }
+
+    static set_property set_animation_loop(const gradient_track& layer, bool value) {
+        const auto* desc = find_property("gradient", "gradient_animation_loop");
+        return {layer.node, "gradient_animation_loop", value == std::get<bool>(desc->default_value)
+            ? std::nullopt : std::optional<vgui::ui_design::value>(value)};
+    }
+
+    id selected_track() const {
+        id track = 0;
+        timeline.find_keyframe(timeline.primary_selection(), &track);
+        return track ? track : timeline.selected_track();
+    }
+
+    void edit_track_duration(double duration) {
+        const auto track = selected_track();
+        if (rejected || !tracks.contains(track)) return;
+        auto& layer = model.at(tracks.at(track));
+        if (std::abs(layer.duration - duration) < 1e-9) return;
+        if (!apply({set_animation_duration(layer, duration)})) return;
+        layer.duration = duration;
+        if (auto* lane = timeline.find_track(track)) {
+            for (auto key : lane->keyframes) {
+                const auto pose = poses.find(key.id);
+                if (pose == poses.end()) continue;
+                key.time = pose->second.offset * duration;
+                timeline.update_keyframe(track, key);
+            }
+        }
+        auto axis = ruler_min_duration;
+        for (const auto& item : model) axis = std::max(axis, item.duration);
+        if (std::abs(timeline.duration() - axis) > 1e-9) needs_fit = true;
+        timeline.set_duration(axis);
+        duration_box.set_value(duration);
+    }
+
+    void edit_track_loop(bool loop) {
+        const auto track = selected_track();
+        if (rejected || !tracks.contains(track)) return;
+        auto& layer = model.at(tracks.at(track));
+        if (layer.loop == loop) return;
+        if (!apply({set_animation_loop(layer, loop)})) return;
+        layer.loop = loop;
+        timeline.set_loop(loop);
     }
 
     static set_property set_frame_edit(const gradient_track& layer, const std::vector<gradient_keyframe>& frames) {

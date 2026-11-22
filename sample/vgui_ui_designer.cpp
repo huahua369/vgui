@@ -2314,6 +2314,26 @@ int smoke_gradient_keyframes() {
     update();
     require(keyframes("highlight").size() == 4 && keyframes("tint").size() == 4,
         "undo restores the edited lane and leaves the second lane untouched");
+    click_at(point_at(.2, 37).first, point_at(.2, 37).second);
+    update();
+    const auto before_resize = keyframes("highlight");
+    auto* duration_edit = find_widget(preview.widget(), "designer.timeline.duration_edit", VGUI_EDIT);
+    require(duration_edit != nullptr, "timeline exposes a duration editor");
+    vgui_set_focus(shell.get(), duration_edit);
+    vgui_input_key(shell.get(), 'A', 1, VGUI_MOD_CTRL);
+    vgui_input_text(shell.get(), "3.6");
+    vgui_input_key(shell.get(), VGUI_KEY_ENTER, 1, 0);
+    update();
+    require(model.current().nodes.at("highlight").props.at("gradient_animation_duration") == ui::value{3.6},
+        "editing timeline duration updates the selected gradient property");
+    const auto resized = keyframes("highlight");
+    require(resized.size() == before_resize.size() &&
+        std::ranges::equal(resized, before_resize, [&](const auto& a, const auto& b) { return near(a.offset, b.offset); }),
+        "duration editing preserves normalized keyframe timing");
+    click("designer.timeline.loop");
+    update();
+    require(model.current().nodes.at("highlight").props.at("gradient_animation_loop") == ui::value{false},
+        "timeline loop checkbox updates the selected gradient property");
     const auto saved = preview.capture_view();
     preview.restore_view({});
     update();
