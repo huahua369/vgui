@@ -95,6 +95,7 @@ constexpr auto gradient_geometry_members = std::array{
     &vgui_gradient_desc::x0, &vgui_gradient_desc::y0, &vgui_gradient_desc::x1, &vgui_gradient_desc::y1,
     &vgui_gradient_desc::x0, &vgui_gradient_desc::y0, &vgui_gradient_desc::x1, &vgui_gradient_desc::y1,
     &vgui_gradient_desc::start_degrees, &vgui_gradient_desc::end_degrees,
+    &vgui_gradient_desc::radius0, &vgui_gradient_desc::radius1,
 };
 static_assert(gradient_geometry_members.size() == gradient_geometry_channels.size());
 using gradient_geometry_values = std::array<double, gradient_geometry_channels.size()>;
@@ -200,7 +201,8 @@ struct gradient_animation {
             for (std::size_t i = 0; i < stops.size(); ++i)
                 frame[i] = {stops[i].offset, tint_color(stops[i].color, pose)};
             if (!vgui_gradient_set(widget, &paint, frame.data(), stops.size())) {
-                // A segment can collapse to coincident endpoints or angles between valid keys.
+                // Interpolated endpoints or angles can coincide between valid keys.
+                // Even a positive radius gap can collapse when rounded to float.
                 // Restore authored geometry, not a previous frame; keep this sample's translation and stops.
                 auto fallback = source.desc;
                 fallback.affine[4] = paint.affine[4];

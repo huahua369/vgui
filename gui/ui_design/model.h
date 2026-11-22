@@ -43,7 +43,10 @@ std::string encode_gradient_stops(std::span<const gradient_stop> stops);
 inline constexpr std::size_t max_gradient_keyframes = 128;
 inline constexpr double gradient_keyframe_min_gap = 1e-6;
 
-enum class gradient_geometry_axis { start_x, start_y, end_x, end_y, center_x, center_y, outer_x, outer_y, start_angle, end_angle, count };
+enum class gradient_geometry_axis {
+    start_x, start_y, end_x, end_y, center_x, center_y, outer_x, outer_y, start_angle, end_angle,
+    inner_radius, outer_radius, count
+};
 
 namespace detail {
 inline constexpr double gradient_limit = 16.0;
@@ -71,6 +74,8 @@ inline constexpr std::array gradient_geometry_channels{
     gradient_geometry_channel{"outer_y", "gradient_outer_y", -detail::gradient_limit, detail::gradient_limit, "radial"},
     gradient_geometry_channel{"start_angle", "gradient_angle0", 0, 360, "sweep"},
     gradient_geometry_channel{"end_angle", "gradient_angle1", 0, 360, "sweep"},
+    gradient_geometry_channel{"inner_radius", "gradient_radius0", 0, detail::gradient_limit, "radial"},
+    gradient_geometry_channel{"outer_radius", "gradient_radius1", 0, detail::gradient_limit, "radial"},
 };
 static_assert(gradient_geometry_channels.size() == static_cast<std::size_t>(gradient_geometry_axis::count));
 

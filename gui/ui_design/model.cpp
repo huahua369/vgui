@@ -428,7 +428,7 @@ bool decode_gradient_keyframes(sv input, std::vector<gradient_keyframe>& out, st
 {
     using json = detail::collection_items::json;
     const auto reject = [&](std::string reason) { error = std::move(reason); return false; };
-    // Leave room for all 16 members per frame at full numeric precision.
+    // Leave room for all geometry channels plus the six pose members at full precision.
     if (input.size() > max_gradient_keyframes * 768) return reject("gradient keyframe data is too long");
     if (input.find('\0') != sv::npos) return reject("raw NUL in gradient keyframe data");
     std::size_t member_count = 0;
@@ -636,7 +636,7 @@ bool validate(const document& doc, diagnostic* error)
                 return std::get<std::string>(it == item.props.end() ? find_property(item.type, key)->default_value : it->second);
             };
             const auto& kind = choice("gradient_kind");
-            const auto degenerate_geometry = [&](const gradient_keyframe* key) {
+            const auto geometry_error = [&](const gradient_keyframe* key) -> const char* {
                 const auto geometry = [&](gradient_geometry_axis axis) {
                     const auto i = static_cast<std::size_t>(axis);
                     if (key && key->geometry[i]) return static_cast<float>(*key->geometry[i]);
@@ -644,20 +644,19 @@ bool validate(const document& doc, diagnostic* error)
                 };
                 using axis = gradient_geometry_axis;
                 // Match the float representation and tolerances of vgui_gradient_set.
-                if (kind == "linear")
-                    return std::hypot(geometry(axis::end_x) - geometry(axis::start_x),
-                        geometry(axis::end_y) - geometry(axis::start_y)) < 0.0001f;
-                if (kind == "sweep")
-                    return std::abs(geometry(axis::end_angle) - geometry(axis::start_angle)) < 0.001f;
-                return false;
+                if (kind == "linear" && std::hypot(geometry(axis::end_x) - geometry(axis::start_x),
+                        geometry(axis::end_y) - geometry(axis::start_y)) < 0.0001f)
+                    return key ? "linear keyframe start and end points must be different" : "linear start and end points must be different";
+                if (kind == "sweep" && std::abs(geometry(axis::end_angle) - geometry(axis::start_angle)) < 0.001f)
+                    return key ? "sweep keyframe angles must be different" : "sweep angles must be different";
+                if (kind == "radial" && geometry(axis::outer_radius) <= geometry(axis::inner_radius))
+                    return "outer radius must be larger than inner radius";
+                return nullptr;
             };
-            if (degenerate_geometry(nullptr)) {
-                if (kind == "linear")
-                    return fail(error, path + "/props/gradient_x1", "linear start and end points must be different");
-                return fail(error, path + "/props/gradient_angle1", "sweep angles must be different");
+            if (const auto* reason = geometry_error(nullptr)) {
+                const auto field = kind == "linear" ? "gradient_x1" : kind == "sweep" ? "gradient_angle1" : "gradient_radius1";
+                return fail(error, path + "/props/" + field, reason);
             }
-            if (kind == "radial" && f("gradient_radius1") <= f("gradient_radius0"))
-                return fail(error, path + "/props/gradient_radius1", "outer radius must be larger than inner radius");
             if (std::abs(f("gradient_affine_xx") * f("gradient_affine_yy") - f("gradient_affine_yx") * f("gradient_affine_xy")) < 1e-4f)
                 return fail(error, path + "/props/gradient_affine_xx", "gradient transform must be invertible");
             const auto& animation = choice("gradient_animation");
@@ -674,10 +673,8 @@ bool validate(const document& doc, diagnostic* error)
                     const auto& key = keyframes[i];
                     if (std::abs(tx + key.x) > detail::gradient_limit || std::abs(ty + key.y) > detail::gradient_limit)
                         return fail(error, key_path, "keyframe travel plus the authored translation must be in [-16, 16]");
-                    if (degenerate_geometry(&key))
-                        return fail(error, key_path + "/" + std::to_string(i), kind == "linear"
-                            ? "linear keyframe start and end points must be different"
-                            : "sweep keyframe angles must be different");
+                    if (const auto* reason = geometry_error(&key))
+                        return fail(error, key_path + "/" + std::to_string(i), reason);
                 }
             }
         }

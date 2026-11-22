@@ -2534,11 +2534,11 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         require(SDL_PushEvent(&text), "cannot enqueue pose or duration input");
         menus.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
     };
-    const auto read_keys = [&](const ui::document& doc) {
+    const auto read_keys = [&](const ui::document& doc, const char* node = "highlight") {
         std::vector<ui::gradient_keyframe> frames;
         std::string error;
-        require(ui::decode_gradient_keyframes(std::get<std::string>(doc.nodes.at("highlight").props.at(
-            "gradient_animation_keyframes")), frames, error), "decode highlight track");
+        require(ui::decode_gradient_keyframes(std::get<std::string>(doc.nodes.at(node).props.at(
+            "gradient_animation_keyframes")), frames, error), "decode gradient track");
         return frames;
     };
     require(editor.open(source), "open the first copy of the gradient example");
@@ -2660,6 +2660,50 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         expect_highlight(pasted_time, 104, 32 + 20 + 296 * .12f);
         expect_highlight(pasted_time + 3.6, 52); // Non-looping: hold the last key, not the pasted pose.
     }
+
+    // Work from the sample, leaving only its radial track active so the
+    // toolbar can add a key without relying on clock or lane pixel positions.
+    ui::document radius_design;
+    require(ui::read_document(sample.parent_path() / "gradient-geometry.vgui.json", radius_design), "load radial example");
+    for (const auto* node : {"linear", "sweep"}) radius_design.nodes.at(node).props.erase("gradient_animation");
+    const auto radial_file = sandbox / "radial-motion.vgui.json";
+    require(ui::write_document(radial_file, radius_design) && editor.open(radial_file), "open isolated radial track");
+    frame();
+    click("designer.preview.timeline");
+    click("designer.preview.mode");
+    click("designer.preview.animation.seek", .22f);
+    click("designer.timeline.add");
+    auto expect_radii = [&](std::optional<double> inner, std::optional<double> outer) {
+        constexpr auto inner_axis = std::size_t(ui::gradient_geometry_axis::inner_radius);
+        constexpr auto outer_axis = std::size_t(ui::gradient_geometry_axis::outer_radius);
+        const auto keys = read_keys(history.current(), "radial");
+        require(keys.size() == 4 && keys[1].geometry[inner_axis] == inner && keys[1].geometry[outer_axis] == outer,
+            "the newly added radial key did not have the expected radius overrides");
+    };
+    click(shape);
+    constexpr char inner_edit[] = "designer.timeline.geometry.inner_radius_edit";
+    constexpr char outer_edit[] = "designer.timeline.geometry.outer_radius_edit";
+    expect_radii({}, {});
+    submit(outer_edit, ".95");
+    submit(inner_edit, ".35");
+    expect_radii(.35, .95);
+    const auto radius_revision = history.revision();
+    submit(inner_edit, ".95");
+    require(history.revision() == radius_revision, "equal radii must not create a history entry");
+    expect_radii(.35, .95);
+    if (!vgui_popup_content(shell)) click(shape);
+    click("designer.timeline.geometry.inner_radius.reset");
+    expect_radii({}, .95);
+    vgui_popup_close(shell);
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    expect_radii(.35, .95);
+    menus.activate(menus.open(0), 2); // File > Save
+    require(!history.dirty() && ui::read_document(radial_file, saved) && saved == history.current(),
+        "saved JSON did not preserve the edited radial key");
+    const auto radial_dir = sandbox / "radial-delivery", radial_single = sandbox / "radial.vgui.package.json";
+    require(ui::export_delivery(saved, sandbox, radial_dir) && ui::read_delivery(radial_dir, directory_design) && directory_design == saved &&
+        ui::export_json_delivery(saved, sandbox, radial_single) && ui::read_json_delivery(radial_single, embedded) && embedded.design == saved,
+        "both delivery formats must preserve the radius overrides");
 }
 
 fs::path designer_settings_path() {

@@ -1398,9 +1398,9 @@ void test_gradient_keyframe_geometry() {
             "gradient_animation_keyframes":[
                 {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth"},
                 {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"step",
-                    "center_x":0.625,"center_y":0.625,"outer_x":0.625,"outer_y":0.375},
+                    "center_x":0.625,"center_y":0.625,"outer_x":0.625,"outer_y":0.375,"inner_radius":0.25,"outer_radius":0.625},
                 {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
-                    "center_y":0.5}]}},
+                    "center_y":0.5,"outer_radius":0.75}]}},
         "sweep":{"type":"gradient","props":{"x":10,"y":110,"width":80,"height":40,"gradient_kind":"sweep",
             "gradient_center_y":0.625,"gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
             "gradient_animation_keyframes":[
@@ -1453,16 +1453,16 @@ void test_gradient_keyframe_geometry() {
         first_linear.colors[0] == glm::vec4(192, 128, 64, 128) / 255.f && first_linear.colors[2].a == 0.f,
         "linear geometry is absolute, ignores inactive channels and preserves neutral stop colors and alpha");
     check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 40, 75, 5) &&
-        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 35), "old keys without geometry use both authored radial centers");
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 35), "old keys without geometry use both authored radial circles");
     check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 30, 125, 350.f / 180, 2),
         "sweep native brush receives keyframed center and both angles in half-turns");
 
     seek(0.125);
     check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 47.5f, 23.75f, 77.5f, 31.25f),
         "linear endpoint positions and paint translation interpolate together");
-    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 43.125f, 76.5625f, 5) &&
-        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 51.5625f, 83.4375f, 35),
-        "smooth geometry interpolates each authored-to-keyed radial center without changing the radii");
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 43.125f, 76.5625f, 5.78125f) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 51.5625f, 83.4375f, 33.4375f),
+        "smooth interpolation animates both centers and radii relative to the widget's short side");
     expect_fallback();
     check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 50, 130, 1, 190.f / 180),
         "sweep angles interpolate numerically across the seam and missing center Y uses the authored value");
@@ -1470,13 +1470,14 @@ void test_gradient_keyframe_geometry() {
     seek(0.75);
     check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 85, 42.5f, 65, 37.5f),
         "a valid sample beyond the degenerate frame restores animated endpoints");
-    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 60, 85, 5) &&
-        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 60, 75, 35), "radial geometry holds the outgoing step");
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 60, 85, 10) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 60, 75, 25), "the outgoing step holds the keyed centers and radii");
     expect_fallback();
 
     seek(1);
     check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 40, 80, 5) &&
-        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 35), "a step switches to the next key's static fallbacks at its exact offset");
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 30),
+        "at the next key the inner radius inherits the static value while the outer radius stays keyed");
     expect_fallback();
 }
 

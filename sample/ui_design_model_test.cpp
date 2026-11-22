@@ -352,12 +352,12 @@ void gradient_keyframe_round_trip()
 void gradient_keyframe_geometry_round_trip()
 {
     const std::vector<ui::gradient_keyframe> expected{{0, 0, 0, "#FFFFFF", 1, "linear",
-        {-16, -1.5, 16, 2.5, 0, 1.25, 2, 3, 0, 360}}};
+        {-16, -1.5, 16, 2.5, 0, 1.25, 2, 3, 0, 360, 0, 16}}};
     const auto encoded = ui::encode_gradient_keyframes(expected);
     check(encoded ==
-        R"([{"center_x":0.0,"center_y":1.25,"end_angle":360.0,"end_x":16.0,"end_y":2.5,"interpolation":"linear",)"
-        R"("offset":0.0,"opacity":1.0,"outer_x":2.0,"outer_y":3.0,"start_angle":0.0,"start_x":-16.0,"start_y":-1.5,)"
-        R"("tint":"#FFFFFF","x":0.0,"y":0.0}])", "geometry uses flat optional fields in canonical order");
+        R"([{"center_x":0.0,"center_y":1.25,"end_angle":360.0,"end_x":16.0,"end_y":2.5,"inner_radius":0.0,)"
+        R"("interpolation":"linear","offset":0.0,"opacity":1.0,"outer_radius":16.0,"outer_x":2.0,"outer_y":3.0,)"
+        R"("start_angle":0.0,"start_x":-16.0,"start_y":-1.5,"tint":"#FFFFFF","x":0.0,"y":0.0}])", "geometry uses flat optional fields in canonical order");
     const auto doc = decode(gradient_keyframe_page(encoded));
     check(decode(encode(doc)) == doc, "page round trips all active and dormant geometry fields");
     std::vector<ui::gradient_keyframe> keys;
@@ -370,6 +370,7 @@ void gradient_keyframe_geometry_round_trip()
         R"("start_x":0,"start_\u0078":1)", R"("outer_x":null)", R"("end_y":true)", R"("center_x":"0")",
         R"("inner_x":0)", R"("start_x":-16.001)", R"("center_y":16.001)",
         R"("start_angle":-0.001)", R"("end_angle":360.001)",
+        R"("inner_radius":-0.001)", R"("outer_radius":16.001)", R"("outer_radius":"1")",
     };
     for (const auto fields : invalid) {
         const auto bad = R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",)"s +
@@ -386,7 +387,7 @@ void gradient_keyframe_geometry_round_trip()
         key.offset = double(i) / ui::max_gradient_keyframes;
         key.geometry = {-15.123456789012345, -10.223456789012345, 14.123456789012345, 11.223456789012345,
             -9.323456789012345, 8.423456789012345, 7.523456789012345, -6.623456789012345,
-            9.723456789012345, 358.823456789012345};
+            9.723456789012345, 358.823456789012345, 0.12345678901234567, 0.9876543210987654};
     }
     const auto max_encoded = ui::encode_gradient_keyframes(full);
     check(max_encoded.size() > 32 * 1024, "full-frame coverage exceeds the legacy byte cap");
@@ -449,6 +450,22 @@ void gradient_keyframe_geometry_validation()
     validate_keys(false, "sweep angle gap below the renderer threshold is rejected");
     channel(axis::end_angle) = 0.001;
     validate_keys(true, "sweep angle gap at the renderer threshold is accepted");
+
+    channel(axis::inner_radius) = .75;
+    validate_keys(true, "radius channels are dormant on a sweep gradient");
+    props["gradient_kind"] = "radial"s;
+    validate_keys(false, "a keyed inner radius cannot exceed the inherited outer radius");
+    props["gradient_radius1"] = 1.0;
+    validate_keys(true, "a missing radius uses the authored radius, not the default");
+    channel(axis::outer_radius) = .75;
+    validate_keys(false, "equal keyed radial radii are invalid");
+    channel(axis::outer_radius) = .75000000001;
+    validate_keys(false, "keyed radii that round to the same renderer value are invalid");
+    channel(axis::outer_radius) = .875;
+    validate_keys(true, "two distinct keyed radii are accepted");
+    channel(axis::inner_radius).reset();
+    props["gradient_radius0"] = .875;
+    validate_keys(false, "a keyed outer radius must exceed the inherited inner radius");
 }
 
 void named_radio_groups()
