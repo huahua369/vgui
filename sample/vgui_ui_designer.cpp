@@ -18,6 +18,10 @@
 #include <vgui/backend/vgui_render_target.h>
 #include <SDL3/SDL_main.h>
 
+#ifdef _WIN32
+#include "ui_designer_native_dialog_exit_smoke.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -2484,12 +2488,13 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-int run(bool smoke, fs::path open_path) {
+int run(bool smoke, fs::path open_path, command native_dialog_exit = command::none) {
+    const bool test_environment = smoke || native_dialog_exit != command::none;
     app_mgr app;
     app.msaa_samples = 8; // Request 8× before creating the window and its GPU context.
     if (!app.init_gpu(true)) {
         std::fprintf(stderr, "Cannot initialize SDL3 Vulkan: %s\n", SDL_GetError());
-        return smoke ? 77 : 1;
+        return test_environment ? 77 : 1;
     }
     std::optional<smoke_file_picker> picker;
     fs::path absolute_fixture;
@@ -2515,7 +2520,8 @@ int run(bool smoke, fs::path open_path) {
             throw std::runtime_error("Cannot write the form smoke fixture: " + describe(error));
         fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
     }
-    const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
+    const auto settings = smoke ? picker->sandbox / "settings.json" :
+        test_environment ? fs::path{} : designer_settings_path();
     if (smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
                   !ui::save_designer_options(settings, ui::designer_grid_settings{.spacing = 24}, ui::designer_theme::light)))
         throw std::runtime_error("Cannot seed custom workbench settings for the smoke test");
@@ -2534,7 +2540,7 @@ int run(bool smoke, fs::path open_path) {
     auto* win = app.create(strings.text("app.title", "VGUI UI Designer"), 1370, 850, 0, true);
     if (!win) {
         std::fprintf(stderr, "Cannot open the designer window: %s\n", SDL_GetError());
-        return smoke ? 77 : 1;
+        return test_environment ? 77 : 1;
     }
     SDL_SetWindowMinimumSize(win->window, 950, 560);
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
@@ -2561,7 +2567,7 @@ int run(bool smoke, fs::path open_path) {
     if (smoke) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
     designer editor(*win, app.vgdev, shell.get(), font.get(), app.vgctx, strings, settings, std::move(message_box));
     if (open_path.empty() || !editor.open(open_path)) {
-        if (smoke) return 1;
+        if (test_environment && !open_path.empty()) return 1;
         if (open_path.empty()) editor.new_page();
     }
     if (invalid_settings) {
@@ -2633,14 +2639,27 @@ int run(bool smoke, fs::path open_path) {
     };
     if (!smoke) {
         host.idle_delay_ms = 0; // Wait for SDL events instead of sleeping and polling every 8 ms.
-        while (!editor.quitting()) {
+        const auto tick = [&] {
             advance();
             if (!editor.quitting() && submitted_windows == 0) {
                 SDL_Event e;
                 // A worker can post a chooser result without waking SDL, so keep the wait bounded.
                 if (SDL_WaitEventTimeout(&e, editor.chooser_open() ? 16 : 50)) dispatch(e);
             }
+        };
+#ifdef _WIN32
+        if (native_dialog_exit != command::none) {
+            tick(); // Draw the page and service initial window messages.
+            editor.request(native_dialog_exit);
+            tick();
+            ui::cancel_native_dialog_and_close(win->window, tick, [&] { return editor.chooser_open(); }, [&] {
+                auto* status = find_widget(vgui_root(shell.get()), "designer.status");
+                return status && std::string_view(vgui_widget_get_text(status)) ==
+                    strings.text("file.chooser_cancelled", "File selection cancelled.");
+            });
         }
+#endif
+        while (!editor.quitting()) tick();
     } else {
         const ui::native_menu_input menus(*win, shell.get(), advance);
         const auto require = [](bool passed, const char* message) {
@@ -2738,6 +2757,15 @@ int main(int argc, char** argv) {
         const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
+#ifdef _WIN32
+        if (argc == 2) {
+            const std::string_view arg(argv[1]);
+            if (arg == "--smoke-native-open-exit" || arg == "--smoke-native-save-exit") {
+                return run(false, fs::path(VGUI_SOURCE_DIR) / "sample/res/gradient-keyframes.vgui.json",
+                    arg == "--smoke-native-open-exit" ? command::open : command::save_as);
+            }
+        }
+#endif
         if (argc > 2) {
             std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;

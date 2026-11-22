@@ -23,9 +23,55 @@
 
 #include "gpu_test_util.h"
 
+#if defined(_WIN32) && defined(_MSC_VER) && defined(_DEBUG)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <crtdbg.h>
+#include <atomic>
+#endif
+
 namespace {
 
 constexpr int kSkipReturnCode = 77;
+
+#if defined(_WIN32) && defined(_MSC_VER) && defined(_DEBUG)
+std::atomic<DWORD> startup_probe_thread{0};
+std::atomic<unsigned> startup_probe_allocations{0};
+
+int __cdecl count_startup_allocations(int type, void*, size_t, int, long, const unsigned char*, int)
+{
+	if ((type == _HOOK_ALLOC || type == _HOOK_REALLOC) &&
+		GetCurrentThreadId() == startup_probe_thread.load(std::memory_order_relaxed))
+		startup_probe_allocations.fetch_add(1, std::memory_order_relaxed);
+	return TRUE;
+}
+
+DWORD WINAPI empty_thread(void*) { return 0; }
+
+bool thread_starts_without_crt_allocations()
+{
+	// The crash was in EXE TLS initialization, before the thread entry point.
+	// Detect it without racing CRT teardown or depending on a shell extension.
+	DWORD id = 0;
+	HANDLE thread = CreateThread(nullptr, 0, empty_thread, nullptr, CREATE_SUSPENDED, &id);
+	if (!thread) return false;
+	startup_probe_thread.store(id, std::memory_order_relaxed);
+	const auto previous = _CrtSetAllocHook(count_startup_allocations);
+	const bool joined = ResumeThread(thread) != DWORD(-1) &&
+		WaitForSingleObject(thread, 5000) == WAIT_OBJECT_0;
+	_CrtSetAllocHook(previous);
+	CloseHandle(thread);
+	const auto allocations = startup_probe_allocations.load(std::memory_order_relaxed);
+	if (!joined || allocations != 0)
+		std::fprintf(stderr, "Fresh Win32 thread: joined=%d, debug CRT allocations=%u (expected zero)\n", joined, allocations);
+	return joined && allocations == 0;
+}
+#endif
 
 struct gpu_state
 {
@@ -171,6 +217,9 @@ bool submit_and_download(gpu_state& gpu, ovg_draw_data_t* passes,
 
 int main()
 {
+#if defined(_WIN32) && defined(_MSC_VER) && defined(_DEBUG)
+	if (!thread_starts_without_crt_allocations()) return 1;
+#endif
 	gpu_state gpu;
 	const int init = init_gpu(gpu);
 	if (init != 0)
