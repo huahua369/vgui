@@ -1324,8 +1324,12 @@ vgui::save_file(opt, [](const vgui::file_dialog_result& r) {
 - `vgui_file_dialog_available()` 返回 0 表示当前构建没有 provider（`VGUI_CORE_ONLY`），
   show 函数返回 0 且**不会**回调，宿主可退回手输路径。
 - 过滤串接受 `"*.png;*.jpg"` 与 `"png;jpg"` 两种写法，`"*"` 表示全部；后端负责转换成各平台格式。
-- 需要自定义对话框时用 `vgui_file_dialog_set_provider()` 装上自己的 provider，并用
-  `vgui_file_dialog_post_result()`（线程安全）回报结果；SDL3 后端在库加载时自动装好一个。
+- 读取用户选中的文件类型：C++ 使用 `r.filter_index`，C 在结果回调中调用
+  `vgui_file_dialog_filter_index()`。索引从 0 开始，按原始 `filters` 顺序，和文件名后缀无关；
+  取消、失败、选目录或平台未返回筛选项时为 `-1`。
+- 需要自定义对话框时用 `vgui_file_dialog_set_provider()` 安装 provider，并用
+  `vgui_file_dialog_post_result()` 回报结果；能提供选中筛选项时改用
+  `vgui_file_dialog_post_result_with_filter()`。两者均可从任意线程调用。
 
 #### 最近使用目录（MRU）
 

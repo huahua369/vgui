@@ -2536,6 +2536,11 @@ extern "C" {
 	typedef void (*vgui_file_dialog_fn)(void* user, vgui_file_dialog_kind kind,
 		const char* const* paths, int count, const char* error);
 
+	/* Inside a result callback, returns the selected zero-based index into that
+	 * request's filters. Returns -1 outside callbacks, on cancel/failure, for
+	 * folder dialogs, or when the provider does not report a filter. */
+	VGUI_API int vgui_file_dialog_filter_index(void);
+
 	/* Zero-initialises a descriptor: all strings NULL, no filters, single
 	 * selection.  Always call it before filling in the fields you need. */
 	VGUI_API void vgui_file_dialog_desc_init(vgui_file_dialog_desc* desc);
@@ -2586,6 +2591,14 @@ extern "C" {
 	VGUI_API int vgui_file_dialog_post_result(vgui_file_dialog_kind kind,
 		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
 		const char* error);
+
+	/* Like vgui_file_dialog_post_result(), with a selected zero-based index
+	 * into the original request's filters, or -1 if unknown/unavailable.
+	 * Providers must report an in-range index. Non-file or unsuccessful
+	 * results ignore filter_index. The legacy function always reports -1. */
+	VGUI_API int vgui_file_dialog_post_result_with_filter(vgui_file_dialog_kind kind,
+		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
+		const char* error, int filter_index);
 
 	/* Number of finished results waiting for the next vgui_update().  Useful for
 	 * diagnostics and tests. */
