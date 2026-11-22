@@ -1524,6 +1524,25 @@ void test_gradient_keyframe_geometry() {
     seek(1);
     check(fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[1] == radial_base.cp[1],
         "cancel restores both circles without moving the playhead");
+
+    const auto sweep_base = fill(VG_PATTERN_TYPE_SWEEP);
+    ui::gradient_shape_preview sweep_draft{"sweep", {}};
+    sweep_draft.geometry[std::size_t(axis::center_x)] = .5f;
+    sweep_draft.geometry[std::size_t(axis::center_y)] = .375f;
+    sweep_draft.geometry[std::size_t(axis::start_angle)] = 0.f;
+    sweep_draft.geometry[std::size_t(axis::end_angle)] = 360.f;
+    seek(1, &sweep_draft);
+    const auto& sweep_live = fill(VG_PATTERN_TYPE_SWEEP);
+    check(point_is(sweep_live.cp[0], 50, 125, 0, 2) && sweep_live.count == sweep_base.count &&
+        sweep_live.colors[0] == sweep_base.colors[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0],
+        "a full-turn sweep draft updates the center and native half-turn angles without modifying other paint");
+    sweep_draft.geometry[std::size_t(axis::start_angle)] = 340.f;
+    sweep_draft.geometry[std::size_t(axis::end_angle)] = 30.f;
+    seek(1, &sweep_draft);
+    check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 50, 125, 340.f / 180, 30.f / 180),
+        "same-time sweep edits retain the authored reverse order rather than wrapping angles");
+    seek(1);
+    check(fill(VG_PATTERN_TYPE_SWEEP).cp[0] == sweep_base.cp[0], "cancel restores the original sweep at the same time");
     expect_fallback();
 }
 

@@ -428,14 +428,26 @@ constexpr auto start_x = std::size_t(gradient_geometry_axis::start_x);
 constexpr auto end_x = std::size_t(gradient_geometry_axis::end_x);
 constexpr auto center_x = std::size_t(gradient_geometry_axis::center_x);
 constexpr auto outer_x = std::size_t(gradient_geometry_axis::outer_x);
+constexpr auto start_angle = std::size_t(gradient_geometry_axis::start_angle);
+constexpr auto end_angle = std::size_t(gradient_geometry_axis::end_angle);
 constexpr auto inner_radius = std::size_t(gradient_geometry_axis::inner_radius);
 constexpr auto outer_radius = std::size_t(gradient_geometry_axis::outer_radius);
 constexpr std::array linear_handles{start_x, end_x};
 constexpr std::array radial_handles{center_x, outer_x, inner_radius, outer_radius};
+constexpr std::array sweep_handles{center_x, start_angle, end_angle};
+constexpr double radians_per_degree = std::numbers::pi / 180.;
+constexpr double sweep_guide_ratio = .42; // Guide only, in paint pixels per short side.
+
+bool is_angle(std::size_t axis) { return axis == start_angle || axis == end_angle; }
+
+double sweep_guide_radius(pixel_rect node) { return sweep_guide_ratio * std::min(node.width, node.height); }
 
 std::span<const std::size_t> shape_handles(const shape_keyframe& key) {
-    if (key.radial) return radial_handles;
-    return linear_handles;
+    switch (key.kind) {
+    case shape_kind::radial: return radial_handles;
+    case shape_kind::sweep: return sweep_handles;
+    default: return linear_handles;
+    }
 }
 
 point project_shape(const shape_keyframe& key, pixel_rect node, double x, double y) {
@@ -460,9 +472,16 @@ point shape_handle_anchor(const shape_keyframe& key, const keyframe_shape& shape
     return project_shape(key, node, x, y);
 }
 
+point sweep_guide_point(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node, double degrees) {
+    const double angle = degrees * radians_per_degree, r = sweep_guide_radius(node);
+    return project_shape(key, node, shape[center_x] + r * std::cos(angle) / node.width,
+        shape[center_x + 1] + r * std::sin(angle) / node.height);
+}
+
 point knob_anchor(const shape_keyframe& key, const keyframe_shape& shape,
         pixel_rect node, float short_side, std::size_t axis, const board_transform& transform) {
-    const auto p = shape_handle_anchor(key, shape, node, short_side, axis, axis == inner_radius ? -1. : 1.);
+    const auto p = is_angle(axis) ? sweep_guide_point(key, shape, node, shape[axis]) :
+        shape_handle_anchor(key, shape, node, short_side, axis, axis == inner_radius ? -1. : 1.);
     const auto projected = transform.project({p.x, p.y, 0, 0});
     return {projected.x, projected.y};
 }
@@ -474,8 +493,8 @@ float distance_sq(point a, point b) {
 
 struct shape_knob { std::size_t axis; point anchor, at; };
 
-// Keep every radial knob accessible when circles are concentric, very small,
-// or extend off the board. Tethers show its true location; editing uses deltas.
+// Keep radial and sweep knobs accessible when guides overlap or extend off
+// the board (including 0° and 360° on the same ray). Tethers show their anchors.
 std::array<shape_knob, 4> place_shape_knobs(const shape_keyframe& key, const keyframe_shape& shape,
         pixel_rect node, board_transform transform, pixel_rect clip, float gap) {
     std::array<shape_knob, 4> result{};
@@ -489,10 +508,11 @@ std::array<shape_knob, 4> place_shape_knobs(const shape_keyframe& key, const key
     for (std::size_t i = 0; i < axes.size(); ++i) {
         const auto axis = axes[i];
         const auto anchor = knob_anchor(key, shape, node, short_side, axis, transform);
-        const auto start = key.radial ? clamp(anchor) : anchor;
+        const bool offset_knobs = key.kind != shape_kind::linear;
+        const auto start = offset_knobs ? clamp(anchor) : anchor;
         auto& knob = result[i];
         knob = {axis, anchor, start};
-        if (!key.radial || i == 0) continue;
+        if (!offset_knobs || i == 0) continue;
         const auto separation = [&](point at) {
             float distance = gap * gap;
             for (std::size_t j = 0; j < i; ++j) distance = std::min(distance, distance_sq(at, result[j].at));
@@ -596,7 +616,8 @@ struct designer_preview::impl {
         board_transform transform;
         point down;
         float dpi;
-        std::size_t axis; // A center's X channel, or a radius channel.
+        std::size_t axis; // A center's X channel, a radius, or an angle.
+        double angle_cursor = 0., angle_unwrapped = 0.;
     };
     std::optional<shape_drag> shape_edit;
     // Keep consuming the matching left-up even when the drag was canceled.
@@ -1060,7 +1081,8 @@ struct designer_preview::impl {
         }
         if (!axis) return false;
         auto values = key->shape;
-        shape_edit.emplace(shape_drag{std::move(*key), values, area, node, transform, p, dpi, *axis});
+        const double angle = is_angle(*axis) ? values[*axis] : 0.;
+        shape_edit.emplace(shape_drag{std::move(*key), values, area, node, transform, p, dpi, *axis, angle, angle});
         edit_release = id;
         return true;
     }
@@ -1090,20 +1112,39 @@ struct designer_preview::impl {
                 const double hi = a == inner_radius ? std::nextafter(float(values[outer_radius]), 0.f) : bounds.max;
                 if (std::abs(delta) > 1e-12) values[a] = std::clamp(values[a] + delta, lo, hi);
             } else {
-                // Undo the board scale and brush affine. Inner center X is additionally
-                // stretched from its outer center when ellipse mode is active.
+                // Undo the board scale and brush affine before interpreting the pointer.
                 const double x = dx / sx / drag.node.width, y = dy / sy / drag.node.height;
                 const double det = double(xx) * yy - double(xy) * yx;
-                const double delta[] = {(yy * x - xy * y) / det / (a == center_x ? ellipse : 1.),
-                    (xx * y - yx * x) / det};
-                for (std::size_t i = 0; i < 2; ++i) {
-                    const auto& bounds = gradient_geometry_channels[a + i];
-                    if (std::abs(delta[i]) > 1e-12)
-                        values[a + i] = std::clamp(values[a + i] + delta[i], bounds.min, bounds.max);
+                const double u = (yy * x - xy * y) / det, v = (xx * y - yx * x) / det;
+                if (is_angle(a)) {
+                    // OVG measures the angle in paint pixels, not normalized widget axes.
+                    // Start at the authored ray, not the shifted knob or off-center grab.
+                    const double initial = values[a] * radians_per_degree, r = sweep_guide_radius(drag.node);
+                    const double rx = std::cos(initial) * r + u * drag.node.width;
+                    const double ry = std::sin(initial) * r + v * drag.node.height;
+                    if (std::hypot(rx, ry) < r * .02) return; // At the center direction is unstable.
+                    const double angle = std::atan2(ry, rx) / radians_per_degree;
+                    drag.angle_unwrapped += std::remainder(angle - drag.angle_cursor, 360.);
+                    drag.angle_cursor = angle;
+                    const auto& bounds = gradient_geometry_channels[a];
+                    values[a] = std::clamp(drag.angle_unwrapped, bounds.min, bounds.max);
+                    // 0 → 360 is a valid full turn even though its rays coincide.
+                    if (std::abs(float(values[end_angle]) - float(values[start_angle])) < .001f) return;
+                } else {
+                    // An elliptical radial inner center is stretched from its outer center.
+                    const double delta[] = {u / (a == center_x ? ellipse : 1.), v};
+                    for (std::size_t i = 0; i < 2; ++i) {
+                        const auto& bounds = gradient_geometry_channels[a + i];
+                        if (std::abs(delta[i]) > 1e-12)
+                            values[a + i] = std::clamp(values[a + i] + delta[i], bounds.min, bounds.max);
+                    }
+                    if (drag.key.kind == shape_kind::linear && std::hypot(float(values[end_x]) - float(values[start_x]),
+                            float(values[end_x + 1]) - float(values[start_x + 1])) < .0001f) return;
                 }
-                if (!drag.key.radial && std::hypot(float(values[end_x]) - float(values[start_x]),
-                        float(values[end_x + 1]) - float(values[start_x + 1])) < .0001f) return;
             }
+        } else if (is_angle(drag.axis)) {
+            // Returning to the grab point restores the original value and winding.
+            drag.angle_cursor = drag.angle_unwrapped = values[drag.axis];
         }
         if (drag.shape == values) return;
         drag.shape = values;
@@ -1436,9 +1477,10 @@ struct designer_preview::impl {
         const float h = knob_radius();
         const auto knobs = place_shape_knobs(*key, values, node, t, clip, 2 * (h + 2.f) + 2);
         const auto visible_knobs = std::span(knobs).first(shape_handles(*key).size());
-        constexpr unsigned ink = 0xFF202936u, accent = 0xFFB7F0FFu, inner_accent = 0xFFFFE1A0u; // OVG: AABBGGRR.
+        constexpr unsigned ink = 0xFF202936u, accent = 0xFFB7F0FFu, blue = 0xFFFFE1A0u; // OVG: AABBGGRR.
         const auto color_for = [&](std::size_t axis) {
-            return key->radial && (axis == center_x || axis == inner_radius) ? inner_accent : accent;
+            return (key->kind == shape_kind::radial && (axis == center_x || axis == inner_radius)) ||
+                axis == start_angle ? blue : accent;
         };
         if (cb->clip_rect && cb->get_clip_rect && cb->set_clip_rect) {
             // OVG save/restore does not preserve the scissor. Keep and intersect
@@ -1461,9 +1503,9 @@ struct designer_preview::impl {
                     }
                 };
                 const auto segment = [&](point a, point b) { cb->move_to(vg, a.x, a.y); cb->line_to(vg, b.x, b.y); };
-                if (!key->radial) {
+                if (key->kind == shape_kind::linear) {
                     stroke(accent, [&] { segment(knobs[0].at, knobs[1].at); });
-                } else {
+                } else if (key->kind == shape_kind::radial) {
                     for (const auto radius : {outer_radius, inner_radius}) {
                         if (values[radius] <= 0.) continue;
                         stroke(color_for(radius), [&] {
@@ -1479,10 +1521,24 @@ struct designer_preview::impl {
                             cb->close_path(vg);
                         });
                     }
-                    for (const auto& knob : visible_knobs)
-                        if (distance_sq(knob.at, knob.anchor) > 1.f)
-                            stroke(color_for(knob.axis), [&] { segment(knob.anchor, knob.at); });
+                } else {
+                    const double start = values[start_angle], span = values[end_angle] - start;
+                    stroke(accent, [&] {
+                        // Show the authored directed span, including reversed and full turns.
+                        const int segments = std::max(1, int(std::ceil(std::abs(span) / 5.)));
+                        for (int i = 0; i <= segments; ++i) {
+                            const auto p = sweep_guide_point(*key, values, node, start + span * i / segments);
+                            const auto at = t.project({p.x, p.y, 0, 0});
+                            if (i == 0) cb->move_to(vg, at.x, at.y);
+                            else cb->line_to(vg, at.x, at.y);
+                        }
+                    });
+                    for (const auto& knob : visible_knobs.subspan(1))
+                        stroke(color_for(knob.axis), [&] { segment(knobs[0].anchor, knob.anchor); });
                 }
+                for (const auto& knob : visible_knobs)
+                    if (distance_sq(knob.at, knob.anchor) > 1.f)
+                        stroke(color_for(knob.axis), [&] { segment(knob.anchor, knob.at); });
                 cb->set_clip_rect(vg, &old);
             }
         }
@@ -1492,15 +1548,15 @@ struct designer_preview::impl {
         for (const auto& knob : visible_knobs) {
             const auto at = knob.at;
             const auto color = color_for(knob.axis);
-            if (key->radial && knob.axis < inner_radius) { // Cross for a center.
+            if (knob.axis == center_x || knob.axis == outer_x) { // Cross for a center.
                 box(at, h + 1, 2.5f, ink);
                 box(at, 2.5f, h + 1, ink);
                 box(at, h, 1.5f, color);
                 box(at, 1.5f, h, color);
-            } else { // Square for a radius (or linear endpoint).
+            } else { // Square for a radius, angle, or linear endpoint.
                 box(at, h + 1, h + 1, ink);
                 box(at, h, h, color);
-                if (knob.axis != start_x) box(at, h * .5f, h * .5f, ink);
+                if (knob.axis != start_x && knob.axis != start_angle) box(at, h * .5f, h * .5f, ink);
             }
         }
     }

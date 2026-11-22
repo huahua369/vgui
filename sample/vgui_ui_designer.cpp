@@ -29,6 +29,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <initializer_list>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -2896,6 +2897,176 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
     }
 }
 
+void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer& editor,
+                                  const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe sweep drag: " + std::string(message));
+    };
+    constexpr auto track_property = "gradient_animation_keyframes";
+    using axis = ui::gradient_geometry_axis;
+    constexpr auto center_x = std::size_t(axis::center_x), center_y = std::size_t(axis::center_y);
+    constexpr auto start_angle = std::size_t(axis::start_angle), end_angle = std::size_t(axis::end_angle);
+    const auto read_keys = [&](const ui::document& doc) {
+        std::vector<ui::gradient_keyframe> keys;
+        std::string error;
+        const auto& props = doc.nodes.at("sweep").props;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(props.at(track_property)), keys, error), "decode sweep track");
+        return keys;
+    };
+    ui::document fixture;
+    require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
+    for (const auto* node : {"linear", "radial"}) fixture.nodes.at(node).props.erase("gradient_animation");
+    auto keys = read_keys(fixture);
+    require(keys.size() == 3 && keys[1].offset == .5, "expected the middle sweep key");
+    constexpr glm::dvec2 center{.43, .56};
+    constexpr double start_degrees = 0., end_degrees = 180.;
+    // Shear X while preserving the horizontal 0°/180° ray, so an actual
+    // integer-pixel pointer can reach exact angle equality under any scale.
+    constexpr double xx = .82, yx = 0., xy = .34, yy = .90, tx = -.09, ty = .11;
+    auto& middle = keys[1];
+    middle.x = .14;
+    middle.y = -.12;
+    middle.geometry[center_x] = center.x;
+    middle.geometry[center_y].reset();
+    middle.geometry[start_angle].reset();
+    middle.geometry[end_angle] = end_degrees;
+    auto& props = fixture.nodes.at("sweep").props;
+    props["height"] = 136.;
+    props["gradient_center_y"] = center.y;
+    props["gradient_angle0"] = start_degrees;
+    props["gradient_affine_xx"] = xx;
+    props["gradient_affine_yx"] = yx;
+    props["gradient_affine_xy"] = xy;
+    props["gradient_affine_yy"] = yy;
+    props["gradient_affine_tx"] = tx;
+    props["gradient_affine_ty"] = ty;
+    props[track_property] = ui::encode_gradient_keyframes(keys);
+    const auto file = sandbox / "sweep-handle-motion.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "open the isolated sweep track");
+    frame();
+
+    const auto& history = editor.history();
+    const auto before = history.current();
+    const auto initial_revision = history.revision();
+    const std::string outline_selection(editor.selection());
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    input.click("designer.preview.timeline");
+    input.click("designer.timeline.fit");
+    auto* tracks = input.widget("designer.timeline.tracks");
+    const auto select_middle = [&] {
+        input.click_at(tracks, input.fitted_middle_key(tracks));
+        const auto view = preview.capture_view();
+        require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
+            vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline_selection &&
+            outline_selection != "sweep", "select the middle sweep key and pause at its exact time without changing the outline");
+    };
+    select_middle();
+    require(history.current() == before && history.revision() == initial_revision &&
+        !history.dirty() && !history.can_undo() && !history.can_redo(), "selecting the key edited the document");
+
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
+    const auto node = std::ranges::find(layout->nodes, "sweep", &ui::node_layout::id);
+    require(node != layout->nodes.end() && node->visible, "sweep gradient is not on the board");
+    const auto& box = node->rect_px;
+    require(box.width > box.height && box.height > 0, "sweep fixture needs a non-square widget");
+    const glm::dvec2 board_scale{double(board->width) / layout->pixel_width, double(board->height) / layout->pixel_height};
+    const auto shell_size = board_scale * glm::dvec2{box.width, box.height};
+    const glm::dmat2 affine{xx, yx, xy, yy};
+    const auto center_at = glm::dvec2{board->x, board->y} + board_scale * glm::dvec2{box.x, box.y} +
+        shell_size * (affine * center + glm::dvec2{tx + middle.x, ty + middle.y});
+    // A sweep angle is a clockwise ray in paint pixels, not normalized widget coordinates.
+    const glm::dmat2 paint_affine{xx, yx * box.height / box.width, xy * box.width / box.height, yy};
+    const double radius = .42 * std::min(box.width, box.height);
+    const auto spoke = [&](double degrees) {
+        const auto angle = glm::radians(degrees);
+        return board_scale * (paint_affine * (radius * glm::dvec2{std::cos(angle), std::sin(angle)}));
+    };
+    const auto start_spoke = spoke(start_degrees), end_spoke = spoke(end_degrees);
+    const auto expected_angle = [&](double authored, glm::dvec2 delta) {
+        // Native pointer positions are rounded to shell pixels before input.
+        const auto ray = glm::inverse(paint_affine) * ((spoke(authored) + glm::round(delta)) / board_scale);
+        const auto angle = glm::degrees(std::atan2(ray.y, ray.x));
+        return angle < 0. ? angle + 360. : angle;
+    };
+    const double separation = 20 * vgui_context_get_ui_scale(shell);
+    require(glm::length(start_spoke) > separation && glm::length(end_spoke) > separation &&
+        glm::length(start_spoke - end_spoke) > separation, "authored knobs must be well separated");
+
+    auto* canvas = input.widget("designer.preview.canvas");
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto drag = [&](std::string_view name, glm::dvec2 anchor, std::initializer_list<glm::dvec2> deltas,
+                          std::initializer_list<std::pair<std::size_t, double>> changed, bool cancel_first = false) {
+        const auto check = [&](bool passed, std::string_view message) {
+            if (!passed) require(false, std::string(name) + ": " + std::string(message));
+        };
+        const auto revision = history.revision();
+        const bool had_redo = history.can_redo();
+        const auto unchanged = [&](std::string_view message) {
+            check(history.current() == before && history.revision() == revision &&
+                !history.dirty() && !history.can_undo() && history.can_redo() == had_redo, message);
+        };
+        const auto grab = glm::round(glm::vec2(anchor)) + glm::vec2{3, -2}; // Preserve the off-center grab.
+        check(vgui_hit_test(shell, grab.x, grab.y) == canvas, "authored knob is not reachable on the canvas");
+        const auto move = [&] {
+            input.button(true, grab);
+            frame();
+            unchanged("press changed the document or history");
+            auto at = grab;
+            for (const auto delta : deltas) {
+                const auto next = grab + glm::vec2(delta);
+                input.motion(at, next);
+                frame();
+                unchanged("motion edited the document before release");
+                at = next;
+            }
+            return at;
+        };
+        const auto release = [&](glm::vec2 at) { input.button(false, at); frame(); };
+        if (cancel_first) {
+            const auto at = move();
+            menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+            release(at);
+            unchanged("Escape did not cancel the draft through mouse-up");
+        }
+        release(move());
+        check(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+            "release did not create exactly one transaction");
+        check(editor.selection() == outline_selection, "drag changed the outline selection");
+        const auto edited = read_keys(history.current());
+        check(edited.size() == keys.size(), "drag changed the number of keys");
+        auto expected_keys = keys;
+        for (const auto& [channel, value] : changed) {
+            const auto actual = edited[1].geometry[channel];
+            check(actual && (value == 360. ? *actual == value : std::abs(*actual - value) < .001),
+                "edited channel did not reach the expected authored value");
+            expected_keys[1].geometry[channel] = actual;
+        }
+        auto expected = before;
+        expected.nodes.at("sweep").props[track_property] = ui::encode_gradient_keyframes(expected_keys);
+        check(history.current() == expected, "drag changed unrelated channels, keys, or document properties");
+        menus.activate(menus.open(1), 0); // Edit > Undo
+        check(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+            "one undo did not restore the original document (including inherited channels)");
+        select_middle();
+    };
+    const glm::dvec2 center_motion{22, -14};
+    const auto moved_center = center + glm::inverse(affine) * (center_motion / shell_size);
+    drag("center", center_at, {center_motion}, {{center_x, moved_center.x}, {center_y, moved_center.y}});
+    // Reach exact equality with a horizontal integer-pixel move. The last
+    // accepted preview is still committed (without changing the opposite angle).
+    const auto valid_move = spoke(56.) - start_spoke;
+    const glm::dvec2 equality_move{-std::ceil(2 * start_spoke.x), 0.};
+    drag("start angle", center_at + start_spoke, {valid_move, equality_move},
+        {{start_angle, expected_angle(start_degrees, valid_move)}}, true);
+    // Cross 360° and continue clockwise by more than half a turn from the grab.
+    // The final pointer ray is 205°, but consecutive deltas must keep the value at 360°.
+    drag("end angle", center_at + end_spoke, {spoke(245.) - end_spoke, spoke(315.) - end_spoke,
+        spoke(385.) - end_spoke, spoke(480.) - end_spoke, spoke(565.) - end_spoke}, {{end_angle, 360.}});
+}
+
 void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& editor,
                                 const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -3129,6 +3300,7 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         "both delivery formats must preserve the radius overrides");
     exercise_keyframe_endpoint_drag(win, shell, editor, frame, sandbox);
     exercise_keyframe_radial_drag(win, shell, editor, frame, sandbox);
+    exercise_keyframe_sweep_drag(win, shell, editor, frame, sandbox);
 }
 
 fs::path designer_settings_path() {

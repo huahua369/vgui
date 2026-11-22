@@ -14,11 +14,14 @@ using gradient_timeline_commit = std::function<bool(std::uint64_t, const std::ve
 
 using keyframe_shape = std::array<double, gradient_geometry_channels.size()>;
 
+enum class shape_kind { linear, radial, sweep };
+
 struct shape_keyframe {
     std::uint64_t revision, key;
     std::string node;
     double time;
-    bool terminal, radial, ellipse;
+    shape_kind kind;
+    bool terminal, ellipse;
     keyframe_shape shape;
     std::array<float, 6> affine; // XX, YX, XY, YY, TX, TY, including the key's translation.
     bool operator==(const shape_keyframe&) const = default;

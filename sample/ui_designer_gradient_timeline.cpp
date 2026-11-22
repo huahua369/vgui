@@ -729,11 +729,12 @@ struct designer_gradient_timeline::impl {
         const auto pose = poses.find(key);
         if (!mark || pose == poses.end()) return {};
         const auto& layer = model.at(tracks.at(lane));
-        const bool radial = layer.kind == "radial";
-        if (!radial && layer.kind != "linear") return {};
+        const auto kind = layer.kind == "radial" ? shape_kind::radial :
+            layer.kind == "sweep" ? shape_kind::sweep : shape_kind::linear;
         const auto& frame = pose->second;
         const auto [xx, yx, xy, yy] = layer.matrix;
-        shape_keyframe result{*revision, key, layer.node, mark->time, frame.offset == 1, radial, radial && layer.ellipse, {},
+        shape_keyframe result{*revision, key, layer.node, mark->time, kind, frame.offset == 1,
+            kind == shape_kind::radial && layer.ellipse, {},
             {xx, yx, xy, yy, static_cast<float>(layer.tx + frame.x), static_cast<float>(layer.ty + frame.y)}};
         for (std::size_t i = 0; i < result.shape.size(); ++i)
             if (gradient_geometry_channels[i].applies_to(layer.kind))
