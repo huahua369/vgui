@@ -308,6 +308,7 @@ add_executable(vgui_ui_designer vgui_ui_designer.cpp ui_designer_workbench.cpp u
 target_link_libraries(vgui_ui_designer PRIVATE vgui_sample_common vgui::ui_design_export ui_design_runtime vgui::editor_kit SDL3::SDL3 ui_designer_locale)
 target_include_directories(vgui_ui_designer SYSTEM PRIVATE ${VGUI_DESIGNER_STB_INCLUDE_DIR})
 target_compile_definitions(vgui_ui_designer PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
+add_test(NAME ui_designer_animation_preview COMMAND vgui_ui_designer --smoke-animation-preview)
 add_test(NAME ui_designer_native COMMAND vgui_ui_designer --smoke-test)
 # The full native suite now exercises multiple visible GPU previews and docking gestures.
 set_tests_properties(ui_designer_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)

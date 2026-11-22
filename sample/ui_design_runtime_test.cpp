@@ -1241,6 +1241,34 @@ void test_gradient_animations() {
     check(rt.mount(doc, 2) && rt.layout({200, 200, 1}), "remount the animation document");
     draw();
     check(near(layers[0].cp[0].x, 60) && near(layers[1].colors[0].r, 1), "remount restores the authored gradient");
+
+    // A short loop and a longer one-shot share the same absolute playhead.
+    doc.nodes.at("shine").props["gradient_animation_duration"] = 3.0;
+    check(rt.mount(doc, 3) && rt.layout({200, 200, 1}), "mount effects with different periods");
+    const auto timing = rt.animation_timing();
+    check(timing.duration == 3.0 && timing.loops, "the page span is the longest duration and reports any loop");
+    rt.seek_animations(.5);
+    draw();
+    check(near(layers[0].cp[0].x, -40 + 100.f / 3) && near(layers[1].colors[0].r, mix.r),
+        "seek uses each effect's own duration");
+    rt.seek_animations(4.5);
+    draw();
+    check(near(layers[0].cp[0].x, 160) && near(layers[1].colors[0].r, mix.r),
+        "absolute time clamps one-shots and wraps loops individually");
+    rt.seek_animations(1);
+    draw();
+    check(near(layers[1].colors[0].b, 1), "backward seek must sample, not integrate a delta");
+    rt.seek_animations(.5);
+    draw();
+    check(near(layers[0].cp[0].x, -40 + 100.f / 3) && near(layers[1].colors[0].r, mix.r),
+        "the same time always returns the same paint, including on previously finished clips");
+    const auto seek_paint_revision = vgui_context_paint_revision(ctx.get());
+    rt.seek_animations(.5);
+    rt.seek_animations(-1);
+    rt.seek_animations(std::numeric_limits<double>::infinity());
+    check(vgui_context_paint_revision(ctx.get()) == seek_paint_revision, "seeking to the same or an invalid time must not dirty paint");
+    rt.unmount();
+    check(rt.animation_timing().duration == 0 && !rt.animation_timing().loops, "unmount clears timing");
 }
 
 void test_progress_colors() {

@@ -477,6 +477,7 @@ struct designer_preview::impl {
     const designer_strings& strings;
     vgui_context* shell = nullptr;
     vgui_widget *panel = nullptr, *toolbar = nullptr, *canvas = nullptr, *status = nullptr, *zoom_text = nullptr;
+    vgui_widget *transport = nullptr, *play = nullptr, *restart = nullptr, *scrubber = nullptr, *time_text = nullptr;
     std::array<vgui_widget*, 3> presets{};
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
     std::function<void(std::string)> select, notify;
@@ -505,6 +506,9 @@ struct designer_preview::impl {
     vgpu_device_t* device = nullptr;
     vgpu_ctx_t* renderer = nullptr;
     bool has_document = false, remount = true, is_mounted = false, run = false;
+    animation_span timing;
+    animation_view playback;
+    bool sample_requested = false;
     bool dirty = true, ready = false, fit = true;
     uint64_t revision = 0, last_paint = 0;
     std::filesystem::path root;
@@ -548,25 +552,44 @@ struct designer_preview::impl {
         vgui_widget_set_gap(toolbar, 4);
         vgui_widget_set_align_items(toolbar, VGUI_ALIGN_CENTER);
         vgui_widget_set_background(toolbar, 0xFF303846);
-        auto button = [&](const char* id, const char* tip = nullptr) {
-            auto* w = vgui_widget_add(toolbar, VGUI_BUTTON, nullptr);
+        auto button = [&](vgui_widget* parent, const char* id, const char* tip = nullptr) {
+            auto* w = vgui_widget_add(parent, VGUI_BUTTON, nullptr);
             vgui_widget_set_id(w, id);
             vgui_widget_set_padding(w, 7, 2, 7, 2);
             if (tip) vgui_widget_set_tooltip(w, tip);
             vgui_widget_on_event(w, toolbar_event, this);
             return w;
         };
-        presets = {button("designer.preview.desktop", "1280 x 720"),
-            button("designer.preview.tablet", "768 x 1024"),
-            button("designer.preview.phone", "390 x 844")};
-        zoom_out = button("designer.preview.out");
-        zoom_in = button("designer.preview.in");
-        zoom_fit = button("designer.preview.fit");
-        zoom_actual = button("designer.preview.actual");
+        presets = {button(toolbar, "designer.preview.desktop", "1280 x 720"),
+            button(toolbar, "designer.preview.tablet", "768 x 1024"),
+            button(toolbar, "designer.preview.phone", "390 x 844")};
+        zoom_out = button(toolbar, "designer.preview.out");
+        zoom_in = button(toolbar, "designer.preview.in");
+        zoom_fit = button(toolbar, "designer.preview.fit");
+        zoom_actual = button(toolbar, "designer.preview.actual");
         vgui_widget_set_text(zoom_actual, "1:1");
         zoom_text = vgui_widget_add(toolbar, VGUI_LABEL, nullptr);
         vgui_widget_set_id(zoom_text, "designer.preview.zoom");
-        mode = button("designer.preview.mode");
+        mode = button(toolbar, "designer.preview.mode");
+        transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(transport, "designer.preview.animation");
+        vgui_widget_set_layout(transport, VGUI_LAYOUT_ROW);
+        vgui_widget_set_size(transport, 0, 34);
+        vgui_widget_set_padding(transport, 5, 3, 8, 3);
+        vgui_widget_set_gap(transport, 8);
+        vgui_widget_set_align_items(transport, VGUI_ALIGN_CENTER);
+        vgui_widget_set_background(transport, 0xFF303846);
+        play = button(transport, "designer.preview.animation.play");
+        vgui_widget_set_min_size(play, 64, 0);
+        restart = button(transport, "designer.preview.animation.restart");
+        scrubber = vgui_widget_add(transport, VGUI_SLIDER, nullptr);
+        vgui_widget_set_id(scrubber, "designer.preview.animation.seek");
+        vgui_widget_set_range(scrubber, 0, 1);
+        vgui_widget_set_size(scrubber, 48, 24);
+        vgui_widget_set_grow(scrubber, 1);
+        vgui_widget_on_event(scrubber, toolbar_event, this);
+        time_text = vgui_widget_add(transport, VGUI_LABEL, nullptr);
+        vgui_widget_set_id(time_text, "designer.preview.animation.time");
         canvas = vgui_widget_add(panel, VGUI_CUSTOM, nullptr);
         vgui_widget_set_id(canvas, "designer.preview.canvas");
         vgui_widget_set_grow(canvas, 1);
@@ -612,6 +635,11 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(zoom_actual, actual_tip);
         vgui_widget_set_a11y_name(zoom_actual, actual_tip);
         vgui_widget_set_tooltip(mode, strings.text("preview.mode.tooltip", "Switch between Design and Run"));
+        vgui_widget_set_text(restart, strings.text("preview.animation.restart", "Restart"));
+        vgui_widget_set_tooltip(restart, strings.text("preview.animation.restart.tooltip", "Play from the beginning"));
+        vgui_widget_set_a11y_name(scrubber, strings.text("preview.animation.seek", "Animation playhead"));
+        vgui_widget_set_tooltip(scrubber, strings.text("preview.animation.seek.tooltip",
+            "Drag to pause and inspect this time range"));
         update_toolbar();
         update_status();
     }
@@ -650,7 +678,9 @@ struct designer_preview::impl {
         if (!panel) return;
         const bool light = theme == designer_theme::light;
         vgui_widget_set_background(panel, light ? 0xFFF1F5FA : 0xFF242933);
-        vgui_widget_set_background(toolbar, light ? 0xFFE7EFF8 : 0xFF303846);
+        const auto bar = light ? 0xFFE7EFF8 : 0xFF303846;
+        vgui_widget_set_background(toolbar, bar);
+        vgui_widget_set_background(transport, bar);
         update_toolbar();
         mark_canvas(); // Shell paint only; the page texture and live input are unchanged.
     }
@@ -665,6 +695,9 @@ struct designer_preview::impl {
         vgui_widget_set_text(mode, run ? strings.text("preview.mode.run", "Run") :
             strings.text("preview.mode.design", "Design"));
         vgui_widget_set_background(mode, run ? (light ? 0xFFCBECDD : 0xFF33765A) : inactive);
+        vgui_widget_set_background(play, inactive);
+        vgui_widget_set_background(restart, inactive);
+        update_transport();
         char label[24]{};
         if (fit) vgui_widget_set_text(zoom_text, strings.text("preview.zoom_auto", "Auto"));
         else {
@@ -673,9 +706,55 @@ struct designer_preview::impl {
         }
     }
 
+    void update_transport() {
+        if (!transport) return;
+        const bool visible = run && timing.duration > 0;
+        vgui_widget_set_visible(transport, visible);
+        if (!visible) return;
+        vgui_widget_set_text(play, playback.playing ? strings.text("preview.animation.pause", "Pause") :
+            strings.text("preview.animation.play", "Play"));
+        const auto end = playback.window_start + timing.duration;
+        const auto progress = static_cast<float>(std::clamp((playback.time - playback.window_start) / timing.duration, 0., 1.));
+        if (vgui_widget_get_value(scrubber) != progress) vgui_widget_set_value(scrubber, progress);
+        char label[120];
+        std::snprintf(label, sizeof(label), "%.2f s  |  %.2f–%.2f s", playback.time, playback.window_start, end);
+        vgui_widget_set_text(time_text, label);
+    }
+
+    void follow_playhead() {
+        if (!timing.loops) {
+            playback.window_start = 0;
+            playback.time = std::min(playback.time, timing.duration);
+            if (playback.time == timing.duration) playback.playing = false;
+        } else if (playback.time < playback.window_start || playback.time > playback.window_start + timing.duration) {
+            // Move the ruler, not the clock: shorter loops keep their own phase.
+            playback.window_start = playback.time - std::fmod(playback.time, timing.duration);
+        }
+    }
+
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
-        if (event->type != VGUI_EVENT_CLICK) return;
         auto& self = *static_cast<impl*>(user);
+        if (w == self.scrubber) {
+            if (event->type == VGUI_EVENT_VALUE_CHANGED || event->type == VGUI_EVENT_MOUSE_DOWN) {
+                self.playback.playing = false;
+                self.playback.time = self.playback.window_start + vgui_widget_get_value(w) * self.timing.duration;
+                self.sample_requested = true;
+                self.update_transport();
+            }
+            return;
+        }
+        if (event->type != VGUI_EVENT_CLICK) return;
+        if (w == self.play || w == self.restart) {
+            if (w == self.restart || (!self.playback.playing && !self.timing.loops &&
+                    self.playback.time >= self.timing.duration)) {
+                self.playback = {};
+                self.sample_requested = true;
+            } else {
+                self.playback.playing = !self.playback.playing;
+            }
+            self.update_transport();
+            return;
+        }
         for (unsigned i = 0; i < self.presets.size(); ++i) if (w == self.presets[i]) {
             self.set_screen(static_cast<preset>(i));
             return;
@@ -696,6 +775,9 @@ struct designer_preview::impl {
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
         run = view.running;
+        playback = view.animation;
+        timing = {};
+        sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
         if (mounted) mounted->unmount();
         is_mounted = false;
@@ -733,6 +815,8 @@ struct designer_preview::impl {
         if (run == value) return;
         blur();
         run = value;
+        playback = {};
+        sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
         if (!run) {
             remount = true; // Next sync restores document values, not live run state.
@@ -919,6 +1003,11 @@ struct designer_preview::impl {
         } else if (commit_geometry) {
             collect_geometry_sources(doc);
         }
+        timing = is_mounted ? mounted->animation_timing() : animation_span{};
+        if (timing.duration > 0) follow_playhead();
+        else playback = {};
+        sample_requested = run && timing.duration > 0;
+        update_transport();
         update_status();
         mark_canvas();
     }
@@ -968,9 +1057,18 @@ struct designer_preview::impl {
             if (!next) { cancel_geometry(); return; }
             frame = std::move(next);
         }
-        // The authored paint belongs to Design. Run samples it without
-        // remounting or rebuilding the layout snapshot for paint-only updates.
-        if (run) mounted->advance_animations(dt);
+        // Run changes only paint. A requested seek samples its exact time
+        // before playback can advance it on a later frame.
+        if (run && timing.duration > 0) {
+            const bool ticking = !sample_requested && playback.playing && std::isfinite(dt) && dt > 0;
+            if (ticking) {
+                playback.time += dt;
+                follow_playhead();
+                update_transport();
+            }
+            if (sample_requested || ticking || layout_needed) mounted->seek_animations(playback.time);
+            sample_requested = false;
+        }
         if (layout_needed || vgui_context_paint_revision(ui.get()) != last_paint) {
             if (renderer && !draw_target(*frame)) {
                 cancel_geometry();
@@ -1367,7 +1465,7 @@ void designer_preview::cancel_interaction() { p_->blur(); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 designer_preview::view_state designer_preview::capture_view() const {
-    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run};
+    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }

@@ -62,6 +62,12 @@ struct layout_snapshot {
     std::vector<node_layout> nodes; // Preorder in document child order; no handles.
 };
 
+// Timing for an absolute playhead across all the animations in a document.
+struct animation_span {
+    double duration = 0; // Longest configured clip, in seconds; zero if none.
+    bool loops = false;
+};
+
 // Internal C++ adapter. Use on the VGUI owner thread with a dedicated context
 // whose built-in root retains its default layout and padding. The caller owns
 // the context; it must outlive runtime and all its mounts. Callbacks must not
@@ -95,6 +101,11 @@ public:
     // Use 0 to sample the start pose. Hidden/off-screen layers pause, one-shot
     // effects hold their last value, and this never mutates the document.
     void advance_animations(double delta_seconds);
+
+    // Sample the visible animations at an absolute time after layout. Looping
+    // effects use their own period; one-shots clamp to their final frame.
+    animation_span animation_timing() const;
+    void seek_animations(double seconds);
 
 private:
     struct mounted_tree;

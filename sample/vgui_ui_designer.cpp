@@ -2069,6 +2069,114 @@ void exercise_grid_layers(app_mgr& app, font_familys_t* font, const ui::designer
         "Run mode rendered design-only guides");
 }
 
+int smoke_animation_preview() {
+    const auto require = [](bool passed, const char* message) {
+        if (!passed) throw std::runtime_error(std::string("Animation preview: ") + message);
+    };
+    const auto near = [](double a, double b) { return std::abs(a - b) < .001; };
+    constexpr int width = 800, height = 500;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(nullptr, 14), vgui_destroy);
+    require(bool(shell), "create test shell");
+    vgui_context_set_size(shell.get(), width, height);
+    ui::designer_strings strings(ui::designer_language::english);
+    ui::designer_preview_fonts fonts;
+    ui::designer_preview preview(vgui_root(shell.get()), nullptr, nullptr, fonts, {}, {}, {}, strings);
+    vgui_widget_set_size(preview.widget(), width, height);
+    ui::session model;
+    const fs::path file = VGUI_SOURCE_DIR "/sample/res/gradient-animation.vgui.json";
+    require(model.load(file), "load animation example");
+    const auto original = model.current();
+    const auto revision = model.revision();
+    const auto sync = [&](const ui::document& doc, uint64_t rev) { preview.sync(doc, rev, file.parent_path(), {}); };
+    const auto state = [&] { return preview.capture_view().animation; };
+    auto* transport = find_widget(preview.widget(), "designer.preview.animation");
+    auto* play = find_widget(transport, "designer.preview.animation.play", VGUI_BUTTON);
+    auto* restart = find_widget(transport, "designer.preview.animation.restart", VGUI_BUTTON);
+    auto* slider = find_widget(transport, "designer.preview.animation.seek", VGUI_SLIDER);
+    auto* mode = find_widget(preview.widget(), "designer.preview.mode", VGUI_BUTTON);
+    require(transport && play && restart && slider && mode, "transport widgets are missing");
+    const auto point_at = [&](vgui_widget* widget, float fraction) {
+        vgui_layout(shell.get());
+        ui::pixel_rect rect;
+        vgui_widget_get_rect(widget, &rect.x, &rect.y, &rect.width, &rect.height);
+        require(rect.width > 0 && rect.height > 0, "transport widget collapsed");
+        return std::pair{rect.x + fraction * rect.width, rect.y + rect.height * .5f};
+    };
+    const auto click = [&](vgui_widget* widget) {
+        const auto [x, y] = point_at(widget, .5f);
+        require(vgui_hit_test(shell.get(), x, y) == widget, "transport widget cannot receive input");
+        vgui_input_mouse_move(shell.get(), x, y);
+        vgui_input_mouse_down(shell.get(), 1, x, y, 1);
+        vgui_input_mouse_up(shell.get(), 1, x, y, 1);
+    };
+    sync(model.current(), revision);
+    preview.render(0);
+    require(preview.snapshot() && !vgui_widget_get_visible(transport), "Design must not show the transport");
+    click(mode);
+    preview.render(.25f);
+    require(vgui_widget_get_visible(transport) && state().playing && state().time == 0, "Run begins playback at zero");
+    const auto serial = preview.snapshot()->serial;
+    preview.render(.8f);
+    require(near(state().time, .8) && near(vgui_widget_get_value(slider), .25), "the thumb follows the playback clock");
+    click(play);
+    preview.render(1.f);
+    require(!state().playing && near(state().time, .8), "pause holds the current frame");
+    click(play);
+    preview.render(.4f);
+    require(state().playing && near(state().time, 1.2), "play resumes instead of restarting");
+
+    const auto [x, y] = point_at(slider, .2f);
+    const auto [end_x, end_y] = point_at(slider, .75f);
+    require(vgui_hit_test(shell.get(), x, y) == slider, "the seek track cannot receive input");
+    vgui_input_mouse_move(shell.get(), x, y);
+    vgui_input_mouse_down(shell.get(), 1, x, y, 1);
+    vgui_input_mouse_move(shell.get(), end_x, end_y);
+    preview.render(1.f); // Scrubbing must take effect even before release.
+    require(!state().playing && near(state().time, 2.4), "drag pauses playback and seeks to the requested frame");
+    vgui_input_mouse_up(shell.get(), 1, end_x, end_y, 1);
+    require(preview.snapshot()->serial == serial, "animation-only samples must not rebuild the layout snapshot");
+    const auto saved_view = preview.capture_view();
+    preview.restore_view({}); // Open a static page, then recreate the first preview from its saved view.
+    sync(ui::make_document(), revision + 1);
+    preview.set_running(true);
+    preview.render(4.f);
+    require(!vgui_widget_get_visible(transport), "static Run pages must not show the transport");
+    preview.restore_view(saved_view);
+    sync(model.current(), revision);
+    preview.render(4.f);
+    require(!state().playing && near(state().time, 2.4) && near(vgui_widget_get_value(slider), .75),
+        "restoring a Run tab preserves the exact paused time");
+
+    click(play);
+    preview.render(2.f);
+    require(near(state().time, 4.4) && near(state().window_start, 3.2) && near(vgui_widget_get_value(slider), .375),
+        "looping pages continue in a new ruler interval without resetting the clock");
+    click(slider);
+    preview.render(.1f);
+    require(!state().playing && near(state().time, 4.8), "seek on a later interval must not jump back to the first one");
+    click(restart);
+    preview.render(.5f);
+    require(state().playing && state().time == 0 && state().window_start == 0, "restart samples the first frame and plays");
+
+    auto once = original;
+    once.nodes.at("sweep").props["gradient_animation_loop"] = false;
+    once.nodes.at("tint").props["gradient_animation_loop"] = false;
+    sync(once, revision + 2);
+    preview.render(0.f);
+    preview.render(4.f);
+    require(!state().playing && near(state().time, 3.2) && vgui_widget_get_value(slider) == 1,
+        "an all-one-shot page pauses at the end");
+    click(mode);
+    sync(model.current(), revision);
+    require(!vgui_widget_get_visible(transport), "returning to Design hides the transport");
+    click(mode);
+    preview.render(.5f);
+    require(state().playing && state().time == 0, "re-entering Run starts from the beginning");
+    require(model.current() == original && model.revision() == revision && !model.dirty() && !model.can_undo(),
+        "preview controls must not change document history");
+    return 0;
+}
+
 fs::path designer_settings_path() {
     if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
         return fs::u8path(override_path);
@@ -2328,8 +2436,9 @@ int run(bool smoke, fs::path open_path) {
 int main(int argc, char** argv) {
     try {
         const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
+        if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc > 2) {
-            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test]\n");
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview]\n");
             return 2;
         }
         return run(smoke, argc == 2 && !smoke ? fs::u8path(argv[1]) : fs::path{});

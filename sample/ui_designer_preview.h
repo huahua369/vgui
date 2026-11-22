@@ -68,12 +68,17 @@ public:
     vgui_widget* widget() const;
 
     enum class preset { desktop, tablet, phone };
+    struct animation_view {
+        double time = 0, window_start = 0;
+        bool playing = true;
+    };
     struct view_state {
         preset screen = preset::desktop;
         bool fit = true;
         float zoom = 1;
         float pan_x = 0, pan_y = 0;
         bool running = false;
+        animation_view animation; // In-memory preview state, not saved to the document.
     };
 
     view_state capture_view() const;

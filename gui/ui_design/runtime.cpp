@@ -102,8 +102,15 @@ struct gradient_animation {
     bool sampled = false;
 
     void advance(double delta) {
-        const double next = loop ? std::fmod(elapsed + std::fmod(delta, duration), duration)
-            : std::min(elapsed + delta, duration);
+        sample(loop ? std::fmod(elapsed + std::fmod(delta, duration), duration)
+            : std::min(elapsed + delta, duration));
+    }
+
+    void seek(double seconds) {
+        sample(loop ? std::fmod(seconds, duration) : std::min(seconds, duration));
+    }
+
+    void sample(double next) {
         if (sampled && next == elapsed) return;
         elapsed = next;
         sampled = true;
@@ -239,6 +246,7 @@ struct runtime::mounted_tree {
     std::vector<std::string> order;
     std::vector<diagnostic> diagnostics;
     std::vector<gradient_animation> gradient_animations;
+    animation_span animation_timing;
     std::uint64_t revision = 0;
     float width = 0, height = 0;
     ~mounted_tree() {
@@ -278,6 +286,17 @@ std::span<const diagnostic> runtime::diagnostics() const {
     return tree_ ? std::span<const diagnostic>(tree_->diagnostics) : std::span<const diagnostic>();
 }
 
+namespace {
+bool animation_visible(vgui_widget* widget, int width, int height) {
+    for (auto* w = widget; w; w = vgui_widget_get_parent(w))
+        if (!vgui_widget_get_visible(w)) return false;
+    pixel_rect rect;
+    vgui_widget_get_rect(widget, &rect.x, &rect.y, &rect.width, &rect.height);
+    const auto clipped = intersect(rect, {0, 0, float(width), float(height)});
+    return clipped.width > 0 && clipped.height > 0;
+}
+} // namespace
+
 void runtime::advance_animations(double delta_seconds) {
     if (!tree_ || tree_->gradient_animations.empty() || !std::isfinite(delta_seconds) || delta_seconds < 0) return;
     int width = 0, height = 0;
@@ -285,13 +304,21 @@ void runtime::advance_animations(double delta_seconds) {
     if (width <= 0 || height <= 0) return;
     for (auto& animation : tree_->gradient_animations) {
         if (!animation.loop && animation.sampled && animation.elapsed >= animation.duration) continue;
-        auto* ancestor = animation.widget;
-        while (ancestor && vgui_widget_get_visible(ancestor)) ancestor = vgui_widget_get_parent(ancestor);
-        if (ancestor) continue;
-        pixel_rect rect;
-        vgui_widget_get_rect(animation.widget, &rect.x, &rect.y, &rect.width, &rect.height);
-        const auto clipped = intersect(rect, {0, 0, float(width), float(height)});
-        if (clipped.width > 0 && clipped.height > 0) animation.advance(delta_seconds);
+        if (animation_visible(animation.widget, width, height)) animation.advance(delta_seconds);
+    }
+}
+
+animation_span runtime::animation_timing() const {
+    return tree_ ? tree_->animation_timing : animation_span{};
+}
+
+void runtime::seek_animations(double seconds) {
+    if (!tree_ || tree_->gradient_animations.empty() || !std::isfinite(seconds) || seconds < 0) return;
+    int width = 0, height = 0;
+    vgui_context_get_size(ctx_, &width, &height);
+    if (width <= 0 || height <= 0) return;
+    for (auto& animation : tree_->gradient_animations) {
+        if (animation_visible(animation.widget, width, height)) animation.seek(seconds);
     }
 }
 
@@ -370,6 +397,9 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             if (mode != "none") {
                 auto& animation = next->gradient_animations.emplace_back(w, std::move(paint),
                     std::get<double>(property(n, "gradient_animation_duration")), p.boolean("gradient_animation_loop"), mode == "shine");
+                auto& timing = next->animation_timing;
+                timing.duration = std::max(timing.duration, animation.duration);
+                timing.loops |= animation.loop;
                 if (animation.shine) {
                     animation.dx = p.number("gradient_animation_dx");
                     animation.dy = p.number("gradient_animation_dy");

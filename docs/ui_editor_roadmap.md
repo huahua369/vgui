@@ -167,7 +167,11 @@ cmake --build <build-dir> --target vgui_ui_designer
 
 #### 扫光与变色
 
-打开 [gradient-animation.vgui.json](../sample/res/gradient-animation.vgui.json)。选中渐变控件，在 **渐变动画 → 动画效果** 选 **扫光** 或 **变色**。切到 **运行** 自动播放；切回 **设计** 恢复原始渐变，下次进入运行时从头开始。单次播放停在终点，隐藏的控件和不可见的页签不推进。JSON 未设置动画时保持静止。
+打开 [gradient-animation.vgui.json](../sample/res/gradient-animation.vgui.json)。选中渐变控件，在 **渐变动画 → 动画效果** 选 **扫光** 或 **变色**。切到 **运行** 自动播放；切回 **设计** 恢复原始渐变，下次进入运行时从头开始。没有动画的页面不显示播放栏。
+
+- **暂停 / 播放**停在当前帧或继续，**重播**从头开始。点击或拖动进度条会暂停，并同时定位整页的动画。右侧显示当前时间和可拖动的范围。
+- 进度条的范围宽度取页面中最长的动画时长。有循环动画时，播放越过右端会移到下一个时间区间；各动画保留自己的周期，单次动画到结尾后不再变化。只有单次动画的页面播到最后会自动暂停。
+- 每个页签独立保留播放位置和暂停状态，不可见的页签不推进。播放栏只控制预览，不写回文档，也不产生撤销记录。
 
 | JSON 属性 | 默认值 | 含义 |
 |---|---|---|
@@ -177,7 +181,7 @@ cmake --build <build-dir> --target vgui_ui_designer
 | `gradient_animation_dx` / `gradient_animation_dy` | `2` / `0` | 扫光总位移，以控件宽／高为单位，原渐变位置是中点。让高光两端透明，循环接缝不显眼 |
 | `gradient_animation_color` | `"#70BFFF"` | 变色目标，接受 `#RRGGBB` / `#RRGGBBAA`。以预乘 Alpha、线性光做颜色插值；仍保留原色标的透明度分布 |
 
-动画属性随文档保存和导出。宿主可在 `layout()` 之后、绘制之前每帧调用 `ui_design::runtime::advance_animations(dt)`（`dt` 以秒计）；不调用则保持静止。播放只改当前画笔，不写回 JSON、不重建控件。只在画笔实际改变时请求新帧。
+动画属性随文档保存和导出。宿主可在 `layout()` 之后、绘制之前每帧调用 `ui_design::runtime::advance_animations(dt)`（`dt` 以秒计），隐藏或超出视口的图层暂停推进。需要绝对时间预览时，可以读取 `animation_timing()` 并调用 `seek_animations(seconds)`；这会在给定时刻采样可见图层。不调用这些接口则保持原始渐变。采样只改当前画笔，不写回 JSON、不重建控件。
 
 完整的时间轴、任意路径变形不在这一版。后续可复用 `TimelineView` 和 `CurveEditor`，为 UI 文档加入轨道持久化和播放器绑定。扫光和仿射只移动色场；轮廓变形需要独立的路径插值。
 
