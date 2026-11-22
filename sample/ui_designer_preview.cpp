@@ -480,6 +480,9 @@ struct designer_preview::impl {
     vgui_widget *transport = nullptr, *play = nullptr, *restart = nullptr, *scrubber = nullptr, *time_text = nullptr;
     std::array<vgui_widget*, 3> presets{};
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
+    vgui_widget* timeline_toggle = nullptr;
+    std::unique_ptr<designer_gradient_timeline> timeline;
+    bool timeline_open = false;
     std::function<void(std::string)> select, notify;
     std::function<void(geometry_edit)> commit_geometry;
     std::map<std::string, geometry_source, std::less<>> geometry_sources;
@@ -530,7 +533,7 @@ struct designer_preview::impl {
 
     impl(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font, designer_preview_fonts::impl& cache,
             std::function<void(std::string)> s, std::function<void(std::string)> n,
-            std::function<void(geometry_edit)> commit, const designer_strings& locale)
+            std::function<void(geometry_edit)> commit, const designer_strings& locale, gradient_timeline_commit commit_keys)
         : strings(locale), shell(parent ? vgui_widget_get_context(parent) : nullptr),
           select(std::move(s)), notify(std::move(n)), commit_geometry(std::move(commit)),
           fonts(cache), ui(vgui_create(font, 14), vgui_destroy), device(gpu) {
@@ -571,6 +574,7 @@ struct designer_preview::impl {
         zoom_text = vgui_widget_add(toolbar, VGUI_LABEL, nullptr);
         vgui_widget_set_id(zoom_text, "designer.preview.zoom");
         mode = button(toolbar, "designer.preview.mode");
+        if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
         transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_id(transport, "designer.preview.animation");
         vgui_widget_set_layout(transport, VGUI_LAYOUT_ROW);
@@ -596,6 +600,8 @@ struct designer_preview::impl {
         vgui_widget_set_focusable(canvas, 0);
         vgui_widget_set_min_size(canvas, 8, 8);
         vgui_custom_set_draw(canvas, draw_canvas, this);
+        if (commit_keys) timeline = std::make_unique<designer_gradient_timeline>(panel, strings, std::move(commit_keys),
+            [this](double time, bool endpoint) { seek_playhead(time, endpoint); }, notify);
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);
@@ -607,6 +613,7 @@ struct designer_preview::impl {
     ~impl() {
         if (focus_listener) vgui_context_remove_focus_listener(shell, focus_listener);
         blur();
+        timeline.reset(); // Detach timeline callbacks before destroying its widget tree.
         if (panel) vgui_widget_destroy(panel);
         if (mounted) mounted->unmount();
         // Flush the private context's deferred CPU texture releases while the
@@ -635,6 +642,11 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(zoom_actual, actual_tip);
         vgui_widget_set_a11y_name(zoom_actual, actual_tip);
         vgui_widget_set_tooltip(mode, strings.text("preview.mode.tooltip", "Switch between Design and Run"));
+        if (timeline) {
+            vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
+            vgui_widget_set_tooltip(timeline_toggle, strings.text("timeline.toggle", "Show or hide this page's gradient animation tracks"));
+            timeline->refresh_language();
+        }
         vgui_widget_set_text(restart, strings.text("preview.animation.restart", "Restart"));
         vgui_widget_set_tooltip(restart, strings.text("preview.animation.restart.tooltip", "Play from the beginning"));
         vgui_widget_set_a11y_name(scrubber, strings.text("preview.animation.seek", "Animation playhead"));
@@ -695,6 +707,7 @@ struct designer_preview::impl {
         vgui_widget_set_text(mode, run ? strings.text("preview.mode.run", "Run") :
             strings.text("preview.mode.design", "Design"));
         vgui_widget_set_background(mode, run ? (light ? 0xFFCBECDD : 0xFF33765A) : inactive);
+        if (timeline_toggle) vgui_widget_set_background(timeline_toggle, timeline_open ? active : inactive);
         vgui_widget_set_background(play, inactive);
         vgui_widget_set_background(restart, inactive);
         update_transport();
@@ -732,14 +745,30 @@ struct designer_preview::impl {
         }
     }
 
+    void seek_playhead(double time, bool endpoint) {
+        if (!run) set_run(true);
+        playback.playing = false;
+        playback.time = time;
+        playback.inspect_end = endpoint;
+        follow_playhead();
+        sample_requested = true;
+        update_transport();
+    }
+
+    void open_timeline(bool value) {
+        if (!timeline || value == timeline_open) return;
+        cancel_pointer();
+        timeline_open = value;
+        timeline->set_visible(value);
+        update_toolbar();
+        mark_canvas();
+    }
+
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
         auto& self = *static_cast<impl*>(user);
         if (w == self.scrubber) {
             if (event->type == VGUI_EVENT_VALUE_CHANGED || event->type == VGUI_EVENT_MOUSE_DOWN) {
-                self.playback.playing = false;
-                self.playback.time = self.playback.window_start + vgui_widget_get_value(w) * self.timing.duration;
-                self.sample_requested = true;
-                self.update_transport();
+                self.seek_playhead(self.playback.window_start + vgui_widget_get_value(w) * self.timing.duration, false);
             }
             return;
         }
@@ -760,6 +789,7 @@ struct designer_preview::impl {
             return;
         }
         if (w == self.mode) { self.set_run(!self.run); return; }
+        if (w == self.timeline_toggle) { self.open_timeline(!self.timeline_open); return; }
         if (w == self.zoom_fit || w == self.zoom_actual) self.reset_zoom(w == self.zoom_fit);
         else {
             const auto area = rect(self.canvas);
@@ -776,6 +806,10 @@ struct designer_preview::impl {
         pan = {view.pan_x, view.pan_y};
         run = view.running;
         playback = view.animation;
+        if (timeline) {
+            timeline_open = view.timeline_open;
+            timeline->set_visible(timeline_open);
+        }
         timing = {};
         sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
@@ -962,6 +996,7 @@ struct designer_preview::impl {
             selection.assign(selected);
             mark_canvas();
         }
+        if (timeline) timeline->sync(doc, rev, selected);
         const bool same_document = has_document && !remount && rev == revision;
         if (same_document && project_root == root) return;
         std::error_code ec;
@@ -1062,11 +1097,12 @@ struct designer_preview::impl {
         if (run && timing.duration > 0) {
             const bool ticking = !sample_requested && playback.playing && std::isfinite(dt) && dt > 0;
             if (ticking) {
+                playback.inspect_end = false;
                 playback.time += dt;
                 follow_playhead();
                 update_transport();
             }
-            if (sample_requested || ticking || layout_needed) mounted->seek_animations(playback.time);
+            if (sample_requested || ticking || layout_needed) mounted->seek_animations(playback.time, playback.inspect_end);
             sample_requested = false;
         }
         if (layout_needed || vgui_context_paint_revision(ui.get()) != last_paint) {
@@ -1082,6 +1118,7 @@ struct designer_preview::impl {
             dirty = false;
             mark_canvas();
         }
+        if (timeline) timeline->show_time(run ? playback.time : 0);
         if (geometry || ime_window) vgui_layout(shell);
         if (geometry) {
             const auto area = rect(canvas);
@@ -1451,9 +1488,9 @@ designer_preview_fonts::~designer_preview_fonts() = default;
 designer_preview::designer_preview(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font,
         designer_preview_fonts& fonts,
         std::function<void(std::string)> select, std::function<void(std::string)> notify,
-        std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings)
+        std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings, gradient_timeline_commit commit_keys)
     : p_(std::make_unique<impl>(parent, gpu, font, *fonts.p_, std::move(select), std::move(notify),
-        std::move(commit_geometry), strings)) {}
+        std::move(commit_geometry), strings, std::move(commit_keys))) {}
 designer_preview::~designer_preview() = default;
 void designer_preview::sync(const document& doc, uint64_t rev, const std::filesystem::path& root, std::string_view selection) {
     p_->sync(doc, rev, root, selection);
@@ -1465,7 +1502,7 @@ void designer_preview::cancel_interaction() { p_->blur(); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 designer_preview::view_state designer_preview::capture_view() const {
-    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback};
+    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }

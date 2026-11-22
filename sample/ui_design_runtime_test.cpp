@@ -1271,6 +1271,112 @@ void test_gradient_animations() {
     check(rt.animation_timing().duration == 0 && !rt.animation_timing().loops, "unmount clears timing");
 }
 
+void test_gradient_keyframe_animation() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["paint"]},
+        "paint":{"type":"gradient","props":{"x":10,"y":20,"width":100,"height":40,
+            "gradient_affine_tx":0.125,"gradient_affine_ty":-0.125,"gradient_extend":"reflect",
+            "gradient_stops":[{"offset":0,"color":"#C0804080"},{"offset":0.4,"color":"#20A0F0"},{"offset":1,"color":"#00AA5500"}],
+            "gradient_animation":"keyframes","gradient_animation_duration":4,"gradient_animation_loop":false,
+            "gradient_animation_keyframes":[
+                {"offset":0.125,"x":0.125,"y":0.25,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"},
+                {"offset":0.375,"x":0.375,"y":0.5,"tint":"#0080FF","opacity":0.5,"interpolation":"step"},
+                {"offset":0.625,"x":-0.125,"y":-0.25,"tint":"#FF0000","opacity":0.25,"interpolation":"smooth"},
+                {"offset":0.875,"x":0.875,"y":0.25,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"}]}}
+    }})", doc), "read keyframed gradient");
+    const auto authored = doc;
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = vg->height = 200;
+    static std::vector<vg_gradient_t> fills;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* p) {
+        if (p && p->type == VG_PATTERN_TYPE_LINEAR && p->data) fills.push_back(*static_cast<vg_gradient_t*>(p->data));
+        set_source(view, p);
+    };
+    const auto expect_paint = [&](float x, float y, std::array<int, 4> rgba, int middle_alpha, std::string_view message) {
+        cb->clear(vg.get());
+        fills.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(fills.size() == 1, "draw a keyframed native gradient");
+        const auto& paint = fills.front();
+        const auto& color = paint.colors[0];
+        check(near(paint.cp[0].x, x) && near(paint.cp[0].y, y) &&
+              color.r == rgba[0] / 255.f && color.g == rgba[1] / 255.f &&
+              color.b == rgba[2] / 255.f && color.a == rgba[3] / 255.f &&
+              paint.colors[1].a == middle_alpha / 255.f, message);
+        check(paint.count == 3 && near(paint.stops[1], .4f) && paint.extend == VG_EXTEND_REFLECT &&
+            paint.colors[2].a == 0.f, "keyframes leave stop layout and spread unchanged and never add authored alpha");
+    };
+    constexpr std::array<int, 4> original{192, 128, 64, 128};
+    ui::runtime rt(ctx.get());
+    const auto mount = [&](std::uint64_t revision) {
+        check(rt.mount(doc, revision) && rt.layout({200, 200, 1}), "mount gradient keyframes");
+    };
+    mount(1);
+    auto* widget = rt.widget("paint");
+    check(rt.animation_timing().duration == 4 && !rt.animation_timing().loops, "keyframes use their configured clip timing");
+    expect_paint(72.5f, 15, original, 255, "mount and layout alone keep the authored paint");
+    rt.advance_animations(0);
+    expect_paint(85, 25, original, 255, "first key clamps before its offset; neutral tint and opacity preserve exact colors");
+    rt.advance_animations(1);
+    expect_paint(97.5f, 30, {96, 96, 64, 96}, 191, "linear midpoint interpolates relative translation, tint and opacity");
+    rt.seek_animations(2);
+    expect_paint(110, 35, {0, 64, 64, 64}, 128, "outgoing step holds at the left key");
+    rt.seek_animations(2.5);
+    expect_paint(60, 5, {192, 0, 0, 32}, 64, "step switches at the exact next key");
+    rt.seek_animations(2.75);
+    expect_paint(75.625f, 8.125f, {192, 20, 10, 47}, 94, "smooth uses the timeline's smoothstep, not linear interpolation");
+    rt.seek_animations(4);
+    expect_paint(160, 25, original, 255, "non-looping clip holds its last key past the last offset");
+    rt.seek_animations(1);
+    expect_paint(97.5f, 30, {96, 96, 64, 96}, 191, "backward seek reproduces the paint from advancement");
+    check(rt.widget("paint") == widget && doc == authored, "sampling does not remount the widget or edit the design");
+
+    auto& props = doc.nodes.at("paint").props;
+    props["gradient_animation_loop"] = true;
+    mount(2);
+    rt.seek_animations(3.875);
+    expect_paint(160, 25, original, 255, "loop holds the last pose up to the clip end, without blending across the boundary");
+    rt.advance_animations(.125);
+    expect_paint(85, 25, original, 255, "advance restarts the loop on the exact cycle boundary");
+    rt.seek_animations(5);
+    expect_paint(97.5f, 30, {96, 96, 64, 96}, 191, "absolute seek wraps each loop's own duration");
+    props["gradient_animation_duration"] = .7;
+    mount(3);
+    const double cycle = .7 * 3;
+    rt.seek_animations(std::nextafter(cycle, 0.));
+    expect_paint(160, 25, original, 255, "a representable time just before a decimal period boundary still holds the last key");
+    rt.seek_animations(cycle);
+    expect_paint(85, 25, original, 255, "an exact computed decimal period boundary restarts the loop");
+
+    std::vector<ui::gradient_keyframe> keys;
+    std::string error;
+    check(ui::decode_gradient_keyframes(std::get<std::string>(props.at("gradient_animation_keyframes")), keys, error),
+        "retrieve the authored keys");
+    keys[2].interpolation = "step";
+    keys.back().offset = 1;
+    props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(keys);
+    mount(4);
+    rt.seek_animations(std::nextafter(.7, 0.));
+    expect_paint(60, 5, {192, 0, 0, 32}, 64, "a step segment has not reached the terminal key before the end");
+    rt.seek_animations(.7, true);
+    expect_paint(160, 25, original, 255, "inspecting the terminal key samples its exact pose, even after a step");
+    rt.seek_animations(.7);
+    expect_paint(85, 25, original, 255, "normal seeks still wrap when arriving at the exact same boundary");
+
+    props.erase("gradient_animation_keyframes");
+    mount(5);
+    check(rt.animation_timing().duration == .7 && rt.animation_timing().loops, "an empty keyframes mode still reports timeline timing");
+    const auto revision = vgui_context_paint_revision(ctx.get());
+    rt.seek_animations(.5);
+    rt.advance_animations(1);
+    check(vgui_context_paint_revision(ctx.get()) == revision, "empty keyframes do not dirty the authored paint");
+    expect_paint(72.5f, 15, original, 255, "empty keyframes preserve authored paint under both clocks");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1463,6 +1569,7 @@ int main(int argc, char** argv) {
         test_panel_gradients();
         test_decorative_gradients();
         test_gradient_animations();
+        test_gradient_keyframe_animation();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

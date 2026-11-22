@@ -6,7 +6,8 @@ namespace vgui::ui_design::detail {
 
 inline constexpr std::string_view gradient_kinds[] = {"linear", "radial", "sweep"};
 inline constexpr std::string_view gradient_extends[] = {"pad", "repeat", "reflect"};
-inline constexpr std::string_view gradient_animations[] = {"none", "shine", "color"};
+inline constexpr std::string_view gradient_animations[] = {"none", "shine", "color", "keyframes"};
+inline constexpr std::string_view gradient_keyframe_interpolations[] = {"step", "linear", "smooth"};
 inline constexpr double gradient_limit = 16.0;
 inline const property_descriptor gradient_properties[] = {
     {"gradient_kind", "Gradient type", value_type::choice, std::string("linear"), 0, 0, gradient_kinds},
@@ -38,6 +39,7 @@ inline const property_descriptor gradient_properties[] = {
     {"gradient_animation_dx", "Shine travel X", value_type::number, 2.0, -4.0, 4.0},
     {"gradient_animation_dy", "Shine travel Y", value_type::number, 0.0, -4.0, 4.0},
     {"gradient_animation_color", "Target color", value_type::color, std::string("#70BFFF")},
+    {"gradient_animation_keyframes", "Keyframes", value_type::gradient_keyframes, std::string("[]")},
 };
 
 } // namespace vgui::ui_design::detail

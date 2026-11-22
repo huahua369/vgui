@@ -306,6 +306,7 @@ public:
             if (page.last_model_revision != model.revision()) {
                 page.last_model_revision = model.revision();
                 page.preview_revision = ++next_preview_revision_;
+                page.last_key_revision.reset();
             }
             const auto selected = page.id == active_ ? workbench_.selection() : std::string_view(page.selection);
             view.sync(model.current(), page.preview_revision, resource_root(page), selected);
@@ -430,6 +431,19 @@ private:
         else workbench_.status(std::string(change.width || change.height ? tr("geometry.resized", "Resized ") : tr("geometry.moved", "Moved ")) + change.id);
     }
 
+    bool commit_keyframes(vgui_item_id id, std::uint64_t revision, const std::vector<ui::edit>& edits) {
+        auto* page = find_page(id);
+        if (!page || id != active_ || revision != page->preview_revision ||
+            (session_.revision() != page->last_model_revision && session_.revision() != page->last_key_revision)) return false;
+        ui::diagnostic error;
+        if (!session_.apply(edits, &error)) {
+            workbench_.status(std::string(tr("timeline.failed", "Keyframe edit failed: ")) + describe(error));
+            return false;
+        }
+        page->last_key_revision = session_.revision();
+        return true;
+    }
+
     struct page_state {
         vgui_item_id id = 0;
         std::uint64_t untitled_number = 0;
@@ -443,6 +457,7 @@ private:
         std::unique_ptr<ui::designer_preview> preview;
         std::optional<std::uint64_t> last_model_revision;
         std::uint64_t preview_revision = 0;
+        std::optional<std::uint64_t> last_key_revision;
     };
 
     page_state* find_page(vgui_item_id id) {
@@ -495,7 +510,8 @@ private:
         page.preview = std::make_unique<ui::designer_preview>(page.host, gpu_, font_, preview_fonts_,
             [this, id](std::string node) { if (active_ == id) workbench_.select(std::move(node)); },
             [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
-            [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_);
+            [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_,
+            [this, id](auto revision, const auto& edits) { return commit_keyframes(id, revision, edits); });
         page.preview->set_render_context(renderer_);
         page.preview->set_grid_settings(grid_settings_);
         page.preview->set_theme(theme_);
@@ -2177,6 +2193,137 @@ int smoke_animation_preview() {
     return 0;
 }
 
+int smoke_gradient_keyframes() {
+    const auto require = [](bool ok, const char* message) {
+        if (!ok) throw std::runtime_error(std::string("Gradient timeline: ") + message);
+    };
+    const auto near = [](double a, double b) { return std::abs(a - b) < .004; };
+    const fs::path file = VGUI_SOURCE_DIR "/sample/res/gradient-keyframes.vgui.json";
+    ui::session model;
+    require(model.load(file), "load the two-track example");
+    const auto before = model.current();
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> shell(vgui_create(nullptr, 14), vgui_destroy);
+    require(bool(shell), "create test context");
+    vgui_context_set_size(shell.get(), 900, 620);
+    ui::designer_preview_fonts fonts;
+    const ui::designer_strings strings(ui::designer_language::english);
+    std::string status;
+    ui::designer_preview preview(vgui_root(shell.get()), nullptr, nullptr, fonts, {},
+        [&](std::string reason) { status = std::move(reason); }, {}, strings,
+        [&](std::uint64_t revision, const std::vector<ui::edit>& batch) {
+            return revision == model.revision() && model.apply(batch);
+        });
+    vgui_widget_set_size(preview.widget(), 900, 620);
+    const auto update = [&] {
+        preview.sync(model.current(), model.revision(), file.parent_path(), "highlight");
+        preview.render(0);
+        vgui_layout(shell.get());
+    };
+    const auto widget = [&](const char* id) {
+        auto* w = find_widget(preview.widget(), id);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto click_at = [&](float x, float y, int clicks = 1) {
+        vgui_input_mouse_move(shell.get(), x, y);
+        vgui_input_mouse_down(shell.get(), 1, x, y, clicks);
+        vgui_input_mouse_up(shell.get(), 1, x, y, clicks);
+    };
+    const auto click = [&](const char* id) {
+        auto* w = widget(id);
+        float x, y, width, height;
+        vgui_widget_get_rect(w, &x, &y, &width, &height);
+        require(vgui_hit_test(shell.get(), x + width / 2, y + height / 2) == w, id);
+        click_at(x + width / 2, y + height / 2);
+    };
+    const auto keyframes = [&](const char* node) {
+        std::vector<ui::gradient_keyframe> frames;
+        std::string error;
+        const auto& props = model.current().nodes.at(node).props;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(props.at("gradient_animation_keyframes")), frames, error),
+            "decode committed keyframes");
+        return frames;
+    };
+    update();
+    require(!vgui_widget_get_visible(widget("designer.timeline")), "timeline starts collapsed");
+    click("designer.preview.timeline");
+    update();
+    require(vgui_widget_get_visible(widget("designer.timeline")) && !preview.running(), "timeline opens underneath Design");
+    auto* tracks = widget("designer.timeline.tracks");
+    const auto point_at = [&](double seconds, float row) {
+        float x, y, width;
+        vgui_widget_get_rect(tracks, &x, &y, &width, nullptr);
+        // TimelineView's 1px inset, 150px header and 8px start gutter at this width.
+        return std::pair{x + 159 + static_cast<float>(seconds / 3.2) * (width - 174), y + 1 + row};
+    };
+    const auto [ruler_x, ruler_y] = point_at(.6, 10);
+    require(vgui_hit_test(shell.get(), ruler_x, ruler_y) == tracks, "ruler is hit-testable");
+    click_at(ruler_x, ruler_y);
+    update();
+    require(preview.running() && !preview.capture_view().animation.playing && near(preview.capture_view().animation.time, .6) &&
+        model.current() == before && !model.dirty(), "ruler seeks and pauses without editing the page");
+    click("designer.timeline.add");
+    update();
+    auto frames = keyframes("highlight");
+    require(frames.size() == 4 && near(frames[1].offset * 2.4, .6) && keyframes("tint").size() == 4,
+        "add writes the chosen track, not its neighbour");
+    auto* edit_x = widget("designer.timeline.x_edit");
+    vgui_set_focus(shell.get(), edit_x);
+    vgui_input_key(shell.get(), 'A', 1, VGUI_MOD_CTRL);
+    vgui_input_text(shell.get(), ".25");
+    vgui_input_key(shell.get(), VGUI_KEY_ENTER, 1, 0);
+    update();
+    require(near(keyframes("highlight")[1].x, .25), "editing a numeric pose field updates the selected key");
+    click("designer.timeline.tint");
+    auto* color_hex = find_widget(vgui_popup_content(shell.get()), "designer.timeline.tint.popup.hex", VGUI_EDIT);
+    require(color_hex != nullptr, "open the selected key's tint picker");
+    vgui_set_focus(shell.get(), color_hex);
+    vgui_input_key(shell.get(), 'A', 1, VGUI_MOD_CTRL);
+    vgui_input_text(shell.get(), "#658DCE80");
+    vgui_input_key(shell.get(), VGUI_KEY_ENTER, 1, 0);
+    vgui_popup_close(shell.get());
+    update();
+    frames = keyframes("highlight");
+    require(frames[1].tint == "#658DCE" && near(frames[1].opacity, 128. / 255), "picker edits both RGB tint and opacity");
+
+    const auto [ax, ay] = point_at(.6, 37);
+    const auto [bx, by] = point_at(.8, 37);
+    const auto before_drag = model.revision();
+    vgui_input_mouse_move(shell.get(), ax, ay);
+    vgui_input_mouse_down(shell.get(), 1, ax, ay, 1);
+    vgui_input_mouse_move(shell.get(), bx, by);
+    update();
+    require(model.revision() == before_drag, "drag motion must not create document undo steps");
+    vgui_input_mouse_up(shell.get(), 1, bx, by, 1);
+    update();
+    frames = keyframes("highlight");
+    require(model.revision() == before_drag + 1 && near(frames[1].offset * 2.4, .8) && near(frames[1].x, .25),
+        "drag commits one retiming transaction and preserves pose values");
+    require(model.undo(), "undo the keyframe move");
+    update();
+    require(near(keyframes("highlight")[1].offset * 2.4, .6), "undo restores the keyframe's time");
+    require(model.redo(), "redo the keyframe move");
+    update();
+    const auto [selected_x, selected_y] = point_at(.8, 37);
+    click_at(selected_x, selected_y);
+    update();
+    click("designer.timeline.delete");
+    update();
+    require(keyframes("highlight").size() == 3, "Delete removes the selected key");
+    require(model.undo(), "undo the keyframe removal");
+    update();
+    require(keyframes("highlight").size() == 4 && keyframes("tint").size() == 4,
+        "undo restores the edited lane and leaves the second lane untouched");
+    const auto saved = preview.capture_view();
+    preview.restore_view({});
+    update();
+    require(!vgui_widget_get_visible(widget("designer.timeline")), "another tab has its own collapsed state");
+    preview.restore_view(saved);
+    update();
+    require(vgui_widget_get_visible(widget("designer.timeline")) && status.empty(), "restoring a tab reopens its timeline");
+    return 0;
+}
+
 fs::path designer_settings_path() {
     if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
         return fs::u8path(override_path);
@@ -2437,8 +2584,9 @@ int main(int argc, char** argv) {
     try {
         const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
+        if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
         if (argc > 2) {
-            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview]\n");
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;
         }
         return run(smoke, argc == 2 && !smoke ? fs::u8path(argv[1]) : fs::path{});

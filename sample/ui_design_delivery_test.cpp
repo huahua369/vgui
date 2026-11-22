@@ -216,6 +216,10 @@ void test_json_delivery() {
     doc.nodes.at(doc.root).children.push_back("rows");
     doc.nodes.emplace("rows", ui::node{"tree", "", {{"items",
         R"([{"children":[{"buttons":[{"icon":"row"}],"text":"Child"}],"text":"Parent"}])"s}}, {}});
+    doc.nodes.at(doc.root).children.push_back("paint");
+    const std::array<ui::gradient_keyframe, 1> keys{{{0.25, 0.5, -0.125, "#ABCDEF", 0.75, "smooth"}}};
+    doc.nodes.emplace("paint", ui::node{"gradient", "", {{"gradient_animation", "keyframes"s},
+        {"gradient_animation_keyframes", ui::encode_gradient_keyframes(keys)}}, {}});
     const std::map<std::string, std::string, std::less<>> input{
         {"atlas", "x"}, {"custom_font", "font"}, {"icon", "\0\r\n"s}, {"photo", rgba}, {"row", ""}, {"unused", "abc"}};
     for (const auto& [key, bytes] : input) write_bytes(project / doc.resources.at(key), bytes);
@@ -314,6 +318,7 @@ void test_json_delivery() {
     reject_tamper(replace_once(content, "eA==", "eA"), "Base64 length");
     reject_tamper(replace_once(content, "\"bytes\":8", "\"bytes\":67108865"), "size limit");
     reject_tamper(replace_once(content, "assets/3.rgba", "assetx/3.rgba"), "design SHA-256");
+    reject_tamper(replace_once(content, "#ABCDEF", "#ABCDFE"), "design SHA-256");
     // An internally consistent design hash is not authorization to introduce a nonportable asset path.
     std::string design_text;
     check(ui::encode_json(expected, design_text), "encode standalone design for an unsafe path mutation");

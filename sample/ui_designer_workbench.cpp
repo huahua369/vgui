@@ -875,6 +875,7 @@ struct designer_workbench::impl {
             if (value == "none") return strings.text("workbench.inspector.gradient_animation.none", "None");
             if (value == "shine") return strings.text("workbench.inspector.gradient_animation.shine", "Shine sweep");
             if (value == "color") return strings.text("workbench.inspector.gradient_animation.color", "Color fade");
+            if (value == "keyframes") return strings.text("workbench.inspector.gradient_animation.keyframes", "Keyframes");
         } else if (desc.key == "text_orientation") {
             if (value == "horizontal") return strings.text("workbench.inspector.text_orientation.horizontal", "Horizontal");
             if (value == "vertical") return strings.text("workbench.inspector.text_orientation.vertical", "Vertical (single column)");
@@ -1459,6 +1460,7 @@ struct designer_workbench::impl {
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
+                if (key == "gradient_animation_keyframes") continue; // Edited in the Timeline.
                 const bool interaction = key.starts_with("tooltip") || key.starts_with("focus") || key == "input_enabled" ||
                     key == "cursor" || key == "a11y_name";
                 if (decorative_gradient) {
@@ -1519,7 +1521,9 @@ struct designer_workbench::impl {
                 else if (key == "gradient_animation_dx" || key == "gradient_animation_dy")
                     row.tooltip = strings.text("workbench.inspector.gradient_animation.travel_hint", "Total travel relative to the widget size, centred on the original gradient. Use transparent endpoint colors for a moving highlight.");
                 else if (key == "gradient_animation_duration")
-                    row.tooltip = strings.text("workbench.inspector.gradient_animation.duration_hint", "Seconds for one sweep, one fade, or one complete out-and-back color loop.");
+                    row.tooltip = animation == "keyframes" ?
+                        strings.text("workbench.inspector.gradient_animation.keyframes_duration_hint", "Animation duration in seconds. Edit the keyframes in the Timeline.") :
+                        strings.text("workbench.inspector.gradient_animation.duration_hint", "Seconds for one sweep, one fade, or one complete out-and-back color loop.");
                 else if (decorative_gradient && row.category == "Gradient transform")
                     row.tooltip = strings.text("workbench.inspector.gradient_transform.hint", "Transforms the paint, not the shape. Translation is relative to the widget size.");
                 else if (decorative_gradient && key.starts_with("gradient_angle"))

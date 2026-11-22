@@ -29,7 +29,7 @@ struct diagnostic {
 };
 
 using value = std::variant<bool, double, std::string>;
-enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items, gradient_stops };
+enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items, gradient_stops, gradient_keyframes };
 // Array-valued properties hold JSON text internally; page files use arrays.
 inline constexpr std::size_t max_gradient_stops = 32;
 struct gradient_stop {
@@ -38,6 +38,19 @@ struct gradient_stop {
 };
 bool decode_gradient_stops(std::string_view input, std::vector<gradient_stop>& out, std::string& error);
 std::string encode_gradient_stops(std::span<const gradient_stop> stops);
+
+inline constexpr std::size_t max_gradient_keyframes = 128;
+inline constexpr double gradient_keyframe_min_gap = 1e-6;
+struct gradient_keyframe {
+    double offset = 0;
+    double x = 0, y = 0; // Relative to the authored affine translation, in widget axes.
+    std::string tint = "#FFFFFF";
+    double opacity = 1;
+    std::string interpolation = "linear"; // Outgoing segment.
+    bool operator==(const gradient_keyframe&) const = default;
+};
+bool decode_gradient_keyframes(std::string_view input, std::vector<gradient_keyframe>& out, std::string& error);
+std::string encode_gradient_keyframes(std::span<const gradient_keyframe> keyframes);
 
 // Test the filename extension (.ttf or .otf, ASCII case-insensitive).
 // This does not otherwise validate a resource path.

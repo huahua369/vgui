@@ -145,6 +145,16 @@ value as_property(const json& input, std::string path)
     reject(std::move(path), "expected a boolean, number or string");
 }
 
+const char* array_property_expectation(value_type type)
+{
+    switch (type) {
+    case value_type::items: return "expected an item array";
+    case value_type::gradient_stops: return "expected a color stop array";
+    case value_type::gradient_keyframes: return "expected a gradient keyframe array";
+    default: return nullptr;
+    }
+}
+
 node decode_node(const json& input, const std::string& path)
 {
     check_members(input, path, {"type", "name", "props", "children"});
@@ -158,8 +168,9 @@ node decode_node(const json& input, const std::string& path)
         for (auto it = props->begin(); it != props->end(); ++it) {
             const auto prop_path = member_path(props_path, it.key());
             const auto* desc = find_property(result.type, it.key());
-            if (desc && (desc->type == value_type::items || desc->type == value_type::gradient_stops)) {
-                if (!it->is_array()) reject(prop_path, desc->type == value_type::items ? "expected an item array" : "expected a color stop array");
+            const auto* expectation = desc ? array_property_expectation(desc->type) : nullptr;
+            if (expectation) {
+                if (!it->is_array()) reject(prop_path, expectation);
                 result.props.emplace(it.key(), it->dump());
             } else result.props.emplace(it.key(), as_property(*it, prop_path));
         }
@@ -370,7 +381,7 @@ bool encode_json(const document& doc, std::string& out, diagnostic* error)
             json props = json::object();
             for (const auto& [key, prop] : item.props) {
                 const auto kind = find_property(item.type, key)->type;
-                if (kind == value_type::items || kind == value_type::gradient_stops) {
+                if (array_property_expectation(kind)) {
                     const auto& text = std::get<std::string>(prop);
                     props[key] = json::parse(text.begin(), text.end());
                 } else std::visit([&](const auto& data) { props[key] = data; }, prop);
