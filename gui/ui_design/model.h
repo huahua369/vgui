@@ -36,6 +36,7 @@ inline constexpr std::size_t max_gradient_stops = 32;
 struct gradient_stop {
     float offset;
     std::string color;
+    bool operator==(const gradient_stop&) const = default;
 };
 bool decode_gradient_stops(std::string_view input, std::vector<gradient_stop>& out, std::string& error);
 std::string encode_gradient_stops(std::span<const gradient_stop> stops);
@@ -87,6 +88,7 @@ struct gradient_keyframe {
     std::string interpolation = "linear"; // Outgoing segment.
     // Missing channels use authored geometry; channels for other kinds stay dormant.
     std::array<std::optional<double>, gradient_geometry_channels.size()> geometry{};
+    std::vector<gradient_stop> stops; // Empty uses the authored stops.
     bool operator==(const gradient_keyframe&) const = default;
 };
 bool decode_gradient_keyframes(std::string_view input, std::vector<gradient_keyframe>& out, std::string& error);

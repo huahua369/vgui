@@ -349,6 +349,118 @@ void gradient_keyframe_round_trip()
     validate_frames(true);
 }
 
+void gradient_keyframe_stops_round_trip()
+{
+    const auto doc = decode(gradient_keyframe_page(R"([
+        {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"},
+        {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+            "stops":[{"offset":0.125,"color":"#aBcDeF80"},{"offset":0.875,"color":"#123456"}]}])"));
+    const auto& value = doc.nodes.at("paint").props.at("gradient_animation_keyframes");
+    std::vector<ui::gradient_keyframe> expected(2), keys;
+    expected.back().offset = 1;
+    expected.back().stops = {{0.125f, "#aBcDeF80"}, {0.875f, "#123456"}};
+    std::string error;
+    check(ui::decode_gradient_keyframes(std::get<std::string>(value), keys, error) && keys == expected && error.empty(),
+        "missing stops inherit the authored colors; present stops preserve offsets and RGBA colors");
+    check(ui::encode_gradient_keyframes(expected) ==
+        R"([{"interpolation":"linear","offset":0.0,"opacity":1.0,"tint":"#FFFFFF","x":0.0,"y":0.0},)"
+        R"({"interpolation":"linear","offset":1.0,"opacity":1.0,"stops":[{"color":"#aBcDeF80","offset":0.125},)"
+        R"({"color":"#123456","offset":0.875}],"tint":"#FFFFFF","x":0.0,"y":0.0}])",
+        "only populated stops are encoded as nested arrays in canonical order");
+    const auto text = encode(doc);
+    check(text.find("\"stops\": [") != std::string::npos && decode(text) == doc && encode(decode(text)) == text,
+        "nested color stops round trip as native JSON arrays");
+
+    const auto frame_with_stops = [](std::string_view stops) {
+        return R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear","stops":)"s +
+            std::string(stops) + "}]";
+    };
+    constexpr std::string_view invalid[] = {
+        R"("[]")", "null", "[]", R"([{"offset":0,"color":"#000000"}])",
+        R"([{"offset":0},{"offset":1,"color":"#FFFFFF"}])",
+        R"([{"offset":false,"color":"#000000"},{"offset":1,"color":"#FFFFFF"}])",
+        R"([{"offset":0,"color":"#000000","extra":0},{"offset":1,"color":"#FFFFFF"}])",
+        R"([{"offset":0,"color":"#000000","col\u006fr":"#112233"},{"offset":1,"color":"#FFFFFF"}])",
+        R"([{"offset":-0.001,"color":"#000000"},{"offset":1,"color":"#FFFFFF"}])",
+        R"([{"offset":0,"color":"#000000"},{"offset":1.001,"color":"#FFFFFF"}])",
+        R"([{"offset":0.5,"color":"#000000"},{"offset":0.25,"color":"#FFFFFF"}])",
+        R"([{"offset":0,"color":"#000000"},{"offset":0.00005,"color":"#FFFFFF"}])",
+        R"([{"offset":0,"color":"#000000"},{"offset":1,"color":"#12GH56"}])",
+    };
+    for (const auto stops : invalid) {
+        const auto bad = frame_with_stops(stops);
+        check(!ui::decode_gradient_keyframes(bad, keys, error) && keys == expected && !error.empty(),
+            "invalid or duplicate stops must not replace decoder output");
+        reject_json(gradient_keyframe_page(bad), "invalid keyframe stops");
+    }
+    check(ui::decode_gradient_keyframes(frame_with_stops(
+        R"([{"offset":0,"color":"#000000"},{"offset":0.0001,"color":"#FFFFFF"}])"), keys, error) &&
+        keys.front().stops.back().offset == 1e-4f && error.empty(), "the authored minimum stop gap is accepted");
+}
+
+void gradient_keyframe_stop_count()
+{
+    auto doc = decode(gradient_keyframe_page("[]"));
+    auto& props = doc.nodes.at("paint").props;
+    std::vector<ui::gradient_keyframe> keys(2);
+    keys.back().offset = 1;
+    auto& stops = keys.back().stops;
+    const auto validate_keys = [&](bool valid, std::string_view context) {
+        props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(keys);
+        ui::diagnostic issue;
+        if (valid) expect_ok(ui::validate(doc, &issue), issue, context);
+        else {
+            expect_failure(ui::validate(doc, &issue), issue, context);
+            check(issue.path == "/nodes/paint/props/gradient_animation_keyframes/1/stops",
+                "reports the mismatched frame's stops");
+        }
+    };
+
+    stops = {{0.25f, "#000000"}, {0.75f, "#FFFFFF"}};
+    validate_keys(true, "two explicit stops match the schema default count");
+    stops.insert(stops.begin() + 1, {0.5f, "#ABCDEF"});
+    validate_keys(false, "three explicit stops do not match the schema default count");
+    const std::vector<ui::gradient_stop> authored{{0, "#FF0000"}, {0.125f, "#00FF00"}, {1, "#0000FF"}};
+    props["gradient_stops"] = ui::encode_gradient_stops(authored);
+    validate_keys(true, "three explicit stops match a custom authored count; omitted stops also inherit it");
+    stops.erase(stops.begin() + 1);
+    validate_keys(false, "two explicit stops do not match the custom authored count");
+    for (const auto* animation : {"none", "shine", "color"}) {
+        props["gradient_animation"] = std::string(animation);
+        validate_keys(true, "a dormant track need not match the authored stop count");
+        check(decode(encode(doc)) == doc, "dormant stops survive a page round trip");
+    }
+    stops.front().color = "invalid";
+    props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(keys);
+    ui::diagnostic issue;
+    expect_failure(ui::validate(doc, &issue), issue, "dormant stops must still be well formed");
+}
+
+void gradient_keyframe_stop_limits()
+{
+    std::vector<ui::gradient_stop> stops;
+    for (std::size_t i = 0; i < ui::max_gradient_stops; ++i)
+        stops.push_back({float(i) / float(ui::max_gradient_stops - 1), "#12345678"});
+    std::vector<ui::gradient_keyframe> full(ui::max_gradient_keyframes), decoded;
+    for (std::size_t i = 0; i < full.size(); ++i) {
+        full[i].offset = double(i) / ui::max_gradient_keyframes;
+        full[i].stops = stops;
+    }
+    const auto text = ui::encode_gradient_keyframes(full);
+    check(text.size() > ui::max_gradient_keyframes * 768, "maximal stop data exceeds the old internal byte cap");
+    std::string error;
+    check(ui::decode_gradient_keyframes(text, decoded, error) && decoded == full && error.empty(),
+        "all 128 frames with 32 stops fit the internal byte cap");
+    auto doc = decode(gradient_keyframe_page("[]"));
+    auto& props = doc.nodes.at("paint").props;
+    props["gradient_stops"] = ui::encode_gradient_stops(stops);
+    props["gradient_animation_keyframes"] = text;
+    check(decode(encode(doc)) == doc, "128 frames with 32 stops round trip through a page file");
+    full.back().stops.insert(full.back().stops.begin() + 1, {0.01f, "#FFFFFF"});
+    check(!ui::decode_gradient_keyframes(ui::encode_gradient_keyframes(full), decoded, error) &&
+        decoded.back().stops == stops, "a 33rd stop is rejected without replacing the decoded data");
+}
+
 void gradient_keyframe_geometry_round_trip()
 {
     const std::vector<ui::gradient_keyframe> expected{{0, 0, 0, "#FFFFFF", 1, "linear",
@@ -1091,6 +1203,9 @@ int main()
         {"schema, duplicates and hierarchy", reject_bad_schema_and_tree},
         {"collection JSON arrays", collection_json_round_trip},
         {"gradient keyframe JSON arrays", gradient_keyframe_round_trip},
+        {"gradient keyframe stop round trip", gradient_keyframe_stops_round_trip},
+        {"gradient keyframe stop count", gradient_keyframe_stop_count},
+        {"gradient keyframe stop limits", gradient_keyframe_stop_limits},
         {"gradient keyframe geometry round trip", gradient_keyframe_geometry_round_trip},
         {"gradient keyframe geometry validation", gradient_keyframe_geometry_validation},
         {"named radio groups", named_radio_groups},

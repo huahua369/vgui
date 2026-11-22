@@ -2,6 +2,7 @@
 
 #include <vgui/editor/color_picker.h>
 #include <vgui/editor/combo_box.h>
+#include <vgui/editor/gradient_editor.h>
 #include <vgui/editor/spinbox.h>
 #include <vgui/editor/timeline_view.h>
 
@@ -37,6 +38,7 @@ struct gradient_track {
     std::vector<gradient_keyframe> frames;
     std::string kind;
     std::array<double, gradient_geometry_channels.size()> authored{};
+    std::vector<gradient_stop> authored_stops;
     bool operator==(const gradient_track&) const = default;
 };
 } // namespace
@@ -47,6 +49,8 @@ struct designer_gradient_timeline::impl {
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
     vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
+    vgui_widget *stops_button, *stops_popup = nullptr, *stops_reset = nullptr, *stops_info = nullptr;
+    kit::gradient_editor stop_editor;
     vgui_widget* geometry_popup = nullptr;
     struct geometry_field {
         vgui_widget* row = nullptr;
@@ -133,6 +137,8 @@ struct designer_gradient_timeline::impl {
             edit_pose([&](auto& frame) { frame.interpolation = value; });
         });
         geometry = button(fields, "designer.timeline.geometry");
+        stops_button = button(fields, "designer.timeline.stops");
+        vgui_widget_set_tooltip_when_disabled(stops_button, 1);
         timeline.set_keyframe_edit_listener([this](const auto& before, const auto& after) { edit_keys(before, after); });
         timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek(seconds, false); });
         timeline.set_change_listener([this] { vgui_widget_mark_dirty(timeline.widget()); });
@@ -164,11 +170,12 @@ struct designer_gradient_timeline::impl {
         close_pose_popups();
         if (picker.widget()) vgui_widget_destroy(picker.widget());
         if (geometry_popup) vgui_widget_destroy(geometry_popup);
+        if (stops_popup) vgui_widget_destroy(stops_popup);
     }
 
     void close_pose_popups() {
         auto* popup = vgui_popup_content(shell);
-        if (popup && (popup == picker.widget() || popup == geometry_popup)) vgui_popup_close(shell);
+        if (popup && (popup == picker.widget() || popup == geometry_popup || popup == stops_popup)) vgui_popup_close(shell);
     }
 
     const char* tr(std::string_view key, const char* fallback) const { return strings.text(key, fallback); }
@@ -207,6 +214,8 @@ struct designer_gradient_timeline::impl {
         else if (w == self.paste) self.paste_keys();
         else if (w == self.tint) self.open_picker();
         else if (w == self.geometry) self.open_geometry();
+        else if (w == self.stops_button) self.open_stops();
+        else if (w == self.stops_reset) self.edit_pose([](auto& frame) { frame.stops.clear(); });
         else {
             for (std::size_t i = 0; i < self.geometry_fields.size(); ++i)
                 if (w == self.geometry_fields[i].reset) { self.edit_geometry(i, std::nullopt); break; }
@@ -232,6 +241,9 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_text(geometry, tr("timeline.geometry", "Shape…"));
         vgui_widget_set_tooltip(geometry, tr("timeline.geometry_hint", "Edit gradient geometry common to the selected keyframes."));
         refresh_geometry_labels();
+        vgui_widget_set_text(stops_button, tr("timeline.stops", "Stops…"));
+        vgui_widget_set_tooltip(stops_button, tr("timeline.stops_hint", "Select one key to edit its stop colors and offsets."));
+        refresh_stop_labels();
         x.set_label("X");
         y.set_label("Y");
         opacity.set_label(tr("timeline.opacity", "Opacity"));
@@ -261,6 +273,8 @@ struct designer_gradient_timeline::impl {
         const auto found = poses.find(primary);
         const auto& selection = timeline.selection_ids();
         const bool has_key = found != poses.end() && !rejected;
+        const bool one_key = has_key && selection.size() == 1;
+        vgui_widget_set_enabled(stops_button, one_key);
         vgui_widget_set_visible(fields, has_key);
         vgui_widget_set_enabled(geometry, has_key && std::ranges::any_of(gradient_geometry_channels,
             [this](const auto& channel) { return supports_geometry(channel); }));
@@ -282,9 +296,10 @@ struct designer_gradient_timeline::impl {
             help = time;
         }
         vgui_widget_set_text(info, help);
-        if (auto* popup = vgui_popup_content(shell); popup && popup == geometry_popup && !has_key)
-            vgui_popup_close(shell);
+        if (auto* popup = vgui_popup_content(shell); popup && ((popup == geometry_popup && !has_key) ||
+            (popup == stops_popup && !one_key))) vgui_popup_close(shell);
         if (!std::exchange(fields_dirty, false) || !has_key) return;
+        if (stops_popup && vgui_popup_content(shell) == stops_popup) refresh_stops();
         if (geometry_popup && vgui_popup_content(shell) == geometry_popup) refresh_geometry();
         const auto& frame = found->second;
         auto x_range = translation_range(0), y_range = translation_range(0);
@@ -351,6 +366,7 @@ struct designer_gradient_timeline::impl {
                 for (std::size_t i = 0; i < layer.authored.size(); ++i)
                     layer.authored[i] = std::get<double>(property(item, gradient_geometry_channels[i].property));
                 std::string error;
+                decode_gradient_stops(std::get<std::string>(property(item, "gradient_stops")), layer.authored_stops, error);
                 decode_gradient_keyframes(std::get<std::string>(property(item, property_key)), layer.frames, error);
                 next.push_back(std::move(layer));
             }
@@ -466,6 +482,10 @@ struct designer_gradient_timeline::impl {
             }
             if (std::abs(layer.tx + key.pose.x) > 16. || std::abs(layer.ty + key.pose.y) > 16.) {
                 if (notify) notify(tr("timeline.paste_translation", "A pasted pose exceeds the target's translation range. No keys were pasted."));
+                return;
+            }
+            if (!key.pose.stops.empty() && key.pose.stops.size() != layer.authored_stops.size()) {
+                if (notify) notify(tr("timeline.paste_stops", "A copied key has a different number of stops. No keys were pasted."));
                 return;
             }
             auto pose = key.pose;
@@ -594,6 +614,74 @@ struct designer_gradient_timeline::impl {
     void edit_geometry(std::size_t index, std::optional<double> value) {
         if (supports_geometry(gradient_geometry_channels[index]))
             edit_pose([&](auto& frame) { frame.geometry[index] = value; });
+    }
+
+    void refresh_stop_labels() {
+        if (!stops_popup) return;
+        stop_editor.set_stop_labels(tr("workbench.inspector.gradient_popup.offset", "Offset"),
+            tr("workbench.inspector.gradient_popup.stops", "Stops"));
+        vgui_widget_set_text(stops_reset, tr("timeline.stops_reset", "Use original"));
+        vgui_widget_set_tooltip(stop_editor.bar_widget(), tr("timeline.stops_drag", "Drag a stop to change its offset."));
+    }
+
+    void refresh_stops() {
+        const auto key = timeline.primary_selection();
+        const auto& frame = poses.at(key);
+        const auto& stops = frame.stops.empty() ? track_for_key(key).authored_stops : frame.stops;
+        kit::gradient_value value;
+        for (const auto& stop : stops) value.stops.push_back({stop.offset, stop.color});
+        stop_editor.set_value(value);
+        vgui_widget_set_enabled(stops_reset, !frame.stops.empty());
+        vgui_widget_set_text(stops_info, frame.stops.empty() ? tr("timeline.stops_inherited", "Original stops") :
+            tr("timeline.stops_custom", "Keyframe stops"));
+    }
+
+    void open_stops() {
+        if (rejected || timeline.selection_ids().size() != 1 || !poses.contains(timeline.primary_selection())) return;
+        if (!stops_popup) {
+            stops_popup = vgui_widget_create(shell, VGUI_PANEL, nullptr);
+            vgui_widget_set_id(stops_popup, "designer.timeline.stops.popup");
+            vgui_widget_set_layout(stops_popup, VGUI_LAYOUT_COLUMN);
+            vgui_widget_set_align_items(stops_popup, VGUI_ALIGN_STRETCH);
+            vgui_widget_set_padding(stops_popup, 6, 6, 6, 6);
+            vgui_widget_set_gap(stops_popup, 4);
+            vgui_panel_set_scrollable(stops_popup, 0, 1);
+            auto* header = row(stops_popup);
+            stops_info = vgui_widget_add(header, VGUI_LABEL, nullptr);
+            vgui_widget_set_grow(stops_info, 1);
+            stops_reset = button(header, "designer.timeline.stops.reset");
+            stop_editor.set_id("designer.timeline.stops.editor");
+            stop_editor.set_stop_limit(max_gradient_stops);
+            stop_editor.set_show_stop_list(true);
+            stop_editor.set_topology_locked(true);
+            stop_editor.build(stops_popup);
+            stop_editor.set_on_commit([this](const kit::gradient_value& value) {
+                const auto key = timeline.primary_selection();
+                if (rejected || vgui_popup_content(shell) != stops_popup || timeline.selection_ids().size() != 1 ||
+                    !poses.contains(key)) return;
+                const auto& current = poses.at(key).stops;
+                const auto& effective = current.empty() ? track_for_key(key).authored_stops : current;
+                std::vector<gradient_stop> stops;
+                for (const auto& stop : value.stops) stops.push_back({stop.t, stop.color});
+                if (std::ranges::equal(stops, effective, [](const auto& a, const auto& b) {
+                    return a.offset == b.offset && parse_text_color(a.color) == parse_text_color(b.color);
+                })) return;
+                edit_pose([&](auto& frame) { frame.stops = stops; });
+            });
+            refresh_stop_labels();
+        }
+        refresh_stops();
+        vgui_theme palette{};
+        vgui_context_get_theme(shell, &palette);
+        vgui_widget_set_background(stops_popup, palette.panel_bg);
+        vgui_widget_set_border(stops_popup, palette.panel_border, 1);
+        int height = 0;
+        vgui_context_get_size(shell, nullptr, &height);
+        vgui_widget_set_max_size(stops_popup, 0, std::max(120.f, static_cast<float>(height) - 16));
+        vgui_panel_set_scroll(stops_popup, 0, 0);
+        float x, y, w, h;
+        vgui_widget_get_rect(stops_button, &x, &y, &w, &h);
+        vgui_popup_open_anchored(shell, stops_popup, x, y, w, h, 4);
     }
 
     void open_picker() {

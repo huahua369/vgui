@@ -74,20 +74,57 @@ linear_color linear_rgba(vgui_color c) {
     return {linear_channel(c >> 16), linear_channel(c >> 8), linear_channel(c), float(c >> 24) / 255.f};
 }
 
+std::uint32_t color_byte(float x) {
+    return static_cast<std::uint32_t>(std::lround(std::clamp(x, 0.f, 1.f) * 255.f));
+}
+
+std::uint32_t srgb_byte(float linear) {
+    return color_byte(linear <= .0031308f ? 12.92f * linear : 1.055f * std::pow(linear, 1.f / 2.4f) - .055f);
+}
+
 vgui_color fade_color(const linear_color& source, const linear_color& target, float t) {
     // Keep the original alpha envelope. A partially transparent target can
     // dim a highlight, but can never turn its transparent endpoints opaque.
     const float target_alpha = source[3] * target[3];
     const float alpha = std::lerp(source[3], target_alpha, t);
-    const auto byte = [](float x) { return static_cast<std::uint32_t>(std::lround(std::clamp(x, 0.f, 1.f) * 255.f)); };
-    std::uint32_t packed = byte(alpha);
+    std::uint32_t packed = color_byte(alpha);
     for (int i = 0; i < 3; ++i) {
         const float channel = alpha > 0.f ? std::lerp(source[i] * source[3], target[i] * target_alpha, t) / alpha
             : std::lerp(source[i], target[i], t);
-        const float srgb = channel <= .0031308f ? 12.92f * channel : 1.055f * std::pow(channel, 1.f / 2.4f) - .055f;
-        packed = (packed << 8) | byte(srgb);
+        packed = (packed << 8) | srgb_byte(channel);
     }
     return packed;
+}
+
+struct gradient_key_stop {
+    vgui_gradient_stop authored;
+    linear_color premultiplied;
+};
+
+gradient_key_stop key_stop(vgui_gradient_stop stop) {
+    auto linear = linear_rgba(stop.color);
+    for (int i = 0; i < 3; ++i) linear[i] *= linear[3];
+    return {stop, linear};
+}
+
+vgui_gradient_stop blend_key_stop(const gradient_key_stop& from, const gradient_key_stop& to, double t) {
+    if (&from == &to || t == 0.) return from.authored;
+    if (t == 1.) return to.authored;
+    // Both palettes have validated stop gaps, so one convex blend preserves their order.
+    const auto offset = static_cast<float>(std::lerp(double(from.authored.offset), double(to.authored.offset), t));
+    // In particular, preserve the RGB bytes of identical transparent colors.
+    if (from.authored.color == to.authored.color) return {offset, from.authored.color};
+
+    const auto& a = from.premultiplied;
+    const auto& b = to.premultiplied;
+    const double alpha = std::lerp(double(a[3]), double(b[3]), t);
+    if (alpha == 0.) return {offset, 0};
+    std::uint32_t packed = color_byte(static_cast<float>(alpha));
+    for (int i = 0; i < 3; ++i) {
+        const auto channel = static_cast<float>(std::lerp(double(a[i]), double(b[i]), t) / alpha);
+        packed = (packed << 8) | srgb_byte(channel);
+    }
+    return {offset, packed};
 }
 
 // Descriptor fields in gradient_geometry_axis order; the gradient kinds share storage.
@@ -115,32 +152,46 @@ gradient_key_pose key_pose(const gradient_keyframe& key, const gradient_geometry
     return {key.x, key.y, {channel(16), channel(8), channel(0)}, key.opacity, geometry};
 }
 
-gradient_key_pose sample_gradient_keys(std::span<const gradient_keyframe> keys, double seconds, double duration,
-    const gradient_geometry_values& authored) {
+struct gradient_key {
+    enum class easing { step, linear, smooth };
+    double offset;
+    easing interpolation;
+    gradient_key_pose pose;
+    std::vector<gradient_key_stop> palette; // Empty uses the widget's base palette.
+};
+
+struct gradient_key_sample {
+    gradient_key_pose pose;
+    const gradient_key& start;
+    const gradient_key& end;
+    double blend;
+};
+
+gradient_key_sample sample_gradient_keys(std::span<const gradient_key> keys, double seconds, double duration) {
     const auto next = std::upper_bound(keys.begin(), keys.end(), seconds,
-        [&](double time, const gradient_keyframe& key) { return time < key.offset * duration; });
-    if (next == keys.begin()) return key_pose(keys.front(), authored);
-    const auto& start = *(next - 1);
-    auto pose = key_pose(start, authored);
+        [&](double time, const gradient_key& key) { return time < key.offset * duration; });
+    const auto& start = next == keys.begin() ? keys.front() : *(next - 1);
     const double start_time = start.offset * duration;
-    if (next == keys.end() || start.interpolation == "step" || seconds == start_time) return pose;
+    if (next == keys.begin() || next == keys.end() || start.interpolation == gradient_key::easing::step || seconds == start_time)
+        return {start.pose, start, start, 0.};
     double t = (seconds - start_time) / (next->offset * duration - start_time);
-    if (start.interpolation == "smooth") t = t * t * (3. - 2. * t);
-    const auto end = key_pose(*next, authored);
+    if (start.interpolation == gradient_key::easing::smooth) t = t * t * (3. - 2. * t);
+    auto pose = start.pose;
+    const auto& end = next->pose;
     pose.x = std::lerp(pose.x, end.x, t);
     pose.y = std::lerp(pose.y, end.y, t);
     for (std::size_t i = 0; i < pose.tint.size(); ++i) pose.tint[i] = std::lerp(pose.tint[i], end.tint[i], t);
     pose.opacity = std::lerp(pose.opacity, end.opacity, t);
     for (std::size_t i = 0; i < pose.geometry.size(); ++i)
         pose.geometry[i] = std::lerp(pose.geometry[i], end.geometry[i], t);
-    return pose;
+    return {pose, start, *next, t};
 }
 
 vgui_color tint_color(vgui_color source, const gradient_key_pose& pose) {
     const auto scaled = [&](unsigned shift, double factor) {
         return static_cast<vgui_color>(std::lround(((source >> shift) & 255u) * factor)) << shift;
     };
-    // Alpha is scaled separately so tint never changes an authored alpha envelope.
+    // Alpha is scaled separately so tint never changes the palette's alpha envelope.
     return scaled(24, pose.opacity) | scaled(16, pose.tint[0]) | scaled(8, pose.tint[1]) | scaled(0, pose.tint[2]);
 }
 
@@ -154,12 +205,28 @@ struct gradient_animation {
     float dx = 0, dy = 0;
     linear_color target{};
     std::vector<linear_color> base_colors;
-    std::vector<gradient_keyframe> keys;
+    std::vector<gradient_key_stop> base_palette;
+    std::vector<gradient_key> keys;
     double tx = 0, ty = 0; // Keep authored translation in double precision for keyframe addition.
-    gradient_geometry_values authored_geometry{};
     std::array<bool, gradient_geometry_channels.size()> active_geometry{};
     double elapsed = 0;
     bool sampled = false;
+
+    void resolve_keys(std::span<const gradient_keyframe> decoded, const gradient_geometry_values& authored) {
+        if (decoded.empty()) return;
+        base_palette.reserve(source.stops.size());
+        for (const auto& stop : source.stops) base_palette.push_back(key_stop(stop));
+        keys.reserve(decoded.size());
+        using easing = gradient_key::easing;
+        for (const auto& key : decoded) {
+            const auto interpolation = key.interpolation == "step" ? easing::step :
+                key.interpolation == "smooth" ? easing::smooth : easing::linear;
+            auto& resolved = keys.emplace_back(key.offset, interpolation, key_pose(key, authored));
+            resolved.palette.reserve(key.stops.size());
+            for (const auto& stop : key.stops)
+                resolved.palette.push_back(key_stop({stop.offset, *parse_text_color(stop.color)}));
+        }
+    }
 
     double loop_time(double seconds) const {
         const double remainder = std::fmod(seconds, duration);
@@ -193,13 +260,18 @@ struct gradient_animation {
         std::array<vgui_gradient_stop, max_gradient_stops> frame;
         if (mode == effect::keyframes) {
             if (keys.empty()) return;
-            const auto pose = sample_gradient_keys(keys, elapsed, duration, authored_geometry);
+            const auto key = sample_gradient_keys(keys, elapsed, duration);
+            const auto& pose = key.pose;
             paint.affine[4] = static_cast<float>(tx + pose.x);
             paint.affine[5] = static_cast<float>(ty + pose.y);
             for (std::size_t i = 0; i < pose.geometry.size(); ++i)
                 if (active_geometry[i]) paint.*gradient_geometry_members[i] = static_cast<float>(pose.geometry[i]);
-            for (std::size_t i = 0; i < stops.size(); ++i)
-                frame[i] = {stops[i].offset, tint_color(stops[i].color, pose)};
+            const auto& from = key.start.palette.empty() ? base_palette : key.start.palette;
+            const auto& to = key.end.palette.empty() ? base_palette : key.end.palette;
+            for (std::size_t i = 0; i < stops.size(); ++i) {
+                frame[i] = blend_key_stop(from[i], to[i], key.blend);
+                frame[i].color = tint_color(frame[i].color, pose);
+            }
             if (!vgui_gradient_set(widget, &paint, frame.data(), stops.size())) {
                 // Interpolated endpoints or angles can coincide between valid keys.
                 // Even a positive radius gap can collapse when rounded to float.
@@ -504,17 +576,20 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                     animation.target = linear_rgba(p.color("gradient_animation_color").value_or(*parse_text_color(fallback)));
                     for (const auto& stop : animation.source.stops) animation.base_colors.push_back(linear_rgba(stop.color));
                 } else {
+                    std::vector<gradient_keyframe> keys;
                     std::string reason;
-                    if (!decode_gradient_keyframes(p.text("gradient_animation_keyframes"), animation.keys, reason)) return false;
+                    if (!decode_gradient_keyframes(p.text("gradient_animation_keyframes"), keys, reason)) return false;
                     animation.tx = std::get<double>(property(n, "gradient_affine_tx"));
                     animation.ty = std::get<double>(property(n, "gradient_affine_ty"));
                     const auto& gradient_kind = p.text("gradient_kind");
+                    gradient_geometry_values authored{};
                     for (std::size_t i = 0; i < gradient_geometry_channels.size(); ++i) {
                         const auto& channel = gradient_geometry_channels[i];
                         if (!channel.applies_to(gradient_kind)) continue;
                         animation.active_geometry[i] = true;
-                        animation.authored_geometry[i] = std::get<double>(property(n, channel.property));
+                        authored[i] = std::get<double>(property(n, channel.property));
                     }
+                    animation.resolve_keys(keys, authored);
                 }
             }
         }

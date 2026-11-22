@@ -1481,6 +1481,77 @@ void test_gradient_keyframe_geometry() {
     expect_fallback();
 }
 
+void test_gradient_keyframe_stops() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["paint"]},
+        "paint":{"type":"gradient","props":{"x":10,"y":20,"width":100,"height":40,
+            "gradient_stops":[{"offset":0,"color":"#0000FF"},{"offset":0.375,"color":"#FF0000"},
+                {"offset":1,"color":"#12345600"}],
+            "gradient_animation":"keyframes","gradient_animation_duration":4,"gradient_animation_loop":false,
+            "gradient_animation_keyframes":[
+                {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth"},
+                {"offset":0.25,"x":0.5,"y":0,"tint":"#80FFFF","opacity":0.5,"interpolation":"step",
+                    "stops":[{"offset":0.125,"color":"#FF000000"},{"offset":0.5,"color":"#00FF00"},
+                        {"offset":0.875,"color":"#12345600"}]},
+                {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+                    "stops":[{"offset":0,"color":"#FF000080"},{"offset":0.625,"color":"#FFFFFF"},
+                        {"offset":0.9375,"color":"#AB341200"}]},
+                {"offset":0.75,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"},
+                {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"}]}}
+    }})", doc), "read keyframed stop palettes");
+
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = vg->height = 200;
+    static std::vector<vg_gradient_t> fills;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* p) {
+        if (p && p->type == VG_PATTERN_TYPE_LINEAR && p->data) fills.push_back(*static_cast<vg_gradient_t*>(p->data));
+        set_source(view, p);
+    };
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1) && rt.layout({200, 200, 1}), "mount animated stop palettes");
+    using palette = std::array<std::array<int, 4>, 3>;
+    const auto expect_paint = [&](float x, const std::array<float, 3>& offsets, const palette& colors,
+        std::string_view message) {
+        cb->clear(vg.get());
+        fills.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(fills.size() == 1 && fills.front().count == 3, "draw a native gradient with three stops");
+        const auto& paint = fills.front();
+        check(near(paint.cp[0].x, x), message);
+        for (std::size_t i = 0; i < offsets.size(); ++i) {
+            const auto& rgba = colors[i];
+            const auto& color = paint.colors[i];
+            check(paint.stops[i] == offsets[i] && color.r == rgba[0] / 255.f && color.g == rgba[1] / 255.f &&
+                color.b == rgba[2] / 255.f && color.a == rgba[3] / 255.f, message);
+        }
+    };
+    constexpr std::array base_offsets{0.f, .375f, 1.f};
+    constexpr palette base_colors{{{0, 0, 255, 255}, {255, 0, 0, 255}, {18, 52, 86, 0}}};
+    constexpr std::array step_offsets{.125f, .5f, .875f};
+    constexpr palette step_colors{{{128, 0, 0, 0}, {0, 255, 0, 128}, {9, 52, 86, 0}}};
+    expect_paint(60, base_offsets, base_colors, "mount without sampling keeps the authored stop palette");
+    rt.seek_animations(.25);
+    expect_paint(67.8125f, {.01953125f, .39453125f, .98046875f},
+        {{{0, 0, 255, 198}, {219, 110, 0, 235}, {17, 52, 86, 0}}},
+        "smoothly blend base to keyed stops in linear premultiplied RGBA, then apply the sampled tint and opacity");
+    rt.seek_animations(1);
+    expect_paint(110, step_offsets, step_colors, "an exact key preserves its authored stop bytes before tint and opacity");
+    rt.seek_animations(1.5);
+    expect_paint(110, step_offsets, step_colors, "step holds the left palette and pose until the next key");
+    rt.seek_animations(2);
+    expect_paint(60, {0.f, .625f, .9375f}, {{{255, 0, 0, 128}, {255, 255, 255, 255}, {171, 52, 18, 0}}},
+        "step switches at the exact next key, including transparent RGB bytes");
+    rt.seek_animations(2.5);
+    expect_paint(60, {0.f, .5f, .96875f}, {{{156, 0, 213, 192}, {255, 188, 188, 255}, {0, 0, 0, 0}}},
+        "linear blending returns to the base palette when the right key omits stops");
+    rt.seek_animations(3.5);
+    expect_paint(60, base_offsets, base_colors, "omitting both palettes preserves every base stop byte");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1675,6 +1746,7 @@ int main(int argc, char** argv) {
         test_gradient_animations();
         test_gradient_keyframe_animation();
         test_gradient_keyframe_geometry();
+        test_gradient_keyframe_stops();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

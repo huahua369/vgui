@@ -2497,6 +2497,31 @@ int smoke_gradient_keyframes() {
     vgui_popup_close(shell.get());
     require(model.undo() && model.current() == after_y, "one undo clears both endpoint overrides");
     update();
+
+    // A copied palette has positional stop identities. The 5-stop highlight
+    // cannot be pasted onto the 3-stop tint track, even at a free time.
+    auto with_palette = keyframes("highlight");
+    std::string stop_error;
+    const auto& stops = model.current().nodes.at("highlight").props.at("gradient_stops");
+    require(ui::decode_gradient_stops(std::get<std::string>(stops), with_palette[0].stops, stop_error),
+        "load the highlight's five stops");
+    const std::vector<ui::edit> seed_palette{ui::set_property{"highlight", "gradient_animation_keyframes",
+        ui::encode_gradient_keyframes(with_palette)}};
+    require(model.apply(seed_palette), "prepare a copied key with explicit color stops");
+    update();
+    activate_track(highlight_row); // Clear the preceding multi-selection.
+    click_timeline(0, highlight_row);
+    click("designer.timeline.copy");
+    update();
+    activate_track(tint_row);
+    click_timeline(.8, ruler_row);
+    const auto palette_revision = model.revision();
+    const auto palette_doc = model.current();
+    status.clear();
+    click("designer.timeline.paste");
+    update();
+    require(model.revision() == palette_revision && model.current() == palette_doc &&
+        status == strings.text("timeline.paste_stops", ""), "a mismatched stop count atomically rejects paste");
     return 0;
 }
 
@@ -2566,6 +2591,27 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     submit(start_x_edit, ".12");
     vgui_popup_close(shell);
     frame();
+    constexpr char stop_button[] = "designer.timeline.stops";
+    constexpr char stop_editor[] = "designer.timeline.stops.editor";
+    click(stop_button);
+    popup = vgui_popup_content(shell);
+    require(popup && find_widget(popup, stop_editor), "open the keyframe stop editor");
+    for (const auto* id : {"designer.timeline.stops.editor.add", "designer.timeline.stops.editor.remove"}) {
+        auto* topology_button = find_widget(popup, id);
+        require(topology_button && !vgui_widget_get_visible(topology_button), "keyframe cannot add or remove stops");
+    }
+    require(read_keys(history.current())[1].stops.empty(), "opening does not materialize inherited stops");
+    submit("designer.timeline.stops.editor.time_edit", ".10");
+    submit("designer.timeline.stops.editor.picker.hex", "#FF884480");
+    const auto palette = read_keys(history.current())[1].stops;
+    require(palette.size() == 5 && std::abs(palette[0].offset - .10f) < 1e-6f &&
+        ui::parse_text_color(palette[0].color) == 0x80FF8844u && palette[1].color == "#BFF8FF26",
+        "changing a stop commits its offset and RGBA without changing neighboring colors");
+    click("designer.timeline.stops.reset");
+    require(read_keys(history.current())[1].stops.empty(), "reset removes the palette override");
+    vgui_popup_close(shell);
+    menus.activate(menus.open(1), 0); // Undo the reset.
+    require(read_keys(history.current())[1].stops == palette, "Undo restores the whole keyframe palette");
     const auto created = read_keys(history.current());
     require(created.size() == 4 && created[1].opacity == .5 && created[1].geometry[start_x] == .12 && history.dirty(),
         "pose and shape did not reach the active document");
@@ -2630,7 +2676,8 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     require(bool(canvas), "create host recording canvas");
     canvas->width = 760;
     canvas->height = 370;
-    static float highlight_alpha, highlight_start_x;
+    static float highlight_alpha, highlight_start_x, highlight_first_stop;
+    static glm::vec4 highlight_first_color;
     static const auto set_source = cb->set_source;
     cb->set_source = [](rvg_t* view, vg_pattern_t* paint) {
         if (paint && paint->type == VG_PATTERN_TYPE_LINEAR && paint->data) {
@@ -2638,6 +2685,8 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
             if (fill.count == 5) {
                 highlight_alpha = fill.colors[2].w;
                 highlight_start_x = fill.cp[0].x;
+                highlight_first_stop = fill.stops[0];
+                highlight_first_color = fill.colors[0];
             }
         }
         set_source(view, paint);
@@ -2658,6 +2707,9 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         require(timing.duration == 3.6 && !timing.loops, "runtime timing did not match the saved clip");
         const double pasted_time = pasted[3].offset * 3.6;
         expect_highlight(pasted_time, 104, 32 + 20 + 296 * .12f);
+        require(std::abs(highlight_first_stop - .10f) < 1e-6f && highlight_first_color.x == 1.f &&
+            highlight_first_color.y == 136 / 255.f && highlight_first_color.z == 68 / 255.f &&
+            highlight_first_color.w == 64 / 255.f, "verified package hosts draw the keyed stop and apply pose opacity");
         expect_highlight(pasted_time + 3.6, 52); // Non-looping: hold the last key, not the pasted pose.
     }
 
