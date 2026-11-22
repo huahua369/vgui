@@ -84,7 +84,6 @@ SDL_Window* sdl3_dialog_parent()
 
 void SDLCALL sdl3_dialog_done(void* userdata, const char* const* filelist, int filter)
 {
-	(void)filter;
 	std::unique_ptr<sdl3_dialog_request> req(static_cast<sdl3_dialog_request*>(userdata));
 	if (!req) return;
 
@@ -100,7 +99,11 @@ void SDLCALL sdl3_dialog_done(void* userdata, const char* const* filelist, int f
 	while (filelist[count]) ++count;
 	// A NULL first entry means the user cancelled; vgui reports that as zero
 	// paths with no error.
-	vgui_file_dialog_post_result(req->kind, req->fn, req->user, filelist, count, nullptr);
+	// SDL reports a zero-based index, or -1 when the platform cannot supply it.
+	// The order in req->filters matches the application's original descriptor.
+	const int selected = filter >= 0 && static_cast<size_t>(filter) < req->filters.size()
+		? filter : -1;
+	vgui_file_dialog_post_result_with_filter(req->kind, req->fn, req->user, filelist, count, nullptr, selected);
 }
 
 int sdl3_show_dialog(void* provider_user, vgui_file_dialog_kind kind,

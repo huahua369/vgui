@@ -54,7 +54,11 @@ struct vgui_file_dialog_result
 	void* user = nullptr;
 	std::vector<std::string> paths;
 	std::string error;
+	int filter_index = -1;
 };
+
+/* Scoped to the result callback and restored if it drains a nested result. */
+static thread_local int vgui_file_dialog_callback_filter = -1;
 
 /* Function-local state: the SDL3 backend installs its provider from a static
  * initialiser, which may run before this translation unit's globals are
@@ -292,6 +296,11 @@ static void vgui_file_dialog_drain(void)
 			argv.push_back(path.c_str());
 		argv.push_back(nullptr);
 		const char* const* paths = r.paths.empty() ? nullptr : argv.data();
+		struct restore_filter {
+			int previous;
+			~restore_filter() { vgui_file_dialog_callback_filter = previous; }
+		} restore{vgui_file_dialog_callback_filter};
+		vgui_file_dialog_callback_filter = r.filter_index;
 		r.fn(r.user, r.kind, paths, (int)r.paths.size(),
 			r.error.empty() ? nullptr : r.error.c_str());
 	}
@@ -22633,6 +22642,18 @@ extern "C" {
 		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
 		const char* error)
 	{
+		return vgui_file_dialog_post_result_with_filter(kind, fn, user, paths, count, error, -1);
+	}
+
+	int vgui_file_dialog_filter_index(void)
+	{
+		return vgui_file_dialog_callback_filter;
+	}
+
+	int vgui_file_dialog_post_result_with_filter(vgui_file_dialog_kind kind,
+		vgui_file_dialog_fn fn, void* user, const char* const* paths, int count,
+		const char* error, int filter_index)
+	{
 		if (!fn) return 0;
 		vgui_file_dialog_result r;
 		r.kind = (kind == VGUI_FILE_DIALOG_SAVE || kind == VGUI_FILE_DIALOG_FOLDER)
@@ -22650,6 +22671,8 @@ extern "C" {
 			for (int i = 0; i < n; ++i)
 				if (paths[i]) r.paths.emplace_back(paths[i]);
 		}
+		if (r.kind != VGUI_FILE_DIALOG_FOLDER && !r.paths.empty() && filter_index >= 0)
+			r.filter_index = filter_index;
 		vgui_file_dialog_state& state = vgui_file_dialog_state_get();
 		std::lock_guard<std::mutex> lock(state.mutex);
 		state.queue.push_back(std::move(r));
