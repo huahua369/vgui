@@ -2525,6 +2525,192 @@ int smoke_gradient_keyframes() {
     return 0;
 }
 
+void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, designer& editor,
+                                    const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe endpoint drag: " + std::string(message));
+    };
+    constexpr auto track_property = "gradient_animation_keyframes";
+    constexpr auto start_x = std::size_t(ui::gradient_geometry_axis::start_x);
+    constexpr auto start_y = std::size_t(ui::gradient_geometry_axis::start_y);
+    const auto read_keys = [&](const ui::document& doc) {
+        std::vector<ui::gradient_keyframe> keys;
+        std::string error;
+        const auto& props = doc.nodes.at("linear").props;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(props.at(track_property)), keys, error), "decode linear track");
+        return keys;
+    };
+    ui::document fixture;
+    require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
+    for (const auto* node : {"radial", "sweep"}) fixture.nodes.at(node).props.erase("gradient_animation");
+    auto keys = read_keys(fixture);
+    require(keys.size() == 3 && keys[1].offset == .5 && keys[1].geometry[start_x], "expected the middle linear key");
+    auto& middle = keys[1];
+    middle.x = .20;
+    middle.y = -.18;
+    middle.geometry[start_y].reset();
+    // Keep X motion on one authored axis, despite the nonidentity scale and shear.
+    constexpr double xx = .8, xy = .25, yy = .875, tx = .05, ty = .12, inherited_y = .25;
+    auto& props = fixture.nodes.at("linear").props;
+    props["gradient_affine_xx"] = xx;
+    props["gradient_affine_xy"] = xy;
+    props["gradient_affine_yy"] = yy;
+    props["gradient_affine_tx"] = tx;
+    props["gradient_affine_ty"] = ty;
+    props["gradient_y0"] = inherited_y;
+    props[track_property] = ui::encode_gradient_keyframes(keys);
+    const auto file = sandbox / "linear-endpoint-motion.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "open the isolated linear track");
+    frame();
+
+    const auto& history = editor.history();
+    const auto before = history.current();
+    const auto revision = history.revision();
+    const auto unchanged = [&](std::string_view message) {
+        require(history.current() == before && history.revision() == revision &&
+            !history.dirty() && !history.can_undo() && !history.can_redo(), message);
+    };
+    auto& preview = editor.preview();
+    const auto widget = [&](const char* id) {
+        auto* w = find_widget(preview.widget(), id);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto rect = [](vgui_widget* w) {
+        ui::pixel_rect r;
+        vgui_widget_get_rect(w, &r.x, &r.y, &r.width, &r.height);
+        return r;
+    };
+    const auto push = [&](SDL_Event e) { require(SDL_PushEvent(&e), "cannot queue SDL input"); };
+    const auto button = [&](bool down, glm::vec2 px) {
+        const auto p = px / win.pixel_ratio();
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = win.id;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = p.x;
+        e.button.y = p.y;
+        push(e);
+    };
+    const auto click_at = [&](vgui_widget* w, glm::vec2 p) {
+        require(vgui_hit_test(shell, p.x, p.y) == w, "click does not hit the intended control");
+        button(true, p);
+        button(false, p);
+        frame();
+    };
+    const auto click = [&](const char* id) {
+        auto* w = widget(id);
+        const auto r = rect(w);
+        click_at(w, {r.x + r.width / 2, r.y + r.height / 2});
+    };
+    click("designer.preview.timeline");
+    click("designer.timeline.fit");
+    auto* tracks = widget("designer.timeline.tracks");
+    const auto r = rect(tracks);
+    const float scale = vgui_context_get_ui_scale(shell);
+    // Fit leaves an 8px leading gutter and uses width minus the header and 24px for the four-second ruler.
+    const float header = std::clamp((r.width - 2) * .28f, 92 * scale, 150 * scale);
+    const glm::vec2 key_at{r.x + 1 + header + 8 + (r.width - header - 24) / 2, r.y + 1 + 37 * scale};
+    click_at(tracks, key_at);
+    const auto view = preview.capture_view();
+    require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
+        vgui_widget_get_enabled(widget("designer.timeline.geometry")) && editor.selection() != "linear",
+        "select the middle key and pause Run at its exact time with a different outline selection");
+    unchanged("selecting a timeline key edited the document");
+
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
+    const auto node = std::ranges::find(layout->nodes, "linear", &ui::node_layout::id);
+    require(node != layout->nodes.end() && node->visible, "linear gradient is not on the board");
+    const auto& box = node->rect_px;
+    const glm::vec2 board_scale{board->width / layout->pixel_width, board->height / layout->pixel_height};
+    const auto widget_pixels = glm::vec2{box.width, box.height} * board_scale;
+    const glm::vec2 painted_start{float(xx * *middle.geometry[start_x] + xy * inherited_y + tx + middle.x),
+        float(yy * inherited_y + ty + middle.y)};
+    const auto center = glm::vec2{board->x, board->y} +
+        glm::vec2{box.x, box.y} * board_scale + widget_pixels * painted_start;
+    const glm::vec2 start{std::round(center.x) + 3, std::round(center.y)}; // Deliberately grab off-center.
+    const auto finish = start + glm::vec2{std::round(widget_pixels.x * float(xx) * .22f), 0};
+    require(vgui_hit_test(shell, start.x, start.y) == widget("designer.preview.canvas") && finish.x - start.x > 10,
+        "projected start handle is not reachable on the canvas");
+    const auto motion = [&](glm::vec2 px) {
+        const auto p = px / win.pixel_ratio(), rel = (px - start) / win.pixel_ratio();
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = win.id;
+        e.motion.state = SDL_BUTTON_LMASK;
+        e.motion.x = p.x;
+        e.motion.y = p.y;
+        e.motion.xrel = rel.x;
+        e.motion.yrel = rel.y;
+        push(e);
+    };
+    const auto move = [&](glm::vec2 to) {
+        button(true, start);
+        frame();
+        unchanged("press changed the document or history");
+        motion(to);
+        frame();
+        unchanged("motion edited the document before release");
+    };
+    const auto release = [&](glm::vec2 at) { button(false, at); frame(); };
+    const auto scrubber = rect(widget("designer.preview.animation.seek"));
+    click_at(widget("designer.preview.animation.seek"),
+        {scrubber.x + scrubber.width * .25f, scrubber.y + scrubber.height / 2});
+    require(preview.capture_view().animation.time != 2.0, "scrub away from the selected key");
+    move(finish);
+    release(finish);
+    unchanged("a handle edited the key while the playhead was away");
+    click_at(tracks, key_at);
+    const auto paused = preview.capture_view().animation;
+    require(paused.time == 2.0 && !paused.playing, "reselecting the same key returns to its exact pose");
+
+    const auto sub_slop = start + glm::vec2{2, 0};
+    move(sub_slop);
+    release(sub_slop);
+    unchanged("motion below the three-pixel slop created an edit");
+
+    const ui::native_menu_input menus(win, shell, frame);
+    move(finish);
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    release(finish);
+    unchanged("Escape did not cancel the drag through mouse-up");
+
+    move(finish);
+    SDL_Event lost{};
+    lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
+    lost.window.windowID = win.id;
+    push(lost);
+    frame();
+    release(finish);
+    unchanged("focus loss did not cancel the drag through mouse-up");
+
+    move(finish);
+    release(finish);
+    const auto after = history.current();
+    require(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+        "release did not create exactly one transaction");
+    require(editor.selection() != "linear", "endpoint drag changed the outline selection to the gradient");
+    const auto edited = read_keys(after);
+    const double expected_x = *middle.geometry[start_x] + (finish.x - start.x) / (widget_pixels.x * xx);
+    require(edited.size() == keys.size() && edited[1].geometry[start_x] &&
+        std::abs(*edited[1].geometry[start_x] - expected_x) < .001,
+        "start X did not follow the pointer delta in authored axes with its grab offset preserved");
+    middle.geometry[start_x] = edited[1].geometry[start_x];
+    auto expected = before;
+    expected.nodes.at("linear").props[track_property] = ui::encode_gradient_keyframes(keys);
+    require(after == expected, "drag changed anything other than the middle key's start X (including inherited axes)");
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one undo did not restore the original document");
+    menus.activate(menus.open(1), 1); // Edit > Redo
+    require(history.current() == after && history.dirty() && history.can_undo() && !history.can_redo(),
+        "redo did not restore the endpoint edit exactly");
+}
+
 void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& editor,
                                 const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -2756,6 +2942,7 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     require(ui::export_delivery(saved, sandbox, radial_dir) && ui::read_delivery(radial_dir, directory_design) && directory_design == saved &&
         ui::export_json_delivery(saved, sandbox, radial_single) && ui::read_json_delivery(radial_single, embedded) && embedded.design == saved,
         "both delivery formats must preserve the radius overrides");
+    exercise_keyframe_endpoint_drag(win, shell, editor, frame, sandbox);
 }
 
 fs::path designer_settings_path() {
@@ -3023,7 +3210,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation and keyframe delivery passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery and endpoint dragging passed");
     }
     app.wait_gpu();
     return 0;

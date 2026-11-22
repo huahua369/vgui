@@ -1421,12 +1421,15 @@ void test_gradient_keyframe_geometry() {
     };
     ui::runtime rt(ctx.get());
     check(rt.mount(doc, 1) && rt.layout({200, 200, 1}), "mount three keyframed gradient kinds");
-    const auto seek = [&](double seconds) {
-        rt.seek_animations(seconds);
+    const auto draw = [&] {
         cb->clear(vg.get());
         fills.clear();
         vgui_draw(ctx.get(), cb.get(), vg.get());
         check(fills.size() == 3, "draw one native brush for each keyframed gradient");
+    };
+    const auto seek = [&](double seconds, const ui::linear_gradient_preview* draft = nullptr) {
+        rt.seek_animations(seconds, false, draft);
+        draw();
     };
     const auto fill = [&](int kind) -> const vg_gradient_t& {
         const auto it = std::ranges::find(fills, kind, &vg_gradient_t::type);
@@ -1478,6 +1481,28 @@ void test_gradient_keyframe_geometry() {
     check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 40, 80, 5) &&
         point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 30),
         "at the next key the inner radius inherits the static value while the outer radius stays keyed");
+    const auto terminal = fill(VG_PATTERN_TYPE_LINEAR);
+    const auto radial = fill(VG_PATTERN_TYPE_RADIAL).cp[0];
+    ui::linear_gradient_preview draft{"linear", {.25f, .125f, .625f, .75f}};
+    seek(1, &draft);
+    const auto& transient = fill(VG_PATTERN_TYPE_LINEAR);
+    check(point_is(transient.cp[0], 60, 30, 90, 55) && transient.colors[0] == terminal.colors[0] &&
+        transient.colors[1] == terminal.colors[1] && transient.count == terminal.count &&
+        transient.stops[1] == terminal.stops[1] && transient.extend == terminal.extend &&
+        fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial,
+        "a draft at the same time replaces only the named brush's endpoints, not its paint or other nodes");
+    const auto revision = vgui_context_paint_revision(ctx.get());
+    rt.seek_animations(1, false, &draft);
+    check(vgui_context_paint_revision(ctx.get()) == revision, "an unchanged draft does not invalidate paint");
+    draft.endpoints[2] = .75f;
+    seek(1, &draft);
+    check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 60, 30, 100, 55), "a second move updates the same sampled time");
+    seek(1);
+    check(fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0], "clearing a draft restores the original same-time brush");
+    seek(1, &draft);
+    rt.advance_animations(0);
+    draw();
+    check(fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0], "normal playback does not retain a draft at the clip end");
     expect_fallback();
 }
 

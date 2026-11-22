@@ -37,6 +37,7 @@ struct gradient_track {
     bool loop = true;
     std::vector<gradient_keyframe> frames;
     std::string kind;
+    std::array<float, 4> matrix{};
     std::array<double, gradient_geometry_channels.size()> authored{};
     std::vector<gradient_stop> authored_stops;
     bool operator==(const gradient_track&) const = default;
@@ -48,6 +49,7 @@ struct designer_gradient_timeline::impl {
     gradient_timeline_commit commit;
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
+    std::function<void()> selection_changed;
     vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
     vgui_widget *stops_button, *stops_popup = nullptr, *stops_reset = nullptr, *stops_info = nullptr;
     kit::gradient_editor stop_editor;
@@ -75,9 +77,10 @@ struct designer_gradient_timeline::impl {
     bool updating = false, rejected = false, visible = false, needs_fit = true, fields_dirty = true;
 
     impl(vgui_widget* parent, const designer_strings& locale, gradient_timeline_commit apply,
-            std::function<void(double, bool)> go, std::function<void(std::string)> status)
+            std::function<void(double, bool)> go, std::function<void(std::string)> status,
+            std::function<void()> changed)
         : strings(locale), commit(std::move(apply)), seek(std::move(go)), notify(std::move(status)),
-          shell(vgui_widget_get_context(parent)) {
+          selection_changed(std::move(changed)), shell(vgui_widget_get_context(parent)) {
         panel = vgui_widget_add(parent, VGUI_PANEL, nullptr);
         vgui_widget_set_id(panel, "designer.timeline");
         vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
@@ -141,6 +144,7 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_tooltip_when_disabled(stops_button, 1);
         timeline.set_keyframe_edit_listener([this](const auto& before, const auto& after) { edit_keys(before, after); });
         timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek(seconds, false); });
+        timeline.set_keyframe_reselect_listener([this](const auto& key) { if (!rejected) seek_key(key); });
         timeline.set_change_listener([this] { vgui_widget_mark_dirty(timeline.widget()); });
         timeline.set_selection_listener([this](const auto&) {
             fields_dirty = true;
@@ -152,6 +156,7 @@ struct designer_gradient_timeline::impl {
                 timeline.set_selected_track(track);
                 seek_key(*key);
             }
+            selection_changed();
             vgui_widget_mark_dirty(timeline.widget());
         });
         shortcut_handler = vgui_context_add_key_handler(shell, [](vgui_context*, int key, int down, int mods, void* user) {
@@ -363,6 +368,10 @@ struct designer_gradient_timeline::impl {
                     std::get<double>(property(item, "gradient_affine_ty")),
                     std::get<bool>(property(item, "gradient_animation_loop")), {},
                     std::get<std::string>(property(item, "gradient_kind"))};
+                constexpr std::string_view matrix[] = {"gradient_affine_xx", "gradient_affine_yx",
+                    "gradient_affine_xy", "gradient_affine_yy"};
+                for (std::size_t i = 0; i < layer.matrix.size(); ++i)
+                    layer.matrix[i] = static_cast<float>(std::get<double>(property(item, matrix[i])));
                 for (std::size_t i = 0; i < layer.authored.size(); ++i)
                     layer.authored[i] = std::get<double>(property(item, gradient_geometry_channels[i].property));
                 std::string error;
@@ -710,6 +719,32 @@ struct designer_gradient_timeline::impl {
         vgui_popup_open_anchored(shell, picker.widget(), ax, ay, aw, ah, 4);
     }
 
+    std::optional<linear_keyframe> selected_linear_key() const {
+        if (!visible || !revision || rejected || timeline.selection_ids().size() != 1) return {};
+        const auto key = timeline.primary_selection();
+        id lane = 0;
+        const auto* mark = timeline.find_keyframe(key, &lane);
+        const auto pose = poses.find(key);
+        if (!mark || pose == poses.end()) return {};
+        const auto& layer = model.at(tracks.at(lane));
+        if (layer.kind != "linear") return {};
+        const auto& frame = pose->second;
+        const auto [xx, yx, xy, yy] = layer.matrix;
+        linear_keyframe result{*revision, key, layer.node, mark->time, frame.offset == 1, {},
+            {xx, yx, xy, yy, static_cast<float>(layer.tx + frame.x), static_cast<float>(layer.ty + frame.y)}};
+        for (std::size_t i = 0; i < result.endpoints.size(); ++i)
+            result.endpoints[i] = frame.geometry[i].value_or(layer.authored[i]);
+        return result;
+    }
+
+    void edit_endpoints(const linear_keyframe& key, const std::array<double, 4>& endpoints) {
+        if (selected_linear_key() != key) return;
+        edit_pose([&](auto& frame) {
+            for (std::size_t i = 0; i < endpoints.size(); ++i)
+                if (endpoints[i] != key.endpoints[i]) frame.geometry[i] = endpoints[i];
+        });
+    }
+
     void seek_key(const kit::timeline_keyframe& key) {
         const auto found = poses.find(key.id);
         if (found != poses.end()) seek(key.time, found->second.offset == 1);
@@ -867,8 +902,10 @@ struct designer_gradient_timeline::impl {
 };
 
 designer_gradient_timeline::designer_gradient_timeline(vgui_widget* parent, const designer_strings& strings,
-        gradient_timeline_commit commit, std::function<void(double, bool)> seek, std::function<void(std::string)> notify)
-    : p_(std::make_unique<impl>(parent, strings, std::move(commit), std::move(seek), std::move(notify))) {}
+        gradient_timeline_commit commit, std::function<void(double, bool)> seek, std::function<void(std::string)> notify,
+        std::function<void()> selection_changed)
+    : p_(std::make_unique<impl>(parent, strings, std::move(commit), std::move(seek), std::move(notify),
+          std::move(selection_changed))) {}
 designer_gradient_timeline::~designer_gradient_timeline() = default;
 void designer_gradient_timeline::set_visible(bool visible) {
     if (!visible && p_->visible) {
@@ -888,6 +925,10 @@ void designer_gradient_timeline::show_time(double time) {
     p_->updating = true;
     p_->timeline.set_playhead(time);
     p_->updating = false;
+}
+std::optional<linear_keyframe> designer_gradient_timeline::selected_linear_key() const { return p_->selected_linear_key(); }
+void designer_gradient_timeline::edit_endpoints(const linear_keyframe& key, const std::array<double, 4>& endpoints) {
+    p_->edit_endpoints(key, endpoints);
 }
 void designer_gradient_timeline::refresh_language() { p_->refresh_language(); }
 

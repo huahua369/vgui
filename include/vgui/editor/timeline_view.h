@@ -135,6 +135,7 @@ namespace vgui_editor_kit {
 		using selection_listener =
 			std::function<void(const std::vector<object_id>&)>;
 		using playhead_listener = std::function<void(double)>;
+		using keyframe_reselect_listener = std::function<void(const timeline_keyframe&)>;
 		using change_listener = std::function<void()>;
 		using keyframe_edit_listener = std::function<void(
 			const std::vector<keyframe_ref>& before,
@@ -186,6 +187,8 @@ namespace vgui_editor_kit {
 		void set_multi_select(bool enabled);
 		bool multi_select() const noexcept;
 		void set_selection_listener(selection_listener listener);
+		/* A plain press on the already singly selected key, with no selection change. */
+		void set_keyframe_reselect_listener(keyframe_reselect_listener listener);
 		/* Track whose header is highlighted and receives new keyframes. */
 		object_id selected_track() const noexcept;
 		void set_selected_track(object_id track);
@@ -387,6 +390,7 @@ namespace vgui_editor_kit {
 		object_id primary_ = invalid_object;
 		object_id selected_track_ = invalid_object;
 		selection_listener selection_listener_;
+		keyframe_reselect_listener keyframe_reselect_listener_;
 		change_listener change_listener_;
 		playhead_listener playhead_listener_;
 		keyframe_edit_listener keyframe_edit_listener_;

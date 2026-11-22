@@ -3,6 +3,7 @@
 #include "ui_designer_font_file.h"
 
 #include <vgui/backend/vgui_render_target.h>
+#include <glm/vec4.hpp>
 
 // One private decoder in this TU, using the project's existing stb dependency.
 #if defined(_MSC_VER)
@@ -496,8 +497,18 @@ struct designer_preview::impl {
         std::optional<corner> handle;
     };
     std::optional<geometry_drag> geometry;
+    struct endpoint_drag {
+        linear_keyframe key;
+        std::array<double, 4> endpoints;
+        pixel_rect area, node;
+        board_transform transform;
+        point down;
+        float dpi;
+        std::size_t axis; // 0 for the start, 2 for the end.
+    };
+    std::optional<endpoint_drag> endpoint;
     // Keep consuming the matching left-up even when the drag was canceled.
-    std::optional<SDL_WindowID> geometry_release;
+    std::optional<SDL_WindowID> edit_release;
     // Unlike the per-mount image loader, these families outlive all widgets
     // and their derived weight/slant variants in the private UI context.
     designer_preview_fonts::impl& fonts;
@@ -601,7 +612,8 @@ struct designer_preview::impl {
         vgui_widget_set_min_size(canvas, 8, 8);
         vgui_custom_set_draw(canvas, draw_canvas, this);
         if (commit_keys) timeline = std::make_unique<designer_gradient_timeline>(panel, strings, std::move(commit_keys),
-            [this](double time, bool endpoint) { seek_playhead(time, endpoint); }, notify);
+            [this](double time, bool endpoint) { seek_playhead(time, endpoint); }, notify,
+            [this] { cancel_endpoint(); mark_canvas(); });
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);
@@ -745,14 +757,16 @@ struct designer_preview::impl {
         }
     }
 
-    void seek_playhead(double time, bool endpoint) {
+    void seek_playhead(double time, bool terminal) {
+        cancel_endpoint();
         if (!run) set_run(true);
         playback.playing = false;
         playback.time = time;
-        playback.inspect_end = endpoint;
+        playback.inspect_end = terminal;
         follow_playhead();
         sample_requested = true;
         update_transport();
+        mark_canvas();
     }
 
     void open_timeline(bool value) {
@@ -774,6 +788,8 @@ struct designer_preview::impl {
         }
         if (event->type != VGUI_EVENT_CLICK) return;
         if (w == self.play || w == self.restart) {
+            self.cancel_endpoint();
+            self.mark_canvas();
             if (w == self.restart || (!self.playback.playing && !self.timing.loops &&
                     self.playback.time >= self.timing.duration)) {
                 self.playback = {};
@@ -824,7 +840,7 @@ struct designer_preview::impl {
     }
 
     void reset_zoom(bool fit_view) {
-        cancel_geometry();
+        cancel_canvas_edit();
         fit = fit_view;
         zoom = 1.f;
         pan = {};
@@ -863,7 +879,7 @@ struct designer_preview::impl {
 
     static void shell_focus(vgui_context*, vgui_widget* old, vgui_widget* next, void* user) {
         auto& self = *static_cast<impl*>(user);
-        if (old != next) self.cancel_geometry();
+        if (old != next) self.cancel_canvas_edit();
         if (old == self.canvas && next != self.canvas) self.blur(false);
     }
 
@@ -903,6 +919,106 @@ struct designer_preview::impl {
         mark_canvas();
     }
 
+    std::optional<linear_keyframe> key_at_playhead() const {
+        if (!run || playback.playing || !timeline_open || !ready || !frame || !canvas_visible() ||
+            vgui_modal_active(shell) || vgui_popup_active(shell) || vgui_context_get_open_menu(shell)) return {};
+        auto key = timeline->selected_linear_key();
+        if (!key || key->revision != frame->revision || key->time != playback.time ||
+            key->terminal != playback.inspect_end) return {};
+        const auto* node = layout_of(key->node);
+        if (!node || !node->visible || !has_area(node->visible_px)) return {};
+        return key;
+    }
+
+    static point project_endpoint(const linear_keyframe& key, const std::array<double, 4>& values,
+            std::size_t axis, pixel_rect node) {
+        const auto [xx, yx, xy, yy, tx, ty] = key.affine;
+        const auto x = static_cast<float>(values[axis]), y = static_cast<float>(values[axis + 1]);
+        return {node.x + node.width * (xx * x + xy * y + tx),
+            node.y + node.height * (yx * x + yy * y + ty)};
+    }
+
+    bool endpoint_is_current(pixel_rect area, pixel_rect board) const {
+        const auto& drag = *endpoint;
+        return same_rect(area, drag.area) && key_at_playhead() == drag.key &&
+            drag.transform.matches(transform_for(board)) && same_rect(layout_of(drag.key.node)->rect_px, drag.node);
+    }
+
+    void cancel_endpoint() {
+        if (!endpoint) return;
+        endpoint.reset();
+        sample_requested = true; // Resample the unmodified key, even at the same time.
+        mark_canvas();
+    }
+
+    void cancel_canvas_edit() {
+        cancel_geometry();
+        cancel_endpoint();
+    }
+
+    float endpoint_radius() const { return 6.f * vgui_context_get_ui_scale(shell); }
+
+    bool start_endpoint(pixel_rect area, pixel_rect board, point p, SDL_WindowID id, float dpi) {
+        auto key = key_at_playhead();
+        if (!key) return false;
+        const auto transform = transform_for(board);
+        const auto node = layout_of(key->node)->rect_px;
+        const auto projected = transform.project(node);
+        const float hit = endpoint_radius() + 2.f;
+        float nearest = 2 * hit * hit;
+        std::optional<std::size_t> axis;
+        for (const std::size_t i : {0, 2}) {
+            const auto at = project_endpoint(*key, key->endpoints, i, projected);
+            const float dx = at.x - p.x, dy = at.y - p.y, distance = dx * dx + dy * dy;
+            if (std::abs(dx) <= hit && std::abs(dy) <= hit && distance <= nearest) {
+                axis = i;
+                nearest = distance;
+            }
+        }
+        if (!axis) return false;
+        auto values = key->endpoints;
+        endpoint.emplace(endpoint_drag{std::move(*key), values, area, node, transform, p, dpi, *axis});
+        edit_release = id;
+        return true;
+    }
+
+    void update_endpoint(point p) {
+        auto& drag = *endpoint;
+        const double dx = double(p.x) - drag.down.x, dy = double(p.y) - drag.down.y;
+        const double slop = 3.0 * drag.dpi;
+        auto values = drag.key.endpoints;
+        if (dx * dx + dy * dy >= slop * slop) {
+            // Invert the shell-to-board scale, the widget's non-uniform size,
+            // then the paint affine, keeping the initial pointer-to-handle offset.
+            const auto& t = drag.transform;
+            const double x = dx * t.width / t.board.width / drag.node.width;
+            const double y = dy * t.height / t.board.height / drag.node.height;
+            const auto [xx, yx, xy, yy, tx, ty] = drag.key.affine;
+            const double det = double(xx) * yy - double(xy) * yx;
+            const auto a = drag.axis;
+            const double delta[] = {(yy * x - xy * y) / det, (xx * y - yx * x) / det};
+            for (std::size_t i = 0; i < 2; ++i) {
+                const auto& bounds = gradient_geometry_channels[a + i];
+                if (std::abs(delta[i]) > 1e-12)
+                    values[a + i] = std::clamp(values[a + i] + delta[i], bounds.min, bounds.max);
+            }
+            // Do not replace the last valid preview with a degenerate brush.
+            if (std::hypot(float(values[2]) - float(values[0]), float(values[3]) - float(values[1])) < .0001f) return;
+        }
+        if (drag.endpoints == values) return;
+        drag.endpoints = values;
+        sample_requested = true;
+        mark_canvas();
+    }
+
+    void finish_endpoint(point p) {
+        update_endpoint(p);
+        auto draft = std::move(*endpoint);
+        cancel_endpoint();
+        edit_release.reset();
+        if (draft.endpoints != draft.key.endpoints) timeline->edit_endpoints(draft.key, draft.endpoints);
+    }
+
     float handle_half_size() const { return 3.f * vgui_context_get_ui_scale(shell); }
 
     std::optional<corner> hit_handle(const node_layout& node, board_transform transform, point p) const {
@@ -928,7 +1044,7 @@ struct designer_preview::impl {
             area, node.rect_px, node.visible_px, node.rect_px, transform_for(board), p, dpi, handle};
         // Use SDL's normal auto-capture, not the physical button state: pushed
         // events and real input follow the same down/move/up path.
-        geometry_release = id;
+        edit_release = id;
     }
 
     void update_geometry(point p) {
@@ -962,13 +1078,13 @@ struct designer_preview::impl {
         update_geometry(p);
         auto change = std::move(geometry->change);
         cancel_geometry();
-        geometry_release.reset();
+        edit_release.reset();
         if (change.x || change.y || change.width || change.height)
             commit_geometry(std::move(change)); // The host may synchronously change the document.
     }
 
     void cancel_pointer() {
-        cancel_geometry();
+        cancel_canvas_edit();
         if (ui && (pressed || runtime_hover)) {
             vgui_input_cancel(ui.get());
             vgui_input_mouse_move(ui.get(), -1, -1);
@@ -1070,7 +1186,7 @@ struct designer_preview::impl {
 
     void set_renderer(vgpu_ctx_t* ctx) {
         if (ctx == renderer) return;
-        cancel_geometry();
+        cancel_canvas_edit();
         target.reset();
         renderer = device ? ctx : nullptr;
         if (render_error) { render_error.reset(); update_status(); }
@@ -1089,8 +1205,13 @@ struct designer_preview::impl {
         if (layout_needed) {
             vgui_update(ui.get(), step);
             auto next = mounted->layout(view_for(screen));
-            if (!next) { cancel_geometry(); return; }
+            if (!next) { cancel_canvas_edit(); return; }
             frame = std::move(next);
+        }
+        if (endpoint) {
+            vgui_layout(shell);
+            const auto area = rect(canvas);
+            if (!endpoint_is_current(area, artboard(area))) cancel_endpoint();
         }
         // Run changes only paint. A requested seek samples its exact time
         // before playback can advance it on a later frame.
@@ -1102,12 +1223,19 @@ struct designer_preview::impl {
                 follow_playhead();
                 update_transport();
             }
-            if (sample_requested || ticking || layout_needed) mounted->seek_animations(playback.time, playback.inspect_end);
+            if (sample_requested || ticking || layout_needed) {
+                std::optional<linear_gradient_preview> draft;
+                if (endpoint && endpoint->endpoints != endpoint->key.endpoints) {
+                    const auto [x0, y0, x1, y1] = endpoint->endpoints;
+                    draft = linear_gradient_preview{endpoint->key.node, {float(x0), float(y0), float(x1), float(y1)}};
+                }
+                mounted->seek_animations(playback.time, playback.inspect_end, draft ? &*draft : nullptr);
+            }
             sample_requested = false;
         }
         if (layout_needed || vgui_context_paint_revision(ui.get()) != last_paint) {
             if (renderer && !draw_target(*frame)) {
-                cancel_geometry();
+                cancel_canvas_edit();
                 ready = false;
                 frame.reset();
                 mark_canvas();
@@ -1176,7 +1304,7 @@ struct designer_preview::impl {
 
     void change_zoom(float factor, point anchor) {
         if (!canvas || !std::isfinite(factor)) return;
-        cancel_geometry();
+        cancel_canvas_edit();
         const auto area = rect(canvas), old = artboard(area);
         const float shell_scale = vgui_context_get_ui_scale(shell);
         const auto view = view_for(screen);
@@ -1193,6 +1321,47 @@ struct designer_preview::impl {
         pan.y = std::clamp(pan.y + (anchor.y - next.y - (anchor.y - old.y) / old.height * next.height) / shell_scale, -8192.f, 8192.f);
         update_toolbar();
         mark_canvas();
+    }
+
+    void draw_endpoints(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board) const {
+        const auto key = key_at_playhead();
+        const auto clip = intersect(area, board);
+        if (!key || !has_area(clip)) return;
+        const auto node = transform_for(board).project(layout_of(key->node)->rect_px);
+        const auto& values = endpoint ? endpoint->endpoints : key->endpoints;
+        const auto a = project_endpoint(*key, values, 0, node), b = project_endpoint(*key, values, 2, node);
+        constexpr unsigned ink = 0xFF202936u, accent = 0xFFB7F0FFu; // OVG: AABBGGRR.
+        if (cb->clip_rect && cb->get_clip_rect && cb->set_clip_rect) {
+            // OVG save/restore does not preserve the scissor. Keep and intersect
+            // the canvas's inherited clip just as the preview texture does.
+            glm::ivec4 old{};
+            cb->get_clip_rect(vg, &old);
+            auto bounds = clip;
+            if (old.z > 0 && old.w > 0)
+                bounds = intersect(bounds, {float(old.x), float(old.y), float(old.z), float(old.w)});
+            if (has_area(bounds)) {
+                const int x = int(std::floor(bounds.x)), y = int(std::floor(bounds.y));
+                cb->clip_rect(vg, x, y, int(std::ceil(bounds.x + bounds.width)) - x,
+                    int(std::ceil(bounds.y + bounds.height)) - y);
+                for (unsigned color : {ink, accent}) {
+                    cb->set_source_color(vg, color);
+                    cb->set_line_width(vg, color == ink ? 3.f : 1.f);
+                    cb->move_to(vg, a.x, a.y);
+                    cb->line_to(vg, b.x, b.y);
+                    cb->stroke(vg);
+                }
+                cb->set_clip_rect(vg, &old);
+            }
+        }
+        const float h = endpoint_radius();
+        const auto box = [&](point at, float radius, unsigned color) {
+            fill(cb, vg, intersect({at.x - radius, at.y - radius, 2 * radius, 2 * radius}, clip), color);
+        };
+        for (const auto at : {a, b}) {
+            box(at, h + 1.f, ink);
+            box(at, h, accent);
+        }
+        box(b, h * .5f, ink); // Solid start, hollow end, legible over both themes.
     }
 
     static void draw_canvas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
@@ -1227,7 +1396,10 @@ struct designer_preview::impl {
         if (self.target && has_area(visible))
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
                 board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
-        if (self.run) return;
+        if (self.run) {
+            self.draw_endpoints(cb, vg, area, board);
+            return;
+        }
         const auto t = self.transform_for(board);
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {
@@ -1285,13 +1457,13 @@ struct designer_preview::impl {
         case SDL_EVENT_WINDOW_HIDDEN:
         case SDL_EVENT_WINDOW_MINIMIZED:
             if (run_window == e.window.windowID || pointer_window == e.window.windowID ||
-                geometry_release == e.window.windowID) blur();
+                edit_release == e.window.windowID) blur();
             return false;
         case SDL_EVENT_WINDOW_RESIZED:
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
         case SDL_EVENT_WINDOW_DISPLAY_CHANGED:
         case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED:
-            if (geometry_release == e.window.windowID) cancel_geometry();
+            if (edit_release == e.window.windowID) cancel_canvas_edit();
             return false;
         case SDL_EVENT_WINDOW_MOUSE_LEAVE:
             if (run_window == e.window.windowID && frame && !pressed) {
@@ -1317,34 +1489,37 @@ struct designer_preview::impl {
         default: return false;
         }
         if ((dragging || pressed) && id != pointer_window) return false;
-        if (geometry && geometry_release != id) return false;
+        if ((geometry || endpoint) && edit_release != id) return false;
         const bool left_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT;
         const bool left_up = e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT;
         if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
-            if (!left_up || geometry_release != id) return false;
-            cancel_geometry();
-            geometry_release.reset();
+            if (!left_up || edit_release != id) return false;
+            cancel_canvas_edit();
+            edit_release.reset();
             return true;
         }
         vgui_layout(shell);
         const auto area = rect(canvas), board = artboard(area);
-        const float dpi = !run || geometry ? pixel_ratio(SDL_GetWindowFromID(id)) : 1.f;
+        const float dpi = pixel_ratio(SDL_GetWindowFromID(id));
         if (geometry && (dpi != geometry->dpi || !geometry_is_current(area, board))) cancel_geometry();
-        if (left_up && geometry_release == id) {
+        if (endpoint && (dpi != endpoint->dpi || !endpoint_is_current(area, board))) cancel_endpoint();
+        if (left_up && edit_release == id) {
             if (geometry) finish_geometry(p);
-            else geometry_release.reset();
+            else if (endpoint) finish_endpoint(p);
+            else edit_release.reset();
             return true;
         }
         if (left_down) {
-            cancel_geometry();
-            geometry_release.reset();
-        } else if (geometry && e.type == SDL_EVENT_MOUSE_MOTION) {
-            update_geometry(p);
+            cancel_canvas_edit();
+            edit_release.reset();
+        } else if ((geometry || endpoint) && e.type == SDL_EVENT_MOUSE_MOTION) {
+            if (geometry) update_geometry(p);
+            else update_endpoint(p);
             return true;
-        } else if (geometry && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        } else if ((geometry || endpoint) && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
             // An intervening button press must not turn a pan or shell click
-            // into a geometry edit on the later left release.
-            cancel_geometry();
+            // into an edit on the later left release.
+            cancel_canvas_edit();
         }
         const bool over_canvas = contains(area, p) && vgui_hit_test(shell, p.x, p.y) == canvas;
         const bool inside = over_canvas && ready && frame && contains(board, p);
@@ -1408,6 +1583,7 @@ struct designer_preview::impl {
             return false;
         }
         if (!frame || !ready) return false;
+        if (left_down && inside && !pressed && start_endpoint(area, board, p, id, dpi)) return true;
         const point at = preview_pixels(board, p);
         switch (e.type) {
         case SDL_EVENT_MOUSE_MOTION:
@@ -1449,9 +1625,9 @@ struct designer_preview::impl {
     }
 
     bool key_event(const SDL_Event& e) {
-        if (geometry && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE &&
-            geometry_release == e.key.windowID) {
-            cancel_geometry();
+        if ((geometry || endpoint) && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE &&
+            edit_release == e.key.windowID) {
+            cancel_canvas_edit();
             return true;
         }
         if (!run || !ready || !frame || vgui_get_focus(shell) != canvas) return false;
