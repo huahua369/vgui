@@ -90,33 +90,48 @@ vgui_color fade_color(const linear_color& source, const linear_color& target, fl
     return packed;
 }
 
+// Descriptor fields in gradient_geometry_axis order; the gradient kinds share storage.
+constexpr auto gradient_geometry_members = std::array{
+    &vgui_gradient_desc::x0, &vgui_gradient_desc::y0, &vgui_gradient_desc::x1, &vgui_gradient_desc::y1,
+    &vgui_gradient_desc::x0, &vgui_gradient_desc::y0, &vgui_gradient_desc::x1, &vgui_gradient_desc::y1,
+    &vgui_gradient_desc::start_degrees, &vgui_gradient_desc::end_degrees,
+};
+static_assert(gradient_geometry_members.size() == gradient_geometry_channels.size());
+using gradient_geometry_values = std::array<double, gradient_geometry_channels.size()>;
+
 struct gradient_key_pose {
     double x, y;
     std::array<double, 3> tint;
     double opacity;
+    gradient_geometry_values geometry;
 };
 
-gradient_key_pose key_pose(const gradient_keyframe& key) {
+gradient_key_pose key_pose(const gradient_keyframe& key, const gradient_geometry_values& authored) {
     const auto color = *parse_text_color(key.tint);
     const auto channel = [&](unsigned shift) { return double((color >> shift) & 255u) / 255.; };
-    return {key.x, key.y, {channel(16), channel(8), channel(0)}, key.opacity};
+    gradient_geometry_values geometry;
+    for (std::size_t i = 0; i < geometry.size(); ++i) geometry[i] = key.geometry[i].value_or(authored[i]);
+    return {key.x, key.y, {channel(16), channel(8), channel(0)}, key.opacity, geometry};
 }
 
-gradient_key_pose sample_gradient_keys(std::span<const gradient_keyframe> keys, double seconds, double duration) {
+gradient_key_pose sample_gradient_keys(std::span<const gradient_keyframe> keys, double seconds, double duration,
+    const gradient_geometry_values& authored) {
     const auto next = std::upper_bound(keys.begin(), keys.end(), seconds,
         [&](double time, const gradient_keyframe& key) { return time < key.offset * duration; });
-    if (next == keys.begin()) return key_pose(keys.front());
+    if (next == keys.begin()) return key_pose(keys.front(), authored);
     const auto& start = *(next - 1);
-    auto pose = key_pose(start);
+    auto pose = key_pose(start, authored);
     const double start_time = start.offset * duration;
     if (next == keys.end() || start.interpolation == "step" || seconds == start_time) return pose;
     double t = (seconds - start_time) / (next->offset * duration - start_time);
     if (start.interpolation == "smooth") t = t * t * (3. - 2. * t);
-    const auto end = key_pose(*next);
+    const auto end = key_pose(*next, authored);
     pose.x = std::lerp(pose.x, end.x, t);
     pose.y = std::lerp(pose.y, end.y, t);
     for (std::size_t i = 0; i < pose.tint.size(); ++i) pose.tint[i] = std::lerp(pose.tint[i], end.tint[i], t);
     pose.opacity = std::lerp(pose.opacity, end.opacity, t);
+    for (std::size_t i = 0; i < pose.geometry.size(); ++i)
+        pose.geometry[i] = std::lerp(pose.geometry[i], end.geometry[i], t);
     return pose;
 }
 
@@ -140,6 +155,8 @@ struct gradient_animation {
     std::vector<linear_color> base_colors;
     std::vector<gradient_keyframe> keys;
     double tx = 0, ty = 0; // Keep authored translation in double precision for keyframe addition.
+    gradient_geometry_values authored_geometry{};
+    std::array<bool, gradient_geometry_channels.size()> active_geometry{};
     double elapsed = 0;
     bool sampled = false;
 
@@ -175,12 +192,21 @@ struct gradient_animation {
         std::array<vgui_gradient_stop, max_gradient_stops> frame;
         if (mode == effect::keyframes) {
             if (keys.empty()) return;
-            const auto pose = sample_gradient_keys(keys, elapsed, duration);
+            const auto pose = sample_gradient_keys(keys, elapsed, duration, authored_geometry);
             paint.affine[4] = static_cast<float>(tx + pose.x);
             paint.affine[5] = static_cast<float>(ty + pose.y);
+            for (std::size_t i = 0; i < pose.geometry.size(); ++i)
+                if (active_geometry[i]) paint.*gradient_geometry_members[i] = static_cast<float>(pose.geometry[i]);
             for (std::size_t i = 0; i < stops.size(); ++i)
                 frame[i] = {stops[i].offset, tint_color(stops[i].color, pose)};
-            vgui_gradient_set(widget, &paint, frame.data(), stops.size());
+            if (!vgui_gradient_set(widget, &paint, frame.data(), stops.size())) {
+                // A segment can collapse to coincident endpoints or angles between valid keys.
+                // Restore authored geometry, not a previous frame; keep this sample's translation and stops.
+                auto fallback = source.desc;
+                fallback.affine[4] = paint.affine[4];
+                fallback.affine[5] = paint.affine[5];
+                vgui_gradient_set(widget, &fallback, frame.data(), stops.size());
+            }
             return;
         }
         const auto phase = static_cast<float>(elapsed / duration);
@@ -480,6 +506,13 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                     if (!decode_gradient_keyframes(p.text("gradient_animation_keyframes"), animation.keys, reason)) return false;
                     animation.tx = std::get<double>(property(n, "gradient_affine_tx"));
                     animation.ty = std::get<double>(property(n, "gradient_affine_ty"));
+                    const auto& gradient_kind = p.text("gradient_kind");
+                    for (std::size_t i = 0; i < gradient_geometry_channels.size(); ++i) {
+                        const auto& channel = gradient_geometry_channels[i];
+                        if (!channel.applies_to(gradient_kind)) continue;
+                        animation.active_geometry[i] = true;
+                        animation.authored_geometry[i] = std::get<double>(property(n, channel.property));
+                    }
                 }
             }
         }

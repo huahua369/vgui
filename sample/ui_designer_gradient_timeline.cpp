@@ -35,6 +35,8 @@ struct gradient_track {
     double duration, tx, ty;
     bool loop = true;
     std::vector<gradient_keyframe> frames;
+    std::string kind;
+    std::array<double, gradient_geometry_channels.size()> authored{};
     bool operator==(const gradient_track&) const = default;
 };
 } // namespace
@@ -44,7 +46,14 @@ struct designer_gradient_timeline::impl {
     gradient_timeline_commit commit;
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
-    vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget;
+    vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
+    vgui_widget* geometry_popup = nullptr;
+    struct geometry_field {
+        vgui_widget* row = nullptr;
+        vgui_widget* reset = nullptr;
+        kit::spinbox value;
+    };
+    std::array<geometry_field, gradient_geometry_channels.size()> geometry_fields;
     vgui_context* shell;
     kit::timeline_view timeline;
     kit::spinbox duration_box;
@@ -123,6 +132,7 @@ struct designer_gradient_timeline::impl {
         easing.set_on_commit([this](int, const std::string& value) {
             edit_pose([&](auto& frame) { frame.interpolation = value; });
         });
+        geometry = button(fields, "designer.timeline.geometry");
         timeline.set_keyframe_edit_listener([this](const auto& before, const auto& after) { edit_keys(before, after); });
         timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek(seconds, false); });
         timeline.set_change_listener([this] { vgui_widget_mark_dirty(timeline.widget()); });
@@ -151,12 +161,14 @@ struct designer_gradient_timeline::impl {
 
     ~impl() {
         if (shortcut_handler) vgui_context_remove_key_handler(shell, shortcut_handler);
-        close_picker();
+        close_pose_popups();
         if (picker.widget()) vgui_widget_destroy(picker.widget());
+        if (geometry_popup) vgui_widget_destroy(geometry_popup);
     }
 
-    void close_picker() {
-        if (picker.widget() && vgui_popup_content(shell) == picker.widget()) vgui_popup_close(shell);
+    void close_pose_popups() {
+        auto* popup = vgui_popup_content(shell);
+        if (popup && (popup == picker.widget() || popup == geometry_popup)) vgui_popup_close(shell);
     }
 
     const char* tr(std::string_view key, const char* fallback) const { return strings.text(key, fallback); }
@@ -194,6 +206,11 @@ struct designer_gradient_timeline::impl {
         else if (w == self.copy) self.copy_keys();
         else if (w == self.paste) self.paste_keys();
         else if (w == self.tint) self.open_picker();
+        else if (w == self.geometry) self.open_geometry();
+        else {
+            for (std::size_t i = 0; i < self.geometry_fields.size(); ++i)
+                if (w == self.geometry_fields[i].reset) { self.edit_geometry(i, std::nullopt); break; }
+        }
     }
 
     void refresh_language() {
@@ -212,6 +229,9 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_tooltip(duration_box.widget(), tr("timeline.duration_hint", "Duration of the selected gradient animation, in seconds (0.1–60)."));
         vgui_widget_set_tooltip(loop_widget, tr("timeline.loop_hint", "Repeat the selected gradient animation independently."));
         vgui_widget_set_tooltip(tint, tr("timeline.tint", "Edit multiply tint and opacity"));
+        vgui_widget_set_text(geometry, tr("timeline.geometry", "Shape…"));
+        vgui_widget_set_tooltip(geometry, tr("timeline.geometry_hint", "Edit gradient geometry common to the selected keyframes."));
+        refresh_geometry_labels();
         x.set_label("X");
         y.set_label("Y");
         opacity.set_label(tr("timeline.opacity", "Opacity"));
@@ -242,6 +262,8 @@ struct designer_gradient_timeline::impl {
         const auto& selection = timeline.selection_ids();
         const bool has_key = found != poses.end() && !rejected;
         vgui_widget_set_visible(fields, has_key);
+        vgui_widget_set_enabled(geometry, has_key && std::ranges::any_of(gradient_geometry_channels,
+            [this](const auto& channel) { return supports_geometry(channel); }));
         vgui_widget_set_enabled(add, has_track);
         vgui_widget_set_enabled(remove, has_key);
         vgui_widget_set_enabled(copy, has_key);
@@ -260,7 +282,10 @@ struct designer_gradient_timeline::impl {
             help = time;
         }
         vgui_widget_set_text(info, help);
+        if (auto* popup = vgui_popup_content(shell); popup && popup == geometry_popup && !has_key)
+            vgui_popup_close(shell);
         if (!std::exchange(fields_dirty, false) || !has_key) return;
+        if (geometry_popup && vgui_popup_content(shell) == geometry_popup) refresh_geometry();
         const auto& frame = found->second;
         auto x_range = translation_range(0), y_range = translation_range(0);
         bool mixed_x = false, mixed_y = false, mixed_opacity = false, mixed_tint = false, mixed_easing = false;
@@ -321,7 +346,10 @@ struct designer_gradient_timeline::impl {
                     std::get<double>(property(item, "gradient_animation_duration")),
                     std::get<double>(property(item, "gradient_affine_tx")),
                     std::get<double>(property(item, "gradient_affine_ty")),
-                    std::get<bool>(property(item, "gradient_animation_loop")), {}};
+                    std::get<bool>(property(item, "gradient_animation_loop")), {},
+                    std::get<std::string>(property(item, "gradient_kind"))};
+                for (std::size_t i = 0; i < layer.authored.size(); ++i)
+                    layer.authored[i] = std::get<double>(property(item, gradient_geometry_channels[i].property));
                 std::string error;
                 decode_gradient_keyframes(std::get<std::string>(property(item, property_key)), layer.frames, error);
                 next.push_back(std::move(layer));
@@ -357,7 +385,7 @@ struct designer_gradient_timeline::impl {
             if (timeline.find_keyframe(key, &lane) && poses.contains(key))
                 selected.emplace(std::pair{model[tracks.at(lane)].node, poses.at(key).offset}, key == primary);
         }
-        close_picker();
+        close_pose_popups();
         updating = true;
         fields_dirty = true;
         std::vector<id> restored;
@@ -464,6 +492,108 @@ struct designer_gradient_timeline::impl {
             keys.push_back(key);
         }
         timeline.set_selection(keys, keys.front());
+    }
+
+    const gradient_track& track_for_key(id key) const {
+        id lane = 0;
+        timeline.find_keyframe(key, &lane);
+        return model.at(tracks.at(lane));
+    }
+
+    bool supports_geometry(const gradient_geometry_channel& channel) const {
+        const auto& selection = timeline.selection_ids();
+        return !selection.empty() && std::ranges::all_of(selection, [&](id key) {
+            return channel.applies_to(track_for_key(key).kind);
+        });
+    }
+
+    void refresh_geometry_labels() {
+        if (!geometry_popup) return;
+        for (std::size_t i = 0; i < geometry_fields.size(); ++i) {
+            const auto& channel = gradient_geometry_channels[i];
+            auto& field = geometry_fields[i];
+            const auto key = "workbench.inspector.property." + std::string(channel.property);
+            field.value.set_label(tr(key, find_property("gradient", channel.property)->label.data()));
+            vgui_widget_set_text(field.reset, tr("timeline.geometry_reset", "Reset"));
+            vgui_widget_set_tooltip(field.reset, tr("timeline.geometry_reset_hint", "Restore the authored gradient property."));
+        }
+    }
+
+    void build_geometry() {
+        geometry_popup = vgui_widget_create(shell, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(geometry_popup, "designer.timeline.geometry.popup");
+        vgui_widget_set_layout(geometry_popup, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_items(geometry_popup, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_padding(geometry_popup, 8, 8, 8, 8);
+        vgui_widget_set_gap(geometry_popup, 4);
+        for (std::size_t i = 0; i < geometry_fields.size(); ++i) {
+            const auto& channel = gradient_geometry_channels[i];
+            auto& field = geometry_fields[i];
+            const auto prefix = "designer.timeline.geometry." + std::string(channel.key);
+            field.row = row(geometry_popup);
+            field.value.set_id(prefix);
+            field.value.set_label_width(130);
+            field.value.set_edit_min_width(80);
+            field.value.set_buttons_visible(false);
+            field.value.set_range(channel.min, channel.max);
+            field.value.set_step(.01);
+            field.value.build(field.row);
+            vgui_widget_set_grow(field.value.widget(), 1);
+            field.value.set_on_commit([this, i](double value) { edit_geometry(i, value); });
+            field.reset = button(field.row, (prefix + ".reset").c_str());
+            vgui_widget_set_size(field.reset, 56, 24);
+        }
+        refresh_geometry_labels();
+    }
+
+    void refresh_geometry() {
+        const auto key = timeline.primary_selection();
+        const auto& primary = poses.at(key);
+        const auto& base = track_for_key(key).authored;
+        int visible_fields = 0;
+        for (std::size_t i = 0; i < geometry_fields.size(); ++i) {
+            auto& field = geometry_fields[i];
+            const bool supported = supports_geometry(gradient_geometry_channels[i]);
+            vgui_widget_set_visible(field.row, supported);
+            if (!supported) continue;
+            ++visible_fields;
+            const auto override = primary.geometry[i];
+            const double effective = override.value_or(base[i]);
+            bool mixed = false, resettable = false;
+            for (const auto selected : timeline.selection_ids()) {
+                const auto other = poses.at(selected).geometry[i];
+                resettable |= other.has_value();
+                mixed |= other != override || other.value_or(track_for_key(selected).authored[i]) != effective;
+            }
+            field.value.set_value(effective);
+            // Inherited numbers are placeholders so explicitly entering the
+            // same value still creates a key override rather than a no-op.
+            const auto hint = mixed ? std::string(tr("timeline.mixed", "Mixed")) :
+                tr("timeline.geometry_base", "Base: ") + field.value.value_text();
+            vgui_edit_set_placeholder(field.value.edit_widget(), hint.c_str());
+            field.value.set_mixed(mixed || !override);
+            vgui_widget_set_enabled(field.reset, resettable);
+        }
+        vgui_widget_set_size(geometry_popup, 304, 16 + visible_fields * 33 - 4);
+    }
+
+    void open_geometry() {
+        if (rejected || !poses.contains(timeline.primary_selection()) ||
+            !std::ranges::any_of(gradient_geometry_channels, [this](const auto& channel) { return supports_geometry(channel); })) return;
+        if (!geometry_popup) build_geometry();
+        vgui_theme palette{};
+        vgui_context_get_theme(shell, &palette);
+        vgui_widget_set_background(geometry_popup, palette.panel_bg);
+        vgui_widget_set_border(geometry_popup, palette.panel_border, 1);
+        refresh_geometry();
+        float x, y, width, height;
+        vgui_widget_get_rect(geometry, &x, &y, &width, &height);
+        vgui_popup_open_anchored(shell, geometry_popup, x, y, width, height, 4);
+    }
+
+    void edit_geometry(std::size_t index, std::optional<double> value) {
+        if (supports_geometry(gradient_geometry_channels[index]))
+            edit_pose([&](auto& frame) { frame.geometry[index] = value; });
     }
 
     void open_picker() {
@@ -655,7 +785,7 @@ designer_gradient_timeline::~designer_gradient_timeline() = default;
 void designer_gradient_timeline::set_visible(bool visible) {
     if (!visible && p_->visible) {
         p_->timeline.cancel_gesture();
-        p_->close_picker();
+        p_->close_pose_popups();
     }
     p_->visible = visible;
     vgui_widget_set_visible(p_->panel, visible);

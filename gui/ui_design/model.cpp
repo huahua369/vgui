@@ -427,8 +427,9 @@ std::string encode_gradient_stops(std::span<const gradient_stop> stops)
 bool decode_gradient_keyframes(sv input, std::vector<gradient_keyframe>& out, std::string& error)
 {
     using json = detail::collection_items::json;
-    const auto reject = [&](const char* reason) { error = reason; return false; };
-    if (input.size() > 32 * 1024) return reject("gradient keyframe data is too long");
+    const auto reject = [&](std::string reason) { error = std::move(reason); return false; };
+    // Leave room for all 16 members per frame at full numeric precision.
+    if (input.size() > max_gradient_keyframes * 768) return reject("gradient keyframe data is too long");
     if (input.find('\0') != sv::npos) return reject("raw NUL in gradient keyframe data");
     std::size_t member_count = 0;
     const auto frames = json::parse(input, [&](int depth, json::parse_event_t event, json&) {
@@ -441,11 +442,11 @@ bool decode_gradient_keyframes(sv input, std::vector<gradient_keyframe>& out, st
 
     constexpr const char* fields[] = {"offset", "x", "y", "tint", "opacity", "interpolation"};
     constexpr auto shape_error = "expected {offset, x, y, tint, opacity, interpolation} for each keyframe";
-    if (member_count != frames.size() * std::size(fields)) return reject(shape_error);
+    std::size_t unique_member_count = 0;
     std::vector<gradient_keyframe> next;
     next.reserve(frames.size());
     for (const auto& frame : frames) {
-        if (!frame.is_object() || frame.size() != std::size(fields) ||
+        if (!frame.is_object() ||
             !std::all_of(std::begin(fields), std::end(fields), [&](const char* key) { return frame.contains(key); }) ||
             !frame["offset"].is_number() || !frame["x"].is_number() || !frame["y"].is_number() ||
             !frame["tint"].is_string() || !frame["opacity"].is_number() || !frame["interpolation"].is_string())
@@ -462,8 +463,23 @@ bool decode_gradient_keyframes(sv input, std::vector<gradient_keyframe>& out, st
         if (std::ranges::find(detail::gradient_keyframe_interpolations, key.interpolation) ==
             std::end(detail::gradient_keyframe_interpolations))
             return reject("keyframe interpolation must be step, linear, or smooth");
+        std::size_t known_members = std::size(fields);
+        for (std::size_t i = 0; i < gradient_geometry_channels.size(); ++i) {
+            const auto& channel = gradient_geometry_channels[i];
+            const auto field = frame.find(channel.key);
+            if (field == frame.end()) continue;
+            if (!field->is_number()) return reject("expected a number for keyframe geometry field " + std::string(channel.key));
+            const auto value = field->get<double>();
+            if (!(value >= channel.min && value <= channel.max))
+                return reject("keyframe geometry field out of range: " + std::string(channel.key));
+            key.geometry[i] = value;
+            ++known_members;
+        }
+        if (known_members != frame.size()) return reject("unknown gradient keyframe field");
+        unique_member_count += frame.size();
         next.push_back(std::move(key));
     }
+    if (member_count != unique_member_count) return reject("duplicate gradient keyframe field");
     out = std::move(next);
     error.clear();
     return true;
@@ -473,8 +489,14 @@ std::string encode_gradient_keyframes(std::span<const gradient_keyframe> keyfram
 {
     using json = detail::collection_items::json;
     auto array = json::array();
-    for (const auto& key : keyframes) array.push_back({{"offset", key.offset}, {"x", key.x}, {"y", key.y},
-        {"tint", key.tint}, {"opacity", key.opacity}, {"interpolation", key.interpolation}});
+    for (const auto& key : keyframes) {
+        json frame = {{"offset", key.offset}, {"x", key.x}, {"y", key.y}, {"tint", key.tint},
+            {"opacity", key.opacity}, {"interpolation", key.interpolation}};
+        for (std::size_t i = 0; i < key.geometry.size(); ++i) {
+            if (key.geometry[i]) frame[std::string(gradient_geometry_channels[i].key)] = *key.geometry[i];
+        }
+        array.push_back(std::move(frame));
+    }
     return array.dump();
 }
 
@@ -614,12 +636,28 @@ bool validate(const document& doc, diagnostic* error)
                 return std::get<std::string>(it == item.props.end() ? find_property(item.type, key)->default_value : it->second);
             };
             const auto& kind = choice("gradient_kind");
-            if (kind == "linear" && std::hypot(f("gradient_x1") - f("gradient_x0"), f("gradient_y1") - f("gradient_y0")) < 1e-4f)
-                return fail(error, path + "/props/gradient_x1", "linear start and end points must be different");
+            const auto degenerate_geometry = [&](const gradient_keyframe* key) {
+                const auto geometry = [&](gradient_geometry_axis axis) {
+                    const auto i = static_cast<std::size_t>(axis);
+                    if (key && key->geometry[i]) return static_cast<float>(*key->geometry[i]);
+                    return f(gradient_geometry_channels[i].property);
+                };
+                using axis = gradient_geometry_axis;
+                // Match the float representation and tolerances of vgui_gradient_set.
+                if (kind == "linear")
+                    return std::hypot(geometry(axis::end_x) - geometry(axis::start_x),
+                        geometry(axis::end_y) - geometry(axis::start_y)) < 0.0001f;
+                if (kind == "sweep")
+                    return std::abs(geometry(axis::end_angle) - geometry(axis::start_angle)) < 0.001f;
+                return false;
+            };
+            if (degenerate_geometry(nullptr)) {
+                if (kind == "linear")
+                    return fail(error, path + "/props/gradient_x1", "linear start and end points must be different");
+                return fail(error, path + "/props/gradient_angle1", "sweep angles must be different");
+            }
             if (kind == "radial" && f("gradient_radius1") <= f("gradient_radius0"))
                 return fail(error, path + "/props/gradient_radius1", "outer radius must be larger than inner radius");
-            if (kind == "sweep" && std::abs(f("gradient_angle1") - f("gradient_angle0")) < 0.001f)
-                return fail(error, path + "/props/gradient_angle1", "sweep angles must be different");
             if (std::abs(f("gradient_affine_xx") * f("gradient_affine_yy") - f("gradient_affine_yx") * f("gradient_affine_xy")) < 1e-4f)
                 return fail(error, path + "/props/gradient_affine_xx", "gradient transform must be invertible");
             const auto& animation = choice("gradient_animation");
@@ -631,10 +669,16 @@ bool validate(const document& doc, diagnostic* error)
                     return fail(error, path + "/props/gradient_animation", "shine travel exceeds the supported gradient translation range");
             } else if (animation == "keyframes" && !keyframes.empty()) {
                 const auto tx = n("gradient_affine_tx"), ty = n("gradient_affine_ty");
-                if (std::any_of(keyframes.begin(), keyframes.end(), [&](const gradient_keyframe& key) {
-                    return std::abs(tx + key.x) > detail::gradient_limit || std::abs(ty + key.y) > detail::gradient_limit;
-                })) return fail(error, path + "/props/gradient_animation_keyframes",
-                    "keyframe travel plus the authored translation must be in [-16, 16]");
+                const auto key_path = path + "/props/gradient_animation_keyframes";
+                for (std::size_t i = 0; i < keyframes.size(); ++i) {
+                    const auto& key = keyframes[i];
+                    if (std::abs(tx + key.x) > detail::gradient_limit || std::abs(ty + key.y) > detail::gradient_limit)
+                        return fail(error, key_path, "keyframe travel plus the authored translation must be in [-16, 16]");
+                    if (degenerate_geometry(&key))
+                        return fail(error, key_path + "/" + std::to_string(i), kind == "linear"
+                            ? "linear keyframe start and end points must be different"
+                            : "sweep keyframe angles must be different");
+                }
             }
         }
         if (item.type == "slider" || item.type == "progress") {

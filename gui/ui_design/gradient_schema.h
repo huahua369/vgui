@@ -8,25 +8,30 @@ inline constexpr std::string_view gradient_kinds[] = {"linear", "radial", "sweep
 inline constexpr std::string_view gradient_extends[] = {"pad", "repeat", "reflect"};
 inline constexpr std::string_view gradient_animations[] = {"none", "shine", "color", "keyframes"};
 inline constexpr std::string_view gradient_keyframe_interpolations[] = {"step", "linear", "smooth"};
-inline constexpr double gradient_limit = 16.0;
+inline property_descriptor gradient_geometry_property(gradient_geometry_axis axis, std::string_view label, double fallback)
+{
+    const auto& channel = gradient_geometry_channels[static_cast<std::size_t>(axis)];
+    return {channel.property, label, value_type::number, fallback, channel.min, channel.max};
+}
+
 inline const property_descriptor gradient_properties[] = {
     {"gradient_kind", "Gradient type", value_type::choice, std::string("linear"), 0, 0, gradient_kinds},
     {"gradient_extend", "Spread", value_type::choice, std::string("pad"), 0, 0, gradient_extends},
     {"gradient_stops", "Color stops", value_type::gradient_stops,
         std::string(R"([{"color":"#5E9CEA","offset":0.0},{"color":"#1C3E70","offset":1.0}])")},
-    {"gradient_x0", "Start X", value_type::number, 0.5, -gradient_limit, gradient_limit},
-    {"gradient_y0", "Start Y", value_type::number, 0.0, -gradient_limit, gradient_limit},
-    {"gradient_x1", "End X", value_type::number, 0.5, -gradient_limit, gradient_limit},
-    {"gradient_y1", "End Y", value_type::number, 1.0, -gradient_limit, gradient_limit},
-    {"gradient_center_x", "Center X", value_type::number, 0.5, -gradient_limit, gradient_limit},
-    {"gradient_center_y", "Center Y", value_type::number, 0.5, -gradient_limit, gradient_limit},
-    {"gradient_outer_x", "Outer center X", value_type::number, 0.5, -gradient_limit, gradient_limit},
-    {"gradient_outer_y", "Outer center Y", value_type::number, 0.5, -gradient_limit, gradient_limit},
+    gradient_geometry_property(gradient_geometry_axis::start_x, "Start X", 0.5),
+    gradient_geometry_property(gradient_geometry_axis::start_y, "Start Y", 0.0),
+    gradient_geometry_property(gradient_geometry_axis::end_x, "End X", 0.5),
+    gradient_geometry_property(gradient_geometry_axis::end_y, "End Y", 1.0),
+    gradient_geometry_property(gradient_geometry_axis::center_x, "Center X", 0.5),
+    gradient_geometry_property(gradient_geometry_axis::center_y, "Center Y", 0.5),
+    gradient_geometry_property(gradient_geometry_axis::outer_x, "Outer center X", 0.5),
+    gradient_geometry_property(gradient_geometry_axis::outer_y, "Outer center Y", 0.5),
     {"gradient_radius0", "Inner radius", value_type::number, 0.0, 0, gradient_limit},
     {"gradient_radius1", "Outer radius", value_type::number, 0.5, 0, gradient_limit},
     {"gradient_ellipse", "Elliptical (2:1)", value_type::boolean, false},
-    {"gradient_angle0", "Start angle (°)", value_type::number, 0.0, 0, 360},
-    {"gradient_angle1", "End angle (°)", value_type::number, 360.0, 0, 360},
+    gradient_geometry_property(gradient_geometry_axis::start_angle, "Start angle (°)", 0.0),
+    gradient_geometry_property(gradient_geometry_axis::end_angle, "End angle (°)", 360.0),
     {"gradient_affine_xx", "XX (X scale)", value_type::number, 1.0, -gradient_limit, gradient_limit},
     {"gradient_affine_yx", "YX (X into Y)", value_type::number, 0.0, -gradient_limit, gradient_limit},
     {"gradient_affine_xy", "XY (Y into X)", value_type::number, 0.0, -gradient_limit, gradient_limit},

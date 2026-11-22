@@ -1,0 +1,31 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "lab",
+  "nodes": {
+    "lab": {"type":"panel","name":"渐变形状动画","props":{"width":740,"height":320,"background":"#101923","border_width":0},"children":["title","hint","linear","radial","sweep","linear_note","radial_note","sweep_note"]},
+    "title": {"type":"label","props":{"x":20,"y":12,"width":700,"height":36,"text":"渐变形状动画","font_size":24,"font_weight":"bold","text_color":"#EDF5FF"}},
+    "hint": {"type":"label","props":{"x":20,"y":51,"width":700,"height":27,"text":"进入运行查看效果，或打开时间轴，选中关键帧后点击「形状…」。","font_size":15,"text_color":"#B6CDE4"}},
+    "linear": {"type":"gradient","name":"线性端点","props":{"x":20,"y":91,"width":220,"height":168,"rounding":14,"gradient_stops":[{"offset":0,"color":"#132B55"},{"offset":0.5,"color":"#5DD9FA"},{"offset":1,"color":"#4C49AD"}],
+      "gradient_animation":"keyframes","gradient_animation_duration":4,
+      "gradient_animation_keyframes":[
+        {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","start_x":0,"start_y":0.15,"end_x":1,"end_y":0.35},
+        {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","start_x":0.12,"start_y":0.03,"end_x":0.7,"end_y":1},
+        {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear","start_x":0,"start_y":0.15,"end_x":1,"end_y":0.35}]}},
+    "radial": {"type":"gradient","name":"径向内外圆心","props":{"x":260,"y":91,"width":220,"height":168,"rounding":14,"gradient_kind":"radial","gradient_radius1":0.85,"gradient_stops":[{"offset":0,"color":"#FFF1CE"},{"offset":0.36,"color":"#FC8763"},{"offset":1,"color":"#582F68"}],
+      "gradient_animation":"keyframes","gradient_animation_duration":4,
+      "gradient_animation_keyframes":[
+        {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","center_x":0.24,"center_y":0.35,"outer_x":0.38,"outer_y":0.42},
+        {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","center_x":0.7,"center_y":0.62,"outer_x":0.58,"outer_y":0.56},
+        {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear","center_x":0.24,"center_y":0.35,"outer_x":0.38,"outer_y":0.42}]}},
+    "sweep": {"type":"gradient","name":"扫掠中心与角度","props":{"x":500,"y":91,"width":220,"height":168,"rounding":14,"gradient_kind":"sweep","gradient_stops":[{"offset":0,"color":"#123640"},{"offset":0.55,"color":"#44D2A8"},{"offset":1,"color":"#123640"}],
+      "gradient_animation":"keyframes","gradient_animation_duration":4,
+      "gradient_animation_keyframes":[
+        {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","center_x":0.38,"center_y":0.46,"start_angle":10,"end_angle":140},
+        {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth","center_x":0.62,"center_y":0.56,"start_angle":140,"end_angle":345},
+        {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear","center_x":0.38,"center_y":0.46,"start_angle":10,"end_angle":140}]}},
+    "linear_note": {"type":"label","props":{"x":20,"y":271,"width":220,"height":24,"text":"01  /  线性 · 起点与终点","font_size":15,"text_color":"#B6CDE4"}},
+    "radial_note": {"type":"label","props":{"x":260,"y":271,"width":220,"height":24,"text":"02  /  径向 · 内外圆心","font_size":15,"text_color":"#B6CDE4"}},
+    "sweep_note": {"type":"label","props":{"x":500,"y":271,"width":220,"height":24,"text":"03  /  扫掠 · 中心与起止角","font_size":15,"text_color":"#B6CDE4"}}
+  }
+}

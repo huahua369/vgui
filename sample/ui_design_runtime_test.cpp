@@ -1377,6 +1377,109 @@ void test_gradient_keyframe_animation() {
     expect_paint(72.5f, 15, original, 255, "empty keyframes preserve authored paint under both clocks");
 }
 
+void test_gradient_keyframe_geometry() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["linear","radial","sweep"]},
+        "linear":{"type":"gradient","props":{"x":10,"y":10,"width":80,"height":40,
+            "gradient_x0":0.125,"gradient_y0":0.25,"gradient_x1":0.875,"gradient_y1":0.75,
+            "gradient_affine_tx":0.125,"gradient_affine_ty":-0.125,"gradient_extend":"reflect",
+            "gradient_stops":[{"offset":0,"color":"#C0804080"},{"offset":0.4,"color":"#20A0F0"},{"offset":1,"color":"#00AA5500"}],
+            "gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
+            "gradient_animation_keyframes":[
+                {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+                    "start_x":0.25,"start_y":0.375,"end_x":0.75,"end_y":0.625,"center_x":0,"outer_y":1},
+                {"offset":1,"x":0.25,"y":0.5,"tint":"#0080FF","opacity":0.5,"interpolation":"linear",
+                    "start_x":0.75,"start_y":0.625,"end_x":0.25,"end_y":0.375,"center_x":0,"outer_y":1}]}},
+        "radial":{"type":"gradient","props":{"x":10,"y":60,"width":80,"height":40,"gradient_kind":"radial",
+            "gradient_center_x":0.375,"gradient_center_y":0.375,"gradient_outer_x":0.5,"gradient_outer_y":0.625,
+            "gradient_radius0":0.125,"gradient_radius1":0.875,
+            "gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
+            "gradient_animation_keyframes":[
+                {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth"},
+                {"offset":0.5,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"step",
+                    "center_x":0.625,"center_y":0.625,"outer_x":0.625,"outer_y":0.375},
+                {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+                    "center_y":0.5}]}},
+        "sweep":{"type":"gradient","props":{"x":10,"y":110,"width":80,"height":40,"gradient_kind":"sweep",
+            "gradient_center_y":0.625,"gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
+            "gradient_animation_keyframes":[
+                {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+                    "center_x":0.25,"center_y":0.375,"start_angle":350,"end_angle":360},
+                {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
+                    "center_x":0.75,"start_angle":10,"end_angle":20}]}}
+    }})", doc), "read three gradients with optional keyframe geometry");
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vg->width = vg->height = 200;
+    static std::vector<vg_gradient_t> fills;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* p) {
+        if (p && p->type >= VG_PATTERN_TYPE_LINEAR && p->data) fills.push_back(*static_cast<vg_gradient_t*>(p->data));
+        set_source(view, p);
+    };
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1) && rt.layout({200, 200, 1}), "mount three keyframed gradient kinds");
+    const auto seek = [&](double seconds) {
+        rt.seek_animations(seconds);
+        cb->clear(vg.get());
+        fills.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(fills.size() == 3, "draw one native brush for each keyframed gradient");
+    };
+    const auto fill = [&](int kind) -> const vg_gradient_t& {
+        const auto it = std::ranges::find(fills, kind, &vg_gradient_t::type);
+        check(it != fills.end(), "draw expected native gradient kind");
+        return *it;
+    };
+    const auto point_is = [](const glm::vec4& point, float x, float y, float z, float w = 0.f) {
+        return near(point.x, x) && near(point.y, y) && near(point.z, z) && near(point.w, w);
+    };
+    const auto expect_fallback = [&] {
+        seek(0.5);
+        const auto& linear = fill(VG_PATTERN_TYPE_LINEAR);
+        check(point_is(linear.cp[0], 40, 25, 100, 45),
+            "coincident linear endpoints restore authored geometry with the current translation");
+        check(linear.count == 3 && linear.extend == VG_EXTEND_REFLECT && near(linear.stops[1], 0.4f) &&
+            linear.colors[0] == glm::vec4(96, 96, 64, 96) / 255.f &&
+            linear.colors[1].a == 191.f / 255 && linear.colors[2].a == 0.f,
+            "degenerate geometry preserves this sample's tint and opacity, stop offsets and spread");
+    };
+
+    seek(0);
+    const auto& first_linear = fill(VG_PATTERN_TYPE_LINEAR);
+    check(point_is(first_linear.cp[0], 40, 20, 80, 30) &&
+        first_linear.colors[0] == glm::vec4(192, 128, 64, 128) / 255.f && first_linear.colors[2].a == 0.f,
+        "linear geometry is absolute, ignores inactive channels and preserves neutral stop colors and alpha");
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 40, 75, 5) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 35), "old keys without geometry use both authored radial centers");
+    check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 30, 125, 350.f / 180, 2),
+        "sweep native brush receives keyframed center and both angles in half-turns");
+
+    seek(0.125);
+    check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 47.5f, 23.75f, 77.5f, 31.25f),
+        "linear endpoint positions and paint translation interpolate together");
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 43.125f, 76.5625f, 5) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 51.5625f, 83.4375f, 35),
+        "smooth geometry interpolates each authored-to-keyed radial center without changing the radii");
+    expect_fallback();
+    check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 50, 130, 1, 190.f / 180),
+        "sweep angles interpolate numerically across the seam and missing center Y uses the authored value");
+
+    seek(0.75);
+    check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 85, 42.5f, 65, 37.5f),
+        "a valid sample beyond the degenerate frame restores animated endpoints");
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 60, 85, 5) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 60, 75, 35), "radial geometry holds the outgoing step");
+    expect_fallback();
+
+    seek(1);
+    check(point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[0], 40, 80, 5) &&
+        point_is(fill(VG_PATTERN_TYPE_RADIAL).cp[1], 50, 85, 35), "a step switches to the next key's static fallbacks at its exact offset");
+    expect_fallback();
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -1570,6 +1673,7 @@ int main(int argc, char** argv) {
         test_decorative_gradients();
         test_gradient_animations();
         test_gradient_keyframe_animation();
+        test_gradient_keyframe_geometry();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

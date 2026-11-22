@@ -2478,6 +2478,25 @@ int smoke_gradient_keyframes() {
         keyframes("tint") == expected_tint, "tint-only batch editing preserves each key's exact opacity and other fields");
     require(model.undo() && model.current() == after_y, "one undo restores both tints");
     update();
+
+    // Two linear tracks can share an endpoint edit even when their authored
+    // endpoints differ. An inherited value on either key must remain undoable.
+    select_mixed_poses();
+    click("designer.timeline.geometry");
+    auto* shape = vgui_popup_content(shell.get());
+    auto* field = find_widget(shape, "designer.timeline.geometry.end_y_edit", VGUI_EDIT);
+    require(field && std::string_view(vgui_edit_get_text(field)).empty(), "mixed inherited endpoints show a placeholder");
+    auto shape_highlight = keyframes("highlight"), shape_tint = keyframes("tint");
+    const auto shape_revision = model.revision();
+    submit(field, ".8");
+    update();
+    constexpr auto end_y = std::size_t(ui::gradient_geometry_axis::end_y);
+    shape_highlight[0].geometry[end_y] = shape_tint[tint_index].geometry[end_y] = .8;
+    require(model.revision() == shape_revision + 1 && keyframes("highlight") == shape_highlight &&
+        keyframes("tint") == shape_tint, "one shape edit updates only the chosen channel on both tracks");
+    vgui_popup_close(shell.get());
+    require(model.undo() && model.current() == after_y, "one undo clears both endpoint overrides");
+    update();
     return 0;
 }
 
@@ -2496,7 +2515,8 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     const ui::native_page_dock_input input(win, shell, dock, frame, require);
     const ui::native_menu_input menus(win, shell, frame);
     const auto click = [&](const char* id, float fraction = .5f) {
-        auto* widget = find_widget(editor.preview().widget(), id);
+        auto* widget = find_widget(vgui_popup_content(shell), id);
+        if (!widget) widget = find_widget(editor.preview().widget(), id);
         require(widget != nullptr, id);
         float x, y, w, h;
         vgui_widget_get_rect(widget, &x, &y, &w, &h);
@@ -2531,8 +2551,24 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     click("designer.preview.animation.seek", .22f);
     click("designer.timeline.add");
     submit("designer.timeline.opacity_edit", ".5");
+    constexpr auto start_x = std::size_t(ui::gradient_geometry_axis::start_x);
+    constexpr char shape[] = "designer.timeline.geometry";
+    constexpr char start_x_edit[] = "designer.timeline.geometry.start_x_edit";
+    click(shape);
+    auto* popup = vgui_popup_content(shell);
+    require(popup && std::string_view(vgui_widget_get_id(popup)) == "designer.timeline.geometry.popup", "open the shape popup");
+    auto* start = find_widget(popup, start_x_edit, VGUI_EDIT);
+    require(start && std::string_view(vgui_edit_get_text(start)).empty(), "a legacy key inherits the original endpoint");
+    submit(start_x_edit, ".12");
+    require(read_keys(history.current())[1].geometry[start_x] == .12, "endpoint override did not reach the key");
+    click("designer.timeline.geometry.start_x.reset");
+    require(!read_keys(history.current())[1].geometry[start_x], "Reset did not restore the authored endpoint");
+    submit(start_x_edit, ".12");
+    vgui_popup_close(shell);
+    frame();
     const auto created = read_keys(history.current());
-    require(created.size() == 4 && created[1].opacity == .5 && history.dirty(), "pose did not reach the active document");
+    require(created.size() == 4 && created[1].opacity == .5 && created[1].geometry[start_x] == .12 && history.dirty(),
+        "pose and shape did not reach the active document");
     const auto before_paste = history.current();
     click("designer.timeline.copy");
 
@@ -2594,30 +2630,35 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     require(bool(canvas), "create host recording canvas");
     canvas->width = 760;
     canvas->height = 370;
-    static float highlight_alpha;
+    static float highlight_alpha, highlight_start_x;
     static const auto set_source = cb->set_source;
     cb->set_source = [](rvg_t* view, vg_pattern_t* paint) {
         if (paint && paint->type == VG_PATTERN_TYPE_LINEAR && paint->data) {
             const auto& fill = *static_cast<vg_gradient_t*>(paint->data);
-            if (fill.count == 5) highlight_alpha = fill.colors[2].w;
+            if (fill.count == 5) {
+                highlight_alpha = fill.colors[2].w;
+                highlight_start_x = fill.cp[0].x;
+            }
         }
         set_source(view, paint);
     };
     ui::runtime host(ctx.get());
-    const auto expect_alpha = [&](double time, int alpha) {
+    const auto expect_highlight = [&](double time, int alpha, std::optional<float> x = {}) {
         host.seek_animations(time);
         highlight_alpha = -1;
+        highlight_start_x = -1;
         cb->clear(canvas.get());
         vgui_draw(ctx.get(), cb.get(), canvas.get());
         require(highlight_alpha == alpha / 255.f, "host did not draw the expected painted opacity");
+        if (x) require(std::abs(highlight_start_x - *x) < .01f, "host did not draw the exported endpoint");
     };
     for (const auto* doc : {&directory_design, &embedded.design}) {
         require(host.mount(*doc, 1) && host.layout({760, 370, 1}), "mount the validated design without the workbench");
         const auto timing = host.animation_timing();
         require(timing.duration == 3.6 && !timing.loops, "runtime timing did not match the saved clip");
         const double pasted_time = pasted[3].offset * 3.6;
-        expect_alpha(pasted_time, 104);
-        expect_alpha(pasted_time + 3.6, 52); // Non-looping: hold the last key, not the pasted pose.
+        expect_highlight(pasted_time, 104, 32 + 20 + 296 * .12f);
+        expect_highlight(pasted_time + 3.6, 52); // Non-looping: hold the last key, not the pasted pose.
     }
 }
 
