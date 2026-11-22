@@ -90,41 +90,107 @@ vgui_color fade_color(const linear_color& source, const linear_color& target, fl
     return packed;
 }
 
+struct gradient_key_pose {
+    double x, y;
+    std::array<double, 3> tint;
+    double opacity;
+};
+
+gradient_key_pose key_pose(const gradient_keyframe& key) {
+    const auto color = *parse_text_color(key.tint);
+    const auto channel = [&](unsigned shift) { return double((color >> shift) & 255u) / 255.; };
+    return {key.x, key.y, {channel(16), channel(8), channel(0)}, key.opacity};
+}
+
+gradient_key_pose sample_gradient_keys(std::span<const gradient_keyframe> keys, double seconds, double duration) {
+    const auto next = std::upper_bound(keys.begin(), keys.end(), seconds,
+        [&](double time, const gradient_keyframe& key) { return time < key.offset * duration; });
+    if (next == keys.begin()) return key_pose(keys.front());
+    const auto& start = *(next - 1);
+    auto pose = key_pose(start);
+    const double start_time = start.offset * duration;
+    if (next == keys.end() || start.interpolation == "step" || seconds == start_time) return pose;
+    double t = (seconds - start_time) / (next->offset * duration - start_time);
+    if (start.interpolation == "smooth") t = t * t * (3. - 2. * t);
+    const auto end = key_pose(*next);
+    pose.x = std::lerp(pose.x, end.x, t);
+    pose.y = std::lerp(pose.y, end.y, t);
+    for (std::size_t i = 0; i < pose.tint.size(); ++i) pose.tint[i] = std::lerp(pose.tint[i], end.tint[i], t);
+    pose.opacity = std::lerp(pose.opacity, end.opacity, t);
+    return pose;
+}
+
+vgui_color tint_color(vgui_color source, const gradient_key_pose& pose) {
+    const auto scaled = [&](unsigned shift, double factor) {
+        return static_cast<vgui_color>(std::lround(((source >> shift) & 255u) * factor)) << shift;
+    };
+    // Alpha is scaled separately so tint never changes an authored alpha envelope.
+    return scaled(24, pose.opacity) | scaled(16, pose.tint[0]) | scaled(8, pose.tint[1]) | scaled(0, pose.tint[2]);
+}
+
 struct gradient_animation {
+    enum class effect { shine, color, keyframes };
     vgui_widget* widget;
     gradient_paint source;
     double duration;
-    bool loop, shine;
+    bool loop;
+    effect mode;
     float dx = 0, dy = 0;
     linear_color target{};
     std::vector<linear_color> base_colors;
+    std::vector<gradient_keyframe> keys;
+    double tx = 0, ty = 0; // Keep authored translation in double precision for keyframe addition.
     double elapsed = 0;
     bool sampled = false;
 
-    void advance(double delta) {
-        sample(loop ? std::fmod(elapsed + std::fmod(delta, duration), duration)
-            : std::min(elapsed + delta, duration));
+    double loop_time(double seconds) const {
+        const double remainder = std::fmod(seconds, duration);
+        if (mode == effect::keyframes && remainder != 0) {
+            // A computed multiple of a decimal duration can be just below the
+            // mathematical boundary. Match the represented boundary exactly,
+            // without wrapping the preceding representable time.
+            const double cycles = std::round(seconds / duration);
+            if (cycles < 0x1p53 && cycles * duration == seconds) return 0;
+        }
+        return remainder;
     }
 
-    void seek(double seconds) {
-        sample(loop ? std::fmod(seconds, duration) : std::min(seconds, duration));
+    void advance(double delta) {
+        sample(loop ? loop_time(elapsed + loop_time(delta)) : std::min(elapsed + delta, duration));
+    }
+
+    void seek(double seconds, bool inspect_loop_end) {
+        auto local = loop ? loop_time(seconds) : std::min(seconds, duration);
+        if (inspect_loop_end && loop && mode == effect::keyframes && seconds > 0 && local == 0)
+            local = duration;
+        sample(local);
     }
 
     void sample(double next) {
         if (sampled && next == elapsed) return;
         elapsed = next;
         sampled = true;
-        const auto phase = static_cast<float>(elapsed / duration);
         const auto& stops = source.stops;
         auto paint = source.desc;
-        if (shine) {
+        std::array<vgui_gradient_stop, max_gradient_stops> frame;
+        if (mode == effect::keyframes) {
+            if (keys.empty()) return;
+            const auto pose = sample_gradient_keys(keys, elapsed, duration);
+            paint.affine[4] = static_cast<float>(tx + pose.x);
+            paint.affine[5] = static_cast<float>(ty + pose.y);
+            for (std::size_t i = 0; i < stops.size(); ++i)
+                frame[i] = {stops[i].offset, tint_color(stops[i].color, pose)};
+            vgui_gradient_set(widget, &paint, frame.data(), stops.size());
+            return;
+        }
+        const auto phase = static_cast<float>(elapsed / duration);
+        if (mode == effect::shine) {
             paint.affine[4] += dx * (phase - .5f);
             paint.affine[5] += dy * (phase - .5f);
             vgui_gradient_set(widget, &paint, stops.data(), stops.size());
         } else {
             const float leg = loop ? 1.f - std::abs(2.f * phase - 1.f) : phase;
             const float t = leg * leg * (3.f - 2.f * leg);
-            std::array<vgui_gradient_stop, max_gradient_stops> frame;
             for (std::size_t i = 0; i < stops.size(); ++i)
                 frame[i] = {stops[i].offset, t == 0.f ? stops[i].color : fade_color(base_colors[i], target, t)};
             vgui_gradient_set(widget, &paint, frame.data(), stops.size());
@@ -312,13 +378,13 @@ animation_span runtime::animation_timing() const {
     return tree_ ? tree_->animation_timing : animation_span{};
 }
 
-void runtime::seek_animations(double seconds) {
+void runtime::seek_animations(double seconds, bool inspect_loop_end) {
     if (!tree_ || tree_->gradient_animations.empty() || !std::isfinite(seconds) || seconds < 0) return;
     int width = 0, height = 0;
     vgui_context_get_size(ctx_, &width, &height);
     if (width <= 0 || height <= 0) return;
     for (auto& animation : tree_->gradient_animations) {
-        if (animation_visible(animation.widget, width, height)) animation.seek(seconds);
+        if (animation_visible(animation.widget, width, height)) animation.seek(seconds, inspect_loop_end);
     }
 }
 
@@ -395,18 +461,25 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             if (!read_gradient(paint, p) || !vgui_gradient_set(w, &paint.desc, paint.stops.data(), paint.stops.size())) return false;
             const auto& mode = p.text("gradient_animation");
             if (mode != "none") {
+                using effect = gradient_animation::effect;
                 auto& animation = next->gradient_animations.emplace_back(w, std::move(paint),
-                    std::get<double>(property(n, "gradient_animation_duration")), p.boolean("gradient_animation_loop"), mode == "shine");
+                    std::get<double>(property(n, "gradient_animation_duration")), p.boolean("gradient_animation_loop"),
+                    mode == "shine" ? effect::shine : mode == "color" ? effect::color : effect::keyframes);
                 auto& timing = next->animation_timing;
                 timing.duration = std::max(timing.duration, animation.duration);
                 timing.loops |= animation.loop;
-                if (animation.shine) {
+                if (animation.mode == effect::shine) {
                     animation.dx = p.number("gradient_animation_dx");
                     animation.dy = p.number("gradient_animation_dy");
-                } else {
+                } else if (animation.mode == effect::color) {
                     const auto& fallback = std::get<std::string>(find_property(n.type, "gradient_animation_color")->default_value);
                     animation.target = linear_rgba(p.color("gradient_animation_color").value_or(*parse_text_color(fallback)));
                     for (const auto& stop : animation.source.stops) animation.base_colors.push_back(linear_rgba(stop.color));
+                } else {
+                    std::string reason;
+                    if (!decode_gradient_keyframes(p.text("gradient_animation_keyframes"), animation.keys, reason)) return false;
+                    animation.tx = std::get<double>(property(n, "gradient_affine_tx"));
+                    animation.ty = std::get<double>(property(n, "gradient_affine_ty"));
                 }
             }
         }

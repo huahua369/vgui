@@ -63,6 +63,7 @@ struct layout_snapshot {
 };
 
 // Timing for an absolute playhead across all the animations in a document.
+// A gradient in keyframes mode contributes timing even with no keys.
 struct animation_span {
     double duration = 0; // Longest configured clip, in seconds; zero if none.
     bool loops = false;
@@ -105,7 +106,9 @@ public:
     // Sample the visible animations at an absolute time after layout. Looping
     // effects use their own period; one-shots clamp to their final frame.
     animation_span animation_timing() const;
-    void seek_animations(double seconds);
+    // Include the terminal key when explicitly inspecting a keyframed loop's
+    // boundary. Normal playback and seeking still wrap to the next cycle.
+    void seek_animations(double seconds, bool inspect_loop_end = false);
 
 private:
     struct mounted_tree;

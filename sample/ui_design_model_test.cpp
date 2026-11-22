@@ -252,6 +252,96 @@ void collection_json_round_trip()
     check(encode(decode(encode(full_depth))) == encode(full_depth), "deepest supported row round trips with buttons");
 }
 
+void gradient_keyframe_round_trip()
+{
+    const auto* desc = ui::find_property("gradient", "gradient_animation_keyframes");
+    check(desc && desc->label == "Keyframes" && desc->type == ui::value_type::gradient_keyframes &&
+        std::get<std::string>(desc->default_value) == "[]", "keyframe schema uses an optional array");
+    const auto page = [](std::string_view keys) {
+        return json_document(R"({"root":{"type":"panel","children":["paint"]},"paint":{"type":"gradient",
+            "props":{"gradient_animation":"keyframes","gradient_animation_keyframes":)"s + std::string(keys) + "}}}");
+    };
+    const auto doc = decode(page(R"([
+        {"offset":0,"x":16,"y":-16,"tint":"#FFFFFF","opacity":1,"interpolation":"step"},
+        {"offset":0.5,"x":-0.125,"y":0.25,"tint":"#aBcDeF","opacity":0.5,"interpolation":"smooth"},
+        {"offset":1,"x":0,"y":0,"tint":"#000000","opacity":0,"interpolation":"linear"}])"));
+    const auto text = encode(doc);
+    check(text.find("\"gradient_animation_keyframes\": [") != std::string::npos && decode(text) == doc &&
+        encode(decode(text)) == text, "keyframes round trip canonically as native JSON arrays");
+    const std::vector<ui::gradient_keyframe> expected{{0, 16, -16, "#FFFFFF", 1, "step"},
+        {0.5, -0.125, 0.25, "#aBcDeF", 0.5, "smooth"}, {1, 0, 0, "#000000", 0, "linear"}};
+    const auto& value = doc.nodes.at("paint").props.at("gradient_animation_keyframes");
+    std::vector<ui::gradient_keyframe> keys;
+    std::string error;
+    check(ui::decode_gradient_keyframes(std::get<std::string>(value), keys, error) && keys == expected && error.empty(),
+        "explicit frames decode without losing their properties");
+    check(ui::decode_gradient_keyframes(ui::encode_gradient_keyframes(expected), keys, error) && keys == expected,
+        "model helpers round trip explicit frame data");
+    check(ui::decode_gradient_keyframes("[]", keys, error) && keys.empty() && ui::encode_gradient_keyframes(keys) == "[]",
+        "empty keyframe sequences are valid");
+    const std::string_view prop_path = "/nodes/paint/props/gradient_animation_keyframes";
+    check(reject_json(page(R"("[]")"), "embedded keyframe JSON string").path == prop_path,
+        "version 1 files must use a native array for keyframes");
+    constexpr std::string_view invalid[] = {
+        R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1}])",
+        R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear","stop":0}])",
+        R"([{"offset":0,"x":false,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear"}])",
+        R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF80","opacity":1,"interpolation":"linear"}])",
+        R"([{"offset":0,"x":0,"y":0,"tint":"white","opacity":1,"interpolation":"linear"}])",
+        R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1.01,"interpolation":"linear"}])",
+        R"([{"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"ease"}])",
+    };
+    for (const auto bad : invalid) {
+        keys = expected;
+        check(!ui::decode_gradient_keyframes(bad, keys, error) && keys == expected && !error.empty(),
+            "invalid keyframes must not replace decoder output");
+        check(reject_json(page(bad), "invalid gradient keyframe").path == prop_path,
+            "invalid keyframe diagnostic must point to its property");
+    }
+    check(!ui::decode_gradient_keyframes(R"([{"offset":0,"offset":1,"x":0,"y":0,"tint":"#FFFFFF",
+        "opacity":1,"interpolation":"linear"}])", keys, error), "direct decoder rejects duplicate fields");
+    check(!ui::decode_gradient_keyframes("[]\0trailing"s, keys, error), "direct decoder rejects raw NUL");
+
+    auto broken = doc;
+    auto& props = broken.nodes.at("paint").props;
+    auto frames = expected;
+    const auto validate_frames = [&](bool valid) {
+        props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(frames);
+        ui::diagnostic issue;
+        check(ui::validate(broken, &issue) == valid && (valid || issue.path == prop_path),
+            valid ? "valid keyframe list was rejected" : "invalid keyframe list was accepted or poorly diagnosed");
+    };
+    frames[1].offset = ui::gradient_keyframe_min_gap;
+    validate_frames(true);
+    frames[1].offset *= 0.5;
+    validate_frames(false);
+    frames[1].offset = 1;
+    validate_frames(false);
+    frames = expected;
+    frames.front().offset = -0.01;
+    validate_frames(false);
+    frames = expected;
+    frames.back().x = -16.01;
+    validate_frames(false);
+    frames = expected;
+    props["gradient_affine_tx"] = 0.125;
+    validate_frames(false);
+    props["gradient_affine_tx"] = 0.0;
+    props["gradient_affine_ty"] = -0.125;
+    validate_frames(false);
+    props["gradient_animation"] = "none"s;
+    validate_frames(true); // A dormant list is shape-validated, but its pose is not applied.
+    props.erase("gradient_animation_keyframes");
+    check(decode(encode(broken)) == broken && encode(broken).find("gradient_animation_keyframes") == std::string::npos,
+        "legacy v1 gradients need no migration or injected property");
+
+    frames.resize(ui::max_gradient_keyframes + 1);
+    for (std::size_t i = 0; i < frames.size(); ++i) frames[i] = {double(i) / ui::max_gradient_keyframes};
+    validate_frames(false);
+    frames.pop_back();
+    validate_frames(true);
+}
+
 void named_radio_groups()
 {
     const auto doc = decode(json_document(R"({
@@ -874,6 +964,7 @@ int main()
         {"font family resource validation and round trip", font_family_validation},
         {"schema, duplicates and hierarchy", reject_bad_schema_and_tree},
         {"collection JSON arrays", collection_json_round_trip},
+        {"gradient keyframe JSON arrays", gradient_keyframe_round_trip},
         {"named radio groups", named_radio_groups},
         {"declarative container constraints", declarative_container_constraints},
         {"IDs, keys and resource paths", keys_and_paths},

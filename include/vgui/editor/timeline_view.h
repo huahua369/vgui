@@ -136,6 +136,9 @@ namespace vgui_editor_kit {
 			std::function<void(const std::vector<object_id>&)>;
 		using playhead_listener = std::function<void(double)>;
 		using change_listener = std::function<void()>;
+		using keyframe_edit_listener = std::function<void(
+			const std::vector<keyframe_ref>& before,
+			const std::vector<keyframe_ref>& after)>;
 
 		timeline_view() = default;
 		~timeline_view();
@@ -242,8 +245,14 @@ namespace vgui_editor_kit {
 		/* Pauses and moves the playhead by whole frames. */
 		void step_frames(int frames);
 		void set_playhead_listener(playhead_listener listener);
+		/* Hides the transport row and disables Space playback when false.
+		 * The playback API and other keyboard navigation remain available. */
+		void set_transport_visible(bool visible);
+		void set_track_header(std::string text);
 
 		/* ---- editing --------------------------------------------------- */
+		/* Controls Ctrl+C/X/V only, not the explicit clipboard edit methods. */
+		void set_clipboard_shortcuts_enabled(bool enabled);
 		void copy_selection();
 		void cut_selection();
 		/* Pastes the clipboard at the (snapped) playhead, preserving relative
@@ -257,6 +266,11 @@ namespace vgui_editor_kit {
 		/* Uses selected_track(), or the first track when none is selected. */
 		object_id add_keyframe_at_playhead();
 		std::size_t clipboard_count() const noexcept;
+		/* Reports completed add/move/delete/paste edits synchronously after
+		 * applying the keyframe changes, even without a command stack. Not
+		 * called for direct model edits, drag motion, cancel, or undo/redo.
+		 * Do not modify tracks, keyframes or gestures from this callback. */
+		void set_keyframe_edit_listener(keyframe_edit_listener listener);
 
 		/* ---- geometry / interaction ----------------------------------- */
 		/* Content-local rectangles (inside the 1px widget border). */
@@ -375,6 +389,7 @@ namespace vgui_editor_kit {
 		selection_listener selection_listener_;
 		change_listener change_listener_;
 		playhead_listener playhead_listener_;
+		keyframe_edit_listener keyframe_edit_listener_;
 
 		timeline_view_state view_{};
 		double min_zoom_ = 4.0;
@@ -392,6 +407,9 @@ namespace vgui_editor_kit {
 
 		bool enabled_ = true;
 		bool multi_select_ = true;
+		bool transport_visible_ = true;
+		std::string track_header_ = "TRACKS";
+		bool clipboard_shortcuts_enabled_ = true;
 		float drag_threshold_ = -1.0f;
 		float marquee_offset_ = 0.0f;
 

@@ -17,12 +17,14 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "pch.h"		// glm etc. (required by ovg_c.h)
 #include <ovg_c.h>		// OVG font cache
 #include <vgui/binding/collection.h>	// P3: std::vector<Row> -> vgui_row_source
 #include <vgui/binding/expression.h>	// P4: string expression DSL + auto deps
+#include <vgui/file_dialog.h>
 #include <vgui/richtext.h>	// core rich-text span primitives
 #include <vgui/vgui.h>		// public C API
 #ifndef VGUI_CORE_ONLY
@@ -6277,6 +6279,7 @@ struct file_dialog_log
 	vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
 	std::vector<std::string> paths;
 	std::string error;
+	int filter_index = -1;
 };
 
 static void on_file_dialog(void* user, vgui_file_dialog_kind kind,
@@ -6289,6 +6292,7 @@ static void on_file_dialog(void* user, vgui_file_dialog_kind kind,
 	for (int i = 0; i < count; ++i)
 		if (paths && paths[i]) log->paths.push_back(paths[i]);
 	log->error = error ? error : "";
+	log->filter_index = vgui_file_dialog_filter_index();
 }
 
 static void test_file_dialog(vgui_context* ctx)
@@ -6317,8 +6321,8 @@ static void test_file_dialog(vgui_context* ctx)
 		"file dialog: desc_init clears the descriptor");
 
 	vgui_file_filter filters[2] = {
-		{ "Scenes", "*.json;*.scene" },
-		{ "All files", "*" }
+		{ "Scene JSON", "*.json" },
+		{ "Scene CBOR", "*.cbor" }
 	};
 	desc.title = "Export scene";
 	desc.default_location = "E:/work";
@@ -6334,39 +6338,71 @@ static void test_file_dialog(vgui_context* ctx)
 	check(probe.shows == 1 && probe.kind == VGUI_FILE_DIALOG_SAVE,
 		"file dialog: provider sees the kind");
 	check(probe.title == "Export scene" && probe.filter_count == 2 &&
-		probe.first_filter == "Scenes" && probe.first_pattern == "*.json;*.scene",
+		probe.first_filter == "Scene JSON" && probe.first_pattern == "*.json",
 		"file dialog: descriptor reaches the provider");
 	check(probe.fn == on_file_dialog && probe.user == &log,
 		"file dialog: callback is forwarded to the provider");
 	check(log.calls == 0, "file dialog: callback waits for a result");
 
 	const char* picked[2] = { "E:/work/scene.json", nullptr };
-	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_SAVE, probe.fn, probe.user, picked, 1, nullptr);
-	check(vgui_file_dialog_pending() == 1, "file dialog: result is queued");
+	// The same pathname can be returned for either selected format. Its
+	// suffix is deliberately different from the selected CBOR filter.
+	std::thread([&] {
+		vgui_file_dialog_post_result_with_filter(VGUI_FILE_DIALOG_SAVE, probe.fn, probe.user, picked, 1, nullptr, 1);
+	}).join();
+	check(vgui_file_dialog_pending() == 1 && vgui_file_dialog_filter_index() == -1,
+		"file dialog: worker queues a filter without exposing it outside the callback");
 	check(log.calls == 0, "file dialog: result is not delivered inline");
 	vgui_update(ctx, 1.0f / 60.0f);
 	check(log.calls == 1 && log.paths.size() == 1 &&
-		log.paths[0] == "E:/work/scene.json" && log.error.empty(),
-		"file dialog: update delivers the selection");
-	check(vgui_file_dialog_pending() == 0, "file dialog: queue drains");
+		log.paths[0] == "E:/work/scene.json" && log.error.empty() && log.filter_index == 1,
+		"file dialog: C callback reports CBOR despite the JSON suffix");
+	check(vgui_file_dialog_pending() == 0 && vgui_file_dialog_filter_index() == -1,
+		"file dialog: queue drains and callback filter is cleared");
+
+	vgui::file_dialog_options options;
+	options.filters = {{"Scene JSON", "*.json"}, {"Scene CBOR", "*.cbor"}};
+	std::vector<vgui::file_dialog_result> results;
+	for (int selection : {0, 1, -1})
+	{
+		check(vgui::save_file(options, [&](const vgui::file_dialog_result& result) { results.push_back(result); }),
+			"file dialog: C++ save request accepted");
+		if (selection < 0)
+			vgui_file_dialog_post_result(VGUI_FILE_DIALOG_SAVE, probe.fn, probe.user, picked, 1, nullptr);
+		else
+			vgui_file_dialog_post_result_with_filter(VGUI_FILE_DIALOG_SAVE, probe.fn, probe.user, picked, 1, nullptr, selection);
+	}
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(results.size() == 3 && results[0].ok() && results[0].filter_index == 0 &&
+		results[1].ok() && results[1].filter_index == 1 && results[1].path() == results[0].path() &&
+		results[2].ok() && results[2].filter_index == -1,
+		"file dialog: queued C++ results preserve both indices and the legacy unknown value");
 
 	log = file_dialog_log{};
 	check(vgui_file_dialog_open(nullptr, on_file_dialog, &log) == 1,
 		"file dialog: null descriptor uses defaults");
 	check(probe.kind == VGUI_FILE_DIALOG_OPEN && probe.filter_count == 0 &&
 		probe.title.empty(), "file dialog: defaults have no filters");
-	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user, nullptr, 0, nullptr);
+	vgui_file_dialog_post_result_with_filter(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user, nullptr, 0, nullptr, 1);
 	vgui_update(ctx, 1.0f / 60.0f);
-	check(log.calls == 1 && log.paths.empty() && log.error.empty(),
-		"file dialog: cancel reported as empty, no error");
+	check(log.calls == 1 && log.paths.empty() && log.error.empty() && log.filter_index == -1,
+		"file dialog: cancel reported as empty, without a filter or error");
 
+	log = file_dialog_log{};
+	check(vgui_file_dialog_open(nullptr, on_file_dialog, &log) == 1,
+		"file dialog: open request accepted before reporting an error");
+	vgui_file_dialog_post_result_with_filter(VGUI_FILE_DIALOG_OPEN, probe.fn, probe.user, nullptr, 0, "boom", 1);
+	vgui_update(ctx, 1.0f / 60.0f);
+	check(log.calls == 1 && log.error == "boom" && log.paths.empty() && log.filter_index == -1,
+		"file dialog: errors are forwarded without a filter");
 	log = file_dialog_log{};
 	check(vgui_file_dialog_select_folder(nullptr, on_file_dialog, &log) == 1,
 		"file dialog: folder request accepted");
-	vgui_file_dialog_post_result(VGUI_FILE_DIALOG_FOLDER, probe.fn, probe.user, nullptr, 0, "boom");
+	const char* folder[] = { "E:/work", nullptr };
+	vgui_file_dialog_post_result_with_filter(VGUI_FILE_DIALOG_FOLDER, probe.fn, probe.user, folder, 1, nullptr, 1);
 	vgui_update(ctx, 1.0f / 60.0f);
-	check(log.calls == 1 && log.error == "boom" && log.paths.empty(),
-		"file dialog: errors are forwarded");
+	check(log.calls == 1 && log.paths.size() == 1 && log.filter_index == -1,
+		"file dialog: folder selection never reports a file filter");
 
 	/* Invalid requests never reach the provider and never call back. */
 	int shows_before = probe.shows;

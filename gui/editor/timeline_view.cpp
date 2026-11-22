@@ -1112,6 +1112,26 @@ namespace vgui_editor_kit {
 		playhead_listener_ = std::move(listener);
 	}
 
+	void timeline_view::set_track_header(std::string text)
+	{
+		if (track_header_ == text)
+			return;
+		track_header_ = std::move(text);
+		if (widget_)
+			vgui_widget_mark_dirty(widget_);
+	}
+
+	void timeline_view::set_transport_visible(bool visible)
+	{
+		if (transport_visible_ == visible)
+			return;
+		if (gesture_ != timeline_gesture::none)
+			cancel_gesture();
+		transport_visible_ = visible;
+		clamp_scroll();
+		notify_change();
+	}
+
 	/* --------------------------------------------------------------------- */
 	/* Editing                                                               */
 	/* --------------------------------------------------------------------- */
@@ -1146,6 +1166,11 @@ namespace vgui_editor_kit {
 	std::vector<timeline_view::keyframe_ref> timeline_view::selection_refs() const
 	{
 		return snapshot_selection();
+	}
+
+	void timeline_view::set_clipboard_shortcuts_enabled(bool enabled)
+	{
+		clipboard_shortcuts_enabled_ = enabled;
 	}
 
 	void timeline_view::copy_selection()
@@ -1286,6 +1311,11 @@ namespace vgui_editor_kit {
 		return clipboard_.size();
 	}
 
+	void timeline_view::set_keyframe_edit_listener(keyframe_edit_listener listener)
+	{
+		keyframe_edit_listener_ = std::move(listener);
+	}
+
 	/* --------------------------------------------------------------------- */
 	/* Geometry                                                              */
 	/* --------------------------------------------------------------------- */
@@ -1325,8 +1355,9 @@ namespace vgui_editor_kit {
 		m.width = width;
 		m.height = height;
 		m.transport_y = 0.0f;
-		m.transport_height = std::min(kTransportHeight * scale,
-			std::max(0.0f, height));
+		if (transport_visible_)
+			m.transport_height = std::min(kTransportHeight * scale,
+				std::max(0.0f, height));
 		m.ruler_y = m.transport_height;
 		m.ruler_height = std::min(kRulerHeight * scale,
 			std::max(0.0f, height - m.ruler_y));
@@ -1875,17 +1906,22 @@ namespace vgui_editor_kit {
 		const std::vector<keyframe_ref>& before,
 		const std::vector<keyframe_ref>& after)
 	{
-		if (!commands_ || (before.empty() && after.empty()))
+		if (before.empty() && after.empty())
 			return;
-		std::weak_ptr<int> alive = alive_token_;
-		auto apply = [this, alive](const std::vector<keyframe_ref>& undo_states,
-			const std::vector<keyframe_ref>& redo_states)
+		if (commands_)
 		{
-			if (!alive.expired())
-				apply_keyframe_states(undo_states, redo_states);
-		};
-		commands_->push(std::make_unique<timeline_command>(
-			name ? name : "Timeline", before, after, std::move(apply)));
+			std::weak_ptr<int> alive = alive_token_;
+			auto apply = [this, alive](const std::vector<keyframe_ref>& undo_states,
+				const std::vector<keyframe_ref>& redo_states)
+			{
+				if (!alive.expired())
+					apply_keyframe_states(undo_states, redo_states);
+			};
+			commands_->push(std::make_unique<timeline_command>(
+				name ? name : "Timeline", before, after, std::move(apply)));
+		}
+		if (keyframe_edit_listener_)
+			keyframe_edit_listener_(before, after);
 	}
 
 	void timeline_view::cancel_gesture_impl()
@@ -1959,6 +1995,8 @@ namespace vgui_editor_kit {
 
 	int timeline_view::transport_hit(float content_x, float content_y) const
 	{
+		if (!transport_visible_)
+			return -1;
 		const metrics m = layout_metrics();
 		if (content_y < m.transport_y ||
 			content_y >= m.transport_y + m.transport_height ||
@@ -2072,8 +2110,13 @@ namespace vgui_editor_kit {
 					self->scrub_start_playhead_ = self->playhead_;
 					const double time = self->x_to_time((double)x -
 						m.lanes_x);
+					const double old = self->playhead_;
 					self->set_playhead(self->snap_enabled_
 						? self->snap_time_value(time) : time);
+					// A hosted ruler also pauses playback when grabbed at
+					// the current position, where set_playhead is silent.
+					if (!self->transport_visible_ && old == self->playhead_)
+						self->notify_playhead();
 				}
 				return 1;
 			}
@@ -2288,29 +2331,32 @@ namespace vgui_editor_kit {
 			const int key_mods = event->mods;
 			const bool ctrl = (key_mods & VGUI_MOD_CTRL) != 0;
 			const int key = event->key;
-			if (key == ' ')
+			if (self->transport_visible_ && key == ' ')
 			{
 				self->toggle_play();
 				return 1;
 			}
 			if (key == VGUI_KEY_DELETE || key == VGUI_KEY_BACKSPACE)
 				return self->delete_selection() ? 1 : 0;
-			if (ctrl && (key == 'C' || key == 'c'))
+			if (self->clipboard_shortcuts_enabled_ && ctrl)
 			{
-				if (self->selection_.empty())
-					return 0;
-				self->copy_selection();
-				return 1;
+				if (key == 'C' || key == 'c')
+				{
+					if (self->selection_.empty())
+						return 0;
+					self->copy_selection();
+					return 1;
+				}
+				if (key == 'X' || key == 'x')
+				{
+					if (self->selection_.empty())
+						return 0;
+					self->cut_selection();
+					return 1;
+				}
+				if (key == 'V' || key == 'v')
+					return self->paste_at_playhead() ? 1 : 0;
 			}
-			if (ctrl && (key == 'X' || key == 'x'))
-			{
-				if (self->selection_.empty())
-					return 0;
-				self->cut_selection();
-				return 1;
-			}
-			if (ctrl && (key == 'V' || key == 'v'))
-				return self->paste_at_playhead() ? 1 : 0;
 			if (ctrl && (key == 'A' || key == 'a'))
 			{
 				self->select_all();
@@ -2429,7 +2475,8 @@ namespace vgui_editor_kit {
 		draw_lanes(cb, vg, widget, x, y, m);
 		draw_keyframes(cb, vg, x, y, m);
 		draw_ruler(cb, vg, widget, x, y, m);
-		draw_transport(cb, vg, widget, x, y, m);
+		if (transport_visible_)
+			draw_transport(cb, vg, widget, x, y, m);
 
 		const float scale = ui_scale();
 		const float lane_left = std::ceil(x + m.lanes_x);
@@ -2677,7 +2724,7 @@ namespace vgui_editor_kit {
 		ovg_tools::line(cb, vg, x, y + m.lanes_y, x + m.width,
 			y + m.lanes_y, to_ovg(panel_border), 1.0f,
 			VG_LINE_CAP_BUTT);
-		vgui_custom_draw_text(widget, cb, vg, "TRACKS", x + 8.0f * scale,
+		vgui_custom_draw_text(widget, cb, vg, track_header_.c_str(), x + 8.0f * scale,
 			y + m.ruler_y, std::max(1.0f, m.header_width - 16.0f * scale),
 			m.ruler_height, with_alpha(text, 0xA0), 0.0f, 0.5f);
 
@@ -2710,7 +2757,7 @@ namespace vgui_editor_kit {
 				px > x + m.lanes_x + m.lanes_width - 4.0f * scale)
 				continue;
 			char label[48];
-			std::snprintf(label, sizeof(label), format, time);
+			std::snprintf(label, sizeof(label), format, index == 0 ? 0.0 : time);
 			vgui_custom_draw_text(widget, cb, vg, label, px + 2.0f * scale,
 				y + m.ruler_y + 1.0f * scale, 52.0f * scale,
 				std::max(1.0f, m.ruler_height - 2.0f * scale), text,

@@ -2,6 +2,7 @@
 
 #include "../gui/ui_design/runtime.h"
 #include "ui_designer_locale.h"
+#include "ui_designer_gradient_timeline.h"
 
 #include <cstdint>
 #include <functional>
@@ -43,7 +44,8 @@ class designer_preview {
 public:
     designer_preview(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font, designer_preview_fonts&,
         std::function<void(std::string)> select, std::function<void(std::string)> notify,
-        std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings);
+        std::function<void(geometry_edit)> commit_geometry, const designer_strings& strings,
+        gradient_timeline_commit commit_keys = {});
     ~designer_preview();
     designer_preview(const designer_preview&) = delete;
     designer_preview& operator=(const designer_preview&) = delete;
@@ -71,6 +73,7 @@ public:
     struct animation_view {
         double time = 0, window_start = 0;
         bool playing = true;
+        bool inspect_end = false; // Inspect a terminal key just before a loop wraps.
     };
     struct view_state {
         preset screen = preset::desktop;
@@ -79,6 +82,7 @@ public:
         float pan_x = 0, pan_y = 0;
         bool running = false;
         animation_view animation; // In-memory preview state, not saved to the document.
+        bool timeline_open = false;
     };
 
     view_state capture_view() const;

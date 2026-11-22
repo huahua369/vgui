@@ -55,6 +55,7 @@ namespace vgui
 		vgui_file_dialog_kind kind = VGUI_FILE_DIALOG_OPEN;
 		std::vector<std::string> paths;
 		std::string error;
+		int filter_index = -1; // Index into options.filters, or -1 when unavailable.
 
 		bool failed() const { return !error.empty(); }
 		bool cancelled() const { return error.empty() && paths.empty(); }
@@ -80,6 +81,7 @@ namespace vgui
 			std::unique_ptr<file_dialog_state> state(static_cast<file_dialog_state*>(user));
 			file_dialog_result result;
 			result.kind = kind;
+			result.filter_index = vgui_file_dialog_filter_index();
 			if (error) result.error = error;
 			if (paths)
 				for (int i = 0; i < count; ++i)
