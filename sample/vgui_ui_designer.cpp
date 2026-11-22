@@ -2481,6 +2481,146 @@ int smoke_gradient_keyframes() {
     return 0;
 }
 
+void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& editor,
+                                const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe delivery: " + std::string(message));
+    };
+    const auto sample = fs::path(VGUI_SOURCE_DIR) / "sample/res/gradient-keyframes.vgui.json";
+    const auto source = sandbox / "motion-a.vgui.json", other = sandbox / "motion-b.vgui.json";
+    fs::copy_file(sample, source);
+    fs::copy_file(sample, other);
+    const auto& history = editor.history();
+    auto* dock = find_widget(vgui_root(shell), "designer.dock", VGUI_DOCK);
+    require(dock != nullptr, "missing document dock");
+    const ui::native_page_dock_input input(win, shell, dock, frame, require);
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto click = [&](const char* id, float fraction = .5f) {
+        auto* widget = find_widget(editor.preview().widget(), id);
+        require(widget != nullptr, id);
+        float x, y, w, h;
+        vgui_widget_get_rect(widget, &x, &y, &w, &h);
+        input.click(widget, x + w * fraction, y + h / 2);
+        return widget;
+    };
+    const auto submit = [&](const char* id, const char* value) {
+        auto* edit = click(id);
+        require(vgui_get_focus(shell) == edit, "numeric input did not gain focus");
+        vgui_edit_select_all(edit);
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = win.id;
+        text.text.text = value;
+        require(SDL_PushEvent(&text), "cannot enqueue pose or duration input");
+        menus.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+    };
+    const auto read_keys = [&](const ui::document& doc) {
+        std::vector<ui::gradient_keyframe> frames;
+        std::string error;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(doc.nodes.at("highlight").props.at(
+            "gradient_animation_keyframes")), frames, error), "decode highlight track");
+        return frames;
+    };
+    require(editor.open(source), "open the first copy of the gradient example");
+    frame();
+    const auto original = history.current();
+    const auto tab = vgui_dock_get_active(dock, VGUI_DOCK_CENTER);
+    require(editor.preview_ready(false), "image-free example did not render");
+    click("designer.preview.timeline");
+    click("designer.preview.mode");
+    click("designer.preview.animation.seek", .22f);
+    click("designer.timeline.add");
+    submit("designer.timeline.opacity_edit", ".5");
+    const auto created = read_keys(history.current());
+    require(created.size() == 4 && created[1].opacity == .5 && history.dirty(), "pose did not reach the active document");
+    const auto before_paste = history.current();
+    click("designer.timeline.copy");
+
+    require(editor.open(other), "open a second copy with identical node IDs");
+    frame();
+    click("designer.preview.timeline");
+    auto* paste = find_widget(editor.preview().widget(), "designer.timeline.paste");
+    require(paste && !vgui_widget_get_enabled(paste) && history.current() == original && !history.can_undo(),
+        "clipboard or undo history leaked into another page");
+    input.select_tab(tab);
+    require(vgui_dock_get_active(dock, VGUI_DOCK_CENTER) == tab && history.current() == before_paste,
+        "switching tabs lost the first page's animation edits");
+    const auto before_paste_playhead = editor.preview().capture_view().animation.time;
+    click("designer.preview.animation.seek");
+    const auto anchor = editor.preview().capture_view().animation;
+    require(!anchor.playing && anchor.time > 1.3 && anchor.time < 1.9 && anchor.time != before_paste_playhead,
+        "the playback scrubber did not pause at a new position");
+    click("designer.timeline.paste");
+    const auto pasted = read_keys(history.current());
+    require(pasted.size() == 5 && std::abs(pasted[3].offset * 2.4 - anchor.time) < .0001,
+        "paste did not anchor the new key at the playhead");
+    auto expected_pose = created[1];
+    expected_pose.offset = pasted[3].offset;
+    require(pasted[3] == expected_pose && std::vector{pasted[0], pasted[1], pasted[2], pasted[4]} == created,
+        "paste must preserve the copied pose and all existing keys");
+    const auto after_paste = history.current();
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before_paste, "Undo did not remove the paste as a single transaction");
+    menus.activate(menus.open(1), 1); // Edit > Redo
+    require(history.current() == after_paste, "Redo did not restore the exact pose and time");
+    submit("designer.timeline.duration_edit", "3.6");
+    click("designer.timeline.loop");
+    const auto edited = history.current();
+    const auto& props = edited.nodes.at("highlight").props;
+    require(props.at("gradient_animation_duration") == ui::value{3.6} &&
+        props.at("gradient_animation_loop") == ui::value{false} && read_keys(edited) == pasted &&
+        edited.nodes.at("tint") == original.nodes.at("tint"), "timing edits must preserve normalized poses and the other lane");
+
+    menus.activate(menus.open(0), 2); // File > Save
+    ui::document saved;
+    require(!history.dirty() && history.can_undo() && ui::read_document(source, saved) && saved == edited,
+        "saved JSON did not preserve the edited animation or its undo history");
+    ui::document unchanged;
+    require(ui::read_document(other, unchanged) && unchanged == original, "saving the animated tab changed another page's file");
+    const auto directory = sandbox / "motion-delivery", single = sandbox / "motion.vgui.package.json";
+    ui::document directory_design;
+    ui::embedded_delivery embedded;
+    require(ui::export_delivery(saved, sandbox, directory) && ui::read_delivery(directory, directory_design) &&
+        directory_design == edited, "verified directory delivery did not preserve the edited track");
+    require(ui::export_json_delivery(saved, sandbox, single) && ui::read_json_delivery(single, embedded) &&
+        embedded.design == edited && embedded.images.empty(), "verified single-file delivery did not preserve the image-free animation");
+
+    // Sample the actual highlight paint in a standalone host from each verified
+    // package. The middle stop's authored alpha is 0xCF; the pasted pose halves it.
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), vgui_destroy);
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
+    require(bool(ctx) && bool(cb), "create host rendering context");
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> canvas(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    require(bool(canvas), "create host recording canvas");
+    canvas->width = 760;
+    canvas->height = 370;
+    static float highlight_alpha;
+    static const auto set_source = cb->set_source;
+    cb->set_source = [](rvg_t* view, vg_pattern_t* paint) {
+        if (paint && paint->type == VG_PATTERN_TYPE_LINEAR && paint->data) {
+            const auto& fill = *static_cast<vg_gradient_t*>(paint->data);
+            if (fill.count == 5) highlight_alpha = fill.colors[2].w;
+        }
+        set_source(view, paint);
+    };
+    ui::runtime host(ctx.get());
+    const auto expect_alpha = [&](double time, int alpha) {
+        host.seek_animations(time);
+        highlight_alpha = -1;
+        cb->clear(canvas.get());
+        vgui_draw(ctx.get(), cb.get(), canvas.get());
+        require(highlight_alpha == alpha / 255.f, "host did not draw the expected painted opacity");
+    };
+    for (const auto* doc : {&directory_design, &embedded.design}) {
+        require(host.mount(*doc, 1) && host.layout({760, 370, 1}), "mount the validated design without the workbench");
+        const auto timing = host.animation_timing();
+        require(timing.duration == 3.6 && !timing.loops, "runtime timing did not match the saved clip");
+        const double pasted_time = pasted[3].offset * 3.6;
+        expect_alpha(pasted_time, 104);
+        expect_alpha(pasted_time + 3.6, 52); // Non-looping: hold the last key, not the pasted pose.
+    }
+}
+
 fs::path designer_settings_path() {
     if (const char* override_path = SDL_getenv("VGUI_DESIGNER_SETTINGS"); override_path && *override_path)
         return fs::u8path(override_path);
@@ -2741,11 +2881,12 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             advance();
             require(editor.preview_ready(true) && editor.preview().snapshot()->nodes.size() == editor.history().current().nodes.size(),
                 "control gallery did not render the full design");
+            exercise_keyframe_delivery(*win, shell.get(), editor, advance, picker->sandbox);
         } catch (...) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit and delivery isolation passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation and keyframe delivery passed");
     }
     app.wait_gpu();
     return 0;
