@@ -33,6 +33,7 @@ kit::timeline_interpolation mode(std::string_view name) {
 struct gradient_track {
     std::string node, name;
     double duration, tx, ty;
+    bool loop = true;
     std::vector<gradient_keyframe> frames;
     bool operator==(const gradient_track&) const = default;
 };
@@ -43,9 +44,10 @@ struct designer_gradient_timeline::impl {
     gradient_timeline_commit commit;
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
-    vgui_widget *panel, *add, *remove, *fit, *info, *fields, *tint;
+    vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget;
     vgui_context* shell;
     kit::timeline_view timeline;
+    kit::spinbox duration_box;
     kit::spinbox x, y, opacity;
     kit::combo_box easing;
     kit::color_picker picker;
@@ -54,7 +56,10 @@ struct designer_gradient_timeline::impl {
     std::vector<gradient_track> model;
     std::map<id, std::size_t> tracks;
     std::map<id, gradient_keyframe> poses;
-    bool updating = false, rejected = false, visible = false, needs_fit = true;
+    struct copied_key { std::string node; double delay; gradient_keyframe pose; };
+    std::vector<copied_key> clipboard;
+    int shortcut_handler = 0;
+    bool updating = false, rejected = false, visible = false, needs_fit = true, fields_dirty = true;
 
     impl(vgui_widget* parent, const designer_strings& locale, gradient_timeline_commit apply,
             std::function<void(double, bool)> go, std::function<void(std::string)> status)
@@ -72,8 +77,24 @@ struct designer_gradient_timeline::impl {
         auto* header = row(panel);
         add = button(header, "designer.timeline.add");
         remove = button(header, "designer.timeline.delete");
+        copy = button(header, "designer.timeline.copy");
+        paste = button(header, "designer.timeline.paste");
         fit = button(header, "designer.timeline.fit");
+        duration_box.set_id("designer.timeline.duration");
+        duration_box.set_label_width(62);
+        duration_box.set_edit_min_width(48);
+        duration_box.set_buttons_visible(false);
+        duration_box.set_range(.1, 60);
+        duration_box.set_step(.1);
+        duration_box.build(header);
+        vgui_widget_set_size(duration_box.widget(), 124, 0);
+        duration_box.set_on_commit([this](double value) { edit_track_duration(value); });
+        loop_widget = vgui_widget_add(header, VGUI_CHECKBOX, nullptr);
+        vgui_widget_set_id(loop_widget, "designer.timeline.loop");
+        vgui_widget_set_size(loop_widget, 72, 22);
+        vgui_widget_on_value(loop_widget, on_loop_value, this);
         info = vgui_widget_add(header, VGUI_LABEL, nullptr);
+        vgui_widget_set_grow(info, 1);
         timeline.build(panel);
         timeline.set_transport_visible(false);
         timeline.set_clipboard_shortcuts_enabled(false);
@@ -106,6 +127,7 @@ struct designer_gradient_timeline::impl {
         timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek(seconds, false); });
         timeline.set_change_listener([this] { vgui_widget_mark_dirty(timeline.widget()); });
         timeline.set_selection_listener([this](const auto&) {
+            fields_dirty = true;
             if (updating) return;
             // Defer field refresh until after dispatch; this may be a color popup closing.
             id track = 0;
@@ -116,10 +138,19 @@ struct designer_gradient_timeline::impl {
             }
             vgui_widget_mark_dirty(timeline.widget());
         });
+        shortcut_handler = vgui_context_add_key_handler(shell, [](vgui_context*, int key, int down, int mods, void* user) {
+            auto& self = *static_cast<impl*>(user);
+            if (!down || !self.visible || !self.timeline.focused() ||
+                !(mods & (VGUI_MOD_CTRL | VGUI_MOD_GUI)) || (mods & (VGUI_MOD_SHIFT | VGUI_MOD_ALT))) return 0;
+            if (key == 'C' || key == 'c') { self.copy_keys(); return 1; }
+            if (key == 'V' || key == 'v') { self.paste_keys(); return 1; }
+            return 0;
+        }, this);
         refresh_language();
     }
 
     ~impl() {
+        if (shortcut_handler) vgui_context_remove_key_handler(shell, shortcut_handler);
         close_picker();
         if (picker.widget()) vgui_widget_destroy(picker.widget());
     }
@@ -149,67 +180,123 @@ struct designer_gradient_timeline::impl {
         return w;
     }
 
+    static void on_loop_value(vgui_widget*, float, void* user) {
+        auto& self = *static_cast<impl*>(user);
+        if (!self.updating) self.edit_track_loop(vgui_widget_get_checked(self.loop_widget) != 0);
+    }
+
     static void event(vgui_widget* w, const vgui_event* e, void* user) {
         if (e->type != VGUI_EVENT_CLICK) return;
         auto& self = *static_cast<impl*>(user);
         if (w == self.fit) self.fit_view();
         else if (w == self.add) self.insert_key();
         else if (w == self.remove) self.timeline.delete_selection();
+        else if (w == self.copy) self.copy_keys();
+        else if (w == self.paste) self.paste_keys();
         else if (w == self.tint) self.open_picker();
     }
 
     void refresh_language() {
         vgui_widget_set_text(add, tr("timeline.add", "Add Key"));
         vgui_widget_set_text(remove, tr("timeline.delete", "Delete Key"));
+        vgui_widget_set_text(copy, tr("timeline.copy", "Copy"));
+        vgui_widget_set_text(paste, tr("timeline.paste", "Paste"));
+        vgui_widget_set_tooltip(copy, tr("timeline.copy_hint", "Copy selected keyframes and their poses (Ctrl+C)."));
+        vgui_widget_set_tooltip(paste, tr("timeline.paste_hint", "Paste the copied keys at the playhead (Ctrl+V)."));
         vgui_widget_set_text(fit, tr("timeline.fit", "Fit Time"));
+        duration_box.set_label(tr("timeline.duration", "Duration"));
+        vgui_widget_set_text(loop_widget, tr("timeline.loop", "Loop"));
         timeline.set_track_header(tr("timeline.tracks", "Tracks"));
         vgui_widget_set_a11y_name(timeline.widget(), tr("timeline.title", "Gradient Timeline"));
         vgui_widget_set_tooltip(timeline.widget(), tr("timeline.hint", "Drag the ruler to preview. Drag a diamond to move a key. Scroll to see more tracks."));
+        vgui_widget_set_tooltip(duration_box.widget(), tr("timeline.duration_hint", "Duration of the selected gradient animation, in seconds (0.1–60)."));
+        vgui_widget_set_tooltip(loop_widget, tr("timeline.loop_hint", "Repeat the selected gradient animation independently."));
         vgui_widget_set_tooltip(tint, tr("timeline.tint", "Edit multiply tint and opacity"));
         x.set_label("X");
         y.set_label("Y");
         opacity.set_label(tr("timeline.opacity", "Opacity"));
         easing.set_items({{tr("timeline.step", "Step"), "step"}, {tr("timeline.linear", "Linear"), "linear"},
             {tr("timeline.smooth", "Smooth"), "smooth"}});
-        shown_pose.reset();
+        const auto* mixed = tr("timeline.mixed", "Mixed");
+        for (auto* box : {&x, &y, &opacity}) vgui_edit_set_placeholder(box->edit_widget(), mixed);
+        easing.set_placeholder(mixed);
+        fields_dirty = true;
         refresh_fields();
     }
 
-    std::optional<std::pair<id, gradient_keyframe>> shown_pose;
-
     void refresh_fields() {
-        const auto key = timeline.primary_selection();
-        const auto it = poses.find(key);
-        const bool has_key = it != poses.end() && !rejected;
-        const auto to_show = has_key ? std::optional(std::pair{key, it->second}) : std::nullopt;
+        const auto primary = timeline.primary_selection();
+        id selected_lane = 0;
+        timeline.find_keyframe(primary, &selected_lane);
+        if (!selected_lane) selected_lane = timeline.selected_track();
+        const bool has_track = tracks.contains(selected_lane) && !rejected;
+        vgui_widget_set_enabled(duration_box.widget(), has_track);
+        vgui_widget_set_enabled(loop_widget, has_track);
+        if (has_track) {
+            const auto& selected_layer = model.at(tracks.at(selected_lane));
+            duration_box.set_value(selected_layer.duration);
+            vgui_widget_set_checked(loop_widget, selected_layer.loop ? 1 : 0);
+            timeline.set_loop(selected_layer.loop);
+        }
+        const auto found = poses.find(primary);
+        const auto& selection = timeline.selection_ids();
+        const bool has_key = found != poses.end() && !rejected;
         vgui_widget_set_visible(fields, has_key);
-        vgui_widget_set_enabled(add, !tracks.empty() && !rejected);
+        vgui_widget_set_enabled(add, has_track);
         vgui_widget_set_enabled(remove, has_key);
+        vgui_widget_set_enabled(copy, has_key);
+        vgui_widget_set_enabled(paste, has_track && !clipboard.empty());
         vgui_widget_set_enabled(fit, !tracks.empty());
         const char* help = tr("timeline.select", "Select a key to edit its pose");
         if (tracks.empty()) help = tr("timeline.empty", "Set a gradient's animation to Keyframes to add a track here.");
-        char time[48];
+        char time[96];
         if (has_key) {
-            id track = 0;
-            const auto* mark = timeline.find_keyframe(key, &track);
-            std::snprintf(time, sizeof(time), "%s: %.3f s", tr("timeline.time", "Key time"), mark ? mark->time : 0.);
+            if (selection.size() > 1) {
+                std::snprintf(time, sizeof(time), tr("timeline.selected_count", "%zu keys selected"), selection.size());
+            } else {
+                const auto* mark = timeline.find_keyframe(primary);
+                std::snprintf(time, sizeof(time), "%s: %.3f s", tr("timeline.time", "Key time"), mark ? mark->time : 0.);
+            }
             help = time;
         }
         vgui_widget_set_text(info, help);
-        if (shown_pose == to_show) return;
-        shown_pose = to_show;
-        if (!has_key) return;
-        id track = 0;
-        timeline.find_keyframe(key, &track);
-        const auto& layer = model.at(tracks.at(track));
-        const auto& frame = it->second;
-        x.set_range(std::max(-16., -16. - layer.tx), std::min(16., 16. - layer.tx));
-        y.set_range(std::max(-16., -16. - layer.ty), std::min(16., 16. - layer.ty));
+        if (!std::exchange(fields_dirty, false) || !has_key) return;
+        const auto& frame = found->second;
+        auto x_range = translation_range(0), y_range = translation_range(0);
+        bool mixed_x = false, mixed_y = false, mixed_opacity = false, mixed_tint = false, mixed_easing = false;
+        for (const auto key : selection) {
+            id lane = 0;
+            timeline.find_keyframe(key, &lane);
+            const auto& layer = model.at(tracks.at(lane));
+            const auto& other = poses.at(key);
+            const auto intersect = [](auto& range, double base) {
+                const auto next = translation_range(base);
+                range.first = std::max(range.first, next.first);
+                range.second = std::min(range.second, next.second);
+            };
+            intersect(x_range, layer.tx);
+            intersect(y_range, layer.ty);
+            mixed_x |= other.x != frame.x;
+            mixed_y |= other.y != frame.y;
+            mixed_opacity |= other.opacity != frame.opacity;
+            mixed_tint |= other.tint != frame.tint;
+            mixed_easing |= other.interpolation != frame.interpolation;
+        }
+        x.set_range(x_range.first, x_range.second);
+        y.set_range(y_range.first, y_range.second);
         x.set_value(frame.x);
         y.set_value(frame.y);
         opacity.set_value(frame.opacity);
-        vgui_widget_set_text(tint, frame.tint.c_str());
-        easing.set_value(frame.interpolation);
+        x.set_mixed(mixed_x);
+        y.set_mixed(mixed_y);
+        opacity.set_mixed(mixed_opacity);
+        vgui_widget_set_text(tint, mixed_tint ? tr("timeline.mixed", "Mixed") : frame.tint.c_str());
+        if (mixed_easing) easing.clear_selection();
+        else easing.set_value(frame.interpolation);
+    }
+
+    static std::pair<double, double> translation_range(double base) {
+        return {std::max(-16., -16. - base), std::min(16., 16. - base)};
     }
 
     void fit_view() {
@@ -233,7 +320,8 @@ struct designer_gradient_timeline::impl {
                 gradient_track layer{node_id, item.name.empty() ? node_id : item.name,
                     std::get<double>(property(item, "gradient_animation_duration")),
                     std::get<double>(property(item, "gradient_affine_tx")),
-                    std::get<double>(property(item, "gradient_affine_ty")), {}};
+                    std::get<double>(property(item, "gradient_affine_ty")),
+                    std::get<bool>(property(item, "gradient_animation_loop")), {}};
                 std::string error;
                 decode_gradient_keyframes(std::get<std::string>(property(item, property_key)), layer.frames, error);
                 next.push_back(std::move(layer));
@@ -259,14 +347,21 @@ struct designer_gradient_timeline::impl {
 
     void rebuild(std::vector<gradient_track> next) {
         id selected_track = timeline.selected_track();
-        const auto selected_key = timeline.primary_selection();
-        timeline.find_keyframe(selected_key, &selected_track);
+        const auto primary = timeline.primary_selection();
+        timeline.find_keyframe(primary, &selected_track);
         std::string keep;
-        std::optional<double> offset;
         if (const auto it = tracks.find(selected_track); it != tracks.end()) keep = model[it->second].node;
-        if (const auto it = poses.find(selected_key); it != poses.end()) offset = it->second.offset;
+        std::map<std::pair<std::string, double>, bool> selected;
+        for (const auto key : timeline.selection_ids()) {
+            id lane = 0;
+            if (timeline.find_keyframe(key, &lane) && poses.contains(key))
+                selected.emplace(std::pair{model[tracks.at(lane)].node, poses.at(key).offset}, key == primary);
+        }
         close_picker();
         updating = true;
+        fields_dirty = true;
+        std::vector<id> restored;
+        id restored_primary = 0;
         timeline.clear_tracks();
         tracks.clear();
         poses.clear();
@@ -283,9 +378,13 @@ struct designer_gradient_timeline::impl {
             for (const auto& frame : layer.frames) {
                 const auto key = timeline.add_keyframe(track, {0, layer.duration * frame.offset, 0, mode(frame.interpolation)});
                 poses.emplace(key, frame);
-                if (layer.node == keep && offset && frame.offset == *offset) timeline.set_selection({key}, key);
+                if (const auto it = selected.find({layer.node, frame.offset}); it != selected.end()) {
+                    restored.push_back(key);
+                    if (it->second) restored_primary = key;
+                }
             }
         }
+        timeline.set_selection(restored, restored_primary);
         if (timeline.duration() != duration) needs_fit = true;
         timeline.set_duration(duration);
         updating = false;
@@ -294,6 +393,77 @@ struct designer_gradient_timeline::impl {
     void insert_key() {
         const auto track = timeline.selected_track();
         if (tracks.contains(track)) timeline.insert_keyframe(track, timeline.playhead());
+    }
+
+    void copy_keys() {
+        if (rejected || timeline.gesture() != kit::timeline_gesture::none) return;
+        std::vector<copied_key> next;
+        for (const auto key : timeline.selection_ids()) {
+            id lane = 0;
+            const auto* mark = timeline.find_keyframe(key, &lane);
+            if (mark && poses.contains(key)) next.push_back({model.at(tracks.at(lane)).node, mark->time, poses.at(key)});
+        }
+        if (next.empty()) return;
+        std::stable_sort(next.begin(), next.end(), [](const auto& a, const auto& b) { return a.delay < b.delay; });
+        const auto first = next.front().delay;
+        for (auto& key : next) key.delay -= first;
+        clipboard = std::move(next);
+    }
+
+    void paste_keys() {
+        if (rejected || clipboard.empty() || timeline.gesture() != kit::timeline_gesture::none) return;
+        const auto destination = selected_track();
+        if (!tracks.contains(destination)) return;
+        const bool single_track = std::ranges::all_of(clipboard, [&](const auto& key) { return key.node == clipboard.front().node; });
+        std::map<std::string_view, id> lanes;
+        if (!single_track)
+            for (const auto& [lane, index] : tracks) lanes.emplace(model[index].node, lane);
+        std::map<id, std::vector<gradient_keyframe>> changes;
+        std::vector<std::pair<id, gradient_keyframe>> inserts;
+        for (const auto& key : clipboard) {
+            id lane = destination;
+            if (!single_track) {
+                const auto source = lanes.find(key.node);
+                if (source == lanes.end()) {
+                    if (notify) notify(tr("timeline.paste_missing", "A source track is missing. No keys were pasted."));
+                    return;
+                }
+                lane = source->second;
+            }
+            const auto& layer = model.at(tracks.at(lane));
+            const auto time = timeline.playhead() + key.delay;
+            if (time > std::nextafter(layer.duration, 61.)) {
+                if (notify) notify(tr("timeline.paste_outside", "Pasted keys would exceed a track's duration. No keys were pasted."));
+                return;
+            }
+            if (std::abs(layer.tx + key.pose.x) > 16. || std::abs(layer.ty + key.pose.y) > 16.) {
+                if (notify) notify(tr("timeline.paste_translation", "A pasted pose exceeds the target's translation range. No keys were pasted."));
+                return;
+            }
+            auto pose = key.pose;
+            pose.offset = std::min(time / layer.duration, 1.);
+            auto it = changes.find(lane);
+            if (it == changes.end()) it = changes.emplace(lane, layer.frames).first;
+            it->second.push_back(pose);
+            inserts.emplace_back(lane, std::move(pose));
+        }
+        for (auto& [lane, frames] : changes) {
+            std::ranges::sort(frames, {}, &gradient_keyframe::offset);
+            if (!valid_spacing(frames)) {
+                if (notify) notify(tr("timeline.paste_overlap", "Pasted keys would overlap or exceed 128 keys per track. No keys were pasted."));
+                return;
+            }
+        }
+        if (!apply_tracks(changes)) return;
+        std::vector<id> keys;
+        keys.reserve(inserts.size());
+        for (const auto& [lane, pose] : inserts) {
+            const auto& layer = model.at(tracks.at(lane));
+            const auto key = timeline.add_keyframe(lane, {0, pose.offset * layer.duration, 0, mode(pose.interpolation)});
+            poses.emplace(key, pose);
+            keys.push_back(key);
+        }
+        timeline.set_selection(keys, keys.front());
     }
 
     void open_picker() {
@@ -306,13 +476,14 @@ struct designer_gradient_timeline::impl {
         std::snprintf(color, sizeof(color), "%s%02X", frame.tint.c_str(), static_cast<unsigned>(std::lround(frame.opacity * 255)));
         picker.set_value(color);
         picker.set_current(color);
-        picker.set_on_commit([this](const std::string& hex) {
+        picker.set_on_commit([this, previous = *parse_text_color(color)](const std::string& hex) mutable {
             if (const auto packed = parse_text_color(hex)) {
-                const auto alpha = static_cast<int>(*packed >> 24);
+                const bool tint_changed = (*packed & 0xFFFFFFu) != (previous & 0xFFFFFFu);
+                const bool opacity_changed = (*packed >> 24) != (previous >> 24);
+                previous = *packed;
                 edit_pose([&](auto& frame) {
-                    frame.tint = hex.substr(0, 7);
-                    // A tint-only edit must not quantize the authored opacity.
-                    if (alpha != std::lround(frame.opacity * 255)) frame.opacity = alpha / 255.;
+                    if (tint_changed) frame.tint = hex.substr(0, 7);
+                    if (opacity_changed) frame.opacity = (*packed >> 24) / 255.;
                 });
             }
         });
@@ -327,29 +498,83 @@ struct designer_gradient_timeline::impl {
     }
 
     template<class Change> void edit_pose(Change change) {
-        const auto key = timeline.primary_selection();
-        auto it = poses.find(key);
-        if (rejected || it == poses.end()) return;
-        id lane = 0;
-        const auto* mark = timeline.find_keyframe(key, &lane);
-        if (!mark) return;
-        const auto old = it->second;
-        auto next = old;
-        change(next);
-        if (next == old) return;
-        auto& layer = model.at(tracks.at(lane));
-        auto frames = layer.frames;
-        const auto pos = std::ranges::find(frames, old.offset, &gradient_keyframe::offset);
-        if (pos == frames.end()) return;
-        *pos = next;
-        if (apply({set_frame_edit(layer, frames)})) {
-            layer.frames = std::move(frames);
-            it->second = next;
-            auto display = *mark;
-            display.interpolation = mode(next.interpolation);
-            timeline.update_keyframe(lane, display);
-            seek_key(display);
+        if (rejected) return;
+        std::map<id, std::vector<gradient_keyframe>> changes;
+        std::map<id, gradient_keyframe> changed_keys;
+        for (const auto key : timeline.selection_ids()) {
+            const auto it = poses.find(key);
+            id lane = 0;
+            if (it == poses.end() || !timeline.find_keyframe(key, &lane)) continue;
+            auto next = it->second;
+            change(next);
+            if (next == it->second) continue;
+            auto entry = changes.find(lane);
+            if (entry == changes.end()) entry = changes.emplace(lane, model.at(tracks.at(lane)).frames).first;
+            auto& frames = entry->second;
+            const auto pos = std::ranges::find(frames, next.offset, &gradient_keyframe::offset);
+            if (pos == frames.end()) return;
+            *pos = next;
+            changed_keys.emplace(key, std::move(next));
         }
+        if (changes.empty() || !apply_tracks(changes)) return;
+        for (const auto& [key, pose] : changed_keys) {
+            poses.at(key) = pose;
+            id lane = 0;
+            auto mark = *timeline.find_keyframe(key, &lane);
+            if (mark.interpolation != mode(pose.interpolation)) {
+                mark.interpolation = mode(pose.interpolation);
+                timeline.update_keyframe(lane, mark);
+            }
+        }
+        fields_dirty = true;
+        if (const auto* mark = timeline.find_keyframe(timeline.primary_selection())) seek_key(*mark);
+    }
+
+    static set_property set_animation_duration(const gradient_track& layer, double value) {
+        const auto* desc = find_property("gradient", "gradient_animation_duration");
+        return {layer.node, "gradient_animation_duration", value == std::get<double>(desc->default_value)
+            ? std::nullopt : std::optional<vgui::ui_design::value>(value)};
+    }
+
+    static set_property set_animation_loop(const gradient_track& layer, bool value) {
+        const auto* desc = find_property("gradient", "gradient_animation_loop");
+        return {layer.node, "gradient_animation_loop", value == std::get<bool>(desc->default_value)
+            ? std::nullopt : std::optional<vgui::ui_design::value>(value)};
+    }
+
+    id selected_track() const {
+        id track = 0;
+        timeline.find_keyframe(timeline.primary_selection(), &track);
+        return track ? track : timeline.selected_track();
+    }
+
+    void edit_track_duration(double duration) {
+        const auto track = selected_track();
+        if (rejected || !tracks.contains(track)) return;
+        auto& layer = model.at(tracks.at(track));
+        if (std::abs(layer.duration - duration) < 1e-9) return;
+        if (!apply({set_animation_duration(layer, duration)})) return;
+        layer.duration = duration;
+        if (const auto* lane = timeline.find_track(track)) {
+            auto resized = *lane;
+            for (auto& key : resized.keyframes) key.time = poses.at(key.id).offset * duration;
+            timeline.update_track(resized);
+        }
+        auto axis = ruler_min_duration;
+        for (const auto& item : model) axis = std::max(axis, item.duration);
+        if (std::abs(timeline.duration() - axis) > 1e-9) needs_fit = true;
+        timeline.set_duration(axis);
+        duration_box.set_value(duration);
+    }
+
+    void edit_track_loop(bool loop) {
+        const auto track = selected_track();
+        if (rejected || !tracks.contains(track)) return;
+        auto& layer = model.at(tracks.at(track));
+        if (layer.loop == loop) return;
+        if (!apply({set_animation_loop(layer, loop)})) return;
+        layer.loop = loop;
+        timeline.set_loop(loop);
     }
 
     static set_property set_frame_edit(const gradient_track& layer, const std::vector<gradient_keyframe>& frames) {
@@ -359,8 +584,23 @@ struct designer_gradient_timeline::impl {
     bool apply(const std::vector<edit>& commands) {
         if (revision && !commands.empty() && commit && commit(*revision, commands)) return true;
         rejected = true;
-        shown_pose.reset();
+        fields_dirty = true;
         return false;
+    }
+
+    static bool valid_spacing(const std::vector<gradient_keyframe>& frames) {
+        return frames.size() <= max_gradient_keyframes && std::adjacent_find(frames.begin(), frames.end(), [](const auto& a, const auto& b) {
+            return b.offset < a.offset + gradient_keyframe_min_gap;
+        }) == frames.end();
+    }
+
+    bool apply_tracks(std::map<id, std::vector<gradient_keyframe>>& changes) {
+        std::vector<edit> commands;
+        commands.reserve(changes.size());
+        for (const auto& [lane, frames] : changes) commands.emplace_back(set_frame_edit(model.at(tracks.at(lane)), frames));
+        if (!apply(commands)) return false;
+        for (auto& [lane, frames] : changes) model.at(tracks.at(lane)).frames = std::move(frames);
+        return true;
     }
 
     void edit_keys(const std::vector<kit::timeline_view::keyframe_ref>& before,
@@ -385,30 +625,25 @@ struct designer_gradient_timeline::impl {
             projected.insert_or_assign(ref.keyframe.id, std::move(frame));
             touched.emplace(ref.track);
         }
-        std::vector<edit> commands;
         std::map<id, std::vector<gradient_keyframe>> changes;
         for (const auto lane : touched) {
             auto& frames = changes[lane];
             const auto* track = timeline.find_track(lane);
             if (!track) return;
             for (const auto& key : track->keyframes) frames.push_back(projected.at(key.id));
-            if (frames.size() > max_gradient_keyframes || std::adjacent_find(frames.begin(), frames.end(), [](const auto& a, const auto& b) {
-                    return b.offset < a.offset + gradient_keyframe_min_gap;
-                }) != frames.end()) {
+            if (!valid_spacing(frames)) {
                 reject(tr("timeline.overlap", "Keys cannot overlap, and each track supports up to 128 keys."));
                 return;
             }
-            commands.emplace_back(set_frame_edit(model.at(tracks.at(lane)), frames));
         }
-        if (!apply(commands)) return;
+        if (!apply_tracks(changes)) return;
         poses = std::move(projected);
-        for (auto& [lane, frames] : changes) model.at(tracks.at(lane)).frames = std::move(frames);
         if (before.size() == 1 && after.size() == 1) seek_key(after.front().keyframe);
     }
 
     void reject(const char* message) {
         rejected = true;
-        shown_pose.reset();
+        fields_dirty = true;
         if (notify) notify(message);
     }
 };

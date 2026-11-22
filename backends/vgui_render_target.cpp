@@ -51,11 +51,14 @@ struct vgui_render_target
 
 namespace {
 
-thread_local std::string g_create_error;
+// All create() diagnostics are string literals. Keep only a constant-
+// initialized pointer in TLS: on MSVC Debug, constructing an empty string
+// can allocate even when a late OS thread starts after CRT heap-lock teardown.
+thread_local const char* g_create_error = "";
 
-void set_create_error(const char* message)
+void set_create_error(const char* literal)
 {
-	g_create_error = message ? message : "";
+	g_create_error = literal;
 }
 
 // Live target registry: lets vgui_render_target_rebuild_all() walk every
@@ -366,15 +369,13 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 	target->fbo.cycle_target = target->clear;
 	if (!vgpu_fbo_color_texture(&target->fbo))
 	{
-		target->error = "failed to create offscreen fbo";
-		set_create_error(target->error.c_str());
+		set_create_error("failed to create offscreen fbo");
 		destroy_partial(target);
 		return nullptr;
 	}
 	if (target->depth && !vgpu_fbo_depth_texture(&target->fbo))
 	{
-		target->error = "failed to create depth attachment";
-		set_create_error(target->error.c_str());
+		set_create_error("failed to create depth attachment");
 		destroy_partial(target);
 		return nullptr;
 	}
@@ -383,8 +384,7 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 	target->vg = cb->new_rvg(cb->ac);
 	if (!target->vg)
 	{
-		target->error = "failed to create recording canvas";
-		set_create_error(target->error.c_str());
+		set_create_error("failed to create recording canvas");
 		destroy_partial(target);
 		return nullptr;
 	}
@@ -394,8 +394,7 @@ vgui_render_target* vgui_render_target_create(vgui_context* owner,
 		format);
 	if (!target->texture)
 	{
-		target->error = "failed to create native vgui_texture";
-		set_create_error(target->error.c_str());
+		set_create_error("failed to create native vgui_texture");
 		destroy_partial(target);
 		return nullptr;
 	}
@@ -714,7 +713,7 @@ int vgui_render_target_rebuild_all(vgpu_ctx_t* old_ctx, vgpu_ctx_t* new_ctx)
 const char* vgui_render_target_last_error(const vgui_render_target* target)
 {
 	if (!target)
-		return g_create_error.c_str();
+		return g_create_error;
 	return target->error.c_str();
 }
 

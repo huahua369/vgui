@@ -314,6 +314,13 @@ add_test(NAME ui_designer_gradient_keyframes COMMAND vgui_ui_designer --smoke-gr
 add_test(NAME ui_designer_native COMMAND vgui_ui_designer --smoke-test)
 # The full native suite now exercises multiple visible GPU previews and docking gestures.
 set_tests_properties(ui_designer_native PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 60)
+if(WIN32)
+    target_sources(vgui_ui_designer PRIVATE ui_designer_native_dialog_exit_smoke.cpp)
+    add_test(NAME ui_designer_native_open_exit COMMAND vgui_ui_designer --smoke-native-open-exit)
+    add_test(NAME ui_designer_native_save_exit COMMAND vgui_ui_designer --smoke-native-save-exit)
+    set_tests_properties(ui_designer_native_open_exit ui_designer_native_save_exit PROPERTIES
+        RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 40)
+endif()
 
 add_executable(vgui_game_editor ${SRC_GAME_EDITOR})
 target_link_libraries(vgui_game_editor PRIVATE vgui_sample_common vgui::editor_kit EnTT::EnTT ZLIB::ZLIB)

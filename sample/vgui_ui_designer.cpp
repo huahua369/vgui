@@ -18,6 +18,10 @@
 #include <vgui/backend/vgui_render_target.h>
 #include <SDL3/SDL_main.h>
 
+#ifdef _WIN32
+#include "ui_designer_native_dialog_exit_smoke.h"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -2236,6 +2240,25 @@ int smoke_gradient_keyframes() {
         require(vgui_hit_test(shell.get(), x + width / 2, y + height / 2) == w, id);
         click_at(x + width / 2, y + height / 2);
     };
+    const auto press = [&](int key, int mods = 0) {
+        const bool handled = vgui_input_key(shell.get(), key, 1, mods) != 0;
+        vgui_input_key(shell.get(), key, 0, 0);
+        return handled;
+    };
+    const auto submit = [&](vgui_widget* edit, const char* text) {
+        vgui_set_focus(shell.get(), edit);
+        press('A', VGUI_MOD_CTRL);
+        vgui_input_text(shell.get(), text);
+        press(VGUI_KEY_ENTER);
+    };
+    const auto edit_tint = [&](const char* hex) {
+        click("designer.timeline.tint");
+        auto* color_hex = find_widget(vgui_popup_content(shell.get()), "designer.timeline.tint.popup.hex", VGUI_EDIT);
+        require(color_hex != nullptr, "open the selected key's tint picker");
+        submit(color_hex, hex);
+        vgui_popup_close(shell.get());
+        update();
+    };
     const auto keyframes = [&](const char* node) {
         std::vector<ui::gradient_keyframe> frames;
         std::string error;
@@ -2267,22 +2290,10 @@ int smoke_gradient_keyframes() {
     auto frames = keyframes("highlight");
     require(frames.size() == 4 && near(frames[1].offset * 2.4, .6) && keyframes("tint").size() == 4,
         "add writes the chosen track, not its neighbour");
-    auto* edit_x = widget("designer.timeline.x_edit");
-    vgui_set_focus(shell.get(), edit_x);
-    vgui_input_key(shell.get(), 'A', 1, VGUI_MOD_CTRL);
-    vgui_input_text(shell.get(), ".25");
-    vgui_input_key(shell.get(), VGUI_KEY_ENTER, 1, 0);
+    submit(widget("designer.timeline.x_edit"), ".25");
     update();
     require(near(keyframes("highlight")[1].x, .25), "editing a numeric pose field updates the selected key");
-    click("designer.timeline.tint");
-    auto* color_hex = find_widget(vgui_popup_content(shell.get()), "designer.timeline.tint.popup.hex", VGUI_EDIT);
-    require(color_hex != nullptr, "open the selected key's tint picker");
-    vgui_set_focus(shell.get(), color_hex);
-    vgui_input_key(shell.get(), 'A', 1, VGUI_MOD_CTRL);
-    vgui_input_text(shell.get(), "#658DCE80");
-    vgui_input_key(shell.get(), VGUI_KEY_ENTER, 1, 0);
-    vgui_popup_close(shell.get());
-    update();
+    edit_tint("#658DCE80");
     frames = keyframes("highlight");
     require(frames[1].tint == "#658DCE" && near(frames[1].opacity, 128. / 255), "picker edits both RGB tint and opacity");
 
@@ -2314,6 +2325,23 @@ int smoke_gradient_keyframes() {
     update();
     require(keyframes("highlight").size() == 4 && keyframes("tint").size() == 4,
         "undo restores the edited lane and leaves the second lane untouched");
+    click_at(point_at(.2, 37).first, point_at(.2, 37).second);
+    update();
+    const auto before_resize = keyframes("highlight");
+    auto* duration_edit = find_widget(preview.widget(), "designer.timeline.duration_edit", VGUI_EDIT);
+    require(duration_edit != nullptr, "timeline exposes a duration editor");
+    submit(duration_edit, "3.6");
+    update();
+    require(model.current().nodes.at("highlight").props.at("gradient_animation_duration") == ui::value{3.6},
+        "editing timeline duration updates the selected gradient property");
+    const auto resized = keyframes("highlight");
+    require(resized.size() == before_resize.size() &&
+        std::ranges::equal(resized, before_resize, [&](const auto& a, const auto& b) { return near(a.offset, b.offset); }),
+        "duration editing preserves normalized keyframe timing");
+    click("designer.timeline.loop");
+    update();
+    require(model.current().nodes.at("highlight").props.at("gradient_animation_loop") == ui::value{false},
+        "timeline loop checkbox updates the selected gradient property");
     const auto saved = preview.capture_view();
     preview.restore_view({});
     update();
@@ -2321,6 +2349,135 @@ int smoke_gradient_keyframes() {
     preview.restore_view(saved);
     update();
     require(vgui_widget_get_visible(widget("designer.timeline")) && status.empty(), "restoring a tab reopens its timeline");
+
+    require(model.load(file), "reload the untouched two-track example for clipboard and batch-edit tests");
+    update();
+    const auto highlight = keyframes("highlight");
+    const auto tint = keyframes("tint");
+    constexpr double highlight_duration = 2.4, tint_duration = 3.2;
+    constexpr float ruler_row = 10, highlight_row = 37, tint_row = 63;
+    const auto highlight_key = highlight[1].offset * highlight_duration;
+    const auto tint_key = tint[1].offset * tint_duration;
+    const auto tint_late_key = tint[2].offset * tint_duration;
+    const auto click_timeline = [&](double second, float row, int mods = 0) {
+        const auto [x, y] = point_at(second, row);
+        require(vgui_hit_test(shell.get(), x, y) == tracks, "timeline can receive mouse input");
+        // Mouse events read modifiers from the context, which key input updates.
+        vgui_input_key(shell.get(), 0, 0, mods);
+        click_at(x, y);
+        vgui_input_key(shell.get(), 0, 0, 0);
+        update();
+    };
+    const auto activate_track = [&](float row) {
+        const auto [x, y] = point_at(0, row);
+        require(vgui_hit_test(shell.get(), x - 100, y) == tracks, "track header can receive mouse input");
+        click_at(x - 100, y);
+        update();
+    };
+    const auto matches_pose_at = [&](const auto& actual, ui::gradient_keyframe source, double duration, double time) {
+        source.offset = actual.offset;
+        return actual == source && near(actual.offset * duration, time);
+    };
+
+    const auto copy_revision = model.revision();
+    click_timeline(0, highlight_row);
+    click_timeline(highlight_key, highlight_row, VGUI_MOD_SHIFT);
+    click("designer.timeline.copy");
+    update();
+    require(model.revision() == copy_revision && model.current() == before && !model.can_undo(),
+        "Copy does not edit the document or history");
+    activate_track(tint_row);
+    constexpr double single_anchor = .8;
+    click_timeline(single_anchor, ruler_row);
+    require(vgui_get_focus(shell.get()) == tracks && press('V', VGUI_MOD_CTRL), "focused timeline handles Ctrl+V");
+    update();
+    const auto pasted = keyframes("tint");
+    require(model.revision() == copy_revision + 1 && pasted.size() == 6 && keyframes("highlight") == highlight &&
+        matches_pose_at(pasted[1], highlight[0], tint_duration, single_anchor) &&
+        matches_pose_at(pasted[3], highlight[1], tint_duration, single_anchor + highlight_key) &&
+        std::vector{pasted[0], pasted[2], pasted[4], pasted[5]} == tint,
+        "single-source paste preserves full poses and second spacing on the active track's different duration");
+    const auto after_single_paste = model.current();
+    const auto single_revision = model.revision();
+    click_timeline(2.6, ruler_row); // The first key fits but the second would exceed 3.2 s.
+    press('V', VGUI_MOD_CTRL);
+    update();
+    require(model.revision() == single_revision && model.current() == after_single_paste,
+        "an out-of-duration paste leaves even the keys that would fit unpasted");
+    require(model.undo() && model.current() == before && !model.can_undo(), "one undo removes the entire paste");
+    update();
+    require(model.redo() && model.current() == after_single_paste, "redo restores the exact pasted keys");
+    update();
+
+    activate_track(highlight_row);
+    click_timeline(highlight_key, highlight_row);
+    click_timeline(tint_key, tint_row, VGUI_MOD_CTRL);
+    require(press('C', VGUI_MOD_CTRL), "focused timeline handles Ctrl+C");
+    update();
+    require(model.undo() && model.current() == before, "rebuild the timeline projection after copying");
+    update();
+    activate_track(tint_row);
+    constexpr double group_anchor = .34;
+    const auto track_delta = tint_key - highlight_key;
+    click_timeline(group_anchor, ruler_row);
+    const auto multi_revision = model.revision();
+    click("designer.timeline.paste");
+    update();
+    auto pasted_highlight = keyframes("highlight");
+    auto pasted_tint = keyframes("tint");
+    require(model.revision() == multi_revision + 1 && pasted_highlight.size() == 4 && pasted_tint.size() == 5 &&
+        matches_pose_at(pasted_highlight[1], highlight[1], highlight_duration, group_anchor) &&
+        matches_pose_at(pasted_tint[1], tint[1], tint_duration, group_anchor + track_delta),
+        "multi-source paste anchors the whole group and returns keys to their original tracks after a rebuild");
+    pasted_highlight.erase(pasted_highlight.begin() + 1);
+    pasted_tint.erase(pasted_tint.begin() + 1);
+    require(pasted_highlight == highlight && pasted_tint == tint, "pasting does not replace existing keys");
+    const auto after_multi_paste = model.current();
+    activate_track(tint_row);
+    click_timeline(tint_late_key - track_delta, ruler_row); // Only the second track would overlap.
+    click("designer.timeline.paste");
+    update();
+    require(model.revision() == multi_revision + 1 && model.current() == after_multi_paste,
+        "overlap on one track rejects the entire paste with no history entry");
+    require(model.undo() && model.current() == before && !model.can_undo(), "one undo removes a paste across tracks");
+    update();
+    require(model.redo() && model.current() == after_multi_paste, "redo restores both tracks of the paste");
+    update();
+
+    const auto select_mixed_poses = [&] {
+        activate_track(highlight_row);
+        click_timeline(0, highlight_row);
+        click_timeline(tint_late_key, tint_row, VGUI_MOD_CTRL); // Keep the highlight key primary.
+    };
+    select_mixed_poses();
+    auto expected_highlight = keyframes("highlight");
+    auto expected_tint = keyframes("tint");
+    const auto tint_index = std::size_t{3}; // The pasted key sorted before the selected original tint key.
+    const auto batch_revision = model.revision();
+    submit(widget("designer.timeline.x_edit"), "-0.9"); // Already the primary key's X.
+    update();
+    expected_tint[tint_index].x = expected_highlight[0].x;
+    require(model.revision() == batch_revision + 1 && keyframes("highlight") == expected_highlight &&
+        keyframes("tint") == expected_tint, "submitting the primary X resolves a mixed field without changing other pose values");
+    const auto after_x = model.current();
+    submit(widget("designer.timeline.y_edit"), ".4");
+    update();
+    expected_highlight[0].y = expected_tint[tint_index].y = .4;
+    require(model.revision() == batch_revision + 2 && keyframes("highlight") == expected_highlight &&
+        keyframes("tint") == expected_tint, "batch editing Y changes only Y on the selected keys across tracks");
+    const auto after_y = model.current();
+    require(model.undo() && model.current() == after_x, "one undo restores both tracks of the batch edit");
+    update();
+    require(model.redo() && model.current() == after_y, "redo restores both tracks of the batch edit");
+    update();
+    select_mixed_poses();
+    const auto tint_revision = model.revision();
+    edit_tint("#658DCE40"); // 0x40 is the unchanged rounded alpha of the primary key (opacity 0.25).
+    expected_highlight[0].tint = expected_tint[tint_index].tint = "#658DCE";
+    require(model.revision() == tint_revision + 1 && keyframes("highlight") == expected_highlight &&
+        keyframes("tint") == expected_tint, "tint-only batch editing preserves each key's exact opacity and other fields");
+    require(model.undo() && model.current() == after_y, "one undo restores both tints");
+    update();
     return 0;
 }
 
@@ -2331,12 +2488,13 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-int run(bool smoke, fs::path open_path) {
+int run(bool smoke, fs::path open_path, command native_dialog_exit = command::none) {
+    const bool test_environment = smoke || native_dialog_exit != command::none;
     app_mgr app;
     app.msaa_samples = 8; // Request 8× before creating the window and its GPU context.
     if (!app.init_gpu(true)) {
         std::fprintf(stderr, "Cannot initialize SDL3 Vulkan: %s\n", SDL_GetError());
-        return smoke ? 77 : 1;
+        return test_environment ? 77 : 1;
     }
     std::optional<smoke_file_picker> picker;
     fs::path absolute_fixture;
@@ -2362,7 +2520,8 @@ int run(bool smoke, fs::path open_path) {
             throw std::runtime_error("Cannot write the form smoke fixture: " + describe(error));
         fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
     }
-    const auto settings = smoke ? picker->sandbox / "settings.json" : designer_settings_path();
+    const auto settings = smoke ? picker->sandbox / "settings.json" :
+        test_environment ? fs::path{} : designer_settings_path();
     if (smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
                   !ui::save_designer_options(settings, ui::designer_grid_settings{.spacing = 24}, ui::designer_theme::light)))
         throw std::runtime_error("Cannot seed custom workbench settings for the smoke test");
@@ -2381,7 +2540,7 @@ int run(bool smoke, fs::path open_path) {
     auto* win = app.create(strings.text("app.title", "VGUI UI Designer"), 1370, 850, 0, true);
     if (!win) {
         std::fprintf(stderr, "Cannot open the designer window: %s\n", SDL_GetError());
-        return smoke ? 77 : 1;
+        return test_environment ? 77 : 1;
     }
     SDL_SetWindowMinimumSize(win->window, 950, 560);
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
@@ -2408,7 +2567,7 @@ int run(bool smoke, fs::path open_path) {
     if (smoke) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
     designer editor(*win, app.vgdev, shell.get(), font.get(), app.vgctx, strings, settings, std::move(message_box));
     if (open_path.empty() || !editor.open(open_path)) {
-        if (smoke) return 1;
+        if (test_environment && !open_path.empty()) return 1;
         if (open_path.empty()) editor.new_page();
     }
     if (invalid_settings) {
@@ -2480,14 +2639,27 @@ int run(bool smoke, fs::path open_path) {
     };
     if (!smoke) {
         host.idle_delay_ms = 0; // Wait for SDL events instead of sleeping and polling every 8 ms.
-        while (!editor.quitting()) {
+        const auto tick = [&] {
             advance();
             if (!editor.quitting() && submitted_windows == 0) {
                 SDL_Event e;
                 // A worker can post a chooser result without waking SDL, so keep the wait bounded.
                 if (SDL_WaitEventTimeout(&e, editor.chooser_open() ? 16 : 50)) dispatch(e);
             }
+        };
+#ifdef _WIN32
+        if (native_dialog_exit != command::none) {
+            tick(); // Draw the page and service initial window messages.
+            editor.request(native_dialog_exit);
+            tick();
+            ui::cancel_native_dialog_and_close(win->window, tick, [&] { return editor.chooser_open(); }, [&] {
+                auto* status = find_widget(vgui_root(shell.get()), "designer.status");
+                return status && std::string_view(vgui_widget_get_text(status)) ==
+                    strings.text("file.chooser_cancelled", "File selection cancelled.");
+            });
         }
+#endif
+        while (!editor.quitting()) tick();
     } else {
         const ui::native_menu_input menus(*win, shell.get(), advance);
         const auto require = [](bool passed, const char* message) {
@@ -2585,6 +2757,15 @@ int main(int argc, char** argv) {
         const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
+#ifdef _WIN32
+        if (argc == 2) {
+            const std::string_view arg(argv[1]);
+            if (arg == "--smoke-native-open-exit" || arg == "--smoke-native-save-exit") {
+                return run(false, fs::path(VGUI_SOURCE_DIR) / "sample/res/gradient-keyframes.vgui.json",
+                    arg == "--smoke-native-open-exit" ? command::open : command::save_as);
+            }
+        }
+#endif
         if (argc > 2) {
             std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;
