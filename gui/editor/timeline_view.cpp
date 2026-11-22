@@ -759,6 +759,11 @@ namespace vgui_editor_kit {
 		selection_listener_ = std::move(listener);
 	}
 
+	void timeline_view::set_keyframe_reselect_listener(keyframe_reselect_listener listener)
+	{
+		keyframe_reselect_listener_ = std::move(listener);
+	}
+
 	void timeline_view::set_change_listener(change_listener listener)
 	{
 		change_listener_ = std::move(listener);
@@ -2160,6 +2165,8 @@ namespace vgui_editor_kit {
 				{
 					primary = hit;
 				}
+				if (!ctrl && !shift && next.size() == 1 && self->primary_ == hit && self->keyframe_reselect_listener_)
+					if (const auto* key = self->find_keyframe(hit)) self->keyframe_reselect_listener_(*key);
 				self->set_selection(next, primary);
 				if (self->is_selected(hit))
 				{

@@ -362,9 +362,6 @@ namespace vgui_editor_kit {
 		vgui_widget_set_min_size(bar_, 220, 44);
 		vgui_custom_set_draw(bar_, &gradient_editor::draw_bar, this);
 		vgui_custom_set_event(bar_, &gradient_editor::on_bar_event, this);
-		vgui_widget_set_multi_click_flags(bar_, VGUI_MULTI_CLICK_DOUBLE);	// 双击色条加色标
-		vgui_widget_set_tooltip(bar_,
-			"Drag stops; double-click the bar to add a stop");
 
 		stop_row_ = vgui_widget_add(root_, VGUI_PANEL, nullptr);
 		vgui_widget_set_layout(stop_row_, VGUI_LAYOUT_ROW);
@@ -476,6 +473,7 @@ namespace vgui_editor_kit {
 		};
 		selected_ = 0;
 		apply_ids();
+		apply_topology_lock();
 		sync_controls();
 	}
 
@@ -577,6 +575,18 @@ namespace vgui_editor_kit {
 		return enabled_;
 	}
 
+	void gradient_editor::set_topology_locked(bool locked)
+	{
+		if (topology_locked_ == locked)
+			return;
+		topology_locked_ = locked;
+		if (root_)
+		{
+			apply_topology_lock();
+			sync_topology_actions();
+		}
+	}
+
 	void gradient_editor::set_stop_limit(std::size_t limit)
 	{
 		stop_limit_ = std::clamp<std::size_t>(limit, 2, 64);
@@ -673,6 +683,28 @@ namespace vgui_editor_kit {
 			}
 	}
 
+	void gradient_editor::apply_topology_lock()
+	{
+		const bool unlocked = !topology_locked_;
+		vgui_widget_set_visible(add_, unlocked);
+		vgui_widget_set_visible(remove_, unlocked);
+		vgui_widget_set_visible(preset_row_, unlocked);
+		for (auto* preset : presets_)
+			vgui_widget_set_visible(preset, unlocked);
+		vgui_widget_set_multi_click_flags(bar_, unlocked ? VGUI_MULTI_CLICK_DOUBLE : VGUI_MULTI_CLICK_NONE);
+		vgui_widget_set_tooltip(bar_, unlocked
+			? "Drag stops; double-click the bar to add a stop" : "Drag stops");
+	}
+
+	void gradient_editor::sync_topology_actions()
+	{
+		const bool editable = enabled_ && !read_only_ && !topology_locked_;
+		vgui_widget_set_enabled(add_, editable && value_.stops.size() < stop_limit_);
+		vgui_widget_set_enabled(remove_, editable && value_.stops.size() > 2);
+		for (auto* preset : presets_)
+			vgui_widget_set_enabled(preset, editable);
+	}
+
 	void gradient_editor::sync_controls()
 	{
 		if (!root_)
@@ -690,16 +722,7 @@ namespace vgui_editor_kit {
 			if (has_stop)
 				time_spin_->set_value(display_offset(value_.stops[(std::size_t)selected_].t));
 		}
-		if (add_)
-			vgui_widget_set_enabled(add_, editable && value_.stops.size() < stop_limit_ ? 1 : 0);
-		if (remove_)
-			vgui_widget_set_enabled(remove_,
-				editable && value_.stops.size() > 2 ? 1 : 0);
-		for (std::size_t i = 0; i < preset_count(); ++i)
-		{
-			if (presets_[i])
-				vgui_widget_set_enabled(presets_[i], editable ? 1 : 0);
-		}
+		sync_topology_actions();
 		if (picker_ && picker_->widget())
 		{
 			vgui_widget_set_enabled(picker_->widget(), editable ? 1 : 0);
@@ -796,7 +819,7 @@ namespace vgui_editor_kit {
 
 	bool gradient_editor::commit_preset(std::size_t index)
 	{
-		if (read_only_ || !enabled_ || index >= preset_count())
+		if (topology_locked_ || read_only_ || !enabled_ || index >= preset_count())
 			return false;
 		gradient_value next;
 		if (!parse_value(kPresets[index].text, next))
@@ -823,7 +846,7 @@ namespace vgui_editor_kit {
 
 	bool gradient_editor::add_stop(float t)
 	{
-		if (read_only_ || !enabled_ || value_.stops.size() >= stop_limit_)
+		if (topology_locked_ || read_only_ || !enabled_ || value_.stops.size() >= stop_limit_)
 			return false;
 		t = std::clamp(t, 0.0f, 1.0f);
 		for (const gradient_stop& stop : value_.stops)
@@ -859,7 +882,7 @@ namespace vgui_editor_kit {
 
 	bool gradient_editor::remove_selected_stop()
 	{
-		if (read_only_ || !enabled_ || value_.stops.size() <= 2 ||
+		if (topology_locked_ || read_only_ || !enabled_ || value_.stops.size() <= 2 ||
 			selected_ < 0 || (std::size_t)selected_ >= value_.stops.size())
 			return false;
 		begin_gesture();
@@ -1012,7 +1035,7 @@ namespace vgui_editor_kit {
 			return 0;
 		if (self->read_only_ || !self->enabled_)
 			return 0;
-		if (event->type == VGUI_EVENT_DOUBLE_CLICK && event->button == 1)
+		if (!self->topology_locked_ && event->type == VGUI_EVENT_DOUBLE_CLICK && event->button == 1)
 		{
 			(void)self->add_stop(self->bar_t(event->x));
 			return 1;
@@ -1058,7 +1081,7 @@ namespace vgui_editor_kit {
 		if (!event || event->type != VGUI_EVENT_CLICK)
 			return;
 		auto* self = static_cast<gradient_editor*>(user);
-		if (!self || self->value_.stops.size() < 2)
+		if (!self || self->topology_locked_ || self->value_.stops.size() < 2)
 			return;
 		std::size_t best = 0;
 		float best_gap = -1.0f;

@@ -77,6 +77,9 @@ namespace vgui_editor_kit {
 		bool read_only() const noexcept;
 		void set_enabled(bool enabled);
 		bool enabled() const noexcept;
+		/* Disables user-style add/remove/preset actions without restricting
+		 * selection, offset and color edits, or silent set_value() updates. */
+		void set_topology_locked(bool locked);
 		/* Optional limit for adding stops interactively (2..64). */
 		void set_stop_limit(std::size_t limit);
 		/* Configure the optional stop list before build(). Labels may change live. */
@@ -130,6 +133,8 @@ namespace vgui_editor_kit {
 		};
 
 		void apply_ids();
+		void apply_topology_lock();
+		void sync_topology_actions();
 		void sync_controls();
 		void sync_stop_list();
 		float clamp_stop_offset(float t) const;
@@ -179,6 +184,7 @@ namespace vgui_editor_kit {
 		int selected_ = 0;
 		bool read_only_ = false;
 		bool enabled_ = true;
+		bool topology_locked_ = false;
 		bool syncing_ = false;
 		bool gesture_active_ = false;
 

@@ -1,6 +1,7 @@
 #pragma once
 
 // Internal UI designer model. No widget handles or platform dependencies.
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -35,18 +36,59 @@ inline constexpr std::size_t max_gradient_stops = 32;
 struct gradient_stop {
     float offset;
     std::string color;
+    bool operator==(const gradient_stop&) const = default;
 };
 bool decode_gradient_stops(std::string_view input, std::vector<gradient_stop>& out, std::string& error);
 std::string encode_gradient_stops(std::span<const gradient_stop> stops);
 
 inline constexpr std::size_t max_gradient_keyframes = 128;
 inline constexpr double gradient_keyframe_min_gap = 1e-6;
+
+enum class gradient_geometry_axis {
+    start_x, start_y, end_x, end_y, center_x, center_y, outer_x, outer_y, start_angle, end_angle,
+    inner_radius, outer_radius, count
+};
+
+namespace detail {
+inline constexpr double gradient_limit = 16.0;
+}
+
+struct gradient_geometry_channel {
+    std::string_view key, property;
+    double min, max;
+    std::string_view primary_kind;
+    bool also_sweep = false;
+
+    constexpr bool applies_to(std::string_view kind) const {
+        return kind == primary_kind || (also_sweep && kind == "sweep");
+    }
+};
+
+inline constexpr std::array gradient_geometry_channels{
+    gradient_geometry_channel{"start_x", "gradient_x0", -detail::gradient_limit, detail::gradient_limit, "linear"},
+    gradient_geometry_channel{"start_y", "gradient_y0", -detail::gradient_limit, detail::gradient_limit, "linear"},
+    gradient_geometry_channel{"end_x", "gradient_x1", -detail::gradient_limit, detail::gradient_limit, "linear"},
+    gradient_geometry_channel{"end_y", "gradient_y1", -detail::gradient_limit, detail::gradient_limit, "linear"},
+    gradient_geometry_channel{"center_x", "gradient_center_x", -detail::gradient_limit, detail::gradient_limit, "radial", true},
+    gradient_geometry_channel{"center_y", "gradient_center_y", -detail::gradient_limit, detail::gradient_limit, "radial", true},
+    gradient_geometry_channel{"outer_x", "gradient_outer_x", -detail::gradient_limit, detail::gradient_limit, "radial"},
+    gradient_geometry_channel{"outer_y", "gradient_outer_y", -detail::gradient_limit, detail::gradient_limit, "radial"},
+    gradient_geometry_channel{"start_angle", "gradient_angle0", 0, 360, "sweep"},
+    gradient_geometry_channel{"end_angle", "gradient_angle1", 0, 360, "sweep"},
+    gradient_geometry_channel{"inner_radius", "gradient_radius0", 0, detail::gradient_limit, "radial"},
+    gradient_geometry_channel{"outer_radius", "gradient_radius1", 0, detail::gradient_limit, "radial"},
+};
+static_assert(gradient_geometry_channels.size() == static_cast<std::size_t>(gradient_geometry_axis::count));
+
 struct gradient_keyframe {
     double offset = 0;
     double x = 0, y = 0; // Relative to the authored affine translation, in widget axes.
     std::string tint = "#FFFFFF";
     double opacity = 1;
     std::string interpolation = "linear"; // Outgoing segment.
+    // Missing channels use authored geometry; channels for other kinds stay dormant.
+    std::array<std::optional<double>, gradient_geometry_channels.size()> geometry{};
+    std::vector<gradient_stop> stops; // Empty uses the authored stops.
     bool operator==(const gradient_keyframe&) const = default;
 };
 bool decode_gradient_keyframes(std::string_view input, std::vector<gradient_keyframe>& out, std::string& error);
