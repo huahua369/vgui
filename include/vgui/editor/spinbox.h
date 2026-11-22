@@ -100,15 +100,21 @@ namespace vgui_editor_kit {
 		double step() const noexcept;
 
 		/* Silent programmatic update: clamps, rounds integers, refreshes the
-		 * edit text and clears any error. */
+		 * edit display and clears any error without changing the mixed state. */
 		void set_value(double value);
 		double value() const noexcept;
 		std::string value_text() const;
 
+		/* Mixed leaves the edit blank until the user edits it. The numeric
+		 * value remains available as the starting point for steps and drags.
+		 * Callers may set the edit's placeholder separately. */
+		void set_mixed(bool mixed);
+		bool mixed() const noexcept;
+
 		/* User-style edits.  They reject read-only/disabled controls, validate
 		 * the input and clamp to the range.  change_listener() fires whenever
-		 * the value changes; commit_listener() fires once for a completed edit
-		 * that actually changed the value. */
+		 * the numeric value changes; commit_listener() fires once for a completed
+		 * edit that changed the value or resolved a mixed state. */
 		bool commit_text(std::string text);
 		bool commit_value(double value);
 		void step_by(int steps);
@@ -151,6 +157,7 @@ namespace vgui_editor_kit {
 		double effective_step() const noexcept;
 		double normalize_value(double value, bool snap_to_step) const noexcept;
 		double canonicalize(double value) const;
+		bool commit_numeric(double value, bool explicit_value);
 		void notify_change();
 		void notify_commit();
 		void nudge(int direction, int mods);
@@ -176,6 +183,7 @@ namespace vgui_editor_kit {
 		bool buttons_visible_ = true;
 		value_type type_ = value_type::number;
 		double value_ = 0.0;
+		bool mixed_ = false;
 		bool has_range_ = false;
 		double min_value_ = 0.0;
 		double max_value_ = 0.0;
@@ -186,6 +194,7 @@ namespace vgui_editor_kit {
 		bool dragging_ = false;
 		float drag_start_x_ = 0.0f;
 		double drag_start_value_ = 0.0;
+		bool drag_start_mixed_ = false;
 		bool drag_changed_ = false;
 
 		value_listener change_listener_;

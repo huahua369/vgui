@@ -460,11 +460,26 @@ namespace vgui_editor_kit {
 		return format_number(value_);
 	}
 
+	void spinbox::set_mixed(bool mixed)
+	{
+		if (mixed_ == mixed)
+			return;
+		mixed_ = mixed;
+		error_.clear();
+		sync_text();
+		update_error_ui();
+	}
+
+	bool spinbox::mixed() const noexcept
+	{
+		return mixed_;
+	}
+
 	void spinbox::sync_text()
 	{
 		if (!edit_)
 			return;
-		const std::string text = value_text();
+		const std::string text = mixed_ ? std::string() : value_text();
 		const char* current = vgui_edit_get_text(edit_);
 		if (!current || text != current)
 			vgui_edit_set_text(edit_, text.c_str());
@@ -473,6 +488,9 @@ namespace vgui_editor_kit {
 
 	bool spinbox::commit_text(std::string text)
 	{
+		const std::string trimmed = trim_copy(std::move(text));
+		if (mixed_ && trimmed.empty())
+			return true;
 		if (!enabled_)
 		{
 			set_error("value is disabled");
@@ -484,7 +502,6 @@ namespace vgui_editor_kit {
 			return false;
 		}
 
-		const std::string trimmed = trim_copy(std::move(text));
 		double parsed = 0.0;
 		if (type_ == value_type::integer)
 		{
@@ -502,20 +519,7 @@ namespace vgui_editor_kit {
 			return false;
 		}
 
-		const double next = canonicalize(normalize_value(parsed, false));
-		error_.clear();
-		update_error_ui();
-		if (next == value_)
-		{
-			sync_text();
-			return true;
-		}
-
-		value_ = next;
-		sync_text();
-		notify_change();
-		notify_commit();
-		return true;
+		return commit_numeric(parsed, true);
 	}
 
 	bool spinbox::commit_value(double value)
@@ -530,6 +534,11 @@ namespace vgui_editor_kit {
 			set_error("value is read-only");
 			return false;
 		}
+		return commit_numeric(value, true);
+	}
+
+	bool spinbox::commit_numeric(double value, bool explicit_value)
+	{
 		if (!std::isfinite(value))
 		{
 			set_error("expected a number");
@@ -537,18 +546,20 @@ namespace vgui_editor_kit {
 		}
 
 		const double next = canonicalize(normalize_value(value, false));
+		const bool value_changed = next != value_;
+		const bool changed = value_changed || (mixed_ && explicit_value);
 		error_.clear();
 		update_error_ui();
-		if (next == value_)
+		if (changed)
 		{
-			sync_text();
-			return true;
+			value_ = next;
+			mixed_ = false;
 		}
-
-		value_ = next;
 		sync_text();
-		notify_change();
-		notify_commit();
+		if (value_changed)
+			notify_change();
+		if (changed)
+			notify_commit();
 		return true;
 	}
 
@@ -566,7 +577,7 @@ namespace vgui_editor_kit {
 			if (delta == 0.0)
 				delta = steps > 0 ? 1.0 : -1.0;
 		}
-		commit_value(value_ + delta);
+		commit_numeric(value_ + delta, false);
 	}
 
 	void spinbox::nudge(int direction, int mods)
@@ -587,7 +598,7 @@ namespace vgui_editor_kit {
 			if (delta == 0.0)
 				delta = direction > 0 ? 1.0 : -1.0;
 		}
-		commit_value(value_ + delta);
+		commit_numeric(value_ + delta, false);
 	}
 
 	void spinbox::set_read_only(bool read_only)
@@ -722,9 +733,13 @@ namespace vgui_editor_kit {
 		dragging_ = true;
 		drag_start_x_ = event.x;
 		drag_start_value_ = value_;
+		drag_start_mixed_ = mixed_;
 		drag_changed_ = false;
 		error_.clear();
 		update_error_ui();
+		// The label doesn't receive key events; let its edit handle Escape.
+		if (drag_start_mixed_)
+			focus();
 	}
 
 	void spinbox::update_drag(const vgui_event& event)
@@ -744,13 +759,15 @@ namespace vgui_editor_kit {
 		if (mods & VGUI_MOD_ALT)
 			step *= 10.0;
 
-		double next = drag_start_value_ +
-			(double)(event.x - drag_start_x_) * step;
-		next = canonicalize(normalize_value(next, true));
+		const double dx = (double)(event.x - drag_start_x_);
+		// Don't snap an off-step representative when there's no displacement.
+		const double next = drag_start_mixed_ && dx == 0.0 ? drag_start_value_
+			: canonicalize(normalize_value(drag_start_value_ + dx * step, true));
 		if (next == value_)
 			return;
 
 		value_ = next;
+		mixed_ = false;
 		drag_changed_ = true;
 		sync_text();
 		notify_change();
@@ -761,7 +778,8 @@ namespace vgui_editor_kit {
 		if (!dragging_)
 			return;
 		dragging_ = false;
-		const bool changed = drag_changed_ && value_ != drag_start_value_;
+		const bool changed = drag_changed_ &&
+			(drag_start_mixed_ || value_ != drag_start_value_);
 		drag_changed_ = false;
 		if (changed)
 			notify_commit();
@@ -773,11 +791,14 @@ namespace vgui_editor_kit {
 			return;
 		dragging_ = false;
 		drag_changed_ = false;
-		if (value_ != drag_start_value_)
+		const bool value_changed = value_ != drag_start_value_;
+		if (value_changed || drag_start_mixed_)
 		{
 			value_ = drag_start_value_;
+			mixed_ = drag_start_mixed_;
 			sync_text();
-			notify_change();
+			if (value_changed)
+				notify_change();
 		}
 	}
 
@@ -803,6 +824,11 @@ namespace vgui_editor_kit {
 			self->end_drag();
 			return;
 		}
+		if (event->type == VGUI_EVENT_CANCEL && self->drag_start_mixed_)
+		{
+			self->cancel_drag();
+			return;
+		}
 		if (event->type == VGUI_EVENT_CLICK && event->button == 1)
 			self->focus();
 	}
@@ -814,7 +840,8 @@ namespace vgui_editor_kit {
 		if (!self || !event || widget != self->edit_)
 			return;
 
-		if (event->type == VGUI_EVENT_SUBMIT)
+		const bool mixed_drag = self->dragging_ && self->drag_start_mixed_;
+		if (event->type == VGUI_EVENT_SUBMIT && !mixed_drag)
 		{
 			const char* text = vgui_edit_get_text(widget);
 			self->commit_text(text ? text : "");
@@ -825,13 +852,16 @@ namespace vgui_editor_kit {
 			{
 				self->error_.clear();
 				self->update_error_ui();
-				self->sync_text();
+				if (mixed_drag)
+					self->cancel_drag();
+				else
+					self->sync_text();
 			}
-			else if (event->key == VGUI_KEY_UP)
+			else if (!mixed_drag && event->key == VGUI_KEY_UP)
 			{
 				self->nudge(1, event->mods);
 			}
-			else if (event->key == VGUI_KEY_DOWN)
+			else if (!mixed_drag && event->key == VGUI_KEY_DOWN)
 			{
 				self->nudge(-1, event->mods);
 			}
