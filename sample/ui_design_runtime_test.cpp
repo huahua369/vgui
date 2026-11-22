@@ -1427,7 +1427,7 @@ void test_gradient_keyframe_geometry() {
         vgui_draw(ctx.get(), cb.get(), vg.get());
         check(fills.size() == 3, "draw one native brush for each keyframed gradient");
     };
-    const auto seek = [&](double seconds, const ui::linear_gradient_preview* draft = nullptr) {
+    const auto seek = [&](double seconds, const ui::gradient_shape_preview* draft = nullptr) {
         rt.seek_animations(seconds, false, draft);
         draw();
     };
@@ -1483,7 +1483,7 @@ void test_gradient_keyframe_geometry() {
         "at the next key the inner radius inherits the static value while the outer radius stays keyed");
     const auto terminal = fill(VG_PATTERN_TYPE_LINEAR);
     const auto radial = fill(VG_PATTERN_TYPE_RADIAL).cp[0];
-    ui::linear_gradient_preview draft{"linear", {.25f, .125f, .625f, .75f}};
+    ui::gradient_shape_preview draft{"linear", {.25f, .125f, .625f, .75f}};
     seek(1, &draft);
     const auto& transient = fill(VG_PATTERN_TYPE_LINEAR);
     check(point_is(transient.cp[0], 60, 30, 90, 55) && transient.colors[0] == terminal.colors[0] &&
@@ -1494,7 +1494,7 @@ void test_gradient_keyframe_geometry() {
     const auto revision = vgui_context_paint_revision(ctx.get());
     rt.seek_animations(1, false, &draft);
     check(vgui_context_paint_revision(ctx.get()) == revision, "an unchanged draft does not invalidate paint");
-    draft.endpoints[2] = .75f;
+    draft.geometry[std::size_t(ui::gradient_geometry_axis::end_x)] = .75f;
     seek(1, &draft);
     check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 60, 30, 100, 55), "a second move updates the same sampled time");
     seek(1);
@@ -1503,6 +1503,27 @@ void test_gradient_keyframe_geometry() {
     rt.advance_animations(0);
     draw();
     check(fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0], "normal playback does not retain a draft at the clip end");
+
+    using axis = ui::gradient_geometry_axis;
+    const auto radial_base = fill(VG_PATTERN_TYPE_RADIAL);
+    ui::gradient_shape_preview radial_draft{"radial", {}};
+    const auto override = [&](axis channel, float value) { radial_draft.geometry[std::size_t(channel)] = value; };
+    override(axis::center_x, .375f);
+    override(axis::center_y, .25f);
+    override(axis::outer_x, .625f);
+    override(axis::outer_y, .5f);
+    override(axis::inner_radius, .1875f);
+    override(axis::outer_radius, .875f);
+    override(axis::start_x, 12.f); // Aliases the same descriptor member but is inactive here.
+    seek(1, &radial_draft);
+    const auto& radial_live = fill(VG_PATTERN_TYPE_RADIAL);
+    check(point_is(radial_live.cp[0], 40, 70, 7.5f) && point_is(radial_live.cp[1], 60, 80, 35) &&
+        radial_live.count == radial_base.count && radial_live.colors[0] == radial_base.colors[0] &&
+        fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0],
+        "radial draft changes both centers and both short-side radii, without altering other paint");
+    seek(1);
+    check(fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[1] == radial_base.cp[1],
+        "cancel restores both circles without moving the playhead");
     expect_fallback();
 }
 

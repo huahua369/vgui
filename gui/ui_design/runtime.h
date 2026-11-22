@@ -45,9 +45,10 @@ struct viewport {
 
 struct pixel_rect { float x = 0, y = 0, width = 0, height = 0; };
 
-struct linear_gradient_preview {
+using gradient_geometry_draft = std::array<std::optional<float>, gradient_geometry_channels.size()>;
+struct gradient_shape_preview {
     std::string_view node;
-    std::array<float, 4> endpoints; // x0, y0, x1, y1 in authored widget axes.
+    gradient_geometry_draft geometry; // In document geometry channel order.
 };
 
 struct node_layout {
@@ -113,10 +114,10 @@ public:
     animation_span animation_timing() const;
     // Include the terminal key when explicitly inspecting a keyframed loop's
     // boundary. Normal playback and seeking still wrap to the next cycle.
-    // An optional editor draft replaces only the endpoints of a linear keyframe
-    // sample. Seeking again without it restores the normal sampled paint.
+    // An optional editor draft replaces only the active shape channels of a
+    // keyframed sample. Seeking without it restores the normal sampled paint.
     void seek_animations(double seconds, bool inspect_loop_end = false,
-        const linear_gradient_preview* preview = nullptr);
+        const gradient_shape_preview* preview = nullptr);
 
 private:
     struct mounted_tree;

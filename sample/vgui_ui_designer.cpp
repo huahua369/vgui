@@ -2525,6 +2525,68 @@ int smoke_gradient_keyframes() {
     return 0;
 }
 
+struct native_keyframe_input {
+    os_window& win;
+    vgui_context* shell;
+    ui::designer_preview& preview;
+    const std::function<void()>& frame;
+    void (*require)(bool, std::string_view);
+
+    vgui_widget* widget(const char* id) const {
+        auto* w = find_widget(preview.widget(), id);
+        require(w != nullptr, id);
+        return w;
+    }
+    static ui::pixel_rect rect(vgui_widget* w) {
+        ui::pixel_rect r;
+        vgui_widget_get_rect(w, &r.x, &r.y, &r.width, &r.height);
+        return r;
+    }
+    void push(SDL_Event e) const { require(SDL_PushEvent(&e), "cannot queue SDL input"); }
+    void button(bool down, glm::vec2 px) const {
+        const auto p = px / win.pixel_ratio();
+        SDL_Event e{};
+        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
+        e.button.windowID = win.id;
+        e.button.button = SDL_BUTTON_LEFT;
+        e.button.down = down;
+        e.button.clicks = 1;
+        e.button.x = p.x;
+        e.button.y = p.y;
+        push(e);
+    }
+    void motion(glm::vec2 from, glm::vec2 to) const {
+        const auto p = to / win.pixel_ratio(), rel = (to - from) / win.pixel_ratio();
+        SDL_Event e{};
+        e.type = SDL_EVENT_MOUSE_MOTION;
+        e.motion.windowID = win.id;
+        e.motion.state = SDL_BUTTON_LMASK;
+        e.motion.x = p.x;
+        e.motion.y = p.y;
+        e.motion.xrel = rel.x;
+        e.motion.yrel = rel.y;
+        push(e);
+    }
+    void click_at(vgui_widget* w, glm::vec2 p) const {
+        require(vgui_hit_test(shell, p.x, p.y) == w, "click does not hit the intended control");
+        button(true, p);
+        button(false, p);
+        frame();
+    }
+    void click(const char* id) const {
+        auto* w = widget(id);
+        const auto r = rect(w);
+        click_at(w, {r.x + r.width / 2, r.y + r.height / 2});
+    }
+    glm::vec2 fitted_middle_key(vgui_widget* tracks) const {
+        const auto r = rect(tracks);
+        const float scale = vgui_context_get_ui_scale(shell);
+        // Fit leaves an 8px leading gutter and uses width minus the header and 24px for the four-second ruler.
+        const float header = std::clamp((r.width - 2) * .28f, 92 * scale, 150 * scale);
+        return {r.x + 1 + header + 8 + (r.width - header - 24) / 2, r.y + 1 + 37 * scale};
+    }
+};
+
 void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, designer& editor,
                                     const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -2571,52 +2633,15 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
             !history.dirty() && !history.can_undo() && !history.can_redo(), message);
     };
     auto& preview = editor.preview();
-    const auto widget = [&](const char* id) {
-        auto* w = find_widget(preview.widget(), id);
-        require(w != nullptr, id);
-        return w;
-    };
-    const auto rect = [](vgui_widget* w) {
-        ui::pixel_rect r;
-        vgui_widget_get_rect(w, &r.x, &r.y, &r.width, &r.height);
-        return r;
-    };
-    const auto push = [&](SDL_Event e) { require(SDL_PushEvent(&e), "cannot queue SDL input"); };
-    const auto button = [&](bool down, glm::vec2 px) {
-        const auto p = px / win.pixel_ratio();
-        SDL_Event e{};
-        e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
-        e.button.windowID = win.id;
-        e.button.button = SDL_BUTTON_LEFT;
-        e.button.down = down;
-        e.button.clicks = 1;
-        e.button.x = p.x;
-        e.button.y = p.y;
-        push(e);
-    };
-    const auto click_at = [&](vgui_widget* w, glm::vec2 p) {
-        require(vgui_hit_test(shell, p.x, p.y) == w, "click does not hit the intended control");
-        button(true, p);
-        button(false, p);
-        frame();
-    };
-    const auto click = [&](const char* id) {
-        auto* w = widget(id);
-        const auto r = rect(w);
-        click_at(w, {r.x + r.width / 2, r.y + r.height / 2});
-    };
-    click("designer.preview.timeline");
-    click("designer.timeline.fit");
-    auto* tracks = widget("designer.timeline.tracks");
-    const auto r = rect(tracks);
-    const float scale = vgui_context_get_ui_scale(shell);
-    // Fit leaves an 8px leading gutter and uses width minus the header and 24px for the four-second ruler.
-    const float header = std::clamp((r.width - 2) * .28f, 92 * scale, 150 * scale);
-    const glm::vec2 key_at{r.x + 1 + header + 8 + (r.width - header - 24) / 2, r.y + 1 + 37 * scale};
-    click_at(tracks, key_at);
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    input.click("designer.preview.timeline");
+    input.click("designer.timeline.fit");
+    auto* tracks = input.widget("designer.timeline.tracks");
+    const auto key_at = input.fitted_middle_key(tracks);
+    input.click_at(tracks, key_at);
     const auto view = preview.capture_view();
     require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
-        vgui_widget_get_enabled(widget("designer.timeline.geometry")) && editor.selection() != "linear",
+        vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() != "linear",
         "select the middle key and pause Run at its exact time with a different outline selection");
     unchanged("selecting a timeline key edited the document");
 
@@ -2634,37 +2659,26 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
         glm::vec2{box.x, box.y} * board_scale + widget_pixels * painted_start;
     const glm::vec2 start{std::round(center.x) + 3, std::round(center.y)}; // Deliberately grab off-center.
     const auto finish = start + glm::vec2{std::round(widget_pixels.x * float(xx) * .22f), 0};
-    require(vgui_hit_test(shell, start.x, start.y) == widget("designer.preview.canvas") && finish.x - start.x > 10,
+    require(vgui_hit_test(shell, start.x, start.y) == input.widget("designer.preview.canvas") && finish.x - start.x > 10,
         "projected start handle is not reachable on the canvas");
-    const auto motion = [&](glm::vec2 px) {
-        const auto p = px / win.pixel_ratio(), rel = (px - start) / win.pixel_ratio();
-        SDL_Event e{};
-        e.type = SDL_EVENT_MOUSE_MOTION;
-        e.motion.windowID = win.id;
-        e.motion.state = SDL_BUTTON_LMASK;
-        e.motion.x = p.x;
-        e.motion.y = p.y;
-        e.motion.xrel = rel.x;
-        e.motion.yrel = rel.y;
-        push(e);
-    };
     const auto move = [&](glm::vec2 to) {
-        button(true, start);
+        input.button(true, start);
         frame();
         unchanged("press changed the document or history");
-        motion(to);
+        input.motion(start, to);
         frame();
         unchanged("motion edited the document before release");
     };
-    const auto release = [&](glm::vec2 at) { button(false, at); frame(); };
-    const auto scrubber = rect(widget("designer.preview.animation.seek"));
-    click_at(widget("designer.preview.animation.seek"),
+    const auto release = [&](glm::vec2 at) { input.button(false, at); frame(); };
+    auto* seek = input.widget("designer.preview.animation.seek");
+    const auto scrubber = input.rect(seek);
+    input.click_at(seek,
         {scrubber.x + scrubber.width * .25f, scrubber.y + scrubber.height / 2});
     require(preview.capture_view().animation.time != 2.0, "scrub away from the selected key");
     move(finish);
     release(finish);
     unchanged("a handle edited the key while the playhead was away");
-    click_at(tracks, key_at);
+    input.click_at(tracks, key_at);
     const auto paused = preview.capture_view().animation;
     require(paused.time == 2.0 && !paused.playing, "reselecting the same key returns to its exact pose");
 
@@ -2683,7 +2697,7 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
     SDL_Event lost{};
     lost.type = SDL_EVENT_WINDOW_FOCUS_LOST;
     lost.window.windowID = win.id;
-    push(lost);
+    input.push(lost);
     frame();
     release(finish);
     unchanged("focus loss did not cancel the drag through mouse-up");
@@ -2709,6 +2723,177 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
     menus.activate(menus.open(1), 1); // Edit > Redo
     require(history.current() == after && history.dirty() && history.can_undo() && !history.can_redo(),
         "redo did not restore the endpoint edit exactly");
+}
+
+void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer& editor,
+                                  const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe radial drag: " + std::string(message));
+    };
+    constexpr auto track_property = "gradient_animation_keyframes";
+    using axis = ui::gradient_geometry_axis;
+    constexpr auto center_x = std::size_t(axis::center_x), center_y = std::size_t(axis::center_y);
+    constexpr auto outer_x = std::size_t(axis::outer_x), outer_y = std::size_t(axis::outer_y);
+    constexpr auto inner_radius = std::size_t(axis::inner_radius), outer_radius = std::size_t(axis::outer_radius);
+    const auto read_keys = [&](const ui::document& doc) {
+        std::vector<ui::gradient_keyframe> keys;
+        std::string error;
+        const auto& props = doc.nodes.at("radial").props;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(props.at(track_property)), keys, error), "decode radial track");
+        return keys;
+    };
+    ui::document fixture;
+    require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
+    for (const auto* node : {"linear", "sweep"}) fixture.nodes.at(node).props.erase("gradient_animation");
+    auto keys = read_keys(fixture);
+    require(keys.size() == 3 && keys[1].offset == .5, "expected the middle radial key");
+    // The inner circle is outside the outer circle's paintable focal range.
+    // Target the authored geometry, not the focal position clamped by OVG.
+    constexpr glm::dvec2 inner{.35, .63}, outer{.62, .42};
+    constexpr double r_inner = .23, r_outer = .48;
+    constexpr double xx = .82, yx = .32, xy = .21, yy = .81, tx = .03, ty = .09;
+    auto& middle = keys[1];
+    middle.x = .10;
+    middle.y = -.16;
+    middle.geometry[center_x] = inner.x;
+    middle.geometry[center_y].reset();
+    middle.geometry[outer_x] = outer.x;
+    middle.geometry[outer_y] = outer.y;
+    middle.geometry[inner_radius].reset();
+    middle.geometry[outer_radius] = r_outer;
+    auto& props = fixture.nodes.at("radial").props;
+    props["gradient_center_y"] = inner.y;
+    props["gradient_radius0"] = r_inner;
+    props["gradient_ellipse"] = true;
+    props["gradient_affine_xx"] = xx;
+    props["gradient_affine_yx"] = yx;
+    props["gradient_affine_xy"] = xy;
+    props["gradient_affine_yy"] = yy;
+    props["gradient_affine_tx"] = tx;
+    props["gradient_affine_ty"] = ty;
+    props[track_property] = ui::encode_gradient_keyframes(keys);
+    const auto file = sandbox / "radial-handle-motion.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "open the isolated radial track");
+    frame();
+
+    const auto& history = editor.history();
+    const auto before = history.current();
+    const auto initial_revision = history.revision();
+    const std::string outline_selection(editor.selection());
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    input.click("designer.preview.timeline");
+    input.click("designer.timeline.fit");
+    auto* tracks = input.widget("designer.timeline.tracks");
+    const auto select_middle = [&] {
+        input.click_at(tracks, input.fitted_middle_key(tracks));
+        const auto view = preview.capture_view();
+        require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
+            vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline_selection &&
+            outline_selection != "radial", "select the middle radial key and pause at its exact time without changing the outline");
+    };
+    select_middle();
+    require(history.current() == before && history.revision() == initial_revision &&
+        !history.dirty() && !history.can_undo() && !history.can_redo(), "selecting the key edited the document");
+
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
+    const auto node = std::ranges::find(layout->nodes, "radial", &ui::node_layout::id);
+    require(node != layout->nodes.end() && node->visible, "radial gradient is not on the board");
+    const auto& box = node->rect_px;
+    require(box.width > box.height && box.height > 0, "radial fixture needs a non-square widget");
+    const glm::dvec2 board_scale{double(board->width) / layout->pixel_width, double(board->height) / layout->pixel_height};
+    const auto shell_size = board_scale * glm::dvec2{box.width, box.height};
+    const glm::dmat2 affine{xx, yx, xy, yy};
+    const auto origin = glm::dvec2{board->x, board->y} + board_scale * glm::dvec2{box.x, box.y} +
+        shell_size * glm::dvec2{tx + middle.x, ty + middle.y};
+    const auto project_delta = [&](glm::dvec2 delta) { return shell_size * (affine * delta); };
+    const auto inner_at = origin + project_delta({2 * inner.x - outer.x, inner.y});
+    const auto outer_at = origin + project_delta(outer);
+    // Width is the long side. One authored radius unit spans the widget's height
+    // in paint pixels, stretched 2× on X before applying the affine.
+    const auto radius_axis = project_delta({2.0 * box.height / box.width, 0});
+    struct drag_case { const char* name; std::size_t channel; glm::dvec2 anchor; glm::vec2 motion; };
+    const drag_case cases[]{
+        {"inner center", center_x, inner_at, {25, -16}},
+        {"outer center", outer_x, outer_at, {-20, 12}},
+        {"inner radius", inner_radius, inner_at - r_inner * radius_axis, {-18, 17}},
+        {"outer radius", outer_radius, outer_at + r_outer * radius_axis, {22, -19}},
+    };
+    for (std::size_t i = 0; i < std::size(cases); ++i)
+        for (std::size_t j = 0; j < i; ++j)
+            require(glm::length(cases[i].anchor - cases[j].anchor) > 20, "authored knobs must be well separated");
+
+    auto* canvas = input.widget("designer.preview.canvas");
+    const ui::native_menu_input menus(win, shell, frame);
+    for (const auto& test : cases) {
+        const auto check = [&](bool passed, std::string_view message) {
+            if (!passed) require(false, std::string(test.name) + ": " + std::string(message));
+        };
+        const auto revision = history.revision();
+        const bool had_redo = history.can_redo();
+        const auto unchanged = [&](std::string_view message) {
+            check(history.current() == before && history.revision() == revision &&
+                !history.dirty() && !history.can_undo() && history.can_redo() == had_redo, message);
+        };
+        const auto start = glm::round(glm::vec2(test.anchor)) + glm::vec2{2, -2}; // Preserve a nonzero grab offset.
+        const auto finish = start + test.motion;
+        check(vgui_hit_test(shell, start.x, start.y) == canvas, "authored knob is not reachable on the canvas");
+        const auto move = [&](glm::vec2 to) {
+            input.button(true, start);
+            frame();
+            unchanged("press changed the document or history");
+            input.motion(start, to);
+            frame();
+            unchanged("motion edited the document before release");
+        };
+        const auto release = [&](glm::vec2 at) { input.button(false, at); frame(); };
+        if (test.channel == inner_radius) {
+            const auto sub_slop = start + glm::vec2{-2, 0};
+            move(sub_slop);
+            release(sub_slop);
+            unchanged("motion below the three-pixel slop created an edit");
+            move(finish);
+            menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+            release(finish);
+            unchanged("Escape did not cancel the draft through mouse-up");
+        }
+        move(finish);
+        release(finish);
+        check(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+            "release did not create exactly one transaction");
+        check(editor.selection() == outline_selection, "drag changed the outline selection");
+        const auto edited = read_keys(history.current());
+        check(edited.size() == keys.size(), "drag changed the number of keys");
+        auto expected_keys = keys;
+        const auto expect_axis = [&](std::size_t channel, double value) {
+            const auto actual = edited[1].geometry[channel];
+            check(actual && std::abs(*actual - value) < .001, "edited channel did not follow the pointer delta in authored units");
+            expected_keys[1].geometry[channel] = actual;
+        };
+        const auto delta = glm::dvec2(test.motion);
+        if (test.channel == center_x || test.channel == outer_x) {
+            const auto paint = glm::inverse(affine) * (delta / shell_size);
+            const bool is_inner = test.channel == center_x;
+            const auto center = is_inner ? inner : outer;
+            expect_axis(test.channel, center.x + paint.x / (is_inner ? 2 : 1));
+            expect_axis(test.channel + 1, center.y + paint.y);
+        } else {
+            const bool is_inner = test.channel == inner_radius;
+            // The diagonal motion has a transverse component: only its screen-space
+            // projection along the signed radius axis changes the radius.
+            const auto signed_axis = is_inner ? -radius_axis : radius_axis;
+            expect_axis(test.channel, (is_inner ? r_inner : r_outer) + glm::dot(delta, signed_axis) / glm::dot(signed_axis, signed_axis));
+        }
+        auto expected = before;
+        expected.nodes.at("radial").props[track_property] = ui::encode_gradient_keyframes(expected_keys);
+        check(history.current() == expected, "drag changed unrelated channels, keys, or document properties");
+        menus.activate(menus.open(1), 0); // Edit > Undo
+        check(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+            "one undo did not restore the original document (including inherited channels)");
+        select_middle();
+    }
 }
 
 void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& editor,
@@ -2943,6 +3128,7 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         ui::export_json_delivery(saved, sandbox, radial_single) && ui::read_json_delivery(radial_single, embedded) && embedded.design == saved,
         "both delivery formats must preserve the radius overrides");
     exercise_keyframe_endpoint_drag(win, shell, editor, frame, sandbox);
+    exercise_keyframe_radial_drag(win, shell, editor, frame, sandbox);
 }
 
 fs::path designer_settings_path() {
@@ -3210,7 +3396,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery and endpoint dragging passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery and linear/radial handle dragging passed");
     }
     app.wait_gpu();
     return 0;

@@ -12,14 +12,16 @@ namespace vgui::ui_design {
 
 using gradient_timeline_commit = std::function<bool(std::uint64_t, const std::vector<edit>&)>;
 
-struct linear_keyframe {
+using keyframe_shape = std::array<double, gradient_geometry_channels.size()>;
+
+struct shape_keyframe {
     std::uint64_t revision, key;
     std::string node;
     double time;
-    bool terminal;
-    std::array<double, 4> endpoints;
+    bool terminal, radial, ellipse;
+    keyframe_shape shape;
     std::array<float, 6> affine; // XX, YX, XY, YY, TX, TY, including the key's translation.
-    bool operator==(const linear_keyframe&) const = default;
+    bool operator==(const shape_keyframe&) const = default;
 };
 
 // A document projection. Timeline gestures edit one or more gradient nodes in
@@ -33,8 +35,8 @@ public:
     void set_visible(bool);
     void sync(const document&, std::uint64_t revision, std::string_view selected);
     void show_time(double);
-    std::optional<linear_keyframe> selected_linear_key() const;
-    void edit_endpoints(const linear_keyframe&, const std::array<double, 4>&);
+    std::optional<shape_keyframe> selected_shape_key() const;
+    void edit_shape(const shape_keyframe&, const keyframe_shape&);
     void refresh_language();
 
 private:

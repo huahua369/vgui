@@ -37,6 +37,7 @@ struct gradient_track {
     bool loop = true;
     std::vector<gradient_keyframe> frames;
     std::string kind;
+    bool ellipse = false;
     std::array<float, 4> matrix{};
     std::array<double, gradient_geometry_channels.size()> authored{};
     std::vector<gradient_stop> authored_stops;
@@ -368,6 +369,7 @@ struct designer_gradient_timeline::impl {
                     std::get<double>(property(item, "gradient_affine_ty")),
                     std::get<bool>(property(item, "gradient_animation_loop")), {},
                     std::get<std::string>(property(item, "gradient_kind"))};
+                layer.ellipse = std::get<bool>(property(item, "gradient_ellipse"));
                 constexpr std::string_view matrix[] = {"gradient_affine_xx", "gradient_affine_yx",
                     "gradient_affine_xy", "gradient_affine_yy"};
                 for (std::size_t i = 0; i < layer.matrix.size(); ++i)
@@ -719,7 +721,7 @@ struct designer_gradient_timeline::impl {
         vgui_popup_open_anchored(shell, picker.widget(), ax, ay, aw, ah, 4);
     }
 
-    std::optional<linear_keyframe> selected_linear_key() const {
+    std::optional<shape_keyframe> selected_shape_key() const {
         if (!visible || !revision || rejected || timeline.selection_ids().size() != 1) return {};
         const auto key = timeline.primary_selection();
         id lane = 0;
@@ -727,21 +729,23 @@ struct designer_gradient_timeline::impl {
         const auto pose = poses.find(key);
         if (!mark || pose == poses.end()) return {};
         const auto& layer = model.at(tracks.at(lane));
-        if (layer.kind != "linear") return {};
+        const bool radial = layer.kind == "radial";
+        if (!radial && layer.kind != "linear") return {};
         const auto& frame = pose->second;
         const auto [xx, yx, xy, yy] = layer.matrix;
-        linear_keyframe result{*revision, key, layer.node, mark->time, frame.offset == 1, {},
+        shape_keyframe result{*revision, key, layer.node, mark->time, frame.offset == 1, radial, radial && layer.ellipse, {},
             {xx, yx, xy, yy, static_cast<float>(layer.tx + frame.x), static_cast<float>(layer.ty + frame.y)}};
-        for (std::size_t i = 0; i < result.endpoints.size(); ++i)
-            result.endpoints[i] = frame.geometry[i].value_or(layer.authored[i]);
+        for (std::size_t i = 0; i < result.shape.size(); ++i)
+            if (gradient_geometry_channels[i].applies_to(layer.kind))
+                result.shape[i] = frame.geometry[i].value_or(layer.authored[i]);
         return result;
     }
 
-    void edit_endpoints(const linear_keyframe& key, const std::array<double, 4>& endpoints) {
-        if (selected_linear_key() != key) return;
+    void edit_shape(const shape_keyframe& key, const keyframe_shape& shape) {
+        if (selected_shape_key() != key) return;
         edit_pose([&](auto& frame) {
-            for (std::size_t i = 0; i < endpoints.size(); ++i)
-                if (endpoints[i] != key.endpoints[i]) frame.geometry[i] = endpoints[i];
+            for (std::size_t i = 0; i < shape.size(); ++i)
+                if (shape[i] != key.shape[i]) frame.geometry[i] = shape[i];
         });
     }
 
@@ -926,9 +930,9 @@ void designer_gradient_timeline::show_time(double time) {
     p_->timeline.set_playhead(time);
     p_->updating = false;
 }
-std::optional<linear_keyframe> designer_gradient_timeline::selected_linear_key() const { return p_->selected_linear_key(); }
-void designer_gradient_timeline::edit_endpoints(const linear_keyframe& key, const std::array<double, 4>& endpoints) {
-    p_->edit_endpoints(key, endpoints);
+std::optional<shape_keyframe> designer_gradient_timeline::selected_shape_key() const { return p_->selected_shape_key(); }
+void designer_gradient_timeline::edit_shape(const shape_keyframe& key, const keyframe_shape& shape) {
+    p_->edit_shape(key, shape);
 }
 void designer_gradient_timeline::refresh_language() { p_->refresh_language(); }
 
