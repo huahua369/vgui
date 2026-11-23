@@ -25,6 +25,7 @@ struct shape_keyframe {
     bool terminal, ellipse;
     keyframe_shape shape;
     std::array<float, 6> affine; // XX, YX, XY, YY, TX, TY, including the key's translation.
+    std::vector<gradient_stop> stops; // Effective palette of a linear key, before multiply tint.
     bool operator==(const shape_keyframe&) const = default;
 };
 
@@ -46,6 +47,7 @@ public:
     void show_time(double);
     std::optional<shape_keyframe> selected_shape_key() const;
     void edit_shape(const shape_keyframe&, const keyframe_shape&);
+    void edit_stop_offset(const shape_keyframe&, std::size_t index, float offset);
     void refresh_language();
 
 private:

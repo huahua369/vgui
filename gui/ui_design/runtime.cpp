@@ -231,7 +231,7 @@ struct gradient_animation {
     std::array<bool, gradient_geometry_channels.size()> active_geometry{};
     double elapsed = 0;
     bool sampled = false;
-    std::optional<gradient_geometry_draft> draft;
+    std::optional<gradient_keyframe_draft> draft;
 
     void resolve_keys(std::span<const gradient_keyframe> decoded, const gradient_geometry_values& authored) {
         if (decoded.empty()) return;
@@ -257,14 +257,14 @@ struct gradient_animation {
         sample(loop ? loop_time(elapsed + loop_time(delta)) : std::min(elapsed + delta, duration));
     }
 
-    void seek(double seconds, bool inspect_loop_end, std::optional<gradient_geometry_draft> preview) {
+    void seek(double seconds, bool inspect_loop_end, std::optional<gradient_keyframe_draft> preview) {
         auto local = loop ? loop_time(seconds) : std::min(seconds, duration);
         if (inspect_loop_end && loop && mode == effect::keyframes && seconds > 0 && local == 0)
             local = duration;
         sample(local, std::move(preview));
     }
 
-    void sample(double next, std::optional<gradient_geometry_draft> preview = {}) {
+    void sample(double next, std::optional<gradient_keyframe_draft> preview = {}) {
         if (mode != effect::keyframes) preview.reset();
         if (sampled && next == elapsed && draft == preview) return;
         elapsed = next;
@@ -282,11 +282,18 @@ struct gradient_animation {
             for (std::size_t i = 0; i < pose.geometry.size(); ++i) {
                 if (!active_geometry[i]) continue;
                 const float sampled = static_cast<float>(pose.geometry[i]);
-                paint.*gradient_geometry_members[i] = draft ? (*draft)[i].value_or(sampled) : sampled;
+                paint.*gradient_geometry_members[i] = draft ? draft->geometry[i].value_or(sampled) : sampled;
             }
             for (std::size_t i = 0; i < stops.size(); ++i) {
                 frame[i] = sample_gradient_stop(key, base_palette, i);
                 frame[i].color = tint_color(frame[i].color, pose);
+            }
+            if (draft && draft->stop && paint.kind == VGUI_GRADIENT_LINEAR) {
+                const auto [i, offset] = *draft->stop;
+                if (i < stops.size() && offset >= 0.f && offset <= 1.f &&
+                    (i == 0 || offset - frame[i - 1].offset >= gradient_stop_min_gap) &&
+                    (i + 1 == stops.size() || frame[i + 1].offset - offset >= gradient_stop_min_gap))
+                    frame[i].offset = offset;
             }
             if (!vgui_gradient_set(widget, &paint, frame.data(), stops.size())) {
                 // Interpolated endpoints or angles can coincide between valid keys.
@@ -566,7 +573,7 @@ void runtime::seek_animations(double seconds, bool inspect_loop_end, const gradi
     for (auto& animation : tree_->gradient_animations) {
         if (animation_visible(animation.widget, width, height))
             animation.seek(seconds, inspect_loop_end,
-                preview && animation.widget == target ? std::optional(preview->geometry) : std::nullopt);
+                preview && animation.widget == target ? std::optional(preview->draft) : std::nullopt);
     }
 }
 

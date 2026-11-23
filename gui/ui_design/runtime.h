@@ -46,9 +46,19 @@ struct viewport {
 struct pixel_rect { float x = 0, y = 0, width = 0, height = 0; };
 
 using gradient_geometry_draft = std::array<std::optional<float>, gradient_geometry_channels.size()>;
+struct gradient_stop_offset {
+    std::size_t index;
+    float offset;
+    bool operator==(const gradient_stop_offset&) const = default;
+};
+struct gradient_keyframe_draft {
+    gradient_geometry_draft geometry{}; // In document channel order.
+    std::optional<gradient_stop_offset> stop;
+    bool operator==(const gradient_keyframe_draft&) const = default;
+};
 struct gradient_shape_preview {
     std::string_view node;
-    gradient_geometry_draft geometry; // In document geometry channel order.
+    gradient_keyframe_draft draft;
 };
 
 struct node_layout {
@@ -122,8 +132,8 @@ public:
     animation_span animation_timing() const;
     // Include the terminal key when explicitly inspecting a keyframed loop's
     // boundary. Normal playback and seeking still wrap to the next cycle.
-    // An optional editor draft replaces only the active shape channels of a
-    // keyframed sample. Seeking without it restores the normal sampled paint.
+    // An optional editor draft changes active shape channels or one stop's
+    // offset. Seeking without it restores the normal sampled paint.
     void seek_animations(double seconds, bool inspect_loop_end = false,
         const gradient_shape_preview* preview = nullptr);
 

@@ -785,6 +785,7 @@ struct designer_gradient_timeline::impl {
         for (std::size_t i = 0; i < result.shape.size(); ++i)
             if (gradient_geometry_channels[i].applies_to(layer.kind))
                 result.shape[i] = frame.geometry[i].value_or(layer.authored[i]);
+        if (kind == shape_kind::linear) result.stops = frame.stops.empty() ? layer.authored_stops : frame.stops;
         return result;
     }
 
@@ -793,6 +794,14 @@ struct designer_gradient_timeline::impl {
         edit_pose([&](auto& frame) {
             for (std::size_t i = 0; i < shape.size(); ++i)
                 if (shape[i] != key.shape[i]) frame.geometry[i] = shape[i];
+        });
+    }
+
+    void edit_stop_offset(const shape_keyframe& key, std::size_t index, float offset) {
+        if (index >= key.stops.size() || offset == key.stops[index].offset || selected_shape_key() != key) return;
+        edit_pose([&](auto& frame) {
+            if (frame.stops.empty()) frame.stops = key.stops;
+            frame.stops[index].offset = offset;
         });
     }
 
@@ -980,6 +989,9 @@ void designer_gradient_timeline::show_time(double time) {
 std::optional<shape_keyframe> designer_gradient_timeline::selected_shape_key() const { return p_->selected_shape_key(); }
 void designer_gradient_timeline::edit_shape(const shape_keyframe& key, const keyframe_shape& shape) {
     p_->edit_shape(key, shape);
+}
+void designer_gradient_timeline::edit_stop_offset(const shape_keyframe& key, std::size_t index, float offset) {
+    p_->edit_stop_offset(key, index, offset);
 }
 void designer_gradient_timeline::refresh_language() { p_->refresh_language(); }
 

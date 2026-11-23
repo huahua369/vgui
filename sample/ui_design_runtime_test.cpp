@@ -1483,7 +1483,7 @@ void test_gradient_keyframe_geometry() {
         "at the next key the inner radius inherits the static value while the outer radius stays keyed");
     const auto terminal = fill(VG_PATTERN_TYPE_LINEAR);
     const auto radial = fill(VG_PATTERN_TYPE_RADIAL).cp[0];
-    ui::gradient_shape_preview draft{"linear", {.25f, .125f, .625f, .75f}};
+    ui::gradient_shape_preview draft{"linear", {{.25f, .125f, .625f, .75f}, {}}};
     seek(1, &draft);
     const auto& transient = fill(VG_PATTERN_TYPE_LINEAR);
     check(point_is(transient.cp[0], 60, 30, 90, 55) && transient.colors[0] == terminal.colors[0] &&
@@ -1494,7 +1494,7 @@ void test_gradient_keyframe_geometry() {
     const auto revision = vgui_context_paint_revision(ctx.get());
     rt.seek_animations(1, false, &draft);
     check(vgui_context_paint_revision(ctx.get()) == revision, "an unchanged draft does not invalidate paint");
-    draft.geometry[std::size_t(ui::gradient_geometry_axis::end_x)] = .75f;
+    draft.draft.geometry[std::size_t(ui::gradient_geometry_axis::end_x)] = .75f;
     seek(1, &draft);
     check(point_is(fill(VG_PATTERN_TYPE_LINEAR).cp[0], 60, 30, 100, 55), "a second move updates the same sampled time");
     seek(1);
@@ -1507,7 +1507,7 @@ void test_gradient_keyframe_geometry() {
     using axis = ui::gradient_geometry_axis;
     const auto radial_base = fill(VG_PATTERN_TYPE_RADIAL);
     ui::gradient_shape_preview radial_draft{"radial", {}};
-    const auto override = [&](axis channel, float value) { radial_draft.geometry[std::size_t(channel)] = value; };
+    const auto override = [&](axis channel, float value) { radial_draft.draft.geometry[std::size_t(channel)] = value; };
     override(axis::center_x, .375f);
     override(axis::center_y, .25f);
     override(axis::outer_x, .625f);
@@ -1527,17 +1527,17 @@ void test_gradient_keyframe_geometry() {
 
     const auto sweep_base = fill(VG_PATTERN_TYPE_SWEEP);
     ui::gradient_shape_preview sweep_draft{"sweep", {}};
-    sweep_draft.geometry[std::size_t(axis::center_x)] = .5f;
-    sweep_draft.geometry[std::size_t(axis::center_y)] = .375f;
-    sweep_draft.geometry[std::size_t(axis::start_angle)] = 0.f;
-    sweep_draft.geometry[std::size_t(axis::end_angle)] = 360.f;
+    sweep_draft.draft.geometry[std::size_t(axis::center_x)] = .5f;
+    sweep_draft.draft.geometry[std::size_t(axis::center_y)] = .375f;
+    sweep_draft.draft.geometry[std::size_t(axis::start_angle)] = 0.f;
+    sweep_draft.draft.geometry[std::size_t(axis::end_angle)] = 360.f;
     seek(1, &sweep_draft);
     const auto& sweep_live = fill(VG_PATTERN_TYPE_SWEEP);
     check(point_is(sweep_live.cp[0], 50, 125, 0, 2) && sweep_live.count == sweep_base.count &&
         sweep_live.colors[0] == sweep_base.colors[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0],
         "a full-turn sweep draft updates the center and native half-turn angles without modifying other paint");
-    sweep_draft.geometry[std::size_t(axis::start_angle)] = 340.f;
-    sweep_draft.geometry[std::size_t(axis::end_angle)] = 30.f;
+    sweep_draft.draft.geometry[std::size_t(axis::start_angle)] = 340.f;
+    sweep_draft.draft.geometry[std::size_t(axis::end_angle)] = 30.f;
     seek(1, &sweep_draft);
     check(point_is(fill(VG_PATTERN_TYPE_SWEEP).cp[0], 50, 125, 340.f / 180, 30.f / 180),
         "same-time sweep edits retain the authored reverse order rather than wrapping angles");
@@ -1634,6 +1634,18 @@ void test_gradient_keyframe_stops() {
     expect_paint(110, step_offsets, step_colors, "an exact key preserves its authored stop bytes before tint and opacity");
     rt.seek_animations(1.5);
     expect_paint(110, step_offsets, step_colors, "step holds the left palette and pose until the next key");
+    ui::gradient_shape_preview stop_draft{"paint", {{}, ui::gradient_stop_offset{1, .625f}}};
+    rt.seek_animations(1.5, false, &stop_draft);
+    expect_paint(110, {.125f, .625f, .875f}, step_colors,
+        "a temporary stop drag changes only its offset at the same time, retaining the key's tint and opacity");
+    stop_draft.draft.stop->offset = .875f;
+    rt.seek_animations(1.5, false, &stop_draft);
+    expect_paint(110, step_offsets, step_colors, "a temporary offset cannot duplicate or cross its neighbor");
+    stop_draft.draft.stop->offset = .375f;
+    rt.seek_animations(1.5, false, &stop_draft);
+    expect_paint(110, {.125f, .375f, .875f}, step_colors, "a second draft still samples the same key");
+    rt.seek_animations(1.5);
+    expect_paint(110, step_offsets, step_colors, "cancel restores the authored stop offsets without changing time");
     rt.seek_animations(2);
     expect_paint(60, {0.f, .625f, .9375f}, {{{255, 0, 0, 128}, {255, 255, 255, 255}, {171, 52, 18, 0}}},
         "step switches at the exact next key, including transparent RGB bytes");

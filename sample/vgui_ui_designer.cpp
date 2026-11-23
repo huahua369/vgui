@@ -2885,6 +2885,181 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
         "redo did not restore the endpoint edit exactly");
 }
 
+void exercise_keyframe_stop_drag(os_window& win, vgui_context* shell, designer& editor,
+                                 const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe stop drag: " + std::string(message));
+    };
+    constexpr auto track_property = "gradient_animation_keyframes";
+    const auto read_keys = [&](const ui::document& doc) {
+        std::vector<ui::gradient_keyframe> keys;
+        std::string error;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(doc.nodes.at("linear").props.at(track_property)),
+            keys, error), "decode the linear track");
+        return keys;
+    };
+    ui::document fixture;
+    require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
+    fixture.nodes.at(fixture.root).children = {"linear"};
+    std::erase_if(fixture.nodes, [&](const auto& entry) { return entry.first != fixture.root && entry.first != "linear"; });
+    auto keys = read_keys(fixture);
+    require(keys.size() == 3 && keys[1].offset == .5, "expected the middle linear key");
+    constexpr glm::dvec2 from{.10, .20}, to{.78, .77};
+    constexpr double xx = .86, yx = .30, xy = .23, yy = .82, tx = .04, ty = .13;
+    auto& middle = keys[1];
+    middle.x = .07;
+    middle.y = -.12;
+    middle.tint = "#B680D1";
+    middle.opacity = .62;
+    middle.geometry = {from.x, {}, to.x, to.y}; // Inherit start Y along with the palette.
+    middle.stops.clear();
+    const std::vector<ui::gradient_stop> authored{{0, "#132B55"}, {.25f, "#12A95480"}, {.5f, "#5DD9FA"},
+        {.75f, "#FFBD7DC0"}, {1, "#4C49AD"}};
+    auto& props = fixture.nodes.at("linear").props;
+    props["x"] = 32.;
+    props["y"] = 75.;
+    props["width"] = 680.; // Keep the stops on the first row, even with the board fitted.
+    props["height"] = 220.;
+    props["gradient_y0"] = from.y;
+    props["gradient_affine_xx"] = xx;
+    props["gradient_affine_yx"] = yx;
+    props["gradient_affine_xy"] = xy;
+    props["gradient_affine_yy"] = yy;
+    props["gradient_affine_tx"] = tx;
+    props["gradient_affine_ty"] = ty;
+    props["gradient_stops"] = ui::encode_gradient_stops(authored);
+    props[track_property] = ui::encode_gradient_keyframes(keys);
+    const auto file = sandbox / "linear-stop-motion.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "open the isolated linear track");
+    frame();
+
+    const auto& history = editor.history();
+    const auto before = history.current();
+    const auto revision = history.revision();
+    const auto unchanged = [&](std::string_view message) {
+        require(history.current() == before && history.revision() == revision &&
+            !history.dirty() && !history.can_undo() && !history.can_redo(), message);
+    };
+    const std::string outline(editor.selection());
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    input.click("designer.preview.timeline");
+    input.click("designer.timeline.fit");
+    auto* tracks = input.widget("designer.timeline.tracks");
+    const auto select_middle = [&] {
+        input.click_at(tracks, input.fitted_key(tracks));
+        const auto view = preview.capture_view();
+        require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
+            vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline &&
+            outline != "linear", "pause at the exact middle key without selecting the gradient in the outline");
+    };
+    select_middle();
+    unchanged("selecting the timeline key edited the document");
+
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
+    const auto node = std::ranges::find(layout->nodes, "linear", &ui::node_layout::id);
+    require(node != layout->nodes.end() && node->visible, "linear gradient is not on the board");
+    const auto& box = node->rect_px;
+    const glm::dvec2 board_scale{double(board->width) / layout->pixel_width, double(board->height) / layout->pixel_height};
+    const auto shell_size = board_scale * glm::dvec2{box.width, box.height};
+    const auto origin = glm::dvec2{board->x, board->y} + board_scale * glm::dvec2{box.x, box.y};
+    const glm::dmat2 affine{xx, yx, xy, yy};
+    const auto start_at = origin + shell_size * (affine * from + glm::dvec2{tx + middle.x, ty + middle.y});
+    const auto screen_axis = shell_size * (affine * (to - from));
+    const double scale = vgui_context_get_ui_scale(shell);
+    const auto normal = glm::normalize(glm::dvec2{screen_axis.y, -screen_axis.x});
+    const auto grab_at = [&](float offset, double side = 1.) {
+        const auto knob = start_at + screen_axis * double(offset) + normal * (side * 18. * scale);
+        return glm::round(glm::vec2(knob)) + glm::vec2{3, 1}; // Deliberately grab off-center.
+    };
+    auto* canvas = input.widget("designer.preview.canvas");
+    const ui::native_menu_input menus(win, shell, frame);
+    const auto move = [&](glm::vec2 start, glm::vec2 finish) {
+        require(vgui_hit_test(shell, start.x, start.y) == canvas, "projected stop handle is not reachable on the canvas");
+        const auto prior = history.current();
+        const auto drag_revision = history.revision();
+        input.button(true, start);
+        frame();
+        require(history.current() == prior && history.revision() == drag_revision, "press edited the document");
+        input.motion(start, finish);
+        frame();
+        require(history.current() == prior && history.revision() == drag_revision, "motion edited the document before release");
+    };
+    const auto release = [&](glm::vec2 at) { input.button(false, at); frame(); };
+    constexpr std::size_t stop_index = 2;
+    const auto expected_edit = [&](float offset) {
+        auto edited = keys;
+        edited[1].stops = authored;
+        edited[1].stops[stop_index].offset = offset;
+        auto expected = before;
+        expected.nodes.at("linear").props[track_property] = ui::encode_gradient_keyframes(edited);
+        return expected;
+    };
+    const auto edited_offset = [&] {
+        const auto edited = read_keys(history.current());
+        require(edited.size() == keys.size() && edited[1].stops.size() == authored.size(), "drag did not materialize the palette");
+        return edited[1].stops[stop_index].offset;
+    };
+    const auto start = grab_at(authored[stop_index].offset);
+    // Include transverse motion so the result must use projection onto the shell axis.
+    const auto delta = glm::round(glm::vec2(screen_axis * .09 + normal * (16. * scale)));
+    const auto finish = start + delta;
+    const auto sub_slop = start + glm::vec2{2, 0};
+    move(start, sub_slop);
+    release(sub_slop);
+    unchanged("motion below three-pixel slop materialized the palette");
+    move(start, finish);
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    release(finish);
+    unchanged("Escape did not cancel the palette draft through mouse-up");
+
+    move(start, finish);
+    release(finish);
+    require(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+        "release did not create exactly one transaction");
+    const auto offset = edited_offset();
+    const double expected_offset = .5 + glm::dot(glm::dvec2(delta), screen_axis) / glm::dot(screen_axis, screen_axis);
+    require(std::abs(offset - expected_offset) < .001, "stop did not follow the projected pointer delta from its off-center grab");
+    const auto after = expected_edit(offset);
+    require(history.current() == after && editor.selection() == outline,
+        "drag changed more than one stop offset, altered inherited colors, or changed the outline selection");
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one undo did not restore palette inheritance and the original document");
+    menus.activate(menus.open(1), 1); // Edit > Redo
+    require(history.current() == after && history.dirty() && history.can_undo() && !history.can_redo(),
+        "redo did not restore the exact stop edit");
+
+    select_middle();
+    const auto clamp_revision = history.revision();
+    const auto moved_grab = grab_at(offset);
+    const auto past_neighbor = moved_grab - glm::round(glm::vec2(screen_axis * .44));
+    move(moved_grab, past_neighbor);
+    release(past_neighbor);
+    const auto clamped = edited_offset();
+    const float prev = authored[stop_index - 1].offset;
+    // At .25, simply adding the float gap rounds down into the forbidden range.
+    require(clamped - prev >= ui::gradient_stop_min_gap && std::nextafter(clamped, prev) - prev < ui::gradient_stop_min_gap,
+        "stop did not clamp to the closest model-valid float above its neighbor");
+    require(history.revision() == clamp_revision + 1 && history.current() == expected_edit(clamped),
+        "clamping did not update only the dragged stop in one transaction");
+
+    // At one legal gap from the previous stop the anchors visually coincide.
+    // The moved stop's knob on the opposite side must still be independently grabbable.
+    select_middle();
+    const auto dense_revision = history.revision();
+    const auto dense_grab = grab_at(clamped, -1.);
+    const auto separate = glm::round(glm::vec2(screen_axis * .1));
+    move(dense_grab, dense_grab + separate);
+    release(dense_grab + separate);
+    const auto spaced = edited_offset();
+    const double expected_spaced = clamped + glm::dot(glm::dvec2(separate), screen_axis) / glm::dot(screen_axis, screen_axis);
+    require(history.revision() == dense_revision + 1 && std::abs(spaced - expected_spaced) < .001 &&
+        history.current() == expected_edit(spaced), "the staggered stop can be moved without selecting its near-coincident neighbor");
+}
+
 void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer& editor,
                                   const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -3459,6 +3634,7 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
         "both delivery formats must preserve the radius overrides");
     exercise_keyframe_capture(win, shell, editor, frame, sandbox);
     exercise_keyframe_endpoint_drag(win, shell, editor, frame, sandbox);
+    exercise_keyframe_stop_drag(win, shell, editor, frame, sandbox);
     exercise_keyframe_radial_drag(win, shell, editor, frame, sandbox);
     exercise_keyframe_sweep_drag(win, shell, editor, frame, sandbox);
 }
@@ -3728,7 +3904,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and linear/radial handle dragging passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
     }
     app.wait_gpu();
     return 0;
