@@ -3,6 +3,7 @@
 #include "ui_designer_font_file.h"
 
 #include <vgui/backend/vgui_render_target.h>
+#include <vgui/editor/color_picker.h>
 #include <glm/vec4.hpp>
 
 // One private decoder in this TU, using the project's existing stb dependency.
@@ -787,6 +788,15 @@ struct designer_preview::impl {
         gradient_stop_axis stop_axis;
     };
     std::optional<shape_drag> shape_edit;
+    struct stop_color_session {
+        shape_keyframe key;
+        std::size_t index;
+        SDL_WindowID window;
+        std::uint32_t color;
+    };
+    std::optional<stop_color_session> stop_color_edit;
+    vgui_editor_kit::color_picker stop_picker;
+    vgui_widget *stop_color_title = nullptr, *stop_color_ok = nullptr, *stop_color_cancel = nullptr;
     // Keep consuming the matching left-up even when the drag was canceled.
     std::optional<SDL_WindowID> edit_release;
     // Unlike the per-mount image loader, these families outlive all widgets
@@ -909,6 +919,7 @@ struct designer_preview::impl {
     ~impl() {
         if (focus_listener) vgui_context_remove_focus_listener(shell, focus_listener);
         blur();
+        if (stop_picker.widget()) vgui_widget_destroy(stop_picker.widget());
         timeline.reset(); // Detach timeline callbacks before destroying its widget tree.
         if (panel) vgui_widget_destroy(panel);
         if (mounted) mounted->unmount();
@@ -943,6 +954,7 @@ struct designer_preview::impl {
             vgui_widget_set_tooltip(timeline_toggle, strings.text("timeline.toggle", "Show or hide this page's gradient animation tracks"));
             timeline->refresh_language();
         }
+        refresh_stop_color_labels();
         vgui_widget_set_text(restart, strings.text("preview.animation.restart", "Restart"));
         vgui_widget_set_tooltip(restart, strings.text("preview.animation.restart.tooltip", "Play from the beginning"));
         vgui_widget_set_a11y_name(scrubber, strings.text("preview.animation.seek", "Animation playhead"));
@@ -1042,6 +1054,7 @@ struct designer_preview::impl {
     }
 
     void seek_playhead(double time, bool terminal) {
+        cancel_stop_color();
         cancel_shape_edit();
         if (!run) set_run(true);
         playback.playing = false;
@@ -1055,6 +1068,7 @@ struct designer_preview::impl {
 
     void open_timeline(bool value) {
         if (!timeline || value == timeline_open) return;
+        cancel_stop_color();
         cancel_pointer();
         timeline_open = value;
         timeline->set_visible(value);
@@ -1205,7 +1219,8 @@ struct designer_preview::impl {
 
     std::optional<shape_keyframe> key_at_playhead() const {
         if (!run || playback.playing || !timeline_open || !ready || !frame || !canvas_visible() ||
-            vgui_modal_active(shell) || vgui_popup_active(shell) || vgui_context_get_open_menu(shell)) return {};
+            vgui_modal_active(shell) || (vgui_popup_active(shell) && !stop_color_edit) ||
+            vgui_context_get_open_menu(shell)) return {};
         auto key = timeline->selected_shape_key();
         if (!key || key->revision != frame->revision || key->time != playback.time ||
             key->terminal != playback.inspect_end) return {};
@@ -1234,7 +1249,94 @@ struct designer_preview::impl {
 
     float knob_radius() const { return 6.f * vgui_context_get_ui_scale(shell); }
 
-    bool start_shape_edit(pixel_rect area, pixel_rect board, point p, SDL_WindowID id, float dpi) {
+    void refresh_stop_color_labels() {
+        if (!stop_color_title) return;
+        const auto* title = strings.text("preview.stop_color", "Stop color");
+        vgui_widget_set_text(stop_color_title, title);
+        vgui_widget_set_a11y_name(stop_picker.widget(), title);
+        vgui_widget_set_text(stop_color_ok, strings.text("common.ok", "OK"));
+        vgui_widget_set_text(stop_color_cancel, strings.text("common.cancel", "Cancel"));
+    }
+
+    static void stop_color_closed(void* user, int) {
+        auto& self = *static_cast<impl*>(user);
+        vgui_popup_on_close(self.shell, nullptr, nullptr);
+        self.stop_color_edit.reset();
+        self.sample_requested = true;
+        self.mark_canvas();
+    }
+
+    void cancel_stop_color() {
+        if (stop_color_edit) vgui_popup_close(shell);
+    }
+
+    static void stop_color_button(vgui_widget* widget, const vgui_event* event, void* user) {
+        auto& self = *static_cast<impl*>(user);
+        if (event->type != VGUI_EVENT_CLICK || !self.stop_color_edit) return;
+        if (widget != self.stop_color_ok || self.key_at_playhead() != self.stop_color_edit->key) {
+            self.cancel_stop_color();
+            return;
+        }
+        const auto edit = std::move(*self.stop_color_edit);
+        const auto hex = self.stop_picker.value();
+        // The document edit can synchronously seek and remount the preview.
+        self.cancel_stop_color();
+        self.timeline->edit_stop_color(edit.key, edit.index, hex);
+    }
+
+    void open_stop_color(shape_keyframe key, const shape_knob& knob, SDL_WindowID window) {
+        const auto index = knob.axis;
+        const auto& hex = key.stops[index].color;
+        const auto color = parse_text_color(hex);
+        if (!color) return;
+        blur(); // Release runtime input before the shell popup takes over.
+        if (!stop_picker.widget()) {
+            stop_picker.set_id("designer.preview.stop_color");
+            stop_picker.set_live_hex(true);
+            stop_picker.build(shell);
+            stop_picker.set_on_change([this](const std::string& value) {
+                const auto color = parse_text_color(value);
+                if (!stop_color_edit || !color || *color == stop_color_edit->color) return;
+                stop_color_edit->color = *color;
+                sample_requested = true;
+                mark_canvas();
+            });
+            auto* footer = vgui_widget_add(stop_picker.widget(), VGUI_PANEL, nullptr);
+            vgui_widget_set_layout(footer, VGUI_LAYOUT_ROW);
+            vgui_widget_set_align_items(footer, VGUI_ALIGN_CENTER);
+            vgui_widget_set_align_self(footer, VGUI_ALIGN_STRETCH);
+            vgui_widget_set_padding(footer, 0, 0, 0, 0);
+            vgui_widget_set_gap(footer, 6);
+            vgui_widget_set_background(footer, 0);
+            vgui_widget_set_border(footer, 0, 0);
+            stop_color_title = vgui_widget_add(footer, VGUI_LABEL, nullptr);
+            vgui_widget_set_grow(stop_color_title, 1);
+            vgui_widget_set_text_align(stop_color_title, 0, .5f);
+            const auto button = [&](const char* id) {
+                auto* widget = vgui_widget_add(footer, VGUI_BUTTON, nullptr);
+                vgui_widget_set_id(widget, id);
+                vgui_widget_on_event(widget, stop_color_button, this);
+                return widget;
+            };
+            stop_color_cancel = button("designer.preview.stop_color.cancel");
+            stop_color_ok = button("designer.preview.stop_color.ok");
+            refresh_stop_color_labels();
+        }
+        vgui_theme palette{};
+        vgui_context_get_theme(shell, &palette);
+        vgui_widget_set_background(stop_picker.widget(), palette.panel_bg);
+        vgui_widget_set_border(stop_picker.widget(), palette.panel_border, 1);
+        stop_picker.set_current(hex);
+        stop_picker.set_value(hex);
+        const float r = knob_radius();
+        if (vgui_popup_open_anchored(shell, stop_picker.widget(), knob.at.x - r, knob.at.y - r, 2 * r, 2 * r, 4)) {
+            stop_color_edit.emplace(stop_color_session{std::move(key), index, window, *color});
+            vgui_popup_on_close(shell, stop_color_closed, this);
+            mark_canvas();
+        }
+    }
+
+    bool start_shape_edit(pixel_rect area, pixel_rect board, point p, SDL_WindowID id, float dpi, bool color_only) {
         auto key = key_at_playhead();
         if (!key) return false;
         const auto transform = transform_for(board);
@@ -1246,7 +1348,7 @@ struct designer_preview::impl {
         const auto stops = layout_stop_knobs(*key, key->shape, node, transform, clip, knob_radius(), geometry);
         float nearest = 2 * hit * hit;
         std::optional<std::size_t> axis;
-        std::optional<gradient_stop_offset> stop;
+        const shape_knob* stop_knob = nullptr;
         const auto hit_knob = [&](const shape_knob& knob) {
             const float distance = distance_sq(knob.at, p);
             if (std::abs(knob.at.x - p.x) > hit || std::abs(knob.at.y - p.y) > hit || distance > nearest) return false;
@@ -1256,7 +1358,14 @@ struct designer_preview::impl {
         for (const auto& knob : geometry)
             if (hit_knob(knob)) axis = knob.axis;
         for (const auto& knob : stops.knobs)
-            if (knob && hit_knob(*knob)) stop = gradient_stop_offset{knob->axis, key->stops[knob->axis].offset};
+            if (knob && hit_knob(*knob)) stop_knob = &*knob;
+        if (color_only) {
+            if (!stop_knob) return false;
+            open_stop_color(std::move(*key), *stop_knob, id);
+            return true;
+        }
+        std::optional<gradient_stop_offset> stop;
+        if (stop_knob) stop = gradient_stop_offset{stop_knob->axis, key->stops[stop_knob->axis].offset};
         if (!axis && !stop) return false;
         auto values = key->shape;
         const auto picked_axis = axis.value_or(start_x);
@@ -1451,6 +1560,7 @@ struct designer_preview::impl {
     }
 
     void blur(bool clear_shell_focus = true) {
+        if (clear_shell_focus) cancel_stop_color();
         cancel_pointer();
         stop_ime();
         if (ui) vgui_set_focus(ui.get(), nullptr);
@@ -1567,6 +1677,7 @@ struct designer_preview::impl {
             const auto area = rect(canvas);
             if (!shape_edit_is_current(area, artboard(area))) cancel_shape_edit();
         }
+        if (stop_color_edit && key_at_playhead() != stop_color_edit->key) cancel_stop_color();
         // Run changes only paint. A requested seek samples its exact time
         // before playback can advance it on a later frame.
         if (run && timing.duration > 0) {
@@ -1579,7 +1690,12 @@ struct designer_preview::impl {
             }
             if (sample_requested || ticking || layout_needed) {
                 std::optional<gradient_shape_preview> draft;
-                if (shape_edit) {
+                if (stop_color_edit) {
+                    const auto& edit = *stop_color_edit;
+                    if (edit.color != parse_text_color(edit.key.stops[edit.index].color))
+                        draft.emplace(gradient_shape_preview{edit.key.node,
+                            {{}, {}, gradient_stop_color{edit.index, edit.color}}});
+                } else if (shape_edit) {
                     const auto& edit = *shape_edit;
                     if (edit.stop && edit.stop->offset != edit.key.stops[edit.stop->index].offset) {
                         draft.emplace(gradient_shape_preview{edit.key.node, {{}, edit.stop}});
@@ -1805,12 +1921,13 @@ struct designer_preview::impl {
             const auto i = stop.axis;
             const auto at = stop.at;
             const float r = h * .75f;
-            box(at, r + 2.f, r + 2.f, active ? accent : ink);
+            const bool picking = stop_color_edit && stop_color_edit->index == i;
+            box(at, r + 2.f, r + 2.f, active || picking ? accent : ink);
             box(at, r + 1.f, r + 1.f, 0xFFE7DECDu);
             box(at, r, r, 0xFFAAAAAAu);
             fill(cb, vg, intersect({at.x - r, at.y - r, r, r}, clip), 0xFFE8E8E8u);
             fill(cb, vg, intersect({at.x, at.y, r, r}, clip), 0xFFE8E8E8u);
-            box(at, r, r, to_ovg(parse_text_color(key->stops[i].color).value_or(0)));
+            box(at, r, r, to_ovg(picking ? stop_color_edit->color : parse_text_color(key->stops[i].color).value_or(0)));
         };
         for (const auto& stop : stops)
             if (stop && (!moving || moving->index != stop->axis)) swatch(*stop, false);
@@ -1902,7 +2019,7 @@ struct designer_preview::impl {
         case SDL_EVENT_WINDOW_HIDDEN:
         case SDL_EVENT_WINDOW_MINIMIZED:
             if (run_window == e.window.windowID || pointer_window == e.window.windowID ||
-                edit_release == e.window.windowID) blur();
+                edit_release == e.window.windowID || (stop_color_edit && stop_color_edit->window == e.window.windowID)) blur();
             return false;
         case SDL_EVENT_WINDOW_RESIZED:
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -2028,7 +2145,9 @@ struct designer_preview::impl {
             return false;
         }
         if (!frame || !ready) return false;
-        if (left_down && inside && !pressed && start_shape_edit(area, board, p, id, dpi)) return true;
+        const bool right_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT;
+        if ((left_down || right_down) && inside && !pressed && start_shape_edit(area, board, p, id, dpi, right_down))
+            return true;
         const point at = preview_pixels(board, p);
         switch (e.type) {
         case SDL_EVENT_MOUSE_MOTION:

@@ -175,6 +175,10 @@ namespace vgui_editor_kit {
 		vgui_widget_set_size(hex_, 0.0f, row_h);
 		vgui_widget_set_min_size(hex_, 80, row_h);
 		vgui_widget_on_event(hex_, &color_picker::on_hex_event, this);
+		if (live_hex_)
+			vgui_widget_on_text(hex_, [](vgui_widget*, const char*, void* user) {
+				static_cast<color_picker*>(user)->commit_edit_text(false);
+			}, this);
 
 		sv_ = vgui_widget_add(root_, VGUI_CUSTOM, nullptr);
 		vgui_widget_set_id(sv_, (id_ + ".sv").c_str());
@@ -385,7 +389,7 @@ namespace vgui_editor_kit {
 			commit_listener_(value_);
 	}
 
-	void color_picker::commit_edit_text()
+	void color_picker::commit_edit_text(bool commit)
 	{
 		if (!hex_)
 			return;
@@ -396,7 +400,7 @@ namespace vgui_editor_kit {
 		const float r = (float)((argb >> 16) & 0xFFu) / 255.0f;
 		const float g = (float)((argb >> 8) & 0xFFu) / 255.0f;
 		const float b = (float)(argb & 0xFFu) / 255.0f;
-		apply_color({ r, g, b, (float)((argb >> 24) & 0xFFu) / 255.0f }, true);
+		apply_color({ r, g, b, (float)((argb >> 24) & 0xFFu) / 255.0f }, commit);
 	}
 
 	void color_picker::on_swatch_click(vgui_widget* widget,

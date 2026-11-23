@@ -865,6 +865,16 @@ struct designer_gradient_timeline::impl {
         });
     }
 
+    void edit_stop_color(const shape_keyframe& key, std::size_t index, const std::string& hex) {
+        const auto color = parse_text_color(hex);
+        if (!color || index >= key.stops.size() || color == parse_text_color(key.stops[index].color) ||
+            selected_shape_key() != key) return;
+        edit_pose([&](auto& frame) {
+            if (frame.stops.empty()) frame.stops = key.stops;
+            frame.stops[index].color = hex;
+        });
+    }
+
     void seek_key(const kit::timeline_keyframe& key) {
         const auto found = poses.find(key.id);
         if (found != poses.end()) seek(key.time, found->second.offset == 1);
@@ -1053,6 +1063,10 @@ void designer_gradient_timeline::edit_shape(const shape_keyframe& key, const key
 }
 void designer_gradient_timeline::edit_stop_offset(const shape_keyframe& key, std::size_t index, float offset) {
     p_->edit_stop_offset(key, index, offset);
+}
+
+void designer_gradient_timeline::edit_stop_color(const shape_keyframe& key, std::size_t index, const std::string& hex) {
+    p_->edit_stop_color(key, index, hex);
 }
 void designer_gradient_timeline::refresh_language() { p_->refresh_language(); }
 

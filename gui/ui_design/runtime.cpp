@@ -286,6 +286,8 @@ struct gradient_animation {
             }
             for (std::size_t i = 0; i < stops.size(); ++i) {
                 frame[i] = sample_gradient_stop(key, base_palette, i);
+                if (draft && draft->color && draft->color->index == i)
+                    frame[i].color = draft->color->color;
                 frame[i].color = tint_color(frame[i].color, pose);
             }
             if (draft && draft->stop) {

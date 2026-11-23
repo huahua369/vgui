@@ -48,6 +48,7 @@ public:
     std::optional<shape_keyframe> selected_shape_key() const;
     void edit_shape(const shape_keyframe&, const keyframe_shape&);
     void edit_stop_offset(const shape_keyframe&, std::size_t index, float offset);
+    void edit_stop_color(const shape_keyframe&, std::size_t index, const std::string& hex);
     void refresh_language();
 
 private:

@@ -51,9 +51,15 @@ struct gradient_stop_offset {
     float offset;
     bool operator==(const gradient_stop_offset&) const = default;
 };
+struct gradient_stop_color {
+    std::size_t index;
+    std::uint32_t color; // VGUI ARGB, before keyframe tint and opacity.
+    bool operator==(const gradient_stop_color&) const = default;
+};
 struct gradient_keyframe_draft {
     gradient_geometry_draft geometry{}; // In document channel order.
     std::optional<gradient_stop_offset> stop;
+    std::optional<gradient_stop_color> color;
     bool operator==(const gradient_keyframe_draft&) const = default;
 };
 struct gradient_shape_preview {
@@ -133,7 +139,7 @@ public:
     // Include the terminal key when explicitly inspecting a keyframed loop's
     // boundary. Normal playback and seeking still wrap to the next cycle.
     // An optional editor draft changes active shape channels or one stop's
-    // offset. Seeking without it restores the normal sampled paint.
+    // offset or color. Seeking without it restores the normal sampled paint.
     void seek_animations(double seconds, bool inspect_loop_end = false,
         const gradient_shape_preview* preview = nullptr);
 

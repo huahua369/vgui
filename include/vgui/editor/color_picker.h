@@ -57,6 +57,9 @@ namespace vgui_editor_kit {
 		 * any value update - the grid snapshots its current value here. */
 		void set_on_press(color_listener listener);
 		void set_on_commit(color_listener listener);
+		/* Opt in to change notifications while a valid hex value is typed.
+		 * Set before build(); Enter remains an internal picker commit. */
+		void set_live_hex(bool enabled) noexcept { live_hex_ = enabled; }
 
 		void set_presets(std::vector<std::string> presets);
 		void set_recent(std::vector<std::string> recent);
@@ -77,7 +80,7 @@ namespace vgui_editor_kit {
 		/* sync_hsv=false keeps the h/s/v values already maintained by a drag;
 		 * otherwise they are recomputed from rgb (hex/swatch paths). */
 		void apply_color(const picker_rgb& rgb, bool commit, bool sync_hsv = true);
-		void commit_edit_text();
+		void commit_edit_text(bool commit = true);
 		/* Drag ownership for the SV/hue/alpha bars: mouse moves do not carry a
 		 * button in vgui 0.3, so the press widget must be tracked explicitly.
 		 * Returns true when this event should drive the given bar. */
@@ -134,6 +137,7 @@ namespace vgui_editor_kit {
 		color_listener commit_listener_;
 		bool dragging_ = false;		/* suppresses commit-on-hex-blur noise */
 		vgui_widget* drag_widget_ = nullptr;	/* SV box / hue bar / alpha bar */
+		bool live_hex_ = false;
 		bool inside_edit_ = false;
 	};
 

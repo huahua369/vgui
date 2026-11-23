@@ -2683,12 +2683,12 @@ struct native_keyframe_input {
         return r;
     }
     void push(SDL_Event e) const { require(SDL_PushEvent(&e), "cannot queue SDL input"); }
-    void button(bool down, glm::vec2 px) const {
+    void button(bool down, glm::vec2 px, Uint8 mouse_button = SDL_BUTTON_LEFT) const {
         const auto p = px / win.pixel_ratio();
         SDL_Event e{};
         e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
         e.button.windowID = win.id;
-        e.button.button = SDL_BUTTON_LEFT;
+        e.button.button = mouse_button;
         e.button.down = down;
         e.button.clicks = 1;
         e.button.x = p.x;
@@ -2707,16 +2707,58 @@ struct native_keyframe_input {
         e.motion.yrel = rel.y;
         push(e);
     }
-    void click_at(vgui_widget* w, glm::vec2 p) const {
+    void click_at(vgui_widget* w, glm::vec2 p, Uint8 mouse_button = SDL_BUTTON_LEFT) const {
         require(vgui_hit_test(shell, p.x, p.y) == w, "click does not hit the intended control");
-        button(true, p);
-        button(false, p);
+        button(true, p, mouse_button);
+        button(false, p, mouse_button);
         frame();
     }
-    void click(const char* id) const {
-        auto* w = widget(id);
+    void click(vgui_widget* w) const {
         const auto r = rect(w);
         click_at(w, {r.x + r.width / 2, r.y + r.height / 2});
+    }
+    void click(const char* id) const { click(widget(id)); }
+
+    vgui_widget* picker_widget(const char* id, vgui_widget_kind kind) const {
+        auto* w = find_widget(vgui_popup_content(shell), id, kind);
+        require(w != nullptr, id);
+        return w;
+    }
+    vgui_widget* picker_hex() const { return picker_widget("designer.preview.stop_color.hex", VGUI_EDIT); }
+    void open_stop_picker(vgui_widget* canvas, glm::vec2 p, const ui::gradient_stop& stop) const {
+        require(!vgui_popup_active(shell), "a popup is already open before the stop click");
+        click_at(canvas, p, SDL_BUTTON_RIGHT); // Down and up must both be dispatched before layout/render.
+        auto* popup = vgui_popup_content(shell);
+        require(popup && find_widget(popup, "designer.preview.stop_color", VGUI_PANEL) == popup &&
+            !vgui_widget_get_parent(popup), "right click did not open the detached canvas stop picker");
+        require(ui::parse_text_color(vgui_edit_get_text(picker_hex())) == ui::parse_text_color(stop.color),
+            "picker did not open at the targeted stop's original color and alpha");
+    }
+    void type_stop_hex(const char* value) const {
+        auto* hex = picker_hex();
+        click(hex);
+        require(vgui_get_focus(shell) == hex, "Hex did not receive focus");
+        vgui_edit_select_all(hex);
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = win.id;
+        text.text.text = value;
+        push(text);
+        frame(); // No Enter or other submission event.
+    }
+    void adjust_stop_alpha(std::uint32_t expected_rgb) const {
+        auto* alpha = picker_widget("designer.preview.stop_color.alpha", VGUI_CUSTOM);
+        const auto r = rect(alpha);
+        click_at(alpha, {std::round(r.x + r.width / 4), r.y + r.height / 2});
+        auto* hex = picker_hex();
+        const auto color = ui::parse_text_color(vgui_edit_get_text(hex));
+        require(vgui_get_focus(shell) != hex && color && (*color & 0xFFFFFFu) == expected_rgb &&
+            std::abs(static_cast<int>(*color >> 24) - 64) <= 2,
+            "alpha click did not preview roughly 25% opacity without altering the current RGB");
+    }
+    void close_stop_picker(const char* id) const {
+        click(picker_widget(id, VGUI_BUTTON));
+        require(!vgui_popup_active(shell), "picker button did not close the popup");
     }
     glm::vec2 fitted_key(vgui_widget* tracks, float fraction = .5f, float row = 37) const {
         const auto r = rect(tracks);
@@ -3110,6 +3152,20 @@ void exercise_keyframe_stop_drag(os_window& win, vgui_context* shell, designer& 
         return edited[1].stops[stop_index].offset;
     };
     const auto start = grab_at(authored[stop_index].offset);
+    input.open_stop_picker(canvas, start, authored[stop_index]);
+    unchanged("right-clicking the linear stop changed the document");
+    input.type_stop_hex("#A436D8");
+    unchanged("typing an RGB color changed history before confirmation");
+    // The alpha gesture reads the picker's current RGB, not the text in the edit.
+    input.adjust_stop_alpha(0xA436D8u);
+    unchanged("adjusting alpha changed history before confirmation");
+    input.close_stop_picker("designer.preview.stop_color.cancel");
+    unchanged("Cancel changed the linear palette or history");
+    input.open_stop_picker(canvas, start, authored[stop_index]);
+    input.close_stop_picker("designer.preview.stop_color.ok");
+    unchanged("confirming the original color materialized the inherited palette");
+    require(editor.selection() == outline, "picking a stop changed the outline selection");
+
     // Include transverse motion so the result must use projection onto the shell axis.
     const auto delta = glm::round(glm::vec2(screen_axis * .09 + normal * (16. * scale)));
     const auto finish = start + delta;
@@ -3417,6 +3473,28 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
     menus.activate(menus.open(1), 0); // Edit > Undo
     require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
         "one undo did not restore radial palette inheritance and the original document");
+
+    select_middle();
+    const auto color_revision = history.revision();
+    const auto color_unchanged = [&](std::string_view message) {
+        require(history.current() == before && history.revision() == color_revision &&
+            !history.dirty() && !history.can_undo() && history.can_redo(), message);
+    };
+    input.open_stop_picker(canvas, start, inherited_stops[stop_index]);
+    color_unchanged("right-clicking the radial stop changed history");
+    constexpr auto rgba = "#2975BC48";
+    input.type_stop_hex(rgba);
+    color_unchanged("typing an RGBA color changed history before confirmation");
+    input.close_stop_picker("designer.preview.stop_color.ok");
+    expected_keys[1].stops = inherited_stops;
+    expected_keys[1].stops[stop_index].color = rgba;
+    expected.nodes.at("radial").props[track_property] = ui::encode_gradient_keyframes(expected_keys);
+    require(history.current() == expected && history.revision() == color_revision + 1 && history.dirty() &&
+        history.can_undo() && !history.can_redo() && editor.selection() == outline_selection,
+        "confirming an RGBA color without Enter did not change exactly one stop color in one transaction");
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one undo did not restore the original color and radial palette inheritance");
 }
 
 void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer& editor,
@@ -3614,6 +3692,15 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
         require(history.current() == before && history.revision() == revision &&
             !history.dirty() && !history.can_undo() && history.can_redo(), message);
     };
+    input.open_stop_picker(canvas, grab, first.stops[stop_index]);
+    unchanged("right-clicking the sweep stop changed history");
+    input.adjust_stop_alpha(0x44D2A8u);
+    unchanged("adjusting the sweep stop's alpha changed history before confirmation");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(!vgui_popup_active(shell) && editor.selection() == outline_selection,
+        "Escape did not dismiss the sweep picker without changing the outline selection");
+    unchanged("Escape did not restore the original sweep stop");
+
     const auto move_stop = [&] {
         input.button(true, grab);
         auto at = grab;

@@ -1678,6 +1678,16 @@ void test_gradient_keyframe_stops() {
     expect_paint(110, {.125f, .375f, .875f}, step_colors, "a second draft still samples the same key");
     rt.seek_animations(1.5);
     expect_paint(110, step_offsets, step_colors, "cancel restores the authored stop offsets without changing time");
+    ui::gradient_shape_preview color_draft{"paint", {{}, {}, ui::gradient_stop_color{1, 0x80FF00FFu}}};
+    rt.seek_animations(1.5, false, &color_draft);
+    expect_paint(110, step_offsets, {{{128, 0, 0, 0}, {128, 0, 255, 64}, {9, 52, 86, 0}}},
+        "a color draft changes just the requested stop, before multiplying keyframe tint and opacity");
+    color_draft.draft.color->color = 0x00FF00FFu;
+    rt.seek_animations(1.5, false, &color_draft);
+    expect_paint(110, step_offsets, {{{128, 0, 0, 0}, {128, 0, 255, 0}, {9, 52, 86, 0}}},
+        "editing only alpha resamples the brush at the same time, preserving the stop's RGB bytes");
+    rt.seek_animations(1.5);
+    expect_paint(110, step_offsets, step_colors, "discarding the color draft restores the brush without changing time");
     rt.seek_animations(2);
     expect_paint(60, {0.f, .625f, .9375f}, {{{255, 0, 0, 128}, {255, 255, 255, 255}, {171, 52, 18, 0}}},
         "step switches at the exact next key, including transparent RGB bytes");
