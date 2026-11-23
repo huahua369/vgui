@@ -1373,11 +1373,16 @@ extern "C" {
 	/*
 	 * Assigns an icon texture to a VGUI_BUTTON.  NULL clears it.
 	 * icon_w/icon_h set the display size inside the button (<= 0 uses the
-	 * texture's own size).  pos = LEFT (default) / RIGHT / TOP / BOTTOM.
+	 * source region's size, or the entire texture if uncropped). pos = LEFT
+	 * (default) / RIGHT / TOP / BOTTOM.
 	 * The button's intrinsic size then includes the icon, with an automatic
 	 * icon_gap between icon and text.
 	 */
 	VGUI_API void vgui_button_set_icon(vgui_widget* widget, vgui_texture* tex, int icon_w, int icon_h, vgui_button_icon_pos pos);
+	/* Button-local crop in texture pixels, independent of display size and UI scale.
+	 * Clamped to the texture bounds; width/height <= 0 extend to the corresponding
+	 * edge. All zeros use the entire texture. Changing the texture keeps the crop. */
+	VGUI_API void vgui_button_set_icon_source(vgui_widget* widget, int x, int y, int width, int height);
 	/* Overrides the default icon-to-text gap (style.button.icon_gap).
 	 * <= 0 falls back to the style value. */
 	VGUI_API void vgui_button_set_icon_gap(vgui_widget* widget, float gap);

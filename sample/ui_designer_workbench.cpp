@@ -1602,6 +1602,8 @@ struct designer_workbench::impl {
                     row.max_value = desc.max;
                     if (desc.key == "font_size") row.tooltip = strings.text("workbench.inspector.font.size_hint",
                         "0 uses the default size. Custom size: 4–256 logical pixels.");
+                    else if (desc.key.starts_with("icon_source_")) row.tooltip = strings.text("workbench.inspector.icon_source_hint",
+                        "Pixel coordinates in the icon image, from its top left. Width or height 0 extends to the image edge. These fields do not set the display size.");
                     break;
                 case value_type::color:
                     row.type = kit::property_type::color;

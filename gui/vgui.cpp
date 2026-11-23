@@ -948,6 +948,7 @@ struct vgui_widget
 	vgui_texture* icon_tex = nullptr;
 	int icon_w = 0;
 	int icon_h = 0;
+	glm::ivec4 icon_source{0}; // Texture pixels, not affected by UI scale.
 	vgui_button_icon_pos icon_pos = VGUI_BUTTON_ICON_LEFT;
 	float icon_gap = -1.0f;   // <0 表示使用 style.button.icon_gap
 	uint32_t icon_tint = 0;    // 0 表示不染色（用纹理原色）
@@ -5160,6 +5161,26 @@ static void vgui_menu_content_size(vgui_widget* w, float* out_w, float* out_h)
 	if (out_h) *out_h = height;
 }
 
+static glm::ivec4 vgui_button_icon_source_rect(const vgui_widget* w)
+{
+	const auto* tex = w->icon_tex;
+	if (!tex || tex->width <= 0 || tex->height <= 0) return glm::ivec4(0);
+	const auto& region = w->icon_source;
+	const int x = std::clamp(region.x, 0, tex->width - 1);
+	const int y = std::clamp(region.y, 0, tex->height - 1);
+	const int width = tex->width - x, height = tex->height - y;
+	return {x, y, region.z > 0 ? std::min(region.z, width) : width,
+		region.w > 0 ? std::min(region.w, height) : height};
+}
+
+static glm::ivec2 vgui_button_icon_display_size(const vgui_widget* w, glm::ivec4 src)
+{
+	if (src.z <= 0 || src.w <= 0) return glm::ivec2(0);
+	const auto scale = w->ctx->ui_scale;
+	return {w->icon_w > 0 ? w->icon_w : std::max(1, (int)std::lround(src.z * scale)),
+		w->icon_h > 0 ? w->icon_h : std::max(1, (int)std::lround(src.w * scale))};
+}
+
 static void vgui_image_source_size(vgui_widget* w, int* out_w, int* out_h)
 {
 	int sw = 0, sh = 0;
@@ -5691,14 +5712,10 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 		break;
 	case VGUI_BUTTON:
 	{
-		float iw = 0, ih = 0;
+		const auto icon = vgui_button_icon_display_size(w, vgui_button_icon_source_rect(w));
+		const float iw = (float)icon.x, ih = (float)icon.y;
 		float gap = w->icon_gap > 0 ? w->icon_gap : st.button.icon_gap;
 		bool horiz = (w->icon_pos == VGUI_BUTTON_ICON_LEFT || w->icon_pos == VGUI_BUTTON_ICON_RIGHT);
-		if (w->icon_tex && w->icon_tex->width > 0)
-		{
-			iw = w->icon_w > 0 ? w->icon_w : (float)w->icon_tex->width;
-			ih = w->icon_h > 0 ? w->icon_h : (float)w->icon_tex->height;
-		}
 		bool has_icon = iw > 0 && ih > 0;
 		bool has_text = !w->text.empty();
 		float extra = st.button.text_extra_width;
@@ -13352,9 +13369,9 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 
 	// --- icon + text layout ---
 	vgui_texture* tex = w->icon_tex;
-	int icon_w = w->icon_w > 0 ? w->icon_w : (tex ? tex->width : 0);
-	int icon_h = w->icon_h > 0 ? w->icon_h : (tex ? tex->height : 0);
-	const bool has_icon = tex && tex->width > 0 && tex->height > 0 && icon_w > 0 && icon_h > 0;
+	const auto src = vgui_button_icon_source_rect(w);
+	const auto [icon_w, icon_h] = vgui_button_icon_display_size(w, src);
+	const bool has_icon = icon_w > 0 && icon_h > 0;
 	const bool has_text = !w->text.empty();
 	const float gap = w->icon_gap > 0 ? w->icon_gap : bs.icon_gap;
 	bool rtl = vgui_is_rtl(ctx);
@@ -13445,7 +13462,6 @@ static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 			}
 			tint = vgui_ovg_color(tint ? tint : 0xFFFFFFFF);
 
-			const glm::ivec4 src{0, 0, tex->width, tex->height};
 			const glm::ivec4 dst{(int)std::lround(ix), (int)std::lround(iy),
 				(int)std::lround(iw), (int)std::lround(ih)};
 			if (!tex->cpu && tex->native.image.id != 0 && cb->add_texture)
@@ -18457,11 +18473,8 @@ extern "C" {
 	{
 		if (!widget || widget->kind != VGUI_BUTTON) return;
 		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
-		int ew = 0, eh = 0;
-		if (icon_w > 0) ew = (int)std::lround((float)icon_w * scale);
-		else if (tex && tex->width > 0) ew = (int)std::lround((float)tex->width * scale);
-		if (icon_h > 0) eh = (int)std::lround((float)icon_h * scale);
-		else if (tex && tex->height > 0) eh = (int)std::lround((float)tex->height * scale);
+		const int ew = icon_w > 0 ? std::max(1, (int)std::lround(icon_w * scale)) : 0;
+		const int eh = icon_h > 0 ? std::max(1, (int)std::lround(icon_h * scale)) : 0;
 		if (widget->icon_tex == tex && widget->icon_w == ew &&
 			widget->icon_h == eh && widget->icon_pos == pos)
 			return;
@@ -18473,6 +18486,15 @@ extern "C" {
 		widget->icon_h = eh;
 		widget->icon_pos = pos;
 		if (widget->ctx) widget->ctx->layout_dirty = true;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_button_set_icon_source(vgui_widget* widget, int x, int y, int width, int height)
+	{
+		if (!widget || widget->kind != VGUI_BUTTON) return;
+		const glm::ivec4 region{std::max(0, x), std::max(0, y), std::max(0, width), std::max(0, height)};
+		if (widget->icon_source == region) return;
+		widget->icon_source = region;
 		vgui_mark_dirty(widget);
 	}
 

@@ -973,6 +973,76 @@ void exercise_button_atlas()
     check(atlas_path() == path, "reopened atlas editor displayed the key instead of the path");
 }
 
+void exercise_button_icon_sources()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "icon-crops.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const auto first = workbench.add("button", root);
+    const auto second = workbench.add("button", root);
+    const auto filter = [&](const char* text) {
+        auto* search = workbench.widget("__property_search", VGUI_EDIT);
+        workbench.click(search);
+        vgui_edit_select_all(search);
+        check(vgui_input_text(ctx, text), "could not filter the icon inspector");
+        workbench.frame();
+    };
+    const auto select = [&](const std::string& node) {
+        workbench.bench.select(node);
+        workbench.frame();
+    };
+    const auto label = [&] { return std::string_view(vgui_widget_get_text(workbench.widget("property:icon_source_width", VGUI_LABEL))); };
+    const auto value = [&](std::string_view key) {
+        return std::string_view(vgui_edit_get_text(workbench.widget("property:" + std::string(key), VGUI_EDIT)));
+    };
+    filter("icon_source");
+    check(label() == "图标源区域宽度" && value("icon_source_width") == "0", "missing Chinese source label or legacy default");
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(label() == "Icon source width", "crop label did not update with the active language");
+
+    constexpr auto path = "images/toolbar.png";
+    for (const auto* id : {&first, &second}) {
+        select(*id);
+        filter("Button icon path");
+        workbench.set_text("icon", path);
+        filter("icon_source");
+        workbench.set_text("icon_source_width", "32");
+        workbench.set_text("icon_source_height", "24");
+    }
+    workbench.set_text("icon_source_y", "8");
+    const auto baseline = model.current();
+    auto* x = workbench.widget("property:icon_source_x", VGUI_EDIT);
+    workbench.click(x);
+    vgui_edit_select_all(x);
+    check(vgui_input_text(ctx, "32") && model.current().nodes.at(second).props.at("icon_source_x") == ui::value{32.},
+        "source X must apply without pressing Enter");
+    vgui_set_focus(ctx, nullptr);
+    workbench.frame();
+    const auto& props = model.current().nodes.at(second).props;
+    const auto key = std::get<std::string>(props.at("icon"));
+    check(model.current().nodes.at(first).props.at("icon") == ui::value{key} &&
+        model.current().resources.size() == 1 && model.current().resources.at(key) == path,
+        "two cropped buttons must share the same resource key");
+    check(props.at("icon_source_y") == ui::value{8.} && props.at("icon_source_width") == ui::value{32.} &&
+        props.at("icon_source_height") == ui::value{24.}, "inspector did not apply the complete source region");
+    const auto saved = model.current();
+    workbench.edit("Undo");
+    check(model.current() == baseline, "one undo did not restore the previous crop");
+    workbench.edit("Redo");
+    check(model.current() == saved, "redo did not restore the crop");
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && workbench.open_calls == 1 && model.current() == saved, "JSON save/reopen lost the crop or shared resource");
+    select(second);
+    filter("icon_source");
+    check(value("icon_source_x") == "32" && value("icon_source_y") == "8" && value("icon_source_height") == "24",
+        "reopened inspector did not display the saved crop");
+}
+
 void exercise_live_properties()
 {
     temp_dir directory;
@@ -2434,6 +2504,7 @@ int main()
         exercise_toolbar();
         exercise_workbench();
         exercise_button_atlas();
+        exercise_button_icon_sources();
         exercise_live_properties();
         exercise_property_favorites();
         exercise_text_color_picker();

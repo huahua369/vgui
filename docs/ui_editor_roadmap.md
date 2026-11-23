@@ -158,6 +158,21 @@ cmake --build <build-dir> --target vgui_ui_designer
 }
 ```
 
+### 按钮共享图标图集
+
+在按钮的 **外观** 里给多个按钮填写同一个 **按钮图标路径**，再分别设置 **图标源区域 X、Y、宽度、高度**。源区域以图片左上角为原点，单位是原图像素，不受画板缩放影响。宽或高为 `0` 时从起点延伸到对应图片边缘；超出的区域会限制在原图内，四项均省略（或均为 `0`）时显示整张图。**图标宽度 / 高度** 仍控制显示大小，为 `0` 时按截取后的对应像素尺寸自动计算。
+
+例如，文档 `resources` 登记 `"toolbar.icons": "icons/toolbar.png"` 后，两个按钮的 `props` 可分别写成：
+
+```json
+[
+  {"icon":"toolbar.icons","icon_source_x":0,"icon_source_y":0,"icon_source_width":32,"icon_source_height":32},
+  {"icon":"toolbar.icons","icon_source_x":32,"icon_source_y":0,"icon_source_width":32,"icon_source_height":32}
+]
+```
+
+运行时在同一页面按资源键共享纹理，只在绘制按钮时取不同区域。C++ 可用 `vgui_button_set_icon_source()` 设置。此设置与四态背景 `atlas` 相互独立，旧文档无需迁移。
+
 ### 装饰渐变控件
 
 在 **资源 → 新建控件 → 渐变** 创建。设计态可选中、移动和改尺寸；运行态不接收鼠标、触摸或键盘焦点，叠在按钮上也不会挡住输入。它没有子控件，不需要资源键。在 **渐变填充** 切换类型，点击「色标」预览条打开编辑器；弹窗显示当前色标数量，按偏移排列的滚动列表可精确选中相邻色标。调整偏移、颜色和透明度会实时预览，点外部提交，Esc 取消。

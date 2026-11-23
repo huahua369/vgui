@@ -480,6 +480,74 @@ void test_button_atlases() {
     }
 }
 
+void test_button_icon_sources() {
+    temp_dir temp;
+    constexpr int width = 96, height = 64;
+    const auto file = temp.path / "icons.rgba";
+    write_image(file, true, width, height);
+    ui::document doc;
+    ui::diagnostic error;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root",
+        "resources":{"icons":"icons.rgba"},"nodes":{
+            "root":{"type":"panel","props":{"layout":"column"},"children":["first","second","uncropped"]},
+            "first":{"type":"button","props":{"icon":"icons","icon_source_x":4,"icon_source_y":8,
+                "icon_source_width":24,"icon_source_height":20}},
+            "second":{"type":"button","props":{"icon":"icons","icon_source_x":80,"icon_source_y":40,
+                "icon_source_height":72,"icon_width":22}},
+            "uncropped":{"type":"button","props":{"icon":"icons"}}
+        }})", doc, &error), "decode three buttons that share one icon texture");
+    auto invalid = doc;
+    invalid.nodes.at("first").props["icon_source_x"] = -1.;
+    check(!ui::validate(invalid, &error) && error.path == "/nodes/first/props/icon_source_x", "reject negative source coordinates");
+
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create icon crop context");
+    image_loader loader;
+    loader.sizes = {{"icons", {width, height}}};
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1, loader.bindings(temp.path)) && rt.diagnostics().empty(), "mount icon crop fixture");
+    check(loader.calls == std::vector<image_call>{{ctx.get(), "icons", fs::canonical(file)}}, "shared icon texture must load only once");
+    loader.textures.clear();
+
+    static std::vector<ovg_image_r> draws;
+    static int uploads = 0;
+    uploads = 0;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = ++uploads; };
+    cb->image_destroy = [](rvg_t*, vg_image_t*) {};
+    cb->add_image = [](rvg_t*, ovg_image_r* img) { draws.push_back(*img); };
+    const auto verify_draw = [&](float scale, glm::ivec4 first, glm::ivec2 first_size) {
+        check(bool(rt.layout({240, 300, scale})), "lay out icon fixture");
+        vg->width = int(240 * scale);
+        vg->height = int(300 * scale);
+        cb->clear(vg.get());
+        draws.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(draws.size() == 3 && uploads == 1 && draws[0].img == draws[1].img && draws[0].img == draws[2].img,
+            "buttons must draw different regions of the same uploaded image");
+        check(draws[0].rc == first && draws[1].rc == glm::ivec4(80, 40, 16, 24) &&
+            draws[2].rc == glm::ivec4(0, 0, width, height), "source pixels, edge clipping, and full-texture fallback");
+        check(glm::ivec2(draws[0].dst.z, draws[0].dst.w) == first_size &&
+            glm::ivec2(draws[1].dst.z, draws[1].dst.w) == glm::ivec2(22 * scale, 24 * scale) &&
+            glm::ivec2(draws[2].dst.z, draws[2].dst.w) == glm::ivec2(width * scale, height * scale),
+            "auto icon size follows the source while explicit width and DPI affect only the destination");
+        float first_w = 0, legacy_w = 0;
+        vgui_widget_get_intrinsic_size(rt.widget("first"), &first_w, nullptr);
+        vgui_widget_get_intrinsic_size(rt.widget("uncropped"), &legacy_w, nullptr);
+        check(near(legacy_w - first_w, width * scale - first_size.x), "button measurement uses the same cropped icon size as paint");
+    };
+    verify_draw(1, {4, 8, 24, 20}, {24, 20});
+    verify_draw(2, {4, 8, 24, 20}, {48, 40});
+    vgui_button_set_icon_source(rt.widget("first"), 1000, 1000, 32, 32);
+    verify_draw(2, {95, 63, 1, 1}, {2, 2});
+    vgui_button_set_icon_source(rt.widget("first"), 0, 0, 0, 0);
+    verify_draw(1, {0, 0, width, height}, {width, height});
+    rt.unmount();
+    cb->clear(vg.get());
+    vgui_draw(ctx.get(), cb.get(), vg.get());
+}
+
 void test_collection_icons_and_actions() {
     temp_dir temp;
     const auto assets = temp.path / "assets";
@@ -1943,6 +2011,7 @@ int main(int argc, char** argv) {
         test_font_families();
         test_image_loading();
         test_button_atlases();
+        test_button_icon_sources();
         test_collection_icons_and_actions();
         std::puts("ui_design_runtime_test: ok");
         return 0;

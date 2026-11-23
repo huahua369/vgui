@@ -71,8 +71,10 @@ void apply_button_icon(vgui_widget* widget, const Access& props, vgui_texture* t
     const auto& position = props.text("icon_position");
     const auto pos = position == "right" ? VGUI_BUTTON_ICON_RIGHT : position == "top" ? VGUI_BUTTON_ICON_TOP :
         position == "bottom" ? VGUI_BUTTON_ICON_BOTTOM : VGUI_BUTTON_ICON_LEFT;
-    vgui_button_set_icon(widget, texture, static_cast<int>(std::lround(props.number("icon_width"))),
-        static_cast<int>(std::lround(props.number("icon_height"))), pos);
+    const auto pixel = [&](std::string_view key) { return static_cast<int>(std::lround(props.number(key))); };
+    vgui_button_set_icon(widget, texture, pixel("icon_width"), pixel("icon_height"), pos);
+    vgui_button_set_icon_source(widget, pixel("icon_source_x"), pixel("icon_source_y"),
+        pixel("icon_source_width"), pixel("icon_source_height"));
     if (props.has("icon_gap")) vgui_button_set_icon_gap(widget, props.number("icon_gap"));
     if (const auto color = props.color("icon_tint")) vgui_button_set_icon_tint(widget, primitive_theme_override(*color));
 }
