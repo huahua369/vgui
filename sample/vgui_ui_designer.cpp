@@ -167,11 +167,19 @@ public:
     const ui::session& history() const { return session_; }
     std::string_view selection() const { return workbench_.selection(); }
     bool preview_event(const SDL_Event& event) {
-        // Once a shell drag starts, only the shell may route its motion, release and Escape.
+        // An active drag-and-drop also owns keyboard events such as Escape.
         if (event.type != SDL_EVENT_WINDOW_FOCUS_LOST && vgui_drag_active(shell_)) return false;
-        // The first motion can cross the canvas before the list has started its drag.
-        if (event.type == SDL_EVENT_MOUSE_MOTION && (event.motion.state & SDL_BUTTON_LMASK) &&
-            workbench_.control_list_focused()) return false;
+        // The runtime preview must not steal mouse input from a shell press,
+        // even on the first motion into the canvas before a drag has started.
+        switch (event.type) {
+        case SDL_EVENT_MOUSE_MOTION:
+        case SDL_EVENT_MOUSE_BUTTON_DOWN:
+        case SDL_EVENT_MOUSE_BUTTON_UP:
+        case SDL_EVENT_MOUSE_WHEEL:
+            if (vgui_context_has_pointer_capture(shell_)) return false;
+            break;
+        default: break;
+        }
         // F10 belongs to the workbench even while a runtime input owns text focus.
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.key == SDLK_F10)
             return false;
@@ -4592,7 +4600,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             advance();
             ui::exercise_geometry(*win, shell.get(), editor.preview(), editor.history(), advance);
             ui::exercise_pages(*win, shell.get(), editor, advance, *picker, prompt, open_path, absolute_fixture);
-            ui::exercise_page_docking(*win, shell.get(), editor, advance);
+            ui::exercise_page_docking(*win, shell.get(), editor, advance, submitted_windows);
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
             exercise_image_button(*win, shell.get(), editor, advance);
             exercise_icon_region(*win, shell.get(), editor, advance, picker->sandbox);

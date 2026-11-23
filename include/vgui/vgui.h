@@ -2201,6 +2201,10 @@ extern "C" {
 	 * active drag is cancelled, then every button, hover, drag and menu state
 	 * is cleared.  Does nothing when no pointer interaction is running. */
 	VGUI_API void vgui_input_cancel(vgui_context* ctx);
+	/* True while this context owns a pointer press or drag, including before a
+	 * drag threshold is crossed. Hosts with nested contexts should keep routing
+	 * motion and release to the owner even when the pointer crosses another UI. */
+	VGUI_API int vgui_context_has_pointer_capture(const vgui_context* ctx);
 	VGUI_API void vgui_input_focus_next(vgui_context* ctx, int reverse);
 
 	/* R2-1 directional focus navigation for gamepad / remote hosts: moves

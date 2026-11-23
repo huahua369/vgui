@@ -1862,7 +1862,6 @@ void designer_workbench::set_dock_widths(designer_dock_widths widths) { impl_->s
 void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }
 void designer_workbench::select(std::string id) { impl_->select(std::move(id)); }
-bool designer_workbench::control_list_focused() const { return vgui_get_focus(impl_->ui) == impl_->controls; }
 const type_descriptor* designer_workbench::dragged_control(const vgui_drag_payload* payload) const {
     return impl_->dragged_control(payload);
 }

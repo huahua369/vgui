@@ -22364,14 +22364,16 @@ extern "C" {
 		vgui_flush_pending(ctx);
 	}
 
+	int vgui_context_has_pointer_capture(const vgui_context* ctx)
+	{
+		return ctx && (ctx->active || ctx->press_target || ctx->slider_drag ||
+			ctx->modal.drag != vgui_modal_state::DRAG_NONE || ctx->drag_kind != VGUI_DRAG_NONE);
+	}
+
 	void vgui_input_cancel(vgui_context* ctx)
 	{
 		if (!ctx) return;
-		const bool pointer_busy = ctx->active != nullptr ||
-			ctx->press_target != nullptr || ctx->slider_drag != nullptr ||
-			ctx->modal.drag != vgui_modal_state::DRAG_NONE;
-		const bool drag_busy = ctx->drag_kind != VGUI_DRAG_NONE;
-		if (!pointer_busy && !drag_busy)
+		if (!vgui_context_has_pointer_capture(ctx))
 		{
 			vgui_dock_state* st = vgui_dock_of(ctx->hot);
 			if (st && st->sash_hover >= 0)
@@ -22385,7 +22387,7 @@ extern "C" {
 		const bool was_in_input = ctx->in_input;
 		if (!was_in_input)
 			vgui_begin_input(ctx);
-		if (drag_busy && ctx->drag_kind != VGUI_DRAG_NONE)
+		if (ctx->drag_kind != VGUI_DRAG_NONE)
 			vgui_cancel_drag(ctx);
 
 		vgui_widget* pressed = ctx->press_target;

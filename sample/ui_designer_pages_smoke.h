@@ -5,6 +5,7 @@
 #include "ui_designer_preview.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -91,13 +92,26 @@ public:
         frame_();
     }
 
-    void drag(float x, float y, float to_x, float to_y) const {
+    void begin_drag(float x, float y) const {
         require_(vgui_hit_test(shell_, x, y) == dock_, "pointer does not hit the intended dock tab or title");
         motion(x, y, false);
         button(x, y, true);
-        motion(to_x, to_y, true);
-        button(to_x, to_y, false);
+    }
+
+    void move_drag(float x, float y) const {
+        motion(x, y, true);
         frame_();
+    }
+
+    void end_drag(float x, float y) const {
+        button(x, y, false);
+        frame_();
+    }
+
+    void drag(float x, float y, float to_x, float to_y) const {
+        begin_drag(x, y);
+        motion(to_x, to_y, true);
+        end_drag(to_x, to_y);
     }
 
 private:
@@ -649,7 +663,8 @@ void exercise_pages(os_window& win, vgui_context* shell, Editor& editor, const s
 // Run after exercise_pages and before exercise_export_isolation. Restore the
 // original center order and active page for the subsequent smoke checks.
 template <class Editor>
-void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, const std::function<void()>& frame) {
+void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, const std::function<void()>& frame,
+                           const int& submitted_windows) {
     std::string_view step = "setup";
     const auto require = [&](bool passed, std::string_view message) {
         if (!passed) throw std::runtime_error("Native page docking (" + std::string(step) + "): " + std::string(message));
@@ -706,7 +721,18 @@ void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, 
     select(first);
     const auto first_state = page_state();
     select(second);
+    const bool was_running = editor.preview().running();
+    editor.preview().set_running(true);
+    frame();
     const auto second_state = page_state();
+    const auto runtime_point = [&](float height_fraction) {
+        auto* canvas = find_page_smoke_widget(second_panel, "designer.preview.canvas");
+        const auto board = editor.preview().artboard_rect_px();
+        require(canvas && board, "runtime canvas is missing");
+        const glm::vec2 point{board->x + board->width / 2, board->y + board->height * height_fraction};
+        require(vgui_hit_test(shell, point.x, point.y) == canvas, "drag motion must land over the running artboard");
+        return point;
+    };
 
     step = "reorder center tabs";
     const auto first_margin = input.tab_rect(first).width * 0.75f;
@@ -722,9 +748,12 @@ void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, 
     step = "float the second page inside the editor";
     const auto center = input.center_rect();
     from = input.reveal_tab(second);
-    require(center.height / 2 > from.height, "center is too short to drop below the tab strip");
-    input.drag(from.x + from.width / 2, from.y + from.height / 2,
-        center.x + center.width / 2, center.y + center.height / 2);
+    const auto drop = runtime_point(0.22f);
+    input.begin_drag(from.x + from.width / 2, from.y + from.height / 2);
+    input.move_drag(drop.x, drop.y);
+    require(vgui_dock_dragging(dock) == second && submitted_windows == 1 && !vgui_dock_is_floating(dock, second),
+        "tab ghost must follow motion over the running artboard before release");
+    input.end_drag(drop.x, drop.y);
     std::erase(expected, second);
     const auto expect_floating = [&] {
         require(center_order() == expected && active() == first &&
@@ -740,8 +769,17 @@ void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, 
 
     step = "move the floating title in the lower center";
     from = input.tab_rect(second); // A floating panel's tab rectangle is its title bar.
-    input.drag(from.x + from.width / 4, from.y + from.height / 2,
-        center.x + center.width / 2, center.y + center.height * 0.65f);
+    const auto inside_float = runtime_point(0.4f);
+    input.begin_drag(from.x + from.width / 4, from.y + from.height / 2);
+    input.move_drag(inside_float.x, inside_float.y);
+    const auto during_move = floating_rect();
+    require(during_move.y > floated.y && submitted_windows == 1,
+        "floating frame must move and present before release over its running artboard");
+    input.move_drag(center.x + center.width / 2, center.y + center.height * 0.65f);
+    const auto during_second_move = floating_rect();
+    require(during_second_move.y != during_move.y && submitted_windows == 1,
+        "floating frame did not present a second, distinct drag position");
+    input.end_drag(center.x + center.width / 2, center.y + center.height * 0.65f);
     expect_floating();
     const auto moved = floating_rect();
     require(moved.y > floated.y && moved.width == floated.width && moved.height == floated.height,
@@ -755,6 +793,27 @@ void exercise_page_docking(os_window& win, vgui_context* shell, Editor& editor, 
         vgui_dock_get_panel(dock, second) == second_panel &&
         std::string_view(vgui_dock_get_title(dock, second)) == "absolute-form.vgui.json" && page_state() == second_state,
         "redocking changed the page's ID, title, order, document, history, selection or view");
+    step = "resize the outline across the runtime preview";
+    const auto left_width = [&] {
+        float width = 0;
+        require(vgui_dock_get_zone_rect(dock, VGUI_DOCK_LEFT, nullptr, nullptr, &width, nullptr), "outline dock is missing");
+        return width;
+    };
+    float left_x = 0;
+    require(vgui_dock_get_zone_rect(dock, VGUI_DOCK_LEFT, &left_x, nullptr, nullptr, nullptr), "outline dock is missing");
+    const float original_width = left_width();
+    const float sash_x = (left_x + original_width + input.center_rect().x) / 2;
+    const auto across = runtime_point(0.5f);
+    input.begin_drag(sash_x, across.y);
+    input.move_drag(across.x, across.y);
+    require(left_width() > original_width && submitted_windows == 1,
+        "the divider did not follow the pointer across the running artboard before release");
+    input.move_drag(sash_x, across.y);
+    input.end_drag(sash_x, across.y);
+    require(std::abs(left_width() - original_width) < 1.f && page_state() == second_state,
+        "the divider did not restore its width or changed the page state");
+    editor.preview().set_running(was_running);
+    frame();
     select(first);
     require(page_state() == first_state, "the other page changed during float and redock");
     select(initial_active);

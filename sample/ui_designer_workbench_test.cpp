@@ -501,11 +501,14 @@ void exercise_side_resize()
         check(a.x + a.w < b.x && vgui_hit_test(ctx, x, y) == dock, "dock divider does not have a hit region");
         vgui_input_mouse_move(ctx, x, y);
         check(vgui_context_get_cursor(ctx) == VGUI_CURSOR_SIZE_H, "hovering the divider did not change the pointer");
-        check(vgui_input_mouse_down(ctx, 1, x, y, 1) != 0, "dock divider did not accept a press");
+        check(!vgui_context_has_pointer_capture(ctx), "hover alone captured the pointer");
+        check(vgui_input_mouse_down(ctx, 1, x, y, 1) != 0 && vgui_context_has_pointer_capture(ctx),
+            "dock divider did not capture the pointer on press");
         vgui_input_mouse_move(ctx, x + delta, y);
         workbench.frame(); // The layout must update during the drag, not only on release.
         const float resized = zone(left).w;
         vgui_input_mouse_up(ctx, 1, x + delta, y, 1);
+        check(!vgui_context_has_pointer_capture(ctx), "dock divider kept pointer capture after release");
         vgui_input_mouse_move(ctx, x, y);
         workbench.frame();
         check(zone(left).w == resized, "the dock divider did not retain its width after release");
@@ -528,6 +531,7 @@ void exercise_side_resize()
     const float cancel_y = before_cancel.y + before_cancel.h * .5f;
     vgui_input_mouse_down(ctx, 1, cancel_x, cancel_y, 1);
     vgui_input_cancel(ctx); // The SDL backend uses this path on window focus loss.
+    check(!vgui_context_has_pointer_capture(ctx), "dock divider kept pointer capture after cancellation");
     vgui_input_mouse_move(ctx, cancel_x - 70, cancel_y);
     vgui_input_mouse_up(ctx, 1, cancel_x - 70, cancel_y, 1);
     workbench.frame();

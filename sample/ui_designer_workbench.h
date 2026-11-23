@@ -53,8 +53,6 @@ public:
     void set_page_active(bool active);
     std::string_view selection() const;
     void select(std::string id);
-    // Identify a built-in control drag from this workbench's own palette.
-    bool control_list_focused() const;
     const type_descriptor* dragged_control(const vgui_drag_payload*) const;
     bool insert_control(std::string_view type, std::string_view parent,
         std::optional<std::pair<double, double>> position);
