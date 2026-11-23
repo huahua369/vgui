@@ -7,6 +7,10 @@
 
 namespace vgui::ui_design {
 
+// Resolve a document-relative resource to a canonical regular file inside the project.
+// Returns an empty path for missing files or targets outside the project (including symlinks).
+std::filesystem::path resolve_project_resource(const std::filesystem::path& project_root, const std::string& relative);
+
 struct runtime_bindings {
     // Borrowed texture from ctx. Keep it alive through mount(); the mounted
     // tree retains assigned textures. nullptr means unavailable.

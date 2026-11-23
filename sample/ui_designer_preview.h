@@ -4,6 +4,7 @@
 #include "ui_designer_locale.h"
 #include "ui_designer_gradient_timeline.h"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -44,6 +45,16 @@ struct canvas_control_drop {
     std::optional<std::pair<double, double>> position; // X/Y in the parent's design units; empty for managed layout.
     pixel_rect hint; // Clipped shell-pixel bounds for the drag overlay.
 };
+
+using icon_source_rect = std::array<int, 4>; // X, Y, width, height in original image pixels.
+inline constexpr const char* icon_source_fields[] = {
+    "icon_source_x", "icon_source_y", "icon_source_width", "icon_source_height"
+};
+// Returns the modal panel or nullptr if the project image cannot be loaded. The
+// close callback receives a rectangle only for an actual confirmed change.
+vgui_widget* open_icon_region_picker(vgui_context*, const designer_strings&,
+    const std::filesystem::path& project_root, const std::string& relative_path,
+    icon_source_rect, std::function<void(std::optional<icon_source_rect>)> on_close);
 
 // Owner-thread UI. Destroy before its parent, the shell context and the GPU.
 // The strings provider must outlive the preview.

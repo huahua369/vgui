@@ -116,7 +116,8 @@ public:
               [this] { request(command::save_all); }, [this] { return can_save_all(); },
               [this] { request(command::import_font); },
               [this] { request(command::options); },
-              [this](ui::designer_theme theme) { pending_theme_ = theme; }}, strings_), dock_(workbench_.document_dock()) {
+              [this](ui::designer_theme theme) { pending_theme_ = theme; },
+              [this] { open_icon_region(); }}, strings_), dock_(workbench_.document_dock()) {
         vgui_context_get_theme(shell_, &dark_shell_theme_);
         apply_theme(ui::load_designer_theme(settings_path_));
         grid_settings_ = ui::load_designer_grid_settings(settings_path_);
@@ -133,6 +134,7 @@ public:
     }
 
     ~designer() {
+        cancel_icon_region();
         if (package_ && vgui_modal_panel(shell_) == package_->panel)
             vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
         vgui_dock_on_activate(dock_, nullptr, nullptr);
@@ -142,6 +144,10 @@ public:
 
     void request(command action, vgui_item_id page = 0) {
         if (chooser_ || pending_ != command::none || pending_tab_) return;
+        if (icon_region_) {
+            if (action != command::quit && action != command::close) return;
+            cancel_icon_region();
+        }
         if (package_ && vgui_modal_panel(shell_) == package_->panel) {
             if (action != command::quit) return;
             vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
@@ -515,6 +521,45 @@ private:
         return std::string(tr("file.untitled", "Untitled")) + " " + std::to_string(page.untitled_number);
     }
 
+    void open_icon_region() {
+        const auto* page = find_page(active_);
+        if (!page || chooser_ || icon_region_ || vgui_modal_active(shell_)) return;
+        const std::string node_id(workbench_.selection());
+        const auto& doc = session_.current();
+        const auto node = doc.nodes.find(node_id);
+        if (node == doc.nodes.end() || node->second.type != "button") return;
+        const auto icon = node->second.props.find("icon");
+        if (icon == node->second.props.end()) return;
+        const auto resource = doc.resources.find(std::get<std::string>(icon->second));
+        if (resource == doc.resources.end()) return;
+        ui::icon_source_rect authored{};
+        for (std::size_t i = 0; i < authored.size(); ++i) {
+            const auto it = node->second.props.find(ui::icon_source_fields[i]);
+            if (it != node->second.props.end()) authored[i] = static_cast<int>(std::lround(std::get<double>(it->second)));
+        }
+        icon_region_ = ui::open_icon_region_picker(shell_, strings_, resource_root(*page), resource->second, authored,
+            [this, page_id = page->id, rev = session_.revision(), node_id](std::optional<ui::icon_source_rect> region) {
+                icon_region_ = nullptr;
+                if (!region || page_id != active_ || rev != session_.revision() || node_id != workbench_.selection()) return;
+                std::vector<ui::edit> batch;
+                for (std::size_t i = 0; i < region->size(); ++i) {
+                    const auto value = (*region)[i];
+                    batch.emplace_back(ui::set_property{node_id, ui::icon_source_fields[i],
+                        value ? std::optional<ui::value>(double(value)) : std::nullopt});
+                }
+                ui::diagnostic error;
+                if (!session_.apply(batch, &error)) workbench_.status(describe(error));
+                else workbench_.status(tr("icon_region.applied", "Button icon region updated."));
+            });
+        if (!icon_region_)
+            workbench_.status(tr("icon_region.unavailable", "Cannot read this icon image. Check that it is a supported image inside the project."));
+    }
+
+    void cancel_icon_region() {
+        if (icon_region_ && vgui_modal_panel(shell_) == icon_region_)
+            vgui_modal_close(shell_, VGUI_MODAL_RESULT_CANCEL);
+    }
+
     std::optional<ui::canvas_control_drop> control_drop_at(const ui::type_descriptor& type, float x, float y) {
         const auto* page = find_page(active_);
         if (!page || !page->preview || page->last_model_revision != session_.revision()) return {};
@@ -563,6 +608,7 @@ private:
     void activate(vgui_item_id id) {
         auto* next = find_page(id);
         if (!next || id == active_) return;
+        cancel_icon_region();
         workbench_.finish_edit();
         if (auto* current = find_page(active_)) {
             // When a tab switch hides this canvas, keep it as the single
@@ -1123,6 +1169,7 @@ private:
     ui::designer_workbench workbench_;
     vgui_widget* dock_;
     ui::designer_options options_;
+    vgui_widget* icon_region_ = nullptr;
 };
 
 struct smoke_unsaved_prompt {
@@ -2854,6 +2901,104 @@ struct native_keyframe_input {
     }
 };
 
+void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
+                          const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native icon region: " + std::string(message));
+    };
+    const auto file = sandbox / "icon-region.vgui.json";
+    const auto source = sandbox / "icon-region.png";
+    require(fs::copy_file(fs::path(VGUI_SOURCE_DIR) / "sample/res/image-button-states.png", source), "copy 384 × 128 fixture");
+    auto doc = ui::make_document();
+    doc.resources = {{"icons", "icon-region.png"}, {"missing", "missing-region.png"}};
+    doc.nodes.at(doc.root).children = {"crop", "missing"};
+    doc.nodes.emplace("crop", ui::node{"button", "Crop", {{"x", 42.}, {"y", 42.}, {"width", 174.}, {"height", 66.},
+        {"icon", std::string("icons")}, {"icon_source_x", 16.}, {"icon_source_y", 8.}, {"icon_source_width", 48.},
+        {"icon_source_height", 32.}}, {}});
+    doc.nodes.emplace("missing", ui::node{"button", "Missing", {{"x", 260.}, {"y", 42.}, {"width", 130.}, {"height", 50.},
+        {"icon", std::string("missing")}}, {}});
+    require(ui::write_document(file, doc) && editor.open(file), "open crop fixture");
+    frame();
+    const native_keyframe_input input{win, shell, editor.preview(), frame, require};
+    const ui::native_menu_input menus(win, shell, frame);
+    auto* open = find_widget(vgui_root(shell), "designer.icon_region.open", VGUI_BUTTON);
+    require(open != nullptr && !vgui_widget_get_visible(open), "crop action must not appear for a panel");
+    const auto select_node = [&](const char* id) {
+        const auto* layout = editor.preview().snapshot();
+        const auto board = editor.preview().artboard_rect_px();
+        require(layout && board, "rendered fixture is missing");
+        const auto entry = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+        require(entry != layout->nodes.end() && entry->visible, "button is not on the board");
+        const auto& r = entry->visible_px;
+        const glm::vec2 point{board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+            board->y + (r.y + r.height / 2) * board->height / layout->pixel_height};
+        input.click_at(input.widget("designer.preview.canvas"), point);
+        require(editor.selection() == id && vgui_widget_get_visible(open) && vgui_widget_get_enabled(open), "crop action not enabled for the selected icon");
+    };
+    const auto& history = editor.history();
+    const auto initial = history.revision();
+    select_node("missing");
+    input.click(open);
+    require(!vgui_modal_active(shell) && history.current() == doc && history.revision() == initial, "missing image opened a picker or changed history");
+    select_node("crop");
+    const auto modal_widget = [&](const char* id, vgui_widget_kind kind) {
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto coords = [&] { return std::string_view(vgui_widget_get_text(modal_widget("designer.icon_region.coordinates", VGUI_LABEL))); };
+    const auto picker = [&] {
+        input.click(open);
+        auto* panel = vgui_modal_panel(shell);
+        require(panel && std::string_view(vgui_widget_get_id(panel)) == "designer.icon_region", "inspector did not open the crop modal");
+        require(coords().starts_with("X: 16     Y: 8     48 × 32 px"), "picker did not show the authored source area");
+    };
+    const auto drag = [&] {
+        const auto r = input.rect(modal_widget("designer.icon_region.image", VGUI_CUSTOM));
+        const auto scale = std::min(r.width / 384, r.height / 128);
+        const auto left = r.x + (r.width - 384 * scale) / 2, top = r.y + (r.height - 128 * scale) / 2;
+        require(scale > 1, "image test requires at least one device pixel per source pixel");
+        const glm::vec2 from{std::round(left + 149.5f * scale), std::round(top + 91.5f * scale)};
+        const glm::vec2 to{std::round(left + 64.5f * scale), std::round(top + 22.5f * scale)};
+        input.motion(to, from, 0);
+        input.button(true, from);
+        input.motion(from, to);
+        input.button(false, to);
+        frame();
+        require(coords().starts_with("X: 64     Y: 22     86 × 70 px"), "reverse drag did not map to the original image pixels");
+        require(history.current() == doc && history.revision() == initial && !history.can_undo(), "drag created a document edit before confirmation");
+    };
+    picker();
+    drag();
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(!vgui_modal_active(shell) && history.current() == doc && history.revision() == initial, "Escape did not cancel the draft");
+    picker();
+    drag();
+    input.click(modal_widget("designer.icon_region.ok", VGUI_BUTTON));
+    auto expected = doc;
+    auto& crop = expected.nodes.at("crop").props;
+    const ui::icon_source_rect region{64, 22, 86, 70};
+    for (std::size_t i = 0; i < region.size(); ++i) crop[ui::icon_source_fields[i]] = double(region[i]);
+    require(!vgui_modal_active(shell) && history.current() == expected && history.revision() == initial + 1 && history.can_undo(),
+        "confirmation must write only the four fields in one transaction");
+    menus.activate(menus.open(1), 0);
+    require(history.current() == doc && !history.can_undo() && history.can_redo(), "one undo did not restore the original rectangle");
+    picker();
+    input.click(modal_widget("designer.icon_region.whole", VGUI_BUTTON));
+    require(coords().starts_with("X: 0     Y: 0     384 × 128 px") && history.current() == doc, "whole image should only change the draft");
+    input.click(modal_widget("designer.icon_region.ok", VGUI_BUTTON));
+    expected = doc;
+    for (const auto* key : ui::icon_source_fields) expected.nodes.at("crop").props.erase(key);
+    require(history.current() == expected && history.can_undo(), "whole image did not clear the source rectangle");
+    menus.activate(menus.open(1), 0);
+    picker();
+    const auto unchanged = history.revision();
+    input.click(modal_widget("designer.icon_region.ok", VGUI_BUTTON));
+    require(history.current() == doc && history.revision() == unchanged && !history.can_undo(), "unmodified confirmation created history");
+    editor.request(command::close);
+    frame();
+}
+
 void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor,
                            const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other_page) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4450,6 +4595,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             ui::exercise_page_docking(*win, shell.get(), editor, advance);
             ui::exercise_export_isolation(*win, shell.get(), editor, advance, *picker, open_path);
             exercise_image_button(*win, shell.get(), editor, advance);
+            exercise_icon_region(*win, shell.get(), editor, advance, picker->sandbox);
             exercise_project_fonts(*win, shell.get(), editor, *picker, advance, absolute_fixture);
             require(editor.open(fs::path(VGUI_SOURCE_DIR) / "sample/res/control-gallery.vgui.json"), "could not open the core control gallery");
             advance();

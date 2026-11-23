@@ -399,23 +399,6 @@ pixel_rect intersect(pixel_rect a, pixel_rect b) {
     return {x, y, std::max(0.f, std::min(a.x+a.width,b.x+b.width)-x),
         std::max(0.f, std::min(a.y+a.height,b.y+b.height)-y)};
 }
-// Compare path components, not string prefixes. Canonicalization follows symlinks.
-bool inside(const std::filesystem::path& root, const std::filesystem::path& file) {
-    auto r = root.begin(), f = file.begin();
-    for (; r != root.end(); ++r, ++f) if (f == file.end() || *r != *f) return false;
-    return f != file.end();
-}
-
-std::filesystem::path resolve_resource(const std::filesystem::path& project_root, const std::string& relative) {
-    if (project_root.empty()) return {};
-    std::error_code ec;
-    const auto root = std::filesystem::canonical(project_root, ec);
-    if (ec || !std::filesystem::is_directory(root, ec)) return {};
-    auto file = std::filesystem::canonical(root / std::filesystem::u8path(relative), ec);
-    if (ec || !inside(root, file) || !std::filesystem::is_regular_file(file, ec)) return {};
-    return file;
-}
-
 // Runtime paint requires strictly increasing stops; persisted keys also require
 // the document's minimum gap. A float-rounded blend can fall one ULP short.
 void space_captured_stops(std::vector<gradient_stop>& stops) {
@@ -596,7 +579,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         if (bindings.load_embedded_image) {
             it->second = bindings.load_embedded_image(ctx_, key, bindings.user);
         } else if (bindings.load_image) {
-            const auto file = resolve_resource(bindings.project_root, doc.resources.at(key));
+            const auto file = resolve_project_resource(bindings.project_root, doc.resources.at(key));
             if (!file.empty()) it->second = bindings.load_image(ctx_, key, file, bindings.user);
         }
         return it->second;
@@ -618,7 +601,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         if (inserted && bindings.load_font) {
             if (is_builtin_font(key)) it->second = bindings.load_font(key, {}, bindings.user);
             else {
-                const auto file = resolve_resource(bindings.project_root, doc.resources.at(key));
+                const auto file = resolve_project_resource(bindings.project_root, doc.resources.at(key));
                 if (!file.empty()) it->second = bindings.load_font(key, file, bindings.user);
             }
         }
@@ -801,5 +784,21 @@ std::optional<layout_snapshot> runtime::layout(viewport view) {
         result.nodes.push_back(std::move(item));
     }
     return result;
+}
+
+std::filesystem::path resolve_project_resource(const std::filesystem::path& project_root, const std::string& relative) {
+    if (project_root.empty()) return {};
+    std::error_code ec;
+    const auto root = std::filesystem::canonical(project_root, ec);
+    if (ec || !std::filesystem::is_directory(root, ec)) return {};
+    auto file = std::filesystem::canonical(root / std::filesystem::u8path(relative), ec);
+    if (ec || !std::filesystem::is_regular_file(file, ec)) return {};
+    // Compare components, not string prefixes. Canonicalization follows symlinks.
+    auto f = file.begin();
+    for (const auto& part : root) {
+        if (f == file.end() || *f != part) return {};
+        ++f;
+    }
+    return f != file.end() ? file : std::filesystem::path{};
 }
 } // namespace vgui::ui_design

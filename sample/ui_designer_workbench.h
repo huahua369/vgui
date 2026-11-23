@@ -34,6 +34,7 @@ struct designer_commands {
     std::function<void()> import_font = {};
     std::function<void()> open_options = {};
     std::function<void(designer_theme)> set_theme = {};
+    std::function<void()> pick_icon_region = {};
 };
 
 // The shell context, working session and strings all outlive the workbench.

@@ -167,7 +167,7 @@ struct designer_workbench::impl {
     const designer_strings& strings;
     kit::editor_context editor;
     kit::command_registry commands;
-    std::function<void()> layout_changed;
+    std::function<void()> layout_changed, pick_icon_region;
     std::optional<kit::outliner_view> outliner{std::in_place};
     std::optional<kit::property_grid> grid{std::in_place};
     std::vector<vgui_widget*> buttons;
@@ -219,7 +219,7 @@ struct designer_workbench::impl {
     vgui_widget *shell = nullptr, *dock = nullptr, *controls = nullptr;
     std::array<vgui_widget*, std::size(sides)> side_buttons{};
     std::vector<vgui_widget*> outline_buttons;
-    vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
+    vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr, *icon_region_button = nullptr;
     outline_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
     vgui_widget *toolbar = nullptr, *menubar = nullptr, *quick_actions = nullptr;
@@ -230,7 +230,7 @@ struct designer_workbench::impl {
 
     impl(vgui_context* context, session& model, designer_commands file, const designer_strings& locale)
         : ui(context), history(model), strings(locale), editor(context),
-          layout_changed(std::move(file.layout_changed)), selected(model.current().root)
+          layout_changed(std::move(file.layout_changed)), pick_icon_region(std::move(file.pick_icon_region)), selected(model.current().root)
     {
         auto* root = vgui_root(ui);
         vgui_widget_set_layout(root, VGUI_LAYOUT_COLUMN);
@@ -261,6 +261,21 @@ struct designer_workbench::impl {
         vgui_dock_activate(dock, vgui_dock_find(dock, "structure"));
         auto* properties = page("inspector", sides[1].title, VGUI_DOCK_RIGHT);
         build_side_buttons();
+        if (pick_icon_region) {
+            icon_region_button = vgui_widget_add(properties, VGUI_BUTTON, nullptr);
+            vgui_widget_set_id(icon_region_button, "designer.icon_region.open");
+            vgui_widget_set_margin(icon_region_button, 6, 4, 6, 2);
+            bind_label(icon_region_button, {"icon_region.open", "Select Icon Region…"});
+            bind_label(icon_region_button, {"icon_region.open_hint", "Assign a button icon path, then drag a rectangle on the image."}, vgui_widget_set_tooltip);
+            vgui_widget_set_tooltip_when_disabled(icon_region_button, 1);
+            vgui_widget_on_event(icon_region_button, [](vgui_widget*, const vgui_event* event, void* user) {
+                auto& self = *static_cast<impl*>(user);
+                if (event->type == VGUI_EVENT_CLICK && self.page_active && !self.replaced) {
+                    self.finish_property_edit();
+                    self.pick_icon_region();
+                }
+            }, this);
+        }
         grid->build_with_labels(properties, inspector_labels());
         grid->set_change_listener([this](const std::string& key, const std::string& input) {
             finish_property_edit();
@@ -1789,6 +1804,14 @@ struct designer_workbench::impl {
             displayed_revision = history.revision();
         }
         const bool selection_changed = selected != outlined_selection;
+        if (icon_region_button) {
+            const auto& doc = history.current();
+            const auto item = doc.nodes.find(selected);
+            const bool button = item != doc.nodes.end() && item->second.type == "button";
+            vgui_widget_set_visible(icon_region_button, button);
+            vgui_widget_set_enabled(icon_region_button, button && doc.resources.contains(
+                std::get<std::string>(property_value(item->second, *find_property("button", "icon")))));
+        }
         if (selection_changed) {
             auto* tree = outliner->widget();
             const auto item = outline.at(selected).item;
