@@ -2281,6 +2281,86 @@ int smoke_gradient_keyframes() {
         // TimelineView's 1px inset, 150px header and 8px start gutter at this width.
         return std::pair{x + 159 + static_cast<float>(seconds / 3.2) * (width - 174), y + 1 + row};
     };
+    const auto state = [&] { return preview.capture_view().animation; };
+    require(!vgui_widget_get_checked(widget("designer.timeline.snap")), "frame snapping starts off");
+    click("designer.timeline.snap");
+    update();
+    const auto seek_with_ruler = [&](double time) {
+        const auto [x, y] = point_at(time, 10);
+        require(vgui_hit_test(shell.get(), x, y) == tracks, "ruler is hit-testable");
+        click_at(x, y);
+        update();
+    };
+    const auto precision_revision = model.revision();
+    seek_with_ruler(.647);
+    require(!state().playing && std::abs(state().time - 19. / 30.) < 1e-9 &&
+        near(vgui_widget_get_value(widget("designer.preview.animation.seek")), (19. / 30.) / 3.2),
+        "snapped ruler seeks to a 30 fps frame and synchronizes the preview transport");
+    auto* playhead_edit = widget("designer.timeline.playhead");
+    click("designer.preview.animation.play");
+    preview.render(.05f);
+    require(state().playing, "resume playback before submitting an exact time");
+    vgui_set_focus(shell.get(), playhead_edit);
+    press('A', VGUI_MOD_CTRL);
+    preview.render(.05f); // A tick while the visible time is selected must not overwrite the edit.
+    vgui_input_text(shell.get(), ".713125");
+    preview.render(.05f);
+    require(std::string_view(vgui_edit_get_text(playhead_edit)) == ".713125" && state().playing,
+        "the running clock does not overwrite an in-progress edit");
+    press(VGUI_KEY_ENTER);
+    update();
+    require(!state().playing && state().time == .713125 && !state().inspect_end,
+        "typed time bypasses snapping and pauses at the exact subframe");
+    submit(playhead_edit, "inf");
+    update();
+    require(state().time == .713125 && status == strings.text("timeline.playhead_invalid", ""),
+        "invalid input cannot move the playhead");
+    press(VGUI_KEY_ESCAPE);
+    require(std::string_view(vgui_edit_get_text(playhead_edit)) == "0.713125", "Escape restores the current time");
+    status.clear();
+    submit(playhead_edit, "2.4");
+    update();
+    require(state().time == 2.4 && state().inspect_end, "an exact time can inspect the shorter looping track's terminal key");
+    submit(playhead_edit, "90");
+    update();
+    require(state().time == 3.2 && state().inspect_end, "time above the ruler limits clamps to its exact end");
+    submit(playhead_edit, "-1");
+    update();
+    require(state().time == 0. && !state().inspect_end && model.revision() == precision_revision && model.current() == before,
+        "time below the ruler limits clamps to zero, with no history edits");
+
+    const auto initial_keys = keyframes("highlight");
+    const auto unsnapped_key_time = initial_keys[1].offset * 2.4;
+    const auto [key_x, key_y] = point_at(unsnapped_key_time, 37);
+    click_at(key_x, key_y);
+    update();
+    require(state().time == unsnapped_key_time, "selecting an existing subframe key does not snap its preview time");
+    const auto [target_x, target_y] = point_at(1.174, 37);
+    vgui_input_mouse_down(shell.get(), 1, key_x, key_y, 1);
+    vgui_input_mouse_move(shell.get(), target_x, target_y);
+    update();
+    require(model.revision() == precision_revision, "snapped drag stays transient until release");
+    vgui_input_mouse_up(shell.get(), 1, target_x, target_y, 1);
+    update();
+    require(model.revision() == precision_revision + 1 && std::abs(keyframes("highlight")[1].offset * 2.4 - 35. / 30.) < 1e-9 &&
+        std::abs(state().time - 35. / 30.) < 1e-9, "drag snaps only the chosen key and updates the playhead in one edit");
+    require(model.undo() && model.current() == before, "one undo restores the original subframe key time");
+    update();
+    submit(playhead_edit, ".713125");
+    update();
+    click("designer.timeline.add");
+    update();
+    const auto added = keyframes("highlight");
+    require(added.size() == initial_keys.size() + 1 && std::abs(added[1].offset * 2.4 - 21. / 30.) < 1e-9,
+        "Add Key snaps the insertion while the exact seek remains available");
+    require(model.undo() && model.current() == before, "undo the snapped insertion");
+    update();
+    click("designer.timeline.snap");
+    update();
+    seek_with_ruler(.647);
+    require(near(state().time, .647) && std::abs(state().time - 19. / 30.) > .01,
+        "turning off snapping restores free ruler positioning");
+
     const auto [ruler_x, ruler_y] = point_at(.6, 10);
     require(vgui_hit_test(shell.get(), ruler_x, ruler_y) == tracks, "ruler is hit-testable");
     click_at(ruler_x, ruler_y);
@@ -2344,14 +2424,22 @@ int smoke_gradient_keyframes() {
     const auto before_resize = keyframes("highlight");
     auto* duration_edit = find_widget(preview.widget(), "designer.timeline.duration_edit", VGUI_EDIT);
     require(duration_edit != nullptr, "timeline exposes a duration editor");
-    submit(duration_edit, "3.6");
+    submit(duration_edit, "3.61");
     update();
-    require(model.current().nodes.at("highlight").props.at("gradient_animation_duration") == ui::value{3.6},
+    require(model.current().nodes.at("highlight").props.at("gradient_animation_duration") == ui::value{3.61},
         "editing timeline duration updates the selected gradient property");
     const auto resized = keyframes("highlight");
     require(resized.size() == before_resize.size() &&
         std::ranges::equal(resized, before_resize, [&](const auto& a, const auto& b) { return near(a.offset, b.offset); }),
         "duration editing preserves normalized keyframe timing");
+    click("designer.timeline.snap");
+    update();
+    submit(playhead_edit, "3.61");
+    update();
+    require(state().time == 3.61 && state().inspect_end,
+        "a terminal key outside the 30 fps grid can still be inspected exactly");
+    click("designer.timeline.snap");
+    update();
     click("designer.timeline.loop");
     update();
     require(model.current().nodes.at("highlight").props.at("gradient_animation_loop") == ui::value{false},

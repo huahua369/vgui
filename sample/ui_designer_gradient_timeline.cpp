@@ -8,6 +8,7 @@
 #include <vgui/editor/timeline_view.h>
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <map>
@@ -19,6 +20,7 @@ namespace kit = vgui_editor_kit;
 namespace {
 constexpr auto property_key = "gradient_animation_keyframes";
 constexpr double ruler_min_duration = .1;
+constexpr double ruler_frame_rate = 30.;
 using id = kit::object_id;
 
 const value& property(const node& item, std::string_view key) {
@@ -54,6 +56,7 @@ struct designer_gradient_timeline::impl {
     std::function<void()> selection_changed;
     std::function<std::optional<capture_playhead>()> preview_time;
     vgui_widget *panel, *add, *capture, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
+    vgui_widget *snap, *time_label, *time_edit;
     vgui_widget *stops_button, *stops_popup = nullptr, *stops_reset = nullptr, *stops_info = nullptr;
     kit::gradient_editor stop_editor;
     vgui_widget* geometry_popup = nullptr;
@@ -88,8 +91,8 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_id(panel, "designer.timeline");
         vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
-        vgui_widget_set_size(panel, 0, 176);
-        vgui_widget_set_min_size(panel, 0, 104);
+        vgui_widget_set_size(panel, 0, 208);
+        vgui_widget_set_min_size(panel, 0, 136);
         vgui_widget_set_padding(panel, 5, 3, 5, 3);
         vgui_widget_set_gap(panel, 3);
         vgui_widget_set_visible(panel, 0);
@@ -113,11 +116,24 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_id(loop_widget, "designer.timeline.loop");
         vgui_widget_set_size(loop_widget, 72, 22);
         vgui_widget_on_value(loop_widget, on_loop_value, this);
-        info = vgui_widget_add(header, VGUI_LABEL, nullptr);
+        auto* positioning = row(panel);
+        snap = vgui_widget_add(positioning, VGUI_CHECKBOX, nullptr);
+        vgui_widget_set_id(snap, "designer.timeline.snap");
+        vgui_widget_on_value(snap, [](vgui_widget* w, float, void* user) {
+            static_cast<impl*>(user)->timeline.set_snap_enabled(vgui_widget_get_checked(w) != 0);
+        }, this);
+        time_label = vgui_widget_add(positioning, VGUI_LABEL, nullptr);
+        time_edit = vgui_widget_add(positioning, VGUI_EDIT, nullptr);
+        vgui_widget_set_id(time_edit, "designer.timeline.playhead");
+        vgui_widget_set_size(time_edit, 108, 26);
+        vgui_widget_set_min_size(time_edit, 0, 0);
+        vgui_widget_on_event(time_edit, on_time_event, this);
+        info = vgui_widget_add(positioning, VGUI_LABEL, nullptr);
         vgui_widget_set_grow(info, 1);
         timeline.build(panel);
         timeline.set_transport_visible(false);
         timeline.set_clipboard_shortcuts_enabled(false);
+        timeline.set_frame_rate(ruler_frame_rate);
         timeline.set_snap_enabled(false);
         timeline.set_zoom_limits(1, 8000);
         vgui_widget_set_id(timeline.widget(), "designer.timeline.tracks");
@@ -147,7 +163,7 @@ struct designer_gradient_timeline::impl {
         stops_button = button(fields, "designer.timeline.stops");
         vgui_widget_set_tooltip_when_disabled(stops_button, 1);
         timeline.set_keyframe_edit_listener([this](const auto& before, const auto& after) { edit_keys(before, after); });
-        timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek(seconds, false); });
+        timeline.set_playhead_listener([this](double seconds) { if (!updating && !tracks.empty()) seek_ruler(seconds); });
         timeline.set_keyframe_reselect_listener([this](const auto& key) { if (!rejected) seek_key(key); });
         timeline.set_change_listener([this] { vgui_widget_mark_dirty(timeline.widget()); });
         timeline.set_selection_listener([this](const auto&) {
@@ -232,6 +248,42 @@ struct designer_gradient_timeline::impl {
         }
     }
 
+    void seek_ruler(double seconds) {
+        // At a track's exact terminal time, inspect its last pose before the loop resets.
+        const bool terminal = std::ranges::any_of(model, [seconds](const auto& layer) { return layer.duration == seconds; });
+        seek(seconds, terminal);
+    }
+
+    void refresh_time_text(double time, bool force = false) {
+        // During playback, don't overwrite the user's text or selection while editing.
+        if (!force && vgui_get_focus(shell) == time_edit) return;
+        char text[48];
+        const auto value = std::to_chars(text, text + sizeof(text) - 1, time, std::chars_format::general, 9);
+        if (value.ec != std::errc()) return;
+        *value.ptr = '\0';
+        if (std::string_view(text) != vgui_edit_get_text(time_edit)) vgui_edit_set_text(time_edit, text);
+    }
+
+    static void on_time_event(vgui_widget* w, const vgui_event* e, void* user) {
+        auto& self = *static_cast<impl*>(user);
+        if (e->type == VGUI_EVENT_CANCEL) {
+            self.refresh_time_text(self.timeline.playhead(), true);
+        } else if (e->type == VGUI_EVENT_SUBMIT && self.visible && !self.tracks.empty()) {
+            auto text = std::string_view(vgui_edit_get_text(w));
+            const auto first = text.find_first_not_of(" \t\r\n");
+            if (first != text.npos) text = text.substr(first, text.find_last_not_of(" \t\r\n") - first + 1);
+            double seconds = 0;
+            const auto parsed = std::from_chars(text.data(), text.data() + text.size(), seconds);
+            if (parsed.ec != std::errc() || parsed.ptr != text.data() + text.size() || !std::isfinite(seconds)) {
+                if (self.notify) self.notify(self.tr("timeline.playhead_invalid", "Enter a valid time in seconds."));
+                return;
+            }
+            seconds = std::clamp(seconds, 0., self.timeline.duration());
+            self.seek_ruler(seconds); // Exact input bypasses pointer snapping, even at the current time.
+            self.refresh_time_text(seconds, true);
+        }
+    }
+
     void refresh_language() {
         vgui_widget_set_text(add, tr("timeline.add", "Add Key"));
         vgui_widget_set_text(capture, tr("timeline.capture", "Capture Key"));
@@ -244,6 +296,12 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_text(fit, tr("timeline.fit", "Fit Time"));
         duration_box.set_label(tr("timeline.duration", "Duration"));
         vgui_widget_set_text(loop_widget, tr("timeline.loop", "Loop"));
+        vgui_widget_set_text(snap, tr("timeline.snap", "Snap · 30 fps"));
+        vgui_widget_set_tooltip(snap, tr("timeline.snap_hint", "Snap ruler and keyframe gestures to the nearest 30 fps frame."));
+        const auto* time_name = tr("timeline.playhead", "Playhead (s)");
+        vgui_widget_set_text(time_label, time_name);
+        vgui_widget_set_a11y_name(time_edit, time_name);
+        vgui_widget_set_tooltip(time_edit, tr("timeline.playhead_hint", "Enter an exact time in seconds and press Enter to pause and seek without snapping."));
         timeline.set_track_header(tr("timeline.tracks", "Tracks"));
         vgui_widget_set_a11y_name(timeline.widget(), tr("timeline.title", "Gradient Timeline"));
         vgui_widget_set_tooltip(timeline.widget(), tr("timeline.hint", "Drag the ruler to preview. Drag a diamond to move a key. Scroll to see more tracks."));
@@ -296,6 +354,8 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_enabled(copy, has_key);
         vgui_widget_set_enabled(paste, has_track && !clipboard.empty());
         vgui_widget_set_enabled(fit, !tracks.empty());
+        vgui_widget_set_enabled(snap, !tracks.empty());
+        vgui_widget_set_enabled(time_edit, !tracks.empty());
         const char* help = tr("timeline.select", "Select a key to edit its pose");
         if (tracks.empty()) help = tr("timeline.empty", "Set a gradient's animation to Keyframes to add a track here.");
         char time[96];
@@ -985,6 +1045,7 @@ void designer_gradient_timeline::show_time(double time) {
     p_->updating = true;
     p_->timeline.set_playhead(time);
     p_->updating = false;
+    p_->refresh_time_text(p_->timeline.playhead());
 }
 std::optional<shape_keyframe> designer_gradient_timeline::selected_shape_key() const { return p_->selected_shape_key(); }
 void designer_gradient_timeline::edit_shape(const shape_keyframe& key, const keyframe_shape& shape) {
