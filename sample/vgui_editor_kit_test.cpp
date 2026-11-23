@@ -15501,7 +15501,8 @@ static int test_file_selector()
 	namespace fs = std::filesystem;
 
 	/* ---- static enumerate(): folders first, sorted, glob-filtered ---- */
-	fs::path dir = fs::temp_directory_path() / "vgui_file_selector_test";
+	const fs::path dir = fs::temp_directory_path() / "vgui_file_selector_test";
+	const std::string location = dir.string(); // The dialog descriptor borrows this string until show().
 	std::error_code ec;
 	fs::remove_all(dir, ec);  // start clean even if a previous run left files
 	fs::create_directories(dir, ec);
@@ -15551,7 +15552,7 @@ static int test_file_selector()
 		selector_result result;
 		vgui_file_dialog_desc desc;
 		vgui_file_dialog_desc_init(&desc);
-		desc.default_location = dir.string().c_str();
+		desc.default_location = location.c_str();
 		desc.filters = nullptr;
 		desc.filter_count = 0;
 		desc.accept_label = "Choose";
@@ -15563,7 +15564,7 @@ static int test_file_selector()
 		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: second show rejected"); }
 		if (result.calls != 0)
 		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: no callback before result"); }
-		if (sel.current_path().empty())
+		if (sel.current_path() != location)
 		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: navigated to seed folder"); }
 
 		/* Select the first file entry, then click OK. */
@@ -15602,7 +15603,7 @@ static int test_file_selector()
 		selector_result result;
 		vgui_file_dialog_desc desc;
 		vgui_file_dialog_desc_init(&desc);
-		desc.default_location = dir.string().c_str();
+		desc.default_location = location.c_str();
 		if (sel.show(VGUI_FILE_DIALOG_FOLDER, &desc, &on_selector_result, &result) != 1)
 		{ vgui_destroy(ui); fs::remove_all(dir, ec); return fail("file selector: folder show accepted"); }
 		vgui_layout(ui);
@@ -15626,7 +15627,7 @@ static int test_file_selector()
 			sel.build(ui);
 			vgui_file_dialog_desc desc;
 			vgui_file_dialog_desc_init(&desc);
-			desc.default_location = dir.string().c_str();
+			desc.default_location = location.c_str();
 			sel.show(VGUI_FILE_DIALOG_OPEN, &desc, &on_selector_result, &result);
 		}
 		vgui_update(ui, 1.0f / 60.0f);
