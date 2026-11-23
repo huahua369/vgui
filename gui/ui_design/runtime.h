@@ -75,6 +75,14 @@ struct animation_span {
     bool loops = false;
 };
 
+// Capture a serializable pose using the same sampler as runtime::seek_animations.
+// Supply a validated track and its authored geometry/stops; time is local
+// seconds in [0, duration], with the caller resolving playback loop boundaries.
+gradient_keyframe capture_gradient_pose(std::string_view kind,
+    const std::array<double, gradient_geometry_channels.size()>& authored,
+    std::span<const gradient_stop> stops, std::span<const gradient_keyframe> keys,
+    double time, double duration);
+
 // Internal C++ adapter. Use on the VGUI owner thread with a dedicated context
 // whose built-in root retains its default layout and padding. The caller owns
 // the context; it must outlive runtime and all its mounts. Callbacks must not

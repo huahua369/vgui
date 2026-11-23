@@ -2,12 +2,29 @@
 
 #include "model.h"
 
+#include <cmath>
+
 namespace vgui::ui_design::detail {
 
 inline constexpr std::string_view gradient_kinds[] = {"linear", "radial", "sweep"};
 inline constexpr std::string_view gradient_extends[] = {"pad", "repeat", "reflect"};
 inline constexpr std::string_view gradient_animations[] = {"none", "shine", "color", "keyframes"};
 inline constexpr std::string_view gradient_keyframe_interpolations[] = {"step", "linear", "smooth"};
+// Match the float representation and tolerances of vgui_gradient_set.
+template<class Coordinate>
+const char* gradient_shape_error(std::string_view kind, Coordinate geometry, bool keyed)
+{
+    using axis = gradient_geometry_axis;
+    if (kind == "linear" && std::hypot(geometry(axis::end_x) - geometry(axis::start_x),
+            geometry(axis::end_y) - geometry(axis::start_y)) < 0.0001f)
+        return keyed ? "linear keyframe start and end points must be different" : "linear start and end points must be different";
+    if (kind == "sweep" && std::abs(geometry(axis::end_angle) - geometry(axis::start_angle)) < 0.001f)
+        return keyed ? "sweep keyframe angles must be different" : "sweep angles must be different";
+    if (kind == "radial" && geometry(axis::outer_radius) <= geometry(axis::inner_radius))
+        return "outer radius must be larger than inner radius";
+    return nullptr;
+}
+
 inline property_descriptor gradient_geometry_property(gradient_geometry_axis axis, std::string_view label, double fallback)
 {
     const auto& channel = gradient_geometry_channels[static_cast<std::size_t>(axis)];

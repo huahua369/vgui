@@ -2,11 +2,13 @@
 #include "primitive_runtime.h"
 #include "collection_runtime.h"
 #include "container_runtime.h"
+#include "gradient_schema.h"
 #include "../vgui_internal.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdio>
 #include <functional>
 #include <limits>
 #include <map>
@@ -160,6 +162,17 @@ struct gradient_key {
     std::vector<gradient_key_stop> palette; // Empty uses the widget's base palette.
 };
 
+gradient_key resolve_gradient_key(const gradient_keyframe& key, const gradient_geometry_values& authored) {
+    using easing = gradient_key::easing;
+    const auto interpolation = key.interpolation == "step" ? easing::step :
+        key.interpolation == "smooth" ? easing::smooth : easing::linear;
+    gradient_key resolved{key.offset, interpolation, key_pose(key, authored), {}};
+    resolved.palette.reserve(key.stops.size());
+    for (const auto& stop : key.stops)
+        resolved.palette.push_back(key_stop({stop.offset, *parse_text_color(stop.color)}));
+    return resolved;
+}
+
 struct gradient_key_sample {
     gradient_key_pose pose;
     const gradient_key& start;
@@ -185,6 +198,13 @@ gradient_key_sample sample_gradient_keys(std::span<const gradient_key> keys, dou
     for (std::size_t i = 0; i < pose.geometry.size(); ++i)
         pose.geometry[i] = std::lerp(pose.geometry[i], end.geometry[i], t);
     return {pose, start, *next, t};
+}
+
+vgui_gradient_stop sample_gradient_stop(const gradient_key_sample& sample, std::span<const gradient_key_stop> base,
+        std::size_t index) {
+    const auto& from = sample.start.palette.empty() ? base[index] : sample.start.palette[index];
+    const auto& to = sample.end.palette.empty() ? base[index] : sample.end.palette[index];
+    return blend_key_stop(from, to, sample.blend);
 }
 
 vgui_color tint_color(vgui_color source, const gradient_key_pose& pose) {
@@ -218,15 +238,7 @@ struct gradient_animation {
         base_palette.reserve(source.stops.size());
         for (const auto& stop : source.stops) base_palette.push_back(key_stop(stop));
         keys.reserve(decoded.size());
-        using easing = gradient_key::easing;
-        for (const auto& key : decoded) {
-            const auto interpolation = key.interpolation == "step" ? easing::step :
-                key.interpolation == "smooth" ? easing::smooth : easing::linear;
-            auto& resolved = keys.emplace_back(key.offset, interpolation, key_pose(key, authored));
-            resolved.palette.reserve(key.stops.size());
-            for (const auto& stop : key.stops)
-                resolved.palette.push_back(key_stop({stop.offset, *parse_text_color(stop.color)}));
-        }
+        for (const auto& key : decoded) keys.push_back(resolve_gradient_key(key, authored));
     }
 
     double loop_time(double seconds) const {
@@ -272,10 +284,8 @@ struct gradient_animation {
                 const float sampled = static_cast<float>(pose.geometry[i]);
                 paint.*gradient_geometry_members[i] = draft ? (*draft)[i].value_or(sampled) : sampled;
             }
-            const auto& from = key.start.palette.empty() ? base_palette : key.start.palette;
-            const auto& to = key.end.palette.empty() ? base_palette : key.end.palette;
             for (std::size_t i = 0; i < stops.size(); ++i) {
-                frame[i] = blend_key_stop(from[i], to[i], key.blend);
+                frame[i] = sample_gradient_stop(key, base_palette, i);
                 frame[i].color = tint_color(frame[i].color, pose);
             }
             if (!vgui_gradient_set(widget, &paint, frame.data(), stops.size())) {
@@ -396,6 +406,69 @@ std::filesystem::path resolve_resource(const std::filesystem::path& project_root
     if (ec || !inside(root, file) || !std::filesystem::is_regular_file(file, ec)) return {};
     return file;
 }
+
+// Runtime paint requires strictly increasing stops; persisted keys also require
+// the document's minimum gap. A float-rounded blend can fall one ULP short.
+void space_captured_stops(std::vector<gradient_stop>& stops) {
+    for (std::size_t i = 1; i < stops.size(); ++i) {
+        const auto prev = stops[i - 1].offset;
+        auto& offset = stops[i].offset;
+        if (offset - prev >= gradient_stop_min_gap) continue;
+        offset = prev + gradient_stop_min_gap;
+        if (offset - prev < gradient_stop_min_gap) offset = std::nextafter(offset, 2.f);
+    }
+    if (stops.back().offset <= 1.f) return;
+    stops.back().offset = 1.f;
+    for (std::size_t i = stops.size() - 1; i > 0; --i) {
+        const auto next = stops[i].offset;
+        auto& offset = stops[i - 1].offset;
+        if (next - offset >= gradient_stop_min_gap) break;
+        offset = next - gradient_stop_min_gap;
+        if (next - offset < gradient_stop_min_gap) offset = std::nextafter(offset, -1.f);
+    }
+}
+}
+
+gradient_keyframe capture_gradient_pose(std::string_view kind, const gradient_geometry_values& authored,
+        std::span<const gradient_stop> stops, std::span<const gradient_keyframe> keys, double time, double duration) {
+    gradient_keyframe result;
+    auto geometry = authored;
+    if (keys.empty()) {
+        result.stops.assign(stops.begin(), stops.end());
+    } else {
+        std::vector<gradient_key> resolved;
+        resolved.reserve(keys.size());
+        for (const auto& key : keys) resolved.push_back(resolve_gradient_key(key, authored));
+        const auto sample = sample_gradient_keys(resolved, time, duration);
+        const auto& pose = sample.pose;
+        result.x = pose.x;
+        result.y = pose.y;
+        result.opacity = pose.opacity;
+        char tint[8];
+        std::snprintf(tint, sizeof(tint), "#%02X%02X%02X", unsigned(color_byte(float(pose.tint[0]))),
+            unsigned(color_byte(float(pose.tint[1]))), unsigned(color_byte(float(pose.tint[2]))));
+        result.tint = tint;
+        using easing = gradient_key::easing;
+        result.interpolation = sample.start.interpolation == easing::step ? "step" :
+            sample.start.interpolation == easing::smooth ? "smooth" : "linear";
+        const auto coordinate = [&](gradient_geometry_axis axis) { return float(pose.geometry[std::size_t(axis)]); };
+        if (!detail::gradient_shape_error(kind, coordinate, true)) geometry = pose.geometry;
+
+        std::vector<gradient_key_stop> base;
+        base.reserve(stops.size());
+        for (const auto& stop : stops) base.push_back(key_stop({stop.offset, *parse_text_color(stop.color)}));
+        result.stops.reserve(stops.size());
+        for (std::size_t i = 0; i < stops.size(); ++i) {
+            const auto stop = sample_gradient_stop(sample, base, i);
+            char rgba[10];
+            std::snprintf(rgba, sizeof(rgba), "#%06X%02X", unsigned(stop.color & 0xffffffu), unsigned(stop.color >> 24));
+            result.stops.push_back({stop.offset, rgba});
+        }
+        space_captured_stops(result.stops);
+    }
+    for (std::size_t i = 0; i < result.geometry.size(); ++i)
+        if (gradient_geometry_channels[i].applies_to(kind)) result.geometry[i] = geometry[i];
+    return result;
 }
 
 struct runtime::mounted_tree {

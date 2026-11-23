@@ -726,7 +726,11 @@ struct designer_preview::impl {
         vgui_custom_set_draw(canvas, draw_canvas, this);
         if (commit_keys) timeline = std::make_unique<designer_gradient_timeline>(panel, strings, std::move(commit_keys),
             [this](double time, bool endpoint) { seek_playhead(time, endpoint); }, notify,
-            [this] { cancel_shape_edit(); mark_canvas(); });
+            [this] { cancel_shape_edit(); mark_canvas(); },
+            [this]() -> std::optional<capture_playhead> {
+                if (!run) return {};
+                return capture_playhead{playback.time, playback.inspect_end};
+            });
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);

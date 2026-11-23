@@ -23,6 +23,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdio>
 #include <deque>
@@ -2286,11 +2287,23 @@ int smoke_gradient_keyframes() {
     update();
     require(preview.running() && !preview.capture_view().animation.playing && near(preview.capture_view().animation.time, .6) &&
         model.current() == before && !model.dirty(), "ruler seeks and pauses without editing the page");
+    const auto [insert_x, insert_y] = point_at(.6, 37);
+    click_at(insert_x, insert_y, 2);
+    update();
+    const auto double_clicked = keyframes("highlight");
+    require(double_clicked.size() == 4 && near(double_clicked[1].offset * 2.4, .6) &&
+        double_clicked[1] == ui::gradient_keyframe{.offset = double_clicked[1].offset},
+        "double-click inserts a base key, not a sampled pose");
+    require(model.undo() && model.current() == before, "undo the double-click insertion");
+    update();
+    click_at(ruler_x, ruler_y);
+    update();
     click("designer.timeline.add");
     update();
     auto frames = keyframes("highlight");
-    require(frames.size() == 4 && near(frames[1].offset * 2.4, .6) && keyframes("tint").size() == 4,
-        "add writes the chosen track, not its neighbour");
+    require(frames.size() == 4 && near(frames[1].offset * 2.4, .6) && keyframes("tint").size() == 4 &&
+        frames[1] == ui::gradient_keyframe{.offset = frames[1].offset},
+        "Add Key inserts a base key in the chosen track, not a sampled pose or a key in its neighbour");
     submit(widget("designer.timeline.x_edit"), ".25");
     update();
     require(near(keyframes("highlight")[1].x, .25), "editing a numeric pose field updates the selected key");
@@ -2523,6 +2536,25 @@ int smoke_gradient_keyframes() {
     update();
     require(model.revision() == palette_revision && model.current() == palette_doc &&
         status == strings.text("timeline.paste_stops", ""), "a mismatched stop count atomically rejects paste");
+
+    // With a first animation key later than zero, Design still displays the
+    // authored paint, not the pose that the running sampler would hold at 0s.
+    require(model.load(file), "restore the original track for a Design capture");
+    auto delayed = keyframes("highlight");
+    delayed.front().offset = .125;
+    const std::vector<ui::edit> delay_first{ui::set_property{"highlight", "gradient_animation_keyframes",
+        ui::encode_gradient_keyframes(delayed)}};
+    require(model.apply(delay_first), "delay the first key");
+    update();
+    if (preview.running()) { click("designer.preview.mode"); update(); }
+    activate_track(highlight_row);
+    click("designer.timeline.capture");
+    update();
+    const auto design_keys = keyframes("highlight");
+    require(design_keys.size() == delayed.size() + 1 && design_keys.front().offset == 0. &&
+        design_keys.front().x == 0. && design_keys.front().opacity == 1. && design_keys.front().stops.size() == 5 &&
+        std::equal(delayed.begin(), delayed.end(), design_keys.begin() + 1),
+        "Design capture at zero stores authored paint rather than the delayed first animation key");
     return 0;
 }
 
@@ -2579,14 +2611,141 @@ struct native_keyframe_input {
         const auto r = rect(w);
         click_at(w, {r.x + r.width / 2, r.y + r.height / 2});
     }
-    glm::vec2 fitted_middle_key(vgui_widget* tracks) const {
+    glm::vec2 fitted_key(vgui_widget* tracks, float fraction = .5f, float row = 37) const {
         const auto r = rect(tracks);
         const float scale = vgui_context_get_ui_scale(shell);
-        // Fit leaves an 8px leading gutter and uses width minus the header and 24px for the four-second ruler.
+        // Fit leaves an 8px leading gutter and uses width minus the header and 24px for the ruler.
         const float header = std::clamp((r.width - 2) * .28f, 92 * scale, 150 * scale);
-        return {r.x + 1 + header + 8 + (r.width - header - 24) / 2, r.y + 1 + 37 * scale};
+        return {r.x + 1 + header + 8 + (r.width - header - 24) * fraction, r.y + 1 + row * scale};
     }
 };
+
+void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
+                               const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native keyframe capture: " + std::string(message));
+    };
+    constexpr auto track_property = "gradient_animation_keyframes";
+    const auto read_keys = [&](const ui::document& doc, const char* node) {
+        std::vector<ui::gradient_keyframe> keys;
+        std::string error;
+        require(ui::decode_gradient_keyframes(std::get<std::string>(doc.nodes.at(node).props.at(track_property)),
+            keys, error), "decode the gradient track");
+        return keys;
+    };
+    ui::document fixture;
+    require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
+    auto& linear = fixture.nodes.at("linear").props;
+    linear["gradient_x0"] = .125;
+    linear["gradient_y0"] = linear["gradient_y1"] = .25;
+    linear["gradient_x1"] = .875;
+    const ui::gradient_keyframe first{.x = .125, .y = -.5, .tint = "#203041", .opacity = .25, .interpolation = "smooth",
+        .geometry = {0., {}, 1.125, {}, .5}, // Y inherits; center_x is dormant on a linear track.
+        .stops = {{0, "#FF0000"}, {.25f, "#FF000000"}, {1, "#DDEEFF"}}};
+    const ui::gradient_keyframe last{.offset = 1, .x = .625, .y = .25, .tint = "#617082", .opacity = .75,
+        .geometry = {.75, .75, .375, .75}, .stops = {{0, "#0000FF"}, {.75f, "#0000FF80"}, {1, "#DDEEFF"}}};
+    linear[track_property] = ui::encode_gradient_keyframes(std::array{first, last});
+
+    // Use the longer radial lane's diamonds as exact seek targets, avoiding clock or subpixel scrubber rounding.
+    auto markers = read_keys(fixture, "radial");
+    require(markers.size() == 3, "expected three seek-marker keys");
+    markers[0].offset = .25;
+    markers[1].offset = .375;
+    markers[2].offset = .875;
+    auto& radial = fixture.nodes.at("radial").props;
+    radial["gradient_animation_duration"] = 8.;
+    radial[track_property] = ui::encode_gradient_keyframes(markers);
+    auto& sweep = fixture.nodes.at("sweep").props;
+    sweep.erase(track_property);
+    sweep["gradient_center_x"] = .25;
+    sweep["gradient_center_y"] = .375;
+    sweep["gradient_angle0"] = 45.;
+    sweep["gradient_angle1"] = 270.;
+    std::vector<ui::gradient_stop> sweep_stops;
+    std::string error;
+    require(ui::decode_gradient_stops(std::get<std::string>(sweep.at("gradient_stops")), sweep_stops, error),
+        "decode the empty lane's authored palette");
+    const auto file = sandbox / "capture-gradient-pose.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "open the capture fixture");
+    frame();
+
+    const auto& history = editor.history();
+    const auto before = history.current();
+    const auto revision = history.revision();
+    const auto outline = std::string(editor.selection());
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    input.click("designer.preview.timeline");
+    input.click("designer.timeline.fit");
+    auto* tracks = input.widget("designer.timeline.tracks");
+    constexpr float linear_row = 37, radial_row = 63, sweep_row = 89;
+    const auto select_lane = [&](float row) {
+        const auto r = input.rect(tracks);
+        input.click_at(tracks, {r.x + 12 * vgui_context_get_ui_scale(shell), input.fitted_key(tracks, 0, row).y});
+    };
+    const auto paused_at = [&](double time) {
+        const auto view = preview.capture_view();
+        return view.timeline_open && view.running && !view.animation.playing && view.animation.time == time;
+    };
+    const auto seek_linear = [&](std::size_t marker) {
+        const auto offset = markers[marker].offset;
+        input.click_at(tracks, input.fitted_key(tracks, static_cast<float>(offset), radial_row));
+        select_lane(linear_row);
+        require(paused_at(offset * 8) && !vgui_widget_get_enabled(input.widget("designer.timeline.delete")),
+            "select the linear lane without moving the exact paused playhead or retaining the radial key selection");
+    };
+    constexpr char capture[] = "designer.timeline.capture";
+    seek_linear(0);
+    require(outline != "linear" && history.current() == before && history.revision() == revision && !history.can_undo(),
+        "setting up the playhead and lane must not select the linear outline node or edit history");
+    input.click(capture);
+    // The first stop blends in linear light; the second blends with premultiplied alpha.
+    // Neither should include the separate tint or opacity of the sampled pose.
+    const ui::gradient_keyframe midpoint{.offset = .5, .x = .375, .y = -.125, .tint = "#415062", .opacity = .5,
+        .interpolation = "smooth", .geometry = {.375, .5, .75, .5},
+        .stops = {{0, "#BC00BCFF"}, {.5f, "#0000FF40"}, {1, "#DDEEFFFF"}}};
+    auto expected = before;
+    expected.nodes.at("linear").props[track_property] = ui::encode_gradient_keyframes(std::array{first, midpoint, last});
+    require(history.current() == expected && history.revision() == revision + 1 && history.dirty() && history.can_undo() &&
+        !history.can_redo(), "capture writes exactly the sampled key, including all active geometry and untinted stops, in one edit");
+    require(paused_at(2) && editor.selection() == outline && vgui_widget_get_enabled(input.widget("designer.timeline.delete")) &&
+        std::string_view(vgui_widget_get_text(input.widget("designer.timeline.tint"))) == midpoint.tint,
+        "capture selects the new key at the paused playhead without changing the outline selection");
+
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(status != nullptr, "missing workbench status");
+    input.click(capture);
+    require(history.current() == expected && history.revision() == revision + 1 &&
+        std::string_view(vgui_widget_get_text(status)) == editor.strings().text("timeline.capture_overlap", ""),
+        "a second capture at the same time reports overlap without replacing the key or adding history");
+    const ui::native_menu_input menus(win, shell, frame);
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one Undo removes the capture");
+    menus.activate(menus.open(1), 1); // Edit > Redo
+    require(history.current() == expected && history.dirty() && history.can_undo() && !history.can_redo(),
+        "Redo restores the exact captured pose");
+    seek_linear(2); // 7s on an 8s axis; wrapping the linear track would incorrectly insert at 3s.
+    const auto outside_revision = history.revision();
+    input.click(capture);
+    require(history.current() == expected && history.revision() == outside_revision && paused_at(7) &&
+        std::string_view(vgui_widget_get_text(status)) == editor.strings().text("timeline.capture_outside", ""),
+        "a playhead beyond the first cycle reports rejection and leaves the document, history and playhead unchanged");
+
+    seek_linear(1); // At 3s the two interpolated endpoints coincide; preview falls back to authored geometry.
+    input.click(capture);
+    const auto fallback = read_keys(history.current(), "linear");
+    const decltype(first.geometry) base_geometry{.125, .25, .875, .25};
+    require(fallback.size() == 4 && fallback[2].offset == .75 && fallback[2].geometry == base_geometry &&
+        fallback[2].x == .5 && fallback[2].y == .0625 && fallback[2].opacity == .625 && fallback[2].interpolation == "smooth",
+        "invalid sampled geometry uses authored endpoints without discarding the rest of the sampled pose");
+    select_lane(sweep_row);
+    input.click(capture);
+    const ui::gradient_keyframe authored{.offset = .75, .geometry = {{{}, {}, {}, {}, .25, .375, {}, {}, 45., 270.}},
+        .stops = sweep_stops};
+    require(paused_at(3) && read_keys(history.current(), "sweep") == std::vector{authored},
+        "capturing the first key on an empty lane materializes the authored palette and active geometry");
+}
 
 void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, designer& editor,
                                     const std::function<void()>& frame, const fs::path& sandbox) {
@@ -2638,7 +2797,7 @@ void exercise_keyframe_endpoint_drag(os_window& win, vgui_context* shell, design
     input.click("designer.preview.timeline");
     input.click("designer.timeline.fit");
     auto* tracks = input.widget("designer.timeline.tracks");
-    const auto key_at = input.fitted_middle_key(tracks);
+    const auto key_at = input.fitted_key(tracks);
     input.click_at(tracks, key_at);
     const auto view = preview.capture_view();
     require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
@@ -2787,7 +2946,7 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
     input.click("designer.timeline.fit");
     auto* tracks = input.widget("designer.timeline.tracks");
     const auto select_middle = [&] {
-        input.click_at(tracks, input.fitted_middle_key(tracks));
+        input.click_at(tracks, input.fitted_key(tracks));
         const auto view = preview.capture_view();
         require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
             vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline_selection &&
@@ -2955,7 +3114,7 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
     input.click("designer.timeline.fit");
     auto* tracks = input.widget("designer.timeline.tracks");
     const auto select_middle = [&] {
-        input.click_at(tracks, input.fitted_middle_key(tracks));
+        input.click_at(tracks, input.fitted_key(tracks));
         const auto view = preview.capture_view();
         require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
             vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline_selection &&
@@ -3298,6 +3457,7 @@ void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& e
     require(ui::export_delivery(saved, sandbox, radial_dir) && ui::read_delivery(radial_dir, directory_design) && directory_design == saved &&
         ui::export_json_delivery(saved, sandbox, radial_single) && ui::read_json_delivery(radial_single, embedded) && embedded.design == saved,
         "both delivery formats must preserve the radius overrides");
+    exercise_keyframe_capture(win, shell, editor, frame, sandbox);
     exercise_keyframe_endpoint_drag(win, shell, editor, frame, sandbox);
     exercise_keyframe_radial_drag(win, shell, editor, frame, sandbox);
     exercise_keyframe_sweep_drag(win, shell, editor, frame, sandbox);
@@ -3568,7 +3728,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery and linear/radial handle dragging passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and linear/radial handle dragging passed");
     }
     app.wait_gpu();
     return 0;

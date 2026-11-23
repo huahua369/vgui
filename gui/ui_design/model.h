@@ -42,6 +42,7 @@ bool decode_gradient_stops(std::string_view input, std::vector<gradient_stop>& o
 std::string encode_gradient_stops(std::span<const gradient_stop> stops);
 
 inline constexpr std::size_t max_gradient_keyframes = 128;
+inline constexpr float gradient_stop_min_gap = 1e-4f;
 inline constexpr double gradient_keyframe_min_gap = 1e-6;
 
 enum class gradient_geometry_axis {

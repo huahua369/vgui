@@ -1544,6 +1544,33 @@ void test_gradient_keyframe_geometry() {
     seek(1);
     check(fill(VG_PATTERN_TYPE_SWEEP).cp[0] == sweep_base.cp[0], "cancel restores the original sweep at the same time");
     expect_fallback();
+
+    const auto original = fill(VG_PATTERN_TYPE_LINEAR);
+    auto& props = doc.nodes.at("linear").props;
+    std::vector<ui::gradient_keyframe> keys;
+    std::vector<ui::gradient_stop> stops;
+    std::string reason;
+    check(ui::decode_gradient_keyframes(std::get<std::string>(props.at("gradient_animation_keyframes")), keys, reason) &&
+        ui::decode_gradient_stops(std::get<std::string>(props.at("gradient_stops")), stops, reason), "decode capture track");
+    std::array<double, ui::gradient_geometry_channels.size()> authored{.125, .25, .875, .75};
+    auto captured = ui::capture_gradient_pose("linear", authored, stops, keys, .5, 1.);
+    check(captured.x == .125 && captured.y == .25 && captured.opacity == .75 && captured.tint == "#80C0FF" &&
+        captured.geometry[std::size_t(axis::start_x)] == .125 && captured.geometry[std::size_t(axis::end_x)] == .875 &&
+        !captured.geometry[std::size_t(axis::center_x)] && captured.stops.size() == stops.size(),
+        "capturing coincident interpolated endpoints uses the authored geometry while retaining the sampled pose");
+    captured.offset = .5;
+    keys.insert(keys.begin() + 1, captured);
+    props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(keys);
+    check(rt.mount(doc, 2) && rt.layout({200, 200, 1}), "mount the document with a captured fallback key");
+    seek(.5);
+    const auto& after = fill(VG_PATTERN_TYPE_LINEAR);
+    check(after.cp[0] == original.cp[0] && after.count == original.count && after.extend == original.extend,
+        "captured geometry produces the same native brush");
+    for (int i = 0; i < after.count; ++i) {
+        const auto diff = glm::abs(after.colors[i] - original.colors[i]);
+        check(after.stops[i] == original.stops[i] && glm::all(glm::lessThanEqual(diff, glm::vec4(1.001f / 255.f))),
+            "captured brush matches its sampled stops within one 8-bit tint step");
+    }
 }
 
 void test_gradient_keyframe_stops() {
@@ -1615,6 +1642,49 @@ void test_gradient_keyframe_stops() {
         "linear blending returns to the base palette when the right key omits stops");
     rt.seek_animations(3.5);
     expect_paint(60, base_offsets, base_colors, "omitting both palettes preserves every base stop byte");
+
+    auto& props = doc.nodes.at("paint").props;
+    std::vector<ui::gradient_keyframe> keys;
+    std::vector<ui::gradient_stop> stops;
+    std::string reason;
+    check(ui::decode_gradient_keyframes(std::get<std::string>(props.at("gradient_animation_keyframes")), keys, reason) &&
+        ui::decode_gradient_stops(std::get<std::string>(props.at("gradient_stops")), stops, reason), "decode palette capture track");
+    const std::array<double, ui::gradient_geometry_channels.size()> authored{.5, 0, .5, 1};
+    const auto step = ui::capture_gradient_pose("linear", authored, stops, keys, 1.5, 4.);
+    check(step.interpolation == "step" && step.tint == "#80FFFF" && step.opacity == .5 &&
+        ui::parse_text_color(step.stops[0].color) == 0x00ff0000u && step.stops[1].offset == .5f,
+        "capture honors step and keeps untinted RGBA, even hidden RGB");
+    auto capture = ui::capture_gradient_pose("linear", authored, stops, keys, .25, 4.);
+    check(capture.interpolation == "smooth" && capture.x == .078125 && capture.opacity == .921875 &&
+        capture.tint == "#EBFFFF" && capture.stops[1].offset == .39453125f &&
+        ui::parse_text_color(capture.stops[0].color) == 0xd70000ffu,
+        "capture uses the runtime smooth curve, linear-light colors and premultiplied alpha");
+    capture.offset = .25 / 4.;
+    keys.insert(keys.begin() + 1, capture);
+    props["gradient_animation_keyframes"] = ui::encode_gradient_keyframes(keys);
+    check(rt.mount(doc, 2) && rt.layout({200, 200, 1}), "mount captured palette");
+    rt.seek_animations(.25);
+    // The interpolated 235.15625 tint becomes 235 in the JSON key. Applied to
+    // the red stop byte 237 this rounds to 218, not the original brush's 219.
+    expect_paint(67.8125f, {.01953125f, .39453125f, .98046875f},
+        {{{0, 0, 255, 198}, {218, 110, 0, 235}, {17, 52, 86, 0}}},
+        "inserting the captured pose reproduces the brush at authored tint precision, without applying tint or opacity twice");
+
+    const auto first = ui::capture_gradient_pose("linear", authored, stops, {}, 0., 4.);
+    check(first.stops == stops && first.geometry[0] == .5 && first.geometry[3] == 1. && first.tint == "#FFFFFF" &&
+        first.opacity == 1. && first.interpolation == "linear", "an empty track captures the authored paint");
+
+    const std::vector<ui::gradient_stop> close_a{{.00119474309f, "#FF0000"}, {.00129474315f, "#0000FF"}},
+        close_b{{.00519330660f, "#FF0000"}, {.00529330689f, "#0000FF"}};
+    std::array<ui::gradient_keyframe, 2> close_keys{};
+    close_keys[1].offset = 1.;
+    close_keys[1].stops = close_b;
+    const auto close = ui::capture_gradient_pose("linear", authored, close_a, close_keys, .75, 1.);
+    std::vector<ui::gradient_stop> roundtrip;
+    check(ui::decode_gradient_stops(ui::encode_gradient_stops(close.stops), roundtrip, reason) &&
+        close.stops[0].offset == .00419366593f && close.stops[1].offset > .00429366576f &&
+        close.stops[1].offset <= std::nextafter(.00429366576f, 1.f),
+        "rounding a minimum-gap blend preserves stop order with the smallest legal adjustment");
 }
 
 void test_progress_colors() {

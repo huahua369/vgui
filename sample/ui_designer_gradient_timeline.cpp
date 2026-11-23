@@ -1,4 +1,5 @@
 #include "ui_designer_gradient_timeline.h"
+#include "../gui/ui_design/runtime.h"
 
 #include <vgui/editor/color_picker.h>
 #include <vgui/editor/combo_box.h>
@@ -51,7 +52,8 @@ struct designer_gradient_timeline::impl {
     std::function<void(double, bool)> seek;
     std::function<void(std::string)> notify;
     std::function<void()> selection_changed;
-    vgui_widget *panel, *add, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
+    std::function<std::optional<capture_playhead>()> preview_time;
+    vgui_widget *panel, *add, *capture, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
     vgui_widget *stops_button, *stops_popup = nullptr, *stops_reset = nullptr, *stops_info = nullptr;
     kit::gradient_editor stop_editor;
     vgui_widget* geometry_popup = nullptr;
@@ -79,9 +81,9 @@ struct designer_gradient_timeline::impl {
 
     impl(vgui_widget* parent, const designer_strings& locale, gradient_timeline_commit apply,
             std::function<void(double, bool)> go, std::function<void(std::string)> status,
-            std::function<void()> changed)
+            std::function<void()> changed, std::function<std::optional<capture_playhead>()> current_time)
         : strings(locale), commit(std::move(apply)), seek(std::move(go)), notify(std::move(status)),
-          selection_changed(std::move(changed)), shell(vgui_widget_get_context(parent)) {
+          selection_changed(std::move(changed)), preview_time(std::move(current_time)), shell(vgui_widget_get_context(parent)) {
         panel = vgui_widget_add(parent, VGUI_PANEL, nullptr);
         vgui_widget_set_id(panel, "designer.timeline");
         vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
@@ -93,6 +95,7 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_visible(panel, 0);
         auto* header = row(panel);
         add = button(header, "designer.timeline.add");
+        capture = button(header, "designer.timeline.capture");
         remove = button(header, "designer.timeline.delete");
         copy = button(header, "designer.timeline.copy");
         paste = button(header, "designer.timeline.paste");
@@ -215,6 +218,7 @@ struct designer_gradient_timeline::impl {
         auto& self = *static_cast<impl*>(user);
         if (w == self.fit) self.fit_view();
         else if (w == self.add) self.insert_key();
+        else if (w == self.capture) self.capture_key();
         else if (w == self.remove) self.timeline.delete_selection();
         else if (w == self.copy) self.copy_keys();
         else if (w == self.paste) self.paste_keys();
@@ -230,6 +234,8 @@ struct designer_gradient_timeline::impl {
 
     void refresh_language() {
         vgui_widget_set_text(add, tr("timeline.add", "Add Key"));
+        vgui_widget_set_text(capture, tr("timeline.capture", "Capture Key"));
+        vgui_widget_set_tooltip(capture, tr("timeline.capture_hint", "Capture the gradient pose at the playhead as a new key on the selected track."));
         vgui_widget_set_text(remove, tr("timeline.delete", "Delete Key"));
         vgui_widget_set_text(copy, tr("timeline.copy", "Copy"));
         vgui_widget_set_text(paste, tr("timeline.paste", "Paste"));
@@ -285,6 +291,7 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_enabled(geometry, has_key && std::ranges::any_of(gradient_geometry_channels,
             [this](const auto& channel) { return supports_geometry(channel); }));
         vgui_widget_set_enabled(add, has_track);
+        vgui_widget_set_enabled(capture, has_track);
         vgui_widget_set_enabled(remove, has_key);
         vgui_widget_set_enabled(copy, has_key);
         vgui_widget_set_enabled(paste, has_track && !clipboard.empty());
@@ -448,6 +455,45 @@ struct designer_gradient_timeline::impl {
     void insert_key() {
         const auto track = timeline.selected_track();
         if (tracks.contains(track)) timeline.insert_keyframe(track, timeline.playhead());
+    }
+
+    void capture_key() {
+        if (rejected || timeline.gesture() != kit::timeline_gesture::none) return;
+        const auto lane = selected_track();
+        if (!tracks.contains(lane)) return;
+        const auto& layer = model.at(tracks.at(lane));
+        const auto playhead = preview_time();
+        auto [time, inspect_end] = playhead.value_or(capture_playhead{0., false});
+        if (!std::isfinite(time) || time < 0 || time > std::nextafter(layer.duration, 61.)) {
+            if (notify) notify(tr("timeline.capture_outside", "Move the playhead into the selected track's first cycle to capture a key."));
+            return;
+        }
+        time = std::min(time, layer.duration);
+        const double offset = time / layer.duration;
+        const auto next = std::ranges::lower_bound(layer.frames, offset, {}, &gradient_keyframe::offset);
+        if (layer.frames.size() >= max_gradient_keyframes ||
+            (next != layer.frames.end() && next->offset < offset + gradient_keyframe_min_gap) ||
+            (next != layer.frames.begin() && offset < std::prev(next)->offset + gradient_keyframe_min_gap)) {
+            if (notify) notify(tr("timeline.capture_overlap", "A key already occupies this time, or the track has reached its 128-key limit. No key was captured."));
+            return;
+        }
+        // A normally scrubbed loop endpoint displays the start of the next
+        // cycle. Save that pose at the last instant of this editable cycle.
+        const double sample_time = layer.loop && !inspect_end && time == layer.duration ? 0. : time;
+        // Design displays the authored paint, even on a track with keys.
+        const auto keys = playhead ? std::span<const gradient_keyframe>(layer.frames) : std::span<const gradient_keyframe>{};
+        auto pose = capture_gradient_pose(layer.kind, layer.authored, layer.authored_stops, keys, sample_time, layer.duration);
+        const auto x_bounds = translation_range(layer.tx), y_bounds = translation_range(layer.ty);
+        pose.x = std::clamp(pose.x, x_bounds.first, x_bounds.second);
+        pose.y = std::clamp(pose.y, y_bounds.first, y_bounds.second);
+        pose.offset = offset;
+        std::map<id, std::vector<gradient_keyframe>> changes;
+        auto& frames = changes.emplace(lane, layer.frames).first->second;
+        frames.insert(frames.begin() + (next - layer.frames.begin()), pose);
+        if (!apply_tracks(changes)) return;
+        const auto key = timeline.add_keyframe(lane, {0, offset * layer.duration, 0, mode(pose.interpolation)});
+        poses.emplace(key, std::move(pose));
+        timeline.set_selection({key}, key); // Pauses at the newly captured pose.
     }
 
     void copy_keys() {
@@ -908,9 +954,9 @@ struct designer_gradient_timeline::impl {
 
 designer_gradient_timeline::designer_gradient_timeline(vgui_widget* parent, const designer_strings& strings,
         gradient_timeline_commit commit, std::function<void(double, bool)> seek, std::function<void(std::string)> notify,
-        std::function<void()> selection_changed)
+        std::function<void()> selection_changed, std::function<std::optional<capture_playhead>()> preview_time)
     : p_(std::make_unique<impl>(parent, strings, std::move(commit), std::move(seek), std::move(notify),
-          std::move(selection_changed))) {}
+          std::move(selection_changed), std::move(preview_time))) {}
 designer_gradient_timeline::~designer_gradient_timeline() = default;
 void designer_gradient_timeline::set_visible(bool visible) {
     if (!visible && p_->visible) {

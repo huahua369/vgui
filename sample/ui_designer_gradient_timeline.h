@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 
 struct vgui_widget;
 
@@ -27,13 +28,18 @@ struct shape_keyframe {
     bool operator==(const shape_keyframe&) const = default;
 };
 
+struct capture_playhead {
+    double seconds;
+    bool inspect_end;
+};
+
 // A document projection. Timeline gestures edit one or more gradient nodes in
 // a single session transaction; playhead/view state never enters the document.
 class designer_gradient_timeline {
 public:
     designer_gradient_timeline(vgui_widget* parent, const designer_strings&, gradient_timeline_commit,
         std::function<void(double, bool)> seek, std::function<void(std::string)> notify,
-        std::function<void()> selection_changed);
+        std::function<void()> selection_changed, std::function<std::optional<capture_playhead>()> preview_time);
     ~designer_gradient_timeline();
     void set_visible(bool);
     void sync(const document&, std::uint64_t revision, std::string_view selected);

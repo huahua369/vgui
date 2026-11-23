@@ -407,7 +407,7 @@ bool decode_gradient_stop_array(const json& stops, std::vector<gradient_stop>& o
         const double n = stop["offset"].get<double>();
         const auto offset = static_cast<float>(n);
         const auto& color = stop["color"].get_ref<const std::string&>();
-        if (!(n >= 0 && n <= 1) || (!next.empty() && offset - next.back().offset < 1e-4f))
+        if (!(n >= 0 && n <= 1) || (!next.empty() && offset - next.back().offset < gradient_stop_min_gap))
             return reject("color stop offsets must be ordered and at least 0.0001 apart in [0, 1]");
         if (!parse_text_color(color)) return reject("expected #RRGGBB or #RRGGBBAA for each stop color");
         next.push_back({offset, color});
@@ -667,16 +667,7 @@ bool validate(const document& doc, diagnostic* error)
                     if (key && key->geometry[i]) return static_cast<float>(*key->geometry[i]);
                     return f(gradient_geometry_channels[i].property);
                 };
-                using axis = gradient_geometry_axis;
-                // Match the float representation and tolerances of vgui_gradient_set.
-                if (kind == "linear" && std::hypot(geometry(axis::end_x) - geometry(axis::start_x),
-                        geometry(axis::end_y) - geometry(axis::start_y)) < 0.0001f)
-                    return key ? "linear keyframe start and end points must be different" : "linear start and end points must be different";
-                if (kind == "sweep" && std::abs(geometry(axis::end_angle) - geometry(axis::start_angle)) < 0.001f)
-                    return key ? "sweep keyframe angles must be different" : "sweep angles must be different";
-                if (kind == "radial" && geometry(axis::outer_radius) <= geometry(axis::inner_radius))
-                    return "outer radius must be larger than inner radius";
-                return nullptr;
+                return detail::gradient_shape_error(kind, geometry, key != nullptr);
             };
             if (const auto* reason = geometry_error(nullptr)) {
                 const auto field = kind == "linear" ? "gradient_x1" : kind == "sweep" ? "gradient_angle1" : "gradient_radius1";
