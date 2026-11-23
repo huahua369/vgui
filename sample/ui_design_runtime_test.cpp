@@ -1394,6 +1394,7 @@ void test_gradient_keyframe_geometry() {
         "radial":{"type":"gradient","props":{"x":10,"y":60,"width":80,"height":40,"gradient_kind":"radial",
             "gradient_center_x":0.375,"gradient_center_y":0.375,"gradient_outer_x":0.5,"gradient_outer_y":0.625,
             "gradient_radius0":0.125,"gradient_radius1":0.875,
+            "gradient_stops":[{"offset":0,"color":"#FFF1CE"},{"offset":0.375,"color":"#FC876380"},{"offset":1,"color":"#582F68"}],
             "gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
             "gradient_animation_keyframes":[
                 {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"smooth"},
@@ -1521,9 +1522,23 @@ void test_gradient_keyframe_geometry() {
         radial_live.count == radial_base.count && radial_live.colors[0] == radial_base.colors[0] &&
         fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0],
         "radial draft changes both centers and both short-side radii, without altering other paint");
+    radial_draft.draft = {{}, ui::gradient_stop_offset{1, .625f}};
+    seek(1, &radial_draft);
+    const auto& radial_stop = fill(VG_PATTERN_TYPE_RADIAL);
+    check(radial_stop.cp[0] == radial_base.cp[0] && radial_stop.cp[1] == radial_base.cp[1] &&
+        radial_stop.m == radial_base.m && radial_stop.stops[1] == .625f &&
+        fill(VG_PATTERN_TYPE_LINEAR).cp[0] == terminal.cp[0],
+        "a radial stop draft applies at the same time without changing the radial geometry or another track");
+    for (int i = 0; i < radial_base.count; ++i)
+        check(radial_stop.colors[i] == radial_base.colors[i] && (i == 1 || radial_stop.stops[i] == radial_base.stops[i]),
+            "radial live preview preserves every color and the other offsets");
+    radial_draft.draft.stop->offset = 1.f;
+    seek(1, &radial_draft);
+    check(fill(VG_PATTERN_TYPE_RADIAL).stops[1] == .375f, "a radial stop draft cannot duplicate its neighbor");
     seek(1);
-    check(fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[1] == radial_base.cp[1],
-        "cancel restores both circles without moving the playhead");
+    check(fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0] && fill(VG_PATTERN_TYPE_RADIAL).cp[1] == radial_base.cp[1] &&
+        fill(VG_PATTERN_TYPE_RADIAL).stops[1] == radial_base.stops[1],
+        "cancel restores both circles and the original stop offsets without moving the playhead");
 
     const auto sweep_base = fill(VG_PATTERN_TYPE_SWEEP);
     ui::gradient_shape_preview sweep_draft{"sweep", {}};

@@ -785,7 +785,7 @@ struct designer_gradient_timeline::impl {
         for (std::size_t i = 0; i < result.shape.size(); ++i)
             if (gradient_geometry_channels[i].applies_to(layer.kind))
                 result.shape[i] = frame.geometry[i].value_or(layer.authored[i]);
-        if (kind == shape_kind::linear) result.stops = frame.stops.empty() ? layer.authored_stops : frame.stops;
+        if (kind != shape_kind::sweep) result.stops = frame.stops.empty() ? layer.authored_stops : frame.stops;
         return result;
     }
 

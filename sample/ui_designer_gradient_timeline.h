@@ -25,7 +25,7 @@ struct shape_keyframe {
     bool terminal, ellipse;
     keyframe_shape shape;
     std::array<float, 6> affine; // XX, YX, XY, YY, TX, TY, including the key's translation.
-    std::vector<gradient_stop> stops; // Effective palette of a linear key, before multiply tint.
+    std::vector<gradient_stop> stops; // Effective palette for supported canvas handles, before multiply tint.
     bool operator==(const shape_keyframe&) const = default;
 };
 

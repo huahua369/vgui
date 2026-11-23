@@ -3097,6 +3097,13 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
     middle.geometry[inner_radius].reset();
     middle.geometry[outer_radius] = r_outer;
     auto& props = fixture.nodes.at("radial").props;
+    std::vector<ui::gradient_stop> inherited_stops;
+    std::string error;
+    require(middle.stops.empty() && ui::decode_gradient_stops(std::get<std::string>(props.at("gradient_stops")),
+        inherited_stops, error) && inherited_stops.size() == 3, "expected three inherited radial stops");
+    constexpr std::size_t stop_index = 1;
+    inherited_stops[stop_index].offset = .5f; // Close enough to the first stop to use the opposite row.
+    props["gradient_stops"] = ui::encode_gradient_stops(inherited_stops);
     props["gradient_center_y"] = inner.y;
     props["gradient_radius0"] = r_inner;
     props["gradient_ellipse"] = true;
@@ -3136,7 +3143,7 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
     require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
     const auto node = std::ranges::find(layout->nodes, "radial", &ui::node_layout::id);
     require(node != layout->nodes.end() && node->visible, "radial gradient is not on the board");
-    const auto& box = node->rect_px;
+    const auto box = node->rect_px;
     require(box.width > box.height && box.height > 0, "radial fixture needs a non-square widget");
     const glm::dvec2 board_scale{double(board->width) / layout->pixel_width, double(board->height) / layout->pixel_height};
     const auto shell_size = board_scale * glm::dvec2{box.width, box.height};
@@ -3229,6 +3236,80 @@ void exercise_keyframe_radial_drag(os_window& win, vgui_context* shell, designer
             "one undo did not restore the original document (including inherited channels)");
         select_middle();
     }
+
+    // Unlike the authored geometry knobs, the stop spoke follows the effective
+    // paint circles: OVG pulls the focal center inside the outer circle in paint pixels.
+    const glm::dvec2 paint_size{box.width, box.height};
+    const double short_side = std::min(paint_size.x, paint_size.y);
+    const double outer_px = std::max(2., r_outer * short_side);
+    const double inner_px = std::min(r_inner * short_side, outer_px - 1.01);
+    const auto outer_center = outer * paint_size;
+    const auto focal_delta = inner * paint_size - outer_center;
+    const double focal_limit = outer_px - inner_px - 1.;
+    require(glm::length(focal_delta) > focal_limit, "radial stop fixture must exercise focal clamping");
+    const auto focal_center = outer_center + glm::normalize(focal_delta) * focal_limit;
+    const auto upper_spoke = [&](glm::dvec2 center, double radius) {
+        const glm::dvec2 at{2 * center.x - outer_center.x, center.y - radius};
+        return origin + project_delta(at / paint_size);
+    };
+    const auto spoke_start = upper_spoke(focal_center, inner_px);
+    const auto spoke_axis = upper_spoke(outer_center, outer_px) - spoke_start;
+    const auto anchor_at = [&](float offset) { return spoke_start + spoke_axis * double(offset); };
+    for (const auto& stop : inherited_stops) {
+        const auto p = glm::vec2(anchor_at(stop.offset));
+        require(p.x >= board->x && p.x < board->x + board->width && p.y >= board->y && p.y < board->y + board->height &&
+            vgui_hit_test(shell, p.x, p.y) == canvas, "all upper-spoke anchors must be visible");
+    }
+    const double scale = vgui_context_get_ui_scale(shell);
+    const auto normal = glm::normalize(glm::dvec2{spoke_axis.y, -spoke_axis.x});
+    const auto middle_anchor = anchor_at(inherited_stops[stop_index].offset);
+    const double gap = 12. * scale + 6.;
+    require(glm::length(middle_anchor - anchor_at(inherited_stops.front().offset)) < gap,
+        "the two upper-spoke swatches must touch the same row's hit spacing");
+    const auto knob = middle_anchor - normal * (18. * scale); // The first stop occupies the +normal row.
+    const auto start = glm::round(glm::vec2(knob)) + glm::vec2{2, -2}; // Grab off-center, with a component along the spoke.
+    const auto delta = glm::round(glm::vec2(spoke_axis * .16 + normal * (16. * scale)));
+    const auto finish = start + delta;
+    require(vgui_hit_test(shell, start.x, start.y) == canvas, "radial stop swatch is not reachable on the canvas");
+    const auto revision = history.revision();
+    const auto unchanged = [&](std::string_view message) {
+        require(history.current() == before && history.revision() == revision &&
+            !history.dirty() && !history.can_undo() && history.can_redo(), message);
+    };
+    const auto move_stop = [&] {
+        input.button(true, start);
+        input.motion(start, finish);
+        frame();
+        unchanged("radial stop motion edited the document before release");
+    };
+    const auto release_stop = [&] { input.button(false, finish); frame(); };
+    move_stop();
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    release_stop();
+    unchanged("Escape did not cancel the radial stop draft through mouse-up");
+
+    move_stop();
+    release_stop();
+    require(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+        "radial stop release did not create exactly one transaction");
+    const auto edited = read_keys(history.current());
+    require(edited.size() == keys.size() && edited[1].stops.size() == inherited_stops.size(),
+        "radial stop drag did not materialize the inherited palette");
+    const auto offset = edited[1].stops[stop_index].offset;
+    const double expected_offset = inherited_stops[stop_index].offset +
+        glm::dot(glm::dvec2(delta), spoke_axis) / glm::dot(spoke_axis, spoke_axis);
+    require(std::abs(offset - expected_offset) < .001,
+        "radial stop did not follow the projected pointer delta along the effective paint spoke");
+    auto expected_keys = keys;
+    expected_keys[1].stops = inherited_stops;
+    expected_keys[1].stops[stop_index].offset = offset;
+    auto expected = before;
+    expected.nodes.at("radial").props[track_property] = ui::encode_gradient_keyframes(expected_keys);
+    require(history.current() == expected && editor.selection() == outline_selection,
+        "radial stop drag changed other offsets, colors, geometry, or the outline selection");
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one undo did not restore radial palette inheritance and the original document");
 }
 
 void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer& editor,

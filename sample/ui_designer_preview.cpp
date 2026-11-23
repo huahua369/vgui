@@ -533,7 +533,7 @@ std::array<shape_knob, 4> place_shape_knobs(const shape_keyframe& key, const key
     return result;
 }
 
-struct linear_stop_axis {
+struct gradient_stop_axis {
     point start, end;
 
     point at(float offset) const {
@@ -545,18 +545,48 @@ struct linear_stop_axis {
     }
 };
 
-linear_stop_axis stop_axis(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node,
-        const board_transform& transform) {
-    return {knob_anchor(key, shape, node, 0.f, start_x, transform),
-        knob_anchor(key, shape, node, 0.f, end_x, transform)};
-}
+// OVG samples circles with interpolated center and radius. Joining the
+// two effective circles at a common direction gives a straight t=0..1 axis.
+struct radial_stop_circles {
+    point inner, outer;
+    float r0, r1;
+
+    radial_stop_circles(const keyframe_shape& shape, pixel_rect node) {
+        inner = {float(shape[center_x]) * node.width, float(shape[center_x + 1]) * node.height};
+        outer = {float(shape[outer_x]) * node.width, float(shape[outer_x + 1]) * node.height};
+        const float s = std::min(node.width, node.height);
+        // Match vgui_draw_gradient's radius limits and OVG's one-pixel focal margin.
+        r1 = std::max(2.f, float(shape[outer_radius]) * s);
+        r0 = std::min(float(shape[inner_radius]) * s, r1 - 1.01f);
+        const float dx = inner.x - outer.x, dy = inner.y - outer.y;
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        if (distance > 0.f && distance + r0 + 1.f >= r1) {
+            const float reach = r1 - r0 - 1.f;
+            inner = {outer.x + (dx / distance) * reach, outer.y + (dy / distance) * reach};
+        }
+    }
+
+    gradient_stop_axis spoke(const shape_keyframe& key, pixel_rect node, const board_transform& transform,
+            point direction) const {
+        const double ellipse = key.ellipse ? 2. : 1.;
+        const auto project = [&](point center, float radius) {
+            const auto x = outer.x + ellipse * (double(center.x) + direction.x * radius - outer.x);
+            const auto y = double(center.y) + direction.y * radius;
+            const auto p = project_shape(key, node, x / node.width, y / node.height);
+            const auto at = transform.project({p.x, p.y, 0, 0});
+            return point{at.x, at.y};
+        };
+        return {project(inner, r0), project(outer, r1)};
+    }
+};
+
+using stop_knobs = std::array<std::optional<shape_knob>, max_gradient_stops>;
 
 // Stagger close stops on perpendicular rows. Tethers communicate the exact
-// offsets without covering the separate endpoint knobs on the gradient axis.
-std::array<std::optional<shape_knob>, max_gradient_stops> place_stop_knobs(const shape_keyframe& key,
-        linear_stop_axis axis, pixel_rect clip, float radius) {
-    std::array<std::optional<shape_knob>, max_gradient_stops> result{};
-    if (key.stops.empty()) return result;
+// offsets without covering the separate geometry knobs.
+stop_knobs place_stop_knobs(const shape_keyframe& key, gradient_stop_axis axis, pixel_rect clip, float radius,
+        std::span<const shape_knob> geometry = {}) {
+    stop_knobs result{};
     const float length = std::sqrt(distance_sq(axis.start, axis.end));
     if (length < 1.f) return result;
     const point normal{(axis.end.y - axis.start.y) / length, (axis.start.x - axis.end.x) / length};
@@ -571,7 +601,9 @@ std::array<std::optional<shape_knob>, max_gradient_stops> place_stop_knobs(const
             const float side = lane % 2 == 0 ? 1.f : -1.f;
             const float shift = side * (3 * radius + (lane / 2) * gap);
             const point at{anchor.x + normal.x * shift, anchor.y + normal.y * shift};
-            if (!contains(room, at) || std::ranges::any_of(std::span(result).first(i), [&](const auto& prev) {
+            if (!contains(room, at) || std::ranges::any_of(geometry, [&](const auto& knob) {
+                    return distance_sq(at, knob.at) < gap * gap;
+                }) || std::ranges::any_of(std::span(result).first(i), [&](const auto& prev) {
                     return prev && distance_sq(at, prev->at) < gap * gap;
                 })) continue;
             result[i] = shape_knob{i, anchor, at};
@@ -579,6 +611,36 @@ std::array<std::optional<shape_knob>, max_gradient_stops> place_stop_knobs(const
         }
     }
     return result;
+}
+
+struct stop_handle_layout { gradient_stop_axis axis{}; stop_knobs knobs{}; };
+
+stop_handle_layout layout_stop_knobs(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node,
+        const board_transform& transform, pixel_rect clip, float radius, std::span<const shape_knob> geometry) {
+    if (key.stops.empty()) return {};
+    if (key.kind == shape_kind::linear) {
+        const gradient_stop_axis axis{knob_anchor(key, shape, node, 0.f, start_x, transform),
+            knob_anchor(key, shape, node, 0.f, end_x, transform)};
+        return {axis, place_stop_knobs(key, axis, clip, radius)};
+    }
+    if (key.kind != shape_kind::radial) return {};
+    const radial_stop_circles circles(shape, node);
+    constexpr float diagonal = .70710678f;
+    constexpr point directions[]{{0, -1}, {0, 1}, {-1, 0}, {1, 0},
+        {-diagonal, -diagonal}, {diagonal, -diagonal}, {-diagonal, diagonal}, {diagonal, diagonal}};
+    stop_handle_layout best;
+    std::size_t visible = 0;
+    // Prefer the upper spoke, switching only if another direction keeps more handles on the artboard.
+    for (const auto direction : directions) {
+        const auto axis = circles.spoke(key, node, transform, direction);
+        auto knobs = place_stop_knobs(key, axis, clip, radius, geometry);
+        const auto count = std::size_t(std::ranges::count_if(knobs, [](const auto& knob) { return knob.has_value(); }));
+        if (count <= visible) continue;
+        best = {axis, std::move(knobs)};
+        if (count == key.stops.size()) break;
+        visible = count;
+    }
+    return best;
 }
 
 float move_stop_offset(std::span<const gradient_stop> stops, std::size_t i, double delta) {
@@ -683,6 +745,7 @@ struct designer_preview::impl {
         std::size_t axis; // A center's X channel, a radius, or an angle.
         double angle_cursor = 0., angle_unwrapped = 0.;
         std::optional<gradient_stop_offset> stop;
+        gradient_stop_axis stop_axis;
     };
     std::optional<shape_drag> shape_edit;
     // Keep consuming the matching left-up even when the drag was canceled.
@@ -1140,7 +1203,8 @@ struct designer_preview::impl {
         const float hit = knob_radius() + 2.f;
         const auto clip = intersect(area, board);
         const auto knobs = place_shape_knobs(*key, key->shape, node, transform, clip, 2 * hit + 2);
-        const auto stops = place_stop_knobs(*key, stop_axis(*key, key->shape, node, transform), clip, knob_radius());
+        const auto geometry = std::span(knobs).first(shape_handles(*key).size());
+        const auto stops = layout_stop_knobs(*key, key->shape, node, transform, clip, knob_radius(), geometry);
         float nearest = 2 * hit * hit;
         std::optional<std::size_t> axis;
         std::optional<gradient_stop_offset> stop;
@@ -1150,15 +1214,16 @@ struct designer_preview::impl {
             nearest = distance;
             return true;
         };
-        for (const auto& knob : std::span(knobs).first(shape_handles(*key).size()))
+        for (const auto& knob : geometry)
             if (hit_knob(knob)) axis = knob.axis;
-        for (const auto& knob : stops)
+        for (const auto& knob : stops.knobs)
             if (knob && hit_knob(*knob)) stop = gradient_stop_offset{knob->axis, key->stops[knob->axis].offset};
         if (!axis && !stop) return false;
         auto values = key->shape;
         const auto picked_axis = axis.value_or(start_x);
         const double angle = !stop && is_angle(picked_axis) ? values[picked_axis] : 0.;
-        shape_edit.emplace(shape_drag{std::move(*key), values, area, node, transform, p, dpi, picked_axis, angle, angle, stop});
+        shape_edit.emplace(shape_drag{std::move(*key), values, area, node, transform, p, dpi,
+            picked_axis, angle, angle, stop, stops.axis});
         edit_release = id;
         if (stop) mark_canvas();
         return true;
@@ -1170,9 +1235,8 @@ struct designer_preview::impl {
         const double slop = 3.0 * drag.dpi;
         if (drag.stop) {
             const auto i = drag.stop->index;
-            const auto axis = stop_axis(drag.key, drag.key.shape, drag.node, drag.transform);
             const float offset = dx * dx + dy * dy < slop * slop ? drag.key.stops[i].offset :
-                move_stop_offset(drag.key.stops, i, axis.offset_delta(dx, dy));
+                move_stop_offset(drag.key.stops, i, drag.stop_axis.offset_delta(dx, dy));
             if (offset != drag.stop->offset) {
                 drag.stop->offset = offset;
                 sample_requested = true;
@@ -1571,8 +1635,7 @@ struct designer_preview::impl {
         const float h = knob_radius();
         const auto knobs = place_shape_knobs(*key, values, node, t, clip, 2 * (h + 2.f) + 2);
         const auto visible_knobs = std::span(knobs).first(shape_handles(*key).size());
-        const auto axis = stop_axis(*key, values, node, t);
-        auto stops = place_stop_knobs(*key, axis, clip, h);
+        auto [axis, stops] = layout_stop_knobs(*key, values, node, t, clip, h, visible_knobs);
         const auto moving = shape_edit ? shape_edit->stop : std::nullopt;
         if (moving && stops[moving->index]) {
             auto& knob = *stops[moving->index];
@@ -1610,8 +1673,6 @@ struct designer_preview::impl {
                 const auto segment = [&](point a, point b) { cb->move_to(vg, a.x, a.y); cb->line_to(vg, b.x, b.y); };
                 if (key->kind == shape_kind::linear) {
                     stroke(accent, [&] { segment(knobs[0].at, knobs[1].at); });
-                    for (const auto& stop : stops)
-                        if (stop) stroke(0xFFE7DECDu, [&] { segment(stop->anchor, stop->at); });
                 } else if (key->kind == shape_kind::radial) {
                     for (const auto radius : {outer_radius, inner_radius}) {
                         if (values[radius] <= 0.) continue;
@@ -1643,6 +1704,11 @@ struct designer_preview::impl {
                     for (const auto& knob : visible_knobs.subspan(1))
                         stroke(color_for(knob.axis), [&] { segment(knobs[0].anchor, knob.anchor); });
                 }
+                constexpr unsigned stop_ink = 0xFFE7DECDu;
+                if (key->kind == shape_kind::radial && std::ranges::any_of(stops, [](const auto& stop) { return stop.has_value(); }))
+                    stroke(stop_ink, [&] { segment(axis.start, axis.end); });
+                for (const auto& stop : stops)
+                    if (stop) stroke(stop_ink, [&] { segment(stop->anchor, stop->at); });
                 for (const auto& knob : visible_knobs)
                     if (distance_sq(knob.at, knob.anchor) > 1.f)
                         stroke(color_for(knob.axis), [&] { segment(knob.anchor, knob.at); });

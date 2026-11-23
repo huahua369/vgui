@@ -288,7 +288,7 @@ struct gradient_animation {
                 frame[i] = sample_gradient_stop(key, base_palette, i);
                 frame[i].color = tint_color(frame[i].color, pose);
             }
-            if (draft && draft->stop && paint.kind == VGUI_GRADIENT_LINEAR) {
+            if (draft && draft->stop && paint.kind != VGUI_GRADIENT_SWEEP) {
                 const auto [i, offset] = *draft->stop;
                 if (i < stops.size() && offset >= 0.f && offset <= 1.f &&
                     (i == 0 || offset - frame[i - 1].offset >= gradient_stop_min_gap) &&
