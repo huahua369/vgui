@@ -1,6 +1,7 @@
 #include <vgui/editor/editor_context.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <utility>
 
 namespace vgui_editor_kit {
@@ -191,8 +192,15 @@ namespace vgui_editor_kit {
 			listeners.reserve(selection_listeners_.size());
 			for (const listener_entry& entry : selection_listeners_)
 				listeners.push_back(entry.fn);
-			for (const auto& listener : listeners)
-				listener(selection_);
+			/* (2026-11-22 DIAG, temporary) the 0c36451 editor dies inside this
+			 * notify chain; print each listener id so the last one logged
+			 * before the death identifies the culprit. Remove when fixed. */
+			for (std::size_t i = 0; i < listeners.size(); ++i)
+			{
+				std::fprintf(stderr, "DIAG notify_selection primary listener #%zu\n", i);
+				std::fflush(stderr);
+				listeners[i](selection_);
+			}
 		}
 		if (set_changed)
 		{
@@ -203,8 +211,12 @@ namespace vgui_editor_kit {
 			/* Snapshot the ids so a listener that mutates the selection cannot
 			 * invalidate the argument seen by later listeners. */
 			const std::vector<object_id> ids = selection_set_;
-			for (const auto& listener : listeners)
-				listener(ids);
+			for (std::size_t i = 0; i < listeners.size(); ++i)
+			{
+				std::fprintf(stderr, "DIAG notify_selection set listener #%zu\n", i);
+				std::fflush(stderr);
+				listeners[i](ids);
+			}
 		}
 	}
 
