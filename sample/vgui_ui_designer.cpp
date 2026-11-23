@@ -3332,7 +3332,7 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
     require(ui::read_document(VGUI_SOURCE_DIR "/sample/res/gradient-geometry.vgui.json", fixture), "load geometry example");
     for (const auto* node : {"linear", "radial"}) fixture.nodes.at(node).props.erase("gradient_animation");
     auto keys = read_keys(fixture);
-    require(keys.size() == 3 && keys[1].offset == .5, "expected the middle sweep key");
+    require(keys.size() == 3 && keys.front().offset == 0. && keys[1].offset == .5, "expected the first and middle sweep keys");
     constexpr glm::dvec2 center{.43, .56};
     constexpr double start_degrees = 0., end_degrees = 180.;
     // Shear X while preserving the horizontal 0°/180° ray, so an actual
@@ -3345,6 +3345,14 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
     middle.geometry[center_y].reset();
     middle.geometry[start_angle].reset();
     middle.geometry[end_angle] = end_degrees;
+    constexpr double circle_start = 360., circle_end = 0.;
+    auto& first = keys.front();
+    first.x = middle.x;
+    first.y = middle.y;
+    first.geometry = middle.geometry;
+    first.geometry[start_angle] = circle_start;
+    first.geometry[end_angle] = circle_end;
+    first.stops = {{0, "#123640"}, {.25f, "#44D2A8AD"}, {1, "#B95D7A"}};
     auto& props = fixture.nodes.at("sweep").props;
     props["height"] = 136.;
     props["gradient_center_y"] = center.y;
@@ -3368,15 +3376,15 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
     const native_keyframe_input input{win, shell, preview, frame, require};
     input.click("designer.preview.timeline");
     input.click("designer.timeline.fit");
-    auto* tracks = input.widget("designer.timeline.tracks");
-    const auto select_middle = [&] {
-        input.click_at(tracks, input.fitted_key(tracks));
+    const auto select_key = [&](float offset) {
+        auto* tracks = input.widget("designer.timeline.tracks");
+        input.click_at(tracks, input.fitted_key(tracks, offset));
         const auto view = preview.capture_view();
-        require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 2.0 &&
+        require(view.timeline_open && view.running && !view.animation.playing && view.animation.time == 4. * offset &&
             vgui_widget_get_enabled(input.widget("designer.timeline.geometry")) && editor.selection() == outline_selection &&
-            outline_selection != "sweep", "select the middle sweep key and pause at its exact time without changing the outline");
+            outline_selection != "sweep", "select the sweep key and pause at its exact time without changing the outline");
     };
-    select_middle();
+    select_key(.5f);
     require(history.current() == before && history.revision() == initial_revision &&
         !history.dirty() && !history.can_undo() && !history.can_redo(), "selecting the key edited the document");
 
@@ -3385,7 +3393,7 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
     require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented board or layout");
     const auto node = std::ranges::find(layout->nodes, "sweep", &ui::node_layout::id);
     require(node != layout->nodes.end() && node->visible, "sweep gradient is not on the board");
-    const auto& box = node->rect_px;
+    const auto box = node->rect_px;
     require(box.width > box.height && box.height > 0, "sweep fixture needs a non-square widget");
     const glm::dvec2 board_scale{double(board->width) / layout->pixel_width, double(board->height) / layout->pixel_height};
     const auto shell_size = board_scale * glm::dvec2{box.width, box.height};
@@ -3465,21 +3473,84 @@ void exercise_keyframe_sweep_drag(os_window& win, vgui_context* shell, designer&
         menus.activate(menus.open(1), 0); // Edit > Undo
         check(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
             "one undo did not restore the original document (including inherited channels)");
-        select_middle();
     };
     const glm::dvec2 center_motion{22, -14};
     const auto moved_center = center + glm::inverse(affine) * (center_motion / shell_size);
     drag("center", center_at, {center_motion}, {{center_x, moved_center.x}, {center_y, moved_center.y}});
+    select_key(.5f);
     // Reach exact equality with a horizontal integer-pixel move. The last
     // accepted preview is still committed (without changing the opposite angle).
     const auto valid_move = spoke(56.) - start_spoke;
     const glm::dvec2 equality_move{-std::ceil(2 * start_spoke.x), 0.};
     drag("start angle", center_at + start_spoke, {valid_move, equality_move},
         {{start_angle, expected_angle(start_degrees, valid_move)}}, true);
+    select_key(.5f);
     // Cross 360° and continue clockwise by more than half a turn from the grab.
     // The final pointer ray is 205°, but consecutive deltas must keep the value at 360°.
     drag("end angle", center_at + end_spoke, {spoke(245.) - end_spoke, spoke(315.) - end_spoke,
         spoke(385.) - end_spoke, spoke(480.) - end_spoke, spoke(565.) - end_spoke}, {{end_angle, 360.}});
+
+    select_key(0.f);
+    require(vgui_widget_get_enabled(input.widget("designer.timeline.stops")), "first sweep key has no editable palette");
+    constexpr std::size_t stop_index = 1;
+    const auto original_offset = first.stops[stop_index].offset;
+    const auto stop_spoke = spoke(std::lerp(circle_start, circle_end, double(original_offset)));
+    // This stop is away from the seam handles and uses the first (outward) row.
+    const double scale = vgui_context_get_ui_scale(shell);
+    const auto knob = center_at + stop_spoke + glm::normalize(stop_spoke) * (18. * scale);
+    const auto grab = glm::round(glm::vec2(knob)) + glm::vec2{3, -2};
+    require(vgui_hit_test(shell, grab.x, grab.y) == canvas, "projected sweep stop swatch is not reachable on the canvas");
+    const auto pointer_at = [&](double degrees) { return glm::round(glm::vec2(center_at + spoke(degrees))); };
+    const auto finish = pointer_at(45.);
+    const auto revision = history.revision();
+    const auto unchanged = [&](std::string_view message) {
+        require(history.current() == before && history.revision() == revision &&
+            !history.dirty() && !history.can_undo() && history.can_redo(), message);
+    };
+    const auto move_stop = [&] {
+        input.button(true, grab);
+        auto at = grab;
+        // From ~270°, travel counterclockwise past 0°, then unwind toward 45°.
+        // Each motion is less than half a turn; the net motion exceeds half a turn.
+        for (const auto next : {pointer_at(155.), pointer_at(40.), pointer_at(-25.), finish}) {
+            input.motion(at, next);
+            at = next;
+        }
+        frame();
+        unchanged("sweep stop motion edited the document before release");
+    };
+    const auto release_stop = [&] { input.button(false, finish); frame(); };
+    move_stop();
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    release_stop();
+    unchanged("Escape did not cancel the sweep stop draft through mouse-up");
+
+    move_stop();
+    release_stop();
+    require(history.revision() == revision + 1 && history.dirty() && history.can_undo() && !history.can_redo(),
+        "sweep stop release did not create exactly one transaction");
+    const auto edited = read_keys(history.current());
+    require(edited.size() == keys.size() && edited.front().stops.size() == first.stops.size(),
+        "sweep stop drag changed the palette or track topology");
+    const auto offset = edited.front().stops[stop_index].offset;
+    const auto mouse_angle = [&](glm::vec2 p) {
+        const auto ray = glm::inverse(paint_affine) * ((glm::dvec2(p) - center_at) / board_scale);
+        return glm::degrees(std::atan2(ray.y, ray.x));
+    };
+    // atan2 reports the grab near -90°; the path above reaches +45° from 270°.
+    const double angular_delta = mouse_angle(finish) - (mouse_angle(grab) + 360.);
+    const double expected_offset = original_offset + angular_delta / (circle_end - circle_start);
+    require(std::abs(offset - expected_offset) < .001,
+        "sweep stop did not follow the accumulated paint-space angle from the off-center grab over a signed span");
+    auto expected_keys = keys;
+    expected_keys.front().stops[stop_index].offset = offset;
+    auto expected = before;
+    expected.nodes.at("sweep").props[track_property] = ui::encode_gradient_keyframes(expected_keys);
+    require(history.current() == expected && editor.selection() == outline_selection,
+        "sweep stop drag changed another offset, color, geometry channel, or the outline selection");
+    menus.activate(menus.open(1), 0); // Edit > Undo
+    require(history.current() == before && !history.dirty() && !history.can_undo() && history.can_redo(),
+        "one undo did not restore the original sweep stop offset");
 }
 
 void exercise_keyframe_delivery(os_window& win, vgui_context* shell, designer& editor,

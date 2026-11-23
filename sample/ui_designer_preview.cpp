@@ -581,25 +581,51 @@ struct radial_stop_circles {
 };
 
 using stop_knobs = std::array<std::optional<shape_knob>, max_gradient_stops>;
+struct stop_ray { point anchor, normal; float inward_limit = std::numeric_limits<float>::infinity(); };
 
-// Stagger close stops on perpendicular rows. Tethers communicate the exact
-// offsets without covering the separate geometry knobs.
-stop_knobs place_stop_knobs(const shape_keyframe& key, gradient_stop_axis axis, pixel_rect clip, float radius,
-        std::span<const shape_knob> geometry = {}) {
+point sweep_stop_center(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node,
+        const board_transform& transform) {
+    return knob_anchor(key, shape, node, 0.f, center_x, transform);
+}
+
+stop_ray sweep_stop_ray(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node,
+        const board_transform& transform, point center, float offset) {
+    const auto p = sweep_guide_point(key, shape, node, std::lerp(shape[start_angle], shape[end_angle], double(offset)));
+    const auto at = transform.project({p.x, p.y, 0, 0});
+    const float dx = at.x - center.x, dy = at.y - center.y, length = std::hypot(dx, dy);
+    return {{at.x, at.y}, length > 0.f ? point{dx / length, dy / length} : point{}, length};
+}
+
+std::optional<double> sweep_pointer_angle(const shape_keyframe& key, pixel_rect node,
+        const board_transform& transform, point center, point pointer) {
+    // Undo both the board scale and the normalized brush affine. OVG measures
+    // clockwise angles in canonical paint pixels, even on a non-square widget.
+    const auto [xx, yx, xy, yy, tx, ty] = key.affine;
+    const double x = (double(pointer.x) - center.x) * transform.width / transform.board.width / node.width;
+    const double y = (double(pointer.y) - center.y) * transform.height / transform.board.height / node.height;
+    const double det = double(xx) * yy - double(xy) * yx;
+    const double u = (yy * x - xy * y) * node.width / det, v = (xx * y - yx * x) * node.height / det;
+    if (std::hypot(u, v) < sweep_guide_radius(node) * .02) return {};
+    return std::atan2(v, u) / radians_per_degree;
+}
+
+// Stagger close stops along tethers without covering the shape controls. For a
+// sweep the tethers follow rays; for a straight guide they are perpendicular.
+template<class RayAt>
+stop_knobs place_stop_knobs(const shape_keyframe& key, RayAt ray_at, pixel_rect clip, float radius,
+        std::span<const shape_knob> geometry) {
     stop_knobs result{};
-    const float length = std::sqrt(distance_sq(axis.start, axis.end));
-    if (length < 1.f) return result;
-    const point normal{(axis.end.y - axis.start.y) / length, (axis.start.x - axis.end.x) / length};
     const float inset = radius + 2.f;
     const pixel_rect room{clip.x + inset, clip.y + inset, clip.width - 2 * inset, clip.height - 2 * inset};
     if (!has_area(room)) return result;
     const float gap = 2 * inset + 2.f;
     for (std::size_t i = 0; i < key.stops.size(); ++i) {
-        const auto anchor = axis.at(key.stops[i].offset);
-        if (!contains(clip, anchor)) continue;
+        const auto [anchor, normal, inward_limit] = ray_at(key.stops[i].offset);
+        if (inward_limit < 1.f || !contains(clip, anchor)) continue;
         for (std::size_t lane = 0; lane < 2 * max_gradient_stops; ++lane) {
             const float side = lane % 2 == 0 ? 1.f : -1.f;
             const float shift = side * (3 * radius + (lane / 2) * gap);
+            if (inward_limit + shift < inset) continue; // Keep sweep swatches on their own side of the center.
             const point at{anchor.x + normal.x * shift, anchor.y + normal.y * shift};
             if (!contains(room, at) || std::ranges::any_of(geometry, [&](const auto& knob) {
                     return distance_sq(at, knob.at) < gap * gap;
@@ -613,6 +639,14 @@ stop_knobs place_stop_knobs(const shape_keyframe& key, gradient_stop_axis axis, 
     return result;
 }
 
+stop_knobs place_axis_stop_knobs(const shape_keyframe& key, gradient_stop_axis axis, pixel_rect clip, float radius,
+        std::span<const shape_knob> geometry = {}) {
+    const float length = std::sqrt(distance_sq(axis.start, axis.end));
+    if (length < 1.f) return {};
+    const point normal{(axis.end.y - axis.start.y) / length, (axis.start.x - axis.end.x) / length};
+    return place_stop_knobs(key, [&](float offset) { return stop_ray{axis.at(offset), normal}; }, clip, radius, geometry);
+}
+
 struct stop_handle_layout { gradient_stop_axis axis{}; stop_knobs knobs{}; };
 
 stop_handle_layout layout_stop_knobs(const shape_keyframe& key, const keyframe_shape& shape, pixel_rect node,
@@ -621,9 +655,14 @@ stop_handle_layout layout_stop_knobs(const shape_keyframe& key, const keyframe_s
     if (key.kind == shape_kind::linear) {
         const gradient_stop_axis axis{knob_anchor(key, shape, node, 0.f, start_x, transform),
             knob_anchor(key, shape, node, 0.f, end_x, transform)};
-        return {axis, place_stop_knobs(key, axis, clip, radius)};
+        return {axis, place_axis_stop_knobs(key, axis, clip, radius)};
     }
-    if (key.kind != shape_kind::radial) return {};
+    if (key.kind == shape_kind::sweep) {
+        const auto center = sweep_stop_center(key, shape, node, transform);
+        return {{}, place_stop_knobs(key, [&](float offset) {
+            return sweep_stop_ray(key, shape, node, transform, center, offset);
+        }, clip, radius, geometry)};
+    }
     const radial_stop_circles circles(shape, node);
     constexpr float diagonal = .70710678f;
     constexpr point directions[]{{0, -1}, {0, 1}, {-1, 0}, {1, 0},
@@ -633,7 +672,7 @@ stop_handle_layout layout_stop_knobs(const shape_keyframe& key, const keyframe_s
     // Prefer the upper spoke, switching only if another direction keeps more handles on the artboard.
     for (const auto direction : directions) {
         const auto axis = circles.spoke(key, node, transform, direction);
-        auto knobs = place_stop_knobs(key, axis, clip, radius, geometry);
+        auto knobs = place_axis_stop_knobs(key, axis, clip, radius, geometry);
         const auto count = std::size_t(std::ranges::count_if(knobs, [](const auto& knob) { return knob.has_value(); }));
         if (count <= visible) continue;
         best = {axis, std::move(knobs)};
@@ -1221,9 +1260,16 @@ struct designer_preview::impl {
         if (!axis && !stop) return false;
         auto values = key->shape;
         const auto picked_axis = axis.value_or(start_x);
-        const double angle = !stop && is_angle(picked_axis) ? values[picked_axis] : 0.;
+        double angle = !stop && is_angle(picked_axis) ? values[picked_axis] : 0.;
+        double winding = angle;
+        if (stop && key->kind == shape_kind::sweep) {
+            const auto center = sweep_stop_center(*key, values, node, transform);
+            const auto cursor = sweep_pointer_angle(*key, node, transform, center, p);
+            if (!cursor) return false;
+            angle = *cursor; // Use the actual grab ray so an off-center press cannot jump the stop.
+        }
         shape_edit.emplace(shape_drag{std::move(*key), values, area, node, transform, p, dpi,
-            picked_axis, angle, angle, stop, stops.axis});
+            picked_axis, angle, winding, stop, stops.axis});
         edit_release = id;
         if (stop) mark_canvas();
         return true;
@@ -1235,8 +1281,21 @@ struct designer_preview::impl {
         const double slop = 3.0 * drag.dpi;
         if (drag.stop) {
             const auto i = drag.stop->index;
-            const float offset = dx * dx + dy * dy < slop * slop ? drag.key.stops[i].offset :
-                move_stop_offset(drag.key.stops, i, drag.stop_axis.offset_delta(dx, dy));
+            const bool within_slop = dx * dx + dy * dy < slop * slop;
+            double delta = 0.;
+            if (drag.key.kind == shape_kind::sweep) {
+                const auto center = sweep_stop_center(drag.key, drag.shape, drag.node, drag.transform);
+                const auto angle = sweep_pointer_angle(drag.key, drag.node, drag.transform, center, p);
+                if (!angle) return; // Keep the last usable draft while the pointer is at the center.
+                drag.angle_unwrapped += std::remainder(*angle - drag.angle_cursor, 360.);
+                drag.angle_cursor = *angle;
+                // A near-return is a no-op, except after an actual turn across the seam.
+                if (!within_slop || std::abs(drag.angle_unwrapped) > 180.)
+                    delta = drag.angle_unwrapped / (drag.shape[end_angle] - drag.shape[start_angle]);
+            } else if (!within_slop) {
+                delta = drag.stop_axis.offset_delta(dx, dy);
+            }
+            const float offset = move_stop_offset(drag.key.stops, i, delta);
             if (offset != drag.stop->offset) {
                 drag.stop->offset = offset;
                 sample_requested = true;
@@ -1639,11 +1698,21 @@ struct designer_preview::impl {
         const auto moving = shape_edit ? shape_edit->stop : std::nullopt;
         if (moving && stops[moving->index]) {
             auto& knob = *stops[moving->index];
-            const auto anchor = axis.at(moving->offset);
             // Keep the other handles in their rows during the gesture.
-            knob.at.x += anchor.x - knob.anchor.x;
-            knob.at.y += anchor.y - knob.anchor.y;
-            knob.anchor = anchor;
+            if (key->kind == shape_kind::sweep) {
+                const auto center = sweep_stop_center(*key, values, node, t);
+                const auto initial = sweep_stop_ray(*key, values, node, t, center, key->stops[moving->index].offset);
+                const auto ray = sweep_stop_ray(*key, values, node, t, center, moving->offset);
+                const float lane = (knob.at.x - knob.anchor.x) * initial.normal.x + (knob.at.y - knob.anchor.y) * initial.normal.y;
+                const float shift = std::max(lane, h + 2.f - ray.inward_limit);
+                knob.anchor = ray.anchor;
+                knob.at = {ray.anchor.x + ray.normal.x * shift, ray.anchor.y + ray.normal.y * shift};
+            } else {
+                const auto anchor = axis.at(moving->offset);
+                knob.at.x += anchor.x - knob.anchor.x;
+                knob.at.y += anchor.y - knob.anchor.y;
+                knob.anchor = anchor;
+            }
         }
         constexpr unsigned ink = 0xFF202936u, accent = 0xFFB7F0FFu, blue = 0xFFFFE1A0u; // OVG: AABBGGRR.
         const auto color_for = [&](std::size_t axis) {

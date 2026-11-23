@@ -1403,7 +1403,9 @@ void test_gradient_keyframe_geometry() {
                 {"offset":1,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
                     "center_y":0.5,"outer_radius":0.75}]}},
         "sweep":{"type":"gradient","props":{"x":10,"y":110,"width":80,"height":40,"gradient_kind":"sweep",
-            "gradient_center_y":0.625,"gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
+            "gradient_center_y":0.625,
+            "gradient_stops":[{"offset":0,"color":"#123640"},{"offset":0.55,"color":"#44D2A880"},{"offset":1,"color":"#123640"}],
+            "gradient_animation":"keyframes","gradient_animation_duration":1,"gradient_animation_loop":false,
             "gradient_animation_keyframes":[
                 {"offset":0,"x":0,"y":0,"tint":"#FFFFFF","opacity":1,"interpolation":"linear",
                     "center_x":0.25,"center_y":0.375,"start_angle":350,"end_angle":360},
@@ -1558,6 +1560,21 @@ void test_gradient_keyframe_geometry() {
         "same-time sweep edits retain the authored reverse order rather than wrapping angles");
     seek(1);
     check(fill(VG_PATTERN_TYPE_SWEEP).cp[0] == sweep_base.cp[0], "cancel restores the original sweep at the same time");
+    sweep_draft.draft = {{}, ui::gradient_stop_offset{1, .75f}};
+    seek(1, &sweep_draft);
+    const auto& sweep_stop = fill(VG_PATTERN_TYPE_SWEEP);
+    check(sweep_stop.cp[0] == sweep_base.cp[0] && sweep_stop.m == sweep_base.m &&
+        sweep_stop.count == sweep_base.count && sweep_stop.stops[1] == .75f &&
+        fill(VG_PATTERN_TYPE_RADIAL).cp[0] == radial_base.cp[0],
+        "a sweep stop draft applies at the same time without changing the sweep geometry or another track");
+    for (int i = 0; i < sweep_base.count; ++i)
+        check(sweep_stop.colors[i] == sweep_base.colors[i] && (i == 1 || sweep_stop.stops[i] == sweep_base.stops[i]),
+            "sweep live preview preserves every color and the other offsets");
+    sweep_draft.draft.stop->offset = 1.f;
+    seek(1, &sweep_draft);
+    check(fill(VG_PATTERN_TYPE_SWEEP).stops[1] == .55f, "a sweep stop draft cannot duplicate its neighbor");
+    seek(1);
+    check(fill(VG_PATTERN_TYPE_SWEEP).stops[1] == sweep_base.stops[1], "cancel restores the original sweep stop offset");
     expect_fallback();
 
     const auto original = fill(VG_PATTERN_TYPE_LINEAR);
