@@ -1809,6 +1809,192 @@ void test_gradient_keyframe_stops() {
         "rounding a minimum-gap blend preserves stop order with the smallest legal adjustment");
 }
 
+void test_switch_appearance() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["switch"]},
+        "switch":{"type":"switch","props":{"x":12,"width":134,"height":28,"text":"Wi-Fi",
+            "text_position":"left","thumb_color":"#F49B38CC"}}
+    }})", doc), "decode optional switch text position and thumb color");
+    const auto font_path = fs::path(__FILE__).parent_path() / "res/fonts/DejaVuSans.ttf";
+    std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache(new_font_cache(), free_font_cache);
+    check(cache && load_font_from_path(cache.get(), font_path.string().c_str(), "SwitchTest"), "load switch label font");
+    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(new_font_family(cache.get(), "SwitchTest", nullptr), delete_font_family);
+    check(font && font->count, "resolve switch label font");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(font.get(), 16), &vgui_destroy);
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    check(bool(ctx) && bool(vg), "create switch draw context");
+    vg->width = 180;
+    vg->height = 60;
+    struct thumb { float x, y, radius; uint32_t color; };
+    static std::vector<thumb> thumbs;
+    static const auto circle = cb->circle;
+    static const auto source = cb->set_source_color;
+    cb->circle = [](rvg_t* view, float x, float y, float radius) {
+        thumbs.push_back({x, y, radius, 0});
+        circle(view, x, y, radius);
+    };
+    cb->set_source_color = [](rvg_t* view, uint32_t color) {
+        if (!thumbs.empty() && !thumbs.back().color) thumbs.back().color = color;
+        source(view, color);
+    };
+    struct label { std::string text; int x, width; float align_x; };
+    static std::vector<label> labels;
+    static const auto add_text = cb->add_text;
+    cb->add_text = [](rvg_t* view, text_st_t* text, text_style_t* style, text_box_rt* box) {
+        labels.push_back({std::string(text->text, text->text_len), box->rc.x, box->rc.z, box->text_align.x});
+        add_text(view, text, style, box);
+    };
+    ui::runtime rt(ctx.get());
+    const auto mount = [&](std::uint64_t revision) {
+        check(rt.mount(doc, revision) && rt.layout({180, 60, 1}), "mount and lay out the switch");
+    };
+    const auto draw = [&] {
+        for (int i = 0; i < 24; ++i) vgui_update(ctx.get(), .05f);
+        cb->clear(vg.get());
+        thumbs.clear();
+        labels.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(thumbs.size() == 1, "switch must draw one thumb");
+        return thumbs.front();
+    };
+    mount(1);
+    const auto off = draw();
+    check(off.x > 100 && off.color == 0xCC389BF4u, "left text places the track on the right with the authored RGBA thumb");
+    vgui_input_mouse_down(ctx.get(), 1, 24, 14, 1); // Click the text side, not the track.
+    vgui_input_mouse_up(ctx.get(), 1, 24, 14, 1);
+    const auto on = draw();
+    check(vgui_widget_get_checked(rt.widget("switch")) && on.x > off.x && on.color == off.color,
+        "clicking the text toggles the switch and both states use the authored color");
+    auto& props = doc.nodes.at("switch").props;
+    props.erase("text_position");
+    props.erase("thumb_color");
+    mount(2);
+    const auto legacy = draw();
+    check(legacy.x < 48 && legacy.color == 0xFFFFFFFFu, "old JSON keeps a left track and the default theme thumb in LTR");
+    vgui_context_set_direction(ctx.get(), VGUI_DIRECTION_RTL);
+    mount(3);
+    check(draw().x > 100, "automatic text position still mirrors in RTL");
+    props["text_position"] = "right"s;
+    mount(4);
+    check(draw().x < 48, "explicit right text is physical even in RTL");
+    props["text"] = ""s;
+    mount(5);
+    check(draw().x > 100 && labels.empty(), "an empty label keeps the natural RTL track position");
+
+    // New physical labels override old single-label props without depending on direction.
+    props["text"] = "Old caption"s;
+    props["text_left"] = "Disabled"s;
+    props["text_right"] = "On"s;
+    props["width"] = 0.0;
+    mount(6);
+    const auto dual = draw();
+    const auto expect_sides = [&](float thumb_x) {
+        check(labels.size() == 2 && labels[0].text == "Disabled" && labels[1].text == "On" &&
+            labels[0].x + labels[0].width < thumb_x && labels[1].x > thumb_x,
+            "distinct labels must be painted on their physical sides of the track");
+    };
+    expect_sides(dual.x);
+    auto* widget = rt.widget("switch");
+    float dual_width = 0;
+    vgui_widget_get_rect(widget, nullptr, nullptr, &dual_width, nullptr);
+    check(std::string_view(vgui_widget_get_a11y_name(widget)) == "Disabled / On", "both labels provide the accessible toggle name");
+    const float right_x = labels[1].x + labels[1].width / 2;
+    vgui_input_mouse_down(ctx.get(), 1, right_x, 14, 1);
+    vgui_input_mouse_up(ctx.get(), 1, right_x, 14, 1);
+    const auto toggled = draw();
+    expect_sides(toggled.x);
+    check(vgui_widget_get_checked(widget) && toggled.x < dual.x, "right text toggles the switch without relocating its labels in RTL");
+    auto roundtrip = ui::document{};
+    std::string json;
+    check(ui::encode_json(doc, json) && ui::decode_json(json, roundtrip) && roundtrip == doc, "both switch sides survive JSON roundtrip");
+    props["text_left"] = ""s;
+    mount(7);
+    draw();
+    float single_width = 0;
+    vgui_widget_get_rect(rt.widget("switch"), nullptr, nullptr, &single_width, nullptr);
+    check(labels.size() == 1 && labels.front().text == "On" && single_width < dual_width,
+        "an empty side omits its label and gap from intrinsic width");
+    props["width"] = 30.0;
+    props["text_left"] = "Disabled"s;
+    mount(8);
+    draw();
+    check(labels.empty(), "an undersized switch must not draw text over its track");
+
+    props["width"] = 155.0;
+    props["text_align_x"] = "start"s;
+    props["text_align_left"] = "center"s;
+    props["text_align_right"] = "left"s;
+    mount(9);
+    expect_sides(draw().x);
+    check(near(labels[0].align_x, .5f) && near(labels[1].align_x, 0.f),
+        "per-side alignment must reach the two draw calls without RTL mirroring");
+    props["text_align_left"] = "right"s;
+    props.erase("text_align_right");
+    vgui_context_set_direction(ctx.get(), VGUI_DIRECTION_LTR);
+    mount(10);
+    expect_sides(draw().x);
+    check(near(labels[0].align_x, 1.f) && near(labels[1].align_x, 0.f),
+        "changing the left side must not change the right side's inherited alignment");
+    vgui_context_set_direction(ctx.get(), VGUI_DIRECTION_RTL);
+    expect_sides(draw().x);
+    check(near(labels[0].align_x, 1.f) && near(labels[1].align_x, 1.f),
+        "only an inherited alignment follows the context direction");
+
+    vgui_context_set_direction(ctx.get(), VGUI_DIRECTION_LTR);
+    props["text_left"] = ""s;
+    props["text_right"] = ""s;
+    props["width"] = props["height"] = 0.0;
+    mount(11);
+    const auto themed = draw();
+    const auto size = [&] {
+        ui::pixel_rect r{};
+        vgui_widget_get_rect(rt.widget("switch"), &r.x, &r.y, &r.width, &r.height);
+        return r;
+    };
+    const float default_width = size().width;
+    props["switch_track_width"] = 64.0;
+    mount(12);
+    check(near(size().width, 64) && near(draw().radius, themed.radius),
+        "changing the track length must not change the inherited slider height");
+    props["switch_track_height"] = 30.0;
+    props.erase("switch_track_width");
+    mount(13);
+    check(near(size().width, default_width) && near(size().height, 30) && near(draw().radius, 13),
+        "changing track height fits auto layout and enlarges the thumb without changing track length");
+    props["switch_track_width"] = 64.0;
+    mount(14);
+    const auto size_at_one = size();
+    const auto left_end = draw();
+    vgui_widget_set_checked(rt.widget("switch"), 1);
+    check(near(draw().x - left_end.x, 34), "thumb travels across the configured length in the checked state");
+    vg->width = 270;
+    vg->height = 90;
+    check(rt.layout({180, 60, 1.5f}).has_value(), "scale a mounted switch without remounting");
+    const auto scaled = size();
+    check(near(scaled.width, size_at_one.width * 1.5f) && near(scaled.height, size_at_one.height * 1.5f) &&
+        near(draw().radius, 19.5f), "logical track size must scale once with DPI");
+    props["width"] = 24.0;
+    props["height"] = 10.0;
+    mount(15);
+    const auto bounded = size();
+    const auto small = draw();
+    check(near(bounded.width, 24) && near(bounded.height, 10) && near(small.radius, 3) &&
+        near(small.y, bounded.y + bounded.height / 2) && small.x - small.radius >= bounded.x,
+        "an oversized track must remain within a fixed-height switch without clipping the thumb");
+    props["width"] = props["height"] = 0.0;
+    mount(16);
+    auto* sized_switch = rt.widget("switch");
+    const auto rev = vgui_context_paint_revision(ctx.get());
+    vgui_switch_set_track_size(sized_switch, 64, 30);
+    check(vgui_context_paint_revision(ctx.get()) == rev, "unchanged track size must not invalidate on-demand drawing");
+    vgui_switch_set_track_size(sized_switch, 0, std::numeric_limits<float>::infinity());
+    check(vgui_context_paint_revision(ctx.get()) != rev && rt.layout({180, 60, 1}).has_value() &&
+        near(size().width, default_width) && near(draw().radius, themed.radius),
+        "zero and invalid dimensions must restore theme sizes and invalidate layout");
+}
+
 void test_progress_colors() {
     std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
     std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
@@ -2004,6 +2190,7 @@ int main(int argc, char** argv) {
         test_gradient_keyframe_animation();
         test_gradient_keyframe_geometry();
         test_gradient_keyframe_stops();
+        test_switch_appearance();
         test_progress_colors();
         test_radio_group_input();
         test_label_orientation();

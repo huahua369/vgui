@@ -886,6 +886,10 @@ struct designer_workbench::impl {
             if (value == "stretch") return strings.text("workbench.inspector.alignment.stretch", "Stretch");
             if (value == "space-between") return strings.text("workbench.inspector.alignment.space_between", "Space between");
             if (value == "space-around") return strings.text("workbench.inspector.alignment.space_around", "Space around");
+        } else if (desc.key == "text_align_left" || desc.key == "text_align_right") {
+            if (value == "left") return strings.text("workbench.inspector.switch_alignment.left", "Align left");
+            if (value == "center") return strings.text("workbench.inspector.alignment.center", "Center");
+            if (value == "right") return strings.text("workbench.inspector.switch_alignment.right", "Align right");
         } else if (desc.key == "background_gradient_direction") {
             if (value == "horizontal") return strings.text("workbench.inspector.gradient_direction.horizontal", "Left to right");
             if (value == "vertical") return strings.text("workbench.inspector.gradient_direction.vertical", "Top to bottom");
@@ -1339,6 +1343,18 @@ struct designer_workbench::impl {
         return true;
     }
 
+    // Project a legacy literal into the appropriate field without changing the
+    // document on load. The first real edit converts it in the same transaction.
+    std::string_view legacy_switch_side(const node& item) const
+    {
+        if (item.type != "switch" || item.props.contains("text_left") || item.props.contains("text_right") ||
+            !std::get<std::string>(property_value(item, *find_property("switch", "text_key"))).empty() ||
+            std::get<std::string>(property_value(item, *find_property("switch", "text"))).empty()) return {};
+        const auto& pos = std::get<std::string>(property_value(item, *find_property("switch", "text_position")));
+        return (pos == "left" || (pos == "auto" && vgui_context_get_direction(ui) == VGUI_DIRECTION_RTL)) ?
+            "text_left" : "text_right";
+    }
+
     void edit_property(const std::string& key, const std::string& input, bool interactive = false)
     {
         if (refreshing || replaced || !page_active || inspected.id != selected) return;
@@ -1419,6 +1435,21 @@ struct designer_workbench::impl {
         }
         auto stored = data == desc->default_value ? std::nullopt : std::optional<value>(std::move(data));
         const auto& item = found->second;
+        if (key == "text_left" || key == "text_right") {
+            if (const auto side = legacy_switch_side(item); !side.empty()) {
+                const auto& previous = std::get<std::string>(item.props.at("text"));
+                if (key == side ? input == previous : input.empty()) {
+                    if (interactive) apply({}, updated, key, true);
+                    return;
+                }
+                std::vector<edit> batch{set_property{inspected.id, "text", std::nullopt},
+                    set_property{inspected.id, "text_position", std::nullopt},
+                    set_property{inspected.id, key, std::move(stored)}};
+                if (key != side) batch.emplace_back(set_property{inspected.id, std::string(side), value{previous}});
+                apply_batch(batch, updated, key, interactive);
+                return;
+            }
+        }
         if (item.type == "radio" && (key == "radio_group" || key == "checked")) {
             const auto* group_property = find_property("radio", "radio_group");
             const auto* checked_property = find_property("radio", "checked");
@@ -1528,9 +1559,16 @@ struct designer_workbench::impl {
         const bool decorative_gradient = item.type == "gradient";
         const auto kind = decorative_gradient ? std::string_view(std::get<std::string>(property_value(item, *find_property("gradient", "gradient_kind")))) : std::string_view{};
         const auto animation = decorative_gradient ? std::string_view(std::get<std::string>(property_value(item, *find_property("gradient", "gradient_animation")))) : std::string_view{};
+        const auto legacy_side = legacy_switch_side(item);
+        const bool show_legacy_switch = item.type == "switch" && !item.props.contains("text_left") && !item.props.contains("text_right") &&
+            !std::get<std::string>(property_value(item, *find_property("switch", "text_key"))).empty();
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
+                if (item.type == "switch" && !show_legacy_switch) {
+                    if (key == "text" || key == "text_key" || key == "text_position") continue;
+                    if (key == "text_align_x" && !item.props.contains(key)) continue;
+                }
                 if (key == "gradient_animation_keyframes") continue; // Edited in the Timeline.
                 const bool interaction = key.starts_with("tooltip") || key.starts_with("focus") || key == "input_enabled" ||
                     key == "cursor" || key == "a11y_name";
@@ -1573,8 +1611,8 @@ struct designer_workbench::impl {
                 else if ((desc.type == value_type::color && desc.key != "text_color") || desc.key == "border_width" ||
                          desc.key == "rounding" || desc.key == "opacity" || desc.key == "background_style" || desc.key == "button_style" ||
                          desc.key == "gradient_preset" || desc.key == "icon" || desc.key.starts_with("icon_") ||
-                         desc.key.starts_with("text_align_")) row.category = "Appearance";
-                row.value = display_value(property_value(item, desc));
+                         desc.key.starts_with("text_align_") || desc.key.starts_with("switch_track_")) row.category = "Appearance";
+                row.value = key == legacy_side ? std::get<std::string>(item.props.at("text")) : display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
                 if (desc.key == "radio_group") {
@@ -1617,6 +1655,8 @@ struct designer_workbench::impl {
                     row.max_value = desc.max;
                     if (desc.key == "font_size") row.tooltip = strings.text("workbench.inspector.font.size_hint",
                         "0 uses the default size. Custom size: 4–256 logical pixels.");
+                    else if (desc.key.starts_with("switch_track_")) row.tooltip = strings.text("workbench.inspector.switch_track_hint",
+                        "Track size in logical pixels, excluding labels. 0 uses the theme. Enlarge the control if the track does not fit.");
                     else if (desc.key.starts_with("icon_source_")) row.tooltip = strings.text("workbench.inspector.icon_source_hint",
                         "Pixel coordinates in the icon image, from its top left. Width or height 0 extends to the image edge. These fields do not set the display size.");
                     break;

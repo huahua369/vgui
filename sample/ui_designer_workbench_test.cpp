@@ -1834,6 +1834,116 @@ void exercise_control_schema()
     check(workbench.io_ok && model.current() == preview, "new control/item edits did not survive save and reopen");
 }
 
+void exercise_switch_appearance()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "switch-style.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const auto id = workbench.add("switch", root);
+    auto* ctx = workbench.ctx.get();
+    const ui::edit legacy[] = {ui::set_property{id, "text", ui::value{std::string("关闭")}},
+        ui::set_property{id, "text_position", ui::value{std::string("left")}}};
+    check(model.apply(legacy), "could not seed the old one-sided switch");
+    workbench.frame();
+    const auto initial = model.current();
+    constexpr auto color = "property:thumb_color";
+    const auto left_edit = [&] { return workbench.widget("property:text_left", VGUI_EDIT); };
+    const auto right_edit = [&] { return workbench.widget("property:text_right", VGUI_EDIT); };
+    check(std::string_view(vgui_widget_get_text(workbench.widget("property:text_left", VGUI_LABEL))) == "左侧文本" &&
+        std::string_view(vgui_widget_get_text(workbench.widget("property:text_right", VGUI_LABEL))) == "右侧文本" &&
+        std::string_view(vgui_edit_get_text(left_edit())) == "关闭" && std::string_view(vgui_edit_get_text(right_edit())).empty() &&
+        std::string_view(vgui_widget_get_text(workbench.widget(color, VGUI_LABEL))) == "圆形滑块颜色",
+        "old switch text must appear on its original side in the new localized inspector");
+    workbench.click(right_edit());
+    check(vgui_input_text(ctx, "开启"), "could not type the opposite switch label");
+    workbench.frame();
+    const auto both = model.current();
+    const auto& props = both.nodes.at(id).props;
+    check(!props.contains("text") && !props.contains("text_position") &&
+        props.at("text_left") == ui::value{std::string("关闭")} && props.at("text_right") == ui::value{std::string("开启")} &&
+        model.committed() == initial, "typing the opposite label must preview both texts and keep the legacy text on its side");
+    workbench.key(VGUI_KEY_ENTER);
+    check(model.undo() && model.current() == initial && model.redo() && model.current() == both,
+        "editing both sides must migrate legacy text and write the new side in one undoable edit");
+    workbench.frame();
+    workbench.click(left_edit());
+    vgui_edit_select_all(left_edit());
+    check(workbench.key(VGUI_KEY_BACKSPACE) && !model.current().nodes.at(id).props.contains("text_left") &&
+        model.current().nodes.at(id).props.contains("text_right"), "clearing the left label changed the right label");
+    workbench.key(VGUI_KEY_ESCAPE);
+    check(model.current() == both, "Escape did not restore the left label");
+    auto* swatch = workbench.widget(color, VGUI_PANEL);
+    workbench.click(swatch);
+    workbench.frame();
+    auto* popup = vgui_popup_content(ctx);
+    check(popup && std::string_view(vgui_widget_get_id(popup)) == "property-grid.color-picker", "thumb color did not use the color picker");
+    check(workbench.key(VGUI_KEY_ESCAPE), "could not close the thumb color picker");
+    auto* edit = workbench.widget(color, VGUI_EDIT);
+    workbench.click(edit);
+    vgui_edit_select_all(edit);
+    check(vgui_input_text(ctx, "#FFD27A"), "could not enter switch thumb color");
+    workbench.frame();
+    const auto styled = model.current();
+    check(styled.nodes.at(id).props.at("thumb_color") == ui::value{std::string("#FFD27A")} && model.committed() == both,
+        "valid thumb color must preview before Enter");
+    workbench.key(VGUI_KEY_ENTER);
+    constexpr auto left_align = "property:text_align_left", right_align = "property:text_align_right";
+    auto* search = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(search);
+    check(vgui_input_text(ctx, "text_align"), "could not find switch alignment properties");
+    workbench.frame();
+    const auto choose = [&](const char* property, const char* choice) {
+        workbench.press(property);
+        auto* menu = vgui_context_get_open_menu(ctx);
+        check(menu, "switch alignment choice menu did not open");
+        check_menu_items(menu, {"使用默认", "左对齐", "居中", "右对齐"});
+        workbench.activate(menu, choice);
+    };
+    check(std::string_view(vgui_widget_get_text(workbench.widget(left_align, VGUI_LABEL))) == "左侧文本水平对齐" &&
+        std::string_view(vgui_widget_get_text(workbench.widget(right_align, VGUI_LABEL))) == "右侧文本水平对齐",
+        "localized alignment fields must identify which side they control");
+    choose(left_align, "右对齐");
+    const auto left_aligned = model.current();
+    check(left_aligned.nodes.at(id).props.at("text_align_left") == ui::value{std::string("right")} &&
+        !left_aligned.nodes.at(id).props.contains("text_align_right"), "the left choice changed the right alignment");
+    choose(right_align, "居中");
+    const auto aligned = model.current();
+    check(aligned.nodes.at(id).props.at("text_align_left") == ui::value{std::string("right")} &&
+        aligned.nodes.at(id).props.at("text_align_right") == ui::value{std::string("center")} &&
+        model.undo() && model.current() == left_aligned && model.redo() && model.current() == aligned,
+        "the right choice must be an independent undoable edit");
+    workbench.frame();
+    workbench.click(search);
+    vgui_edit_select_all(search);
+    check(vgui_input_text(ctx, "switch_track"), "could not find switch track dimensions");
+    workbench.frame();
+    constexpr auto track_width = "property:switch_track_width", track_height = "property:switch_track_height";
+    check(std::string_view(vgui_widget_get_text(workbench.widget(track_width, VGUI_LABEL))) == "轨道长度" &&
+        std::string_view(vgui_widget_get_text(workbench.widget(track_height, VGUI_LABEL))) == "轨道高度",
+        "track dimensions are not exposed in the inspector");
+    auto* length = workbench.widget(track_width, VGUI_EDIT);
+    workbench.click(length);
+    vgui_edit_select_all(length);
+    check(vgui_input_text(ctx, "64"), "could not enter the track length");
+    workbench.frame();
+    check(model.current().nodes.at(id).props.at("switch_track_width") == ui::value{64.0} && model.committed() == aligned,
+        "track length must apply to the live preview before Enter");
+    workbench.key(VGUI_KEY_ENTER);
+    workbench.set_text("switch_track_height", "26");
+    const auto sized = model.current();
+    check(sized.nodes.at(id).props.at("switch_track_height") == ui::value{26.0} &&
+        sized.nodes.at(id).props.at("width") == aligned.nodes.at(id).props.at("width") &&
+        sized.nodes.at(id).props.at("height") == aligned.nodes.at(id).props.at("height"),
+        "track dimensions must not resize the authored widget bounds");
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == sized, "switch track dimensions or appearance were lost on save/reopen");
+}
+
 void exercise_label_orientation()
 {
     temp_dir directory;
@@ -2517,6 +2627,7 @@ int main()
         exercise_outline_icons();
         exercise_outline_drag();
         exercise_control_schema();
+        exercise_switch_appearance();
         exercise_label_orientation();
         exercise_button_gradients();
         exercise_panel_gradient();

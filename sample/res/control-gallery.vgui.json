@@ -10,7 +10,7 @@
     "edit": {"type":"edit", "props":{"x":134,"y":55,"width":158,"height":30,"placeholder":"输入文字…"}},
     "check": {"type":"checkbox", "props":{"x":306,"y":55,"width":105,"height":30,"text":"复选框","checked":true}},
     "radio": {"type":"radio", "props":{"x":421,"y":55,"width":105,"height":30,"text":"单选框","checked":true}},
-    "switch": {"type":"switch", "props":{"x":536,"y":55,"width":104,"height":30,"text":"开关","checked":true}},
+    "switch": {"type":"switch", "props":{"x":536,"y":55,"width":150,"height":30,"text_left":"关闭","text_right":"开启","text_align_left":"right","text_align_right":"left","switch_track_width":64,"switch_track_height":26,"thumb_color":"#FFD27A","checked":true}},
     "line": {"type":"separator", "props":{"x":20,"y":96,"width":720,"height":1}},
     "slider": {"type":"slider", "props":{"x":20,"y":112,"width":206,"height":22,"max_value":100,"value":40,"step":5}},
     "progress": {"type":"progress", "props":{"x":250,"y":112,"width":180,"height":22,"value":0.7}},

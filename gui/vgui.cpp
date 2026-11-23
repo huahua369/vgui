@@ -957,6 +957,14 @@ struct vgui_widget
 	vgui_button_style_kind btn_style_kind = VGUI_BUTTON_STYLE_SOLID;
 	std::array<vgui_color, 8> button_gradient = vgui::detail::default_button_gradient;
 
+	// switch (VGUI_SWITCH) --------------------------------------------------
+	struct switch_labels { std::string left, right, accessible_name; };
+	std::unique_ptr<switch_labels> switch_caption;
+	vgui_switch_text_position switch_text_position = VGUI_SWITCH_TEXT_AUTO;
+	float switch_left_align = -1.0f, switch_right_align = -1.0f;
+	float switch_track_width = 0.0f, switch_track_height = 0.0f; // Logical units; zero inherits.
+	vgui_color switch_thumb_color = 0;
+
 	// custom (VGUI_CUSTOM) -------------------------------------------------
 	vgui_custom_draw_fn custom_draw = nullptr;
 	void* custom_draw_user = nullptr;
@@ -5631,6 +5639,14 @@ static void vgui_measure_label_column(vgui_widget* w, float row_height)
 	}
 }
 
+static void vgui_switch_track_size(const vgui_widget* w, float line_height, float& width, float& height)
+{
+	const auto& style = w->ctx->style.switch_;
+	width = w->switch_track_width > 0.0f ? w->switch_track_width * w->ctx->ui_scale : style.width;
+	height = w->switch_track_height > 0.0f ? w->switch_track_height * w->ctx->ui_scale :
+		std::clamp(line_height - style.line_offset, style.min_height, style.max_height);
+}
+
 static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 {
 	if (!w) return;
@@ -5754,10 +5770,18 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	break;
 	case VGUI_SWITCH:
 	{
-		float track = st.switch_.width;
+		float track_w, track_h;
+		vgui_switch_track_size(w, lh, track_w, track_h);
 		float label = w->text.empty() ? 0 : (tw + st.switch_.gap);
-		w->intrinsic_w = track + label + pl + pr;
-		w->intrinsic_h = std::max(st.switch_.min_control_height, lh) + pt + pb;
+		if (const auto* caption = w->switch_caption.get())
+		{
+			label = 0;
+			for (const auto* text : {&caption->left, &caption->right})
+				if (!text->empty()) label += vgui_text_width(w, *text) + st.switch_.gap;
+		}
+		w->intrinsic_w = track_w + label + pl + pr;
+		w->intrinsic_h = std::max({st.switch_.min_control_height, lh,
+			w->switch_track_height > 0.0f ? track_h : 0.0f}) + pt + pb;
 	}
 	break;
 	case VGUI_SLIDER:
@@ -13665,12 +13689,44 @@ static void vgui_draw_switch(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	vgui_context* ctx = w->ctx;
 	const vgui_switch_style& ss = ctx->style.switch_;
-	bool rtl = vgui_is_rtl(ctx);
-	float lh = vgui_line_height(ctx, w);
-	float track_w = ss.width;
-	float track_h = std::max(ss.min_height, std::min(ss.max_height, lh - ss.line_offset));
-	float x = rtl ? w->abs_x + w->abs_w - w->padding[2] - track_w : w->abs_x + w->padding[0];
-	float y = w->abs_y + (w->abs_h - track_h) * 0.5f;
+	const bool rtl = vgui_is_rtl(ctx);
+	const auto position = w->text.empty() ? VGUI_SWITCH_TEXT_AUTO : w->switch_text_position;
+	const bool text_left = position == VGUI_SWITCH_TEXT_AUTO ? rtl : position == VGUI_SWITCH_TEXT_LEFT;
+	const float left = w->abs_x + w->padding[0];
+	const float right = w->abs_x + w->abs_w - w->padding[2];
+	const auto* caption = w->switch_caption.get();
+	const bool custom_size = w->switch_track_width > 0.0f || w->switch_track_height > 0.0f;
+	float track_w, track_h;
+	vgui_switch_track_size(w, vgui_line_height(ctx, w), track_w, track_h);
+	if (caption || custom_size || position != VGUI_SWITCH_TEXT_AUTO)
+		track_w = std::clamp(right - left, 0.0f, track_w);
+	const float top_padding = custom_size ? w->padding[1] : 0.0f;
+	const float inner_h = std::max(0.0f, w->abs_h - top_padding - (custom_size ? w->padding[3] : 0.0f));
+	if (custom_size) track_h = std::min(track_h, inner_h);
+	float x = text_left ? right - track_w : left;
+	float left_width = 0, right_width = 0, label_gap = 0;
+	if (caption)
+	{
+		const bool has_left = !caption->left.empty(), has_right = !caption->right.empty();
+		const int labels = int(has_left) + int(has_right);
+		if (!labels) x = rtl ? right - track_w : left;
+		else
+		{
+			const float space = std::max(0.0f, right - left - track_w);
+			label_gap = std::min(ss.gap, space / labels);
+			const float available = std::max(0.0f, space - label_gap * labels);
+			if (has_left && has_right)
+			{
+				const float lw = vgui_text_width(w, caption->left), rw = vgui_text_width(w, caption->right);
+				const float preferred = lw + rw;
+				left_width = available >= preferred ? lw + (available - preferred) * 0.5f : available * lw / preferred;
+			}
+			else left_width = has_left ? available : 0.0f;
+			right_width = available - left_width;
+			x = left + left_width + (has_left ? label_gap : 0.0f);
+		}
+	}
+	const float y = w->abs_y + top_padding + (inner_h - track_h) * 0.5f;
 	uint32_t on = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 	uint32_t off = w->enabled ? ctx->theme.track
 		: vgui_mix_color(ctx->theme.track, ctx->theme.disabled, ss.disabled_mix);
@@ -13678,31 +13734,40 @@ static void vgui_draw_switch(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	uint32_t track = vgui_mix_color(off, on, t);
 	vgui_fill_rect(cb, vg, x, y, track_w, track_h, track_h * 0.5f, vgui_widget_color(w, track));
 
-	float radius = std::max(0.0f, track_h * 0.5f - ss.thumb_inset);
-	float travel = std::max(0.0f, track_w - radius * 2.0f - ss.thumb_inset * 2.0f);
-	float kx = rtl
-		? x + track_w - radius - ss.thumb_inset - t * travel
-		: x + radius + ss.thumb_inset + t * travel;
-	float ky = y + track_h * 0.5f;
+	const float short_edge = std::min(track_h, track_w);
+	const float inset = std::min(ss.thumb_inset, custom_size ? short_edge * 0.25f : track_w * 0.5f);
+	const float radius = std::max(0.0f, short_edge * 0.5f - inset);
+	const float travel = std::max(0.0f, track_w - radius * 2.0f - inset * 2.0f);
+	const float kx = rtl ? x + track_w - radius - inset - t * travel : x + radius + inset + t * travel;
+	const float ky = y + track_h * 0.5f;
+	const vgui_color thumb = w->switch_thumb_color ? w->switch_thumb_color : ctx->theme.switch_thumb;
 	cb->circle(vg, kx, ky, radius);
-	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.switch_thumb)));
+	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, thumb)));
 	cb->fill(vg);
 
-	if (!w->text.empty())
+	const float shared_alignment = rtl ? 1.0f - w->text_align_x : w->text_align_x;
+	const auto draw_clipped = [&](const std::string& text, float tx, float width, float align)
 	{
-		if (rtl)
-		{
-			float tx = w->abs_x + w->padding[0];
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
-				std::max(0.0f, x - ss.gap - tx), w->abs_h,
+		if (width > 0.0f && !text.empty())
+			vgui_text_submit(ctx, cb, vg, w, text, tx, w->abs_y, width, w->abs_h,
+				vgui_text_color(w), align < 0.0f ? shared_alignment : align, w->text_align_y,
+				vgui_font_size(ctx, w), 0, 0, nullptr, VGUI_TEXT_PASS_ALL | VGUI_TEXT_PASS_CLIP_TEXT);
+	};
+	if (caption)
+	{
+		draw_clipped(caption->left, left, left_width, w->switch_left_align);
+		draw_clipped(caption->right, x + track_w + label_gap, right_width, w->switch_right_align);
+	}
+	else if (!w->text.empty())
+	{
+		const float tx = text_left ? left : x + track_w + ss.gap;
+		const float end = text_left ? x - ss.gap : position == VGUI_SWITCH_TEXT_AUTO ? w->abs_x + w->abs_w : right;
+		const float width = std::max(0.0f, end - tx);
+		const float align = text_left ? w->switch_left_align : w->switch_right_align;
+		if (position == VGUI_SWITCH_TEXT_AUTO && align < 0.0f)
+			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, width, w->abs_h,
 				vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
-		else
-		{
-			float tx = x + track_w + ss.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
+		else draw_clipped(w->text, tx, width, align);
 	}
 	vgui_draw_focus(w, cb, vg);
 }
@@ -17691,6 +17756,73 @@ extern "C" {
 	vgui_label_text_orientation vgui_label_get_text_orientation(const vgui_widget* widget)
 	{
 		return widget && widget->label_column ? VGUI_LABEL_TEXT_VERTICAL : VGUI_LABEL_TEXT_HORIZONTAL;
+	}
+
+	void vgui_switch_set_text_position(vgui_widget* widget, vgui_switch_text_position position)
+	{
+		if (!widget || widget->kind != VGUI_SWITCH || widget->switch_text_position == position ||
+			(position != VGUI_SWITCH_TEXT_AUTO && position != VGUI_SWITCH_TEXT_LEFT && position != VGUI_SWITCH_TEXT_RIGHT)) return;
+		widget->switch_text_position = position;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_widget_mark_dirty(widget);
+	}
+
+	void vgui_switch_set_labels(vgui_widget* widget, const char* left, const char* right)
+	{
+		if (!widget || widget->kind != VGUI_SWITCH) return;
+		if (!left && !right)
+		{
+			if (!widget->switch_caption) return;
+			widget->switch_caption.reset();
+		}
+		else
+		{
+			if (!left) left = "";
+			if (!right) right = "";
+			if (const auto* old = widget->switch_caption.get(); old && old->left == left && old->right == right) return;
+			auto labels = std::make_unique<vgui_widget::switch_labels>();
+			labels->left = left;
+			labels->right = right;
+			labels->accessible_name = labels->left.empty() ? labels->right : labels->right.empty() ? labels->left :
+				labels->left + " / " + labels->right;
+			widget->switch_caption = std::move(labels);
+		}
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_switch_set_text_align_x(vgui_widget* widget, float left, float right)
+	{
+		if (!widget || widget->kind != VGUI_SWITCH) return;
+		const auto alignment = [](float x) { return std::isfinite(x) && x >= 0.0f ? std::min(x, 1.0f) : -1.0f; };
+		left = alignment(left);
+		right = alignment(right);
+		if (widget->switch_left_align == left && widget->switch_right_align == right) return;
+		widget->switch_left_align = left;
+		widget->switch_right_align = right;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_widget_mark_dirty(widget);
+	}
+
+	void vgui_switch_set_thumb_color(vgui_widget* widget, vgui_color color)
+	{
+		if (!widget || widget->kind != VGUI_SWITCH || widget->switch_thumb_color == color) return;
+		widget->switch_thumb_color = color;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_widget_mark_dirty(widget);
+	}
+
+	void vgui_switch_set_track_size(vgui_widget* widget, float width, float height)
+	{
+		if (!widget || widget->kind != VGUI_SWITCH) return;
+		const auto dimension = [](float v) { return std::isfinite(v) ? vgui_nonneg(v) : 0.0f; };
+		width = dimension(width);
+		height = dimension(height);
+		if (widget->switch_track_width == width && widget->switch_track_height == height) return;
+		widget->switch_track_width = width;
+		widget->switch_track_height = height;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_mark_dirty(widget);
 	}
 
 	void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor)
@@ -22000,7 +22132,11 @@ extern "C" {
 		if (!w) return "";
 		if (!w->a11y_name.empty()) return w->a11y_name.c_str();
 		// Edit content is not its accessible name; prefer tooltip/placeholder.
-		if (w->kind != VGUI_EDIT && !w->text.empty()) return w->text.c_str();
+		if (w->switch_caption)
+		{
+			if (!w->switch_caption->accessible_name.empty()) return w->switch_caption->accessible_name.c_str();
+		}
+		else if (w->kind != VGUI_EDIT && !w->text.empty()) return w->text.c_str();
 		if (!w->tooltip.empty()) return w->tooltip.c_str();
 		if (w->kind == VGUI_EDIT && !w->placeholder.empty())
 			return w->placeholder.c_str();

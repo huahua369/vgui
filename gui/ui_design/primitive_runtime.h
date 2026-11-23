@@ -148,6 +148,22 @@ void apply_primitive(vgui_widget* widget, const node& n, const Access& props)
         if (props.has("checked")) vgui_widget_set_checked(widget, props.boolean("checked"));
         if (const auto color = props.color("accent_color"))
             vgui_widget_set_accent(widget, primitive_theme_override(*color));
+        if (type == "switch") {
+            if (props.has("switch_track_width") || props.has("switch_track_height"))
+                vgui_switch_set_track_size(widget, props.number("switch_track_width"), props.number("switch_track_height"));
+            if (props.has("text_left") || props.has("text_right"))
+                vgui_switch_set_labels(widget, props.text("text_left").c_str(), props.text("text_right").c_str());
+            const auto align = [](std::string_view value) {
+                return value == "left" ? 0.f : value == "center" ? .5f : value == "right" ? 1.f : -1.f;
+            };
+            if (props.has("text_align_left") || props.has("text_align_right"))
+                vgui_switch_set_text_align_x(widget, align(props.text("text_align_left")), align(props.text("text_align_right")));
+            const auto& position = props.text("text_position");
+            vgui_switch_set_text_position(widget, position == "left" ? VGUI_SWITCH_TEXT_LEFT :
+                position == "right" ? VGUI_SWITCH_TEXT_RIGHT : VGUI_SWITCH_TEXT_AUTO);
+            if (const auto color = props.color("thumb_color"))
+                vgui_switch_set_thumb_color(widget, primitive_theme_override(*color));
+        }
     } else if (type == "slider" || type == "progress") {
         // The C setter accepts values in range units. Install range and step
         // first; the setter clamps and quantizes against the newly set range.

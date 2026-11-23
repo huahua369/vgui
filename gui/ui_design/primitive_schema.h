@@ -52,8 +52,18 @@ inline const property_descriptor radio_properties[] = {
     text_align_start, text_align_middle, primitive_font_size, primitive_font_weight,
     primitive_font_slant, primitive_text_color, primitive_font_family,
 };
+inline constexpr std::string_view switch_text_positions[] = {"auto", "left", "right"};
+inline constexpr std::string_view switch_text_alignments[] = {"default", "left", "center", "right"};
 inline const property_descriptor switch_properties[] = {
-    primitive_text, primitive_text_key, initially_checked, accent_color,
+    {"text_left", "Left text", value_type::text, std::string{}},
+    {"text_right", "Right text", value_type::text, std::string{}},
+    primitive_text, primitive_text_key,
+    {"text_position", "Text position", value_type::choice, std::string("auto"), 0, 0, switch_text_positions},
+    initially_checked, accent_color, {"thumb_color", "Switch thumb color", value_type::color, std::string{}},
+    {"switch_track_width", "Track length", value_type::number, 0.0, 0, primitive_extent},
+    {"switch_track_height", "Track height", value_type::number, 0.0, 0, primitive_extent},
+    {"text_align_left", "Left text alignment", value_type::choice, std::string("default"), 0, 0, switch_text_alignments},
+    {"text_align_right", "Right text alignment", value_type::choice, std::string("default"), 0, 0, switch_text_alignments},
     text_align_start, text_align_middle, primitive_font_size, primitive_font_weight,
     primitive_font_slant, primitive_text_color, primitive_font_family,
 };

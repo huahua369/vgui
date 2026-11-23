@@ -1292,6 +1292,25 @@ extern "C" {
 	/* Returns horizontal for NULL and non-label widgets. */
 	VGUI_API vgui_label_text_orientation vgui_label_get_text_orientation(const vgui_widget* widget);
 
+	/* SWITCH: text can be placed physically left or right of the track.
+	 * AUTO follows context direction (right in LTR, left in RTL).
+	 * Empty text leaves the track at its default position. */
+	typedef enum vgui_switch_text_position {
+		VGUI_SWITCH_TEXT_AUTO = 0, VGUI_SWITCH_TEXT_LEFT, VGUI_SWITCH_TEXT_RIGHT
+	} vgui_switch_text_position;
+	VGUI_API void vgui_switch_set_text_position(vgui_widget* widget, vgui_switch_text_position position);
+	/* Set physical left and right labels, replacing the single legacy label.
+	 * Each side can be empty. Passing NULL for both restores the legacy label. */
+	VGUI_API void vgui_switch_set_labels(vgui_widget* widget, const char* left, const char* right);
+	/* Physical horizontal alignment per side: 0 left, 0.5 center, 1 right.
+	 * A negative value inherits the shared, direction-aware text alignment. */
+	VGUI_API void vgui_switch_set_text_align_x(vgui_widget* widget, float left, float right);
+	/* AARRGGBB for the circular thumb in both states; 0 restores the theme. */
+	VGUI_API void vgui_switch_set_thumb_color(vgui_widget* widget, vgui_color color);
+	/* Track size in logical pixels, separate from the widget and its labels.
+	 * Zero uses the theme on that axis. A custom track fits the widget bounds. */
+	VGUI_API void vgui_switch_set_track_size(vgui_widget* widget, float width, float height);
+
 	VGUI_API void vgui_widget_set_cursor(vgui_widget* widget, vgui_cursor cursor);
 	VGUI_API void vgui_widget_set_opacity(vgui_widget* widget, float opacity);
 
