@@ -321,7 +321,7 @@ float grid_edge(double center, float width) {
 }
 
 void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pixel_rect frame,
-        viewport view, float ui_scale, const designer_grid_settings& settings) {
+        viewport view, float ui_scale, const designer_grid_settings& settings, const designer_grid_colors& colors) {
     if (!std::isfinite(board.x) || !std::isfinite(board.y) || !std::isfinite(board.width) ||
         !std::isfinite(board.height) || !std::isfinite(ui_scale) || ui_scale <= 0) return;
     const auto clips = grid_clips(area, board, frame);
@@ -335,7 +335,7 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
     const double min_step = std::max(settings.hide_below, width + 1.f);
     const bool dots = settings.style == designer_grid_style::dots;
     const auto layer = [&](bool major) {
-        const auto color = to_ovg(major ? settings.major_color : settings.minor_color);
+        const auto color = to_ovg(major ? colors.major_color : colors.minor_color);
         if (!(color >> 24) || (!major && settings.major_every == 1)) return;
         const int stride = major ? settings.major_every : 1;
         const double sx = step_x * stride, sy = step_y * stride;
@@ -391,9 +391,9 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
     layer(false);
     layer(true);
 
-    if (settings.axis_color >> 24) {
+    if (colors.axis_color >> 24) {
         const float x = grid_edge(board.x, width), y = grid_edge(board.y, width);
-        const auto color = to_ovg(settings.axis_color);
+        const auto color = to_ovg(colors.axis_color);
         for (const auto r : clips) {
             if (!has_area(r)) continue;
             fill(cb, vg, intersect({x, r.y, width, r.height}, r), color);
@@ -1822,15 +1822,7 @@ struct designer_preview::impl {
         const auto& self = *static_cast<impl*>(user);
         const pixel_rect area{x, y, width, height};
         const bool light = self.theme == designer_theme::light;
-        auto grid_appearance = self.grid;
-        if (light) {
-            // The built-in grid palette follows the shell. Non-default colors
-            // remain user choices and are never changed in settings.
-            constexpr designer_grid_settings defaults;
-            if (grid_appearance.background == defaults.background) grid_appearance.background = 0xFFE9EFF7;
-            if (grid_appearance.minor_color == defaults.minor_color) grid_appearance.minor_color = 0xFFDBE4F0;
-            if (grid_appearance.major_color == defaults.major_color) grid_appearance.major_color = 0xFFC4D2E4;
-        }
+        const auto& grid_appearance = self.grid.colors(self.theme);
         const auto matte = self.run ? (light ? 0xFFE4ECF7u : 0xFF191D24u) : grid_appearance.background;
         fill(cb, vg, area, to_ovg(matte));
         if (!self.ready || !self.frame) return;
@@ -1840,11 +1832,11 @@ struct designer_preview::impl {
         outline(cb, vg, board_frame, area, to_ovg(light ? 0xFF849BB6u : 0xFF535E6Eu), 1.f);
         if (self.run) {
             fill(cb, vg, visible, to_ovg(light ? 0xFFD7E2F0u : 0xFF262B35u));
-        } else if (grid_appearance.visible) {
+        } else if (self.grid.visible) {
             // Guides are part of the Design backdrop. The preview texture's
             // alpha determines which parts, if any, show through the page.
             draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
-                vgui_context_get_ui_scale(self.shell), grid_appearance);
+                vgui_context_get_ui_scale(self.shell), self.grid, grid_appearance);
         }
         if (self.target && has_area(visible))
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),

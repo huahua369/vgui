@@ -47,6 +47,12 @@ inline constexpr int designer_grid_min_major_every = 1, designer_grid_max_major_
 inline constexpr float designer_grid_min_hide_below = 0.f, designer_grid_max_hide_below = 64.f;
 inline constexpr float designer_grid_min_line_width = 0.25f, designer_grid_max_line_width = 8.f;
 
+struct designer_grid_colors {
+    // Packed 0xAARRGGBB, persisted as #RRGGBB or #RRGGBBAA.
+    std::uint32_t background = 0xFF171A1F, minor_color = 0xFF242A31, major_color = 0xFF333C46, axis_color = 0xFFE7122D;
+    bool operator==(const designer_grid_colors&) const = default;
+};
+
 struct designer_grid_settings {
     bool visible = true;
     designer_grid_style style = designer_grid_style::lines;
@@ -54,8 +60,15 @@ struct designer_grid_settings {
     int major_every = 5;
     float hide_below = 6.f;
     float line_width = 1.f;
-    // Packed 0xAARRGGBB, persisted as #RRGGBB or #RRGGBBAA.
-    std::uint32_t background = 0xFF171A1F, minor_color = 0xFF242A31, major_color = 0xFF333C46, axis_color = 0xFFE7122D;
+    designer_grid_colors dark_colors{};
+    designer_grid_colors light_colors{0xFFE9EFF7, 0xFFDBE4F0, 0xFFC4D2E4, 0xFFE7122D};
+
+    constexpr const designer_grid_colors& colors(designer_theme theme) const {
+        return theme == designer_theme::light ? light_colors : dark_colors;
+    }
+    constexpr designer_grid_colors& colors(designer_theme theme) {
+        return theme == designer_theme::light ? light_colors : dark_colors;
+    }
     bool operator==(const designer_grid_settings&) const = default;
 };
 

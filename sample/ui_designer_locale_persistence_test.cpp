@@ -68,22 +68,31 @@ void test_grid_preferences(const fs::path& path) {
     auto partial = defaults;
     partial.visible = false;
     partial.hide_below = 64.f;
-    partial.background = 0x8012ABEFu;
-    partial.axis_color = 0;
-    check(ui::load_designer_grid_settings(path) == partial, "invalid grid members did not default individually");
+    partial.dark_colors.background = partial.light_colors.background = 0x8012ABEFu;
+    partial.dark_colors.axis_color = partial.light_colors.axis_color = 0;
+    check(ui::load_designer_grid_settings(path) == partial, "legacy custom colors must carry over to both themes");
+    write(path, R"({"canvas_grid":{"background":"#171A1F","axis_color":"#224466",)"
+        R"("dark_colors":{"minor_color":"#ABCDEF70"},"light_colors":{"background":"#171A1F","minor_color":"invalid"}}})");
+    auto themed = defaults;
+    themed.dark_colors.minor_color = 0x70ABCDEFu;
+    themed.light_colors.background = defaults.dark_colors.background;
+    check(ui::load_designer_grid_settings(path) == themed,
+        "explicit palettes override legacy colors, even when light uses the dark default; missing fields default individually");
 
     write(path, R"({"language":"en-US","layout":{"left_width":300,"left_collapsed":true},)"
-        R"("theme":"custom-theme","canvas_grid":{"extension":"grid-extension","major_every":18446744073709551615, "spacing":1e100}})");
+        R"("theme":"custom-theme","canvas_grid":{"extension":"grid-extension","major_every":18446744073709551615, "spacing":1e100,)"
+        R"("light_colors":{"extension":"palette-extension"}}})");
     check(ui::load_designer_grid_settings(path) == defaults, "oversized numeric members did not default");
 
     const ui::designer_grid_settings low{false, ui::designer_grid_style::dots, 1.f, 1, 0.f, 0.25f,
-        0x8012ABEFu, 0xFF345678u, 0x00123456u, 0u};
+        {0x8012ABEFu, 0xFF345678u, 0x00123456u, 0u}, {0xFFE6E8EBu, 0x40203040u, 0xFF786543u, 0xFF1040A0u}};
     check(ui::save_designer_grid_settings(path, low) && ui::load_designer_grid_settings(path) == low,
         "lower inclusive bounds, dots, or colors did not round-trip");
     const auto saved = read(path);
     check(ui::load_designer_language(path) == ui::designer_language::english &&
         ui::load_designer_dock_widths(path) == ui::designer_dock_widths{300, 345, true, false} &&
-        saved.find("\"custom-theme\"") != std::string::npos && saved.find("\"grid-extension\"") != std::string::npos,
+        saved.find("\"custom-theme\"") != std::string::npos && saved.find("\"grid-extension\"") != std::string::npos &&
+        saved.find("\"palette-extension\"") != std::string::npos,
         "saving grid settings dropped unrelated preferences");
     check(saved.find("\"#12ABEF80\"") != std::string::npos && saved.find("\"#345678\"") != std::string::npos &&
         saved.find("\"#12345600\"") != std::string::npos && saved.find("\"#00000000\"") != std::string::npos,

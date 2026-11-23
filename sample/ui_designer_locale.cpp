@@ -10,6 +10,7 @@
 #include <map>
 #include <random>
 #include <string>
+#include <utility>
 
 namespace vgui::ui_design {
 namespace {
@@ -95,6 +96,11 @@ bool valid_dock_width(double value) {
 bool valid_grid_number(double value, double minimum, double maximum) {
     return std::isfinite(value) && value >= minimum && value <= maximum;
 }
+
+constexpr std::pair<const char*, std::uint32_t designer_grid_colors::*> grid_colors[] = {
+    {"background", &designer_grid_colors::background}, {"minor_color", &designer_grid_colors::minor_color},
+    {"major_color", &designer_grid_colors::major_color}, {"axis_color", &designer_grid_colors::axis_color},
+};
 
 std::uint32_t read_grid_color(const json& grid, const char* key, std::uint32_t fallback) {
     const auto it = grid.find(key);
@@ -230,10 +236,18 @@ designer_grid_settings load_designer_grid_settings(const fs::path& path) {
     }
     settings.hide_below = read_float("hide_below", settings.hide_below, designer_grid_min_hide_below, designer_grid_max_hide_below);
     settings.line_width = read_float("line_width", settings.line_width, designer_grid_min_line_width, designer_grid_max_line_width);
-    settings.background = read_grid_color(*grid, "background", settings.background);
-    settings.minor_color = read_grid_color(*grid, "minor_color", settings.minor_color);
-    settings.major_color = read_grid_color(*grid, "major_color", settings.major_color);
-    settings.axis_color = read_grid_color(*grid, "axis_color", settings.axis_color);
+    const auto dark = grid->find("dark_colors"), light = grid->find("light_colors");
+    for (const auto& [key, member] : grid_colors) {
+        const auto dark_default = settings.dark_colors.*member;
+        const auto legacy = read_grid_color(*grid, key, dark_default);
+        // Old files stored one palette: custom values applied to both themes,
+        // while untouched dark defaults drew with the built-in light palette.
+        settings.dark_colors.*member = dark != grid->end() && dark->is_object()
+            ? read_grid_color(*dark, key, dark_default) : legacy;
+        auto& light_color = settings.light_colors.*member;
+        if (light != grid->end() && light->is_object()) light_color = read_grid_color(*light, key, light_color);
+        else if (legacy != dark_default) light_color = legacy;
+    }
     return settings;
 }
 
@@ -266,10 +280,13 @@ bool save_designer_options(const fs::path& path, std::optional<designer_grid_set
         grid["major_every"] = settings.major_every;
         grid["hide_below"] = settings.hide_below;
         grid["line_width"] = settings.line_width;
-        grid["background"] = write_grid_color(settings.background);
-        grid["minor_color"] = write_grid_color(settings.minor_color);
-        grid["major_color"] = write_grid_color(settings.major_color);
-        grid["axis_color"] = write_grid_color(settings.axis_color);
+        const auto save_colors = [&](const char* group, const designer_grid_colors& colors) {
+            auto& palette = grid[group];
+            if (!palette.is_object()) palette = json::object();
+            for (const auto& [key, member] : grid_colors) palette[key] = write_grid_color(colors.*member);
+        };
+        save_colors("dark_colors", settings.dark_colors);
+        save_colors("light_colors", settings.light_colors);
     }
     return write_settings(path, config);
 }

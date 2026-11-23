@@ -17,8 +17,19 @@ namespace kit = vgui_editor_kit;
 using kit::property_type;
 using edit_event = kit::property_grid::text_edit_event;
 using settings = designer_grid_settings;
-using member = std::variant<bool settings::*, designer_grid_style settings::*, float settings::*,
-    int settings::*, std::uint32_t settings::*>;
+using colors = designer_grid_colors;
+struct color_field {
+    designer_theme theme;
+    std::uint32_t colors::* value;
+    bool operator==(const color_field&) const = default;
+};
+using member = std::variant<bool settings::*, designer_grid_style settings::*, float settings::*, int settings::*, color_field>;
+
+template<class Grid, class Member>
+decltype(auto) field_value(Grid& grid, Member ptr) {
+    if constexpr (std::is_same_v<Member, color_field>) return (grid.colors(ptr.theme).*ptr.value);
+    else return (grid.*ptr);
+}
 
 struct field {
     const char* id;
@@ -40,10 +51,14 @@ constexpr std::array fields{
         designer_grid_min_hide_below, designer_grid_max_hide_below},
     field{"line_width", "options.grid.line_width", "Line width", property_type::number, &settings::line_width,
         designer_grid_min_line_width, designer_grid_max_line_width},
-    field{"background", "options.grid.background", "Background", property_type::color, &settings::background},
-    field{"minor_color", "options.grid.minor_color", "Minor grid line", property_type::color, &settings::minor_color},
-    field{"major_color", "options.grid.major_color", "Major grid line", property_type::color, &settings::major_color},
-    field{"axis_color", "options.grid.axis_color", "Axis", property_type::color, &settings::axis_color},
+    field{"dark_background", "options.grid.background", "Background", property_type::color, color_field{designer_theme::dark, &colors::background}},
+    field{"dark_minor_color", "options.grid.minor_color", "Minor grid line", property_type::color, color_field{designer_theme::dark, &colors::minor_color}},
+    field{"dark_major_color", "options.grid.major_color", "Major grid line", property_type::color, color_field{designer_theme::dark, &colors::major_color}},
+    field{"dark_axis_color", "options.grid.axis_color", "Axis", property_type::color, color_field{designer_theme::dark, &colors::axis_color}},
+    field{"light_background", "options.grid.background", "Background", property_type::color, color_field{designer_theme::light, &colors::background}},
+    field{"light_minor_color", "options.grid.minor_color", "Minor grid line", property_type::color, color_field{designer_theme::light, &colors::minor_color}},
+    field{"light_major_color", "options.grid.major_color", "Major grid line", property_type::color, color_field{designer_theme::light, &colors::major_color}},
+    field{"light_axis_color", "options.grid.axis_color", "Axis", property_type::color, color_field{designer_theme::light, &colors::axis_color}},
 };
 
 std::optional<std::size_t> field_index(std::string_view id)
@@ -56,8 +71,8 @@ std::optional<std::size_t> field_index(std::string_view id)
 std::string field_text(const field& item, const settings& grid)
 {
     return std::visit([&](auto ptr) -> std::string {
-        using type = std::remove_cvref_t<decltype(grid.*ptr)>;
-        const auto value = grid.*ptr;
+        const auto value = field_value(grid, ptr);
+        using type = std::remove_cv_t<decltype(value)>;
         if constexpr (std::is_same_v<type, bool>) {
             return value ? "true" : "false";
         } else if constexpr (std::is_same_v<type, designer_grid_style>) {
@@ -79,20 +94,21 @@ std::string field_text(const field& item, const settings& grid)
 void set_field(const field& item, settings& grid, std::string_view text)
 {
     std::visit([&](auto ptr) {
-        using type = std::remove_cvref_t<decltype(grid.*ptr)>;
+        auto& target = field_value(grid, ptr);
+        using type = std::remove_cvref_t<decltype(target)>;
         if constexpr (std::is_same_v<type, bool>) {
-            grid.*ptr = text == "true";
+            target = text == "true";
         } else if constexpr (std::is_same_v<type, designer_grid_style>) {
-            grid.*ptr = text == "dots" ? designer_grid_style::dots : designer_grid_style::lines;
+            target = text == "dots" ? designer_grid_style::dots : designer_grid_style::lines;
         } else if constexpr (std::is_same_v<type, std::uint32_t>) {
             std::uint32_t hex = 0;
             const auto parsed = std::from_chars(text.data() + 1, text.data() + text.size(), hex, 16);
             if (parsed.ec == std::errc{})
-                grid.*ptr = text.size() == 7 ? 0xFF000000u | hex : (hex << 24) | (hex >> 8);
+                target = text.size() == 7 ? 0xFF000000u | hex : (hex << 24) | (hex >> 8);
         } else {
             type value{};
             const auto parsed = std::from_chars(text.data(), text.data() + text.size(), value);
-            if (parsed.ec == std::errc{}) grid.*ptr = value;
+            if (parsed.ec == std::errc{}) target = value;
         }
     }, item.value);
 }
@@ -106,7 +122,9 @@ kit::property_desc describe(const field& item, const designer_strings& strings, 
     desc.value = field_text(item, draft);
     desc.default_value = field_text(item, settings{});
     desc.has_default = true;
-    desc.category = item.type == property_type::color ? "colors" : "common";
+    if (const auto* color = std::get_if<color_field>(&item.value))
+        desc.category = color->theme == designer_theme::light ? "light_colors" : "dark_colors";
+    else desc.category = "common";
     desc.has_range = item.min < item.max;
     desc.min_value = item.min;
     desc.max_value = item.max;
@@ -348,6 +366,7 @@ struct designer_options::impl {
         vgui_widget_set_background(title, colors.chrome);
         vgui_widget_set_background(nav, colors.navigation);
         vgui_widget_set_background(footer, colors.chrome);
+        vgui_widget_set_background(grid_page, colors.background);
         vgui_widget_set_background(info_page, colors.background);
         vgui_widget_set_background(appearance_page, colors.background);
         vgui_widget_set_background(ok, colors.accent);
@@ -498,27 +517,24 @@ struct designer_options::impl {
         vgui_widget_set_id(nav, "designer.options.navigation");
         vgui_widget_set_size(nav, strings.language() == designer_language::english ? 220 : 132, 0);
         vgui_widget_set_padding(nav, 8, 8, 8, 8);
-        auto* canvas = vgui_widget_add(nav, VGUI_LABEL, strings.text("options.canvas", "Canvas"));
-        vgui_widget_set_size(canvas, 0, 28);
-        vgui_widget_set_padding(canvas, 6, 0, 6, 0);
-        vgui_widget_set_text_align(canvas, 0, .5f);
-        vgui_widget_set_font_weight(canvas, 600);
-        const auto add_nav = [&](const char* id, const char* label, float indent) {
+        const auto add_nav = [&](const char* id, const char* label) {
             auto* item = button(nav, id, label, 0);
-            vgui_widget_set_padding(item, indent, 0, 6, 0);
+            vgui_widget_set_padding(item, 6, 0, 6, 0);
             vgui_widget_set_text_align(item, 0, .5f);
             vgui_widget_set_border(item, 0, 0);
             return item;
         };
-        grid_nav = add_nav("designer.options.nav.grid", strings.text("options.grid", "Grid"), 18);
-        appearance_nav = add_nav("designer.options.nav.appearance", strings.text("options.appearance", "Appearance"), 6);
+        grid_nav = add_nav("designer.options.nav.canvas", strings.text("options.canvas", "Canvas"));
+        appearance_nav = add_nav("designer.options.nav.appearance", strings.text("options.appearance", "Appearance"));
         vgui_widget_set_margin(appearance_nav, 0, 6, 0, 0);
-        info_nav = add_nav("designer.options.nav.configuration", strings.text("settings.info", "Configuration Information"), 6);
+        info_nav = add_nav("designer.options.nav.configuration", strings.text("settings.info", "Configuration Information"));
         vgui_widget_set_margin(info_nav, 0, 6, 0, 0);
 
         grid_page = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(grid_page, "designer.options.grid");
         vgui_widget_set_grow(grid_page, 1);
+        vgui_widget_set_padding(grid_page, 10, 12, 10, 0);
+        add_page_heading(grid_page, "designer.options.grid.title", strings.text("options.grid", "Grid"));
         appearance_page = make_panel(body, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_id(appearance_page, "designer.options.appearance");
         vgui_widget_set_grow(appearance_page, 1);
@@ -551,7 +567,8 @@ struct designer_options::impl {
             .reset_button = strings.text("workbench.inspector.reset_button", "R"),
             .reset_to_default = strings.text("workbench.inspector.reset_to_default", "Reset to default"),
             .categories = {{"common", strings.text("options.common", "Common")},
-                {"colors", strings.text("options.colors", "Colors")}},
+                {"dark_colors", strings.text("options.grid.dark_colors", "Dark theme colors")},
+                {"light_colors", strings.text("options.grid.light_colors", "Light theme colors")}},
             .pick_color = strings.text("workbench.inspector.font.pick_color", "Pick color"),
         });
         for (const auto& item : fields)

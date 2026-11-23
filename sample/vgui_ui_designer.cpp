@@ -1882,6 +1882,10 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
         ui::load_designer_grid_settings(settings) == original, "Tools > Theme did not apply and save dark independently of grid settings");
     open();
     auto* panel = vgui_modal_panel(shell);
+    require(!find_widget(panel, "designer.options.nav.grid") &&
+        std::string_view(vgui_widget_get_text(widget("designer.options.nav.canvas", VGUI_BUTTON))) == "画布" &&
+        std::string_view(vgui_widget_get_text(widget("designer.options.grid.title", VGUI_LABEL))) == "网格",
+        "Canvas must be a direct navigation entry with Grid as the right-hand title");
     auto* title = find_widget(panel, "designer.options.title");
     require(title != nullptr, "missing title drag handle");
     float x, y, w, h, panel_x, panel_y;
@@ -1922,7 +1926,7 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
     click(widget("designer.options.nav.configuration", VGUI_BUTTON));
     require(vgui_modal_panel(shell) == panel && editor.preview().grid_settings().spacing == 36.5f &&
         ui::load_designer_grid_settings(settings) == original, "switching to configuration changed or saved the grid draft");
-    click(widget("designer.options.nav.grid", VGUI_BUTTON));
+    click(widget("designer.options.nav.canvas", VGUI_BUTTON));
     require(vgui_widget_get_visible(widget("designer.options.grid", VGUI_PANEL)) &&
         vgui_widget_get_enabled(widget("designer.options.reset", VGUI_BUTTON)) &&
         std::string_view(vgui_edit_get_text(widget("property:spacing", VGUI_EDIT))) == "36.5",
@@ -1942,18 +1946,18 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
     require(editor.preview().grid_settings() == ui::designer_grid_settings{} &&
         ui::load_designer_grid_settings(settings) == original, "Restore Defaults did not preview without writing");
     replace_text("property:spacing", "32");
-    replace_text("property:axis_color", "#12345680");
+    replace_text("property:dark_axis_color", "#12345680");
     auto expected = ui::designer_grid_settings{};
     expected.spacing = 32;
-    expected.axis_color = 0x80123456u;
+    expected.dark_colors.axis_color = 0x80123456u;
     require(editor.preview().grid_settings() == expected, "typing an RGBA color did not immediately preview it");
-    auto* color_swatch = widget("property:axis_color", VGUI_PANEL);
+    auto* color_swatch = widget("property:dark_axis_color", VGUI_PANEL);
     click(color_swatch);
     auto* picker = vgui_popup_content(shell);
     auto* red = find_widget(picker, "property-grid.color-picker.swatch.2", VGUI_PANEL);
     require(red, "color picker did not open over the options modal");
     click(red);
-    require(editor.preview().grid_settings().axis_color == 0xFFFF0000u, "color picker did not preview its preset");
+    require(editor.preview().grid_settings().dark_colors.axis_color == 0xFFFF0000u, "color picker did not preview its preset");
     menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
     require(vgui_modal_active(shell) && !vgui_popup_active(shell) && editor.preview().grid_settings() == expected,
         "Escape did not cancel only the nested color picker");
@@ -1966,6 +1970,12 @@ void exercise_options(os_window& win, vgui_context* shell, designer& editor, con
     menus.activate(vgui_context_get_open_menu(shell), 1);
     expected.style = ui::designer_grid_style::dots;
     require(editor.preview().grid_settings() == expected, "grid style did not preview the selected option");
+    click(widget("category:dark_colors", VGUI_BUTTON));
+    replace_text("property:light_axis_color", "#6385B0");
+    expected.light_colors.axis_color = 0xFF6385B0u;
+    require(editor.preview().grid_settings() == expected && !shell_is_light() &&
+        ui::load_designer_grid_settings(settings) == original,
+        "editing the light palette while dark is active did not stay independent and unsaved");
     options_theme("designer.options.theme.light");
     click(widget("designer.options.nav.configuration", VGUI_BUTTON));
     require(std::string_view(vgui_widget_get_text(widget("designer.options.configuration.theme", VGUI_LABEL))) == "界面主题：浅色",
@@ -2014,7 +2024,9 @@ void exercise_grid_layers(app_mgr& app, font_familys_t* font, const ui::designer
         vgui_render_target_create(shell.get(), app.vgctx, cb.get(), &desc), vgui_render_target_destroy);
     require(bool(target), "cannot create readback target");
     std::vector<uint32_t> pixels(width * height);
-    ui::designer_grid_settings grid{.spacing = 80, .line_width = 3, .minor_color = 0xFFFF0000u};
+    ui::designer_grid_settings grid{.spacing = 80, .line_width = 3};
+    grid.dark_colors = {0xFF191919u, 0xFF777777u, 0xFF888888u, 0xFF999999u};
+    grid.light_colors = {0xFFE0E0E0u, 0xFF444444u, 0xFF333333u, 0xFF222222u};
     auto doc = ui::make_document();
     auto& root = doc.nodes.at(doc.root);
     const auto default_props = root.props;
@@ -2050,6 +2062,13 @@ void exercise_grid_layers(app_mgr& app, font_familys_t* font, const ui::designer
     require(with_grid.control == no_grid.control, "lines painted over an opaque control");
     require(with_grid.guide != no_grid.guide && with_grid.plain == no_grid.plain,
         "lines did not show through a transparent root");
+    preview.set_theme(ui::designer_theme::light);
+    const auto light_grid = sample(true);
+    require((with_grid.plain & 0x00FFFFFFu) == 0x191919u && (with_grid.guide & 0x00FFFFFFu) == 0x777777u &&
+        (light_grid.plain & 0x00FFFFFFu) == 0xE0E0E0u && (light_grid.guide & 0x00FFFFFFu) == 0x444444u &&
+        light_grid.control == with_grid.control, "each theme must draw its own canvas background and grid without recoloring controls");
+    preview.set_theme(ui::designer_theme::dark);
+    require(sample(true).guide == with_grid.guide, "switching back did not restore the dark grid palette");
     grid.style = ui::designer_grid_style::dots;
     const auto dots = sample(true);
     require(dots.control == no_grid.control && dots.guide != no_grid.guide,
