@@ -9,6 +9,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 union SDL_Event;
 struct vgpu_device_t;
@@ -36,6 +37,12 @@ struct geometry_edit {
     std::string id;
     std::uint64_t revision;
     std::optional<double> x, y, width, height;
+};
+
+struct canvas_control_drop {
+    std::string_view parent;
+    std::optional<std::pair<double, double>> position; // X/Y in the parent's design units; empty for managed layout.
+    pixel_rect hint; // Clipped shell-pixel bounds for the drag overlay.
 };
 
 // Owner-thread UI. Destroy before its parent, the shell context and the GPU.
@@ -68,6 +75,10 @@ public:
     // assigned a new locale. Relabels shell controls without changing the mounted preview.
     void refresh_language();
     vgui_widget* widget() const;
+    void set_control_drop_target(const vgui_drop_target&);
+    // The result borrows the mounted snapshot; use before the next sync/render.
+    std::optional<canvas_control_drop> control_drop_at(const document&, std::uint64_t revision,
+        const type_descriptor&, float x, float y) const;
 
     enum class preset { desktop, tablet, phone };
     struct animation_view {

@@ -2,15 +2,19 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 struct vgui_context;
+struct vgui_drag_payload;
 struct vgui_widget;
 
 namespace vgui::ui_design {
 
 class session;
+struct type_descriptor;
 class designer_strings;
 enum class designer_language;
 enum class designer_theme;
@@ -48,6 +52,11 @@ public:
     void set_page_active(bool active);
     std::string_view selection() const;
     void select(std::string id);
+    // Identify a built-in control drag from this workbench's own palette.
+    bool control_list_focused() const;
+    const type_descriptor* dragged_control(const vgui_drag_payload*) const;
+    bool insert_control(std::string_view type, std::string_view parent,
+        std::optional<std::pair<double, double>> position);
 
     // Commit the active property edit before moving out the working session.
     void finish_edit();

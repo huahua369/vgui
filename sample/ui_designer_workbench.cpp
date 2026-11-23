@@ -216,7 +216,7 @@ struct designer_workbench::impl {
     bool invoking_command = false;
     bool page_active = true;
     designer_theme theme = default_designer_theme;
-    vgui_widget *shell = nullptr, *dock = nullptr;
+    vgui_widget *shell = nullptr, *dock = nullptr, *controls = nullptr;
     std::array<vgui_widget*, std::size(sides)> side_buttons{};
     std::vector<vgui_widget*> outline_buttons;
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr;
@@ -257,6 +257,8 @@ struct designer_workbench::impl {
 
         auto* structure = page("structure", sides[0].title, VGUI_DOCK_LEFT);
         build_structure(structure);
+        build_controls(page("controls", {"workbench.controls.title", "Controls"}, VGUI_DOCK_LEFT));
+        vgui_dock_activate(dock, vgui_dock_find(dock, "structure"));
         auto* properties = page("inspector", sides[1].title, VGUI_DOCK_RIGHT);
         build_side_buttons();
         grid->build_with_labels(properties, inspector_labels());
@@ -296,6 +298,7 @@ struct designer_workbench::impl {
         finish_property_edit(false);
         auto* tree = outliner->widget();
         vgui_tree_set_row_drag(tree, nullptr, nullptr);
+        vgui_list_set_row_drag(controls, nullptr, nullptr);
         vgui_widget_set_drop_target(tree, nullptr);
         outliner.reset();
         grid.reset();
@@ -893,6 +896,42 @@ struct designer_workbench::impl {
         return strings.text("workbench.inspector.choice." + fallback, fallback.c_str());
     }
 
+    void build_controls(vgui_widget* panel)
+    {
+        vgui_widget_set_padding(panel, 6, 5, 6, 5);
+        vgui_widget_set_gap(panel, 5);
+        auto* hint = vgui_widget_add(panel, VGUI_LABEL, nullptr);
+        vgui_widget_set_text_align(hint, 0, .5f);
+        bind_label(hint, {"workbench.controls.hint", "Drag onto the canvas"}, vgui_widget_set_text);
+        controls = vgui_widget_add(panel, VGUI_LIST, nullptr);
+        vgui_widget_set_id(controls, "designer.controls");
+        vgui_widget_set_size(controls, 0, 0);
+        vgui_widget_set_grow(controls, 1);
+        vgui_panel_set_scrollable(controls, 0, 1);
+        bind_label(controls, {"workbench.controls.title", "Controls"}, vgui_widget_set_a11y_name);
+        for (const auto& type : types()) vgui_list_add_item(controls, translate(type_label(type)), nullptr);
+        bind_control_drag();
+    }
+
+    void bind_control_drag()
+    {
+        vgui_list_set_row_drag(controls, [](void* user, vgui_item_id item, int index, vgui_drag_payload* out) -> int {
+            auto& self = *static_cast<impl*>(user);
+            if (!self.page_active || self.replaced || index < 0 || std::size_t(index) >= types().size() ||
+                self.history.current().nodes.size() >= max_nodes) return 0;
+            *out = {.kind = VGUI_DRAG_CUSTOM, .text = vgui_list_get_item_text(self.controls, item),
+                .id = static_cast<vgui_item_id>(index) + 1, .data = self.controls};
+            return 1;
+        }, this);
+    }
+
+    const type_descriptor* dragged_control(const vgui_drag_payload* payload) const
+    {
+        if (!page_active || replaced || !payload || payload->kind != VGUI_DRAG_CUSTOM ||
+            payload->data != controls || !payload->id || payload->id > types().size()) return nullptr;
+        return &types()[payload->id - 1];
+    }
+
     void build_structure(vgui_widget* panel)
     {
         vgui_widget_set_padding(panel, 6, 5, 6, 5);
@@ -1014,8 +1053,10 @@ struct designer_workbench::impl {
         vgui_cancel_drag(ui);
         vgui_tree_set_row_drag(tree, nullptr, nullptr);
         build_drag_drop(tree);
+        vgui_list_set_row_drag(controls, nullptr, nullptr);
+        bind_control_drag();
         for (auto* focus = vgui_get_focus(ui); focus; focus = vgui_widget_get_parent(focus)) {
-            if (focus != tree && focus != grid->widget()) continue;
+            if (focus != tree && focus != controls && focus != grid->widget()) continue;
             vgui_set_focus(ui, nullptr);
             break;
         }
@@ -1039,7 +1080,7 @@ struct designer_workbench::impl {
         }
         // The Dock manages visibility of its immediate pages. Close the side
         // panels rather than hiding their widgets; the host owns the document pages.
-        for (const auto* id : {"structure", "inspector"}) {
+        for (const auto* id : {"controls", "structure", "inspector"}) {
             const auto panel = vgui_dock_find(dock, id);
             if (active) vgui_dock_restore(dock, panel);
             else vgui_dock_close(dock, panel);
@@ -1101,17 +1142,32 @@ struct designer_workbench::impl {
 
     void add_node(const std::string& type)
     {
-        const auto parent = insertion_parent(type);
+        if (const auto parent = insertion_parent(type)) insert_control(type, *parent, std::nullopt);
+    }
+
+    bool insert_control(std::string_view type, std::string_view parent,
+        std::optional<std::pair<double, double>> position)
+    {
+        if (!page_active) return false;
+        const auto& doc = history.current();
+        const auto target = doc.nodes.find(parent);
         const auto* descriptor = find_type(type);
-        if (!parent || !descriptor) return;
+        if (!descriptor || doc.nodes.size() >= max_nodes || target == doc.nodes.end() ||
+            !accepts_child(*find_type(target->second.type), type, target->second.children.size())) return false;
         node data;
         data.type = type;
-        auto id = fresh_key("node_", history.current().nodes);
+        auto id = fresh_key("node_", doc.nodes);
         // Seed fresh controls; zero or missing dimensions in existing documents still mean auto-size.
         data.props.emplace("width", descriptor->initial_width);
         data.props.emplace("height", descriptor->initial_height);
-        if (apply({insert_node{id, *parent, std::move(data)}},
-                formatted_status{{"workbench.status.added_type", "Added {value}"}, type_label(*descriptor)})) select(std::move(id));
+        if (position) {
+            data.props.emplace("x", position->first);
+            data.props.emplace("y", position->second);
+        }
+        if (!apply({insert_node{id, std::string(parent), std::move(data)}},
+                formatted_status{{"workbench.status.added_type", "Added {value}"}, type_label(*descriptor)})) return false;
+        select(std::move(id));
+        return true;
     }
 
     void erase()
@@ -1702,6 +1758,9 @@ struct designer_workbench::impl {
         }
         refresh_command_states();
         for (const auto& [id, label] : dock_labels) vgui_dock_set_title(dock, id, translate(label));
+        int index = 0;
+        for (const auto& type : types())
+            vgui_list_set_item_text(controls, vgui_list_get_item_at(controls, index++), translate(type_label(type)));
         refresh_side_buttons();
         if (page_active && !replaced) refresh_outline_labels();
         sync_inspector_language = true;
@@ -1778,6 +1837,14 @@ void designer_workbench::set_dock_widths(designer_dock_widths widths) { impl_->s
 void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }
 void designer_workbench::select(std::string id) { impl_->select(std::move(id)); }
+bool designer_workbench::control_list_focused() const { return vgui_get_focus(impl_->ui) == impl_->controls; }
+const type_descriptor* designer_workbench::dragged_control(const vgui_drag_payload* payload) const {
+    return impl_->dragged_control(payload);
+}
+bool designer_workbench::insert_control(std::string_view type, std::string_view parent,
+    std::optional<std::pair<double, double>> position) {
+    return impl_->insert_control(type, parent, position);
+}
 void designer_workbench::finish_edit() { impl_->finish_property_edit(); }
 void designer_workbench::document_replaced(std::string selection) { impl_->document_replaced(std::move(selection)); }
 void designer_workbench::refresh() { impl_->refresh(); }

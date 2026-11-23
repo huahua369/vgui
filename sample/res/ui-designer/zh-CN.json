@@ -520,6 +520,8 @@
   "workbench.outline.copy": "复制",
   "workbench.outline.delete": "删除",
   "workbench.outline.down": "下移",
+  "workbench.controls.title": "控件",
+  "workbench.controls.hint": "拖到画布创建",
   "workbench.outline.heading": "大纲",
   "workbench.outline.move_here": "移到此处",
   "workbench.outline.pick": "拾取",

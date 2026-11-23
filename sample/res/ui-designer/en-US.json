@@ -475,6 +475,8 @@
   "workbench.outline.copy": "Copy",
   "workbench.outline.delete": "Delete",
   "workbench.outline.down": "Down",
+  "workbench.controls.title": "Controls",
+  "workbench.controls.hint": "Drag onto the canvas",
   "workbench.outline.heading": "Outline",
   "workbench.outline.move_here": "Move Here",
   "workbench.outline.pick": "Pick Up",

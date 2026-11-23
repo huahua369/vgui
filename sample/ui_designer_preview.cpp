@@ -1989,6 +1989,54 @@ struct designer_preview::impl {
             (p.y - board.y) * frame->pixel_height / board.height};
     }
 
+    std::optional<canvas_control_drop> control_drop_at(const document& doc, std::uint64_t rev,
+        const type_descriptor& type, point p) const {
+        if (run || remount || !ready || !frame || frame->revision != rev || doc.nodes.size() >= max_nodes ||
+            !std::isfinite(p.x) || !std::isfinite(p.y) || vgui_hit_test(shell, p.x, p.y) != canvas) return {};
+        const auto area = rect(canvas), board = artboard(area), clip = intersect(area, board);
+        if (!contains(clip, p)) return {};
+        const auto transform = transform_for(board);
+        const auto at = preview_pixels(board, p);
+        // Hit the topmost visible node, then walk up to a compatible container.
+        const auto hit = std::find_if(frame->nodes.rbegin(), frame->nodes.rend(), [&](const node_layout& item) {
+            return item.visible && contains(item.visible_px, at);
+        });
+        if (hit == frame->nodes.rend()) return {};
+        for (auto* w = mounted->widget(hit->id); w && w != vgui_root(ui.get()); w = vgui_widget_get_parent(w)) {
+            const auto found = doc.nodes.find(vgui_widget_get_id(w));
+            if (found == doc.nodes.end()) continue;
+            const auto& parent = found->second;
+            if (!accepts_child(*find_type(parent.type), type.key, parent.children.size())) continue;
+            const auto* target = layout_of(found->first);
+            if (!target || !target->visible || !contains(target->visible_px, at)) continue;
+            const auto limit = intersect(clip, transform.project(target->visible_px));
+            const auto property = [&](std::string_view key) -> const value& {
+                const auto entry = parent.props.find(key);
+                return entry == parent.props.end() ? find_property(parent.type, key)->default_value : entry->second;
+            };
+            if (parent.type != "panel" || std::get<std::string>(property("layout")) != "absolute")
+                return canvas_control_drop{target->id, {}, limit};
+
+            const auto number = [&](std::string_view key) { return std::get<double>(property(key)); };
+            const bool scrolling = std::get<bool>(property("scrollable_x")) || std::get<bool>(property("scrollable_y"));
+            const double border = scrolling ? number("border_width") : 0.;
+            const auto scale = frame->view.scale;
+            float sx = 0, sy = 0;
+            vgui_panel_get_scroll(w, &sx, &sy);
+            // The absolute layout origin is the panel's inner padding minus scroll.
+            const auto left = target->rect_px.x + std::max(border, number("pad_left")) * scale - sx;
+            const auto top = target->rect_px.y + std::max(border, number("pad_top")) * scale - sy;
+            const auto position = [&](double offset, std::string_view axis) {
+                return std::clamp(std::round(offset / scale), 0., find_property(type.key, axis)->max);
+            };
+            const auto x = position(at.x - left, "x"), y = position(at.y - top, "y");
+            const auto bounds = transform.project({float(left + x * scale), float(top + y * scale),
+                float(type.initial_width * scale), float(type.initial_height * scale)});
+            return canvas_control_drop{target->id, std::pair{x, y}, intersect(limit, bounds)};
+        }
+        return {};
+    }
+
     void update_ime(SDL_WindowID id) {
         if (!canvas || !frame || !run || vgui_get_focus(shell) != canvas ||
             !vgui_context_wants_text_input(ui.get())) { stop_ime(); return; }
@@ -2241,6 +2289,13 @@ bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
 void designer_preview::cancel_interaction() { p_->blur(); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
+void designer_preview::set_control_drop_target(const vgui_drop_target& target) {
+    vgui_widget_set_drop_target(p_->canvas, &target);
+}
+std::optional<canvas_control_drop> designer_preview::control_drop_at(const document& doc, std::uint64_t rev,
+    const type_descriptor& type, float x, float y) const {
+    return p_->control_drop_at(doc, rev, type, {x, y});
+}
 designer_preview::view_state designer_preview::capture_view() const {
     return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open};
 }

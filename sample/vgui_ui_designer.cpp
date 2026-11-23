@@ -161,6 +161,11 @@ public:
     const ui::session& history() const { return session_; }
     std::string_view selection() const { return workbench_.selection(); }
     bool preview_event(const SDL_Event& event) {
+        // Once a shell drag starts, only the shell may route its motion, release and Escape.
+        if (event.type != SDL_EVENT_WINDOW_FOCUS_LOST && vgui_drag_active(shell_)) return false;
+        // The first motion can cross the canvas before the list has started its drag.
+        if (event.type == SDL_EVENT_MOUSE_MOTION && (event.motion.state & SDL_BUTTON_LMASK) &&
+            workbench_.control_list_focused()) return false;
         // F10 belongs to the workbench even while a runtime input owns text focus.
         if ((event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_KEY_UP) && event.key.key == SDLK_F10)
             return false;
@@ -510,6 +515,12 @@ private:
         return std::string(tr("file.untitled", "Untitled")) + " " + std::to_string(page.untitled_number);
     }
 
+    std::optional<ui::canvas_control_drop> control_drop_at(const ui::type_descriptor& type, float x, float y) {
+        const auto* page = find_page(active_);
+        if (!page || !page->preview || page->last_model_revision != session_.revision()) return {};
+        return page->preview->control_drop_at(session_.current(), page->preview_revision, type, x, y);
+    }
+
     ui::designer_preview& ensure_preview(page_state& page) {
         if (page.preview) return *page.preview;
         const auto id = page.id;
@@ -518,6 +529,29 @@ private:
             [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
             [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_,
             [this, id](auto revision, const auto& edits) { return commit_keyframes(id, revision, edits); });
+        page.preview->set_control_drop_target({
+            [](void* user, const vgui_drag_payload* payload) -> int {
+                auto& self = *static_cast<designer*>(user);
+                const auto* active = self.find_page(self.active_);
+                return active && active->preview && !active->preview->running() && self.workbench_.dragged_control(payload);
+            },
+            [](void* user, const vgui_drag_payload* payload, float x, float y, vgui_drop_hint* hint) {
+                auto& self = *static_cast<designer*>(user);
+                if (const auto* type = self.workbench_.dragged_control(payload))
+                    if (const auto drop = self.control_drop_at(*type, x, y); drop && drop->hint.width > 0 && drop->hint.height > 0) {
+                        const auto& r = drop->hint;
+                        *hint = {VGUI_DROP_HINT_RECT, r.x, r.y, r.width, r.height};
+                    }
+            },
+            [](void* user, const vgui_drag_payload* payload, float x, float y) -> int {
+                auto& self = *static_cast<designer*>(user);
+                const auto* type = self.workbench_.dragged_control(payload);
+                if (!type) return 0;
+                const auto drop = self.control_drop_at(*type, x, y);
+                return drop && self.workbench_.insert_control(type->key, drop->parent, drop->position);
+            },
+            this
+        });
         page.preview->set_render_context(renderer_);
         page.preview->set_grid_settings(grid_settings_);
         page.preview->set_theme(theme_);
@@ -2746,12 +2780,12 @@ struct native_keyframe_input {
         e.button.y = p.y;
         push(e);
     }
-    void motion(glm::vec2 from, glm::vec2 to) const {
+    void motion(glm::vec2 from, glm::vec2 to, SDL_MouseButtonFlags buttons = SDL_BUTTON_LMASK) const {
         const auto p = to / win.pixel_ratio(), rel = (to - from) / win.pixel_ratio();
         SDL_Event e{};
         e.type = SDL_EVENT_MOUSE_MOTION;
         e.motion.windowID = win.id;
-        e.motion.state = SDL_BUTTON_LMASK;
+        e.motion.state = buttons;
         e.motion.x = p.x;
         e.motion.y = p.y;
         e.motion.xrel = rel.x;
@@ -2819,6 +2853,130 @@ struct native_keyframe_input {
         return {r.x + 1 + header + 8 + (r.width - header - 24) * fraction, r.y + 1 + row * scale};
     }
 };
+
+void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor,
+                           const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other_page) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native control palette: " + std::string(message));
+    };
+    auto fixture = ui::make_document();
+    fixture.nodes.at(fixture.root).children = {"padded", "flow"};
+    fixture.nodes.emplace("padded", ui::node{"panel", {}, {{"x", 90.}, {"y", 80.}, {"width", 430.}, {"height", 280.},
+        {"pad_left", 18.}, {"pad_top", 12.}}, {"leaf"}});
+    fixture.nodes.emplace("leaf", ui::node{"label", {}, {{"x", 16.}, {"y", 10.}, {"width", 140.}, {"height", 48.},
+        {"text", std::string("Drop here")}}, {}});
+    fixture.nodes.emplace("flow", ui::node{"panel", {}, {{"x", 540.}, {"y", 80.}, {"width", 390.}, {"height", 280.},
+        {"layout", std::string("row")}}, {}});
+    const auto file = sandbox / "palette-drop.vgui.json";
+    require(ui::write_document(file, fixture) && editor.open(file), "load the nested layout fixture");
+    frame();
+    auto& preview = editor.preview();
+    auto view = preview.capture_view();
+    view.fit = false;
+    view.zoom = .66f;
+    view.pan_x = 21;
+    view.pan_y = -17;
+    preview.restore_view(view);
+    frame();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    auto* dock = find_widget(vgui_root(shell), "designer.dock", VGUI_DOCK);
+    auto* list = find_widget(vgui_root(shell), "designer.controls", VGUI_LIST);
+    require(dock && list && vgui_list_get_count(list) == static_cast<int>(ui::types().size()), "missing built-in controls list");
+    const auto click_tab = [&](const char* id) {
+        ui::pixel_rect r;
+        const auto tab = vgui_dock_find(dock, id);
+        require(vgui_dock_get_tab_rect(dock, tab, &r.x, &r.y, &r.width, &r.height), "left dock tab is not visible");
+        input.click_at(dock, {r.x + r.width / 2, r.y + r.height / 2});
+        require(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == tab, "did not activate the left dock tab");
+    };
+    click_tab("controls");
+    auto* canvas = input.widget("designer.preview.canvas");
+    const auto point_on = [&](glm::vec2 logical) {
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(board && layout, "artboard must be presented");
+        return glm::round(glm::vec2{board->x, board->y} + logical *
+            glm::vec2{board->width / layout->pixel_width, board->height / layout->pixel_height});
+    };
+    const auto inside_leaf = point_on({90 + 18 + 45, 80 + 12 + 32});
+    const auto inside_flow = point_on({650, 145});
+    const auto& history = editor.history();
+    const auto begin_drag = [&](glm::vec2 target) {
+        const auto r = input.rect(list);
+        // Unscrolled first row (Panel), clear of the scrollbar and border.
+        const glm::vec2 source{r.x + 28, r.y + 8};
+        require(vgui_hit_test(shell, source.x, source.y) == list, "palette row not hit-testable");
+        // Move back to the source, like a real pointer, before starting the next drag.
+        input.motion(target, source, 0);
+        input.button(true, source);
+        input.motion(source, target);
+        frame();
+        require(vgui_drag_active(shell), preview.running() ? "palette drag did not start in Run" : "palette drag did not start in Design");
+    };
+    const auto drag = [&](glm::vec2 target, bool valid, bool cancel = false) {
+        const auto revision = history.revision();
+        begin_drag(target);
+        vgui_drop_hint hint{};
+        require((vgui_drag_hint(shell, &hint) != 0) == valid, valid ? "accepted drop has no drag hint" : "rejected drop has a drag hint");
+        require(!valid || (hint.kind == VGUI_DROP_HINT_RECT && hint.w > 0 && hint.h > 0), "drag hint has no visible bounds");
+        require(history.revision() == revision && history.current() == fixture, "hover added a control before release");
+        if (cancel) ui::native_menu_input(win, shell, frame).key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+        input.button(false, target);
+        frame();
+        require(!vgui_drag_active(shell), "release left the drag active");
+        require(history.revision() == revision + (valid && !cancel ? 1 : 0), "drop did not create exactly the expected undo entry");
+        if (!valid || cancel) require(history.current() == fixture, "cancelled or invalid drop changed the page");
+    };
+    require(vgui_hit_test(shell, inside_leaf.x, inside_leaf.y) == canvas, "fixture drop does not hit the canvas");
+    drag(inside_leaf, true, true);
+    const auto toolbar = input.rect(input.widget("designer.preview.toolbar"));
+    drag({toolbar.x + toolbar.width / 2, toolbar.y + toolbar.height / 2}, false);
+    input.click("designer.preview.mode");
+    drag(inside_leaf, false);
+    input.click("designer.preview.mode");
+    drag(inside_leaf, true);
+    const auto verify_insert = [&](const char* parent, bool absolute) {
+        const std::string id(editor.selection());
+        const auto& actual_parent = history.current().nodes.at(parent);
+        require(!actual_parent.children.empty() && actual_parent.children.back() == id, "drop resolved to the wrong container");
+        const auto& added = history.current().nodes.at(id);
+        const auto* type = ui::find_type("panel");
+        require(added.type == type->key && std::get<double>(added.props.at("width")) == type->initial_width &&
+            std::get<double>(added.props.at("height")) == type->initial_height, "drop did not use the menu's default control size");
+        if (absolute) {
+            require(std::abs(std::get<double>(added.props.at("x")) - 45.) <= 1. &&
+                std::abs(std::get<double>(added.props.at("y")) - 32.) <= 1., "drop lost zoom, pan or parent padding");
+        } else {
+            require(!added.props.contains("x") && !added.props.contains("y"), "auto-layout drop wrote absolute coordinates");
+        }
+        auto expected = fixture;
+        expected.nodes.at(parent).children.push_back(id);
+        expected.nodes.emplace(id, added);
+        require(history.current() == expected && history.can_undo() && history.dirty(), "drop altered unrelated nodes or history");
+        const ui::native_menu_input menus(win, shell, frame);
+        menus.activate(menus.open(1), 0); // Edit > Undo
+        require(history.current() == fixture && !history.can_undo() && history.can_redo() && !history.dirty(),
+            "one undo did not remove the newly created control");
+    };
+    verify_insert("padded", true);
+    drag(inside_flow, true);
+    verify_insert("flow", false);
+
+    begin_drag(inside_leaf);
+    require(editor.open(other_page), "switch pages while a palette drag is active");
+    frame();
+    require(!vgui_drag_active(shell), "page switch retained the palette drag");
+    const auto other_doc = history.current();
+    const auto other_revision = history.revision();
+    input.button(false, inside_leaf);
+    frame();
+    require(history.current() == other_doc && history.revision() == other_revision, "old release edited the new page");
+    require(editor.open(file) && history.current() == fixture, "page switch edited the drag's source document");
+    frame();
+    click_tab("structure");
+    editor.request(command::close); // Do not leave this scratch tab in the multi-page fixture.
+    frame();
+}
 
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
@@ -4283,6 +4441,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             exercise_language_and_layout(*win, shell.get(), editor, settings, advance);
             exercise_grid_layers(app, font.get(), strings);
             exercise_options(*win, shell.get(), editor, settings, advance);
+            exercise_control_drag(*win, shell.get(), editor, advance, picker->sandbox, open_path);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
@@ -4301,7 +4460,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, geometry, control palette drag, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
     }
     app.wait_gpu();
     return 0;

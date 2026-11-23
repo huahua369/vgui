@@ -2233,6 +2233,20 @@ void exercise_menu_language()
         !vgui_menu_get_item_enabled(edit, menu_item(edit, "重做")), "localized Undo and Redo lost their disabled state");
     check(workbench.key(VGUI_KEY_ESCAPE), "could not dismiss localized Edit menu");
 
+    auto* list = workbench.widget("designer.controls", VGUI_LIST);
+    auto* dock = workbench.bench.document_dock();
+    const auto controls_tab = vgui_dock_find(dock, "controls");
+    const auto check_controls = [&](std::string_view title) {
+        check(controls_tab && vgui_dock_get_title(dock, controls_tab) == title &&
+            vgui_list_get_count(list) == static_cast<int>(ui::types().size()), "control resource tab or catalog is missing");
+        int index = 0;
+        for (const auto& type : ui::types()) {
+            const auto* expected = workbench.strings.text("workbench.type." + std::string(type.key), type.label.data());
+            const auto item = vgui_list_get_item_at(list, index++);
+            check(item && std::string_view(vgui_list_get_item_text(list, item)) == expected, "catalog row did not match the resource menu locale");
+        }
+    };
+    check_controls("控件");
     auto* submenu = workbench.open_new_control();
     check_menu_items(submenu, {"面板", "标签", "按钮", "输入框", "图片", "渐变", "复选框", "单选按钮", "开关",
         "滑块", "进度条", "分隔线", "列表", "树", "菜单", "菜单栏", "分栏", "选项卡", "停靠容器"});
@@ -2241,6 +2255,7 @@ void exercise_menu_language()
     workbench.strings = ui::designer_strings(designer_language::english);
     workbench.bench.refresh_language();
     workbench.frame();
+    check_controls("Controls");
     check_menu_titles(workbench.menubar(), {"File", "Edit", "Resources", "View", "Tools", "Help"});
     if (auto* resources = vgui_context_get_open_menu(ctx)) {
         // If the popup stays open, its labels must not lag behind the bar.
