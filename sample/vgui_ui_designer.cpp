@@ -2350,6 +2350,57 @@ int smoke_gradient_keyframes() {
 
     const auto initial_keys = keyframes("highlight");
     const auto unsnapped_key_time = initial_keys[1].offset * 2.4;
+    constexpr auto previous_key = "designer.timeline.prev_key";
+    constexpr auto next_key = "designer.timeline.next_key";
+    const auto enabled = [&](const char* control) { return vgui_widget_get_enabled(widget(control)) != 0; };
+    const auto click_update = [&](const char* control) { click(control); update(); };
+    const auto select_lane = [&](float row) {
+        const auto [x, y] = point_at(0., row);
+        require(vgui_hit_test(shell.get(), x - 80, y) == tracks, "timeline track header is hit-testable");
+        click_at(x - 80, y);
+        update();
+    };
+    require(!enabled(previous_key) && enabled(next_key), "there is no previous key at the first key's time");
+    click("designer.preview.animation.play");
+    preview.render(.05f);
+    require(state().playing && enabled(previous_key), "advancing playback makes the first key reachable backwards");
+    click_update(next_key);
+    require(state().time == unsnapped_key_time && !state().playing && !state().inspect_end &&
+        enabled("designer.timeline.geometry") && std::string_view(vgui_widget_get_text(widget("designer.timeline.tint"))) == initial_keys[1].tint,
+        "next key pauses exactly at the unsnapped key and exposes its pose");
+    submit(playhead_edit, ".713125"); // Leave the middle key selected but move the preview away from it.
+    update();
+    click_update(next_key);
+    require(state().time == unsnapped_key_time && !state().playing, "jump can return to the already-selected key");
+    click_update(next_key);
+    require(state().time == 2.4 && state().inspect_end && !enabled(next_key) && enabled(previous_key),
+        "the last key on a looping track shows its terminal pose and cannot wrap or jump to another track");
+    select_lane(63);
+    click_update(previous_key);
+    require(state().time == keyframes("tint")[2].offset * 3.2 && !state().inspect_end &&
+        std::string_view(vgui_widget_get_text(widget("designer.timeline.tint"))) == keyframes("tint")[2].tint,
+        "switching track headers changes which track's keys are visited");
+    select_lane(37);
+    click_update(previous_key);
+    click_update(previous_key);
+    require(state().time == 0. && !state().inspect_end && !enabled(previous_key) && enabled(next_key),
+        "reverse navigation stops at the selected track's first key");
+    const auto [zoom_x, zoom_y] = point_at(0., 10);
+    vgui_input_mouse_move(shell.get(), zoom_x, zoom_y);
+    vgui_input_key(shell.get(), 0, 0, VGUI_MOD_CTRL);
+    vgui_input_mouse_wheel(shell.get(), 0, 16);
+    vgui_input_key(shell.get(), 0, 0, 0);
+    click_update(next_key);
+    require(state().time == unsnapped_key_time, "zooming the ruler does not change the next key's exact time");
+    float ruler_left = 0, ruler_width = 0;
+    vgui_widget_get_rect(tracks, &ruler_left, nullptr, &ruler_width, nullptr);
+    click_at(ruler_left + ruler_width - 9, zoom_y);
+    update();
+    require(state().time == 1., "jump pans the off-screen middle key into the right edge of the zoomed ruler");
+    click_update("designer.timeline.fit");
+    require(model.revision() == precision_revision && model.current() == before && !model.dirty() && !model.can_undo(),
+        "key navigation cannot edit the document or add undo entries");
+
     const auto [key_x, key_y] = point_at(unsnapped_key_time, 37);
     click_at(key_x, key_y);
     update();

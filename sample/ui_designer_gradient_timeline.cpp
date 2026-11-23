@@ -56,7 +56,7 @@ struct designer_gradient_timeline::impl {
     std::function<void()> selection_changed;
     std::function<std::optional<capture_playhead>()> preview_time;
     vgui_widget *panel, *add, *capture, *remove, *copy, *paste, *fit, *info, *fields, *tint, *loop_widget, *geometry;
-    vgui_widget *snap, *time_label, *time_edit;
+    vgui_widget *snap, *time_label, *time_edit, *prev_key, *next_key;
     vgui_widget *stops_button, *stops_popup = nullptr, *stops_reset = nullptr, *stops_info = nullptr;
     kit::gradient_editor stop_editor;
     vgui_widget* geometry_popup = nullptr;
@@ -128,6 +128,10 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_size(time_edit, 108, 26);
         vgui_widget_set_min_size(time_edit, 0, 0);
         vgui_widget_on_event(time_edit, on_time_event, this);
+        prev_key = button(positioning, "designer.timeline.prev_key");
+        next_key = button(positioning, "designer.timeline.next_key");
+        vgui_widget_set_text(prev_key, "‹");
+        vgui_widget_set_text(next_key, "›");
         info = vgui_widget_add(positioning, VGUI_LABEL, nullptr);
         vgui_widget_set_grow(info, 1);
         timeline.build(panel);
@@ -233,6 +237,7 @@ struct designer_gradient_timeline::impl {
         if (e->type != VGUI_EVENT_CLICK) return;
         auto& self = *static_cast<impl*>(user);
         if (w == self.fit) self.fit_view();
+        else if (w == self.prev_key || w == self.next_key) self.jump_key(w == self.next_key);
         else if (w == self.add) self.insert_key();
         else if (w == self.capture) self.capture_key();
         else if (w == self.remove) self.timeline.delete_selection();
@@ -302,6 +307,12 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_text(time_label, time_name);
         vgui_widget_set_a11y_name(time_edit, time_name);
         vgui_widget_set_tooltip(time_edit, tr("timeline.playhead_hint", "Enter an exact time in seconds and press Enter to pause and seek without snapping."));
+        const auto* previous = tr("timeline.prev_key", "Previous keyframe on this track");
+        const auto* next = tr("timeline.next_key", "Next keyframe on this track");
+        vgui_widget_set_tooltip(prev_key, previous);
+        vgui_widget_set_tooltip(next_key, next);
+        vgui_widget_set_a11y_name(prev_key, previous);
+        vgui_widget_set_a11y_name(next_key, next);
         timeline.set_track_header(tr("timeline.tracks", "Tracks"));
         vgui_widget_set_a11y_name(timeline.widget(), tr("timeline.title", "Gradient Timeline"));
         vgui_widget_set_tooltip(timeline.widget(), tr("timeline.hint", "Drag the ruler to preview. Drag a diamond to move a key. Scroll to see more tracks."));
@@ -356,6 +367,7 @@ struct designer_gradient_timeline::impl {
         vgui_widget_set_enabled(fit, !tracks.empty());
         vgui_widget_set_enabled(snap, !tracks.empty());
         vgui_widget_set_enabled(time_edit, !tracks.empty());
+        refresh_key_navigation();
         const char* help = tr("timeline.select", "Select a key to edit its pose");
         if (tracks.empty()) help = tr("timeline.empty", "Set a gradient's animation to Keyframes to add a track here.");
         char time[96];
@@ -875,6 +887,46 @@ struct designer_gradient_timeline::impl {
         });
     }
 
+    const kit::timeline_keyframe* neighbor_key(bool forward) const {
+        if (rejected) return nullptr;
+        const auto* track = timeline.find_track(selected_track());
+        if (!track) return nullptr;
+        // Use the actual preview clock, even before the next render syncs the ruler.
+        const auto time = preview_time().value_or(capture_playhead{0., false}).seconds;
+        const auto& keys = track->keyframes;
+        if (forward) {
+            const auto next = std::ranges::upper_bound(keys, time, {}, &kit::timeline_keyframe::time);
+            return next == keys.end() ? nullptr : &*next;
+        }
+        const auto at = std::ranges::lower_bound(keys, time, {}, &kit::timeline_keyframe::time);
+        return at == keys.begin() ? nullptr : &*std::prev(at);
+    }
+
+    void refresh_key_navigation() {
+        vgui_widget_set_enabled(prev_key, neighbor_key(false) != nullptr);
+        vgui_widget_set_enabled(next_key, neighbor_key(true) != nullptr);
+    }
+
+    void jump_key(bool forward) {
+        if (timeline.gesture() != kit::timeline_gesture::none) return;
+        const auto* key = neighbor_key(forward);
+        if (!key) return;
+        // Preserve the zoom, but pan when the target is outside the usable ruler.
+        float width = 0;
+        vgui_widget_get_rect(timeline.widget(), nullptr, nullptr, &width, nullptr);
+        const auto lane_width = width - (timeline.content_x_at_time(0) - timeline.time_to_x(0)) - 2;
+        if (lane_width > 0) {
+            const auto inset = std::min(8. * vgui_context_get_ui_scale(shell), lane_width * .5);
+            const auto x = timeline.time_to_x(key->time);
+            timeline.pan_by_pixels(static_cast<float>(std::clamp(x, inset, lane_width - inset) - x));
+        }
+        if (timeline.selection_ids().size() == 1 && timeline.primary_selection() == key->id)
+            seek_key(*key); // Ruler scrubbing can leave the destination already selected.
+        else
+            timeline.set_selection({key->id}, key->id); // The normal selection path pauses and seeks.
+        refresh_key_navigation();
+    }
+
     void seek_key(const kit::timeline_keyframe& key) {
         const auto found = poses.find(key.id);
         if (found != poses.end()) seek(key.time, found->second.offset == 1);
@@ -1056,6 +1108,7 @@ void designer_gradient_timeline::show_time(double time) {
     p_->timeline.set_playhead(time);
     p_->updating = false;
     p_->refresh_time_text(p_->timeline.playhead());
+    p_->refresh_key_navigation();
 }
 std::optional<shape_keyframe> designer_gradient_timeline::selected_shape_key() const { return p_->selected_shape_key(); }
 void designer_gradient_timeline::edit_shape(const shape_keyframe& key, const keyframe_shape& shape) {

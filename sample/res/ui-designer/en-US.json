@@ -118,6 +118,8 @@
   "timeline.playhead": "Playhead (s)",
   "timeline.playhead_hint": "Enter an exact time in seconds and press Enter to pause and seek without snapping.",
   "timeline.playhead_invalid": "Enter a valid time in seconds.",
+  "timeline.prev_key": "Previous keyframe on this track",
+  "timeline.next_key": "Next keyframe on this track",
   "timeline.hint": "Drag the ruler to preview. Drag a diamond to move a key. Scroll to see more tracks.",
   "timeline.tracks": "Tracks",
   "timeline.tint": "Edit multiply tint and opacity",
