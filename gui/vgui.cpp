@@ -958,6 +958,7 @@ struct vgui_widget
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
 	vgui_texture* choice_atlas = nullptr; // VGUI_CHECKBOX and VGUI_RADIO indicator.
+	float choice_size = 0.0f, choice_gap = 0.0f; // Logical units; zero inherits.
 
 	// button icon (VGUI_BUTTON) --------------------------------------------
 	vgui_texture* button_atlas = nullptr;
@@ -5654,6 +5655,18 @@ static void vgui_measure_label_column(vgui_widget* w, float row_height)
 	}
 }
 
+static float vgui_choice_box_size(const vgui_widget* w, float line_height)
+{
+	const auto& style = w->ctx->style.choice;
+	return w->choice_size > 0.0f ? w->choice_size * w->ctx->ui_scale :
+		std::clamp(line_height - style.line_offset, style.box_min, style.box_max);
+}
+
+static float vgui_choice_label_gap(const vgui_widget* w)
+{
+	return w->choice_gap > 0.0f ? w->choice_gap * w->ctx->ui_scale : w->ctx->style.choice.gap;
+}
+
 static void vgui_switch_track_size(const vgui_widget* w, float line_height, float& width, float& height)
 {
 	const auto& style = w->ctx->style.switch_;
@@ -5801,8 +5814,8 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	case VGUI_CHECKBOX:
 	case VGUI_RADIO:
 	{
-		float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
-		float label = w->text.empty() ? 0 : (tw + st.choice.gap);
+		float box = vgui_choice_box_size(w, lh);
+		float label = w->text.empty() ? 0 : (tw + vgui_choice_label_gap(w));
 		w->intrinsic_w = box + label + pl + pr;
 		w->intrinsic_h = std::max(box, lh) + pt + pb;
 	}
@@ -13861,16 +13874,45 @@ static void vgui_draw_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	vgui_custom_clip_end(cb, vg, saved, has_saved);
 }
 
+static float vgui_choice_draw_size(vgui_widget* w)
+{
+	const float size = vgui_choice_box_size(w, vgui_line_height(w->ctx, w));
+	if (w->choice_size == 0.0f) return size; // Preserve legacy geometry.
+	return std::max(0.0f, std::min({size, w->abs_h, w->abs_w - w->padding[0] - w->padding[2]}));
+}
+
+static void vgui_draw_choice_label(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, float x, float size, bool rtl)
+{
+	if (w->text.empty()) return;
+	const float gap = vgui_choice_label_gap(w);
+	const float left = rtl ? w->abs_x + w->padding[0] : x + size + gap;
+	const float right = rtl ? x - gap : w->abs_x + w->abs_w;
+	const float width = std::max(0.0f, right - left);
+	const auto color = vgui_text_color(w);
+	if (w->choice_size == 0.0f && w->choice_gap == 0.0f)
+	{
+		vgui_draw_text(w->ctx, cb, vg, w, w->text, left, w->abs_y, width, w->abs_h, color,
+			w->text_align_x, w->text_align_y);
+	}
+	else if (width > 0.0f && color)
+	{
+		// A custom gap can consume the remaining width. Don't draw the
+		// label over its indicator or outside the row when space is tight.
+		vgui_text_submit(w->ctx, cb, vg, w, w->text, left, w->abs_y, width, w->abs_h, color,
+			rtl ? 1.0f - w->text_align_x : w->text_align_x, w->text_align_y, vgui_font_size(w->ctx, w),
+			0, 0, nullptr, VGUI_TEXT_PASS_ALL | VGUI_TEXT_PASS_CLIP_TEXT);
+	}
+}
+
 static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	vgui_context* ctx = w->ctx;
 	const vgui_style& st = ctx->style;
 	bool rtl = vgui_is_rtl(ctx);
-	float lh = vgui_line_height(ctx, w);
-	float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
+	float box = vgui_choice_draw_size(w);
 	float bx = rtl ? w->abs_x + w->abs_w - w->padding[2] - box : w->abs_x + w->padding[0];
 	float by = w->abs_y + (w->abs_h - box) * 0.5f;
-	if (!vgui_draw_choice_atlas(w, cb, vg, bx, by, box))
+	if (box > 0.0f && !vgui_draw_choice_atlas(w, cb, vg, bx, by, box))
 	{
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
@@ -13905,22 +13947,7 @@ static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		}
 	}
 
-	if (!w->text.empty())
-	{
-		if (rtl)
-		{
-			float tx = w->abs_x + w->padding[0];
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
-				std::max(0.0f, bx - st.choice.gap - tx), w->abs_h,
-				vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
-		else
-		{
-			float tx = bx + box + st.choice.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
-	}
+	vgui_draw_choice_label(w, cb, vg, bx, box, rtl);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -13929,11 +13956,10 @@ static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	vgui_context* ctx = w->ctx;
 	const vgui_style& st = ctx->style;
 	bool rtl = vgui_is_rtl(ctx);
-	float lh = vgui_line_height(ctx, w);
-	float d = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
+	float d = vgui_choice_draw_size(w);
 	float cx = rtl ? w->abs_x + w->abs_w - w->padding[2] - d * 0.5f : w->abs_x + w->padding[0] + d * 0.5f;
 	float cy = w->abs_y + w->abs_h * 0.5f;
-	if (!vgui_draw_choice_atlas(w, cb, vg, cx - d * 0.5f, cy - d * 0.5f, d))
+	if (d > 0.0f && !vgui_draw_choice_atlas(w, cb, vg, cx - d * 0.5f, cy - d * 0.5f, d))
 	{
 		uint32_t border = w->enabled
 			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
@@ -13965,22 +13991,7 @@ static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 		}
 	}
 
-	if (!w->text.empty())
-	{
-		if (rtl)
-		{
-			float tx = w->abs_x + w->padding[0];
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y,
-				std::max(0.0f, cx - d * 0.5f - st.choice.gap - tx), w->abs_h,
-				vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
-		else
-		{
-			float tx = cx + d * 0.5f + st.choice.gap;
-			vgui_draw_text(ctx, cb, vg, w, w->text, tx, w->abs_y, std::max(0.0f, w->abs_x + w->abs_w - tx),
-				w->abs_h, vgui_text_color(w), w->text_align_x, w->text_align_y);
-		}
-	}
+	vgui_draw_choice_label(w, cb, vg, cx - d * 0.5f, d, rtl);
 	vgui_draw_focus(w, cb, vg);
 }
 
@@ -18932,6 +18943,18 @@ extern "C" {
 		vgui_recording_invalidate_chain(widget, true);
 		vgui_widget_mark_dirty(widget);
 		return 1;
+	}
+
+	void vgui_choice_set_indicator_metrics(vgui_widget* widget, float size, float gap)
+	{
+		if (!widget || (widget->kind != VGUI_CHECKBOX && widget->kind != VGUI_RADIO)) return;
+		size = std::isfinite(size) ? vgui_nonneg(size) : 0.0f;
+		gap = std::isfinite(gap) ? vgui_nonneg(gap) : 0.0f;
+		if (widget->choice_size == size && widget->choice_gap == gap) return;
+		widget->choice_size = size;
+		widget->choice_gap = gap;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_mark_dirty(widget);
 	}
 
 	void vgui_button_set_icon(vgui_widget* widget, vgui_texture* tex,

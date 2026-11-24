@@ -1402,6 +1402,12 @@ extern "C" {
 	 * for unsupported widgets or textures without positive even dimensions. */
 	VGUI_API int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture);
 
+	/* VGUI_CHECKBOX / VGUI_RADIO: optional square size and gap to the label,
+	 * in logical units. Non-positive or non-finite values inherit the theme
+	 * on that axis. Applies to the built-in indicator and atlas alike. A
+	 * custom square shrinks to fit if layout assigns a smaller rectangle. */
+	VGUI_API void vgui_choice_set_indicator_metrics(vgui_widget* widget, float size, float gap);
+
 	/* ------------------------------------------------------------------------- */
 	/* Button icon                                                               */
 	/* ------------------------------------------------------------------------- */

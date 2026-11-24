@@ -1799,7 +1799,8 @@ struct designer_workbench::impl {
                 else if ((desc.type == value_type::color && desc.key != "text_color") || desc.key == "border_width" ||
                          desc.key == "rounding" || desc.key == "opacity" || desc.key == "background_style" || desc.key == "button_style" ||
                          desc.key == "gradient_preset" || desc.key == "icon" || desc.key.starts_with("icon_") ||
-                         desc.key.starts_with("text_align_") || desc.key.starts_with("switch_track_")) row.category = "Appearance";
+                         key.starts_with("indicator_") || key.starts_with("text_align_") || key.starts_with("switch_track_"))
+                    row.category = "Appearance";
                 row.value = key == legacy_side ? std::get<std::string>(item.props.at("text")) : display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
@@ -1875,6 +1876,8 @@ struct designer_workbench::impl {
                         "Milliseconds for a bound progress value to reach its target. 0 applies instantly; ignored without a value field.");
                     else if (desc.key.starts_with("switch_track_")) row.tooltip = strings.text("workbench.inspector.switch_track_hint",
                         "Track size in logical pixels, excluding labels. 0 uses the theme. Enlarge the control if the track does not fit.");
+                    else if (key == "indicator_size" || key == "indicator_gap") row.tooltip = strings.text("workbench.inspector.indicator_metrics_hint",
+                        "Measured in logical pixels. 0 uses the theme.");
                     else if (desc.key.starts_with("icon_source_")) row.tooltip = strings.text("workbench.inspector.icon_source_hint",
                         "Pixel coordinates in the icon image, from its top left. Width or height 0 extends to the image edge. These fields do not set the display size.");
                     break;

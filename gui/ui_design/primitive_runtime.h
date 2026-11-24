@@ -163,6 +163,8 @@ void apply_primitive(vgui_widget* widget, const node& n, const Access& props)
                 position == "right" ? VGUI_SWITCH_TEXT_RIGHT : VGUI_SWITCH_TEXT_AUTO);
             if (const auto color = props.color("thumb_color"))
                 vgui_switch_set_thumb_color(widget, primitive_theme_override(*color));
+        } else if (props.has("indicator_size") || props.has("indicator_gap")) {
+            vgui_choice_set_indicator_metrics(widget, props.number("indicator_size"), props.number("indicator_gap"));
         }
     } else if (type == "slider" || type == "progress") {
         // The C setter accepts values in range units. Install range and step

@@ -1385,6 +1385,92 @@ void test_choice_indicator_atlases() {
     verify_frames(height / 2);
 }
 
+void test_choice_indicator_metrics() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root",
+        "resources":{"atlas":"choice.rgba"},"nodes":{
+            "root":{"type":"panel","children":["check","radio","default","no_label","tight"]},
+            "check":{"type":"checkbox","props":{"x":12,"y":7,"text":"Check","indicator_size":24,
+                "indicator_gap":17,"indicator_atlas":"atlas"}},
+            "radio":{"type":"radio","props":{"x":12,"y":43,"text":"Radio","indicator_size":32,"indicator_gap":13}},
+            "default":{"type":"checkbox","props":{"x":12,"y":83,"text":"Theme","indicator_size":0,"indicator_gap":0}},
+            "no_label":{"type":"checkbox","props":{"x":100,"y":83,"indicator_size":24,"indicator_gap":15}},
+            "tight":{"type":"checkbox","props":{"x":12,"y":113,"width":14,"height":18,"text":"Tight",
+                "indicator_size":40,"indicator_atlas":"atlas"}}
+        }})", doc), "decode choice indicator dimensions and spacing");
+    const auto font_path = fs::path(__FILE__).parent_path() / "res/fonts/DejaVuSans.ttf";
+    std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> cache(new_font_cache(), free_font_cache);
+    check(cache && load_font_from_path(cache.get(), font_path.string().c_str(), "ChoiceMetrics"), "load choice label font");
+    std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(new_font_family(cache.get(), "ChoiceMetrics", nullptr), delete_font_family);
+    check(font && font->count, "resolve choice label font");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(font.get(), 16), &vgui_destroy);
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    check(ctx && vg, "create choice metrics draw context");
+    vgui_style style;
+    vgui_context_get_style(ctx.get(), &style);
+    style.choice.box_min = style.choice.box_max = 14;
+    style.choice.gap = 8;
+    vgui_context_set_style(ctx.get(), &style);
+
+    temp_dir temp;
+    write_image(temp.path / "choice.rgba", true, 32, 16);
+    image_loader loader;
+    loader.sizes = {{"atlas", {32, 16}}};
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1, loader.bindings(temp.path)) && rt.diagnostics().empty(), "mount both kinds of choice indicators");
+    static std::vector<glm::ivec4> sprites;
+    static std::vector<glm::vec3> circles;
+    static std::map<std::string, glm::ivec4> labels;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    cb->image_destroy = [](rvg_t*, vg_image_t*) {};
+    cb->add_image = [](rvg_t*, ovg_image_r* img) { sprites.push_back(img->dst); };
+    cb->circle = [](rvg_t*, float x, float y, float r) { circles.emplace_back(x, y, r); };
+    cb->add_text = [](rvg_t*, text_st_t* text, text_style_t*, text_box_rt* box) {
+        labels.emplace(std::string(text->text, text->text_len), box->rc);
+    };
+    const auto render = [&](bool rtl, int scale) {
+        vgui_context_set_direction(ctx.get(), rtl ? VGUI_DIRECTION_RTL : VGUI_DIRECTION_LTR);
+        const auto view = rt.layout({220, 150, static_cast<float>(scale)});
+        check(bool(view), "layout choice metrics");
+        vg->width = view->pixel_width;
+        vg->height = view->pixel_height;
+        cb->clear(vg.get());
+        sprites.clear(); circles.clear(); labels.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(sprites.size() == 2 && !circles.empty() && labels.size() == 3 && !labels.contains("Tight"),
+            "paint both indicator types without drawing the label of a row with no remaining space");
+        const auto check_geometry = [&](const char* id, const char* text, int size, int gap) {
+            auto* w = rt.widget(id);
+            const auto r = node(*view, id).rect_px;
+            float iw = 0, ih = 0;
+            vgui_widget_get_intrinsic_size(w, &iw, &ih);
+            const auto label = labels.at(text);
+            check(near(iw, (size + gap) * scale + vgui_widget_measure_text(w, text)) &&
+                near(ih, std::max(float(size * scale), vgui_widget_get_line_height(w))), "choice metrics determine intrinsic geometry");
+            check(rtl ? near(label.x + label.z, r.x + r.width - (size + gap) * scale) :
+                near(label.x, r.x + (size + gap) * scale), "label mirrors the measured indicator and gap");
+            return r;
+        };
+        const auto cr = check_geometry("check", "Check", 24, 17);
+        const auto rr = check_geometry("radio", "Radio", 32, 13);
+        check_geometry("default", "Theme", 14, 8);
+        check(near(node(*view, "no_label").rect_px.width, 24 * scale), "empty text does not reserve label spacing");
+        check(sprites.front().x == static_cast<int>(rtl ? cr.x + cr.width - 24 * scale : cr.x) &&
+            sprites.front().z == 24 * scale && sprites.front().w == 12 * scale,
+            "atlas uses the specified square, without distorting the frame");
+        check(near(circles.front().z, 16 * scale) &&
+            near(circles.front().x, rtl ? rr.x + rr.width - 16 * scale : rr.x + 16 * scale),
+            "stock radio uses the same logical size and mirrors its indicator");
+        const auto tight = node(*view, "tight").rect_px;
+        check(sprites.back().x == static_cast<int>(tight.x) && sprites.back().z == 14 * scale && sprites.back().w == 7 * scale,
+            "oversized sprite fits into its narrower explicit widget rectangle");
+    };
+    render(false, 1);
+    render(true, 1);
+    render(false, 2);
+}
+
 void test_button_icon_sources() {
     temp_dir temp;
     constexpr int width = 96, height = 64;
@@ -3140,6 +3226,7 @@ int main(int argc, char** argv) {
         test_image_loading();
         test_button_atlases();
         test_choice_indicator_atlases();
+        test_choice_indicator_metrics();
         test_button_icon_sources();
         test_collection_icons_and_actions();
         std::puts("ui_design_runtime_test: ok");

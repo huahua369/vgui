@@ -991,17 +991,35 @@ void exercise_indicator_atlas()
     };
     const auto path_editor = [&] { return workbench.widget("property:indicator_atlas", VGUI_EDIT); };
     const auto atlas_path = [&] { return std::string_view(vgui_edit_get_text(path_editor())); };
-    const auto atlas_label = [&] {
-        return std::string_view(vgui_widget_get_text(workbench.widget("property:indicator_atlas", VGUI_LABEL)));
+    const auto metric_editor = [&](std::string_view key) {
+        return workbench.widget("property:" + std::string(key), VGUI_EDIT);
     };
+    const auto label = [&](std::string_view key) {
+        return std::string_view(vgui_widget_get_text(workbench.widget("property:" + std::string(key), VGUI_LABEL)));
+    };
+    auto* ctx = workbench.ctx.get();
+    workbench.click(workbench.widget("__property_search", VGUI_EDIT));
+    check(vgui_input_text(ctx, "Appearance"), "could not filter the inspector to Appearance");
+    workbench.frame();
     for (const auto* id : {&radio, &checkbox}) {
         select(*id);
-        check(atlas_label() == "指示器图集路径" && atlas_path().empty(), "missing Chinese indicator atlas label or empty default");
+        check(label("indicator_atlas") == "指示器图集路径" && atlas_path().empty() &&
+            label("indicator_size") == "指示器尺寸" && label("indicator_gap") == "文字间距",
+            "checkbox and radio indicator properties must be grouped under Appearance and localized");
+        for (const auto key : {"indicator_size", "indicator_gap"}) {
+            auto* editor = metric_editor(key);
+            check(std::string_view(vgui_edit_get_text(editor)) == "0" &&
+                std::string_view(vgui_widget_get_tooltip(editor)).find("0 使用主题") != std::string_view::npos,
+                "indicator metrics must show the inherited default and explain it");
+        }
     }
     workbench.strings = ui::designer_strings(ui::designer_language::english);
     workbench.bench.refresh_language();
     workbench.frame();
-    check(atlas_label() == "Indicator atlas path", "indicator atlas label did not switch to English");
+    check(label("indicator_atlas") == "Indicator atlas path" && label("indicator_size") == "Indicator size" &&
+        label("indicator_gap") == "Label gap" &&
+        std::string_view(vgui_widget_get_tooltip(metric_editor("indicator_gap"))).find("0 uses the theme") != std::string_view::npos,
+        "indicator labels and hint did not switch to English");
 
     const auto before = model.current();
     const auto revision = model.revision();
@@ -1020,17 +1038,45 @@ void exercise_indicator_atlas()
     workbench.edit("Redo");
     check(model.current() == with_checkbox && atlas_path() == path, "Redo did not restore the atlas key and path");
 
+    const auto edit_metric = [&](const std::string& id, std::string_view key, const char* text, double value) {
+        const auto before_edit = model.current();
+        auto* editor = metric_editor(key);
+        workbench.click(editor);
+        check(vgui_get_focus(ctx) == editor, "indicator metric did not take text focus");
+        vgui_edit_select_all(editor);
+        check(vgui_input_text(ctx, text), "indicator metric did not consume text");
+        workbench.frame();
+        const auto edited = model.current();
+        check(edited.nodes.at(id).props.at(std::string(key)) == ui::value{value} && model.committed() == before_edit,
+            "indicator metric must apply before Enter");
+        check(workbench.key(VGUI_KEY_ENTER) && model.committed() == edited, "Enter did not commit the indicator metric");
+        workbench.edit("Undo");
+        check(model.current() == before_edit, "one Undo did not restore the previous indicator metric");
+        workbench.edit("Redo");
+        check(model.current() == edited, "Redo did not restore the edited indicator metric");
+    };
+    edit_metric(checkbox, "indicator_size", "26.5", 26.5);
+    edit_metric(checkbox, "indicator_gap", "7.5", 7.5);
     select(radio);
     workbench.set_text("indicator_atlas", path);
+    edit_metric(radio, "indicator_size", "32", 32);
+    edit_metric(radio, "indicator_gap", "12", 12);
     const auto saved = model.current();
     check(saved.nodes.at(radio).props.at("indicator_atlas") == ui::value{key} && saved.resources == with_checkbox.resources,
         "the radio atlas path did not reuse the existing checkbox resource key");
+    check(saved.nodes.at(checkbox).props.at("indicator_size") == ui::value{26.5} &&
+        saved.nodes.at(checkbox).props.at("indicator_gap") == ui::value{7.5},
+        "editing the radio metrics changed the checkbox metrics");
     workbench.file("Save As");
+    check(workbench.io_ok, "could not save the indicator properties");
     workbench.file("Open Page");
-    check(workbench.io_ok && workbench.open_calls == 1 && model.current() == saved, "reopening lost indicator atlas keys");
+    check(workbench.io_ok && workbench.open_calls == 1 && model.current() == saved, "reopening lost indicator atlas keys or metrics");
     for (const auto* id : {&checkbox, &radio}) {
         select(*id);
         check(atlas_path() == path, "a reopened indicator atlas editor did not resolve its resource key");
+        check(std::string_view(vgui_edit_get_text(metric_editor("indicator_size"))) == (id == &checkbox ? "26.5" : "32") &&
+            std::string_view(vgui_edit_get_text(metric_editor("indicator_gap"))) == (id == &checkbox ? "7.5" : "12"),
+            "a reopened inspector did not display the saved indicator metrics");
     }
     auto* editor = path_editor();
     workbench.click(editor);
