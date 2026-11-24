@@ -84,8 +84,9 @@ public:
     // Call before the shell acquires its swapchain or records/submits a frame.
     void render(float dt);
     // Raw SDL events in window points, before shell shortcut/input dispatch.
-    // Do not forward consumed events. DPI is read from the event's SDL window.
-    bool handle_event(const SDL_Event&);
+    // Do not forward consumed events. Apply any non-null cursor they request.
+    // DPI is read from the event's SDL window.
+    bool handle_event(const SDL_Event&, vgui_cursor& cursor);
     // Discard any open preview dialog and drop input ownership without invalidating a cached frame.
     void cancel_interaction();
     // Call after event dispatch, once the existing strings provider has been

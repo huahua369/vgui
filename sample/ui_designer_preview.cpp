@@ -2106,6 +2106,7 @@ struct designer_preview::impl {
 
     void update_toolbar() {
         if (!panel) return;
+        vgui_widget_set_cursor(canvas, hand_tool ? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW);
         const bool light = theme == designer_theme::light;
         const vgui_color inactive = light ? 0xFFEEF4FC : 0xFF394454;
         const vgui_color active = light ? 0xFFCFE2FA : 0xFF3A668E;
@@ -3406,7 +3407,7 @@ struct designer_preview::impl {
         }
     }
 
-    bool event(const SDL_Event& e) {
+    bool event(const SDL_Event& e, vgui_cursor& cursor) {
         if (!canvas) return false;
         switch (e.type) {
         case SDL_EVENT_WINDOW_FOCUS_LOST:
@@ -3460,7 +3461,11 @@ struct designer_preview::impl {
             hand_releases &= ~mask;
             if (!hand_releases) hand_release_window = 0;
             if (up) {
-                if (button == pan_button) cancel_pointer();
+                if (button == pan_button) {
+                    if (hand_tool) cursor = std::isfinite(p.x) && std::isfinite(p.y) &&
+                        vgui_hit_test(shell, p.x, p.y) == canvas ? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW;
+                    cancel_pointer();
+                }
                 return true;
             }
         }
@@ -3502,13 +3507,15 @@ struct designer_preview::impl {
 
         // Hand presses belong to the viewport rather than the document. Retain
         // them separately from the pan so right-clicking can switch modes safely.
-        if (hand_tool && down && (over_canvas || pan_button)) {
-            if (mask) {
+        if (hand_tool && (over_canvas || pan_button)) {
+            cursor = VGUI_CURSOR_HAND;
+            if (down && mask) {
                 hand_release_window = id;
                 hand_releases |= mask;
             }
             if (right_down) {
                 set_hand_tool(false);
+                cursor = VGUI_CURSOR_ARROW;
                 return true;
             }
         }
@@ -3679,7 +3686,7 @@ void designer_preview::sync(const document& doc, uint64_t rev, const std::filesy
 }
 void designer_preview::set_render_context(vgpu_ctx_t* ctx) { p_->set_renderer(ctx); }
 void designer_preview::render(float dt) { p_->render(dt); }
-bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
+bool designer_preview::handle_event(const SDL_Event& e, vgui_cursor& cursor) { return p_->event(e, cursor); }
 void designer_preview::cancel_interaction() {
     p_->close_viewport_dialog();
     p_->simulation_editor.close();

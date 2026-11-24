@@ -166,7 +166,7 @@ public:
     }
     const ui::session& history() const { return session_; }
     std::string_view selection() const { return workbench_.selection(); }
-    bool preview_event(const SDL_Event& event) {
+    bool preview_event(const SDL_Event& event, vgui_cursor& cursor) {
         // An active drag-and-drop also owns keyboard events such as Escape.
         if (event.type != SDL_EVENT_WINDOW_FOCUS_LOST && vgui_drag_active(shell_)) return false;
         // The runtime preview must not steal mouse input from a shell press,
@@ -199,7 +199,7 @@ public:
         }
         auto* page = find_page(active_);
         return page && (page->last_model_revision == session_.revision() || event.type == SDL_EVENT_WINDOW_FOCUS_LOST) &&
-            page->preview->handle_event(event);
+            page->preview->handle_event(event, cursor);
     }
 
     bool open(const fs::path& path) {
@@ -3394,7 +3394,7 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     frame();
 }
 
-void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
+void exercise_view_tools(app_mgr& app, os_window& win, vgui_context* shell, designer& editor,
                          const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other) {
     const auto require = [](bool passed, std::string_view message) {
         if (!passed) throw std::runtime_error("Native view tools: " + std::string(message));
@@ -3472,13 +3472,32 @@ void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
     require(editor.selection() == "entry", "default Pointer did not select the object");
     input.click(hand_id);
     expect_tool(true);
+    const auto bar = input.rect(input.widget("designer.preview.status"));
+    const glm::vec2 outside = glm::round(glm::vec2{bar.x + bar.width / 2, bar.y + bar.height / 2});
+    const auto hover = [&](glm::vec2 from, glm::vec2 to) {
+        input.motion(from, to, 0);
+        frame();
+    };
+    const auto cursor_is = [&](SDL_SystemCursor shape, const char* why) {
+        require(app.system_cursor[shape] && SDL_GetCursor() == app.system_cursor[shape], why);
+    };
+    const auto over = center("trigger");
+    hover(over, outside);
+    cursor_is(SDL_SYSTEM_CURSOR_DEFAULT, "outside the canvas must use the normal cursor");
+    hover(outside, over);
+    cursor_is(SDL_SYSTEM_CURSOR_POINTER, "re-entering the canvas did not restore the Hand cursor");
     const auto initial_view = preview.capture_view();
     const auto initial_board = board();
     const auto delta = glm::round(glm::vec2{initial_board.width / 24, -initial_board.height / 24});
     const auto start = center("trigger");
+    hover(over, outside);
     input.button(true, start);
+    frame();
+    cursor_is(SDL_SYSTEM_CURSOR_POINTER, "starting a Hand drag did not set the Hand cursor");
+    app.set_defcursor(cursor_st::cursor_arrow); // Simulate the cursor being replaced while capture is active.
     input.motion(start, start + delta);
     frame();
+    cursor_is(SDL_SYSTEM_CURSOR_POINTER, "captured Hand motion did not restore the Hand cursor");
     expect_pan(initial_view, initial_board, delta);
     require(editor.selection() == "entry", "Design Hand drag selected the object under it");
     unchanged_document();
@@ -3490,6 +3509,7 @@ void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
 
     input.click_at(canvas, center("trigger"), SDL_BUTTON_RIGHT);
     expect_tool(false);
+    cursor_is(SDL_SYSTEM_CURSOR_DEFAULT, "right-click leaving Hand did not restore the normal cursor");
     require(editor.selection() == "entry", "right click leaving Hand selected the object");
     const auto middle = center("trigger");
     input.button(true, middle, SDL_BUTTON_MIDDLE);
@@ -3526,6 +3546,7 @@ void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
     input.button(true, at + delta, SDL_BUTTON_RIGHT);
     frame();
     expect_tool(false);
+    cursor_is(SDL_SYSTEM_CURSOR_DEFAULT, "right-click cancel during a Hand drag left the cursor stuck");
     input.motion(at + delta, at, SDL_BUTTON_LMASK | SDL_BUTTON_RMASK);
     input.button(false, at, SDL_BUTTON_RIGHT);
     input.button(false, at);
@@ -5317,9 +5338,13 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             win->request_render(0);
         const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
         // Shell overlays own input even when the pointer is over the artboard.
+        vgui_cursor preview_cursor = VGUI_CURSOR_NULL;
         if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
-            !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e))
+            !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e, preview_cursor)) {
+            // A consumed preview event skips the SDL backend's usual cursor update.
+            if (preview_cursor != VGUI_CURSOR_NULL) app.set_defcursor(static_cast<cursor_st>(preview_cursor));
             return;
+        }
         if (!editor.chooser_open() || focus_lost) app.process_event(&e);
     };
     auto last = SDL_GetTicks();
@@ -5478,7 +5503,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             exercise_options(*win, shell.get(), editor, settings, advance);
             exercise_control_drag(*win, shell.get(), editor, advance, picker->sandbox, open_path);
             exercise_custom_viewport(*win, shell.get(), editor, advance, picker->sandbox, open_path);
-            exercise_view_tools(*win, shell.get(), editor, advance, picker->sandbox, open_path);
+            exercise_view_tools(app, *win, shell.get(), editor, advance, picker->sandbox, open_path);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
