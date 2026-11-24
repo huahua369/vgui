@@ -805,6 +805,7 @@ struct designer_workbench::impl {
                 {"Anchors", strings.text("workbench.inspector.category.anchors", "Anchors")},
                 {"Game data", strings.text("workbench.inspector.category.game_data", "Game data")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
+                {"Navigation", strings.text("workbench.inspector.category.navigation", "Navigation")},
                 {"Pages", strings.text("workbench.inspector.category.pages", "Pages")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
             },
@@ -1721,6 +1722,8 @@ struct designer_workbench::impl {
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
+                const bool navigation = key.starts_with("nav_");
+                if (navigation && (decorative_gradient || (key == "nav_start" && selected != doc.root))) continue;
                 if (desc.type == value_type::data_key) {
                     const auto bindings = data_bindings();
                     const auto binding = std::ranges::find(bindings, key, &data_binding_descriptor::key);
@@ -1758,6 +1761,7 @@ struct designer_workbench::impl {
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
                 if (desc.type == value_type::data_key || key == "bind_value_transition_ms") row.category = "Game data";
                 else if (key.starts_with("anchor_")) row.category = "Anchors";
+                else if (navigation) row.category = "Navigation";
                 else if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
                 else if (decorative_gradient && key.starts_with("gradient_"))
                     row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
@@ -1781,7 +1785,11 @@ struct designer_workbench::impl {
                 row.value = key == legacy_side ? std::get<std::string>(item.props.at("text")) : display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
-                if (key == "anchor_x" || key == "anchor_y") {
+                if (navigation) {
+                    row.placeholder = strings.text("workbench.inspector.navigation.auto", "Auto");
+                    row.tooltip = strings.text("workbench.inspector.navigation.hint",
+                        "Enter a node ID from this page's Outline. Leave blank for Auto. If the target cannot take focus, navigation falls back to Auto.");
+                } else if (key == "anchor_x" || key == "anchor_y") {
                     row.tooltip = strings.text("workbench.inspector.anchor.hint",
                         "X/Y are offsets from the selected edge or center. Positive offsets go right/down; use negative offsets to inset from the right/bottom.");
                 } else if (key == "anchor_safe_area") {
@@ -1942,7 +1950,7 @@ struct designer_workbench::impl {
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
         constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Gradient animation", "Geometry & state", "Pages",
-            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Anchors", "Game data"};
+            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Navigation", "Anchors", "Game data"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

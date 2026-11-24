@@ -550,13 +550,19 @@ struct runtime::mounted_tree {
     animation_span animation_timing;
     std::uint64_t revision = 0;
     float width = 0, height = 0;
+    bool laid_out = false;
     ~mounted_tree() {
         if (root) vgui_widget_destroy(root);
         for (auto* texture : collection_textures) vgui_texture_release(texture);
     }
     static void event(vgui_widget*, const vgui_event* event, void* user) {
         auto* e = static_cast<entry*>(user);
-        if (event->type == VGUI_EVENT_CLICK && e->handler) e->handler(e->id, e->action, e->user);
+        // Bound only to authored buttons. Core sends key events for native
+        // button activation, but does not synthesize a click.
+        const bool activate_key = event->type == VGUI_EVENT_KEY_DOWN && event->mods == VGUI_MOD_NONE &&
+            (event->key == VGUI_KEY_ENTER || event->key == ' ');
+        if (e->handler && (event->type == VGUI_EVENT_CLICK || activate_key))
+            e->handler(e->id, e->action, e->user);
     }
     static void menu_event(vgui_widget*, vgui_item_id item, void* user) {
         const auto& menu = *static_cast<menu_actions*>(user);
@@ -905,6 +911,24 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         if (error) *error = {"", "failed to create VGUI widget"};
         return false;
     }
+
+    const auto nav_target = [&](const node& source, std::string_view key) -> vgui_widget* {
+        const auto prop = source.props.find(key);
+        if (prop == source.props.end()) return nullptr;
+        const auto& id = std::get<std::string>(prop->second);
+        return id.empty() ? nullptr : next->entries.at(id).widget;
+    };
+    if (auto* target = nav_target(root_node, "nav_start"))
+        vgui_navigation_set_start(next->root, target);
+    constexpr std::pair<std::string_view, vgui_nav_direction> directions[] = {
+        {"nav_up", VGUI_NAV_UP}, {"nav_down", VGUI_NAV_DOWN},
+        {"nav_left", VGUI_NAV_LEFT}, {"nav_right", VGUI_NAV_RIGHT}
+    };
+    for (const auto& [id, source] : doc.nodes) {
+        for (const auto& [key, direction] : directions)
+            if (auto* target = nav_target(source, key))
+                vgui_navigation_set_direction(next->root, next->entries.at(id).widget, direction, target);
+    }
     tree_ = std::move(next);
     return true;
 }
@@ -934,7 +958,12 @@ std::optional<layout_snapshot> runtime::layout(viewport view) {
         states.emplace(e.widget, state{item.visible_px, item.visible, item.enabled});
         result.nodes.push_back(std::move(item));
     }
+    tree_->laid_out = true;
     return result;
+}
+
+bool runtime::focus_default() {
+    return tree_ && tree_->laid_out && vgui_navigation_focus_start(ctx_, tree_->root);
 }
 
 std::filesystem::path resolve_project_resource(const std::filesystem::path& project_root, const std::string& relative) {

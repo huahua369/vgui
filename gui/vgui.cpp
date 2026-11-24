@@ -757,11 +757,22 @@ struct vgui_gradient_paint
 	std::vector<vgui_gradient_stop> stops;
 };
 
+// A widget owns its optional link record; weak references to that record
+// distinguish it from any later widget allocated at the same address.
+struct vgui_navigation_links
+{
+	explicit vgui_navigation_links(vgui_widget* w) : widget(w) {}
+	vgui_widget* widget;
+	std::weak_ptr<vgui_navigation_links> owner, start;
+	std::array<std::weak_ptr<vgui_navigation_links>, 4> directions;
+};
+
 struct vgui_widget
 {
 	vgui_context* ctx = nullptr;
 	vgui_widget* parent = nullptr;
 	std::vector<vgui_widget*> children;
+	std::shared_ptr<vgui_navigation_links> navigation;
 
 	std::string text;
 	std::string text_key;
@@ -8893,12 +8904,130 @@ static void vgui_focus_next_impl(vgui_context* ctx, bool reverse)
 	vgui_set_focus_internal(ctx, list[(size_t)index]);
 }
 
-// R2-1 directional focus navigation (gamepad / remote hosts).  Purely
-// geometric: picks the focusable widget whose centre lies closest to the
-// focused widget in the requested visual direction (cone test, primary
-// axis + cross-axis penalty); wraps to the farthest opposite widget when
-// the cone is empty.  In-widget arrow-key behaviour (lists, sliders) is
-// untouched -- hosts call this explicitly from their own input layer.
+static const std::shared_ptr<vgui_navigation_links>& vgui_navigation_record(vgui_widget* w)
+{
+	if (!w->navigation) w->navigation = std::make_shared<vgui_navigation_links>(w);
+	return w->navigation;
+}
+
+void vgui_navigation_set_start(vgui_widget* owner, vgui_widget* target)
+{
+	if (owner && vgui_is_within(owner, target))
+		vgui_navigation_record(owner)->start = vgui_navigation_record(target);
+}
+
+void vgui_navigation_set_direction(vgui_widget* owner, vgui_widget* source,
+	vgui_nav_direction direction, vgui_widget* target)
+{
+	if (direction < VGUI_NAV_UP || direction > VGUI_NAV_RIGHT ||
+		!vgui_is_within(owner, source) || !vgui_is_within(owner, target))
+		return;
+	auto& links = vgui_navigation_record(source);
+	links->owner = vgui_navigation_record(owner);
+	links->directions[direction] = vgui_navigation_record(target);
+}
+
+static vgui_widget* vgui_navigation_resolve(vgui_context* ctx,
+	const std::weak_ptr<vgui_navigation_links>& ref)
+{
+	const auto links = ref.lock();
+	return links && ctx->alive.count(links->widget) && !links->widget->destroy_pending
+		? links->widget : nullptr;
+}
+
+static vgui_content_rect vgui_navigation_child_clip(vgui_widget* parent, vgui_widget* child)
+{
+	if (vgui_is_scroll_panel(parent))
+		return vgui_scroll_content_rect(parent);
+	if (parent->kind == VGUI_TABVIEW)
+	{
+		auto view = vgui_scroll_content_rect(parent);
+		const float tab_h = std::min(vgui_tabs_of(parent)->tab_height, view.h);
+		view.y += tab_h;
+		view.h -= tab_h;
+		return view;
+	}
+	if (auto* dock = vgui_dock_of(parent))
+	{
+		// The dock clips each page to its own content area, not the dock's
+		// outer bounds (which a floating page can extend beyond).
+		for (const auto& panel : dock->panels)
+		{
+			if (panel.page != child) continue;
+			if (panel.zone == VGUI_DOCK_FLOATING)
+			{
+				vgui_content_rect view{};
+				vgui_dock_floating_content_rect(parent, panel, &view.x, &view.y, &view.w, &view.h);
+				return view;
+			}
+			const int zone = panel.zone;
+			const float tab_h = std::min(parent->ctx->style.dock.tab_height, dock->zone_h[zone]);
+			return {dock->zone_x[zone], dock->zone_y[zone] + tab_h, dock->zone_w[zone], dock->zone_h[zone] - tab_h};
+		}
+		return {child->abs_x, child->abs_y, child->abs_w, child->abs_h};
+	}
+	return {parent->abs_x, parent->abs_y, parent->abs_w, parent->abs_h};
+}
+
+static bool vgui_navigation_eligible(vgui_context* ctx, vgui_widget* target, vgui_widget* root)
+{
+	if (!target || !target->focusable || !vgui_is_within(root, target))
+		return false;
+
+	// Check for a nonempty intersection with the viewport and all clips on
+	// the way to the active root. Do not tighten the legacy geometric search.
+	float l = std::max(0.0f, target->abs_x), t = std::max(0.0f, target->abs_y);
+	float r = std::min((float)ctx->width, target->abs_x + target->abs_w);
+	float b = std::min((float)ctx->height, target->abs_y + target->abs_h);
+	vgui_widget* child = nullptr;
+	for (vgui_widget* p = target; p; child = p, p = p->parent)
+	{
+		if (!p->visible || !p->enabled || p->destroy_pending || !(p->abs_w > 0.0f && p->abs_h > 0.0f))
+			return false;
+		if (child && p->clip_children)
+		{
+			const auto clip = vgui_navigation_child_clip(p, child);
+			l = std::max(l, clip.x);
+			t = std::max(t, clip.y);
+			r = std::min(r, clip.x + clip.w);
+			b = std::min(b, clip.y + clip.h);
+		}
+		if (p == root) break;
+	}
+	return l < r && t < b;
+}
+
+static vgui_widget* vgui_navigation_start_target(vgui_context* ctx, vgui_widget* owner, vgui_widget* root)
+{
+	if (!owner->navigation || !vgui_is_within(root, owner)) return nullptr;
+	auto* target = vgui_navigation_resolve(ctx, owner->navigation->start);
+	return vgui_is_within(owner, target) ? target : nullptr;
+}
+
+static bool vgui_navigation_move(vgui_context* ctx, vgui_widget* target)
+{
+	if (!target || target == ctx->focus) return false;
+	// Drop any cached outline of the old focus when leaving its subtree.
+	vgui_recording_invalidate_chain(ctx->focus, true);
+	// Wake render-on-change hosts without invalidating layout or changing
+	// how Tab and pointer input report paint changes.
+	++ctx->paint_revision;
+	vgui_set_focus_internal(ctx, target);
+	return true;
+}
+
+bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner)
+{
+	if (!ctx || ctx->focus || !ctx->alive.count(owner)) return false;
+	vgui_ensure_layout(ctx);
+	auto* root = vgui_active_root(ctx);
+	auto* target = vgui_navigation_start_target(ctx, owner, root);
+	return vgui_navigation_eligible(ctx, target, root) && vgui_navigation_move(ctx, target);
+}
+
+// Directional focus navigation (gamepad / remote hosts). Prefer an eligible
+// authored link, otherwise use the geometric cone test (or opposite wrap).
+// In-widget arrow-key behaviour (lists, sliders) is untouched.
 static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 {
 	if (!ctx)
@@ -8920,15 +9049,39 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 
 	// Candidate collection mirrors vgui_focus_next_impl (trap-scoped).
 	vgui_widget* scope = root;
-	if (ctx->focus && ctx->alive.count(ctx->focus))
+	vgui_widget* from = ctx->focus && ctx->alive.count(ctx->focus) ? ctx->focus : nullptr;
+	vgui_widget* rejected_direction = nullptr;
+	if (from)
 	{
-		for (vgui_widget* p = ctx->focus; p; p = p->parent)
+		for (vgui_widget* p = from; p; p = p->parent)
 			if (p->focus_trap) { scope = p; break; }
+		if (from->navigation && vgui_is_within(root, from))
+		{
+			auto* owner = vgui_navigation_resolve(ctx, from->navigation->owner);
+			auto* target = vgui_navigation_resolve(ctx, from->navigation->directions[dir]);
+			if (vgui_is_within(owner, from) && vgui_is_within(owner, target))
+			{
+				if (vgui_is_within(scope, target) && vgui_navigation_eligible(ctx, target, root) &&
+					vgui_navigation_move(ctx, target))
+					return 1;
+				rejected_direction = target;
+			}
+		}
 	}
+	vgui_widget* start = nullptr;
+	std::vector<vgui_widget*> rejected_starts;
 	std::vector<vgui_widget*> list;
 	std::function<void(vgui_widget*)> collect = [&](vgui_widget* w)
 		{
 			if (!w || !w->visible || !w->enabled) return;
+		if (!from && !start && w->navigation)
+		{
+			if (auto* target = vgui_navigation_start_target(ctx, w, root))
+			{
+				if (vgui_navigation_eligible(ctx, target, root)) start = target;
+				else rejected_starts.push_back(target);
+			}
+		}
 			if (w->focusable) list.push_back(w);
 			for (vgui_widget* c : w->children) collect(c);
 		};
@@ -8936,15 +9089,19 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 	if (list.empty() && scope != root)
 		collect(root);
 
-	vgui_widget* from = (ctx->focus && ctx->alive.count(ctx->focus))
-		? ctx->focus : nullptr;
 	if (!from)
 	{
-		// No focus yet: take the first candidate like Tab from scratch.
-		if (list.empty())
-			return 0;
-		vgui_set_focus_internal(ctx, list.front());
-		return 1;
+		if (!start)
+		{
+			// Keep the legacy order, but do not land on a rejected authored
+			// target through the fallback (e.g. it was fully clipped).
+			auto first = std::find_if(list.begin(), list.end(), [&](vgui_widget* w)
+			{
+				return std::find(rejected_starts.begin(), rejected_starts.end(), w) == rejected_starts.end();
+			});
+			if (first != list.end()) start = *first;
+		}
+		return vgui_navigation_move(ctx, start);
 	}
 
 	const float fx = from->abs_x + from->abs_w * 0.5f;
@@ -8957,7 +9114,7 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 	float wrap_cross = 0.0f;
 	for (vgui_widget* w : list)
 	{
-		if (w == from)
+		if (w == from || w == rejected_direction)
 			continue;
 		const float cx = w->abs_x + w->abs_w * 0.5f;
 		const float cy = w->abs_y + w->abs_h * 0.5f;
@@ -8994,11 +9151,7 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 		}
 	}
 
-	vgui_widget* target = best ? best : wrap;
-	if (!target)
-		return 0;
-	vgui_set_focus_internal(ctx, target);
-	return 1;
+	return vgui_navigation_move(ctx, best ? best : wrap);
 }
 
 //----------------------------------------------------------------------------

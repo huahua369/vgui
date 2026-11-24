@@ -46,6 +46,133 @@ void same_rect(const ui::pixel_rect& a, const ui::pixel_rect& b) {
     check(near(a.x,b.x) && near(a.y,b.y) && near(a.width,b.width) && near(a.height,b.height),
         "snapshot rect differs from actual VGUI layout");
 }
+void test_authored_navigation() {
+    ui::document doc;
+    ui::diagnostic error;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["first","group","remote_group"]},
+        "first":{"type":"button","props":{"x":10,"y":5,"width":30,"height":20}},
+        "group":{"type":"panel","props":{"width":120,"height":100},"children":["start","step","clipped"]},
+        "start":{"type":"button","props":{"x":10,"y":45,"width":30,"height":20,"nav_right":"remote","focus_alpha":1}},
+        "step":{"type":"button","props":{"x":60,"y":45,"width":30,"height":20,"nav_right":"clipped"}},
+        "clipped":{"type":"button","props":{"x":120,"y":45,"width":30,"height":20}},
+        "remote_group":{"type":"panel","props":{"x":160,"width":60,"height":100,
+            "bind_visible":"controls.visible","bind_enabled":"controls.enabled"},"children":["remote"]},
+        "remote":{"type":"button","props":{"x":10,"y":45,"width":30,"height":20}}
+    }})", doc, &error), "decode authored navigation");
+    const auto original = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    ui::runtime rt(ctx.get());
+    const auto focus = [&] { return vgui_get_focus(ctx.get()); };
+    const auto set_focus = [&](vgui_widget* w) { vgui_set_focus(ctx.get(), w); };
+    const auto paint = [&] { return vgui_context_paint_revision(ctx.get()); };
+    const auto navigate = [&](vgui_nav_direction dir) { return vgui_focus_navigate(ctx.get(), dir); };
+    const auto expect_move = [&](vgui_nav_direction dir, vgui_widget* target, std::string_view message) {
+        const auto before = paint();
+        check(navigate(dir) && focus() == target && paint() > before, message);
+    };
+    check(!rt.focus_default() && rt.mount(doc, 1, {}, &error), "mount authored navigation");
+    check(!rt.focus_default() && !rt.layout({0, 110, 1}) && !rt.focus_default() && !focus(),
+        "default focus requires a valid layout of this mount");
+    check(rt.layout({260, 110, 1}).has_value(), "lay out authored navigation");
+    auto* start = rt.widget("start");
+    auto* step = rt.widget("step");
+    auto* remote = rt.widget("remote");
+    const auto before_focus = paint();
+    check(!focus() && rt.focus_default() && focus() == start && paint() > before_focus,
+        "explicitly focusing the authored start overrides first-in-tree order and repaints");
+
+    {
+        auto* group = rt.widget("group");
+        std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+        std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+        vg->width = 260;
+        vg->height = 110;
+        static int replays = 0;
+        static const auto replay = cb->replay;
+        cb->replay = [](rvg_t* view, ovg_recording_t* recording) {
+            ++replays;
+            replay(view, recording);
+        };
+        const auto draw = [&] {
+            cb->clear(vg.get());
+            replays = 0;
+            vgui_draw(ctx.get(), cb.get(), vg.get());
+            return replays;
+        };
+        vgui_widget_set_recording_hint(group, 1);
+        draw(); // Capture the focused start button in this subtree.
+        expect_move(VGUI_NAV_RIGHT, remote, "authored Right skips the closer geometric target");
+        check(draw() == 0 && draw() == 1, "leaving a recorded subtree drops its old focus ring once");
+        vgui_widget_set_recording_hint(group, 0);
+    }
+    const auto before_noop = paint();
+    check(!rt.focus_default() && focus() == remote && paint() == before_noop,
+        "the default does not steal focus or repaint when ignored");
+    set_focus(nullptr);
+    expect_move(VGUI_NAV_DOWN, start, "any direction uses the configured initial focus from scratch");
+    vgui_input_focus_next(ctx.get(), 0);
+    check(focus() == step, "Tab traversal keeps document order instead of following Right");
+
+    expect_move(VGUI_NAV_RIGHT, remote,
+        "an authored target fully clipped by its parent is skipped even if it would win on geometry");
+    for (const auto* field : {"controls.visible", "controls.enabled"}) {
+        set_focus(start);
+        check(rt.set_data(field, ui::value{false}), "change authored target ancestor's eligibility");
+        expect_move(VGUI_NAV_RIGHT, step, "a hidden or disabled ancestor causes geometric fallback");
+        check(rt.set_data(field, std::nullopt), "restore authored target eligibility");
+    }
+    vgui_widget_set_focusable(remote, 0);
+    set_focus(start);
+    expect_move(VGUI_NAV_RIGHT, step, "a nonfocusable target causes geometric fallback");
+    vgui_widget_set_focusable(remote, 1);
+
+    vgui_widget_set_focus_trap(rt.widget("group"), 1);
+    set_focus(start);
+    expect_move(VGUI_NAV_RIGHT, step, "an authored direction cannot leave the focused trap");
+    vgui_widget_set_focus_trap(rt.widget("group"), 0);
+
+    check(rt.layout({120, 110, 2}).has_value() && rt.widget("start") == start && focus() == step,
+        "viewport and DPI relayout preserve the mounted widgets and current focus");
+    set_focus(start);
+    expect_move(VGUI_NAV_RIGHT, step, "a target fully outside the viewport causes geometric fallback");
+    check(rt.layout({260, 110, 2}).has_value(), "restore the wide viewport");
+    set_focus(start);
+    expect_move(VGUI_NAV_RIGHT, remote, "relayout makes an authored edge usable again");
+
+    auto* modal = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
+    auto* modal_button = vgui_widget_add(modal, VGUI_BUTTON, "Modal");
+    check(vgui_modal_show(ctx.get(), modal, nullptr), "open a modal over the mounted subtree");
+    set_focus(nullptr);
+    check(!rt.focus_default() && !focus(), "the authored default cannot focus behind a modal");
+    expect_move(VGUI_NAV_RIGHT, modal_button, "directional start is scoped to the active modal root");
+    vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
+
+    check(doc == original, "runtime navigation cannot mutate the design");
+    doc.nodes.at("root").props.at("nav_start") = "remote"s;
+    doc.nodes.at("root").children = {"remote_group", "first", "group"};
+    check(rt.mount(doc, 2, {}, &error) && !rt.focus_default() && !focus(),
+        "remount discards focus and does not reuse the last mount's layout");
+    check(rt.layout({120, 110, 1}).has_value(), "lay out the remount with its new start clipped");
+    check(!rt.focus_default() && !focus(), "a clipped default does not focus a fallback implicitly");
+    expect_move(VGUI_NAV_LEFT, rt.widget("first"),
+        "a clipped authored start is skipped even if it is first in geometric traversal order");
+    check(rt.layout({260, 110, 1}).has_value(), "lay out the new start in view");
+    set_focus(nullptr);
+    check(rt.focus_default() && focus() == rt.widget("remote"), "remount adopts the new authored start");
+
+    doc.nodes.at("root").props.erase("nav_start");
+    doc.nodes.at("root").children = original.nodes.at("root").children;
+    doc.nodes.at("start").props.erase("nav_right");
+    doc.nodes.at("step").props.erase("nav_right");
+    check(rt.mount(doc, 3, {}, &error) && rt.layout({260, 110, 1}).has_value() && !rt.focus_default(),
+        "a legacy document has no configured default");
+    expect_move(VGUI_NAV_LEFT, rt.widget("first"), "legacy documents start at the first focusable node");
+    set_focus(rt.widget("start"));
+    expect_move(VGUI_NAV_RIGHT, rt.widget("step"), "legacy documents keep geometric navigation");
+    expect_move(VGUI_NAV_RIGHT, rt.widget("clipped"), "legacy geometry still considers non-authored clipped candidates");
+}
+
 void test_game_data() {
     ui::document doc;
     ui::diagnostic error;
@@ -2422,6 +2549,18 @@ void run() {
     check(actions.calls == 0, "action must not fire on pointer down");
     vgui_input_mouse_up(ctx.get(), 1, x, y, 0);
     check(actions.calls == 1 && actions.id == "submit" && actions.action == "form.send", "activation routes action");
+    vgui_set_focus(ctx.get(), rt.widget("submit"));
+    for (int key : {int(VGUI_KEY_ENTER), int(' ')}) {
+        const auto before = actions.calls;
+        vgui_input_key(ctx.get(), key, 1, VGUI_MOD_CTRL);
+        vgui_input_key(ctx.get(), key, 0, VGUI_MOD_CTRL);
+        check(actions.calls == before, "modified activation keys do not dispatch a button action");
+        check(vgui_input_key(ctx.get(), key, 1, VGUI_MOD_NONE) && actions.calls == before + 1 &&
+            actions.id == "submit" && actions.action == "form.send",
+            "plain Enter and Space dispatch the same authored action as pointer click");
+        vgui_input_key(ctx.get(), key, 0, VGUI_MOD_NONE);
+        check(actions.calls == before + 1, "button action dispatches once on key-down, not key-up");
+    }
     check(doc == original, "action wrote back to document");
 
     auto* old_root = rt.widget("root");
@@ -2445,6 +2584,7 @@ int main(int argc, char** argv) {
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
         test_anchored_layout();
+        test_authored_navigation();
         test_game_data();
         test_progress_value_transitions();
         test_declarative_widgets();

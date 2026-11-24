@@ -3473,6 +3473,65 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
     frame();
 }
 
+void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
+                         const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native navigation: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["near","start","far"]},
+        "near":{"type":"button","props":{"x":150,"y":40,"width":100,"height":36,"text":"Near","action":"nav.near"}},
+        "start":{"type":"button","props":{"x":20,"y":40,"width":100,"height":36,"text":"Start","action":"nav.start",
+            "nav_right":"far","focus_alpha":1}},
+        "far":{"type":"button","props":{"x":340,"y":150,"width":100,"height":36,"text":"Far","action":"nav.far",
+            "nav_left":"start","focus_alpha":1,"bind_enabled":"hud.far"}}
+    }})", doc), "decode the navigation fixture");
+    const auto file = sandbox / "nav.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the navigation fixture");
+    frame();
+
+    auto& preview = editor.preview();
+    const auto revision = editor.history().revision();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    const auto action = [&](std::string_view id) {
+        keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+        auto* status = find_widget(vgui_root(shell), "designer.status");
+        require(status && std::string_view(vgui_widget_get_text(status)).ends_with(id), id);
+    };
+    constexpr auto mode = "designer.preview.mode";
+    input.click(mode);
+    require(preview.running() && vgui_get_focus(shell) == input.widget("designer.preview.canvas"),
+        "entering Run did not focus the artboard with a configured default");
+    action("nav.start [start]");
+    require(preview.snapshot() != nullptr, "missing focused preview snapshot");
+    const auto before = preview.snapshot()->serial;
+    keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    require(preview.snapshot() && preview.snapshot()->serial != before, "direction move did not repaint the focus ring");
+    action("nav.far [far]");
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    action("nav.start [start]");
+
+    input.click("designer.preview.simulation");
+    const auto modal = [&](const char* id, vgui_widget_kind kind) {
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w != nullptr, id);
+        return w;
+    };
+    input.click(modal("designer.preview.simulation.override", VGUI_CHECKBOX));
+    require(!vgui_widget_get_checked(modal("designer.preview.simulation.boolean", VGUI_CHECKBOX)),
+        "expected a false draft for the enable field");
+    input.click(modal("designer.preview.simulation.ok", VGUI_BUTTON));
+    input.click(mode);
+    input.click(mode);
+    action("nav.start [start]");
+    keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    action("nav.near [near]");
+    require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
+        "navigating or simulating availability changed the design");
+}
+
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4696,7 +4755,7 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-enum class native_smoke { none, workbench, game_data };
+enum class native_smoke { none, workbench, game_data, navigation };
 
 int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = command::none) {
     const bool workbench_smoke = smoke == native_smoke::workbench;
@@ -4850,18 +4909,23 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         host.draw_all();
         submitted_windows = host.end_frame();
     };
-    if (smoke == native_smoke::game_data) {
+    if (smoke == native_smoke::game_data || smoke == native_smoke::navigation) {
         try {
             advance();
-            exercise_game_data(*win, shell.get(), editor, advance, [&](float seconds) {
-                game_data_step = seconds;
-                advance();
-            }, picker->sandbox);
+            if (smoke == native_smoke::game_data) {
+                exercise_game_data(*win, shell.get(), editor, advance, [&](float seconds) {
+                    game_data_step = seconds;
+                    advance();
+                }, picker->sandbox);
+                std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
+            } else {
+                exercise_navigation(*win, shell.get(), editor, advance, picker->sandbox);
+                std::puts("ui_designer_navigation: default focus, directional overrides, and fallback passed");
+            }
         } catch (...) {
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
     } else if (!workbench_smoke) {
         host.idle_delay_ms = 0; // Wait for SDL events instead of sleeping and polling every 8 ms.
         const auto tick = [&] {
@@ -4986,6 +5050,7 @@ int main(int argc, char** argv) {
         const std::string_view arg = argc == 2 ? argv[1] : "";
         if (arg == "--smoke-test") return run(native_smoke::workbench, {});
         if (arg == "--smoke-game-data") return run(native_smoke::game_data, {});
+        if (arg == "--smoke-navigation") return run(native_smoke::navigation, {});
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
 #ifdef _WIN32
@@ -4997,7 +5062,7 @@ int main(int argc, char** argv) {
         }
 #endif
         if (argc > 2) {
-            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-game-data | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-game-data | --smoke-navigation | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;
         }
         return run(native_smoke::none, argc == 2 ? fs::u8path(argv[1]) : fs::path{});

@@ -419,6 +419,11 @@ void test_hud_delivery() {
     ui::runtime runtime(ctx.get());
     const auto mount_live_hud = [&](const ui::document& doc, bool smooth) {
         check(runtime.mount(doc, 1, {}, &error) && runtime.layout({1720, 720, 1.5f}), "mount delivered HUD");
+        check(runtime.focus_default() && vgui_get_focus(ctx.get()) == runtime.widget("skill1"),
+            "delivered HUD must keep its initial skill focus");
+        check(vgui_focus_navigate(ctx.get(), VGUI_NAV_LEFT) && vgui_get_focus(ctx.get()) == runtime.widget("skill6") &&
+            vgui_focus_navigate(ctx.get(), VGUI_NAV_RIGHT) && vgui_get_focus(ctx.get()) == runtime.widget("skill1"),
+            "delivered HUD must round-trip focus links");
         ui::pixel_rect radar{}, reticle{};
         vgui_widget_get_rect(runtime.widget("minimap"), &radar.x, &radar.y, &radar.width, &radar.height);
         vgui_widget_get_rect(runtime.widget("crosshair"), &reticle.x, &reticle.y, &reticle.width, &reticle.height);

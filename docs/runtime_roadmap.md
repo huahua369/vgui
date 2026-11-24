@@ -113,7 +113,7 @@ hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
 
 ### 5.1 R2-1 core 方向导航（P0，M）
 
-- **API**：`vgui_direction`（UP/DOWN/LEFT/RIGHT）+ `VGUI_API int vgui_focus_navigate(vgui_context* ctx, vgui_direction dir)`；返回 1 表示焦点移动了。
+- **API**：`vgui_nav_direction`（UP/DOWN/LEFT/RIGHT）+ `vgui_focus_navigate(ctx, dir)`；返回 1 表示焦点移动了。
 - **实现**（gui/vgui.cpp，与 vgui_focus_next_impl 同层）：
   - 候选集：全树 `focusable && visible && enabled` 控件的中心点（abs 几何），先 `vgui_ensure_layout` 保证几何有效；枚举方式对齐 vgui_focus_next_impl 的现有做法。
   - 打分：以焦点控件中心为原点，主轴位移 >0 且 |横轴位移| ≤ 主轴位移 ×1.5 的候选入锥；得分 = 主轴位移 + 2×|横轴位移|，最小者胜。
@@ -121,6 +121,8 @@ hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
   - 边界语义：纯几何方向，不做 RTL 特判（几何"左"即视觉左）；list/tree/slider 聚焦时的方向键行为维持现状（进入控件内部导航，见 R2-2 的宿主侧约定）。
   - **不做**：不改核心对方向键的现有绑定（列表/滑杆的方向键已有语义）；`vgui_focus_navigate` 仅供宿主/手柄层显式调用。
 - **验收**：model_test 新增 test_focus_navigate——固定坐标按钮网格断言四方向序列、环绕、跳过 disabled/hidden/0 尺寸控件；RTL 下几何语义不变。
+
+设计稿可在根节点设置 `nav_start`，在控件上设置 `nav_up` / `nav_down` / `nav_left` / `nav_right`，值为当前页的节点 ID。原生手柄方向输入优先采用当前可用的显式目标，其余情况使用原几何算法，不改变 Tab 顺序。宿主也可在首次布局完成后调用 `runtime::focus_default()` 尝试默认焦点；如果已经有焦点或目标不可用，不会抢走焦点。[`game-hud.vgui.json`](../sample/res/game-hud.vgui.json) 示例以 `Q` 为默认焦点，并配置 `Q` 与 `Y` 两端的方向跳转。
 
 ### 5.2 R2-2 SDL_Gamepad 映射（P0，M）
 

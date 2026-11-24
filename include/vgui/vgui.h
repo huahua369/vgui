@@ -2247,9 +2247,10 @@ extern "C" {
 	/* R2-1 directional focus navigation for gamepad / remote hosts: moves
 	 * focus to the focusable widget closest to the focused one in the given
 	 * visual direction (geometric cone test), wrapping around the screen edge
-	 * when the cone is empty.  Purely geometric -- in-widget arrow-key
-	 * behaviour (lists, sliders) is untouched; hosts call this from their own
-	 * input layer.  Returns 1 when focus moved. */
+	 * when the cone is empty. An eligible authored design target takes
+	 * precedence, including a configured start if nothing is focused.
+	 * In-widget arrow-key behaviour (lists, sliders) is untouched; hosts call
+	 * this from their own input layer. Returns 1 when focus moved. */
 	typedef enum vgui_nav_direction {
 		VGUI_NAV_UP = 0,
 		VGUI_NAV_DOWN,

@@ -6,7 +6,7 @@
     "hud": {
       "type": "panel",
       "name": "Arena HUD",
-      "props": {"layout": "absolute"},
+      "props": {"layout": "absolute", "nav_start": "skill1"},
       "children": ["vitals", "status_plate", "minimap", "hotbar", "ult", "crosshair"]
     },
     "vitals": {
@@ -42,22 +42,22 @@
       "children": ["slot1", "slot2", "slot3", "slot4", "slot5", "slot6"]
     },
     "slot1": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill1", "cooldown1"]},
-    "skill1": {"type": "button", "props": {"text": "Q", "width": 56, "height": 36, "action": "hud.skill.1"}},
+    "skill1": {"type": "button", "props": {"text": "Q", "width": 56, "height": 36, "action": "hud.skill.1", "focus_alpha": 1, "nav_left": "skill6"}},
     "cooldown1": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.1.cooldown"}},
     "slot2": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill2", "cooldown2"]},
-    "skill2": {"type": "button", "props": {"text": "W", "width": 56, "height": 36, "action": "hud.skill.2"}},
+    "skill2": {"type": "button", "props": {"text": "W", "width": 56, "height": 36, "action": "hud.skill.2", "focus_alpha": 1}},
     "cooldown2": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.2.cooldown"}},
     "slot3": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill3", "cooldown3"]},
-    "skill3": {"type": "button", "props": {"text": "E", "width": 56, "height": 36, "action": "hud.skill.3"}},
+    "skill3": {"type": "button", "props": {"text": "E", "width": 56, "height": 36, "action": "hud.skill.3", "focus_alpha": 1}},
     "cooldown3": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.3.cooldown"}},
     "slot4": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill4", "cooldown4"]},
-    "skill4": {"type": "button", "props": {"text": "R", "width": 56, "height": 36, "action": "hud.skill.4"}},
+    "skill4": {"type": "button", "props": {"text": "R", "width": 56, "height": 36, "action": "hud.skill.4", "focus_alpha": 1}},
     "cooldown4": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.4.cooldown"}},
     "slot5": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill5", "cooldown5"]},
-    "skill5": {"type": "button", "props": {"text": "T", "width": 56, "height": 36, "action": "hud.skill.5"}},
+    "skill5": {"type": "button", "props": {"text": "T", "width": 56, "height": 36, "action": "hud.skill.5", "focus_alpha": 1}},
     "cooldown5": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.5.cooldown"}},
     "slot6": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill6", "cooldown6"]},
-    "skill6": {"type": "button", "props": {"text": "Y", "width": 56, "height": 36, "action": "hud.skill.6"}},
+    "skill6": {"type": "button", "props": {"text": "Y", "width": 56, "height": 36, "action": "hud.skill.6", "focus_alpha": 1, "nav_right": "skill1"}},
     "cooldown6": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.6.cooldown"}},
     "ult": {"type": "progress", "name": "Ultimate", "props": {
       "anchor_x": "center", "anchor_y": "end", "anchor_safe_area": true, "x": 274, "y": -52, "width": 44, "height": 44,

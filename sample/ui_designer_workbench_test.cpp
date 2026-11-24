@@ -2526,6 +2526,80 @@ void exercise_radio_group_inspector()
         "the radio group field must have a localized Chinese label");
 }
 
+void exercise_navigation_inspector()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "navigation.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const ui::edit nodes[] = {
+        ui::insert_node{"nested", root, {"panel", "Nested", {}, {}}},
+        ui::insert_node{"target", "nested", {"button", "Target title", {{"enabled", false}}, {}}},
+        ui::insert_node{"art", root, {"gradient", "Art", {}, {}}},
+    };
+    check(model.apply(nodes), "could not seed navigation nodes");
+    workbench.bench.select(root);
+    workbench.frame();
+    workbench.click(workbench.widget("__property_search", VGUI_EDIT));
+    check(vgui_input_text(ctx, "nav_"), "could not filter navigation properties");
+    workbench.frame();
+    const auto category = [&] {
+        return std::string_view(vgui_widget_get_text(workbench.widget("category:Navigation", VGUI_BUTTON)));
+    };
+    const auto field = [&](std::string_view key) {
+        return workbench.widget("property:" + std::string(key), VGUI_EDIT);
+    };
+    const auto label = [&](std::string_view key) { return std::string_view(vgui_widget_get_a11y_name(field(key))); };
+    check(category().ends_with("Navigation") && label("nav_start") == "Initial focus" &&
+        label("nav_up") == "Focus up" && label("nav_down") == "Focus down" &&
+        label("nav_left") == "Focus left" && label("nav_right") == "Focus right",
+        "root should display the five English navigation labels together");
+    check(std::string_view(vgui_widget_get_tooltip(field("nav_start"))).find("this page's Outline") != std::string_view::npos,
+        "initial focus tooltip should explain which node IDs to use");
+
+    const auto baseline = model.current();
+    const auto enter = [&](std::string_view key, const char* text) {
+        auto* edit = field(key);
+        workbench.click(edit);
+        check(vgui_get_focus(ctx) == edit, "navigation field did not take text focus");
+        vgui_edit_select_all(edit);
+        check(vgui_input_text(ctx, text), "navigation field did not consume text");
+        workbench.frame();
+    };
+    enter("nav_start", "target");
+    const auto preview = model.current();
+    check(preview.nodes.at(root).props.at("nav_start") == ui::value{std::string("target")} &&
+        model.committed() == baseline, "an exact ID should apply live, even for a disabled target");
+    enter("nav_start", "missing");
+    check(model.current() == preview && model.committed() == baseline &&
+        std::string_view(vgui_widget_get_tooltip(field("nav_start"))).find("not found") != std::string_view::npos,
+        "invalid live input should show an error and leave the last valid preview in place");
+    check(workbench.key(VGUI_KEY_ESCAPE) && model.current() == baseline, "Escape should discard the navigation preview");
+
+    enter("nav_start", "target");
+    check(workbench.key(VGUI_KEY_ENTER) && model.committed() == preview &&
+        model.undo() && model.current() == baseline && model.redo() && model.current() == preview,
+        "Enter should commit focus navigation as a single undoable edit");
+    for (const auto* id : {"nested", "target", "art"}) {
+        workbench.bench.select(id);
+        workbench.frame();
+        check(!find_widget(vgui_root(ctx), "property:nav_start", VGUI_EDIT),
+            "non-root nodes should not show initial focus");
+        check((find_widget(vgui_root(ctx), "property:nav_right", VGUI_EDIT) != nullptr) == (std::string_view(id) != "art"),
+            "the four directional overrides should be available except on decorative gradients");
+    }
+    workbench.bench.select(root);
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(category().ends_with("导航") && label("nav_start") == "初始焦点" &&
+        label("nav_up") == "向上移动焦点" && label("nav_down") == "向下移动焦点" &&
+        label("nav_left") == "向左移动焦点" && label("nav_right") == "向右移动焦点" &&
+        std::string_view(vgui_widget_get_tooltip(field("nav_start"))).find("自动导航") != std::string_view::npos,
+        "Chinese navigation group, labels, and Auto fallback hint should appear on language switch");
+}
+
 void exercise_menu_language()
 {
     using ui::designer_language;
@@ -2861,6 +2935,7 @@ int main()
         exercise_gradient_stop_list();
         exercise_gradient_animation();
         exercise_radio_group_inspector();
+        exercise_navigation_inspector();
         exercise_menu_language();
         exercise_control_search();
         exercise_anchor_inspector();

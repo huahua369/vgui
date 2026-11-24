@@ -338,6 +338,14 @@ void vgui_texture_mark_layout_dirty(vgui_texture* texture);
 // invalidate paint or recordings; transition samples never dispatch events.
 bool vgui_widget_set_progress_value_if_changed(vgui_widget* widget, float value);
 
+// Design navigation links belong to one mounted subtree and do not own widgets.
+// Set with live handles after building the tree.
+void vgui_navigation_set_start(vgui_widget* owner, vgui_widget* target);
+void vgui_navigation_set_direction(vgui_widget* owner, vgui_widget* source,
+	vgui_nav_direction direction, vgui_widget* target);
+// Uses only this subtree's configured start; leaves existing focus alone.
+bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner);
+
 // Bytes per pixel for a vgui_texture_format.  Returns 0 for an unknown format
 // (used by vgui_texture_desc_valid to reject it).  Shared so editor helpers and
 // backends compute strides consistently instead of hard-coding 4.

@@ -28,6 +28,12 @@ constexpr sv cursor_choices[] = {"default", "arrow", "text", "wait", "no", "hand
 constexpr sv tooltip_anchors[] = {"pointer", "widget"};
 constexpr sv focus_choices[] = {"default", "yes", "no"};
 constexpr sv anchors[] = {"start", "center", "end", "stretch"};
+constexpr sv navigation_keys[] = {"nav_start", "nav_up", "nav_down", "nav_left", "nav_right"};
+
+bool is_navigation_property(sv key)
+{
+    return std::ranges::find(navigation_keys, key) != std::end(navigation_keys);
+}
 
 constexpr data_binding_descriptor text_binding{"bind_text", "text", value_type::text};
 constexpr data_binding_descriptor value_binding{"bind_value", "value", value_type::number};
@@ -72,6 +78,10 @@ const property_descriptor common[] = {
     {"input_enabled", "Accept input", value_type::boolean, true},
     {"focusable", "Keyboard focus", value_type::choice, std::string("default"), 0, 0, focus_choices},
     {"focus_alpha", "Focus ring opacity", value_type::number, 1.0, 0, 1},
+    {"nav_up", "Focus up", value_type::text, std::string{}},
+    {"nav_down", "Focus down", value_type::text, std::string{}},
+    {"nav_left", "Focus left", value_type::text, std::string{}},
+    {"nav_right", "Focus right", value_type::text, std::string{}},
     {"cursor", "Mouse cursor", value_type::choice, std::string("default"), 0, 0, cursor_choices},
     {"tooltip", "Tooltip", value_type::text, std::string{}},
     {"tooltip_enabled", "Enable tooltip", value_type::boolean, true},
@@ -92,6 +102,7 @@ const property_descriptor panel[] = {
     {"pad_top", "Top padding", value_type::number, 0.0, 0, max_geometry},
     {"pad_right", "Right padding", value_type::number, 0.0, 0, max_geometry},
     {"pad_bottom", "Bottom padding", value_type::number, 0.0, 0, max_geometry},
+    {"nav_start", "Initial focus", value_type::text, std::string{}},
 };
 constexpr sv font_weights[] = {"default", "regular", "medium", "semi_bold", "bold"};
 constexpr sv font_slants[] = {"default", "normal", "italic", "oblique"};
@@ -217,6 +228,22 @@ bool valid_resource_path(sv path)
         if (end == sv::npos) return true;
         path.remove_prefix(end + 1);
     }
+}
+
+bool check_navigation_target(const document& doc, sv id, sv key, const value& val,
+    const std::string& path, diagnostic* error)
+{
+    if (key == "nav_start" && id != doc.root)
+        return fail(error, path, "initial focus can only be set on the document root");
+    const auto* target = std::get_if<std::string>(&val);
+    if (!target) return fail(error, path, "expected a node ID string");
+    if (target->empty()) return true;
+    if (!is_key(*target)) return fail(error, path, "invalid navigation target ID");
+    if (*target == id) return fail(error, path, "navigation target cannot be the node itself");
+    const auto found = doc.nodes.find(*target);
+    if (found == doc.nodes.end()) return fail(error, path, "navigation target ID not found on this page");
+    // A target may become available at runtime; only decorative gradients can never participate.
+    return found->second.type != "gradient" || fail(error, path, "navigation target cannot be a decorative gradient");
 }
 
 bool check_value(const document& doc, const property_descriptor& desc, const value& val,
@@ -346,6 +373,14 @@ bool apply_one(document& doc, const edit& operation, diagnostic* error)
                         for (const auto& id : ids) {
                             auto item = doc.nodes.at(id);
                             for (auto& child : item.children) child = op.ids.at(child);
+                            if (id == doc.root) item.props.erase("nav_start"); // The copy is nested.
+                            for (const auto key : navigation_keys) {
+                                const auto prop = item.props.find(key);
+                                if (prop == item.props.end()) continue;
+                                if (auto* target = std::get_if<std::string>(&prop->second))
+                                    if (const auto mapped = op.ids.find(*target); mapped != op.ids.end())
+                                        *target = mapped->second;
+                            }
                             doc.nodes.emplace(op.ids.at(id), std::move(item));
                         }
                         insert_child(parent->second, op.ids.at(op.id), op.index);
@@ -359,7 +394,18 @@ bool apply_one(document& doc, const edit& operation, diagnostic* error)
                     if (op.id == doc.root) return fail(error, path, "cannot erase the root");
                     auto& children = find_parent(doc, op.id)->second.children;
                     children.erase(std::find(children.begin(), children.end(), op.id));
-                    for (const auto& id : subtree(doc, op.id)) doc.nodes.erase(id);
+                    auto removed = subtree(doc, op.id);
+                    for (const auto& id : removed) doc.nodes.erase(id);
+                    std::sort(removed.begin(), removed.end());
+                    for (auto& [id, peer] : doc.nodes) {
+                        for (const auto key : navigation_keys) {
+                            const auto prop = peer.props.find(key);
+                            if (prop == peer.props.end()) continue;
+                            const auto* target = std::get_if<std::string>(&prop->second);
+                            if (target && std::binary_search(removed.begin(), removed.end(), *target))
+                                peer.props.erase(prop);
+                        }
+                    }
                 } else if constexpr (std::is_same_v<T, rename_node>) {
                     item.name = op.name;
                 } else {
@@ -561,8 +607,8 @@ const property_descriptor* find_property(sv type, sv key)
 {
     const auto* desc = find_type(type);
     if (!desc) return nullptr;
-    // Decorative gradients expose visibility, but not an enabled binding.
-    if (type == "gradient" && key == enabled_binding.key) return nullptr;
+    // Decorative gradients expose visibility, but not enabled bindings or navigation.
+    if (type == "gradient" && (key == enabled_binding.key || is_navigation_property(key))) return nullptr;
     for (const auto& prop : desc->properties) if (prop.key == key) return &prop;
     for (const auto& prop : common_properties()) if (prop.key == key) return &prop;
     return nullptr;
@@ -698,7 +744,9 @@ bool validate(const document& doc, diagnostic* error)
             const auto prop_path = path + "/props/" + pointer_token(key);
             const auto* prop = find_property(item.type, key);
             if (!prop) return fail(error, prop_path, "unknown property");
-            if (prop->type == value_type::items) {
+            if (is_navigation_property(key)) {
+                if (!check_navigation_target(doc, id, key, val, prop_path, error)) return false;
+            } else if (prop->type == value_type::items) {
                 const auto* source = std::get_if<std::string>(&val);
                 std::string reason;
                 if (!source) return fail(error, prop_path, "expected an item array");

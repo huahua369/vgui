@@ -165,6 +165,11 @@ public:
     // Relayout keeps live edit/focus state; remount restores document values.
     std::optional<layout_snapshot> layout(viewport view);
 
+    // Focus the authored start node after a valid layout of this mount, only
+    // when it is eligible and the context does not already have focus.
+    // Returns false for an unset or unavailable start (no geometric fallback).
+    bool focus_default();
+
     // Tick live value transitions, then advance mounted gradient animations on
     // the host clock, after layout and before drawing. For gradients, mount and
     // layout keep the authored paint and 0 samples the start pose. Hidden or

@@ -515,6 +515,7 @@ static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cach
 
 	vgui_context_add_key_handler(st->ui, on_key, st);
 	if (!layout_hud(st, kInitialWidth, kInitialHeight)) return false;
+	st->design->focus_default();
 	vgui_update(st->ui, 0.0f);
 	return true;
 }

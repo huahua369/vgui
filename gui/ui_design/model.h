@@ -168,11 +168,11 @@ bool read_document(const std::filesystem::path& path, document& out, diagnostic*
 bool write_document(const std::filesystem::path& path, const document& doc, diagnostic* error = nullptr);
 
 struct insert_node { std::string id, parent; node data; std::size_t index = append; };
-struct erase_node { std::string id; }; // Removes the entire subtree.
+struct erase_node { std::string id; }; // Removes the entire subtree and clears incoming navigation links.
 struct move_node { std::string id, parent; std::size_t index = append; }; // Index after removal.
 struct copy_subtree {
     std::string id, parent;
-    std::map<std::string, std::string, std::less<>> ids; // Exact old -> new IDs for the subtree.
+    std::map<std::string, std::string, std::less<>> ids; // Exact old -> new IDs for children and internal navigation links.
     std::size_t index = append;
 };
 struct rename_node { std::string id, name; };

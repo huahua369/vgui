@@ -1304,6 +1304,71 @@ void subtree_transactions()
     check(!s.can_redo(), "all structural edits have been replayed");
 }
 
+void navigation_targets()
+{
+    ui::session s;
+    const auto root = s.current().root;
+    apply(s, {ui::insert_node{"panel", root, {"panel", {}, {}, {}}},
+        ui::insert_node{"source", "panel", {"button", {}, {}, {}}},
+        ui::insert_node{"target.id", root, {"button", "Alias", {{"visible", false}, {"enabled", false}, {"focusable", "no"s}}, {}}},
+        ui::insert_node{"art", root, {"gradient", {}, {}, {}}},
+        ui::set_property{root, "nav_start", ui::value{"target.id"s}},
+        ui::set_property{"source", "nav_up", ui::value{"target.id"s}},
+        ui::set_property{"source", "nav_right", ui::value{"panel"s}},
+        ui::set_property{"source", "nav_down", ui::value{""s}}});
+    const auto page = encode(s.current());
+    check(page.find(R"("nav_start": "target.id")") != std::string::npos &&
+        decode(page) == s.current() && encode(decode(page)) == page,
+        "exact IDs and a blank Auto value round-trip as strings, even when a target is unavailable");
+    for (const auto* id : {"missing", "source", "art", "Alias", "Target.id", " target.id", "other/target.id"})
+        check(reject_edit(s, {ui::set_property{"source", "nav_left", ui::value{std::string(id)}}}, id).path ==
+            "/nodes/source/props/nav_left", "bad directional link did not point at its property");
+    reject_edit(s, {ui::set_property{"source", "nav_left", ui::value{1.0}}}, "node IDs must be strings");
+    reject_edit(s, {ui::set_property{root, "nav_start", ui::value{root}}}, "root cannot target itself");
+    reject_edit(s, {ui::set_property{"panel", "nav_start", ui::value{"source"s}}}, "nested panel cannot set initial focus");
+    reject_edit(s, {ui::set_property{"source", "nav_start", ui::value{"target.id"s}}}, "non-panel cannot set initial focus");
+    reject_edit(s, {ui::set_property{"art", "nav_right", ui::value{"source"s}}}, "gradient cannot author navigation links");
+    check(reject_json(json_document(R"({
+        "root": {"type":"panel", "children":["panel"]},
+        "panel": {"type":"panel", "props":{"nav_start":""}}
+    })"), "initial focus is root-only even when explicitly blank in JSON").path == "/nodes/panel/props/nav_start",
+        "nested initial focus must fail at its authored property");
+}
+
+void navigation_transactions()
+{
+    ui::session s;
+    const auto root = s.current().root;
+    apply(s, {ui::insert_node{"group", root, {"panel", {}, {}, {}}},
+        ui::insert_node{"a", "group", {"button", {}, {{"nav_down", "b"s}, {"nav_right", "outside"s}}, {}}},
+        ui::insert_node{"b", "group", {"button", {}, {{"nav_up", "a"s}}, {}}},
+        ui::insert_node{"outside", root, {"button", {}, {{"nav_left", "group"s}, {"nav_up", "b"s}}, {}}},
+        ui::set_property{root, "nav_start", ui::value{"a"s}}});
+    const auto before = s.current();
+    apply(s, {ui::copy_subtree{"group", root, {{"group", "copy"}, {"a", "copy_a"}, {"b", "copy_b"}}}});
+    const auto copied = s.current();
+    check(copied.nodes.at("copy_a").props.at("nav_down") == ui::value{"copy_b"s} &&
+        copied.nodes.at("copy_b").props.at("nav_up") == ui::value{"copy_a"s} &&
+        copied.nodes.at("copy_a").props.at("nav_right") == ui::value{"outside"s} &&
+        copied.nodes.at(root).props == before.nodes.at(root).props &&
+        copied.nodes.at("outside") == before.nodes.at("outside") &&
+        copied.nodes.at("a") == before.nodes.at("a"),
+        "copy remaps links between new nodes without retargeting originals or links outside the copy");
+
+    reject_edit(s, {ui::erase_node{"group"}, ui::erase_node{"missing"}}, "failed batch must not remove incoming links");
+    apply(s, {ui::erase_node{"group"}});
+    auto expected = copied;
+    auto& children = expected.nodes.at(root).children;
+    children.erase(children.begin());
+    for (const auto* id : {"group", "a", "b"}) expected.nodes.erase(id);
+    expected.nodes.at(root).props.erase("nav_start");
+    expected.nodes.at("outside").props.clear();
+    check(s.current() == expected, "erase clears root initial focus and incoming links to the removed panel and descendants only");
+    check(s.undo() && s.current() == copied && s.undo() && s.current() == before &&
+        s.redo() && s.current() == copied && s.redo() && s.current() == expected,
+        "copy and delete each undo/redo atomically with all affected navigation links");
+}
+
 void savepoint_history()
 {
     const temp_dir tmp;
@@ -1417,6 +1482,8 @@ int main()
         {"live cancellation and redo", live_cancellation},
         {"ordinary operations during live edits", live_ordinary_operations},
         {"subtree transactions", subtree_transactions},
+        {"navigation targets and round trip", navigation_targets},
+        {"navigation subtree transactions", navigation_transactions},
         {"savepoint history", savepoint_history},
         {"failed file operations", failed_file_operations},
     };

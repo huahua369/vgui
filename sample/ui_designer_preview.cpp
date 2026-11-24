@@ -1571,6 +1571,7 @@ struct designer_preview::impl {
     vgpu_device_t* device = nullptr;
     vgpu_ctx_t* renderer = nullptr;
     bool has_document = false, remount = true, is_mounted = false, run = false;
+    bool start_focus_requested = false;
     animation_span timing;
     animation_view playback;
     bool sample_requested = false;
@@ -2048,6 +2049,7 @@ struct designer_preview::impl {
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
         run = view.running;
+        start_focus_requested = false; // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
         playback = view.animation;
         if (timeline) {
@@ -2111,6 +2113,7 @@ struct designer_preview::impl {
         simulation_editor.close();
         blur();
         run = value;
+        start_focus_requested = run;
         playback = {};
         sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
@@ -2653,6 +2656,12 @@ struct designer_preview::impl {
             auto next = mounted->layout(active_viewport());
             if (!next) { cancel_canvas_edit(); return; }
             frame = std::move(next);
+        }
+        if (std::exchange(start_focus_requested, false) && frame && canvas_visible() &&
+            !vgui_modal_active(shell) && !vgui_popup_active(shell) && !vgui_context_get_open_menu(shell) &&
+            mounted->focus_default()) {
+            vgui_set_focus(shell, canvas);
+            if (auto* window = SDL_GetKeyboardFocus()) run_window = SDL_GetWindowID(window);
         }
         // Data transitions keep their own clock when the gradient playhead is
         // paused or scrubbed. Only changed progress paint wakes the canvas.
@@ -3242,7 +3251,19 @@ struct designer_preview::impl {
         else {
             const int key = input_key(e.key.key);
             const bool down = e.type == SDL_EVENT_KEY_DOWN;
-            handled = vgui_input_key(ui.get(), key, down, input_mods(e.key.mod)) != 0;
+            const int mods = input_mods(e.key.mod);
+            handled = vgui_input_key(ui.get(), key, down, mods) != 0;
+            // Edits, lists and sliders consume their own arrows first. The
+            // remaining arrows exercise the same directional path as gamepads.
+            if (!handled && down && !mods) {
+                switch (key) {
+                case VGUI_KEY_UP: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_UP) != 0; break;
+                case VGUI_KEY_DOWN: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_DOWN) != 0; break;
+                case VGUI_KEY_LEFT: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_LEFT) != 0; break;
+                case VGUI_KEY_RIGHT: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_RIGHT) != 0; break;
+                default: break;
+                }
+            }
             if (!handled && down && key == VGUI_KEY_ESCAPE) { blur(); return true; }
             // Don't let the shell's shortcuts act on edits inside the preview.
             handled = handled || vgui_context_wants_text_input(ui.get());
