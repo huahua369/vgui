@@ -53,6 +53,7 @@ public:
     void set_page_active(bool active);
     std::string_view selection() const;
     void select(std::string id);
+    void locate_in_outline(std::string id);
     const type_descriptor* dragged_control(const vgui_drag_payload*) const;
     bool insert_control(std::string_view type, std::string_view parent,
         std::optional<std::pair<double, double>> position);

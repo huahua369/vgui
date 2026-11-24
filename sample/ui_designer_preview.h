@@ -90,6 +90,7 @@ public:
     void refresh_language();
     vgui_widget* widget() const;
     void set_control_drop_target(const vgui_drop_target&);
+    void set_binding_locator(std::function<void(std::string)> locate);
     // The result borrows the mounted snapshot; use before the next sync/render.
     std::optional<canvas_control_drop> control_drop_at(const document&, std::uint64_t revision,
         const type_descriptor&, float x, float y) const;

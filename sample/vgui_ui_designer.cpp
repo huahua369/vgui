@@ -583,6 +583,9 @@ private:
             [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
             [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_,
             [this, id](auto revision, const auto& edits) { return commit_keyframes(id, revision, edits); });
+        page.preview->set_binding_locator([this, id](std::string node) {
+            if (active_ == id) workbench_.locate_in_outline(std::move(node));
+        });
         page.preview->set_control_drop_target({
             [](void* user, const vgui_drag_payload* payload) -> int {
                 auto& self = *static_cast<designer*>(user);
@@ -3302,11 +3305,13 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
     };
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","children":["caption","meter","button"]},
+        "root":{"type":"panel","children":["caption","meter","button","group"]},
         "caption":{"type":"label","props":{"x":20,"y":20,"width":280,"height":32,"text":"Design",
             "bind_text":"hud.caption","bind_visible":"hud.ready"}},
-        "meter":{"type":"progress","props":{"x":20,"y":64,"width":180,"height":22,"value":0.5,"bind_value":"hud.hp"}},
-        "button":{"type":"button","props":{"x":20,"y":96,"width":98,"height":32,"text":"Ready","bind_enabled":"hud.ready"}}
+        "meter":{"type":"progress","props":{"x":20,"y":64,"width":180,"height":22,"value":0.5,"step":0.5,"bind_value":"hud.hp"}},
+        "button":{"type":"button","props":{"x":20,"y":96,"width":98,"height":32,"text":"Ready","bind_enabled":"hud.ready"}},
+        "group":{"type":"panel","props":{"y":140,"width":220,"height":40},"children":["mirror"]},
+        "mirror":{"type":"progress","props":{"x":20,"width":180,"height":22,"max_value":0.125,"value":0.0625,"bind_value":"hud.hp"}}
     }})", doc), "decode the data binding fixture");
     const auto source = sandbox / "game-data-source.vgui.json", second = sandbox / "game-data-second.vgui.json";
     require(ui::write_document(source, doc) && ui::write_document(second, doc) && editor.open(source), "open fixture");
@@ -3323,8 +3328,8 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
         return w;
     };
     const auto click = [&](const char* suffix, vgui_widget_kind kind = VGUI_BUTTON) { input.click(field(suffix, kind)); };
-    const auto type = [&](const char* value) {
-        auto* edit = field(".value", VGUI_EDIT);
+    const auto type = [&](const char* value, const char* suffix = ".value") {
+        auto* edit = field(suffix, VGUI_EDIT);
         input.click(edit);
         vgui_edit_select_all(edit);
         SDL_Event text{};
@@ -3333,6 +3338,13 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
         text.text.text = value;
         input.push(text);
         frame();
+    };
+    const auto read = [&](const char* suffix) {
+        return std::string(vgui_edit_get_text(field(suffix, VGUI_EDIT)));
+    };
+    const auto first_row = [&](vgui_widget* list) {
+        const auto r = input.rect(list);
+        input.click_at(list, {r.x + r.width * .5f, r.y + 12 * vgui_context_get_ui_scale(shell)});
     };
     const auto state = [&](std::string_view id) -> ui::node_layout {
         const auto* snapshot = preview.snapshot();
@@ -3351,29 +3363,72 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
     click(".override", VGUI_CHECKBOX);
     type("Pilot ready");
     require(preview.node_text("caption") == "Design", "editing a draft updated the canvas before confirmation");
+    click(".debug_tab");
+    const auto label = [&](const char* suffix) { return std::string(vgui_widget_get_text(field(suffix, VGUI_LABEL))); };
+    require(label(".source").ends_with(editor.strings().text("preview.simulation.source_design", "Design values")) &&
+        read(".published") == "—" && read(".authored") == "\"Design\"" && read(".effective") == "\"Design\"",
+        "field debug showed the unapplied text instead of the design value");
+    click(".edit_tab");
+    require(read(".value") == "Pilot ready", "switching back from field debug lost the draft");
     click(".ok");
     require(!vgui_modal_active(shell) && preview.node_text("caption") == "Pilot ready", "confirmation did not set live text");
 
     input.click(simulate);
     list = field(".fields", VGUI_LIST);
-    const auto r = input.rect(list);
-    input.click_at(list, {r.x + r.width * .5f, r.y + 12 * vgui_context_get_ui_scale(shell)});
+    first_row(list);
     keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
     require(vgui_list_is_selected(list, vgui_list_get_item_at(list, 1)), "could not select the numeric field");
     click(".override", VGUI_CHECKBOX);
     type("invalid");
     click(".ok");
     require(vgui_modal_active(shell) && *vgui_widget_get_text(field(".error", VGUI_LABEL)), "invalid numeric data was applied");
-    type("0.25");
-    input.click_at(list, {r.x + r.width * .5f, r.y + 12 * vgui_context_get_ui_scale(shell)});
+    type("0.375");
+    first_row(list);
     keys.key(SDLK_END, SDL_SCANCODE_END);
     require(vgui_list_is_selected(list, vgui_list_get_item_at(list, 2)), "could not select the boolean field");
     click(".override", VGUI_CHECKBOX);
     if (vgui_widget_get_checked(field(".boolean", VGUI_CHECKBOX))) click(".boolean", VGUI_CHECKBOX);
     click(".ok");
     const auto simulation = preview.capture_view().simulation;
-    require(simulation.at("hud.hp") == ui::value{.25} && simulation.at("hud.ready") == ui::value{false} &&
+    require(simulation.at("hud.hp") == ui::value{.375} && simulation.at("hud.ready") == ui::value{false} &&
         !state("caption").visible && !state("button").enabled, "numeric or boolean overrides did not reach the preview");
+
+    auto* dock = find_widget(vgui_root(shell), "designer.dock", VGUI_DOCK);
+    auto* tree = find_widget(vgui_root(shell), "designer.outliner", VGUI_TREE);
+    require(dock && tree, "missing dock or outline for the locate test");
+    const auto root = vgui_tree_get_root(tree, 0);
+    const auto group = vgui_tree_get_child(tree, root, 3);
+    const auto mirror = vgui_tree_get_child(tree, group, 0);
+    require(mirror && !vgui_tree_get_item_expanded(tree, group), "the target's ancestor must start collapsed");
+    vgui_dock_activate(dock, vgui_dock_find(dock, "controls"));
+    vgui_dock_set_side_collapsed(dock, VGUI_DOCK_LEFT, 1);
+    frame();
+    input.click(simulate);
+    type("Unconfirmed");
+    click(".debug_tab");
+    require(read(".published") == "\"Pilot ready\"" && read(".effective") == "\"Pilot ready\"",
+        "field debug did not distinguish an applied text value from a new draft");
+    first_row(field(".fields", VGUI_LIST));
+    keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    auto* targets = field(".targets", VGUI_LIST);
+    require(vgui_list_get_count(targets) == 2 && std::string_view(vgui_list_get_item_text(targets, vgui_list_get_item_at(targets, 0))) == "meter" &&
+        read(".published") == "0.375" && read(".authored") == "0.5" && read(".effective") == "0.5",
+        "progress step was not reflected in the first binding target");
+    first_row(targets);
+    keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    require(read(".authored") == "0.0625" && read(".effective") == "0.125",
+        "the second target did not show its own design and clamped actual value");
+    type("Not editable", ".effective");
+    require(read(".effective") == "0.125", "the field diagnostics are editable");
+    click(".locate");
+    require(!vgui_modal_active(shell) && preview.running() && editor.selection() == "mirror" &&
+        vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == vgui_dock_find(dock, "structure") &&
+        !vgui_dock_get_side_collapsed(dock, VGUI_DOCK_LEFT) && vgui_tree_get_item_expanded(tree, group) &&
+        vgui_tree_is_selected(tree, mirror) && vgui_tree_get_cursor(tree) == mirror,
+        "locating did not reveal and select the nested target in the outline");
+    require(preview.node_text("caption") == "Pilot ready" && preview.capture_view().simulation == simulation &&
+        editor.history().revision() == revision && editor.history().current() == doc && !editor.history().can_undo(),
+        "locating applied a draft or changed the document");
 
     input.click(simulate);
     click(".reset_all");

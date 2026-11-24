@@ -50,13 +50,16 @@ void test_game_data() {
     ui::document doc;
     ui::diagnostic error;
     check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","props":{"layout":"column"},"children":["title","gauge","mirror","button"]},
+        "root":{"type":"panel","props":{"layout":"column","bind_visible":"hud.frame","bind_enabled":"hud.frame"},
+            "children":["title","gauge","mirror","button","tabs"]},
         "title":{"type":"label","props":{"height":20,"text":"Design","text_key":"hud.title",
             "bind_text":"hud.caption","bind_visible":"hud.ready"}},
         "gauge":{"type":"progress","props":{"width":100,"height":20,"min_value":0,"max_value":50,"step":5,
-            "value":10,"bind_value":"hud.amount"}},
+            "value":11,"bind_value":"hud.amount"}},
         "mirror":{"type":"progress","props":{"height":20,"max_value":10,"value":3,"bind_value":"hud.amount"}},
-        "button":{"type":"button","props":{"text":"Continue","height":20,"bind_text":"hud.caption","bind_enabled":"hud.ready"}}
+        "button":{"type":"button","props":{"text":"Continue","height":20,"bind_text":"hud.caption","bind_enabled":"hud.ready"}},
+        "tabs":{"type":"tabview","props":{"height":30},"children":["page"]},
+        "page":{"type":"panel","props":{"bind_visible":"hud.dormant"}}
     }})", doc, &error), "decode the game data fixture");
     const auto original = doc;
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
@@ -65,6 +68,7 @@ void test_game_data() {
     vgui_context_set_language(ctx.get(), "en");
     ui::runtime rt(ctx.get());
     check(!rt.set_data("hud.caption", ui::value{"ignored"s}), "an unmounted instance cannot accept data");
+    check(!std::as_const(rt).inspect_data("hud.caption"), "an unmounted instance has no field snapshot");
     check(rt.mount(doc, 12, {}, &error), "mount the game data fixture");
     auto* title = rt.widget("title");
     auto* gauge = rt.widget("gauge");
@@ -75,6 +79,24 @@ void test_game_data() {
     const auto initial = rt.layout({300, 120, 1});
     check(initial && near(node(*initial, "gauge").rect_px.y, 20.f), "initial column layout");
     const auto paint = vgui_context_paint_revision(ctx.get());
+    check(!rt.inspect_data("hud.unknown") && !rt.inspect_data("hud.dormant"),
+        "unknown keys and tab-managed page visibility must not appear as active fields");
+    const auto default_amount = rt.inspect_data("hud.amount");
+    check(default_amount && default_amount->type == ui::value_type::number && !default_amount->published &&
+        default_amount->targets.size() == 2 && default_amount->targets[0].node == "gauge" &&
+        default_amount->targets[0].property == "value" && default_amount->targets[0].authored == ui::value{11.} &&
+        default_amount->targets[0].effective == ui::value{10.} && default_amount->targets[1].node == "mirror" &&
+        default_amount->targets[1].authored == ui::value{3.} && default_amount->targets[1].effective == ui::value{3.},
+        "inspection must distinguish each raw authored number from its native fallback");
+    const auto default_caption = rt.inspect_data("hud.caption");
+    check(default_caption && default_caption->type == ui::value_type::text && !default_caption->published &&
+        default_caption->targets.size() == 2 && default_caption->targets[0].node == "title" &&
+        default_caption->targets[0].property == "text" && default_caption->targets[0].authored == ui::value{"Design"s} &&
+        default_caption->targets[0].effective == ui::value{"Localized title"s} &&
+        default_caption->targets[0].text_key == "hud.title" && default_caption->targets[1].node == "button" &&
+        default_caption->targets[1].effective == ui::value{"Continue"s} && default_caption->targets[1].text_key.empty() &&
+        vgui_context_paint_revision(ctx.get()) == paint,
+        "text inspection must keep mount order and report resolved fallback text without dirtying paint");
     check(!rt.set_data("hud.unknown", ui::value{true}) &&
         !rt.set_data("hud.amount", ui::value{"12"s}) &&
         !rt.set_data("hud.amount", ui::value{std::numeric_limits<double>::infinity()}) &&
@@ -97,11 +119,28 @@ void test_game_data() {
         !vgui_widget_get_enabled(button) && !vgui_get_focus(ctx.get()) &&
         vgui_context_paint_revision(ctx.get()) != before_hide, "boolean field should hide and disable real widgets");
     const auto after_hide = vgui_context_paint_revision(ctx.get());
+    const auto live_amount = rt.inspect_data("hud.amount");
+    const auto live_caption = rt.inspect_data("hud.caption");
+    const auto live_ready = rt.inspect_data("hud.ready");
+    check(live_amount && live_amount->published == ui::value{13.} && live_amount->targets.size() == 2 &&
+        live_amount->targets[0].effective == ui::value{static_cast<double>(vgui_widget_get_value(gauge))} &&
+        live_amount->targets[1].effective == ui::value{static_cast<double>(vgui_widget_get_value(mirror))},
+        "inspection must separate the publication from each target's quantized or clamped number");
+    check(live_caption && live_caption->published == ui::value{"Live caption"s} && live_caption->targets.size() == 2 &&
+        live_caption->targets[0].effective == ui::value{"Live caption"s} &&
+        live_caption->targets[0].text_key == "hud.title" && live_caption->targets[1].effective == ui::value{"Live caption"s},
+        "a live text snapshot must preserve the authored localization key");
+    check(live_ready && live_ready->type == ui::value_type::boolean && live_ready->published == ui::value{false} &&
+        live_ready->targets.size() == 2 && live_ready->targets[0].property == "visible" &&
+        live_ready->targets[0].effective == ui::value{false} && live_ready->targets[1].property == "enabled" &&
+        live_ready->targets[1].effective == ui::value{false} && vgui_context_paint_revision(ctx.get()) == after_hide,
+        "boolean inspection must report current properties without dirtying paint");
     check(rt.set_data("hud.ready", ui::value{false}) && rt.set_data("hud.amount", ui::value{13.}) &&
         rt.set_data("hud.caption", ui::value{"Live caption"s}) &&
         vgui_context_paint_revision(ctx.get()) == after_hide, "repeated data must not submit new paint");
     const auto resized = rt.layout({500, 180, 1.5f});
-    check(resized && resized->revision == 12 && near(node(*resized, "gauge").rect_px.y, 0.f) &&
+    check(resized && resized->revision == 12 && resized->serial == initial->serial + 1 &&
+        near(node(*resized, "gauge").rect_px.y, 0.f) &&
         !node(*resized, "title").visible && !node(*resized, "button").enabled && rt.widget("gauge") == gauge &&
         near(vgui_widget_get_value(gauge), 15.f) && doc == original,
         "resize must keep live values and handles; invisible nodes must not reserve layout space");
@@ -112,9 +151,27 @@ void test_game_data() {
         std::string_view(vgui_widget_get_text(title)) == "Lokalisierter Titel" &&
         std::string_view(vgui_widget_get_text_key(title)) == "hud.title" &&
         vgui_widget_get_visible(title) && vgui_widget_get_enabled(button), "clear must restore per-node values and localization");
+    const auto cleared_caption = rt.inspect_data("hud.caption");
+    check(cleared_caption && !cleared_caption->published && cleared_caption->targets.size() == 2 &&
+        cleared_caption->targets[0].effective == ui::value{"Lokalisierter Titel"s},
+        "clearing must remove the publication and expose the current localization");
+    check(rt.set_data("hud.frame", ui::value{false}), "hide and disable the shared ancestor");
+    const auto cleared_ready = rt.inspect_data("hud.ready");
+    check(cleared_ready && !cleared_ready->published && cleared_ready->targets.size() == 2 &&
+        cleared_ready->targets[0].effective == ui::value{true} && cleared_ready->targets[1].effective == ui::value{true},
+        "inspection must report local visibility and enabled flags, not the ancestor's");
     check(rt.set_data("hud.amount", ui::value{42.}) && rt.mount(doc, 13, {}, &error) &&
         vgui_widget_get_value(rt.widget("gauge")) == 10 && doc == original,
         "mount must not carry live game data into the new tree");
+    const auto remounted_amount = rt.inspect_data("hud.amount");
+    check(remounted_amount && !remounted_amount->published && remounted_amount->targets.size() == 2 &&
+        remounted_amount->targets[0].effective == ui::value{10.}, "remount must reset the inspected field");
+    rt.unmount();
+    check(!rt.inspect_data("hud.amount") && live_caption->published == ui::value{"Live caption"s} &&
+        live_caption->targets[0].node == "title" && live_caption->targets[0].property == "text" &&
+        live_caption->targets[0].authored == ui::value{"Design"s} &&
+        live_caption->targets[0].effective == ui::value{"Live caption"s} && live_caption->targets[0].text_key == "hud.title",
+        "a saved inspection must own its values and identity after changes and unmount");
 }
 
 void test_anchored_layout() {

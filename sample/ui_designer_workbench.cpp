@@ -225,6 +225,7 @@ struct designer_workbench::impl {
     std::uint64_t next_generated_id = 1;
     std::uint64_t displayed_revision = 0;
     std::string selected, outlined_selection, move_source;
+    bool reveal_selection = false;
     status_message message = localized_text{"workbench.status.ready", "Ready"};
     std::optional<information_dialog> pending_dialog;
     inspector_state inspected;
@@ -1201,11 +1202,19 @@ struct designer_workbench::impl {
         sync_inspector = true;
     }
 
+    void locate_in_outline(std::string id)
+    {
+        if (!page_active || !history.current().nodes.contains(id)) return;
+        select(std::move(id));
+        reveal_selection = true;
+    }
+
     void reset_document_transients()
     {
         live.reset(); // The outgoing edit must be finished before swapping the session.
         replaced = sync_inspector = true;
         move_source.clear();
+        reveal_selection = false;
         field_errors.clear();
         message = localized_text{"workbench.status.ready", "Ready"};
 
@@ -2024,13 +2033,24 @@ struct designer_workbench::impl {
             vgui_widget_set_enabled(icon_region_button, button && doc.resources.contains(
                 std::get<std::string>(property_value(item->second, *find_property("button", "icon")))));
         }
-        if (selection_changed) {
+        const bool reveal = std::exchange(reveal_selection, false);
+        if (reveal) {
+            const auto panel = vgui_dock_find(dock, "structure");
+            if (!vgui_dock_is_open(dock, panel)) vgui_dock_restore(dock, panel);
+            const auto zone = vgui_dock_get_zone(dock, panel);
+            if (zone == VGUI_DOCK_LEFT || zone == VGUI_DOCK_RIGHT)
+                vgui_dock_set_side_collapsed(dock, zone, 0);
+            vgui_dock_activate(dock, panel);
+        }
+        if (selection_changed || reveal) {
             auto* tree = outliner->widget();
             const auto item = outline.at(selected).item;
-            if (!vgui_tree_is_selected(tree, item)) {
+            if (reveal || !vgui_tree_is_selected(tree, item)) {
                 vgui_tree_expand_to(tree, item);
-                vgui_tree_clear_selection(tree);
-                vgui_tree_select(tree, item, 1);
+                if (!vgui_tree_is_selected(tree, item)) {
+                    vgui_tree_clear_selection(tree);
+                    vgui_tree_select(tree, item, 1);
+                }
                 vgui_tree_set_cursor(tree, item);
                 vgui_tree_scroll_to_node(tree, item, VGUI_SCROLL_ALIGN_NEAREST);
             }
@@ -2074,6 +2094,7 @@ void designer_workbench::set_dock_widths(designer_dock_widths widths) { impl_->s
 void designer_workbench::set_page_active(bool active) { impl_->set_page_active(active); }
 std::string_view designer_workbench::selection() const { return impl_->selected; }
 void designer_workbench::select(std::string id) { impl_->select(std::move(id)); }
+void designer_workbench::locate_in_outline(std::string id) { impl_->locate_in_outline(std::move(id)); }
 const type_descriptor* designer_workbench::dragged_control(const vgui_drag_payload* payload) const {
     return impl_->dragged_control(payload);
 }

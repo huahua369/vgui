@@ -485,10 +485,18 @@ struct runtime::mounted_tree {
     };
     struct data_target {
         vgui_widget* widget;
+        std::string_view node; // Points to the stable entry ID in this mount.
         std::string_view property; // Points into the schema.
         value fallback;
         std::string text_key;
         float min = 0, max = 0;
+
+        value current_value() const {
+            if (property == "text") return std::string(vgui_widget_get_text(widget));
+            if (property == "value") return static_cast<double>(vgui_widget_get_value(widget));
+            if (property == "visible") return vgui_widget_get_visible(widget) != 0;
+            return vgui_widget_get_enabled(widget) != 0;
+        }
 
         void apply(const std::optional<value>& data) const {
             const auto& effective = data ? *data : fallback;
@@ -577,6 +585,19 @@ bool runtime::set_data(std::string_view field, std::optional<value> data) {
     slot.live = std::move(data);
     for (const auto& target : slot.targets) target.apply(slot.live);
     return true;
+}
+
+std::optional<data_field_snapshot> runtime::inspect_data(std::string_view field) const {
+    if (!tree_) return std::nullopt;
+    const auto it = tree_->fields.find(field);
+    if (it == tree_->fields.end()) return std::nullopt;
+    const auto& slot = it->second;
+    data_field_snapshot result{slot.type, slot.live, {}};
+    result.targets.reserve(slot.targets.size());
+    for (const auto& target : slot.targets)
+        result.targets.push_back({std::string(target.node), target.property, target.fallback,
+            target.current_value(), target.text_key});
+    return result;
 }
 
 namespace {
@@ -794,7 +815,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             const auto& field = std::get<std::string>(it->second);
             if (field.empty() || !data_binding_applies(binding, n, parent_node)) continue;
             auto& slot = next->fields.try_emplace(field, mounted_tree::data_field{binding.type, {}, {}}).first->second;
-            mounted_tree::data_target target{w, binding.target, property(n, binding.target), {}};
+            mounted_tree::data_target target{w, e.id, binding.target, property(n, binding.target), {}};
             if (binding.target == "text") target.text_key = p.text("text_key");
             else if (binding.target == "value") {
                 target.min = p.number("min_value");

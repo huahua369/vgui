@@ -88,6 +88,19 @@ struct layout_snapshot {
     std::vector<node_layout> nodes; // Preorder in document child order; no handles.
 };
 
+struct data_target_snapshot {
+    std::string node;
+    std::string_view property; // Refers to the static binding schema.
+    value authored, effective; // Design fallback and current widget-local value.
+    std::string text_key; // Authored localization key, if any.
+};
+
+struct data_field_snapshot {
+    value_type type;
+    std::optional<value> published;
+    std::vector<data_target_snapshot> targets; // Active bindings in mount order.
+};
+
 // Timing for an absolute playhead across all the animations in a document.
 // A gradient in keyframes mode contributes timing even with no keys.
 struct animation_span {
@@ -131,6 +144,11 @@ public:
     // Same-value updates are no-ops. Layout keeps the values; a remount
     // starts fresh. Neither publishing nor clearing changes the document.
     bool set_data(std::string_view field, std::optional<value> data);
+
+    // Read a field from the current mount without changing widgets or layout.
+    // Empty when unmounted or the field has no active bindings. The snapshot
+    // owns its data (apart from static schema names) and survives remounting.
+    std::optional<data_field_snapshot> inspect_data(std::string_view field) const;
 
     // Applies DPI + viewport then runs VGUI layout (no drawing). Empty if not
     // mounted or the view is invalid. A zero root width/height fills that axis

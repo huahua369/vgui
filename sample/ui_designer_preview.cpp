@@ -1031,6 +1031,26 @@ namespace {
 
 using simulation_values = decltype(designer_preview::view_state::simulation);
 
+vgui_widget* simulation_control(vgui_widget* parent, vgui_widget_kind kind, std::string_view suffix) {
+    auto* w = vgui_widget_add(parent, kind, nullptr);
+    const auto id = "designer.preview.simulation." + std::string(suffix);
+    vgui_widget_set_id(w, id.c_str());
+    if (kind == VGUI_LABEL) vgui_widget_set_text_align(w, 0, .5f);
+    return w;
+}
+
+vgui_widget* simulation_group(vgui_widget* parent, std::string_view suffix, vgui_layout_kind layout) {
+    auto* w = simulation_control(parent, VGUI_PANEL, suffix);
+    vgui_widget_set_layout(w, layout);
+    vgui_widget_set_align_items(w, VGUI_ALIGN_STRETCH);
+    vgui_widget_set_size(w, 0, 0);
+    vgui_widget_set_padding(w, 0, 0, 0, 0);
+    vgui_widget_set_gap(w, 6);
+    vgui_widget_set_background(w, 0);
+    vgui_widget_set_border(w, 0, 0);
+    return w;
+}
+
 struct simulation_dialog {
     vgui_context* shell;
     const designer_strings& strings;
@@ -1039,9 +1059,17 @@ struct simulation_dialog {
     std::vector<const data_field_map::value_type*> rows;
     simulation_values draft;
     std::function<void(simulation_values)> apply;
+    const runtime* mounted = nullptr;
+    std::function<void(std::string)> locate_node;
+    std::optional<data_field_snapshot> inspected;
+    bool debug = false, light = false;
     vgui_widget *panel = nullptr, *title = nullptr, *hint = nullptr, *list = nullptr, *type_label = nullptr;
     vgui_widget *override_value = nullptr, *edit = nullptr, *check = nullptr, *error = nullptr;
     vgui_widget *reset = nullptr, *ok = nullptr, *cancel = nullptr;
+    vgui_widget *edit_tab = nullptr, *debug_tab = nullptr, *edit_view = nullptr, *debug_view = nullptr;
+    vgui_widget *source = nullptr, *targets = nullptr, *target_title = nullptr, *locate = nullptr;
+    struct readout { vgui_widget *label, *edit; };
+    readout published{}, authored{}, effective{};
     vgui_item_id selected = 0;
     std::optional<value_type> invalid_type;
 
@@ -1063,12 +1091,86 @@ struct simulation_dialog {
         vgui_widget_set_text(error, message);
     }
 
+    const char* target_property(std::string_view property) const {
+        if (property == "text") return strings.text("preview.simulation.target_text", "Text");
+        if (property == "value") return strings.text("preview.simulation.target_value", "Progress");
+        if (property == "visible") return strings.text("preview.simulation.target_visible", "Visible");
+        return strings.text("preview.simulation.target_enabled", "Enabled");
+    }
+
+    std::string format_value(const value& data, bool native = false) const {
+        if (const auto* flag = std::get_if<bool>(&data)) {
+            return *flag ? strings.text("preview.simulation.value_true", "True") :
+                strings.text("preview.simulation.value_false", "False");
+        }
+        if (const auto* number = std::get_if<double>(&data)) {
+            char buffer[64];
+            const auto result = native ? std::to_chars(buffer, buffer + sizeof(buffer), static_cast<float>(*number)) :
+                std::to_chars(buffer, buffer + sizeof(buffer), *number);
+            return std::string(buffer, result.ptr);
+        }
+        // Keep line breaks legible in the single-line, copyable value cells.
+        std::string result = "\"";
+        for (const char c : std::get<std::string>(data)) {
+            switch (c) {
+            case '\r': result += "\\r"; break;
+            case '\n': result += "\\n"; break;
+            case '\t': result += "\\t"; break;
+            case '"': case '\\': result += '\\'; [[fallthrough]];
+            default: result += c;
+            }
+        }
+        return result + '"';
+    }
+
+    const data_target_snapshot* current_target() const {
+        const auto id = vgui_list_get_selected(targets, 0);
+        return inspected && id && id <= inspected->targets.size() ? &inspected->targets[id - 1] : nullptr;
+    }
+
+    void show_target() const {
+        const auto* target = current_target();
+        std::string design = target ? format_value(target->authored) : "—";
+        if (target && !target->text_key.empty()) design += "  [text_key: " + target->text_key + ']';
+        vgui_edit_set_text(authored.edit, design.c_str());
+        vgui_edit_set_text(effective.edit, target ? format_value(target->effective, true).c_str() : "—");
+        vgui_widget_set_enabled(locate, target && locate_node);
+    }
+
+    void show_inspection() const {
+        std::string description;
+        if (inspected) {
+            description = type_name(inspected->type);
+            description += " · ";
+            description += inspected->published ? strings.text("preview.simulation.source_mock", "Simulated value") :
+                strings.text("preview.simulation.source_design", "Design values");
+        }
+        vgui_widget_set_text(source, description.c_str());
+        vgui_edit_set_text(published.edit,
+            inspected && inspected->published ? format_value(*inspected->published).c_str() : "—");
+        show_target();
+    }
+
+    void inspect_selected() {
+        vgui_list_clear_selection(targets);
+        inspected = selected ? mounted->inspect_data(rows[selected - 1]->first) : std::nullopt;
+        vgui_list_source_changed(targets);
+        if (inspected && !inspected->targets.empty()) {
+            vgui_list_select(targets, 1, 1);
+            vgui_list_set_cursor(targets, 1);
+            vgui_list_scroll_to_item(targets, 1, VGUI_SCROLL_ALIGN_TOP);
+        }
+        show_inspection();
+    }
+
     void refresh_language() const {
         if (!panel) return;
         const auto* caption = strings.text("preview.simulation.title", "Simulate Data");
         vgui_widget_set_text(title, caption);
         vgui_widget_set_a11y_name(panel, caption);
-        vgui_widget_set_text(hint, strings.text("preview.simulation.hint", "Overrides are temporary and apply only in Run."));
+        vgui_widget_set_text(hint, debug ?
+            strings.text("preview.simulation.debug_hint", "Read-only. Shows applied values, not unconfirmed edits.") :
+            strings.text("preview.simulation.hint", "Overrides are temporary and apply only in Run."));
         vgui_widget_set_a11y_name(list, strings.text("preview.simulation.fields", "Data fields"));
         vgui_list_set_empty_text(list, strings.text("preview.simulation.empty", "This page has no bound data fields."));
         vgui_widget_set_text(override_value, strings.text("preview.simulation.override", "Use simulated value"));
@@ -1076,7 +1178,24 @@ struct simulation_dialog {
         vgui_widget_set_text(check, strings.text("preview.simulation.true", "True (unchecked = false)"));
         vgui_widget_set_text(reset, strings.text("preview.simulation.reset_all", "Use All Design Values"));
         vgui_widget_set_text(ok, strings.text("common.ok", "OK"));
-        vgui_widget_set_text(cancel, strings.text("common.cancel", "Cancel"));
+        vgui_widget_set_text(cancel, debug ? strings.text("preview.simulation.close", "Close") :
+            strings.text("common.cancel", "Cancel"));
+        vgui_widget_set_text(edit_tab, strings.text("preview.simulation.edit_tab", "Simulated Values"));
+        vgui_widget_set_text(debug_tab, strings.text("preview.simulation.debug_tab", "Field Debug"));
+        const auto* heading = strings.text("preview.simulation.targets", "Binding Targets");
+        vgui_widget_set_text(target_title, heading);
+        vgui_widget_set_a11y_name(targets, heading);
+        vgui_list_set_empty_text(targets, strings.text("preview.simulation.no_targets", "No binding targets."));
+        vgui_widget_set_text(locate, strings.text("preview.simulation.locate", "Locate in Outline"));
+        const auto label = [](readout cell, const char* caption) {
+            vgui_widget_set_text(cell.label, caption);
+            vgui_widget_set_a11y_name(cell.edit, caption);
+        };
+        label(published, strings.text("preview.simulation.published", "Applied Field Value"));
+        label(authored, strings.text("preview.simulation.authored", "Design Property"));
+        label(effective, strings.text("preview.simulation.effective", "Actual Property"));
+        vgui_list_source_rows_changed(targets, 0, vgui_list_get_count(targets));
+        if (debug) show_inspection();
         if (selected) label_type();
         refresh_error();
     }
@@ -1133,6 +1252,33 @@ struct simulation_dialog {
         }
     }
 
+    void set_debug(bool enabled) {
+        if (debug == enabled) return;
+        if (!debug) save_row();
+        debug = enabled;
+        vgui_widget_set_visible(edit_view, !debug);
+        vgui_widget_set_visible(debug_view, debug);
+        vgui_widget_set_visible(reset, !debug);
+        vgui_widget_set_visible(ok, !debug);
+        vgui_widget_set_visible(locate, debug);
+        const auto active = light ? 0xFFCFE2FAu : 0xFF3A668Eu;
+        vgui_widget_set_background(edit_tab, debug ? 0 : active);
+        vgui_widget_set_background(debug_tab, debug ? active : 0);
+        if (debug) inspect_selected();
+        else show_row();
+        refresh_language();
+    }
+
+    void jump_to_target() {
+        if (!debug || !locate_node) return;
+        const auto* target = current_target();
+        if (!target) return;
+        auto node = target->node;
+        auto jump = std::move(locate_node);
+        close(); // Dismiss without applying any draft.
+        jump(std::move(node));
+    }
+
     void confirm() {
         save_row();
         const auto invalid = std::find_if(draft.begin(), draft.end(), [this](const auto& item) {
@@ -1172,38 +1318,46 @@ struct simulation_dialog {
         rows.clear();
         draft.clear();
         apply = {};
+        mounted = nullptr;
+        locate_node = {};
+        inspected.reset();
+        debug = false;
     }
 
     void open(const data_field_map& fields, const simulation_values& initial, bool light,
+            const runtime& running, std::function<void(std::string)> on_locate,
             std::function<void(simulation_values)> on_apply) {
         if (vgui_modal_active(shell)) return;
         rows.reserve(fields.size());
         for (const auto& field : fields) rows.push_back(&field);
         draft = initial;
         apply = std::move(on_apply);
+        mounted = &running;
+        locate_node = std::move(on_locate);
+        this->light = light;
         panel = vgui_widget_create(shell, VGUI_PANEL, nullptr);
         vgui_widget_set_id(panel, "designer.preview.simulation.dialog");
         vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
         vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
-        vgui_widget_set_size(panel, 500, 366);
+        vgui_widget_set_size(panel, 700, 428);
         vgui_widget_set_gap(panel, 6);
         vgui_widget_set_padding(panel, 12, 10, 12, 10);
-        const auto add = [](vgui_widget* parent, vgui_widget_kind kind, std::string_view suffix) {
-            auto* w = vgui_widget_add(parent, kind, nullptr);
-            const auto id = "designer.preview.simulation." + std::string(suffix);
-            vgui_widget_set_id(w, id.c_str());
-            if (kind == VGUI_LABEL) vgui_widget_set_text_align(w, 0, .5f);
-            return w;
-        };
+        const auto add = simulation_control;
         title = add(panel, VGUI_LABEL, "title");
         vgui_widget_set_font_size(title, 18);
         vgui_widget_set_font_weight(title, VGUI_FONT_WEIGHT_SEMI_BOLD);
         hint = add(panel, VGUI_LABEL, "hint");
-        list = add(panel, VGUI_LIST, "fields");
-        vgui_widget_set_size(list, 0, 56);
-        vgui_widget_set_grow(list, 1);
+        auto* tabs = simulation_group(panel, "tabs", VGUI_LAYOUT_ROW);
+        edit_tab = add(tabs, VGUI_BUTTON, "edit_tab");
+        debug_tab = add(tabs, VGUI_BUTTON, "debug_tab");
+        vgui_widget_set_background(edit_tab, light ? 0xFFCFE2FAu : 0xFF3A668Eu);
+        auto* body = simulation_group(panel, "body", VGUI_LAYOUT_ROW);
+        vgui_widget_set_grow(body, 1);
+        vgui_widget_set_gap(body, 12);
+        list = add(body, VGUI_LIST, "fields");
+        vgui_widget_set_size(list, 204, 0);
         vgui_widget_set_enabled(list, !rows.empty());
-        const vgui_row_source source{
+        const vgui_row_source field_source{
             .row_count = [](void* user) { return static_cast<int>(static_cast<simulation_dialog*>(user)->rows.size()); },
             .row_info = [](void* user, int index, const char** text, const char** detail, void**) {
                 *text = static_cast<simulation_dialog*>(user)->rows[index]->first.c_str();
@@ -1217,16 +1371,19 @@ struct simulation_dialog {
             .user = this,
             .row_tooltip = [](void* user, int index) { return static_cast<simulation_dialog*>(user)->rows[index]->first.c_str(); }
         };
-        vgui_list_set_row_source(list, &source);
+        vgui_list_set_row_source(list, &field_source);
         vgui_list_set_selection_mode(list, VGUI_SELECTION_SINGLE);
         vgui_list_on_select(list, [](vgui_widget*, vgui_item_id id, int on, void* user) {
             auto& self = *static_cast<simulation_dialog*>(user);
             if (!on || id == self.selected) return;
-            self.save_row();
+            if (!self.debug) self.save_row();
             self.selected = id;
-            self.show_row();
+            if (self.debug) self.inspect_selected();
+            else self.show_row();
         }, this);
-        override_value = add(panel, VGUI_CHECKBOX, "override");
+        edit_view = simulation_group(body, "edit_view", VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_grow(edit_view, 1);
+        override_value = add(edit_view, VGUI_CHECKBOX, "override");
         vgui_widget_on_value(override_value, [](vgui_widget* w, float, void* user) {
             auto& self = *static_cast<simulation_dialog*>(user);
             if (!self.selected) return;
@@ -1237,21 +1394,64 @@ struct simulation_dialog {
             else self.draft.insert_or_assign(key, std::string{});
             self.show_row();
         }, this);
-        type_label = add(panel, VGUI_LABEL, "type");
-        edit = add(panel, VGUI_EDIT, "value");
-        check = add(panel, VGUI_CHECKBOX, "boolean");
-        error = add(panel, VGUI_LABEL, "error");
+        type_label = add(edit_view, VGUI_LABEL, "type");
+        edit = add(edit_view, VGUI_EDIT, "value");
+        vgui_widget_set_size(edit, 0, 30);
+        check = add(edit_view, VGUI_CHECKBOX, "boolean");
+        error = add(edit_view, VGUI_LABEL, "error");
         vgui_widget_set_size(error, 0, 20);
         vgui_widget_set_font_size(error, 12);
         vgui_widget_set_text_color(error, light ? 0xFFA52C22u : 0xFFFF9A8Du);
-        auto* actions = add(panel, VGUI_PANEL, "actions");
-        vgui_widget_set_layout(actions, VGUI_LAYOUT_ROW);
+        debug_view = simulation_group(body, "debug_view", VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_grow(debug_view, 1);
+        vgui_widget_set_visible(debug_view, 0);
+        const auto cell = [&](std::string_view suffix) -> readout {
+            auto* row = simulation_group(debug_view, std::string(suffix) + "_row", VGUI_LAYOUT_ROW);
+            auto* label = add(row, VGUI_LABEL, std::string(suffix) + "_label");
+            vgui_widget_set_size(label, 145, 0);
+            auto* edit = add(row, VGUI_EDIT, suffix);
+            vgui_widget_set_size(edit, 0, 26);
+            vgui_widget_set_grow(edit, 1);
+            vgui_edit_set_readonly(edit, 1);
+            return {label, edit};
+        };
+        source = add(debug_view, VGUI_LABEL, "source");
+        published = cell("published");
+        target_title = add(debug_view, VGUI_LABEL, "target_title");
+        targets = add(debug_view, VGUI_LIST, "targets");
+        vgui_widget_set_size(targets, 0, 54);
+        vgui_widget_set_grow(targets, 1);
+        const vgui_row_source target_source{
+            .row_count = [](void* user) {
+                const auto& data = static_cast<simulation_dialog*>(user)->inspected;
+                return data ? static_cast<int>(data->targets.size()) : 0;
+            },
+            .row_info = [](void* user, int index, const char** text, const char** detail, void**) {
+                const auto& self = *static_cast<simulation_dialog*>(user);
+                const auto& target = self.inspected->targets[index];
+                *text = target.node.c_str();
+                *detail = self.target_property(target.property);
+                return 1;
+            },
+            .row_id = field_source.row_id,
+            .row_id_index = [](void* user, vgui_item_id id) {
+                const auto& data = static_cast<simulation_dialog*>(user)->inspected;
+                return data && id && id <= data->targets.size() ? static_cast<int>(id - 1) : -1;
+            },
+            .user = this,
+        };
+        vgui_list_set_row_source(targets, &target_source);
+        vgui_list_set_selection_mode(targets, VGUI_SELECTION_SINGLE);
+        vgui_list_on_select(targets, [](vgui_widget*, vgui_item_id, int selected, void* user) {
+            if (selected) static_cast<simulation_dialog*>(user)->show_target();
+        }, this);
+        authored = cell("authored");
+        effective = cell("effective");
+        auto* actions = simulation_group(panel, "actions", VGUI_LAYOUT_ROW);
         vgui_widget_set_justify(actions, VGUI_JUSTIFY_END);
-        vgui_widget_set_padding(actions, 0, 0, 0, 0);
-        vgui_widget_set_gap(actions, 8);
-        vgui_widget_set_background(actions, 0);
-        vgui_widget_set_border(actions, 0, 0);
         reset = add(actions, VGUI_BUTTON, "reset_all");
+        locate = add(actions, VGUI_BUTTON, "locate");
+        vgui_widget_set_visible(locate, 0);
         cancel = add(actions, VGUI_BUTTON, "cancel");
         ok = add(actions, VGUI_BUTTON, "ok");
         const auto on_click = [](vgui_widget* w, const vgui_event* e, void* user) {
@@ -1259,12 +1459,14 @@ struct simulation_dialog {
             auto& self = *static_cast<simulation_dialog*>(user);
             if (w == self.ok) self.confirm();
             else if (w == self.cancel) self.close();
+            else if (w == self.edit_tab || w == self.debug_tab) self.set_debug(w == self.debug_tab);
+            else if (w == self.locate) self.jump_to_target();
             else {
                 self.draft.clear();
                 self.show_row();
             }
         };
-        for (auto* button : {reset, cancel, ok}) vgui_widget_on_event(button, on_click, this);
+        for (auto* button : {reset, cancel, ok, edit_tab, debug_tab, locate}) vgui_widget_on_event(button, on_click, this);
         if (rows.empty()) {
             for (auto* w : {override_value, type_label, edit, check}) vgui_widget_set_visible(w, 0);
             vgui_widget_set_enabled(reset, 0);
@@ -1309,7 +1511,7 @@ struct designer_preview::impl {
     vgui_widget* timeline_toggle = nullptr;
     std::unique_ptr<designer_gradient_timeline> timeline;
     bool timeline_open = false;
-    std::function<void(std::string)> select, notify;
+    std::function<void(std::string)> select, notify, locate_node;
     std::function<void(geometry_edit)> commit_geometry;
     std::map<std::string, geometry_source, std::less<>> geometry_sources;
     struct geometry_drag {
@@ -1767,19 +1969,20 @@ struct designer_preview::impl {
     void open_simulation_dialog() {
         if (!run || !is_mounted || remount || vgui_modal_active(shell)) return;
         blur();
-        simulation_editor.open(fields, simulation, theme == designer_theme::light, [this](simulation_values next) {
-            if (next == simulation || !run || !is_mounted || remount) return;
-            for (const auto& [key, data] : simulation)
-                if (!next.contains(key)) mounted->set_data(key, std::nullopt);
-            for (const auto& [key, data] : next) {
-                const auto old = simulation.find(key);
-                if (old == simulation.end() || old->second != data) mounted->set_data(key, data);
-            }
-            simulation = std::move(next);
-            dirty = true;
-            update_toolbar();
-            mark_canvas();
-        });
+        simulation_editor.open(fields, simulation, theme == designer_theme::light, *mounted, locate_node,
+            [this](simulation_values next) {
+                if (next == simulation || !run || !is_mounted || remount) return;
+                for (const auto& [key, data] : simulation)
+                    if (!next.contains(key)) mounted->set_data(key, std::nullopt);
+                for (const auto& [key, data] : next) {
+                    const auto old = simulation.find(key);
+                    if (old == simulation.end() || old->second != data) mounted->set_data(key, data);
+                }
+                simulation = std::move(next);
+                dirty = true;
+                update_toolbar();
+                mark_canvas();
+            });
     }
 
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
@@ -3065,6 +3268,9 @@ void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 void designer_preview::set_control_drop_target(const vgui_drop_target& target) {
     vgui_widget_set_drop_target(p_->canvas, &target);
+}
+void designer_preview::set_binding_locator(std::function<void(std::string)> locate) {
+    p_->locate_node = std::move(locate);
 }
 std::optional<canvas_control_drop> designer_preview::control_drop_at(const document& doc, std::uint64_t rev,
     const type_descriptor& type, float x, float y) const {
