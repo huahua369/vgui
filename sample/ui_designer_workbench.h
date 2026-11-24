@@ -9,6 +9,7 @@
 
 struct vgui_context;
 struct vgui_drag_payload;
+struct vgui_texture;
 struct vgui_widget;
 
 namespace vgui::ui_design {
@@ -20,6 +21,9 @@ enum class designer_language;
 enum class designer_theme;
 struct designer_dock_widths;
 enum class designer_view_action { design, run, desktop, tablet, phone, fit, actual };
+
+// Creates a texture from the embedded editor icon atlas. Caller releases the reference.
+vgui_texture* create_hand_tool_icon(vgui_context*);
 
 struct designer_commands {
     std::function<void()> new_document, open_document, save_document, save_as, export_package;

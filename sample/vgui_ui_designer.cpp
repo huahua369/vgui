@@ -3405,7 +3405,14 @@ void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
         auto* pointer = find_widget(preview.widget(), pointer_id, VGUI_BUTTON);
         auto* grip = find_widget(preview.widget(), hand_id, VGUI_BUTTON);
         require(pointer && grip && std::string_view(vgui_widget_get_text(pointer)) == "↖" &&
-            std::string_view(vgui_widget_get_text(grip)) == "☞", "missing Pointer or Hand toolbar button/icon");
+            std::string_view(vgui_widget_get_text(grip)).empty(), "missing Pointer or icon-only Hand tool");
+        std::unique_ptr<vgui_widget, decltype(&vgui_widget_destroy)> empty(vgui_widget_create(shell, VGUI_BUTTON, nullptr), vgui_widget_destroy);
+        vgui_widget_set_padding(empty.get(), 6, 2, 6, 2);
+        float hand_width = 0, empty_width = 0;
+        vgui_widget_get_intrinsic_size(grip, &hand_width, nullptr);
+        vgui_widget_get_intrinsic_size(empty.get(), &empty_width, nullptr);
+        require(std::abs(hand_width - empty_width - std::round(16 * vgui_context_get_ui_scale(shell))) < .01f,
+            "Hand tool must measure with its image even without an emoji font");
         // Ordinary VGUI buttons tint the checked state even when not hovered.
         require(preview.capture_view().hand_tool == hand && (vgui_widget_get_checked(pointer) != 0) == !hand &&
             (vgui_widget_get_checked(grip) != 0) == hand, "toolbar does not show the active canvas tool");

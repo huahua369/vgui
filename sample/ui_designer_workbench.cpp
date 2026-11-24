@@ -91,15 +91,21 @@ constexpr std::size_t control_icon_bytes = control_icon_size * control_icon_size
 constexpr unsigned char control_icon_rgba[] = {
 #include "ui_designer_control_rgba.inc"
 };
-static_assert(sizeof(control_icon_rgba) == std::size(control_icon_types) * control_icon_bytes);
+constexpr auto hand_tool_icon_index = std::size(control_icon_types);
+static_assert(sizeof(control_icon_rgba) == (hand_tool_icon_index + 1) * control_icon_bytes);
+
+vgui_texture* create_icon_tile(vgui_context* ui, std::size_t index)
+{
+    const vgui_texture_desc desc{control_icon_size, control_icon_size, 0, VGUI_TEXTURE_FORMAT_RGBA8,
+        control_icon_rgba + index * control_icon_bytes};
+    return vgui_texture_create(ui, &desc);
+}
 
 icon_texture make_control_icon(vgui_context* ui, std::string_view type)
 {
     const auto found = std::ranges::find(control_icon_types, type);
     if (found == std::end(control_icon_types)) return {nullptr, vgui_texture_destroy};
-    const auto offset = static_cast<std::size_t>(found - std::begin(control_icon_types)) * control_icon_bytes;
-    const vgui_texture_desc desc{control_icon_size, control_icon_size, 0, VGUI_TEXTURE_FORMAT_RGBA8, control_icon_rgba + offset};
-    return {vgui_texture_create(ui, &desc), vgui_texture_destroy};
+    return {create_icon_tile(ui, static_cast<std::size_t>(found - std::begin(control_icon_types))), vgui_texture_destroy};
 }
 
 // A small antialiased white mask keeps the icons independent of platform fonts.
@@ -172,6 +178,11 @@ void update_text(vgui_widget* widget, const std::string& text)
     if (text != vgui_widget_get_text(widget)) vgui_widget_set_text(widget, text.c_str());
 }
 } // namespace
+
+vgui_texture* create_hand_tool_icon(vgui_context* ui)
+{
+    return create_icon_tile(ui, hand_tool_icon_index);
+}
 
 struct designer_workbench::impl {
     struct outline_row {

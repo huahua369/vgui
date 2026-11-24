@@ -1,6 +1,7 @@
 #include "ui_designer_preview.h"
 
 #include "ui_designer_font_file.h"
+#include "ui_designer_workbench.h"
 
 #include <vgui/backend/vgui_render_target.h>
 #include <vgui/editor/color_picker.h>
@@ -1874,7 +1875,10 @@ struct designer_preview::impl {
         pointer_tool = button(toolbar, "designer.preview.pointer");
         hand_tool_button = button(toolbar, "designer.preview.hand");
         vgui_widget_set_text(pointer_tool, "↖");
-        vgui_widget_set_text(hand_tool_button, "☞");
+        // The bundled fonts have no 👆 glyph; draw the embedded Twemoji tile instead.
+        const image_ptr hand_icon(create_hand_tool_icon(shell), vgui_texture_destroy);
+        vgui_widget_set_padding(hand_tool_button, 6, 2, 6, 2);
+        vgui_button_set_icon(hand_tool_button, hand_icon.get(), 16, 16, VGUI_BUTTON_ICON_LEFT);
         for (auto* tool : {pointer_tool, hand_tool_button}) {
             vgui_widget_set_min_size(tool, 28, 0);
             vgui_widget_set_a11y_role(tool, VGUI_A11Y_ROLE_TOGGLE);

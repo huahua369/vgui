@@ -15,6 +15,8 @@ CODEPOINTS = (
     "1f4e6", "1f3f7", "1f532", "2328", "1f5bc", "1f308", "2611", "1f518", "1f51b",
     "1f39a", "1f4ca", "2796", "1f4cb", "1f333", "1f4dc", "1f5c2", "2194", "1f4d1", "1f9e9",
 )
+# The view toolbar's hand icon follows the palette tiles.
+HAND_CODEPOINT = "1f446"
 
 
 def pixels(codepoint):
@@ -31,5 +33,5 @@ def pixels(codepoint):
 
 if __name__ == "__main__":
     with ThreadPoolExecutor(max_workers=6) as pool:
-        atlas = b"".join(pool.map(pixels, CODEPOINTS))
+        atlas = b"".join(pool.map(pixels, (*CODEPOINTS, HAND_CODEPOINT)))
     Path(__file__).with_name("control-palette.rgba").write_bytes(atlas)
