@@ -607,6 +607,7 @@ extern "C" {
 		vgui_color tooltip_bg;		/* fallback: menu_bg */
 		vgui_color tooltip_border;	/* fallback: menu_border */
 		vgui_color tooltip_text;	/* fallback: text */
+		vgui_color tooltip_shadow;	/* optional drop shadow; 0 disables it */
 		/* Modal, dialog and toast colours.  A zero value selects a
 		 * backwards-compatible fallback as documented in
 		 * vgui_context_set_theme(). */
