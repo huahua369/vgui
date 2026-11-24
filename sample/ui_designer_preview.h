@@ -119,6 +119,7 @@ public:
         std::optional<viewport> custom_viewport; // Absent when using a preset.
         safe_area_insets safe_area;
         std::map<std::string, value, std::less<>> simulation; // Page-local Run overrides, never serialized.
+        bool hand_tool = false; // Page-local canvas input mode, never serialized.
     };
 
     view_state capture_view() const;

@@ -3394,6 +3394,164 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     frame();
 }
 
+void exercise_view_tools(os_window& win, vgui_context* shell, designer& editor,
+                         const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native view tools: " + std::string(message));
+    };
+    constexpr auto pointer_id = "designer.preview.pointer", hand_id = "designer.preview.hand";
+    const auto expect_tool = [&](bool hand) {
+        auto& preview = editor.preview();
+        auto* pointer = find_widget(preview.widget(), pointer_id, VGUI_BUTTON);
+        auto* grip = find_widget(preview.widget(), hand_id, VGUI_BUTTON);
+        require(pointer && grip && std::string_view(vgui_widget_get_text(pointer)) == "↖" &&
+            std::string_view(vgui_widget_get_text(grip)) == "☞", "missing Pointer or Hand toolbar button/icon");
+        // Ordinary VGUI buttons tint the checked state even when not hovered.
+        require(preview.capture_view().hand_tool == hand && (vgui_widget_get_checked(pointer) != 0) == !hand &&
+            (vgui_widget_get_checked(grip) != 0) == hand, "toolbar does not show the active canvas tool");
+    };
+
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).children = {"trigger", "entry"};
+    doc.nodes.emplace("trigger", ui::node{"button", {}, {{"x", 510.}, {"y", 276.}, {"width", 230.}, {"height", 68.},
+        {"text", std::string("Trigger")}, {"action", std::string("view.trigger")}}, {}});
+    doc.nodes.emplace("entry", ui::node{"edit", {}, {{"x", 510.}, {"y", 376.}, {"width", 230.}, {"height", 52.}}, {}});
+    const auto file = sandbox / "preview-view-tools.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the view tools fixture");
+    frame();
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    auto* canvas = input.widget("designer.preview.canvas");
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(status != nullptr, "missing workbench status");
+    const auto revision = editor.history().revision();
+    const auto unchanged_document = [&] {
+        const auto& history = editor.history();
+        require(history.revision() == revision && history.current() == doc &&
+            !history.dirty() && !history.can_undo() && !history.can_redo(), "canvas tools changed the document or its history");
+    };
+    const auto board = [&] {
+        const auto r = preview.artboard_rect_px();
+        require(r.has_value(), "artboard must be presented");
+        return *r;
+    };
+    const auto center = [&](std::string_view id) {
+        const auto r = board();
+        const auto* layout = preview.snapshot();
+        require(layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing presented layout");
+        const auto node = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+        require(node != layout->nodes.end() && node->visible, "fixture object is not visible");
+        const auto& bounds = node->visible_px;
+        const glm::vec2 p = glm::round(glm::vec2{r.x + (bounds.x + bounds.width / 2) * r.width / layout->pixel_width,
+            r.y + (bounds.y + bounds.height / 2) * r.height / layout->pixel_height});
+        require(vgui_hit_test(shell, p.x, p.y) == canvas, "fixture object center is not on the canvas");
+        return p;
+    };
+    const auto expect_pan = [&](const ui::designer_preview::view_state& view, ui::pixel_rect r, glm::vec2 shift) {
+        const auto now = preview.capture_view();
+        const auto b = board();
+        const auto scale = vgui_context_get_ui_scale(shell);
+        require(std::abs(now.pan_x - view.pan_x - shift.x / scale) < .01f &&
+            std::abs(now.pan_y - view.pan_y - shift.y / scale) < .01f &&
+            std::abs(b.x - r.x - shift.x) <= 1.f && std::abs(b.y - r.y - shift.y) <= 1.f &&
+            b.width == r.width && b.height == r.height && now.fit == view.fit && now.zoom == view.zoom,
+            "drag did not just translate the artboard by the SDL pointer delta");
+    };
+
+    require(!preview.running(), "expected to start in Design");
+    expect_tool(false);
+    input.click_at(canvas, center("entry"));
+    require(editor.selection() == "entry", "default Pointer did not select the object");
+    input.click(hand_id);
+    expect_tool(true);
+    const auto initial_view = preview.capture_view();
+    const auto initial_board = board();
+    const auto delta = glm::round(glm::vec2{initial_board.width / 24, -initial_board.height / 24});
+    const auto start = center("trigger");
+    input.button(true, start);
+    input.motion(start, start + delta);
+    frame();
+    expect_pan(initial_view, initial_board, delta);
+    require(editor.selection() == "entry", "Design Hand drag selected the object under it");
+    unchanged_document();
+    input.button(false, start + delta);
+    input.motion(start + delta, start, 0);
+    frame();
+    expect_pan(initial_view, initial_board, delta);
+    expect_tool(true);
+
+    input.click_at(canvas, center("trigger"), SDL_BUTTON_RIGHT);
+    expect_tool(false);
+    require(editor.selection() == "entry", "right click leaving Hand selected the object");
+    const auto middle = center("trigger");
+    input.button(true, middle, SDL_BUTTON_MIDDLE);
+    input.motion(middle, middle - delta, SDL_BUTTON_MMASK);
+    input.button(false, middle - delta, SDL_BUTTON_MIDDLE);
+    frame();
+    expect_pan(initial_view, initial_board, {});
+    require(editor.selection() == "entry", "middle-button pan selected the object");
+    input.click_at(canvas, center("trigger"));
+    require(editor.selection() == "trigger", "click after leaving Hand did not restore Design selection");
+    unchanged_document();
+
+    input.click("designer.preview.mode");
+    require(preview.running(), "toolbar did not enter Run mode");
+    input.click(hand_id);
+    expect_tool(true);
+    const std::string quiet = vgui_widget_get_text(status);
+    const auto no_runtime_input = [&] {
+        require(quiet == vgui_widget_get_text(status) && !SDL_TextInputActive(win.window) &&
+            vgui_get_focus(shell) != canvas, "Hand input reached a runtime button or edit");
+    };
+    input.click_at(canvas, center("trigger"));
+    input.click_at(canvas, center("entry"));
+    no_runtime_input();
+    const auto run_view = preview.capture_view();
+    const auto run_board = board();
+    const auto at = center("trigger");
+    input.button(true, at);
+    input.motion(at, at + delta);
+    frame();
+    expect_pan(run_view, run_board, delta);
+    no_runtime_input();
+
+    input.button(true, at + delta, SDL_BUTTON_RIGHT);
+    frame();
+    expect_tool(false);
+    input.motion(at + delta, at, SDL_BUTTON_LMASK | SDL_BUTTON_RMASK);
+    input.button(false, at, SDL_BUTTON_RIGHT);
+    input.button(false, at);
+    frame();
+    expect_pan(run_view, run_board, delta);
+    no_runtime_input();
+    input.click_at(canvas, center("entry"));
+    require(SDL_TextInputActive(win.window), "right-click exit did not restore Run edit focus");
+
+    input.click(hand_id);
+    expect_tool(true);
+    input.click(pointer_id);
+    expect_tool(false);
+    const auto trigger = center("trigger");
+    input.button(true, trigger);
+    frame();
+    require(quiet == vgui_widget_get_text(status), "runtime button activated on press instead of release");
+    input.button(false, trigger);
+    frame();
+    require(std::string_view(vgui_widget_get_text(status)).ends_with("view.trigger [trigger]"),
+        "Pointer did not restore runtime button action on release");
+    unchanged_document();
+
+    input.click(hand_id);
+    require(editor.open(other), "activate the other page");
+    frame();
+    expect_tool(false);
+    require(editor.open(file), "return to the Hand fixture");
+    frame();
+    expect_tool(true);
+    editor.request(command::close);
+    frame();
+}
+
 void exercise_custom_viewport(os_window& win, vgui_context* shell, designer& editor,
                               const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other) {
     const auto require = [](bool passed, std::string_view message) {
@@ -5312,6 +5470,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             exercise_options(*win, shell.get(), editor, settings, advance);
             exercise_control_drag(*win, shell.get(), editor, advance, picker->sandbox, open_path);
             exercise_custom_viewport(*win, shell.get(), editor, advance, picker->sandbox, open_path);
+            exercise_view_tools(*win, shell.get(), editor, advance, picker->sandbox, open_path);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();
@@ -5331,7 +5490,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, icon and four-state region picking, geometry, control palette drag, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
+        std::puts("ui_designer_native: rendering, input, view tools, image buttons, icon and four-state region picking, geometry, control palette drag, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
     }
     app.wait_gpu();
     return 0;

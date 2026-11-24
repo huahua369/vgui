@@ -1748,6 +1748,7 @@ struct designer_preview::impl {
     vgui_widget *panel = nullptr, *toolbar = nullptr, *canvas = nullptr, *status = nullptr, *zoom_text = nullptr;
     vgui_widget *transport = nullptr, *play = nullptr, *restart = nullptr, *scrubber = nullptr, *time_text = nullptr;
     std::array<vgui_widget*, 3> presets{};
+    vgui_widget *pointer_tool = nullptr, *hand_tool_button = nullptr;
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
     vgui_widget *viewport_button = nullptr, *viewport_dialog = nullptr, *viewport_error = nullptr;
     std::array<vgui_widget*, 7> viewport_fields{};
@@ -1827,7 +1828,10 @@ struct designer_preview::impl {
     float zoom = 1;
     point pan{};
     SDL_WindowID pointer_window = 0, run_window = 0, ime_window = 0;
-    bool owns_text_input = false, dragging = false, runtime_hover = false;
+    bool owns_text_input = false, hand_tool = false, runtime_hover = false;
+    Uint8 pan_button = 0;
+    SDL_WindowID hand_release_window = 0;
+    SDL_MouseButtonFlags hand_releases = 0; // Consume releases for presses owned by the Hand tool, even after switching.
     unsigned pressed = 0;
     int focus_listener = 0;
     point drag_last{};
@@ -1867,6 +1871,14 @@ struct designer_preview::impl {
             vgui_widget_on_event(w, toolbar_event, this);
             return w;
         };
+        pointer_tool = button(toolbar, "designer.preview.pointer");
+        hand_tool_button = button(toolbar, "designer.preview.hand");
+        vgui_widget_set_text(pointer_tool, "↖");
+        vgui_widget_set_text(hand_tool_button, "☞");
+        for (auto* tool : {pointer_tool, hand_tool_button}) {
+            vgui_widget_set_min_size(tool, 28, 0);
+            vgui_widget_set_a11y_role(tool, VGUI_A11Y_ROLE_TOGGLE);
+        }
         presets = {button(toolbar, "designer.preview.desktop", "1280 x 720"),
             button(toolbar, "designer.preview.tablet", "768 x 1024"),
             button(toolbar, "designer.preview.phone", "390 x 844")};
@@ -1946,6 +1958,11 @@ struct designer_preview::impl {
         vgui_widget_set_text(presets[0], strings.text("preview.desktop", "Desktop"));
         vgui_widget_set_text(presets[1], strings.text("preview.tablet", "Tablet"));
         vgui_widget_set_text(presets[2], strings.text("preview.phone", "Phone"));
+        vgui_widget_set_a11y_name(pointer_tool, strings.text("preview.tool.pointer", "Pointer"));
+        vgui_widget_set_tooltip(pointer_tool, strings.text("preview.tool.pointer.tooltip", "Select and edit in Design; interact with controls in Run"));
+        vgui_widget_set_a11y_name(hand_tool_button, strings.text("preview.tool.hand", "Hand"));
+        vgui_widget_set_tooltip(hand_tool_button, strings.text("preview.tool.hand.tooltip",
+            "Left-drag to pan; right-click the canvas to return to Pointer; wheel to zoom"));
         vgui_widget_set_text(viewport_button, viewport_text(strings, "preview.viewport.button", "Viewport…", "视口…"));
         vgui_widget_set_text(zoom_out, strings.text("preview.zoom_out", "-"));
         vgui_widget_set_tooltip(zoom_out, strings.text("preview.zoom_out.tooltip", "Zoom out"));
@@ -1995,6 +2012,8 @@ struct designer_preview::impl {
             if (render_error) {
                 message = strings.text("preview.status.gpu_error_prefix", "Preview GPU: ");
                 message += *render_error;
+            } else if (hand_tool) {
+                message = strings.text("preview.status.hand_controls", "Left-drag: pan  |  Right-click: return to Pointer  |  Wheel: zoom");
             } else {
                 message = strings.text("preview.status.controls", "Middle-drag: pan  |  Wheel: zoom in Design  |  Ctrl+wheel: zoom in Run");
             }
@@ -2021,6 +2040,10 @@ struct designer_preview::impl {
         const bool light = theme == designer_theme::light;
         const vgui_color inactive = light ? 0xFFEEF4FC : 0xFF394454;
         const vgui_color active = light ? 0xFFCFE2FA : 0xFF3A668E;
+        vgui_widget_set_background(pointer_tool, hand_tool ? inactive : active);
+        vgui_widget_set_background(hand_tool_button, hand_tool ? active : inactive);
+        if ((vgui_widget_get_checked(pointer_tool) != 0) == hand_tool) vgui_widget_set_checked(pointer_tool, !hand_tool);
+        if ((vgui_widget_get_checked(hand_tool_button) != 0) != hand_tool) vgui_widget_set_checked(hand_tool_button, hand_tool);
         for (unsigned i = 0; i < presets.size(); ++i)
             vgui_widget_set_background(presets[i], !custom_viewport && i == static_cast<unsigned>(screen) ? active : inactive);
         vgui_widget_set_background(viewport_button, custom_viewport ? active : inactive);
@@ -2244,6 +2267,10 @@ struct designer_preview::impl {
             return;
         }
         if (event->type != VGUI_EVENT_CLICK) return;
+        if (w == self.pointer_tool || w == self.hand_tool_button) {
+            self.set_hand_tool(w == self.hand_tool_button);
+            return;
+        }
         if (w == self.play || w == self.restart) {
             self.cancel_shape_edit();
             self.mark_canvas();
@@ -2284,6 +2311,7 @@ struct designer_preview::impl {
         fit = view.fit;
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
+        hand_tool = view.hand_tool;
         run = view.running;
         start_focus_requested = false; // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
@@ -2302,6 +2330,7 @@ struct designer_preview::impl {
         ready = false;
         dirty = true;
         update_toolbar();
+        update_status();
         mark_canvas();
     }
 
@@ -2747,9 +2776,19 @@ struct designer_preview::impl {
         }
         // SDL's normal mouse auto-capture covers drags beyond the window.
         pressed = 0;
-        dragging = false;
+        pan_button = 0;
         runtime_hover = false;
         pointer_window = 0;
+    }
+
+    void set_hand_tool(bool hand) {
+        if (hand_tool == hand) return;
+        cancel_stop_color();
+        cancel_pointer();
+        hand_tool = hand;
+        update_toolbar();
+        update_status();
+        mark_canvas();
     }
 
     void blur(bool clear_shell_focus = true) {
@@ -3198,13 +3237,13 @@ struct designer_preview::impl {
                 board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
         draw_safe_area(cb, vg, visible, t, self.safe_area);
         if (self.run) {
-            self.draw_shape_handles(cb, vg, area, board);
+            if (!self.hand_tool) self.draw_shape_handles(cb, vg, area, board);
             return;
         }
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {
             outline(cb, vg, t.project(selected->visible_px), area, accent);
-            if (self.geometry_sources.contains(selected->id)) {
+            if (!self.hand_tool && self.geometry_sources.contains(selected->id)) {
                 const float h = self.handle_half_size();
                 visible_corners(*selected, t, [&](corner, point at) {
                     fill(cb, vg, {at.x - h - 1, at.y - h - 1, 2 * h + 2, 2 * h + 2}, 0xFF553820);
@@ -3229,7 +3268,7 @@ struct designer_preview::impl {
 
     std::optional<canvas_control_drop> control_drop_at(const document& doc, std::uint64_t rev,
         const type_descriptor& type, point p) const {
-        if (run || remount || !ready || !frame || frame->revision != rev || doc.nodes.size() >= max_nodes ||
+        if (hand_tool || run || remount || !ready || !frame || frame->revision != rev || doc.nodes.size() >= max_nodes ||
             !std::isfinite(p.x) || !std::isfinite(p.y) || vgui_hit_test(shell, p.x, p.y) != canvas) return {};
         const auto area = rect(canvas), board = artboard(area), clip = intersect(area, board);
         if (!contains(clip, p)) return {};
@@ -3306,6 +3345,10 @@ struct designer_preview::impl {
         case SDL_EVENT_WINDOW_MINIMIZED:
             if (run_window == e.window.windowID || pointer_window == e.window.windowID ||
                 edit_release == e.window.windowID || (stop_color_edit && stop_color_edit->window == e.window.windowID)) blur();
+            if (hand_release_window == e.window.windowID) {
+                hand_releases = 0;
+                hand_release_window = 0;
+            }
             return false;
         case SDL_EVENT_WINDOW_RESIZED:
         case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
@@ -3336,10 +3379,24 @@ struct designer_preview::impl {
             id = e.wheel.windowID; p = shell_pixels(id, e.wheel.mouse_x, e.wheel.mouse_y); break;
         default: return false;
         }
-        if ((dragging || pressed) && id != pointer_window) return false;
+        if ((pan_button || pressed) && id != pointer_window) return false;
         if ((geometry || shape_edit) && edit_release != id) return false;
-        const bool left_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_LEFT;
-        const bool left_up = e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_LEFT;
+        const bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN, up = e.type == SDL_EVENT_MOUSE_BUTTON_UP;
+        const Uint8 button = down || up ? e.button.button : 0;
+        const auto mask = button >= 1 && button <= 8 ? SDL_BUTTON_MASK(button) : SDL_MouseButtonFlags{0};
+        const bool left_down = down && button == SDL_BUTTON_LEFT;
+        const bool left_up = up && button == SDL_BUTTON_LEFT;
+        const bool right_down = down && button == SDL_BUTTON_RIGHT;
+        if (id == hand_release_window && (hand_releases & mask)) {
+            hand_releases &= ~mask;
+            if (!hand_releases) hand_release_window = 0;
+            if (up) {
+                if (button == pan_button) cancel_pointer();
+                return true;
+            }
+        }
+        if (!hand_tool && id == hand_release_window && e.type == SDL_EVENT_MOUSE_MOTION &&
+            (e.motion.state & hand_releases)) return true;
         if (!std::isfinite(p.x) || !std::isfinite(p.y)) {
             if (!left_up || edit_release != id) return false;
             cancel_canvas_edit();
@@ -3371,30 +3428,44 @@ struct designer_preview::impl {
         }
         const bool over_canvas = contains(area, p) && vgui_hit_test(shell, p.x, p.y) == canvas;
         const bool inside = over_canvas && ready && frame && contains(board, p);
-        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && !inside && !pressed && !dragging &&
+        if (down && !inside && !pressed && !pan_button &&
             (run_window || vgui_get_focus(shell) == canvas)) blur();
 
-        if (e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_MIDDLE && over_canvas && !pressed) {
-            dragging = true;
+        // Hand presses belong to the viewport rather than the document. Retain
+        // them separately from the pan so right-clicking can switch modes safely.
+        if (hand_tool && down && (over_canvas || pan_button)) {
+            if (mask) {
+                hand_release_window = id;
+                hand_releases |= mask;
+            }
+            if (right_down) {
+                set_hand_tool(false);
+                return true;
+            }
+        }
+        if (down && over_canvas && !pressed && !pan_button &&
+            (button == SDL_BUTTON_MIDDLE || (hand_tool && button == SDL_BUTTON_LEFT))) {
+            pan_button = button;
             pointer_window = id;
             drag_last = p;
             return true;
         }
-        if (dragging) {
+        if (pan_button) {
             if (e.type == SDL_EVENT_MOUSE_MOTION) {
                 const float scale = vgui_context_get_ui_scale(shell);
                 pan.x = std::clamp(pan.x + (p.x - drag_last.x) / scale, -8192.f, 8192.f);
                 pan.y = std::clamp(pan.y + (p.y - drag_last.y) / scale, -8192.f, 8192.f);
                 drag_last = p;
                 mark_canvas();
-            } else if (e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.button == SDL_BUTTON_MIDDLE) cancel_pointer();
+            } else if (up && button == pan_button) cancel_pointer();
             return true;
         }
-        if (e.type == SDL_EVENT_MOUSE_WHEEL && over_canvas && (!run || (SDL_GetModState() & SDL_KMOD_CTRL))) {
+        if (e.type == SDL_EVENT_MOUSE_WHEEL && over_canvas && (hand_tool || !run || (SDL_GetModState() & SDL_KMOD_CTRL))) {
             const float dir = e.wheel.direction == SDL_MOUSEWHEEL_FLIPPED ? -1.f : 1.f;
             change_zoom(std::pow(1.15f, std::clamp(dir * e.wheel.y, -12.f, 12.f)), p);
             return true;
         }
+        if (hand_tool) return over_canvas;
         if (!run) {
             if (left_down && over_canvas) {
                 if (ready && frame) {
@@ -3431,7 +3502,6 @@ struct designer_preview::impl {
             return false;
         }
         if (!frame || !ready) return false;
-        const bool right_down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN && e.button.button == SDL_BUTTON_RIGHT;
         if ((left_down || right_down) && inside && !pressed && start_shape_edit(area, board, p, id, dpi, right_down))
             return true;
         const point at = preview_pixels(board, p);
@@ -3560,7 +3630,7 @@ std::optional<canvas_control_drop> designer_preview::control_drop_at(const docum
 }
 designer_preview::view_state designer_preview::capture_view() const {
     return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open,
-        p_->custom_viewport, p_->safe_area, p_->simulation};
+        p_->custom_viewport, p_->safe_area, p_->simulation, p_->hand_tool};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }
