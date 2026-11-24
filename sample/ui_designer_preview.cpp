@@ -327,7 +327,7 @@ std::uint32_t to_ovg(std::uint32_t argb) {
     return (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) | ((argb >> 16) & 0xFFu);
 }
 
-// Both toolbar glyphs use the same 24-unit grid and follow the theme foreground.
+// Both toolbar glyphs use the same 24-unit grid and rounded, theme-colored strokes.
 template<bool hand>
 void draw_view_tool_glyph(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
     float x, float y, float width, float height, float, void*) {
@@ -343,27 +343,28 @@ void draw_view_tool_glyph(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
             cb->curve_to(vg, ox + x1 * scale, oy + y1 * scale, ox + x2 * scale, oy + y2 * scale,
                 ox + x3 * scale, oy + y3 * scale);
         };
-        // Keep only the index finger raised; use a solid palm so it reads at toolbar size.
-        move(8.7f, 15.3f);
-        line(8.7f, 2.5f);
-        curve(8.7f, 1.1f, 11, 1.1f, 11, 2.5f);
-        line(11, 10.6f);
-        line(12, 10.6f);
-        line(12, 7.7f);
-        curve(12, 6.3f, 14.2f, 6.3f, 14.2f, 7.7f);
-        line(14.2f, 10.6f);
-        line(15.2f, 10.6f);
-        line(15.2f, 8.8f);
-        curve(15.2f, 7.4f, 17.4f, 7.4f, 17.4f, 8.8f);
-        line(17.4f, 11.1f);
-        line(18.4f, 11.1f);
-        line(18.4f, 9.6f);
-        curve(18.4f, 8.3f, 20.4f, 8.3f, 20.4f, 9.6f);
-        line(20.4f, 15.7f);
-        curve(20.4f, 19.9f, 17.9f, 22.1f, 14.1f, 22.1f);
-        curve(11.6f, 22.1f, 9.9f, 21.2f, 8.4f, 19.2f);
-        line(4.1f, 14.1f);
-        curve(3.2f, 13, 4.6f, 11.6f, 5.9f, 12.6f);
+        // Trace the raised fingers, then the palm and thumb as one outline.
+        move(7.3f, 14);
+        line(7.3f, 6.3f);
+        curve(7.3f, 4.5f, 9.6f, 4.5f, 9.6f, 6.3f);
+        line(9.6f, 9.6f);
+        curve(9.6f, 10.3f, 10.6f, 10.3f, 10.6f, 9.6f);
+        line(10.6f, 4);
+        curve(10.6f, 2, 12.9f, 2, 12.9f, 4);
+        line(12.9f, 9.2f);
+        curve(12.9f, 9.9f, 13.9f, 9.9f, 13.9f, 9.2f);
+        line(13.9f, 5.4f);
+        curve(13.9f, 3.6f, 16.2f, 3.6f, 16.2f, 5.4f);
+        line(16.2f, 10);
+        curve(16.2f, 10.7f, 17.2f, 10.7f, 17.2f, 10);
+        line(17.2f, 7.5f);
+        curve(17.2f, 5.7f, 19.5f, 5.7f, 19.5f, 7.5f);
+        line(19.5f, 14.5f);
+        curve(19.5f, 18.5f, 17, 21, 13.5f, 21);
+        line(12.5f, 21);
+        curve(9.6f, 21, 8, 19.8f, 6.4f, 18);
+        line(3.8f, 15.1f);
+        curve(2.4f, 13.6f, 4.4f, 11.5f, 6, 12.7f);
     } else {
         move(4.5f, 3);
         line(20, 12.3f);
@@ -374,13 +375,9 @@ void draw_view_tool_glyph(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
     vgui_theme theme;
     vgui_context_get_theme(ui, &theme);
     cb->set_source_color(vg, to_ovg(theme.text));
-    if constexpr (hand) {
-        cb->fill(vg);
-    } else {
-        cb->set_line_width(vg, 1.65f * scale);
-        cb->set_line_join(vg, VG_LINE_JOIN_ROUND);
-        cb->stroke(vg);
-    }
+    cb->set_line_width(vg, 1.65f * scale);
+    cb->set_line_join(vg, VG_LINE_JOIN_ROUND);
+    cb->stroke(vg);
 }
 
 bool has_area(pixel_rect r) { return r.width > 0 && r.height > 0; }
