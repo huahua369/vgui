@@ -728,6 +728,249 @@ void test_authored_modals() {
     check(doc == original, "playing authored modals does not edit the document");
 }
 
+bool press_key(vgui_context* ctx, int key, int mods = VGUI_MOD_NONE) {
+    const bool handled = vgui_input_key(ctx, key, 1, mods) != 0;
+    vgui_input_key(ctx, key, 0, mods);
+    return handled;
+}
+
+void test_page_stack_state() {
+    ui::document home, cover;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["start","resume","edit","meter","caption","shine"]},
+        "start":{"type":"button","props":{"x":10,"y":5,"width":60,"height":25}},
+        "resume":{"type":"button","props":{"x":200,"y":5,"width":60,"height":25,"action":"home.resume"}},
+        "edit":{"type":"edit","props":{"x":10,"y":35,"width":100,"height":25,"text":"Authored"}},
+        "meter":{"type":"progress","props":{"x":10,"y":65,"width":100,"height":15,"value":20,"max_value":100,
+            "bind_value":"hud.hp","bind_value_transition_ms":1000}},
+        "caption":{"type":"label","props":{"x":10,"y":85,"width":100,"height":15,"bind_text":"home.caption"}},
+        "shine":{"type":"gradient","props":{"x":10,"y":105,"width":100,"height":15,
+            "gradient_animation":"shine","gradient_animation_duration":2,"gradient_animation_loop":false}}
+    }})", home), "decode the home page");
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["first","start","meter"]},
+        "first":{"type":"button","props":{"x":200,"y":5,"width":60,"height":25,"action":"cover.first"}},
+        "start":{"type":"button","props":{"x":10,"y":5,"width":60,"height":25,"action":"cover.start"}},
+        "meter":{"type":"progress","props":{"x":10,"y":65,"width":100,"height":15,"value":5,"max_value":100,
+            "bind_value":"hud.hp"}}
+    }})", cover), "decode the covering page");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    auto* stage = vgui_root(ctx.get());
+    const auto focus = [&] { return vgui_get_focus(ctx.get()); };
+    const auto paint = [&] { return vgui_context_paint_revision(ctx.get()); };
+    action_log home_actions, cover_actions;
+    ui::runtime_bindings home_bindings, cover_bindings;
+    home_bindings.on_action = cover_bindings.on_action = on_action;
+    home_bindings.user = &home_actions;
+    cover_bindings.user = &cover_actions;
+    ui::runtime rt(ctx.get());
+    const auto active_width = [&] {
+        float width = 0;
+        vgui_widget_get_rect(rt.widget("root"), nullptr, nullptr, &width, nullptr);
+        return width;
+    };
+    ui::diagnostic error;
+    check(rt.page_depth() == 0 && !rt.pop_page() && !rt.push_page(cover, 2),
+        "navigation requires a mounted root");
+    check(rt.mount(home, 1, home_bindings) && rt.page_depth() == 1 && !rt.layout({0, 140, 1}) &&
+        !rt.push_page(cover, 2, cover_bindings, &error) && !error.message.empty(),
+        "a mounted root needs a valid viewport before pushing");
+    const auto initial = rt.layout({280, 140, 1});
+    check(initial && node(*initial, "resume").visible, "lay out a home page with an eligible return target");
+    const auto* home_root = rt.widget("root");
+    const auto* resume = rt.widget("resume");
+    auto* edit = rt.widget("edit");
+    const auto* home_meter = rt.widget("meter");
+    vgui_edit_set_text(edit, "Live edit");
+    check(rt.set_data("home.caption", ui::value{"Live caption"s}) && rt.set_data("hud.hp", ui::value{100.}),
+        "publish a home-only field and start a transition on a shared field");
+    rt.advance_animations(.25);
+    check(near(vgui_widget_get_value(rt.widget("meter")), 66.25f), "sample the home transition before covering it");
+
+    vgui_input_mouse_move(ctx.get(), 220, 15);
+    vgui_input_mouse_down(ctx.get(), 1, 220, 15, 0);
+    check(focus() == resume && vgui_context_has_pointer_capture(ctx.get()) && home_actions.calls == 0,
+        "a home press owns capture and focuses the return target without activating it");
+    check(rt.push_page(cover, 2, cover_bindings) && rt.page_depth() == 2 && rt.widget("root") != home_root &&
+        vgui_widget_get_child_count(stage) == 1 && vgui_widget_get_child(stage, 0) == rt.widget("root") &&
+        near(active_width(), 280) && focus() == rt.widget("start") && !vgui_context_has_pointer_capture(ctx.get()),
+        "push detaches the home, lays out only the covering page, focuses its authored start and cancels capture");
+    vgui_input_mouse_up(ctx.get(), 1, 220, 15, 0);
+    check(!home_actions.calls && !cover_actions.calls &&
+        press_key(ctx.get(), VGUI_KEY_ENTER) && cover_actions.calls == 1 &&
+        cover_actions.id == "start" && cover_actions.action == "cover.start" && !home_actions.calls,
+        "stale pointer release cannot activate either page; keyboard actions use the new page's bindings");
+
+    const auto current = rt.layout({300, 145, 1});
+    check(current && current->revision == 2 && current->serial > initial->serial && current->nodes.size() == 4 &&
+        node(*current, "first").visible && !rt.widget("resume") && !rt.widget("edit") &&
+        rt.widget("meter") != home_meter && !rt.inspect_data("home.caption") &&
+        !rt.set_data("home.caption", ui::value{"Not active"s}),
+        "layout, widget lookup and field publication see only the current page");
+    const auto fresh = rt.inspect_data("hud.hp");
+    check(fresh && !fresh->published && vgui_widget_get_value(rt.widget("meter")) == 5 &&
+        rt.set_data("hud.hp", ui::value{40.}) && vgui_widget_get_value(rt.widget("meter")) == 40 &&
+        rt.animation_timing().duration == 0, "overlapping field names and animation timing are page-local");
+    const auto idle = paint();
+    rt.seek_animations(1);
+    rt.advance_animations(2);
+    check(paint() == idle, "a covered gradient and data transition cannot dirty paint");
+
+    check(rt.pop_page() && rt.page_depth() == 1 && rt.widget("root") == home_root && focus() == resume &&
+        vgui_widget_get_child_count(stage) == 1 && vgui_widget_get_child(stage, 0) == home_root &&
+        near(active_width(), 300) && !rt.widget("first"),
+        "pop restores the same root in the latest viewport and the saved non-default focus");
+    const auto restored = rt.layout({300, 145, 1});
+    const auto hp = rt.inspect_data("hud.hp");
+    check(restored && restored->revision == 1 && restored->serial > current->serial &&
+        rt.widget("edit") == edit && std::string_view(vgui_edit_get_text(edit)) == "Live edit" &&
+        std::string_view(vgui_widget_get_text(rt.widget("caption"))) == "Live caption" &&
+        rt.widget("meter") == home_meter && hp && hp->published == ui::value{100.} &&
+        near(vgui_widget_get_value(rt.widget("meter")), 66.25f),
+        "restoring the page preserves its revision, native edits, publications and paused tween");
+    const auto resumed_paint = paint();
+    rt.seek_animations(.25);
+    check(rt.animation_timing().duration == 2 && paint() == resumed_paint,
+        "the restored gradient is already at its last sampled time");
+    rt.advance_animations(.25);
+    check(near(vgui_widget_get_value(rt.widget("meter")), 90) &&
+        press_key(ctx.get(), VGUI_KEY_ENTER) && home_actions.calls == 1 &&
+        home_actions.id == "resume" && home_actions.action == "home.resume" && cover_actions.calls == 1,
+        "the old tween resumes and the restored action routes to its original host binding");
+
+    check(rt.push_page(cover, 3) && rt.layout({140, 140, 1}) && rt.pop_page() &&
+        near(active_width(), 140) && focus() == rt.widget("start"),
+        "a resize clipping the saved focus falls back to the authored start after relayout");
+    check(rt.push_page(cover, 4) && rt.layout({5, 140, 1}) && rt.pop_page() && !focus(),
+        "when both saved and default focus are clipped, pop leaves focus empty");
+}
+
+void test_page_escape_priority() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"open"},"children":["open","edit","dialog"]},
+        "open":{"type":"button","props":{"x":10,"y":5,"width":80,"height":25,"open_modal":"dialog"}},
+        "edit":{"type":"edit","props":{"x":100,"y":5,"width":80,"height":25}},
+        "dialog":{"type":"panel","props":{"modal":true,"width":100,"height":60},"children":["close"]},
+        "close":{"type":"button","props":{"width":80,"height":25,"close_modal":true}}
+    }})", doc), "decode a stacked page with an authored modal");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    ui::runtime rt(ctx.get());
+    const auto key = [&](int code, int mods = VGUI_MOD_NONE) { return press_key(ctx.get(), code, mods); };
+    const auto expect_blocked = [&] {
+        check(!rt.push_page(doc, 9) && !rt.pop_page() && rt.page_depth() == 2,
+            "an active overlay blocks explicit push and pop");
+    };
+    check(rt.mount(doc, 1) && rt.layout({280, 140, 1}) && rt.push_page(doc, 2),
+        "enter a page where Escape has a previous page to return to");
+
+    check(key(VGUI_KEY_ENTER) && !vgui_modal_active(ctx.get()) && rt.push_page(doc, 3),
+        "cover the page while its authored modal command is still queued");
+    rt.service_navigation();
+    check(!vgui_modal_active(ctx.get()) && rt.page_depth() == 3 && rt.pop_page(),
+        "a modal command cannot leak to the next page");
+    rt.service_navigation();
+    check(!vgui_modal_active(ctx.get()) && rt.page_depth() == 2,
+        "restoring the page does not replay its abandoned command");
+
+    check(key(VGUI_KEY_ENTER) && !vgui_modal_active(ctx.get()), "defer authored modal opening");
+    rt.service_navigation();
+    check(vgui_modal_panel(ctx.get()) == rt.widget("dialog"), "navigation service still opens authored modals");
+    expect_blocked();
+    check(key(VGUI_KEY_ESCAPE) && !vgui_modal_active(ctx.get()), "native modal consumes Escape");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "closing a modal never also returns a page");
+
+    auto* menu = vgui_widget_create(ctx.get(), VGUI_MENU, nullptr);
+    vgui_menu_add_item(menu, "Item");
+    vgui_menu_open(menu, 10, 45);
+    check(vgui_menu_is_open(menu), "open a context menu above the stacked page");
+    expect_blocked();
+    check(key(VGUI_KEY_ESCAPE) && !vgui_menu_is_open(menu), "native menu consumes Escape");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "closing a menu never also returns a page");
+    vgui_widget_destroy(menu);
+
+    auto* popup = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
+    check(vgui_popup_open(ctx.get(), popup, 10, 45), "open a popup above the stacked page");
+    expect_blocked();
+    check(key(VGUI_KEY_ESCAPE) && !vgui_popup_active(ctx.get()), "native popup consumes Escape");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "closing a popup never also returns a page");
+    vgui_widget_destroy(popup);
+
+    vgui_set_focus(ctx.get(), rt.widget("edit"));
+    check(vgui_get_focus(ctx.get()) == rt.widget("edit") && key(VGUI_KEY_ESCAPE) && !vgui_get_focus(ctx.get()),
+        "native edit cancellation takes priority and blurs the edit");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "canceling an edit never also returns a page");
+
+    check(rt.push_page(doc, 3), "enter a third page to test deferred return");
+    check(!key(VGUI_KEY_ESCAPE, VGUI_MOD_CTRL) &&
+        !vgui_input_key(ctx.get(), VGUI_KEY_ESCAPE, 0, VGUI_MOD_NONE), "modified Escape and key-up do not request Back");
+    rt.service_navigation();
+    check(rt.page_depth() == 3, "non-Back input leaves the stack intact");
+    check(key(VGUI_KEY_ESCAPE) && key(VGUI_KEY_ESCAPE) && rt.page_depth() == 3,
+        "plain Escape queues rather than immediately changing pages during input");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "two Back requests before service return exactly one page");
+    rt.service_navigation();
+    check(rt.page_depth() == 2 && key(VGUI_KEY_ESCAPE), "there is no second queued return");
+    rt.service_navigation();
+    check(rt.page_depth() == 1 && !rt.pop_page() && !key(VGUI_KEY_ESCAPE), "Escape is unhandled at the root");
+    rt.service_navigation();
+    check(rt.page_depth() == 1, "servicing navigation at the root cannot unmount it");
+}
+
+void test_page_stack_depth() {
+    auto doc = fixture();
+    auto invalid = doc;
+    invalid.nodes.at(doc.root).children.push_back("absent");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    ui::runtime rt(ctx.get());
+    constexpr ui::viewport view{280, 160, 1};
+    check(rt.mount(doc, 1) && rt.layout(view), "mount the base of a deep stack");
+    for (std::size_t depth = 2; depth <= 16; ++depth) {
+        check(rt.push_page(doc, depth) && rt.page_depth() == depth, "push up to the 16-level limit");
+        vgui_edit_set_text(rt.widget("field"), std::to_string(depth).c_str());
+    }
+    auto* top = rt.widget("root");
+    ui::diagnostic error;
+    check(!rt.push_page(doc, 17, {}, &error) && !error.message.empty() && rt.page_depth() == 16 &&
+        rt.widget("root") == top, "overflow is diagnosed without replacing the top or dropping history");
+    check(rt.pop_page() && rt.page_depth() == 15, "return below the limit");
+    top = rt.widget("root");
+    error = {};
+    check(!rt.push_page(invalid, 99, {}, &error) && !error.message.empty(), "invalid push is diagnosed");
+    error = {};
+    check(!rt.mount(invalid, 99, {}, &error) && !error.message.empty(), "invalid root replacement is diagnosed");
+    for (std::size_t depth = 15; depth > 1; --depth) {
+        const auto page = rt.layout(view);
+        check(page && page->revision == depth && rt.page_depth() == depth && rt.widget("root") &&
+            (depth != 15 || rt.widget("root") == top) &&
+            std::string_view(vgui_edit_get_text(rt.widget("field"))) == std::to_string(depth),
+            "failure preserves the active tree and all deeper live pages return in LIFO order");
+        check(rt.pop_page(), "pop another suspended page");
+    }
+    const auto base = rt.layout(view);
+    check(base && base->revision == 1 && rt.page_depth() == 1 && !rt.pop_page() &&
+        std::string_view(vgui_edit_get_text(rt.widget("field"))) == "original", "multi-pop returns to the original base");
+
+    check(rt.push_page(doc, 17) && press_key(ctx.get(), VGUI_KEY_ESCAPE), "queue Back before root replacement");
+    check(rt.mount(doc, 18) && rt.page_depth() == 1 && !rt.pop_page() &&
+        !press_key(ctx.get(), VGUI_KEY_ESCAPE), "successful mount replaces the root and clears navigation");
+    check(rt.layout(view) && rt.push_page(doc, 19), "push again after root replacement");
+    rt.service_navigation();
+    check(rt.page_depth() == 2 && press_key(ctx.get(), VGUI_KEY_ESCAPE), "replacement discards stale Back requests");
+    rt.unmount();
+    check(rt.page_depth() == 0 && !rt.pop_page() && !rt.widget("root") && !rt.layout(view) &&
+        !vgui_get_focus(ctx.get()) && vgui_widget_get_child_count(vgui_root(ctx.get())) == 0 &&
+        !press_key(ctx.get(), VGUI_KEY_ESCAPE), "unmount clears all pages, focus and the Back handler");
+    check(rt.mount(doc, 20) && rt.layout(view) && rt.push_page(doc, 21), "navigation can start fresh after unmount");
+    rt.service_navigation();
+    check(rt.page_depth() == 2, "unmount discards a queued Back request");
+}
+
 class temp_dir {
 public:
     temp_dir() {
@@ -2802,6 +3045,9 @@ int main(int argc, char** argv) {
         test_anchored_layout();
         test_authored_navigation();
         test_authored_modals();
+        test_page_stack_state();
+        test_page_escape_priority();
+        test_page_stack_depth();
         test_game_data();
         test_progress_value_transitions();
         test_declarative_widgets();

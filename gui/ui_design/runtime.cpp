@@ -563,10 +563,10 @@ struct runtime::mounted_tree {
         vgui_widget* opener = nullptr; // Null for a close command.
     } pending_modal, active_modal;
     vgui_widget* start_focus = nullptr;
+    vgui_widget* saved_focus = nullptr; // Owned by this tree while suspended.
     bool destroying = false;
     std::uint64_t revision = 0;
     float width = 0, height = 0;
-    bool laid_out = false;
     ~mounted_tree() {
         destroying = true;
         if (active_modal.target) {
@@ -622,8 +622,95 @@ struct runtime::mounted_tree {
 };
 
 runtime::runtime(vgui_context* ctx) : ctx_(ctx) {}
-runtime::~runtime() = default;
-void runtime::unmount() { tree_.reset(); }
+runtime::~runtime() { unmount(); }
+
+void runtime::unmount() {
+    vgui_context_remove_key_handler(ctx_, std::exchange(back_handler_, 0));
+    back_pending_ = false;
+    tree_.reset();
+    history_.clear();
+    view_.reset();
+}
+
+std::size_t runtime::page_depth() const { return history_.size() + (tree_ ? 1 : 0); }
+
+bool runtime::has_overlay() const {
+    return vgui_modal_active(ctx_) || vgui_popup_active(ctx_) || vgui_context_get_open_menu(ctx_);
+}
+
+void runtime::clear_page_input() {
+    // A detached page is still alive. Drop pointer targets/hover and the old
+    // keyboard focus before detaching so they cannot receive further input.
+    if (vgui_context_has_pointer_capture(ctx_)) vgui_input_cancel(ctx_);
+    else vgui_input_clear(ctx_);
+    vgui_set_focus(ctx_, nullptr);
+    tree_->pending_modal = {};
+    back_pending_ = false;
+}
+
+bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_bindings& bindings, diagnostic* error) {
+    auto next = build_tree(doc, revision, bindings, error);
+    if (!next) return false;
+    unmount();
+    tree_ = std::move(next);
+    vgui_widget_attach(vgui_root(ctx_), tree_->root);
+    return true;
+}
+
+bool runtime::push_page(const document& doc, std::uint64_t revision, const runtime_bindings& bindings, diagnostic* error) {
+    const char* blocked = !view_ ? "lay out the initial page before pushing a page" :
+        page_depth() >= 16 ? "page history limit reached" : has_overlay() ? "close the active overlay before switching pages" : nullptr;
+    if (blocked) {
+        if (error) *error = {"", blocked};
+        return false;
+    }
+    auto next = build_tree(doc, revision, bindings, error);
+    if (!next) return false;
+
+    auto* focus = vgui_get_focus(ctx_);
+    for (auto* w = focus; w; w = vgui_widget_get_parent(w)) {
+        if (w != tree_->root) continue;
+        tree_->saved_focus = focus;
+        break;
+    }
+    clear_page_input();
+    vgui_widget_remove(tree_->root);
+    history_.push_back(std::move(tree_));
+    tree_ = std::move(next);
+    vgui_widget_attach(vgui_root(ctx_), tree_->root);
+    restore_page_layout();
+    focus_default();
+    if (!back_handler_) back_handler_ = vgui_context_add_key_handler(ctx_, back_key, this);
+    return true;
+}
+
+bool runtime::pop_page() {
+    if (history_.empty() || has_overlay()) return false;
+    clear_page_input();
+    tree_ = std::move(history_.back());
+    history_.pop_back();
+    if (history_.empty()) vgui_context_remove_key_handler(ctx_, std::exchange(back_handler_, 0));
+    vgui_widget_attach(vgui_root(ctx_), tree_->root);
+    restore_page_layout();
+    if (!vgui_navigation_restore_focus(ctx_, std::exchange(tree_->saved_focus, nullptr))) focus_default();
+    return true;
+}
+
+int runtime::back_key(vgui_context* ctx, int key, int down, int mods, void* user) {
+    auto& rt = *static_cast<runtime*>(user);
+    // The core calls context handlers only after native widgets/overlays have
+    // had first refusal. SDL's B button feeds this same Escape-down path.
+    if (!down || key != VGUI_KEY_ESCAPE || mods != VGUI_MOD_NONE || rt.has_overlay() ||
+        vgui_context_has_pointer_capture(ctx)) return 0;
+    if (!rt.tree_->pending_modal.target) rt.back_pending_ = true;
+    return 1;
+}
+
+void runtime::service_navigation() {
+    if (std::exchange(back_pending_, false) && pop_page()) return;
+    service_modals();
+}
+
 vgui_widget* runtime::widget(std::string_view id) const {
     if (!tree_) return nullptr;
     auto it = tree_->entries.find(id);
@@ -771,11 +858,12 @@ void runtime::seek_animations(double seconds, bool inspect_loop_end, const gradi
     }
 }
 
-bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_bindings& bindings, diagnostic* error) {
-    if (!validate(doc, error)) return false;
+std::unique_ptr<runtime::mounted_tree> runtime::build_tree(const document& doc, std::uint64_t revision,
+    const runtime_bindings& bindings, diagnostic* error) {
+    if (!validate(doc, error)) return nullptr;
     if (!ctx_ || !vgui_root(ctx_)) {
         if (error) *error = {"", "missing VGUI context or root"};
-        return false;
+        return nullptr;
     }
     auto next = std::make_unique<mounted_tree>();
     next->revision = revision;
@@ -831,7 +919,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             return detail::container_kind(n.type);
         }();
         if (!kind) return false;
-        auto* w = vgui_widget_add(parent, *kind, "");
+        auto* w = parent ? vgui_widget_add(parent, *kind, "") : vgui_widget_create(ctx_, *kind, "");
         if (!w) return false;
         if (!next->root) next->root = w;
         auto& e = next->entries[id]; e.id = id; e.widget = w;
@@ -982,9 +1070,9 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         detail::finish_container(w, n, p);
         return true;
     };
-    if (!build(doc.root, vgui_root(ctx_), nullptr, nullptr)) {
+    if (!build(doc.root, nullptr, nullptr, nullptr)) {
         if (error) *error = {"", "failed to create VGUI widget"};
-        return false;
+        return nullptr;
     }
 
     const auto target_widget = [&](const node& source, std::string_view key) -> vgui_widget* {
@@ -1026,8 +1114,21 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             vgui_widget_set_visible(modal.panel, 1);
         }
     }
-    tree_ = std::move(next);
-    return true;
+    return next;
+}
+
+void runtime::apply_layout(viewport view, int width, int height) {
+    vgui_context_set_ui_scale(ctx_, view.scale);
+    vgui_context_set_size(ctx_, width, height);
+    vgui_widget_set_size(tree_->root, tree_->width == 0 ? float(view.width) : tree_->width, tree_->height == 0 ? float(view.height) : tree_->height);
+    vgui_layout(ctx_);
+    view_ = view;
+}
+
+void runtime::restore_page_layout() {
+    const auto view = *view_;
+    apply_layout(view, static_cast<int>(std::lround(double(view.width)*view.scale)),
+        static_cast<int>(std::lround(double(view.height)*view.scale)));
 }
 
 std::optional<layout_snapshot> runtime::layout(viewport view) {
@@ -1036,10 +1137,7 @@ std::optional<layout_snapshot> runtime::layout(viewport view) {
     int width = static_cast<int>(std::lround(double(view.width)*view.scale));
     int height = static_cast<int>(std::lround(double(view.height)*view.scale));
     if (width <= 0 || height <= 0) return std::nullopt;
-    vgui_context_set_ui_scale(ctx_, view.scale);
-    vgui_context_set_size(ctx_, width, height);
-    vgui_widget_set_size(tree_->root, tree_->width == 0 ? float(view.width) : tree_->width, tree_->height == 0 ? float(view.height) : tree_->height);
-    vgui_layout(ctx_);
+    apply_layout(view, width, height);
     layout_snapshot result; result.revision = tree_->revision; result.serial = ++serial_; result.view = view; result.pixel_width = width; result.pixel_height = height;
     struct state { pixel_rect clip; bool visible, enabled; };
     std::map<vgui_widget*, state> states;
@@ -1059,12 +1157,11 @@ std::optional<layout_snapshot> runtime::layout(viewport view) {
         states.emplace(e.widget, state{item.visible_px, item.visible, item.enabled});
         result.nodes.push_back(std::move(item));
     }
-    tree_->laid_out = true;
     return result;
 }
 
 bool runtime::focus_default() {
-    return tree_ && tree_->laid_out && vgui_navigation_focus_start(ctx_, tree_->root);
+    return tree_ && view_ && vgui_navigation_focus_start(ctx_, tree_->root);
 }
 
 std::filesystem::path resolve_project_resource(const std::filesystem::path& project_root, const std::string& relative) {

@@ -124,13 +124,21 @@ hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
 
 设计稿可在根节点设置 `nav_start`，在控件上设置 `nav_up` / `nav_down` / `nav_left` / `nav_right`，值为当前页的节点 ID。原生手柄方向输入优先采用当前可用的显式目标，其余情况使用原几何算法，不改变 Tab 顺序。宿主也可在首次布局完成后调用 `runtime::focus_default()` 尝试默认焦点；如果已经有焦点或目标不可用，不会抢走焦点。[`game-hud.vgui.json`](../sample/res/game-hud.vgui.json) 示例以 `Q` 为默认焦点，并配置 `Q` 与 `Y` 两端的方向跳转。
 
-游戏模态使用 `modal`（根节点直属面板）、`open_modal`（外部按钮指定面板 ID）、`close_modal`（内部按钮）和可选 `modal_return_focus`。宿主应在派发完输入、开始绘制前调用 `runtime::service_modals()`；Esc 与手柄 B 复用原生返回路径。关闭时按指定目标、打开按钮、页面初始焦点的顺序恢复，不往隐藏、禁用或被裁剪的目标赋予焦点。`vgui_runtime_hud` 与 `vgui_ui_json_demo` 已接入，配置随交付包保留，打开状态不保存。
+游戏模态使用 `modal`（根节点直属面板）、`open_modal`（外部按钮指定面板 ID）、`close_modal`（内部按钮）和可选 `modal_return_focus`。宿主应在派发完输入、开始绘制前调用 `runtime::service_modals()`（如果使用页面栈，则调用 `runtime::service_navigation()`）；Esc 与手柄 B 复用原生返回路径。关闭时按指定目标、打开按钮、页面初始焦点的顺序恢复，不往隐藏、禁用或被裁剪的目标赋予焦点。`vgui_runtime_hud` 与 `vgui_ui_json_demo` 已接入，配置随交付包保留，打开状态不保存。
+
+#### 独立页面切换和返回
+
+每页仍是独立的设计或交付文件。宿主先 `mount` 首页并 `layout`，可用 `focus_default` 应用首页的 `nav_start`。在 `on_action` 回调中只记录导航意图；派发完成后由宿主按自己的动作映射选择文档，再调用 `push_page(doc, revision, bindings, &error)`。页面动作键不解释为路径；每一页单独提供资源根或内嵌资源加载器。`mount` 成功时替换整栈；`push_page` 失败不改变当前页。
+
+入栈后，只挂接目标页并尝试其 `nav_start`。上一页保留输入、滚动、已发布绑定值和控件实例；挂起时不会推进运行时的数据过渡和渐变动画。`widget`、布局快照、诊断和绑定 API 都只面向活动页，即使不同页面复用控件 ID 也彼此独立。最多保留 16 页（含首页）。
+
+`pop_page()` 返回并销毁离开的页面，按最新视口重新布局上一页；优先恢复离开前的焦点，不可用则尝试 `nav_start`，否则留空。弹窗、菜单和浮层打开时不会切页。每帧在派发完输入后调用一次 `service_navigation()`（它也处理模态命令）；无修饰键的 Esc 或 SDL 手柄 B 优先交给原生控件和覆盖层，未被处理且存在上一页时才返回。回到首页后不再拦截返回键。参见 [C++ JSON 示例](ui_editor_roadmap.md#直接运行设计-jsonc-示例)。
 
 ### 5.2 R2-2 SDL_Gamepad 映射（P0，M）
 
 - **实现**（backends/vgui_sdl3.cpp，app_mgr）：
   - `SDL_InitSubSystem(SDL_INIT_GAMEPAD)`；处理 SDL_EVENT_GAMEPAD_ADDED/REMOVED（开/关手柄）；每帧在 get_event 内泵状态。
-  - 映射表（纯函数，可单测）：A(南)→注入 `VGUI_KEY_ENTER`（复用现有 Enter 激活路径）；B(东)→`vgui_input_cancel`；Y(西)→菜单键（复用 context menu 路径）；Start→`VGUI_KEY_F10`（menubar）；十字键+左摇杆（死区 0.35 数字化）→`vgui_focus_navigate`，重复率：首延迟 350ms、重复 140ms。
+  - 映射表（纯函数，可单测）：A(南)→注入 `VGUI_KEY_ENTER`（复用现有 Enter 激活路径）；B(东)→注入 Esc 按下（未处理时回退到 `vgui_input_cancel`）；Y(西)→菜单键（复用 context menu 路径）；Start→`VGUI_KEY_F10`（menubar）；十字键+左摇杆（死区 0.35 数字化）→`vgui_focus_navigate`，重复率：首延迟 350ms、重复 140ms。
   - 摇杆聚焦滑杆时的约定：焦点控件为 slider 且方向沿其轴向时，宿主层改为 `vgui_widget_set_value` 步进（文档化，不做进 core）。
 - **验收**：映射表单测（按钮状态→动作序列）；接手柄人工验证 HUD 示例全程可手柄操作（导航/激活/返回/菜单/热键栏聚焦）。
 

@@ -1,0 +1,18 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "contact_help",
+  "nodes": {
+    "contact_help": {
+      "type": "panel",
+      "name": "Contact help",
+      "props": {"layout": "column", "align_items": "start", "gap": 12, "pad_left": 24, "pad_top": 24, "pad_right": 24, "nav_start": "back"},
+      "children": ["help_title", "help_message", "help_shortcut", "back"]
+    },
+    "help_title": {"type": "label", "props": {"text": "Contact form help", "height": 32}},
+    "help_message": {"type": "label", "props": {"text": "This demo does not send your information.", "height": 24}},
+    "help_shortcut": {"type": "label", "props": {"text": "Use Back, Esc, or gamepad B to return to your draft.", "height": 24}},
+    "back": {"type": "button", "props": {"text": "Back", "action": "contact.back", "width": 88, "height": 30, "focus_alpha": 1}}
+  },
+  "resources": {}
+}

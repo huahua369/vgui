@@ -24,6 +24,9 @@ namespace fs = std::filesystem;
 constexpr int initial_width = 460;
 constexpr int initial_height = 300;
 constexpr char submit_action[] = "contact.submit";
+constexpr char help_action[] = "contact.help";
+constexpr char back_action[] = "contact.back";
+constexpr char help_file[] = VGUI_SOURCE_DIR "/sample/res/form-help.vgui.json";
 constexpr char smoke_image_id[] = "logo";
 
 struct form_input {
@@ -43,7 +46,7 @@ struct form_host {
     form_host(vgui_context* context, const form_input& input) : input(input), tree(context) {}
 
     bool mount() {
-        ui::runtime_bindings bindings;
+        auto bindings = action_bindings();
         if (input.packaged) {
             bindings.load_embedded_image = [](vgui_context* ctx, std::string_view key, void* user) -> vgui_texture* {
                 auto& form = *static_cast<form_host*>(user);
@@ -54,11 +57,6 @@ struct form_host {
         } else {
             bindings.project_root = input.project_root;
         }
-        bindings.user = this;
-        bindings.on_action = [](std::string_view, std::string_view action, void* user) noexcept {
-            // JSON supplies a routing key, not executable code. Leave other actions unbound.
-            if (action == submit_action) static_cast<form_host*>(user)->submit_pending = true;
-        };
         ui::diagnostic error;
         const bool mounted = tree.mount(input.content.design, 1, bindings, &error);
         decoder = {}; // Drop the loader's references; the mounted tree retains assigned textures.
@@ -71,9 +69,52 @@ struct form_host {
         return true;
     }
 
-    void apply_actions() {
-        if (!submit_pending) return;
-        submit_pending = false;
+    void service() {
+        if (std::exchange(submit_pending, false)) submit();
+        switch (std::exchange(pending_page, page_action::none)) {
+        case page_action::help: open_help(); break;
+        case page_action::back: tree.pop_page(); break;
+        case page_action::none: break;
+        }
+        tree.service_navigation();
+    }
+
+    const form_input& input;
+    vgui_sample::json_image_decoder decoder;
+    ui::runtime tree;
+
+private:
+    enum class page_action { none, help, back };
+    page_action pending_page = page_action::none;
+    bool submit_pending = false;
+
+    ui::runtime_bindings action_bindings() {
+        ui::runtime_bindings bindings;
+        bindings.user = this;
+        bindings.on_action = [](std::string_view, std::string_view action, void* user) noexcept {
+            // Match only host-owned routing keys. Defer widget access and navigation
+            // until input dispatch has returned.
+            auto& form = *static_cast<form_host*>(user);
+            if (action == submit_action) form.submit_pending = true;
+            else if (form.pending_page == page_action::none) {
+                if (action == help_action) form.pending_page = page_action::help;
+                else if (action == back_action) form.pending_page = page_action::back;
+            }
+        };
+        return bindings;
+    }
+
+    void open_help() {
+        // The host chooses the document. The action's JSON never supplies its path.
+        ui::document help;
+        ui::diagnostic error;
+        if (!ui::read_document(fs::u8path(help_file), help, &error) ||
+            !tree.push_page(help, 2, action_bindings(), &error)) {
+            std::fprintf(stderr, "Cannot open demo Help (%s): %s\n", error.path.c_str(), error.message.c_str());
+        }
+    }
+
+    void submit() {
         // Access live widgets after input dispatch has returned. The JSON is never edited.
         auto* name = tree.widget("name");
         auto* hint = tree.widget("hint");
@@ -84,11 +125,6 @@ struct form_host {
         }
         std::printf("Handled %s (demo only; nothing was sent).\n", submit_action);
     }
-
-    const form_input& input;
-    vgui_sample::json_image_decoder decoder;
-    ui::runtime tree;
-    bool submit_pending = false;
 };
 
 using context_ptr = std::unique_ptr<vgui_context, decltype(&vgui_destroy)>;
@@ -115,7 +151,8 @@ int smoke_test(const form_input& input) {
     auto* name = form.tree.widget("name");
     auto* button = form.tree.widget("submit");
     auto* hint = form.tree.widget("hint");
-    if (!name || !button || !hint) return 1;
+    auto* help = form.tree.widget("help");
+    if (!name || !button || !hint || !help) return 1;
     auto press_center = [&](vgui_widget* widget, float& x, float& y) {
         float width = 0, height = 0;
         vgui_widget_get_rect(widget, &x, &y, &width, &height);
@@ -129,12 +166,54 @@ int smoke_test(const form_input& input) {
     vgui_input_mouse_up(context.get(), 1, x, y, 1);
     vgui_input_text(context.get(), "Ada");
     press_center(button, x, y);
-    form.apply_actions();
+    form.service();
     if (std::string_view(vgui_widget_get_text(hint)) != "Ready to send") return 1;
     vgui_input_mouse_up(context.get(), 1, x, y, 1);
-    form.apply_actions();
+    form.service();
     if (std::string_view(vgui_widget_get_text(hint)) != "Demo submitted for Ada") {
         std::fprintf(stderr, "Expected a Submit click to update the hint with the live name.\n");
+        return 1;
+    }
+
+    const auto base_depth = form.tree.page_depth();
+    const auto help_open = [&] {
+        auto* back = form.tree.widget("back");
+        return form.tree.page_depth() == base_depth + 1 && !form.tree.widget("name") &&
+            back && vgui_get_focus(context.get()) == back;
+    };
+    const auto form_restored = [&] {
+        return form.tree.page_depth() == base_depth && form.tree.widget("name") == name &&
+            form.tree.widget("hint") == hint && form.tree.widget("help") == help &&
+            vgui_get_focus(context.get()) == help && std::string_view(vgui_edit_get_text(name)) == "Ada" &&
+            std::string_view(vgui_widget_get_text(hint)) == "Demo submitted for Ada";
+    };
+    press_center(help, x, y);
+    vgui_input_mouse_up(context.get(), 1, x, y, 1);
+    form.service();
+    if (!help_open()) {
+        std::fprintf(stderr, "Expected a Help click to open the Help page and focus Back.\n");
+        return 1;
+    }
+    // Escape key-down is also the input sent by the SDL gamepad B button.
+    const bool escaped = vgui_input_key(context.get(), VGUI_KEY_ESCAPE, 1, 0) != 0;
+    form.service();
+    if (!escaped || !form_restored()) {
+        std::fprintf(stderr, "Expected Escape to restore the same form, draft, and Help focus.\n");
+        return 1;
+    }
+    const auto press_enter = [&] {
+        vgui_input_key(context.get(), VGUI_KEY_ENTER, 1, 0);
+        vgui_input_key(context.get(), VGUI_KEY_ENTER, 0, 0);
+        form.service();
+    };
+    press_enter();
+    if (!help_open()) {
+        std::fprintf(stderr, "Expected Enter on the restored Help button to open Help again.\n");
+        return 1;
+    }
+    press_enter();
+    if (!form_restored()) {
+        std::fprintf(stderr, "Expected Back activation to restore the same form, draft, and Help focus.\n");
         return 1;
     }
     return 0;
@@ -173,7 +252,7 @@ int smoke_package(const fs::path& form_file) try {
         std::fprintf(stderr, "Cannot reserve a smoke-test temporary directory.\n");
         return 1;
     }
-    // Only the package is present in its directory. The demo must not use external source files.
+    // Only the package is present in its directory. The packaged form must not need sidecar files.
     const auto package = temporary.path / (std::string("form") + std::string(ui::json_delivery_suffix));
     if (!ui::export_json_delivery(design, form_file.parent_path(), package, &error)) {
         std::fprintf(stderr, "Cannot export the smoke-test package (%s): %s\n", error.path.c_str(), error.message.c_str());
@@ -238,9 +317,8 @@ int run_window(const form_input& input) {
     layout_window();
     Uint64 last_frame = SDL_GetTicks();
     while (app.get_event() >= 0 && !window->pending_close) {
-        form.apply_actions();
         layout_window();
-        form.tree.service_modals();
+        form.service();
         const Uint64 now = SDL_GetTicks();
         const float delta = static_cast<float>(now - last_frame) / 1000.0f;
         form.tree.advance_animations(delta);

@@ -20,8 +20,9 @@
     "name": {"type": "edit", "props": {"placeholder": "Your name", "height": 26}},
     "email_label": {"type": "label", "props": {"text": "Email", "height": 18}},
     "email": {"type": "edit", "props": {"placeholder": "you@example.com", "height": 26}},
-    "footer": {"type": "panel", "props": {"layout": "row", "height": 40, "align_items": "center", "gap": 10}, "children": ["hint", "submit"]},
+    "footer": {"type": "panel", "props": {"layout": "row", "height": 40, "align_items": "center", "gap": 10}, "children": ["hint", "help", "submit"]},
     "hint": {"type": "label", "props": {"text": "Ready to send", "grow": 1}},
+    "help": {"type": "button", "props": {"text": "Help", "action": "contact.help", "width": 76, "height": 30, "focus_alpha": 1}},
     "submit": {"type": "button", "props": {"text": "Submit", "action": "contact.submit", "width": 88, "height": 30}}
   },
   "resources": {}

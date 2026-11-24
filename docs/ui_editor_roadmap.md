@@ -328,7 +328,9 @@ out/bin/x64d/vgui_ui_json_demo.exe sample/res/form.vgui.json
 
 不传文件时打开随仓库附带的联系表单。在 **Name** 输入姓名后点击 **Submit**，状态标签会更新为 `Demo submitted for <姓名>`。示例用 `read_document` 读取 JSON，再用 `runtime::mount` 创建控件树；`runtime_bindings::on_action` 把 JSON 中的 `contact.submit` 路由到 C++，事件派发结束后通过控件 ID `name`、`hint` 读取和更新运行态控件。没有网络请求，也不会写回设计文件。
 
-传入普通 `.vgui.json` 时，宿主以该文件的父目录作为资源根；示例不为该模式加载外部图片或自定义字体。也可直接传入 `*.vgui.package.json`，宿主先校验包，再从内存解码其中的 PNG/JPEG，不会解包到磁盘。两种模式都仅绑定 `contact.submit` 业务逻辑。无窗口回归可以用 `--smoke-test`（普通表单）或 `--smoke-test-package`（内嵌 PNG 与按钮）。
+点击 **Help** 会打开另一份独立的 [form-help.vgui.json](../sample/res/form-help.vgui.json)，焦点落在 **Back**。点击 **Back** 或按 **Esc**（SDL 手柄 **B**）返回，姓名输入保留，焦点回到 **Help**。`contact.help` 和 `contact.back` 只是动作键，目标页由宿主选择；打开的设计文件不能借此指定任意文件路径。这个示例不依赖编辑器的多页面标签，单页 JSON 和交付格式无需改动。
+
+传入普通 `.vgui.json` 时，宿主以该文件的父目录作为资源根；示例不为该模式加载外部图片或自定义字体。也可直接传入 `*.vgui.package.json`，宿主先校验包，再从内存解码其中的 PNG/JPEG，不会解包到磁盘。内置帮助页是宿主随示例提供的独立文件，不会并入首页交付包。无窗口回归可以用 `--smoke-test`（普通表单）或 `--smoke-test-package`（内嵌 PNG 与按钮）；两者都验证页面返回、焦点和输入保留。
 
 ## 10. U4-A 顶部菜单与多页面工作台
 

@@ -132,14 +132,31 @@ public:
     runtime(const runtime&) = delete;
     runtime& operator=(const runtime&) = delete;
 
-    // Rebuilds just the document subtree. An invalid document leaves the old
-    // mount intact. Recoverable image errors are reported in diagnostics();
+    // Replaces the current page and clears its history. An invalid document
+    // leaves both intact. Recoverable image errors appear in diagnostics();
     // collection rows stay mounted with default rendering for missing icons.
     // The document is not stored or mutated.
     bool mount(const document& doc, std::uint64_t revision, const runtime_bindings& bindings = {},
         diagnostic* error = nullptr);
     void unmount();
-    // Borrowed until mount/unmount; do not reparent, restyle or destroy handles.
+
+    // Page operations run outside input dispatch. Push requires an already laid
+    // out page and lays out the new page in the same viewport. The previous
+    // page is detached, retaining widget state and data until popped back to.
+    // At most 16 pages (including the initial page). An active native
+    // modal/menu/popup blocks push/pop; failure leaves the current page intact.
+    bool push_page(const document& doc, std::uint64_t revision, const runtime_bindings& bindings = {},
+        diagnostic* error = nullptr);
+    // Discards the current page and restores the previous page's saved focus
+    // if still eligible, otherwise its authored initial focus, otherwise none.
+    bool pop_page();
+    std::size_t page_depth() const;
+    // Service authored modal commands and any pending Escape/SDL B return.
+    // Call once per frame after input dispatch instead of service_modals().
+    void service_navigation();
+
+    // Active page only. Borrowed until a page change or unmount; do not
+    // reparent, restyle or destroy handles.
     vgui_widget* widget(std::string_view id) const;
     std::span<const diagnostic> diagnostics() const;
 
@@ -197,8 +214,20 @@ public:
 
 private:
     struct mounted_tree;
+    std::unique_ptr<mounted_tree> build_tree(const document& doc, std::uint64_t revision,
+        const runtime_bindings& bindings, diagnostic* error);
+    bool has_overlay() const;
+    void clear_page_input();
+    void apply_layout(viewport view, int width, int height);
+    void restore_page_layout();
+    static int back_key(vgui_context* ctx, int key, int down, int mods, void* user);
+
     vgui_context* ctx_;
     std::unique_ptr<mounted_tree> tree_;
+    std::vector<std::unique_ptr<mounted_tree>> history_;
+    std::optional<viewport> view_;
+    int back_handler_ = 0;
+    bool back_pending_ = false;
     std::uint64_t serial_ = 0;
 };
 
