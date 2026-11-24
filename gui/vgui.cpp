@@ -15227,6 +15227,17 @@ static void vgui_draw_tooltip(vgui_context* ctx, ovg_ctx_cb* cb, rvg_t* vg)
 	if (!text) text = 0xFFFFFFFF;
 
 	cb->save(vg);
+	// Two offset rounded fills give the frame a soft, cheap shadow without
+	// depending on the optional GPU effect pipeline.  Alpha stays with the
+	// theme colour so apps can tune both the tone and the strength.
+	if (vgui_color shadow = ctx->theme.tooltip_shadow)
+	{
+		float shadow_rounding = std::max(0.0f, ts.rounding - 1.0f);
+		vgui_fill_rect(cb, vg, t.x + 4.0f, t.y + 5.0f, t.w, t.h, shadow_rounding,
+			vgui_alpha_color(shadow, 0.45f));
+		vgui_fill_rect(cb, vg, t.x + 2.0f, t.y + 3.0f, t.w, t.h, shadow_rounding,
+			vgui_alpha_color(shadow, 0.75f));
+	}
 	vgui_fill_rect(cb, vg, t.x, t.y, t.w, t.h, ts.rounding, bg);
 	if (ts.border_width > 0.0f && border)
 	{
