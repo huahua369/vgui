@@ -545,6 +545,8 @@
   "workbench.outline.down": "下移",
   "workbench.controls.title": "控件",
   "workbench.controls.hint": "拖到画布创建",
+  "workbench.controls.search": "搜索控件…",
+  "workbench.controls.no_match": "没有匹配的控件",
   "workbench.outline.heading": "大纲",
   "workbench.outline.move_here": "移到此处",
   "workbench.outline.pick": "拾取",

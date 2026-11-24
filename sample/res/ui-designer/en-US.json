@@ -500,6 +500,8 @@
   "workbench.outline.down": "Down",
   "workbench.controls.title": "Controls",
   "workbench.controls.hint": "Drag onto the canvas",
+  "workbench.controls.search": "Search controls…",
+  "workbench.controls.no_match": "No matching controls",
   "workbench.outline.heading": "Outline",
   "workbench.outline.move_here": "Move Here",
   "workbench.outline.pick": "Pick Up",

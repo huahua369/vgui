@@ -3098,12 +3098,12 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     drag(inside_leaf, false);
     input.click("designer.preview.mode");
     drag(inside_leaf, true);
-    const auto verify_insert = [&](const char* parent, bool absolute) {
+    const auto verify_insert = [&](const char* parent, bool absolute, const char* kind = "panel") {
         const std::string id(editor.selection());
         const auto& actual_parent = history.current().nodes.at(parent);
         require(!actual_parent.children.empty() && actual_parent.children.back() == id, "drop resolved to the wrong container");
         const auto& added = history.current().nodes.at(id);
-        const auto* type = ui::find_type("panel");
+        const auto* type = ui::find_type(kind);
         require(added.type == type->key && std::get<double>(added.props.at("width")) == type->initial_width &&
             std::get<double>(added.props.at("height")) == type->initial_height, "drop did not use the menu's default control size");
         if (absolute) {
@@ -3124,6 +3124,23 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     verify_insert("padded", true);
     drag(inside_flow, true);
     verify_insert("flow", false);
+
+    auto* search = find_widget(vgui_root(shell), "designer.controls.search", VGUI_EDIT);
+    require(search, "missing palette search field");
+    input.click(search);
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = "复选";
+    input.push(text);
+    frame(); // Filter before any Enter or blur.
+    require(vgui_list_get_count(list) == 1 && vgui_list_get_item_icon(list, vgui_list_get_item_at(list, 0)),
+        "Chinese search did not show one result with its icon");
+    drag(inside_flow, true);
+    verify_insert("flow", false, "checkbox");
+    input.click(search);
+    ui::native_menu_input(win, shell, frame).key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(vgui_list_get_count(list) == static_cast<int>(ui::types().size()), "clearing search did not restore all rows");
 
     begin_drag(inside_leaf);
     require(editor.open(other_page), "switch pages while a palette drag is active");

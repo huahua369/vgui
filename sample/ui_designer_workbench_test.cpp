@@ -2474,6 +2474,55 @@ void exercise_menu_language()
         "could not dismiss the reopened New Control popup chain");
 }
 
+void exercise_control_search()
+{
+    temp_dir directory;
+    using ui::designer_language;
+    test_workbench workbench(directory.path / "control-search.vgui.json", designer_language::simplified_chinese);
+    auto* ctx = workbench.ctx.get();
+    auto* dock = workbench.bench.document_dock();
+    auto* search = workbench.widget("designer.controls.search", VGUI_EDIT);
+    auto* list = workbench.widget("designer.controls", VGUI_LIST);
+    const auto before = workbench.model.current();
+    const auto revision = workbench.model.revision();
+    const auto all = static_cast<int>(ui::types().size());
+    check(vgui_dock_activate(dock, vgui_dock_find(dock, "controls")), "could not show the controls tab");
+    workbench.frame();
+    const auto type = [&](const char* query) {
+        workbench.click(search);
+        check(vgui_get_focus(ctx) == search, "search did not receive focus");
+        vgui_edit_select_all(search);
+        check(vgui_input_text(ctx, query), "search did not receive text");
+        workbench.frame();
+    };
+    const auto name = [&](int i) { return std::string_view(vgui_list_get_item_text(list, vgui_list_get_item_at(list, i))); };
+    type("按钮");
+    check(vgui_list_get_count(list) == 2 && name(0) == "按钮" && name(1) == "单选按钮",
+        "Chinese substring search did not keep both buttons in catalog order");
+    const auto button = vgui_list_get_item_at(list, 0);
+    auto* icon = vgui_list_get_item_icon(list, button);
+    check(icon && vgui_list_select(list, button, 1), "filtered row lost its icon or selection");
+    workbench.strings = ui::designer_strings(designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_a11y_name(search)) == "Search controls…" &&
+        std::string_view(vgui_edit_get_text(search)) == "按钮" && vgui_list_get_count(list) == 2 &&
+        name(0) == "Button" && name(1) == "Radio Button" && vgui_list_get_item_at(list, 0) == button &&
+        vgui_list_get_item_icon(list, button) == icon && vgui_list_is_selected(list, button),
+        "language switch lost the search, its matching rows, selection or icon");
+    type(" pRoGrEsS bAr ");
+    check(vgui_list_get_count(list) == 1 && name(0) == "Progress Bar", "English search did not ignore case and outer spaces");
+    type("tabview");
+    check(vgui_list_get_count(list) == 1 && name(0) == "Tab View", "type key search did not match");
+    type("no-such-control");
+    check(vgui_list_get_count(list) == 0, "a nonmatching query still showed rows");
+    check(workbench.key(VGUI_KEY_ESCAPE) && vgui_list_get_count(list) == all && !*vgui_edit_get_text(search),
+        "Escape did not clear the search and restore the catalog");
+    type("   ");
+    check(vgui_list_get_count(list) == all && workbench.model.current() == before && workbench.model.revision() == revision,
+        "blank search filtered the catalog or changed the document");
+}
+
 void exercise_layout_preferences()
 {
     temp_dir directory;
@@ -2648,6 +2697,7 @@ int main()
         exercise_gradient_animation();
         exercise_radio_group_inspector();
         exercise_menu_language();
+        exercise_control_search();
         exercise_language_preferences();
         exercise_layout_preferences();
         std::puts("UI Designer workbench smoke test passed");

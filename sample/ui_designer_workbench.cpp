@@ -54,6 +54,14 @@ const value& property_value(const node& item, const property_descriptor& desc)
     return found == item.props.end() ? desc.default_value : found->second;
 }
 
+bool control_matches(std::string_view text, std::string_view query)
+{
+    if (query.empty()) return true;
+    const auto fold = [](char c) { return c >= 'A' && c <= 'Z' ? c - 'A' + 'a' : c; };
+    return std::search(text.begin(), text.end(), query.begin(), query.end(),
+        [&](char a, char b) { return fold(a) == fold(b); }) != text.end();
+}
+
 bool is_container(const node& item)
 {
     const auto* type = find_type(item.type);
@@ -237,12 +245,13 @@ struct designer_workbench::impl {
     bool invoking_command = false;
     bool page_active = true;
     designer_theme theme = default_designer_theme;
-    vgui_widget *shell = nullptr, *dock = nullptr, *controls = nullptr;
+    vgui_widget *shell = nullptr, *dock = nullptr, *controls = nullptr, *control_search = nullptr;
     std::array<vgui_widget*, std::size(sides)> side_buttons{};
     std::vector<vgui_widget*> outline_buttons;
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr, *icon_region_button = nullptr;
     // List rows borrow their icon textures. The shell is destroyed before these owners.
     std::vector<icon_texture> control_icons;
+    std::vector<vgui_item_id> control_rows; // Indexed by catalog entry; zero when filtered out.
     icon_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
     vgui_widget *toolbar = nullptr, *menubar = nullptr, *quick_actions = nullptr;
@@ -945,30 +954,79 @@ struct designer_workbench::impl {
         auto* hint = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_text_align(hint, 0, .5f);
         bind_label(hint, {"workbench.controls.hint", "Drag onto the canvas"}, vgui_widget_set_text);
+        control_search = vgui_widget_add(panel, VGUI_EDIT, nullptr);
+        vgui_widget_set_id(control_search, "designer.controls.search");
+        vgui_widget_set_size(control_search, 0, 28);
+        vgui_widget_set_align_self(control_search, VGUI_ALIGN_STRETCH);
+        bind_label(control_search, {"workbench.controls.search", "Search controls…"}, vgui_edit_set_placeholder);
+        bind_label(control_search, {"workbench.controls.search", "Search controls…"}, vgui_widget_set_a11y_name);
+        vgui_widget_on_text(control_search, [](vgui_widget*, const char*, void* user) {
+            static_cast<impl*>(user)->update_control_search();
+        }, this);
+        vgui_widget_on_event(control_search, [](vgui_widget* edit, const vgui_event* event, void* user) {
+            if (event->type == VGUI_EVENT_CANCEL && event->key == VGUI_KEY_ESCAPE && *vgui_edit_get_text(edit)) {
+                vgui_edit_set_text(edit, "");
+                static_cast<impl*>(user)->update_control_search();
+            }
+        }, this);
         controls = vgui_widget_add(panel, VGUI_LIST, nullptr);
         vgui_widget_set_id(controls, "designer.controls");
         vgui_widget_set_size(controls, 0, 0);
         vgui_widget_set_grow(controls, 1);
         vgui_panel_set_scrollable(controls, 0, 1);
         bind_label(controls, {"workbench.controls.title", "Controls"}, vgui_widget_set_a11y_name);
+        bind_label(controls, {"workbench.controls.no_match", "No matching controls"}, vgui_list_set_empty_text);
         control_icons.reserve(types().size());
-        for (const auto& type : types()) {
-            const auto item = vgui_list_add_item(controls, translate(type_label(type)), nullptr);
-            auto icon = make_control_icon(ui, type.key);
-            vgui_list_set_item_icon(controls, item, icon.get());
-            control_icons.push_back(std::move(icon));
-        }
+        for (const auto& type : types()) control_icons.push_back(make_control_icon(ui, type.key));
+        control_rows.resize(types().size());
+        refresh_control_rows();
         bind_control_drag();
+    }
+
+    void update_control_search()
+    {
+        refresh_control_rows();
+        vgui_panel_set_scroll(controls, 0, 0);
+    }
+
+    void refresh_control_rows()
+    {
+        std::string_view query = vgui_edit_get_text(control_search);
+        constexpr std::string_view whitespace = " \t\r\n";
+        const auto first = query.find_first_not_of(whitespace);
+        query = first == std::string_view::npos ? std::string_view{} : query.substr(first, query.find_last_not_of(whitespace) - first + 1);
+        const designer_strings chinese(designer_language::simplified_chinese), english(designer_language::english);
+        int position = 0;
+        for (std::size_t i = 0; i < types().size(); ++i) {
+            const auto& type = types()[i];
+            const auto label = type_label(type);
+            auto& row = control_rows[i];
+            if (!control_matches(type.key, query) && !control_matches(chinese.text(label.key, label.fallback), query) &&
+                !control_matches(english.text(label.key, label.fallback), query)) {
+                if (row) vgui_list_remove_item(controls, std::exchange(row, 0));
+                continue;
+            }
+            const char* localized = translate(label);
+            if (!row) {
+                row = vgui_list_insert_item(controls, position, localized, nullptr);
+                vgui_list_set_item_icon(controls, row, control_icons[i].get());
+            } else if (std::string_view(vgui_list_get_item_text(controls, row)) != localized) {
+                vgui_list_set_item_text(controls, row, localized);
+            }
+            ++position;
+        }
     }
 
     void bind_control_drag()
     {
-        vgui_list_set_row_drag(controls, [](void* user, vgui_item_id item, int index, vgui_drag_payload* out) -> int {
+        vgui_list_set_row_drag(controls, [](void* user, vgui_item_id item, int, vgui_drag_payload* out) -> int {
             auto& self = *static_cast<impl*>(user);
-            if (!self.page_active || self.replaced || index < 0 || std::size_t(index) >= types().size() ||
-                self.history.current().nodes.size() >= max_nodes) return 0;
+            if (!self.page_active || self.replaced || !item || self.history.current().nodes.size() >= max_nodes) return 0;
+            const auto found = std::ranges::find(self.control_rows, item);
+            if (found == self.control_rows.end()) return 0;
+            // The visible row index changes when the search hides other types.
             *out = {.kind = VGUI_DRAG_CUSTOM, .text = vgui_list_get_item_text(self.controls, item),
-                .id = static_cast<vgui_item_id>(index) + 1, .data = self.controls};
+                .id = static_cast<vgui_item_id>(found - self.control_rows.begin()) + 1, .data = self.controls};
             return 1;
         }, this);
     }
@@ -1104,7 +1162,7 @@ struct designer_workbench::impl {
         vgui_list_set_row_drag(controls, nullptr, nullptr);
         bind_control_drag();
         for (auto* focus = vgui_get_focus(ui); focus; focus = vgui_widget_get_parent(focus)) {
-            if (focus != tree && focus != controls && focus != grid->widget()) continue;
+            if (focus != tree && focus != controls && focus != control_search && focus != grid->widget()) continue;
             vgui_set_focus(ui, nullptr);
             break;
         }
@@ -1844,9 +1902,7 @@ struct designer_workbench::impl {
         }
         refresh_command_states();
         for (const auto& [id, label] : dock_labels) vgui_dock_set_title(dock, id, translate(label));
-        int index = 0;
-        for (const auto& type : types())
-            vgui_list_set_item_text(controls, vgui_list_get_item_at(controls, index++), translate(type_label(type)));
+        refresh_control_rows();
         refresh_side_buttons();
         if (page_active && !replaced) refresh_outline_labels();
         sync_inspector_language = true;
