@@ -174,6 +174,86 @@ void test_game_data() {
         "a saved inspection must own its values and identity after changes and unmount");
 }
 
+void test_progress_value_transitions() {
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"visible":false},"children":["hp","mirror","shield","dormant"]},
+        "hp":{"type":"progress","props":{"max_value":100,"value":20,"bind_value":"hud.hp",
+            "bind_value_transition_ms":1000}},
+        "mirror":{"type":"progress","props":{"max_value":10,"value":3,"bind_value":"hud.hp"}},
+        "shield":{"type":"progress","props":{"max_value":100,"step":25,"value":12,"bind_value":"hud.shield",
+            "bind_value_transition_ms":2000}},
+        "dormant":{"type":"progress","props":{"value":0.25,"bind_value_transition_ms":5000}}
+    }})", doc), "decode optional data transitions");
+    const auto authored = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    ui::runtime rt(ctx.get());
+    const auto paint = [&] { return vgui_context_paint_revision(ctx.get()); };
+    const auto displayed = [&](std::string_view id) { return vgui_widget_get_value(rt.widget(id)); };
+    const auto publish_hp = [&](double target) { return rt.set_data("hud.hp", ui::value{target}); };
+
+    check(!rt.advance_data_transitions(1), "no transitions before mount");
+    check(rt.mount(doc, 1) && displayed("hp") == 20 && displayed("mirror") == 3 &&
+        displayed("shield") == 0 && displayed("dormant") == .25f, "mount keeps native authored values");
+    auto* hp = rt.widget("hp");
+    const auto before_publish = paint();
+    check(rt.set_data("hud.shield", ui::value{82.}) && displayed("shield") == 0 && paint() == before_publish,
+        "publishing a transition does not immediately display or dirty paint");
+    check(!rt.advance_data_transitions(.02) && displayed("shield") == 0 && paint() == before_publish,
+        "a stepped transition advances its clock without updating paint on a quantization plateau");
+    check(publish_hp(150) && displayed("hp") == 20 && displayed("mirror") == 10,
+        "the same field can update a default instant target and an opted-in transition differently");
+    const auto published = rt.inspect_data("hud.hp");
+    check(published && published->published == ui::value{150.} && published->targets.size() == 2 &&
+        published->targets[0].effective == ui::value{20.} && published->targets[1].effective == ui::value{10.},
+        "inspection reports the raw publication separately from the native displayed values");
+    const auto pending = paint();
+    check(!rt.advance_data_transitions(0) && !rt.advance_data_transitions(-.25) &&
+        !rt.advance_data_transitions(std::numeric_limits<double>::infinity()) &&
+        !rt.advance_data_transitions(std::numeric_limits<double>::quiet_NaN()) && paint() == pending,
+        "invalid and zero deltas must not advance the clock or dirty paint");
+    check(rt.advance_data_transitions(.25) && near(displayed("hp"), 66.25f) && displayed("shield") == 25 &&
+        paint() != pending, "an ease-out sample advances both targets at their own rates before layout under a hidden root");
+    const auto first_sample = paint();
+    check(publish_hp(150) && !rt.set_data("hud.hp", ui::value{false}, ui::data_update::immediate) &&
+        paint() == first_sample && rt.advance_data_transitions(.25) && near(displayed("hp"), 90.f),
+        "same-value and invalid publications do not interrupt an active transition");
+    const auto second_sample = paint();
+    check(publish_hp(200) && paint() == second_sample && rt.inspect_data("hud.hp")->published == ui::value{200.} &&
+        rt.advance_data_transitions(.25) && near(displayed("hp"), 98.75f),
+        "different publications clamped to the same target keep the original transition clock");
+
+    check(rt.layout({300, 120, 1}).has_value() && rt.widget("hp") == hp && near(displayed("hp"), 98.75f),
+        "layout neither remounts nor changes an active transition");
+    check(publish_hp(0) && near(displayed("hp"), 98.75f), "retargeting does not jump");
+    rt.advance_animations(.5);
+    check(near(displayed("hp"), 12.34375f) && displayed("shield") == 75,
+        "the ordinary animation tick retargets from the current display and keeps ticking hidden data without gradients");
+    check(rt.set_data("hud.hp", ui::value{0.}, ui::data_update::immediate) && displayed("hp") == 0,
+        "an immediate publication of the same value snaps and cancels the running tween");
+    check(rt.set_data("hud.shield", std::nullopt) && displayed("shield") == 0 &&
+        !rt.inspect_data("hud.shield")->published, "clearing a publication snaps back to the native authored fallback");
+    const auto idle = paint();
+    check(!rt.advance_data_transitions(3) && paint() == idle, "canceled transitions stop requesting paint");
+
+    check(publish_hp(100) && rt.advance_data_transitions(.5) && near(displayed("hp"), 87.5f) &&
+        publish_hp(87.5) && !rt.advance_data_transitions(.5) && near(displayed("hp"), 87.5f),
+        "retargeting to the currently displayed value cancels a tween");
+    check(rt.set_data("hud.shield", ui::value{82.}) &&
+        rt.advance_data_transitions(std::numeric_limits<double>::max()) && displayed("shield") == 75,
+        "a large elapsed time lands on the native quantized endpoint");
+    const auto finished = paint();
+    check(!rt.advance_data_transitions(1) && paint() == finished && displayed("dormant") == .25f &&
+        rt.widget("hp") == hp && doc == authored, "completed and unbound transitions leave paint, widgets and authoring alone");
+
+    check(publish_hp(0) && rt.mount(doc, 2) && displayed("hp") == 20 &&
+        !rt.inspect_data("hud.hp")->published && !rt.advance_data_transitions(1),
+        "remount drops active transitions and publications");
+    check(publish_hp(100), "start another transition before unmount");
+    rt.unmount();
+    check(!rt.advance_data_transitions(1), "unmount safely drops active transition targets");
+}
+
 void test_anchored_layout() {
     ui::diagnostic error;
     ui::document doc;
@@ -1397,13 +1477,14 @@ void test_decorative_gradients() {
 void test_gradient_animations() {
     ui::document doc;
     check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","children":["shine","group"]},
+        "root":{"type":"panel","children":["shine","group","hp"]},
         "shine":{"type":"gradient","props":{"x":10,"y":20,"width":100,"height":30,
             "gradient_animation":"shine","gradient_animation_duration":2,"gradient_animation_loop":false}},
         "group":{"type":"panel","props":{"x":10,"y":70,"width":100,"height":30},"children":["color"]},
         "color":{"type":"gradient","props":{"width":100,"height":30,
             "gradient_animation":"color","gradient_animation_color":"#0000FF80",
-            "gradient_stops":[{"offset":0,"color":"#FF0000"},{"offset":0.4,"color":"#00FF0080"},{"offset":1,"color":"#00FF0000"}]}}
+            "gradient_stops":[{"offset":0,"color":"#FF0000"},{"offset":0.4,"color":"#00FF0080"},{"offset":1,"color":"#00FF0000"}]}},
+        "hp":{"type":"progress","props":{"visible":false,"bind_value":"hud.hp","bind_value_transition_ms":1000}}
     }})", doc), "decode two animated gradients");
     std::string json;
     ui::document reloaded;
@@ -1501,6 +1582,21 @@ void test_gradient_animations() {
     rt.seek_animations(-1);
     rt.seek_animations(std::numeric_limits<double>::infinity());
     check(vgui_context_paint_revision(ctx.get()) == seek_paint_revision, "seeking to the same or an invalid time must not dirty paint");
+
+    auto* hp = rt.widget("hp");
+    check(rt.set_data("hud.hp", ui::value{1.}), "start a data transition alongside the gradients");
+    rt.seek_animations(1);
+    draw();
+    const float sought_x = layers[0].cp[0].x;
+    check(near(sought_x, -40 + 200.f / 3) && vgui_widget_get_value(hp) == 0,
+        "absolute seek samples the gradient timeline but leaves a live tween alone");
+    check(rt.advance_data_transitions(.5) && vgui_widget_get_value(hp) == .875f, "advance the data clock alone");
+    draw();
+    check(near(layers[0].cp[0].x, sought_x), "a data-only tick does not advance the gradient playhead");
+    rt.advance_animations(.5);
+    draw();
+    check(near(layers[0].cp[0].x, 60) && vgui_widget_get_value(hp) == 1, "the host clock advances both kinds of animation");
+
     rt.unmount();
     check(rt.animation_timing().duration == 0 && !rt.animation_timing().loops, "unmount clears timing");
 }
@@ -2350,6 +2446,7 @@ int main(int argc, char** argv) {
         run();
         test_anchored_layout();
         test_game_data();
+        test_progress_value_transitions();
         test_declarative_widgets();
         test_button_gradients();
         test_panel_gradients();

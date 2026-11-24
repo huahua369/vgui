@@ -1992,6 +1992,30 @@ void exercise_data_binding_inspector()
     workbench.frame();
     check(std::string_view(vgui_widget_get_text(workbench.widget(id, VGUI_LABEL))) == "Text field",
         "English language switch did not relabel the binding");
+
+    workbench.bench.select("bar");
+    workbench.frame();
+    search = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(search);
+    vgui_edit_select_all(search);
+    check(vgui_input_text(ctx, "bind_value_transition_ms"), "could not filter the transition property");
+    workbench.frame();
+    constexpr auto transition = "property:bind_value_transition_ms";
+    check(std::string_view(vgui_widget_get_text(workbench.widget(transition, VGUI_LABEL))) == "Transition (ms)",
+        "the transition duration should be in the progress inspector");
+    field = workbench.widget(transition, VGUI_EDIT);
+    check(std::string_view(vgui_edit_get_text(field)) == "0", "an existing progress binding should default to instant");
+    workbench.click(field);
+    type("250");
+    const auto smooth = model.current();
+    check(smooth.nodes.at("bar").props.at("bind_value_transition_ms") == ui::value{250.} && model.committed() == committed,
+        "editing the duration should apply before Enter");
+    type("5001");
+    check(model.current() == smooth, "an out-of-range duration replaced the last valid edit");
+    type("250");
+    workbench.key(VGUI_KEY_ENTER);
+    check(model.committed() == smooth && model.undo() && model.current() == committed && model.redo() && model.current() == smooth,
+        "the transition duration should commit as one undoable edit");
 }
 
 void exercise_anchor_inspector()

@@ -1756,7 +1756,7 @@ struct designer_workbench::impl {
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (desc.type == value_type::data_key) row.category = "Game data";
+                if (desc.type == value_type::data_key || key == "bind_value_transition_ms") row.category = "Game data";
                 else if (key.starts_with("anchor_")) row.category = "Anchors";
                 else if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
                 else if (decorative_gradient && key.starts_with("gradient_"))
@@ -1833,6 +1833,8 @@ struct designer_workbench::impl {
                     row.max_value = desc.max;
                     if (desc.key == "font_size") row.tooltip = strings.text("workbench.inspector.font.size_hint",
                         "0 uses the default size. Custom size: 4–256 logical pixels.");
+                    else if (key == "bind_value_transition_ms") row.tooltip = strings.text("workbench.inspector.data.transition_hint",
+                        "Milliseconds for a bound progress value to reach its target. 0 applies instantly; ignored without a value field.");
                     else if (desc.key.starts_with("switch_track_")) row.tooltip = strings.text("workbench.inspector.switch_track_hint",
                         "Track size in logical pixels, excluding labels. 0 uses the theme. Enlarge the control if the track does not fit.");
                     else if (desc.key.starts_with("icon_source_")) row.tooltip = strings.text("workbench.inspector.icon_source_hint",

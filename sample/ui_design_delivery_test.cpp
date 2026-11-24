@@ -413,12 +413,11 @@ void test_hud_delivery() {
     ui::diagnostic error;
     ui::document design;
     check(ui::read_document(source, design, &error), "read anchored HUD");
-    const auto authored = design;
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
     check(bool(ctx), "create HUD delivery context");
     vgui_context_set_safe_area(ctx.get(), 44, 3, 16, 30);
     ui::runtime runtime(ctx.get());
-    const auto mount_live_hud = [&](const ui::document& doc) {
+    const auto mount_live_hud = [&](const ui::document& doc, bool smooth) {
         check(runtime.mount(doc, 1, {}, &error) && runtime.layout({1720, 720, 1.5f}), "mount delivered HUD");
         ui::pixel_rect radar{}, reticle{};
         vgui_widget_get_rect(runtime.widget("minimap"), &radar.x, &radar.y, &radar.width, &radar.height);
@@ -427,12 +426,29 @@ void test_hud_delivery() {
             reticle.x + reticle.width * .5f == 1720 * .75f && reticle.y + reticle.height * .5f == 720 * .75f,
             "delivered HUD must respect safe-area insets without displacing the reticle");
         auto* hp = runtime.widget("hp");
-        check(hp && vgui_widget_get_value(hp) == 1.0f, "mount must use the authored HP, not the previous live value");
-        check(runtime.set_data("player.hp_ratio", ui::value{0.25}) && vgui_widget_get_value(hp) == 0.25f,
-            "delivered HUD must preserve working HP binding");
-        check(doc == authored, "runtime HUD values must not mutate the document");
+        auto* shield = runtime.widget("shield");
+        check(hp && shield && vgui_widget_get_value(hp) == 1.0f && vgui_widget_get_value(shield) == 0.5f,
+            "mount must use authored vitals, not previous live values");
+        check(runtime.set_data("player.hp_ratio", ui::value{0.25}) && runtime.set_data("player.shield_ratio", ui::value{1.0}),
+            "delivered HUD must preserve working vitals bindings");
+        check(vgui_widget_get_value(hp) == (smooth ? 1.f : .25f) && vgui_widget_get_value(shield) == (smooth ? .5f : 1.f),
+            "only explicitly configured vitals should transition");
+        if (smooth) {
+            runtime.advance_animations(0.125); // Shield is done; HP has half of its time remaining.
+            check(vgui_widget_get_value(hp) > .25f && vgui_widget_get_value(hp) < 1.f && vgui_widget_get_value(shield) == 1.f,
+                "delivered HP and shield must keep independent transition durations");
+            runtime.advance_animations(0.125);
+            check(vgui_widget_get_value(hp) == .25f, "delivered HP should reach its target");
+        }
     };
-    mount_live_hud(design);
+    const auto original = design;
+    mount_live_hud(design, false);
+    check(design == original, "runtime HUD values must not mutate the document");
+    design.nodes.at("hp").props["bind_value_transition_ms"] = 250.;
+    design.nodes.at("shield").props["bind_value_transition_ms"] = 125.;
+    const auto authored = design;
+    mount_live_hud(design, true);
+    check(design == authored, "runtime must not mutate the configured HUD");
 
     temp_dir temp;
     const auto folder = temp.path / "hud";
@@ -443,8 +459,8 @@ void test_hud_delivery() {
     ui::embedded_delivery single;
     check(ui::read_delivery(folder, directory, &error) && ui::read_json_delivery(file, single, &error) &&
         directory == authored && single.design == authored, "deliver authored bindings and defaults, not live HUD values");
-    mount_live_hud(directory);
-    mount_live_hud(single.design);
+    mount_live_hud(directory, true);
+    mount_live_hud(single.design, true);
     check(read_bytes(source) == source_bytes, "running and delivering the HUD must not rewrite its source");
 }
 } // namespace

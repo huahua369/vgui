@@ -3299,7 +3299,8 @@ void exercise_custom_viewport(os_window& win, vgui_context* shell, designer& edi
 }
 
 void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
-                        const std::function<void()>& frame, const fs::path& sandbox) {
+                        const std::function<void()>& frame, const std::function<void(float)>& tick_preview,
+                        const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
         if (!passed) throw std::runtime_error("Native game data: " + std::string(message));
     };
@@ -3311,7 +3312,8 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
         "meter":{"type":"progress","props":{"x":20,"y":64,"width":180,"height":22,"value":0.5,"step":0.5,"bind_value":"hud.hp"}},
         "button":{"type":"button","props":{"x":20,"y":96,"width":98,"height":32,"text":"Ready","bind_enabled":"hud.ready"}},
         "group":{"type":"panel","props":{"y":140,"width":220,"height":40},"children":["mirror"]},
-        "mirror":{"type":"progress","props":{"x":20,"width":180,"height":22,"max_value":0.125,"value":0.0625,"bind_value":"hud.hp"}}
+        "mirror":{"type":"progress","props":{"x":20,"width":180,"height":22,"max_value":0.125,"value":0.0625,
+            "bind_value":"hud.hp","bind_value_transition_ms":1000}}
     }})", doc), "decode the data binding fixture");
     const auto source = sandbox / "game-data-source.vgui.json", second = sandbox / "game-data-second.vgui.json";
     require(ui::write_document(source, doc) && ui::write_document(second, doc) && editor.open(source), "open fixture");
@@ -3416,6 +3418,15 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
         "progress step was not reflected in the first binding target");
     first_row(targets);
     keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    require(read(".effective") == "0.0625" && read(".published") == "0.375",
+        "the transitioned target should still show its initial value before a clock tick");
+    const auto selected_target = vgui_list_get_selected(targets, 0);
+    tick_preview(0.25f);
+    const auto halfway = std::stof(read(".effective"));
+    require(halfway > 0.0625f && halfway < 0.125f && read(".published") == "0.375" &&
+        vgui_list_get_selected(targets, 0) == selected_target,
+        "the open debug view should update the effective value without moving the target selection");
+    tick_preview(0.75f);
     require(read(".authored") == "0.0625" && read(".effective") == "0.125",
         "the second target did not show its own design and clamped actual value");
     type("Not editable", ".effective");
@@ -4798,6 +4809,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
     };
     auto last = SDL_GetTicks();
     int submitted_windows = 0;
+    float game_data_step = 0.0f; // The data smoke advances its clock explicitly.
     const std::function<void()> advance = [&] {
         SDL_Event e;
         // Commit a requested transition between SDL events, without leaving
@@ -4833,7 +4845,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         last = now;
         // The independent preview may be the only thing that changed. Let it
         // invalidate the shell before begin_frame decides which canvases to clear.
-        editor.render_preview(elapsed);
+        editor.render_preview(smoke == native_smoke::game_data ? std::exchange(game_data_step, 0.0f) : elapsed);
         host.begin_frame(dt);
         host.draw_all();
         submitted_windows = host.end_frame();
@@ -4841,7 +4853,10 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
     if (smoke == native_smoke::game_data) {
         try {
             advance();
-            exercise_game_data(*win, shell.get(), editor, advance, picker->sandbox);
+            exercise_game_data(*win, shell.get(), editor, advance, [&](float seconds) {
+                game_data_step = seconds;
+                advance();
+            }, picker->sandbox);
         } catch (...) {
             app.wait_gpu();
             throw;

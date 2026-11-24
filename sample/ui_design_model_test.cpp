@@ -222,12 +222,22 @@ void data_binding_round_trip()
         }
     }
 
+    constexpr std::string_view transition_key = "bind_value_transition_ms";
+    for (const auto& kind : ui::types()) {
+        const auto* duration = ui::find_property(kind.key, transition_key);
+        if (kind.key == "progress") {
+            check(duration && duration->type == value_type::number && duration->default_value == ui::value{0.} &&
+                duration->min == 0 && duration->max == 5000, "progress value transition is instant by default");
+        } else {
+            check(!duration, "transition duration only applies to progress values");
+        }
+    }
     const auto doc = decode(json_document(R"({
         "root":{"type":"panel","children":["caption","confirm","meter","paint"],
                 "props":{"bind_visible":"","bind_enabled":"flags.active","enabled":false}},
         "caption":{"type":"label","props":{"text":"Author caption","text_key":"caption.i18n","bind_text":"z.caption"}},
         "confirm":{"type":"button","props":{"text":"Author button","bind_text":"z.caption","bind_visible":"flags.active"}},
-        "meter":{"type":"progress","props":{"value":0.75,"bind_value":"a.meter"}},
+        "meter":{"type":"progress","props":{"value":0.75,"bind_value":"a.meter","bind_value_transition_ms":125.5}},
         "paint":{"type":"gradient","props":{"enabled":false,"bind_visible":"flags.active"}}
     })"));
     const ui::data_field_map expected_fields{
@@ -241,6 +251,18 @@ void data_binding_round_trip()
         reopened.nodes.at("root").props.at("enabled") == ui::value{false},
         "data bindings do not overwrite authored fallback values");
     check(ui::data_fields(decode(minimal)).empty(), "legacy page with no bindings declares no fields");
+    auto dormant = reopened;
+    dormant.nodes.at("meter").props.erase("bind_value");
+    auto& props = dormant.nodes.at("meter").props;
+    props["bind_value_transition_ms"] = 5000.;
+    check(ui::validate(dormant) && !ui::data_fields(dormant).contains("a.meter") &&
+        decode(encode(dormant)) == dormant, "an unbound progress duration persists but declares no field");
+    for (auto invalid : {ui::value{-1.}, ui::value{5001.}, ui::value{"250"s}}) {
+        props["bind_value_transition_ms"] = invalid;
+        ui::diagnostic error;
+        check(!ui::validate(dormant, &error) && error.path == "/nodes/meter/props/bind_value_transition_ms",
+            "out of range and ill-typed transition durations are rejected even when dormant");
+    }
 }
 
 void data_binding_validation()

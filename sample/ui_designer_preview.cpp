@@ -1163,6 +1163,18 @@ struct simulation_dialog {
         show_inspection();
     }
 
+    void refresh_transition_value() {
+        if (!panel || !debug || !inspected || inspected->type != value_type::number) return;
+        auto live = mounted->inspect_data(rows[selected - 1]->first);
+        if (!live) return;
+        // Targets are fixed for this mount. Keep the current selection and scroll position.
+        inspected = std::move(live);
+        if (const auto* target = current_target()) {
+            const auto display = format_value(target->effective, true);
+            if (display != vgui_edit_get_text(effective.edit)) vgui_edit_set_text(effective.edit, display.c_str());
+        }
+    }
+
     void refresh_language() const {
         if (!panel) return;
         const auto* caption = strings.text("preview.simulation.title", "Simulate Data");
@@ -1962,7 +1974,8 @@ struct designer_preview::impl {
 
     void apply_simulation() {
         if (!run || simulation.empty()) return;
-        for (const auto& [key, data] : simulation) mounted->set_data(key, data);
+        // Restoring a page or re-entering Run is not a new game-data update.
+        for (const auto& [key, data] : simulation) mounted->set_data(key, data, data_update::immediate);
         dirty = true;
     }
 
@@ -2641,6 +2654,9 @@ struct designer_preview::impl {
             if (!next) { cancel_canvas_edit(); return; }
             frame = std::move(next);
         }
+        // Data transitions keep their own clock when the gradient playhead is
+        // paused or scrubbed. Only changed progress paint wakes the canvas.
+        if (run && mounted->advance_data_transitions(dt)) simulation_editor.refresh_transition_value();
         if (shape_edit) {
             vgui_layout(shell);
             const auto area = rect(canvas);

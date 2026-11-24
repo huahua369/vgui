@@ -815,6 +815,7 @@ static int check_hud(const hud_input& input)
 	if (skill && vgui_widget_get_kind(skill) == VGUI_BUTTON)
 	{
 		std::array<float, first_skill_progress + kSkillActions.size()> authored{}, live{}, expected{};
+		std::array<double, first_skill_progress + kSkillActions.size()> transitions{};
 		for (std::size_t i = 0; i < st.progress.size(); ++i)
 		{
 			const auto& field = st.progress[i];
@@ -822,6 +823,9 @@ static int check_hud(const hud_input& input)
 				std::fprintf(stderr, "hud design check: missing bind_value '%s' on '%s'\n", field.key, field.id);
 			ok = ok && field.bound;
 			authored[i] = vgui_widget_get_value(field.widget);
+			const auto& props = input.content.design.nodes.at(field.id).props;
+			if (const auto duration = props.find("bind_value_transition_ms"); duration != props.end())
+				transitions[i] = std::get<double>(duration->second) / 1000.0;
 		}
 		const auto button = rect(skill);
 		const float x = button.x + button.width * 0.5f;
@@ -842,9 +846,13 @@ static int check_hud(const hud_input& input)
 		for (std::size_t i = 0; i < kSkillActions.size(); ++i)
 			expected[first_skill_progress + i] = st.skill_cd[i] / 3.0f;
 		for (std::size_t i = 0; i < st.progress.size(); ++i)
+			check(near(vgui_widget_get_value(st.progress[i].widget), transitions[i] > 0.0 ? authored[i] : expected[i]),
+				"only configured meters should defer their displayed value");
+		st.design->advance_animations(*std::max_element(transitions.begin(), transitions.end()));
+		for (std::size_t i = 0; i < st.progress.size(); ++i)
 		{
 			live[i] = vgui_widget_get_value(st.progress[i].widget);
-			check(near(live[i], expected[i]), "simulation data must reach each HUD meter before update");
+			check(near(live[i], expected[i]), "simulation data must reach each HUD meter by its transition end");
 		}
 		check(live[first_skill_progress] > 0.9f, "JSON action did not start the live cooldown");
 		check(!st.design->set_data("hud.unknown", ui::value{0.25}), "unknown fields must be rejected");

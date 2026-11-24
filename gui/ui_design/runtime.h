@@ -101,6 +101,8 @@ struct data_field_snapshot {
     std::vector<data_target_snapshot> targets; // Active bindings in mount order.
 };
 
+enum class data_update { transition, immediate };
+
 // Timing for an absolute playhead across all the animations in a document.
 // A gradient in keyframes mode contributes timing even with no keys.
 struct animation_span {
@@ -140,10 +142,17 @@ public:
 
     // Publish a single field on the owner thread, outside input dispatch.
     // Returns false for an unknown field or invalid type/value. nullopt
-    // restores every target's own authored value (including its text key).
-    // Same-value updates are no-ops. Layout keeps the values; a remount
-    // starts fresh. Neither publishing nor clearing changes the document.
-    bool set_data(std::string_view field, std::optional<value> data);
+    // immediately restores every target's authored value (including its text key).
+    // Progress targets can opt into a transition; immediate snaps and cancels
+    // any in-flight transition, even for the same publication. Otherwise a
+    // same-value update is a no-op. Layout keeps live data; a remount starts fresh.
+    // Neither publishing nor clearing changes the document.
+    bool set_data(std::string_view field, std::optional<value> data,
+        data_update update = data_update::transition);
+
+    // Tick live value transitions independently of layout, visibility and
+    // gradient playheads. Returns true only if a displayed value changed.
+    bool advance_data_transitions(double delta_seconds);
 
     // Read a field from the current mount without changing widgets or layout.
     // Empty when unmounted or the field has no active bindings. The snapshot
@@ -156,10 +165,10 @@ public:
     // Relayout keeps live edit/focus state; remount restores document values.
     std::optional<layout_snapshot> layout(viewport view);
 
-    // Advance mounted gradient animations on the host clock, after layout and
-    // before drawing. Mount and layout alone always keep the authored paint.
-    // Use 0 to sample the start pose. Hidden/off-screen layers pause, one-shot
-    // effects hold their last value, and this never mutates the document.
+    // Tick live value transitions, then advance mounted gradient animations on
+    // the host clock, after layout and before drawing. For gradients, mount and
+    // layout keep the authored paint and 0 samples the start pose. Hidden or
+    // off-screen layers pause and one-shots hold their last value.
     void advance_animations(double delta_seconds);
 
     // Sample the visible animations at an absolute time after layout. Looping

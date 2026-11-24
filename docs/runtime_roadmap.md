@@ -103,6 +103,8 @@ hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
 
 文本、进度、显隐、启用分别接受字符串、数值、布尔值、布尔值。不认识的字段或错误类型返回 `false`；相同值不会重复刷新。更新不重挂、不写回设计，重新挂载时由宿主重新发布。技能规则、冷却计时和输入映射继续属于游戏宿主，设计稿只描述界面用哪些数据。`--check-design` 检查本示例的绑定合约；旧 HUD 设计未绑定的进度条仍可在正常运行和窗口烟测中使用。
 
+绑定的进度条可以用 `bind_value_transition_ms` 单独设置显示过渡（0–5000 毫秒，默认 0）。可给 `hp` 和 `shield` 分别设置，冷却条继续即时显示。`set_data()` 立即记录字段值；变化中的进度条从当前显示值接续，保留各自的限幅和步进。宿主用 `advance_animations(dt)` 推进（秒），也可只调用 `advance_data_transitions(dt)`；同一帧不要重复调用两者。需要跳过过渡时用 `data_update::immediate`，清除字段则直接恢复设计值。`inspect_data()` 可区分发布值和当前显示值。
+
 ## 5. R2 手柄/键盘方向导航（已实现；焦点环待接实机手柄确认）
 
 > **实施记录**：R2-1 实际 API 为 `vgui_nav_direction`（UP/DOWN/LEFT/RIGHT，`vgui_direction` 名已被 RTL 方向占用）+ `vgui_focus_navigate`；环绕含横向偏移 tie-break（同主轴距离取横轴最小者，否则网格环绕落到 0 列）。验收：model_test test_focus_navigate 12 断言（独立上下文 3x3 网格，避免残留控件成为环绕候选）全过。R2-2 如设计实现（pump_gamepad 每帧泵）。

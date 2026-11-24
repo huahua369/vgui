@@ -8755,6 +8755,28 @@ static void vgui_radio_select(vgui_widget* w, bool notify)
 	vgui_radio_set_checked_internal(w, true, notify);
 }
 
+static float vgui_quantize_range_value(const vgui_widget* w, float normalized)
+{
+	float value = vgui_clampf(normalized, 0.0f, 1.0f);
+	const float span = w->range_max - w->range_min;
+	const float step = span > 0 ? w->step / span : 0.0f;
+	if (step > 0)
+		value = vgui_clampf(std::round(value / step) * step, 0.0f, 1.0f);
+	return value;
+}
+
+bool vgui_widget_set_progress_value_if_changed(vgui_widget* w, float value)
+{
+	if (!w || w->kind != VGUI_PROGRESS || !std::isfinite(value)) return false;
+	const float span = w->range_max - w->range_min;
+	const float next = vgui_quantize_range_value(w, span != 0 ? (value - w->range_min) / span : 0.0f);
+	if (w->value == next) return false;
+	w->value = next;
+	vgui_recording_invalidate_chain(w, true);
+	vgui_widget_mark_dirty(w);
+	return true;
+}
+
 static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
 {
 	if (!w) return;
@@ -8778,11 +8800,7 @@ static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
 	case VGUI_SLIDER:
 	case VGUI_PROGRESS:
 	{
-		float nv = vgui_clampf(v, 0.0f, 1.0f);
-		float span = w->range_max - w->range_min;
-		float nstep = span > 0 ? w->step / span : 0.0f;
-		if (nstep > 0)
-			nv = vgui_clampf(std::round(nv / nstep) * nstep, 0.0f, 1.0f);
+		const float nv = vgui_quantize_range_value(w, v);
 		changed = (std::fabs(w->value - nv) > 1e-6f);
 		w->value = nv;
 	}

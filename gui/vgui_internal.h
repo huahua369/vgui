@@ -334,6 +334,10 @@ void vgui_texture_release(vgui_texture* texture);
 // Marks the owning context for re-layout after a texture size change.
 void vgui_texture_mark_layout_dirty(vgui_texture* texture);
 
+// Update a bound progress bar in range units. A quantized no-op does not
+// invalidate paint or recordings; transition samples never dispatch events.
+bool vgui_widget_set_progress_value_if_changed(vgui_widget* widget, float value);
+
 // Bytes per pixel for a vgui_texture_format.  Returns 0 for an unknown format
 // (used by vgui_texture_desc_valid to reject it).  Shared so editor helpers and
 // backends compute strides consistently instead of hard-coding 4.

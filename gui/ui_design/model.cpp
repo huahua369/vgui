@@ -37,6 +37,7 @@ constexpr data_binding_descriptor bindings[] = {text_binding, value_binding, vis
 const property_descriptor bind_text{text_binding.key, "Text field", value_type::data_key, std::string{}};
 const property_descriptor progress_binding[] = {
     {value_binding.key, "Value field", value_type::data_key, std::string{}},
+    {"bind_value_transition_ms", "Value transition (ms)", value_type::number, 0.0, 0, 5000},
 };
 
 const property_descriptor common[] = {

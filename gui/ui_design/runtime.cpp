@@ -490,6 +490,11 @@ struct runtime::mounted_tree {
         value fallback;
         std::string text_key;
         float min = 0, max = 0;
+        double transition_seconds = 0;
+        struct {
+            float from = 0, to = 0;
+            double elapsed = 0;
+        } tween{};
 
         value current_value() const {
             if (property == "text") return std::string(vgui_widget_get_text(widget));
@@ -498,13 +503,17 @@ struct runtime::mounted_tree {
             return vgui_widget_get_enabled(widget) != 0;
         }
 
+        float clamped_value(const value& data) const {
+            return std::clamp(static_cast<float>(std::get<double>(data)), min, max);
+        }
+
         void apply(const std::optional<value>& data) const {
             const auto& effective = data ? *data : fallback;
             if (property == "text") {
                 if (!data && !text_key.empty()) vgui_widget_set_text_key(widget, text_key.c_str());
                 else vgui_widget_set_text(widget, std::get<std::string>(effective).c_str());
             } else if (property == "value") {
-                const float desired = std::clamp(static_cast<float>(std::get<double>(effective)), min, max);
+                const float desired = clamped_value(effective);
                 const float before = vgui_widget_get_value(widget);
                 if (desired != before) {
                     vgui_widget_set_value(widget, desired); // Uses the native progress range and step.
@@ -532,6 +541,8 @@ struct runtime::mounted_tree {
     std::map<std::string, entry, std::less<>> entries;
     std::map<vgui_widget*, menu_actions> menus;
     std::map<std::string, data_field, std::less<>> fields;
+    // Populated only after mount, when the field target vectors no longer grow.
+    std::set<data_target*> active_data_transitions;
     std::set<vgui_texture*> collection_textures;
     std::vector<std::string> order;
     std::vector<diagnostic> diagnostics;
@@ -576,15 +587,55 @@ std::span<const diagnostic> runtime::diagnostics() const {
     return tree_ ? std::span<const diagnostic>(tree_->diagnostics) : std::span<const diagnostic>();
 }
 
-bool runtime::set_data(std::string_view field, std::optional<value> data) {
+bool runtime::set_data(std::string_view field, std::optional<value> data, data_update update) {
     if (!tree_) return false;
     const auto it = tree_->fields.find(field);
     if (it == tree_->fields.end() || (data && !valid_data_value(it->second.type, *data))) return false;
     auto& slot = it->second;
-    if (slot.live == data) return true;
-    slot.live = std::move(data);
-    for (const auto& target : slot.targets) target.apply(slot.live);
+    const bool changed = slot.live != data;
+    if (!changed && update != data_update::immediate) return true;
+    if (changed) slot.live = std::move(data);
+    auto& active = tree_->active_data_transitions;
+    for (auto& target : slot.targets) {
+        if (target.transition_seconds > 0) {
+            if (slot.live && update == data_update::transition) {
+                const float to = target.clamped_value(*slot.live);
+                if (active.contains(&target) && target.tween.to == to) continue;
+                const float from = vgui_widget_get_value(target.widget);
+                if (from != to) {
+                    active.insert(&target);
+                    target.tween = {from, to, 0};
+                } else {
+                    active.erase(&target);
+                }
+                continue;
+            }
+            const bool was_active = active.erase(&target) != 0;
+            if (was_active || changed) target.apply(slot.live);
+        } else if (changed) {
+            target.apply(slot.live);
+        }
+    }
     return true;
+}
+
+bool runtime::advance_data_transitions(double delta_seconds) {
+    if (!tree_ || !std::isfinite(delta_seconds) || delta_seconds <= 0) return false;
+    bool changed = false;
+    auto& active = tree_->active_data_transitions;
+    for (auto it = active.begin(); it != active.end();) {
+        auto& target = **it;
+        auto& tween = target.tween;
+        tween.elapsed = std::min(tween.elapsed + delta_seconds, target.transition_seconds);
+        // Ease out so streams that retarget every frame still move promptly.
+        const double remaining = 1.0 - tween.elapsed / target.transition_seconds;
+        const auto desired = static_cast<float>(std::lerp(double(tween.from), double(tween.to),
+            1.0 - remaining * remaining * remaining));
+        if (vgui_widget_set_progress_value_if_changed(target.widget, desired)) changed = true;
+        if (tween.elapsed == target.transition_seconds) it = active.erase(it);
+        else ++it;
+    }
+    return changed;
 }
 
 std::optional<data_field_snapshot> runtime::inspect_data(std::string_view field) const {
@@ -612,6 +663,7 @@ bool animation_visible(vgui_widget* widget, int width, int height) {
 } // namespace
 
 void runtime::advance_animations(double delta_seconds) {
+    advance_data_transitions(delta_seconds);
     if (!tree_ || tree_->gradient_animations.empty() || !std::isfinite(delta_seconds) || delta_seconds < 0) return;
     int width = 0, height = 0;
     vgui_context_get_size(ctx_, &width, &height);
@@ -820,6 +872,7 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             else if (binding.target == "value") {
                 target.min = p.number("min_value");
                 target.max = p.number("max_value");
+                target.transition_seconds = std::get<double>(property(n, "bind_value_transition_ms")) / 1000.;
             }
             slot.targets.push_back(std::move(target));
         }

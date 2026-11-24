@@ -518,6 +518,8 @@
   "workbench.inspector.category.game_data": "Game data",
   "workbench.inspector.property.bind_text": "Text field",
   "workbench.inspector.property.bind_value": "Progress field",
+  "workbench.inspector.property.bind_value_transition_ms": "Transition (ms)",
+  "workbench.inspector.data.transition_hint": "Milliseconds for a bound progress value to reach its target. 0 applies instantly; ignored without a value field.",
   "workbench.inspector.property.bind_visible": "Visibility field",
   "workbench.inspector.property.bind_enabled": "Enabled field",
   "workbench.inspector.data.unbound": "Use design value",
