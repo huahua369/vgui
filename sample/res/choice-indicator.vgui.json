@@ -1,0 +1,24 @@
+{
+  "format": "vgui-ui-design",
+  "version": 1,
+  "root": "demo",
+  "nodes": {
+    "demo": {"type":"panel","name":"单选与复选图集示例","props":{"width":540,"height":330,"background":"#182333","nav_start":"radio_a"},"children":["title","intro","radio_column","checkbox_column","native_comparison"]},
+    "title": {"type":"label","props":{"x":24,"y":18,"width":492,"height":32,"text":"单选与复选 · 四态指示器","text_color":"#EEF4FF","font_size":23,"font_weight":"bold"}},
+    "intro": {"type":"label","props":{"x":24,"y":57,"width":492,"height":24,"text":"切到运行：单选互斥，复选独立。下半部分是禁用状态。","text_color":"#B9CBE1"}},
+    "radio_column": {"type":"panel","props":{"x":24,"y":94,"width":240,"height":176,"background":"#223348","rounding":8},"children":["radio_heading","radio_a","radio_b","radio_off","radio_on"]},
+    "radio_heading": {"type":"label","props":{"x":14,"y":8,"width":200,"height":24,"text":"单选 · HUD 模式","font_weight":"bold","text_color":"#A8E7FF"}},
+    "radio_a": {"type":"radio","props":{"x":14,"y":39,"width":200,"height":26,"text":"简洁模式","radio_group":"hud","indicator_atlas":"demo.radio","checked":true,"focus_alpha":1}},
+    "radio_b": {"type":"radio","props":{"x":14,"y":69,"width":200,"height":26,"text":"完整模式","radio_group":"hud","indicator_atlas":"demo.radio","focus_alpha":1}},
+    "radio_off": {"type":"radio","props":{"x":14,"y":107,"width":200,"height":26,"text":"禁用 · 未选中","radio_group":"locked","indicator_atlas":"demo.radio","enabled":false}},
+    "radio_on": {"type":"radio","props":{"x":14,"y":137,"width":200,"height":26,"text":"禁用 · 已选中","radio_group":"locked","indicator_atlas":"demo.radio","enabled":false,"checked":true}},
+    "checkbox_column": {"type":"panel","props":{"x":276,"y":94,"width":240,"height":176,"background":"#223348","rounding":8},"children":["check_heading","check_a","check_b","check_off","check_on"]},
+    "check_heading": {"type":"label","props":{"x":14,"y":8,"width":200,"height":24,"text":"复选 · 地图标记","font_weight":"bold","text_color":"#BBF7D3"}},
+    "check_a": {"type":"checkbox","props":{"x":14,"y":39,"width":200,"height":26,"text":"显示队友","indicator_atlas":"demo.check","checked":true,"focus_alpha":1}},
+    "check_b": {"type":"checkbox","props":{"x":14,"y":69,"width":200,"height":26,"text":"显示任务","indicator_atlas":"demo.check","focus_alpha":1}},
+    "check_off": {"type":"checkbox","props":{"x":14,"y":107,"width":200,"height":26,"text":"禁用 · 未选中","indicator_atlas":"demo.check","enabled":false}},
+    "check_on": {"type":"checkbox","props":{"x":14,"y":137,"width":200,"height":26,"text":"禁用 · 已选中","indicator_atlas":"demo.check","enabled":false,"checked":true}},
+    "native_comparison": {"type":"checkbox","props":{"x":24,"y":284,"width":380,"height":26,"text":"未绑定图集：默认指示器","checked":true,"focus_alpha":1}}
+  },
+  "resources": {"demo.radio":"radio-indicator-states.png","demo.check":"checkbox-indicator-states.png"}
+}

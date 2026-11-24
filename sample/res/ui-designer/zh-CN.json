@@ -385,6 +385,8 @@
   "workbench.inspector.image_path": "图片路径",
   "workbench.inspector.atlas_path": "四态图集路径",
   "workbench.inspector.atlas_path_hint": "填写项目相对路径。图集宽高均须为偶数，按 2×2 排列普通、悬停、按下、禁用四帧；清空后使用默认按钮样式。",
+  "workbench.inspector.indicator_atlas_path": "指示器图集路径",
+  "workbench.inspector.indicator_atlas_path_hint": "填写项目相对路径。图集宽高均须为偶数，按 2×2 排列：左列未选中，右列已选中；上行启用，下行禁用。清空后使用内置指示器。",
   "workbench.inspector.image_path_example": "images/示例.png",
   "workbench.inspector.image_path_hint": "使用 / 分隔的项目相对路径。清空即可解除图片关联。",
   "workbench.inspector.layout.absolute": "绝对定位",

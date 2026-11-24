@@ -1312,6 +1312,79 @@ void test_button_atlases() {
     }
 }
 
+void test_choice_indicator_atlases() {
+    temp_dir temp;
+    constexpr int width = 32, height = 16;
+    write_image(temp.path / "choice.rgba", true, width, height);
+    write_image(temp.path / "odd.rgba", true, width - 1, height);
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).props["layout"] = "column"s;
+    doc.resources = {{"shared", "choice.rgba"}, {"odd", "odd.rgba"}, {"missing", "missing.rgba"}};
+    const auto add_choice = [&](const char* id, const char* type, bool checked, const char* key = nullptr) {
+        ui::node choice{type, "", {{"text", "Choice"s}, {"checked", checked}}, {}};
+        if (key) choice.props.emplace("indicator_atlas", std::string(key));
+        doc.nodes.at(doc.root).children.push_back(id);
+        doc.nodes.emplace(id, std::move(choice));
+    };
+    add_choice("checkbox", "checkbox", false, "shared");
+    add_choice("radio", "radio", true, "shared");
+    add_choice("odd", "checkbox", false, "odd");
+    add_choice("missing", "radio", false, "missing");
+    add_choice("stock-checkbox", "checkbox", false);
+    add_choice("stock-radio", "radio", false);
+
+    std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), &free_ctx_cb);
+    std::unique_ptr<rvg_t, void (*)(rvg_t*)> vg(cb->new_rvg(cb->ac), cb->destroy_rvg);
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create indicator atlas context");
+    image_loader loader;
+    loader.sizes = {{"shared", {width, height}}, {"odd", {width - 1, height}}};
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 1, loader.bindings(temp.path)), "mount indicator atlas fixtures with stock fallbacks");
+    const std::vector<image_call> expected{{ctx.get(), "shared", fs::canonical(temp.path / "choice.rgba")},
+        {ctx.get(), "odd", fs::canonical(temp.path / "odd.rgba")}};
+    check(loader.calls == expected, "choice atlases must share one canonical load per key");
+    loader.textures.clear();
+
+    const auto diagnosed = [&](std::string_view id, std::string_view reason) {
+        return std::ranges::any_of(rt.diagnostics(), [&](const auto& d) {
+            return d.path == "/nodes/"s + std::string(id) + "/props/indicator_atlas" && d.message.find(reason) != std::string::npos;
+        });
+    };
+    check(rt.diagnostics().size() == 2 && diagnosed("odd", "even-sized 2x2") && diagnosed("missing", "unavailable"),
+        "only odd-sized and missing indicator atlases should be diagnosed");
+    const auto snapshot = rt.layout({240, 220, 1});
+    check(bool(snapshot), "lay out indicator atlas fixtures");
+    for (const auto* id : {"checkbox", "radio", "odd", "missing"}) {
+        check(!node(*snapshot, id).image_placeholder, "a choice must retain its normal appearance, not an image placeholder");
+        auto* choice = rt.widget(id);
+        const auto kind = vgui_widget_get_kind(choice);
+        float w = 0, h = 0, stock_w = 0, stock_h = 0;
+        vgui_widget_get_intrinsic_size(choice, &w, &h);
+        vgui_widget_get_intrinsic_size(rt.widget(kind == VGUI_CHECKBOX ? "stock-checkbox" : "stock-radio"), &stock_w, &stock_h);
+        check(near(w, stock_w) && near(h, stock_h), "indicator atlas must not change the choice layout size");
+    }
+    static std::vector<ovg_image_r> draws;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    cb->image_destroy = [](rvg_t*, vg_image_t*) {};
+    cb->add_image = [](rvg_t*, ovg_image_r* img) { draws.push_back(*img); };
+    vg->width = snapshot->pixel_width;
+    vg->height = snapshot->pixel_height;
+    const auto verify_frames = [&](int y) {
+        cb->clear(vg.get());
+        draws.clear();
+        vgui_draw(ctx.get(), cb.get(), vg.get());
+        check(draws.size() == 2 && draws[0].img == draws[1].img,
+            "only the two choices with valid bindings should paint a shared atlas");
+        check(draws[0].rc == glm::ivec4(0, y, width / 2, height / 2) &&
+            draws[1].rc == glm::ivec4(width / 2, y, width / 2, height / 2), "choice indicator used the wrong atlas quadrant");
+    };
+    verify_frames(0);
+    vgui_widget_set_enabled(rt.widget("checkbox"), 0);
+    vgui_widget_set_enabled(rt.widget("radio"), 0);
+    verify_frames(height / 2);
+}
+
 void test_button_icon_sources() {
     temp_dir temp;
     constexpr int width = 96, height = 64;
@@ -3066,6 +3139,7 @@ int main(int argc, char** argv) {
         test_font_families();
         test_image_loading();
         test_button_atlases();
+        test_choice_indicator_atlases();
         test_button_icon_sources();
         test_collection_icons_and_actions();
         std::puts("ui_design_runtime_test: ok");

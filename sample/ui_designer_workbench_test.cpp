@@ -977,6 +977,69 @@ void exercise_button_atlas()
     check(atlas_path() == path, "reopened atlas editor displayed the key instead of the path");
 }
 
+void exercise_indicator_atlas()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "indicator-atlas.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const auto checkbox = workbench.add("checkbox", root);
+    const auto radio = workbench.add("radio", root);
+    const auto select = [&](const std::string& id) {
+        workbench.bench.select(id);
+        workbench.frame();
+    };
+    const auto path_editor = [&] { return workbench.widget("property:indicator_atlas", VGUI_EDIT); };
+    const auto atlas_path = [&] { return std::string_view(vgui_edit_get_text(path_editor())); };
+    const auto atlas_label = [&] {
+        return std::string_view(vgui_widget_get_text(workbench.widget("property:indicator_atlas", VGUI_LABEL)));
+    };
+    for (const auto* id : {&radio, &checkbox}) {
+        select(*id);
+        check(atlas_label() == "指示器图集路径" && atlas_path().empty(), "missing Chinese indicator atlas label or empty default");
+    }
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(atlas_label() == "Indicator atlas path", "indicator atlas label did not switch to English");
+
+    const auto before = model.current();
+    const auto revision = model.revision();
+    workbench.set_text("indicator_atlas", "../outside.png");
+    check(model.current() == before && model.revision() == revision, "indicator atlas path bypassed project path validation");
+    constexpr char path[] = "images/choice-states.png";
+    workbench.set_text("indicator_atlas", path);
+    const auto with_checkbox = model.current();
+    const auto& key = std::get<std::string>(with_checkbox.nodes.at(checkbox).props.at("indicator_atlas"));
+    auto* resource = workbench.widget("property:@resource-key", VGUI_EDIT);
+    check(key.starts_with("image_") && with_checkbox.resources.at(key) == path && atlas_path() == path &&
+        std::string_view(vgui_edit_get_text(resource)) == key && !vgui_widget_get_enabled(resource),
+        "indicator atlas did not register a key and show the path and read-only key separately");
+    workbench.edit("Undo");
+    check(model.current() == before && atlas_path().empty(), "one Undo must remove the new asset and checkbox binding");
+    workbench.edit("Redo");
+    check(model.current() == with_checkbox && atlas_path() == path, "Redo did not restore the atlas key and path");
+
+    select(radio);
+    workbench.set_text("indicator_atlas", path);
+    const auto saved = model.current();
+    check(saved.nodes.at(radio).props.at("indicator_atlas") == ui::value{key} && saved.resources == with_checkbox.resources,
+        "the radio atlas path did not reuse the existing checkbox resource key");
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && workbench.open_calls == 1 && model.current() == saved, "reopening lost indicator atlas keys");
+    for (const auto* id : {&checkbox, &radio}) {
+        select(*id);
+        check(atlas_path() == path, "a reopened indicator atlas editor did not resolve its resource key");
+    }
+    auto* editor = path_editor();
+    workbench.click(editor);
+    vgui_edit_select_all(editor);
+    check(workbench.key(VGUI_KEY_BACKSPACE) && workbench.key(VGUI_KEY_ENTER) &&
+        !model.current().nodes.at(radio).props.contains("indicator_atlas") && model.current().resources == saved.resources,
+        "clearing the radio atlas should leave the shared resource available to the checkbox");
+}
+
 void exercise_button_icon_sources()
 {
     temp_dir directory;
@@ -3016,6 +3079,7 @@ int main()
         exercise_toolbar();
         exercise_workbench();
         exercise_button_atlas();
+        exercise_indicator_atlas();
         exercise_button_icon_sources();
         exercise_live_properties();
         exercise_property_favorites();

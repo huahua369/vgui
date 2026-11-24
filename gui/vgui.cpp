@@ -957,6 +957,7 @@ struct vgui_widget
 
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
+	vgui_texture* choice_atlas = nullptr; // VGUI_CHECKBOX and VGUI_RADIO indicator.
 
 	// button icon (VGUI_BUTTON) --------------------------------------------
 	vgui_texture* button_atlas = nullptr;
@@ -1583,7 +1584,7 @@ static bool vgui_texture_store_desc(vgui_texture* texture, const vgui_texture_de
 	return true;
 }
 
-static bool vgui_button_atlas_valid(const vgui_texture* texture)
+static bool vgui_atlas_2x2_valid(const vgui_texture* texture)
 {
 	return texture && texture->width > 0 && texture->height > 0 &&
 		texture->width % 2 == 0 && texture->height % 2 == 0;
@@ -5790,7 +5791,7 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 			w->intrinsic_w = tw + pl + pr + extra;
 			w->intrinsic_h = std::max(lh + pt + pb, st.button.min_height);
 		}
-		if (vgui_button_atlas_valid(w->button_atlas))
+		if (vgui_atlas_2x2_valid(w->button_atlas))
 		{
 			w->intrinsic_w = std::max(w->intrinsic_w, w->button_atlas->width * 0.5f * ctx->ui_scale);
 			w->intrinsic_h = std::max(w->intrinsic_h, w->button_atlas->height * 0.5f * ctx->ui_scale);
@@ -7303,6 +7304,7 @@ static void vgui_delete_rec(vgui_widget* w, vgui_context* ctx)
 	// button icon texture — release ref before delete
 	if (w->icon_tex) { vgui_texture_release(w->icon_tex); w->icon_tex = nullptr; }
 	if (w->button_atlas) vgui_texture_release(w->button_atlas);
+	if (w->choice_atlas) vgui_texture_release(w->choice_atlas);
 
 	delete w;
 }
@@ -8818,6 +8820,7 @@ static void vgui_set_value_internal(vgui_widget* w, float v, bool notify)
 		int c = v >= 0.5f ? 1 : 0;
 		changed = (w->checked != c);
 		w->checked = c;
+		if (changed && w->choice_atlas) vgui_widget_mark_dirty(w);
 	}
 	break;
 	case VGUI_RADIO:
@@ -8854,6 +8857,7 @@ static void vgui_activate_widget(vgui_widget* w, int clicks)
 		if (clicks <= 1)
 		{
 			w->checked = !w->checked;
+			if (w->choice_atlas) vgui_widget_mark_dirty(w);
 			vgui_notify_value(w);
 		}
 		break;
@@ -13570,20 +13574,16 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 	cb->restore(vg);
 }
 
-static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+static bool vgui_draw_atlas_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+	vgui_texture* texture, int frame, const glm::ivec4& dst)
 {
-	auto* texture = w->button_atlas;
-	if (!vgui_button_atlas_valid(texture)) return false;
 	vgui_texture_ensure_upload(w->ctx, texture, cb, vg);
 	const bool native = !texture->cpu && texture->native.image.id != 0;
 	if (!native && texture->image.id == 0 &&
 		!(texture->cpu && texture->upload_frame == w->ctx->frame_index)) return false;
 
-	const int frame = !vgui_effective_enabled(w) ? 3 : w->pressed ? 2 : w->hovered ? 1 : 0;
 	const int sw = texture->width / 2, sh = texture->height / 2;
 	const glm::ivec4 src{(frame % 2) * sw, (frame / 2) * sh, sw, sh};
-	const glm::ivec4 dst{(int)std::lround(w->abs_x), (int)std::lround(w->abs_y),
-		(int)std::lround(w->abs_w), (int)std::lround(w->abs_h)};
 	const uint32_t tint = vgui_ovg_color(vgui_widget_color(w, 0xFFFFFFFF));
 	if (native && cb->add_texture)
 	{
@@ -13605,6 +13605,27 @@ static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	}
 	else return false;
 	return true;
+}
+
+static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
+{
+	if (!vgui_atlas_2x2_valid(w->button_atlas)) return false;
+	const int frame = !vgui_effective_enabled(w) ? 3 : w->pressed ? 2 : w->hovered ? 1 : 0;
+	return vgui_draw_atlas_frame(w, cb, vg, w->button_atlas, frame,
+		{(int)std::lround(w->abs_x), (int)std::lround(w->abs_y),
+		 (int)std::lround(w->abs_w), (int)std::lround(w->abs_h)});
+}
+
+static bool vgui_draw_choice_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float box)
+{
+	auto* texture = w->choice_atlas;
+	if (!vgui_atlas_2x2_valid(texture) || box < 1) return false;
+	const float scale = box / (float)std::max(texture->width, texture->height);
+	const float width = texture->width * scale, height = texture->height * scale;
+	const int frame = (vgui_effective_enabled(w) ? 0 : 2) + (w->checked ? 1 : 0);
+	return vgui_draw_atlas_frame(w, cb, vg, texture, frame,
+		{(int)std::lround(x + (box - width) * 0.5f), (int)std::lround(y + (box - height) * 0.5f),
+		 std::max(1, (int)std::lround(width)), std::max(1, (int)std::lround(height))});
 }
 
 static void vgui_draw_button(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
@@ -13849,36 +13870,39 @@ static void vgui_draw_checkbox(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	float box = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
 	float bx = rtl ? w->abs_x + w->abs_w - w->padding[2] - box : w->abs_x + w->padding[0];
 	float by = w->abs_y + (w->abs_h - box) * 0.5f;
-	uint32_t border = w->enabled
-		? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
-			: ctx->theme.button_border)
-		: ctx->theme.disabled;
-	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+	if (!vgui_draw_choice_atlas(w, cb, vg, bx, by, box))
+	{
+		uint32_t border = w->enabled
+			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
+				: ctx->theme.button_border)
+			: ctx->theme.disabled;
+		uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 
-	vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, ctx->theme.track));
-	if (w->check_anim > 0.01f)
-	{
-		uint32_t c = vgui_mix_color(ctx->theme.track, accent, w->check_anim);
-		vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, c));
-	}
-	if (st.checkbox.border_width > 0)
-	{
-		vgui_stroke_frame(cb, vg, bx, by, box, box, st.checkbox.rounding,
-			vgui_widget_color(w, border), st.checkbox.border_width);
-	}
+		vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, ctx->theme.track));
+		if (w->check_anim > 0.01f)
+		{
+			uint32_t c = vgui_mix_color(ctx->theme.track, accent, w->check_anim);
+			vgui_fill_rect(cb, vg, bx, by, box, box, st.checkbox.rounding, vgui_widget_color(w, c));
+		}
+		if (st.checkbox.border_width > 0)
+		{
+			vgui_stroke_frame(cb, vg, bx, by, box, box, st.checkbox.rounding,
+				vgui_widget_color(w, border), st.checkbox.border_width);
+		}
 
-	if (w->check_anim > 0.05f && st.checkbox.check_width > 0)
-	{
-		float t = w->check_anim;
-		cb->set_line_width(vg, st.checkbox.check_width);
-		cb->set_line_cap(vg, 1);
-		cb->set_line_join(vg, 1);
-		cb->move_to(vg, bx + box * st.checkbox.check_start_x, by + box * st.checkbox.check_start_y);
-		cb->line_to(vg, bx + box * st.checkbox.check_mid_x, by + box * st.checkbox.check_mid_y);
-		cb->line_to(vg, bx + box * st.checkbox.check_end_x, by + box * st.checkbox.check_end_y);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w,
-			vgui_alpha_color(ctx->theme.checkmark, t))));
-		cb->stroke(vg);
+		if (w->check_anim > 0.05f && st.checkbox.check_width > 0)
+		{
+			float t = w->check_anim;
+			cb->set_line_width(vg, st.checkbox.check_width);
+			cb->set_line_cap(vg, 1);
+			cb->set_line_join(vg, 1);
+			cb->move_to(vg, bx + box * st.checkbox.check_start_x, by + box * st.checkbox.check_start_y);
+			cb->line_to(vg, bx + box * st.checkbox.check_mid_x, by + box * st.checkbox.check_mid_y);
+			cb->line_to(vg, bx + box * st.checkbox.check_end_x, by + box * st.checkbox.check_end_y);
+			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w,
+				vgui_alpha_color(ctx->theme.checkmark, t))));
+			cb->stroke(vg);
+		}
 	}
 
 	if (!w->text.empty())
@@ -13909,33 +13933,36 @@ static void vgui_draw_radio(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 	float d = std::max(st.choice.box_min, std::min(st.choice.box_max, lh - st.choice.line_offset));
 	float cx = rtl ? w->abs_x + w->abs_w - w->padding[2] - d * 0.5f : w->abs_x + w->padding[0] + d * 0.5f;
 	float cy = w->abs_y + w->abs_h * 0.5f;
-	uint32_t border = w->enabled
-		? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
-			: ctx->theme.button_border)
-		: ctx->theme.disabled;
-	uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
+	if (!vgui_draw_choice_atlas(w, cb, vg, cx - d * 0.5f, cy - d * 0.5f, d))
+	{
+		uint32_t border = w->enabled
+			? (w->focused ? vgui_mix_color(ctx->theme.button_border, ctx->theme.accent, vgui_focus_alpha(w))
+				: ctx->theme.button_border)
+			: ctx->theme.disabled;
+		uint32_t accent = w->enabled ? (w->accent ? w->accent : ctx->theme.accent) : ctx->theme.disabled;
 
-	cb->circle(vg, cx, cy, d * 0.5f);
-	cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.track)));
-	cb->fill(vg);
-	if (st.radio.border_width > 0)
-	{
-		// 描边向内收半个线宽，让圆环的外沿正好落在控件自己的矩形里。否则
-		// 描边会向左右各溢出 bw/2，父容器的裁剪边一旦和控件边界重合（例如
-		// padding 为 0 的单选组行，第一个单选按钮的左边就是行的左边界），
-		// 外侧半条描边连同抗锯齿会被切掉，看起来像被削平了一块。复选框的
-		// 描边一直是这样向内收的，这里与之对齐。
-		const float inset = st.radio.border_width * 0.5f;
-		cb->circle(vg, cx, cy, std::max(0.0f, d * 0.5f - inset));
-		cb->set_line_width(vg, st.radio.border_width);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
-		cb->stroke(vg);
-	}
-	if (w->check_anim > 0.01f)
-	{
-		cb->circle(vg, cx, cy, d * 0.5f * st.radio.dot_scale * w->check_anim);
-		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, accent)));
+		cb->circle(vg, cx, cy, d * 0.5f);
+		cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, ctx->theme.track)));
 		cb->fill(vg);
+		if (st.radio.border_width > 0)
+		{
+			// 描边向内收半个线宽，让圆环的外沿正好落在控件自己的矩形里。否则
+			// 描边会向左右各溢出 bw/2，父容器的裁剪边一旦和控件边界重合（例如
+			// padding 为 0 的单选组行，第一个单选按钮的左边就是行的左边界），
+			// 外侧半条描边连同抗锯齿会被切掉，看起来像被削平了一块。复选框的
+			// 描边一直是这样向内收的，这里与之对齐。
+			const float inset = st.radio.border_width * 0.5f;
+			cb->circle(vg, cx, cy, std::max(0.0f, d * 0.5f - inset));
+			cb->set_line_width(vg, st.radio.border_width);
+			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, border)));
+			cb->stroke(vg);
+		}
+		if (w->check_anim > 0.01f)
+		{
+			cb->circle(vg, cx, cy, d * 0.5f * st.radio.dot_scale * w->check_anim);
+			cb->set_source_color(vg, vgui_ovg_color(vgui_widget_color(w, accent)));
+			cb->fill(vg);
+		}
 	}
 
 	if (!w->text.empty())
@@ -15567,6 +15594,9 @@ static bool vgui_recording_replay_ok(vgui_widget* w, vgui_context* ctx,
 	std::function<bool(vgui_widget*)> scan = [&](vgui_widget* c) -> bool
 		{
 			if (!c) return false;
+			// Sprite selection can change with an ancestor's enabled state,
+			// and the retained texture can be updated by the host.
+			if (c->choice_atlas) return true;
 			if (c == ctx->focus) return true;	// focus ring animates
 			if ((c->hover_anim > 0.001f && c->hover_anim < 0.999f)
 				|| (c->press_anim > 0.001f && c->press_anim < 0.999f)
@@ -18879,7 +18909,7 @@ extern "C" {
 	int vgui_button_set_atlas(vgui_widget* widget, vgui_texture* texture)
 	{
 		if (!widget || widget->kind != VGUI_BUTTON ||
-			(texture && (texture->ctx != widget->ctx || !vgui_button_atlas_valid(texture))))
+			(texture && (texture->ctx != widget->ctx || !vgui_atlas_2x2_valid(texture))))
 			return 0;
 		if (widget->button_atlas == texture) return 1;
 		if (texture) vgui_texture_retain(texture);
@@ -18887,6 +18917,20 @@ extern "C" {
 		widget->button_atlas = texture;
 		widget->ctx->layout_dirty = true;
 		vgui_mark_dirty(widget);
+		return 1;
+	}
+
+	int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture)
+	{
+		if (!widget || (widget->kind != VGUI_CHECKBOX && widget->kind != VGUI_RADIO) ||
+			(texture && (texture->ctx != widget->ctx || !vgui_atlas_2x2_valid(texture))))
+			return 0;
+		if (widget->choice_atlas == texture) return 1;
+		if (texture) vgui_texture_retain(texture);
+		vgui_texture_release(widget->choice_atlas);
+		widget->choice_atlas = texture;
+		vgui_recording_invalidate_chain(widget, true);
+		vgui_widget_mark_dirty(widget);
 		return 1;
 	}
 

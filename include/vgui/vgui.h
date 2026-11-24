@@ -1394,6 +1394,14 @@ extern "C" {
 	 * widget or texture (dimensions must both be positive and even). */
 	VGUI_API int vgui_button_set_atlas(vgui_widget* widget, vgui_texture* texture);
 
+	/* Optional indicator atlas for VGUI_CHECKBOX and VGUI_RADIO. Four equal
+	 * frames in 2×2 order: unchecked, checked, disabled unchecked, disabled
+	 * checked. The sprite fits within the existing indicator square; label,
+	 * focus and input stay native. Unusable textures fall back to the default
+	 * indicator. Retains the same-context texture; NULL clears it. Returns 0
+	 * for unsupported widgets or textures without positive even dimensions. */
+	VGUI_API int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture);
+
 	/* ------------------------------------------------------------------------- */
 	/* Button icon                                                               */
 	/* ------------------------------------------------------------------------- */

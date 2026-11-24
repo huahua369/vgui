@@ -168,6 +168,12 @@ cmake --build <build-dir> --target vgui_ui_designer
 
 这是普通按钮的可选皮肤，不是新的控件类型。选择按钮后，在属性检查器填写 **四态图集路径**（相对于页面文件，示例为 `image-button-states.png`），清空则恢复普通按钮外观。图集宽高必须为偶数；无法加载时预览会报告问题并使用普通按钮外观。[示例图集](../sample/res/image-button-states.png) 是一张 **384 × 128** 的透明 PNG，每帧 **192 × 64**。从左上角开始依次为普通 `(0, 0)`、悬停 `(192, 0)`、按下 `(0, 64)`、禁用 `(192, 64)`。每次只绘制其中一帧，文字、键盘焦点和动作仍由按钮处理。导出交付包时整张图集作为一个资源交付。
 
+### 单选框和复选框的指示器图集
+
+打开 [choice-indicator.vgui.json](../sample/res/choice-indicator.vgui.json)，切到 **运行**，可比较自定义单选、复选指示器与原生外观。选中单选框或复选框，在属性检查器填写 **指示器图集路径**（相对于页面文件）；它会在 JSON 的 `indicator_atlas` 保存资源键。清空时恢复默认外观。文件不存在、不能解码或宽高不是偶数时，预览报告诊断并显示默认指示器。
+
+图集是单张 2×2 图片，**左上：未选中，右上：已选中，左下：禁用未选中，右下：禁用已选中**。示例使用 [单选图集](../sample/res/radio-indicator-states.png) 和 [复选图集](../sample/res/checkbox-indicator-states.png)，每帧 64 × 64 像素。帧保持宽高比，居中放入原有指示器区域，不改变文字位置或控件尺寸；禁用的父容器也会让子控件显示禁用帧。单选互斥、复选切换和键盘焦点仍由原生控件处理。图集随目录交付包或内嵌图片包导出。C/C++ 宿主可直接使用 `vgui_choice_set_indicator_atlas()` 绑定同一上下文的纹理。
+
 ### 拟物化控件示例
 
 在编辑器中打开 [skeuomorphic-controls.vgui.json](../sample/res/skeuomorphic-controls.vgui.json)，切换到 **运行**，悬停或按住按钮看状态变化。三组控件可以在设计态分别拆开修改：

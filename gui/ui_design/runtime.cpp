@@ -1029,6 +1029,17 @@ std::unique_ptr<runtime::mounted_tree> runtime::build_tree(const document& doc, 
                 }
             }
         }
+        if (*kind == VGUI_CHECKBOX || *kind == VGUI_RADIO) {
+            const auto& key = p.text("indicator_atlas");
+            if (!key.empty()) {
+                auto* atlas = load_image(key);
+                if (!atlas || !vgui_choice_set_indicator_atlas(w, atlas)) {
+                    next->diagnostics.push_back({"/nodes/" + id + "/props/indicator_atlas", !atlas ?
+                        image_unavailable("indicator atlas", key) :
+                        "indicator atlas requires an even-sized 2x2 image from this context: " + key});
+                }
+            }
+        }
         detail::apply_primitive(w, n, p);
         for (const auto& binding : data_bindings()) {
             const auto it = n.props.find(binding.key);

@@ -906,6 +906,8 @@ struct designer_workbench::impl {
             return {"workbench.inspector.atlas_path", "Button atlas path"};
         if (desc.key == "icon")
             return {"workbench.inspector.icon_path", "Button icon path"};
+        if (desc.key == "indicator_atlas")
+            return {"workbench.inspector.indicator_atlas_path", "Indicator atlas path"};
         if (desc.type == value_type::resource_key)
             return {"workbench.inspector.image_path", "Image path"};
         return {"workbench.inspector.property." + std::string(desc.key), desc.label.data()};
@@ -1956,9 +1958,14 @@ struct designer_workbench::impl {
                     const auto path = doc.resources.find(key);
                     row.value = path == doc.resources.end() ? std::string() : path->second;
                     row.placeholder = strings.text("workbench.inspector.image_path_example", "images/example.png");
-                    row.tooltip = desc.key == "atlas" ? strings.text("workbench.inspector.atlas_path_hint",
-                        "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.") :
-                        strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
+                    if (desc.key == "atlas")
+                        row.tooltip = strings.text("workbench.inspector.atlas_path_hint",
+                            "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.");
+                    else if (desc.key == "indicator_atlas")
+                        row.tooltip = strings.text("workbench.inspector.indicator_atlas_path_hint",
+                            "Project-relative path to a 2×2 atlas with even width and height. Left: unchecked; right: checked. Top: enabled; bottom: disabled. Clear to use the built-in indicator.");
+                    else
+                        row.tooltip = strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
                     auto resource_category = row.category;
                     add(std::move(row));
                     add({.id = desc.key == "icon" ? std::string("@icon-resource-key") : resource_key,

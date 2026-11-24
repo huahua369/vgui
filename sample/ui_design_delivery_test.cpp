@@ -367,6 +367,42 @@ void test_row_icon_delivery() {
     check(child && loader.calls == 1 && loader.texture && vgui_tree_get_item_button_icon(tree, child, 0) == loader.texture.get(),
         "the exported asset must reach the nested row button as a texture");
 }
+
+void test_indicator_atlas_delivery() {
+    temp_dir temp;
+    const auto project = temp.path / "source";
+    fs::create_directories(project / "skins");
+    const auto pixels = rgba + rgba + rgba + rgba; // 4x2 raw RGBA8 atlas.
+    write_bytes(project / "skins" / "choice.rgba", pixels);
+    auto doc = ui::make_document();
+    doc.resources.emplace("choice", "skins/choice.rgba");
+    doc.nodes.at(doc.root).children = {"check", "option"};
+    doc.nodes.emplace("check", ui::node{"checkbox", "", {{"indicator_atlas", "choice"s}}, {}});
+    doc.nodes.emplace("option", ui::node{"radio", "", {{"indicator_atlas", "choice"s}, {"checked", true}}, {}});
+
+    ui::diagnostic error;
+    const auto package = temp.path / "package";
+    const auto standalone = temp.path / "choice.vgui.package.json";
+    check(ui::export_delivery(doc, project, package, &error) &&
+        ui::export_json_delivery(doc, project, standalone, &error), "export indicator atlases through both delivery formats");
+
+    const auto copied = temp.path / "recipient" / "package";
+    fs::create_directory(copied.parent_path());
+    fs::copy(package, copied, fs::copy_options::recursive);
+    fs::remove_all(project);
+    fs::remove_all(package);
+    auto expected = doc;
+    expected.resources.at("choice") = "assets/1.rgba";
+    ui::document restored;
+    check(ui::read_delivery(copied, restored, &error) && restored == expected &&
+        read_bytes(copied / restored.resources.at("choice")) == pixels,
+        "copied delivery must preserve both indicator atlas bindings and one shared asset");
+    ui::embedded_delivery embedded;
+    check(ui::read_json_delivery(standalone, embedded, &error) && embedded.design == expected &&
+        embedded.images.size() == 1 && embedded.images.at("choice") == std::vector<std::uint8_t>(pixels.begin(), pixels.end()),
+        "standalone delivery must preserve both indicator atlas bindings and embed the shared asset once");
+}
+
 void test_label_orientation_delivery() {
     const auto source = fs::path(__FILE__).parent_path() / "res/label-orientation.vgui.json";
     ui::diagnostic error;
@@ -484,6 +520,7 @@ int main() {
         test_delivery();
         test_json_delivery();
         test_row_icon_delivery();
+        test_indicator_atlas_delivery();
         test_label_orientation_delivery();
         test_hud_delivery();
         return 0;

@@ -4,7 +4,7 @@
 // create -> VGUI_IMAGE draw -> source crop / tint / flip -> update -> release.
 // V10 adds nine-slice, rotation and arbitrary matrix coverage for both native
 // (ovg::add_texture) and CPU (generated add_geometry) textures. Also exercises
-// the VGUI_BUTTON atlas with public input events and GPU readback.
+// button and choice indicator atlases with public input events and GPU readback.
 //
 // The image widget geometry and vgui clip state are handled by vgui; the
 // sampled pixels verify that VGUI_IMAGE maps its state onto the draw paths
@@ -22,6 +22,7 @@
 #include <vgui/backend/vgui_renderer_sdl3.h>
 #include "gpu_test_util.h"
 
+#include <array>
 #include <cstdio>
 #include <filesystem>
 #include <memory>
@@ -232,6 +233,212 @@ static void test_button_atlas(vgui_test_context& t, vgui_context* ui,
 	frame(rgba(255, 128, 0), "button atlas native 2x2");
 	vgui_widget_remove(panel);
 	vgui_context_set_font(ui, nullptr, 16.0f);
+}
+
+static void test_choice_indicator_atlas(vgui_test_context& t)
+{
+	auto expect = [&](bool ok, const char* label) {
+		++t.checks;
+		if (!ok)
+		{
+			std::printf("FAIL %s\n", label);
+			++t.failures;
+		}
+		return ok;
+	};
+
+	std::unique_ptr<font_cache_cx, decltype(&free_font_cache)> font_cache(new_font_cache(), free_font_cache);
+	const auto font_path = std::filesystem::path(__FILE__).parent_path() / "res/fonts/DejaVuSans.ttf";
+	if (!expect(font_cache && load_font_from_path(font_cache.get(), font_path.string().c_str(), "ChoiceAtlasTest"),
+		"choice atlas font setup")) return;
+	std::unique_ptr<font_familys_t, decltype(&delete_font_family)> font(
+		new_font_family(font_cache.get(), "ChoiceAtlasTest", nullptr), delete_font_family);
+	if (!expect(font && font->count > 0, "choice atlas font resolve")) return;
+
+	using context_ptr = std::unique_ptr<vgui_context, decltype(&vgui_destroy)>;
+	context_ptr context(vgui_create(font.get(), 16.0f), vgui_destroy);
+	context_ptr foreign_ui(vgui_create(nullptr, 16.0f), vgui_destroy);
+	if (!expect(context && foreign_ui, "choice atlas context setup")) return;
+	vgui_context* ui = context.get();
+	vgui_context_set_size(ui, t.width, t.height);
+	constexpr int box = 24, gap = 8, pad = 8;
+	vgui_style style;
+	vgui_context_get_style(ui, &style);
+	style.choice.box_min = style.choice.box_max = box;
+	style.choice.gap = gap;
+	style.focus.width = 3.0f;
+	style.focus.inset = 2.0f;
+	vgui_context_set_style(ui, &style);
+	vgui_theme theme;
+	vgui_context_get_theme(ui, &theme);
+	theme.track = 0xFF303030u;
+	theme.accent = 0xFF00FFFFu;
+	vgui_context_set_theme(ui, &theme);
+	const uint32_t track = rgba(48, 48, 48), backdrop = rgba(96, 32, 128);
+
+	vgui_widget* panel = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(panel, 40, 24);
+	vgui_widget_set_size(panel, 320, 176);
+	vgui_widget_set_padding(panel, 0, 0, 0, 0);
+	vgui_widget_set_background(panel, 0xFF602080u);
+	vgui_widget_set_border(panel, 0, 0);
+	auto add_choice = [&](vgui_widget_kind kind, int y) {
+		vgui_widget* w = vgui_widget_add(panel, kind, "H");
+		vgui_widget_set_pos(w, 12, y);
+		vgui_widget_set_padding(w, pad, pad, pad, pad);
+		vgui_widget_set_text_align(w, 0.0f, 0.5f);
+		vgui_widget_set_text_color(w, 0xFFFFFFFFu);
+		vgui_widget_set_focus_alpha(w, 1.0f);
+		return w; // Keep both dimensions auto-sized.
+	};
+	vgui_widget* check = add_choice(VGUI_CHECKBOX, 8);
+	vgui_widget* radio_a = add_choice(VGUI_RADIO, 64);
+	vgui_widget* radio_b = add_choice(VGUI_RADIO, 120);
+	vgui_radio_set_group(radio_a, "atlas");
+	vgui_radio_set_group(radio_b, "atlas");
+
+	// Each cell is deliberately larger than the intrinsic widget and twice as
+	// wide as it is tall: it should fit into the 24px box as a centered 24x12.
+	constexpr int cw = 80, ch = 40;
+	const uint32_t colors[] = { rgba(255, 0, 0), rgba(0, 255, 0),
+		rgba(0, 0, 255), rgba(255, 255, 0) };
+	uint32_t pixels[2 * cw * 2 * ch];
+	for (int y = 0; y < 2 * ch; ++y)
+		for (int x = 0; x < 2 * cw; ++x)
+			pixels[y * 2 * cw + x] = colors[(y / ch) * 2 + x / cw];
+	using texture_ptr = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
+	auto make_texture = [](vgui_context* owner, int w, int h, const uint32_t* data) {
+		const vgui_texture_desc desc{w, h, 0, VGUI_TEXTURE_FORMAT_RGBA8, data};
+		return texture_ptr(vgui_texture_create(owner, &desc), vgui_texture_destroy);
+	};
+	const uint32_t invalid_pixels[6] = {};
+	auto atlas = make_texture(ui, 2 * cw, 2 * ch, pixels);
+	auto odd_width = make_texture(ui, 3, 2, invalid_pixels);
+	auto odd_height = make_texture(ui, 2, 3, invalid_pixels);
+	auto foreign = make_texture(foreign_ui.get(), 2, 2, invalid_pixels);
+	if (!expect(atlas && odd_width && odd_height && foreign, "choice atlas texture setup")) return;
+
+	auto rect = [](vgui_widget* w) {
+		std::array<float, 4> r;
+		vgui_widget_get_rect(w, &r[0], &r[1], &r[2], &r[3]);
+		return r;
+	};
+	auto capture = [&](const char* label) { return render_vgui(t, ui) || expect(false, label); };
+	const auto check_rect = rect(check), a_rect = rect(radio_a), b_rect = rect(radio_b);
+	const int x = (int)check_rect[0], y = (int)check_rect[1], w = (int)check_rect[2];
+	const int ix = x + pad + box / 2, iy = (int)(check_rect[1] + check_rect[3] / 2);
+	const int label_x = x + pad + box + gap;
+	auto contains = [&](int x0, int y0, int x1, int y1, auto matches) {
+		for (int py = y0; py < y1; ++py)
+			for (int px = x0; px < x1; ++px)
+				if (matches(t.pixels[(size_t)py * t.width + px])) return true;
+		return false;
+	};
+	auto checkbox_frame = [&](uint32_t color, const char* label) {
+		if (!capture(label)) return false;
+		expect_pixel(t, ix, iy, color, label);
+		return true;
+	};
+	auto click = [&](int mx, int my) {
+		vgui_input_mouse_move(ui, mx, my);
+		vgui_input_mouse_down(ui, SDL_BUTTON_LEFT, mx, my, 1);
+		vgui_input_mouse_up(ui, SDL_BUTTON_LEFT, mx, my, 1);
+	};
+
+	checkbox_frame(track, "choice checkbox default indicator");
+	expect(vgui_choice_set_indicator_atlas(nullptr, atlas.get()) == 0, "choice atlas rejects null widget");
+	expect(vgui_choice_set_indicator_atlas(panel, atlas.get()) == 0, "choice atlas rejects panel");
+	if (!expect(vgui_choice_set_indicator_atlas(check, atlas.get()) == 1, "choice atlas binds checkbox")) return;
+	atlas.reset(); // No other widget holds this atlas.
+	vgui_context_set_size(ui, t.width, t.height); // Force layout to measure with the atlas bound.
+	expect(rect(check) == check_rect, "choice atlas preserves checkbox layout");
+	if (checkbox_frame(colors[0], "choice atlas enabled unchecked after caller release"))
+	{
+		expect_pixel(t, ix - 9, iy - 4, colors[0], "choice atlas fitted top-left interior");
+		expect_pixel(t, ix + 9, iy + 4, colors[0], "choice atlas fitted bottom-right interior");
+		expect_pixel(t, ix, iy - 9, backdrop, "choice atlas top letterbox");
+		expect_pixel(t, ix, iy + 9, backdrop, "choice atlas bottom letterbox");
+		expect(contains(label_x, y + pad, x + w - pad, (int)(y + check_rect[3]) - pad, [](uint32_t p) {
+			return (p & 255u) > 224 && ((p >> 8) & 255u) > 224 && ((p >> 16) & 255u) > 224;
+		}), "choice atlas keeps checkbox label");
+	}
+
+	auto reject_atlas = [&](vgui_texture* invalid, const char* label) {
+		expect(vgui_choice_set_indicator_atlas(check, invalid) == 0, label);
+		checkbox_frame(colors[0], label); // The failed setter must leave the binding unchanged.
+	};
+	reject_atlas(odd_width.get(), "choice atlas rejects odd width");
+	reject_atlas(odd_height.get(), "choice atlas rejects odd height");
+	reject_atlas(foreign.get(), "choice atlas rejects foreign texture");
+	vgui_widget_set_enabled(check, 0);
+	checkbox_frame(colors[2], "choice atlas disabled unchecked");
+	vgui_widget_set_enabled(check, 1);
+	vgui_set_focus(ui, check);
+	vgui_input_key(ui, ' ', 1, 0);
+	vgui_input_key(ui, ' ', 0, 0);
+	expect(vgui_widget_get_checked(check) == 1, "choice checkbox Space toggles");
+	// Don't advance vgui_update: the frame must follow checked, not check_anim.
+	if (checkbox_frame(colors[1], "choice atlas enabled checked"))
+		expect(contains(x + 9, y, x + w - 9, y + 6, [](uint32_t p) { return p == rgba(0, 255, 255); }),
+			"choice atlas keeps checkbox focus ring");
+
+	vgui_widget_set_enabled(panel, 0);
+	click(label_x + 3, iy);
+	expect(vgui_widget_get_checked(check) == 1, "choice checkbox ignores mouse under disabled ancestor");
+	checkbox_frame(colors[3], "choice atlas checked with disabled ancestor");
+	vgui_widget_set_enabled(panel, 1);
+	vgui_input_mouse_move(ui, label_x + 3, iy);
+	vgui_input_mouse_down(ui, SDL_BUTTON_LEFT, label_x + 3, iy, 1);
+	checkbox_frame(colors[1], "choice atlas stays checked during mouse press");
+	vgui_input_mouse_up(ui, SDL_BUTTON_LEFT, label_x + 3, iy, 1);
+	expect(vgui_widget_get_checked(check) == 0, "choice checkbox mouse toggles from label");
+	checkbox_frame(colors[0], "choice atlas returns to enabled unchecked");
+
+	vgui_context_set_direction(ui, VGUI_DIRECTION_RTL);
+	if (capture("choice atlas RTL render"))
+		expect_pixel(t, (int)(check_rect[0] + check_rect[2]) - pad - box / 2, iy, colors[0],
+			"choice atlas RTL indicator on right");
+	vgui_context_set_direction(ui, VGUI_DIRECTION_LTR);
+	expect(vgui_choice_set_indicator_atlas(check, nullptr) == 1, "choice atlas clears checkbox");
+	checkbox_frame(track, "choice atlas restores default checkbox indicator");
+
+	auto radio_atlas = make_texture(ui, 2 * cw, 2 * ch, pixels);
+	if (!expect(!!radio_atlas, "choice radio atlas texture setup")) return;
+	expect(vgui_choice_set_indicator_atlas(radio_a, radio_atlas.get()) == 1, "choice atlas binds first radio");
+	expect(vgui_choice_set_indicator_atlas(radio_b, radio_atlas.get()) == 1, "choice atlas binds second radio");
+	radio_atlas.reset();
+	vgui_context_set_size(ui, t.width, t.height);
+	expect(rect(radio_a) == a_rect && rect(radio_b) == b_rect, "choice atlas preserves radio layout");
+	auto radio_pixel = [&](const auto& r, uint32_t color, const char* label) {
+		expect_pixel(t, (int)r[0] + pad + box / 2, (int)(r[1] + r[3] / 2), color, label);
+	};
+	vgui_widget_set_checked(radio_a, 1);
+	if (capture("choice radio initial selection render"))
+	{
+		radio_pixel(a_rect, colors[1], "choice atlas first radio checked");
+		radio_pixel(b_rect, colors[0], "choice atlas second radio unchecked");
+	}
+	click((int)b_rect[0] + pad + box + gap + 3, (int)(b_rect[1] + b_rect[3] / 2));
+	expect(!vgui_widget_get_checked(radio_a) && vgui_widget_get_checked(radio_b),
+		"choice radio group mouse selection is exclusive");
+	if (capture("choice radio changed selection render"))
+	{
+		radio_pixel(a_rect, colors[0], "choice atlas first radio deselected");
+		radio_pixel(b_rect, colors[1], "choice atlas second radio selected");
+	}
+	vgui_widget_set_enabled(panel, 0);
+	if (capture("choice radio disabled ancestor render"))
+	{
+		radio_pixel(a_rect, colors[2], "choice atlas first radio disabled unchecked");
+		radio_pixel(b_rect, colors[3], "choice atlas second radio disabled checked");
+	}
+	vgui_widget_set_enabled(panel, 1);
+	expect(vgui_choice_set_indicator_atlas(radio_a, nullptr) == 1, "choice atlas clears first radio");
+	if (capture("choice radio cleared atlas render"))
+	{
+		radio_pixel(a_rect, track, "choice atlas restores default radio indicator");
+		radio_pixel(b_rect, colors[1], "choice atlas remains bound to second radio");
+	}
 }
 
 int main()
@@ -618,6 +825,7 @@ int main()
 	expect_pixel(t, 196, 4, orange, "update new pixels");
 
 	test_button_atlas(t, ui, native_frame, native);
+	test_choice_indicator_atlas(t);
 
 	// Drop the creator reference first; the widgets still hold references.
 	vgui_texture_destroy(native);
