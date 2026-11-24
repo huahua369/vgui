@@ -1743,9 +1743,8 @@ static float vgui_text_ascent(vgui_context* ctx, vgui_widget* w)
 	return vg_get_font_metrics(vgui_font_for(ctx, w), fs).ascent;
 }
 
-// Text measurement lives in ovg_fonts.cpp (vg_measure_text_width).  It uses
-// the same coverage-based fallback selection and nominal advances as before,
-// so layout and the renderer stay in sync without gui/ touching HarfBuzz.
+// OVG's fast width estimate shares the renderer's font fallback and skips
+// default-ignorable controls, but does not perform contextual shaping.
 static float vgui_measure_text_range(font_familys_t* ffs, int fontsize, const char* text, int len)
 {
 	return vg_measure_text_width(ffs, fontsize, text, len);

@@ -6256,6 +6256,40 @@ static void test_binding_slider_range(font_familys_t* familys)
 	vgui_destroy(ctx);
 }
 
+static void test_zero_width_text(font_familys_t* fonts)
+{
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(fonts, 24), vgui_destroy);
+	vgui_context_set_size(ctx.get(), 320, 180);
+	auto* root = vgui_root(ctx.get());
+	vgui_widget_set_layout(root, VGUI_LAYOUT_ABSOLUTE);
+	// DejaVu Sans assigns a nonzero nominal advance to U+00AD.
+	const char text[] = "A\u00AD" "Z";
+	auto* label = vgui_widget_add(root, VGUI_LABEL, "AZ");
+	float plain_width = 0, control_width = 0;
+	vgui_widget_get_rect(label, nullptr, nullptr, &plain_width, nullptr);
+	vgui_widget_set_text(label, text);
+	vgui_widget_get_rect(label, nullptr, nullptr, &control_width, nullptr);
+	check(plain_width > 0 && near(plain_width, control_width),
+		"zero width text: a soft hyphen does not grow a label's intrinsic width");
+
+	auto* edit = vgui_widget_add(root, VGUI_EDIT, nullptr);
+	vgui_widget_set_pos(edit, 8, 40);
+	vgui_widget_set_size(edit, 160, 30);
+	vgui_edit_set_text(edit, text);
+	vgui_layout(ctx.get()); // Establish the viewport before caret auto-scroll.
+	vgui_set_focus(ctx.get(), edit);
+	vgui_edit_set_cursor(edit, 1);
+	int before = -1, after = -2;
+	const bool before_rect = vgui_context_get_text_input_rect(ctx.get(), &before, nullptr, nullptr, nullptr) != 0;
+	vgui_input_key(ctx.get(), VGUI_KEY_RIGHT, 1, 0);
+	const bool after_rect = vgui_context_get_text_input_rect(ctx.get(), &after, nullptr, nullptr, nullptr) != 0;
+	check(vgui_edit_get_cursor(edit) == 3 && std::string(vgui_edit_get_text(edit)) == text,
+		"zero width text: cursor crosses the preserved UTF-8 bytes");
+	if (before != after) std::fprintf(stderr, "zero width text: IME x moved from %d to %d\n", before, after);
+	check(before_rect && after_rect && before == after,
+		"zero width text: crossing the control does not move the IME x coordinate");
+}
+
 static void test_label_orientation(font_familys_t* fonts)
 {
 	std::unique_ptr<ovg_ctx_cb, decltype(&free_ctx_cb)> cb(new_ctx_cb(), free_ctx_cb);
@@ -6900,6 +6934,7 @@ int main()
 	test_binding_collection(familys);
 	test_binding_expr(familys);
 	test_binding_slider_range(familys);
+	test_zero_width_text(familys);
 	test_label_orientation(familys);
 	test_richtext_spans(familys);
 	test_file_dialog(ui);

@@ -19,6 +19,7 @@
 #include <fstream>
 #include <iterator>
 #include <memory>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -57,6 +58,58 @@ std::vector<uint8_t> raster(font_familys_t* f) {
     check(vg_render_text_rgba8(&text, &st, nullptr, pixels.data(), 256, 128, 256 * 4, nullptr), "RGBA renders selected face");
     check(std::any_of(pixels.begin(), pixels.end(), [](auto v) { return v != 0; }), "face produces ink");
     return pixels;
+}
+
+void test_zero_width(font_cache_cx* cache, const char* regular_path) {
+    check(memory_font(cache, regular_path, "OvgWidthLatin"), "register Latin measurement fixture");
+    check(memory_font(cache, VGUI_SOURCE_DIR "/sample/res/fonts/DesignerSansSC.ttf", "OvgWidthCjk"),
+        "register CJK measurement fixture");
+    auto latin = fonts(new_font_family(cache, "OvgWidthLatin", nullptr));
+    auto cjk = fonts(new_font_family(cache, "OvgWidthCjk,OvgWidthLatin", nullptr));
+    if (!first(latin) || !first(cjk) || cjk->count < 2) {
+        check(false, "load single and fallback-chain measurement fixtures");
+        return;
+    }
+
+    const std::string_view controls[] = {
+        "\u00AD", "\u034F", "\u061C", "\u200B", "\u200C", "\u200D", "\u200E", "\u200F",
+        "\u202E", "\u2060", "\u2066", "\u2069", "\uFE0E", "\uFE0F", "\uFEFF",
+        "\U000E0067", "\U000E0100"
+    };
+    for (const auto* family : {latin.get(), cjk.get()}) {
+        const auto measure = [&](std::string_view text) {
+            return vg_measure_text_width(family, 24, text.data(), static_cast<int>(text.size()));
+        };
+        const auto base = measure("AZ");
+        check(base > 0, "visible text has measurable width");
+        for (const auto control : controls) {
+            const auto mixed = "A" + std::string(control) + "Z";
+            const float only = measure(control), combined = measure(mixed);
+            if (only != 0 || combined != base) {
+                std::fprintf(stderr, "    UTF-8 bytes for advancing control:");
+                for (unsigned char byte : control) std::fprintf(stderr, " %02X", static_cast<unsigned>(byte));
+                std::fprintf(stderr, "; isolated %.1f px, in AZ %.1f vs %.1f px\n", only, combined, base);
+            }
+            check(only == 0 && combined == base && measure(mixed) == base,
+                "invisible controls add no advance alone, in text, or from cache");
+        }
+        check(measure("A\u200B\nAZ\uFEFF") == base, "zero width controls keep the widest-line rule");
+        for (const auto space : {" ", "\u00A0", "\u2009", "\u202F", "\u3000"})
+            check(measure(space) > 0, "a spacing character still advances");
+        check(measure("\u3164") > 0 && measure("\U0010FFFD") > 0,
+            "Hangul filler and missing visible glyphs retain nominal advance");
+        check(measure("A\u0301") == base - measure("Z"), "a covered combining acute stays zero advance");
+
+        // Only the requested bytes are part of the text, even if the buffer
+        // happens to contain the rest of the scalar after that slice.
+        const char partial_zwsp[] = {char(0xE2), char(0x80), char(0x8B)};
+        const char partial_vs[] = {char(0xF3), char(0xA0), char(0x84), char(0x80)};
+        check(measure({partial_zwsp, 2}) == measure("\uFFFD") &&
+            measure({partial_vs, 3}) == measure("\uFFFD"),
+            "truncated UTF-8 byte slices are measured as replacement, not as a following control");
+        check(measure("\xE2" "A") == measure("\uFFFD" "A"),
+            "invalid UTF-8 does not swallow the next visible character");
+    }
 }
 
 void test_synthetic(font_cache_cx* cache, const char* regular_path) {
@@ -397,6 +450,7 @@ int main(int argc, char** argv) {
     get_sys_family(cache.get());
     check(cache->next_font_id == next_id, "fontconfig refresh does not insert faces twice");
     test_synthetic(cache.get(), regular_path);
+    test_zero_width(cache.get(), regular_path);
     test_cache_lifetime(cache.get(), regular_path);
     test_static(cache.get(), regular_path);
     test_variable(cache.get());
