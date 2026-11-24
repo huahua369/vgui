@@ -2970,27 +2970,44 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
         require(w != nullptr, id);
         return w;
     };
+    constexpr std::array zoom_ids{"designer.icon_region.zoom_out", "designer.icon_region.zoom_in",
+        "designer.icon_region.zoom_fit", "designer.icon_region.zoom_actual"};
+    constexpr auto zoom_label = "designer.icon_region.zoom_level";
+    constexpr std::array field_ids{"designer.icon_region.x", "designer.icon_region.y",
+        "designer.icon_region.width", "designer.icon_region.height"};
     const auto coords = [&] { return std::string_view(vgui_widget_get_text(modal_widget("designer.icon_region.coordinates", VGUI_LABEL))); };
     const auto picker = [&] {
         input.click(open);
         auto* panel = vgui_modal_panel(shell);
         require(panel && std::string_view(vgui_widget_get_id(panel)) == "designer.icon_region", "inspector did not open the crop modal");
         require(coords().starts_with("X: 16     Y: 8     48 × 32 px"), "picker did not show the authored source area");
+        for (const auto* id : zoom_ids) require(!find_widget(panel, id, VGUI_BUTTON), "button picker acquired a four-state zoom button");
+        for (const auto* id : field_ids) require(!find_widget(panel, id, VGUI_EDIT), "button picker acquired a four-state edit field");
+        require(!find_widget(panel, zoom_label, VGUI_LABEL), "button picker acquired a four-state zoom readout");
+    };
+    const auto canvas = [&] { return modal_widget("designer.icon_region.image", VGUI_CUSTOM); };
+    const auto drag_at = [&](glm::vec2 from, glm::vec2 to, Uint8 button, SDL_MouseButtonFlags mask) {
+        require(vgui_hit_test(shell, from.x, from.y) == canvas(), "drag does not start on the canvas");
+        input.motion(to, from, 0);
+        input.button(true, from, button);
+        input.motion(from, to, mask);
+        input.button(false, to, button);
+        frame();
+    };
+    const auto fit_scale = [](ui::pixel_rect r, int width, int height) {
+        return std::min(r.width / width, r.height / height);
+    };
+    const auto centered_pixel = [](ui::pixel_rect r, int width, int height, float scale, glm::vec2 p) {
+        return glm::vec2{
+            std::round(r.x + r.width / 2 + (p.x + .5f - width / 2.f) * scale),
+            std::round(r.y + r.height / 2 + (p.y + .5f - height / 2.f) * scale)};
     };
     const auto drag_pixels = [&](int width, int height, glm::vec2 a, glm::vec2 b) {
-        const auto r = input.rect(modal_widget("designer.icon_region.image", VGUI_CUSTOM));
-        const auto scale = std::min(r.width / width, r.height / height);
-        const auto left = r.x + (r.width - width * scale) / 2, top = r.y + (r.height - height * scale) / 2;
+        const auto r = input.rect(canvas());
+        const auto scale = fit_scale(r, width, height);
         require(scale > 1, "image test requires at least one device pixel per source pixel");
-        const auto pixel_center = [&](glm::vec2 p) {
-            return glm::vec2{std::round(left + (p.x + .5f) * scale), std::round(top + (p.y + .5f) * scale)};
-        };
-        const auto from = pixel_center(a), to = pixel_center(b);
-        input.motion(to, from, 0);
-        input.button(true, from);
-        input.motion(from, to);
-        input.button(false, to);
-        frame();
+        drag_at(centered_pixel(r, width, height, scale, a), centered_pixel(r, width, height, scale, b),
+            SDL_BUTTON_LEFT, SDL_BUTTON_LMASK);
     };
     const auto drag = [&] {
         drag_pixels(384, 128, {149, 91}, {64, 22});
@@ -3033,24 +3050,154 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
         require(vgui_modal_panel(shell) != nullptr, "choice did not open the image picker");
     };
     const auto ok = [&] { return modal_widget("designer.icon_region.ok", VGUI_BUTTON); };
+    const auto field = [&](std::size_t index) { return modal_widget(field_ids[index], VGUI_EDIT); };
+    const auto draft_is = [&](ui::icon_source_rect region, bool valid, const char* message) {
+        const auto [x, y, w, h] = region;
+        require(coords().starts_with("X: " + std::to_string(x) + "     Y: " + std::to_string(y) + "     " +
+            std::to_string(w) + " × " + std::to_string(h) + " px") && (vgui_widget_get_enabled(ok()) != 0) == valid, message);
+        for (std::size_t i = 0; i < region.size(); ++i)
+            require(std::string_view(vgui_edit_get_text(field(i))) == std::to_string(region[i]), message);
+    };
+    const auto replace_text = [&](std::size_t index, const char* value) {
+        auto* edit = field(index);
+        input.click(edit);
+        require(vgui_get_focus(shell) == edit, "numeric field did not take focus");
+        for (bool down : {true, false}) {
+            SDL_Event e{};
+            e.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+            e.key.windowID = win.id;
+            e.key.key = SDLK_A;
+            e.key.scancode = SDL_SCANCODE_A;
+            e.key.mod = SDL_KMOD_LCTRL;
+            e.key.down = down;
+            input.push(e);
+        }
+        if (*value) {
+            SDL_Event e{};
+            e.type = SDL_EVENT_TEXT_INPUT;
+            e.text.windowID = win.id;
+            e.text.text = value;
+            input.push(e);
+            frame(); // Assert the draft before Enter or blur.
+        } else menus.key(SDLK_BACKSPACE, SDL_SCANCODE_BACKSPACE);
+        require(std::string_view(vgui_edit_get_text(edit)) == value, "Ctrl+A did not replace the complete field text");
+    };
+    const auto zoom_text = [&] {
+        return std::string_view(vgui_widget_get_text(modal_widget(zoom_label, VGUI_LABEL)));
+    };
+    const auto fit_text = editor.strings().text("indicator_region.zoom_fitted", "Auto");
+    const auto zoom = [&] {
+        const std::string text(zoom_text());
+        const int percent = std::stoi(text);
+        require(text == std::to_string(percent) + "%", "zoom readout must be a device-pixel percentage");
+        return percent;
+    };
+    const auto wheel = [&](glm::vec2 at, float delta, int steps = 1) {
+        require(vgui_hit_test(shell, at.x, at.y) == canvas(), "wheel does not hit canvas");
+        input.motion(at, at, 0);
+        for (int i = 0; i < steps; ++i) {
+            SDL_Event e{};
+            e.type = SDL_EVENT_MOUSE_WHEEL;
+            e.wheel.windowID = win.id;
+            e.wheel.y = delta;
+            e.wheel.mouse_x = at.x / win.pixel_ratio();
+            e.wheel.mouse_y = at.y / win.pixel_ratio();
+            input.push(e);
+        }
+        frame();
+    };
     open_choice_region("check");
-    require(coords().starts_with("X: 0     Y: 0     273 × 139 px") && !vgui_widget_get_enabled(ok()) &&
-        !vgui_widget_get_enabled(modal_widget("designer.icon_region.whole", VGUI_BUTTON)),
+    draft_is({0, 0, 273, 139}, false, "odd-sized sheet must require a four-state subregion");
+    require(!vgui_widget_get_enabled(modal_widget("designer.icon_region.whole", VGUI_BUTTON)),
         "odd-sized sheet must require a four-state subregion");
+    constexpr int atlas_w = 273, atlas_h = 139;
+    const auto r = input.rect(canvas());
+    const auto fitted = fit_scale(r, atlas_w, atlas_h);
+    const int fit_percent = int(std::round(fitted * 100));
+    require(zoom_text() == fit_text, "picker did not open in fit mode");
+    input.click(modal_widget(zoom_ids[1], VGUI_BUTTON));
+    const int increased = zoom();
+    require(increased > fit_percent, "zoom in button did not increase magnification");
+    input.click(modal_widget(zoom_ids[0], VGUI_BUTTON));
+    require(zoom() < increased, "zoom out button did not decrease magnification");
+    input.click(modal_widget(zoom_ids[2], VGUI_BUTTON));
+
+    // Offset the cursor along the fit-limited axis, where zoom can preserve the anchor.
+    // Center the other axis in case the first step still leaves a letterbox there.
+    const glm::vec2 source_anchor = r.width / atlas_w <= r.height / atlas_h ?
+        glm::vec2{103, 69} : glm::vec2{136, 53};
+    const auto anchor = centered_pixel(r, atlas_w, atlas_h, fitted, source_anchor);
+    wheel(anchor, 1);
+    require(std::abs(zoom() - fitted * 125) <= 2, "wheel did not zoom one approximately 1.25× step");
+    wheel(anchor, 1, 2);
+    input.click_at(canvas(), anchor);
+    const int ax = int(source_anchor.x), ay = int(source_anchor.y);
+    draft_is({ax, ay, 1, 1}, false, "wheel zoom did not keep the original source pixel under the cursor");
+
+    // Small drag at this zoom stays away from the clamp; test the hit mapping, not internal pan state.
+    const auto shifted = anchor + glm::vec2{29, -23};
+    drag_at(anchor, shifted, SDL_BUTTON_MIDDLE, SDL_BUTTON_MMASK);
+    draft_is({ax, ay, 1, 1}, false, "middle drag changed the selection");
+    const auto scale = zoom() / 100.f;
+    const auto to = shifted + glm::vec2{std::round(3 * scale), std::round(5 * scale)};
+    drag_at(shifted, to, SDL_BUTTON_LEFT, SDL_BUTTON_LMASK);
+    draft_is({ax, ay, 4, 6}, true, "drag after zoom and pan did not select the expected source pixels");
+    require(vgui_get_focus(shell) == canvas(), "selection drag did not focus the canvas");
+    menus.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    menus.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    draft_is({ax + 1, ay + 1, 4, 6}, true, "canvas arrows must move one original pixel without resizing");
+
+    wheel(anchor, 1, 24);
+    require(zoom() == 1600, "zoom did not stop at 16:1");
+    wheel(anchor, 1);
+    require(zoom() == 1600, "wheel changed the zoom at its maximum");
+    wheel(anchor, -1, 24);
+    require(zoom() == std::min(fit_percent, 100), "wheel did not stop at the minimum zoom");
+    wheel(anchor, -1);
+    require(zoom() == std::min(fit_percent, 100), "wheel changed the zoom at its minimum");
+    input.click(modal_widget(zoom_ids[3], VGUI_BUTTON));
+    require(zoom() == 100, "actual size must be exactly one device pixel per source pixel");
+    draft_is({ax + 1, ay + 1, 4, 6}, true, "zoom navigation changed the draft");
+    // SDL mouse coordinates are rounded to whole device pixels. At 1:1 choose
+    // the integer inside each source pixel, including when its left/top edge is integral.
+    const glm::vec2 actual_origin{std::ceil(r.x + (r.width - atlas_w) / 2),
+        std::ceil(r.y + (r.height - atlas_h) / 2)};
+    input.click_at(canvas(), actual_origin + glm::vec2{81, 51});
+    draft_is({81, 51, 1, 1}, false, "1:1 selection did not map to the original image pixels");
+    input.click(modal_widget(zoom_ids[2], VGUI_BUTTON));
+    require(zoom_text() == fit_text, "fit did not restore automatic magnification");
     drag_pixels(273, 139, {266, 132}, {140, 5});
-    require(coords().starts_with("X: 140     Y: 5     127 × 128 px") && !vgui_widget_get_enabled(ok()),
-        "odd crop width must not be confirmable");
-    drag_pixels(273, 139, {267, 132}, {140, 5});
-    require(coords().starts_with("X: 140     Y: 5     128 × 128 px") && vgui_widget_get_enabled(ok()) &&
-        history.current() == doc && history.revision() == unchanged,
-        "valid crop should enable confirmation without mutating the document");
+    draft_is({140, 5, 127, 128}, false, "fit did not reset the pan, or odd width was accepted");
+    input.click(field(2));
+    menus.key(SDLK_UP, SDL_SCANCODE_UP);
+    draft_is({140, 5, 128, 128}, true, "Width Up did not recover an odd crop by adding one pixel");
+    replace_text(0, "");
+    require(!vgui_widget_get_enabled(ok()), "empty X was accepted");
+    replace_text(0, "bad");
+    require(!vgui_widget_get_enabled(ok()), "noninteger X was accepted");
+    replace_text(0, "146");
+    require(!vgui_widget_get_enabled(ok()), "an otherwise valid crop extending past the atlas was accepted");
+    replace_text(0, "141");
+    draft_is({141, 5, 128, 128}, true, "typing a valid X did not immediately recover the draft");
+    replace_text(1, "7");
+    draft_is({141, 7, 128, 128}, true, "typing Y did not immediately update the draft");
+    menus.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    draft_is({141, 6, 128, 128}, true, "Y Down did not subtract one pixel");
+    replace_text(2, "126");
+    draft_is({141, 6, 126, 128}, true, "typing Width did not immediately update the draft");
+    replace_text(3, "127");
+    draft_is({141, 6, 126, 127}, false, "typing an odd Height must disable confirmation");
+    menus.key(SDLK_UP, SDL_SCANCODE_UP);
+    draft_is({141, 6, 126, 128}, true, "Height Up did not recover an odd crop by adding one pixel");
+    require(history.current() == doc && history.revision() == unchanged && !history.can_undo(),
+        "zoom, pan, selection, or numeric edits mutated the document before confirmation");
     input.click(ok());
     expected = doc;
     const auto set_indicator_region = [&](const char* id, ui::icon_source_rect region) {
         for (std::size_t i = 0; i < region.size(); ++i)
             expected.nodes.at(id).props[ui::indicator_source_fields[i]] = double(region[i]);
     };
-    set_indicator_region("check", {140, 5, 128, 128});
+    set_indicator_region("check", {141, 6, 126, 128});
     require(history.current() == expected && history.revision() == unchanged + 1, "checkbox confirmation was not one isolated edit");
     menus.activate(menus.open(1), 0);
     require(history.current() == doc && !history.can_undo(), "one undo did not restore the checkbox's whole-image default");
@@ -3059,9 +3206,15 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
     open_choice_region("radio");
     require(coords().starts_with("X: 5     Y: 5     128 × 128 px") && vgui_widget_get_enabled(ok()),
         "radio picker mixed the radio and checkbox selections");
-    drag_pixels(273, 139, {9, 9}, {128, 128});
+    const auto before_cancel = history.revision();
+    replace_text(0, "9");
+    draft_is({9, 5, 128, 128}, true, "radio field edit did not update its draft");
+    input.click(modal_widget(zoom_ids[1], VGUI_BUTTON));
+    replace_text(3, "");
+    require(!vgui_widget_get_enabled(ok()), "empty radio draft was accepted");
     menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
-    require(!vgui_modal_active(shell) && history.current() == expected, "cancel changed the radio selection");
+    require(!vgui_modal_active(shell) && history.current() == expected && history.revision() == before_cancel,
+        "cancel changed the radio selection or history");
     open_choice_region("radio");
     drag_pixels(273, 139, {9, 9}, {128, 128});
     require(coords().starts_with("X: 9     Y: 9     120 × 120 px") && vgui_widget_get_enabled(ok()), "radio could not select its own region");

@@ -865,8 +865,14 @@ struct icon_region_picker {
     icon_source_rect original, selected;
     std::function<void(std::optional<icon_source_rect>)> on_close;
     bool four_state = false;
-    std::string invalid_hint;
+    std::string invalid_hint, bounds_hint, number_hint, fitted_label;
     vgui_widget *canvas = nullptr, *coordinates = nullptr, *whole = nullptr, *confirm = nullptr;
+    vgui_widget *zoom_level = nullptr, *zoom_in = nullptr, *zoom_out = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
+    std::array<vgui_widget*, 4> fields{};
+    std::array<bool, 4> bad_number{};
+    std::optional<float> zoom; // Device pixels per source pixel. Empty adapts to the canvas.
+    point center{.5f, .5f}; // Normalized source position at the center of the view.
+    std::optional<point> pan_last;
     std::optional<point> anchor;
     icon_source_rect drag_start{};
 
@@ -874,11 +880,20 @@ struct icon_region_picker {
     int height() const { return vgui_texture_get_height(image.get()); }
     icon_source_rect entire() const { return {0, 0, width(), height()}; }
 
-    bool valid(icon_source_rect region) const {
-        if (!four_state) return true;
+    bool in_bounds(icon_source_rect region) const {
         const auto [x, y, w, h] = region;
-        return x >= 0 && y >= 0 && w > 0 && h > 0 && w % 2 == 0 && h % 2 == 0 &&
+        return x >= 0 && y >= 0 && w > 0 && h > 0 &&
             w <= width() - x && h <= height() - y;
+    }
+
+    bool valid(icon_source_rect region) const {
+        return !four_state || (in_bounds(region) && region[2] % 2 == 0 && region[3] % 2 == 0);
+    }
+
+    const char* selection_error() const {
+        if (std::ranges::any_of(bad_number, [](bool bad) { return bad; })) return number_hint.c_str();
+        if (four_state && !in_bounds(selected)) return bounds_hint.c_str();
+        return valid(selected) ? nullptr : invalid_hint.c_str();
     }
 
     icon_source_rect clamp(icon_source_rect authored) const {
@@ -890,21 +905,100 @@ struct icon_region_picker {
         return authored;
     }
 
-    pixel_rect fit(pixel_rect area) const {
-        const float scale = std::min(area.width / width(), area.height / height());
+    float fit_scale(pixel_rect area) const {
+        const float fit = std::min(area.width / width(), area.height / height());
+        return four_state ? std::min(fit, 16.f) : fit;
+    }
+
+    pixel_rect image_rect(pixel_rect area) const {
+        const float scale = zoom.value_or(fit_scale(area));
         const float w = width() * scale, h = height() * scale;
-        return {area.x + (area.width - w) / 2, area.y + (area.height - h) / 2, w, h};
+        const auto offset = [](float extent, float size, float focus) {
+            if (size <= extent) return (extent - size) / 2;
+            return std::clamp(extent / 2 - focus * size, extent - size, 0.f);
+        };
+        return {area.x + offset(area.width, w, center.x), area.y + offset(area.height, h, center.y), w, h};
+    }
+
+    void place_image(pixel_rect area, point origin) {
+        const auto image = image_rect(area);
+        center = {
+            image.width > area.width ? std::clamp((area.x + area.width / 2 - origin.x) / image.width,
+                area.width / (2 * image.width), 1 - area.width / (2 * image.width)) : .5f,
+            image.height > area.height ? std::clamp((area.y + area.height / 2 - origin.y) / image.height,
+                area.height / (2 * image.height), 1 - area.height / (2 * image.height)) : .5f};
+        vgui_widget_mark_dirty(canvas);
+    }
+
+    void change_zoom(pixel_rect area, point focus, std::optional<float> scale) {
+        if (!has_area(area) || anchor || pan_last) return;
+        const auto old = image_rect(area);
+        zoom = scale;
+        const auto image = image_rect(area);
+        if (zoom) {
+            // Keep the source point under the pointer unless an image edge
+            // or a centered, non-overflowing axis prevents further panning.
+            place_image(area, {focus.x - (focus.x - old.x) * image.width / old.width,
+                focus.y - (focus.y - old.y) * image.height / old.height});
+        } else {
+            center = {.5f, .5f};
+            vgui_widget_mark_dirty(canvas);
+        }
+        const auto text = zoom ? std::to_string(std::lround(*zoom * 100)) + "%" : fitted_label;
+        vgui_widget_set_text(zoom_level, text.c_str());
+    }
+
+    void step_zoom(pixel_rect area, point focus, bool increase) {
+        const float old = zoom.value_or(fit_scale(area));
+        const float request = std::clamp(old * (increase ? 1.25f : .8f), std::min(fit_scale(area), 1.f), 16.f);
+        const float next = (old < 1 && request > 1) || (old > 1 && request < 1) ? 1.f : request;
+        if (next != old) change_zoom(area, focus, next);
     }
 
     void show_coordinates() const {
         const auto [x, y, w, h] = selected;
-        const bool can_apply = valid(selected);
+        const auto* error = selection_error();
         char text[96];
         std::snprintf(text, sizeof(text), "X: %d     Y: %d     %d × %d px     /     %d × %d px", x, y, w, h, width(), height());
-        const std::string status = can_apply ? text : std::string(text) + "   ·   " + invalid_hint;
+        const std::string status = error ? std::string(text) + "   ·   " + error : text;
         vgui_widget_set_text(coordinates, status.c_str());
-        vgui_widget_set_enabled(confirm, can_apply);
+        vgui_widget_set_enabled(confirm, error == nullptr);
         vgui_widget_mark_dirty(canvas);
+    }
+
+    void set_selection(icon_source_rect region) {
+        selected = region;
+        bad_number.fill(false);
+        if (four_state)
+            for (std::size_t i = 0; i < fields.size(); ++i) {
+                const auto text = std::to_string(selected[i]);
+                if (text != vgui_edit_get_text(fields[i])) vgui_edit_set_text(fields[i], text.c_str());
+            }
+        show_coordinates();
+    }
+
+    static void edit_text(vgui_widget* widget, const char* text, void* user) {
+        auto& self = *static_cast<icon_region_picker*>(user);
+        const auto i = std::size_t(std::ranges::find(self.fields, widget) - self.fields.begin());
+        const auto end = text + std::char_traits<char>::length(text);
+        int value = 0;
+        const auto parsed = std::from_chars(text, end, value);
+        self.bad_number[i] = parsed.ec != std::errc{} || parsed.ptr != end;
+        if (!self.bad_number[i]) self.selected[i] = value;
+        self.show_coordinates();
+    }
+
+    static void edit_key(vgui_widget* widget, const vgui_event* e, void* user) {
+        if (e->type != VGUI_EVENT_KEY_DOWN || (e->key != VGUI_KEY_UP && e->key != VGUI_KEY_DOWN)) return;
+        auto& self = *static_cast<icon_region_picker*>(user);
+        const auto i = std::size_t(std::ranges::find(self.fields, widget) - self.fields.begin());
+        const int side = i % 2 == 0 ? self.width() : self.height();
+        const int min = i < 2 ? 0 : 1, max = i < 2 ? side - 1 : side;
+        const int delta = e->key == VGUI_KEY_UP ? 1 : -1;
+        self.selected[i] = std::clamp(std::clamp(self.selected[i], min, max) + delta, min, max);
+        self.bad_number[i] = false;
+        vgui_edit_set_text(widget, std::to_string(self.selected[i]).c_str());
+        self.show_coordinates();
     }
 
     // Select inclusive source pixels, independently of dialog scale or drag direction.
@@ -915,62 +1009,106 @@ struct icon_region_picker {
 
     static int event(vgui_widget* w, const vgui_event* e, void* user) {
         auto& self = *static_cast<icon_region_picker*>(user);
+        const auto box = rect(w);
+        const pixel_rect view{0, 0, box.width, box.height};
+        const auto image = self.image_rect(view);
+        const point cursor{e->x, e->y};
+        if (self.four_state) {
+            if (e->type == VGUI_EVENT_MOUSE_WHEEL && e->wheel_y != 0) {
+                self.step_zoom(view, cursor, e->wheel_y > 0);
+                return 1;
+            }
+            if (e->type == VGUI_EVENT_MOUSE_DOWN && e->button == 2 && !self.anchor) {
+                self.pan_last = cursor;
+                return 1;
+            }
+            if (self.pan_last && (e->type == VGUI_EVENT_MOUSE_MOVE ||
+                (e->type == VGUI_EVENT_MOUSE_UP && e->button == 2))) {
+                self.place_image(view, {image.x + cursor.x - self.pan_last->x, image.y + cursor.y - self.pan_last->y});
+                if (e->type == VGUI_EVENT_MOUSE_UP) self.pan_last.reset();
+                else self.pan_last = cursor;
+                return 1;
+            }
+            if (e->type == VGUI_EVENT_CANCEL) self.pan_last.reset();
+            if (e->type == VGUI_EVENT_KEY_DOWN && !self.anchor && !self.pan_last && self.in_bounds(self.selected) &&
+                std::ranges::none_of(self.bad_number, [](bool bad) { return bad; })) {
+                const int dx = (e->key == VGUI_KEY_RIGHT) - (e->key == VGUI_KEY_LEFT);
+                const int dy = (e->key == VGUI_KEY_DOWN) - (e->key == VGUI_KEY_UP);
+                if (dx || dy) {
+                    auto next = self.selected;
+                    next[0] = std::clamp(next[0] + dx, 0, self.width() - next[2]);
+                    next[1] = std::clamp(next[1] + dy, 0, self.height() - next[3]);
+                    if (next != self.selected) self.set_selection(next);
+                    return 1;
+                }
+            }
+        }
         if (e->type == VGUI_EVENT_CANCEL && self.anchor) {
             self.anchor.reset();
-            self.selected = self.drag_start;
+            self.set_selection(self.drag_start);
         } else {
-            const auto box = rect(w);
-            const auto image = self.fit({0, 0, box.width, box.height});
-            if (!has_area(image)) return 0;
-            const point cursor{e->x, e->y};
+            if (!has_area(image) || self.pan_last) return 0;
             if (e->type == VGUI_EVENT_MOUSE_DOWN && e->button == 1 && contains(image, cursor)) {
                 self.anchor = self.pixel_at(image, cursor);
                 self.drag_start = self.selected;
             } else if (!self.anchor || (e->type != VGUI_EVENT_MOUSE_MOVE &&
                        (e->type != VGUI_EVENT_MOUSE_UP || e->button != 1))) return 0;
             const auto a = *self.anchor, b = self.pixel_at(image, cursor);
-            self.selected = {int(std::min(a.x, b.x)), int(std::min(a.y, b.y)),
-                1 + int(std::abs(a.x - b.x)), 1 + int(std::abs(a.y - b.y))};
+            self.set_selection({int(std::min(a.x, b.x)), int(std::min(a.y, b.y)),
+                1 + int(std::abs(a.x - b.x)), 1 + int(std::abs(a.y - b.y))});
             if (e->type == VGUI_EVENT_MOUSE_UP) self.anchor.reset();
         }
-        self.show_coordinates();
         return 1;
     }
 
     static void draw(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float width, float height,
         float, void* user) {
         const auto& self = *static_cast<icon_region_picker*>(user);
-        const auto area = self.fit({x, y, width, height});
-        if (!has_area(area)) return;
+        const pixel_rect view{x, y, width, height};
+        const auto area = self.image_rect(view);
+        const auto clip = intersect(view, area);
+        if (!has_area(clip)) return;
         // A checkerboard lets sprite-sheet transparency remain visible.
-        fill(cb, vg, area, 0xFFC5C5C5u);
+        fill(cb, vg, clip, 0xFFC5C5C5u);
         const float cell = std::max(8.f, 12.f * vgui_context_get_ui_scale(vgui_widget_get_context(w)));
         cb->set_source_color(vg, 0xFF909090u);
-        for (int row = 0; row * cell < area.height; ++row) {
-            const float top = row * cell;
-            for (float left = (row % 2) * cell; left < area.width; left += 2 * cell)
-                cb->rectangle(vg, area.x + left, area.y + top, std::min(cell, area.width - left), std::min(cell, area.height - top));
+        const int first_row = int(std::floor((clip.y - area.y) / cell)), first_col = int(std::floor((clip.x - area.x) / cell));
+        for (int row = first_row; area.y + row * cell < clip.y + clip.height; ++row) {
+            for (int col = first_col + ((first_col + row) % 2); area.x + col * cell < clip.x + clip.width; col += 2) {
+                const auto r = intersect(clip, {area.x + col * cell, area.y + row * cell, cell, cell});
+                if (has_area(r)) cb->rectangle(vg, r.x, r.y, r.width, r.height);
+            }
         }
         cb->fill(vg);
         vgui_custom_draw_texture_fit(w, cb, vg, self.image.get(), area.x, area.y, area.width, area.height,
             VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFFu);
         const auto [sx, sy, sw, sh] = self.selected;
         const float scale_x = area.width / self.width(), scale_y = area.height / self.height();
+        if (self.four_state && scale_x >= 8.f) {
+            // At high magnification, show the visible original-pixel boundaries.
+            const auto cols = grid_indices(clip.x, clip.width, area.x, scale_x, 1);
+            const auto rows = grid_indices(clip.y, clip.height, area.y, scale_y, 1);
+            for (auto col = cols.first; col < cols.end; ++col)
+                fill(cb, vg, intersect(clip, {grid_edge(area.x + col * scale_x, 1), clip.y, 1, clip.height}), 0x42636363u);
+            for (auto row = rows.first; row < rows.end; ++row)
+                fill(cb, vg, intersect(clip, {clip.x, grid_edge(area.y + row * scale_y, 1), clip.width, 1}), 0x42636363u);
+        }
+        if (sw <= 0 || sh <= 0) return;
         const pixel_rect selection{area.x + sx * scale_x, area.y + sy * scale_y, sw * scale_x, sh * scale_y};
         const float right = selection.x + selection.width, bottom = selection.y + selection.height;
         constexpr auto faded = 0x86000000u;
-        fill(cb, vg, {area.x, area.y, area.width, selection.y - area.y}, faded);
-        fill(cb, vg, {area.x, bottom, area.width, area.y + area.height - bottom}, faded);
-        fill(cb, vg, {area.x, selection.y, selection.x - area.x, selection.height}, faded);
-        fill(cb, vg, {right, selection.y, area.x + area.width - right, selection.height}, faded);
-        const bool valid = self.valid(self.selected);
+        fill(cb, vg, intersect(clip, {area.x, area.y, area.width, selection.y - area.y}), faded);
+        fill(cb, vg, intersect(clip, {area.x, bottom, area.width, area.y + area.height - bottom}), faded);
+        fill(cb, vg, intersect(clip, {area.x, selection.y, selection.x - area.x, selection.height}), faded);
+        fill(cb, vg, intersect(clip, {right, selection.y, area.x + area.width - right, selection.height}), faded);
+        const bool valid = self.selection_error() == nullptr;
         constexpr auto grid_color = 0xFFF6D373u;
-        outline(cb, vg, selection, area, valid ? grid_color : to_ovg(0xFFEE5757u));
+        outline(cb, vg, selection, clip, valid ? grid_color : to_ovg(0xFFEE5757u));
         if (self.four_state && valid) {
             const float dx = std::min(selection.width * 0.25f, 2.f);
             const float dy = std::min(selection.height * 0.25f, 2.f);
-            fill(cb, vg, {selection.x + (selection.width - dx) / 2, selection.y, dx, selection.height}, grid_color);
-            fill(cb, vg, {selection.x, selection.y + (selection.height - dy) / 2, selection.width, dy}, grid_color);
+            fill(cb, vg, intersect(clip, {selection.x + (selection.width - dx) / 2, selection.y, dx, selection.height}), grid_color);
+            fill(cb, vg, intersect(clip, {selection.x, selection.y + (selection.height - dy) / 2, selection.width, dy}), grid_color);
         }
     }
 };
@@ -986,46 +1124,104 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     if (file.empty() || !loader.load(shell, file)) return nullptr;
     auto self = std::make_unique<icon_region_picker>(icon_region_picker{
         std::move(loader.images.back()), {}, {}, std::move(on_close), four_state,
-        strings.text("indicator_region.invalid", "Width and height must be even.")});
+        strings.text("indicator_region.invalid", "Width and height must be even."),
+        strings.text("indicator_region.invalid_bounds", "The region must fit inside the image."),
+        strings.text("indicator_region.invalid_number", "Enter whole numbers in source pixels."),
+        strings.text("indicator_region.zoom_fitted", "Auto")});
     self->original = four_state && authored != icon_source_rect{} ? authored : self->clamp(authored);
     self->selected = self->valid(self->original) ? self->original : self->entire();
     auto* panel = vgui_widget_create(shell, VGUI_PANEL, nullptr);
     vgui_widget_set_id(panel, "designer.icon_region");
     vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
     vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
-    vgui_widget_set_size(panel, 640, 480);
+    vgui_widget_set_size(panel, 640, four_state ? 530 : 480);
     vgui_widget_set_padding(panel, 12, 10, 12, 10);
     vgui_widget_set_gap(panel, 8);
-    const auto label = [&](const char* text) {
-        auto* widget = vgui_widget_add(panel, VGUI_LABEL, text);
+    const auto label = [](vgui_widget* parent, const char* text) {
+        auto* widget = vgui_widget_add(parent, VGUI_LABEL, text);
         vgui_widget_set_text_align(widget, 0, .5f);
         return widget;
     };
-    auto* title = label(four_state ? strings.text("indicator_region.title", "Four-State Indicator Region")
+    const auto row = [&](vgui_justify justify) {
+        auto* w = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_layout(w, VGUI_LAYOUT_ROW);
+        vgui_widget_set_align_items(w, VGUI_ALIGN_CENTER);
+        vgui_widget_set_justify(w, justify);
+        vgui_widget_set_padding(w, 0, 0, 0, 0);
+        vgui_widget_set_gap(w, 8);
+        vgui_widget_set_background(w, 0);
+        vgui_widget_set_border(w, 0, 0);
+        return w;
+    };
+    auto* title = label(panel, four_state ? strings.text("indicator_region.title", "Four-State Indicator Region")
         : strings.text("icon_region.title", "Button Icon Region"));
     vgui_widget_set_font_size(title, 18);
     vgui_widget_set_font_weight(title, VGUI_FONT_WEIGHT_SEMI_BOLD);
     const auto* hint = four_state ? strings.text("indicator_region.hint",
         "Drag around all four states. Left: unchecked; right: checked. Top: enabled; bottom: disabled.")
         : strings.text("icon_region.hint", "Drag on the image to select a new rectangle.");
-    label(hint);
+    label(panel, hint);
+    if (four_state) {
+        auto* tools = row(VGUI_JUSTIFY_START);
+        const auto zoom_button = [&](const char* id, const char* text, const char* help, float width) {
+            auto* w = vgui_widget_add(tools, VGUI_BUTTON, text);
+            vgui_widget_set_id(w, id);
+            vgui_widget_set_size(w, width, 28);
+            vgui_widget_set_tooltip(w, help);
+            vgui_widget_set_a11y_name(w, help);
+            vgui_widget_on_event(w, [](vgui_widget* widget, const vgui_event* e, void* user) {
+                if (e->type != VGUI_EVENT_CLICK) return;
+                auto& picker = *static_cast<icon_region_picker*>(user);
+                const auto box = rect(picker.canvas);
+                const pixel_rect view{0, 0, box.width, box.height};
+                const point center{view.width / 2, view.height / 2};
+                if (widget == picker.zoom_fit) picker.change_zoom(view, center, std::nullopt);
+                else if (widget == picker.zoom_actual) picker.change_zoom(view, center, 1.f);
+                else picker.step_zoom(view, center, widget == picker.zoom_in);
+            }, self.get());
+            return w;
+        };
+        self->zoom_out = zoom_button("designer.icon_region.zoom_out", "−", strings.text("indicator_region.zoom_out", "Zoom out"), 30);
+        self->zoom_in = zoom_button("designer.icon_region.zoom_in", "+", strings.text("indicator_region.zoom_in", "Zoom in"), 30);
+        self->zoom_level = label(tools, self->fitted_label.c_str());
+        vgui_widget_set_id(self->zoom_level, "designer.icon_region.zoom_level");
+        vgui_widget_set_size(self->zoom_level, 52, 28);
+        vgui_widget_set_text_align(self->zoom_level, .5f, .5f);
+        const auto* fit = strings.text("indicator_region.zoom_fit", "Fit");
+        self->zoom_fit = zoom_button("designer.icon_region.zoom_fit", fit, fit, 0);
+        self->zoom_actual = zoom_button("designer.icon_region.zoom_actual", "1:1", strings.text("indicator_region.zoom_actual", "Actual pixels"), 42);
+        label(tools, strings.text("indicator_region.zoom_hint", "Wheel to zoom · Middle-drag to pan"));
+    }
     auto* canvas = vgui_widget_add(panel, VGUI_CUSTOM, nullptr);
     self->canvas = canvas;
     vgui_widget_set_id(canvas, "designer.icon_region.image");
     vgui_widget_set_grow(canvas, 1);
     vgui_widget_set_a11y_name(canvas, hint);
     vgui_widget_set_cursor(canvas, VGUI_CURSOR_HAND);
+    if (four_state) vgui_widget_set_focusable(canvas, 1);
     vgui_custom_set_event(canvas, icon_region_picker::event, self.get());
     vgui_custom_set_draw(canvas, icon_region_picker::draw, self.get());
-    self->coordinates = label("");
+    self->coordinates = label(panel, "");
     vgui_widget_set_id(self->coordinates, "designer.icon_region.coordinates");
-    auto* buttons = vgui_widget_add(panel, VGUI_PANEL, nullptr);
-    vgui_widget_set_layout(buttons, VGUI_LAYOUT_ROW);
-    vgui_widget_set_justify(buttons, VGUI_JUSTIFY_END);
-    vgui_widget_set_padding(buttons, 0, 0, 0, 0);
-    vgui_widget_set_gap(buttons, 8);
-    vgui_widget_set_background(buttons, 0);
-    vgui_widget_set_border(buttons, 0, 0);
+    if (four_state) {
+        auto* pixels = row(VGUI_JUSTIFY_START);
+        constexpr const char* ids[] = {"designer.icon_region.x", "designer.icon_region.y",
+            "designer.icon_region.width", "designer.icon_region.height"};
+        const char* labels[] = {strings.text("indicator_region.source_x", "X"), strings.text("indicator_region.source_y", "Y"),
+            strings.text("indicator_region.source_width", "Width"), strings.text("indicator_region.source_height", "Height")};
+        const auto* help = strings.text("indicator_region.edit_hint", "Source-image pixels. Up/down changes the value by 1.");
+        for (std::size_t i = 0; i < self->fields.size(); ++i) {
+            label(pixels, labels[i]);
+            auto* edit = self->fields[i] = vgui_widget_add(pixels, VGUI_EDIT, "");
+            vgui_widget_set_id(edit, ids[i]);
+            vgui_widget_set_size(edit, 68, 28);
+            vgui_widget_set_a11y_name(edit, labels[i]);
+            vgui_widget_set_tooltip(edit, help);
+            vgui_widget_on_text(edit, icon_region_picker::edit_text, self.get());
+            vgui_widget_on_event(edit, icon_region_picker::edit_key, self.get());
+        }
+    }
+    auto* buttons = row(VGUI_JUSTIFY_END);
     const auto button = [&](const char* id, const char* text) {
         auto* w = vgui_widget_add(buttons, VGUI_BUTTON, text);
         vgui_widget_set_id(w, id);
@@ -1033,9 +1229,9 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
             if (e->type != VGUI_EVENT_CLICK) return;
             auto& picker = *static_cast<icon_region_picker*>(user);
             if (widget == picker.whole) {
-                picker.selected = picker.entire();
-                picker.show_coordinates();
-            } else vgui_modal_close(vgui_widget_get_context(widget), widget == picker.confirm ?
+                picker.set_selection(picker.entire());
+            } else if (widget != picker.confirm || !picker.selection_error())
+                vgui_modal_close(vgui_widget_get_context(widget), widget == picker.confirm ?
                 VGUI_MODAL_RESULT_CONFIRM : VGUI_MODAL_RESULT_CANCEL);
         }, self.get());
         return w;
@@ -1046,7 +1242,7 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     if (four_state) vgui_widget_set_tooltip(self->whole, self->invalid_hint.c_str());
     button("designer.icon_region.cancel", strings.text("common.cancel", "Cancel"));
     self->confirm = button("designer.icon_region.ok", strings.text("common.ok", "OK"));
-    self->show_coordinates();
+    self->set_selection(self->selected);
     vgui_modal_options options;
     vgui_modal_options_default(&options);
     options.destroy_on_close = 1;
@@ -1054,7 +1250,7 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     options.on_close = [](vgui_context*, vgui_widget*, int result, void* user) {
         std::unique_ptr<icon_region_picker> picker(static_cast<icon_region_picker*>(user));
         std::optional<icon_source_rect> change;
-        if (result == VGUI_MODAL_RESULT_CONFIRM && picker->valid(picker->selected) && picker->selected != picker->original)
+        if (result == VGUI_MODAL_RESULT_CONFIRM && !picker->selection_error() && picker->selected != picker->original)
             change = picker->selected == picker->entire() ? icon_source_rect{} : picker->selected;
         picker->on_close(change);
     };
