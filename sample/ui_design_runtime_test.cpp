@@ -46,6 +46,44 @@ void same_rect(const ui::pixel_rect& a, const ui::pixel_rect& b) {
     check(near(a.x,b.x) && near(a.y,b.y) && near(a.width,b.width) && near(a.height,b.height),
         "snapshot rect differs from actual VGUI layout");
 }
+void test_anchored_layout() {
+    ui::diagnostic error;
+    ui::document doc;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"pad_left":8,"pad_right":12},"children":["hud","center","flow","legacy"]},
+        "hud":{"type":"panel","props":{"x":6,"y":-5,"height":24,"anchor_x":"stretch","anchor_y":"end",
+            "anchor_right":9,"anchor_safe_area":true},"children":["nested"]},
+        "nested":{"type":"button","props":{"x":-3,"width":20,"height":20,"anchor_x":"end","anchor_y":"center"}},
+        "center":{"type":"edit","props":{"width":40,"height":20,"anchor_x":"center","anchor_y":"center","text":"authored"}},
+        "flow":{"type":"panel","props":{"layout":"row","x":1,"y":2,"width":96,"height":34},"children":["managed"]},
+        "managed":{"type":"label","props":{"width":18,"height":11,"anchor_x":"stretch","anchor_y":"end","anchor_safe_area":true}},
+        "legacy":{"type":"panel","props":{"x":3,"y":5,"width":9,"height":7}}
+    }})", doc, &error), "decode anchor fixture");
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    ui::runtime rt(ctx.get());
+    check(rt.mount(doc, 7, {}, &error), "mount anchored design");
+    vgui_context_set_safe_area(ctx.get(), 26, 10, 17, 13);
+    const auto check_layout = [&](ui::viewport view) {
+        const auto s = rt.layout(view);
+        check(s && s->revision == 7, "capture anchored layout");
+        const auto expected = [&](std::string_view id, float x, float y, float w, float h) {
+            same_rect(node(*s, id).rect_px, {x * view.scale, y * view.scale, w * view.scale, h * view.scale});
+        };
+        const float width = static_cast<float>(view.width), height = static_cast<float>(view.height);
+        expected("hud", 32, height - 42, width - 58, 24);
+        expected("nested", width - 49, height - 40, 20, 20);
+        expected("center", (width - 4 - 40) / 2, (height - 20) / 2, 40, 20);
+        expected("managed", 9, 2, 18, 11);
+        expected("legacy", 11, 5, 9, 7);
+    };
+    check_layout({320, 180, 1});
+    auto* field = rt.widget("center");
+    vgui_set_focus(ctx.get(), field);
+    vgui_edit_set_text(field, "live");
+    check_layout({420, 180, 1.5f});
+    check(rt.widget("center") == field && vgui_get_focus(ctx.get()) == field &&
+        std::string_view(vgui_edit_get_text(field)) == "live", "DPI and viewport relayout must preserve live state");
+}
 ui::document fixture() {
     return {"root", {
         {"root", {"panel", "", {{"layout", "column"s}, {"gap", 5.0},
@@ -2182,6 +2220,7 @@ int main(int argc, char** argv) {
         if (argc == 2 && std::string_view(argv[1]) == "--links") return test_link_paths();
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
+        test_anchored_layout();
         test_declarative_widgets();
         test_button_gradients();
         test_panel_gradients();

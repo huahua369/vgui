@@ -5193,6 +5193,102 @@ static void test_ui_scale(vgui_context* ui)
 		check(scaled.animation_speed == base_style.animation_speed,			"ui_scale: style_scale leaves timing alone");
 	}
 
+static void test_absolute_anchors(font_familys_t* fonts)
+{
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(fonts, 16.0f), vgui_destroy);
+	auto* ui = ctx.get();
+	auto* root = vgui_root(ui);
+	vgui_context_set_size(ui, 320, 200);
+	auto check_rect = [](vgui_widget* widget, float x, float y, float w, float h, const char* what)
+	{
+		float ax, ay, aw, ah;
+		vgui_widget_get_rect(widget, &ax, &ay, &aw, &ah);
+		check(near(ax, x) && near(ay, y) && near(aw, w) && near(ah, h), what);
+	};
+
+	auto* panel = vgui_widget_add(root, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(panel, 12, 10);
+	vgui_widget_set_size(panel, 200, 130);
+	vgui_widget_set_padding(panel, 8, 6, 12, 10);
+	auto* legacy = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(legacy, 9, 7);
+	vgui_widget_set_size(legacy, 30, 20);
+	vgui_widget_set_margin(legacy, 3, 4, 7, 8);
+	check_rect(legacy, 32, 27, 30, 20, "anchor: default absolute geometry is unchanged");
+	vgui_widget_set_anchor(legacy, VGUI_ANCHOR_START, VGUI_ANCHOR_START, 99, 99, 0);
+	check_rect(legacy, 32, 27, 30, 20, "anchor: START ignores trailing insets");
+
+	auto* aligned = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(aligned, 50, 30);
+	vgui_widget_set_max_size(aligned, 40, 26);
+	vgui_widget_set_margin(aligned, 3, 4, 7, 8);
+	vgui_widget_set_pos(aligned, -16, 5);
+	vgui_widget_set_anchor(aligned, VGUI_ANCHOR_END, VGUI_ANCHOR_CENTER, 0, 0, 0);
+	check_rect(aligned, 137, 63, 40, 26, "anchor: END and CENTER use final size, margins and signed offsets");
+
+	auto* safe_start = vgui_widget_add(root, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(safe_start, 7, 9);
+	vgui_widget_set_anchor(safe_start, VGUI_ANCHOR_START, VGUI_ANCHOR_START, 0, 0, 1);
+	auto* stretch = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(stretch, 5, 3);
+	vgui_widget_set_size(stretch, 110, 100);
+	vgui_widget_set_margin(stretch, 2, 4, 6, 8);
+	vgui_widget_set_anchor(stretch, VGUI_ANCHOR_STRETCH, VGUI_ANCHOR_STRETCH, 11, 7, 1);
+	vgui_context_set_safe_area(ui, 32, 24, 40, 84);
+	check_rect(safe_start, 32, 24, 7, 9, "anchor: START can opt into the safe area");
+	check_rect(stretch, 39, 31, 144, 70, "anchor: stretch intersects asymmetric safe area and nested padding");
+	float cw, ch;
+	vgui_panel_get_content_size(panel, &cw, &ch);
+	check(near(cw, 169) && near(ch, 93), "anchor: content extent uses arranged geometry");
+
+	vgui_context_set_ui_scale(ui, 1.25f);
+	check_rect(stretch, 48.75f, 38.75f, 180, 37.5f, "anchor: non-integer DPI scales offsets, insets and padding");
+	vgui_context_set_ui_scale(ui, 1.0f);
+	check_rect(stretch, 39, 31, 144, 70, "anchor: DPI round trip preserves logical geometry");
+	vgui_context_set_safe_area(ui, 195, 24, 124, 84);
+	check_rect(stretch, 202, 31, 0, 70, "anchor: safe-area change relayouts and zero width is not auto");
+	vgui_widget_set_min_size(stretch, 6, 0);
+	vgui_widget_set_max_size(stretch, 0, 50);
+	check_rect(stretch, 202, 31, 6, 50, "anchor: stretch honors min and max without moving its leading edge");
+	vgui_widget_set_min_size(stretch, 0, 0);
+	vgui_widget_set_max_size(stretch, 0, 0);
+	vgui_context_set_safe_area(ui, 1000, 24, 40, 84);
+	check_rect(stretch, 207, 31, 0, 70, "anchor: empty safe intersection collapses at the parent edge");
+
+	vgui_context_set_safe_area(ui, 32, 24, 40, 84);
+	auto* spacer = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(spacer, 234, 156);
+	vgui_widget_set_size(spacer, 20, 20);
+	vgui_panel_set_scrollable(panel, 1, 1);
+	vgui_panel_set_scroll(panel, 25, 30);
+	check_rect(stretch, 14, 1, 144, 70, "anchor: absolute anchors scroll with the parent's content");
+	auto* root_spacer = vgui_widget_add(root, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(root_spacer, 370, 260);
+	vgui_widget_set_size(root_spacer, 10, 10);
+	vgui_panel_set_scrollable(root, 1, 1);
+	vgui_panel_set_scroll(root, 15, 15);
+	check_rect(stretch, 14, 1, 129, 69, "anchor: nested safe intersection follows ancestor scrolling");
+
+	vgui_panel_set_scrollable(root, 0, 0);
+	vgui_panel_set_scrollable(panel, 0, 0);
+	vgui_widget_set_layout(panel, VGUI_LAYOUT_ROW);
+	check_rect(stretch, 112, 20, 110, 100, "anchor: automatic layouts ignore anchor settings");
+
+	auto* fit = vgui_widget_add(root, VGUI_PANEL, nullptr);
+	vgui_widget_set_pos(fit, 40, 40);
+	vgui_widget_set_padding(fit, 0, 0, 0, 0);
+	auto* fixed_child = vgui_widget_add(fit, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(fixed_child, 30, 20);
+	vgui_widget_set_pos(fixed_child, -16, -5);
+	vgui_widget_set_anchor(fixed_child, VGUI_ANCHOR_END, VGUI_ANCHOR_CENTER, 0, 0, 0);
+	auto* fill_child = vgui_widget_add(fit, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(fill_child, 200, 200);
+	vgui_widget_set_pos(fill_child, 2, 1);
+	vgui_widget_set_anchor(fill_child, VGUI_ANCHOR_STRETCH, VGUI_ANCHOR_STRETCH, 3, 4, 0);
+	check_rect(fit, 40, 40, 46, 30, "anchor: auto-sized parent fits aligned content, ignoring stretch requests");
+	check_rect(fill_child, 42, 41, 41, 25, "anchor: non-safe stretch uses the parent content box");
+}
+
 	struct a11y_walk_capture
 {
 	vgui_widget* edit = nullptr;
@@ -6677,6 +6773,7 @@ int main()
 	test_multi_click(ui, style);
 	test_accessibility_e05(ui);
 	test_ui_scale(ui);
+	test_absolute_anchors(familys);
 	test_focus_navigate(ui, familys);
 	test_binding(familys);
 	test_binding_collection(familys);

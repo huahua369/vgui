@@ -38,6 +38,8 @@ struct geometry_edit {
     std::string id;
     std::uint64_t revision;
     std::optional<double> x, y, width, height;
+    std::optional<double> anchor_right, anchor_bottom;
+    bool resized = false; // A resize handle was dragged, even if only insets changed.
 };
 
 struct canvas_control_drop {
@@ -92,6 +94,10 @@ public:
         const type_descriptor&, float x, float y) const;
 
     enum class preset { desktop, tablet, phone };
+    struct safe_area_insets {
+        int left = 0, top = 0, right = 0, bottom = 0; // Logical units.
+        bool operator==(const safe_area_insets&) const = default;
+    };
     struct animation_view {
         double time = 0, window_start = 0;
         bool playing = true;
@@ -105,6 +111,8 @@ public:
         bool running = false;
         animation_view animation; // In-memory preview state, not saved to the document.
         bool timeline_open = false;
+        std::optional<viewport> custom_viewport; // Absent when using a preset.
+        safe_area_insets safe_area;
     };
 
     view_state capture_view() const;
@@ -113,7 +121,11 @@ public:
     void restore_view(const view_state&);
 
     void set_preset(preset);
-    preset current_preset() const;
+    // No preset is selected while a custom viewport is active.
+    std::optional<preset> current_preset() const;
+    // Reset to Fit on a change. Invalid dimensions, DPI, insets or texture sizes
+    // return false without changing the view. Like presets, this never edits the document.
+    bool set_custom_viewport(viewport, safe_area_insets = {0, 0, 0, 0});
     void reset_zoom(bool fit);
     void set_running(bool);
     bool running() const;

@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdio>
 #include <fstream>
@@ -58,6 +59,36 @@ viewport view_for(designer_preview::preset preset) {
     case designer_preview::preset::phone: return {390, 844, 1};
     default: return {1280, 720, 1};
     }
+}
+
+bool valid_viewport(viewport view, designer_preview::safe_area_insets insets) {
+    constexpr int max_logical_side = 4096, max_pixel_side = 4096;
+    constexpr long max_pixels = 8L * 1024 * 1024;
+    if (view.width < 1 || view.width > max_logical_side || view.height < 1 || view.height > max_logical_side ||
+        !(view.scale >= .5f && view.scale <= 4.f)) return false;
+    if (insets.left < 0 || insets.top < 0 || insets.right < 0 || insets.bottom < 0 ||
+        insets.left >= view.width || insets.right >= view.width - insets.left ||
+        insets.top >= view.height || insets.bottom >= view.height - insets.top) return false;
+    // Match runtime::layout's rounding: budget the actual render texture.
+    const auto w = std::lround(double(view.width) * view.scale);
+    const auto h = std::lround(double(view.height) * view.scale);
+    return w <= max_pixel_side && h <= max_pixel_side && w * h <= max_pixels;
+}
+
+const char* viewport_text(const designer_strings& strings, std::string_view key, const char* en, const char* zh) {
+    return strings.text(key, strings.language() == designer_language::english ? en : zh);
+}
+
+template<class Number>
+bool read_viewport_number(vgui_widget* field, Number& value) {
+    std::string_view text(vgui_edit_get_text(field));
+    constexpr std::string_view spaces = " \t\r\n";
+    const auto first = text.find_first_not_of(spaces);
+    if (first == std::string_view::npos) return false;
+    text = text.substr(first, text.find_last_not_of(spaces) - first + 1);
+    const auto end = text.data() + text.size();
+    const auto result = std::from_chars(text.data(), end, value);
+    return result.ec == std::errc{} && result.ptr == end;
 }
 
 // Match os_window::pixel_ratio(), not SDL_GetWindowDisplayScale (UI scaling).
@@ -322,7 +353,8 @@ float grid_edge(double center, float width) {
 }
 
 void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pixel_rect frame,
-        viewport view, float ui_scale, const designer_grid_settings& settings, const designer_grid_colors& colors) {
+        double shell_per_unit_x, double shell_per_unit_y, float ui_scale,
+        const designer_grid_settings& settings, const designer_grid_colors& colors) {
     if (!std::isfinite(board.x) || !std::isfinite(board.y) || !std::isfinite(board.width) ||
         !std::isfinite(board.height) || !std::isfinite(ui_scale) || ui_scale <= 0) return;
     const auto clips = grid_clips(area, board, frame);
@@ -330,8 +362,8 @@ void draw_grid(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect area, pixel_rect board, pix
 
     // Spacing is in artboard units. The width is in shell units, snapped to
     // full device pixels so thin strokes and dots stay legible without MSAA.
-    const double step_x = double(settings.spacing) * board.width / view.width;
-    const double step_y = double(settings.spacing) * board.height / view.height;
+    const double step_x = settings.spacing * shell_per_unit_x;
+    const double step_y = settings.spacing * shell_per_unit_y;
     const float width = std::max(1.f, std::round(settings.line_width * ui_scale));
     const double min_step = std::max(settings.hide_below, width + 1.f);
     const bool dots = settings.style == designer_grid_style::dots;
@@ -424,6 +456,32 @@ struct board_transform {
         return same_rect(board, other.board) && width == other.width && height == other.height && scale == other.scale;
     }
 };
+
+void draw_safe_area(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect clip, const board_transform& t,
+        designer_preview::safe_area_insets insets) {
+    if (insets == designer_preview::safe_area_insets{} || !has_area(clip)) return;
+    const float x = insets.left * t.scale, y = insets.top * t.scale;
+    // VGUI measures the trailing insets from the rounded context pixel size,
+    // not from the unrounded logical extent times DPI.
+    const auto safe = t.project({x, y, std::max(0.f, t.width - insets.right * t.scale - x),
+        std::max(0.f, t.height - insets.bottom * t.scale - y)});
+    const float left = std::round(safe.x), top = std::round(safe.y);
+    const float right = std::round(safe.x + safe.width), bottom = std::round(safe.y + safe.height);
+    // Shell-only overlay: use a contrasting outline even on opaque content.
+    const auto stroke = [&](bool vertical, float at, float start, float end) {
+        const auto line = [&](float offset, float width, vgui_color color) {
+            const auto length = std::max(1.f, end - start);
+            fill(cb, vg, intersect(vertical ? pixel_rect{at + offset, start, width, length} :
+                pixel_rect{start, at + offset, length, width}, clip), to_ovg(color));
+        };
+        line(-1.f, 3.f, 0xC022373Du);
+        line(0.f, 1.f, 0xFF61ECFFu);
+    };
+    if (insets.left) stroke(true, left, top, bottom);
+    if (insets.top) stroke(false, top, left, right);
+    if (insets.right) stroke(true, right, top, bottom);
+    if (insets.bottom) stroke(false, bottom, left, right);
+}
 
 constexpr auto start_x = std::size_t(gradient_geometry_axis::start_x);
 constexpr auto end_x = std::size_t(gradient_geometry_axis::end_x);
@@ -700,8 +758,9 @@ float move_stop_offset(std::span<const gradient_stop> stops, std::size_t i, doub
 }
 
 struct source_axis {
-    double position;
-    const property_descriptor *pos_desc, *size_desc;
+    double position, trailing, minimum, maximum;
+    std::string_view anchor;
+    const property_descriptor *pos_desc, *size_desc, *trailing_desc;
 };
 
 struct geometry_source { source_axis x, y; };
@@ -723,31 +782,71 @@ void visible_corners(const node_layout& node, board_transform transform, F&& vis
     }
 }
 
-struct axis_edit { std::optional<double> position, size; };
+struct axis_edit {
+    std::optional<double> position, size, trailing;
+    double leading_delta = 0, size_delta = 0; // Visual deltas, not authored values.
+};
 
 axis_edit edit_axis(source_axis source, double actual_size, double delta, bool resize, bool leading) {
     if (delta == 0) return {};
     const auto& p = *source.pos_desc;
     const auto& s = *source.size_desc;
+    const auto& t = *source.trailing_desc;
+    const bool stretch = source.anchor == "stretch";
+    const auto changed = [](double original, double difference, const property_descriptor& desc) -> std::optional<double> {
+        if (difference == 0) return {};
+        const double value = std::clamp(original + difference, desc.min, desc.max);
+        return value != original ? std::optional(value) : std::nullopt;
+    };
     if (!resize) {
-        const double position = std::clamp(source.position + delta, p.min, p.max);
-        if (position != source.position) return {position, {}};
-        return {};
+        double lo = p.min - source.position, hi = p.max - source.position;
+        if (stretch) {
+            lo = std::max(lo, source.trailing - t.max);
+            hi = std::min(hi, source.trailing - t.min);
+        }
+        delta = std::clamp(delta, lo, hi);
+        return {changed(source.position, delta, p), {},
+            stretch ? changed(source.trailing, -delta, t) : std::nullopt, delta, 0};
     }
 
-    // Never write the auto sentinel (0). Let a pre-existing sub-unit size grow
-    // from its actual extent without jumping to 1 at pointer-down.
-    double min_size = std::max(s.min, std::min(actual_size, 1.0)), max_size = s.max;
-    const double opposite = source.position + actual_size;
-    if (leading) {
-        min_size = std::max(min_size, opposite - p.max);
-        max_size = std::min(max_size, opposite - p.min);
-    }
-    if (min_size > max_size) return {};
-    const double size = std::clamp(actual_size + (leading ? -delta : delta), min_size, max_size);
-    if (size == actual_size) return {};
-    // Limiting the size also limits the leading position, preserving the far edge.
-    return {leading ? std::optional(std::clamp(opposite - size, p.min, p.max)) : std::nullopt, size};
+    // A stretch snapshot at a size limit doesn't reveal how far the raw
+    // extent is past that limit. Hold that axis rather than moving one edge
+    // while the other unexpectedly drifts. Moving the whole widget still works.
+    constexpr double layout_epsilon = .001;
+    if (stretch && ((source.minimum > 0 && actual_size <= source.minimum + layout_epsilon) ||
+        (source.maximum > 0 && actual_size >= source.maximum - layout_epsilon))) return {};
+
+    // Never write the non-stretch auto sentinel (0). Keep existing sub-unit
+    // sizes continuous. A stretch axis writes only insets, never size.
+    const double min_size = std::max(source.minimum, stretch ? 0. : std::max(s.min, std::min(actual_size, 1.0)));
+    double max_size = stretch ? std::numeric_limits<double>::infinity() : s.max;
+    if (source.maximum > 0) max_size = std::min(max_size, source.maximum);
+
+    // q is the size change after fixing the opposite edge. For CENTER and
+    // END, the origin of the authored offset itself moves as size changes.
+    const double alignment = source.anchor == "center" ? .5 : source.anchor == "end" ? 1. : 0.;
+    const double pos_per_q = alignment - (leading ? 1. : 0.);
+    const double tail_per_q = stretch && !leading ? -1. : 0.;
+    double lo = min_size - actual_size, hi = max_size - actual_size;
+    const auto restrict_delta = [&](double original, double factor, const property_descriptor& desc) {
+        if (factor == 0) return;
+        const double a = (desc.min - original) / factor, b = (desc.max - original) / factor;
+        lo = std::max(lo, std::min(a, b));
+        hi = std::min(hi, std::max(a, b));
+    };
+    restrict_delta(source.position, pos_per_q, p);
+    restrict_delta(source.trailing, tail_per_q, t);
+    if (lo > hi) return {};
+    const double requested = leading ? -delta : delta;
+    const double q = std::clamp(requested, lo, hi);
+    // Avoid a jump when an intrinsic size starts outside its writable range.
+    if (q == 0 || (requested > 0 ? q < 0 || q > requested : q > 0 || q < requested)) return {};
+    return {changed(source.position, pos_per_q * q, p), stretch ? std::nullopt : changed(actual_size, q, s),
+        changed(source.trailing, tail_per_q * q, t), leading ? -q : 0., q};
+}
+
+bool has_geometry_edit(const geometry_edit& change) {
+    return change.x || change.y || change.width || change.height || change.anchor_right || change.anchor_bottom;
 }
 
 struct icon_region_picker {
@@ -934,6 +1033,9 @@ struct designer_preview::impl {
     vgui_widget *transport = nullptr, *play = nullptr, *restart = nullptr, *scrubber = nullptr, *time_text = nullptr;
     std::array<vgui_widget*, 3> presets{};
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
+    vgui_widget *viewport_button = nullptr, *viewport_dialog = nullptr, *viewport_error = nullptr;
+    std::array<vgui_widget*, 7> viewport_fields{};
+    float toolbar_width = 0;
     vgui_widget* timeline_toggle = nullptr;
     std::unique_ptr<designer_gradient_timeline> timeline;
     bool timeline_open = false;
@@ -997,6 +1099,8 @@ struct designer_preview::impl {
     std::optional<std::string> render_error;
     image_load* active_load = nullptr;
     preset screen = preset::desktop;
+    std::optional<viewport> custom_viewport;
+    safe_area_insets safe_area;
     designer_grid_settings grid;
     designer_theme theme = default_designer_theme;
     float zoom = 1;
@@ -1027,6 +1131,8 @@ struct designer_preview::impl {
         vgui_widget_set_id(toolbar, "designer.preview.toolbar");
         vgui_widget_set_layout(toolbar, VGUI_LAYOUT_ROW);
         vgui_widget_set_size(toolbar, 0, 34);
+        // Keep the canvas in place when translated captions no longer fit.
+        vgui_panel_set_scrollable(toolbar, 1, 0);
         vgui_widget_set_padding(toolbar, 5, 3, 5, 3);
         vgui_widget_set_gap(toolbar, 4);
         vgui_widget_set_align_items(toolbar, VGUI_ALIGN_CENTER);
@@ -1042,6 +1148,7 @@ struct designer_preview::impl {
         presets = {button(toolbar, "designer.preview.desktop", "1280 x 720"),
             button(toolbar, "designer.preview.tablet", "768 x 1024"),
             button(toolbar, "designer.preview.phone", "390 x 844")};
+        viewport_button = button(toolbar, "designer.preview.viewport");
         zoom_out = button(toolbar, "designer.preview.out");
         zoom_in = button(toolbar, "designer.preview.in");
         zoom_fit = button(toolbar, "designer.preview.fit");
@@ -1093,6 +1200,7 @@ struct designer_preview::impl {
 
     ~impl() {
         if (focus_listener) vgui_context_remove_focus_listener(shell, focus_listener);
+        close_viewport_dialog();
         blur();
         if (stop_picker.widget()) vgui_widget_destroy(stop_picker.widget());
         timeline.reset(); // Detach timeline callbacks before destroying its widget tree.
@@ -1114,6 +1222,7 @@ struct designer_preview::impl {
         vgui_widget_set_text(presets[0], strings.text("preview.desktop", "Desktop"));
         vgui_widget_set_text(presets[1], strings.text("preview.tablet", "Tablet"));
         vgui_widget_set_text(presets[2], strings.text("preview.phone", "Phone"));
+        vgui_widget_set_text(viewport_button, viewport_text(strings, "preview.viewport.button", "Viewport…", "视口…"));
         vgui_widget_set_text(zoom_out, strings.text("preview.zoom_out", "-"));
         vgui_widget_set_tooltip(zoom_out, strings.text("preview.zoom_out.tooltip", "Zoom out"));
         vgui_widget_set_text(zoom_in, strings.text("preview.zoom_in", "+"));
@@ -1186,7 +1295,8 @@ struct designer_preview::impl {
         const vgui_color inactive = light ? 0xFFEEF4FC : 0xFF394454;
         const vgui_color active = light ? 0xFFCFE2FA : 0xFF3A668E;
         for (unsigned i = 0; i < presets.size(); ++i)
-            vgui_widget_set_background(presets[i], i == static_cast<unsigned>(screen) ? active : inactive);
+            vgui_widget_set_background(presets[i], !custom_viewport && i == static_cast<unsigned>(screen) ? active : inactive);
+        vgui_widget_set_background(viewport_button, custom_viewport ? active : inactive);
         vgui_widget_set_text(mode, run ? strings.text("preview.mode.run", "Run") :
             strings.text("preview.mode.design", "Design"));
         vgui_widget_set_background(mode, run ? (light ? 0xFFCBECDD : 0xFF33765A) : inactive);
@@ -1251,6 +1361,124 @@ struct designer_preview::impl {
         mark_canvas();
     }
 
+    viewport active_viewport() const { return custom_viewport.value_or(view_for(screen)); }
+
+    void close_viewport_dialog() {
+        if (viewport_dialog && vgui_modal_panel(shell) == viewport_dialog)
+            vgui_modal_close(shell, VGUI_MODAL_RESULT_CANCEL);
+    }
+
+    void confirm_viewport_dialog() {
+        viewport view;
+        safe_area_insets insets;
+        if (!read_viewport_number(viewport_fields[0], view.width) || !read_viewport_number(viewport_fields[1], view.height) ||
+            !read_viewport_number(viewport_fields[2], view.scale) || !read_viewport_number(viewport_fields[3], insets.left) ||
+            !read_viewport_number(viewport_fields[4], insets.top) || !read_viewport_number(viewport_fields[5], insets.right) ||
+            !read_viewport_number(viewport_fields[6], insets.bottom) || !valid_viewport(view, insets)) {
+            vgui_widget_set_text(viewport_error, viewport_text(strings, "preview.viewport.invalid",
+                "Check values and insets. Pixel limits: 4096 per side and 8,388,608 total.",
+                "请检查数值和边距；像素尺寸上限为每边 4096，总计 8388608 像素。"));
+            return;
+        }
+        vgui_modal_close(shell, VGUI_MODAL_RESULT_CONFIRM);
+        set_custom_viewport(view, insets);
+    }
+
+    void open_viewport_dialog() {
+        if (vgui_modal_active(shell)) return;
+        cancel_pointer();
+        const auto local = [&](std::string_view key, const char* en, const char* zh) {
+            return viewport_text(strings, key, en, zh);
+        };
+        auto* dialog = vgui_widget_create(shell, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(dialog, "designer.preview.viewport.dialog");
+        vgui_widget_set_layout(dialog, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_size(dialog, 520, 272);
+        vgui_widget_set_padding(dialog, 12, 10, 12, 10);
+        vgui_widget_set_gap(dialog, 6);
+        vgui_widget_set_align_items(dialog, VGUI_ALIGN_STRETCH);
+        const auto label = [](vgui_widget* parent, const char* text) {
+            auto* w = vgui_widget_add(parent, VGUI_LABEL, text);
+            vgui_widget_set_text_align(w, 0, .5f);
+            return w;
+        };
+        const auto* title_text = local("preview.viewport.title", "Custom Viewport", "自定义视口");
+        auto* title = label(dialog, title_text);
+        vgui_widget_set_id(title, "designer.preview.viewport.title");
+        vgui_widget_set_a11y_name(dialog, title_text);
+        vgui_widget_set_font_size(title, 18);
+        vgui_widget_set_font_weight(title, VGUI_FONT_WEIGHT_SEMI_BOLD);
+        const auto group = [](vgui_widget* parent, vgui_layout_kind layout) {
+            auto* w = vgui_widget_add(parent, VGUI_PANEL, nullptr);
+            vgui_widget_set_layout(w, layout);
+            vgui_widget_set_padding(w, 0, 0, 0, 0);
+            vgui_widget_set_gap(w, layout == VGUI_LAYOUT_ROW ? 8.f : 2.f);
+            vgui_widget_set_background(w, 0);
+            vgui_widget_set_border(w, 0, 0);
+            vgui_widget_set_align_items(w, VGUI_ALIGN_STRETCH);
+            return w;
+        };
+        const auto field = [&](vgui_widget* row, std::size_t i, const char* id, const char* name, const std::string& value) {
+            auto* column = group(row, VGUI_LAYOUT_COLUMN);
+            vgui_widget_set_grow(column, 1);
+            label(column, name);
+            auto* edit = viewport_fields[i] = vgui_widget_add(column, VGUI_EDIT, nullptr);
+            vgui_widget_set_id(edit, id);
+            vgui_widget_set_a11y_name(edit, name);
+            vgui_edit_set_text(edit, value.c_str());
+        };
+        const auto view = active_viewport();
+        char dpi[32];
+        const auto dpi_result = std::to_chars(dpi, dpi + sizeof(dpi), view.scale);
+        auto* dimensions = group(dialog, VGUI_LAYOUT_ROW);
+        field(dimensions, 0, "designer.preview.viewport.width", local("preview.viewport.width", "Width", "宽度"), std::to_string(view.width));
+        field(dimensions, 1, "designer.preview.viewport.height", local("preview.viewport.height", "Height", "高度"), std::to_string(view.height));
+        field(dimensions, 2, "designer.preview.viewport.scale", local("preview.viewport.scale", "DPI Scale", "DPI 倍率"), std::string(dpi, dpi_result.ptr));
+        label(dialog, local("preview.viewport.safe_area", "Safe-area insets (logical units)", "安全区边距（逻辑单位）"));
+        auto* margins = group(dialog, VGUI_LAYOUT_ROW);
+        field(margins, 3, "designer.preview.viewport.left", local("preview.viewport.left", "Left", "左"), std::to_string(safe_area.left));
+        field(margins, 4, "designer.preview.viewport.top", local("preview.viewport.top", "Top", "上"), std::to_string(safe_area.top));
+        field(margins, 5, "designer.preview.viewport.right", local("preview.viewport.right", "Right", "右"), std::to_string(safe_area.right));
+        field(margins, 6, "designer.preview.viewport.bottom", local("preview.viewport.bottom", "Bottom", "下"), std::to_string(safe_area.bottom));
+        auto* hint = label(dialog, local("preview.viewport.hint", "Width and height: 1–4096. DPI scale: 0.5–4.",
+            "宽高 1–4096，DPI 倍率 0.5–4。"));
+        vgui_widget_set_font_size(hint, 12);
+        viewport_error = label(dialog, "");
+        vgui_widget_set_id(viewport_error, "designer.preview.viewport.error");
+        vgui_widget_set_size(viewport_error, 0, 20);
+        vgui_widget_set_font_size(viewport_error, 12);
+        vgui_widget_set_text_color(viewport_error, theme == designer_theme::light ? 0xFFA52C22u : 0xFFFF9A8Du);
+        auto* actions = group(dialog, VGUI_LAYOUT_ROW);
+        vgui_widget_set_justify(actions, VGUI_JUSTIFY_END);
+        auto* cancel = vgui_widget_add(actions, VGUI_BUTTON, strings.text("common.cancel", "Cancel"));
+        vgui_widget_set_id(cancel, "designer.preview.viewport.cancel");
+        vgui_widget_on_event(cancel, [](vgui_widget* w, const vgui_event* e, void*) {
+            if (e->type == VGUI_EVENT_CLICK) vgui_modal_close(vgui_widget_get_context(w), VGUI_MODAL_RESULT_CANCEL);
+        }, nullptr);
+        auto* ok = vgui_widget_add(actions, VGUI_BUTTON, strings.text("common.ok", "OK"));
+        vgui_widget_set_id(ok, "designer.preview.viewport.ok");
+        vgui_widget_on_event(ok, [](vgui_widget*, const vgui_event* e, void* user) {
+            if (e->type == VGUI_EVENT_CLICK) static_cast<impl*>(user)->confirm_viewport_dialog();
+        }, this);
+        vgui_modal_options options;
+        vgui_modal_options_default(&options);
+        options.destroy_on_close = 1;
+        options.user = this;
+        options.on_close = [](vgui_context*, vgui_widget*, int, void* user) {
+            auto& self = *static_cast<impl*>(user);
+            self.viewport_dialog = self.viewport_error = nullptr;
+            self.viewport_fields.fill(nullptr);
+        };
+        if (!vgui_modal_show(shell, dialog, &options)) {
+            vgui_widget_destroy(dialog);
+            viewport_error = nullptr;
+            viewport_fields.fill(nullptr);
+            return;
+        }
+        viewport_dialog = dialog;
+        vgui_modal_set_drag_handle(shell, title);
+    }
+
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
         auto& self = *static_cast<impl*>(user);
         if (w == self.scrubber) {
@@ -1277,6 +1505,7 @@ struct designer_preview::impl {
             self.set_screen(static_cast<preset>(i));
             return;
         }
+        if (w == self.viewport_button) { self.open_viewport_dialog(); return; }
         if (w == self.mode) { self.set_run(!self.run); return; }
         if (w == self.timeline_toggle) { self.open_timeline(!self.timeline_open); return; }
         if (w == self.zoom_fit || w == self.zoom_actual) self.reset_zoom(w == self.zoom_fit);
@@ -1288,8 +1517,12 @@ struct designer_preview::impl {
     }
 
     void restore_view(const view_state& view) {
+        close_viewport_dialog();
         blur(); // Cancels the drag but leaves its matching release to be consumed.
         screen = view.screen;
+        custom_viewport = view.custom_viewport && valid_viewport(*view.custom_viewport, view.safe_area) ?
+            view.custom_viewport : std::nullopt;
+        safe_area = custom_viewport ? view.safe_area : safe_area_insets{};
         fit = view.fit;
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
@@ -1322,10 +1555,27 @@ struct designer_preview::impl {
     }
 
     void set_screen(preset v) {
-        if (v == screen || static_cast<unsigned>(v) >= presets.size()) return;
-        cancel_pointer();
+        if ((v == screen && !custom_viewport) || static_cast<unsigned>(v) >= presets.size()) return;
         screen = v;
+        custom_viewport.reset();
+        safe_area = {};
+        viewport_changed();
+    }
+
+    bool set_custom_viewport(viewport view, safe_area_insets insets) {
+        if (!valid_viewport(view, insets)) return false;
+        if (custom_viewport && custom_viewport->width == view.width && custom_viewport->height == view.height &&
+            custom_viewport->scale == view.scale && safe_area == insets) return true;
+        custom_viewport = view;
+        safe_area = insets;
+        viewport_changed();
+        return true;
+    }
+
+    void viewport_changed() {
+        cancel_pointer();
         fit = true;
+        zoom = 1;
         pan = {};
         frame.reset();
         ready = false;
@@ -1678,7 +1928,7 @@ struct designer_preview::impl {
             SDL_WindowID id, float dpi, std::optional<corner> handle = {}) {
         const auto source = geometry_sources.find(node.id);
         if (source == geometry_sources.end()) return;
-        geometry = geometry_drag{{node.id, frame->revision, {}, {}, {}, {}}, source->second,
+        geometry = geometry_drag{{node.id, frame->revision, {}, {}, {}, {}, {}, {}, handle.has_value()}, source->second,
             area, node.rect_px, node.visible_px, node.rect_px, transform_for(board), p, dpi, handle};
         // Use SDL's normal auto-capture, not the physical button state: pushed
         // events and real input follow the same down/move/up path.
@@ -1703,12 +1953,14 @@ struct designer_preview::impl {
         g.change.y = y.position;
         g.change.width = x.size;
         g.change.height = y.size;
+        g.change.anchor_right = x.trailing;
+        g.change.anchor_bottom = y.trailing;
         g.ghost = g.initial;
         const double scale = g.transform.scale;
-        if (x.position) g.ghost.x += float((*x.position - g.source.x.position) * scale);
-        if (y.position) g.ghost.y += float((*y.position - g.source.y.position) * scale);
-        if (x.size) g.ghost.width = float(*x.size * scale);
-        if (y.size) g.ghost.height = float(*y.size * scale);
+        g.ghost.x += float(x.leading_delta * scale);
+        g.ghost.y += float(y.leading_delta * scale);
+        g.ghost.width += float(x.size_delta * scale);
+        g.ghost.height += float(y.size_delta * scale);
         mark_canvas();
     }
 
@@ -1717,7 +1969,7 @@ struct designer_preview::impl {
         auto change = std::move(geometry->change);
         cancel_geometry();
         edit_release.reset();
-        if (change.x || change.y || change.width || change.height)
+        if (has_geometry_edit(change))
             commit_geometry(std::move(change)); // The host may synchronously change the document.
     }
 
@@ -1803,22 +2055,31 @@ struct designer_preview::impl {
     }
 
     void collect_geometry_sources(const document& doc) {
-        // The successfully mounted document is valid. Retain just model origins
-        // and bounds for children of an immediate Absolute container.
+        // The successfully mounted document is valid. Retain only the model
+        // values and limits used to invert an immediate Absolute child's drag.
         const auto property = [](const node& n, const property_descriptor& desc) -> const value& {
             const auto it = n.props.find(desc.key);
             return it == n.props.end() ? desc.default_value : it->second;
         };
-        const auto axis = [&](const node& n, std::string_view pos, std::string_view size) -> source_axis {
-            const auto* p = find_property(n.type, pos);
-            return {std::get<double>(property(n, *p)), p, find_property(n.type, size)};
+        const auto axis = [&](const node& n, bool horizontal) -> source_axis {
+            const auto desc = [&](const char* x, const char* y) { return find_property(n.type, horizontal ? x : y); };
+            const auto numeric = [&](const property_descriptor* d) { return std::get<double>(property(n, *d)); };
+            const auto* p = desc("x", "y");
+            const auto* t = desc("anchor_right", "anchor_bottom");
+            // The document is borrowed by sync only. Keep an enum-like string
+            // view into the static choices, never into the authored property.
+            const auto* a = desc("anchor_x", "anchor_y");
+            const std::string_view mode = std::get<std::string>(property(n, *a));
+            const auto choice = std::ranges::find(a->choices, mode);
+            return {numeric(p), numeric(t), numeric(desc("min_width", "min_height")), numeric(desc("max_width", "max_height")),
+                choice != a->choices.end() ? *choice : "start", p, desc("width", "height"), t};
         };
         for (const auto& [id, parent] : doc.nodes) {
             const auto* layout = find_property(parent.type, "layout");
             if (parent.children.empty() || !layout || std::get<std::string>(property(parent, *layout)) != "absolute") continue;
             for (const auto& child_id : parent.children) {
                 const auto& child = doc.nodes.at(child_id);
-                geometry_sources.emplace(child_id, geometry_source{axis(child, "x", "width"), axis(child, "y", "height")});
+                geometry_sources.emplace(child_id, geometry_source{axis(child, true), axis(child, false)});
             }
         }
     }
@@ -1835,6 +2096,18 @@ struct designer_preview::impl {
     }
 
     void render(float dt) {
+        if (toolbar) {
+            // Wrap needs a measurement width. Use the dock/floating panel's
+            // actual width (not the window width) so the toolbar can grow in
+            // height without clipping controls when the docks narrow it.
+            vgui_layout(shell);
+            const float width = rect(panel).width / vgui_context_get_ui_scale(shell);
+            if (width > 0 && width != toolbar_width) {
+                toolbar_width = width;
+                vgui_widget_set_size(toolbar, width, 0);
+                vgui_layout(shell);
+            }
+        }
         if (!is_mounted || remount) return;
         // Never let the standalone submit path reuse/submit the shell's cmd.
         if (renderer && vgpu_current_command_buffer(renderer)) return;
@@ -1843,7 +2116,8 @@ struct designer_preview::impl {
             vgui_context_has_active_animation(ui.get());
         if (layout_needed) {
             vgui_update(ui.get(), step);
-            auto next = mounted->layout(view_for(screen));
+            vgui_context_set_safe_area(ui.get(), safe_area.left, safe_area.top, safe_area.right, safe_area.bottom);
+            auto next = mounted->layout(active_viewport());
             if (!next) { cancel_canvas_edit(); return; }
             frame = std::move(next);
         }
@@ -1944,7 +2218,9 @@ struct designer_preview::impl {
     }
 
     pixel_rect artboard(pixel_rect area) const {
-        const auto view = view_for(screen);
+        // 100% displays a design unit as one shell UI unit. Preview DPI only
+        // changes the number of snapshot/texture pixels within the board.
+        const auto view = active_viewport();
         const float shell_scale = vgui_context_get_ui_scale(shell);
         const float scale = fit ? fitted_scale(area, view, shell_scale) : zoom * shell_scale;
         const float w = std::max(1.f, std::round(view.width * scale));
@@ -1958,7 +2234,7 @@ struct designer_preview::impl {
         cancel_canvas_edit();
         const auto area = rect(canvas), old = artboard(area);
         const float shell_scale = vgui_context_get_ui_scale(shell);
-        const auto view = view_for(screen);
+        const auto view = active_viewport();
         // Pixel rounding belongs to artboard(), not the stored zoom factor.
         const float previous = fit ? fitted_scale(area, view, shell_scale) / shell_scale : zoom;
         const float requested = std::clamp(previous * factor, .05f, 4.f);
@@ -2120,6 +2396,7 @@ struct designer_preview::impl {
         if (!self.ready || !self.frame) return;
         const auto board = self.artboard(area);
         const auto visible = intersect(board, area);
+        const auto t = self.transform_for(board);
         const pixel_rect board_frame{board.x - 1, board.y - 1, board.width + 2, board.height + 2};
         outline(cb, vg, board_frame, area, to_ovg(light ? 0xFF849BB6u : 0xFF535E6Eu), 1.f);
         if (self.run) {
@@ -2127,17 +2404,18 @@ struct designer_preview::impl {
         } else if (self.grid.visible) {
             // Guides are part of the Design backdrop. The preview texture's
             // alpha determines which parts, if any, show through the page.
-            draw_grid(cb, vg, area, board, board_frame, view_for(self.screen),
+            draw_grid(cb, vg, area, board, board_frame,
+                double(board.width) * t.scale / t.width, double(board.height) * t.scale / t.height,
                 vgui_context_get_ui_scale(self.shell), self.grid, grid_appearance);
         }
         if (self.target && has_area(visible))
             vgui_custom_draw_texture_fit(w, cb, vg, vgui_render_target_texture(self.target.get()),
                 board.x, board.y, board.width, board.height, VGUI_IMAGE_FIT_STRETCH, 0xFFFFFFFF);
+        draw_safe_area(cb, vg, visible, t, self.safe_area);
         if (self.run) {
             self.draw_shape_handles(cb, vg, area, board);
             return;
         }
-        const auto t = self.transform_for(board);
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {
             outline(cb, vg, t.project(selected->visible_px), area, accent);
@@ -2151,7 +2429,7 @@ struct designer_preview::impl {
         }
         if (self.geometry && self.geometry_is_current(area, board)) {
             const auto& g = *self.geometry;
-            if (g.change.x || g.change.y || g.change.width || g.change.height) {
+            if (has_geometry_edit(g.change)) {
                 const auto ghost = t.project(g.ghost), clip = intersect(area, board);
                 fill(cb, vg, intersect(ghost, clip), 0x29FFECC4);
                 outline(cb, vg, ghost, clip, 0xF5FFF2DA);
@@ -2461,7 +2739,7 @@ void designer_preview::sync(const document& doc, uint64_t rev, const std::filesy
 void designer_preview::set_render_context(vgpu_ctx_t* ctx) { p_->set_renderer(ctx); }
 void designer_preview::render(float dt) { p_->render(dt); }
 bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
-void designer_preview::cancel_interaction() { p_->blur(); }
+void designer_preview::cancel_interaction() { p_->close_viewport_dialog(); p_->blur(); }
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 void designer_preview::set_control_drop_target(const vgui_drop_target& target) {
@@ -2472,11 +2750,15 @@ std::optional<canvas_control_drop> designer_preview::control_drop_at(const docum
     return p_->control_drop_at(doc, rev, type, {x, y});
 }
 designer_preview::view_state designer_preview::capture_view() const {
-    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open};
+    return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open,
+        p_->custom_viewport, p_->safe_area};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }
-designer_preview::preset designer_preview::current_preset() const { return p_->screen; }
+std::optional<designer_preview::preset> designer_preview::current_preset() const {
+    return p_->custom_viewport ? std::nullopt : std::optional(p_->screen);
+}
+bool designer_preview::set_custom_viewport(viewport view, safe_area_insets insets) { return p_->set_custom_viewport(view, insets); }
 void designer_preview::reset_zoom(bool fit) { p_->reset_zoom(fit); }
 void designer_preview::set_running(bool run) { p_->set_run(run); }
 bool designer_preview::running() const { return p_->run; }

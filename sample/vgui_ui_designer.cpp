@@ -440,7 +440,8 @@ private:
 
         std::vector<ui::edit> batch;
         for (const auto& [key, number] : {std::pair{"x", change.x}, std::pair{"y", change.y},
-                                         std::pair{"width", change.width}, std::pair{"height", change.height}}) {
+                                         std::pair{"width", change.width}, std::pair{"height", change.height},
+                                         std::pair{"anchor_right", change.anchor_right}, std::pair{"anchor_bottom", change.anchor_bottom}}) {
             if (!number) continue;
             const auto& old = target->second.props;
             const auto& def = ui::find_property(target->second.type, key)->default_value;
@@ -453,7 +454,7 @@ private:
         if (batch.empty()) return;
         ui::diagnostic error;
         if (!session_.apply(batch, &error)) workbench_.status(std::string(tr("geometry.failed", "Geometry edit failed: ")) + describe(error));
-        else workbench_.status(std::string(change.width || change.height ? tr("geometry.resized", "Resized ") : tr("geometry.moved", "Moved ")) + change.id);
+        else workbench_.status(std::string(change.resized ? tr("geometry.resized", "Resized ") : tr("geometry.moved", "Moved ")) + change.id);
     }
 
     bool commit_keyframes(vgui_item_id id, std::uint64_t revision, const std::vector<ui::edit>& edits) {
@@ -3167,6 +3168,133 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     frame();
 }
 
+void exercise_custom_viewport(os_window& win, vgui_context* shell, designer& editor,
+                              const std::function<void()>& frame, const fs::path& sandbox, const fs::path& other) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native custom viewport: " + std::string(message));
+    };
+    auto doc = ui::make_document();
+    doc.nodes.at(doc.root).children = {"message", "bar"};
+    doc.nodes.emplace("message", ui::node{"edit", {}, {{"x", 12.}, {"y", -10.}, {"width", 140.}, {"height", 32.},
+        {"anchor_y", std::string("end")}, {"anchor_safe_area", true}}, {}});
+    doc.nodes.emplace("bar", ui::node{"panel", {}, {{"x", 16.}, {"y", 40.}, {"width", 80.}, {"height", 48.},
+        {"anchor_x", std::string("stretch")}, {"anchor_right", 30.}, {"anchor_safe_area", true}}, {}});
+    const auto file = sandbox / "custom-viewport.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the anchored fixture");
+    frame();
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const auto prefix = std::string("designer.preview.viewport");
+    const auto modal_widget = [&](const char* suffix, vgui_widget_kind kind) {
+        const auto id = prefix + suffix;
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w != nullptr, id);
+        return w;
+    };
+    const auto edit = [&](const char* suffix, const char* value) {
+        auto* w = modal_widget(suffix, VGUI_EDIT);
+        input.click(w);
+        vgui_edit_select_all(w);
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = win.id;
+        text.text.text = value;
+        input.push(text);
+        frame();
+    };
+    const auto rev = editor.history().revision();
+    input.click(prefix.c_str());
+    require(vgui_modal_active(shell), "viewport controls did not open");
+    edit(".width", "640");
+    edit(".height", "320");
+    edit(".scale", "1.5");
+    edit(".left", "44");
+    edit(".bottom", "30");
+    edit(".right", "640");
+    input.click(modal_widget(".ok", VGUI_BUTTON));
+    require(vgui_modal_active(shell) &&
+        *vgui_widget_get_text(modal_widget(".error", VGUI_LABEL)), "invalid opposing insets were applied instead of diagnosed");
+    edit(".right", "18");
+    require(!preview.capture_view().custom_viewport, "draft viewport changed before confirmation");
+    input.click(modal_widget(".ok", VGUI_BUTTON));
+    require(!vgui_modal_active(shell), "valid viewport was not applied");
+    auto view = preview.capture_view();
+    const auto* layout = preview.snapshot();
+    require(editor.history().revision() == rev && view.custom_viewport && view.safe_area.left == 44 && view.safe_area.bottom == 30 &&
+        layout && layout->pixel_width == 960 && layout->pixel_height == 480, "DPI or safe area did not reach the preview");
+    const auto anchored = std::ranges::find(layout->nodes, "message", &ui::node_layout::id);
+    require(anchored != layout->nodes.end() && anchored->visible, "anchor was not laid out");
+    const auto rect = anchored->rect_px;
+    require(rect.x == 84 && rect.y == 372 && rect.width == 210 && rect.height == 48,
+        "preview does not use the safe-area anchor formula in physical pixels");
+
+    // Resize a stretched axis through SDL. The opposite edge stays fixed,
+    // and the authored width is retained for later use in other layout modes.
+    const auto bounds = preview.artboard_rect_px();
+    const auto bar = std::ranges::find(layout->nodes, "bar", &ui::node_layout::id);
+    require(bounds && bar != layout->nodes.end() && bar->visible, "missing stretched bar");
+    const auto project = [&](float x, float y) {
+        return glm::round(glm::vec2{bounds->x + x * bounds->width / 960.f, bounds->y + y * bounds->height / 480.f});
+    };
+    const auto original_bar = bar->rect_px;
+    auto* canvas = input.widget("designer.preview.canvas");
+    input.click_at(canvas, project(original_bar.x + original_bar.width / 2, original_bar.y + original_bar.height / 2));
+    require(editor.selection() == "bar", "stretched bar could not be selected");
+    const auto end = project(original_bar.x + original_bar.width, original_bar.y + original_bar.height);
+    const auto moved = end - glm::vec2{24.f, 0.f};
+    input.button(true, end);
+    input.motion(end, moved);
+    input.button(false, moved);
+    frame();
+    const auto& props = editor.history().current().nodes.at("bar").props;
+    require(std::get<double>(props.at("anchor_right")) > 30. && std::get<double>(props.at("width")) == 80. &&
+        std::get<double>(props.at("x")) == 16., "trailing resize did not update only the trailing inset");
+    const auto* resized = preview.snapshot();
+    require(resized != nullptr, "resize lost its preview");
+    const auto current_bar = std::ranges::find(resized->nodes, "bar", &ui::node_layout::id);
+    require(current_bar != resized->nodes.end() && current_bar->rect_px.x == original_bar.x &&
+        current_bar->rect_px.width < original_bar.width, "stretched resize moved the opposite edge or did not resize");
+    const ui::native_menu_input menus(win, shell, frame);
+    menus.activate(menus.open(1), 0);
+    require(!editor.history().can_undo() && editor.history().current() == doc, "stretched resize did not undo in one step");
+    const auto after_undo = editor.history().revision();
+    auto* view_menu = menus.open(3);
+    for (int index : {2, 3, 4})
+        require(!vgui_menu_get_item_checked(view_menu, vgui_menu_get_item_at(view_menu, index)),
+            "the View menu marked an inactive preset as selected");
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+
+    input.click("designer.preview.mode");
+    layout = preview.snapshot();
+    const auto board = preview.artboard_rect_px();
+    require(preview.running() && layout && board, "cannot run the custom viewport");
+    const glm::vec2 point{board->x + (rect.x + rect.width / 2) * board->width / layout->pixel_width,
+        board->y + (rect.y + rect.height / 2) * board->height / layout->pixel_height};
+    input.click_at(input.widget("designer.preview.canvas"), glm::round(point));
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = "Live";
+    input.push(text);
+    frame();
+    require(preview.edit_text("message") == "Live", "DPI-scaled canvas did not route input to the anchored edit");
+
+    input.click(prefix.c_str());
+    edit(".width", "123");
+    input.click(modal_widget(".cancel", VGUI_BUTTON));
+    require(!vgui_modal_active(shell) && preview.capture_view().custom_viewport->width == 640 &&
+        editor.history().revision() == after_undo && editor.history().current() == doc, "viewport changed on cancel or wrote into the document");
+    require(editor.open(other) && !editor.preview().capture_view().custom_viewport, "the viewport leaked to another page");
+    require(editor.open(file) && editor.preview().capture_view().custom_viewport &&
+        editor.preview().capture_view().safe_area.left == 44, "the custom page viewport was not restored");
+    frame();
+    input.click("designer.preview.desktop");
+    require(!preview.capture_view().custom_viewport && preview.capture_view().safe_area.left == 0 &&
+        preview.snapshot() && preview.snapshot()->view.scale == 1, "preset did not reset DPI and safe area");
+    editor.request(command::close);
+    frame();
+}
+
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4631,6 +4759,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             exercise_grid_layers(app, font.get(), strings);
             exercise_options(*win, shell.get(), editor, settings, advance);
             exercise_control_drag(*win, shell.get(), editor, advance, picker->sandbox, open_path);
+            exercise_custom_viewport(*win, shell.get(), editor, advance, picker->sandbox, open_path);
             if (!editor.open(absolute_fixture))
                 throw std::runtime_error("Cannot open the absolute geometry test fixture");
             advance();

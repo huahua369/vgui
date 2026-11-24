@@ -25,12 +25,18 @@ constexpr sv align_self_choices[] = {"auto", "start", "center", "end", "stretch"
 constexpr sv cursor_choices[] = {"default", "arrow", "text", "wait", "no", "hand", "size_h", "size_v"};
 constexpr sv tooltip_anchors[] = {"pointer", "widget"};
 constexpr sv focus_choices[] = {"default", "yes", "no"};
+constexpr sv anchors[] = {"start", "center", "end", "stretch"};
 
 const property_descriptor common[] = {
     {"x", "X", value_type::number, 0.0, -max_geometry, max_geometry},
     {"y", "Y", value_type::number, 0.0, -max_geometry, max_geometry},
     {"width", "Width", value_type::number, 0.0, 0, max_geometry},
     {"height", "Height", value_type::number, 0.0, 0, max_geometry},
+    {"anchor_x", "Horizontal anchor", value_type::choice, std::string("start"), 0, 0, anchors},
+    {"anchor_y", "Vertical anchor", value_type::choice, std::string("start"), 0, 0, anchors},
+    {"anchor_right", "Right inset", value_type::number, 0.0, 0, max_geometry},
+    {"anchor_bottom", "Bottom inset", value_type::number, 0.0, 0, max_geometry},
+    {"anchor_safe_area", "Respect safe area", value_type::boolean, false},
     {"grow", "Grow", value_type::number, 0.0, 0, max_geometry},
     {"visible", "Visible", value_type::boolean, true},
     {"enabled", "Enabled", value_type::boolean, true},

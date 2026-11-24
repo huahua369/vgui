@@ -87,6 +87,13 @@ extern "C" {
 		VGUI_LAYOUT_WRAP
 	} vgui_layout_kind;
 
+	typedef enum vgui_anchor_mode {
+		VGUI_ANCHOR_START = 0,
+		VGUI_ANCHOR_CENTER,
+		VGUI_ANCHOR_END,
+		VGUI_ANCHOR_STRETCH
+	} vgui_anchor_mode;
+
 	typedef enum vgui_align {
 		VGUI_ALIGN_AUTO = 0,
 		VGUI_ALIGN_START,
@@ -1223,8 +1230,8 @@ extern "C" {
 	 * for thin bars where the text does not fit; draw the value in a separate
 	 * LABEL bound to the same model/expression instead. */
 	VGUI_API void vgui_widget_set_progress_text_visible(vgui_widget* widget, int visible);
-	/* R4-2: display safe-area insets in logical pixels (TV overscan, notches).
-	 * Hosts clamp their HUD anchors to these; negative values are clamped. */
+	/* Display safe-area insets in logical units (TV overscan, notches).
+	 * Used by opt-in absolute anchors; negative values are clamped to zero. */
 	VGUI_API void vgui_context_set_safe_area(vgui_context* ctx,
 		int left, int top, int right, int bottom);
 	VGUI_API void vgui_context_get_safe_area(vgui_context* ctx,
@@ -1443,6 +1450,17 @@ extern "C" {
 	 * by the context ui_scale; get_rect() reports effective pixels. */
 	VGUI_API void vgui_widget_set_layout(vgui_widget* widget, vgui_layout_kind layout);
 	VGUI_API void vgui_widget_set_pos(vgui_widget* widget, float x, float y);
+	/* For children of an absolute-layout panel only. START (the default),
+	 * CENTER and END align the child's margin box to the corresponding point
+	 * of the parent's content box. x/y offset that position right/down when
+	 * positive (e.g. END with x=-16 leaves 16 units plus the right margin).
+	 * STRETCH uses x/y and right/bottom as leading and trailing insets on
+	 * that axis, overriding the requested size but respecting min/max.
+	 * With use_safe_area, intersect the parent content box with the viewport
+	 * safe area. The parent scrolls the resulting positions as usual. */
+	VGUI_API void vgui_widget_set_anchor(vgui_widget* widget,
+		vgui_anchor_mode horizontal, vgui_anchor_mode vertical,
+		float right, float bottom, int use_safe_area);
 	VGUI_API void vgui_widget_set_size(vgui_widget* widget, float width, float height);
 	VGUI_API void vgui_widget_set_min_size(vgui_widget* widget, float width, float height);
 	VGUI_API void vgui_widget_set_max_size(vgui_widget* widget, float width, float height);

@@ -90,9 +90,9 @@ out/bin/x64d/vgui_runtime_hud.exe path/to/arena.vgui.package.json
 out/bin/x64d/vgui_runtime_hud.exe --smoke path/to/arena-delivery
 ```
 
-沿用模板中的运行时 ID：`hp`、`shield`、`ult`、`cooldown1` 至 `cooldown6` 是进度条（值域 0–1），`status` 是状态标签，`status_plate` 和 `hotbar` 是面板。`minimap`、`crosshair` 为留给宿主绘图的面板（纵向布局，保留尺寸）；根节点保持 `absolute`，X/Y 和宽高为 0。`status_plate`、`hotbar`、`ult`、`minimap`、`crosshair` 需留在根节点下：宿主以 1280×800 为设计参考，按边缘或中心平移这些控件，保留设计尺寸和偏移。可在编辑器中调整样式和位置，也可添加图片等其他控件。
+沿用模板中的运行时 ID：`hp`、`shield`、`ult`、`cooldown1` 至 `cooldown6` 是进度条（值域 0–1），`status` 是状态标签。`minimap`、`crosshair` 为留给宿主绘图的面板（纵向布局，保留尺寸）；根节点保持 `absolute`，X/Y 和宽高为 0。技能栏贴底居中、小地图在安全区内、准星居全屏中心，这些规则都来自设计文件的 `anchor_x`、`anchor_y` 和 `anchor_safe_area`，宿主不再逐个控件计算坐标。自定义宿主提供视口尺寸、DPI 和逻辑单位的安全边距（`vgui_context_set_safe_area`），然后调用 `runtime::layout()`；与编辑器预览使用同一套布局规则。
 
-点击技能按钮会把 `hud.skill.1` 至 `hud.skill.6` 交给宿主；对应 Q/W/E/R/T/Y 快捷键，U 触发大招冷却，B 切换安全区。宿主只挂载一次并更新实时进度，不写回设计。世界空间名牌和公告牌仍属于 3D 示例的宿主代码。`ctest -R runtime_hud_design` 无需打开窗口，检查 JSON 的技能动作、实时值和视口变化时的状态保留。
+点击技能按钮会把 `hud.skill.1` 至 `hud.skill.6` 交给宿主；对应 Q/W/E/R/T/Y 快捷键，U 触发大招冷却，B 在 0、60、100 逻辑单位的安全边距间切换。宿主只挂载一次并更新实时进度，不写回设计。世界空间名牌和公告牌仍属于 3D 示例的宿主代码。`ctest -R runtime_hud_design` 无需打开窗口，检查技能动作、普通宽屏和 21:9、非对称安全区、准星位置及重排前后的运行态值。
 
 ## 5. R2 手柄/键盘方向导航（已实现；焦点环待接实机手柄确认）
 
@@ -161,7 +161,7 @@ out/bin/x64d/vgui_runtime_hud.exe --smoke path/to/arena-delivery
 
 ## 7. R4 HUD 控件包（R4-1/R4-2 已实现；R4-3 按需）
 
-> **实施记录**：R4-1 `vgui_widget_set_text` 已补同值短路（相同文本且无 text_key 时直接返回，不 mark_dirty、不失效录制缓存）；set_value 的 1e-6 脏检查为既有行为。绑定惯例已在 runtime_hud 名牌/血条/蓝条全帧直写模式上验证。R4-2 三件全部落地并截屏验证：(1) **冷却环**——`vgui_widget_set_radial(w, 1)`，progress 绘制分支切换为圆环轨道 + 12 点钟起顺时针 accent 弧 + 居中百分比文字（runtime_hud 热键栏右侧 ult 环演示，U 键触发 5s 冷却）；(2) **飘字**——`vgui_spawn_float_text(ctx, x, y, text, color, lifetime, rise)`，上浮 + 按 life/max_life 透明度衰减 + 过期回收，上限 64 条，绘制于全部 HUD 内容之上（技能键触发冷却时在槽位上方飘 "3.0s"，SendKeys 注入已验证）；(3) **安全区**——`vgui_context_set_safe_area/get`（逻辑 px，负值钳 0），runtime_hud layout_anchors 全锚点钳制 + B 键循环 0/60/100px 档位演示。
+> **实施记录**：R4-1 `vgui_widget_set_text` 已补同值短路（相同文本且无 text_key 时直接返回，不 mark_dirty、不失效录制缓存）；set_value 的 1e-6 脏检查为既有行为。绑定惯例已在 runtime_hud 名牌/血条/蓝条全帧直写模式上验证。R4-2 三件全部落地并截屏验证：(1) **冷却环**——`vgui_widget_set_radial(w, 1)`，progress 绘制分支切换为圆环轨道 + 12 点钟起顺时针 accent 弧 + 居中百分比文字（runtime_hud 热键栏右侧 ult 环演示，U 键触发 5s 冷却）；(2) **飘字**——`vgui_spawn_float_text(ctx, x, y, text, color, lifetime, rise)`，上浮 + 按 life/max_life 透明度衰减 + 过期回收，上限 64 条，绘制于全部 HUD 内容之上（技能键触发冷却时在槽位上方飘 "3.0s"，SendKeys 注入已验证）；(3) **安全区**——`vgui_context_set_safe_area/get`（逻辑 px，负值钳 0），`vgui_widget_set_anchor` 可选择在父内容区与安全区的交集中布局，HUD 用 B 键循环演示。
 
 > **实施记录**：R4-1 `vgui_widget_set_text` 已补同值短路（相同文本且无 text_key 时直接返回，不 mark_dirty、不失效录制缓存）；set_value 的 1e-6 脏检查为既有行为。绑定惯例已在 runtime_hud 名牌/血条/蓝条全帧直写模式上验证。
 

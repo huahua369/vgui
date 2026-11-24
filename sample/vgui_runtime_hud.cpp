@@ -20,7 +20,8 @@
 // ones would race on the shared vertex buffers).
 //
 // The screen HUD is loaded from an editor design or delivery package; the host
-// supplies simulation values, action handlers and custom minimap/crosshair draws.
+// supplies safe-area insets, simulation values, action handlers and custom
+// minimap/crosshair draws. The design owns screen-space placement.
 // Run with --smoke to render both modes or --check-design for a no-window check.
 
 #include <algorithm>
@@ -31,6 +32,7 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -51,8 +53,8 @@
 namespace ui = vgui::ui_design;
 namespace fs = std::filesystem;
 
-static constexpr int kDesignWidth = 1280;
-static constexpr int kDesignHeight = 800;
+static constexpr int kInitialWidth = 1280;
+static constexpr int kInitialHeight = 800;
 static constexpr int kEntityCount = 12;
 static constexpr std::array kSkillActions = {
 	"hud.skill.1", "hud.skill.2", "hud.skill.3", "hud.skill.4", "hud.skill.5", "hud.skill.6"
@@ -87,12 +89,7 @@ struct hud_mount_assets
 	std::size_t font_bytes = 0;
 };
 
-struct hud_anchor
-{
-	vgui_widget* widget = nullptr;
-	float viewport_x = 0, viewport_y = 0;
-	float x = 0, y = 0, width = 0, height = 0;
-};
+using hud_insets = std::array<int, 4>; // Logical left, top, right, bottom.
 
 struct hud_state
 {
@@ -106,14 +103,14 @@ struct hud_state
 	vgui_widget* hp = nullptr;
 	vgui_widget* shield = nullptr;
 	vgui_widget* status = nullptr;
-	std::array<hud_anchor, 5> anchors{};
 	vgui_widget* cooldown[6] = {};
 	std::array<bool, kSkillActions.size()> pending_skills{};
 
 	// R4-2 demo: radial ultimate cooldown + safe-area cycling.
 	vgui_widget* ult = nullptr;
 	float ult_cd = 0.0f;
-	int safe_level = 0;
+	std::size_t safe_level = 0;
+	std::optional<hud_insets> pending_safe_area;
 
 	// World-anchored nameplates: name + health bar + mana bar per entity,
 	// projected from world space onto the screen every frame.
@@ -143,8 +140,6 @@ struct hud_state
 
 	int last_w = 0;
 	int last_h = 0;
-	float page_pad_left = 0.0f;
-	float page_pad_top = 0.0f;
 
 	// Mode B offscreen target: the rendered HUD, borrowed as a texture.
 	vg_fbo_t ui_fbo{};
@@ -246,9 +241,6 @@ static void apply_hud_actions(hud_state* st)
 		if (std::exchange(st->pending_skills[i], false)) activate_skill(st, i);
 }
 
-static void apply_safe_area(hud_state* st);
-static void layout_anchors(hud_state* st, int width, int height);
-
 static int pick_unit(const hud_state* st, float mx, float my);
 static void select_unit(hud_state* st, int index);
 
@@ -299,9 +291,10 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 	}
 	if (key == 'B')
 	{
-		st->safe_level = (st->safe_level + 1) % 3;
-		apply_safe_area(st);
-		layout_anchors(st, st->last_w, st->last_h);
+		static constexpr std::array kMargins = {0, 60, 100};
+		st->safe_level = (st->safe_level + 1) % kMargins.size();
+		const int inset = kMargins[st->safe_level];
+		st->pending_safe_area = hud_insets{inset, inset, inset, inset};
 		return 1;
 	}
 	return 0;
@@ -310,6 +303,22 @@ static int on_key(vgui_context*, int key, int down, int, void* user)
 // ---------------------------------------------------------------------------
 // HUD tree
 // ---------------------------------------------------------------------------
+
+static bool layout_hud(hud_state* st, int width, int height)
+{
+	if (!st->pending_safe_area && st->last_w == width && st->last_h == height) return true;
+	// Apply safe-area changes after input dispatch, even at the same viewport size.
+	if (st->pending_safe_area)
+	{
+		const auto [left, top, right, bottom] = *st->pending_safe_area;
+		vgui_context_set_safe_area(st->ui, left, top, right, bottom);
+	}
+	if (!st->design->layout({width, height, 1.0f})) return false;
+	st->pending_safe_area.reset();
+	st->last_w = width;
+	st->last_h = height;
+	return true;
+}
 
 static font_familys_t* load_hud_font(std::string_view key, const fs::path& path, void* user)
 {
@@ -398,8 +407,6 @@ static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cach
 		std::fprintf(stderr, "hud: root must use absolute layout\n");
 		return false;
 	}
-	st->page_pad_left = root_number("pad_left");
-	st->page_pad_top = root_number("pad_top");
 	st->hp = require("hp", VGUI_PROGRESS);
 	st->shield = require("shield", VGUI_PROGRESS);
 	st->status = require("status", VGUI_LABEL);
@@ -411,22 +418,7 @@ static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cach
 
 	auto* minimap = require("minimap", VGUI_PANEL);
 	auto* crosshair = require("crosshair", VGUI_PANEL);
-	st->anchors = {{
-		{require("status_plate", VGUI_PANEL), 1.0f, 0.0f}, {minimap, 0.0f, 1.0f},
-		{require("hotbar", VGUI_PANEL), 0.5f, 1.0f}, {st->ult, 0.5f, 1.0f}, {crosshair, 0.5f, 0.5f}
-	}};
-	if (!st->design->layout({kDesignWidth, kDesignHeight, 1.0f})) return false;
-	for (auto& anchor : st->anchors)
-	{
-		if (!anchor.widget) return false;
-		if (vgui_widget_get_parent(anchor.widget) != page)
-		{
-			std::fprintf(stderr, "hud: anchored widget '%s' must be a direct child of the design root\n",
-				vgui_widget_get_id(anchor.widget));
-			return false;
-		}
-		vgui_widget_get_rect(anchor.widget, &anchor.x, &anchor.y, &anchor.width, &anchor.height);
-	}
+	if (!minimap || !crosshair) return false;
 
 	// JSON owns the bounds; these two panels host the engine's custom draws.
 	const auto add_canvas = [&](vgui_widget* panel, vgui_custom_draw_fn draw) {
@@ -485,7 +477,7 @@ static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cach
 	vgui_widget_on_event(page, on_root_event, st); // The loaded panel covers the built-in root.
 
 	vgui_context_add_key_handler(st->ui, on_key, st);
-	layout_anchors(st, kDesignWidth, kDesignHeight);
+	if (!layout_hud(st, kInitialWidth, kInitialHeight)) return false;
 	vgui_update(st->ui, 0.0f);
 	return true;
 }
@@ -594,56 +586,6 @@ static void select_unit(hud_state* st, int index)
 		vgui_widget_set_border(st->plates[index], 0xFF40A0FF, 1.5f);
 		vgui_widget_set_text_color(st->plate_name[index], 0xFFFFFFFF);
 	}
-}
-
-// R4-2: applies the current safe-area preset (B key cycles none/60px/100px).
-static void apply_safe_area(hud_state* st)
-{
-	static const int kPresets[3][4] = {
-		{ 0, 0, 0, 0 }, { 60, 60, 60, 60 }, { 100, 100, 100, 100 },
-	};
-	const int* inset = kPresets[st->safe_level % 3];
-	vgui_context_set_safe_area(st->ui, inset[0], inset[1], inset[2], inset[3]);
-}
-
-// Edge/centre anchors for the absolutely-positioned HUD plates; called on
-// build and whenever the window resizes.  Positions are clamped to the
-// display safe area (R4-2).
-static void layout_anchors(hud_state* st, int width, int height)
-{
-	st->last_w = width;
-	st->last_h = height;
-	int sl = 0, stop = 0, sr = 0, sb = 0;
-	vgui_context_get_safe_area(st->ui, &sl, &stop, &sr, &sb);
-	auto clamp_x = [&](float x, float w)
-	{
-		const float lo = (float)sl;
-		const float hi = (float)width - (float)sr - w;
-		return std::max(lo, std::min(x, std::max(lo, hi)));
-	};
-	auto clamp_y = [&](float y, float h)
-	{
-		const float lo = (float)stop;
-		const float hi = (float)height - (float)sb - h;
-		return std::max(lo, std::min(y, std::max(lo, hi)));
-	};
-	for (const auto& anchor : st->anchors)
-	{
-		const float x = anchor.x + (width - kDesignWidth) * anchor.viewport_x;
-		const float y = anchor.y + (height - kDesignHeight) * anchor.viewport_y;
-		const bool centered = anchor.viewport_y == 0.5f; // Reticle follows the viewport center, not safe area.
-		vgui_widget_set_pos(anchor.widget,
-			(centered ? x : clamp_x(x, anchor.width)) - st->page_pad_left,
-			(centered ? y : clamp_y(y, anchor.height)) - st->page_pad_top);
-	}
-}
-
-static bool resize_hud(hud_state* st, int width, int height)
-{
-	if (st->last_w == width && st->last_h == height) return true;
-	if (!st->design->layout({width, height, 1.0f})) return false;
-	layout_anchors(st, width, height);
-	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -774,15 +716,71 @@ static int check_hud(const hud_input& input)
 		if (!pass) std::fprintf(stderr, "hud design check: %s\n", message);
 		ok = ok && pass;
 	};
+	const auto rect = [](vgui_widget* widget) {
+		ui::pixel_rect r;
+		vgui_widget_get_rect(widget, &r.x, &r.y, &r.width, &r.height);
+		return r;
+	};
+	const auto near = [](float a, float b) { return std::abs(a - b) < 0.01f; };
+	const auto same_size = [&](ui::pixel_rect actual, ui::pixel_rect authored) {
+		return actual.width > 0 && actual.height > 0 &&
+			near(actual.width, authored.width) && near(actual.height, authored.height);
+	};
+	const auto initial_hotbar = rect(st.design->widget("hotbar"));
+	const auto initial_minimap = rect(st.design->widget("minimap"));
+	const auto initial_reticle = rect(st.design->widget("crosshair"));
+	const auto initial_hp_rect = rect(st.hp);
+	const auto hotbar_margin = kInitialHeight - initial_hotbar.y - initial_hotbar.height;
+	const auto minimap_margin = kInitialHeight - initial_minimap.y - initial_minimap.height;
+
+	const auto check_layout = [&](int width, int height, hud_insets safe) {
+		const bool laid_out = layout_hud(&st, width, height);
+		check(laid_out, "could not lay out the mounted design");
+		if (!laid_out) return;
+		const auto [left, top, right, bottom] = safe;
+		const float safe_right = (float)(width - right);
+		const float safe_bottom = (float)(height - bottom);
+		const auto hp = rect(st.hp);
+		check(same_size(hp, initial_hp_rect) && near(hp.x - left, initial_hp_rect.x) &&
+			near(hp.y - top, initial_hp_rect.y), "vitals must move with the upper-left safe-area edge");
+		const auto hotbar = rect(st.design->widget("hotbar"));
+		check(same_size(hotbar, initial_hotbar) &&
+			near(hotbar.x + hotbar.width * 0.5f, (left + safe_right) * 0.5f) &&
+			near(safe_bottom - hotbar.y - hotbar.height, hotbar_margin),
+			"hotbar must be bottom-centered in the safe area, with authored size and margin");
+		const auto minimap = rect(st.design->widget("minimap"));
+		check(same_size(minimap, initial_minimap) &&
+			near(minimap.x - left, initial_minimap.x) &&
+			near(safe_bottom - minimap.y - minimap.height, minimap_margin) &&
+			minimap.x >= left && minimap.x + minimap.width <= safe_right &&
+			minimap.y >= top && minimap.y + minimap.height <= safe_bottom,
+			"minimap must keep its lower-left margins inside the safe area");
+		auto* crosshair = st.design->widget("crosshair");
+		const auto reticle = rect(crosshair);
+		check(same_size(reticle, initial_reticle) &&
+			near(reticle.x + reticle.width * 0.5f, width * 0.5f) &&
+			near(reticle.y + reticle.height * 0.5f, height * 0.5f),
+			"crosshair must stay at the full viewport center");
+		const auto canvas = rect(vgui_widget_get_child(crosshair, 0));
+		check(same_size(canvas, reticle) && near(canvas.x, reticle.x) && near(canvas.y, reticle.y),
+			"engine canvas must fill the authored reticle panel");
+		const auto ult = rect(st.design->widget("ult"));
+		check(ult.x >= hotbar.x + hotbar.width || ult.x + ult.width <= hotbar.x ||
+			ult.y >= hotbar.y + hotbar.height || ult.y + ult.height <= hotbar.y,
+			"ultimate ring must not overlap the hotbar");
+	};
+
+	check_layout(1600, 900, {});
 	auto* skill = st.design->widget("skill1");
 	check(skill && vgui_widget_get_kind(skill) == VGUI_BUTTON, "expected a mounted skill1 button");
-	if (skill)
+	if (skill && vgui_widget_get_kind(skill) == VGUI_BUTTON)
 	{
-		const float initial_hp = vgui_widget_get_value(st.hp);
-		float x, y, w, h;
-		vgui_widget_get_rect(skill, &x, &y, &w, &h);
-		x += w * 0.5f;
-		y += h * 0.5f;
+		auto* hp_widget = st.hp;
+		auto* cooldown_widget = st.cooldown[0];
+		const float initial_hp = vgui_widget_get_value(hp_widget);
+		const auto button = rect(skill);
+		const float x = button.x + button.width * 0.5f;
+		const float y = button.y + button.height * 0.5f;
 		vgui_input_mouse_move(st.ui, x, y);
 		vgui_input_mouse_down(st.ui, 1, x, y, 1);
 		check(!st.pending_skills[0], "skill cannot activate until the click completes");
@@ -790,25 +788,28 @@ static int check_hud(const hud_input& input)
 		check(st.pending_skills[0] && st.skill_cd[0] == 0, "click must queue the JSON action without updating in dispatch");
 		apply_hud_actions(&st);
 		simulate(&st, 0.1f);
-		check(vgui_widget_get_value(st.cooldown[0]) > 0.9f, "JSON action did not start the live cooldown");
-		check(std::abs(vgui_widget_get_value(st.hp) - initial_hp) > 0.001f, "simulation did not change the mounted HP");
-		const float hp = vgui_widget_get_value(st.hp);
-		check(resize_hud(&st, 1600, 900), "could not resize the mounted design");
-		vgui_update(st.ui, 0.0f);
-		const auto& hotbar = st.anchors[2];
-		vgui_widget_get_rect(hotbar.widget, &x, &y, &w, &h);
-		check(x == hotbar.x + 160 && y == hotbar.y + 100 && w == hotbar.width && h == hotbar.height,
-			"hotbar should follow the enlarged viewport without losing authored size");
-		const auto& reticle = st.anchors[4];
-		float reticle_w, reticle_h;
-		vgui_widget_get_rect(vgui_widget_get_child(reticle.widget, 0), &x, &y, &reticle_w, &reticle_h);
-		check(reticle_w == reticle.width && reticle_h == reticle.height,
-			"engine canvas should fill the authored reticle panel");
-		check(st.design->widget("skill1") == skill && vgui_widget_get_value(st.hp) == hp,
-			"viewport updates must not remount the HUD or reset live state");
+		const float hp = vgui_widget_get_value(hp_widget);
+		const float cooldown = vgui_widget_get_value(cooldown_widget);
+		check(cooldown > 0.9f, "JSON action did not start the live cooldown");
+		check(std::abs(hp - initial_hp) > 0.001f, "simulation did not change the mounted HP");
+
+		constexpr int wide_width = 2520, wide_height = 1080; // 21:9
+		check_layout(wide_width, wide_height, {});
+		check(vgui_input_key(st.ui, 'B', 1, 0) != 0, "B must cycle the safe-area preset");
+		check_layout(wide_width, wide_height, {60, 60, 60, 60});
+		constexpr hud_insets asymmetric{96, 40, 32, 104};
+		st.pending_safe_area = asymmetric;
+		check_layout(wide_width, wide_height, asymmetric);
+
+		auto* current_hp = st.design->widget("hp");
+		auto* current_cooldown = st.design->widget("cooldown1");
+		check(st.design->widget("skill1") == skill && current_hp == hp_widget && current_cooldown == cooldown_widget,
+			"viewport and safe-area changes must not remount the HUD");
+		check(vgui_widget_get_value(current_hp) == hp && vgui_widget_get_value(current_cooldown) == cooldown,
+			"viewport and safe-area changes must not reset live HP or cooldown");
 	}
 	destroy_hud(&st);
-	if (ok) std::puts("hud design check: ok");
+	if (ok) std::puts("hud design check: ok (no remount)");
 	return ok ? 0 : 1;
 }
 
@@ -878,7 +879,7 @@ int main(int argc, char** argv)
 	}
 
 	os_window* form = wg->create("vgui runtime HUD (M toggles compositing)",
-		kDesignWidth, kDesignHeight, ef_resizable, true);
+		kInitialWidth, kInitialHeight, ef_resizable, true);
 	if (!form || !form->viewport)
 	{
 		std::fprintf(stderr, "hud: window creation failed\n");
@@ -963,7 +964,7 @@ int main(int argc, char** argv)
 
 		const int cw = (int)fbo->display_size.x;
 		const int ch = (int)fbo->display_size.y;
-		if (!resize_hud(&st, cw, ch))
+		if (!layout_hud(&st, cw, ch))
 		{
 			std::fprintf(stderr, "hud: invalid viewport %dx%d\n", cw, ch);
 			ok = false;

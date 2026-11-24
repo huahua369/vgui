@@ -801,6 +801,7 @@ struct designer_workbench::impl {
                 {"Gradient transform", strings.text("workbench.inspector.category.gradient_transform", "Gradient transform")},
                 {"Image", strings.text("workbench.inspector.category.image", "Image")},
                 {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
+                {"Anchors", strings.text("workbench.inspector.category.anchors", "Anchors")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
                 {"Pages", strings.text("workbench.inspector.category.pages", "Pages")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
@@ -910,7 +911,15 @@ struct designer_workbench::impl {
     {
         // Keep the static, human-facing labels independent of serialized values.
         // Alignment and justification share the common positional terms.
-        if (desc.key == "layout") {
+        if (desc.key == "anchor_x" || desc.key == "anchor_y") {
+            const bool horizontal = desc.key == "anchor_x";
+            if (value == "start") return horizontal ? strings.text("workbench.inspector.anchor.left", "Left") :
+                strings.text("workbench.inspector.anchor.top", "Top");
+            if (value == "end") return horizontal ? strings.text("workbench.inspector.anchor.right", "Right") :
+                strings.text("workbench.inspector.anchor.bottom", "Bottom");
+            if (value == "center") return strings.text("workbench.inspector.alignment.center", "Center");
+            if (value == "stretch") return strings.text("workbench.inspector.alignment.stretch", "Stretch");
+        } else if (desc.key == "layout") {
             if (value == "absolute") return strings.text("workbench.inspector.layout.absolute", "Absolute");
             if (value == "row") return strings.text("workbench.inspector.layout.row", "Row");
             if (value == "column") return strings.text("workbench.inspector.layout.column", "Column");
@@ -1682,6 +1691,11 @@ struct designer_workbench::impl {
         add({.id = node_id, .label = strings.text("workbench.inspector.node_id", "Node ID"), .value = selected, .read_only = true});
         add({.id = node_name, .label = strings.text("workbench.inspector.name", "Name"), .value = item.name, .has_default = true});
         const auto place = location(selected);
+        const auto* anchor_parent = place ? &doc.nodes.at(place->first) : nullptr;
+        const bool anchors_allowed = anchor_parent && anchor_parent->type == "panel" &&
+            std::get<std::string>(property_value(*anchor_parent, *find_property("panel", "layout"))) == "absolute";
+        const auto anchor_x = std::get<std::string>(property_value(item, *find_property(item.type, "anchor_x")));
+        const auto anchor_y = std::get<std::string>(property_value(item, *find_property(item.type, "anchor_y")));
         std::optional<std::array<vgui_color, 8>> gradient;
         if (item.type == "button" && std::get<std::string>(property_value(item, *find_property("button", "button_style"))) == "gradient")
             gradient = detail::button_gradient_palette(std::get<std::string>(property_value(item, *find_property("button", "gradient_preset"))));
@@ -1697,6 +1711,9 @@ struct designer_workbench::impl {
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
+                if (key.starts_with("anchor_") && (!anchors_allowed ||
+                    (key == "anchor_right" && anchor_x != "stretch") ||
+                    (key == "anchor_bottom" && anchor_y != "stretch"))) continue;
                 if (item.type == "switch" && !show_legacy_switch) {
                     if (key == "text" || key == "text_key" || key == "text_position") continue;
                     if (key == "text_align_x" && !item.props.contains(key)) continue;
@@ -1724,7 +1741,8 @@ struct designer_workbench::impl {
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
+                if (key.starts_with("anchor_")) row.category = "Anchors";
+                else if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
                 else if (decorative_gradient && key.starts_with("gradient_"))
                     row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
                 else if (gradient_color || panel_gradient_field) row.category = "Gradient colors";
@@ -1747,7 +1765,19 @@ struct designer_workbench::impl {
                 row.value = key == legacy_side ? std::get<std::string>(item.props.at("text")) : display_value(property_value(item, desc));
                 row.default_value = display_value(desc.default_value);
                 row.has_default = true;
-                if (desc.key == "radio_group") {
+                if (key == "anchor_x" || key == "anchor_y") {
+                    row.tooltip = strings.text("workbench.inspector.anchor.hint",
+                        "X/Y are offsets from the selected edge or center. Positive offsets go right/down; use negative offsets to inset from the right/bottom.");
+                } else if (key == "anchor_safe_area") {
+                    row.tooltip = strings.text("workbench.inspector.anchor.safe_hint",
+                        "Use the intersection of the parent content area and the viewport safe area. Set preview insets in Viewport.");
+                } else if (key == "anchor_right" || key == "anchor_bottom") {
+                    row.tooltip = strings.text("workbench.inspector.anchor.stretch_hint",
+                        "Stretch uses X/Y for the left/top inset and these fields for the right/bottom inset, instead of the authored width/height.");
+                } else if (anchors_allowed && ((key == "width" && anchor_x == "stretch") ||
+                    (key == "height" && anchor_y == "stretch"))) {
+                    row.tooltip = strings.text("workbench.inspector.anchor.size_hint", "This size is used only when the axis is not stretched.");
+                } else if (desc.key == "radio_group") {
                     row.placeholder = strings.text("workbench.inspector.radio_group.default", "Default group");
                     row.tooltip = strings.text("workbench.inspector.radio_group.hint",
                         "Only radio buttons with the same group name in this container exclude one another. Leave blank for the default group.");
@@ -1889,7 +1919,7 @@ struct designer_workbench::impl {
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
         constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Gradient animation", "Geometry & state", "Pages",
-            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction"};
+            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Anchors"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

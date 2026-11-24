@@ -12,7 +12,7 @@
     "vitals": {
       "type": "panel",
       "name": "Vitals",
-      "props": {"x": 16, "y": 16, "width": 266, "height": 66, "layout": "column", "gap": 6,
+      "props": {"anchor_safe_area": true, "x": 16, "y": 16, "width": 266, "height": 66, "layout": "column", "gap": 6,
         "pad_left": 8, "pad_top": 8, "pad_right": 8, "pad_bottom": 8, "background": "#18141098", "input_enabled": false},
       "children": ["hp_row", "shield_row"]
     },
@@ -25,17 +25,19 @@
     "status_plate": {
       "type": "panel",
       "name": "Runtime status",
-      "props": {"x": 744, "y": 16, "width": 520, "height": 38, "layout": "column", "align_items": "stretch",
+      "props": {"anchor_x": "end", "anchor_safe_area": true, "x": -16, "y": 16, "width": 520, "height": 38, "layout": "column", "align_items": "stretch",
         "pad_left": 10, "pad_top": 8, "pad_right": 10, "pad_bottom": 8, "background": "#18141098", "input_enabled": false},
       "children": ["status"]
     },
     "status": {"type": "label", "props": {"text": "M: compositing mode", "font_size": 14}},
     "minimap": {"type": "panel", "name": "Minimap (host draws)", "props": {
-      "x": 16, "y": 604, "width": 180, "height": 180, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}},
+      "anchor_y": "end", "anchor_safe_area": true, "x": 16, "y": -16, "width": 180, "height": 180,
+      "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}},
     "hotbar": {
       "type": "panel",
       "name": "Skills",
-      "props": {"x": 392, "y": 704, "width": 488, "height": 80, "layout": "row", "gap": 8,
+      "props": {"anchor_x": "center", "anchor_y": "end", "anchor_safe_area": true, "y": -16,
+        "width": 488, "height": 80, "layout": "row", "gap": 8,
         "pad_left": 8, "pad_top": 8, "pad_right": 8, "pad_bottom": 8, "background": "#18141080"},
       "children": ["slot1", "slot2", "slot3", "slot4", "slot5", "slot6"]
     },
@@ -57,10 +59,12 @@
     "slot6": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill6", "cooldown6"]},
     "skill6": {"type": "button", "props": {"text": "Y", "width": 56, "height": 36, "action": "hud.skill.6"}},
     "cooldown6": {"type": "progress", "props": {"width": 56, "height": 16}},
-    "ult": {"type": "progress", "name": "Ultimate", "props": {"x": 892, "y": 704, "width": 44, "height": 44,
+    "ult": {"type": "progress", "name": "Ultimate", "props": {
+      "anchor_x": "center", "anchor_y": "end", "anchor_safe_area": true, "x": 274, "y": -52, "width": 44, "height": 44,
       "radial": true, "accent_color": "#FFA040", "track_color": "#40282050", "input_enabled": false}},
     "crosshair": {"type": "panel", "name": "Crosshair (host draws)", "props": {
-      "x": 624, "y": 384, "width": 32, "height": 32, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}}
+      "anchor_x": "center", "anchor_y": "center", "anchor_safe_area": false,
+      "width": 32, "height": 32, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}}
   },
   "resources": {}
 }

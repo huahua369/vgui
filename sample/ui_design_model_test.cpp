@@ -632,6 +632,24 @@ void label_text_orientation()
     }
 }
 
+void anchor_round_trip()
+{
+    const auto doc = decode(json_document(R"({"root":{"type":"panel","children":["bar","legacy"]},
+        "bar":{"type":"panel","props":{"anchor_x":"stretch","anchor_y":"end","anchor_right":15,
+            "anchor_bottom":9,"anchor_safe_area":true,"x":12,"y":-20}},
+        "legacy":{"type":"label"}})"));
+    check(decode(encode(doc)) == doc && doc.nodes.at("legacy").props.empty() &&
+        ui::find_property("label", "anchor_x")->default_value == ui::value{"start"s},
+        "anchored fields must round trip without writing defaults to an old node");
+    for (const auto& [property, input] : {std::pair{"anchor_x", "\"bottom\""}, {"anchor_y", "1"},
+        {"anchor_right", "-1"}, {"anchor_safe_area", "\"true\""}}) {
+        const auto nodes = std::string(R"({"root":{"type":"panel","children":["child"]},"child":{"type":"label","props":{")") +
+            property + "\":" + input + "}}}";
+        check(reject_json(json_document(nodes), "invalid anchor").path == std::string("/nodes/child/props/") + property,
+            "anchor validation must report the invalid field");
+    }
+}
+
 void font_properties_round_trip()
 {
     const ui::document doc{"root", {
@@ -1197,6 +1215,7 @@ int main()
     const struct { const char* name; void (*run)(); } tests[] = {
         {"canonical v1 JSON", canonical_round_trip},
         {"label text orientation", label_text_orientation},
+        {"anchor property validation and round trip", anchor_round_trip},
         {"optional font properties round trip", font_properties_round_trip},
         {"font property validation", reject_bad_font_properties},
         {"font family resource validation and round trip", font_family_validation},

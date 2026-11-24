@@ -331,6 +331,13 @@ vgui_align alignment(std::string_view value) {
     return VGUI_ALIGN_AUTO;
 }
 
+vgui_anchor_mode anchor_mode(std::string_view value) {
+    if (value == "center") return VGUI_ANCHOR_CENTER;
+    if (value == "end") return VGUI_ANCHOR_END;
+    if (value == "stretch") return VGUI_ANCHOR_STRETCH;
+    return VGUI_ANCHOR_START;
+}
+
 void apply_widget_properties(vgui_widget* widget, const widget_properties& p, bool document_root) {
     vgui_widget_set_pos(widget, p.number("x"), p.number("y"));
     vgui_widget_set_size(widget, p.number("width"), p.number("height"));
@@ -630,6 +637,13 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         vgui_widget_set_id(w, id.c_str());
         const widget_properties p{n};
         apply_widget_properties(w, p, !parent_node);
+        if (parent_node && parent_node->type == "panel") {
+            const auto x = anchor_mode(p.text("anchor_x"));
+            const auto y = anchor_mode(p.text("anchor_y"));
+            const bool safe = p.boolean("anchor_safe_area");
+            if (x != VGUI_ANCHOR_START || y != VGUI_ANCHOR_START || safe)
+                vgui_widget_set_anchor(w, x, y, p.number("anchor_right"), p.number("anchor_bottom"), safe);
+        }
         if (*kind == VGUI_GRADIENT) {
             gradient_paint paint;
             if (!read_gradient(paint, p) || !vgui_gradient_set(w, &paint.desc, paint.stops.data(), paint.stops.size())) return false;

@@ -786,6 +786,10 @@ struct vgui_widget
 	vgui_justify justify = VGUI_JUSTIFY_START;
 	vgui_align_content align_content = VGUI_ALIGN_CONTENT_START;
 	float x = 0, y = 0;
+	float anchor_right = 0, anchor_bottom = 0; // logical trailing insets
+	vgui_anchor_mode anchor_x = VGUI_ANCHOR_START;
+	vgui_anchor_mode anchor_y = VGUI_ANCHOR_START;
+	bool anchor_safe_area = false;
 	float req_w = 0, req_h = 0;
 	float min_w = 0, min_h = 0;
 	float max_w = 0, max_h = 0;
@@ -5084,20 +5088,21 @@ static vgui_widget* vgui_new_widget(vgui_context* ctx, vgui_widget_kind kind, co
 
 static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx);
 
+static float vgui_constrain_size(float size, float minimum, float maximum)
+{
+	if (minimum > 0) size = std::max(size, minimum);
+	if (maximum > 0) size = std::min(size, maximum);
+	return std::max(size, 0.0f);
+}
+
 static float vgui_child_req_w(vgui_widget* c)
 {
-	float v = c->req_w > 0 ? c->req_w : c->intrinsic_w;
-	if (c->min_w > 0) v = std::max(v, c->min_w);
-	if (c->max_w > 0) v = std::min(v, c->max_w);
-	return std::max(v, 0.0f);
+	return vgui_constrain_size(c->req_w > 0 ? c->req_w : c->intrinsic_w, c->min_w, c->max_w);
 }
 
 static float vgui_child_req_h(vgui_widget* c)
 {
-	float v = c->req_h > 0 ? c->req_h : c->intrinsic_h;
-	if (c->min_h > 0) v = std::max(v, c->min_h);
-	if (c->max_h > 0) v = std::min(v, c->max_h);
-	return std::max(v, 0.0f);
+	return vgui_constrain_size(c->req_h > 0 ? c->req_h : c->intrinsic_h, c->min_h, c->max_h);
 }
 
 static float vgui_menu_item_height(vgui_widget* w, const vgui_menu_item& item)
@@ -5647,6 +5652,20 @@ static void vgui_switch_track_size(const vgui_widget* w, float line_height, floa
 		std::clamp(line_height - style.line_offset, style.min_height, style.max_height);
 }
 
+static float vgui_anchor_extent(vgui_anchor_mode mode, float offset, float trailing,
+	float outer_size, float margins, float minimum, float maximum)
+{
+	switch (mode)
+	{
+	case VGUI_ANCHOR_CENTER: return outer_size + 2.0f * std::fabs(offset);
+	case VGUI_ANCHOR_END: return outer_size - offset;
+	case VGUI_ANCHOR_STRETCH:
+		// The parent supplies the size; only reserve the insets and minimum.
+		return offset + trailing + margins + vgui_constrain_size(0.0f, minimum, maximum);
+	default: return offset + outer_size;
+	}
+}
+
 static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 {
 	if (!w) return;
@@ -5685,8 +5704,18 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 			}
 			else
 			{
-				content_w = std::max(content_w, c->x + cw);
-				content_h = std::max(content_h, c->y + ch);
+				float extent_w = c->x + cw, extent_h = c->y + ch;
+				if (w->layout == VGUI_LAYOUT_ABSOLUTE)
+				{
+					if (c->anchor_x != VGUI_ANCHOR_START)
+						extent_w = vgui_anchor_extent(c->anchor_x, c->x, c->anchor_right * ctx->ui_scale,
+							cw, c->margin[0] + c->margin[2], c->min_w, c->max_w);
+					if (c->anchor_y != VGUI_ANCHOR_START)
+						extent_h = vgui_anchor_extent(c->anchor_y, c->y, c->anchor_bottom * ctx->ui_scale,
+							ch, c->margin[1] + c->margin[3], c->min_h, c->max_h);
+				}
+				content_w = std::max(content_w, extent_w);
+				content_h = std::max(content_h, extent_h);
 			}
 			visible_count++;
 		}
@@ -5952,13 +5981,45 @@ static void vgui_measure_widget(vgui_widget* w, vgui_context* ctx)
 	if (w->max_h > 0) w->intrinsic_h = std::min(w->intrinsic_h, w->max_h);
 }
 
-static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y, float forced_w, float forced_h);
+static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y,
+	float forced_w, float forced_h, bool allow_zero = false);
 
 struct vgui_placement
 {
 	vgui_widget* child;
 	float x, y, w, h;
+	bool allow_zero = false;
 };
+
+static void vgui_intersect_safe_axis(float viewport, float leading, float trailing,
+	float& start, float& size)
+{
+	const float safe_start = std::min(viewport, leading);
+	const float safe_end = std::max(safe_start, viewport - trailing);
+	const float end = start + size;
+	// An empty intersection collapses at the closest point in the parent.
+	start = vgui_clampf(safe_start, start, end);
+	size = vgui_clampf(safe_end, start, end) - start;
+}
+
+static float vgui_anchor_position(vgui_anchor_mode mode, float origin, float span,
+	float offset, float trailing, float margin_start, float margin_end,
+	float minimum, float maximum, float& size)
+{
+	switch (mode)
+	{
+	case VGUI_ANCHOR_CENTER:
+		return origin + margin_start + (span - margin_start - margin_end - size) * 0.5f + offset;
+	case VGUI_ANCHOR_END:
+		return origin + span - margin_end - size + offset;
+	case VGUI_ANCHOR_STRETCH:
+		size = vgui_constrain_size(span - offset - trailing - margin_start - margin_end, minimum, maximum);
+		break;
+	default:
+		break;
+	}
+	return origin + offset + margin_start;
+}
 
 static void vgui_arrange_children(vgui_widget* w, vgui_context* ctx, float ix, float iy, float iw, float ih)
 {
@@ -5974,6 +6035,24 @@ static void vgui_arrange_children(vgui_widget* w, vgui_context* ctx, float ix, f
 			if (!c->visible) continue;
 			float cw = vgui_child_req_w(c);
 			float ch = vgui_child_req_h(c);
+			if (c->anchor_x != VGUI_ANCHOR_START || c->anchor_y != VGUI_ANCHOR_START || c->anchor_safe_area)
+			{
+				float ax = ix, ay = iy, aw = iw, ah = ih;
+				const float scale = ctx->ui_scale;
+				if (c->anchor_safe_area)
+				{
+					vgui_intersect_safe_axis((float)ctx->width, ctx->safe_l * scale, ctx->safe_r * scale, ax, aw);
+					vgui_intersect_safe_axis((float)ctx->height, ctx->safe_t * scale, ctx->safe_b * scale, ay, ah);
+				}
+				float px = vgui_anchor_position(c->anchor_x, ax, aw, c->x, c->anchor_right * scale,
+					c->margin[0], c->margin[2], c->min_w, c->max_w, cw);
+				float py = vgui_anchor_position(c->anchor_y, ay, ah, c->y, c->anchor_bottom * scale,
+					c->margin[1], c->margin[3], c->min_h, c->max_h, ch);
+				placements.push_back({ c, px, py, cw, ch, true });
+				content_w = std::max(content_w, px - ix + cw + c->margin[2]);
+				content_h = std::max(content_h, py - iy + ch + c->margin[3]);
+				continue;
+			}
 			float px = ix + c->x + c->margin[0];
 			float py = iy + c->y + c->margin[1];
 			placements.push_back({ c, px, py, cw, ch });
@@ -6182,7 +6261,7 @@ static void vgui_arrange_children(vgui_widget* w, vgui_context* ctx, float ix, f
 
 	for (const auto& p : placements)
 	{
-		vgui_layout_widget(p.child, ctx, p.x - w->scroll_x, p.y - w->scroll_y, p.w, p.h);
+		vgui_layout_widget(p.child, ctx, p.x - w->scroll_x, p.y - w->scroll_y, p.w, p.h, p.allow_zero);
 	}
 }
 
@@ -6692,19 +6771,14 @@ static void vgui_layout_dock(vgui_widget* w, vgui_context* ctx, float x, float y
 	w->children.swap(ordered);
 }
 
-static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y, float forced_w, float forced_h)
+static void vgui_layout_widget(vgui_widget* w, vgui_context* ctx, float x, float y,
+	float forced_w, float forced_h, bool allow_zero)
 {
 	if (!w || !w->visible) return;
-	float ww = forced_w;
-	if (ww <= 0) ww = vgui_child_req_w(w);
-	float hh = forced_h;
-	if (hh <= 0) hh = vgui_child_req_h(w);
-	if (w->min_w > 0) ww = std::max(ww, w->min_w);
-	if (w->min_h > 0) hh = std::max(hh, w->min_h);
-	if (w->max_w > 0) ww = std::min(ww, w->max_w);
-	if (w->max_h > 0) hh = std::min(hh, w->max_h);
-	ww = std::max(ww, 0.0f);
-	hh = std::max(hh, 0.0f);
+	if (!allow_zero && forced_w <= 0) forced_w = vgui_child_req_w(w);
+	if (!allow_zero && forced_h <= 0) forced_h = vgui_child_req_h(w);
+	float ww = vgui_constrain_size(forced_w, w->min_w, w->max_w);
+	float hh = vgui_constrain_size(forced_h, w->min_h, w->max_h);
 
 	w->abs_x = x;
 	w->abs_y = y;
@@ -17591,10 +17665,17 @@ extern "C" {
 		int left, int top, int right, int bottom)
 	{
 		if (!ctx) return;
-		ctx->safe_l = std::max(0, left);
-		ctx->safe_t = std::max(0, top);
-		ctx->safe_r = std::max(0, right);
-		ctx->safe_b = std::max(0, bottom);
+		left = std::max(0, left);
+		top = std::max(0, top);
+		right = std::max(0, right);
+		bottom = std::max(0, bottom);
+		if (left == ctx->safe_l && top == ctx->safe_t &&
+			right == ctx->safe_r && bottom == ctx->safe_b) return;
+		ctx->safe_l = left;
+		ctx->safe_t = top;
+		ctx->safe_r = right;
+		ctx->safe_b = bottom;
+		vgui_mark_dirty(ctx->root);
 	}
 
 	void vgui_context_get_safe_area(vgui_context* ctx,
@@ -18700,6 +18781,19 @@ extern "C" {
 		const float scale = widget->ctx ? widget->ctx->ui_scale : 1.0f;
 		widget->x = x * scale;
 		widget->y = y * scale;
+		vgui_mark_dirty(widget);
+	}
+
+	void vgui_widget_set_anchor(vgui_widget* widget,
+		vgui_anchor_mode horizontal, vgui_anchor_mode vertical,
+		float right, float bottom, int use_safe_area)
+	{
+		if (!widget) return;
+		widget->anchor_x = horizontal;
+		widget->anchor_y = vertical;
+		widget->anchor_right = right;
+		widget->anchor_bottom = bottom;
+		widget->anchor_safe_area = use_safe_area != 0;
 		vgui_mark_dirty(widget);
 	}
 

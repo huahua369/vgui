@@ -1944,6 +1944,57 @@ void exercise_switch_appearance()
     check(workbench.io_ok && model.current() == sized, "switch track dimensions or appearance were lost on save/reopen");
 }
 
+void exercise_anchor_inspector()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "anchored.vgui.json");
+    auto* ctx = workbench.ctx.get();
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const ui::edit seed[] = {ui::insert_node{"anchored", root, {"panel", {}, {{"width", 100.}, {"height", 40.}}, {}}}};
+    check(model.apply(seed), "could not seed an anchorable panel");
+    workbench.bench.select("anchored");
+    workbench.frame();
+    auto* search = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(search);
+    check(vgui_input_text(ctx, "anchor"), "cannot filter anchor fields");
+    workbench.frame();
+    const auto at = [&](const char* key, vgui_widget_kind kind) { return find_widget(vgui_root(ctx), key, kind); };
+    check(!at("property:anchor_right", VGUI_EDIT), "trailing inset should be hidden until the axis is stretched");
+    workbench.press("property:anchor_x");
+    auto* menu = vgui_context_get_open_menu(ctx);
+    check(menu, "horizontal anchor menu did not open");
+    check_menu_items(menu, {"Left", "Center", "Right", "Stretch"});
+    workbench.activate(menu, "Stretch");
+    const auto stretched = model.current();
+    check(stretched.nodes.at("anchored").props.at("anchor_x") == ui::value{std::string("stretch")},
+        "an anchor selection did not update the document");
+    workbench.click(search);
+    vgui_edit_select_all(search);
+    check(vgui_input_text(ctx, "anchor_right"), "cannot filter the right inset");
+    workbench.frame();
+    auto* inset = workbench.widget("property:anchor_right", VGUI_EDIT);
+    workbench.click(inset);
+    vgui_edit_select_all(inset);
+    check(vgui_input_text(ctx, "18"), "could not enter the right inset");
+    workbench.frame();
+    check(model.current().nodes.at("anchored").props.at("anchor_right") == ui::value{18.} &&
+        model.committed() == stretched, "anchor insets must update before Enter");
+    workbench.key(VGUI_KEY_ENTER);
+    workbench.edit("Undo");
+    check(model.current() == stretched, "one Undo must restore the anchor inset");
+
+    const ui::edit flow[] = {ui::set_property{root, "layout", std::string("row")}};
+    check(model.apply(flow), "could not change the parent to a managed layout");
+    workbench.click(search);
+    vgui_edit_select_all(search);
+    check(vgui_input_text(ctx, "anchor"), "cannot refilter anchor fields");
+    workbench.frame();
+    check(!at("property:anchor_x", VGUI_BUTTON) && !at("property:anchor_right", VGUI_EDIT) &&
+        model.current().nodes.at("anchored").props.at("anchor_x") == ui::value{std::string("stretch")},
+        "managed layout must hide but preserve dormant anchor settings");
+}
+
 void exercise_label_orientation()
 {
     temp_dir directory;
@@ -2738,6 +2789,7 @@ int main()
         exercise_radio_group_inspector();
         exercise_menu_language();
         exercise_control_search();
+        exercise_anchor_inspector();
         exercise_language_preferences();
         exercise_layout_preferences();
         std::puts("UI Designer workbench smoke test passed");
