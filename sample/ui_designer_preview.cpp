@@ -1,7 +1,6 @@
 #include "ui_designer_preview.h"
 
 #include "ui_designer_font_file.h"
-#include "ui_designer_workbench.h"
 
 #include <vgui/backend/vgui_render_target.h>
 #include <vgui/editor/color_picker.h>
@@ -326,6 +325,59 @@ pixel_rect intersect(pixel_rect a, pixel_rect b) {
 
 std::uint32_t to_ovg(std::uint32_t argb) {
     return (argb & 0xFF00FF00u) | ((argb & 0xFFu) << 16) | ((argb >> 16) & 0xFFu);
+}
+
+// Both toolbar glyphs use the same 24-unit grid and rounded, theme-colored strokes.
+template<bool hand>
+void draw_view_tool_glyph(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
+    float x, float y, float width, float height, float, void*) {
+    auto* ui = vgui_widget_get_context(w);
+    const float size = std::min({width, height, 22.f * vgui_context_get_ui_scale(ui)});
+    if (size <= 0) return;
+    const float scale = size / 24.f, ox = x + (width - size) / 2, oy = y + (height - size) / 2;
+    const auto move = [&](float px, float py) { cb->move_to(vg, ox + px * scale, oy + py * scale); };
+    const auto line = [&](float px, float py) { cb->line_to(vg, ox + px * scale, oy + py * scale); };
+    cb->new_path(vg);
+    if constexpr (hand) {
+        const auto curve = [&](float x1, float y1, float x2, float y2, float x3, float y3) {
+            cb->curve_to(vg, ox + x1 * scale, oy + y1 * scale, ox + x2 * scale, oy + y2 * scale,
+                ox + x3 * scale, oy + y3 * scale);
+        };
+        // Trace the raised fingers, then the palm and thumb as one outline.
+        move(7.3f, 14);
+        line(7.3f, 6.3f);
+        curve(7.3f, 4.5f, 9.6f, 4.5f, 9.6f, 6.3f);
+        line(9.6f, 9.6f);
+        curve(9.6f, 10.3f, 10.6f, 10.3f, 10.6f, 9.6f);
+        line(10.6f, 4);
+        curve(10.6f, 2, 12.9f, 2, 12.9f, 4);
+        line(12.9f, 9.2f);
+        curve(12.9f, 9.9f, 13.9f, 9.9f, 13.9f, 9.2f);
+        line(13.9f, 5.4f);
+        curve(13.9f, 3.6f, 16.2f, 3.6f, 16.2f, 5.4f);
+        line(16.2f, 10);
+        curve(16.2f, 10.7f, 17.2f, 10.7f, 17.2f, 10);
+        line(17.2f, 7.5f);
+        curve(17.2f, 5.7f, 19.5f, 5.7f, 19.5f, 7.5f);
+        line(19.5f, 14.5f);
+        curve(19.5f, 18.5f, 17, 21, 13.5f, 21);
+        line(12.5f, 21);
+        curve(9.6f, 21, 8, 19.8f, 6.4f, 18);
+        line(3.8f, 15.1f);
+        curve(2.4f, 13.6f, 4.4f, 11.5f, 6, 12.7f);
+    } else {
+        move(4.5f, 3);
+        line(20, 12.3f);
+        line(13, 13.7f);
+        line(10.6f, 20.5f);
+    }
+    cb->close_path(vg);
+    vgui_theme theme;
+    vgui_context_get_theme(ui, &theme);
+    cb->set_source_color(vg, to_ovg(theme.text));
+    cb->set_line_width(vg, 1.65f * scale);
+    cb->set_line_join(vg, VG_LINE_JOIN_ROUND);
+    cb->stroke(vg);
 }
 
 bool has_area(pixel_rect r) { return r.width > 0 && r.height > 0; }
@@ -1872,17 +1924,30 @@ struct designer_preview::impl {
             vgui_widget_on_event(w, toolbar_event, this);
             return w;
         };
-        pointer_tool = button(toolbar, "designer.preview.pointer");
-        hand_tool_button = button(toolbar, "designer.preview.hand");
-        vgui_widget_set_text(pointer_tool, "↖");
-        // The bundled fonts have no 👆 glyph; draw the embedded Twemoji tile instead.
-        const image_ptr hand_icon(create_hand_tool_icon(shell), vgui_texture_destroy);
-        vgui_widget_set_padding(hand_tool_button, 6, 2, 6, 2);
-        vgui_button_set_icon(hand_tool_button, hand_icon.get(), 16, 16, VGUI_BUTTON_ICON_LEFT);
-        for (auto* tool : {pointer_tool, hand_tool_button}) {
-            vgui_widget_set_min_size(tool, 28, 0);
+        const auto tool_button = [&](const char* id, vgui_custom_draw_fn draw) {
+            constexpr float width = 30, height = 27;
+            auto* slot = vgui_widget_add(toolbar, VGUI_PANEL, nullptr);
+            vgui_widget_set_layout(slot, VGUI_LAYOUT_ABSOLUTE);
+            vgui_widget_set_size(slot, width, height);
+            vgui_widget_set_padding(slot, 0, 0, 0, 0);
+            vgui_widget_set_background(slot, 0);
+            vgui_widget_set_border(slot, 0, 0);
+            auto* tool = button(slot, id);
+            vgui_widget_set_size(tool, width, height);
             vgui_widget_set_a11y_role(tool, VGUI_A11Y_ROLE_TOGGLE);
-        }
+            // Keep the built-in button in charge of hit testing, keyboard focus and state.
+            auto* glyph = vgui_widget_add(slot, VGUI_CUSTOM, nullptr);
+            vgui_widget_set_id(glyph, "designer.preview.tool.glyph");
+            vgui_widget_set_size(glyph, width, height);
+            vgui_widget_set_padding(glyph, 0, 0, 0, 0);
+            vgui_widget_set_background(glyph, 0);
+            vgui_widget_set_border(glyph, 0, 0);
+            vgui_widget_set_input_enabled(glyph, 0);
+            vgui_custom_set_draw(glyph, draw, nullptr);
+            return tool;
+        };
+        pointer_tool = tool_button("designer.preview.pointer", draw_view_tool_glyph<false>);
+        hand_tool_button = tool_button("designer.preview.hand", draw_view_tool_glyph<true>);
         presets = {button(toolbar, "designer.preview.desktop", "1280 x 720"),
             button(toolbar, "designer.preview.tablet", "768 x 1024"),
             button(toolbar, "designer.preview.phone", "390 x 844")};
