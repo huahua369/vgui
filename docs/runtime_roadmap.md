@@ -124,6 +124,8 @@ hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
 
 设计稿可在根节点设置 `nav_start`，在控件上设置 `nav_up` / `nav_down` / `nav_left` / `nav_right`，值为当前页的节点 ID。原生手柄方向输入优先采用当前可用的显式目标，其余情况使用原几何算法，不改变 Tab 顺序。宿主也可在首次布局完成后调用 `runtime::focus_default()` 尝试默认焦点；如果已经有焦点或目标不可用，不会抢走焦点。[`game-hud.vgui.json`](../sample/res/game-hud.vgui.json) 示例以 `Q` 为默认焦点，并配置 `Q` 与 `Y` 两端的方向跳转。
 
+游戏模态使用 `modal`（根节点直属面板）、`open_modal`（外部按钮指定面板 ID）、`close_modal`（内部按钮）和可选 `modal_return_focus`。宿主应在派发完输入、开始绘制前调用 `runtime::service_modals()`；Esc 与手柄 B 复用原生返回路径。关闭时按指定目标、打开按钮、页面初始焦点的顺序恢复，不往隐藏、禁用或被裁剪的目标赋予焦点。`vgui_runtime_hud` 与 `vgui_ui_json_demo` 已接入，配置随交付包保留，打开状态不保存。
+
 ### 5.2 R2-2 SDL_Gamepad 映射（P0，M）
 
 - **实现**（backends/vgui_sdl3.cpp，app_mgr）：

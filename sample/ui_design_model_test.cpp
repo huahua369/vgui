@@ -1369,6 +1369,102 @@ void navigation_transactions()
         "copy and delete each undo/redo atomically with all affected navigation links");
 }
 
+void modal_authoring()
+{
+    ui::session s;
+    const auto root = s.current().root;
+    apply(s, {
+        ui::insert_node{"page", root, {"panel", {}, {{"modal", false}, {"modal_return_focus", ""s}}, {}}},
+        ui::insert_node{"opener", "page", {"button", {}, {{"open_modal", "dialog"s}, {"close_modal", false}}, {}}},
+        ui::insert_node{"return", "page", {"button", {}, {{"enabled", false}}, {}}},
+        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true}, {"visible", false}, {"modal_return_focus", "return"s}}, {}}},
+        ui::insert_node{"nested", "dialog", {"panel", {}, {{"modal", false}}, {}}},
+        ui::insert_node{"close", "nested", {"button", {}, {{"close_modal", true}, {"open_modal", ""s}, {"nav_up", "input"s}}, {}}},
+        ui::insert_node{"input", "dialog", {"edit", {}, {}, {}}},
+        ui::insert_node{"other", root, {"panel", {}, {{"modal", true}, {"bind_visible", ""s}}, {}}},
+        ui::set_property{root, "nav_start", ui::value{"opener"s}},
+    });
+    const auto doc = s.current();
+    const auto json = encode(doc);
+    check(decode(json) == doc && encode(decode(json)) == json, "modal keys round-trip, including dormant false and empty values");
+    check(ui::is_modal_panel(doc.nodes.at("dialog")) && !ui::is_modal_panel(doc.nodes.at("page")),
+        "is_modal_panel reflects the authored modal flag");
+    const auto reject = [&](const char* id, const char* key, ui::value value) {
+        check(reject_edit(s, {ui::set_property{id, key, std::move(value)}}, key).path ==
+            "/nodes/"s + id + "/props/" + key, "invalid modal edit did not report the authored property");
+    };
+    reject("root", "modal", true);
+    reject("nested", "modal", true);
+    reject("dialog", "modal", "true"s);
+    reject("dialog", "bind_visible", "showDialog"s);
+    reject("dialog", "nav_start", "close"s);
+    reject("page", "modal_return_focus", "opener"s);
+    reject("dialog", "modal_return_focus", "dialog"s);
+    reject("dialog", "modal_return_focus", "input"s);
+    reject("dialog", "modal_return_focus", "other"s);
+    reject("dialog", "modal_return_focus", true);
+    reject("opener", "open_modal", "missing"s);
+    reject("opener", "open_modal", "page"s);
+    reject("opener", "open_modal", "../dialog"s);
+    reject("opener", "open_modal", true);
+    reject("opener", "close_modal", true);
+    reject("close", "close_modal", 1.0);
+    reject("close", "open_modal", "other"s);
+    reject("close", "nav_right", "opener"s);
+    reject("close", "nav_right", "other"s);
+    reject("opener", "nav_down", "dialog"s);
+    reject("root", "nav_start", "close"s);
+    check(reject_edit(s, {ui::move_node{"dialog", "page"}}, "modal must remain under root").path == "/nodes/dialog/props/modal",
+        "invalid reparenting must report the moved panel, not a dangling opener");
+    reject_edit(s, {ui::move_node{"opener", "nested"}}, "opener must stay outside modals");
+    reject_edit(s, {ui::set_property{"dialog", "modal", ui::value{false}}}, "active references prevent demotion");
+    apply(s, {ui::set_property{"dialog", "modal_return_focus", ui::value{root}}});
+    apply(s, {ui::set_property{"dialog", "modal", ui::value{false}},
+        ui::set_property{"dialog", "modal_return_focus", ui::value{""s}},
+        ui::set_property{"opener", "open_modal", ui::value{""s}},
+        ui::set_property{"close", "close_modal", ui::value{false}}});
+    check(!ui::is_modal_panel(s.current().nodes.at("dialog")), "a batch can demote a modal and clear its roles together");
+    check(reject_json(json_document(R"({
+        "root": {"type":"panel"},
+        "detached": {"type":"panel", "props":{"modal":true}}
+    })"), "orphan modal").path == "/nodes/detached", "topology failures take priority over modal placement");
+}
+
+void modal_reference_transactions()
+{
+    ui::session s;
+    const auto root = s.current().root;
+    apply(s, {
+        ui::insert_node{"opener", root, {"button", {}, {{"open_modal", "dialog"s}}, {}}},
+        ui::insert_node{"group", root, {"panel", {}, {}, {}}},
+        ui::insert_node{"return", "group", {"button", {}, {}, {}}},
+        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true}, {"modal_return_focus", "return"s}}, {}}},
+        ui::insert_node{"close", "dialog", {"button", {}, {{"close_modal", true}, {"nav_up", "input"s}}, {}}},
+        ui::insert_node{"input", "dialog", {"edit", {}, {}, {}}},
+    });
+    const auto original = s.current();
+    apply(s, {
+        ui::copy_subtree{"dialog", root, {{"dialog", "dialog_copy"}, {"close", "close_copy"}, {"input", "input_copy"}}},
+        ui::copy_subtree{"opener", root, {{"opener", "opener_copy"}}},
+    });
+    const auto copies = s.current();
+    check(copies.nodes.at("dialog_copy").props == original.nodes.at("dialog").props &&
+        copies.nodes.at("opener_copy") == original.nodes.at("opener") &&
+        copies.nodes.at("close_copy").props.at("nav_up") == ui::value{"input_copy"s} &&
+        copies.nodes.at("close_copy").props.at("close_modal") == ui::value{true},
+        "copy preserves external modal references and remaps directional links within the modal");
+    apply(s, {ui::erase_node{"group"}, ui::erase_node{"dialog"}});
+    const auto deleted = s.current();
+    check(!deleted.nodes.at("opener").props.contains("open_modal") &&
+        !deleted.nodes.at("opener_copy").props.contains("open_modal") &&
+        !deleted.nodes.at("dialog_copy").props.contains("modal_return_focus") &&
+        deleted.nodes.at("close_copy") == copies.nodes.at("close_copy"),
+        "delete clears incoming opener and return-focus references but preserves unrelated roles");
+    check(s.undo() && s.current() == copies && s.undo() && s.current() == original &&
+        s.redo() && s.current() == copies && s.redo() && s.current() == deleted,
+        "modal copy and delete replay exactly through undo/redo");
+}
+
 void savepoint_history()
 {
     const temp_dir tmp;
@@ -1484,6 +1580,8 @@ int main()
         {"subtree transactions", subtree_transactions},
         {"navigation targets and round trip", navigation_targets},
         {"navigation subtree transactions", navigation_transactions},
+        {"modal authoring and round trip", modal_authoring},
+        {"modal reference transactions", modal_reference_transactions},
         {"savepoint history", savepoint_history},
         {"failed file operations", failed_file_operations},
     };

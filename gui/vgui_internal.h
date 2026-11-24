@@ -345,6 +345,9 @@ void vgui_navigation_set_direction(vgui_widget* owner, vgui_widget* source,
 	vgui_nav_direction direction, vgui_widget* target);
 // Uses only this subtree's configured start; leaves existing focus alone.
 bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner);
+// Restores a live target eligible for navigation in the active root. Returns
+// true also if it was already focused; an ineligible target leaves focus alone.
+bool vgui_navigation_restore_focus(vgui_context* ctx, vgui_widget* target);
 
 // Bytes per pixel for a vgui_texture_format.  Returns 0 for an unknown format
 // (used by vgui_texture_desc_valid to reject it).  Shared so editor helpers and

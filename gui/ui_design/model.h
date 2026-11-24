@@ -145,6 +145,9 @@ struct document {
     bool operator==(const document&) const = default;
 };
 
+// Tests the authored modal flag; validate() enforces placement under the page root.
+bool is_modal_panel(const node& item);
+
 struct data_binding_descriptor {
     std::string_view key, target; // Binding property, then the authored fallback property.
     value_type type; // Type of the bound value, not of the key.
@@ -168,11 +171,11 @@ bool read_document(const std::filesystem::path& path, document& out, diagnostic*
 bool write_document(const std::filesystem::path& path, const document& doc, diagnostic* error = nullptr);
 
 struct insert_node { std::string id, parent; node data; std::size_t index = append; };
-struct erase_node { std::string id; }; // Removes the entire subtree and clears incoming navigation links.
+struct erase_node { std::string id; }; // Removes the entire subtree and clears incoming node references.
 struct move_node { std::string id, parent; std::size_t index = append; }; // Index after removal.
 struct copy_subtree {
     std::string id, parent;
-    std::map<std::string, std::string, std::less<>> ids; // Exact old -> new IDs for children and internal navigation links.
+    std::map<std::string, std::string, std::less<>> ids; // Exact old -> new IDs for children and internal node references.
     std::size_t index = append;
 };
 struct rename_node { std::string id, name; };

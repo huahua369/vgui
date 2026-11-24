@@ -1055,6 +1055,7 @@ int main(int argc, char** argv)
 		if (st.mode == 1)
 			sync_ui_fbo(wg->vgctx, &st, cw, ch);
 
+		st.design->service_modals();
 		apply_hud_actions(&st);
 		simulate(&st, delta);
 		update_nameplates(&st, cw, ch);

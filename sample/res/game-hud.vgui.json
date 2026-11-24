@@ -7,7 +7,7 @@
       "type": "panel",
       "name": "Arena HUD",
       "props": {"layout": "absolute", "nav_start": "skill1"},
-      "children": ["vitals", "status_plate", "minimap", "hotbar", "ult", "crosshair"]
+      "children": ["vitals", "status_plate", "minimap", "hotbar", "ult", "crosshair", "pause_button", "pause_dialog"]
     },
     "vitals": {
       "type": "panel",
@@ -42,7 +42,7 @@
       "children": ["slot1", "slot2", "slot3", "slot4", "slot5", "slot6"]
     },
     "slot1": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill1", "cooldown1"]},
-    "skill1": {"type": "button", "props": {"text": "Q", "width": 56, "height": 36, "action": "hud.skill.1", "focus_alpha": 1, "nav_left": "skill6"}},
+    "skill1": {"type": "button", "props": {"text": "Q", "width": 56, "height": 36, "action": "hud.skill.1", "focus_alpha": 1, "nav_left": "skill6", "nav_up": "pause_button"}},
     "cooldown1": {"type": "progress", "props": {"width": 56, "height": 16, "bind_value": "skill.1.cooldown"}},
     "slot2": {"type": "panel", "props": {"layout": "column", "gap": 4, "background": "#00000000"}, "children": ["skill2", "cooldown2"]},
     "skill2": {"type": "button", "props": {"text": "W", "width": 56, "height": 36, "action": "hud.skill.2", "focus_alpha": 1}},
@@ -64,7 +64,19 @@
       "radial": true, "bind_value": "player.ult_cooldown", "accent_color": "#FFA040", "track_color": "#40282050", "input_enabled": false}},
     "crosshair": {"type": "panel", "name": "Crosshair (host draws)", "props": {
       "anchor_x": "center", "anchor_y": "center", "anchor_safe_area": false,
-      "width": 32, "height": 32, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}}
+      "width": 32, "height": 32, "layout": "column", "align_items": "stretch", "background": "#00000000", "input_enabled": false}},
+    "pause_button": {"type": "button", "props": {
+      "anchor_safe_area": true, "x": 16, "y": 94, "width": 112, "height": 32, "text": "Pause menu",
+      "open_modal": "pause_dialog", "nav_down": "skill1", "focus_alpha": 1}},
+    "pause_dialog": {"type": "panel", "name": "Pause menu", "props": {
+      "modal": true, "modal_return_focus": "skill1", "anchor_x": "center", "anchor_y": "center",
+      "width": 360, "height": 176, "layout": "column", "align_items": "stretch",
+      "pad_left": 20, "pad_top": 17, "pad_right": 20, "pad_bottom": 17, "gap": 10,
+      "background": "#263144", "border_color": "#638AB0", "border_width": 1},
+      "children": ["pause_title", "pause_hint", "pause_close"]},
+    "pause_title": {"type": "label", "props": {"text": "Pause menu", "font_size": 22}},
+    "pause_hint": {"type": "label", "props": {"text": "Esc / B to go back", "font_size": 15}},
+    "pause_close": {"type": "button", "props": {"text": "Back to skills", "height": 38, "close_modal": true, "focus_alpha": 1}}
   },
   "resources": {}
 }

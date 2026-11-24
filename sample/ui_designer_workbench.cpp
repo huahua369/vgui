@@ -806,6 +806,7 @@ struct designer_workbench::impl {
                 {"Game data", strings.text("workbench.inspector.category.game_data", "Game data")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
                 {"Navigation", strings.text("workbench.inspector.category.navigation", "Navigation")},
+                {"Modal", strings.text("workbench.inspector.category.modal", "Modal")},
                 {"Pages", strings.text("workbench.inspector.category.pages", "Pages")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
             },
@@ -1703,6 +1704,16 @@ struct designer_workbench::impl {
         add({.id = node_name, .label = strings.text("workbench.inspector.name", "Name"), .value = item.name, .has_default = true});
         const auto place = location(selected);
         const auto* anchor_parent = place ? &doc.nodes.at(place->first) : nullptr;
+        const bool modal_panel = is_modal_panel(item);
+        bool inside_modal = false;
+        if (item.type == "button") {
+            for (auto ancestor = place; ancestor; ancestor = location(ancestor->first)) {
+                if (is_modal_panel(doc.nodes.at(ancestor->first))) {
+                    inside_modal = true;
+                    break;
+                }
+            }
+        }
         const bool anchors_allowed = anchor_parent && anchor_parent->type == "panel" &&
             std::get<std::string>(property_value(*anchor_parent, *find_property("panel", "layout"))) == "absolute";
         const auto anchor_x = std::get<std::string>(property_value(item, *find_property(item.type, "anchor_x")));
@@ -1723,7 +1734,11 @@ struct designer_workbench::impl {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
                 const bool navigation = key.starts_with("nav_");
+                const bool modal_property = key == "modal" || key == "modal_return_focus" || key == "open_modal" || key == "close_modal";
                 if (navigation && (decorative_gradient || (key == "nav_start" && selected != doc.root))) continue;
+                if ((key == "modal" && (!place || place->first != doc.root)) ||
+                    (key == "modal_return_focus" && !modal_panel) ||
+                    (key == "open_modal" && inside_modal) || (key == "close_modal" && !inside_modal)) continue;
                 if (desc.type == value_type::data_key) {
                     const auto bindings = data_bindings();
                     const auto binding = std::ranges::find(bindings, key, &data_binding_descriptor::key);
@@ -1762,6 +1777,7 @@ struct designer_workbench::impl {
                 if (desc.type == value_type::data_key || key == "bind_value_transition_ms") row.category = "Game data";
                 else if (key.starts_with("anchor_")) row.category = "Anchors";
                 else if (navigation) row.category = "Navigation";
+                else if (modal_property) row.category = "Modal";
                 else if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
                 else if (decorative_gradient && key.starts_with("gradient_"))
                     row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
@@ -1788,7 +1804,19 @@ struct designer_workbench::impl {
                 if (navigation) {
                     row.placeholder = strings.text("workbench.inspector.navigation.auto", "Auto");
                     row.tooltip = strings.text("workbench.inspector.navigation.hint",
-                        "Enter a node ID from this page's Outline. Leave blank for Auto. If the target cannot take focus, navigation falls back to Auto.");
+                        "Enter a node ID from this page's Outline. Focus links must stay within the page or the same modal. Leave blank for Auto. If the target cannot take focus, navigation falls back to Auto.");
+                } else if (key == "modal") {
+                    row.tooltip = strings.text("workbench.inspector.modal.hint",
+                        "Use this panel as a modal in Run. It starts closed and blocks the page while open. Visible only controls this panel in Design.");
+                } else if (key == "modal_return_focus") {
+                    row.placeholder = strings.text("workbench.inspector.modal.opener", "Opening button");
+                    row.tooltip = strings.text("workbench.inspector.modal.return_focus_hint",
+                        "Enter the ID of a node outside all modals to focus on close. Leave blank to return focus to the opening button.");
+                } else if (key == "open_modal") {
+                    row.tooltip = strings.text("workbench.inspector.modal.open_hint",
+                        "Enter a modal panel's node ID from the Outline. Leave blank to open nothing.");
+                } else if (key == "close_modal") {
+                    row.tooltip = strings.text("workbench.inspector.modal.close_hint", "Close the containing modal when this button is activated in Run.");
                 } else if (key == "anchor_x" || key == "anchor_y") {
                     row.tooltip = strings.text("workbench.inspector.anchor.hint",
                         "X/Y are offsets from the selected edge or center. Positive offsets go right/down; use negative offsets to inset from the right/bottom.");
@@ -1950,7 +1978,7 @@ struct designer_workbench::impl {
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
         constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Gradient animation", "Geometry & state", "Pages",
-            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Navigation", "Anchors", "Game data"};
+            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Navigation", "Modal", "Anchors", "Game data"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

@@ -396,9 +396,10 @@ extern "C" {
 	 * close_on_escape defaults to 1, close_on_backdrop to 0, dim_background to
 	 * 1 and destroy_on_close to 0 (the caller keeps ownership of the panel).
 	 * A negative margin/backdrop_alpha selects the value from
-	 * style.modal.  The optional close callback runs after the modal has been
-	 * deactivated and the panel detached, but before destroy_on_close destroys
-	 * it, so the panel is still valid for inspection. */
+	 * style.modal. The modal and its open popup or menu are closed before
+	 * restoring any still-navigable previous focus and calling the optional
+	 * close callback. The panel is detached, but destroy_on_close does not
+	 * destroy it until after the callback. */
 	typedef enum vgui_modal_result_kind {
 		VGUI_MODAL_RESULT_NONE = 0,
 		VGUI_MODAL_RESULT_CANCEL = 1,
@@ -531,8 +532,8 @@ extern "C" {
 	 * Only one popup per context; opening one closes menus and vice versa. */
 
 	/* Notified from every close path.  reason is one of VGUI_POPUP_CLOSE_*:
-	 * EXPLICIT (vgui_popup_close / replaced by another popup or a menu /
-	 * a modal), OUTSIDE (click), ESCAPE, WHEEL.  Not called when the content
+	 * EXPLICIT (vgui_popup_close / another popup or menu / a modal opening
+	 * or closing), OUTSIDE (click), ESCAPE, WHEEL.  Not called when the content
 	 * widget is destroyed directly. */
 	typedef enum vgui_popup_close_reason {
 		VGUI_POPUP_CLOSE_EXPLICIT = 0,

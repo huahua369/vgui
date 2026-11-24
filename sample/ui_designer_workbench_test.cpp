@@ -2600,6 +2600,104 @@ void exercise_navigation_inspector()
         "Chinese navigation group, labels, and Auto fallback hint should appear on language switch");
 }
 
+void exercise_modal_inspector()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "modal.vgui.json");
+    auto& model = workbench.model;
+    auto* ctx = workbench.ctx.get();
+    const auto root = model.current().root;
+    const ui::edit nodes[] = {
+        ui::insert_node{"dialog", root, {"panel", "Dialog", {}, {}}},
+        ui::insert_node{"nested", "dialog", {"panel", "Nested", {}, {}}},
+        ui::insert_node{"close", "nested", {"button", "Close", {}, {}}},
+        ui::insert_node{"opener", root, {"button", "Open", {}, {}}},
+    };
+    check(model.apply(nodes), "could not seed modal authoring nodes");
+    workbench.frame();
+    workbench.click(workbench.widget("__property_search", VGUI_EDIT));
+    check(vgui_input_text(ctx, "modal"), "could not filter modal properties");
+    workbench.frame();
+    const auto select = [&](const char* id) {
+        workbench.bench.select(id);
+        workbench.frame();
+    };
+    const auto find = [&](std::string_view key, vgui_widget_kind kind) {
+        return find_widget(vgui_root(ctx), "property:" + std::string(key), kind);
+    };
+    const auto category = [&] {
+        return std::string_view(vgui_widget_get_text(workbench.widget("category:Modal", VGUI_BUTTON)));
+    };
+    const auto label = [&](std::string_view key, vgui_widget_kind kind) {
+        return std::string_view(vgui_widget_get_a11y_name(workbench.widget("property:" + std::string(key), kind)));
+    };
+    const auto enter = [&](std::string_view key, const char* text) {
+        auto* field = workbench.widget("property:" + std::string(key), VGUI_EDIT);
+        workbench.click(field);
+        check(vgui_get_focus(ctx) == field, "modal text field did not take focus");
+        vgui_edit_select_all(field);
+        check(vgui_input_text(ctx, text), "modal text field did not consume text");
+        workbench.frame();
+    };
+    check(!find("modal", VGUI_CHECKBOX), "the page root must not show the modal toggle");
+    select("nested");
+    check(!find("modal", VGUI_CHECKBOX), "a nested panel must not show the modal toggle");
+    select("dialog");
+    auto* modal = workbench.widget("property:modal", VGUI_CHECKBOX);
+    check(category().ends_with("Modal") && label("modal", VGUI_CHECKBOX) == "Modal panel" &&
+        std::string_view(vgui_widget_get_tooltip(modal)).find("only controls this panel in Design") != std::string_view::npos &&
+        !find("modal_return_focus", VGUI_EDIT), "modal panel toggle must explain Run visibility and reveal return focus only when enabled");
+    workbench.click(modal);
+    workbench.frame();
+    check(ui::is_modal_panel(model.current().nodes.at("dialog")) &&
+        label("modal_return_focus", VGUI_EDIT) == "Return focus to", "checking Modal panel must reveal return focus");
+    enter("modal_return_focus", "opener");
+    check(workbench.key(VGUI_KEY_ENTER), "return focus edit did not commit");
+
+    select("opener");
+    check(!find("close_modal", VGUI_CHECKBOX) && label("open_modal", VGUI_EDIT) == "Open modal",
+        "outside buttons must offer Open modal only");
+    const auto before_opener = model.committed();
+    enter("open_modal", "dialog");
+    const auto preview = model.current();
+    check(preview.nodes.at("opener").props.at("open_modal") == ui::value{std::string("dialog")} &&
+        model.committed() == before_opener, "modal opener applies live");
+    enter("open_modal", "missing");
+    check(model.current() == preview &&
+        std::string_view(vgui_widget_get_tooltip(find("open_modal", VGUI_EDIT))).find("not found") != std::string_view::npos,
+        "invalid opener ID must surface an error without changing the last valid preview");
+    enter("open_modal", "dialog");
+    check(workbench.key(VGUI_KEY_ENTER) && model.committed() == preview, "valid modal opener did not commit");
+    select("close");
+    check(!find("open_modal", VGUI_EDIT) && label("close_modal", VGUI_CHECKBOX) == "Close modal",
+        "buttons anywhere in the modal subtree must offer Close modal only");
+    workbench.click(workbench.widget("property:close_modal", VGUI_CHECKBOX));
+    workbench.frame();
+    check(model.committed().nodes.at("close").props.at("close_modal") == ui::value{true}, "close toggle did not commit");
+
+    workbench.strings = ui::designer_strings(ui::designer_language::simplified_chinese);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(category().ends_with("模态弹窗") && label("close_modal", VGUI_CHECKBOX) == "关闭弹窗" &&
+        std::string_view(vgui_widget_get_tooltip(find("close_modal", VGUI_CHECKBOX))).find("运行模式") != std::string_view::npos,
+        "modal group, close label, and hint must follow the locale");
+    select("opener");
+    check(label("open_modal", VGUI_EDIT) == "打开弹窗", "modal opener label must follow the locale");
+    select("dialog");
+    check(label("modal", VGUI_CHECKBOX) == "设为模态弹窗" && label("modal_return_focus", VGUI_EDIT) == "关闭后焦点",
+        "modal panel labels must follow the locale");
+
+    const auto saved = model.committed();
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    workbench.file("Save As");
+    workbench.file("Open Page");
+    check(workbench.io_ok && model.current() == saved &&
+        model.current().nodes.at("dialog").props.at("modal_return_focus") == ui::value{std::string("opener")},
+        "the four authored modal properties must survive saving and reopening");
+}
+
 void exercise_menu_language()
 {
     using ui::designer_language;
@@ -2936,6 +3034,7 @@ int main()
         exercise_gradient_animation();
         exercise_radio_group_inspector();
         exercise_navigation_inspector();
+        exercise_modal_inspector();
         exercise_menu_language();
         exercise_control_search();
         exercise_anchor_inspector();

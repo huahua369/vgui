@@ -1075,7 +1075,7 @@ struct vgui_modal_state
 	int result = VGUI_MODAL_RESULT_NONE;
 	vgui_widget* stage = nullptr;
 	vgui_widget* panel = nullptr;
-	vgui_widget* restore_focus = nullptr;
+	std::weak_ptr<vgui_navigation_links> restore_focus;
 	vgui_modal_options options = {};
 	vgui_widget* drag_handle = nullptr;
 	enum { DRAG_NONE, DRAG_MOVING, DRAG_CANCELLED } drag = DRAG_NONE;
@@ -1457,9 +1457,8 @@ static bool vgui_is_within(vgui_widget* ancestor, vgui_widget* widget)
 
 static vgui_widget* vgui_first_focusable(vgui_widget* root)
 {
-	if (!root) return nullptr;
-	if (root->visible && root->enabled && !root->destroy_pending && root->focusable)
-		return root;
+	if (!root || !root->visible || !root->enabled || root->destroy_pending) return nullptr;
+	if (root->focusable) return root;
 	for (vgui_widget* c : root->children)
 	{
 		vgui_widget* found = vgui_first_focusable(c);
@@ -7158,9 +7157,13 @@ static void vgui_ensure_layout(vgui_context* ctx)
 }
 
 static void vgui_menu_close_internal(vgui_widget* menu);
+static void vgui_menu_close_all(vgui_context* ctx);
 static void vgui_modal_close_internal(vgui_context* ctx, int result);
 static void vgui_popup_close_internal(vgui_context* ctx, int reason);
 static void vgui_set_focus_internal(vgui_context* ctx, vgui_widget* w);
+static const std::shared_ptr<vgui_navigation_links>& vgui_navigation_record(vgui_widget* w);
+static vgui_widget* vgui_navigation_resolve(vgui_context* ctx,
+	const std::weak_ptr<vgui_navigation_links>& ref);
 
 static void vgui_dialog_forget_widget(vgui_context* ctx, vgui_widget* w)
 {
@@ -7368,10 +7371,12 @@ static void vgui_modal_close_internal(vgui_context* ctx, int result)
 	if (!ctx || !ctx->modal.active) return;
 	vgui_widget* panel = ctx->modal.panel;
 	vgui_widget* stage = ctx->modal.stage;
-	vgui_widget* restore = ctx->modal.restore_focus;
+	const auto restore_focus = ctx->modal.restore_focus;
 	vgui_modal_options options = ctx->modal.options;
 	bool panel_alive = panel && ctx->alive.count(panel);
-	bool stage_alive = stage && ctx->alive.count(stage);
+	std::weak_ptr<vgui_navigation_links> panel_ref, stage_ref;
+	if (panel_alive) panel_ref = vgui_navigation_record(panel);
+	if (stage && ctx->alive.count(stage)) stage_ref = vgui_navigation_record(stage);
 	bool dialog_matched = panel_alive && ctx->dialog.panel == panel;
 	bool destroy_panel = panel_alive && (options.destroy_on_close || dialog_matched);
 
@@ -7398,30 +7403,44 @@ static void vgui_modal_close_internal(vgui_context* ctx, int result)
 	ctx->slider_drag = nullptr;
 	vgui_tooltip_clear_candidate(ctx);
 
-	// Never restore focus into a panel that is about to be destroyed.
-	if (restore && (!ctx->alive.count(restore) || !restore->visible ||
-		!restore->enabled || restore->destroy_pending ||
-		(destroy_panel && vgui_is_within(panel, restore))))
-		restore = nullptr;
-	vgui_set_focus_internal(ctx, restore);
+	// Showing a modal closes the background overlays, so the current overlay
+	// belongs to this modal. Close it before restoring background focus.
+	if (ctx->popup.content)
+		vgui_popup_close_internal(ctx, VGUI_POPUP_CLOSE_EXPLICIT);
+	else
+		vgui_menu_close_all(ctx);
+
+	// An overlay callback can open a different modal or overlay. Do not
+	// restore background focus over it, or retain focus in the detached tree.
+	if (!ctx->modal.active && !ctx->popup.content && !ctx->open_menu)
+	{
+		vgui_widget* restore = vgui_navigation_resolve(ctx, restore_focus);
+		if ((destroy_panel && vgui_is_within(vgui_navigation_resolve(ctx, panel_ref), restore)) ||
+			!vgui_navigation_restore_focus(ctx, restore))
+			vgui_set_focus_internal(ctx, nullptr);
+	}
+	else if (ctx->focus && !vgui_is_within(vgui_active_root(ctx), ctx->focus))
+		vgui_set_focus_internal(ctx, nullptr);
 
 	if (options.on_close)
-		options.on_close(ctx, panel_alive ? panel : nullptr, result, options.user);
+		options.on_close(ctx, vgui_navigation_resolve(ctx, panel_ref), result, options.user);
 	if (dialog_matched && dialog.on_result)
 		dialog.on_result(ctx, result, input_text.c_str(), dialog.user);
 
 	// A callback may have opened another modal (possibly reusing the panel),
 	// so only destroy the objects that still belong to this closing modal.
-	if (stage_alive && ctx->alive.count(stage))
+	stage = vgui_navigation_resolve(ctx, stage_ref);
+	panel = vgui_navigation_resolve(ctx, panel_ref);
+	if (stage)
 		vgui_schedule_destroy(stage);
-	if (destroy_panel && panel_alive && ctx->alive.count(panel) &&
-		ctx->modal.panel != panel)
+	const bool delete_panel = destroy_panel && panel && ctx->modal.panel != panel;
+	if (delete_panel)
 		vgui_schedule_destroy(panel);
 
 	// Focus may still sit on one of the widgets that were just scheduled for
 	// deletion (panel controls, or a background element of the stage).
 	if (ctx->focus && ctx->focus->ctx == ctx &&
-		((destroy_panel && vgui_is_within(panel, ctx->focus)) ||
+		((delete_panel && vgui_is_within(panel, ctx->focus)) ||
 			vgui_is_within(stage, ctx->focus)))
 		vgui_set_focus_internal(ctx, nullptr);
 	ctx->layout_dirty = true;
@@ -9013,6 +9032,15 @@ static bool vgui_navigation_move(vgui_context* ctx, vgui_widget* target)
 	// how Tab and pointer input report paint changes.
 	++ctx->paint_revision;
 	vgui_set_focus_internal(ctx, target);
+	return true;
+}
+
+bool vgui_navigation_restore_focus(vgui_context* ctx, vgui_widget* target)
+{
+	if (!ctx || !target || !ctx->alive.count(target) || target->destroy_pending) return false;
+	vgui_ensure_layout(ctx);
+	if (!vgui_navigation_eligible(ctx, target, vgui_active_root(ctx))) return false;
+	vgui_navigation_move(ctx, target);
 	return true;
 }
 
@@ -16802,7 +16830,7 @@ extern "C" {
 		ctx->modal.active = 0;
 		ctx->modal.stage = nullptr;
 		ctx->modal.panel = nullptr;
-		ctx->modal.restore_focus = nullptr;
+		ctx->modal.restore_focus.reset();
 		ctx->dialog = vgui_dialog_state();
 		ctx->toasts.clear();
 		// R3-1: free the subtree display-list caches before the widgets go.
@@ -18306,7 +18334,7 @@ extern "C" {
 		ctx->modal.active = 1;
 		ctx->modal.stage = stage;
 		ctx->modal.panel = panel;
-		ctx->modal.restore_focus = restore;
+		if (restore) ctx->modal.restore_focus = vgui_navigation_record(restore);
 		ctx->modal.options = opts;
 		stage->focus_trap = 1;
 		ctx->layout_dirty = true;

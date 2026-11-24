@@ -14,6 +14,7 @@
 #include <map>
 #include <set>
 #include <system_error>
+#include <utility>
 
 namespace vgui::ui_design {
 namespace {
@@ -471,6 +472,10 @@ gradient_keyframe capture_gradient_pose(std::string_view kind, const gradient_ge
 }
 
 struct runtime::mounted_tree {
+    struct modal {
+        vgui_widget* panel;
+        vgui_widget* return_focus = nullptr;
+    };
     struct entry {
         std::string id, action;
         vgui_widget* widget = nullptr;
@@ -478,6 +483,10 @@ struct runtime::mounted_tree {
         runtime_bindings::action_handler handler = nullptr;
         void* user = nullptr;
         std::map<std::pair<vgui_item_id, int>, std::string> row_actions;
+        const modal* modal_scope = nullptr;
+        const modal* open_modal = nullptr;
+        bool close_modal = false;
+        mounted_tree* tree = nullptr; // For button activations.
     };
     struct menu_actions {
         const entry* owner = nullptr;
@@ -548,21 +557,52 @@ struct runtime::mounted_tree {
     std::vector<diagnostic> diagnostics;
     std::vector<gradient_animation> gradient_animations;
     animation_span animation_timing;
+    std::map<std::string, modal, std::less<>> modals;
+    struct modal_request {
+        const modal* target = nullptr;
+        vgui_widget* opener = nullptr; // Null for a close command.
+    } pending_modal, active_modal;
+    vgui_widget* start_focus = nullptr;
+    bool destroying = false;
     std::uint64_t revision = 0;
     float width = 0, height = 0;
     bool laid_out = false;
     ~mounted_tree() {
+        destroying = true;
+        if (active_modal.target) {
+            auto* ctx = vgui_widget_get_context(root);
+            if (vgui_modal_panel(ctx) == active_modal.target->panel)
+                vgui_modal_close(ctx, VGUI_MODAL_RESULT_CANCEL);
+        }
+        for (const auto& [id, modal] : modals)
+            if (!vgui_widget_get_parent(modal.panel)) vgui_widget_destroy(modal.panel);
         if (root) vgui_widget_destroy(root);
         for (auto* texture : collection_textures) vgui_texture_release(texture);
     }
     static void event(vgui_widget*, const vgui_event* event, void* user) {
-        auto* e = static_cast<entry*>(user);
+        const auto& e = *static_cast<entry*>(user);
         // Bound only to authored buttons. Core sends key events for native
         // button activation, but does not synthesize a click.
         const bool activate_key = event->type == VGUI_EVENT_KEY_DOWN && event->mods == VGUI_MOD_NONE &&
             (event->key == VGUI_KEY_ENTER || event->key == ' ');
-        if (e->handler && (event->type == VGUI_EVENT_CLICK || activate_key))
-            e->handler(e->id, e->action, e->user);
+        if (event->type != VGUI_EVENT_CLICK && !activate_key) return;
+        if (!e.tree->pending_modal.target) {
+            if (e.open_modal)
+                e.tree->pending_modal = {e.open_modal, e.widget};
+            else if (e.close_modal && e.tree->active_modal.target == e.modal_scope)
+                e.tree->pending_modal = {e.modal_scope, nullptr};
+        }
+        if (e.handler) e.handler(e.id, e.action, e.user);
+    }
+    static void modal_closed(vgui_context* ctx, vgui_widget*, int, void* user) {
+        auto& tree = *static_cast<mounted_tree*>(user);
+        const auto closed = std::exchange(tree.active_modal, {});
+        if (tree.pending_modal.target == closed.target) tree.pending_modal = {};
+        if (!closed.target || tree.destroying || vgui_context_get_open_menu(ctx)) return;
+
+        if (!vgui_navigation_restore_focus(ctx, closed.target->return_focus) &&
+            !vgui_navigation_restore_focus(ctx, closed.opener))
+            vgui_navigation_restore_focus(ctx, tree.start_focus);
     }
     static void menu_event(vgui_widget*, vgui_item_id item, void* user) {
         const auto& menu = *static_cast<menu_actions*>(user);
@@ -591,6 +631,34 @@ vgui_widget* runtime::widget(std::string_view id) const {
 }
 std::span<const diagnostic> runtime::diagnostics() const {
     return tree_ ? std::span<const diagnostic>(tree_->diagnostics) : std::span<const diagnostic>();
+}
+
+bool runtime::has_modals() const { return tree_ && !tree_->modals.empty(); }
+
+void runtime::service_modals() {
+    if (!tree_) return;
+    const auto request = std::exchange(tree_->pending_modal, {});
+    if (!request.target) return;
+    auto* panel = request.target->panel;
+    if (!request.opener) {
+        if (vgui_modal_panel(ctx_) == panel) vgui_modal_close(ctx_, VGUI_MODAL_RESULT_CONFIRM);
+        return;
+    }
+    if (vgui_modal_active(ctx_) || !vgui_widget_get_enabled(panel)) return;
+
+    vgui_modal_options options;
+    vgui_modal_options_default(&options);
+    options.on_close = mounted_tree::modal_closed;
+    options.user = tree_.get();
+    // Let the authored priority order be the only focus restore, including
+    // during teardown. Native show would otherwise save the current focus.
+    auto* previous = vgui_get_focus(ctx_);
+    vgui_set_focus(ctx_, nullptr);
+    tree_->active_modal = request;
+    if (!vgui_modal_show(ctx_, panel, &options)) {
+        tree_->active_modal = {};
+        vgui_navigation_restore_focus(ctx_, previous);
+    }
 }
 
 bool runtime::set_data(std::string_view field, std::optional<value> data, data_update update) {
@@ -658,9 +726,13 @@ std::optional<data_field_snapshot> runtime::inspect_data(std::string_view field)
 }
 
 namespace {
-bool animation_visible(vgui_widget* widget, int width, int height) {
-    for (auto* w = widget; w; w = vgui_widget_get_parent(w))
+bool animation_visible(vgui_widget* widget, vgui_widget* root, vgui_widget* modal, int width, int height) {
+    bool attached = false;
+    for (auto* w = widget; w; w = vgui_widget_get_parent(w)) {
         if (!vgui_widget_get_visible(w)) return false;
+        attached |= w == root || w == modal;
+    }
+    if (!attached) return false;
     pixel_rect rect;
     vgui_widget_get_rect(widget, &rect.x, &rect.y, &rect.width, &rect.height);
     const auto clipped = intersect(rect, {0, 0, float(width), float(height)});
@@ -674,9 +746,10 @@ void runtime::advance_animations(double delta_seconds) {
     int width = 0, height = 0;
     vgui_context_get_size(ctx_, &width, &height);
     if (width <= 0 || height <= 0) return;
+    auto* modal = vgui_modal_panel(ctx_);
     for (auto& animation : tree_->gradient_animations) {
         if (!animation.loop && animation.sampled && !animation.draft && animation.elapsed >= animation.duration) continue;
-        if (animation_visible(animation.widget, width, height)) animation.advance(delta_seconds);
+        if (animation_visible(animation.widget, tree_->root, modal, width, height)) animation.advance(delta_seconds);
     }
 }
 
@@ -690,8 +763,9 @@ void runtime::seek_animations(double seconds, bool inspect_loop_end, const gradi
     vgui_context_get_size(ctx_, &width, &height);
     if (width <= 0 || height <= 0) return;
     auto* target = preview ? widget(preview->node) : nullptr;
+    auto* modal = vgui_modal_panel(ctx_);
     for (auto& animation : tree_->gradient_animations) {
-        if (animation_visible(animation.widget, width, height))
+        if (animation_visible(animation.widget, tree_->root, modal, width, height))
             animation.seek(seconds, inspect_loop_end,
                 preview && animation.widget == target ? std::optional(preview->draft) : std::nullopt);
     }
@@ -742,8 +816,8 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         }
         return it->second;
     };
-    std::function<bool(const std::string&, vgui_widget*, const node*)> build =
-        [&](const std::string& id, vgui_widget* parent, const node* parent_node) {
+    std::function<bool(const std::string&, vgui_widget*, const node*, const mounted_tree::modal*)> build =
+        [&](const std::string& id, vgui_widget* parent, const node* parent_node, const mounted_tree::modal* scope) {
         const auto& n = doc.nodes.at(id);
         const auto kind = [&]() -> std::optional<vgui_widget_kind> {
             if (n.type == "panel") return VGUI_PANEL;
@@ -761,6 +835,8 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
         if (!w) return false;
         if (!next->root) next->root = w;
         auto& e = next->entries[id]; e.id = id; e.widget = w;
+        if (is_modal_panel(n)) scope = &next->modals.emplace(id, mounted_tree::modal{w}).first->second;
+        e.modal_scope = scope;
         next->order.push_back(id);
         vgui_widget_set_id(w, id.c_str());
         const widget_properties p{n};
@@ -862,7 +938,6 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
                 }
                 if (!text(n,"action").empty()) {
                     e.action = text(n,"action"); e.handler = bindings.on_action; e.user = bindings.user;
-                    vgui_widget_on_event(w, mounted_tree::event, &e);
                 }
             }
         }
@@ -903,31 +978,53 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             }
         }
         if (parent_node && !detail::insert_content(parent, *parent_node, w, n, p)) return false;
-        for (const auto& child : n.children) if (!build(child, w, &n)) return false;
+        for (const auto& child : n.children) if (!build(child, w, &n, scope)) return false;
         detail::finish_container(w, n, p);
         return true;
     };
-    if (!build(doc.root, vgui_root(ctx_), nullptr)) {
+    if (!build(doc.root, vgui_root(ctx_), nullptr, nullptr)) {
         if (error) *error = {"", "failed to create VGUI widget"};
         return false;
     }
 
-    const auto nav_target = [&](const node& source, std::string_view key) -> vgui_widget* {
+    const auto target_widget = [&](const node& source, std::string_view key) -> vgui_widget* {
         const auto prop = source.props.find(key);
         if (prop == source.props.end()) return nullptr;
         const auto& id = std::get<std::string>(prop->second);
         return id.empty() ? nullptr : next->entries.at(id).widget;
     };
-    if (auto* target = nav_target(root_node, "nav_start"))
-        vgui_navigation_set_start(next->root, target);
+    next->start_focus = target_widget(root_node, "nav_start");
+    if (next->start_focus) vgui_navigation_set_start(next->root, next->start_focus);
     constexpr std::pair<std::string_view, vgui_nav_direction> directions[] = {
         {"nav_up", VGUI_NAV_UP}, {"nav_down", VGUI_NAV_DOWN},
         {"nav_left", VGUI_NAV_LEFT}, {"nav_right", VGUI_NAV_RIGHT}
     };
     for (const auto& [id, source] : doc.nodes) {
+        auto& e = next->entries.at(id);
+        auto* owner = e.modal_scope ? e.modal_scope->panel : next->root;
         for (const auto& [key, direction] : directions)
-            if (auto* target = nav_target(source, key))
-                vgui_navigation_set_direction(next->root, next->entries.at(id).widget, direction, target);
+            if (auto* target = target_widget(source, key))
+                vgui_navigation_set_direction(owner, e.widget, direction, target);
+        if (source.type == "button") {
+            if (!bindings.show_modal_design) {
+                const auto& open = text(source, "open_modal");
+                if (!open.empty()) e.open_modal = &next->modals.at(open);
+                e.close_modal = boolean(source, "close_modal");
+            }
+            if (e.handler || e.open_modal || e.close_modal) {
+                e.tree = next.get();
+                vgui_widget_on_event(e.widget, mounted_tree::event, &e);
+            }
+        }
+    }
+    for (auto& [id, modal] : next->modals) {
+        modal.return_focus = target_widget(doc.nodes.at(id), "modal_return_focus");
+        if (!bindings.show_modal_design) {
+            vgui_widget_remove(modal.panel);
+            // Run visibility is controlled by attachment to the native modal
+            // stage, independently of the authored Design visibility.
+            vgui_widget_set_visible(modal.panel, 1);
+        }
     }
     tree_ = std::move(next);
     return true;
@@ -949,10 +1046,14 @@ std::optional<layout_snapshot> runtime::layout(viewport view) {
     for (const auto& id : tree_->order) {
         const auto& e = tree_->entries.at(id);
         state parent{{0,0,float(width),float(height)},true,true};
-        auto p = states.find(vgui_widget_get_parent(e.widget)); if (p != states.end()) parent = p->second;
+        auto* parent_widget = vgui_widget_get_parent(e.widget);
+        auto p = states.find(parent_widget); if (p != states.end()) parent = p->second;
         node_layout item; item.id = id; item.image_placeholder = e.placeholder;
-        vgui_widget_get_rect(e.widget, &item.rect_px.x, &item.rect_px.y, &item.rect_px.width, &item.rect_px.height);
-        item.visible_px = intersect(parent.clip, item.rect_px);
+        const bool detached = e.modal_scope && !vgui_widget_get_parent(e.modal_scope->panel);
+        if (!detached) {
+            vgui_widget_get_rect(e.widget, &item.rect_px.x, &item.rect_px.y, &item.rect_px.width, &item.rect_px.height);
+            item.visible_px = intersect(parent.clip, item.rect_px);
+        }
         item.visible = parent.visible && vgui_widget_get_visible(e.widget) && item.visible_px.width > 0 && item.visible_px.height > 0;
         item.enabled = parent.enabled && vgui_widget_get_enabled(e.widget);
         states.emplace(e.widget, state{item.visible_px, item.visible, item.enabled});

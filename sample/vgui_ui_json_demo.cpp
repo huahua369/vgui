@@ -240,6 +240,7 @@ int run_window(const form_input& input) {
     while (app.get_event() >= 0 && !window->pending_close) {
         form.apply_actions();
         layout_window();
+        form.tree.service_modals();
         const Uint64 now = SDL_GetTicks();
         const float delta = static_cast<float>(now - last_frame) / 1000.0f;
         form.tree.advance_animations(delta);

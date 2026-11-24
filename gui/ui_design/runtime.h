@@ -40,6 +40,9 @@ struct runtime_bindings {
     // Same lifetime and context requirements as image_loader.
     using embedded_image_loader = vgui_texture* (*)(vgui_context* ctx, std::string_view key, void* user);
     embedded_image_loader load_embedded_image = nullptr;
+
+    // Leave authored modal panels in the page layout and do not arm their commands.
+    bool show_modal_design = false;
 };
 
 struct viewport {
@@ -139,6 +142,12 @@ public:
     // Borrowed until mount/unmount; do not reparent, restyle or destroy handles.
     vgui_widget* widget(std::string_view id) const;
     std::span<const diagnostic> diagnostics() const;
+
+    // True if the mount has authored modal panels, including in Design.
+    bool has_modals() const;
+    // Service the first authored open/close command received since the last call.
+    // Call once per frame on the owner thread, after input dispatch.
+    void service_modals();
 
     // Publish a single field on the owner thread, outside input dispatch.
     // Returns false for an unknown field or invalid type/value. nullopt

@@ -2564,6 +2564,7 @@ struct modal_cb
 	vgui_widget* panel = nullptr;
 	int active_at_close = -1;
 	int panel_rect_valid = 0;
+	vgui_widget* focus_at_close = nullptr;
 };
 
 static void on_modal_close(vgui_context* ctx, vgui_widget* panel, int result,
@@ -2574,6 +2575,7 @@ static void on_modal_close(vgui_context* ctx, vgui_widget* panel, int result,
 	s->result = result;
 	s->panel = panel;
 	s->active_at_close = vgui_modal_active(ctx);
+	s->focus_at_close = vgui_get_focus(ctx);
 	if (panel)
 	{
 		float x = 0, y = 0, w = 0, h = 0;
@@ -2654,8 +2656,9 @@ static void test_modal_drag_and_overlays()
 	check(at(110, 85), "modal drag: reopening resets both position and handle");
 
 	auto escape = [&]() {
+		// Gamepad B uses Escape down only: an up event could reach the surface
+		// exposed by this press instead of the one being dismissed.
 		check(vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0) == 1, "modal overlays: Escape consumed");
-		vgui_input_key(ui, VGUI_KEY_ESCAPE, 0, 0);
 	};
 	vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
 	vgui_menu_add_item(menu, "Choice");
@@ -2680,9 +2683,127 @@ static void test_modal_drag_and_overlays()
 		"modal overlays: Escape closes modal after overlays");
 }
 
+static void test_modal_focus_lifecycle()
+{
+	std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16.0f), vgui_destroy);
+	vgui_context* ui = ctx.get();
+	vgui_context_set_size(ui, 400, 300);
+	vgui_widget* parent = vgui_widget_add(vgui_root(ui), VGUI_PANEL, nullptr);
+	vgui_widget_set_size(parent, 120, 80);
+	vgui_widget* bg = vgui_widget_add(parent, VGUI_BUTTON, "Background");
+	vgui_widget_set_size(bg, 80, 30);
+
+	vgui_widget* panel = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(panel, 180, 110);
+	vgui_widget* hidden = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_add(hidden, VGUI_BUTTON, "Hidden ancestor");
+	vgui_widget_set_visible(hidden, 0);
+	vgui_widget* disabled = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+	vgui_widget_add(disabled, VGUI_BUTTON, "Disabled ancestor");
+	vgui_widget_set_enabled(disabled, 0);
+	vgui_widget* first = vgui_widget_add(panel, VGUI_BUTTON, "Ready");
+	modal_cb closed;
+	vgui_modal_options opts;
+	vgui_modal_options_default(&opts);
+	opts.on_close = on_modal_close;
+	opts.user = &closed;
+	auto open = [&]() {
+		vgui_set_focus(ui, bg);
+		closed = {};
+		check(vgui_modal_show(ui, panel, &opts) == 1 && vgui_get_focus(ui) == first,
+			"modal focus: initial search skips hidden and disabled branches");
+	};
+	auto close_with_focus = [&](vgui_widget* expected, const char* message) {
+		vgui_modal_close(ui, VGUI_MODAL_RESULT_CONFIRM);
+		check(!vgui_modal_active(ui) && closed.closes == 1 && closed.panel == panel &&
+			closed.focus_at_close == expected && vgui_get_focus(ui) == expected, message);
+	};
+
+	open();
+	close_with_focus(bg, "modal focus: restores a valid nested target before the callback");
+
+	open();
+	vgui_widget_set_visible(parent, 0);
+	close_with_focus(nullptr, "modal focus: does not restore through a hidden ancestor");
+	vgui_widget_set_visible(parent, 1);
+
+	open();
+	vgui_widget_set_enabled(parent, 0);
+	close_with_focus(nullptr, "modal focus: does not restore through a disabled ancestor");
+	vgui_widget_set_enabled(parent, 1);
+
+	open();
+	vgui_widget_set_focusable(bg, 0);
+	close_with_focus(nullptr, "modal focus: does not restore a target made non-focusable");
+	vgui_widget_set_focusable(bg, 1);
+
+	open();
+	vgui_widget_set_pos(bg, 200, 0);
+	close_with_focus(nullptr, "modal focus: uses current layout and rejects a clipped target");
+	vgui_widget_set_pos(bg, 0, 0);
+
+	open();
+	vgui_widget_remove(parent);
+	close_with_focus(nullptr, "modal focus: does not restore into a detached subtree");
+	vgui_widget_attach(vgui_root(ui), parent);
+
+	open();
+	vgui_widget* popup = vgui_widget_create(ui, VGUI_PANEL, nullptr);
+	vgui_widget_set_size(popup, 100, 55);
+	vgui_widget* edit = vgui_widget_add(popup, VGUI_EDIT, nullptr);
+	vgui_widget_set_size(edit, 80, 28);
+	int popup_reason = -1;
+	vgui_popup_on_close(ui, [](void* user, int reason) { *static_cast<int*>(user) = reason; }, &popup_reason);
+	check(vgui_popup_open(ui, popup, 100, 100) == 1, "modal focus: opens a popup above the modal");
+	float x = 0, y = 0;
+	vgui_widget_get_rect(edit, &x, &y, nullptr, nullptr);
+	click_at(ui, x + 10, y + 10);
+	check(vgui_get_focus(ui) == edit, "modal focus: popup edit owns focus before programmatic close");
+	close_with_focus(bg, "modal focus: programmatic close restores focus from the popup");
+	check(!vgui_popup_active(ui) && popup_reason == VGUI_POPUP_CLOSE_EXPLICIT,
+		"modal focus: programmatic close closes the popup and notifies its listener");
+
+	open();
+	vgui_widget* menu = vgui_widget_create(ui, VGUI_MENU, nullptr);
+	vgui_widget* submenu = nullptr;
+	vgui_menu_add_submenu(menu, "More", &submenu);
+	vgui_menu_add_item(submenu, "Item");
+	vgui_menu_open(menu, 100, 100);
+	vgui_input_key(ui, VGUI_KEY_RIGHT, 1, 0);
+	check(vgui_menu_is_open(menu) && vgui_menu_is_open(submenu), "modal focus: menu and submenu above modal");
+	close_with_focus(bg, "modal focus: programmatic close restores focus from the menu");
+	check(!vgui_menu_is_open(menu) && !vgui_menu_is_open(submenu),
+		"modal focus: programmatic close closes the menu chain");
+
+	// Allocators may recycle the old widget's address while the modal is open.
+	open();
+	const auto old_address = reinterpret_cast<uintptr_t>(bg);
+	vgui_widget_destroy(bg);
+	for (int i = 0; i < 16; ++i)
+	{
+		auto* replacement = vgui_widget_add(parent, VGUI_BUTTON, "Replacement");
+		if (reinterpret_cast<uintptr_t>(replacement) == old_address) break;
+	}
+	close_with_focus(nullptr, "modal focus: does not restore a destroyed or recycled previous widget");
+
+	bg = vgui_widget_add(parent, VGUI_BUTTON, "Pending ancestor");
+	open();
+	struct close_from_input { vgui_context* ui; vgui_widget* parent; } state{ui, parent};
+	vgui_widget_on_event(first, [](vgui_widget*, const vgui_event* event, void* user) {
+		if (event->type != VGUI_EVENT_KEY_DOWN || event->key != VGUI_KEY_ENTER) return;
+		auto& s = *static_cast<close_from_input*>(user);
+		vgui_widget_destroy(s.parent);
+		vgui_modal_close(s.ui, VGUI_MODAL_RESULT_CONFIRM);
+	}, &state);
+	vgui_input_key(ui, VGUI_KEY_ENTER, 1, 0);
+	check(!vgui_modal_active(ui) && closed.closes == 1 && closed.focus_at_close == nullptr,
+		"modal focus: does not restore through an ancestor pending destruction during input");
+}
+
 static void test_modal(vgui_context* ui)
 {
 	test_modal_drag_and_overlays();
+	test_modal_focus_lifecycle();
 	vgui_modal_close(ui, 0);
 	vgui_set_focus(ui, nullptr);
 	vgui_toast_clear(ui);

@@ -28,11 +28,20 @@ constexpr sv cursor_choices[] = {"default", "arrow", "text", "wait", "no", "hand
 constexpr sv tooltip_anchors[] = {"pointer", "widget"};
 constexpr sv focus_choices[] = {"default", "yes", "no"};
 constexpr sv anchors[] = {"start", "center", "end", "stretch"};
-constexpr sv navigation_keys[] = {"nav_start", "nav_up", "nav_down", "nav_left", "nav_right"};
+constexpr sv node_reference_keys[] = {
+    "nav_start", "nav_up", "nav_down", "nav_left", "nav_right", "open_modal", "modal_return_focus"
+};
 
 bool is_navigation_property(sv key)
 {
-    return std::ranges::find(navigation_keys, key) != std::end(navigation_keys);
+    return key.starts_with("nav_");
+}
+
+bool true_property(const node& item, sv key)
+{
+    const auto prop = item.props.find(key);
+    const auto* flag = prop == item.props.end() ? nullptr : std::get_if<bool>(&prop->second);
+    return flag && *flag;
 }
 
 constexpr data_binding_descriptor text_binding{"bind_text", "text", value_type::text};
@@ -103,6 +112,8 @@ const property_descriptor panel[] = {
     {"pad_right", "Right padding", value_type::number, 0.0, 0, max_geometry},
     {"pad_bottom", "Bottom padding", value_type::number, 0.0, 0, max_geometry},
     {"nav_start", "Initial focus", value_type::text, std::string{}},
+    {"modal", "Modal panel", value_type::boolean, false},
+    {"modal_return_focus", "Return focus to", value_type::text, std::string{}},
 };
 constexpr sv font_weights[] = {"default", "regular", "medium", "semi_bold", "bold"};
 constexpr sv font_slants[] = {"default", "normal", "italic", "oblique"};
@@ -120,6 +131,8 @@ const property_descriptor button[] = {
     label[0], label[1], {"action", "Action", value_type::action_key, std::string{}},
     {"atlas", "Button atlas path", value_type::resource_key, std::string{}},
     label[2], label[3], label[4], label[5], font_family, bind_text,
+    {"open_modal", "Open modal", value_type::text, std::string{}},
+    {"close_modal", "Close modal", value_type::boolean, false},
 };
 const property_descriptor edit_box[] = {
     label[0], label[1], {"placeholder", "Placeholder", value_type::text, std::string{}},
@@ -230,7 +243,7 @@ bool valid_resource_path(sv path)
     }
 }
 
-bool check_navigation_target(const document& doc, sv id, sv key, const value& val,
+bool check_node_target(const document& doc, sv id, sv key, const value& val,
     const std::string& path, diagnostic* error)
 {
     if (key == "nav_start" && id != doc.root)
@@ -238,12 +251,14 @@ bool check_navigation_target(const document& doc, sv id, sv key, const value& va
     const auto* target = std::get_if<std::string>(&val);
     if (!target) return fail(error, path, "expected a node ID string");
     if (target->empty()) return true;
-    if (!is_key(*target)) return fail(error, path, "invalid navigation target ID");
-    if (*target == id) return fail(error, path, "navigation target cannot be the node itself");
+    if (!is_key(*target)) return fail(error, path, "invalid target node ID");
+    if (*target == id) return fail(error, path, "target cannot be the node itself");
     const auto found = doc.nodes.find(*target);
-    if (found == doc.nodes.end()) return fail(error, path, "navigation target ID not found on this page");
+    if (found == doc.nodes.end()) return fail(error, path, "target node ID not found on this page");
+    if (key == "open_modal")
+        return is_modal_panel(found->second) || fail(error, path, "open modal must target a modal panel");
     // A target may become available at runtime; only decorative gradients can never participate.
-    return found->second.type != "gradient" || fail(error, path, "navigation target cannot be a decorative gradient");
+    return found->second.type != "gradient" || fail(error, path, "focus target cannot be a decorative gradient");
 }
 
 bool check_value(const document& doc, const property_descriptor& desc, const value& val,
@@ -374,7 +389,7 @@ bool apply_one(document& doc, const edit& operation, diagnostic* error)
                             auto item = doc.nodes.at(id);
                             for (auto& child : item.children) child = op.ids.at(child);
                             if (id == doc.root) item.props.erase("nav_start"); // The copy is nested.
-                            for (const auto key : navigation_keys) {
+                            for (const auto key : node_reference_keys) {
                                 const auto prop = item.props.find(key);
                                 if (prop == item.props.end()) continue;
                                 if (auto* target = std::get_if<std::string>(&prop->second))
@@ -398,7 +413,7 @@ bool apply_one(document& doc, const edit& operation, diagnostic* error)
                     for (const auto& id : removed) doc.nodes.erase(id);
                     std::sort(removed.begin(), removed.end());
                     for (auto& [id, peer] : doc.nodes) {
-                        for (const auto key : navigation_keys) {
+                        for (const auto key : node_reference_keys) {
                             const auto prop = peer.props.find(key);
                             if (prop == peer.props.end()) continue;
                             const auto* target = std::get_if<std::string>(&prop->second);
@@ -620,10 +635,16 @@ bool accepts_child(const type_descriptor& parent, std::string_view child_type, s
         (!parent.panel_children_only || child_type == "panel");
 }
 
+bool is_modal_panel(const node& item)
+{
+    return item.type == "panel" && true_property(item, "modal");
+}
+
 bool data_binding_applies(const data_binding_descriptor& binding, const node& item, const node* parent)
 {
-    // Tabs and dock containers manage their own pages' visibility.
-    if (binding.key == visible_binding.key && parent && (parent->type == "tabview" || parent->type == "dock"))
+    // The modal overlay and tab/dock containers manage their own visibility.
+    if (binding.key == visible_binding.key &&
+        (is_modal_panel(item) || (parent && (parent->type == "tabview" || parent->type == "dock"))))
         return false;
     const auto* prop = find_property(item.type, binding.key);
     return prop && prop->type == value_type::data_key;
@@ -745,7 +766,7 @@ bool validate(const document& doc, diagnostic* error)
             const auto* prop = find_property(item.type, key);
             if (!prop) return fail(error, prop_path, "unknown property");
             if (is_navigation_property(key)) {
-                if (!check_navigation_target(doc, id, key, val, prop_path, error)) return false;
+                if (!check_node_target(doc, id, key, val, prop_path, error)) return false;
             } else if (prop->type == value_type::items) {
                 const auto* source = std::get_if<std::string>(&val);
                 std::string reason;
@@ -876,18 +897,62 @@ bool validate(const document& doc, diagnostic* error)
     // Each non-root node can have only one incoming edge; any cycle left
     // after the root-parent check must be outside the root's reachable tree.
     std::size_t reached = 0;
-    auto visit = [&](auto&& self, const auto& entry, std::size_t depth) -> bool {
+    std::unordered_map<sv, sv> modal_scopes;
+    sv misplaced_modal;
+    auto visit = [&](auto&& self, const auto& entry, std::size_t depth, sv scope) -> bool {
         if (depth > max_tree_depth) return fail(error, node_path(entry.first), "tree depth limit exceeded");
         ++reached;
+        if (is_modal_panel(entry.second)) {
+            if (depth == 2) scope = entry.first;
+            else if (misplaced_modal.empty()) misplaced_modal = entry.first;
+        }
+        if (!scope.empty()) modal_scopes.emplace(entry.first, scope);
         for (const auto& child : entry.second.children)
-            if (!self(self, *doc.nodes.find(child), depth + 1)) return false;
+            if (!self(self, *doc.nodes.find(child), depth + 1, scope)) return false;
         return true;
     };
-    if (!visit(visit, *root, 1)) return false;
+    if (!visit(visit, *root, 1, {})) return false;
     if (reached != doc.nodes.size()) {
         for (const auto& [id, item] : doc.nodes)
             if (id != doc.root && !parented.contains(id)) return fail(error, node_path(id), "orphan node");
         return fail(error, "/nodes", "cycle outside the root tree");
+    }
+    if (!misplaced_modal.empty())
+        return fail(error, node_path(misplaced_modal) + "/props/modal", "a modal panel must be a direct child of the page root");
+
+    const auto modal_scope = [&](sv id) -> sv {
+        const auto found = modal_scopes.find(id);
+        return found == modal_scopes.end() ? sv{} : found->second;
+    };
+    for (const auto& [id, item] : doc.nodes) {
+        const auto scope = modal_scope(id);
+        const auto prop_path = [&](sv key) { return node_path(id) + "/props/" + std::string(key); };
+        const auto text = [&](sv key) -> sv {
+            const auto it = item.props.find(key);
+            return it == item.props.end() ? sv{} : std::get<std::string>(it->second);
+        };
+        if (scope == id && !text("bind_visible").empty())
+            return fail(error, prop_path("bind_visible"), "modal panel visibility is controlled by opening and closing the modal");
+        if (scope.empty() && true_property(item, "close_modal"))
+            return fail(error, prop_path("close_modal"), "only a button inside a modal can close it");
+        for (const auto& [key, val] : item.props) {
+            if (is_navigation_property(key)) {
+                const auto& target = std::get<std::string>(val);
+                if (!target.empty() && modal_scope(target) != scope)
+                    return fail(error, prop_path(key), "focus links cannot cross between a modal and the page or another modal");
+            } else if (key == "open_modal" || key == "modal_return_focus") {
+                const auto& target = std::get<std::string>(val);
+                if (target.empty()) continue;
+                const auto path = prop_path(key);
+                if (key == "open_modal" && !scope.empty())
+                    return fail(error, path, "a button inside a modal cannot open a modal");
+                if (key == "modal_return_focus" && scope != id)
+                    return fail(error, path, "only a modal panel can set return focus");
+                if (!check_node_target(doc, id, key, val, path, error)) return false;
+                if (key == "modal_return_focus" && !modal_scope(target).empty())
+                    return fail(error, path, "return focus must target a node outside all modal panels");
+            }
+        }
     }
     return true;
 }

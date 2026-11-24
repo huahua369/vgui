@@ -134,6 +134,16 @@ int input_mods(SDL_Keymod mods) {
         (mods & SDL_KMOD_GUI ? VGUI_MOD_GUI : 0);
 }
 
+std::optional<vgui_nav_direction> input_direction(int key) {
+    switch (key) {
+    case VGUI_KEY_UP: return VGUI_NAV_UP;
+    case VGUI_KEY_DOWN: return VGUI_NAV_DOWN;
+    case VGUI_KEY_LEFT: return VGUI_NAV_LEFT;
+    case VGUI_KEY_RIGHT: return VGUI_NAV_RIGHT;
+    default: return std::nullopt;
+    }
+}
+
 using image_ptr = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
 
 struct image_load {
@@ -2117,8 +2127,10 @@ struct designer_preview::impl {
         playback = {};
         sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
-        if (!run) {
-            remount = true; // Next sync restores document values, not live run state.
+        if (!run || (is_mounted && mounted->has_modals())) {
+            // Run uses detached modal panels; Design must keep them editable
+            // in their authored positions. Leaving Run also resets live input.
+            remount = true;
             ready = false;
             frame.reset();
         } else if (is_mounted && !remount) {
@@ -2550,6 +2562,7 @@ struct designer_preview::impl {
         runtime_bindings bindings;
         bindings.project_root = root;
         bindings.user = this;
+        bindings.show_modal_design = !run;
         bindings.load_image = [](vgui_context* ctx, std::string_view, const std::filesystem::path& file, void* user) {
             return static_cast<impl*>(user)->active_load->load(ctx, file);
         };
@@ -2647,6 +2660,7 @@ struct designer_preview::impl {
         if (!is_mounted || remount) return;
         // Never let the standalone submit path reuse/submit the shell's cmd.
         if (renderer && vgpu_current_command_buffer(renderer)) return;
+        if (run) mounted->service_modals();
         const float step = std::isfinite(dt) ? std::clamp(dt, 0.f, .05f) : 0.f;
         const bool layout_needed = dirty || !frame || vgui_context_paint_revision(ui.get()) != last_paint ||
             vgui_context_has_active_animation(ui.get());
@@ -3252,17 +3266,22 @@ struct designer_preview::impl {
             const int key = input_key(e.key.key);
             const bool down = e.type == SDL_EVENT_KEY_DOWN;
             const int mods = input_mods(e.key.mod);
-            handled = vgui_input_key(ui.get(), key, down, mods) != 0;
-            // Edits, lists and sliders consume their own arrows first. The
-            // remaining arrows exercise the same directional path as gamepads.
-            if (!handled && down && !mods) {
-                switch (key) {
-                case VGUI_KEY_UP: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_UP) != 0; break;
-                case VGUI_KEY_DOWN: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_DOWN) != 0; break;
-                case VGUI_KEY_LEFT: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_LEFT) != 0; break;
-                case VGUI_KEY_RIGHT: handled = vgui_focus_navigate(ui.get(), VGUI_NAV_RIGHT) != 0; break;
-                default: break;
-                }
+            const auto direction = down && !mods ? input_direction(key) : std::nullopt;
+            // Native modal input consumes unhandled keys to keep them from
+            // escaping the dialog. Route arrows directly only if the focused
+            // control (or a child overlay) has no built-in arrow handling.
+            auto* focus = vgui_get_focus(ui.get());
+            const auto kind = focus ? vgui_widget_get_kind(focus) : VGUI_PANEL;
+            const bool route_modal_arrow = direction && vgui_modal_active(ui.get()) &&
+                !vgui_popup_active(ui.get()) && !vgui_context_get_open_menu(ui.get()) &&
+                kind != VGUI_EDIT && kind != VGUI_LIST && kind != VGUI_TREE &&
+                kind != VGUI_SLIDER && kind != VGUI_TABVIEW && kind != VGUI_DOCK;
+            if (route_modal_arrow) {
+                vgui_focus_navigate(ui.get(), *direction);
+                handled = true;
+            } else {
+                handled = vgui_input_key(ui.get(), key, down, mods) != 0;
+                if (!handled && direction) handled = vgui_focus_navigate(ui.get(), *direction) != 0;
             }
             if (!handled && down && key == VGUI_KEY_ESCAPE) { blur(); return true; }
             // Don't let the shell's shortcuts act on edits inside the preview.

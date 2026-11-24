@@ -424,6 +424,15 @@ void test_hud_delivery() {
         check(vgui_focus_navigate(ctx.get(), VGUI_NAV_LEFT) && vgui_get_focus(ctx.get()) == runtime.widget("skill6") &&
             vgui_focus_navigate(ctx.get(), VGUI_NAV_RIGHT) && vgui_get_focus(ctx.get()) == runtime.widget("skill1"),
             "delivered HUD must round-trip focus links");
+        check(runtime.has_modals() && vgui_focus_navigate(ctx.get(), VGUI_NAV_UP) &&
+            vgui_get_focus(ctx.get()) == runtime.widget("pause_button"), "delivered HUD must keep the pause opener reachable");
+        vgui_input_key(ctx.get(), VGUI_KEY_ENTER, 1, 0);
+        runtime.service_modals();
+        check(vgui_modal_panel(ctx.get()) == runtime.widget("pause_dialog") &&
+            vgui_get_focus(ctx.get()) == runtime.widget("pause_close"), "delivered pause dialog must open and take focus");
+        vgui_input_key(ctx.get(), VGUI_KEY_ESCAPE, 1, 0);
+        check(!vgui_modal_active(ctx.get()) && vgui_get_focus(ctx.get()) == runtime.widget("skill1"),
+            "delivered pause dialog must restore authored focus on return");
         ui::pixel_rect radar{}, reticle{};
         vgui_widget_get_rect(runtime.widget("minimap"), &radar.x, &radar.y, &radar.width, &radar.height);
         vgui_widget_get_rect(runtime.widget("crosshair"), &reticle.x, &reticle.y, &reticle.width, &reticle.height);

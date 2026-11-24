@@ -512,6 +512,222 @@ void on_action(std::string_view id, std::string_view action, void* user) noexcep
     log.id = id;
     log.action = action;
 }
+
+void test_authored_modals() {
+    ui::document doc;
+    ui::diagnostic error;
+    const bool decoded = ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["start","open_group","return_group","dialog","other"]},
+        "start":{"type":"button","props":{"x":5,"y":5,"width":50,"height":25,"open_modal":"other"}},
+        "open_group":{"type":"panel","props":{"x":65,"y":5,"width":100,"height":30,"bind_visible":"page.opener"},"children":["open"]},
+        "open":{"type":"button","props":{"width":100,"height":25,"open_modal":"dialog","action":"opened"}},
+        "return_group":{"type":"panel","props":{"x":175,"y":5,"width":100,"height":30,"bind_enabled":"page.return"},"children":["return"]},
+        "return":{"type":"button","props":{"width":100,"height":25}},
+        "dialog":{"type":"panel","props":{"modal":true,"modal_return_focus":"return","x":15,"y":40,"width":220,"height":130,
+            "bind_enabled":"dialog.enabled"},"children":["hidden","edit","near","close","caption","shine"]},
+        "hidden":{"type":"panel","props":{"width":50,"height":30,"visible":false},"children":["hidden_button"]},
+        "hidden_button":{"type":"button","props":{"width":50,"height":25}},
+        "edit":{"type":"edit","props":{"x":5,"y":5,"width":55,"height":25,"text":"Initial","nav_right":"close"}},
+        "near":{"type":"button","props":{"x":70,"y":5,"width":55,"height":25}},
+        "close":{"type":"button","props":{"x":150,"y":5,"width":60,"height":25,"close_modal":true,"action":"closed"}},
+        "caption":{"type":"label","props":{"x":5,"y":40,"width":160,"height":25,"bind_text":"dialog.caption"}},
+        "shine":{"type":"gradient","props":{"x":5,"y":70,"width":160,"height":25,
+            "gradient_animation":"shine","gradient_animation_duration":2,"gradient_animation_loop":true}},
+        "other":{"type":"panel","props":{"modal":true,"visible":false,"width":100,"height":60},"children":["other_close"]},
+        "other_close":{"type":"button","props":{"width":80,"height":25,"close_modal":true}}
+    }})", doc, &error);
+    check(decoded, error.path + ": " + error.message);
+    const auto original = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    action_log log;
+    ui::runtime rt(ctx.get());
+    ui::runtime_bindings bindings;
+    bindings.on_action = on_action;
+    bindings.user = &log;
+    const auto focus = [&] { return vgui_get_focus(ctx.get()); };
+    const auto paint = [&] { return vgui_context_paint_revision(ctx.get()); };
+    const auto set_focus = [&](std::string_view id) { vgui_set_focus(ctx.get(), rt.widget(id)); };
+    const auto panel = [&] { return vgui_modal_panel(ctx.get()); };
+    const auto key = [&](int code) {
+        const int handled = vgui_input_key(ctx.get(), code, 1, VGUI_MOD_NONE);
+        vgui_input_key(ctx.get(), code, 0, VGUI_MOD_NONE);
+        return handled != 0;
+    };
+    const auto click = [&](const ui::pixel_rect& rect) {
+        const float x = rect.x + rect.width / 2, y = rect.y + rect.height / 2;
+        vgui_input_mouse_move(ctx.get(), x, y);
+        vgui_input_mouse_down(ctx.get(), 1, x, y, 0);
+        vgui_input_mouse_up(ctx.get(), 1, x, y, 0);
+    };
+    const auto layout = [&] {
+        auto result = rt.layout({320, 220, 1});
+        check(result.has_value(), "lay out the authored modal test");
+        return std::move(*result);
+    };
+    const auto expect_closed_snapshot = [&](const ui::layout_snapshot& snapshot) {
+        for (const auto* id : {"dialog", "edit", "caption", "shine", "other", "other_close"}) {
+            const auto& item = node(snapshot, id);
+            check(!item.visible && !item.visible_px.width && !item.rect_px.width,
+                "detached modal nodes remain in snapshots without visible or stale geometry");
+        }
+    };
+    check(!rt.has_modals(), "unmounted runtime has no modals");
+    bindings.show_modal_design = true;
+    check(rt.mount(doc, 1, bindings, &error) && rt.has_modals(), "mount authored modals in Design");
+    auto frame = layout();
+    check(node(frame, "dialog").visible && near(node(frame, "dialog").rect_px.x, 15) &&
+        near(node(frame, "dialog").rect_px.y, 40) && !node(frame, "other").visible,
+        "Design preserves authored panel placement and visibility");
+    auto paint_before = paint();
+    rt.seek_animations(.5);
+    check(paint() > paint_before, "Design can seek an animation within a visible authored modal");
+    set_focus("open");
+    check(key(VGUI_KEY_ENTER) && log.calls == 1 && log.action == "opened", "Design retains button actions");
+    rt.service_modals();
+    check(!panel(), "Design does not arm modal commands");
+
+    bindings.show_modal_design = false;
+    check(rt.mount(doc, 2, bindings, &error) && rt.has_modals(), "mount authored modals in Run");
+    frame = layout();
+    expect_closed_snapshot(frame);
+    check(!vgui_widget_get_parent(rt.widget("dialog")) && rt.focus_default() && focus() == rt.widget("start"),
+        "closed modals are detached and the page keeps its authored initial focus");
+    check(rt.set_data("dialog.enabled", ui::value{false}), "disable the detached modal");
+    set_focus("open");
+    check(key(' '), "activate the opener for the disabled modal");
+    rt.service_modals();
+    check(!panel() && focus() == rt.widget("open"), "disabled modal cannot take focus");
+    check(rt.set_data("dialog.enabled", std::nullopt) && rt.set_data("dialog.caption", ui::value{"Live caption"s}),
+        "apply live data to detached modal nodes");
+
+    const auto actions_before = log.calls;
+    click(node(frame, "open").rect_px);
+    check(!panel() && log.calls == actions_before + 1 && log.id == "open" && log.action == "opened",
+        "pointer activation publishes the action but defers modal show until service");
+    set_focus("start");
+    check(key(VGUI_KEY_ENTER), "queue a competing open command in the same frame");
+    rt.service_modals();
+    auto* dialog = rt.widget("dialog");
+    auto* edit = rt.widget("edit");
+    auto* closer = rt.widget("close");
+    check(panel() == dialog && focus() == edit, "first command wins; initial focus skips the hidden subtree");
+    frame = layout();
+    const auto& centered = node(frame, "dialog").rect_px;
+    check(node(frame, "dialog").visible && near(centered.x, std::floor((frame.pixel_width - centered.width) * .5f)) &&
+        near(centered.y, std::floor((frame.pixel_height - centered.height) * .5f)) &&
+        node(frame, "edit").visible && !node(frame, "other").visible,
+        "the native modal stage centers the open subtree above the page");
+    check(std::string_view(vgui_widget_get_text(rt.widget("caption"))) == "Live caption",
+        "a modal shows its live data published while closed");
+    paint_before = paint();
+    rt.advance_animations(.25);
+    check(paint() > paint_before, "the attached modal's animation advances in Run");
+    paint_before = paint();
+    rt.seek_animations(.75);
+    check(paint() > paint_before, "the attached modal's animation can be seeked in Run");
+    click(node(frame, "open").rect_px);
+    check(panel() == dialog && log.calls == actions_before + 1, "modal backdrop blocks page clicks without dismissing");
+    set_focus("edit");
+    check(vgui_focus_navigate(ctx.get(), VGUI_NAV_RIGHT) && focus() == closer,
+        "a modal-owned direction link wins over closer geometry");
+    vgui_input_focus_next(ctx.get(), 0);
+    check(focus() == edit, "Tab wraps within the modal");
+
+    vgui_edit_set_text(edit, "Edited live");
+    check(key(VGUI_KEY_ESCAPE) && !panel() && focus() == rt.widget("return") &&
+        vgui_modal_result(ctx.get()) == VGUI_MODAL_RESULT_CANCEL, "Escape uses the explicit return-focus target");
+    rt.service_modals();
+    expect_closed_snapshot(layout());
+    check(!panel(), "the competing request was discarded rather than opening after Escape");
+    paint_before = paint();
+    rt.advance_animations(.25);
+    check(paint() == paint_before, "a previously open modal's detached animation does not advance or dirty paint");
+    rt.seek_animations(1.5);
+    check(paint() == paint_before, "a previously open modal's detached animation cannot be seeked");
+
+    check(rt.set_data("page.return", ui::value{false}), "disable the explicit return target's ancestor");
+    set_focus("open");
+    check(key(VGUI_KEY_ENTER) && !panel(), "keyboard open is deferred too");
+    rt.service_modals();
+    frame = layout();
+    check(panel() == dialog && rt.widget("edit") == edit && focus() == edit && frame.revision == 2 &&
+        std::string_view(vgui_edit_get_text(edit)) == "Edited live" &&
+        std::string_view(vgui_widget_get_text(rt.widget("caption"))) == "Live caption",
+        "reopening keeps widget identity, edited text, data, and mount revision");
+    const auto before_close = log.calls;
+    click(node(frame, "close").rect_px);
+    check(panel() == dialog && log.calls == before_close + 1 && log.id == "close" && log.action == "closed",
+        "close button publishes an action but defers native close");
+    rt.service_modals();
+    check(!panel() && focus() == rt.widget("open") && vgui_modal_result(ctx.get()) == VGUI_MODAL_RESULT_CONFIRM,
+        "close button falls back to the opener when explicit return is disabled");
+
+    check(key(' '), "reopen from restored opener");
+    rt.service_modals();
+    check(panel() == dialog && rt.set_data("page.opener", ui::value{false}), "hide the opener's ancestor while open");
+    vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
+    check(!panel() && focus() == rt.widget("start"), "programmatic close falls back to page start if opener is hidden");
+
+    check(key(VGUI_KEY_ENTER) && !panel(), "a command-only button queues a different modal");
+    rt.service_modals();
+    check(panel() == rt.widget("other") && focus() == rt.widget("other_close") && node(layout(), "other").visible,
+        "Run shows an opened modal even if Design authored its visibility false");
+    check(key(' ') && panel() == rt.widget("other"), "a command-only close button defers dismissal");
+    rt.service_modals();
+    check(!panel() && focus() == rt.widget("start"), "command-only close returns to its opener");
+
+    auto no_start = doc;
+    no_start.nodes.at("root").props.erase("nav_start");
+    check(rt.mount(no_start, 3, bindings, &error), "mount without page start");
+    layout();
+    check(rt.set_data("page.return", ui::value{false}), "make explicit return unavailable");
+    set_focus("open");
+    check(key(' '), "queue open without a page start");
+    rt.service_modals();
+    check(rt.set_data("page.opener", ui::value{false}), "make opener unavailable");
+    check(key(VGUI_KEY_ESCAPE) && !panel() && !focus(),
+        "no eligible explicit return, opener or page start leaves no focus");
+
+    set_focus("start");
+    check(key(' '), "open before unmount");
+    rt.service_modals();
+    check(panel() == rt.widget("other"), "modal active before unmount");
+    bool focused_during_teardown = false;
+    vgui_context_set_focus_listener(ctx.get(), [](vgui_context*, vgui_widget*, vgui_widget* focused, void* user) {
+        if (focused) *static_cast<bool*>(user) = true;
+    }, &focused_during_teardown);
+    rt.unmount();
+    vgui_context_set_focus_listener(ctx.get(), nullptr, nullptr);
+    rt.service_modals();
+    check(!panel() && !focus() && !focused_during_teardown && !rt.has_modals() &&
+        vgui_widget_get_child_count(vgui_root(ctx.get())) == 0,
+        "unmount tears down the active dialog and page without restoring focus to a dying widget");
+
+    check(rt.mount(doc, 4, bindings, &error), "remount for replacement overlay");
+    layout();
+    set_focus("open");
+    check(key(' '), "queue open ahead of a host-owned overlay");
+    rt.service_modals();
+    check(panel() == rt.widget("dialog"), "open authored modal before replacing it");
+    auto* popup = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
+    auto* host_modal = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
+    auto* host_button = vgui_widget_add(host_modal, VGUI_BUTTON, "Host modal");
+    check(vgui_popup_open(ctx.get(), popup, 0, 0), "open a popup over the authored modal");
+    vgui_popup_on_close(ctx.get(), [](void* user, int) {
+        auto* next_panel = static_cast<vgui_widget*>(user);
+        vgui_modal_show(vgui_widget_get_context(next_panel), next_panel, nullptr);
+    }, host_modal);
+    vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
+    vgui_popup_on_close(ctx.get(), nullptr, nullptr);
+    check(panel() == host_modal && focus() == host_button, "close does not restore focus behind a replacement modal");
+    rt.unmount();
+    check(panel() == host_modal && focus() == host_button, "unmount does not close a host-owned modal");
+    vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
+    vgui_widget_destroy(host_modal);
+    vgui_widget_destroy(popup);
+    check(doc == original, "playing authored modals does not edit the document");
+}
+
 class temp_dir {
 public:
     temp_dir() {
@@ -2585,6 +2801,7 @@ int main(int argc, char** argv) {
         run();
         test_anchored_layout();
         test_authored_navigation();
+        test_authored_modals();
         test_game_data();
         test_progress_value_transitions();
         test_declarative_widgets();

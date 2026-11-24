@@ -3532,6 +3532,73 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
         "navigating or simulating availability changed the design");
 }
 
+void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor,
+                           const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native modal return: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"open"},"children":["open","return_to","dialog"]},
+        "open":{"type":"button","props":{"x":16,"y":20,"width":120,"height":36,"text":"Open","open_modal":"dialog","action":"modal.open"}},
+        "return_to":{"type":"button","props":{"x":154,"y":20,"width":120,"height":36,"text":"Restored","action":"restored"}},
+        "dialog":{"type":"panel","props":{"modal":true,"modal_return_focus":"return_to","x":40,"y":80,"width":300,"height":120,
+            "layout":"row","gap":12,"pad_left":12,"pad_top":12},"children":["inside","close"]},
+        "inside":{"type":"button","props":{"width":120,"height":36,"text":"Inside","action":"modal.inside","nav_right":"close"}},
+        "close":{"type":"button","props":{"width":120,"height":36,"text":"Close","close_modal":true,"action":"modal.close"}}
+    }})", doc), "decode the modal fixture");
+    const auto file = sandbox / "modal-return.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the modal fixture");
+    frame();
+
+    auto& preview = editor.preview();
+    const auto revision = editor.history().revision();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    const auto node = [&](std::string_view id) {
+        auto* snapshot = preview.snapshot();
+        require(snapshot != nullptr, "missing modal layout");
+        const auto it = std::ranges::find(snapshot->nodes, id, &ui::node_layout::id);
+        require(it != snapshot->nodes.end(), "missing modal node");
+        return *it;
+    };
+    const auto action = [&](std::string_view expected) {
+        keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+        auto* status = find_widget(vgui_root(shell), "designer.status");
+        require(status && std::string_view(vgui_widget_get_text(status)).ends_with(expected), expected);
+    };
+    constexpr auto mode = "designer.preview.mode";
+    const auto authored = node("dialog");
+    require(authored.visible && authored.rect_px.x == 40 && authored.rect_px.y == 80,
+        "the modal must stay at its authored position in Design");
+    input.click(mode);
+    require(preview.running() && !node("dialog").visible && !node("inside").visible,
+        "the modal must start closed in Run");
+    action("modal.open [open]");
+    const auto opened = node("dialog");
+    require(opened.visible && node("inside").visible && opened.rect_px.x > authored.rect_px.x,
+        "opening did not display a centered modal");
+    action("modal.inside [inside]");
+    keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    action("modal.close [close]");
+    require(!node("dialog").visible && !node("close").visible, "the close button did not dismiss the modal");
+    action("restored [return_to]");
+
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    action("modal.open [open]");
+    keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(preview.running() && !node("dialog").visible, "Escape closed the Run view instead of the modal");
+    action("restored [return_to]");
+
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    action("modal.open [open]");
+    input.click(mode);
+    require(!preview.running() && node("dialog").visible && node("dialog").rect_px.x == authored.rect_px.x,
+        "returning to Design did not restore the authored layout");
+    require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
+        "opening/closing a dialog modified the design");
+}
+
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4755,7 +4822,7 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-enum class native_smoke { none, workbench, game_data, navigation };
+enum class native_smoke { none, workbench, game_data, navigation, modal_return };
 
 int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = command::none) {
     const bool workbench_smoke = smoke == native_smoke::workbench;
@@ -4909,7 +4976,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         host.draw_all();
         submitted_windows = host.end_frame();
     };
-    if (smoke == native_smoke::game_data || smoke == native_smoke::navigation) {
+    if (testing && !workbench_smoke) {
         try {
             advance();
             if (smoke == native_smoke::game_data) {
@@ -4918,9 +4985,12 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                     advance();
                 }, picker->sandbox);
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
-            } else {
+            } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(*win, shell.get(), editor, advance, picker->sandbox);
                 std::puts("ui_designer_navigation: default focus, directional overrides, and fallback passed");
+            } else {
+                exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
+                std::puts("ui_designer_modal_return: keyboard close, Escape, and focus restoration passed");
             }
         } catch (...) {
             app.wait_gpu();
@@ -5051,6 +5121,7 @@ int main(int argc, char** argv) {
         if (arg == "--smoke-test") return run(native_smoke::workbench, {});
         if (arg == "--smoke-game-data") return run(native_smoke::game_data, {});
         if (arg == "--smoke-navigation") return run(native_smoke::navigation, {});
+        if (arg == "--smoke-modal-return") return run(native_smoke::modal_return, {});
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
 #ifdef _WIN32
@@ -5062,7 +5133,7 @@ int main(int argc, char** argv) {
         }
 #endif
         if (argc > 2) {
-            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-game-data | --smoke-navigation | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-game-data | --smoke-navigation | --smoke-modal-return | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;
         }
         return run(native_smoke::none, argc == 2 ? fs::u8path(argv[1]) : fs::path{});

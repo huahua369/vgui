@@ -1295,7 +1295,7 @@ void app_mgr::pump_gamepad()
 	const Uint64 now = SDL_GetTicks();
 
 	// Face buttons (edge triggered): A -> Enter (activates the focused
-	// widget), B -> cancel, Y -> menu key, Start -> F10 menubar.
+	// widget), B -> Escape/cancel, Y -> menu key, Start -> F10 menubar.
 	const struct { SDL_GamepadButton btn; int key; bool cancel; } face[4] = {
 		{ SDL_GAMEPAD_BUTTON_SOUTH, VGUI_KEY_ENTER, false },
 		{ SDL_GAMEPAD_BUTTON_EAST, 0, true },
@@ -1308,7 +1308,12 @@ void app_mgr::pump_gamepad()
 		if (down && !gamepad_prev_btn[i])
 		{
 			if (face[i].cancel)
-				vgui_input_cancel(ui);
+			{
+				// Escape may close an overlay or cancel a popup edit on key-down.
+				// Do not send key-up to the newly exposed control.
+				if (!vgui_input_key(ui, VGUI_KEY_ESCAPE, 1, 0))
+					vgui_input_cancel(ui);
+			}
 			else
 				vgui_input_key(ui, face[i].key, 1, 0);
 		}
