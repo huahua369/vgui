@@ -3295,6 +3295,118 @@ void exercise_custom_viewport(os_window& win, vgui_context* shell, designer& edi
     frame();
 }
 
+void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
+                        const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native game data: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","children":["caption","meter","button"]},
+        "caption":{"type":"label","props":{"x":20,"y":20,"width":280,"height":32,"text":"Design",
+            "bind_text":"hud.caption","bind_visible":"hud.ready"}},
+        "meter":{"type":"progress","props":{"x":20,"y":64,"width":180,"height":22,"value":0.5,"bind_value":"hud.hp"}},
+        "button":{"type":"button","props":{"x":20,"y":96,"width":98,"height":32,"text":"Ready","bind_enabled":"hud.ready"}}
+    }})", doc), "decode the data binding fixture");
+    const auto source = sandbox / "game-data-source.vgui.json", second = sandbox / "game-data-second.vgui.json";
+    require(ui::write_document(source, doc) && ui::write_document(second, doc) && editor.open(source), "open fixture");
+    frame();
+    auto& preview = editor.preview();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    constexpr auto mode = "designer.preview.mode", simulate = "designer.preview.simulation";
+    const auto revision = editor.history().revision();
+    const auto field = [&](const char* suffix, vgui_widget_kind kind) {
+        const auto id = std::string(simulate) + suffix;
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w && vgui_widget_get_visible(w), id);
+        return w;
+    };
+    const auto click = [&](const char* suffix, vgui_widget_kind kind = VGUI_BUTTON) { input.click(field(suffix, kind)); };
+    const auto type = [&](const char* value) {
+        auto* edit = field(".value", VGUI_EDIT);
+        input.click(edit);
+        vgui_edit_select_all(edit);
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = win.id;
+        text.text.text = value;
+        input.push(text);
+        frame();
+    };
+    const auto state = [&](std::string_view id) -> ui::node_layout {
+        const auto* snapshot = preview.snapshot();
+        require(snapshot != nullptr, "no canvas snapshot");
+        const auto it = std::ranges::find(snapshot->nodes, id, &ui::node_layout::id);
+        require(it != snapshot->nodes.end(), "bound target is absent from layout");
+        return *it;
+    };
+    input.click(mode);
+    require(preview.running() && preview.node_text("caption") == "Design" && state("caption").visible,
+        "an unpublished binding did not keep its design value");
+    input.click(simulate);
+    auto* list = field(".fields", VGUI_LIST);
+    require(vgui_list_get_count(list) == 3 &&
+        vgui_list_is_selected(list, vgui_list_get_item_at(list, 0)), "dialog did not list distinct field keys in order");
+    click(".override", VGUI_CHECKBOX);
+    type("Pilot ready");
+    require(preview.node_text("caption") == "Design", "editing a draft updated the canvas before confirmation");
+    click(".ok");
+    require(!vgui_modal_active(shell) && preview.node_text("caption") == "Pilot ready", "confirmation did not set live text");
+
+    input.click(simulate);
+    list = field(".fields", VGUI_LIST);
+    const auto r = input.rect(list);
+    input.click_at(list, {r.x + r.width * .5f, r.y + 12 * vgui_context_get_ui_scale(shell)});
+    keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    require(vgui_list_is_selected(list, vgui_list_get_item_at(list, 1)), "could not select the numeric field");
+    click(".override", VGUI_CHECKBOX);
+    type("invalid");
+    click(".ok");
+    require(vgui_modal_active(shell) && *vgui_widget_get_text(field(".error", VGUI_LABEL)), "invalid numeric data was applied");
+    type("0.25");
+    input.click_at(list, {r.x + r.width * .5f, r.y + 12 * vgui_context_get_ui_scale(shell)});
+    keys.key(SDLK_END, SDL_SCANCODE_END);
+    require(vgui_list_is_selected(list, vgui_list_get_item_at(list, 2)), "could not select the boolean field");
+    click(".override", VGUI_CHECKBOX);
+    if (vgui_widget_get_checked(field(".boolean", VGUI_CHECKBOX))) click(".boolean", VGUI_CHECKBOX);
+    click(".ok");
+    const auto simulation = preview.capture_view().simulation;
+    require(simulation.at("hud.hp") == ui::value{.25} && simulation.at("hud.ready") == ui::value{false} &&
+        !state("caption").visible && !state("button").enabled, "numeric or boolean overrides did not reach the preview");
+
+    input.click(simulate);
+    click(".reset_all");
+    click(".cancel");
+    require(preview.capture_view().simulation == simulation && !state("caption").visible, "cancel committed a reset");
+    input.click(mode);
+    require(!preview.running() && preview.node_text("caption") == "Design" && state("caption").visible && state("button").enabled,
+        "Design mode is using mock data");
+    input.click(mode);
+    require(preview.node_text("caption") == "Pilot ready" && !state("caption").visible,
+        "returning to Run lost the mock values");
+    require(editor.open(second), "open a second page with identical keys");
+    frame();
+    require(editor.preview().capture_view().simulation.empty() && editor.preview().node_text("caption") == "Design",
+        "mock data leaked to another page");
+    editor.request(command::close);
+    frame();
+    require(editor.open(source), "return to the first page");
+    frame();
+    require(preview.capture_view().simulation == simulation && !state("caption").visible, "page switch lost its mock values");
+    input.click(simulate);
+    click(".reset_all");
+    click(".ok");
+    require(preview.capture_view().simulation.empty() && preview.node_text("caption") == "Design" &&
+        state("caption").visible && state("button").enabled && editor.history().revision() >= revision &&
+        editor.history().current() == doc && !editor.history().dirty() && !editor.history().can_undo(),
+        "reset did not restore the design or mock data changed document history");
+    ui::document saved;
+    require(ui::read_document(source, saved) && saved == doc, "mock data was written to disk");
+    editor.request(command::close);
+    frame();
+}
+
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4518,8 +4630,12 @@ fs::path designer_settings_path() {
     return pref ? fs::u8path(pref.get()) / "settings.json" : fs::path{};
 }
 
-int run(bool smoke, fs::path open_path, command native_dialog_exit = command::none) {
-    const bool test_environment = smoke || native_dialog_exit != command::none;
+enum class native_smoke { none, workbench, game_data };
+
+int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = command::none) {
+    const bool workbench_smoke = smoke == native_smoke::workbench;
+    const bool testing = smoke != native_smoke::none;
+    const bool test_environment = testing || native_dialog_exit != command::none;
     app_mgr app;
     app.msaa_samples = 8; // Request 8× before creating the window and its GPU context.
     if (!app.init_gpu(true)) {
@@ -4528,8 +4644,8 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
     }
     std::optional<smoke_file_picker> picker;
     fs::path absolute_fixture;
-    if (smoke) {
-        picker.emplace();
+    if (testing) picker.emplace();
+    if (workbench_smoke) {
         const fs::path fixtures = VGUI_SOURCE_DIR "/sample/res";
         open_path = picker->sandbox / "form.vgui.json";
         absolute_fixture = picker->sandbox / "absolute-form.vgui.json";
@@ -4550,9 +4666,9 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
             throw std::runtime_error("Cannot write the form smoke fixture: " + describe(error));
         fs::copy_file(fixtures / absolute_fixture.filename(), absolute_fixture);
     }
-    const auto settings = smoke ? picker->sandbox / "settings.json" :
+    const auto settings = testing ? picker->sandbox / "settings.json" :
         test_environment ? fs::path{} : designer_settings_path();
-    if (smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
+    if (workbench_smoke && (!ui::save_designer_dock_widths(settings, {280, 375}) ||
                   !ui::save_designer_options(settings, ui::designer_grid_settings{.spacing = 24}, ui::designer_theme::light)))
         throw std::runtime_error("Cannot seed custom workbench settings for the smoke test");
     bool invalid_settings = false;
@@ -4594,7 +4710,7 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
     } detach{win};
     smoke_unsaved_prompt prompt;
     designer::message_box_fn message_box = SDL_ShowMessageBox;
-    if (smoke) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
+    if (testing) message_box = [&prompt](const SDL_MessageBoxData* box, int* selected) { return prompt.show(box, selected); };
     designer editor(*win, app.vgdev, shell.get(), font.get(), app.vgctx, strings, settings, std::move(message_box));
     if (open_path.empty() || !editor.open(open_path)) {
         if (test_environment && !open_path.empty()) return 1;
@@ -4667,7 +4783,16 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
         host.draw_all();
         submitted_windows = host.end_frame();
     };
-    if (!smoke) {
+    if (smoke == native_smoke::game_data) {
+        try {
+            advance();
+            exercise_game_data(*win, shell.get(), editor, advance, picker->sandbox);
+        } catch (...) {
+            app.wait_gpu();
+            throw;
+        }
+        std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
+    } else if (!workbench_smoke) {
         host.idle_delay_ms = 0; // Wait for SDL events instead of sleeping and polling every 8 ms.
         const auto tick = [&] {
             advance();
@@ -4788,23 +4913,24 @@ int run(bool smoke, fs::path open_path, command native_dialog_exit = command::no
 
 int main(int argc, char** argv) {
     try {
-        const bool smoke = argc == 2 && std::string_view(argv[1]) == "--smoke-test";
+        const std::string_view arg = argc == 2 ? argv[1] : "";
+        if (arg == "--smoke-test") return run(native_smoke::workbench, {});
+        if (arg == "--smoke-game-data") return run(native_smoke::game_data, {});
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-animation-preview") return smoke_animation_preview();
         if (argc == 2 && std::string_view(argv[1]) == "--smoke-gradient-keyframes") return smoke_gradient_keyframes();
 #ifdef _WIN32
         if (argc == 2) {
-            const std::string_view arg(argv[1]);
             if (arg == "--smoke-native-open-exit" || arg == "--smoke-native-save-exit") {
-                return run(false, fs::path(VGUI_SOURCE_DIR) / "sample/res/gradient-keyframes.vgui.json",
+                return run(native_smoke::none, fs::path(VGUI_SOURCE_DIR) / "sample/res/gradient-keyframes.vgui.json",
                     arg == "--smoke-native-open-exit" ? command::open : command::save_as);
             }
         }
 #endif
         if (argc > 2) {
-            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
+            std::fprintf(stderr, "Usage: vgui_ui_designer [design.vgui.json | --smoke-test | --smoke-game-data | --smoke-animation-preview | --smoke-gradient-keyframes]\n");
             return 2;
         }
-        return run(smoke, argc == 2 && !smoke ? fs::u8path(argv[1]) : fs::path{});
+        return run(native_smoke::none, argc == 2 ? fs::u8path(argv[1]) : fs::path{});
     } catch (const std::exception& error) {
         std::fprintf(stderr, "VGUI UI Designer: %s\n", error.what());
         return 1;

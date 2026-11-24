@@ -33,6 +33,7 @@
 #include <span>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace vgui::ui_design {
 namespace {
@@ -80,7 +81,7 @@ const char* viewport_text(const designer_strings& strings, std::string_view key,
 }
 
 template<class Number>
-bool read_viewport_number(vgui_widget* field, Number& value) {
+bool read_number(vgui_widget* field, Number& value) {
     std::string_view text(vgui_edit_get_text(field));
     constexpr std::string_view spaces = " \t\r\n";
     const auto first = text.find_first_not_of(spaces);
@@ -1026,6 +1027,271 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     return panel;
 }
 
+namespace {
+
+using simulation_values = decltype(designer_preview::view_state::simulation);
+
+struct simulation_dialog {
+    vgui_context* shell;
+    const designer_strings& strings;
+    // Virtual rows and a single editor keep the widget tree bounded. The
+    // preview closes this dialog before replacing the cached field map.
+    std::vector<const data_field_map::value_type*> rows;
+    simulation_values draft;
+    std::function<void(simulation_values)> apply;
+    vgui_widget *panel = nullptr, *title = nullptr, *hint = nullptr, *list = nullptr, *type_label = nullptr;
+    vgui_widget *override_value = nullptr, *edit = nullptr, *check = nullptr, *error = nullptr;
+    vgui_widget *reset = nullptr, *ok = nullptr, *cancel = nullptr;
+    vgui_item_id selected = 0;
+    std::optional<value_type> invalid_type;
+
+    simulation_dialog(vgui_context* ctx, const designer_strings& locale) : shell(ctx), strings(locale) {}
+    ~simulation_dialog() { close(); }
+
+    const char* type_name(value_type type) const {
+        switch (type) {
+        case value_type::number: return strings.text("preview.simulation.number", "Number");
+        case value_type::boolean: return strings.text("preview.simulation.boolean", "Boolean");
+        default: return strings.text("preview.simulation.text", "Text");
+        }
+    }
+
+    void refresh_error() const {
+        const char* message = !invalid_type ? "" : *invalid_type == value_type::number ?
+            strings.text("preview.simulation.invalid_number", "Enter a finite number in range, e.g. 1.5.") :
+            strings.text("preview.simulation.invalid_text", "Enter valid text within the length limit.");
+        vgui_widget_set_text(error, message);
+    }
+
+    void refresh_language() const {
+        if (!panel) return;
+        const auto* caption = strings.text("preview.simulation.title", "Simulate Data");
+        vgui_widget_set_text(title, caption);
+        vgui_widget_set_a11y_name(panel, caption);
+        vgui_widget_set_text(hint, strings.text("preview.simulation.hint", "Overrides are temporary and apply only in Run."));
+        vgui_widget_set_a11y_name(list, strings.text("preview.simulation.fields", "Data fields"));
+        vgui_list_set_empty_text(list, strings.text("preview.simulation.empty", "This page has no bound data fields."));
+        vgui_widget_set_text(override_value, strings.text("preview.simulation.override", "Use simulated value"));
+        vgui_edit_set_placeholder(edit, strings.text("preview.simulation.design_value", "Design value"));
+        vgui_widget_set_text(check, strings.text("preview.simulation.true", "True (unchecked = false)"));
+        vgui_widget_set_text(reset, strings.text("preview.simulation.reset_all", "Use All Design Values"));
+        vgui_widget_set_text(ok, strings.text("common.ok", "OK"));
+        vgui_widget_set_text(cancel, strings.text("common.cancel", "Cancel"));
+        if (selected) label_type();
+        refresh_error();
+    }
+
+    void label_type() const {
+        const auto* name = type_name(rows[selected - 1]->second);
+        vgui_widget_set_text(type_label, name);
+        vgui_widget_set_a11y_name(edit, name);
+    }
+
+    void show_row() {
+        invalid_type.reset();
+        refresh_error();
+        if (!selected) return;
+        const auto& [key, type] = *rows[selected - 1];
+        const auto it = draft.find(key);
+        const bool overridden = it != draft.end();
+        const bool boolean = type == value_type::boolean;
+        label_type();
+        vgui_widget_set_visible(edit, !boolean);
+        vgui_widget_set_visible(check, boolean);
+        vgui_widget_set_checked(override_value, overridden);
+        vgui_widget_set_enabled(edit, overridden);
+        vgui_widget_set_enabled(check, overridden);
+        if (boolean) {
+            vgui_widget_set_checked(check, overridden && std::get<bool>(it->second));
+        } else if (!overridden) {
+            vgui_edit_set_text(edit, "");
+        } else if (const auto* text = std::get_if<std::string>(&it->second)) {
+            vgui_edit_set_text(edit, text->c_str());
+        } else {
+            char number[64];
+            const auto result = std::to_chars(number, number + sizeof(number) - 1, std::get<double>(it->second));
+            *result.ptr = '\0';
+            vgui_edit_set_text(edit, number);
+        }
+    }
+
+    // Capture the active editor even for programmatic changes or an unfinished
+    // number. Invalid numeric input survives selecting a different field.
+    void save_row() {
+        if (!selected) return;
+        const auto& [key, type] = *rows[selected - 1];
+        if (!vgui_widget_get_checked(override_value)) {
+            draft.erase(key);
+        } else if (type == value_type::boolean) {
+            draft.insert_or_assign(key, vgui_widget_get_checked(check) != 0);
+        } else {
+            double number;
+            if (type == value_type::number && read_number(edit, number))
+                draft.insert_or_assign(key, number);
+            else
+                draft.insert_or_assign(key, std::string(vgui_edit_get_text(edit)));
+        }
+    }
+
+    void confirm() {
+        save_row();
+        const auto invalid = std::find_if(draft.begin(), draft.end(), [this](const auto& item) {
+            const auto row = find_row(item.first);
+            return !valid_data_value((*row)->second, item.second);
+        });
+        if (invalid != draft.end()) {
+            const auto row = find_row(invalid->first);
+            const auto id = static_cast<vgui_item_id>(row - rows.begin() + 1);
+            vgui_list_select(list, id, 1);
+            vgui_list_set_cursor(list, id);
+            vgui_list_scroll_to_item(list, id, VGUI_SCROLL_ALIGN_NEAREST);
+            invalid_type = (*row)->second;
+            refresh_error();
+            vgui_set_focus(shell, edit);
+            return;
+        }
+        auto commit = std::move(apply);
+        auto values = std::move(draft);
+        vgui_modal_close(shell, VGUI_MODAL_RESULT_CONFIRM);
+        commit(std::move(values));
+    }
+
+    std::vector<const data_field_map::value_type*>::const_iterator find_row(std::string_view key) const {
+        return std::lower_bound(rows.begin(), rows.end(), key,
+            [](const auto* row, std::string_view key) { return row->first < key; });
+    }
+
+    void close() {
+        if (panel && vgui_modal_panel(shell) == panel) vgui_modal_close(shell, VGUI_MODAL_RESULT_CANCEL);
+    }
+
+    void clear_session() {
+        panel = nullptr;
+        selected = 0;
+        invalid_type.reset();
+        rows.clear();
+        draft.clear();
+        apply = {};
+    }
+
+    void open(const data_field_map& fields, const simulation_values& initial, bool light,
+            std::function<void(simulation_values)> on_apply) {
+        if (vgui_modal_active(shell)) return;
+        rows.reserve(fields.size());
+        for (const auto& field : fields) rows.push_back(&field);
+        draft = initial;
+        apply = std::move(on_apply);
+        panel = vgui_widget_create(shell, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(panel, "designer.preview.simulation.dialog");
+        vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
+        vgui_widget_set_align_items(panel, VGUI_ALIGN_STRETCH);
+        vgui_widget_set_size(panel, 500, 366);
+        vgui_widget_set_gap(panel, 6);
+        vgui_widget_set_padding(panel, 12, 10, 12, 10);
+        const auto add = [](vgui_widget* parent, vgui_widget_kind kind, std::string_view suffix) {
+            auto* w = vgui_widget_add(parent, kind, nullptr);
+            const auto id = "designer.preview.simulation." + std::string(suffix);
+            vgui_widget_set_id(w, id.c_str());
+            if (kind == VGUI_LABEL) vgui_widget_set_text_align(w, 0, .5f);
+            return w;
+        };
+        title = add(panel, VGUI_LABEL, "title");
+        vgui_widget_set_font_size(title, 18);
+        vgui_widget_set_font_weight(title, VGUI_FONT_WEIGHT_SEMI_BOLD);
+        hint = add(panel, VGUI_LABEL, "hint");
+        list = add(panel, VGUI_LIST, "fields");
+        vgui_widget_set_size(list, 0, 56);
+        vgui_widget_set_grow(list, 1);
+        vgui_widget_set_enabled(list, !rows.empty());
+        const vgui_row_source source{
+            .row_count = [](void* user) { return static_cast<int>(static_cast<simulation_dialog*>(user)->rows.size()); },
+            .row_info = [](void* user, int index, const char** text, const char** detail, void**) {
+                *text = static_cast<simulation_dialog*>(user)->rows[index]->first.c_str();
+                *detail = nullptr;
+                return 1;
+            },
+            .row_id = [](void*, int index) { return static_cast<vgui_item_id>(index + 1); },
+            .row_id_index = [](void* user, vgui_item_id id) {
+                return id && id <= static_cast<simulation_dialog*>(user)->rows.size() ? static_cast<int>(id - 1) : -1;
+            },
+            .user = this,
+            .row_tooltip = [](void* user, int index) { return static_cast<simulation_dialog*>(user)->rows[index]->first.c_str(); }
+        };
+        vgui_list_set_row_source(list, &source);
+        vgui_list_set_selection_mode(list, VGUI_SELECTION_SINGLE);
+        vgui_list_on_select(list, [](vgui_widget*, vgui_item_id id, int on, void* user) {
+            auto& self = *static_cast<simulation_dialog*>(user);
+            if (!on || id == self.selected) return;
+            self.save_row();
+            self.selected = id;
+            self.show_row();
+        }, this);
+        override_value = add(panel, VGUI_CHECKBOX, "override");
+        vgui_widget_on_value(override_value, [](vgui_widget* w, float, void* user) {
+            auto& self = *static_cast<simulation_dialog*>(user);
+            if (!self.selected) return;
+            const auto& [key, type] = *self.rows[self.selected - 1];
+            if (!vgui_widget_get_checked(w)) self.draft.erase(key);
+            else if (type == value_type::number) self.draft.insert_or_assign(key, 0.);
+            else if (type == value_type::boolean) self.draft.insert_or_assign(key, false);
+            else self.draft.insert_or_assign(key, std::string{});
+            self.show_row();
+        }, this);
+        type_label = add(panel, VGUI_LABEL, "type");
+        edit = add(panel, VGUI_EDIT, "value");
+        check = add(panel, VGUI_CHECKBOX, "boolean");
+        error = add(panel, VGUI_LABEL, "error");
+        vgui_widget_set_size(error, 0, 20);
+        vgui_widget_set_font_size(error, 12);
+        vgui_widget_set_text_color(error, light ? 0xFFA52C22u : 0xFFFF9A8Du);
+        auto* actions = add(panel, VGUI_PANEL, "actions");
+        vgui_widget_set_layout(actions, VGUI_LAYOUT_ROW);
+        vgui_widget_set_justify(actions, VGUI_JUSTIFY_END);
+        vgui_widget_set_padding(actions, 0, 0, 0, 0);
+        vgui_widget_set_gap(actions, 8);
+        vgui_widget_set_background(actions, 0);
+        vgui_widget_set_border(actions, 0, 0);
+        reset = add(actions, VGUI_BUTTON, "reset_all");
+        cancel = add(actions, VGUI_BUTTON, "cancel");
+        ok = add(actions, VGUI_BUTTON, "ok");
+        const auto on_click = [](vgui_widget* w, const vgui_event* e, void* user) {
+            if (e->type != VGUI_EVENT_CLICK) return;
+            auto& self = *static_cast<simulation_dialog*>(user);
+            if (w == self.ok) self.confirm();
+            else if (w == self.cancel) self.close();
+            else {
+                self.draft.clear();
+                self.show_row();
+            }
+        };
+        for (auto* button : {reset, cancel, ok}) vgui_widget_on_event(button, on_click, this);
+        if (rows.empty()) {
+            for (auto* w : {override_value, type_label, edit, check}) vgui_widget_set_visible(w, 0);
+            vgui_widget_set_enabled(reset, 0);
+        } else {
+            vgui_list_select(list, 1, 1);
+            vgui_list_set_cursor(list, 1);
+        }
+        refresh_language();
+
+        vgui_modal_options options;
+        vgui_modal_options_default(&options);
+        options.destroy_on_close = 1;
+        options.user = this;
+        options.on_close = [](vgui_context*, vgui_widget*, int, void* user) {
+            static_cast<simulation_dialog*>(user)->clear_session();
+        };
+        if (!vgui_modal_show(shell, panel, &options)) {
+            vgui_widget_destroy(panel);
+            clear_session();
+            return;
+        }
+        vgui_modal_set_drag_handle(shell, title);
+    }
+};
+
+} // namespace
+
 struct designer_preview::impl {
     const designer_strings& strings;
     vgui_context* shell = nullptr;
@@ -1035,6 +1301,10 @@ struct designer_preview::impl {
     vgui_widget *mode = nullptr, *zoom_out = nullptr, *zoom_in = nullptr, *zoom_fit = nullptr, *zoom_actual = nullptr;
     vgui_widget *viewport_button = nullptr, *viewport_dialog = nullptr, *viewport_error = nullptr;
     std::array<vgui_widget*, 7> viewport_fields{};
+    vgui_widget* simulation_button = nullptr;
+    simulation_values simulation;
+    data_field_map fields;
+    simulation_dialog simulation_editor;
     float toolbar_width = 0;
     vgui_widget* timeline_toggle = nullptr;
     std::unique_ptr<designer_gradient_timeline> timeline;
@@ -1115,6 +1385,7 @@ struct designer_preview::impl {
             std::function<void(std::string)> s, std::function<void(std::string)> n,
             std::function<void(geometry_edit)> commit, const designer_strings& locale, gradient_timeline_commit commit_keys)
         : strings(locale), shell(parent ? vgui_widget_get_context(parent) : nullptr),
+          simulation_editor(shell, strings),
           select(std::move(s)), notify(std::move(n)), commit_geometry(std::move(commit)),
           fonts(cache), ui(vgui_create(font, 14), vgui_destroy), device(gpu) {
         if (ui) mounted = std::make_unique<runtime>(ui.get());
@@ -1157,6 +1428,7 @@ struct designer_preview::impl {
         zoom_text = vgui_widget_add(toolbar, VGUI_LABEL, nullptr);
         vgui_widget_set_id(zoom_text, "designer.preview.zoom");
         mode = button(toolbar, "designer.preview.mode");
+        simulation_button = button(toolbar, "designer.preview.simulation");
         if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
         transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_id(transport, "designer.preview.animation");
@@ -1201,6 +1473,7 @@ struct designer_preview::impl {
     ~impl() {
         if (focus_listener) vgui_context_remove_focus_listener(shell, focus_listener);
         close_viewport_dialog();
+        simulation_editor.close();
         blur();
         if (stop_picker.widget()) vgui_widget_destroy(stop_picker.widget());
         timeline.reset(); // Detach timeline callbacks before destroying its widget tree.
@@ -1233,6 +1506,9 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(zoom_actual, actual_tip);
         vgui_widget_set_a11y_name(zoom_actual, actual_tip);
         vgui_widget_set_tooltip(mode, strings.text("preview.mode.tooltip", "Switch between Design and Run"));
+        vgui_widget_set_text(simulation_button, strings.text("preview.simulation.button", "Simulate…"));
+        vgui_widget_set_tooltip(simulation_button, strings.text("preview.simulation.tooltip", "Set temporary data for this Run preview"));
+        simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
             vgui_widget_set_tooltip(timeline_toggle, strings.text("timeline.toggle", "Show or hide this page's gradient animation tracks"));
@@ -1300,6 +1576,9 @@ struct designer_preview::impl {
         vgui_widget_set_text(mode, run ? strings.text("preview.mode.run", "Run") :
             strings.text("preview.mode.design", "Design"));
         vgui_widget_set_background(mode, run ? (light ? 0xFFCBECDD : 0xFF33765A) : inactive);
+        vgui_widget_set_background(simulation_button, simulation.empty() ? inactive : active);
+        vgui_widget_set_visible(simulation_button, run);
+        vgui_widget_set_enabled(simulation_button, is_mounted && !remount);
         if (timeline_toggle) vgui_widget_set_background(timeline_toggle, timeline_open ? active : inactive);
         vgui_widget_set_background(play, inactive);
         vgui_widget_set_background(restart, inactive);
@@ -1371,10 +1650,10 @@ struct designer_preview::impl {
     void confirm_viewport_dialog() {
         viewport view;
         safe_area_insets insets;
-        if (!read_viewport_number(viewport_fields[0], view.width) || !read_viewport_number(viewport_fields[1], view.height) ||
-            !read_viewport_number(viewport_fields[2], view.scale) || !read_viewport_number(viewport_fields[3], insets.left) ||
-            !read_viewport_number(viewport_fields[4], insets.top) || !read_viewport_number(viewport_fields[5], insets.right) ||
-            !read_viewport_number(viewport_fields[6], insets.bottom) || !valid_viewport(view, insets)) {
+        if (!read_number(viewport_fields[0], view.width) || !read_number(viewport_fields[1], view.height) ||
+            !read_number(viewport_fields[2], view.scale) || !read_number(viewport_fields[3], insets.left) ||
+            !read_number(viewport_fields[4], insets.top) || !read_number(viewport_fields[5], insets.right) ||
+            !read_number(viewport_fields[6], insets.bottom) || !valid_viewport(view, insets)) {
             vgui_widget_set_text(viewport_error, viewport_text(strings, "preview.viewport.invalid",
                 "Check values and insets. Pixel limits: 4096 per side and 8,388,608 total.",
                 "请检查数值和边距；像素尺寸上限为每边 4096，总计 8388608 像素。"));
@@ -1479,6 +1758,30 @@ struct designer_preview::impl {
         vgui_modal_set_drag_handle(shell, title);
     }
 
+    void apply_simulation() {
+        if (!run || simulation.empty()) return;
+        for (const auto& [key, data] : simulation) mounted->set_data(key, data);
+        dirty = true;
+    }
+
+    void open_simulation_dialog() {
+        if (!run || !is_mounted || remount || vgui_modal_active(shell)) return;
+        blur();
+        simulation_editor.open(fields, simulation, theme == designer_theme::light, [this](simulation_values next) {
+            if (next == simulation || !run || !is_mounted || remount) return;
+            for (const auto& [key, data] : simulation)
+                if (!next.contains(key)) mounted->set_data(key, std::nullopt);
+            for (const auto& [key, data] : next) {
+                const auto old = simulation.find(key);
+                if (old == simulation.end() || old->second != data) mounted->set_data(key, data);
+            }
+            simulation = std::move(next);
+            dirty = true;
+            update_toolbar();
+            mark_canvas();
+        });
+    }
+
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
         auto& self = *static_cast<impl*>(user);
         if (w == self.scrubber) {
@@ -1507,6 +1810,7 @@ struct designer_preview::impl {
         }
         if (w == self.viewport_button) { self.open_viewport_dialog(); return; }
         if (w == self.mode) { self.set_run(!self.run); return; }
+        if (w == self.simulation_button) { self.open_simulation_dialog(); return; }
         if (w == self.timeline_toggle) { self.open_timeline(!self.timeline_open); return; }
         if (w == self.zoom_fit || w == self.zoom_actual) self.reset_zoom(w == self.zoom_fit);
         else {
@@ -1518,6 +1822,7 @@ struct designer_preview::impl {
 
     void restore_view(const view_state& view) {
         close_viewport_dialog();
+        simulation_editor.close();
         blur(); // Cancels the drag but leaves its matching release to be consumed.
         screen = view.screen;
         custom_viewport = view.custom_viewport && valid_viewport(*view.custom_viewport, view.safe_area) ?
@@ -1527,6 +1832,7 @@ struct designer_preview::impl {
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
         run = view.running;
+        simulation = view.simulation;
         playback = view.animation;
         if (timeline) {
             timeline_open = view.timeline_open;
@@ -1537,7 +1843,7 @@ struct designer_preview::impl {
         if (canvas) vgui_widget_set_focusable(canvas, run);
         if (mounted) mounted->unmount();
         is_mounted = false;
-        remount = true; // Next sync mounts document values, not live run state.
+        remount = true; // Next sync restores only document values and explicit Run overrides.
         frame.reset();
         ready = false;
         dirty = true;
@@ -1586,6 +1892,7 @@ struct designer_preview::impl {
 
     void set_run(bool value) {
         if (run == value) return;
+        simulation_editor.close();
         blur();
         run = value;
         playback = {};
@@ -1595,6 +1902,8 @@ struct designer_preview::impl {
             remount = true; // Next sync restores document values, not live run state.
             ready = false;
             frame.reset();
+        } else if (is_mounted && !remount) {
+            apply_simulation();
         }
         update_toolbar();
         mark_canvas();
@@ -2010,6 +2319,7 @@ struct designer_preview::impl {
         auto abs_root = project_root.empty() ? project_root : std::filesystem::absolute(project_root, ec);
         if (ec) abs_root.clear();
         if (same_document && root == abs_root) return;
+        simulation_editor.close();
         blur();
         has_document = true;
         remount = false;
@@ -2042,14 +2352,21 @@ struct designer_preview::impl {
         geometry_sources.clear();
         if (!is_mounted) {
             if (mounted) mounted->unmount();
-        } else if (commit_geometry) {
-            collect_geometry_sources(doc);
+            fields.clear();
+        } else {
+            fields = data_fields(doc);
+            std::erase_if(simulation, [this](const auto& setting) {
+                const auto it = fields.find(setting.first);
+                return it == fields.end() || !valid_data_value(it->second, setting.second);
+            });
+            apply_simulation();
+            if (commit_geometry) collect_geometry_sources(doc);
         }
         timing = is_mounted ? mounted->animation_timing() : animation_span{};
         if (timing.duration > 0) follow_playhead();
         else playback = {};
         sample_requested = run && timing.duration > 0;
-        update_transport();
+        update_toolbar();
         update_status();
         mark_canvas();
     }
@@ -2739,7 +3056,11 @@ void designer_preview::sync(const document& doc, uint64_t rev, const std::filesy
 void designer_preview::set_render_context(vgpu_ctx_t* ctx) { p_->set_renderer(ctx); }
 void designer_preview::render(float dt) { p_->render(dt); }
 bool designer_preview::handle_event(const SDL_Event& e) { return p_->event(e); }
-void designer_preview::cancel_interaction() { p_->close_viewport_dialog(); p_->blur(); }
+void designer_preview::cancel_interaction() {
+    p_->close_viewport_dialog();
+    p_->simulation_editor.close();
+    p_->blur();
+}
 void designer_preview::refresh_language() { p_->refresh_language(); }
 vgui_widget* designer_preview::widget() const { return p_->panel; }
 void designer_preview::set_control_drop_target(const vgui_drop_target& target) {
@@ -2751,7 +3072,7 @@ std::optional<canvas_control_drop> designer_preview::control_drop_at(const docum
 }
 designer_preview::view_state designer_preview::capture_view() const {
     return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open,
-        p_->custom_viewport, p_->safe_area};
+        p_->custom_viewport, p_->safe_area, p_->simulation};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }
@@ -2795,6 +3116,14 @@ std::optional<std::string> designer_preview::edit_text(std::string_view id) cons
     auto* widget = p_->mounted ? p_->mounted->widget(id) : nullptr;
     if (!widget || vgui_widget_get_kind(widget) != VGUI_EDIT) return std::nullopt;
     return std::string(vgui_edit_get_text(widget));
+}
+
+std::optional<std::string> designer_preview::node_text(std::string_view id) const {
+    auto* widget = p_->mounted ? p_->mounted->widget(id) : nullptr;
+    if (!widget) return std::nullopt;
+    const auto kind = vgui_widget_get_kind(widget);
+    if (kind != VGUI_LABEL && kind != VGUI_BUTTON) return std::nullopt;
+    return std::string(vgui_widget_get_text(widget));
 }
 
 } // namespace vgui::ui_design

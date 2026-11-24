@@ -802,6 +802,7 @@ struct designer_workbench::impl {
                 {"Image", strings.text("workbench.inspector.category.image", "Image")},
                 {"Layout details", strings.text("workbench.inspector.category.layout_details", "Layout details")},
                 {"Anchors", strings.text("workbench.inspector.category.anchors", "Anchors")},
+                {"Game data", strings.text("workbench.inspector.category.game_data", "Game data")},
                 {"Interaction", strings.text("workbench.inspector.category.interaction", "Interaction")},
                 {"Pages", strings.text("workbench.inspector.category.pages", "Pages")},
                 {"Geometry & state", strings.text("workbench.inspector.category.geometry_state", "Geometry & state")},
@@ -1711,6 +1712,11 @@ struct designer_workbench::impl {
         const auto add_descriptors = [&](std::span<const property_descriptor> descriptors, const char* category) {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
+                if (desc.type == value_type::data_key) {
+                    const auto bindings = data_bindings();
+                    const auto binding = std::ranges::find(bindings, key, &data_binding_descriptor::key);
+                    if (binding == bindings.end() || !data_binding_applies(*binding, item, anchor_parent)) continue;
+                }
                 if (key.starts_with("anchor_") && (!anchors_allowed ||
                     (key == "anchor_right" && anchor_x != "stretch") ||
                     (key == "anchor_bottom" && anchor_y != "stretch"))) continue;
@@ -1741,7 +1747,8 @@ struct designer_workbench::impl {
                 row.id = desc.key;
                 row.label = translate(property_label(desc));
                 row.category = desc.key.starts_with("font_") || desc.key == "text_color" ? "Font" : category;
-                if (key.starts_with("anchor_")) row.category = "Anchors";
+                if (desc.type == value_type::data_key) row.category = "Game data";
+                else if (key.starts_with("anchor_")) row.category = "Anchors";
                 else if (decorative_gradient && key.starts_with("gradient_animation")) row.category = "Gradient animation";
                 else if (decorative_gradient && key.starts_with("gradient_"))
                     row.category = key.starts_with("gradient_affine_") ? "Gradient transform" : "Gradient paint";
@@ -1876,6 +1883,11 @@ struct designer_workbench::impl {
                         row.choice_values.emplace_back(choice);
                     }
                     break;
+                case value_type::data_key:
+                    row.placeholder = strings.text("workbench.inspector.data.unbound", "Use design value");
+                    row.tooltip = strings.text("workbench.inspector.data.hint",
+                        "Enter a game field key, e.g. player.hp_ratio. Leave blank to unbind. Reused keys must have the same type.");
+                    break;
                 case value_type::font_key:
                     row.type = kit::property_type::enumeration;
                     row.allow_empty = true;
@@ -1919,7 +1931,7 @@ struct designer_workbench::impl {
         // Keep common authoring fields above optional chrome, regardless of
         // the order in which the schema registers a kind's appearance rows.
         constexpr std::string_view order[] = {"General", "Container", "Content", "Font", "Gradient paint", "Gradient animation", "Geometry & state", "Pages",
-            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Anchors"};
+            "Appearance", "Gradient colors", "Gradient transform", "Image", "Layout details", "Interaction", "Anchors", "Game data"};
         const auto rank = [&](const kit::property_desc& row) {
             return std::find(std::begin(order), std::end(order), row.category) - std::begin(order);
         };

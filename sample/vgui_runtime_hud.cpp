@@ -59,6 +59,23 @@ static constexpr int kEntityCount = 12;
 static constexpr std::array kSkillActions = {
 	"hud.skill.1", "hud.skill.2", "hud.skill.3", "hud.skill.4", "hud.skill.5", "hud.skill.6"
 };
+enum hud_progress_index { hp_progress, shield_progress, ult_progress, first_skill_progress };
+
+struct hud_progress
+{
+	const char* id;
+	const char* key;
+	vgui_widget* widget = nullptr;
+	bool bound = false;
+
+	void set(ui::runtime& design, float ratio) const
+	{
+		if (!bound)
+			vgui_widget_set_value(widget, ratio); // Older HUD designs have no field.
+		else if (!design.set_data(key, ui::value{static_cast<double>(ratio)}))
+			std::fprintf(stderr, "hud: cannot update data field '%s'\n", key);
+	}
+};
 
 struct hud_input
 {
@@ -100,14 +117,21 @@ struct hud_state
 	phase0_renderer* renderer = nullptr;
 
 	// HUD widgets bound to simulated game state.
-	vgui_widget* hp = nullptr;
-	vgui_widget* shield = nullptr;
+	std::array<hud_progress, first_skill_progress + kSkillActions.size()> progress{{
+		{"hp", "player.hp_ratio"},
+		{"shield", "player.shield_ratio"},
+		{"ult", "player.ult_cooldown"},
+		{"cooldown1", "skill.1.cooldown"},
+		{"cooldown2", "skill.2.cooldown"},
+		{"cooldown3", "skill.3.cooldown"},
+		{"cooldown4", "skill.4.cooldown"},
+		{"cooldown5", "skill.5.cooldown"},
+		{"cooldown6", "skill.6.cooldown"},
+	}};
 	vgui_widget* status = nullptr;
-	vgui_widget* cooldown[6] = {};
 	std::array<bool, kSkillActions.size()> pending_skills{};
 
 	// R4-2 demo: radial ultimate cooldown + safe-area cycling.
-	vgui_widget* ult = nullptr;
 	float ult_cd = 0.0f;
 	std::size_t safe_level = 0;
 	std::optional<hud_insets> pending_safe_area;
@@ -230,7 +254,7 @@ static void activate_skill(hud_state* st, int slot)
 	st->skill_cd[slot] = 3.0f;
 	// R4-2 floating text demo: report the fresh cooldown above the slot.
 	float x, y, width, height;
-	vgui_widget_get_rect(st->cooldown[slot], &x, &y, &width, &height);
+	vgui_widget_get_rect(st->progress[first_skill_progress + slot].widget, &x, &y, &width, &height);
 	vgui_spawn_float_text(st->ui, x + width * 0.5f, y - 6.0f, "3.0s", 0xFFFFE080, 1.2f, 26.0f);
 }
 
@@ -407,14 +431,27 @@ static bool build_hud(hud_state* st, const hud_input& input, font_cache_cx* cach
 		std::fprintf(stderr, "hud: root must use absolute layout\n");
 		return false;
 	}
-	st->hp = require("hp", VGUI_PROGRESS);
-	st->shield = require("shield", VGUI_PROGRESS);
+	const auto fields = ui::data_fields(document);
+	for (auto& field : st->progress)
+	{
+		field.widget = require(field.id, VGUI_PROGRESS);
+		if (!field.widget) return false;
+		const auto& props = document.nodes.at(field.id).props;
+		const auto prop = props.find("bind_value");
+		const std::string_view declared = prop == props.end() ?
+			std::string_view{} : std::string_view(std::get<std::string>(prop->second));
+		field.bound = declared == field.key;
+		// Only an undeclared field and an unbound widget qualify for the
+		// legacy direct setter.
+		if (!field.bound && (!declared.empty() || fields.contains(field.key)))
+		{
+			std::fprintf(stderr, "hud: widget '%s' has an incompatible binding; expected bind_value '%s'\n",
+				field.id, field.key);
+			return false;
+		}
+	}
 	st->status = require("status", VGUI_LABEL);
-	st->ult = require("ult", VGUI_PROGRESS);
-	for (int i = 0; i < 6; ++i)
-		st->cooldown[i] = require(("cooldown" + std::to_string(i + 1)).c_str(), VGUI_PROGRESS);
-	if (!st->hp || !st->shield || !st->status || !st->ult ||
-		std::any_of(std::begin(st->cooldown), std::end(st->cooldown), [](auto* w) { return !w; })) return false;
+	if (!st->status) return false;
 
 	auto* minimap = require("minimap", VGUI_PANEL);
 	auto* crosshair = require("crosshair", VGUI_PANEL);
@@ -597,17 +634,18 @@ static void simulate(hud_state* st, float delta)
 	st->time += delta;
 	st->hp_value = 0.62f + 0.36f * std::sin(st->time * 0.6f);
 	st->shield_value = 0.45f + 0.45f * std::sin(st->time * 0.9f + 1.3f);
-	vgui_widget_set_value(st->hp, st->hp_value);
-	vgui_widget_set_value(st->shield, st->shield_value);
-	for (int i = 0; i < 6; ++i)
+	auto& design = *st->design;
+	st->progress[hp_progress].set(design, st->hp_value);
+	st->progress[shield_progress].set(design, st->shield_value);
+	for (std::size_t i = 0; i < kSkillActions.size(); ++i)
 	{
 		if (st->skill_cd[i] > 0.0f)
 			st->skill_cd[i] = std::max(0.0f, st->skill_cd[i] - delta);
-		vgui_widget_set_value(st->cooldown[i], st->skill_cd[i] / 3.0f);
+		st->progress[first_skill_progress + i].set(design, st->skill_cd[i] / 3.0f);
 	}
 	if (st->ult_cd > 0.0f)
 		st->ult_cd = std::max(0.0f, st->ult_cd - delta);
-	vgui_widget_set_value(st->ult, st->ult_cd / 5.0f);
+	st->progress[ult_progress].set(design, st->ult_cd / 5.0f);
 	for (int i = 0; i < kEntityCount; ++i)
 	{
 		const float angle = st->time * 0.4f
@@ -729,7 +767,8 @@ static int check_hud(const hud_input& input)
 	const auto initial_hotbar = rect(st.design->widget("hotbar"));
 	const auto initial_minimap = rect(st.design->widget("minimap"));
 	const auto initial_reticle = rect(st.design->widget("crosshair"));
-	const auto initial_hp_rect = rect(st.hp);
+	const auto& hp = st.progress[hp_progress];
+	const auto initial_hp_rect = rect(hp.widget);
 	const auto hotbar_margin = kInitialHeight - initial_hotbar.y - initial_hotbar.height;
 	const auto minimap_margin = kInitialHeight - initial_minimap.y - initial_minimap.height;
 
@@ -740,9 +779,9 @@ static int check_hud(const hud_input& input)
 		const auto [left, top, right, bottom] = safe;
 		const float safe_right = (float)(width - right);
 		const float safe_bottom = (float)(height - bottom);
-		const auto hp = rect(st.hp);
-		check(same_size(hp, initial_hp_rect) && near(hp.x - left, initial_hp_rect.x) &&
-			near(hp.y - top, initial_hp_rect.y), "vitals must move with the upper-left safe-area edge");
+		const auto hp_rect = rect(hp.widget);
+		check(same_size(hp_rect, initial_hp_rect) && near(hp_rect.x - left, initial_hp_rect.x) &&
+			near(hp_rect.y - top, initial_hp_rect.y), "vitals must move with the upper-left safe-area edge");
 		const auto hotbar = rect(st.design->widget("hotbar"));
 		check(same_size(hotbar, initial_hotbar) &&
 			near(hotbar.x + hotbar.width * 0.5f, (left + safe_right) * 0.5f) &&
@@ -775,9 +814,15 @@ static int check_hud(const hud_input& input)
 	check(skill && vgui_widget_get_kind(skill) == VGUI_BUTTON, "expected a mounted skill1 button");
 	if (skill && vgui_widget_get_kind(skill) == VGUI_BUTTON)
 	{
-		auto* hp_widget = st.hp;
-		auto* cooldown_widget = st.cooldown[0];
-		const float initial_hp = vgui_widget_get_value(hp_widget);
+		std::array<float, first_skill_progress + kSkillActions.size()> authored{}, live{}, expected{};
+		for (std::size_t i = 0; i < st.progress.size(); ++i)
+		{
+			const auto& field = st.progress[i];
+			if (!field.bound)
+				std::fprintf(stderr, "hud design check: missing bind_value '%s' on '%s'\n", field.key, field.id);
+			ok = ok && field.bound;
+			authored[i] = vgui_widget_get_value(field.widget);
+		}
 		const auto button = rect(skill);
 		const float x = button.x + button.width * 0.5f;
 		const float y = button.y + button.height * 0.5f;
@@ -787,11 +832,24 @@ static int check_hud(const hud_input& input)
 		vgui_input_mouse_up(st.ui, 1, x, y, 1);
 		check(st.pending_skills[0] && st.skill_cd[0] == 0, "click must queue the JSON action without updating in dispatch");
 		apply_hud_actions(&st);
+		for (std::size_t i = 1; i < kSkillActions.size(); ++i)
+			st.skill_cd[i] = 1.0f + 0.25f * static_cast<float>(i);
+		st.ult_cd = 4.0f;
 		simulate(&st, 0.1f);
-		const float hp = vgui_widget_get_value(hp_widget);
-		const float cooldown = vgui_widget_get_value(cooldown_widget);
-		check(cooldown > 0.9f, "JSON action did not start the live cooldown");
-		check(std::abs(hp - initial_hp) > 0.001f, "simulation did not change the mounted HP");
+		expected[hp_progress] = st.hp_value;
+		expected[shield_progress] = st.shield_value;
+		expected[ult_progress] = st.ult_cd / 5.0f;
+		for (std::size_t i = 0; i < kSkillActions.size(); ++i)
+			expected[first_skill_progress + i] = st.skill_cd[i] / 3.0f;
+		for (std::size_t i = 0; i < st.progress.size(); ++i)
+		{
+			live[i] = vgui_widget_get_value(st.progress[i].widget);
+			check(near(live[i], expected[i]), "simulation data must reach each HUD meter before update");
+		}
+		check(live[first_skill_progress] > 0.9f, "JSON action did not start the live cooldown");
+		check(!st.design->set_data("hud.unknown", ui::value{0.25}), "unknown fields must be rejected");
+		check(!st.design->set_data(hp.key, ui::value{true}) && vgui_widget_get_value(hp.widget) == live[hp_progress],
+			"invalid data must leave the live HP unchanged");
 
 		constexpr int wide_width = 2520, wide_height = 1080; // 21:9
 		check_layout(wide_width, wide_height, {});
@@ -801,12 +859,19 @@ static int check_hud(const hud_input& input)
 		st.pending_safe_area = asymmetric;
 		check_layout(wide_width, wide_height, asymmetric);
 
-		auto* current_hp = st.design->widget("hp");
-		auto* current_cooldown = st.design->widget("cooldown1");
-		check(st.design->widget("skill1") == skill && current_hp == hp_widget && current_cooldown == cooldown_widget,
-			"viewport and safe-area changes must not remount the HUD");
-		check(vgui_widget_get_value(current_hp) == hp && vgui_widget_get_value(current_cooldown) == cooldown,
-			"viewport and safe-area changes must not reset live HP or cooldown");
+		check(st.design->widget("skill1") == skill, "viewport and safe-area changes must not remount skill1");
+		for (std::size_t i = 0; i < st.progress.size(); ++i)
+		{
+			const auto& field = st.progress[i];
+			auto* current = st.design->widget(field.id);
+			check(current == field.widget, "viewport and safe-area changes must not remount HUD meters");
+			check(current && vgui_widget_get_value(current) == live[i],
+				"viewport and safe-area changes must not reset live HUD values");
+			// Reverting the override proves simulate() wrote to the field,
+			// not directly to the widget as it would for a legacy design.
+			check(st.design->set_data(field.key, std::nullopt) && current &&
+				vgui_widget_get_value(current) == authored[i], "clearing the override must restore the design value");
+		}
 	}
 	destroy_hud(&st);
 	if (ok) std::puts("hud design check: ok (no remount)");

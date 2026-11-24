@@ -407,33 +407,45 @@ void test_label_orientation_delivery() {
             "delivered label layout does not match the source design");
     }
 }
-void test_anchor_delivery() {
+void test_hud_delivery() {
     const auto source = fs::path(__FILE__).parent_path() / "res/game-hud.vgui.json";
+    const auto source_bytes = read_bytes(source);
     ui::diagnostic error;
     ui::document design;
     check(ui::read_document(source, design, &error), "read anchored HUD");
-    temp_dir temp;
-    const auto folder = temp.path / "hud";
-    const auto file = temp.path / "hud.vgui.package.json";
-    check(ui::export_delivery(design, source.parent_path(), folder, &error) &&
-        ui::export_json_delivery(design, source.parent_path(), file, &error), "export both anchored HUD packages");
-    ui::document directory;
-    ui::embedded_delivery single;
-    check(ui::read_delivery(folder, directory, &error) && ui::read_json_delivery(file, single, &error) &&
-        directory == design && single.design == design, "read both anchored HUD packages without losing data");
-
+    const auto authored = design;
     std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    check(bool(ctx), "create HUD delivery context");
     vgui_context_set_safe_area(ctx.get(), 44, 3, 16, 30);
     ui::runtime runtime(ctx.get());
-    for (const auto* doc : {&design, &directory, &single.design}) {
-        check(runtime.mount(*doc, 1, {}, &error) && runtime.layout({1720, 720, 1.5f}), "mount delivered HUD");
+    const auto mount_live_hud = [&](const ui::document& doc) {
+        check(runtime.mount(doc, 1, {}, &error) && runtime.layout({1720, 720, 1.5f}), "mount delivered HUD");
         ui::pixel_rect radar{}, reticle{};
         vgui_widget_get_rect(runtime.widget("minimap"), &radar.x, &radar.y, &radar.width, &radar.height);
         vgui_widget_get_rect(runtime.widget("crosshair"), &reticle.x, &reticle.y, &reticle.width, &reticle.height);
         check(radar.x >= 44 * 1.5f && radar.y + radar.height <= (720 - 30) * 1.5f &&
             reticle.x + reticle.width * .5f == 1720 * .75f && reticle.y + reticle.height * .5f == 720 * .75f,
             "delivered HUD must respect safe-area insets without displacing the reticle");
-    }
+        auto* hp = runtime.widget("hp");
+        check(hp && vgui_widget_get_value(hp) == 1.0f, "mount must use the authored HP, not the previous live value");
+        check(runtime.set_data("player.hp_ratio", ui::value{0.25}) && vgui_widget_get_value(hp) == 0.25f,
+            "delivered HUD must preserve working HP binding");
+        check(doc == authored, "runtime HUD values must not mutate the document");
+    };
+    mount_live_hud(design);
+
+    temp_dir temp;
+    const auto folder = temp.path / "hud";
+    const auto file = temp.path / "hud.vgui.package.json";
+    check(ui::export_delivery(design, source.parent_path(), folder, &error) &&
+        ui::export_json_delivery(design, source.parent_path(), file, &error), "export both HUD packages with a live override");
+    ui::document directory;
+    ui::embedded_delivery single;
+    check(ui::read_delivery(folder, directory, &error) && ui::read_json_delivery(file, single, &error) &&
+        directory == authored && single.design == authored, "deliver authored bindings and defaults, not live HUD values");
+    mount_live_hud(directory);
+    mount_live_hud(single.design);
+    check(read_bytes(source) == source_bytes, "running and delivering the HUD must not rewrite its source");
 }
 } // namespace
 
@@ -443,7 +455,7 @@ int main() {
         test_json_delivery();
         test_row_icon_delivery();
         test_label_orientation_delivery();
-        test_anchor_delivery();
+        test_hud_delivery();
         return 0;
     } catch (const std::exception& e) {
         std::fprintf(stderr, "ui_design_delivery_test: %s\n", e.what());

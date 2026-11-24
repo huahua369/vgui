@@ -94,6 +94,15 @@ out/bin/x64d/vgui_runtime_hud.exe --smoke path/to/arena-delivery
 
 点击技能按钮会把 `hud.skill.1` 至 `hud.skill.6` 交给宿主；对应 Q/W/E/R/T/Y 快捷键，U 触发大招冷却，B 在 0、60、100 逻辑单位的安全边距间切换。宿主只挂载一次并更新实时进度，不写回设计。世界空间名牌和公告牌仍属于 3D 示例的宿主代码。`ctest -R runtime_hud_design` 无需打开窗口，检查技能动作、普通宽屏和 21:9、非对称安全区、准星位置及重排前后的运行态值。
 
+技能冷却、血量和护盾现在由 HUD 的 `bind_value` 指定字段。宿主在输入派发结束后发布数据，例如：
+
+```cpp
+hud.set_data("player.hp_ratio", vgui::ui_design::value{0.65});
+hud.set_data("player.hp_ratio", std::nullopt); // 回到设计进度
+```
+
+文本、进度、显隐、启用分别接受字符串、数值、布尔值、布尔值。不认识的字段或错误类型返回 `false`；相同值不会重复刷新。更新不重挂、不写回设计，重新挂载时由宿主重新发布。技能规则、冷却计时和输入映射继续属于游戏宿主，设计稿只描述界面用哪些数据。`--check-design` 检查本示例的绑定合约；旧 HUD 设计未绑定的进度条仍可在正常运行和窗口烟测中使用。
+
 ## 5. R2 手柄/键盘方向导航（已实现；焦点环待接实机手柄确认）
 
 > **实施记录**：R2-1 实际 API 为 `vgui_nav_direction`（UP/DOWN/LEFT/RIGHT，`vgui_direction` 名已被 RTL 方向占用）+ `vgui_focus_navigate`；环绕含横向偏移 tie-break（同主轴距离取横轴最小者，否则网格环绕落到 0 列）。验收：model_test test_focus_navigate 12 断言（独立上下文 3x3 网格，避免残留控件成为环绕候选）全过。R2-2 如设计实现（pump_gamepad 每帧泵）。

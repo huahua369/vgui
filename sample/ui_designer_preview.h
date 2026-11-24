@@ -7,6 +7,7 @@
 #include <array>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -82,7 +83,7 @@ public:
     // Raw SDL events in window points, before shell shortcut/input dispatch.
     // Do not forward consumed events. DPI is read from the event's SDL window.
     bool handle_event(const SDL_Event&);
-    // Drop pointer and keyboard ownership without invalidating a cached frame.
+    // Discard any open preview dialog and drop input ownership without invalidating a cached frame.
     void cancel_interaction();
     // Call after event dispatch, once the existing strings provider has been
     // assigned a new locale. Relabels shell controls without changing the mounted preview.
@@ -113,6 +114,7 @@ public:
         bool timeline_open = false;
         std::optional<viewport> custom_viewport; // Absent when using a preset.
         safe_area_insets safe_area;
+        std::map<std::string, value, std::less<>> simulation; // Page-local Run overrides, never serialized.
     };
 
     view_state capture_view() const;
@@ -138,6 +140,7 @@ public:
     // Read-only views of the displayed board and private runtime widget state.
     std::optional<pixel_rect> artboard_rect_px() const;
     std::optional<std::string> edit_text(std::string_view id) const;
+    std::optional<std::string> node_text(std::string_view id) const;
 
 private:
     struct impl;

@@ -483,9 +483,47 @@ struct runtime::mounted_tree {
         const entry* owner = nullptr;
         std::map<vgui_item_id, std::string> actions;
     };
+    struct data_target {
+        vgui_widget* widget;
+        std::string_view property; // Points into the schema.
+        value fallback;
+        std::string text_key;
+        float min = 0, max = 0;
+
+        void apply(const std::optional<value>& data) const {
+            const auto& effective = data ? *data : fallback;
+            if (property == "text") {
+                if (!data && !text_key.empty()) vgui_widget_set_text_key(widget, text_key.c_str());
+                else vgui_widget_set_text(widget, std::get<std::string>(effective).c_str());
+            } else if (property == "value") {
+                const float desired = std::clamp(static_cast<float>(std::get<double>(effective)), min, max);
+                const float before = vgui_widget_get_value(widget);
+                if (desired != before) {
+                    vgui_widget_set_value(widget, desired); // Uses the native progress range and step.
+                    if (vgui_widget_get_value(widget) != before) vgui_widget_mark_dirty(widget);
+                }
+            } else if (property == "visible") {
+                const bool visible = std::get<bool>(effective);
+                if (vgui_widget_get_visible(widget) != visible) {
+                    vgui_widget_invalidate_recording(widget);
+                    vgui_widget_set_visible(widget, visible);
+                    vgui_widget_mark_dirty(widget);
+                }
+            } else if (vgui_widget_get_enabled(widget) != std::get<bool>(effective)) {
+                vgui_widget_invalidate_recording(widget);
+                vgui_widget_set_enabled(widget, std::get<bool>(effective));
+            }
+        }
+    };
+    struct data_field {
+        value_type type;
+        std::optional<value> live;
+        std::vector<data_target> targets;
+    };
     vgui_widget* root = nullptr;
     std::map<std::string, entry, std::less<>> entries;
     std::map<vgui_widget*, menu_actions> menus;
+    std::map<std::string, data_field, std::less<>> fields;
     std::set<vgui_texture*> collection_textures;
     std::vector<std::string> order;
     std::vector<diagnostic> diagnostics;
@@ -528,6 +566,17 @@ vgui_widget* runtime::widget(std::string_view id) const {
 }
 std::span<const diagnostic> runtime::diagnostics() const {
     return tree_ ? std::span<const diagnostic>(tree_->diagnostics) : std::span<const diagnostic>();
+}
+
+bool runtime::set_data(std::string_view field, std::optional<value> data) {
+    if (!tree_) return false;
+    const auto it = tree_->fields.find(field);
+    if (it == tree_->fields.end() || (data && !valid_data_value(it->second.type, *data))) return false;
+    auto& slot = it->second;
+    if (slot.live == data) return true;
+    slot.live = std::move(data);
+    for (const auto& target : slot.targets) target.apply(slot.live);
+    return true;
 }
 
 namespace {
@@ -739,6 +788,20 @@ bool runtime::mount(const document& doc, std::uint64_t revision, const runtime_b
             }
         }
         detail::apply_primitive(w, n, p);
+        for (const auto& binding : data_bindings()) {
+            const auto it = n.props.find(binding.key);
+            if (it == n.props.end()) continue;
+            const auto& field = std::get<std::string>(it->second);
+            if (field.empty() || !data_binding_applies(binding, n, parent_node)) continue;
+            auto& slot = next->fields.try_emplace(field, mounted_tree::data_field{binding.type, {}, {}}).first->second;
+            mounted_tree::data_target target{w, binding.target, property(n, binding.target), {}};
+            if (binding.target == "text") target.text_key = p.text("text_key");
+            else if (binding.target == "value") {
+                target.min = p.number("min_value");
+                target.max = p.number("max_value");
+            }
+            slot.targets.push_back(std::move(target));
+        }
         if (detail::collection_kind(n.type)) {
             e.handler = bindings.on_action;
             e.user = bindings.user;

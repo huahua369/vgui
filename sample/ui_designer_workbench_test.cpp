@@ -1944,6 +1944,56 @@ void exercise_switch_appearance()
     check(workbench.io_ok && model.current() == sized, "switch track dimensions or appearance were lost on save/reopen");
 }
 
+void exercise_data_binding_inspector()
+{
+    temp_dir directory;
+    test_workbench workbench(directory.path / "data-binding.vgui.json", ui::designer_language::simplified_chinese);
+    auto& model = workbench.model;
+    const auto root = model.current().root;
+    const ui::edit seed[] = {
+        ui::insert_node{"hud", root, {"label", {}, {{"text", std::string("Design")}}, {}}},
+        ui::insert_node{"bar", root, {"progress", {}, {{"bind_value", std::string("player.hp_ratio")}}, {}}},
+    };
+    check(model.apply(seed), "could not seed binding targets");
+    workbench.bench.select("hud");
+    workbench.frame();
+    auto* ctx = workbench.ctx.get();
+    auto* search = workbench.widget("__property_search", VGUI_EDIT);
+    workbench.click(search);
+    check(vgui_input_text(ctx, "bind_text"), "could not filter the text binding property");
+    workbench.frame();
+    constexpr auto id = "property:bind_text";
+    check(std::string_view(vgui_widget_get_text(workbench.widget(id, VGUI_LABEL))) == "文本字段",
+        "text binding has no localized property label");
+    const auto original = model.current();
+    auto* field = workbench.widget(id, VGUI_EDIT);
+    workbench.click(field);
+    const auto type = [&](const char* key) {
+        vgui_edit_select_all(field);
+        check(vgui_input_text(ctx, key), "could not type a game field key");
+        workbench.frame();
+    };
+    type("hud.caption");
+    const auto live = model.current();
+    check(live.nodes.at("hud").props.at("bind_text") == ui::value{std::string("hud.caption")} &&
+        model.committed() == original, "binding edits must apply live before Enter");
+    type("hud caption");
+    check(model.current() == live, "invalid field key replaced the last valid draft");
+    type("player.hp_ratio");
+    check(model.current() == live, "one key accepted both text and number targets");
+    type("hud.final");
+    workbench.key(VGUI_KEY_ENTER);
+    const auto committed = model.current();
+    check(committed.nodes.at("hud").props.at("bind_text") == ui::value{std::string("hud.final")} &&
+        model.undo() && model.current() == original && model.redo() && model.current() == committed,
+        "a typing session must be one undoable edit");
+    workbench.strings = ui::designer_strings(ui::designer_language::english);
+    workbench.bench.refresh_language();
+    workbench.frame();
+    check(std::string_view(vgui_widget_get_text(workbench.widget(id, VGUI_LABEL))) == "Text field",
+        "English language switch did not relabel the binding");
+}
+
 void exercise_anchor_inspector()
 {
     temp_dir directory;
@@ -2790,6 +2840,7 @@ int main()
         exercise_menu_language();
         exercise_control_search();
         exercise_anchor_inspector();
+        exercise_data_binding_inspector();
         exercise_language_preferences();
         exercise_layout_preferences();
         std::puts("UI Designer workbench smoke test passed");

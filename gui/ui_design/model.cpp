@@ -9,8 +9,10 @@
 #include <algorithm>
 #include <charconv>
 #include <cmath>
+#include <limits>
 #include <set>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 
 namespace vgui::ui_design {
@@ -27,6 +29,16 @@ constexpr sv tooltip_anchors[] = {"pointer", "widget"};
 constexpr sv focus_choices[] = {"default", "yes", "no"};
 constexpr sv anchors[] = {"start", "center", "end", "stretch"};
 
+constexpr data_binding_descriptor text_binding{"bind_text", "text", value_type::text};
+constexpr data_binding_descriptor value_binding{"bind_value", "value", value_type::number};
+constexpr data_binding_descriptor visible_binding{"bind_visible", "visible", value_type::boolean};
+constexpr data_binding_descriptor enabled_binding{"bind_enabled", "enabled", value_type::boolean};
+constexpr data_binding_descriptor bindings[] = {text_binding, value_binding, visible_binding, enabled_binding};
+const property_descriptor bind_text{text_binding.key, "Text field", value_type::data_key, std::string{}};
+const property_descriptor progress_binding[] = {
+    {value_binding.key, "Value field", value_type::data_key, std::string{}},
+};
+
 const property_descriptor common[] = {
     {"x", "X", value_type::number, 0.0, -max_geometry, max_geometry},
     {"y", "Y", value_type::number, 0.0, -max_geometry, max_geometry},
@@ -40,6 +52,8 @@ const property_descriptor common[] = {
     {"grow", "Grow", value_type::number, 0.0, 0, max_geometry},
     {"visible", "Visible", value_type::boolean, true},
     {"enabled", "Enabled", value_type::boolean, true},
+    {visible_binding.key, "Visibility field", value_type::data_key, std::string{}},
+    {enabled_binding.key, "Enabled field", value_type::data_key, std::string{}},
     {"min_width", "Minimum width", value_type::number, 0.0, 0, max_geometry},
     {"min_height", "Minimum height", value_type::number, 0.0, 0, max_geometry},
     {"max_width", "Maximum width", value_type::number, 0.0, 0, max_geometry},
@@ -88,12 +102,12 @@ const property_descriptor label[] = {
     {"font_weight", "Font weight", value_type::choice, std::string("default"), 0, 0, font_weights},
     {"font_slant", "Font slant", value_type::choice, std::string("default"), 0, 0, font_slants},
     {"text_color", "Text color", value_type::color, std::string{}},
-    font_family,
+    font_family, bind_text,
 };
 const property_descriptor button[] = {
     label[0], label[1], {"action", "Action", value_type::action_key, std::string{}},
     {"atlas", "Button atlas path", value_type::resource_key, std::string{}},
-    label[2], label[3], label[4], label[5], font_family,
+    label[2], label[3], label[4], label[5], font_family, bind_text,
 };
 const property_descriptor edit_box[] = {
     label[0], label[1], {"placeholder", "Placeholder", value_type::text, std::string{}},
@@ -116,6 +130,7 @@ const auto label_properties = properties(label, detail::extra_label_properties);
 const auto button_properties = properties(button, detail::extra_button_properties, detail::extra_button_gradient_properties);
 const auto edit_properties = properties(edit_box, detail::extra_edit_properties);
 const auto image_properties = properties(image, detail::extra_image_properties);
+const auto progress_properties = properties(detail::progress_properties, progress_binding);
 const type_descriptor descriptors[] = {
     {"panel", "Panel", true, panel_properties, 240, 160},
     {"label", "Label", false, label_properties, 120, 24},
@@ -127,7 +142,7 @@ const type_descriptor descriptors[] = {
     {"radio", "Radio Button", false, detail::radio_properties, 144, 28},
     {"switch", "Switch", false, detail::switch_properties, 144, 28},
     {"slider", "Slider", false, detail::slider_properties, 180, 28},
-    {"progress", "Progress Bar", false, detail::progress_properties, 180, 24},
+    {"progress", "Progress Bar", false, progress_properties, 180, 24},
     {"separator", "Separator", false, detail::separator_properties, 160, 8},
     {"list", "List", false, detail::list_properties, 210, 165},
     {"tree", "Tree", false, detail::tree_properties, 210, 180},
@@ -533,6 +548,7 @@ std::string encode_gradient_keyframes(std::span<const gradient_keyframe> keyfram
 
 std::span<const type_descriptor> types() { return descriptors; }
 std::span<const property_descriptor> common_properties() { return common; }
+std::span<const data_binding_descriptor> data_bindings() { return bindings; }
 
 const type_descriptor* find_type(sv type)
 {
@@ -544,6 +560,8 @@ const property_descriptor* find_property(sv type, sv key)
 {
     const auto* desc = find_type(type);
     if (!desc) return nullptr;
+    // Decorative gradients expose visibility, but not an enabled binding.
+    if (type == "gradient" && key == enabled_binding.key) return nullptr;
     for (const auto& prop : desc->properties) if (prop.key == key) return &prop;
     for (const auto& prop : common_properties()) if (prop.key == key) return &prop;
     return nullptr;
@@ -553,6 +571,55 @@ bool accepts_child(const type_descriptor& parent, std::string_view child_type, s
 {
     return parent.container && existing_children < parent.max_children &&
         (!parent.panel_children_only || child_type == "panel");
+}
+
+bool data_binding_applies(const data_binding_descriptor& binding, const node& item, const node* parent)
+{
+    // Tabs and dock containers manage their own pages' visibility.
+    if (binding.key == visible_binding.key && parent && (parent->type == "tabview" || parent->type == "dock"))
+        return false;
+    const auto* prop = find_property(item.type, binding.key);
+    return prop && prop->type == value_type::data_key;
+}
+
+data_field_map data_fields(const document& doc)
+{
+    std::unordered_map<sv, const node*> parents;
+    parents.reserve(doc.nodes.size());
+    for (const auto& [id, item] : doc.nodes)
+        for (const auto& child : item.children)
+            parents.emplace(child, &item);
+
+    data_field_map fields;
+    for (const auto& [id, item] : doc.nodes) {
+        const auto it_parent = parents.find(id);
+        const auto* parent = it_parent == parents.end() ? nullptr : it_parent->second;
+        for (const auto& binding : data_bindings()) {
+            const auto it = item.props.find(binding.key);
+            if (it == item.props.end()) continue;
+            const auto& key = std::get<std::string>(it->second);
+            if (!key.empty() && data_binding_applies(binding, item, parent)) fields.try_emplace(key, binding.type);
+        }
+    }
+    return fields;
+}
+
+bool valid_data_value(value_type type, const value& data)
+{
+    switch (type) {
+    case value_type::boolean:
+        return std::holds_alternative<bool>(data);
+    case value_type::number: {
+        const auto* number = std::get_if<double>(&data);
+        return number && std::isfinite(*number) && std::abs(*number) <= std::numeric_limits<float>::max();
+    }
+    case value_type::text: {
+        const auto* text = std::get_if<std::string>(&data);
+        return text && valid_text(*text, max_text_bytes);
+    }
+    default:
+        return false;
+    }
 }
 
 document make_document()
@@ -617,6 +684,7 @@ bool validate(const document& doc, diagnostic* error)
     }
 
     std::set<sv> parented;
+    std::map<sv, value_type> field_types;
     for (const auto& [id, item] : doc.nodes) {
         const auto path = node_path(id);
         if (!is_key(id)) return fail(error, path, "invalid node ID");
@@ -651,7 +719,20 @@ bool validate(const document& doc, diagnostic* error)
                 std::string reason;
                 if (!source) return fail(error, prop_path, "expected a gradient keyframe array");
                 if (!decode_gradient_keyframes(*source, keyframes, reason)) return fail(error, prop_path, std::move(reason));
-            } else if (!check_value(doc, *prop, val, prop_path, error)) return false;
+            } else {
+                if (!check_value(doc, *prop, val, prop_path, error)) return false;
+                if (prop->type == value_type::data_key) {
+                    // Include dormant bindings so reparenting cannot create a type conflict.
+                    const auto& field = std::get<std::string>(val);
+                    if (field.empty()) continue;
+                    const auto registered = data_bindings();
+                    const auto binding = std::find_if(registered.begin(), registered.end(),
+                        [&](const auto& candidate) { return candidate.key == key; });
+                    const auto [it, inserted] = field_types.try_emplace(field, binding->type);
+                    if (!inserted && it->second != binding->type)
+                        return fail(error, prop_path, "data field '" + field + "' is already bound to a different type");
+                }
+            }
         }
         const auto n = [&](std::string_view key) {
             const auto it = item.props.find(key);

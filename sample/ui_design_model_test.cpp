@@ -10,6 +10,7 @@
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <random>
 #include <set>
@@ -190,6 +191,136 @@ void canonical_round_trip()
     std::swap(children[0], children[1]);
     check(encode(reordered) != canonical && decode(encode(reordered)) == reordered,
         "canonical encoding must not sort or discard ordered children");
+}
+
+void data_binding_round_trip()
+{
+    using ui::value_type;
+    const ui::data_binding_descriptor expected[] = {
+        {"bind_text", "text", value_type::text},
+        {"bind_value", "value", value_type::number},
+        {"bind_visible", "visible", value_type::boolean},
+        {"bind_enabled", "enabled", value_type::boolean},
+    };
+    const auto registered = ui::data_bindings();
+    check(registered.size() == std::size(expected), "exactly four data binding targets");
+    for (std::size_t i = 0; i < registered.size(); ++i) {
+        const auto& [key, target, type] = registered[i];
+        check(key == expected[i].key && target == expected[i].target && type == expected[i].type,
+            "binding descriptor identifies the authored fallback and actual field type");
+        for (const auto& kind : ui::types()) {
+            const bool supported = key == "bind_text" ? kind.key == "label" || kind.key == "button" :
+                key == "bind_value" ? kind.key == "progress" : key == "bind_visible" || kind.key != "gradient";
+            const auto* prop = ui::find_property(kind.key, key);
+            if (supported) {
+                const auto* fallback = ui::find_property(kind.key, target);
+                check(prop && prop->type == value_type::data_key && prop->default_value == ui::value{""s} &&
+                    fallback && fallback->type == type, "supported binding is an optional string key with a typed fallback");
+            } else {
+                check(!prop, std::string(kind.key) + " must not declare " + std::string(key));
+            }
+        }
+    }
+
+    const auto doc = decode(json_document(R"({
+        "root":{"type":"panel","children":["caption","confirm","meter","paint"],
+                "props":{"bind_visible":"","bind_enabled":"flags.active","enabled":false}},
+        "caption":{"type":"label","props":{"text":"Author caption","text_key":"caption.i18n","bind_text":"z.caption"}},
+        "confirm":{"type":"button","props":{"text":"Author button","bind_text":"z.caption","bind_visible":"flags.active"}},
+        "meter":{"type":"progress","props":{"value":0.75,"bind_value":"a.meter"}},
+        "paint":{"type":"gradient","props":{"enabled":false,"bind_visible":"flags.active"}}
+    })"));
+    const ui::data_field_map expected_fields{
+        {"a.meter", value_type::number}, {"flags.active", value_type::boolean}, {"z.caption", value_type::text}};
+    check(ui::data_fields(doc) == expected_fields, "deduplicate shared fields and ignore empty and localization keys");
+    const auto json = encode(doc);
+    const auto reopened = decode(json);
+    check(reopened == doc && encode(reopened) == json, "bindings and fallback properties round-trip as ordinary v1 props");
+    check(reopened.nodes.at("caption").props.at("text") == ui::value{"Author caption"s} &&
+        reopened.nodes.at("meter").props.at("value") == ui::value{0.75} &&
+        reopened.nodes.at("root").props.at("enabled") == ui::value{false},
+        "data bindings do not overwrite authored fallback values");
+    check(ui::data_fields(decode(minimal)).empty(), "legacy page with no bindings declares no fields");
+}
+
+void data_binding_validation()
+{
+    for (const auto& key : {"."s, ".."s, "a/b"s, "a b"s, R"(\u00e9)"s, R"(key\u0000)"s, std::string(65, 'a')}) {
+        const auto page = json_document(R"({"root":{"type":"panel","props":{"bind_visible":")" + key + R"("}}})");
+        check(reject_json(page, "invalid data key").path == "/nodes/root/props/bind_visible", "invalid key path");
+    }
+    const auto max_key = "A0._-"s + std::string(59, 'a');
+    const auto page = json_document(R"({"root":{"type":"panel","props":{"bind_visible":")" + max_key + R"("}}})");
+    check(ui::data_fields(decode(page)) == ui::data_field_map{{max_key, ui::value_type::boolean}},
+        "64-byte ASCII data key accepted");
+    check(reject_json(json_document(R"({"root":{"type":"panel","props":{"bind_visible":true}}})"),
+        "binding must be a string key").path == "/nodes/root/props/bind_visible", "binding type error path");
+    check(reject_json(json_document(R"({"root":{"type":"panel","children":["paint"]},
+        "paint":{"type":"gradient","props":{"bind_enabled":""}}})"), "decorative gradient enabled binding").path ==
+        "/nodes/paint/props/bind_enabled", "unsupported binding path");
+    check(reject_json(json_document(R"({"root":{"type":"panel","children":["a","b"]},
+        "a":{"type":"label","props":{"bind_text":"same"}},"b":{"type":"progress","props":{"bind_value":"same"}}})"),
+        "text and number cannot share a field").path == "/nodes/b/props/bind_value", "cross-node type conflict path");
+    check(reject_json(json_document(R"({"root":{"type":"panel","children":["a"]},
+        "a":{"type":"button","props":{"bind_enabled":"same","bind_text":"same"}}})"),
+        "boolean and text cannot share a field on one node").path == "/nodes/a/props/bind_text", "same-node conflict path");
+}
+
+void dormant_data_bindings()
+{
+    using ui::value_type;
+    const auto doc = decode(json_document(R"({
+        "root":{"type":"panel","children":["tabs","dock"],"props":{"bind_visible":"shared"}},
+        "tabs":{"type":"tabview","children":["tab_page","second_tab"]},
+        "tab_page":{"type":"panel","children":["caption"],
+                    "props":{"bind_visible":"tabs.show","bind_enabled":"tabs.enabled"}},
+        "second_tab":{"type":"panel","props":{"bind_visible":"shared"}},
+        "caption":{"type":"label","props":{"bind_visible":"caption.show"}},
+        "dock":{"type":"dock","children":["dock_page"]},
+        "dock_page":{"type":"panel","props":{"bind_visible":"dock.show","bind_enabled":"dock.enabled"}}
+    })"));
+    const ui::data_field_map effective{
+        {"caption.show", value_type::boolean}, {"dock.enabled", value_type::boolean},
+        {"shared", value_type::boolean}, {"tabs.enabled", value_type::boolean}};
+    check(ui::data_fields(doc) == effective,
+        "only visibility bindings on immediate tab/dock pages are dormant, and an active use still declares a shared key");
+    check(decode(encode(doc)) == doc, "dormant visibility props still round-trip");
+
+    auto moved = doc;
+    moved.nodes.at("tabs").children.erase(moved.nodes.at("tabs").children.begin());
+    moved.nodes.at("root").children.push_back("tab_page");
+    ui::diagnostic error;
+    expect_ok(ui::validate(moved, &error), error, "reparent former tab page");
+    auto restored = effective;
+    restored.emplace("tabs.show", value_type::boolean);
+    check(ui::data_fields(moved) == restored, "reparenting restores a stored visibility binding");
+
+    auto invalid = doc;
+    invalid.nodes.at("caption").props.emplace("bind_text", "tabs.show"s);
+    expect_failure(ui::validate(invalid, &error), error, "dormant binding reserves its field type");
+    check(error.path == "/nodes/tab_page/props/bind_visible", "dormant type conflict pinpoints the incompatible property");
+}
+
+void data_value_validation()
+{
+    using ui::valid_data_value;
+    using ui::value_type;
+    check(valid_data_value(value_type::boolean, true) && valid_data_value(value_type::boolean, false) &&
+        !valid_data_value(value_type::boolean, 0.0) && !valid_data_value(value_type::boolean, "true"s),
+        "boolean data validation is strict");
+    constexpr double float_max = std::numeric_limits<float>::max();
+    check(valid_data_value(value_type::number, -float_max) && valid_data_value(value_type::number, float_max) &&
+        valid_data_value(value_type::number, 0.25) && !valid_data_value(value_type::number, false) &&
+        !valid_data_value(value_type::number, "0.25"s) && !valid_data_value(value_type::number, float_max * 2) &&
+        !valid_data_value(value_type::number, std::numeric_limits<double>::infinity()) &&
+        !valid_data_value(value_type::number, std::numeric_limits<double>::quiet_NaN()),
+        "number data must be finite and fit the native float range");
+    check(valid_data_value(value_type::text, ""s) && valid_data_value(value_type::text, "Caf\xC3\xA9"s) &&
+        valid_data_value(value_type::text, std::string(16384, 'x')) &&
+        !valid_data_value(value_type::text, std::string(16385, 'x')) &&
+        !valid_data_value(value_type::text, "before\0after"s) && !valid_data_value(value_type::text, "\xC0\x80"s) &&
+        !valid_data_value(value_type::text, 1.0) && !valid_data_value(value_type::data_key, "valid.key"s),
+        "text data shares the authored text restrictions, and key types are not data types");
 }
 
 void collection_json_round_trip()
@@ -917,6 +1048,29 @@ ui::diagnostic reject_edit(ui::session& s, std::initializer_list<ui::edit> edits
     return error;
 }
 
+void data_binding_transactions()
+{
+    ui::session s;
+    apply(s, {ui::insert_node{"caption", s.current().root, {"label", "", {{"text", "Authored"s}}, {}}}});
+    const auto unbound = s.committed();
+    apply_live(s, {ui::set_property{"caption", "bind_text", ui::value{"hud.caption"s}}});
+    const ui::data_field_map expected{{"hud.caption", ui::value_type::text}};
+    check(ui::data_fields(s.current()) == expected && s.committed() == unbound, "live data-key edit does not commit");
+    check(reject_edit(s, {ui::set_property{s.current().root, "bind_visible", ui::value{"hud.caption"s}}},
+        "boolean binding conflicts with previewed text field").path == "/nodes/root/props/bind_visible",
+        "failed binding edit preserves preview and points to the conflicting property");
+    s.finish_live();
+    const auto bound = s.committed();
+    check(ui::data_fields(bound) == expected && s.undo() && s.current() == unbound &&
+        s.redo() && s.current() == bound, "binding commits as one undoable and redoable Inspector transaction");
+    apply(s, {ui::set_property{"caption", "bind_text", ui::value{""s}}});
+    check(ui::data_fields(s.current()).empty() && s.current().nodes.at("caption").props.at("text") == ui::value{"Authored"s},
+        "clear the last binding without changing the authored text");
+    check(s.undo() && s.current() == bound && s.redo() && ui::data_fields(s.current()).empty(), "clearing a binding is undoable");
+    apply(s, {ui::set_property{"caption", "bind_text", std::nullopt}});
+    check(s.current() == unbound, "property reset removes the binding key from storage");
+}
+
 void declarative_container_constraints()
 {
     ui::session s;
@@ -1214,6 +1368,11 @@ int main()
 {
     const struct { const char* name; void (*run)(); } tests[] = {
         {"canonical v1 JSON", canonical_round_trip},
+        {"data bindings round trip", data_binding_round_trip},
+        {"data binding validation", data_binding_validation},
+        {"dormant tab and dock visibility bindings", dormant_data_bindings},
+        {"data value validation", data_value_validation},
+        {"data binding transactions", data_binding_transactions},
         {"label text orientation", label_text_orientation},
         {"anchor property validation and round trip", anchor_round_trip},
         {"optional font properties round trip", font_properties_round_trip},

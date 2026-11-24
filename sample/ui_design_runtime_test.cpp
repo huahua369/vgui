@@ -46,6 +46,77 @@ void same_rect(const ui::pixel_rect& a, const ui::pixel_rect& b) {
     check(near(a.x,b.x) && near(a.y,b.y) && near(a.width,b.width) && near(a.height,b.height),
         "snapshot rect differs from actual VGUI layout");
 }
+void test_game_data() {
+    ui::document doc;
+    ui::diagnostic error;
+    check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"layout":"column"},"children":["title","gauge","mirror","button"]},
+        "title":{"type":"label","props":{"height":20,"text":"Design","text_key":"hud.title",
+            "bind_text":"hud.caption","bind_visible":"hud.ready"}},
+        "gauge":{"type":"progress","props":{"width":100,"height":20,"min_value":0,"max_value":50,"step":5,
+            "value":10,"bind_value":"hud.amount"}},
+        "mirror":{"type":"progress","props":{"height":20,"max_value":10,"value":3,"bind_value":"hud.amount"}},
+        "button":{"type":"button","props":{"text":"Continue","height":20,"bind_text":"hud.caption","bind_enabled":"hud.ready"}}
+    }})", doc, &error), "decode the game data fixture");
+    const auto original = doc;
+    std::unique_ptr<vgui_context, decltype(&vgui_destroy)> ctx(vgui_create(nullptr, 16), &vgui_destroy);
+    vgui_context_set_string(ctx.get(), "en", "hud.title", "Localized title");
+    vgui_context_set_string(ctx.get(), "de", "hud.title", "Lokalisierter Titel");
+    vgui_context_set_language(ctx.get(), "en");
+    ui::runtime rt(ctx.get());
+    check(!rt.set_data("hud.caption", ui::value{"ignored"s}), "an unmounted instance cannot accept data");
+    check(rt.mount(doc, 12, {}, &error), "mount the game data fixture");
+    auto* title = rt.widget("title");
+    auto* gauge = rt.widget("gauge");
+    auto* mirror = rt.widget("mirror");
+    auto* button = rt.widget("button");
+    check(std::string_view(vgui_widget_get_text(title)) == "Localized title" && vgui_widget_get_value(gauge) == 10 &&
+        vgui_widget_get_value(mirror) == 3, "unpublished fields must keep each design default");
+    const auto initial = rt.layout({300, 120, 1});
+    check(initial && near(node(*initial, "gauge").rect_px.y, 20.f), "initial column layout");
+    const auto paint = vgui_context_paint_revision(ctx.get());
+    check(!rt.set_data("hud.unknown", ui::value{true}) &&
+        !rt.set_data("hud.amount", ui::value{"12"s}) &&
+        !rt.set_data("hud.amount", ui::value{std::numeric_limits<double>::infinity()}) &&
+        !rt.set_data("hud.caption", ui::value{std::string("A\0B", 3)}) &&
+        rt.set_data("hud.amount", std::nullopt) && vgui_context_paint_revision(ctx.get()) == paint,
+        "invalid updates and clearing an unset field must have no side effects");
+
+    check(rt.set_data("hud.amount", ui::value{13.}) && near(vgui_widget_get_value(gauge), 15.f) &&
+        near(vgui_widget_get_value(mirror), 10.f) && vgui_context_paint_revision(ctx.get()) != paint,
+        "number data must propagate in native range units, respecting each target's range and step");
+    check(rt.set_data("hud.caption", ui::value{"Live caption"s}) &&
+        std::string_view(vgui_widget_get_text(title)) == "Live caption" &&
+        std::string_view(vgui_widget_get_text(button)) == "Live caption", "one field must update both text targets");
+    vgui_context_set_language(ctx.get(), "de");
+    check(std::string_view(vgui_widget_get_text(title)) == "Live caption",
+        "changing language must not replace a published literal");
+    vgui_set_focus(ctx.get(), button);
+    const auto before_hide = vgui_context_paint_revision(ctx.get());
+    check(rt.set_data("hud.ready", ui::value{false}) && !vgui_widget_get_visible(title) &&
+        !vgui_widget_get_enabled(button) && !vgui_get_focus(ctx.get()) &&
+        vgui_context_paint_revision(ctx.get()) != before_hide, "boolean field should hide and disable real widgets");
+    const auto after_hide = vgui_context_paint_revision(ctx.get());
+    check(rt.set_data("hud.ready", ui::value{false}) && rt.set_data("hud.amount", ui::value{13.}) &&
+        rt.set_data("hud.caption", ui::value{"Live caption"s}) &&
+        vgui_context_paint_revision(ctx.get()) == after_hide, "repeated data must not submit new paint");
+    const auto resized = rt.layout({500, 180, 1.5f});
+    check(resized && resized->revision == 12 && near(node(*resized, "gauge").rect_px.y, 0.f) &&
+        !node(*resized, "title").visible && !node(*resized, "button").enabled && rt.widget("gauge") == gauge &&
+        near(vgui_widget_get_value(gauge), 15.f) && doc == original,
+        "resize must keep live values and handles; invisible nodes must not reserve layout space");
+
+    check(rt.set_data("hud.amount", std::nullopt) && rt.set_data("hud.caption", std::nullopt) &&
+        rt.set_data("hud.ready", std::nullopt) && vgui_widget_get_value(gauge) == 10 &&
+        vgui_widget_get_value(mirror) == 3 && std::string_view(vgui_widget_get_text(button)) == "Continue" &&
+        std::string_view(vgui_widget_get_text(title)) == "Lokalisierter Titel" &&
+        std::string_view(vgui_widget_get_text_key(title)) == "hud.title" &&
+        vgui_widget_get_visible(title) && vgui_widget_get_enabled(button), "clear must restore per-node values and localization");
+    check(rt.set_data("hud.amount", ui::value{42.}) && rt.mount(doc, 13, {}, &error) &&
+        vgui_widget_get_value(rt.widget("gauge")) == 10 && doc == original,
+        "mount must not carry live game data into the new tree");
+}
+
 void test_anchored_layout() {
     ui::diagnostic error;
     ui::document doc;
@@ -2221,6 +2292,7 @@ int main(int argc, char** argv) {
         check(argc == 1, "usage: ui_design_runtime_test [--links]");
         run();
         test_anchored_layout();
+        test_game_data();
         test_declarative_widgets();
         test_button_gradients();
         test_panel_gradients();

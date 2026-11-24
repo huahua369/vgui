@@ -30,7 +30,7 @@ struct diagnostic {
 };
 
 using value = std::variant<bool, double, std::string>;
-enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items, gradient_stops, gradient_keyframes };
+enum class value_type { boolean, number, text, choice, resource_key, action_key, localization_key, color, font_key, items, gradient_stops, gradient_keyframes, data_key };
 // Array-valued properties hold JSON text internally; page files use arrays.
 inline constexpr std::size_t max_gradient_stops = 32;
 struct gradient_stop {
@@ -144,6 +144,18 @@ struct document {
     std::map<std::string, std::string, std::less<>> resources;
     bool operator==(const document&) const = default;
 };
+
+struct data_binding_descriptor {
+    std::string_view key, target; // Binding property, then the authored fallback property.
+    value_type type; // Type of the bound value, not of the key.
+};
+std::span<const data_binding_descriptor> data_bindings();
+// Whether a binding is supported in this position, even if no key is assigned.
+bool data_binding_applies(const data_binding_descriptor& binding, const node& item, const node* parent);
+using data_field_map = std::map<std::string, value_type, std::less<>>;
+// Collect nonempty, effective field keys from an already validated document.
+data_field_map data_fields(const document& doc);
+bool valid_data_value(value_type type, const value& data);
 
 document make_document();
 bool validate(const document& doc, diagnostic* error = nullptr);

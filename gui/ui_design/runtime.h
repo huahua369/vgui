@@ -125,6 +125,13 @@ public:
     vgui_widget* widget(std::string_view id) const;
     std::span<const diagnostic> diagnostics() const;
 
+    // Publish a single field on the owner thread, outside input dispatch.
+    // Returns false for an unknown field or invalid type/value. nullopt
+    // restores every target's own authored value (including its text key).
+    // Same-value updates are no-ops. Layout keeps the values; a remount
+    // starts fresh. Neither publishing nor clearing changes the document.
+    bool set_data(std::string_view field, std::optional<value> data);
+
     // Applies DPI + viewport then runs VGUI layout (no drawing). Empty if not
     // mounted or the view is invalid. A zero root width/height fills that axis
     // of the viewport; explicit dimensions and x/y are in logical units.
