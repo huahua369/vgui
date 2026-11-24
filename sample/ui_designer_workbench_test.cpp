@@ -2516,11 +2516,51 @@ void exercise_control_search()
     check(vgui_list_get_count(list) == 1 && name(0) == "Tab View", "type key search did not match");
     type("no-such-control");
     check(vgui_list_get_count(list) == 0, "a nonmatching query still showed rows");
+    check(workbench.key(VGUI_KEY_DOWN) && workbench.key(VGUI_KEY_ENTER) &&
+        vgui_get_focus(ctx) == search && workbench.model.revision() == revision,
+        "an empty result moved focus or created a control");
     check(workbench.key(VGUI_KEY_ESCAPE) && vgui_list_get_count(list) == all && !*vgui_edit_get_text(search),
         "Escape did not clear the search and restore the catalog");
     type("   ");
     check(vgui_list_get_count(list) == all && workbench.model.current() == before && workbench.model.revision() == revision,
         "blank search filtered the catalog or changed the document");
+
+    type("button");
+    const auto first = vgui_list_get_item_at(list, 0);
+    const auto second = vgui_list_get_item_at(list, 1);
+    check(workbench.key(VGUI_KEY_ENTER) && vgui_get_focus(ctx) == search && workbench.model.revision() == revision,
+        "Enter while editing the query must not add a control or move focus");
+    check(vgui_input_editing(ctx, "an", 2, 0), "could not start a search IME composition");
+    check(workbench.key(VGUI_KEY_DOWN) && vgui_get_focus(ctx) == search,
+        "Down during IME composition moved focus away from the search");
+    check(vgui_input_editing(ctx, "", 0, 0), "could not end the search IME composition");
+    check(workbench.key(VGUI_KEY_DOWN) && vgui_get_focus(ctx) == list && vgui_list_is_selected(list, first),
+        "Down from the search did not select the first visible result");
+    check(workbench.key(VGUI_KEY_DOWN) && vgui_list_is_selected(list, second) && workbench.model.revision() == revision,
+        "Down in the list did not select the next result without editing the document");
+    workbench.click(search);
+    check(workbench.key(VGUI_KEY_DOWN) && vgui_list_is_selected(list, second),
+        "returning to the results lost the still-visible selection");
+
+    const auto* radio = ui::find_type("radio");
+    check(vgui_input_key(ctx, VGUI_KEY_ENTER, 1, 0) && vgui_input_key(ctx, VGUI_KEY_ENTER, 1, 0),
+        "list did not consume Enter and its repeat");
+    vgui_input_key(ctx, VGUI_KEY_ENTER, 0, 0);
+    workbench.frame();
+    const std::string added(workbench.bench.selection());
+    auto expected = before;
+    expected.nodes.at(before.root).children.push_back(added);
+    expected.nodes.emplace(added, ui::node{"radio", {}, {{"width", radio->initial_width}, {"height", radio->initial_height}}, {}});
+    check(workbench.model.current() == expected && workbench.model.revision() == revision + 1,
+        "Enter did not create exactly one Radio Button with the menu defaults");
+    workbench.edit("Undo");
+    check(workbench.model.current() == before && !workbench.model.can_undo(), "one Undo did not remove the keyboard-created control");
+
+    workbench.add("tabview", before.root);
+    const auto tab_revision = workbench.model.revision();
+    type("button");
+    check(workbench.key(VGUI_KEY_DOWN) && vgui_get_focus(ctx) == list && workbench.key(VGUI_KEY_ENTER) &&
+        workbench.model.revision() == tab_revision, "keyboard creation bypassed the Tab View child restriction");
 }
 
 void exercise_layout_preferences()

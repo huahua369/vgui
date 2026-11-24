@@ -3136,10 +3136,19 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     frame(); // Filter before any Enter or blur.
     require(vgui_list_get_count(list) == 1 && vgui_list_get_item_icon(list, vgui_list_get_item_at(list, 0)),
         "Chinese search did not show one result with its icon");
+    const ui::native_menu_input keys(win, shell, frame);
+    const auto before_keys = history.revision();
+    keys.key(SDLK_DOWN, SDL_SCANCODE_DOWN);
+    require(vgui_get_focus(shell) == list && vgui_list_is_selected(list, vgui_list_get_item_at(list, 0)) &&
+        history.revision() == before_keys, "Down did not focus and select the search result without adding it");
+    keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+    require(history.revision() == before_keys + 1, "Enter did not create one undoable control");
+    verify_insert(fixture.root.c_str(), false, "checkbox");
+
     drag(inside_flow, true);
     verify_insert("flow", false, "checkbox");
     input.click(search);
-    ui::native_menu_input(win, shell, frame).key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
     require(vgui_list_get_count(list) == static_cast<int>(ui::types().size()), "clearing search did not restore all rows");
 
     begin_drag(inside_leaf);

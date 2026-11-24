@@ -252,6 +252,8 @@ struct designer_workbench::impl {
     // List rows borrow their icon textures. The shell is destroyed before these owners.
     std::vector<icon_texture> control_icons;
     std::vector<vgui_item_id> control_rows; // Indexed by catalog entry; zero when filtered out.
+    bool control_search_composing = false;
+    bool control_enter_held = false;
     icon_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
     vgui_widget *toolbar = nullptr, *menubar = nullptr, *quick_actions = nullptr;
@@ -325,6 +327,8 @@ struct designer_workbench::impl {
         grid->set_gradient_popup_edit_listener(preview_paint);
         focus_listener = vgui_context_add_focus_listener(ui, [](vgui_context*, vgui_widget* old, vgui_widget*, void* user) {
             auto& self = *static_cast<impl*>(user);
+            if (old == self.control_search) self.control_search_composing = false;
+            if (old == self.controls) self.control_enter_held = false;
             // The picker owns its transaction until the popup closes, even
             // when focus moves between the picker controls.
             if (self.live && !self.live->popup && self.live->widget == old) self.finish_property_edit();
@@ -953,20 +957,30 @@ struct designer_workbench::impl {
         vgui_widget_set_gap(panel, 5);
         auto* hint = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_text_align(hint, 0, .5f);
-        bind_label(hint, {"workbench.controls.hint", "Drag onto the canvas"}, vgui_widget_set_text);
+        bind_label(hint, {"workbench.controls.hint", "Drag or press Enter to add"});
         control_search = vgui_widget_add(panel, VGUI_EDIT, nullptr);
         vgui_widget_set_id(control_search, "designer.controls.search");
         vgui_widget_set_size(control_search, 0, 28);
         vgui_widget_set_align_self(control_search, VGUI_ALIGN_STRETCH);
         bind_label(control_search, {"workbench.controls.search", "Search controls…"}, vgui_edit_set_placeholder);
         bind_label(control_search, {"workbench.controls.search", "Search controls…"}, vgui_widget_set_a11y_name);
+        bind_label(control_search, {"workbench.controls.search_hint", "Press Down to select a result, or Esc to clear the search."},
+            vgui_widget_set_tooltip);
         vgui_widget_on_text(control_search, [](vgui_widget*, const char*, void* user) {
             static_cast<impl*>(user)->update_control_search();
         }, this);
         vgui_widget_on_event(control_search, [](vgui_widget* edit, const vgui_event* event, void* user) {
-            if (event->type == VGUI_EVENT_CANCEL && event->key == VGUI_KEY_ESCAPE && *vgui_edit_get_text(edit)) {
+            auto& self = *static_cast<impl*>(user);
+            if (event->type == VGUI_EVENT_EDITING) {
+                self.control_search_composing = event->text && *event->text;
+            } else if (event->type == VGUI_EVENT_TEXT) {
+                self.control_search_composing = false;
+            } else if (event->type == VGUI_EVENT_KEY_DOWN && event->key == VGUI_KEY_DOWN &&
+                event->mods == VGUI_MOD_NONE && !self.control_search_composing) {
+                self.focus_control_results();
+            } else if (event->type == VGUI_EVENT_CANCEL && event->key == VGUI_KEY_ESCAPE && *vgui_edit_get_text(edit)) {
                 vgui_edit_set_text(edit, "");
-                static_cast<impl*>(user)->update_control_search();
+                self.update_control_search();
             }
         }, this);
         controls = vgui_widget_add(panel, VGUI_LIST, nullptr);
@@ -976,11 +990,34 @@ struct designer_workbench::impl {
         vgui_panel_set_scrollable(controls, 0, 1);
         bind_label(controls, {"workbench.controls.title", "Controls"}, vgui_widget_set_a11y_name);
         bind_label(controls, {"workbench.controls.no_match", "No matching controls"}, vgui_list_set_empty_text);
+        vgui_widget_on_event(controls, [](vgui_widget* list, const vgui_event* event, void* user) {
+            if (event->key != VGUI_KEY_ENTER) return;
+            auto& self = *static_cast<impl*>(user);
+            if (event->type == VGUI_EVENT_KEY_UP) {
+                self.control_enter_held = false;
+            } else if (event->type == VGUI_EVENT_KEY_DOWN && !std::exchange(self.control_enter_held, true) &&
+                event->mods == VGUI_MOD_NONE && self.page_active && !self.replaced) {
+                const auto item = vgui_list_get_cursor(list);
+                if (const auto index = self.control_index(item); index && vgui_list_is_selected(list, item))
+                    self.invoke_command(("designer.add." + std::string(types()[*index].key)).c_str());
+            }
+        }, this);
         control_icons.reserve(types().size());
         for (const auto& type : types()) control_icons.push_back(make_control_icon(ui, type.key));
         control_rows.resize(types().size());
         refresh_control_rows();
         bind_control_drag();
+    }
+
+    void focus_control_results()
+    {
+        auto item = vgui_list_get_selected(controls, 0);
+        if (!item) item = vgui_list_get_item_at(controls, 0);
+        if (!item) return;
+        vgui_list_set_cursor(controls, item);
+        vgui_list_select(controls, item, 1);
+        vgui_list_scroll_to_item(controls, item, VGUI_SCROLL_ALIGN_NEAREST);
+        vgui_set_focus(ui, controls);
     }
 
     void update_control_search()
@@ -1017,16 +1054,24 @@ struct designer_workbench::impl {
         }
     }
 
+    std::optional<std::size_t> control_index(vgui_item_id item) const
+    {
+        if (!item) return std::nullopt;
+        const auto found = std::ranges::find(control_rows, item);
+        if (found == control_rows.end()) return std::nullopt;
+        return static_cast<std::size_t>(found - control_rows.begin());
+    }
+
     void bind_control_drag()
     {
         vgui_list_set_row_drag(controls, [](void* user, vgui_item_id item, int, vgui_drag_payload* out) -> int {
             auto& self = *static_cast<impl*>(user);
-            if (!self.page_active || self.replaced || !item || self.history.current().nodes.size() >= max_nodes) return 0;
-            const auto found = std::ranges::find(self.control_rows, item);
-            if (found == self.control_rows.end()) return 0;
+            if (!self.page_active || self.replaced || self.history.current().nodes.size() >= max_nodes) return 0;
+            const auto index = self.control_index(item);
+            if (!index) return 0;
             // The visible row index changes when the search hides other types.
             *out = {.kind = VGUI_DRAG_CUSTOM, .text = vgui_list_get_item_text(self.controls, item),
-                .id = static_cast<vgui_item_id>(found - self.control_rows.begin()) + 1, .data = self.controls};
+                .id = static_cast<vgui_item_id>(*index) + 1, .data = self.controls};
             return 1;
         }, this);
     }
