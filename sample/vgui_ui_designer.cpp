@@ -536,32 +536,37 @@ private:
         const std::string node_id(workbench_.selection());
         const auto& doc = session_.current();
         const auto node = doc.nodes.find(node_id);
-        if (node == doc.nodes.end() || node->second.type != "button") return;
-        const auto icon = node->second.props.find("icon");
+        if (node == doc.nodes.end()) return;
+        const bool indicator = node->second.type == "checkbox" || node->second.type == "radio";
+        if (!indicator && node->second.type != "button") return;
+        const auto* fields = indicator ? ui::indicator_source_fields : ui::icon_source_fields;
+        const auto icon = node->second.props.find(indicator ? "indicator_atlas" : "icon");
         if (icon == node->second.props.end()) return;
         const auto resource = doc.resources.find(std::get<std::string>(icon->second));
         if (resource == doc.resources.end()) return;
         ui::icon_source_rect authored{};
         for (std::size_t i = 0; i < authored.size(); ++i) {
-            const auto it = node->second.props.find(ui::icon_source_fields[i]);
+            const auto it = node->second.props.find(fields[i]);
             if (it != node->second.props.end()) authored[i] = static_cast<int>(std::lround(std::get<double>(it->second)));
         }
-        icon_region_ = ui::open_icon_region_picker(shell_, strings_, resource_root(*page), resource->second, authored,
-            [this, page_id = page->id, rev = session_.revision(), node_id](std::optional<ui::icon_source_rect> region) {
+        icon_region_ = ui::open_icon_region_picker(shell_, strings_, resource_root(*page), resource->second, authored, indicator,
+            [this, page_id = page->id, rev = session_.revision(), node_id, fields, indicator](std::optional<ui::icon_source_rect> region) {
                 icon_region_ = nullptr;
                 if (!region || page_id != active_ || rev != session_.revision() || node_id != workbench_.selection()) return;
                 std::vector<ui::edit> batch;
                 for (std::size_t i = 0; i < region->size(); ++i) {
                     const auto value = (*region)[i];
-                    batch.emplace_back(ui::set_property{node_id, ui::icon_source_fields[i],
+                    batch.emplace_back(ui::set_property{node_id, fields[i],
                         value ? std::optional<ui::value>(double(value)) : std::nullopt});
                 }
                 ui::diagnostic error;
                 if (!session_.apply(batch, &error)) workbench_.status(describe(error));
-                else workbench_.status(tr("icon_region.applied", "Button icon region updated."));
+                else workbench_.status(indicator ? tr("indicator_region.applied", "Four-state region updated.")
+                    : tr("icon_region.applied", "Button icon region updated."));
             });
         if (!icon_region_)
-            workbench_.status(tr("icon_region.unavailable", "Cannot read this icon image. Check that it is a supported image inside the project."));
+            workbench_.status(indicator ? tr("indicator_region.unavailable", "Cannot read this atlas. Check that it is a supported image inside the project.")
+                : tr("icon_region.unavailable", "Cannot read this icon image. Check that it is a supported image inside the project."));
     }
 
     void cancel_icon_region() {
@@ -2921,14 +2926,21 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
     const auto file = sandbox / "icon-region.vgui.json";
     const auto source = sandbox / "icon-region.png";
     require(fs::copy_file(fs::path(VGUI_SOURCE_DIR) / "sample/res/image-button-states.png", source), "copy 384 × 128 fixture");
+    require(fs::copy_file(fs::path(VGUI_SOURCE_DIR) / "sample/res/choice-indicator-sheet.png",
+        sandbox / "shared-atlas.png"), "copy 273 × 139 choice atlas");
     auto doc = ui::make_document();
-    doc.resources = {{"icons", "icon-region.png"}, {"missing", "missing-region.png"}};
-    doc.nodes.at(doc.root).children = {"crop", "missing"};
+    doc.resources = {{"icons", "icon-region.png"}, {"missing", "missing-region.png"}, {"shared", "shared-atlas.png"}};
+    doc.nodes.at(doc.root).children = {"crop", "missing", "radio", "check"};
     doc.nodes.emplace("crop", ui::node{"button", "Crop", {{"x", 42.}, {"y", 42.}, {"width", 174.}, {"height", 66.},
         {"icon", std::string("icons")}, {"icon_source_x", 16.}, {"icon_source_y", 8.}, {"icon_source_width", 48.},
         {"icon_source_height", 32.}}, {}});
     doc.nodes.emplace("missing", ui::node{"button", "Missing", {{"x", 260.}, {"y", 42.}, {"width", 130.}, {"height", 50.},
         {"icon", std::string("missing")}}, {}});
+    doc.nodes.emplace("radio", ui::node{"radio", "Radio", {{"x", 42.}, {"y", 125.}, {"width", 174.}, {"height", 34.},
+        {"indicator_atlas", std::string("shared")}, {"indicator_source_x", 5.}, {"indicator_source_y", 5.},
+        {"indicator_source_width", 128.}, {"indicator_source_height", 128.}}, {}});
+    doc.nodes.emplace("check", ui::node{"checkbox", "Check", {{"x", 260.}, {"y", 125.}, {"width", 130.}, {"height", 34.},
+        {"indicator_atlas", std::string("shared")}}, {}});
     require(ui::write_document(file, doc) && editor.open(file), "open crop fixture");
     frame();
     const native_keyframe_input input{win, shell, editor.preview(), frame, require};
@@ -2940,7 +2952,7 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
         const auto board = editor.preview().artboard_rect_px();
         require(layout && board, "rendered fixture is missing");
         const auto entry = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
-        require(entry != layout->nodes.end() && entry->visible, "button is not on the board");
+        require(entry != layout->nodes.end() && entry->visible, "control is not on the board");
         const auto& r = entry->visible_px;
         const glm::vec2 point{board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
             board->y + (r.y + r.height / 2) * board->height / layout->pixel_height};
@@ -2965,18 +2977,23 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
         require(panel && std::string_view(vgui_widget_get_id(panel)) == "designer.icon_region", "inspector did not open the crop modal");
         require(coords().starts_with("X: 16     Y: 8     48 × 32 px"), "picker did not show the authored source area");
     };
-    const auto drag = [&] {
+    const auto drag_pixels = [&](int width, int height, glm::vec2 a, glm::vec2 b) {
         const auto r = input.rect(modal_widget("designer.icon_region.image", VGUI_CUSTOM));
-        const auto scale = std::min(r.width / 384, r.height / 128);
-        const auto left = r.x + (r.width - 384 * scale) / 2, top = r.y + (r.height - 128 * scale) / 2;
+        const auto scale = std::min(r.width / width, r.height / height);
+        const auto left = r.x + (r.width - width * scale) / 2, top = r.y + (r.height - height * scale) / 2;
         require(scale > 1, "image test requires at least one device pixel per source pixel");
-        const glm::vec2 from{std::round(left + 149.5f * scale), std::round(top + 91.5f * scale)};
-        const glm::vec2 to{std::round(left + 64.5f * scale), std::round(top + 22.5f * scale)};
+        const auto pixel_center = [&](glm::vec2 p) {
+            return glm::vec2{std::round(left + (p.x + .5f) * scale), std::round(top + (p.y + .5f) * scale)};
+        };
+        const auto from = pixel_center(a), to = pixel_center(b);
         input.motion(to, from, 0);
         input.button(true, from);
         input.motion(from, to);
         input.button(false, to);
         frame();
+    };
+    const auto drag = [&] {
+        drag_pixels(384, 128, {149, 91}, {64, 22});
         require(coords().starts_with("X: 64     Y: 22     86 × 70 px"), "reverse drag did not map to the original image pixels");
         require(history.current() == doc && history.revision() == initial && !history.can_undo(), "drag created a document edit before confirmation");
     };
@@ -3007,6 +3024,59 @@ void exercise_icon_region(os_window& win, vgui_context* shell, designer& editor,
     const auto unchanged = history.revision();
     input.click(modal_widget("designer.icon_region.ok", VGUI_BUTTON));
     require(history.current() == doc && history.revision() == unchanged && !history.can_undo(), "unmodified confirmation created history");
+
+    const auto open_choice_region = [&](const char* id) {
+        select_node(id);
+        require(std::string_view(vgui_widget_get_text(open)) ==
+            editor.strings().text("indicator_region.open", "Select Four-State Region…"), "choice did not show the four-state action");
+        input.click(open);
+        require(vgui_modal_panel(shell) != nullptr, "choice did not open the image picker");
+    };
+    const auto ok = [&] { return modal_widget("designer.icon_region.ok", VGUI_BUTTON); };
+    open_choice_region("check");
+    require(coords().starts_with("X: 0     Y: 0     273 × 139 px") && !vgui_widget_get_enabled(ok()) &&
+        !vgui_widget_get_enabled(modal_widget("designer.icon_region.whole", VGUI_BUTTON)),
+        "odd-sized sheet must require a four-state subregion");
+    drag_pixels(273, 139, {266, 132}, {140, 5});
+    require(coords().starts_with("X: 140     Y: 5     127 × 128 px") && !vgui_widget_get_enabled(ok()),
+        "odd crop width must not be confirmable");
+    drag_pixels(273, 139, {267, 132}, {140, 5});
+    require(coords().starts_with("X: 140     Y: 5     128 × 128 px") && vgui_widget_get_enabled(ok()) &&
+        history.current() == doc && history.revision() == unchanged,
+        "valid crop should enable confirmation without mutating the document");
+    input.click(ok());
+    expected = doc;
+    const auto set_indicator_region = [&](const char* id, ui::icon_source_rect region) {
+        for (std::size_t i = 0; i < region.size(); ++i)
+            expected.nodes.at(id).props[ui::indicator_source_fields[i]] = double(region[i]);
+    };
+    set_indicator_region("check", {140, 5, 128, 128});
+    require(history.current() == expected && history.revision() == unchanged + 1, "checkbox confirmation was not one isolated edit");
+    menus.activate(menus.open(1), 0);
+    require(history.current() == doc && !history.can_undo(), "one undo did not restore the checkbox's whole-image default");
+    menus.activate(menus.open(1), 1);
+    require(history.current() == expected, "redo did not reapply the checkbox crop");
+    open_choice_region("radio");
+    require(coords().starts_with("X: 5     Y: 5     128 × 128 px") && vgui_widget_get_enabled(ok()),
+        "radio picker mixed the radio and checkbox selections");
+    drag_pixels(273, 139, {9, 9}, {128, 128});
+    menus.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    require(!vgui_modal_active(shell) && history.current() == expected, "cancel changed the radio selection");
+    open_choice_region("radio");
+    drag_pixels(273, 139, {9, 9}, {128, 128});
+    require(coords().starts_with("X: 9     Y: 9     120 × 120 px") && vgui_widget_get_enabled(ok()), "radio could not select its own region");
+    input.click(ok());
+    set_indicator_region("radio", {9, 9, 120, 120});
+    require(history.current() == expected, "radio confirmation affected the other crop or resource");
+    editor.request(command::save);
+    frame();
+    ui::document saved;
+    require(!history.dirty() && ui::read_document(file, saved) && saved == expected, "saving lost the shared atlas or either region");
+    editor.request(command::close);
+    frame();
+    require(editor.open(file), "failed to reopen the shared-atlas page");
+    frame();
+    require(history.current() == expected, "reopening did not restore both independent regions");
     editor.request(command::close);
     frame();
 }
@@ -5108,7 +5178,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             app.wait_gpu();
             throw;
         }
-        std::puts("ui_designer_native: rendering, input, image buttons, geometry, control palette drag, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
+        std::puts("ui_designer_native: rendering, input, image buttons, icon and four-state region picking, geometry, control palette drag, language, theme, grid layering, layout, page docking, multi-page save/close/exit, delivery isolation, keyframe delivery, pose capture and gradient shape/stop handle dragging passed");
     }
     app.wait_gpu();
     return 0;

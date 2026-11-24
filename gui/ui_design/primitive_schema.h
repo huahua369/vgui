@@ -34,6 +34,10 @@ inline const property_descriptor text_align_center = {"text_align_x", "Horizonta
 inline const property_descriptor text_align_middle = {"text_align_y", "Vertical text alignment", value_type::choice, std::string("center"), 0, 0, text_alignment_y};
 inline const property_descriptor initially_checked = {"checked", "Initially checked", value_type::boolean, false};
 inline const property_descriptor indicator_atlas = {"indicator_atlas", "Indicator atlas path", value_type::resource_key, std::string{}};
+inline const property_descriptor indicator_source_x = {"indicator_source_x", "Indicator source X", value_type::number, 0.0, 0, primitive_extent};
+inline const property_descriptor indicator_source_y = {"indicator_source_y", "Indicator source Y", value_type::number, 0.0, 0, primitive_extent};
+inline const property_descriptor indicator_source_width = {"indicator_source_width", "Indicator source width", value_type::number, 0.0, 0, primitive_extent};
+inline const property_descriptor indicator_source_height = {"indicator_source_height", "Indicator source height", value_type::number, 0.0, 0, primitive_extent};
 inline const property_descriptor indicator_size = {"indicator_size", "Indicator size", value_type::number, 0.0, 0, primitive_extent};
 inline const property_descriptor indicator_gap = {"indicator_gap", "Label gap", value_type::number, 0.0, 0, primitive_extent};
 inline const property_descriptor accent_color = {"accent_color", "Accent color", value_type::color, std::string{}};
@@ -45,13 +49,17 @@ inline const property_descriptor range_value = {"value", "Initial value", value_
 inline const property_descriptor range_step = {"step", "Step", value_type::number, 0.0, 0, 2 * primitive_extent};
 
 inline const property_descriptor checkbox_properties[] = {
-    primitive_text, primitive_text_key, initially_checked, indicator_atlas, indicator_size, indicator_gap, accent_color,
+    primitive_text, primitive_text_key, initially_checked, indicator_atlas,
+    indicator_source_x, indicator_source_y, indicator_source_width, indicator_source_height,
+    indicator_size, indicator_gap, accent_color,
     text_align_start, text_align_middle, primitive_font_size, primitive_font_weight,
     primitive_font_slant, primitive_text_color, primitive_font_family,
 };
 inline const property_descriptor radio_properties[] = {
     primitive_text, primitive_text_key, {"radio_group", "Group name", value_type::text, std::string{}},
-    initially_checked, indicator_atlas, indicator_size, indicator_gap, accent_color,
+    initially_checked, indicator_atlas,
+    indicator_source_x, indicator_source_y, indicator_source_width, indicator_source_height,
+    indicator_size, indicator_gap, accent_color,
     text_align_start, text_align_middle, primitive_font_size, primitive_font_weight,
     primitive_font_slant, primitive_text_color, primitive_font_family,
 };

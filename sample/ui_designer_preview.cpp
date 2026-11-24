@@ -864,13 +864,22 @@ struct icon_region_picker {
     image_ptr image;
     icon_source_rect original, selected;
     std::function<void(std::optional<icon_source_rect>)> on_close;
-    vgui_widget *coordinates = nullptr, *whole = nullptr, *confirm = nullptr;
+    bool four_state = false;
+    std::string invalid_hint;
+    vgui_widget *canvas = nullptr, *coordinates = nullptr, *whole = nullptr, *confirm = nullptr;
     std::optional<point> anchor;
     icon_source_rect drag_start{};
 
     int width() const { return vgui_texture_get_width(image.get()); }
     int height() const { return vgui_texture_get_height(image.get()); }
     icon_source_rect entire() const { return {0, 0, width(), height()}; }
+
+    bool valid(icon_source_rect region) const {
+        if (!four_state) return true;
+        const auto [x, y, w, h] = region;
+        return x >= 0 && y >= 0 && w > 0 && h > 0 && w % 2 == 0 && h % 2 == 0 &&
+            w <= width() - x && h <= height() - y;
+    }
 
     icon_source_rect clamp(icon_source_rect authored) const {
         auto& [x, y, w, h] = authored;
@@ -889,9 +898,13 @@ struct icon_region_picker {
 
     void show_coordinates() const {
         const auto [x, y, w, h] = selected;
+        const bool can_apply = valid(selected);
         char text[96];
         std::snprintf(text, sizeof(text), "X: %d     Y: %d     %d × %d px     /     %d × %d px", x, y, w, h, width(), height());
-        vgui_widget_set_text(coordinates, text);
+        const std::string status = can_apply ? text : std::string(text) + "   ·   " + invalid_hint;
+        vgui_widget_set_text(coordinates, status.c_str());
+        vgui_widget_set_enabled(confirm, can_apply);
+        vgui_widget_mark_dirty(canvas);
     }
 
     // Select inclusive source pixels, independently of dialog scale or drag direction.
@@ -921,7 +934,6 @@ struct icon_region_picker {
             if (e->type == VGUI_EVENT_MOUSE_UP) self.anchor.reset();
         }
         self.show_coordinates();
-        vgui_widget_mark_dirty(w);
         return 1;
     }
 
@@ -951,21 +963,32 @@ struct icon_region_picker {
         fill(cb, vg, {area.x, bottom, area.width, area.y + area.height - bottom}, faded);
         fill(cb, vg, {area.x, selection.y, selection.x - area.x, selection.height}, faded);
         fill(cb, vg, {right, selection.y, area.x + area.width - right, selection.height}, faded);
-        outline(cb, vg, selection, area, 0xFFF6D373u);
+        const bool valid = self.valid(self.selected);
+        constexpr auto grid_color = 0xFFF6D373u;
+        outline(cb, vg, selection, area, valid ? grid_color : to_ovg(0xFFEE5757u));
+        if (self.four_state && valid) {
+            const float dx = std::min(selection.width * 0.25f, 2.f);
+            const float dy = std::min(selection.height * 0.25f, 2.f);
+            fill(cb, vg, {selection.x + (selection.width - dx) / 2, selection.y, dx, selection.height}, grid_color);
+            fill(cb, vg, {selection.x, selection.y + (selection.height - dy) / 2, selection.width, dy}, grid_color);
+        }
     }
 };
 
 } // namespace
 
 vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings& strings,
-    const std::filesystem::path& root, const std::string& relative, icon_source_rect authored,
+    const std::filesystem::path& root, const std::string& relative, icon_source_rect authored, bool four_state,
     std::function<void(std::optional<icon_source_rect>)> on_close) {
     if (!shell || vgui_modal_active(shell)) return nullptr;
     const auto file = resolve_project_resource(root, relative);
     image_load loader;
     if (file.empty() || !loader.load(shell, file)) return nullptr;
-    auto self = std::make_unique<icon_region_picker>(icon_region_picker{std::move(loader.images.back()), {}, {}, std::move(on_close)});
-    self->selected = self->original = self->clamp(authored);
+    auto self = std::make_unique<icon_region_picker>(icon_region_picker{
+        std::move(loader.images.back()), {}, {}, std::move(on_close), four_state,
+        strings.text("indicator_region.invalid", "Width and height must be even.")});
+    self->original = four_state && authored != icon_source_rect{} ? authored : self->clamp(authored);
+    self->selected = self->valid(self->original) ? self->original : self->entire();
     auto* panel = vgui_widget_create(shell, VGUI_PANEL, nullptr);
     vgui_widget_set_id(panel, "designer.icon_region");
     vgui_widget_set_layout(panel, VGUI_LAYOUT_COLUMN);
@@ -978,12 +1001,16 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
         vgui_widget_set_text_align(widget, 0, .5f);
         return widget;
     };
-    auto* title = label(strings.text("icon_region.title", "Button Icon Region"));
+    auto* title = label(four_state ? strings.text("indicator_region.title", "Four-State Indicator Region")
+        : strings.text("icon_region.title", "Button Icon Region"));
     vgui_widget_set_font_size(title, 18);
     vgui_widget_set_font_weight(title, VGUI_FONT_WEIGHT_SEMI_BOLD);
-    const auto* hint = strings.text("icon_region.hint", "Drag on the image to select a new rectangle.");
+    const auto* hint = four_state ? strings.text("indicator_region.hint",
+        "Drag around all four states. Left: unchecked; right: checked. Top: enabled; bottom: disabled.")
+        : strings.text("icon_region.hint", "Drag on the image to select a new rectangle.");
     label(hint);
     auto* canvas = vgui_widget_add(panel, VGUI_CUSTOM, nullptr);
+    self->canvas = canvas;
     vgui_widget_set_id(canvas, "designer.icon_region.image");
     vgui_widget_set_grow(canvas, 1);
     vgui_widget_set_a11y_name(canvas, hint);
@@ -992,7 +1019,6 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     vgui_custom_set_draw(canvas, icon_region_picker::draw, self.get());
     self->coordinates = label("");
     vgui_widget_set_id(self->coordinates, "designer.icon_region.coordinates");
-    self->show_coordinates();
     auto* buttons = vgui_widget_add(panel, VGUI_PANEL, nullptr);
     vgui_widget_set_layout(buttons, VGUI_LAYOUT_ROW);
     vgui_widget_set_justify(buttons, VGUI_JUSTIFY_END);
@@ -1015,8 +1041,12 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
         return w;
     };
     self->whole = button("designer.icon_region.whole", strings.text("icon_region.whole", "Whole Image"));
+    vgui_widget_set_enabled(self->whole, self->valid(self->entire()));
+    vgui_widget_set_tooltip_when_disabled(self->whole, 1);
+    if (four_state) vgui_widget_set_tooltip(self->whole, self->invalid_hint.c_str());
     button("designer.icon_region.cancel", strings.text("common.cancel", "Cancel"));
     self->confirm = button("designer.icon_region.ok", strings.text("common.ok", "OK"));
+    self->show_coordinates();
     vgui_modal_options options;
     vgui_modal_options_default(&options);
     options.destroy_on_close = 1;
@@ -1024,7 +1054,7 @@ vgui_widget* open_icon_region_picker(vgui_context* shell, const designer_strings
     options.on_close = [](vgui_context*, vgui_widget*, int result, void* user) {
         std::unique_ptr<icon_region_picker> picker(static_cast<icon_region_picker*>(user));
         std::optional<icon_source_rect> change;
-        if (result == VGUI_MODAL_RESULT_CONFIRM && picker->selected != picker->original)
+        if (result == VGUI_MODAL_RESULT_CONFIRM && picker->valid(picker->selected) && picker->selected != picker->original)
             change = picker->selected == picker->entire() ? icon_source_rect{} : picker->selected;
         picker->on_close(change);
     };

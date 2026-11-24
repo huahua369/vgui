@@ -1394,13 +1394,24 @@ extern "C" {
 	 * widget or texture (dimensions must both be positive and even). */
 	VGUI_API int vgui_button_set_atlas(vgui_widget* widget, vgui_texture* texture);
 
-	/* Optional indicator atlas for VGUI_CHECKBOX and VGUI_RADIO. Four equal
-	 * frames in 2×2 order: unchecked, checked, disabled unchecked, disabled
-	 * checked. The sprite fits within the existing indicator square; label,
-	 * focus and input stay native. Unusable textures fall back to the default
-	 * indicator. Retains the same-context texture; NULL clears it. Returns 0
-	 * for unsupported widgets or textures without positive even dimensions. */
+	/* Optional whole-texture indicator atlas for VGUI_CHECKBOX and VGUI_RADIO.
+	 * Four equal frames in 2×2 order: unchecked, checked, disabled unchecked,
+	 * disabled checked. The sprite fits within the existing indicator square;
+	 * label, focus and input stay native. Unusable textures fall back to the
+	 * default indicator. Retains the same-context texture; NULL clears it.
+	 * Returns 0 without changing the binding for unsupported widgets or
+	 * invalid textures (both texture dimensions must be positive and even). */
 	VGUI_API int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture);
+	/* Binds the same four frames within a fixed rectangle in original texture
+	 * pixels, independent of UI scale. x/y must be nonnegative, width/height
+	 * positive and even, and the rectangle fully inside the same-context
+	 * texture. The texture itself need not be even-sized. An invalid binding
+	 * returns 0 without changing the current one; success returns 1. NULL
+	 * clears the binding on a supported widget and ignores the rectangle.
+	 * If the texture is resized and no longer contains the rectangle, the
+	 * default indicator is drawn until the rectangle fits again. */
+	VGUI_API int vgui_choice_set_indicator_atlas_region(vgui_widget* widget, vgui_texture* texture,
+		int x, int y, int width, int height);
 
 	/* VGUI_CHECKBOX / VGUI_RADIO: optional square size and gap to the label,
 	 * in logical units. Non-positive or non-finite values inherit the theme

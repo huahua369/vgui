@@ -1032,11 +1032,26 @@ std::unique_ptr<runtime::mounted_tree> runtime::build_tree(const document& doc, 
         if (*kind == VGUI_CHECKBOX || *kind == VGUI_RADIO) {
             const auto& key = p.text("indicator_atlas");
             if (!key.empty()) {
+                const auto source = [&](std::string_view field) { return std::get<double>(property(n, field)); };
+                const double x = source("indicator_source_x"), y = source("indicator_source_y");
+                const double width = source("indicator_source_width"), height = source("indicator_source_height");
+                // An authored subpixel value is still a region request, even if it rounds to zero.
+                const bool has_region = x != 0 || y != 0 || width != 0 || height != 0;
+                const auto diagnose = [&](std::string_view field, std::string message) {
+                    next->diagnostics.push_back({"/nodes/" + id + "/props/" + std::string(field), std::move(message)});
+                };
                 auto* atlas = load_image(key);
-                if (!atlas || !vgui_choice_set_indicator_atlas(w, atlas)) {
-                    next->diagnostics.push_back({"/nodes/" + id + "/props/indicator_atlas", !atlas ?
-                        image_unavailable("indicator atlas", key) :
-                        "indicator atlas requires an even-sized 2x2 image from this context: " + key});
+                if (!atlas) diagnose("indicator_atlas", image_unavailable("indicator atlas", key));
+                else if (!has_region) {
+                    if (!vgui_choice_set_indicator_atlas(w, atlas))
+                        diagnose("indicator_atlas", "indicator atlas requires an even-sized 2x2 image from this context: " + key);
+                } else if (atlas->ctx != ctx_) {
+                    diagnose("indicator_atlas", "indicator atlas must be from this context: " + key);
+                } else {
+                    const auto pixel = [](double value) { return static_cast<int>(std::lround(value)); };
+                    if (!vgui_choice_set_indicator_atlas_region(w, atlas, pixel(x), pixel(y), pixel(width), pixel(height)))
+                        diagnose("indicator_source_width",
+                            "indicator source region requires positive even width and height within the image: " + key);
                 }
             }
         }

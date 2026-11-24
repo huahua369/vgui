@@ -25,6 +25,7 @@
 #include <array>
 #include <cstdio>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -349,6 +350,15 @@ static void test_choice_indicator_atlas(vgui_test_context& t)
 	expect(vgui_choice_set_indicator_atlas(nullptr, atlas.get()) == 0, "choice atlas rejects null widget");
 	expect(vgui_choice_set_indicator_atlas(panel, atlas.get()) == 0, "choice atlas rejects panel");
 	if (!expect(vgui_choice_set_indicator_atlas(check, atlas.get()) == 1, "choice atlas binds checkbox")) return;
+	expect(vgui_choice_set_indicator_atlas_region(check, atlas.get(), cw, 0, cw, ch) == 1,
+		"choice region replaces a whole atlas on the same handle");
+	checkbox_frame(colors[1], "choice atlas crop selects inside the old checked quadrant");
+	expect(vgui_choice_set_indicator_atlas(check, atlas.get()) == 1, "choice atlas restores whole texture on the same handle");
+	const vgui_texture_desc shorter_atlas{2 * cw, ch, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels};
+	expect(vgui_texture_update(atlas.get(), &shorter_atlas) == 1, "choice whole atlas is resized");
+	checkbox_frame(colors[0], "choice whole atlas tracks updated texture dimensions");
+	const vgui_texture_desc original_atlas{2 * cw, 2 * ch, 0, VGUI_TEXTURE_FORMAT_RGBA8, pixels};
+	expect(vgui_texture_update(atlas.get(), &original_atlas) == 1, "choice whole atlas dimensions are restored");
 	atlas.reset(); // No other widget holds this atlas.
 	vgui_context_set_size(ui, t.width, t.height); // Force layout to measure with the atlas bound.
 	expect(rect(check) == check_rect, "choice atlas preserves checkbox layout");
@@ -439,6 +449,95 @@ static void test_choice_indicator_atlas(vgui_test_context& t)
 		radio_pixel(a_rect, track, "choice atlas restores default radio indicator");
 		radio_pixel(b_rect, colors[1], "choice atlas remains bound to second radio");
 	}
+
+	// Two differently shaped four-state regions on one odd-sized sprite sheet.
+	// The radio region touches the right and bottom edges exactly.
+	constexpr int sheet_w = 247, sheet_h = 133;
+	constexpr std::array<int, 4> check_region{7, 5, 2 * cw, 2 * ch};
+	constexpr std::array<int, 4> radio_region{199, 61, 48, 72};
+	const uint32_t radio_colors[] = { rgba(255, 128, 0), rgba(128, 0, 255),
+		rgba(128, 255, 0), rgba(255, 0, 128) };
+	std::vector<uint32_t> sheet_pixels(sheet_w * sheet_h, rgba(24, 35, 46));
+	auto paint_region = [&](const auto& r, const uint32_t* frames) {
+		for (int dy = 0; dy < r[3]; ++dy)
+			for (int dx = 0; dx < r[2]; ++dx)
+				sheet_pixels[(r[1] + dy) * sheet_w + r[0] + dx] =
+					frames[(dy / (r[3] / 2)) * 2 + dx / (r[2] / 2)];
+	};
+	paint_region(check_region, colors);
+	paint_region(radio_region, radio_colors);
+	auto sheet = make_texture(ui, sheet_w, sheet_h, sheet_pixels.data());
+	if (!expect(!!sheet, "choice atlas shared sheet setup")) return;
+
+	auto bind_region = [](vgui_widget* widget, vgui_texture* texture, const std::array<int, 4>& r) {
+		return vgui_choice_set_indicator_atlas_region(widget, texture, r[0], r[1], r[2], r[3]);
+	};
+	expect(bind_region(nullptr, sheet.get(), check_region) == 0, "choice region rejects null widget");
+	expect(bind_region(panel, sheet.get(), check_region) == 0, "choice region rejects panel");
+	if (!expect(bind_region(check, sheet.get(), check_region) == 1, "choice region binds checkbox") ||
+		!expect(bind_region(radio_a, sheet.get(), radio_region) == 1, "choice region binds radio")) return;
+	vgui_widget_set_recording_hint(panel, 1);
+	if (checkbox_frame(colors[0], "choice checkbox reads its shared region"))
+	{
+		radio_pixel(a_rect, radio_colors[0], "choice radio reads its shared region");
+		const int ax = (int)a_rect[0] + pad + box / 2, ay = (int)(a_rect[1] + a_rect[3] / 2);
+		expect_pixel(t, ax, ay - 9, radio_colors[0], "choice portrait region fits by height");
+		expect_pixel(t, ax - 10, ay, backdrop, "choice portrait region is letterboxed");
+	}
+
+	vgui_set_focus(ui, check);
+	vgui_widget_set_checked(check, 1);
+	checkbox_frame(colors[1], "choice checkbox reads checked frame before reframing");
+	expect(bind_region(check, sheet.get(), radio_region) == 1, "choice atlas reframes the same handle");
+	expect(vgui_get_focus(ui) == check && vgui_widget_get_checked(check),
+		"choice reframing preserves focus and checked state");
+	if (checkbox_frame(radio_colors[1], "choice checkbox reads checked frame at new crop"))
+		radio_pixel(a_rect, radio_colors[0], "choice checkbox reframe leaves radio unchanged");
+
+	const auto reject_region = [&](const std::array<int, 4>& r, const char* label) {
+		expect(bind_region(check, sheet.get(), r) == 0, label);
+	};
+	reject_region({-1, 5, 160, 80}, "choice region rejects negative x");
+	reject_region({7, -1, 160, 80}, "choice region rejects negative y");
+	reject_region({7, 5, 0, 80}, "choice region rejects zero width");
+	reject_region({7, 5, 160, -2}, "choice region rejects negative height");
+	reject_region({7, 5, 159, 80}, "choice region rejects odd width");
+	reject_region({7, 5, 160, 79}, "choice region rejects odd height");
+	reject_region({200, 61, 48, 72}, "choice region rejects right overflow");
+	reject_region({199, 62, 48, 72}, "choice region rejects bottom overflow");
+	reject_region({std::numeric_limits<int>::max(), 0, 2, 2}, "choice region rejects an overflowing sum");
+	expect(bind_region(check, foreign.get(), {0, 0, 2, 2}) == 0, "choice region rejects foreign texture");
+	expect(vgui_choice_set_indicator_atlas(check, sheet.get()) == 0, "choice whole atlas rejects odd sheet");
+	expect(vgui_get_focus(ui) == check && vgui_widget_get_checked(check),
+		"choice rejected regions preserve focus and checked state");
+	checkbox_frame(radio_colors[1], "choice rejected regions preserve the pixels");
+
+	const vgui_texture_desc narrower_sheet{sheet_w - 1, sheet_h, sheet_w * (int)sizeof(uint32_t),
+		VGUI_TEXTURE_FORMAT_RGBA8, sheet_pixels.data()};
+	expect(vgui_texture_update(sheet.get(), &narrower_sheet) == 1, "choice shared sheet is resized");
+	if (capture("choice region after texture shrinks"))
+		radio_pixel(a_rect, track, "choice region falls back when texture no longer contains it");
+	const vgui_texture_desc original_sheet{sheet_w, sheet_h, 0, VGUI_TEXTURE_FORMAT_RGBA8, sheet_pixels.data()};
+	expect(vgui_texture_update(sheet.get(), &original_sheet) == 1, "choice shared sheet dimensions are restored");
+
+	sheet.reset(); // Both widgets keep their own retained reference.
+	vgui_widget_set_enabled(panel, 0);
+	if (checkbox_frame(radio_colors[3], "choice cropped disabled checked after caller release"))
+		radio_pixel(a_rect, radio_colors[2], "choice cropped disabled unchecked after caller release");
+	vgui_widget_set_enabled(panel, 1);
+
+	constexpr float ui_scale = 1.25f;
+	vgui_context_set_ui_scale(ui, ui_scale);
+	const auto scaled = rect(check);
+	if (capture("choice cropped atlas scaled render"))
+		expect_pixel(t, (int)(scaled[0] + (pad + box / 2) * ui_scale), (int)(scaled[1] + scaled[3] / 2),
+			radio_colors[1], "choice cropped texture coordinates are independent of DPI");
+	vgui_context_set_ui_scale(ui, 1.0f);
+
+	vgui_widget_set_checked(check, 0);
+	expect(bind_region(check, nullptr, {-1, -1, 1, 1}) == 1, "choice region NULL clears and ignores rectangle");
+	if (checkbox_frame(track, "choice region clear restores default indicator"))
+		radio_pixel(a_rect, radio_colors[0], "choice region clear leaves other binding alive");
 }
 
 int main()

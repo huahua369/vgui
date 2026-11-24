@@ -372,13 +372,15 @@ void test_indicator_atlas_delivery() {
     temp_dir temp;
     const auto project = temp.path / "source";
     fs::create_directories(project / "skins");
-    const auto pixels = rgba + rgba + rgba + rgba; // 4x2 raw RGBA8 atlas.
+    const std::string pixels(12 * 8 * 4, '\x55'); // 12x8 raw RGBA8 atlas.
     write_bytes(project / "skins" / "choice.rgba", pixels);
     auto doc = ui::make_document();
     doc.resources.emplace("choice", "skins/choice.rgba");
     doc.nodes.at(doc.root).children = {"check", "option"};
-    doc.nodes.emplace("check", ui::node{"checkbox", "", {{"indicator_atlas", "choice"s}}, {}});
-    doc.nodes.emplace("option", ui::node{"radio", "", {{"indicator_atlas", "choice"s}, {"checked", true}}, {}});
+    doc.nodes.emplace("check", ui::node{"checkbox", "", {{"indicator_atlas", "choice"s},
+        {"indicator_source_x", 2.}, {"indicator_source_y", 1.}, {"indicator_source_width", 4.}, {"indicator_source_height", 4.}}, {}});
+    doc.nodes.emplace("option", ui::node{"radio", "", {{"indicator_atlas", "choice"s}, {"checked", true},
+        {"indicator_source_x", 6.}, {"indicator_source_y", 2.}, {"indicator_source_width", 6.}, {"indicator_source_height", 4.}}, {}});
 
     ui::diagnostic error;
     const auto package = temp.path / "package";
@@ -395,12 +397,12 @@ void test_indicator_atlas_delivery() {
     expected.resources.at("choice") = "assets/1.rgba";
     ui::document restored;
     check(ui::read_delivery(copied, restored, &error) && restored == expected &&
-        read_bytes(copied / restored.resources.at("choice")) == pixels,
-        "copied delivery must preserve both indicator atlas bindings and one shared asset");
+        bundle_files(copied / "assets") == std::map<fs::path, std::string>{{"1.rgba", pixels}},
+        "copied delivery must preserve both indicator regions and one shared asset");
     ui::embedded_delivery embedded;
     check(ui::read_json_delivery(standalone, embedded, &error) && embedded.design == expected &&
         embedded.images.size() == 1 && embedded.images.at("choice") == std::vector<std::uint8_t>(pixels.begin(), pixels.end()),
-        "standalone delivery must preserve both indicator atlas bindings and embed the shared asset once");
+        "standalone delivery must preserve both indicator regions and embed the shared asset once");
 }
 
 void test_label_orientation_delivery() {

@@ -300,8 +300,6 @@ struct designer_workbench::impl {
             icon_region_button = vgui_widget_add(properties, VGUI_BUTTON, nullptr);
             vgui_widget_set_id(icon_region_button, "designer.icon_region.open");
             vgui_widget_set_margin(icon_region_button, 6, 4, 6, 2);
-            bind_label(icon_region_button, {"icon_region.open", "Select Icon Region…"});
-            bind_label(icon_region_button, {"icon_region.open_hint", "Assign a button icon path, then drag a rectangle on the image."}, vgui_widget_set_tooltip);
             vgui_widget_set_tooltip_when_disabled(icon_region_button, 1);
             vgui_widget_on_event(icon_region_button, [](vgui_widget*, const vgui_event* event, void* user) {
                 auto& self = *static_cast<impl*>(user);
@@ -1878,6 +1876,8 @@ struct designer_workbench::impl {
                         "Track size in logical pixels, excluding labels. 0 uses the theme. Enlarge the control if the track does not fit.");
                     else if (key == "indicator_size" || key == "indicator_gap") row.tooltip = strings.text("workbench.inspector.indicator_metrics_hint",
                         "Measured in logical pixels. 0 uses the theme.");
+                    else if (key.starts_with("indicator_source_")) row.tooltip = strings.text("workbench.inspector.indicator_source_hint",
+                        "Original image pixels. Width and height must both be positive and even. Set all four values to 0 to use the whole image.");
                     else if (desc.key.starts_with("icon_source_")) row.tooltip = strings.text("workbench.inspector.icon_source_hint",
                         "Pixel coordinates in the icon image, from its top left. Width or height 0 extends to the image edge. These fields do not set the display size.");
                     break;
@@ -1966,7 +1966,7 @@ struct designer_workbench::impl {
                             "Project-relative path to an even-sized 2×2 atlas: normal, hover, pressed, disabled. Clear to use the default button style.");
                     else if (desc.key == "indicator_atlas")
                         row.tooltip = strings.text("workbench.inspector.indicator_atlas_path_hint",
-                            "Project-relative path to a 2×2 atlas with even width and height. Left: unchecked; right: checked. Top: enabled; bottom: disabled. Clear to use the built-in indicator.");
+                            "Project-relative image path. Select a 2×2 region on the image, or use an even-sized whole image. Clear to use the built-in indicator.");
                     else
                         row.tooltip = strings.text("workbench.inspector.image_path_hint", "Project-relative path, using /. Clear to detach the image.");
                     auto resource_category = row.category;
@@ -2016,9 +2016,31 @@ struct designer_workbench::impl {
             literal ? std::string_view(*literal) : translate(std::get<localized_text>(format.value)));
     }
 
+    void refresh_region_button()
+    {
+        if (!icon_region_button) return;
+        const auto& doc = history.current();
+        const auto item = doc.nodes.find(selected);
+        const bool indicator = item != doc.nodes.end() && (item->second.type == "checkbox" || item->second.type == "radio");
+        const bool icon = item != doc.nodes.end() && item->second.type == "button";
+        vgui_widget_set_visible(icon_region_button, page_active && (indicator || icon));
+        if (!indicator && !icon) return;
+        const auto& field = *find_property(item->second.type, indicator ? "indicator_atlas" : "icon");
+        vgui_widget_set_enabled(icon_region_button,
+            doc.resources.contains(std::get<std::string>(property_value(item->second, field))));
+        update_text(icon_region_button, indicator ? strings.text("indicator_region.open", "Select Four-State Region…")
+            : strings.text("icon_region.open", "Select Icon Region…"));
+        const auto* hint = indicator ? strings.text("indicator_region.open_hint",
+            "Assign an indicator atlas path, then select its four-state region.")
+            : strings.text("icon_region.open_hint", "Assign a button icon path, then drag a rectangle on the image.");
+        if (std::string_view(vgui_widget_get_tooltip(icon_region_button)) != hint)
+            vgui_widget_set_tooltip(icon_region_button, hint);
+    }
+
     void refresh_captions()
     {
         refresh_pickup_button();
+        refresh_region_button();
         // Keep the icon hit targets at their natural size when the dock narrows.
         float width = 0;
         vgui_widget_get_intrinsic_size(outline_actions, &width, nullptr);
@@ -2073,14 +2095,6 @@ struct designer_workbench::impl {
             displayed_revision = history.revision();
         }
         const bool selection_changed = selected != outlined_selection;
-        if (icon_region_button) {
-            const auto& doc = history.current();
-            const auto item = doc.nodes.find(selected);
-            const bool button = item != doc.nodes.end() && item->second.type == "button";
-            vgui_widget_set_visible(icon_region_button, button);
-            vgui_widget_set_enabled(icon_region_button, button && doc.resources.contains(
-                std::get<std::string>(property_value(item->second, *find_property("button", "icon")))));
-        }
         const bool reveal = std::exchange(reveal_selection, false);
         if (reveal) {
             const auto panel = vgui_dock_find(dock, "structure");

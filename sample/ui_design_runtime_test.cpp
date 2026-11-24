@@ -1314,22 +1314,33 @@ void test_button_atlases() {
 
 void test_choice_indicator_atlases() {
     temp_dir temp;
-    constexpr int width = 32, height = 16;
+    constexpr int width = 64, height = 48;
     write_image(temp.path / "choice.rgba", true, width, height);
     write_image(temp.path / "odd.rgba", true, width - 1, height);
+    write_image(temp.path / "bad.rgba", false);
     auto doc = ui::make_document();
     doc.nodes.at(doc.root).props["layout"] = "column"s;
-    doc.resources = {{"shared", "choice.rgba"}, {"odd", "odd.rgba"}, {"missing", "missing.rgba"}};
-    const auto add_choice = [&](const char* id, const char* type, bool checked, const char* key = nullptr) {
+    doc.resources = {{"shared", "choice.rgba"}, {"odd", "odd.rgba"}, {"bad", "bad.rgba"}, {"missing", "missing.rgba"}};
+    const auto add_choice = [&](const char* id, const char* type, bool checked, const char* key = nullptr,
+        std::array<double, 4> source = {}) {
         ui::node choice{type, "", {{"text", "Choice"s}, {"checked", checked}}, {}};
         if (key) choice.props.emplace("indicator_atlas", std::string(key));
+        constexpr const char* fields[] = {"indicator_source_x", "indicator_source_y", "indicator_source_width", "indicator_source_height"};
+        for (std::size_t i = 0; i < source.size(); ++i)
+            if (source[i] != 0) choice.props.emplace(fields[i], source[i]);
         doc.nodes.at(doc.root).children.push_back(id);
         doc.nodes.emplace(id, std::move(choice));
     };
-    add_choice("checkbox", "checkbox", false, "shared");
-    add_choice("radio", "radio", true, "shared");
+    add_choice("checkbox", "checkbox", false, "shared", {2.5, 5.4, 15.6, 11.6});
+    add_choice("radio", "radio", true, "shared", {32.5, 23.6, 20, 16});
+    add_choice("whole", "checkbox", false, "shared");
     add_choice("odd", "checkbox", false, "odd");
-    add_choice("missing", "radio", false, "missing");
+    add_choice("missing", "radio", false, "missing", {0, 0, 8, 8});
+    add_choice("bad", "checkbox", false, "bad", {0, 0, 8, 8});
+    add_choice("odd-region", "radio", false, "shared", {2, 4, 9, 8});
+    add_choice("out-of-bounds", "checkbox", false, "shared", {2, 41, 8, 8});
+    add_choice("subpixel-only", "radio", false, "shared", {0.25, 0, 0, 0});
+    add_choice("no-atlas", "checkbox", false, nullptr, {0, 0, 8, 8});
     add_choice("stock-checkbox", "checkbox", false);
     add_choice("stock-radio", "radio", false);
 
@@ -1342,20 +1353,33 @@ void test_choice_indicator_atlases() {
     ui::runtime rt(ctx.get());
     check(rt.mount(doc, 1, loader.bindings(temp.path)), "mount indicator atlas fixtures with stock fallbacks");
     const std::vector<image_call> expected{{ctx.get(), "shared", fs::canonical(temp.path / "choice.rgba")},
-        {ctx.get(), "odd", fs::canonical(temp.path / "odd.rgba")}};
+        {ctx.get(), "odd", fs::canonical(temp.path / "odd.rgba")},
+        {ctx.get(), "bad", fs::canonical(temp.path / "bad.rgba")}};
     check(loader.calls == expected, "choice atlases must share one canonical load per key");
     loader.textures.clear();
 
     const auto diagnosed = [&](std::string_view id, std::string_view reason) {
+        const auto path = "/nodes/"s + std::string(id) + "/props/indicator_atlas";
         return std::ranges::any_of(rt.diagnostics(), [&](const auto& d) {
-            return d.path == "/nodes/"s + std::string(id) + "/props/indicator_atlas" && d.message.find(reason) != std::string::npos;
+            return d.path == path && d.message.find(reason) != std::string::npos;
         });
     };
-    check(rt.diagnostics().size() == 2 && diagnosed("odd", "even-sized 2x2") && diagnosed("missing", "unavailable"),
-        "only odd-sized and missing indicator atlases should be diagnosed");
-    const auto snapshot = rt.layout({240, 220, 1});
+    check(rt.diagnostics().size() == 6 && diagnosed("odd", "even-sized 2x2") &&
+        diagnosed("missing", "unavailable") && diagnosed("bad", "unavailable"),
+        "an odd whole atlas and texture loading failures must locate the resource field");
+    for (const auto* id : {"odd-region", "out-of-bounds", "subpixel-only"}) {
+        const auto path = "/nodes/"s + id + "/props/indicator_source_";
+        check(std::ranges::any_of(rt.diagnostics(), [&](const auto& d) {
+            return d.path.starts_with(path) && d.message.find("positive even") != std::string::npos &&
+                d.message.find("within the image") != std::string::npos;
+        }), "invalid indicator region must locate a source field and explain the rectangle requirements: "s + id);
+    }
+    check(std::ranges::none_of(rt.diagnostics(), [](const auto& d) { return d.path.starts_with("/nodes/no-atlas/"); }),
+        "clearing the optional atlas must restore the built-in indicator without a diagnostic, even with a saved region");
+    const auto snapshot = rt.layout({240, 300, 1});
     check(bool(snapshot), "lay out indicator atlas fixtures");
-    for (const auto* id : {"checkbox", "radio", "odd", "missing"}) {
+    for (const auto* id : {"checkbox", "radio", "whole", "odd", "missing", "bad",
+        "odd-region", "out-of-bounds", "subpixel-only", "no-atlas"}) {
         check(!node(*snapshot, id).image_placeholder, "a choice must retain its normal appearance, not an image placeholder");
         auto* choice = rt.widget(id);
         const auto kind = vgui_widget_get_kind(choice);
@@ -1365,24 +1389,40 @@ void test_choice_indicator_atlases() {
         check(near(w, stock_w) && near(h, stock_h), "indicator atlas must not change the choice layout size");
     }
     static std::vector<ovg_image_r> draws;
-    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = 1; };
+    static int uploads = 0;
+    uploads = 0;
+    cb->image_update = [](rvg_t*, vg_image_t* img, vg_image_desc_t*) { img->id = ++uploads; };
     cb->image_destroy = [](rvg_t*, vg_image_t*) {};
     cb->add_image = [](rvg_t*, ovg_image_r* img) { draws.push_back(*img); };
     vg->width = snapshot->pixel_width;
     vg->height = snapshot->pixel_height;
-    const auto verify_frames = [&](int y) {
+    const auto verify_frames = [&](bool flipped, bool disabled) {
         cb->clear(vg.get());
         draws.clear();
         vgui_draw(ctx.get(), cb.get(), vg.get());
-        check(draws.size() == 2 && draws[0].img == draws[1].img,
-            "only the two choices with valid bindings should paint a shared atlas");
-        check(draws[0].rc == glm::ivec4(0, y, width / 2, height / 2) &&
-            draws[1].rc == glm::ivec4(width / 2, y, width / 2, height / 2), "choice indicator used the wrong atlas quadrant");
+        check(draws.size() == 3 && uploads == 1 && draws[0].img == draws[1].img && draws[0].img == draws[2].img,
+            "only the three valid choices should paint an image, shared in one upload");
+        check(draws[0].rc == glm::ivec4(3 + 8 * flipped, 5 + 6 * disabled, 8, 6),
+            "checkbox must round its source to original pixels and use the matching frame");
+        check(draws[1].rc == glm::ivec4(33 + 10 * !flipped, 24 + 8 * disabled, 10, 8),
+            "radio must use its own region and matching frame on the shared image");
+        check(draws[2].rc == glm::ivec4(width / 2 * flipped, height / 2 * disabled, width / 2, height / 2),
+            "zero source fields must keep using the full image atlas");
     };
-    verify_frames(0);
-    vgui_widget_set_enabled(rt.widget("checkbox"), 0);
-    vgui_widget_set_enabled(rt.widget("radio"), 0);
-    verify_frames(height / 2);
+    for (bool disabled : {false, true}) {
+        for (auto id : {"checkbox", "radio", "whole"}) vgui_widget_set_enabled(rt.widget(id), !disabled);
+        for (bool flipped : {false, true}) {
+            vgui_widget_set_checked(rt.widget("checkbox"), flipped);
+            vgui_widget_set_checked(rt.widget("radio"), !flipped);
+            vgui_widget_set_checked(rt.widget("whole"), flipped);
+            verify_frames(flipped, disabled);
+        }
+    }
+    const auto scaled = rt.layout({240, 300, 2});
+    check(bool(scaled), "lay out choice atlas at 2x scale");
+    vg->width = scaled->pixel_width;
+    vg->height = scaled->pixel_height;
+    verify_frames(true, true);
 }
 
 void test_choice_indicator_metrics() {

@@ -958,6 +958,7 @@ struct vgui_widget
 	// image ----------------------------------------------------------------
 	std::unique_ptr<vgui_image_state> image;
 	vgui_texture* choice_atlas = nullptr; // VGUI_CHECKBOX and VGUI_RADIO indicator.
+	glm::ivec4 choice_atlas_region{0}; // Texture pixels; zero tracks the whole texture.
 	float choice_size = 0.0f, choice_gap = 0.0f; // Logical units; zero inherits.
 
 	// button icon (VGUI_BUTTON) --------------------------------------------
@@ -1589,6 +1590,14 @@ static bool vgui_atlas_2x2_valid(const vgui_texture* texture)
 {
 	return texture && texture->width > 0 && texture->height > 0 &&
 		texture->width % 2 == 0 && texture->height % 2 == 0;
+}
+
+static bool vgui_atlas_2x2_region_valid(const vgui_texture* texture, const glm::ivec4& region)
+{
+	return region.x >= 0 && region.y >= 0 && region.z > 0 && region.w > 0 &&
+		region.z % 2 == 0 && region.w % 2 == 0 &&
+		region.z <= texture->width && region.w <= texture->height &&
+		region.x <= texture->width - region.z && region.y <= texture->height - region.w;
 }
 
 static bool vgui_point_in(const vgui_widget* w, float x, float y)
@@ -13588,15 +13597,15 @@ static void vgui_draw_button_gradient(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
 }
 
 static bool vgui_draw_atlas_frame(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
-	vgui_texture* texture, int frame, const glm::ivec4& dst)
+	vgui_texture* texture, const glm::ivec4& region, int frame, const glm::ivec4& dst)
 {
 	vgui_texture_ensure_upload(w->ctx, texture, cb, vg);
 	const bool native = !texture->cpu && texture->native.image.id != 0;
 	if (!native && texture->image.id == 0 &&
 		!(texture->cpu && texture->upload_frame == w->ctx->frame_index)) return false;
 
-	const int sw = texture->width / 2, sh = texture->height / 2;
-	const glm::ivec4 src{(frame % 2) * sw, (frame / 2) * sh, sw, sh};
+	const int sw = region.z / 2, sh = region.w / 2;
+	const glm::ivec4 src{region.x + (frame % 2) * sw, region.y + (frame / 2) * sh, sw, sh};
 	const uint32_t tint = vgui_ovg_color(vgui_widget_color(w, 0xFFFFFFFF));
 	if (native && cb->add_texture)
 	{
@@ -13624,7 +13633,8 @@ static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 {
 	if (!vgui_atlas_2x2_valid(w->button_atlas)) return false;
 	const int frame = !vgui_effective_enabled(w) ? 3 : w->pressed ? 2 : w->hovered ? 1 : 0;
-	return vgui_draw_atlas_frame(w, cb, vg, w->button_atlas, frame,
+	return vgui_draw_atlas_frame(w, cb, vg, w->button_atlas,
+		{0, 0, w->button_atlas->width, w->button_atlas->height}, frame,
 		{(int)std::lround(w->abs_x), (int)std::lround(w->abs_y),
 		 (int)std::lround(w->abs_w), (int)std::lround(w->abs_h)});
 }
@@ -13632,11 +13642,14 @@ static bool vgui_draw_button_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg)
 static bool vgui_draw_choice_atlas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg, float x, float y, float box)
 {
 	auto* texture = w->choice_atlas;
-	if (!vgui_atlas_2x2_valid(texture) || box < 1) return false;
-	const float scale = box / (float)std::max(texture->width, texture->height);
-	const float width = texture->width * scale, height = texture->height * scale;
+	if (!texture || box < 1) return false;
+	const glm::ivec4 region = w->choice_atlas_region.z > 0 ? w->choice_atlas_region
+		: glm::ivec4{0, 0, texture->width, texture->height};
+	if (!vgui_atlas_2x2_region_valid(texture, region)) return false;
+	const float scale = box / (float)std::max(region.z, region.w);
+	const float width = region.z * scale, height = region.w * scale;
 	const int frame = (vgui_effective_enabled(w) ? 0 : 2) + (w->checked ? 1 : 0);
-	return vgui_draw_atlas_frame(w, cb, vg, texture, frame,
+	return vgui_draw_atlas_frame(w, cb, vg, texture, region, frame,
 		{(int)std::lround(x + (box - width) * 0.5f), (int)std::lround(y + (box - height) * 0.5f),
 		 std::max(1, (int)std::lround(width)), std::max(1, (int)std::lround(height))});
 }
@@ -18931,18 +18944,36 @@ extern "C" {
 		return 1;
 	}
 
-	int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture)
+	static int vgui_choice_bind_indicator_atlas(vgui_widget* widget, vgui_texture* texture, const glm::ivec4& region)
 	{
 		if (!widget || (widget->kind != VGUI_CHECKBOX && widget->kind != VGUI_RADIO) ||
-			(texture && (texture->ctx != widget->ctx || !vgui_atlas_2x2_valid(texture))))
+			(texture && texture->ctx != widget->ctx))
 			return 0;
-		if (widget->choice_atlas == texture) return 1;
-		if (texture) vgui_texture_retain(texture);
-		vgui_texture_release(widget->choice_atlas);
-		widget->choice_atlas = texture;
+		if (widget->choice_atlas == texture && widget->choice_atlas_region == region) return 1;
+		if (widget->choice_atlas != texture)
+		{
+			vgui_texture_retain(texture);
+			vgui_texture_release(widget->choice_atlas);
+			widget->choice_atlas = texture;
+		}
+		widget->choice_atlas_region = region;
 		vgui_recording_invalidate_chain(widget, true);
 		vgui_widget_mark_dirty(widget);
 		return 1;
+	}
+
+	int vgui_choice_set_indicator_atlas(vgui_widget* widget, vgui_texture* texture)
+	{
+		if (texture && !vgui_atlas_2x2_valid(texture)) return 0;
+		return vgui_choice_bind_indicator_atlas(widget, texture, glm::ivec4{0});
+	}
+
+	int vgui_choice_set_indicator_atlas_region(vgui_widget* widget, vgui_texture* texture,
+		int x, int y, int width, int height)
+	{
+		const glm::ivec4 region = texture ? glm::ivec4{x, y, width, height} : glm::ivec4{0};
+		if (texture && !vgui_atlas_2x2_region_valid(texture, region)) return 0;
+		return vgui_choice_bind_indicator_atlas(widget, texture, region);
 	}
 
 	void vgui_choice_set_indicator_metrics(vgui_widget* widget, float size, float gap)
