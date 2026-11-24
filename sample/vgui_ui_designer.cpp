@@ -3054,11 +3054,21 @@ void exercise_control_drag(os_window& win, vgui_context* shell, designer& editor
     const auto inside_leaf = point_on({90 + 18 + 45, 80 + 12 + 32});
     const auto inside_flow = point_on({650, 145});
     const auto& history = editor.history();
+    const auto row = input.rect(list);
+    const glm::vec2 icon_point{row.x + 14, row.y + 12};
+    const auto panel_item = vgui_list_get_item_at(list, 0);
+    require(vgui_list_get_item_icon(list, panel_item), "first palette row has no emoji icon");
+    const auto before_click = history.revision();
+    input.click_at(list, icon_point);
+    require(vgui_list_is_selected(list, panel_item), "clicking the icon did not select the Panel row");
+    vgui_list_clear_selection(list);
+    input.click_at(list, {row.x + 42, icon_point.y});
+    require(vgui_list_is_selected(list, panel_item) && history.revision() == before_click,
+        "clicking the label must select the same row without creating a control");
     const auto begin_drag = [&](glm::vec2 target) {
-        const auto r = input.rect(list);
-        // Unscrolled first row (Panel), clear of the scrollbar and border.
-        const glm::vec2 source{r.x + 28, r.y + 8};
-        require(vgui_hit_test(shell, source.x, source.y) == list, "palette row not hit-testable");
+        // Start on the icon (not on the text) to exercise the whole-row drag.
+        const auto source = icon_point;
+        require(vgui_hit_test(shell, source.x, source.y) == list, "palette icon not hit-testable");
         // Move back to the source, like a real pointer, before starting the next drag.
         input.motion(target, source, 0);
         input.button(true, source);

@@ -2420,14 +2420,26 @@ void exercise_menu_language()
     auto* list = workbench.widget("designer.controls", VGUI_LIST);
     auto* dock = workbench.bench.document_dock();
     const auto controls_tab = vgui_dock_find(dock, "controls");
+    std::vector<std::pair<vgui_item_id, vgui_texture*>> control_rows;
     const auto check_controls = [&](std::string_view title) {
         check(controls_tab && vgui_dock_get_title(dock, controls_tab) == title &&
             vgui_list_get_count(list) == static_cast<int>(ui::types().size()), "control resource tab or catalog is missing");
+        const bool initial = control_rows.empty();
         int index = 0;
         for (const auto& type : ui::types()) {
             const auto* expected = workbench.strings.text("workbench.type." + std::string(type.key), type.label.data());
-            const auto item = vgui_list_get_item_at(list, index++);
-            check(item && std::string_view(vgui_list_get_item_text(list, item)) == expected, "catalog row did not match the resource menu locale");
+            const auto item = vgui_list_get_item_at(list, index);
+            auto* icon = vgui_list_get_item_icon(list, item);
+            check(item && std::string_view(vgui_list_get_item_text(list, item)) == expected,
+                "catalog row did not match the resource menu locale");
+            check(icon && vgui_texture_get_width(icon) == 24 && vgui_texture_get_height(icon) == 24,
+                "missing dedicated palette icon for " + std::string(type.key));
+            if (initial) {
+                check(std::ranges::none_of(control_rows, [icon](const auto& row) { return row.second == icon; }),
+                    "control rows unexpectedly share an icon texture");
+                control_rows.emplace_back(item, icon);
+            } else check(control_rows[index] == std::pair{item, icon}, "changing language replaced a palette row or icon");
+            ++index;
         }
     };
     check_controls("控件");

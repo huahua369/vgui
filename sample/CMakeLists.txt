@@ -294,7 +294,20 @@ add_executable(ui_designer_locale_persistence_test ui_designer_locale_persistenc
 target_link_libraries(ui_designer_locale_persistence_test PRIVATE ui_designer_locale)
 add_test(NAME ui_designer_locale_persistence COMMAND ui_designer_locale_persistence_test)
 
+# Embed the palette's small RGBA tiles so the workbench needs neither a system
+# emoji font nor an image decoder (including the core-only workbench test).
+set(designer_control_icons "${CMAKE_CURRENT_SOURCE_DIR}/res/ui-designer/control-icons/control-palette.rgba")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${designer_control_icons}")
+file(READ "${designer_control_icons}" designer_control_rgba HEX)
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," designer_control_rgba "${designer_control_rgba}")
+string(REPEAT "." 80 designer_icon_row)
+string(REGEX REPLACE "(${designer_icon_row})" "\\1\n" designer_control_rgba "${designer_control_rgba}")
+file(GENERATE OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/ui_designer_control_rgba.inc" CONTENT "${designer_control_rgba}\n")
+set_property(SOURCE ui_designer_workbench.cpp APPEND PROPERTY OBJECT_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/ui_designer_control_rgba.inc")
+
 add_executable(ui_designer_workbench_test ui_designer_workbench_test.cpp ui_designer_workbench.cpp)
+target_include_directories(ui_designer_workbench_test PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_link_libraries(ui_designer_workbench_test PRIVATE ui_design_model vgui::editor_kit ui_designer_locale)
 target_compile_definitions(ui_designer_workbench_test PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 add_test(NAME ui_designer_workbench COMMAND ui_designer_workbench_test)
@@ -307,6 +320,7 @@ endif()
 add_executable(vgui_ui_designer vgui_ui_designer.cpp ui_designer_workbench.cpp ui_designer_preview.cpp ui_designer_options.cpp
     ui_designer_gradient_timeline.cpp)
 target_link_libraries(vgui_ui_designer PRIVATE vgui_sample_common vgui::ui_design_export ui_design_runtime vgui::editor_kit SDL3::SDL3 ui_designer_locale)
+target_include_directories(vgui_ui_designer PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 target_include_directories(vgui_ui_designer SYSTEM PRIVATE ${VGUI_DESIGNER_STB_INCLUDE_DIR})
 target_compile_definitions(vgui_ui_designer PRIVATE VGUI_SOURCE_DIR="${VGUI_SOURCE_DIR}")
 add_test(NAME ui_designer_animation_preview COMMAND vgui_ui_designer --smoke-animation-preview)

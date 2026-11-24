@@ -70,11 +70,32 @@ vgui_widget* make_row(vgui_widget* parent)
 }
 
 struct icon_stroke { float x0, y0, x1, y1; };
-using outline_texture = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
+using icon_texture = std::unique_ptr<vgui_texture, decltype(&vgui_texture_destroy)>;
 constexpr int outline_icon_size = 18;
 
+// Twemoji artwork (CC BY 4.0); see res/ui-designer/control-icons/README.md.
+constexpr std::string_view control_icon_types[] = {
+    "panel", "label", "button", "edit", "image", "gradient", "checkbox", "radio", "switch",
+    "slider", "progress", "separator", "list", "tree", "menu", "menubar", "splitter", "tabview", "dock",
+};
+constexpr int control_icon_size = 24;
+constexpr std::size_t control_icon_bytes = control_icon_size * control_icon_size * 4;
+constexpr unsigned char control_icon_rgba[] = {
+#include "ui_designer_control_rgba.inc"
+};
+static_assert(sizeof(control_icon_rgba) == std::size(control_icon_types) * control_icon_bytes);
+
+icon_texture make_control_icon(vgui_context* ui, std::string_view type)
+{
+    const auto found = std::ranges::find(control_icon_types, type);
+    if (found == std::end(control_icon_types)) return {nullptr, vgui_texture_destroy};
+    const auto offset = static_cast<std::size_t>(found - std::begin(control_icon_types)) * control_icon_bytes;
+    const vgui_texture_desc desc{control_icon_size, control_icon_size, 0, VGUI_TEXTURE_FORMAT_RGBA8, control_icon_rgba + offset};
+    return {vgui_texture_create(ui, &desc), vgui_texture_destroy};
+}
+
 // A small antialiased white mask keeps the icons independent of platform fonts.
-outline_texture make_outline_icon(vgui_context* ui, std::initializer_list<icon_stroke> strokes)
+icon_texture make_outline_icon(vgui_context* ui, std::initializer_list<icon_stroke> strokes)
 {
     constexpr int size = 48;
     constexpr float density = size / 16.f;
@@ -220,7 +241,9 @@ struct designer_workbench::impl {
     std::array<vgui_widget*, std::size(sides)> side_buttons{};
     std::vector<vgui_widget*> outline_buttons;
     vgui_widget *status_label = nullptr, *pickup = nullptr, *outline_actions = nullptr, *icon_region_button = nullptr;
-    outline_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
+    // List rows borrow their icon textures. The shell is destroyed before these owners.
+    std::vector<icon_texture> control_icons;
+    icon_texture pick_icon{nullptr, vgui_texture_destroy}, cancel_move_icon{nullptr, vgui_texture_destroy};
     float outline_actions_min_width = 0;
     vgui_widget *toolbar = nullptr, *menubar = nullptr, *quick_actions = nullptr;
     vgui_widget *save_button = nullptr, *export_button = nullptr;
@@ -928,7 +951,13 @@ struct designer_workbench::impl {
         vgui_widget_set_grow(controls, 1);
         vgui_panel_set_scrollable(controls, 0, 1);
         bind_label(controls, {"workbench.controls.title", "Controls"}, vgui_widget_set_a11y_name);
-        for (const auto& type : types()) vgui_list_add_item(controls, translate(type_label(type)), nullptr);
+        control_icons.reserve(types().size());
+        for (const auto& type : types()) {
+            const auto item = vgui_list_add_item(controls, translate(type_label(type)), nullptr);
+            auto icon = make_control_icon(ui, type.key);
+            vgui_list_set_item_icon(controls, item, icon.get());
+            control_icons.push_back(std::move(icon));
+        }
         bind_control_drag();
     }
 
