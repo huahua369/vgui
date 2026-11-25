@@ -2285,6 +2285,12 @@ extern "C" {
 		VGUI_NAV_RIGHT
 	} vgui_nav_direction;
 	VGUI_API int vgui_focus_navigate(vgui_context* ctx, vgui_nav_direction dir);
+	/* Returns the borrowed target vgui_focus_navigate would move to, or NULL
+	 * if no move is possible or dir is invalid. If authored is not NULL, it is
+	 * set to 1 for an explicit link or configured start, and 0 otherwise.
+	 * May ensure layout, but does not move focus, emit focus notifications,
+	 * or invalidate paint in an already laid-out context. */
+	VGUI_API vgui_widget* vgui_focus_peek(vgui_context* ctx, vgui_nav_direction dir, int* authored);
 
 	VGUI_API int vgui_context_wants_mouse(vgui_context* ctx);
 	VGUI_API int vgui_context_wants_keyboard(vgui_context* ctx);

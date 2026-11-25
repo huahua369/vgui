@@ -3911,15 +3911,67 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
         require(status && std::string_view(vgui_widget_get_text(status)).ends_with(id), id);
     };
     constexpr auto mode = "designer.preview.mode";
+    constexpr auto debug = "designer.preview.navigation_debug";
+    const auto debug_control = [&](std::string_view suffix, vgui_widget_kind kind) {
+        return find_widget(preview.widget(), std::string(debug).append(suffix), kind);
+    };
+    const auto strip_visible = [&] {
+        return vgui_widget_get_visible(debug_control(".panel", VGUI_PANEL));
+    };
+    const auto label = [&](std::string_view suffix) {
+        auto* w = debug_control(suffix, VGUI_LABEL);
+        require(vgui_widget_get_visible(w), suffix);
+        return std::string_view(vgui_widget_get_text(w));
+    };
+    const auto localized = [&](std::string_view suffix, const char* fallback) {
+        return editor.strings().text(std::string("preview.navigation_debug").append(suffix), fallback);
+    };
+    const auto focus_is = [&](std::string_view id) {
+        const auto text = label(".focus");
+        return text.contains(localized(".focus", "Focus")) && text.contains(id);
+    };
+    require(!vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
+        "focus debug should be hidden in Design");
     input.click(mode);
-    require(preview.running() && vgui_get_focus(shell) == input.widget("designer.preview.canvas"),
+    auto* canvas = input.widget("designer.preview.canvas");
+    require(preview.running() && vgui_get_focus(shell) == canvas,
         "entering Run did not focus the artboard with a configured default");
+    auto* toggle = debug_control("", VGUI_BUTTON);
+    require(vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) && !strip_visible(),
+        "Run should start with the focus debug toggle available and the strip closed");
+    input.click(toggle);
+    require(strip_visible() && vgui_get_focus(shell) == canvas && focus_is("start"),
+        "opening focus debug did not preserve the configured focus and keyboard routing");
+    const auto right = label(".right");
+    require(right.contains(localized(".right", "Right")) && right.contains("far") &&
+        right.contains(localized(".explicit", "Explicit")), "Right should show the explicit far target");
+    const auto up = label(".up");
+    require(up.contains(localized(".up", "Up")) && up.contains("far") && up.contains(localized(".automatic", "Auto")) &&
+        label(".down").contains(localized(".down", "Down")) && label(".left").contains(localized(".left", "Left")),
+        "the strip must show all four directions, including the automatic Up wrap to far");
     action("nav.start [start]");
     require(preview.snapshot() != nullptr, "missing focused preview snapshot");
     const auto before = preview.snapshot()->serial;
     keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
     require(preview.snapshot() && preview.snapshot()->serial != before, "direction move did not repaint the focus ring");
+    require(focus_is("far") && label(".left").contains("start") &&
+        label(".left").contains(localized(".explicit", "Explicit")),
+        "moving right did not update the current focus and left target");
     action("nav.far [far]");
+    auto* mode_button = input.widget(mode);
+    const auto center = [&](vgui_widget* w) {
+        const auto r = input.rect(w);
+        return glm::vec2{r.x + r.width / 2, r.y + r.height / 2};
+    };
+    const auto press = center(toggle), release = center(mode_button);
+    require(vgui_hit_test(shell, press.x, press.y) == toggle && vgui_hit_test(shell, release.x, release.y) == mode_button,
+        "cannot exercise a release outside the focus debug toggle");
+    input.button(true, press);
+    input.motion(press, release);
+    input.button(false, release);
+    frame();
+    require(preview.running() && strip_visible() && vgui_get_focus(shell) == canvas && focus_is("far"),
+        "pressing the toggle and releasing elsewhere changed focus or toggled the strip");
     keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
     action("nav.start [start]");
 
@@ -3933,13 +3985,39 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
     require(!vgui_widget_get_checked(modal("designer.preview.simulation.boolean", VGUI_CHECKBOX)),
         "expected a false draft for the enable field");
     input.click(modal("designer.preview.simulation.ok", VGUI_BUTTON));
-    input.click(mode);
-    input.click(mode);
-    action("nav.start [start]");
+    // The simulation dialog releases live focus. Refocus start without remounting
+    // or reopening the strip so this also checks updates in the current Run session.
+    const auto board = preview.artboard_rect_px();
+    const auto* layout = preview.snapshot();
+    require(board && layout, "missing preview after applying simulation");
+    const auto start = std::ranges::find(layout->nodes, "start", &ui::node_layout::id);
+    require(start != layout->nodes.end() && start->visible && start->enabled, "start is no longer available");
+    const auto& bounds = start->visible_px;
+    input.click_at(canvas, {board->x + (bounds.x + bounds.width / 2) * board->width / layout->pixel_width,
+        board->y + (bounds.y + bounds.height / 2) * board->height / layout->pixel_height});
+    require(focus_is("start") && label(".right").contains("near") &&
+        label(".right").contains(localized(".automatic", "Auto")),
+        "disabling far did not refresh the strip with the automatic near target");
+    require(label(".up").contains(localized(".none", "None")),
+        "disabling the only off-row target should leave Up without a target");
     keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    require(focus_is("near"), "the current-focus label did not follow the fallback move");
     action("nav.near [near]");
+    input.click(toggle);
+    require(!strip_visible() && vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) &&
+        vgui_get_focus(shell) == canvas, "closing focus debug did not leave the canvas and toggle available");
+    require(preview.snapshot() != nullptr, "missing preview after closing focus debug");
+    const auto closed = preview.snapshot()->serial;
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    require(preview.snapshot() && preview.snapshot()->serial != closed,
+        "closing the strip must not reset the current focus or swallow the next arrow");
+    action("nav.start [start]");
+    input.click(toggle);
+    input.click(mode);
+    require(!preview.running() && !vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
+        "returning to Design must hide an open focus debug strip and its toggle");
     require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
-        "navigating or simulating availability changed the design");
+        "navigating, toggling focus debug, or simulating availability changed the design");
 }
 
 void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor,

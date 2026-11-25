@@ -121,6 +121,7 @@ public:
         safe_area_insets safe_area;
         std::map<std::string, value, std::less<>> simulation; // Page-local Run overrides, never serialized.
         bool hand_tool = false; // Page-local canvas input mode, never serialized.
+        bool navigation_debug_open = false; // Page-local Run overlay, never serialized.
     };
 
     view_state capture_view() const;

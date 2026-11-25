@@ -9081,14 +9081,15 @@ bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner)
 // Directional focus navigation (gamepad / remote hosts). Prefer an eligible
 // authored link, otherwise use the geometric cone test (or opposite wrap).
 // In-widget arrow-key behaviour (lists, sliders) is untouched.
-static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
+static vgui_widget* vgui_focus_resolve_target(vgui_context* ctx, vgui_nav_direction dir, int* authored)
 {
+	if (authored) *authored = 0;
 	if (!ctx)
-		return 0;
+		return nullptr;
 	vgui_ensure_layout(ctx);
 	vgui_widget* root = vgui_active_root(ctx);
 	if (!root)
-		return 0;
+		return nullptr;
 
 	float dir_x = 0.0f, dir_y = 0.0f;
 	switch (dir)
@@ -9097,7 +9098,7 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 	case VGUI_NAV_DOWN: dir_y = 1.0f; break;
 	case VGUI_NAV_LEFT: dir_x = -1.0f; break;
 	case VGUI_NAV_RIGHT: dir_x = 1.0f; break;
-	default: return 0;
+	default: return nullptr;
 	}
 
 	// Candidate collection mirrors vgui_focus_next_impl (trap-scoped).
@@ -9114,9 +9115,11 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 			auto* target = vgui_navigation_resolve(ctx, from->navigation->directions[dir]);
 			if (vgui_is_within(owner, from) && vgui_is_within(owner, target))
 			{
-				if (vgui_is_within(scope, target) && vgui_navigation_eligible(ctx, target, root) &&
-					vgui_navigation_move(ctx, target))
-					return 1;
+				if (target != from && vgui_is_within(scope, target) && vgui_navigation_eligible(ctx, target, root))
+				{
+					if (authored) *authored = 1;
+					return target;
+				}
 				rejected_direction = target;
 			}
 		}
@@ -9144,6 +9147,7 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 
 	if (!from)
 	{
+		const bool has_authored_start = start != nullptr;
 		if (!start)
 		{
 			// Keep the legacy order, but do not land on a rejected authored
@@ -9154,7 +9158,9 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 			});
 			if (first != list.end()) start = *first;
 		}
-		return vgui_navigation_move(ctx, start);
+		if (!start || start == ctx->focus) return nullptr;
+		if (authored && has_authored_start) *authored = 1;
+		return start;
 	}
 
 	const float fx = from->abs_x + from->abs_w * 0.5f;
@@ -9204,7 +9210,7 @@ static int vgui_focus_navigate_impl(vgui_context* ctx, vgui_nav_direction dir)
 		}
 	}
 
-	return vgui_navigation_move(ctx, best ? best : wrap);
+	return best ? best : wrap;
 }
 
 //----------------------------------------------------------------------------
@@ -22969,7 +22975,12 @@ extern "C" {
 
 	int vgui_focus_navigate(vgui_context* ctx, vgui_nav_direction dir)
 	{
-		return vgui_focus_navigate_impl(ctx, dir);
+		return vgui_navigation_move(ctx, vgui_focus_resolve_target(ctx, dir, nullptr));
+	}
+
+	vgui_widget* vgui_focus_peek(vgui_context* ctx, vgui_nav_direction dir, int* authored)
+	{
+		return vgui_focus_resolve_target(ctx, dir, authored);
 	}
 
 	int vgui_context_add_key_handler(vgui_context* ctx, vgui_key_handler_fn fn, void* user)

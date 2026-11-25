@@ -27,6 +27,7 @@
 #include <vgui/file_dialog.h>
 #include <vgui/richtext.h>	// core rich-text span primitives
 #include <vgui/vgui.h>		// public C API
+#include "../gui/vgui_internal.h"	// authored navigation links
 #ifndef VGUI_CORE_ONLY
 #include "../backends/vgui_sdl3_dialog.h"
 #endif
@@ -4741,6 +4742,44 @@ static void test_focus_navigate(vgui_context* ui, font_familys_t* familys)
 	vgui_set_focus(ctx, nullptr);
 	check(vgui_focus_navigate(ctx, VGUI_NAV_DOWN) == 1, "nav: focuses from scratch");
 	check(vgui_get_focus(ctx) != nullptr, "nav: focus set from scratch");
+
+	focus_change_counter focus;
+	vgui_context_set_focus_listener(ctx, on_focus_change, &focus);
+	const auto expect_peek = [&](vgui_nav_direction dir, vgui_widget* target, int expected_authored, const char* what)
+	{
+		vgui_layout(ctx);
+		auto* before = vgui_get_focus(ctx);
+		const int changes = focus.changes;
+		const uint64_t revision = vgui_context_paint_revision(ctx);
+		int authored = -1;
+		check(vgui_focus_peek(ctx, dir, &authored) == target && authored == expected_authored, what);
+		check(vgui_focus_peek(ctx, dir, nullptr) == target, "nav peek: authored output is optional");
+		check(vgui_get_focus(ctx) == before && focus.changes == changes &&
+			vgui_context_paint_revision(ctx) == revision, "nav peek: no focus, listener or paint changes");
+		check(vgui_focus_navigate(ctx, dir) == (target != nullptr) &&
+			vgui_get_focus(ctx) == (target ? target : before), "nav peek: actual move matches preview");
+	};
+
+	auto* root = vgui_root(ctx);
+	vgui_navigation_set_start(root, grid[1][1]);
+	vgui_navigation_set_direction(root, grid[1][1], VGUI_NAV_RIGHT, grid[0][2]);
+	vgui_set_focus(ctx, nullptr);
+	expect_peek(VGUI_NAV_DOWN, grid[1][1], 1, "nav peek: authored start overrides tree order");
+	expect_peek(VGUI_NAV_RIGHT, grid[0][2], 1, "nav peek: authored link overrides nearer geometry");
+
+	vgui_widget_set_enabled(grid[0][2], 0);
+	vgui_set_focus(ctx, grid[1][1]);
+	expect_peek(VGUI_NAV_RIGHT, grid[1][2], 0, "nav peek: ineligible authored link falls back to geometry");
+	expect_peek(static_cast<vgui_nav_direction>(4), nullptr, 0, "nav peek: invalid direction");
+
+	auto* modal = vgui_widget_create(ctx, VGUI_PANEL, nullptr);
+	auto* modal_button = vgui_widget_add(modal, VGUI_BUTTON, "Modal");
+	check(vgui_modal_show(ctx, modal, nullptr) == 1, "nav peek: show modal");
+	vgui_set_focus(ctx, nullptr);
+	expect_peek(VGUI_NAV_DOWN, modal_button, 0, "nav peek: initial target is inside the active modal");
+	expect_peek(VGUI_NAV_RIGHT, nullptr, 0, "nav peek: only candidate is already focused");
+	vgui_modal_close(ctx, VGUI_MODAL_RESULT_CANCEL);
+	vgui_context_set_focus_listener(ctx, nullptr, nullptr);
 
 	vgui_destroy(ctx);
 }

@@ -1806,6 +1806,10 @@ struct designer_preview::impl {
     vgui_widget *viewport_button = nullptr, *viewport_dialog = nullptr, *viewport_error = nullptr;
     std::array<vgui_widget*, 7> viewport_fields{};
     vgui_widget* simulation_button = nullptr;
+    vgui_widget *navigation_debug_button = nullptr, *navigation_debug_panel = nullptr;
+    vgui_widget* navigation_debug_focus = nullptr;
+    std::array<vgui_widget*, 4> navigation_debug_targets{};
+    bool navigation_debug_open = false, navigation_debug_refresh = true, navigation_debug_press = false;
     simulation_values simulation;
     data_field_map fields;
     simulation_dialog simulation_editor;
@@ -1886,7 +1890,7 @@ struct designer_preview::impl {
     SDL_WindowID hand_release_window = 0;
     SDL_MouseButtonFlags hand_releases = 0; // Consume releases for presses owned by the Hand tool, even after switching.
     unsigned pressed = 0;
-    int focus_listener = 0;
+    int focus_listener = 0, runtime_focus_listener = 0;
     point drag_last{};
 
     impl(vgui_widget* parent, vgpu_device_t* gpu, font_familys_t* font, designer_preview_fonts::impl& cache,
@@ -1961,6 +1965,8 @@ struct designer_preview::impl {
         vgui_widget_set_id(zoom_text, "designer.preview.zoom");
         mode = button(toolbar, "designer.preview.mode");
         simulation_button = button(toolbar, "designer.preview.simulation");
+        navigation_debug_button = button(toolbar, "designer.preview.navigation_debug");
+        vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
         if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
         transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_id(transport, "designer.preview.animation");
@@ -1994,16 +2000,40 @@ struct designer_preview::impl {
                 if (!run) return {};
                 return capture_playhead{playback.time, playback.inspect_end};
             });
+        navigation_debug_panel = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_id(navigation_debug_panel, "designer.preview.navigation_debug.panel");
+        vgui_widget_set_layout(navigation_debug_panel, VGUI_LAYOUT_ROW);
+        vgui_widget_set_size(navigation_debug_panel, 0, 34);
+        vgui_widget_set_padding(navigation_debug_panel, 8, 2, 8, 2);
+        vgui_widget_set_gap(navigation_debug_panel, 16);
+        vgui_widget_set_align_items(navigation_debug_panel, VGUI_ALIGN_CENTER);
+        vgui_panel_set_scrollable(navigation_debug_panel, 1, 0);
+        vgui_widget_set_background(navigation_debug_panel, 0xFF303846);
+        const auto debug_label = [&](const char* id) {
+            auto* w = vgui_widget_add(navigation_debug_panel, VGUI_LABEL, nullptr);
+            vgui_widget_set_id(w, id);
+            return w;
+        };
+        navigation_debug_focus = debug_label("designer.preview.navigation_debug.focus");
+        navigation_debug_targets = {debug_label("designer.preview.navigation_debug.up"),
+            debug_label("designer.preview.navigation_debug.down"),
+            debug_label("designer.preview.navigation_debug.left"),
+            debug_label("designer.preview.navigation_debug.right")};
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);
         vgui_widget_set_padding(status, 6, 0, 6, 0);
         focus_listener = vgui_context_add_focus_listener(shell, shell_focus, this);
+        if (ui) runtime_focus_listener = vgui_context_add_focus_listener(ui.get(),
+            [](vgui_context*, vgui_widget*, vgui_widget*, void* user) {
+                static_cast<impl*>(user)->navigation_debug_refresh = true;
+            }, this);
         refresh_language();
     }
 
     ~impl() {
         if (focus_listener) vgui_context_remove_focus_listener(shell, focus_listener);
+        if (runtime_focus_listener) vgui_context_remove_focus_listener(ui.get(), runtime_focus_listener);
         close_viewport_dialog();
         simulation_editor.close();
         blur();
@@ -2045,6 +2075,10 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(mode, strings.text("preview.mode.tooltip", "Switch between Design and Run"));
         vgui_widget_set_text(simulation_button, strings.text("preview.simulation.button", "Simulate…"));
         vgui_widget_set_tooltip(simulation_button, strings.text("preview.simulation.tooltip", "Set temporary data for this Run preview"));
+        vgui_widget_set_text(navigation_debug_button,
+            viewport_text(strings, "preview.navigation_debug.button", "Focus Debug", "焦点调试"));
+        vgui_widget_set_tooltip(navigation_debug_button, viewport_text(strings, "preview.navigation_debug.tooltip",
+            "Show the current focus and actual directional targets", "显示当前焦点和四个方向的实际目标"));
         simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
@@ -2091,6 +2125,41 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(status, message.c_str());
     }
 
+    void refresh_navigation_debug(bool laid_out) {
+        if (!navigation_debug_panel || !run || !navigation_debug_open) return;
+        navigation_debug_refresh = false;
+        const auto tr = [&](std::string_view key, const char* en, const char* zh) {
+            return viewport_text(strings, key, en, zh);
+        };
+        const auto name = [&](vgui_widget* widget) {
+            if (!widget) return tr("preview.navigation_debug.none", "None", "无");
+            const auto* id = vgui_widget_get_id(widget);
+            if (id && *id && mounted->widget(id) == widget) return id;
+            return tr("preview.navigation_debug.internal", "Internal control", "内部控件");
+        };
+        const auto set_label = [&](vgui_widget* label, const char* caption, const char* id, const char* source) {
+            std::string text(caption);
+            text.append(": ").append(id);
+            if (source) text.append(" [").append(source).append("]");
+            if (text == vgui_widget_get_text(label)) return;
+            vgui_widget_set_text(label, text.c_str());
+            vgui_widget_set_tooltip(label, text.c_str());
+        };
+        set_label(navigation_debug_focus, tr("preview.navigation_debug.focus", "Focus", "焦点"),
+            name(laid_out ? vgui_get_focus(ui.get()) : nullptr), nullptr);
+        const std::array captions{tr("preview.navigation_debug.up", "Up", "上"),
+            tr("preview.navigation_debug.down", "Down", "下"), tr("preview.navigation_debug.left", "Left", "左"),
+            tr("preview.navigation_debug.right", "Right", "右")};
+        constexpr std::array directions{VGUI_NAV_UP, VGUI_NAV_DOWN, VGUI_NAV_LEFT, VGUI_NAV_RIGHT};
+        for (std::size_t i = 0; i < directions.size(); ++i) {
+            int authored = 0;
+            auto* target = laid_out ? vgui_focus_peek(ui.get(), directions[i], &authored) : nullptr;
+            const auto* source = !target ? nullptr : authored ? tr("preview.navigation_debug.explicit", "Explicit", "显式") :
+                tr("preview.navigation_debug.automatic", "Auto", "自动");
+            set_label(navigation_debug_targets[i], captions[i], name(target), source);
+        }
+    }
+
     void set_theme(designer_theme next) {
         if (theme == next) return;
         theme = next;
@@ -2100,6 +2169,7 @@ struct designer_preview::impl {
         const auto bar = light ? 0xFFE7EFF8 : 0xFF303846;
         vgui_widget_set_background(toolbar, bar);
         vgui_widget_set_background(transport, bar);
+        vgui_widget_set_background(navigation_debug_panel, bar);
         update_toolbar();
         mark_canvas(); // Shell paint only; the page texture and live input are unchanged.
     }
@@ -2123,6 +2193,13 @@ struct designer_preview::impl {
         vgui_widget_set_background(simulation_button, simulation.empty() ? inactive : active);
         vgui_widget_set_visible(simulation_button, run);
         vgui_widget_set_enabled(simulation_button, is_mounted && !remount);
+        vgui_widget_set_visible(navigation_debug_button, run);
+        vgui_widget_set_enabled(navigation_debug_button, is_mounted && !remount);
+        vgui_widget_set_visible(navigation_debug_panel, run && navigation_debug_open);
+        vgui_widget_set_background(navigation_debug_button, navigation_debug_open ? active : inactive);
+        if ((vgui_widget_get_checked(navigation_debug_button) != 0) != navigation_debug_open)
+            vgui_widget_set_checked(navigation_debug_button, navigation_debug_open);
+        navigation_debug_refresh = true;
         if (timeline_toggle) vgui_widget_set_background(timeline_toggle, timeline_open ? active : inactive);
         vgui_widget_set_background(play, inactive);
         vgui_widget_set_background(restart, inactive);
@@ -2330,6 +2407,18 @@ struct designer_preview::impl {
 
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
         auto& self = *static_cast<impl*>(user);
+        if (w == self.navigation_debug_button) {
+            if (event->type == VGUI_EVENT_MOUSE_DOWN && std::exchange(self.navigation_debug_press, false)) {
+                // The shell button still owns the press/release, but the Run
+                // canvas keeps keyboard input even if the click is canceled.
+                vgui_set_focus(self.shell, self.canvas);
+            }
+            if (event->type == VGUI_EVENT_CLICK) {
+                self.navigation_debug_open = !self.navigation_debug_open;
+                self.update_toolbar();
+            }
+            return;
+        }
         if (w == self.scrubber) {
             if (event->type == VGUI_EVENT_VALUE_CHANGED || event->type == VGUI_EVENT_MOUSE_DOWN) {
                 self.seek_playhead(self.playback.window_start + vgui_widget_get_value(w) * self.timing.duration, false);
@@ -2382,6 +2471,7 @@ struct designer_preview::impl {
         zoom = view.zoom;
         pan = {view.pan_x, view.pan_y};
         hand_tool = view.hand_tool;
+        navigation_debug_open = view.navigation_debug_open;
         run = view.running;
         start_focus_requested = false; // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
@@ -2468,7 +2558,8 @@ struct designer_preview::impl {
     static void shell_focus(vgui_context*, vgui_widget* old, vgui_widget* next, void* user) {
         auto& self = *static_cast<impl*>(user);
         if (old != next) self.cancel_canvas_edit();
-        if (old == self.canvas && next != self.canvas) self.blur(false);
+        if (old == self.canvas && next != self.canvas &&
+            !(self.navigation_debug_press && next == self.navigation_debug_button)) self.blur(false);
     }
 
     void stop_ime() {
@@ -2862,6 +2953,7 @@ struct designer_preview::impl {
     }
 
     void blur(bool clear_shell_focus = true) {
+        navigation_debug_press = false;
         if (clear_shell_focus) cancel_stop_color();
         cancel_pointer();
         stop_ime();
@@ -2992,7 +3084,10 @@ struct designer_preview::impl {
                 vgui_layout(shell);
             }
         }
-        if (!is_mounted || remount) return;
+        if (!is_mounted || remount) {
+            if (navigation_debug_refresh) refresh_navigation_debug(false);
+            return;
+        }
         // Never let the standalone submit path reuse/submit the shell's cmd.
         if (renderer && vgpu_current_command_buffer(renderer)) return;
         if (run) mounted->service_modals();
@@ -3003,7 +3098,11 @@ struct designer_preview::impl {
             vgui_update(ui.get(), step);
             vgui_context_set_safe_area(ui.get(), safe_area.left, safe_area.top, safe_area.right, safe_area.bottom);
             auto next = mounted->layout(active_viewport());
-            if (!next) { cancel_canvas_edit(); return; }
+            if (!next) {
+                refresh_navigation_debug(false);
+                cancel_canvas_edit();
+                return;
+            }
             frame = std::move(next);
         }
         if (std::exchange(start_focus_requested, false) && frame && canvas_visible() &&
@@ -3052,11 +3151,13 @@ struct designer_preview::impl {
             }
             sample_requested = false;
         }
-        if (layout_needed || vgui_context_paint_revision(ui.get()) != last_paint) {
+        const bool redraw = layout_needed || vgui_context_paint_revision(ui.get()) != last_paint;
+        if (redraw) {
             if (renderer && !draw_target(*frame)) {
                 cancel_canvas_edit();
                 ready = false;
                 frame.reset();
+                refresh_navigation_debug(false);
                 mark_canvas();
                 return;
             }
@@ -3065,6 +3166,7 @@ struct designer_preview::impl {
             dirty = false;
             mark_canvas();
         }
+        if (redraw || navigation_debug_refresh) refresh_navigation_debug(true);
         if (timeline) timeline->show_time(run ? playback.time : 0);
         if (geometry || ime_window) vgui_layout(shell);
         if (geometry) {
@@ -3502,6 +3604,12 @@ struct designer_preview::impl {
         }
         const bool over_canvas = contains(area, p) && vgui_hit_test(shell, p.x, p.y) == canvas;
         const bool inside = over_canvas && ready && frame && contains(board, p);
+        if (left_down && run && !pressed && !pan_button && vgui_get_focus(shell) == canvas &&
+            vgui_hit_test(shell, p.x, p.y) == navigation_debug_button) {
+            cancel_pointer();
+            navigation_debug_press = true;
+            return false; // Use the shell's native button, without blurring the Run context.
+        }
         if (down && !inside && !pressed && !pan_button &&
             (run_window || vgui_get_focus(shell) == canvas)) blur();
 
@@ -3706,7 +3814,7 @@ std::optional<canvas_control_drop> designer_preview::control_drop_at(const docum
 }
 designer_preview::view_state designer_preview::capture_view() const {
     return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open,
-        p_->custom_viewport, p_->safe_area, p_->simulation, p_->hand_tool};
+        p_->custom_viewport, p_->safe_area, p_->simulation, p_->hand_tool, p_->navigation_debug_open};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }
