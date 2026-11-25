@@ -88,6 +88,7 @@ public:
     // DPI is read from the event's SDL window. Route gamepad button presses
     // only to the active preview for the foreground window.
     bool handle_event(const SDL_Event&, vgui_cursor& cursor);
+    void set_navigation_editor(std::function<void(std::uint64_t, set_property)> commit);
     // Discard any open preview dialog and drop input ownership without invalidating a cached frame.
     void cancel_interaction();
     // Call after event dispatch, once the existing strings provider has been
@@ -123,6 +124,7 @@ public:
         std::map<std::string, value, std::less<>> simulation; // Page-local Run overrides, never serialized.
         bool hand_tool = false; // Page-local canvas input mode, never serialized.
         bool navigation_debug_open = false; // Page-local Run overlay, never serialized.
+        bool navigation_edit_open = false; // Page-local Design tool, never serialized.
     };
 
     view_state capture_view() const;

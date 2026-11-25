@@ -523,13 +523,17 @@ struct board_transform {
 
 constexpr std::array navigation_directions{VGUI_NAV_UP, VGUI_NAV_DOWN, VGUI_NAV_LEFT, VGUI_NAV_RIGHT};
 constexpr std::array navigation_normals{point{0, -1}, point{0, 1}, point{-1, 0}, point{1, 0}};
+constexpr std::array navigation_properties{"nav_up", "nav_down", "nav_left", "nav_right"};
+
+point navigation_port(pixel_rect node, point n) {
+    return {node.x + node.width * (.5f + .5f * n.x), node.y + node.height * (.5f + .5f * n.y)};
+}
 
 // Route from the relevant side of the focused node, even when the destination
 // is behind it (an explicit link or an automatic edge wrap).
 void draw_navigation_arrow(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect from, pixel_rect to, point direction,
         float scale, bool authored) {
-    const point start{from.x + from.width * (.5f + .5f * direction.x),
-        from.y + from.height * (.5f + .5f * direction.y)};
+    const auto start = navigation_port(from, direction);
     const point center{to.x + to.width * .5f, to.y + to.height * .5f};
     const point delta{center.x - start.x, center.y - start.y};
     const float distance = std::hypot(delta.x, delta.y);
@@ -570,6 +574,21 @@ void draw_navigation_arrow(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect from, pixel_rec
         cb->line_to(vg, end.x + back.x * head + back.y * wing, end.y + back.y * head - back.x * wing);
         cb->stroke(vg);
     }
+}
+
+void with_navigation_clip(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect clip, auto draw) {
+    if (!cb->get_clip_rect || !cb->clip_rect || !cb->set_clip_rect) return;
+    // Preserve the inherited dock scissor separately from OVG drawing state.
+    glm::ivec4 old{};
+    cb->get_clip_rect(vg, &old);
+    if (old.z > 0 && old.w > 0) clip = intersect(clip, {float(old.x), float(old.y), float(old.z), float(old.w)});
+    if (!has_area(clip)) return;
+    const int x = int(std::floor(clip.x)), y = int(std::floor(clip.y));
+    cb->clip_rect(vg, x, y, int(std::ceil(clip.x + clip.width)) - x, int(std::ceil(clip.y + clip.height)) - y);
+    cb->save(vg);
+    draw(clip);
+    cb->restore(vg);
+    cb->set_clip_rect(vg, &old);
 }
 
 void draw_safe_area(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect clip, const board_transform& t,
@@ -1866,6 +1885,23 @@ struct designer_preview::impl {
     pixel_rect navigation_focus_bounds{};
     struct navigation_target { pixel_rect bounds{}; bool authored = false; };
     std::array<navigation_target, navigation_directions.size()> navigation_targets{};
+    vgui_widget* navigation_edit_button = nullptr;
+    bool navigation_edit_open = false;
+    std::function<void(std::uint64_t, set_property)> commit_navigation;
+    struct navigation_node {
+        std::string scope;
+        std::array<std::string, navigation_properties.size()> links;
+        bool focusable;
+    };
+    std::map<std::string, navigation_node, std::less<>> navigation_nodes;
+    struct navigation_drag {
+        std::string source;
+        std::uint64_t revision;
+        std::size_t direction;
+        point down, pointer;
+        bool moved = false;
+    };
+    std::optional<navigation_drag> navigation_edit;
     simulation_values simulation;
     data_field_map fields;
     simulation_dialog simulation_editor;
@@ -2020,6 +2056,8 @@ struct designer_preview::impl {
         zoom_text = vgui_widget_add(toolbar, VGUI_LABEL, nullptr);
         vgui_widget_set_id(zoom_text, "designer.preview.zoom");
         mode = button(toolbar, "designer.preview.mode");
+        navigation_edit_button = button(toolbar, "designer.preview.navigation_edit");
+        vgui_widget_set_a11y_role(navigation_edit_button, VGUI_A11Y_ROLE_TOGGLE);
         simulation_button = button(toolbar, "designer.preview.simulation");
         navigation_debug_button = button(toolbar, "designer.preview.navigation_debug");
         vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
@@ -2135,6 +2173,10 @@ struct designer_preview::impl {
             viewport_text(strings, "preview.navigation_debug.button", "Focus Debug", "焦点调试"));
         vgui_widget_set_tooltip(navigation_debug_button, viewport_text(strings, "preview.navigation_debug.tooltip",
             "Show the current focus and actual directional targets", "显示当前焦点和四个方向的实际目标"));
+        vgui_widget_set_text(navigation_edit_button,
+            viewport_text(strings, "preview.navigation_edit.button", "Navigation Links", "导航连线"));
+        vgui_widget_set_tooltip(navigation_edit_button, viewport_text(strings, "preview.navigation_edit.tooltip",
+            "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除"));
         simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
@@ -2173,6 +2215,9 @@ struct designer_preview::impl {
                 message += *render_error;
             } else if (hand_tool) {
                 message = strings.text("preview.status.hand_controls", "Left-drag: pan  |  Right-click: return to Pointer  |  Wheel: zoom");
+            } else if (!run && navigation_edit_open) {
+                message = viewport_text(strings, "preview.navigation_edit.tooltip",
+                    "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除");
             } else {
                 message = strings.text("preview.status.controls", "Middle-drag: pan  |  Wheel: zoom in Design  |  Ctrl+wheel: zoom in Run");
             }
@@ -2248,9 +2293,10 @@ struct designer_preview::impl {
         const bool light = theme == designer_theme::light;
         const vgui_color inactive = light ? 0xFFEEF4FC : 0xFF394454;
         const vgui_color active = light ? 0xFFCFE2FA : 0xFF3A668E;
-        vgui_widget_set_background(pointer_tool, hand_tool ? inactive : active);
+        const bool pointer_active = !hand_tool && (run || !navigation_edit_open);
+        vgui_widget_set_background(pointer_tool, pointer_active ? active : inactive);
         vgui_widget_set_background(hand_tool_button, hand_tool ? active : inactive);
-        if ((vgui_widget_get_checked(pointer_tool) != 0) == hand_tool) vgui_widget_set_checked(pointer_tool, !hand_tool);
+        if ((vgui_widget_get_checked(pointer_tool) != 0) != pointer_active) vgui_widget_set_checked(pointer_tool, pointer_active);
         if ((vgui_widget_get_checked(hand_tool_button) != 0) != hand_tool) vgui_widget_set_checked(hand_tool_button, hand_tool);
         for (unsigned i = 0; i < presets.size(); ++i)
             vgui_widget_set_background(presets[i], !custom_viewport && i == static_cast<unsigned>(screen) ? active : inactive);
@@ -2262,6 +2308,11 @@ struct designer_preview::impl {
         vgui_widget_set_visible(simulation_button, run);
         vgui_widget_set_enabled(simulation_button, is_mounted && !remount);
         vgui_widget_set_visible(navigation_debug_button, run);
+        vgui_widget_set_visible(navigation_edit_button, !run && bool(commit_navigation));
+        vgui_widget_set_enabled(navigation_edit_button, is_mounted && !remount);
+        vgui_widget_set_background(navigation_edit_button, navigation_edit_open ? active : inactive);
+        if ((vgui_widget_get_checked(navigation_edit_button) != 0) != navigation_edit_open)
+            vgui_widget_set_checked(navigation_edit_button, navigation_edit_open);
         vgui_widget_set_enabled(navigation_debug_button, is_mounted && !remount);
         vgui_widget_set_visible(navigation_debug_panel, run && navigation_debug_open);
         vgui_widget_set_background(navigation_debug_button, navigation_debug_open ? active : inactive);
@@ -2495,7 +2546,23 @@ struct designer_preview::impl {
             return;
         }
         if (event->type != VGUI_EVENT_CLICK) return;
+        if (w == self.navigation_edit_button) {
+            self.cancel_canvas_edit();
+            self.navigation_edit_open = !self.navigation_edit_open;
+            if (self.navigation_edit_open) self.set_hand_tool(false);
+            self.update_toolbar();
+            self.update_status();
+            self.mark_canvas();
+            return;
+        }
         if (w == self.pointer_tool || w == self.hand_tool_button) {
+            if (!self.run && self.navigation_edit_open) {
+                self.cancel_canvas_edit();
+                self.navigation_edit_open = false;
+                self.update_toolbar();
+                self.update_status();
+                self.mark_canvas();
+            }
             self.set_hand_tool(w == self.hand_tool_button);
             return;
         }
@@ -2541,6 +2608,7 @@ struct designer_preview::impl {
         pan = {view.pan_x, view.pan_y};
         hand_tool = view.hand_tool;
         navigation_debug_open = view.navigation_debug_open;
+        navigation_edit_open = view.navigation_edit_open;
         run = view.running;
         start_focus_requested = false; // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
@@ -2649,6 +2717,89 @@ struct designer_preview::impl {
         return nullptr;
     }
 
+    const node_layout* design_node_at(const board_transform& t, point p) const {
+        // Later siblings paint on top; reverse preorder visits children first.
+        for (auto it = frame->nodes.rbegin(); it != frame->nodes.rend(); ++it) {
+            if (!it->visible) continue;
+            const auto r = t.project(it->visible_px);
+            // SDL positions are rounded to shell pixels; round hit bounds too.
+            if (p.x >= std::round(r.x) && p.y >= std::round(r.y) &&
+                p.x < std::round(r.x + r.width) && p.y < std::round(r.y + r.height)) return &*it;
+        }
+        return nullptr;
+    }
+
+    const node_layout* navigation_source() const {
+        if (!navigation_edit_open || hand_tool || run || !ready || !frame) return nullptr;
+        const auto source = navigation_nodes.find(selection);
+        if (source == navigation_nodes.end() || !source->second.focusable) return nullptr;
+        const auto* node = layout_of(selection);
+        return node && node->visible ? node : nullptr;
+    }
+
+    const node_layout* navigation_drop_target(const board_transform& t, pixel_rect clip, point p) const {
+        if (!contains(clip, p)) return nullptr;
+        const auto* hit = design_node_at(t, p);
+        if (!hit || hit->id == selection) return nullptr;
+        const auto source = navigation_nodes.find(selection), target = navigation_nodes.find(hit->id);
+        return source != navigation_nodes.end() && target != navigation_nodes.end() && target->second.focusable &&
+            source->second.scope == target->second.scope ? hit : nullptr;
+    }
+
+    float navigation_port_radius(pixel_rect node) const {
+        return std::min(6.f * vgui_context_get_ui_scale(shell), std::min(node.width, node.height) * .25f);
+    }
+
+    void commit_navigation_link(std::uint64_t rev, const std::string& source, std::size_t direction,
+            std::optional<value> target) {
+        commit_navigation(rev, set_property{source, navigation_properties[direction], std::move(target)});
+    }
+
+    bool press_navigation(point p, pixel_rect clip, const board_transform& t, SDL_WindowID id, bool clear) {
+        const auto* source = navigation_source();
+        if (!source) return false;
+        const auto r = t.project(source->visible_px);
+        const auto radius = navigation_port_radius(r);
+        if (radius < 2.f) return false;
+        for (std::size_t i = 0; i < navigation_properties.size(); ++i) {
+            const auto port = navigation_port(r, navigation_normals[i]);
+            const auto hit = intersect({port.x - radius, port.y - radius, radius * 2, radius * 2}, clip);
+            if (!contains(hit, p)) continue;
+            if (clear) {
+                if (!navigation_nodes.at(source->id).links[i].empty())
+                    commit_navigation_link(frame->revision, source->id, i, std::nullopt);
+            } else {
+                navigation_edit.emplace(navigation_drag{source->id, frame->revision, i, p, p});
+                edit_release = id;
+                mark_canvas();
+            }
+            return true;
+        }
+        return false;
+    }
+
+    void move_navigation(point p) {
+        navigation_edit->pointer = p;
+        navigation_edit->moved |= distance_sq(p, navigation_edit->down) >= 4.f;
+        mark_canvas();
+    }
+
+    void finish_navigation(point p, pixel_rect clip, const board_transform& t) {
+        const auto drag = std::move(*navigation_edit);
+        navigation_edit.reset();
+        edit_release.reset();
+        mark_canvas();
+        if (!navigation_source() || selection != drag.source || frame->revision != drag.revision ||
+            (!drag.moved && distance_sq(p, drag.down) < 4.f)) return;
+        if (const auto* target = navigation_drop_target(t, clip, p)) {
+            if (navigation_nodes.at(drag.source).links[drag.direction] != target->id)
+                commit_navigation_link(drag.revision, drag.source, drag.direction, value{target->id});
+        } else if (notify) {
+            notify(viewport_text(strings, "preview.navigation_edit.invalid",
+                "Drop on another focusable control in the same focus scope", "请放到同一焦点范围内的其他可聚焦控件上"));
+        }
+    }
+
     board_transform transform_for(pixel_rect board) const {
         return {board, frame->pixel_width, frame->pixel_height, frame->view.scale};
     }
@@ -2695,6 +2846,10 @@ struct designer_preview::impl {
     void cancel_canvas_edit() {
         cancel_geometry();
         cancel_shape_edit();
+        if (navigation_edit) {
+            navigation_edit.reset();
+            mark_canvas();
+        }
     }
 
     float knob_radius() const { return 6.f * vgui_context_get_ui_scale(shell); }
@@ -3036,6 +3191,7 @@ struct designer_preview::impl {
             std::string_view selected) {
         if (selection != selected) {
             if (geometry && geometry->change.id != selected) cancel_geometry();
+            if (navigation_edit) cancel_canvas_edit();
             selection.assign(selected);
             mark_canvas();
         }
@@ -3078,6 +3234,7 @@ struct designer_preview::impl {
         is_mounted = mounted && mounted->mount(doc, rev, bindings, &mount_error);
         active_load = nullptr;
         geometry_sources.clear();
+        navigation_nodes.clear();
         if (!is_mounted) {
             if (mounted) mounted->unmount();
             fields.clear();
@@ -3089,6 +3246,7 @@ struct designer_preview::impl {
             });
             apply_simulation();
             if (commit_geometry) collect_geometry_sources(doc);
+            if (commit_navigation && !run) collect_navigation_nodes(doc);
         }
         timing = is_mounted ? mounted->animation_timing() : animation_span{};
         if (timing.duration > 0) follow_playhead();
@@ -3127,6 +3285,22 @@ struct designer_preview::impl {
                 geometry_sources.emplace(child_id, geometry_source{axis(child, true), axis(child, false)});
             }
         }
+    }
+
+    void collect_navigation_nodes(const document& doc) {
+        const auto visit = [&](auto&& self, const std::string& id, std::string_view scope) -> void {
+            const auto& node = doc.nodes.at(id);
+            if (is_modal_panel(node)) scope = id;
+            if (node.type != "gradient") {
+                navigation_node data{std::string(scope), {}, vgui_widget_get_focusable(mounted->widget(id)) != 0};
+                for (std::size_t i = 0; i < navigation_properties.size(); ++i)
+                    if (const auto it = node.props.find(navigation_properties[i]); it != node.props.end())
+                        data.links[i] = std::get<std::string>(it->second);
+                navigation_nodes.emplace(id, std::move(data));
+            }
+            for (const auto& child : node.children) self(self, child, scope);
+        };
+        visit(visit, doc.root, {});
     }
 
     void set_renderer(vgpu_ctx_t* ctx) {
@@ -3188,6 +3362,8 @@ struct designer_preview::impl {
             const auto area = rect(canvas);
             if (!shape_edit_is_current(area, artboard(area))) cancel_shape_edit();
         }
+        if (navigation_edit && (!canvas_visible() || vgui_modal_active(shell) || vgui_popup_active(shell) ||
+                vgui_context_get_open_menu(shell))) cancel_canvas_edit();
         if (stop_color_edit && key_at_playhead() != stop_color_edit->key) cancel_stop_color();
         // Run changes only paint. A requested seek samples its exact time
         // before playback can advance it on a later frame.
@@ -3451,28 +3627,52 @@ struct designer_preview::impl {
     }
 
     void draw_navigation_debug(ovg_ctx_cb* cb, rvg_t* vg, const board_transform& transform, pixel_rect clip) const {
-        if (!navigation_debug_open || !has_area(navigation_focus_bounds) ||
-            !cb->get_clip_rect || !cb->clip_rect || !cb->set_clip_rect) return;
-        // Preserve the scissor inherited from dock/floating ancestors. OVG
-        // save/restore only protects the drawing state, not the clip.
-        glm::ivec4 old{};
-        cb->get_clip_rect(vg, &old);
-        if (old.z > 0 && old.w > 0) clip = intersect(clip, {float(old.x), float(old.y), float(old.z), float(old.w)});
-        if (!has_area(clip)) return;
-        const int x = int(std::floor(clip.x)), y = int(std::floor(clip.y));
-        cb->clip_rect(vg, x, y, int(std::ceil(clip.x + clip.width)) - x, int(std::ceil(clip.y + clip.height)) - y);
-        cb->save(vg);
-        const float scale = vgui_context_get_ui_scale(shell);
-        const auto focus = transform.project(navigation_focus_bounds);
-        for (std::size_t i = 0; i < navigation_targets.size(); ++i) {
-            const auto& target = navigation_targets[i];
-            if (has_area(target.bounds))
-                draw_navigation_arrow(cb, vg, focus, transform.project(target.bounds), navigation_normals[i], scale, target.authored);
-        }
-        outline(cb, vg, focus, clip, 0xE020242Au, 3.f * scale);
-        outline(cb, vg, focus, clip, 0xFFF3F7FFu, 1.5f * scale);
-        cb->restore(vg);
-        cb->set_clip_rect(vg, &old);
+        if (!navigation_debug_open || !has_area(navigation_focus_bounds)) return;
+        with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
+            const float scale = vgui_context_get_ui_scale(shell);
+            const auto focus = transform.project(navigation_focus_bounds);
+            for (std::size_t i = 0; i < navigation_targets.size(); ++i) {
+                const auto& target = navigation_targets[i];
+                if (has_area(target.bounds))
+                    draw_navigation_arrow(cb, vg, focus, transform.project(target.bounds), navigation_normals[i], scale, target.authored);
+            }
+            outline(cb, vg, focus, clipped, 0xE020242Au, 3.f * scale);
+            outline(cb, vg, focus, clipped, 0xFFF3F7FFu, 1.5f * scale);
+        });
+    }
+
+    void draw_navigation_edit(ovg_ctx_cb* cb, rvg_t* vg, const board_transform& t, pixel_rect clip) const {
+        const auto* source = navigation_source();
+        if (!source) return;
+        with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
+            const float scale = vgui_context_get_ui_scale(shell);
+            const auto r = t.project(source->visible_px);
+            const auto& links = navigation_nodes.at(source->id).links;
+            for (std::size_t i = 0; i < links.size(); ++i) {
+                if (navigation_edit && navigation_edit->direction == i) {
+                    const auto p = navigation_edit->pointer;
+                    const auto* target = navigation_drop_target(t, clipped, p);
+                    const auto to = target ? t.project(target->visible_px) : pixel_rect{p.x - 1, p.y - 1, 2, 2};
+                    if (target) outline(cb, vg, to, clipped, to_ovg(0xFF6EE7A9u), 2.f * scale);
+                    draw_navigation_arrow(cb, vg, r, to, navigation_normals[i], scale, true);
+                } else if (!links[i].empty()) {
+                    if (const auto* target = layout_of(links[i]); target && target->visible)
+                        draw_navigation_arrow(cb, vg, r, t.project(target->visible_px), navigation_normals[i], scale, true);
+                }
+            }
+            const float radius = navigation_port_radius(r);
+            if (radius < 2.f) return;
+            constexpr auto cyan = 0xFFFFDF64u, dark = 0xFF292520u;
+            for (std::size_t i = 0; i < links.size(); ++i) {
+                const auto p = navigation_port(r, navigation_normals[i]);
+                const pixel_rect handle{p.x - radius, p.y - radius, radius * 2, radius * 2};
+                fill(cb, vg, handle, dark);
+                if (links[i].empty() && (!navigation_edit || navigation_edit->direction != i))
+                    outline(cb, vg, handle, clipped, cyan, 2.f * scale);
+                else
+                    fill(cb, vg, {handle.x + 1, handle.y + 1, handle.width - 2, handle.height - 2}, cyan);
+            }
+        });
     }
 
     static void draw_canvas(vgui_widget* w, ovg_ctx_cb* cb, rvg_t* vg,
@@ -3510,7 +3710,7 @@ struct designer_preview::impl {
         constexpr auto accent = 0xFFFFC963u; // OVG uses 0xAABBGGRR.
         if (const auto* selected = self.layout_of(self.selection); selected && selected->visible) {
             outline(cb, vg, t.project(selected->visible_px), area, accent);
-            if (!self.hand_tool && self.geometry_sources.contains(selected->id)) {
+            if (!self.navigation_edit_open && !self.hand_tool && self.geometry_sources.contains(selected->id)) {
                 const float h = self.handle_half_size();
                 visible_corners(*selected, t, [&](corner, point at) {
                     fill(cb, vg, {at.x - h - 1, at.y - h - 1, 2 * h + 2, 2 * h + 2}, 0xFF553820);
@@ -3518,6 +3718,7 @@ struct designer_preview::impl {
                 });
             }
         }
+        self.draw_navigation_edit(cb, vg, t, visible);
         if (self.geometry && self.geometry_is_current(area, board)) {
             const auto& g = *self.geometry;
             if (has_geometry_edit(g.change)) {
@@ -3649,7 +3850,7 @@ struct designer_preview::impl {
         default: return false;
         }
         if ((pan_button || pressed) && id != pointer_window) return false;
-        if ((geometry || shape_edit) && edit_release != id) return false;
+        if ((geometry || shape_edit || navigation_edit) && edit_release != id) return false;
         const bool down = e.type == SDL_EVENT_MOUSE_BUTTON_DOWN, up = e.type == SDL_EVENT_MOUSE_BUTTON_UP;
         const Uint8 button = down || up ? e.button.button : 0;
         const auto mask = button >= 1 && button <= 8 ? SDL_BUTTON_MASK(button) : SDL_MouseButtonFlags{0};
@@ -3684,17 +3885,20 @@ struct designer_preview::impl {
         if (left_up && edit_release == id) {
             if (geometry) finish_geometry(p);
             else if (shape_edit) finish_shape_edit(p);
+            else if (navigation_edit) finish_navigation(p,
+                vgui_hit_test(shell, p.x, p.y) == canvas ? intersect(area, board) : pixel_rect{}, transform_for(board));
             else edit_release.reset();
             return true;
         }
         if (left_down) {
             cancel_canvas_edit();
             edit_release.reset();
-        } else if ((geometry || shape_edit) && e.type == SDL_EVENT_MOUSE_MOTION) {
+        } else if ((geometry || shape_edit || navigation_edit) && e.type == SDL_EVENT_MOUSE_MOTION) {
             if (geometry) update_geometry(p);
-            else update_shape_edit(p);
+            else if (shape_edit) update_shape_edit(p);
+            else move_navigation(p);
             return true;
-        } else if ((geometry || shape_edit) && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        } else if ((geometry || shape_edit || navigation_edit) && e.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
             // An intervening button press must not turn a pan or shell click
             // into an edit on the later left release.
             cancel_canvas_edit();
@@ -3748,9 +3952,11 @@ struct designer_preview::impl {
         }
         if (hand_tool) return over_canvas;
         if (!run) {
+            if (inside && navigation_edit_open && (left_down || right_down) &&
+                press_navigation(p, intersect(area, board), transform_for(board), id, right_down)) return true;
             if (left_down && over_canvas) {
                 if (ready && frame) {
-                    if (geometry_sources.contains(selection)) {
+                    if (!navigation_edit_open && geometry_sources.contains(selection)) {
                         if (const auto* selected = layout_of(selection); selected && selected->visible) {
                             if (const auto handle = hit_handle(*selected, transform_for(board), p)) {
                                 start_geometry(*selected, area, board, p, id, dpi, handle);
@@ -3760,20 +3966,9 @@ struct designer_preview::impl {
                     }
                     std::string hit;
                     if (inside) {
-                        const auto t = transform_for(board);
-                        // Later siblings paint on top; reverse preorder visits children first.
-                        for (auto it = frame->nodes.rbegin(); it != frame->nodes.rend(); ++it) {
-                            if (!it->visible) continue;
-                            const auto r = t.project(it->visible_px);
-                            // SDL positions are rounded to shell pixels. Round the bounds
-                            // in that space too so a click on a displayed leading edge
-                            // cannot miss the child and start dragging its parent.
-                            if (p.x >= std::round(r.x) && p.y >= std::round(r.y) &&
-                                p.x < std::round(r.x + r.width) && p.y < std::round(r.y + r.height)) {
-                                hit = it->id;
-                                start_geometry(*it, area, board, p, id, dpi);
-                                break;
-                            }
+                        if (const auto* node = design_node_at(transform_for(board), p)) {
+                            hit = node->id;
+                            if (!navigation_edit_open) start_geometry(*node, area, board, p, id, dpi);
                         }
                     }
                     if (select) select(std::move(hit));
@@ -3852,7 +4047,7 @@ struct designer_preview::impl {
     }
 
     bool key_event(const SDL_Event& e) {
-        if ((geometry || shape_edit) && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE &&
+        if ((geometry || shape_edit || navigation_edit) && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE &&
             edit_release == e.key.windowID) {
             cancel_canvas_edit();
             return true;
@@ -3918,6 +4113,10 @@ void designer_preview::sync(const document& doc, uint64_t rev, const std::filesy
 void designer_preview::set_render_context(vgpu_ctx_t* ctx) { p_->set_renderer(ctx); }
 void designer_preview::render(float dt) { p_->render(dt); }
 bool designer_preview::handle_event(const SDL_Event& e, vgui_cursor& cursor) { return p_->event(e, cursor); }
+void designer_preview::set_navigation_editor(std::function<void(std::uint64_t, set_property)> commit) {
+    p_->commit_navigation = std::move(commit);
+    p_->update_toolbar();
+}
 void designer_preview::cancel_interaction() {
     p_->close_viewport_dialog();
     p_->simulation_editor.close();
@@ -3937,7 +4136,7 @@ std::optional<canvas_control_drop> designer_preview::control_drop_at(const docum
 }
 designer_preview::view_state designer_preview::capture_view() const {
     return {p_->screen, p_->fit, p_->zoom, p_->pan.x, p_->pan.y, p_->run, p_->playback, p_->timeline_open,
-        p_->custom_viewport, p_->safe_area, p_->simulation, p_->hand_tool, p_->navigation_debug_open};
+        p_->custom_viewport, p_->safe_area, p_->simulation, p_->hand_tool, p_->navigation_debug_open, p_->navigation_edit_open};
 }
 void designer_preview::restore_view(const view_state& view) { p_->restore_view(view); }
 void designer_preview::set_preset(preset v) { p_->set_screen(v); }

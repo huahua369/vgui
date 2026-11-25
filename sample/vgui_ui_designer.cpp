@@ -471,6 +471,23 @@ private:
         return true;
     }
 
+    void commit_navigation(vgui_item_id id, std::uint64_t revision, ui::set_property change) {
+        const auto* page = find_page(id);
+        if (!page || id != active_ || !page->preview || page->preview->running() ||
+            page->preview_revision != revision || page->last_model_revision != session_.revision()) return;
+        workbench_.finish_edit();
+        const bool linked = change.data.has_value();
+        const auto link = change.id + " · " + change.key;
+        const ui::edit change_property = std::move(change);
+        ui::diagnostic error;
+        if (!session_.apply(std::span{&change_property, 1}, &error)) {
+            workbench_.status(std::string(tr("preview.navigation_edit.failed", "Navigation link edit failed: ")) + describe(error));
+        } else {
+            workbench_.status(std::string(linked ? tr("preview.navigation_edit.linked", "Linked") :
+                tr("preview.navigation_edit.cleared", "Cleared")) + " " + link);
+        }
+    }
+
     struct page_state {
         vgui_item_id id = 0;
         std::uint64_t untitled_number = 0;
@@ -589,6 +606,9 @@ private:
             [this, id](std::string message) { if (active_ == id) workbench_.status(std::move(message)); },
             [this, id](ui::geometry_edit change) { commit_geometry(id, std::move(change)); }, strings_,
             [this, id](auto revision, const auto& edits) { return commit_keyframes(id, revision, edits); });
+        page.preview->set_navigation_editor([this, id](auto revision, ui::set_property change) {
+            commit_navigation(id, revision, std::move(change));
+        });
         page.preview->set_binding_locator([this, id](std::string node) {
             if (active_ == id) workbench_.locate_in_outline(std::move(node));
         });
@@ -3960,6 +3980,198 @@ private:
     SDL_Joystick* joystick_ = nullptr;
 };
 
+void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& editor,
+                              const std::function<void()>& frame, const fs::path& sandbox,
+                              vgui_render_target* target, const vgui_render_target_desc& desc,
+                              std::vector<uint8_t>& pixels, bool bgra) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Design navigation: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"source"},"children":["source","near","far","dialog"]},
+        "source":{"type":"button","props":{"x":176,"y":140,"width":128,"height":80,"nav_right":"far","text":"Source","focus_alpha":0}},
+        "near":{"type":"button","props":{"x":362,"y":148,"width":112,"height":64,"text":"Near"}},
+        "far":{"type":"button","props":{"x":525,"y":315,"width":120,"height":64,"text":"Far"}},
+        "dialog":{"type":"panel","props":{"x":98,"y":300,"width":245,"height":160,"modal":true},"children":["inside"]},
+        "inside":{"type":"button","props":{"x":22,"y":27,"width":120,"height":64,"text":"Inside modal"}}
+    }})", doc), "decode the link editor fixture");
+    const auto file = sandbox / "nav-edit.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the link editor fixture");
+    frame();
+
+    auto& preview = editor.preview();
+    const auto& history = editor.history();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    auto* canvas = input.widget("designer.preview.canvas");
+    auto* toggle = find_widget(preview.widget(), "designer.preview.navigation_edit", VGUI_BUTTON);
+    require(!preview.running() && toggle && vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) &&
+        !vgui_widget_get_checked(toggle), "the navigation toggle must be available and off in Design");
+    const auto node = [&](std::string_view id) {
+        const auto* layout = preview.snapshot();
+        require(layout != nullptr, "missing Design layout");
+        const auto it = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+        require(it != layout->nodes.end() && it->visible, id);
+        return it->visible_px;
+    };
+    const auto project = [&](float x, float y) {
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing Design artboard");
+        const auto pos = glm::round(glm::vec2{board->x + x * board->width / layout->pixel_width,
+            board->y + y * board->height / layout->pixel_height});
+        require(vgui_hit_test(shell, pos.x, pos.y) == canvas, "fixture point is outside the canvas");
+        return pos;
+    };
+    const auto at = [&](std::string_view id, float u = .5f, float v = .5f) {
+        const auto r = node(id);
+        return project(r.x + u * r.width, r.y + v * r.height);
+    };
+    const auto sample_handles = [&] {
+        require(vgui_render_target_submit_context(target, shell), "cannot composite Design navigation handles");
+        require(vgui_render_target_download(target, pixels.data(), pixels.size()) == pixels.size(),
+            "cannot read Design navigation handle pixels");
+        // Look for the navigation stroke in small neighborhoods around the four ports.
+        std::array<int, 4> samples{};
+        const std::array centers{at("source", .5f, 0), at("source", .5f, 1),
+            at("source", 0, .5f), at("source", 1, .5f)};
+        const int radius = std::max(2, int(std::ceil(7.f * vgui_context_get_ui_scale(shell))));
+        for (size_t i = 0; i < centers.size(); ++i) {
+            const int x = int(centers[i].x), y = int(centers[i].y);
+            require(x >= radius && y >= radius && x + radius < int(desc.width) && y + radius < int(desc.height),
+                "handle sample is outside the render target");
+            for (int row = y - radius; row <= y + radius; ++row) for (int col = x - radius; col <= x + radius; ++col) {
+                const auto* p = pixels.data() + (size_t(row) * desc.width + col) * 4;
+                samples[i] += std::abs(p[bgra ? 2 : 0] - 0x64) <= 16 && std::abs(p[1] - 0xDF) <= 16 &&
+                    std::abs(p[bgra ? 0 : 2] - 0xFF) <= 16;
+            }
+        }
+        return samples;
+    };
+    const auto inspector_is = [&](std::string_view key, std::string_view value) {
+        auto* field = find_widget(vgui_root(shell), std::string("property:").append(key), VGUI_EDIT);
+        require(field && std::string_view(vgui_edit_get_text(field)) == value, "inspector navigation value is stale");
+    };
+    input.click_at(canvas, at("source"));
+    require(editor.selection() == "source", "could not select the link source");
+    auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
+    require(search != nullptr, "missing inspector search");
+    input.click(search);
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = "nav_";
+    input.push(text);
+    frame();
+    inspector_is("nav_right", "far");
+
+    const auto original_revision = history.revision();
+    const auto untouched = [&](std::string_view message) {
+        require(history.revision() == original_revision && history.current() == doc &&
+            !history.dirty() && !history.can_undo() && editor.selection() == "source", message);
+    };
+    input.click_at(canvas, at("source", 1, .5f), SDL_BUTTON_RIGHT);
+    untouched("the default-off tool cleared an authored link");
+    const std::array<int, 4> no_handles{};
+    require(sample_handles() == no_handles, "navigation handles are visible with the tool initially off");
+    input.click(toggle);
+    require(vgui_widget_get_checked(toggle) &&
+        std::ranges::all_of(sample_handles(), [](int count) { return count >= 4; }),
+        "enabling the tool did not paint all four side midpoint handles");
+    untouched("enabling the tool edited the document");
+
+    const auto begin_drag = [&](glm::vec2 from, glm::vec2 to) {
+        input.button(true, from);
+        input.motion(from, to);
+    };
+    const auto release = [&](glm::vec2 to) {
+        input.button(false, to);
+        frame();
+    };
+    const auto up = [&] { return at("source", .5f, 0); };
+    const auto right = [&] { return at("source", 1, .5f); };
+    const auto near = [&] { return at("near"); };
+    begin_drag(up(), near());
+    frame();
+    untouched("drag motion committed before release");
+    keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    release(near());
+    untouched("Escape did not cancel the link through mouse-up");
+    const auto invalid_drop = [&](glm::vec2 end, std::string_view message) {
+        begin_drag(right(), end);
+        release(end);
+        untouched(message);
+    };
+    invalid_drop(project(650, 540), "a blank drop changed the existing override");
+    invalid_drop(at("source"), "a self drop changed the existing override");
+    invalid_drop(at("inside"), "a cross-modal drop changed the existing override");
+
+    const auto check_edit = [&](const ui::document& expected, uint64_t revision, std::string_view message) {
+        require(history.revision() == revision + 1 && history.current() == expected &&
+            history.committed() == expected && history.dirty() && history.can_undo() &&
+            editor.selection() == "source", message);
+    };
+    auto expected = doc;
+    begin_drag(up(), near());
+    release(near());
+    expected.nodes.at("source").props["nav_up"] = std::string("near");
+    check_edit(expected, original_revision, "adding a link did not commit one edit on the selected source");
+    inspector_is("nav_up", "near");
+
+    auto revision = history.revision();
+    begin_drag(right(), near());
+    release(near());
+    expected.nodes.at("source").props["nav_right"] = std::string("near");
+    check_edit(expected, revision, "replacing a link did not commit one edit on the selected source");
+    inspector_is("nav_right", "near");
+
+    revision = history.revision();
+    input.click_at(canvas, right(), SDL_BUTTON_RIGHT);
+    const auto replaced = expected;
+    expected.nodes.at("source").props.erase("nav_right");
+    check_edit(expected, revision, "right click did not remove just the authored override in one edit");
+    inspector_is("nav_right", "");
+    keys.activate(keys.open(1), 0); // Edit > Undo
+    require(history.current() == replaced, "one Undo did not restore the right override");
+    inspector_is("nav_right", "near");
+    keys.activate(keys.open(1), 1); // Edit > Redo
+    require(history.current() == expected, "one Redo did not remove the right override");
+    inspector_is("nav_right", "");
+
+    input.click(toggle);
+    require(!vgui_widget_get_checked(toggle) && sample_handles() == no_handles,
+        "turning off the tool left navigation handles on the canvas");
+    const auto start = at("source");
+    const auto moved = start + glm::vec2{24, 16};
+    revision = history.revision();
+    begin_drag(start, moved);
+    release(moved);
+    auto geometry_only = expected;
+    const auto& props = history.current().nodes.at("source").props;
+    require(std::get<double>(props.at("x")) > 176 && std::get<double>(props.at("y")) > 140,
+        "the ordinary Design move did not resume with the navigation tool off");
+    geometry_only.nodes.at("source").props["x"] = props.at("x");
+    geometry_only.nodes.at("source").props["y"] = props.at("y");
+    check_edit(geometry_only, revision, "a geometry move with the tool off changed unrelated properties");
+    keys.activate(keys.open(1), 0);
+    require(history.current() == expected, "one Undo did not restore the source position");
+
+    editor.request(command::save);
+    frame();
+    ui::document saved;
+    require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
+        "the new link or the removal of the old override did not survive saving");
+    revision = history.revision();
+    input.click(toggle);
+    input.click("designer.preview.mode");
+    require(preview.running() && !vgui_widget_get_visible(toggle) && sample_handles() == no_handles,
+        "the Design navigation toggle or handles are visible in Run");
+    input.click_at(canvas, up(), SDL_BUTTON_RIGHT);
+    require(history.current() == expected && history.revision() == revision && !history.dirty(),
+        "the Design navigation tool edited the document in Run");
+}
+
 void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_context* shell,
                          designer& editor, const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -4206,6 +4418,7 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     pad.unplug();
     require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
         "navigating, toggling focus debug, or simulating availability changed the design");
+    exercise_navigation_edit(win, shell, editor, frame, sandbox, target.get(), desc, pixels, bgra);
 }
 
 void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor,
@@ -5707,7 +5920,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
             } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_navigation: default focus, directional overrides, fallback, and focus-debug pixels passed");
+                std::puts("ui_designer_navigation: Run focus, overrides, fallback, debug pixels, and Design link editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 std::puts("ui_designer_modal_return: keyboard close, Escape, and focus restoration passed");
