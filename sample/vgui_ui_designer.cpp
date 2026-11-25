@@ -644,7 +644,7 @@ private:
         page.preview->set_navigation_editor([this, id](auto revision, ui::set_property change) {
             commit_navigation(id, revision, std::move(change));
         });
-        page.preview->set_binding_locator([this, id](std::string node) {
+        page.preview->set_outline_locator([this, id](std::string node) {
             if (active_ == id) workbench_.locate_in_outline(std::move(node));
         });
         page.preview->set_control_drop_target({
@@ -4341,11 +4341,13 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     };
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","props":{"nav_start":"start"},"children":["near","start","far"]},
+        "root":{"type":"panel","props":{"nav_start":"start"},"children":["near","start","group"]},
         "near":{"type":"button","props":{"x":150,"y":40,"width":100,"height":36,"text":"Near","action":"nav.near"}},
         "start":{"type":"button","props":{"x":20,"y":40,"width":100,"height":36,"text":"Start","action":"nav.start",
             "nav_right":"far","focus_alpha":1}},
-        "far":{"type":"button","props":{"x":340,"y":150,"width":100,"height":36,"text":"Far","action":"nav.far",
+        "group":{"type":"panel","props":{"layout":"absolute","x":340,"y":150,"width":100,"height":36,
+            "background":"#00000000","border_width":0},"children":["far"]},
+        "far":{"type":"button","props":{"width":100,"height":36,"text":"Far","action":"nav.far",
             "nav_left":"start","focus_alpha":1,"bind_enabled":"hud.far"}}
     }})", doc), "decode the navigation fixture");
     const auto file = sandbox / "nav.vgui.json";
@@ -4353,7 +4355,12 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     frame();
 
     auto& preview = editor.preview();
-    const auto revision = editor.history().revision();
+    const auto& history = editor.history();
+    const auto revision = history.revision();
+    const auto unchanged = [&](std::string_view message) {
+        require(history.revision() == revision && history.current() == doc && !history.dirty() && !history.can_undo(),
+            message);
+    };
     const native_keyframe_input input{win, shell, preview, frame, require};
     const ui::native_menu_input keys(win, shell, frame);
     native_gamepad_input pad(win.window, frame, require);
@@ -4371,23 +4378,37 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto debug_control = [&](std::string_view suffix, vgui_widget_kind kind) {
         return find_widget(preview.widget(), std::string(debug).append(suffix), kind);
     };
-    const auto strip_visible = [&] {
-        return vgui_widget_get_visible(debug_control(".panel", VGUI_PANEL));
+    auto* strip = debug_control(".panel", VGUI_PANEL);
+    require(strip != nullptr, "missing focus debug strip");
+    const auto strip_visible = [&] { return vgui_widget_get_visible(strip); };
+    const auto entry = [&](std::string_view suffix) {
+        auto* w = debug_control(suffix, VGUI_BUTTON);
+        require(w && vgui_widget_get_visible(w), suffix);
+        return w;
     };
-    const auto label = [&](std::string_view suffix) {
-        auto* w = debug_control(suffix, VGUI_LABEL);
-        require(vgui_widget_get_visible(w), suffix);
-        return std::string_view(vgui_widget_get_text(w));
+    const auto entry_text = [&](std::string_view suffix) {
+        return std::string_view(vgui_widget_get_text(entry(suffix)));
     };
     const auto localized = [&](std::string_view suffix, const char* fallback) {
         return editor.strings().text(std::string("preview.navigation_debug").append(suffix), fallback);
     };
     const auto focus_is = [&](std::string_view id) {
-        const auto text = label(".focus");
+        const auto text = entry_text(".focus");
         return text.contains(localized(".focus", "Focus")) && text.contains(id);
     };
     require(!vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
         "focus debug should be hidden in Design");
+    auto* dock = find_widget(vgui_root(shell), "designer.dock", VGUI_DOCK);
+    auto* tree = find_widget(vgui_root(shell), "designer.outliner", VGUI_TREE);
+    require(dock && tree, "missing dock or outline for navigation locate");
+    const auto structure = vgui_dock_find(dock, "structure"), controls = vgui_dock_find(dock, "controls");
+    const auto group_row = vgui_tree_get_child(tree, vgui_tree_get_root(tree, 0), 2);
+    const auto far_row = vgui_tree_get_child(tree, group_row, 0);
+    require(far_row && !vgui_tree_get_item_expanded(tree, group_row), "Far's ancestor must start collapsed");
+    // A plain selection also expands ancestors, but only a locate reveals the Structure tab.
+    require(vgui_dock_activate(dock, controls) && vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == controls,
+        "could not hide the outline behind the Controls tab");
+    frame();
     pad.plug();
     auto* mode_button = input.widget(mode);
     // If A leaks to the shell as Enter, this focused button will enter Run.
@@ -4407,6 +4428,22 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     auto* toggle = debug_control("", VGUI_BUTTON);
     require(vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) && !strip_visible(),
         "Run should start with the focus debug toggle available and the strip closed");
+    const auto center = [&](vgui_widget* w) {
+        const auto r = input.rect(w);
+        return glm::vec2{r.x + r.width / 2, r.y + r.height / 2};
+    };
+    const auto keeps_focus = [&](std::string_view id) {
+        return preview.running() && strip_visible() && vgui_get_focus(shell) == canvas && focus_is(id);
+    };
+    const auto locate = [&](std::string_view suffix, std::string_view node, std::string_view focused) {
+        auto* button = entry(suffix);
+        require(vgui_widget_get_enabled(button), "a document target is not locatable");
+        const auto status = std::string(status_text());
+        input.click(button);
+        require(editor.selection() == node, "debug click did not locate the expected document node");
+        require(keeps_focus(focused) && status_text() == status, "locating a node changed or activated Run focus");
+        unchanged("locating a node changed the design");
+    };
 
     // Record after the host submits, into the target's separate canvas. Borrow
     // the host's callback table since vgui_draw retains it on the shell.
@@ -4473,13 +4510,33 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 24000);
     require(focus_is("start"), "a stick held from Design moved focus after entering Run");
     pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
-    const auto right = label(".right");
+    const auto right = entry_text(".right");
     require(right.contains(localized(".right", "Right")) && right.contains("far") &&
         right.contains(localized(".explicit", "Explicit")), "Right should show the explicit far target");
-    const auto up = label(".up");
+    const auto up = entry_text(".up");
     require(up.contains(localized(".up", "Up")) && up.contains("far") && up.contains(localized(".automatic", "Auto")) &&
-        label(".down").contains(localized(".down", "Down")) && label(".left").contains(localized(".left", "Left")),
+        entry_text(".down").contains(localized(".down", "Down")) &&
+        entry_text(".left").contains(localized(".left", "Left")),
         "the strip must show all four directions, including the automatic Up wrap to far");
+    const auto before_locate = std::string(editor.selection());
+    auto* right_button = entry(".right");
+    const auto locate_press = center(right_button), locate_release = center(toggle);
+    require(vgui_hit_test(shell, locate_press.x, locate_press.y) == right_button &&
+        vgui_hit_test(shell, locate_release.x, locate_release.y) == toggle,
+        "cannot exercise releasing outside the navigation entry");
+    input.button(true, locate_press);
+    frame();
+    require(editor.selection() == before_locate && keeps_focus("start"), "pressing a debug entry selected or focused it");
+    input.motion(locate_press, locate_release);
+    input.button(false, locate_release);
+    frame();
+    require(editor.selection() == before_locate && keeps_focus("start"),
+        "releasing outside a debug entry located a node or changed focus");
+    locate(".right", "far", "start");
+    require(vgui_dock_get_active(dock, VGUI_DOCK_LEFT) == structure && vgui_tree_get_item_expanded(tree, group_row) &&
+        vgui_tree_is_selected(tree, far_row) && vgui_tree_get_cursor(tree) == far_row,
+        "locating the explicit target did not reveal Far in the outline");
+    locate(".focus", "start", "start");
     const auto opened_links = sample_links();
     require(opened_links.far_gap.authored >= 4 && opened_links.far_gap.automatic >= 4,
         "opening focus debug did not paint both cyan explicit and amber automatic links to far");
@@ -4508,15 +4565,11 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto before = preview.snapshot()->serial;
     pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
     require(preview.snapshot() && preview.snapshot()->serial != before, "direction move did not repaint the focus ring");
-    require(focus_is("far") && label(".left").contains("start") &&
-        label(".left").contains(localized(".explicit", "Explicit")),
+    require(focus_is("far") && entry_text(".left").contains("start") &&
+        entry_text(".left").contains(localized(".explicit", "Explicit")),
         "D-pad Right did not follow the explicit link or update the debug strip");
     pad.tap(SDL_GAMEPAD_BUTTON_SOUTH);
     require(status_text().ends_with("nav.far [far]"), "A did not activate the focused far button");
-    const auto center = [&](vgui_widget* w) {
-        const auto r = input.rect(w);
-        return glm::vec2{r.x + r.width / 2, r.y + r.height / 2};
-    };
     const auto press = center(toggle), release = center(mode_button);
     require(vgui_hit_test(shell, press.x, press.y) == toggle && vgui_hit_test(shell, release.x, release.y) == mode_button,
         "cannot exercise a release outside the focus debug toggle");
@@ -4595,11 +4648,16 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto& bounds = start->visible_px;
     input.click_at(canvas, {board->x + (bounds.x + bounds.width / 2) * board->width / layout->pixel_width,
         board->y + (bounds.y + bounds.height / 2) * board->height / layout->pixel_height});
-    require(focus_is("start") && label(".right").contains("near") &&
-        label(".right").contains(localized(".automatic", "Auto")),
+    require(focus_is("start") && entry_text(".right").contains("near") &&
+        entry_text(".right").contains(localized(".automatic", "Auto")),
         "disabling far did not refresh the strip with the automatic near target");
-    require(label(".up").contains(localized(".none", "None")),
-        "disabling the only off-row target should leave Up without a target");
+    auto* no_target = entry(".up");
+    require(entry_text(".up").contains(localized(".none", "None")) && !vgui_widget_get_enabled(no_target),
+        "disabling the only off-row target should leave Up disabled with no target");
+    locate(".right", "near", "start");
+    // Disabled buttons are skipped by hit testing; the click falls through to the strip.
+    input.click_at(strip, center(no_target));
+    require(editor.selection() == "near" && keeps_focus("start"), "clicking None located a node or changed focus");
     const auto fallback_links = sample_links();
     require(fallback_links.far_gap.empty() && !fallback_links.near_gap.authored &&
         fallback_links.near_gap.automatic >= 4,
@@ -4638,8 +4696,7 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     require(!preview.running() && !vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
         "returning to Design must hide an open focus debug strip and its toggle");
     pad.unplug();
-    require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
-        "navigating, toggling focus debug, or simulating availability changed the design");
+    unchanged("navigating, toggling focus debug, locating nodes, or simulating availability changed the design");
     exercise_navigation_edit(win, shell, editor, frame, sandbox, target.get(), desc, pixels, bgra);
 }
 
@@ -6732,7 +6789,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
             } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback, debug pixels, and Design link and initial focus editing passed");
+                std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback, "
+                    "debug pixels, locating nodes in the outline, and Design link and initial focus editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);

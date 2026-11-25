@@ -1877,9 +1877,14 @@ struct designer_preview::impl {
     std::array<vgui_widget*, 7> viewport_fields{};
     vgui_widget* simulation_button = nullptr;
     vgui_widget *navigation_debug_button = nullptr, *navigation_debug_panel = nullptr;
-    vgui_widget* navigation_debug_focus = nullptr;
-    std::array<vgui_widget*, navigation_directions.size()> navigation_debug_targets{};
-    bool navigation_debug_open = false, navigation_debug_refresh = true, navigation_debug_press = false;
+    struct navigation_debug_entry {
+        vgui_widget* button = nullptr;
+        std::string node;
+    };
+    navigation_debug_entry navigation_debug_focus;
+    std::array<navigation_debug_entry, navigation_directions.size()> navigation_debug_targets{};
+    bool navigation_debug_open = false, navigation_debug_refresh = true;
+    vgui_widget* navigation_debug_press = nullptr;
     // Cache runtime-pixel bounds, not borrowed widgets. The draw callback
     // projects them using the current pan/zoom without querying the runtime.
     pixel_rect navigation_focus_bounds{};
@@ -2133,20 +2138,22 @@ struct designer_preview::impl {
         vgui_widget_set_layout(navigation_debug_panel, VGUI_LAYOUT_ROW);
         vgui_widget_set_size(navigation_debug_panel, 0, 34);
         vgui_widget_set_padding(navigation_debug_panel, 8, 2, 8, 2);
-        vgui_widget_set_gap(navigation_debug_panel, 16);
+        vgui_widget_set_gap(navigation_debug_panel, 5);
         vgui_widget_set_align_items(navigation_debug_panel, VGUI_ALIGN_CENTER);
         vgui_panel_set_scrollable(navigation_debug_panel, 1, 0);
         vgui_widget_set_background(navigation_debug_panel, 0xFF303846);
-        const auto debug_label = [&](const char* id) {
-            auto* w = vgui_widget_add(navigation_debug_panel, VGUI_LABEL, nullptr);
-            vgui_widget_set_id(w, id);
-            return w;
+        vgui_widget_on_event(navigation_debug_panel, toolbar_event, this);
+        const auto debug_entry = [&](const char* id) {
+            auto* w = button(navigation_debug_panel, id);
+            vgui_widget_set_cursor(w, VGUI_CURSOR_HAND);
+            vgui_widget_set_tooltip_when_disabled(w, 1);
+            return navigation_debug_entry{w, {}};
         };
-        navigation_debug_focus = debug_label("designer.preview.navigation_debug.focus");
-        navigation_debug_targets = {debug_label("designer.preview.navigation_debug.up"),
-            debug_label("designer.preview.navigation_debug.down"),
-            debug_label("designer.preview.navigation_debug.left"),
-            debug_label("designer.preview.navigation_debug.right")};
+        navigation_debug_focus = debug_entry("designer.preview.navigation_debug.focus");
+        navigation_debug_targets = {debug_entry("designer.preview.navigation_debug.up"),
+            debug_entry("designer.preview.navigation_debug.down"),
+            debug_entry("designer.preview.navigation_debug.left"),
+            debug_entry("designer.preview.navigation_debug.right")};
         status = vgui_widget_add(panel, VGUI_LABEL, nullptr);
         vgui_widget_set_id(status, "designer.preview.status");
         vgui_widget_set_size(status, 0, 22);
@@ -2266,6 +2273,13 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(status, message.c_str());
     }
 
+    const navigation_debug_entry* debug_locator(const vgui_widget* w) const {
+        if (!w || !navigation_debug_open) return nullptr;
+        if (navigation_debug_focus.button == w) return &navigation_debug_focus;
+        const auto item = std::ranges::find(navigation_debug_targets, w, &navigation_debug_entry::button);
+        return item == navigation_debug_targets.end() ? nullptr : &*item;
+    }
+
     void refresh_navigation_debug(bool laid_out) {
         navigation_debug_refresh = false;
         if (!navigation_debug_panel || !run || !navigation_debug_open) return;
@@ -2286,18 +2300,24 @@ struct designer_preview::impl {
             const auto* node = id ? layout_of(id) : nullptr;
             return node && node->visible ? node->visible_px : pixel_rect{};
         };
-        const auto set_label = [&](vgui_widget* label, const char* caption, const char* id, const char* source) {
+        const auto set_entry = [&](navigation_debug_entry& entry, const char* caption, vgui_widget* widget,
+                                    const char* id, const char* source) {
+            entry.node = id ? id : "";
+            const bool can_locate = id && bool(locate_node);
+            vgui_widget_set_enabled(entry.button, can_locate);
             std::string text(caption);
-            text.append(": ").append(id);
+            text.append(": ").append(name(widget, id));
             if (source) text.append(" [").append(source).append("]");
-            if (text == vgui_widget_get_text(label)) return;
-            vgui_widget_set_text(label, text.c_str());
-            vgui_widget_set_tooltip(label, text.c_str());
+            vgui_widget_set_text(entry.button, text.c_str());
+            if (can_locate) text.append("\n").append(tr("preview.navigation_debug.locate",
+                "Click to locate in the Outline", "点击在大纲中定位"));
+            if (text != vgui_widget_get_tooltip(entry.button))
+                vgui_widget_set_tooltip(entry.button, text.c_str());
         };
         auto* focus = laid_out ? vgui_get_focus(ui.get()) : nullptr;
         const auto* focus_id = node_id(focus);
         navigation_focus_bounds = bounds(focus_id);
-        set_label(navigation_debug_focus, tr("preview.navigation_debug.focus", "Focus", "焦点"), name(focus, focus_id), nullptr);
+        set_entry(navigation_debug_focus, tr("preview.navigation_debug.focus", "Focus", "焦点"), focus, focus_id, nullptr);
         const std::array captions{tr("preview.navigation_debug.up", "Up", "上"),
             tr("preview.navigation_debug.down", "Down", "下"), tr("preview.navigation_debug.left", "Left", "左"),
             tr("preview.navigation_debug.right", "Right", "右")};
@@ -2308,7 +2328,7 @@ struct designer_preview::impl {
             navigation_targets[i] = {bounds(id), authored != 0};
             const auto* source = !target ? nullptr : authored ? tr("preview.navigation_debug.explicit", "Explicit", "显式") :
                 tr("preview.navigation_debug.automatic", "Auto", "自动");
-            set_label(navigation_debug_targets[i], captions[i], name(target, id), source);
+            set_entry(navigation_debug_targets[i], captions[i], target, id, source);
         }
         mark_canvas();
     }
@@ -2503,6 +2523,8 @@ struct designer_preview::impl {
         vgui_widget_set_enabled(navigation_debug_button, is_mounted && !remount);
         vgui_widget_set_visible(navigation_debug_panel, run && navigation_debug_open);
         vgui_widget_set_background(navigation_debug_button, navigation_debug_open ? active : inactive);
+        vgui_widget_set_background(navigation_debug_focus.button, inactive);
+        for (const auto& entry : navigation_debug_targets) vgui_widget_set_background(entry.button, inactive);
         if ((vgui_widget_get_checked(navigation_debug_button) != 0) != navigation_debug_open)
             vgui_widget_set_checked(navigation_debug_button, navigation_debug_open);
         navigation_debug_refresh = true;
@@ -2713,17 +2735,27 @@ struct designer_preview::impl {
 
     static void toolbar_event(vgui_widget* w, const vgui_event* event, void* user) {
         auto& self = *static_cast<impl*>(user);
+        if (event->type == VGUI_EVENT_MOUSE_DOWN && self.navigation_debug_press == w) {
+            // Shell owns the press/release; canvas keeps Run keyboard input
+            // even when releasing without a click.
+            self.navigation_debug_press = nullptr;
+            vgui_set_focus(self.shell, self.canvas);
+        }
         if (w == self.navigation_debug_button) {
-            if (event->type == VGUI_EVENT_MOUSE_DOWN && std::exchange(self.navigation_debug_press, false)) {
-                // The shell button still owns the press/release, but the Run
-                // canvas keeps keyboard input even if the click is canceled.
-                vgui_set_focus(self.shell, self.canvas);
-            }
             if (event->type == VGUI_EVENT_CLICK) {
                 self.navigation_debug_open = !self.navigation_debug_open;
                 self.update_toolbar();
                 self.mark_canvas();
             }
+            return;
+        }
+        if (const auto* entry = self.debug_locator(w)) {
+            const bool activate = (event->type == VGUI_EVENT_CLICK && event->button == 1) ||
+                (event->type == VGUI_EVENT_KEY_DOWN && event->mods == VGUI_MOD_NONE &&
+                    (event->key == VGUI_KEY_ENTER || event->key == ' '));
+            if (activate && self.run &&
+                self.is_mounted && !self.remount && !entry->node.empty() && self.locate_node)
+                self.locate_node(entry->node);
             return;
         }
         if (w == self.scrubber) {
@@ -2916,8 +2948,11 @@ struct designer_preview::impl {
     static void shell_focus(vgui_context*, vgui_widget* old, vgui_widget* next, void* user) {
         auto& self = *static_cast<impl*>(user);
         if (old != next) self.cancel_canvas_edit();
-        if (old == self.canvas && next != self.canvas &&
-            !(self.navigation_debug_press && next == self.navigation_debug_button)) self.blur(false);
+        const auto* press = self.navigation_debug_press;
+        // A press on the strip background (e.g. over a disabled entry) clears
+        // shell focus instead of moving it to a button.
+        const bool debug_press = press && (next == press || (!next && press == self.navigation_debug_panel));
+        if (old == self.canvas && next != self.canvas && !debug_press) self.blur(false);
     }
 
     void stop_ime() {
@@ -3430,7 +3465,7 @@ struct designer_preview::impl {
     }
 
     void blur(bool clear_shell_focus = true) {
-        navigation_debug_press = false;
+        navigation_debug_press = nullptr;
         if (clear_shell_focus) cancel_stop_color();
         cancel_pointer();
         stop_ime();
@@ -4153,6 +4188,7 @@ struct designer_preview::impl {
 
     bool event(const SDL_Event& e, vgui_cursor& cursor) {
         if (!canvas) return false;
+        navigation_debug_press = nullptr;
         switch (e.type) {
         case SDL_EVENT_WINDOW_FOCUS_LOST:
         case SDL_EVENT_WINDOW_HIDDEN:
@@ -4264,11 +4300,13 @@ struct designer_preview::impl {
             // into an edit on the later left release.
             cancel_canvas_edit();
         }
-        if (left_down && run && !pressed && !pan_button && vgui_get_focus(shell) == canvas &&
-            vgui_hit_test(shell, p.x, p.y) == navigation_debug_button) {
-            cancel_pointer();
-            navigation_debug_press = true;
-            return false; // Use the shell's native button, without blurring the Run context.
+        if (left_down && run && !pressed && !pan_button && vgui_get_focus(shell) == canvas) {
+            auto* hit = vgui_hit_test(shell, p.x, p.y);
+            if (hit && (hit == navigation_debug_button || hit == navigation_debug_panel || debug_locator(hit))) {
+                cancel_pointer();
+                navigation_debug_press = hit;
+                return false; // Preserve the Run context while handling the shell click.
+            }
         }
         if (down && !inside && !pressed && !pan_button &&
             (run_window || vgui_get_focus(shell) == canvas)) blur();
@@ -4500,8 +4538,9 @@ vgui_widget* designer_preview::widget() const { return p_->panel; }
 void designer_preview::set_control_drop_target(const vgui_drop_target& target) {
     vgui_widget_set_drop_target(p_->canvas, &target);
 }
-void designer_preview::set_binding_locator(std::function<void(std::string)> locate) {
+void designer_preview::set_outline_locator(std::function<void(std::string)> locate) {
     p_->locate_node = std::move(locate);
+    p_->navigation_debug_refresh = true;
 }
 std::optional<canvas_control_drop> designer_preview::control_drop_at(const document& doc, std::uint64_t rev,
     const type_descriptor& type, float x, float y) const {
