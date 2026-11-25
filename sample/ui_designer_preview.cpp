@@ -1885,9 +1885,10 @@ struct designer_preview::impl {
     pixel_rect navigation_focus_bounds{};
     struct navigation_target { pixel_rect bounds{}; bool authored = false; };
     std::array<navigation_target, navigation_directions.size()> navigation_targets{};
-    vgui_widget* navigation_edit_button = nullptr;
+    vgui_widget *navigation_edit_button = nullptr, *navigation_start_button = nullptr;
     bool navigation_edit_open = false;
     std::function<void(std::uint64_t, set_property)> commit_navigation;
+    std::string navigation_root, navigation_start;
     struct navigation_node {
         std::string scope;
         std::array<std::string, navigation_properties.size()> links;
@@ -2058,6 +2059,7 @@ struct designer_preview::impl {
         mode = button(toolbar, "designer.preview.mode");
         navigation_edit_button = button(toolbar, "designer.preview.navigation_edit");
         vgui_widget_set_a11y_role(navigation_edit_button, VGUI_A11Y_ROLE_TOGGLE);
+        navigation_start_button = button(toolbar, "designer.preview.navigation_start");
         simulation_button = button(toolbar, "designer.preview.simulation");
         navigation_debug_button = button(toolbar, "designer.preview.navigation_debug");
         vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
@@ -2287,6 +2289,35 @@ struct designer_preview::impl {
         mark_canvas(); // Shell paint only; the page texture and live input are unchanged.
     }
 
+    bool can_edit_navigation_start() const {
+        if (run || !navigation_edit_open || !commit_navigation || !is_mounted || remount ||
+            selection.empty() || selection == navigation_root || navigation_root.empty()) return false;
+        if (selection == navigation_start) return true; // Clear even if the target lost focusability.
+        const auto node = navigation_nodes.find(selection);
+        return node != navigation_nodes.end() && node->second.scope.empty() && node->second.focusable;
+    }
+
+    void update_navigation_start_button() {
+        if (!navigation_start_button) return;
+        const bool visible = !run && navigation_edit_open && bool(commit_navigation);
+        vgui_widget_set_visible(navigation_start_button, visible);
+        if (!visible) return;
+        const bool clear = !selection.empty() && selection == navigation_start;
+        const bool enabled = can_edit_navigation_start();
+        vgui_widget_set_enabled(navigation_start_button, enabled);
+        vgui_widget_set_text(navigation_start_button, clear ?
+            viewport_text(strings, "preview.navigation_start.clear", "Clear Initial Focus", "清除初始焦点") :
+            viewport_text(strings, "preview.navigation_start.set", "Set Initial Focus", "设为初始焦点"));
+        vgui_widget_set_tooltip_when_disabled(navigation_start_button, 1);
+        vgui_widget_set_tooltip(navigation_start_button, !enabled ?
+            viewport_text(strings, "preview.navigation_start.unavailable", "Select a focusable control outside modal panels",
+                "请选择弹窗之外的可聚焦控件") :
+            clear ? viewport_text(strings, "preview.navigation_start.clear_tooltip", "Clear the page's explicit initial focus",
+                "清除该页面显式设置的初始焦点") :
+            viewport_text(strings, "preview.navigation_start.set_tooltip", "Use the selected control as this page's initial focus",
+                "将选中的控件设为该页面的初始焦点"));
+    }
+
     void update_toolbar() {
         if (!panel) return;
         vgui_widget_set_cursor(canvas, hand_tool ? VGUI_CURSOR_HAND : VGUI_CURSOR_ARROW);
@@ -2313,6 +2344,8 @@ struct designer_preview::impl {
         vgui_widget_set_background(navigation_edit_button, navigation_edit_open ? active : inactive);
         if ((vgui_widget_get_checked(navigation_edit_button) != 0) != navigation_edit_open)
             vgui_widget_set_checked(navigation_edit_button, navigation_edit_open);
+        vgui_widget_set_background(navigation_start_button, inactive);
+        update_navigation_start_button();
         vgui_widget_set_enabled(navigation_debug_button, is_mounted && !remount);
         vgui_widget_set_visible(navigation_debug_panel, run && navigation_debug_open);
         vgui_widget_set_background(navigation_debug_button, navigation_debug_open ? active : inactive);
@@ -2546,6 +2579,14 @@ struct designer_preview::impl {
             return;
         }
         if (event->type != VGUI_EVENT_CLICK) return;
+        if (w == self.navigation_start_button) {
+            if (self.can_edit_navigation_start()) {
+                self.cancel_canvas_edit();
+                self.commit_navigation(self.revision, set_property{self.navigation_root, "nav_start",
+                    self.selection == self.navigation_start ? std::nullopt : std::optional<value>{self.selection}});
+            }
+            return;
+        }
         if (w == self.navigation_edit_button) {
             self.cancel_canvas_edit();
             self.navigation_edit_open = !self.navigation_edit_open;
@@ -3193,6 +3234,7 @@ struct designer_preview::impl {
             if (geometry && geometry->change.id != selected) cancel_geometry();
             if (navigation_edit) cancel_canvas_edit();
             selection.assign(selected);
+            update_navigation_start_button();
             mark_canvas();
         }
         if (timeline) timeline->sync(doc, rev, selected);
@@ -3235,6 +3277,8 @@ struct designer_preview::impl {
         active_load = nullptr;
         geometry_sources.clear();
         navigation_nodes.clear();
+        navigation_root.clear();
+        navigation_start.clear();
         if (!is_mounted) {
             if (mounted) mounted->unmount();
             fields.clear();
@@ -3288,6 +3332,10 @@ struct designer_preview::impl {
     }
 
     void collect_navigation_nodes(const document& doc) {
+        navigation_root = doc.root;
+        const auto& root_props = doc.nodes.at(doc.root).props;
+        if (const auto it = root_props.find("nav_start"); it != root_props.end())
+            navigation_start = std::get<std::string>(it->second);
         const auto visit = [&](auto&& self, const std::string& id, std::string_view scope) -> void {
             const auto& node = doc.nodes.at(id);
             if (is_modal_panel(node)) scope = id;
@@ -3641,11 +3689,40 @@ struct designer_preview::impl {
         });
     }
 
+    void draw_initial_focus_flag(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect node, float ui_scale) const {
+        // Keep the flag inside the target's upper-left corner, away from the
+        // navigation handle at the top midpoint. Shrink with small controls.
+        const float s = std::min({ui_scale, node.width / 38.f, node.height / 22.f});
+        if (s < .35f) return;
+        const float x = node.x + 5.f * s, y = node.y + 5.f * s;
+        const auto path = [&] {
+            cb->new_path(vg);
+            cb->move_to(vg, x, y + 12.f * s);
+            cb->line_to(vg, x, y);
+            cb->line_to(vg, x + 12.f * s, y);
+            cb->line_to(vg, x + 9.f * s, y + 3.5f * s);
+            cb->line_to(vg, x + 12.f * s, y + 7.f * s);
+            cb->line_to(vg, x, y + 7.f * s);
+        };
+        cb->set_source_color(vg, 0xFF292520u);
+        cb->set_line_width(vg, 3.f * s);
+        path();
+        cb->stroke(vg);
+        cb->set_source_color(vg, to_ovg(0xFFFFCE64u));
+        path();
+        cb->fill(vg);
+        fill(cb, vg, {x - .65f * s, y, 1.3f * s, 12.f * s}, to_ovg(0xFFFFCE64u));
+    }
+
     void draw_navigation_edit(ovg_ctx_cb* cb, rvg_t* vg, const board_transform& t, pixel_rect clip) const {
+        if (run || !navigation_edit_open) return;
         const auto* source = navigation_source();
-        if (!source) return;
+        const auto* start = navigation_start.empty() ? nullptr : layout_of(navigation_start);
+        if (!source && (!start || !start->visible)) return;
         with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
             const float scale = vgui_context_get_ui_scale(shell);
+            if (start && start->visible) draw_initial_focus_flag(cb, vg, t.project(start->visible_px), scale);
+            if (!source) return;
             const auto r = t.project(source->visible_px);
             const auto& links = navigation_nodes.at(source->id).links;
             for (std::size_t i = 0; i < links.size(); ++i) {
