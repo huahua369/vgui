@@ -1886,10 +1886,11 @@ struct designer_preview::impl {
     struct navigation_target { pixel_rect bounds{}; bool authored = false; };
     std::array<navigation_target, navigation_directions.size()> navigation_targets{};
     vgui_widget *navigation_edit_button = nullptr, *navigation_start_button = nullptr;
-    vgui_widget *navigation_return_bar = nullptr, *navigation_return_button = nullptr, *navigation_return_clear = nullptr;
+    vgui_widget *navigation_modal_bar = nullptr, *navigation_return_button = nullptr, *navigation_return_clear = nullptr;
+    vgui_widget *navigation_open_button = nullptr, *navigation_open_clear = nullptr;
     bool navigation_edit_open = false;
-    bool navigation_return_picking = false;
-    std::string navigation_return_hover;
+    bool navigation_modal_picking = false;
+    std::string navigation_modal_hover;
     std::function<void(std::uint64_t, set_property)> commit_navigation;
     std::string navigation_root, navigation_start;
     struct navigation_node {
@@ -1898,7 +1899,13 @@ struct designer_preview::impl {
         bool focusable;
     };
     std::map<std::string, navigation_node, std::less<>> navigation_nodes;
-    std::map<std::string, std::string, std::less<>> navigation_returns; // Design modal ID -> authored target.
+    struct modal_navigation_link {
+        bool opens_modal;
+        std::string target;
+        const char* property() const { return opens_modal ? "open_modal" : "modal_return_focus"; }
+    };
+    // Only page buttons and modal panels have contextual modal-link actions.
+    std::map<std::string, modal_navigation_link, std::less<>> navigation_modal_links;
     struct navigation_drag {
         std::string source;
         std::uint64_t revision;
@@ -2069,17 +2076,20 @@ struct designer_preview::impl {
         vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
         if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
         // Contextual row: both modal actions stay reachable in a narrow dock.
-        navigation_return_bar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
-        vgui_widget_set_layout(navigation_return_bar, VGUI_LAYOUT_ROW);
-        vgui_widget_set_size(navigation_return_bar, 0, 32);
-        vgui_widget_set_padding(navigation_return_bar, 5, 2, 5, 2);
-        vgui_widget_set_gap(navigation_return_bar, 4);
-        vgui_widget_set_align_items(navigation_return_bar, VGUI_ALIGN_CENTER);
-        vgui_panel_set_scrollable(navigation_return_bar, 1, 0);
-        vgui_widget_set_background(navigation_return_bar, 0xFF303846);
-        navigation_return_button = button(navigation_return_bar, "designer.preview.navigation_return");
-        navigation_return_clear = button(navigation_return_bar, "designer.preview.navigation_return.clear");
+        navigation_modal_bar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
+        vgui_widget_set_layout(navigation_modal_bar, VGUI_LAYOUT_ROW);
+        vgui_widget_set_size(navigation_modal_bar, 0, 32);
+        vgui_widget_set_padding(navigation_modal_bar, 5, 2, 5, 2);
+        vgui_widget_set_gap(navigation_modal_bar, 4);
+        vgui_widget_set_align_items(navigation_modal_bar, VGUI_ALIGN_CENTER);
+        vgui_panel_set_scrollable(navigation_modal_bar, 1, 0);
+        vgui_widget_set_background(navigation_modal_bar, 0xFF303846);
+        navigation_return_button = button(navigation_modal_bar, "designer.preview.navigation_return");
+        navigation_return_clear = button(navigation_modal_bar, "designer.preview.navigation_return.clear");
         vgui_widget_set_a11y_role(navigation_return_button, VGUI_A11Y_ROLE_TOGGLE);
+        navigation_open_button = button(navigation_modal_bar, "designer.preview.navigation_open");
+        navigation_open_clear = button(navigation_modal_bar, "designer.preview.navigation_open.clear");
+        vgui_widget_set_a11y_role(navigation_open_button, VGUI_A11Y_ROLE_TOGGLE);
         transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_id(transport, "designer.preview.animation");
         vgui_widget_set_layout(transport, VGUI_LAYOUT_ROW);
@@ -2233,12 +2243,8 @@ struct designer_preview::impl {
                 message += *render_error;
             } else if (hand_tool) {
                 message = strings.text("preview.status.hand_controls", "Left-drag: pan  |  Right-click: return to Pointer  |  Wheel: zoom");
-            } else if (navigation_return_picking) {
-                message = viewport_text(strings, "preview.navigation_return.hint",
-                    "Click a focusable control outside modal panels; Esc cancels", "点击弹窗之外的可聚焦控件，Esc 取消");
-            } else if (!run && navigation_edit_open && navigation_returns.contains(selection)) {
-                message = viewport_text(strings, "preview.navigation_return.pick_tooltip",
-                    "Pick the page control that receives focus after this dialog closes", "选取该弹窗关闭后接收焦点的页面控件");
+            } else if (const auto* link = selected_modal_link()) {
+                message = modal_pick_help(link->opens_modal);
             } else if (!run && navigation_edit_open) {
                 message = viewport_text(strings, "preview.navigation_edit.tooltip",
                     "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除");
@@ -2307,7 +2313,7 @@ struct designer_preview::impl {
         vgui_widget_set_background(toolbar, bar);
         vgui_widget_set_background(transport, bar);
         vgui_widget_set_background(navigation_debug_panel, bar);
-        vgui_widget_set_background(navigation_return_bar, bar);
+        vgui_widget_set_background(navigation_modal_bar, bar);
         update_toolbar();
         mark_canvas(); // Shell paint only; the page texture and live input are unchanged.
     }
@@ -2322,7 +2328,8 @@ struct designer_preview::impl {
 
     void update_navigation_start_button() {
         if (!navigation_start_button) return;
-        const bool visible = !run && navigation_edit_open && bool(commit_navigation) && !navigation_returns.contains(selection);
+        const auto* link = selected_modal_link();
+        const bool visible = !run && navigation_edit_open && bool(commit_navigation) && (!link || link->opens_modal);
         vgui_widget_set_visible(navigation_start_button, visible);
         if (!visible) return;
         const bool clear = !selection.empty() && selection == navigation_start;
@@ -2341,34 +2348,56 @@ struct designer_preview::impl {
                 "将选中的控件设为该页面的初始焦点"));
     }
 
-    void update_navigation_return_buttons() {
-        const auto modal = navigation_returns.find(selection);
-        const bool visible = !run && navigation_edit_open && is_mounted && !remount && modal != navigation_returns.end();
-        vgui_widget_set_visible(navigation_return_bar, visible);
-        vgui_widget_set_visible(navigation_return_button, visible);
-        vgui_widget_set_visible(navigation_return_clear, visible && !modal->second.empty());
-        if (!visible) return;
-        const auto tr = [&](std::string_view key, const char* en, const char* zh) { return viewport_text(strings, key, en, zh); };
-        vgui_widget_set_text(navigation_return_button, navigation_return_picking ?
-            tr("preview.navigation_return.cancel", "Cancel Picking", "取消选取") :
-            tr("preview.navigation_return.pick", "Pick Return Focus", "选取返回焦点"));
-        vgui_widget_set_tooltip(navigation_return_button, navigation_return_picking ?
-            tr("preview.navigation_return.hint", "Click a focusable control outside modal panels; Esc cancels",
-                "点击弹窗之外的可聚焦控件，Esc 取消") :
-            tr("preview.navigation_return.pick_tooltip", "Pick the page control that receives focus after this dialog closes",
-                "选取该弹窗关闭后接收焦点的页面控件"));
-        if ((vgui_widget_get_checked(navigation_return_button) != 0) != navigation_return_picking)
-            vgui_widget_set_checked(navigation_return_button, navigation_return_picking);
-        vgui_widget_set_text(navigation_return_clear, tr("preview.navigation_return.clear", "Clear Return Focus", "清除返回焦点"));
-        vgui_widget_set_tooltip(navigation_return_clear, tr("preview.navigation_return.clear_tooltip",
-            "Clear the dialog's explicit return focus", "清除该弹窗显式设置的返回焦点"));
+    const modal_navigation_link* selected_modal_link() const {
+        if (run || !navigation_edit_open || !is_mounted || remount) return nullptr;
+        const auto link = navigation_modal_links.find(selection);
+        return link == navigation_modal_links.end() ? nullptr : &link->second;
     }
 
-    void set_navigation_return_picking(bool picking) {
-        if (navigation_return_picking == picking) return;
-        navigation_return_picking = picking;
-        navigation_return_hover.clear();
-        update_navigation_return_buttons();
+    const char* modal_pick_help(bool opens) const {
+        if (opens) return navigation_modal_picking ?
+            viewport_text(strings, "preview.navigation_open.hint", "Click a modal or one of its controls; Esc cancels",
+                "点击弹窗或其中的控件，Esc 取消") :
+            viewport_text(strings, "preview.navigation_open.pick_tooltip", "Pick the modal this button opens",
+                "选取此按钮要打开的弹窗");
+        return navigation_modal_picking ?
+            viewport_text(strings, "preview.navigation_return.hint", "Click a focusable control outside modal panels; Esc cancels",
+                "点击弹窗之外的可聚焦控件，Esc 取消") :
+            viewport_text(strings, "preview.navigation_return.pick_tooltip",
+                "Pick the page control that receives focus after this dialog closes", "选取该弹窗关闭后接收焦点的页面控件");
+    }
+
+    void update_navigation_modal_buttons() {
+        const auto* link = selected_modal_link();
+        const bool opens = link && link->opens_modal, returns = link && !link->opens_modal;
+        vgui_widget_set_visible(navigation_modal_bar, link != nullptr);
+        vgui_widget_set_visible(navigation_open_button, opens);
+        vgui_widget_set_visible(navigation_open_clear, opens && !link->target.empty());
+        vgui_widget_set_visible(navigation_return_button, returns);
+        vgui_widget_set_visible(navigation_return_clear, returns && !link->target.empty());
+        if (!link) return;
+        const auto tr = [&](std::string_view key, const char* en, const char* zh) { return viewport_text(strings, key, en, zh); };
+        auto* pick = opens ? navigation_open_button : navigation_return_button;
+        auto* clear = opens ? navigation_open_clear : navigation_return_clear;
+        vgui_widget_set_text(pick, navigation_modal_picking ?
+            tr("preview.navigation_return.cancel", "Cancel Picking", "取消选取") :
+            opens ? tr("preview.navigation_open.pick", "Pick Modal to Open", "选取要打开的弹窗") :
+            tr("preview.navigation_return.pick", "Pick Return Focus", "选取返回焦点"));
+        vgui_widget_set_tooltip(pick, modal_pick_help(opens));
+        if ((vgui_widget_get_checked(pick) != 0) != navigation_modal_picking)
+            vgui_widget_set_checked(pick, navigation_modal_picking);
+        vgui_widget_set_text(clear, opens ? tr("preview.navigation_open.clear", "Clear Open Target", "清除打开目标") :
+            tr("preview.navigation_return.clear", "Clear Return Focus", "清除返回焦点"));
+        vgui_widget_set_tooltip(clear, opens ? tr("preview.navigation_open.clear_tooltip",
+            "Clear the modal opened by this button", "清除该按钮打开的弹窗") :
+            tr("preview.navigation_return.clear_tooltip", "Clear the dialog's explicit return focus", "清除该弹窗显式设置的返回焦点"));
+    }
+
+    void set_navigation_modal_picking(bool picking) {
+        if (navigation_modal_picking == picking) return;
+        navigation_modal_picking = picking;
+        navigation_modal_hover.clear();
+        update_navigation_modal_buttons();
         update_status();
         mark_canvas();
     }
@@ -2403,7 +2432,9 @@ struct designer_preview::impl {
         update_navigation_start_button();
         vgui_widget_set_background(navigation_return_button, inactive);
         vgui_widget_set_background(navigation_return_clear, inactive);
-        update_navigation_return_buttons();
+        vgui_widget_set_background(navigation_open_button, inactive);
+        vgui_widget_set_background(navigation_open_clear, inactive);
+        update_navigation_modal_buttons();
         vgui_widget_set_enabled(navigation_debug_button, is_mounted && !remount);
         vgui_widget_set_visible(navigation_debug_panel, run && navigation_debug_open);
         vgui_widget_set_background(navigation_debug_button, navigation_debug_open ? active : inactive);
@@ -2637,14 +2668,14 @@ struct designer_preview::impl {
             return;
         }
         if (event->type != VGUI_EVENT_CLICK) return;
-        if (w == self.navigation_return_button) {
-            if (vgui_widget_get_visible(w)) self.set_navigation_return_picking(!self.navigation_return_picking);
+        if (w == self.navigation_return_button || w == self.navigation_open_button) {
+            if (vgui_widget_get_visible(w)) self.set_navigation_modal_picking(!self.navigation_modal_picking);
             return;
         }
-        if (w == self.navigation_return_clear) {
-            if (vgui_widget_get_visible(w)) {
-                self.set_navigation_return_picking(false);
-                self.commit_navigation(self.revision, set_property{self.selection, "modal_return_focus", std::nullopt});
+        if (w == self.navigation_return_clear || w == self.navigation_open_clear) {
+            if (const auto* link = self.selected_modal_link(); link && vgui_widget_get_visible(w)) {
+                self.set_navigation_modal_picking(false);
+                self.commit_navigation(self.revision, set_property{self.selection, link->property(), std::nullopt});
             }
             return;
         }
@@ -2856,30 +2887,35 @@ struct designer_preview::impl {
             source->second.scope == target->second.scope ? hit : nullptr;
     }
 
-    const node_layout* navigation_return_target(point p, pixel_rect clip, pixel_rect board) const {
+    const node_layout* navigation_modal_target(point p, pixel_rect clip, pixel_rect board, bool opens) const {
         if (!ready || !frame || !contains(clip, p)) return nullptr;
         const auto* hit = design_node_at(transform_for(board), p);
         if (!hit || hit->id == navigation_root) return nullptr;
         const auto target = navigation_nodes.find(hit->id);
-        return target != navigation_nodes.end() && target->second.focusable && target->second.scope.empty() ? hit : nullptr;
+        if (target == navigation_nodes.end()) return nullptr;
+        // A child hit identifies its containing modal, not a different target.
+        if (opens) return target->second.scope.empty() ? nullptr : layout_of(target->second.scope);
+        return target->second.focusable && target->second.scope.empty() ? hit : nullptr;
     }
 
-    void finish_navigation_return(point p, pixel_rect clip, pixel_rect board) {
+    void finish_navigation_modal(point p, pixel_rect clip, pixel_rect board) {
         edit_release.reset();
-        const auto modal = navigation_returns.find(selection);
-        if (run || !navigation_edit_open || !ready || !frame || modal == navigation_returns.end()) {
-            set_navigation_return_picking(false);
+        const auto* link = selected_modal_link();
+        if (!link || !ready || !frame) {
+            set_navigation_modal_picking(false);
             return;
         }
-        const auto* hit = navigation_return_target(p, clip, board);
+        const auto* hit = navigation_modal_target(p, clip, board, link->opens_modal);
         if (!hit) {
-            if (notify) notify(viewport_text(strings, "preview.navigation_return.invalid",
+            if (notify) notify(link->opens_modal ? viewport_text(strings, "preview.navigation_open.invalid",
+                "Choose a modal panel on this page", "请选择本页面的模态弹窗") :
+                viewport_text(strings, "preview.navigation_return.invalid",
                 "Choose a focusable control outside modal panels", "请选择弹窗之外的可聚焦控件"));
             return;
         }
-        set_navigation_return_picking(false);
-        if (hit->id != modal->second)
-            commit_navigation(revision, set_property{selection, "modal_return_focus", value{hit->id}});
+        set_navigation_modal_picking(false);
+        if (hit->id != link->target)
+            commit_navigation(revision, set_property{selection, link->property(), value{hit->id}});
     }
 
     float navigation_port_radius(pixel_rect node) const {
@@ -2986,7 +3022,7 @@ struct designer_preview::impl {
             navigation_edit.reset();
             mark_canvas();
         }
-        set_navigation_return_picking(false);
+        set_navigation_modal_picking(false);
     }
 
     float knob_radius() const { return 6.f * vgui_context_get_ui_scale(shell); }
@@ -3328,10 +3364,10 @@ struct designer_preview::impl {
             std::string_view selected) {
         if (selection != selected) {
             if (geometry && geometry->change.id != selected) cancel_geometry();
-            if (navigation_edit || navigation_return_picking) cancel_canvas_edit();
+            if (navigation_edit || navigation_modal_picking) cancel_canvas_edit();
             selection.assign(selected);
             update_navigation_start_button();
-            update_navigation_return_buttons();
+            update_navigation_modal_buttons();
             if (navigation_edit_open) update_status();
             mark_canvas();
         }
@@ -3375,7 +3411,7 @@ struct designer_preview::impl {
         active_load = nullptr;
         geometry_sources.clear();
         navigation_nodes.clear();
-        navigation_returns.clear();
+        navigation_modal_links.clear();
         navigation_root.clear();
         navigation_start.clear();
         if (!is_mounted) {
@@ -3437,18 +3473,22 @@ struct designer_preview::impl {
             navigation_start = std::get<std::string>(it->second);
         const auto visit = [&](auto&& self, const std::string& id, std::string_view scope) -> void {
             const auto& node = doc.nodes.at(id);
-            if (is_modal_panel(node)) {
-                scope = id;
-                const auto target = node.props.find("modal_return_focus");
-                navigation_returns.emplace(id, target == node.props.end() ? std::string{} : std::get<std::string>(target->second));
+            const bool modal = is_modal_panel(node);
+            if (modal) scope = id;
+            if (modal || (scope.empty() && node.type == "button")) {
+                modal_navigation_link link{!modal, {}};
+                if (const auto target = node.props.find(link.property()); target != node.props.end())
+                    link.target = std::get<std::string>(target->second);
+                navigation_modal_links.emplace(id, std::move(link));
             }
+            navigation_node data{std::string(scope), {}, false};
             if (node.type != "gradient") {
-                navigation_node data{std::string(scope), {}, vgui_widget_get_focusable(mounted->widget(id)) != 0};
+                data.focusable = vgui_widget_get_focusable(mounted->widget(id)) != 0;
                 for (std::size_t i = 0; i < navigation_properties.size(); ++i)
                     if (const auto it = node.props.find(navigation_properties[i]); it != node.props.end())
                         data.links[i] = std::get<std::string>(it->second);
-                navigation_nodes.emplace(id, std::move(data));
             }
+            navigation_nodes.emplace(id, std::move(data));
             for (const auto& child : node.children) self(self, child, scope);
         };
         visit(visit, doc.root, {});
@@ -3513,7 +3553,7 @@ struct designer_preview::impl {
             const auto area = rect(canvas);
             if (!shape_edit_is_current(area, artboard(area))) cancel_shape_edit();
         }
-        if ((navigation_edit || navigation_return_picking) && (!canvas_visible() || vgui_modal_active(shell) || vgui_popup_active(shell) ||
+        if ((navigation_edit || navigation_modal_picking) && (!canvas_visible() || vgui_modal_active(shell) || vgui_popup_active(shell) ||
                 vgui_context_get_open_menu(shell))) cancel_canvas_edit();
         if (stop_color_edit && key_at_playhead() != stop_color_edit->key) cancel_stop_color();
         // Run changes only paint. A requested seek samples its exact time
@@ -3821,23 +3861,23 @@ struct designer_preview::impl {
         if (run || !navigation_edit_open) return;
         const auto* source = navigation_source();
         const auto* start = navigation_start.empty() ? nullptr : layout_of(navigation_start);
-        const auto link = navigation_returns.find(selection);
-        const auto* return_from = link != navigation_returns.end() && !link->second.empty() ? layout_of(selection) : nullptr;
-        const auto* return_to = return_from ? layout_of(link->second) : nullptr;
-        const bool draw_return = return_from && return_to && return_from->visible && return_to->visible;
-        const auto* hover = navigation_return_hover.empty() ? nullptr : layout_of(navigation_return_hover);
-        if (!source && (!start || !start->visible) && !draw_return && !hover) return;
+        const auto* link = selected_modal_link();
+        const auto* modal_from = link && !link->target.empty() ? layout_of(selection) : nullptr;
+        const auto* modal_to = modal_from ? layout_of(link->target) : nullptr;
+        const bool draw_modal = modal_from && modal_to && modal_from->visible && modal_to->visible;
+        const auto* hover = navigation_modal_hover.empty() ? nullptr : layout_of(navigation_modal_hover);
+        if (!source && (!start || !start->visible) && !draw_modal && !hover) return;
         with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
             const float scale = vgui_context_get_ui_scale(shell);
-            if (draw_return) {
-                const auto from = t.project(return_from->visible_px), to = t.project(return_to->visible_px);
+            if (draw_modal) {
+                const auto from = t.project(modal_from->visible_px), to = t.project(modal_to->visible_px);
                 const float dx = to.x + .5f * to.width - from.x - .5f * from.width;
                 const float dy = to.y + .5f * to.height - from.y - .5f * from.height;
                 const point side = std::abs(dx) >= std::abs(dy) ? point{std::copysign(1.f, dx), 0.f} :
                     point{0.f, std::copysign(1.f, dy)};
-                constexpr vgui_color violet = 0xFFD8A4FFu;
-                draw_navigation_arrow(cb, vg, from, to, side, scale, true, violet);
-                outline(cb, vg, to, clipped, to_ovg(violet), 2.f * scale);
+                const vgui_color color = link->opens_modal ? 0xFF75E3A6u : 0xFFD8A4FFu;
+                draw_navigation_arrow(cb, vg, from, to, side, scale, true, color);
+                outline(cb, vg, to, clipped, to_ovg(color), 2.f * scale);
             }
             if (hover && hover->visible)
                 outline(cb, vg, t.project(hover->visible_px), clipped, to_ovg(0xFF6EE7A9u), 2.f * scale);
@@ -4009,7 +4049,7 @@ struct designer_preview::impl {
         case SDL_EVENT_WINDOW_HIDDEN:
         case SDL_EVENT_WINDOW_MINIMIZED:
             if (run_window == e.window.windowID || pointer_window == e.window.windowID ||
-                edit_release == e.window.windowID || navigation_return_picking ||
+                edit_release == e.window.windowID || navigation_modal_picking ||
                 (stop_color_edit && stop_color_edit->window == e.window.windowID)) blur();
             if (hand_release_window == e.window.windowID) {
                 hand_releases = 0;
@@ -4023,8 +4063,8 @@ struct designer_preview::impl {
             if (edit_release == e.window.windowID) cancel_canvas_edit();
             return false;
         case SDL_EVENT_WINDOW_MOUSE_LEAVE:
-            if (!navigation_return_hover.empty()) {
-                navigation_return_hover.clear();
+            if (!navigation_modal_hover.empty()) {
+                navigation_modal_hover.clear();
                 mark_canvas();
             }
             if (run_window == e.window.windowID && frame && !pressed) {
@@ -4091,18 +4131,19 @@ struct designer_preview::impl {
             else if (shape_edit) finish_shape_edit(p);
             else if (navigation_edit) finish_navigation(p,
                 over_canvas ? intersect(area, board) : pixel_rect{}, transform_for(board));
-            else if (navigation_return_picking) finish_navigation_return(p,
+            else if (navigation_modal_picking) finish_navigation_modal(p,
                 over_canvas ? intersect(area, board) : pixel_rect{}, board);
             else edit_release.reset();
             return true;
         }
-        if (left_down && navigation_return_picking && over_canvas) {
+        if (left_down && navigation_modal_picking && over_canvas) {
             edit_release = id;
             return true;
         }
         if (left_down) {
             // Let a second click on the native picker button cancel it.
-            if (!navigation_return_picking || vgui_hit_test(shell, p.x, p.y) != navigation_return_button) cancel_canvas_edit();
+            const auto* hit = navigation_modal_picking ? vgui_hit_test(shell, p.x, p.y) : nullptr;
+            if (hit != navigation_return_button && hit != navigation_open_button) cancel_canvas_edit();
             edit_release.reset();
         } else if ((geometry || shape_edit || navigation_edit) && e.type == SDL_EVENT_MOUSE_MOTION) {
             if (geometry) update_geometry(p);
@@ -4161,15 +4202,17 @@ struct designer_preview::impl {
         }
         if (hand_tool) return over_canvas;
         if (!run) {
-            if (navigation_return_picking && e.type == SDL_EVENT_MOUSE_MOTION) {
-                const auto* target = over_canvas ? navigation_return_target(p, intersect(area, board), board) : nullptr;
+            if (navigation_modal_picking && e.type == SDL_EVENT_MOUSE_MOTION) {
+                const auto* link = selected_modal_link();
+                const auto* target = over_canvas && link ?
+                    navigation_modal_target(p, intersect(area, board), board, link->opens_modal) : nullptr;
                 const auto id = target ? std::string_view(target->id) : std::string_view{};
-                if (navigation_return_hover != id) {
-                    navigation_return_hover = id;
+                if (navigation_modal_hover != id) {
+                    navigation_modal_hover = id;
                     mark_canvas();
                 }
             }
-            if (inside && navigation_edit_open && !navigation_return_picking && (left_down || right_down) &&
+            if (inside && navigation_edit_open && !navigation_modal_picking && (left_down || right_down) &&
                 press_navigation(p, intersect(area, board), transform_for(board), id, right_down)) return true;
             if (left_down && over_canvas) {
                 if (ready && frame) {
@@ -4264,8 +4307,8 @@ struct designer_preview::impl {
     }
 
     bool key_event(const SDL_Event& e) {
-        if (navigation_return_picking && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) {
-            set_navigation_return_picking(false);
+        if (navigation_modal_picking && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE) {
+            set_navigation_modal_picking(false);
             return true;
         }
         if ((geometry || shape_edit || navigation_edit) && e.type == SDL_EVENT_KEY_DOWN && e.key.key == SDLK_ESCAPE &&

@@ -477,18 +477,19 @@ private:
             page->preview_revision != revision || page->last_model_revision != session_.revision()) return;
         const bool initial = change.key == "nav_start";
         const bool return_focus = change.key == "modal_return_focus";
-        if (return_focus && change.id != workbench_.selection()) return;
-        std::string start;
+        const bool open_modal = change.key == "open_modal";
+        if ((return_focus || open_modal) && change.id != workbench_.selection()) return;
+        std::string target;
         if (initial) {
             const auto& doc = session_.current();
             const auto& root_props = doc.nodes.at(doc.root).props;
-            if (change.data) start = std::get<std::string>(*change.data);
+            if (change.data) target = std::get<std::string>(*change.data);
             const auto previous = root_props.find("nav_start");
-            const std::string_view selected = change.data ? start :
+            const std::string_view selected = change.data ? target :
                 previous != root_props.end() ? std::get<std::string>(previous->second) : std::string_view{};
             if (selected.empty() || selected != workbench_.selection()) return; // Ignore stale toolbar selection.
         }
-        if (return_focus && change.data) start = std::get<std::string>(*change.data);
+        if ((return_focus || open_modal) && change.data) target = std::get<std::string>(*change.data);
         workbench_.finish_edit();
         const bool linked = change.data.has_value();
         const auto link = change.id + " · " + change.key;
@@ -497,11 +498,14 @@ private:
         if (!session_.apply(std::span{&change_property, 1}, &error)) {
             workbench_.status(std::string(tr("preview.navigation_edit.failed", "Navigation link edit failed: ")) + describe(error));
         } else if (initial) {
-            workbench_.status(linked ? std::string(tr("preview.navigation_start.saved", "Initial focus:")) + " " + start :
+            workbench_.status(linked ? std::string(tr("preview.navigation_start.saved", "Initial focus:")) + " " + target :
                 tr("preview.navigation_start.cleared", "Initial focus cleared"));
         } else if (return_focus) {
-            workbench_.status(linked ? std::string(tr("preview.navigation_return.saved", "Return focus:")) + " " + start :
+            workbench_.status(linked ? std::string(tr("preview.navigation_return.saved", "Return focus:")) + " " + target :
                 tr("preview.navigation_return.cleared", "Return focus cleared"));
+        } else if (open_modal) {
+            workbench_.status(linked ? std::string(tr("preview.navigation_open.saved", "Opens modal:")) + " " + target :
+                tr("preview.navigation_open.cleared", "Open target cleared"));
         } else {
             workbench_.status(std::string(linked ? tr("preview.navigation_edit.linked", "Linked") :
                 tr("preview.navigation_edit.cleared", "Cleared")) + " " + link);
@@ -4784,6 +4788,194 @@ void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor
     test_run_return("modal.new_return [new_return]");
 }
 
+void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
+                         const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native modal open: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"opener"},"children":["opener","plain","first","second"]},
+        "opener":{"type":"button","props":{"x":16,"y":20,"width":120,"height":36,"text":"Open","open_modal":"first"}},
+        "plain":{"type":"button","props":{"x":154,"y":20,"width":120,"height":36,"text":"Ordinary button"}},
+        "first":{"type":"panel","props":{"modal":true,"modal_return_focus":"opener","x":40,"y":80,"width":220,"height":110}},
+        "second":{"type":"panel","props":{"modal":true,"x":300,"y":80,"width":220,"height":110},"children":["group"]},
+        "group":{"type":"panel","props":{"x":12,"y":16,"width":190,"height":74},"children":["caption","inside"]},
+        "caption":{"type":"label","props":{"x":10,"y":4,"width":130,"height":20,"text":"Second dialog"}},
+        "inside":{"type":"button","props":{"x":10,"y":32,"width":130,"height":32,"text":"Close","close_modal":true}}
+    }})", doc), "decode the modal opener fixture");
+    const auto file = sandbox / "modal-open.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the modal opener fixture");
+    frame();
+
+    auto& preview = editor.preview();
+    const auto& history = editor.history();
+    const auto revision = history.revision();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    auto* canvas = input.widget("designer.preview.canvas");
+    auto* links = input.widget("designer.preview.navigation_edit");
+    const auto button = [&](const char* id) {
+        auto* result = find_widget(preview.widget(), id, VGUI_BUTTON);
+        require(result != nullptr, id);
+        return result;
+    };
+    auto* pick = button("designer.preview.navigation_open");
+    auto* clear = button("designer.preview.navigation_open.clear");
+    auto* return_pick = button("designer.preview.navigation_return");
+    auto* return_clear = button("designer.preview.navigation_return.clear");
+    auto* bar = vgui_widget_get_parent(pick);
+    require(bar && vgui_widget_get_parent(clear) == bar && vgui_widget_get_parent(return_pick) == bar &&
+        vgui_widget_get_parent(return_clear) == bar, "Open and Return must share the contextual toolbar");
+    const auto controls = [&](bool show_pick, bool show_clear, bool picking = false, bool show_return = false) {
+        const auto visible = [](vgui_widget* widget) { return vgui_widget_get_visible(widget) != 0; };
+        require(visible(bar) == (show_pick || show_return) && visible(pick) == show_pick &&
+            visible(clear) == show_clear && visible(return_pick) == show_return && visible(return_clear) == show_return,
+            "wrong Open/Return toolbar visibility");
+        require(!show_pick || (vgui_widget_get_enabled(pick) && (vgui_widget_get_checked(pick) != 0) == picking),
+            "Open picker is disabled or has the wrong checked state");
+        require(!show_clear || vgui_widget_get_enabled(clear), "cannot clear the explicit opener target");
+    };
+    const auto node = [&](std::string_view id) {
+        const auto* layout = preview.snapshot();
+        require(layout != nullptr, "missing modal opener layout");
+        const auto it = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+        require(it != layout->nodes.end(), id);
+        return *it;
+    };
+    const auto project = [&](float x, float y) {
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(board && layout && layout->pixel_width > 0 && layout->pixel_height > 0, "missing modal opener artboard");
+        return glm::round(glm::vec2{board->x + x * board->width / layout->pixel_width,
+            board->y + y * board->height / layout->pixel_height});
+    };
+    const auto click_node = [&](std::string_view id) {
+        const auto item = node(id);
+        require(item.visible, id);
+        const auto r = item.visible_px;
+        input.click_at(canvas, project(r.x + r.width / 2, r.y + r.height / 2));
+    };
+    const auto select = [&](std::string_view id) {
+        click_node(id);
+        require(editor.selection() == id, "could not select the expected Design node");
+    };
+    select("opener");
+    require(!preview.running() && !vgui_widget_get_checked(links), "the new page must start in Design with navigation off");
+    controls(false, false);
+    input.click(links);
+    require(vgui_widget_get_checked(links), "could not enable Design navigation");
+    controls(true, true);
+    select("inside");
+    controls(false, false);
+    select("first");
+    controls(false, false, false, true);
+    select("plain");
+    controls(true, false);
+    select("opener");
+
+    const auto state_is = [&](const ui::document& expected, auto expected_revision) {
+        return history.revision() == expected_revision && history.current() == expected &&
+            history.committed() == expected && editor.selection() == "opener";
+    };
+    const auto untouched = [&](std::string_view message) {
+        require(state_is(doc, revision) && !history.dirty() && !history.can_undo() && !history.can_redo(), message);
+    };
+    input.click(pick);
+    controls(true, true, true);
+    untouched("starting a pick changed the design or opener selection");
+    click_node("plain");
+    controls(true, true, true);
+    untouched("picking an ordinary control changed the design or opener selection");
+    input.click_at(canvas, project(22, 120));
+    controls(true, true, true);
+    untouched("picking blank space changed the design or opener selection");
+    keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+    controls(true, true);
+    untouched("Escape changed the design or opener selection");
+
+    constexpr auto open_property = "open_modal";
+    auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
+    require(search != nullptr, "missing opener property filter");
+    input.click(search);
+    // The property search is shared across pages; replace the prior modal filter.
+    for (bool down : {true, false}) {
+        SDL_Event key{};
+        key.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+        key.key.windowID = win.id;
+        key.key.key = SDLK_A;
+        key.key.scancode = SDL_SCANCODE_A;
+        key.key.mod = SDL_KMOD_LCTRL;
+        key.key.down = down;
+        input.push(key);
+    }
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = open_property;
+    input.push(text);
+    frame();
+    require(std::string_view(vgui_edit_get_text(search)) == open_property, "opener property filter did not replace the modal filter");
+    const auto inspector_is = [&](const ui::document& state) {
+        const auto& properties = state.nodes.at("opener").props;
+        const auto found = properties.find(open_property);
+        const std::string_view target = found == properties.end() ? std::string_view{} : std::get<std::string>(found->second);
+        auto* field = find_widget(vgui_root(shell), "property:open_modal", VGUI_EDIT);
+        require(field && std::string_view(vgui_edit_get_text(field)) == target, "open modal inspector value is stale");
+    };
+    auto expected = doc;
+    auto& props = expected.nodes.at("opener").props;
+    const auto edit_open = [&](const auto& edit) {
+        const auto before = history.current();
+        const auto start_revision = history.revision();
+        edit();
+        require(state_is(expected, start_revision + 1), "the edit must only change open_modal and keep the opener selected");
+        inspector_is(expected);
+        controls(true, props.contains(open_property));
+        keys.activate(keys.open(1), 0); // Edit > Undo
+        require(state_is(before, start_revision + 2), "one Undo did not restore the previous opener target");
+        inspector_is(before);
+        controls(true, before.nodes.at("opener").props.contains(open_property));
+        keys.activate(keys.open(1), 1); // Edit > Redo
+        require(state_is(expected, start_revision + 3), "one Redo did not restore the edited opener target");
+        inspector_is(expected);
+        controls(true, props.contains(open_property));
+    };
+    props.erase(open_property);
+    edit_open([&] { input.click(clear); });
+    input.click("designer.preview.mode");
+    click_node("opener");
+    require(preview.running() && !node("first").visible && !node("second").visible,
+        "clearing the link must leave both modals closed when the opener is clicked");
+    input.click("designer.preview.mode");
+    controls(true, false);
+    const auto assign = [&](const char* target, std::string_view hit) {
+        props[open_property] = std::string(target);
+        const bool had_target = history.current().nodes.at("opener").props.contains(open_property);
+        edit_open([&] {
+            input.click(pick);
+            controls(true, had_target, true);
+            click_node(hit);
+        });
+    };
+    assign("first", "first"); // Pick the panel body itself.
+    assign("second", "caption"); // A visible non-focusable grandchild resolves to its modal ancestor.
+    editor.request(command::save);
+    frame();
+    ui::document saved;
+    require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
+        "the edited opener target did not survive saving");
+
+    const auto saved_revision = history.revision();
+    input.click("designer.preview.mode");
+    require(preview.running() && !node("first").visible && !node("second").visible, "Run must start with both dialogs closed");
+    controls(false, false);
+    click_node("opener");
+    require(!node("first").visible && node("second").visible && node("caption").visible,
+        "the opener did not show only the newly bound Run dialog");
+    require(state_is(expected, saved_revision) && !history.dirty(), "using the opener in Run changed the design or selection");
+}
+
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,
                                const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -6206,7 +6398,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 std::puts("ui_designer_navigation: Run focus, overrides, fallback, debug pixels, and Design link and initial focus editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_modal_return: Run modal close and focus restoration, Design return picking, clearing, cancellation, and undo/redo passed");
+                exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);
+                std::puts("ui_designer_modal_return: Design modal open/return picking, clearing, cancellation, undo/redo, and saving; Run opening, closing, and focus restoration passed");
             }
         } catch (...) {
             app.wait_gpu();
