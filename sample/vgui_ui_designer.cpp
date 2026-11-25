@@ -3883,8 +3883,8 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
     frame();
 }
 
-void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
-                         const std::function<void()>& frame, const fs::path& sandbox) {
+void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_context* shell,
+                         designer& editor, const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
         if (!passed) throw std::runtime_error("Native navigation: " + std::string(message));
     };
@@ -3939,6 +3939,66 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
     auto* toggle = debug_control("", VGUI_BUTTON);
     require(vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) && !strip_visible(),
         "Run should start with the focus debug toggle available and the strip closed");
+
+    // Record after the host submits, into the target's separate canvas. Borrow
+    // the host's callback table since vgui_draw retains it on the shell.
+    vgui_render_target_desc desc;
+    vgui_render_target_desc_default(&desc);
+    vgui_context_get_size(shell, &desc.width, &desc.height);
+    desc.sample_count = 1;
+    const auto format = vgpu_color_format(gpu); // The SDR window can use either byte order.
+    const bool bgra = format == SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM;
+    require(bgra || format == SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM, "unexpected readback format");
+    std::unique_ptr<vgui_render_target, decltype(&vgui_render_target_destroy)> target(
+        vgui_render_target_create(shell, gpu, cb, &desc), vgui_render_target_destroy);
+    require(bool(target), "cannot create navigation readback target");
+    std::vector<uint8_t> pixels(size_t(desc.width) * desc.height * 4);
+    struct link_counts {
+        int authored = 0, automatic = 0;
+        bool empty() const { return !authored && !automatic; }
+    };
+    struct link_samples { link_counts near_gap, far_gap; };
+    const auto sample_links = [&] {
+        require(vgui_render_target_submit_context(target.get(), shell), "cannot composite navigation overlay");
+        require(vgui_render_target_download(target.get(), pixels.data(), pixels.size()) == pixels.size(),
+            "cannot read navigation overlay pixels");
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(board && layout && layout->pixel_width > 0, "missing navigation board for readback");
+        const auto bounds = [&](std::string_view id) {
+            const auto node = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+            require(node != layout->nodes.end() && node->visible, "missing navigation node for readback");
+            return node->visible_px;
+        };
+        const auto area = input.rect(canvas);
+        const int y0 = int(std::ceil(std::max({0.f, board->y, area.y})));
+        const int y1 = int(std::floor(std::min({float(desc.height), board->y + board->height, area.y + area.height})));
+        const auto gap = [&](ui::pixel_rect left, ui::pixel_rect right) {
+            // Scan the open space between controls, away from the endpoints.
+            // Use the current board since opening the strip changes the fit.
+            const float scale = board->width / layout->pixel_width;
+            const float lo = board->x + (left.x + left.width) * scale, hi = board->x + right.x * scale;
+            const float pad = (hi - lo) * .2f;
+            const int x0 = int(std::ceil(std::max({0.f, area.x, lo + pad})));
+            const int x1 = int(std::floor(std::min({float(desc.width), area.x + area.width, hi - pad})));
+            require(x1 - x0 >= 4 && y1 > y0, "no visible space between navigation fixture controls");
+            link_counts counts;
+            for (int y = y0; y < y1; ++y) for (int x = x0; x < x1; ++x) {
+                const auto* p = pixels.data() + (size_t(y) * desc.width + x) * 4;
+                const auto matches = [&](int r, int g, int b) {
+                    // Count near-opaque stroke interiors; tolerate edge antialiasing.
+                    return std::abs(p[bgra ? 2 : 0] - r) <= 16 && std::abs(p[1] - g) <= 16 &&
+                        std::abs(p[bgra ? 0 : 2] - b) <= 16;
+                };
+                counts.authored += matches(0x64, 0xDF, 0xFF);
+                counts.automatic += matches(0xFF, 0xC7, 0x77);
+            }
+            return counts;
+        };
+        const auto start_bounds = bounds("start"), near_bounds = bounds("near"), far_bounds = bounds("far");
+        return link_samples{gap(start_bounds, near_bounds), gap(near_bounds, far_bounds)};
+    };
+
     input.click(toggle);
     require(strip_visible() && vgui_get_focus(shell) == canvas && focus_is("start"),
         "opening focus debug did not preserve the configured focus and keyboard routing");
@@ -3949,6 +4009,29 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
     require(up.contains(localized(".up", "Up")) && up.contains("far") && up.contains(localized(".automatic", "Auto")) &&
         label(".down").contains(localized(".down", "Down")) && label(".left").contains(localized(".left", "Left")),
         "the strip must show all four directions, including the automatic Up wrap to far");
+    const auto opened_links = sample_links();
+    require(opened_links.far_gap.authored >= 4 && opened_links.far_gap.automatic >= 4,
+        "opening focus debug did not paint both cyan explicit and amber automatic links to far");
+    const auto fit_board = *preview.artboard_rect_px();
+    SDL_Event wheel{};
+    wheel.type = SDL_EVENT_MOUSE_WHEEL;
+    wheel.wheel.windowID = win.id;
+    wheel.wheel.y = -1.f;
+    wheel.wheel.mouse_x = (fit_board.x + fit_board.width / 2) / win.pixel_ratio();
+    wheel.wheel.mouse_y = (fit_board.y + fit_board.height / 2) / win.pixel_ratio();
+    input.push(wheel);
+    const auto old_mods = SDL_GetModState();
+    SDL_SetModState(SDL_KMOD_LCTRL);
+    frame();
+    SDL_SetModState(old_mods);
+    const auto zoomed_board = preview.artboard_rect_px();
+    require(zoomed_board && zoomed_board->width < fit_board.width && focus_is("start"),
+        "Ctrl+wheel did not zoom around the canvas while preserving focus");
+    const auto zoomed_links = sample_links();
+    require(zoomed_links.far_gap.authored >= 4 && zoomed_links.far_gap.automatic >= 4,
+        "the navigation lines did not follow the zoomed board");
+    preview.reset_zoom(true);
+    frame();
     action("nav.start [start]");
     require(preview.snapshot() != nullptr, "missing focused preview snapshot");
     const auto before = preview.snapshot()->serial;
@@ -4000,6 +4083,10 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
         "disabling far did not refresh the strip with the automatic near target");
     require(label(".up").contains(localized(".none", "None")),
         "disabling the only off-row target should leave Up without a target");
+    const auto fallback_links = sample_links();
+    require(fallback_links.far_gap.empty() && !fallback_links.near_gap.authored &&
+        fallback_links.near_gap.automatic >= 4,
+        "disabling far should clear its lines and paint the automatic fallback to near");
     keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
     require(focus_is("near"), "the current-focus label did not follow the fallback move");
     action("nav.near [near]");
@@ -4012,6 +4099,9 @@ void exercise_navigation(os_window& win, vgui_context* shell, designer& editor,
     require(preview.snapshot() && preview.snapshot()->serial != closed,
         "closing the strip must not reset the current focus or swallow the next arrow");
     action("nav.start [start]");
+    const auto closed_links = sample_links(); // Same focus and availability as the fallback sample.
+    require(closed_links.near_gap.empty() && closed_links.far_gap.empty(),
+        "closing focus debug did not remove the navigation lines");
     input.click(toggle);
     input.click(mode);
     require(!preview.running() && !vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
@@ -5478,8 +5568,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 }, picker->sandbox);
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
             } else if (smoke == native_smoke::navigation) {
-                exercise_navigation(*win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_navigation: default focus, directional overrides, and fallback passed");
+                exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
+                std::puts("ui_designer_navigation: default focus, directional overrides, fallback, and focus-debug pixels passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 std::puts("ui_designer_modal_return: keyboard close, Escape, and focus restoration passed");
