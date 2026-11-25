@@ -1898,6 +1898,7 @@ struct designer_preview::impl {
     struct navigation_target { pixel_rect bounds{}; bool authored = false; };
     std::array<navigation_target, navigation_directions.size()> navigation_targets{};
     vgui_widget *navigation_edit_button = nullptr, *navigation_start_button = nullptr;
+    vgui_widget* run_from_selection_button = nullptr;
     vgui_widget *navigation_modal_bar = nullptr, *navigation_return_button = nullptr, *navigation_return_clear = nullptr;
     vgui_widget *navigation_open_button = nullptr, *navigation_open_clear = nullptr;
     vgui_widget *navigation_close_button = nullptr, *navigation_modal_start_button = nullptr;
@@ -1985,7 +1986,8 @@ struct designer_preview::impl {
     vgpu_device_t* device = nullptr;
     vgpu_ctx_t* renderer = nullptr;
     bool has_document = false, remount = true, is_mounted = false, run = false;
-    bool start_focus_requested = false;
+    // Pending for this Run entry only; an empty ID requests the authored default.
+    std::optional<std::string> start_focus_request;
     animation_span timing;
     animation_view playback;
     bool sample_requested = false;
@@ -2090,6 +2092,8 @@ struct designer_preview::impl {
         simulation_button = button(toolbar, "designer.preview.simulation");
         navigation_debug_button = button(toolbar, "designer.preview.navigation_debug");
         vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
+        run_from_selection_button = button(toolbar, "designer.preview.run_from_selection");
+        vgui_widget_set_tooltip_when_disabled(run_from_selection_button, 1);
         if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
         // Contextual row: modal actions stay reachable in a narrow dock.
         navigation_modal_bar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
@@ -2227,6 +2231,7 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(navigation_edit_button, viewport_text(strings, "preview.navigation_edit.tooltip",
             "Drag direction handles to link; right-click to clear. Pink dashed lines point to the selection.",
             "拖动方向手柄连线，右键清除；粉色虚线指向选中控件。"));
+        vgui_widget_set_text(run_from_selection_button, strings.text("preview.run_from_selection.button", "Run from Selection"));
         simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
@@ -2388,6 +2393,25 @@ struct designer_preview::impl {
         return node != navigation_nodes.end() && node->second.scope.empty() && node->second.focusable;
     }
 
+    bool can_run_from_selection() const {
+        if (run || !navigation_edit_open || !is_mounted || remount || selection == navigation_root) return false;
+        const auto node = navigation_nodes.find(selection);
+        if (node == navigation_nodes.end() || !node->second.scope.empty() || !node->second.focusable) return false;
+        const auto* layout = layout_of(selection);
+        return layout && layout->visible && layout->enabled;
+    }
+
+    void update_run_from_selection() {
+        const bool visible = !run && navigation_edit_open && bool(commit_navigation);
+        vgui_widget_set_visible(run_from_selection_button, visible);
+        if (!visible) return;
+        const bool enabled = can_run_from_selection();
+        vgui_widget_set_enabled(run_from_selection_button, enabled);
+        vgui_widget_set_tooltip(run_from_selection_button, enabled ?
+            strings.text("preview.run_from_selection.tooltip", "Start Run with focus on the selected control without changing the page's initial focus") :
+            strings.text("preview.run_from_selection.unavailable", "Select a visible, enabled, focusable control outside modal panels"));
+    }
+
     void update_navigation_start_button() {
         if (!navigation_start_button) return;
         const auto* link = selected_modal_link();
@@ -2546,6 +2570,8 @@ struct designer_preview::impl {
             vgui_widget_set_checked(navigation_edit_button, navigation_edit_open);
         vgui_widget_set_background(navigation_start_button, inactive);
         update_navigation_start_button();
+        vgui_widget_set_background(run_from_selection_button, inactive);
+        update_run_from_selection();
         vgui_widget_set_background(navigation_return_button, inactive);
         vgui_widget_set_background(navigation_return_clear, inactive);
         vgui_widget_set_background(navigation_open_button, inactive);
@@ -2831,6 +2857,10 @@ struct designer_preview::impl {
             }
             return;
         }
+        if (w == self.run_from_selection_button) {
+            if (self.can_run_from_selection()) self.set_run(true, self.selection);
+            return;
+        }
         if (w == self.navigation_edit_button) {
             self.cancel_canvas_edit();
             self.navigation_edit_open = !self.navigation_edit_open;
@@ -2895,7 +2925,7 @@ struct designer_preview::impl {
         navigation_debug_open = view.navigation_debug_open;
         navigation_edit_open = view.navigation_edit_open;
         run = view.running;
-        start_focus_requested = false; // Switching to a cached page must not grab shell focus.
+        start_focus_request.reset(); // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
         playback = view.animation;
         if (timeline) {
@@ -2955,12 +2985,13 @@ struct designer_preview::impl {
         mark_canvas();
     }
 
-    void set_run(bool value) {
+    void set_run(bool value, std::string start = {}) {
         if (run == value) return;
         simulation_editor.close();
         blur();
         run = value;
-        start_focus_requested = run;
+        if (run) start_focus_request = std::move(start);
+        else start_focus_request.reset();
         playback = {};
         sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
@@ -3514,6 +3545,7 @@ struct designer_preview::impl {
             if (navigation_edit || navigation_modal_picking) cancel_canvas_edit();
             selection.assign(selected);
             update_navigation_start_button();
+            update_run_from_selection();
             update_navigation_modal_buttons();
             if (navigation_edit_open) update_status();
             mark_canvas();
@@ -3695,12 +3727,17 @@ struct designer_preview::impl {
                 return;
             }
             frame = std::move(next);
+            if (!run && navigation_edit_open) update_run_from_selection();
         }
-        if (std::exchange(start_focus_requested, false) && frame && canvas_visible() &&
-            !vgui_modal_active(shell) && !vgui_popup_active(shell) && !vgui_context_get_open_menu(shell) &&
-            mounted->focus_default()) {
-            vgui_set_focus(shell, canvas);
-            if (auto* window = SDL_GetKeyboardFocus()) run_window = SDL_GetWindowID(window);
+        if (const auto start = std::exchange(start_focus_request, std::nullopt);
+            start && frame && canvas_visible() &&
+            !vgui_modal_active(shell) && !vgui_popup_active(shell) && !vgui_context_get_open_menu(shell)) {
+            // The Run mount or simulated data can make a Design selection unavailable.
+            if ((!start->empty() && vgui_navigation_restore_focus(ui.get(), mounted->widget(*start))) ||
+                mounted->focus_default()) {
+                vgui_set_focus(shell, canvas);
+                if (auto* window = SDL_GetKeyboardFocus()) run_window = SDL_GetWindowID(window);
+            }
         }
         // Data transitions keep their own clock when the gradient playhead is
         // paused or scrubbed. Only changed progress paint wakes the canvas.

@@ -2912,8 +2912,18 @@ struct native_keyframe_input {
         e.motion.yrel = rel.y;
         push(e);
     }
-    void click_at(vgui_widget* w, glm::vec2 p, Uint8 mouse_button = SDL_BUTTON_LEFT) const {
-        require(vgui_hit_test(shell, p.x, p.y) == w, "click does not hit the intended control");
+    void click_at(vgui_widget* w, glm::vec2 p, Uint8 mouse_button = SDL_BUTTON_LEFT,
+                  std::string_view description = {}) const {
+        if (auto* actual = vgui_hit_test(shell, p.x, p.y); !w || actual != w) {
+            const auto id = [](vgui_widget* widget) -> std::string_view {
+                if (!widget) return "<none>";
+                const std::string_view name = vgui_widget_get_id(widget);
+                return name.empty() ? "<unnamed widget>" : name;
+            };
+            require(false, std::string(description.empty() ? "click" : description) +
+                " at (" + std::to_string(p.x) + ", " + std::to_string(p.y) +
+                ") expected " + std::string(id(w)) + ", hit " + std::string(id(actual)));
+        }
         button(true, p, mouse_button);
         button(false, p, mouse_button);
         frame();
@@ -4034,14 +4044,17 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     };
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","props":{"layout":"absolute","nav_start":"source"},"children":["source","near","far","dialog","inactive","hidden"]},
+        "root":{"type":"panel","props":{"layout":"absolute","nav_start":"source"},"children":["source","near","far","dialog","inactive","hidden","disabled","clipped"]},
         "source":{"type":"button","props":{"x":176,"y":140,"width":128,"height":80,"nav_right":"far","text":"Source","focus_alpha":0}},
-        "near":{"type":"button","props":{"x":362,"y":148,"width":112,"height":64,"nav_down":"inactive","text":"Near"}},
+        "near":{"type":"button","props":{"x":362,"y":148,"width":112,"height":64,"nav_down":"inactive","text":"Near",
+            "action":"nav.edit.near","bind_enabled":"nav.edit.near_enabled"}},
         "far":{"type":"button","props":{"x":525,"y":315,"width":120,"height":64,"text":"Far","action":"nav.edit.far"}},
         "dialog":{"type":"panel","props":{"x":98,"y":300,"width":245,"height":160,"modal":true},"children":["inside"]},
         "inside":{"type":"button","props":{"x":22,"y":27,"width":120,"height":64,"text":"Inside modal"}},
         "inactive":{"type":"button","props":{"x":374,"y":385,"width":108,"height":52,"text":"Not focusable","focusable":"no"}},
-        "hidden":{"type":"button","props":{"x":545,"y":105,"width":80,"height":36,"visible":false,"nav_down":"far"}}
+        "hidden":{"type":"button","props":{"x":545,"y":105,"width":80,"height":36,"visible":false,"nav_down":"far"}},
+        "disabled":{"type":"button","props":{"x":62,"y":105,"width":90,"height":36,"enabled":false}},
+        "clipped":{"type":"button","props":{"x":-120,"y":105,"width":80,"height":36}}
     }})", doc), "decode the link editor fixture");
     const auto file = sandbox / "nav-edit.vgui.json";
     require(ui::write_document(file, doc) && editor.open(file), "open the link editor fixture");
@@ -4052,18 +4065,40 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     const native_keyframe_input input{win, shell, preview, frame, require};
     const ui::native_menu_input keys(win, shell, frame);
     auto* canvas = input.widget("designer.preview.canvas");
+    auto* toolbar = input.widget("designer.preview.toolbar");
+    auto* mode = input.widget("designer.preview.mode");
     auto* toggle = find_widget(preview.widget(), "designer.preview.navigation_edit", VGUI_BUTTON);
     auto* initial_focus = find_widget(preview.widget(), "designer.preview.navigation_start", VGUI_BUTTON);
+    auto* run_from_selection = find_widget(preview.widget(), "designer.preview.run_from_selection", VGUI_BUTTON);
     require(!preview.running() && toggle && vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) &&
         !vgui_widget_get_checked(toggle), "the navigation toggle must be available and off in Design");
     require(initial_focus && !vgui_widget_get_visible(initial_focus),
         "the initial focus button must start hidden with the navigation tool off");
-    const auto node = [&](std::string_view id) {
+    require(run_from_selection && !vgui_widget_get_visible(run_from_selection),
+        "Run from Selection must start hidden with the navigation tool off");
+    const auto click_tool = [&](vgui_widget* tool) {
+        const auto r = input.rect(tool);
+        const glm::vec2 point{r.x + r.width / 2, r.y + r.height / 2};
+        if (vgui_hit_test(shell, point.x, point.y) != tool) {
+            // The toolbar can be narrower than its controls. Reveal the control
+            // without changing the artboard or the docks, then click it via SDL.
+            const auto bar = input.rect(toolbar);
+            vgui_panel_scroll_by(toolbar, point.x - (bar.x + bar.width / 2), 0);
+            frame();
+        }
+        input.click(tool);
+    };
+    const auto layout_node = [&](std::string_view id) -> const ui::node_layout& {
         const auto* layout = preview.snapshot();
         require(layout != nullptr, "missing Design layout");
         const auto it = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
-        require(it != layout->nodes.end() && it->visible, id);
-        return it->visible_px;
+        require(it != layout->nodes.end(), id);
+        return *it;
+    };
+    const auto node = [&](std::string_view id) {
+        const auto& item = layout_node(id);
+        require(item.visible, id);
+        return item.visible_px;
     };
     const auto project = [&](float x, float y) {
         const auto board = preview.artboard_rect_px();
@@ -4079,7 +4114,8 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         return project(r.x + u * r.width, r.y + v * r.height);
     };
     const auto select = [&](std::string_view id) {
-        input.click_at(canvas, id == doc.root ? project(650, 540) : at(id));
+        input.click_at(canvas, id == doc.root ? project(650, 540) : at(id), SDL_BUTTON_LEFT,
+            std::string("select Design node ") + std::string(id));
         require(editor.selection() == id, "could not select the Design navigation test node");
     };
     const auto read_navigation_pixels = [&] {
@@ -4151,11 +4187,11 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         require(history.revision() == original_revision && history.current() == doc &&
             !history.dirty() && !history.can_undo() && editor.selection() == "source", message);
     };
-    input.click_at(canvas, at("source", 1, .5f), SDL_BUTTON_RIGHT);
+    input.click_at(canvas, at("source", 1, .5f), SDL_BUTTON_RIGHT, "clear the source's Right link with the tool off");
     untouched("the default-off tool cleared an authored link");
     const std::array<int, 4> no_handles{};
     require(sample_handles() == no_handles, "navigation handles are visible with the tool initially off");
-    input.click(toggle);
+    click_tool(toggle);
     require(vgui_widget_get_checked(toggle) &&
         std::ranges::all_of(sample_handles(), [](int count) { return count >= 4; }),
         "enabling the tool did not paint all four side midpoint handles");
@@ -4163,10 +4199,10 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     select("far");
     require(far_incoming(), "selecting Far did not display the authored incoming Right link");
     require(!has_incoming(540, 165, 630, 260), "a hidden source drew an incoming arrow to Far");
-    input.click(toggle);
+    click_tool(toggle);
     require(!vgui_widget_get_checked(toggle) && !far_incoming(),
         "turning off the navigation tool left Far's incoming arrow visible");
-    input.click(toggle);
+    click_tool(toggle);
     select("inactive");
     const auto inactive_incoming = [&] {
         const auto near = node("near"), inactive = node("inactive");
@@ -4229,7 +4265,7 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     require(history.revision() == revision + 1, "inspecting the replaced link edited the document");
 
     revision = history.revision();
-    input.click_at(canvas, right(), SDL_BUTTON_RIGHT);
+    input.click_at(canvas, right(), SDL_BUTTON_RIGHT, "clear the source's Right link");
     const auto replaced = expected;
     expected.nodes.at("source").props.erase("nav_right");
     check_edit(expected, revision, "right click did not remove just the authored override in one edit");
@@ -4248,7 +4284,7 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     select("source");
     inspector_is("nav_right", "");
 
-    input.click(toggle);
+    click_tool(toggle);
     require(!vgui_widget_get_checked(toggle) && sample_handles() == no_handles,
         "turning off the tool left navigation handles on the canvas");
     const auto start = at("source");
@@ -4272,19 +4308,19 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
         "the new link or the removal of the old override did not survive saving");
     revision = history.revision();
-    input.click(toggle);
-    input.click("designer.preview.mode");
+    click_tool(toggle);
+    click_tool(mode);
     require(preview.running() && !vgui_widget_get_visible(toggle) && sample_handles() == no_handles,
         "the Design navigation toggle or handles are visible in Run");
     require(!vgui_widget_get_visible(initial_focus), "the initial focus button is visible in Run");
-    input.click_at(canvas, up(), SDL_BUTTON_RIGHT);
+    input.click_at(canvas, up(), SDL_BUTTON_RIGHT, "clear the source's Up link in Run");
     require(history.current() == expected && history.revision() == revision && !history.dirty(),
         "the Design navigation tool edited the document in Run");
-    input.click("designer.preview.mode");
-    if (!vgui_widget_get_checked(toggle)) input.click(toggle);
+    click_tool(mode);
+    if (!vgui_widget_get_checked(toggle)) click_tool(toggle);
     select("inactive");
     require(inactive_incoming(), "the selected target has no Design incoming arrow before switching to Run");
-    input.click("designer.preview.mode");
+    click_tool(mode);
     require(preview.running() && editor.selection() == "inactive" && !inactive_incoming(),
         "Run still displays a Design incoming arrow to the selected node");
 
@@ -4316,7 +4352,7 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         const auto start_revision = history.revision();
         require(vgui_widget_get_visible(initial_focus) && vgui_widget_get_enabled(initial_focus),
             "the initial focus button is unavailable for a valid edit");
-        input.click(initial_focus);
+        click_tool(initial_focus);
         require(history.revision() == start_revision + 1 && history.current() == after &&
             history.committed() == after && history.dirty() && editor.selection() == selected,
             "initial focus did not commit exactly one edit without changing other properties or selection");
@@ -4326,21 +4362,54 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         require(history.current() == after, "one Redo did not reapply the initial focus edit");
     };
 
-    input.click("designer.preview.mode");
-    if (!vgui_widget_get_checked(toggle)) input.click(toggle);
+    click_tool(mode);
+    if (!vgui_widget_get_checked(toggle)) click_tool(toggle);
+    const auto unavailable_for_run = [&](std::string_view message) {
+        require(vgui_widget_get_visible(run_from_selection) && !vgui_widget_get_enabled(run_from_selection), message);
+    };
     select("inside");
     require(vgui_widget_get_visible(initial_focus) && !vgui_widget_get_enabled(initial_focus),
         "a focusable control inside a modal can be set as the page's initial focus");
+    unavailable_for_run("a control inside a modal was eligible for Run from Selection");
     select("inactive");
     require(!vgui_widget_get_enabled(initial_focus), "a non-focusable control can be set as the initial focus");
+    unavailable_for_run("a non-focusable control was eligible for Run from Selection");
+    select("disabled");
+    unavailable_for_run("a disabled control was eligible for Run from Selection");
+    auto* outline = find_widget(vgui_root(shell), "designer.outliner", VGUI_TREE);
+    require(outline != nullptr, "missing outline for selecting unavailable controls");
+    const auto select_outline = [&](std::string_view id) {
+        const auto& children = doc.nodes.at(doc.root).children;
+        const auto index = static_cast<int>(std::ranges::find(children, id) - children.begin());
+        const auto row = vgui_tree_get_child(outline, vgui_tree_get_root(outline, 0), index);
+        require(row != 0, "missing unavailable control in the outline");
+        vgui_tree_scroll_to_node(outline, row, VGUI_SCROLL_ALIGN_CENTER);
+        frame();
+        ui::pixel_rect r;
+        require(vgui_tree_get_item_rect(outline, row, &r.x, &r.y, &r.width, &r.height),
+            "unavailable control has no outline row rectangle");
+        input.click_at(outline, {r.x + r.width / 2, r.y + r.height / 2}, SDL_BUTTON_LEFT,
+            std::string("select Outline row ") + std::string(id));
+        require(editor.selection() == id, "could not select the unavailable control in the outline");
+    };
+    select_outline("hidden");
+    require(!layout_node("hidden").visible, "the hidden fixture control is visible");
+    unavailable_for_run("a hidden control was eligible for Run from Selection");
+    select_outline("clipped");
+    const auto& clipped = layout_node("clipped");
+    require(clipped.rect_px.width > 0 && clipped.visible_px.width == 0 && !clipped.visible,
+        "the fixture control is not fully clipped");
+    unavailable_for_run("a fully clipped control was eligible for Run from Selection");
     select(doc.root);
     require(!vgui_widget_get_enabled(initial_focus), "the root can be set as its own initial focus");
+    unavailable_for_run("the page root was eligible for Run from Selection");
     inspector_is("nav_start", "source");
     require(sample_flag("source") >= 4, "the configured initial focus was not marked when unselected");
-    input.click(toggle);
+    click_tool(toggle);
     require(!vgui_widget_get_visible(initial_focus) && sample_flag("source") == 0,
         "the initial focus button or flag remained visible with the tool off");
-    input.click(toggle);
+    require(!vgui_widget_get_visible(run_from_selection), "Run from Selection remained visible with the tool off");
+    click_tool(toggle);
 
     // The inspector can author a reference even when that target cannot take focus.
     auto* property = find_widget(vgui_root(shell), "property:nav_start", VGUI_EDIT);
@@ -4383,15 +4452,70 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     require(ui::read_document(file, saved) && saved == saved_start && !history.dirty(),
         "the authored initial focus or original navigation links did not survive saving");
     revision = history.revision();
-    input.click("designer.preview.mode");
+    const bool can_undo = history.can_undo(), can_redo = history.can_redo();
+    const auto unchanged_start = [&] {
+        require(history.current() == saved_start && history.committed() == saved_start &&
+            history.revision() == revision && !history.dirty() &&
+            history.can_undo() == can_undo && history.can_redo() == can_redo && editor.selection() == "near",
+            "Run from Selection or the mode toggle modified the design, history, or selection");
+    };
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(status != nullptr, "missing action status");
+    const auto activate = [&](std::string_view expected_action) {
+        keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+        require(std::string_view(vgui_widget_get_text(status)).ends_with(expected_action), expected_action);
+        unchanged_start();
+    };
+    const auto start_at_selection = [&] {
+        require(vgui_widget_get_visible(run_from_selection) && vgui_widget_get_enabled(run_from_selection),
+            "the selected page control is not eligible for Run from Selection");
+        const std::string before = vgui_widget_get_text(status);
+        click_tool(run_from_selection);
+        require(preview.running() && !vgui_widget_get_visible(run_from_selection) && vgui_get_focus(shell) == canvas,
+            "Run from Selection did not enter Run and focus the shell canvas");
+        // A non-activating key also flushes any pending action reported by the private preview.
+        keys.key(SDLK_F8, SDL_SCANCODE_F8);
+        require(std::string_view(vgui_widget_get_text(status)) == before, "entering Run activated a control");
+        unchanged_start();
+    };
+    const auto back_to_design = [&] {
+        click_tool(mode);
+        require(!preview.running(), "the mode toggle did not return to Design");
+        if (!vgui_widget_get_checked(toggle)) click_tool(toggle);
+        unchanged_start();
+    };
+    select("near");
+    start_at_selection();
+    activate("nav.edit.near [near]");
+    back_to_design();
+
+    click_tool(mode);
     require(preview.running() && vgui_get_focus(shell) == canvas &&
         !vgui_widget_get_visible(initial_focus) && sample_flag("far") == 0,
         "Run did not focus the canvas or still displays Design initial focus authoring");
-    keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
-    auto* status = find_widget(vgui_root(shell), "designer.status");
-    require(status && std::string_view(vgui_widget_get_text(status)).ends_with("nav.edit.far [far]") &&
-        history.current() == saved_start && history.revision() == revision && !history.dirty(),
-        "Run did not activate the newly configured initial focus without editing the document");
+    activate("nav.edit.far [far]");
+
+    // Design still considers Near eligible when its Run-only enabled override is false.
+    click_tool(input.widget("designer.preview.simulation"));
+    const auto simulation_control = [&](const char* id, vgui_widget_kind kind) {
+        auto* w = find_widget(vgui_modal_panel(shell), id, kind);
+        require(w != nullptr, id);
+        return w;
+    };
+    input.click(simulation_control("designer.preview.simulation.override", VGUI_CHECKBOX));
+    auto* enabled = simulation_control("designer.preview.simulation.boolean", VGUI_CHECKBOX);
+    if (vgui_widget_get_checked(enabled)) input.click(enabled);
+    input.click(simulation_control("designer.preview.simulation.ok", VGUI_BUTTON));
+    require(!vgui_modal_active(shell) && !layout_node("near").enabled, "simulation did not disable Near in Run");
+    back_to_design();
+    require(layout_node("near").enabled, "a Run override disabled Near in Design");
+    start_at_selection();
+    require(!layout_node("near").enabled, "Run from Selection ignored the temporary enabled override");
+    click_tool(input.widget("designer.preview.navigation_debug"));
+    auto* focus = find_widget(preview.widget(), "designer.preview.navigation_debug.focus", VGUI_BUTTON);
+    require(focus && vgui_widget_get_visible(focus) && std::string_view(vgui_widget_get_text(focus)).contains("far") &&
+        vgui_get_focus(shell) == canvas, "Run did not fall back to the authored initial focus when Near was disabled");
+    unchanged_start();
 }
 
 void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_context* shell,
@@ -6873,7 +6997,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
                 std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback hints, "
                     "debug pixels, locating nodes in the outline, and Design incoming link pixels, link editing, "
-                    "and initial focus editing passed");
+                    "initial focus editing, and Run from Selection with authored fallback passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);
