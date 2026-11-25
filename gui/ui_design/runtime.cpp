@@ -560,7 +560,7 @@ struct runtime::mounted_tree {
     std::map<std::string, modal, std::less<>> modals;
     struct modal_request {
         const modal* target = nullptr;
-        vgui_widget* opener = nullptr; // Null for a close command.
+        vgui_widget* opener = nullptr; // Absent for a direct open; in the pending queue, null means close.
     } pending_modal, active_modal;
     vgui_widget* start_focus = nullptr;
     vgui_widget* saved_focus = nullptr; // Owned by this tree while suspended.
@@ -603,6 +603,24 @@ struct runtime::mounted_tree {
         if (!vgui_navigation_restore_focus(ctx, closed.target->return_focus) &&
             !vgui_navigation_restore_focus(ctx, closed.opener))
             vgui_navigation_restore_focus(ctx, tree.start_focus);
+    }
+    bool show_modal(vgui_context* ctx, modal_request request) {
+        auto* panel = request.target->panel;
+        if (vgui_modal_active(ctx) || !vgui_widget_get_enabled(panel)) return false;
+
+        vgui_modal_options options;
+        vgui_modal_options_default(&options);
+        options.on_close = modal_closed;
+        options.user = this;
+        // Let the authored priority order be the only focus restore, including
+        // during teardown. Native show would otherwise save the current focus.
+        auto* previous = vgui_get_focus(ctx);
+        vgui_set_focus(ctx, nullptr);
+        active_modal = request;
+        if (vgui_modal_show(ctx, panel, &options)) return true;
+        active_modal = {};
+        vgui_navigation_restore_focus(ctx, previous);
+        return false;
     }
     static void menu_event(vgui_widget*, vgui_item_id item, void* user) {
         const auto& menu = *static_cast<menu_actions*>(user);
@@ -722,6 +740,15 @@ std::span<const diagnostic> runtime::diagnostics() const {
 
 bool runtime::has_modals() const { return tree_ && !tree_->modals.empty(); }
 
+bool runtime::open_modal(std::string_view panel_id) {
+    if (!tree_ || !view_ || has_overlay() || tree_->pending_modal.target || back_pending_ ||
+        vgui_context_has_pointer_capture(ctx_)) return false;
+    const auto found = tree_->modals.find(panel_id);
+    // Design mounts keep these panels attached; only Run detaches them.
+    if (found == tree_->modals.end() || vgui_widget_get_parent(found->second.panel)) return false;
+    return tree_->show_modal(ctx_, {&found->second, nullptr});
+}
+
 void runtime::service_modals() {
     if (!tree_) return;
     const auto request = std::exchange(tree_->pending_modal, {});
@@ -731,21 +758,7 @@ void runtime::service_modals() {
         if (vgui_modal_panel(ctx_) == panel) vgui_modal_close(ctx_, VGUI_MODAL_RESULT_CONFIRM);
         return;
     }
-    if (vgui_modal_active(ctx_) || !vgui_widget_get_enabled(panel)) return;
-
-    vgui_modal_options options;
-    vgui_modal_options_default(&options);
-    options.on_close = mounted_tree::modal_closed;
-    options.user = tree_.get();
-    // Let the authored priority order be the only focus restore, including
-    // during teardown. Native show would otherwise save the current focus.
-    auto* previous = vgui_get_focus(ctx_);
-    vgui_set_focus(ctx_, nullptr);
-    tree_->active_modal = request;
-    if (!vgui_modal_show(ctx_, panel, &options)) {
-        tree_->active_modal = {};
-        vgui_navigation_restore_focus(ctx_, previous);
-    }
+    tree_->show_modal(ctx_, request);
 }
 
 bool runtime::set_data(std::string_view field, std::optional<value> data, data_update update) {

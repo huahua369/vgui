@@ -592,7 +592,7 @@ void test_authored_modals() {
                 "detached modal nodes remain in snapshots without visible or stale geometry");
         }
     };
-    check(!rt.has_modals(), "unmounted runtime has no modals");
+    check(!rt.has_modals() && !rt.open_modal("dialog"), "unmounted runtime has no modals to open");
     bindings.show_modal_design = true;
     check(rt.mount(doc, 1, bindings, &error) && rt.has_modals(), "mount authored modals in Design");
     auto frame = layout();
@@ -603,28 +603,67 @@ void test_authored_modals() {
     rt.seek_animations(.5);
     check(paint() > paint_before, "Design can seek an animation within a visible authored modal");
     set_focus("open");
+    check(!rt.open_modal("dialog") && !panel() && focus() == rt.widget("open") && log.calls == 0,
+        "opening by ID in Design leaves focus and actions alone");
     check(key(VGUI_KEY_ENTER) && log.calls == 1 && log.action == "opened", "Design retains button actions");
     rt.service_modals();
     check(!panel(), "Design does not arm modal commands");
 
     bindings.show_modal_design = false;
     check(rt.mount(doc, 2, bindings, &error) && rt.has_modals(), "mount authored modals in Run");
+    check(!rt.open_modal("dialog") && !rt.layout({0, 220, 1}) && !rt.open_modal("dialog") && !panel(),
+        "opening by ID requires a successful layout of the current mount");
     frame = layout();
     expect_closed_snapshot(frame);
     check(!vgui_widget_get_parent(rt.widget("dialog")) && rt.focus_default() && focus() == rt.widget("start"),
         "closed modals are detached and the page keeps its authored initial focus");
+    for (std::string_view id : {"", "missing", "open_group", "near"})
+        check(!rt.open_modal(id) && !panel() && focus() == rt.widget("start"),
+            "only an authored modal panel ID can open an overlay");
+
     check(rt.set_data("dialog.enabled", ui::value{false}), "disable the detached modal");
     set_focus("open");
+    check(!rt.open_modal("dialog") && !panel() && focus() == rt.widget("open") && log.calls == 1,
+        "opening by ID respects the modal's live enabled binding");
     check(key(' '), "activate the opener for the disabled modal");
     rt.service_modals();
     check(!panel() && focus() == rt.widget("open"), "disabled modal cannot take focus");
     check(rt.set_data("dialog.enabled", std::nullopt) && rt.set_data("dialog.caption", ui::value{"Live caption"s}),
         "apply live data to detached modal nodes");
 
+    const auto before_direct_open = log.calls;
+    check(rt.open_modal("dialog") && panel() == rt.widget("dialog") && focus() == rt.widget("near") &&
+        log.calls == before_direct_open, "opening by ID immediately focuses the authored modal start without an action");
+    check(!rt.open_modal("dialog") && !rt.open_modal("other") && panel() == rt.widget("dialog") &&
+        focus() == rt.widget("near"), "opening by ID cannot replace or reopen the active modal");
+    check(key(VGUI_KEY_ESCAPE) && !panel() && focus() == rt.widget("return") &&
+        vgui_modal_result(ctx.get()) == VGUI_MODAL_RESULT_CANCEL && log.calls == before_direct_open,
+        "Escape from a modal opened by ID restores its explicit return target without an action");
+
+    check(rt.set_data("page.return", ui::value{false}), "disable the explicit return target for a direct open");
+    set_focus("open"); // Eligible and focused, but not an opener unless activated.
+    check(rt.open_modal("dialog") && focus() == rt.widget("near") && log.calls == before_direct_open,
+        "opening by ID does not activate the focused opener");
+    set_focus("close");
+    check(key(VGUI_KEY_ENTER) && panel() == rt.widget("dialog") && log.calls == before_direct_open + 1 &&
+        log.id == "close" && log.action == "closed", "an explicit close command still publishes and defers dismissal");
+    rt.service_modals();
+    check(!panel() && focus() == rt.widget("start") && vgui_modal_result(ctx.get()) == VGUI_MODAL_RESULT_CONFIRM,
+        "a modal opened by ID skips the opener and falls back to page start when explicit return is disabled");
+    check(rt.set_data("page.return", std::nullopt), "restore the explicit return target");
+
     const auto actions_before = log.calls;
-    click(node(frame, "open").rect_px);
+    const auto& opener_rect = node(frame, "open").rect_px;
+    const float opener_x = opener_rect.x + opener_rect.width / 2, opener_y = opener_rect.y + opener_rect.height / 2;
+    vgui_input_mouse_move(ctx.get(), opener_x, opener_y);
+    vgui_input_mouse_down(ctx.get(), 1, opener_x, opener_y, 0);
+    check(vgui_context_has_pointer_capture(ctx.get()) && !rt.open_modal("other") &&
+        vgui_context_has_pointer_capture(ctx.get()) && !panel() && log.calls == actions_before,
+        "opening by ID does not interrupt a captured press");
+    vgui_input_mouse_up(ctx.get(), 1, opener_x, opener_y, 0);
     check(!panel() && log.calls == actions_before + 1 && log.id == "open" && log.action == "opened",
         "pointer activation publishes the action but defers modal show until service");
+    check(!rt.open_modal("other") && !panel(), "opening by ID does not supersede a pending authored modal command");
     set_focus("start");
     check(key(VGUI_KEY_ENTER), "queue a competing open command in the same frame");
     int focus_assignments = 0;
@@ -933,6 +972,8 @@ void test_page_escape_priority() {
     vgui_menu_add_item(menu, "Item");
     vgui_menu_open(menu, 10, 45);
     check(vgui_menu_is_open(menu), "open a context menu above the stacked page");
+    check(!rt.open_modal("dialog") && vgui_menu_is_open(menu) && !vgui_modal_active(ctx.get()),
+        "opening by ID does not replace a menu");
     expect_blocked();
     check(key(VGUI_KEY_ESCAPE) && !vgui_menu_is_open(menu), "native menu consumes Escape");
     rt.service_navigation();
@@ -941,6 +982,8 @@ void test_page_escape_priority() {
 
     auto* popup = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
     check(vgui_popup_open(ctx.get(), popup, 10, 45), "open a popup above the stacked page");
+    check(!rt.open_modal("dialog") && vgui_popup_active(ctx.get()) && !vgui_modal_active(ctx.get()),
+        "opening by ID does not replace a popup");
     expect_blocked();
     check(key(VGUI_KEY_ESCAPE) && !vgui_popup_active(ctx.get()), "native popup consumes Escape");
     rt.service_navigation();
@@ -960,6 +1003,8 @@ void test_page_escape_priority() {
     check(rt.page_depth() == 3, "non-Back input leaves the stack intact");
     check(key(VGUI_KEY_ESCAPE) && key(VGUI_KEY_ESCAPE) && rt.page_depth() == 3,
         "plain Escape queues rather than immediately changing pages during input");
+    check(!rt.open_modal("dialog") && !vgui_modal_active(ctx.get()),
+        "opening by ID does not supersede pending page navigation");
     rt.service_navigation();
     check(rt.page_depth() == 2, "two Back requests before service return exactly one page");
     rt.service_navigation();

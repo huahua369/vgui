@@ -162,6 +162,11 @@ public:
 
     // True if the mount has authored modal panels, including in Design.
     bool has_modals() const;
+    // Open an authored Run modal by panel ID after this page has been laid
+    // out, outside input dispatch. Does not activate a button or emit an
+    // action. On close, tries the authored return target, then page start.
+    // Fails if the panel is unavailable or another interaction is active.
+    bool open_modal(std::string_view panel_id);
     // Service the first authored open/close command received since the last call.
     // Call once per frame on the owner thread, after input dispatch.
     void service_modals();

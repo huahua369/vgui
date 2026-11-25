@@ -5139,9 +5139,10 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
     };
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","props":{"nav_start":"open"},"children":["open","restored","dialog"]},
-        "open":{"type":"button","props":{"x":16,"y":20,"width":120,"height":36,"text":"Open","open_modal":"dialog"}},
+        "root":{"type":"panel","props":{"nav_start":"page_start"},"children":["open","restored","page_start","dialog"]},
+        "open":{"type":"button","props":{"x":16,"y":20,"width":120,"height":36,"text":"Open","open_modal":"dialog","action":"modal.open"}},
         "restored":{"type":"button","props":{"x":154,"y":20,"width":120,"height":36,"text":"Restored","action":"modal.restored"}},
+        "page_start":{"type":"button","props":{"x":292,"y":20,"width":120,"height":36,"text":"Page start","action":"modal.page_start"}},
         "dialog":{"type":"panel","props":{"modal":true,"modal_return_focus":"restored","x":40,"y":80,"width":340,"height":150},
             "children":["first","group","caption"]},
         "first":{"type":"button","props":{"x":12,"y":12,"width":120,"height":36,"text":"First","action":"modal.first"}},
@@ -5161,8 +5162,22 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
     auto* canvas = input.widget("designer.preview.canvas");
     auto* links = input.widget("designer.preview.navigation_edit");
     auto* start = input.widget("designer.preview.navigation_modal_start");
-    constexpr auto mode = "designer.preview.mode";
+    auto* mode = input.widget("designer.preview.mode");
+    auto* try_selection = input.widget("designer.preview.run_from_selection");
+    auto* clear_return = input.widget("designer.preview.navigation_return.clear");
     constexpr auto property = "modal_start_focus";
+    const auto click_tool = [&](vgui_widget* tool) {
+        const auto r = input.rect(tool);
+        const glm::vec2 center{r.x + r.width / 2, r.y + r.height / 2};
+        if (vgui_hit_test(shell, center.x, center.y) != tool) {
+            // Reveal clipped tools without resizing the artboard or docks.
+            auto* toolbar = vgui_widget_get_parent(tool);
+            const auto bar = input.rect(toolbar);
+            vgui_panel_scroll_by(toolbar, center.x - (bar.x + bar.width / 2), 0);
+            frame();
+        }
+        input.click(tool);
+    };
     const auto node = [&](std::string_view id) {
         const auto* layout = preview.snapshot();
         require(layout != nullptr, "missing modal layout");
@@ -5202,7 +5217,9 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
         require(field && std::string_view(vgui_edit_get_text(field)) == target, "modal initial focus inspector value is stale");
     };
 
-    input.click(links);
+    select("dialog", .85f);
+    require(!vgui_widget_get_visible(try_selection), "Try This Modal is visible with Navigation Links off");
+    click_tool(links);
     select("restored");
     hidden();
     select("caption");
@@ -5222,13 +5239,16 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
 
     select("target");
     control(false);
-    input.click(links);
+    require(vgui_widget_get_visible(try_selection) && !vgui_widget_get_enabled(try_selection) &&
+        std::string_view(vgui_widget_get_text(try_selection)) == "从所选控件试跑",
+        "a modal descendant was eligible for the modal or page selection run");
+    click_tool(links);
     hidden();
-    input.click(links);
+    click_tool(links);
     const auto edit = [&](bool assigned, std::string_view target, const ui::document& expected) {
         const auto revision = history.revision();
         control(assigned);
-        input.click(start);
+        click_tool(start);
         require(history.revision() == revision + 1 && history.current() == expected &&
             history.committed() == expected && history.dirty() && editor.selection() == target,
             "the button did not change just the modal's start property in one edit");
@@ -5251,14 +5271,20 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
     require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
         "the modal initial focus did not survive saving");
 
+    auto* status = find_widget(vgui_root(shell), "designer.status");
+    require(status != nullptr, "missing action status");
     const auto activate = [&](std::string_view expected_action) {
         keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
-        auto* status = find_widget(vgui_root(shell), "designer.status");
-        require(status && std::string_view(vgui_widget_get_text(status)).ends_with(expected_action), expected_action);
+        require(std::string_view(vgui_widget_get_text(status)).ends_with(expected_action), expected_action);
+    };
+    const auto back_to_design = [&] {
+        click_tool(mode);
+        require(!preview.running(), "the mode toggle did not return to Design");
+        if (!vgui_widget_get_checked(links)) click_tool(links);
     };
     const auto test_run = [&](std::string_view initial_action) {
         const auto revision = history.revision();
-        input.click(mode);
+        click_tool(mode);
         require(preview.running() && !node("dialog").visible, "Run did not start with the modal closed");
         hidden();
         click_node("open");
@@ -5268,11 +5294,50 @@ void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
         require(preview.running() && !node("dialog").visible, "Escape did not close the Run modal");
         activate("modal.restored [restored]");
         require(history.revision() == revision && history.current() == expected, "running the modal edited the document");
-        input.click(mode);
-        if (!vgui_widget_get_checked(links)) input.click(links);
+        back_to_design();
     };
-    select("target");
+    select("dialog", .85f);
     test_run("modal.target [target]");
+
+    const auto try_modal = [&](const auto& dismiss, std::string_view restored_action) {
+        const auto before = history.current();
+        const auto revision = history.revision();
+        const bool was_dirty = history.dirty();
+        require(editor.selection() == "dialog" && vgui_widget_get_visible(try_selection) &&
+            vgui_widget_get_enabled(try_selection) &&
+            std::string_view(vgui_widget_get_text(try_selection)) == "试跑此弹窗",
+            "Try This Modal is unavailable or mislabeled for the selected modal");
+        const std::string prior_status = vgui_widget_get_text(status);
+        click_tool(try_selection);
+        require(preview.running() && vgui_get_focus(shell) == canvas && !vgui_widget_get_visible(try_selection) &&
+            node("dialog").visible && node("target").visible, "Try This Modal did not enter Run with the selected modal open");
+        // Flush any pending action without activating the private preview's focused control.
+        keys.key(SDLK_F8, SDL_SCANCODE_F8);
+        require(std::string_view(vgui_widget_get_text(status)) == prior_status,
+            "Try This Modal activated the opener or another control");
+        activate("modal.target [target]");
+        dismiss();
+        require(preview.running() && !node("dialog").visible && !node("target").visible,
+            "dismissal of the directly opened modal did not leave the preview running");
+        activate(restored_action);
+        back_to_design();
+        require(history.revision() == revision && history.current() == before && history.committed() == before &&
+            history.dirty() == was_dirty && editor.selection() == "dialog",
+            "Try This Modal changed the design, history, or selection");
+    };
+    try_modal([&] { keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE); }, "modal.restored [restored]");
+
+    auto without_return = expected;
+    without_return.nodes.at("dialog").props.erase("modal_return_focus");
+    require(vgui_widget_get_visible(clear_return) && vgui_widget_get_enabled(clear_return), "missing clear return focus tool");
+    click_tool(clear_return);
+    require(history.committed() == without_return, "could not clear the modal's explicit return focus");
+    native_gamepad_input pad(win.window, frame, require);
+    pad.plug();
+    try_modal([&] { pad.tap(SDL_GAMEPAD_BUTTON_EAST); }, "modal.page_start [page_start]");
+    pad.unplug();
+    keys.activate(keys.open(1), 0); // Restore the saved return target for the remaining cases.
+    require(history.current() == expected && !history.dirty(), "Undo did not restore the saved return focus");
 
     select("target");
     props.erase(property);
@@ -7002,7 +7067,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_start(*win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_modal_return: Design modal open, return, close, and initial focus editing, undo/redo, and saving; Run opening, initial focus, fallback, closing, and focus restoration passed");
+                std::puts("ui_designer_modal_return: Design modal open, return, close, and initial focus editing, undo/redo, and saving; "
+                    "normal Run and Try This Modal opening, initial focus, fallback, closing, and focus restoration passed");
             }
         } catch (...) {
             app.wait_gpu();

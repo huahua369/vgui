@@ -1987,7 +1987,8 @@ struct designer_preview::impl {
     vgpu_ctx_t* renderer = nullptr;
     bool has_document = false, remount = true, is_mounted = false, run = false;
     // Pending for this Run entry only; an empty ID requests the authored default.
-    std::optional<std::string> start_focus_request;
+    struct run_entry { std::string node; bool modal; };
+    std::optional<run_entry> run_entry_request;
     animation_span timing;
     animation_view playback;
     bool sample_requested = false;
@@ -2231,7 +2232,6 @@ struct designer_preview::impl {
         vgui_widget_set_tooltip(navigation_edit_button, viewport_text(strings, "preview.navigation_edit.tooltip",
             "Drag direction handles to link; right-click to clear. Pink dashed lines point to the selection.",
             "拖动方向手柄连线，右键清除；粉色虚线指向选中控件。"));
-        vgui_widget_set_text(run_from_selection_button, strings.text("preview.run_from_selection.button", "Run from Selection"));
         simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
@@ -2393,12 +2393,20 @@ struct designer_preview::impl {
         return node != navigation_nodes.end() && node->second.scope.empty() && node->second.focusable;
     }
 
+    bool selected_modal_panel_for_run() const {
+        const auto* link = selected_modal_link();
+        return link && !link->opens_modal;
+    }
+
     bool can_run_from_selection() const {
         if (run || !navigation_edit_open || !is_mounted || remount || selection == navigation_root) return false;
+        const auto* layout = layout_of(selection);
+        if (!layout || !layout->enabled) return false;
+        // Modal visibility/position in Design do not control the Run stage.
+        if (selected_modal_panel_for_run()) return true;
         const auto node = navigation_nodes.find(selection);
         if (node == navigation_nodes.end() || !node->second.scope.empty() || !node->second.focusable) return false;
-        const auto* layout = layout_of(selection);
-        return layout && layout->visible && layout->enabled;
+        return layout->visible;
     }
 
     void update_run_from_selection() {
@@ -2406,8 +2414,13 @@ struct designer_preview::impl {
         vgui_widget_set_visible(run_from_selection_button, visible);
         if (!visible) return;
         const bool enabled = can_run_from_selection();
+        const bool modal = selected_modal_panel_for_run();
         vgui_widget_set_enabled(run_from_selection_button, enabled);
-        vgui_widget_set_tooltip(run_from_selection_button, enabled ?
+        vgui_widget_set_text(run_from_selection_button, modal ? strings.text("preview.run_from_selection.modal", "Try This Modal") :
+            strings.text("preview.run_from_selection.button", "Run from Selection"));
+        vgui_widget_set_tooltip(run_from_selection_button, modal ? (enabled ?
+            strings.text("preview.run_from_selection.modal_tooltip", "Open this modal in Run without activating its opening button") :
+            strings.text("preview.run_from_selection.modal_unavailable", "This modal is disabled or not ready")) : enabled ?
             strings.text("preview.run_from_selection.tooltip", "Start Run with focus on the selected control without changing the page's initial focus") :
             strings.text("preview.run_from_selection.unavailable", "Select a visible, enabled, focusable control outside modal panels"));
     }
@@ -2858,7 +2871,7 @@ struct designer_preview::impl {
             return;
         }
         if (w == self.run_from_selection_button) {
-            if (self.can_run_from_selection()) self.set_run(true, self.selection);
+            if (self.can_run_from_selection()) self.set_run(true, self.selection, self.selected_modal_panel_for_run());
             return;
         }
         if (w == self.navigation_edit_button) {
@@ -2925,7 +2938,7 @@ struct designer_preview::impl {
         navigation_debug_open = view.navigation_debug_open;
         navigation_edit_open = view.navigation_edit_open;
         run = view.running;
-        start_focus_request.reset(); // Switching to a cached page must not grab shell focus.
+        run_entry_request.reset(); // Switching to a cached page must not grab shell focus.
         simulation = view.simulation;
         playback = view.animation;
         if (timeline) {
@@ -2985,13 +2998,13 @@ struct designer_preview::impl {
         mark_canvas();
     }
 
-    void set_run(bool value, std::string start = {}) {
+    void set_run(bool value, std::string start = {}, bool modal = false) {
         if (run == value) return;
         simulation_editor.close();
         blur();
         run = value;
-        if (run) start_focus_request = std::move(start);
-        else start_focus_request.reset();
+        if (run) run_entry_request = run_entry{std::move(start), modal};
+        else run_entry_request.reset();
         playback = {};
         sample_requested = run;
         if (canvas) vgui_widget_set_focusable(canvas, run);
@@ -3729,12 +3742,17 @@ struct designer_preview::impl {
             frame = std::move(next);
             if (!run && navigation_edit_open) update_run_from_selection();
         }
-        if (const auto start = std::exchange(start_focus_request, std::nullopt);
+        if (const auto start = std::exchange(run_entry_request, std::nullopt);
             start && frame && canvas_visible() &&
             !vgui_modal_active(shell) && !vgui_popup_active(shell) && !vgui_context_get_open_menu(shell)) {
             // The Run mount or simulated data can make a Design selection unavailable.
-            if ((!start->empty() && vgui_navigation_restore_focus(ui.get(), mounted->widget(*start))) ||
-                mounted->focus_default()) {
+            const bool opened = start->modal && mounted->open_modal(start->node);
+            if (opened) {
+                if (auto open_frame = mounted->layout(frame->view)) frame = std::move(open_frame);
+            }
+            const bool focused = !start->modal && !start->node.empty() &&
+                vgui_navigation_restore_focus(ui.get(), mounted->widget(start->node));
+            if (opened || focused || mounted->focus_default()) {
                 vgui_set_focus(shell, canvas);
                 if (auto* window = SDL_GetKeyboardFocus()) run_window = SDL_GetWindowID(window);
             }
