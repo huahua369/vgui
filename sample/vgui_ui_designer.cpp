@@ -4034,13 +4034,14 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     };
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
-        "root":{"type":"panel","props":{"layout":"absolute","nav_start":"source"},"children":["source","near","far","dialog","inactive"]},
+        "root":{"type":"panel","props":{"layout":"absolute","nav_start":"source"},"children":["source","near","far","dialog","inactive","hidden"]},
         "source":{"type":"button","props":{"x":176,"y":140,"width":128,"height":80,"nav_right":"far","text":"Source","focus_alpha":0}},
-        "near":{"type":"button","props":{"x":362,"y":148,"width":112,"height":64,"text":"Near"}},
+        "near":{"type":"button","props":{"x":362,"y":148,"width":112,"height":64,"nav_down":"inactive","text":"Near"}},
         "far":{"type":"button","props":{"x":525,"y":315,"width":120,"height":64,"text":"Far","action":"nav.edit.far"}},
         "dialog":{"type":"panel","props":{"x":98,"y":300,"width":245,"height":160,"modal":true},"children":["inside"]},
         "inside":{"type":"button","props":{"x":22,"y":27,"width":120,"height":64,"text":"Inside modal"}},
-        "inactive":{"type":"button","props":{"x":374,"y":385,"width":108,"height":52,"text":"Not focusable","focusable":"no"}}
+        "inactive":{"type":"button","props":{"x":374,"y":385,"width":108,"height":52,"text":"Not focusable","focusable":"no"}},
+        "hidden":{"type":"button","props":{"x":545,"y":105,"width":80,"height":36,"visible":false,"nav_down":"far"}}
     }})", doc), "decode the link editor fixture");
     const auto file = sandbox / "nav-edit.vgui.json";
     require(ui::write_document(file, doc) && editor.open(file), "open the link editor fixture");
@@ -4077,6 +4078,10 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         const auto r = node(id);
         return project(r.x + u * r.width, r.y + v * r.height);
     };
+    const auto select = [&](std::string_view id) {
+        input.click_at(canvas, id == doc.root ? project(650, 540) : at(id));
+        require(editor.selection() == id, "could not select the Design navigation test node");
+    };
     const auto read_navigation_pixels = [&] {
         require(vgui_render_target_submit_context(target, shell), "cannot composite Design navigation overlay");
         require(vgui_render_target_download(target, pixels.data(), pixels.size()) == pixels.size(),
@@ -4101,12 +4106,35 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
         }
         return samples;
     };
+    const auto has_incoming = [&](float left, float top, float right, float bottom) {
+        const auto first = project(left, top), last = project(right, bottom);
+        const int x0 = int(first.x), x1 = int(last.x), y0 = int(first.y), y1 = int(last.y);
+        require(x0 >= 0 && y0 >= 0 && x1 <= int(desc.width) && y1 <= int(desc.height) && x1 > x0 && y1 > y0,
+            "incoming arrow sample is outside the render target or empty");
+        read_navigation_pixels();
+        for (int row = y0; row < y1; ++row) for (int col = x0; col < x1; ++col) {
+            const auto* p = pixels.data() + (size_t(row) * desc.width + col) * 4;
+            if (std::abs(p[bgra ? 2 : 0] - 0xFF) <= 16 && std::abs(p[1] - 0x9C) <= 16 &&
+                std::abs(p[bgra ? 0 : 2] - 0xD6) <= 16) return true;
+        }
+        return false;
+    };
+    const auto far_incoming = [&] {
+        // Sample the open space beyond Near so even a stale Right-to-Far link is distinguishable.
+        const auto near = node("near"), far = node("far");
+        return has_incoming(near.x + near.width + 4, node("source").y, far.x - 4, far.y + far.height * .5f);
+    };
+    const auto near_right_incoming = [&] {
+        // The authored Up link also reaches Near, but its curve stays above the Right port.
+        const auto source = node("source"), near = node("near");
+        const float y = source.y + source.height * .5f;
+        return has_incoming(source.x + source.width + 4, y - 4, near.x - 4, y + 24);
+    };
     const auto inspector_is = [&](std::string_view key, std::string_view value) {
         auto* field = find_widget(vgui_root(shell), std::string("property:").append(key), VGUI_EDIT);
         require(field && std::string_view(vgui_edit_get_text(field)) == value, "inspector navigation value is stale");
     };
-    input.click_at(canvas, at("source"));
-    require(editor.selection() == "source", "could not select the link source");
+    select("source");
     auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
     require(search != nullptr, "missing inspector search");
     input.click(search);
@@ -4131,7 +4159,23 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     require(vgui_widget_get_checked(toggle) &&
         std::ranges::all_of(sample_handles(), [](int count) { return count >= 4; }),
         "enabling the tool did not paint all four side midpoint handles");
-    untouched("enabling the tool edited the document");
+    require(!far_incoming(), "selecting the source displayed its outgoing Right link as incoming");
+    select("far");
+    require(far_incoming(), "selecting Far did not display the authored incoming Right link");
+    require(!has_incoming(540, 165, 630, 260), "a hidden source drew an incoming arrow to Far");
+    input.click(toggle);
+    require(!vgui_widget_get_checked(toggle) && !far_incoming(),
+        "turning off the navigation tool left Far's incoming arrow visible");
+    input.click(toggle);
+    select("inactive");
+    const auto inactive_incoming = [&] {
+        const auto near = node("near"), inactive = node("inactive");
+        return has_incoming(near.x, near.y + near.height + 8, near.x + near.width, inactive.y - 8);
+    };
+    require(inactive_incoming(),
+        "selecting a visible non-focusable target did not display its authored incoming link");
+    select("source");
+    untouched("toggling the tool or inspecting incoming links edited the document");
 
     const auto begin_drag = [&](glm::vec2 from, glm::vec2 to) {
         input.button(true, from);
@@ -4177,6 +4221,12 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     expected.nodes.at("source").props["nav_right"] = std::string("near");
     check_edit(expected, revision, "replacing a link did not commit one edit on the selected source");
     inspector_is("nav_right", "near");
+    select("far");
+    require(!far_incoming(), "Far still displays the incoming Right link after its replacement");
+    select("near");
+    require(near_right_incoming(), "Near did not display the replacement incoming Right link");
+    select("source");
+    require(history.revision() == revision + 1, "inspecting the replaced link edited the document");
 
     revision = history.revision();
     input.click_at(canvas, right(), SDL_BUTTON_RIGHT);
@@ -4184,11 +4234,18 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     expected.nodes.at("source").props.erase("nav_right");
     check_edit(expected, revision, "right click did not remove just the authored override in one edit");
     inspector_is("nav_right", "");
+    select("near");
+    require(!near_right_incoming(), "clearing Right left its incoming arrow visible on Near");
     keys.activate(keys.open(1), 0); // Edit > Undo
     require(history.current() == replaced, "one Undo did not restore the right override");
+    require(editor.selection() == "near" && near_right_incoming(), "Undo did not restore Near's incoming Right arrow");
+    select("source");
     inspector_is("nav_right", "near");
+    select("near");
     keys.activate(keys.open(1), 1); // Edit > Redo
     require(history.current() == expected, "one Redo did not remove the right override");
+    require(editor.selection() == "near" && !near_right_incoming(), "Redo did not remove Near's incoming Right arrow");
+    select("source");
     inspector_is("nav_right", "");
 
     input.click(toggle);
@@ -4223,6 +4280,13 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
     input.click_at(canvas, up(), SDL_BUTTON_RIGHT);
     require(history.current() == expected && history.revision() == revision && !history.dirty(),
         "the Design navigation tool edited the document in Run");
+    input.click("designer.preview.mode");
+    if (!vgui_widget_get_checked(toggle)) input.click(toggle);
+    select("inactive");
+    require(inactive_incoming(), "the selected target has no Design incoming arrow before switching to Run");
+    input.click("designer.preview.mode");
+    require(preview.running() && editor.selection() == "inactive" && !inactive_incoming(),
+        "Run still displays a Design incoming arrow to the selected node");
 
     const auto sample_flag = [&](std::string_view id) {
         read_navigation_pixels();
@@ -4241,10 +4305,6 @@ void exercise_navigation_edit(os_window& win, vgui_context* shell, designer& edi
                 std::abs(p[bgra ? 0 : 2] - 0x64) <= 12;
         }
         return gold;
-    };
-    const auto select = [&](std::string_view id) {
-        input.click_at(canvas, id == doc.root ? project(650, 540) : at(id));
-        require(editor.selection() == id, "could not select the initial focus test node");
     };
     const auto change_start = [&](std::string_view target_id) {
         const auto before = history.current();
@@ -6812,7 +6872,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
                 std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback hints, "
-                    "debug pixels, locating nodes in the outline, and Design link and initial focus editing passed");
+                    "debug pixels, locating nodes in the outline, and Design incoming link pixels, link editing, "
+                    "and initial focus editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);

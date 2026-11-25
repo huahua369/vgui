@@ -152,7 +152,7 @@
   "preview.navigation_debug.internal": "内部控件",
   "preview.navigation_debug.locate": "点击在大纲中定位",
   "preview.navigation_edit.button": "导航连线",
-  "preview.navigation_edit.tooltip": "选中控件后拖动方向手柄连线，右键清除",
+  "preview.navigation_edit.tooltip": "拖动方向手柄连线，右键清除；粉色虚线指向选中控件。",
   "preview.navigation_edit.linked": "已连接",
   "preview.navigation_edit.cleared": "已清除",
   "preview.navigation_edit.failed": "导航连线修改失败：",

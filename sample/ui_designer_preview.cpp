@@ -530,10 +530,12 @@ point navigation_port(pixel_rect node, point n) {
     return {node.x + node.width * (.5f + .5f * n.x), node.y + node.height * (.5f + .5f * n.y)};
 }
 
-// Route from the relevant side of the focused node, even when the destination
+// Route from the relevant side of the source node, even when the destination
 // is behind it (an explicit link or an automatic edge wrap).
+enum class navigation_arrow { authored, automatic, incoming };
+
 void draw_navigation_arrow(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect from, pixel_rect to, point direction,
-        float scale, bool authored, vgui_color explicit_color = 0xFF64DFFFu) {
+        float scale, navigation_arrow style = navigation_arrow::authored, vgui_color explicit_color = 0xFF64DFFFu) {
     const auto start = navigation_port(from, direction);
     const point center{to.x + to.width * .5f, to.y + to.height * .5f};
     const point delta{center.x - start.x, center.y - start.y};
@@ -541,6 +543,9 @@ void draw_navigation_arrow(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect from, pixel_rec
     const bool reverse = delta.x * direction.x + delta.y * direction.y <= 0.f;
     const float bend = reverse ? std::min(distance * .45f, 75.f * scale) : 0.f;
     const point lane{-direction.y * bend, direction.x * bend};
+    // Keep an incoming route visible beside a reciprocal outgoing route.
+    const float bow = style == navigation_arrow::incoming ? std::min(distance * .22f, 16.f * scale) : 0.f;
+    const point offset{-direction.y * bow, direction.x * bow};
     const point approach{-delta.x + lane.x, -delta.y + lane.y};
     const float xr = std::abs(approach.x) / to.width, yr = std::abs(approach.y) / to.height;
     const float at_edge = 2 * std::max(xr, yr);
@@ -551,24 +556,25 @@ void draw_navigation_arrow(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect from, pixel_rec
     const float lead = std::min(length * .38f, 80.f * scale);
     const point enter = xr >= yr ? point{std::copysign(1.f, approach.x), 0.f} :
         point{0.f, std::copysign(1.f, approach.y)};
-    const point p1{start.x + direction.x * lead + lane.x, start.y + direction.y * lead + lane.y};
-    const point p2{end.x + enter.x * lead + lane.x, end.y + enter.y * lead + lane.y};
+    const point p1{start.x + direction.x * lead + lane.x + offset.x, start.y + direction.y * lead + lane.y + offset.y};
+    const point p2{end.x + enter.x * lead + lane.x + offset.x, end.y + enter.y * lead + lane.y + offset.y};
     const float tangent = std::hypot(p2.x - end.x, p2.y - end.y);
     if (tangent < .1f) return;
     const point back{(p2.x - end.x) / tangent, (p2.y - end.y) / tangent};
     const float head = std::min(length * .45f, 9.f * scale), wing = head * .55f;
     constexpr unsigned ink = 0xEC20242Au;
-    const auto color = to_ovg(authored ? explicit_color : 0xFFFFC777u);
+    const bool dashed = style != navigation_arrow::authored;
+    const auto color = to_ovg(style == navigation_arrow::incoming ? 0xFFFF9CD6u : dashed ? 0xFFFFC777u : explicit_color);
     const float pattern[]{7.f * scale, 5.f * scale};
     for (const auto width : {4.5f, 2.3f}) {
         cb->set_source_color(vg, width > 3.f ? ink : color);
         cb->set_line_width(vg, width * scale);
-        if (!authored && cb->set_dash) cb->set_dash(vg, pattern, 2, 0);
+        if (dashed && cb->set_dash) cb->set_dash(vg, pattern, 2, 0);
         cb->new_path(vg);
         cb->move_to(vg, start.x, start.y);
         cb->curve_to(vg, p1.x, p1.y, p2.x, p2.y, end.x, end.y);
         cb->stroke(vg);
-        if (!authored && cb->set_dash) cb->set_dash(vg, nullptr, 0, 0);
+        if (dashed && cb->set_dash) cb->set_dash(vg, nullptr, 0, 0);
         cb->new_path(vg);
         cb->move_to(vg, end.x + back.x * head - back.y * wing, end.y + back.y * head + back.x * wing);
         cb->line_to(vg, end.x, end.y);
@@ -1906,6 +1912,7 @@ struct designer_preview::impl {
         bool focusable;
         std::optional<bool> closes_modal;
         std::string modal_start;
+        bool has_incoming = false;
     };
     std::map<std::string, navigation_node, std::less<>> navigation_nodes;
     struct modal_navigation_link {
@@ -2218,7 +2225,8 @@ struct designer_preview::impl {
         vgui_widget_set_text(navigation_edit_button,
             viewport_text(strings, "preview.navigation_edit.button", "Navigation Links", "导航连线"));
         vgui_widget_set_tooltip(navigation_edit_button, viewport_text(strings, "preview.navigation_edit.tooltip",
-            "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除"));
+            "Drag direction handles to link; right-click to clear. Pink dashed lines point to the selection.",
+            "拖动方向手柄连线，右键清除；粉色虚线指向选中控件。"));
         simulation_editor.refresh_language();
         if (timeline) {
             vgui_widget_set_text(timeline_toggle, strings.text("timeline.title", "Gradient Timeline"));
@@ -2265,7 +2273,8 @@ struct designer_preview::impl {
                 message = modal_start_help(start->clear);
             } else if (!run && navigation_edit_open) {
                 message = viewport_text(strings, "preview.navigation_edit.tooltip",
-                    "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除");
+                    "Drag direction handles to link; right-click to clear. Pink dashed lines point to the selection.",
+                    "拖动方向手柄连线，右键清除；粉色虚线指向选中控件。");
             } else {
                 message = strings.text("preview.status.controls", "Middle-drag: pan  |  Wheel: zoom in Design  |  Ctrl+wheel: zoom in Run");
             }
@@ -3637,6 +3646,9 @@ struct designer_preview::impl {
             for (const auto& child : node.children) self(self, child, scope);
         };
         visit(visit, doc.root, {});
+        for (const auto& [id, node] : navigation_nodes)
+            for (const auto& target : node.links)
+                if (!target.empty()) navigation_nodes.at(target).has_incoming = true;
     }
 
     void set_renderer(vgpu_ctx_t* ctx) {
@@ -3970,7 +3982,8 @@ struct designer_preview::impl {
             for (std::size_t i = 0; i < navigation_targets.size(); ++i) {
                 const auto& target = navigation_targets[i];
                 if (has_area(target.bounds))
-                    draw_navigation_arrow(cb, vg, focus, transform.project(target.bounds), navigation_normals[i], scale, target.authored);
+                    draw_navigation_arrow(cb, vg, focus, transform.project(target.bounds), navigation_normals[i], scale,
+                        target.authored ? navigation_arrow::authored : navigation_arrow::automatic);
             }
             outline(cb, vg, focus, clipped, 0xE020242Au, 3.f * scale);
             outline(cb, vg, focus, clipped, 0xFFF3F7FFu, 1.5f * scale);
@@ -4021,6 +4034,8 @@ struct designer_preview::impl {
     void draw_navigation_edit(ovg_ctx_cb* cb, rvg_t* vg, const board_transform& t, pixel_rect clip) const {
         if (run || !navigation_edit_open) return;
         const auto* source = navigation_source();
+        const auto selected = navigation_nodes.find(selection);
+        const auto* incoming = selected != navigation_nodes.end() && selected->second.has_incoming ? layout_of(selection) : nullptr;
         const auto* start = navigation_start.empty() ? nullptr : layout_of(navigation_start);
         const auto modal_start = selected_modal_start();
         const auto* modal_flag = modal_start && modal_start->clear ? layout_of(selection) : nullptr;
@@ -4031,9 +4046,21 @@ struct designer_preview::impl {
         const auto* hover = navigation_modal_hover.empty() ? nullptr : layout_of(navigation_modal_hover);
         const auto* close = selected_modal_close().value_or(false) ? layout_of(selection) : nullptr;
         if (!source && (!start || !start->visible) && !draw_modal && !hover &&
-            (!close || !close->visible) && (!modal_flag || !modal_flag->visible)) return;
+            (!close || !close->visible) && (!modal_flag || !modal_flag->visible) && (!incoming || !incoming->visible)) return;
         with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
             const float scale = vgui_context_get_ui_scale(shell);
+            if (incoming && incoming->visible) {
+                const auto to = t.project(incoming->visible_px);
+                // One sweep of the snapshot also handles a target with many incoming edges.
+                for (const auto& from : frame->nodes) {
+                    if (!from.visible || from.id == selection) continue;
+                    const auto& links = navigation_nodes.at(from.id).links;
+                    for (std::size_t i = 0; i < links.size(); ++i)
+                        if (links[i] == selection)
+                            draw_navigation_arrow(cb, vg, t.project(from.visible_px), to, navigation_normals[i],
+                                scale, navigation_arrow::incoming);
+                }
+            }
             if (draw_modal) {
                 const auto from = t.project(modal_from->visible_px), to = t.project(modal_to->visible_px);
                 const float dx = to.x + .5f * to.width - from.x - .5f * from.width;
@@ -4041,7 +4068,7 @@ struct designer_preview::impl {
                 const point side = std::abs(dx) >= std::abs(dy) ? point{std::copysign(1.f, dx), 0.f} :
                     point{0.f, std::copysign(1.f, dy)};
                 const vgui_color color = link->opens_modal ? 0xFF75E3A6u : 0xFFD8A4FFu;
-                draw_navigation_arrow(cb, vg, from, to, side, scale, true, color);
+                draw_navigation_arrow(cb, vg, from, to, side, scale, navigation_arrow::authored, color);
                 outline(cb, vg, to, clipped, to_ovg(color), 2.f * scale);
             }
             if (hover && hover->visible)
@@ -4058,10 +4085,10 @@ struct designer_preview::impl {
                     const auto* target = navigation_drop_target(t, clipped, p);
                     const auto to = target ? t.project(target->visible_px) : pixel_rect{p.x - 1, p.y - 1, 2, 2};
                     if (target) outline(cb, vg, to, clipped, to_ovg(0xFF6EE7A9u), 2.f * scale);
-                    draw_navigation_arrow(cb, vg, r, to, navigation_normals[i], scale, true);
+                    draw_navigation_arrow(cb, vg, r, to, navigation_normals[i], scale);
                 } else if (!links[i].empty()) {
                     if (const auto* target = layout_of(links[i]); target && target->visible)
-                        draw_navigation_arrow(cb, vg, r, t.project(target->visible_px), navigation_normals[i], scale, true);
+                        draw_navigation_arrow(cb, vg, r, t.project(target->visible_px), navigation_normals[i], scale);
                 }
             }
             const float radius = navigation_port_radius(r);
