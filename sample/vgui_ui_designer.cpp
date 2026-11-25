@@ -3971,9 +3971,11 @@ public:
         SDL_VirtualJoystickDesc desc;
         SDL_INIT_INTERFACE(&desc);
         desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
-        // Identity mapping: the virtual joystick index matches SDL_GamepadButton.
+        // Identity mapping: virtual joystick indices match SDL_GamepadButton and SDL_GamepadAxis.
         desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
         desc.button_mask = (Uint32{1} << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        desc.naxes = SDL_GAMEPAD_AXIS_COUNT;
+        desc.axis_mask = (Uint32{1} << SDL_GAMEPAD_AXIS_COUNT) - 1;
         desc.name = "VGUI designer smoke gamepad";
         id_ = SDL_AttachVirtualJoystick(&desc);
         require_(id_ && SDL_IsGamepad(id_), "cannot attach a virtual SDL gamepad");
@@ -3991,6 +3993,14 @@ public:
             SDL_UpdateJoysticks();
             frame_();
         }
+    }
+
+    void move_stick(SDL_GamepadAxis axis, Sint16 value) {
+        require_(SDL_GetKeyboardFocus() == window_, "the smoke window lost SDL keyboard focus");
+        require_(SDL_SetJoystickVirtualAxis(joystick_, axis, value), "cannot set a virtual gamepad axis");
+        SDL_UpdateJoysticks();
+        require_(SDL_GetGamepadAxis(SDL_GetGamepadFromID(id_), axis) == value, "virtual stick axis is not mapped");
+        frame_();
     }
 
     void unplug() {
@@ -4388,6 +4398,8 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     require(vgui_get_focus(shell) == mode_button, "D-pad moved shell focus in Design");
     pad.tap(SDL_GAMEPAD_BUTTON_SOUTH);
     require(!preview.running() && status_text() == design_status, "gamepad triggered an action in Design");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16384);
+    require(vgui_get_focus(shell) == mode_button && !preview.running(), "left stick moved shell focus in Design");
     input.click(mode_button);
     auto* canvas = input.widget("designer.preview.canvas");
     require(preview.running() && vgui_get_focus(shell) == canvas,
@@ -4458,6 +4470,9 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     input.click(toggle);
     require(strip_visible() && vgui_get_focus(shell) == canvas && focus_is("start"),
         "opening focus debug did not preserve the configured focus and keyboard routing");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 24000);
+    require(focus_is("start"), "a stick held from Design moved focus after entering Run");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
     const auto right = label(".right");
     require(right.contains(localized(".right", "Right")) && right.contains("far") &&
         right.contains(localized(".explicit", "Explicit")), "Right should show the explicit far target");
@@ -4514,12 +4529,53 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
     action("nav.start [start]");
 
+    pad.move_stick(SDL_GAMEPAD_AXIS_RIGHTX, SDL_JOYSTICK_AXIS_MAX);
+    require(focus_is("start"), "right stick moved focus");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16383);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, -12000);
+    require(focus_is("start"), "sub-threshold stick noise moved focus");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16384);
+    require(focus_is("far"), "left stick Right did not follow the explicit link at the engagement threshold");
+    {
+        native_gamepad_input other(win.window, frame, require);
+        other.plug();
+        other.move_stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_JOYSTICK_AXIS_MIN);
+        require(focus_is("start"), "left stick Left did not work on a second gamepad while the first was held");
+        other.unplug();
+    }
+
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 8193);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 24000);
+    require(focus_is("start"), "a held stick repeated after jitter outside the rearm threshold");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, -24000);
+    require(focus_is("start"), "a second axis crossing repeated a held stick movement");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 8192);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 24000);
+    require(focus_is("start"), "centering only one left-stick axis rearmed movement");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 8192);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, -8192);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, -16384);
+    require(focus_is("far"), "left stick Up did not work after both axes reached the rearm threshold");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, 16384);
+    require(focus_is("near"), "left stick Down did not follow the automatic wrap from far to near");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_RIGHTX, 0);
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    action("nav.start [start]");
+
     input.click("designer.preview.simulation");
     auto* simulation_panel = vgui_modal_panel(shell);
     require(vgui_modal_active(shell) && simulation_panel, "missing shell simulation modal");
     pad.tap(SDL_GAMEPAD_BUTTON_EAST);
     require(vgui_modal_active(shell) && vgui_modal_panel(shell) == simulation_panel,
         "B dismissed the shell simulation modal");
+    auto* modal_focus = vgui_get_focus(shell);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16384);
+    require(vgui_modal_panel(shell) == simulation_panel && vgui_get_focus(shell) == modal_focus,
+        "left stick changed shell modal focus");
     const auto modal = [&](const char* id, vgui_widget_kind kind) {
         auto* w = find_widget(vgui_modal_panel(shell), id, kind);
         require(w != nullptr, id);
@@ -4548,6 +4604,20 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     require(fallback_links.far_gap.empty() && !fallback_links.near_gap.authored &&
         fallback_links.near_gap.automatic >= 4,
         "disabling far should clear its lines and paint the automatic fallback to near");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 24000);
+    require(focus_is("start"), "a stick held from a shell modal replayed into the Run canvas");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
+    // Up crosses first and has no target. The excursion still cannot move Right
+    // until both axes recenter.
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, -16384);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16384);
+    require(focus_is("start"), "a later axis crossing overrode the first direction");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTY, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 16384);
+    require(focus_is("near"), "left stick Right did not follow the automatic fallback after recentering");
+    pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
     pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
     require(focus_is("near"), "D-pad Right did not follow the automatic fallback in the same Run view");
     action("nav.near [near]");
@@ -6521,10 +6591,31 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
     }
 
     using gamepad_ptr = std::unique_ptr<SDL_Gamepad, decltype(&SDL_CloseGamepad)>;
-    std::map<SDL_JoystickID, gamepad_ptr> gamepads;
+    struct controller {
+        gamepad_ptr pad;
+        int left_x = 0, left_y = 0;
+        bool stick_latched = false;
+
+        std::optional<SDL_GamepadButton> move_stick(const SDL_GamepadAxisEvent& event) {
+            const bool horizontal = event.axis == SDL_GAMEPAD_AXIS_LEFTX;
+            if (!horizontal && event.axis != SDL_GAMEPAD_AXIS_LEFTY) return std::nullopt;
+            (horizontal ? left_x : left_y) = event.value;
+            constexpr int engage = 16384, release = 8192;
+            if (stick_latched) {
+                if (std::abs(left_x) <= release && std::abs(left_y) <= release) stick_latched = false;
+                return std::nullopt;
+            }
+            if (std::abs(int(event.value)) < engage) return std::nullopt;
+            stick_latched = true;
+            return horizontal ? (event.value < 0 ? SDL_GAMEPAD_BUTTON_DPAD_LEFT : SDL_GAMEPAD_BUTTON_DPAD_RIGHT)
+                              : (event.value < 0 ? SDL_GAMEPAD_BUTTON_DPAD_UP : SDL_GAMEPAD_BUTTON_DPAD_DOWN);
+        }
+    };
+    std::map<SDL_JoystickID, controller> gamepads;
     const auto open_gamepad = [&](SDL_JoystickID id) {
         if (gamepads.contains(id)) return;
-        if (gamepad_ptr pad(SDL_OpenGamepad(id), SDL_CloseGamepad); pad) gamepads.emplace(id, std::move(pad));
+        if (gamepad_ptr pad(SDL_OpenGamepad(id), SDL_CloseGamepad); pad)
+            gamepads.emplace(id, controller{std::move(pad)});
     };
     {
         int count = 0;
@@ -6535,17 +6626,33 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         return !editor.chooser_open() && !vgui_modal_active(shell.get()) &&
             !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get());
     };
+    const auto route_gamepad_press = [&](const SDL_Event& e) {
+        if (SDL_GetKeyboardFocus() == win->window && preview_input_available() &&
+            !vgui_context_has_pointer_capture(shell.get())) {
+            vgui_cursor unused = VGUI_CURSOR_NULL;
+            editor.preview_event(e, unused);
+        }
+    };
     const auto dispatch = [&](const SDL_Event& e) {
         // Controller events carry an instance ID, not a window ID. Never
-        // forward them as shell input (including unused axes and releases).
+        // forward them as shell input.
         if (e.type >= SDL_EVENT_JOYSTICK_AXIS_MOTION && e.type < SDL_EVENT_FINGER_DOWN) {
             if (e.type == SDL_EVENT_GAMEPAD_ADDED) open_gamepad(e.gdevice.which);
             else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) gamepads.erase(e.gdevice.which);
-            else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && gamepads.contains(e.gbutton.which) &&
-                     SDL_GetKeyboardFocus() == win->window && preview_input_available() &&
-                     !vgui_context_has_pointer_capture(shell.get())) {
-                vgui_cursor unused = VGUI_CURSOR_NULL;
-                editor.preview_event(e, unused);
+            else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && gamepads.contains(e.gbutton.which)) route_gamepad_press(e);
+            else if (e.type == SDL_EVENT_GAMEPAD_AXIS_MOTION) {
+                auto pad = gamepads.find(e.gaxis.which);
+                if (pad == gamepads.end()) return;
+                // Advance the latch even when the preview cannot take input.
+                // A stick held across a dialog or mode switch must not replay.
+                if (const auto direction = pad->second.move_stick(e.gaxis)) {
+                    SDL_Event press{};
+                    press.type = SDL_EVENT_GAMEPAD_BUTTON_DOWN;
+                    press.gbutton.which = e.gaxis.which;
+                    press.gbutton.button = static_cast<Uint8>(*direction);
+                    press.gbutton.down = true;
+                    route_gamepad_press(press);
+                }
             }
             return;
         }
@@ -6625,7 +6732,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
             } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_navigation: Run focus, overrides, fallback, debug pixels, and Design link and initial focus editing passed");
+                std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback, debug pixels, and Design link and initial focus editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);
