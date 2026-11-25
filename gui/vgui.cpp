@@ -9013,21 +9013,24 @@ static vgui_content_rect vgui_navigation_child_clip(vgui_widget* parent, vgui_wi
 	return {parent->abs_x, parent->abs_y, parent->abs_w, parent->abs_h};
 }
 
-static bool vgui_navigation_eligible(vgui_context* ctx, vgui_widget* target, vgui_widget* root)
+static vgui_navigation_rejection vgui_navigation_reject(vgui_context* ctx, vgui_widget* target, vgui_widget* root)
 {
-	if (!target || !target->focusable || !vgui_is_within(root, target))
-		return false;
+	using reason = vgui_navigation_rejection;
+	if (!vgui_is_within(root, target)) return reason::outside_scope;
+	if (!target->focusable) return reason::not_focusable;
 
 	// Check for a nonempty intersection with the viewport and all clips on
 	// the way to the active root. Do not tighten the legacy geometric search.
 	float l = std::max(0.0f, target->abs_x), t = std::max(0.0f, target->abs_y);
 	float r = std::min((float)ctx->width, target->abs_x + target->abs_w);
 	float b = std::min((float)ctx->height, target->abs_y + target->abs_h);
+	bool empty_bounds = false;
 	vgui_widget* child = nullptr;
 	for (vgui_widget* p = target; p; child = p, p = p->parent)
 	{
-		if (!p->visible || !p->enabled || p->destroy_pending || !(p->abs_w > 0.0f && p->abs_h > 0.0f))
-			return false;
+		if (!p->visible || p->destroy_pending) return reason::hidden;
+		if (!p->enabled) return reason::disabled;
+		empty_bounds |= !(p->abs_w > 0.0f && p->abs_h > 0.0f);
 		if (child && p->clip_children)
 		{
 			const auto clip = vgui_navigation_child_clip(p, child);
@@ -9038,7 +9041,12 @@ static bool vgui_navigation_eligible(vgui_context* ctx, vgui_widget* target, vgu
 		}
 		if (p == root) break;
 	}
-	return l < r && t < b;
+	return !empty_bounds && l < r && t < b ? reason::none : reason::clipped;
+}
+
+static bool vgui_navigation_eligible(vgui_context* ctx, vgui_widget* target, vgui_widget* root)
+{
+	return vgui_navigation_reject(ctx, target, root) == vgui_navigation_rejection::none;
 }
 
 static vgui_widget* vgui_navigation_start_target(vgui_context* ctx, vgui_widget* owner, vgui_widget* root)
@@ -9081,7 +9089,8 @@ bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner)
 // Directional focus navigation (gamepad / remote hosts). Prefer an eligible
 // authored link, otherwise use the geometric cone test (or opposite wrap).
 // In-widget arrow-key behaviour (lists, sliders) is untouched.
-static vgui_widget* vgui_focus_resolve_target(vgui_context* ctx, vgui_nav_direction dir, int* authored)
+static vgui_widget* vgui_focus_resolve_target(vgui_context* ctx, vgui_nav_direction dir, int* authored,
+	vgui_navigation_probe* probe = nullptr)
 {
 	if (authored) *authored = 0;
 	if (!ctx)
@@ -9115,12 +9124,20 @@ static vgui_widget* vgui_focus_resolve_target(vgui_context* ctx, vgui_nav_direct
 			auto* target = vgui_navigation_resolve(ctx, from->navigation->directions[dir]);
 			if (vgui_is_within(owner, from) && vgui_is_within(owner, target))
 			{
-				if (target != from && vgui_is_within(scope, target) && vgui_navigation_eligible(ctx, target, root))
+				using reason = vgui_navigation_rejection;
+				const auto rejection = target != from && vgui_is_within(scope, target)
+					? vgui_navigation_reject(ctx, target, root) : reason::outside_scope;
+				if (rejection == reason::none)
 				{
 					if (authored) *authored = 1;
 					return target;
 				}
 				rejected_direction = target;
+				if (probe)
+				{
+					probe->rejected = target;
+					probe->reason = rejection;
+				}
 			}
 		}
 	}
@@ -9211,6 +9228,13 @@ static vgui_widget* vgui_focus_resolve_target(vgui_context* ctx, vgui_nav_direct
 	}
 
 	return best ? best : wrap;
+}
+
+vgui_navigation_probe vgui_navigation_inspect(vgui_context* ctx, vgui_nav_direction dir)
+{
+	vgui_navigation_probe probe;
+	probe.target = vgui_focus_resolve_target(ctx, dir, &probe.authored, &probe);
+	return probe;
 }
 
 //----------------------------------------------------------------------------

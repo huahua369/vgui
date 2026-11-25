@@ -1,6 +1,7 @@
 #include "ui_designer_preview.h"
 
 #include "ui_designer_font_file.h"
+#include "../gui/vgui_internal.h"
 
 #include <vgui/backend/vgui_render_target.h>
 #include <vgui/editor/color_picker.h>
@@ -2300,8 +2301,25 @@ struct designer_preview::impl {
             const auto* node = id ? layout_of(id) : nullptr;
             return node && node->visible ? node->visible_px : pixel_rect{};
         };
+        const auto reason_text = [&](vgui_navigation_rejection rejection) -> const char* {
+            switch (rejection) {
+            case vgui_navigation_rejection::outside_scope:
+                return tr("preview.navigation_debug.reason.scope", "Outside the current focus scope", "不在当前焦点范围");
+            case vgui_navigation_rejection::not_focusable:
+                return tr("preview.navigation_debug.reason.focusable", "Not focusable", "不可聚焦");
+            case vgui_navigation_rejection::hidden:
+                return tr("preview.navigation_debug.reason.hidden", "Hidden", "已隐藏");
+            case vgui_navigation_rejection::disabled:
+                return tr("preview.navigation_debug.reason.disabled", "Disabled", "已禁用");
+            case vgui_navigation_rejection::clipped:
+                return tr("preview.navigation_debug.reason.clipped", "Fully clipped", "完全被裁剪");
+            case vgui_navigation_rejection::none: return nullptr;
+            }
+            return nullptr;
+        };
         const auto set_entry = [&](navigation_debug_entry& entry, const char* caption, vgui_widget* widget,
-                                    const char* id, const char* source) {
+                                    const char* source, vgui_widget* rejected, const char* reason) {
+            const auto* id = node_id(widget);
             entry.node = id ? id : "";
             const bool can_locate = id && bool(locate_node);
             vgui_widget_set_enabled(entry.button, can_locate);
@@ -2309,6 +2327,9 @@ struct designer_preview::impl {
             text.append(": ").append(name(widget, id));
             if (source) text.append(" [").append(source).append("]");
             vgui_widget_set_text(entry.button, text.c_str());
+            if (rejected && reason) text.append("\n")
+                .append(tr("preview.navigation_debug.skipped", "Skipped explicit target:", "跳过显式目标："))
+                .append(" ").append(name(rejected, node_id(rejected))).append(" (").append(reason).append(")");
             if (can_locate) text.append("\n").append(tr("preview.navigation_debug.locate",
                 "Click to locate in the Outline", "点击在大纲中定位"));
             if (text != vgui_widget_get_tooltip(entry.button))
@@ -2317,18 +2338,20 @@ struct designer_preview::impl {
         auto* focus = laid_out ? vgui_get_focus(ui.get()) : nullptr;
         const auto* focus_id = node_id(focus);
         navigation_focus_bounds = bounds(focus_id);
-        set_entry(navigation_debug_focus, tr("preview.navigation_debug.focus", "Focus", "焦点"), focus, focus_id, nullptr);
+        set_entry(navigation_debug_focus, tr("preview.navigation_debug.focus", "Focus", "焦点"),
+            focus, nullptr, nullptr, nullptr);
         const std::array captions{tr("preview.navigation_debug.up", "Up", "上"),
             tr("preview.navigation_debug.down", "Down", "下"), tr("preview.navigation_debug.left", "Left", "左"),
             tr("preview.navigation_debug.right", "Right", "右")};
         for (std::size_t i = 0; i < navigation_directions.size(); ++i) {
-            int authored = 0;
-            auto* target = laid_out ? vgui_focus_peek(ui.get(), navigation_directions[i], &authored) : nullptr;
-            const auto* id = node_id(target);
-            navigation_targets[i] = {bounds(id), authored != 0};
-            const auto* source = !target ? nullptr : authored ? tr("preview.navigation_debug.explicit", "Explicit", "显式") :
-                tr("preview.navigation_debug.automatic", "Auto", "自动");
-            set_entry(navigation_debug_targets[i], captions[i], target, id, source);
+            const auto probe = laid_out ? vgui_navigation_inspect(ui.get(), navigation_directions[i]) : vgui_navigation_probe{};
+            navigation_targets[i] = {bounds(node_id(probe.target)), probe.authored != 0};
+            const auto* source = probe.rejected ? (probe.target ?
+                tr("preview.navigation_debug.fallback", "Auto fallback", "自动回退") :
+                tr("preview.navigation_debug.no_fallback", "No fallback", "无法回退")) :
+                !probe.target ? nullptr : probe.authored ? tr("preview.navigation_debug.explicit", "Explicit", "显式") :
+                    tr("preview.navigation_debug.automatic", "Auto", "自动");
+            set_entry(navigation_debug_targets[i], captions[i], probe.target, source, probe.rejected, reason_text(probe.reason));
         }
         mark_canvas();
     }

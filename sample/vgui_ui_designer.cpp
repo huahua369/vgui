@@ -4342,7 +4342,8 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     ui::document doc;
     require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
         "root":{"type":"panel","props":{"nav_start":"start"},"children":["near","start","group"]},
-        "near":{"type":"button","props":{"x":150,"y":40,"width":100,"height":36,"text":"Near","action":"nav.near"}},
+        "near":{"type":"button","props":{"x":150,"y":40,"width":100,"height":36,"text":"Near","action":"nav.near",
+            "nav_up":"far"}},
         "start":{"type":"button","props":{"x":20,"y":40,"width":100,"height":36,"text":"Start","action":"nav.start",
             "nav_right":"far","focus_alpha":1}},
         "group":{"type":"panel","props":{"layout":"absolute","x":340,"y":150,"width":100,"height":36,
@@ -4392,6 +4393,11 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto localized = [&](std::string_view suffix, const char* fallback) {
         return editor.strings().text(std::string("preview.navigation_debug").append(suffix), fallback);
     };
+    const auto tooltip = [&](std::string_view suffix) {
+        return std::string_view(vgui_widget_get_tooltip(entry(suffix)));
+    };
+    const std::string_view fallback_label = localized(".fallback", "Auto fallback");
+    const std::string_view disabled_reason = localized(".reason.disabled", "Disabled");
     const auto focus_is = [&](std::string_view id) {
         const auto text = entry_text(".focus");
         return text.contains(localized(".focus", "Focus")) && text.contains(id);
@@ -4512,9 +4518,13 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     pad.move_stick(SDL_GAMEPAD_AXIS_LEFTX, 0);
     const auto right = entry_text(".right");
     require(right.contains(localized(".right", "Right")) && right.contains("far") &&
-        right.contains(localized(".explicit", "Explicit")), "Right should show the explicit far target");
+        right.contains(localized(".explicit", "Explicit")) && !right.contains(fallback_label),
+        "Right should show the explicit far target");
+    require(tooltip(".right") == std::string(right).append("\n").append(
+        localized(".locate", "Click to locate in the Outline")), "an eligible explicit link should have no rejection hint");
     const auto up = entry_text(".up");
     require(up.contains(localized(".up", "Up")) && up.contains("far") && up.contains(localized(".automatic", "Auto")) &&
+        !up.contains(fallback_label) &&
         entry_text(".down").contains(localized(".down", "Down")) &&
         entry_text(".left").contains(localized(".left", "Left")),
         "the strip must show all four directions, including the automatic Up wrap to far");
@@ -4648,12 +4658,16 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto& bounds = start->visible_px;
     input.click_at(canvas, {board->x + (bounds.x + bounds.width / 2) * board->width / layout->pixel_width,
         board->y + (bounds.y + bounds.height / 2) * board->height / layout->pixel_height});
-    require(focus_is("start") && entry_text(".right").contains("near") &&
-        entry_text(".right").contains(localized(".automatic", "Auto")),
-        "disabling far did not refresh the strip with the automatic near target");
+    const auto fallback_right = entry_text(".right");
+    const auto right_hint = tooltip(".right");
+    require(focus_is("start") && fallback_right.contains("near") && !fallback_right.contains("far") &&
+        fallback_right.contains(fallback_label), "disabling far did not label Right as a fallback to near");
+    require(right_hint.contains("far") && right_hint.contains(disabled_reason),
+        "the fallback tooltip should identify far as disabled");
     auto* no_target = entry(".up");
-    require(entry_text(".up").contains(localized(".none", "None")) && !vgui_widget_get_enabled(no_target),
-        "disabling the only off-row target should leave Up disabled with no target");
+    const std::string unmarked_up = std::string(localized(".up", "Up")) + ": " + localized(".none", "None");
+    require(entry_text(".up") == unmarked_up && tooltip(".up") == unmarked_up && !vgui_widget_get_enabled(no_target),
+        "Up has no explicit link and should show an unmarked, non-locatable None");
     locate(".right", "near", "start");
     // Disabled buttons are skipped by hit testing; the click falls through to the strip.
     input.click_at(strip, center(no_target));
@@ -4678,6 +4692,14 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
     pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
     require(focus_is("near"), "D-pad Right did not follow the automatic fallback in the same Run view");
+    // Start shares Near's row, so it cannot serve as a vertical fallback.
+    auto* blocked_up = entry(".up");
+    const auto blocked_up_hint = tooltip(".up");
+    require(entry_text(".up") == unmarked_up + " [" + localized(".no_fallback", "No fallback") + "]" &&
+        !vgui_widget_get_enabled(blocked_up), "Near's explicit Up should show a non-locatable None with No fallback");
+    require(vgui_widget_get_tooltip_when_disabled(blocked_up) &&
+        blocked_up_hint.contains("far") && blocked_up_hint.contains(disabled_reason),
+        "Near's disabled Up entry should still explain that its explicit target far is disabled");
     action("nav.near [near]");
     input.click(toggle);
     require(!strip_visible() && vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) &&
@@ -6789,7 +6811,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
                 std::puts("ui_designer_game_data: typed overrides, validation, cancellation, and page isolation passed");
             } else if (smoke == native_smoke::navigation) {
                 exercise_navigation(app.vgctx, cb.get(), *win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback, "
+                std::puts("ui_designer_navigation: Run focus, D-pad and left-stick navigation, overrides, fallback hints, "
                     "debug pixels, locating nodes in the outline, and Design link and initial focus editing passed");
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);

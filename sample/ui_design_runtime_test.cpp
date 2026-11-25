@@ -1,5 +1,6 @@
 // U1 runtime contract tests: core-only, no window or GPU required.
 #include "runtime.h"
+#include "../gui/vgui_internal.h"
 
 #include <glm/glm.hpp>
 #include <ovg_c.h>
@@ -47,6 +48,7 @@ void same_rect(const ui::pixel_rect& a, const ui::pixel_rect& b) {
         "snapshot rect differs from actual VGUI layout");
 }
 void test_authored_navigation() {
+    using rejection = vgui_navigation_rejection;
     ui::document doc;
     ui::diagnostic error;
     check(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
@@ -66,10 +68,19 @@ void test_authored_navigation() {
     const auto focus = [&] { return vgui_get_focus(ctx.get()); };
     const auto set_focus = [&](vgui_widget* w) { vgui_set_focus(ctx.get(), w); };
     const auto paint = [&] { return vgui_context_paint_revision(ctx.get()); };
-    const auto navigate = [&](vgui_nav_direction dir) { return vgui_focus_navigate(ctx.get(), dir); };
-    const auto expect_move = [&](vgui_nav_direction dir, vgui_widget* target, std::string_view message) {
+    const auto expect_move = [&](vgui_nav_direction dir, const vgui_navigation_probe& expected, std::string_view message) {
+        vgui_layout(ctx.get());
+        auto* from = focus();
         const auto before = paint();
-        check(navigate(dir) && focus() == target && paint() > before, message);
+        const auto probe = vgui_navigation_inspect(ctx.get(), dir);
+        check(probe.target == expected.target && probe.rejected == expected.rejected &&
+            probe.reason == expected.reason && probe.authored == expected.authored,
+            std::string(message) + ": navigation diagnostics");
+        check(focus() == from && paint() == before, "navigation inspection leaves focus and paint unchanged");
+        int authored = -1;
+        check(vgui_focus_peek(ctx.get(), dir, &authored) == probe.target && authored == probe.authored,
+            "public navigation peek agrees with inspection");
+        check(vgui_focus_navigate(ctx.get(), dir) && focus() == expected.target && paint() > before, message);
     };
     check(!rt.focus_default() && rt.mount(doc, 1, {}, &error), "mount authored navigation");
     check(!rt.focus_default() && !rt.layout({0, 110, 1}) && !rt.focus_default() && !focus(),
@@ -102,7 +113,8 @@ void test_authored_navigation() {
         };
         vgui_widget_set_recording_hint(group, 1);
         draw(); // Capture the focused start button in this subtree.
-        expect_move(VGUI_NAV_RIGHT, remote, "authored Right skips the closer geometric target");
+        expect_move(VGUI_NAV_RIGHT, {.target = remote, .authored = 1},
+            "authored Right skips the closer geometric target");
         check(draw() == 0 && draw() == 1, "leaving a recorded subtree drops its old focus ring once");
         vgui_widget_set_recording_hint(group, 0);
     }
@@ -110,42 +122,47 @@ void test_authored_navigation() {
     check(!rt.focus_default() && focus() == remote && paint() == before_noop,
         "the default does not steal focus or repaint when ignored");
     set_focus(nullptr);
-    expect_move(VGUI_NAV_DOWN, start, "any direction uses the configured initial focus from scratch");
+    expect_move(VGUI_NAV_DOWN, {.target = start, .authored = 1},
+        "any direction uses the configured initial focus from scratch");
     vgui_input_focus_next(ctx.get(), 0);
     check(focus() == step, "Tab traversal keeps document order instead of following Right");
 
-    expect_move(VGUI_NAV_RIGHT, remote,
+    expect_move(VGUI_NAV_RIGHT, {.target = remote, .rejected = rt.widget("clipped"), .reason = rejection::clipped},
         "an authored target fully clipped by its parent is skipped even if it would win on geometry");
-    for (const auto* field : {"controls.visible", "controls.enabled"}) {
+    for (const auto& [field, reason] : {std::pair{"controls.visible", rejection::hidden},
+                                       std::pair{"controls.enabled", rejection::disabled}}) {
         set_focus(start);
         check(rt.set_data(field, ui::value{false}), "change authored target ancestor's eligibility");
-        expect_move(VGUI_NAV_RIGHT, step, "a hidden or disabled ancestor causes geometric fallback");
+        expect_move(VGUI_NAV_RIGHT, {.target = step, .rejected = remote, .reason = reason}, field);
         check(rt.set_data(field, std::nullopt), "restore authored target eligibility");
     }
     vgui_widget_set_focusable(remote, 0);
     set_focus(start);
-    expect_move(VGUI_NAV_RIGHT, step, "a nonfocusable target causes geometric fallback");
+    expect_move(VGUI_NAV_RIGHT, {.target = step, .rejected = remote, .reason = rejection::not_focusable},
+        "a nonfocusable target causes geometric fallback");
     vgui_widget_set_focusable(remote, 1);
 
     vgui_widget_set_focus_trap(rt.widget("group"), 1);
     set_focus(start);
-    expect_move(VGUI_NAV_RIGHT, step, "an authored direction cannot leave the focused trap");
+    expect_move(VGUI_NAV_RIGHT, {.target = step, .rejected = remote, .reason = rejection::outside_scope},
+        "an authored direction cannot leave the focused trap");
     vgui_widget_set_focus_trap(rt.widget("group"), 0);
 
     check(rt.layout({120, 110, 2}).has_value() && rt.widget("start") == start && focus() == step,
         "viewport and DPI relayout preserve the mounted widgets and current focus");
     set_focus(start);
-    expect_move(VGUI_NAV_RIGHT, step, "a target fully outside the viewport causes geometric fallback");
+    expect_move(VGUI_NAV_RIGHT, {.target = step, .rejected = remote, .reason = rejection::clipped},
+        "a target fully outside the viewport causes geometric fallback");
     check(rt.layout({260, 110, 2}).has_value(), "restore the wide viewport");
     set_focus(start);
-    expect_move(VGUI_NAV_RIGHT, remote, "relayout makes an authored edge usable again");
+    expect_move(VGUI_NAV_RIGHT, {.target = remote, .authored = 1}, "relayout makes an authored edge usable again");
 
     auto* modal = vgui_widget_create(ctx.get(), VGUI_PANEL, nullptr);
     auto* modal_button = vgui_widget_add(modal, VGUI_BUTTON, "Modal");
     check(vgui_modal_show(ctx.get(), modal, nullptr), "open a modal over the mounted subtree");
     set_focus(nullptr);
     check(!rt.focus_default() && !focus(), "the authored default cannot focus behind a modal");
-    expect_move(VGUI_NAV_RIGHT, modal_button, "directional start is scoped to the active modal root");
+    expect_move(VGUI_NAV_RIGHT, {.target = modal_button}, "directional start is scoped to the active modal root");
     vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
 
     check(doc == original, "runtime navigation cannot mutate the design");
@@ -155,8 +172,8 @@ void test_authored_navigation() {
         "remount discards focus and does not reuse the last mount's layout");
     check(rt.layout({120, 110, 1}).has_value(), "lay out the remount with its new start clipped");
     check(!rt.focus_default() && !focus(), "a clipped default does not focus a fallback implicitly");
-    expect_move(VGUI_NAV_LEFT, rt.widget("first"),
-        "a clipped authored start is skipped even if it is first in geometric traversal order");
+    expect_move(VGUI_NAV_LEFT, {.target = rt.widget("first")},
+        "a clipped authored start is skipped without reporting a rejected direction");
     check(rt.layout({260, 110, 1}).has_value(), "lay out the new start in view");
     set_focus(nullptr);
     check(rt.focus_default() && focus() == rt.widget("remote"), "remount adopts the new authored start");
@@ -167,10 +184,11 @@ void test_authored_navigation() {
     doc.nodes.at("step").props.erase("nav_right");
     check(rt.mount(doc, 3, {}, &error) && rt.layout({260, 110, 1}).has_value() && !rt.focus_default(),
         "a legacy document has no configured default");
-    expect_move(VGUI_NAV_LEFT, rt.widget("first"), "legacy documents start at the first focusable node");
+    expect_move(VGUI_NAV_LEFT, {.target = rt.widget("first")}, "legacy documents start at the first focusable node");
     set_focus(rt.widget("start"));
-    expect_move(VGUI_NAV_RIGHT, rt.widget("step"), "legacy documents keep geometric navigation");
-    expect_move(VGUI_NAV_RIGHT, rt.widget("clipped"), "legacy geometry still considers non-authored clipped candidates");
+    expect_move(VGUI_NAV_RIGHT, {.target = rt.widget("step")}, "legacy documents keep geometric navigation");
+    expect_move(VGUI_NAV_RIGHT, {.target = rt.widget("clipped")},
+        "legacy geometry still considers non-authored clipped candidates");
 }
 
 void test_game_data() {

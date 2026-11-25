@@ -349,6 +349,17 @@ bool vgui_navigation_focus_start(vgui_context* ctx, vgui_widget* owner);
 // true also if it was already focused; an ineligible target leaves focus alone.
 bool vgui_navigation_restore_focus(vgui_context* ctx, vgui_widget* target);
 
+// Read-only diagnostic for the same resolver as vgui_focus_peek/navigate.
+// `rejected` is a borrowed, live explicit direction target, not a start target.
+enum class vgui_navigation_rejection { none, outside_scope, not_focusable, hidden, disabled, clipped };
+struct vgui_navigation_probe {
+	vgui_widget* target = nullptr;
+	vgui_widget* rejected = nullptr;
+	vgui_navigation_rejection reason = vgui_navigation_rejection::none;
+	int authored = 0;
+};
+vgui_navigation_probe vgui_navigation_inspect(vgui_context* ctx, vgui_nav_direction dir);
+
 // Bytes per pixel for a vgui_texture_format.  Returns 0 for an unknown format
 // (used by vgui_texture_desc_valid to reject it).  Shared so editor helpers and
 // backends compute strides consistently instead of hard-coding 4.
