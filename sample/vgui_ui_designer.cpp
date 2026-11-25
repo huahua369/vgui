@@ -476,18 +476,22 @@ private:
         if (!page || id != active_ || !page->preview || page->preview->running() ||
             page->preview_revision != revision || page->last_model_revision != session_.revision()) return;
         const bool initial = change.key == "nav_start";
+        const bool modal_initial = change.key == "modal_start_focus";
         const bool return_focus = change.key == "modal_return_focus";
         const bool open_modal = change.key == "open_modal";
         const bool close_modal = change.key == "close_modal";
         if ((return_focus || open_modal || close_modal) && change.id != workbench_.selection()) return;
         std::string target;
-        if (initial) {
+        if (initial || modal_initial) {
             const auto& doc = session_.current();
-            const auto& root_props = doc.nodes.at(doc.root).props;
+            const auto owner = doc.nodes.find(change.id);
+            if (owner == doc.nodes.end() || (initial && change.id != doc.root) ||
+                (modal_initial && !ui::is_modal_panel(owner->second))) return;
+            const auto& props = owner->second.props;
             if (change.data) target = std::get<std::string>(*change.data);
-            const auto previous = root_props.find("nav_start");
+            const auto previous = props.find(change.key);
             const std::string_view selected = change.data ? target :
-                previous != root_props.end() ? std::get<std::string>(previous->second) : std::string_view{};
+                previous != props.end() ? std::get<std::string>(previous->second) : std::string_view{};
             if (selected.empty() || selected != workbench_.selection()) return; // Ignore stale toolbar selection.
         }
         if ((return_focus || open_modal) && change.data) target = std::get<std::string>(*change.data);
@@ -501,6 +505,9 @@ private:
         } else if (initial) {
             workbench_.status(linked ? std::string(tr("preview.navigation_start.saved", "Initial focus:")) + " " + target :
                 tr("preview.navigation_start.cleared", "Initial focus cleared"));
+        } else if (modal_initial) {
+            workbench_.status(linked ? std::string(tr("preview.navigation_modal_start.saved", "Modal initial focus:")) + " " + target :
+                tr("preview.navigation_modal_start.cleared", "Modal initial focus cleared"));
         } else if (return_focus) {
             workbench_.status(linked ? std::string(tr("preview.navigation_return.saved", "Return focus:")) + " " + target :
                 tr("preview.navigation_return.cleared", "Return focus cleared"));
@@ -4792,6 +4799,160 @@ void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor
     test_run_return("modal.new_return [new_return]");
 }
 
+void exercise_modal_start(os_window& win, vgui_context* shell, designer& editor,
+                          const std::function<void()>& frame, const fs::path& sandbox) {
+    const auto require = [](bool passed, std::string_view message) {
+        if (!passed) throw std::runtime_error("Native modal initial focus: " + std::string(message));
+    };
+    ui::document doc;
+    require(ui::decode_json(R"({"format":"vgui-ui-design","version":1,"root":"root","nodes":{
+        "root":{"type":"panel","props":{"nav_start":"open"},"children":["open","restored","dialog"]},
+        "open":{"type":"button","props":{"x":16,"y":20,"width":120,"height":36,"text":"Open","open_modal":"dialog"}},
+        "restored":{"type":"button","props":{"x":154,"y":20,"width":120,"height":36,"text":"Restored","action":"modal.restored"}},
+        "dialog":{"type":"panel","props":{"modal":true,"modal_return_focus":"restored","x":40,"y":80,"width":340,"height":150},
+            "children":["first","group","caption"]},
+        "first":{"type":"button","props":{"x":12,"y":12,"width":120,"height":36,"text":"First","action":"modal.first"}},
+        "group":{"type":"panel","props":{"x":144,"y":12,"width":144,"height":88},"children":["target","disabled"]},
+        "target":{"type":"button","props":{"x":8,"y":0,"width":120,"height":36,"text":"Target","action":"modal.target"}},
+        "disabled":{"type":"button","props":{"x":8,"y":44,"width":120,"height":36,"text":"Disabled","enabled":false}},
+        "caption":{"type":"label","props":{"x":12,"y":60,"width":120,"height":24,"text":"Dialog"}}
+    }})", doc), "decode the modal fixture");
+    const auto file = sandbox / "modal-start.vgui.json";
+    require(ui::write_document(file, doc) && editor.open(file), "open the modal fixture");
+    frame();
+
+    auto& preview = editor.preview();
+    const auto& history = editor.history();
+    const native_keyframe_input input{win, shell, preview, frame, require};
+    const ui::native_menu_input keys(win, shell, frame);
+    auto* canvas = input.widget("designer.preview.canvas");
+    auto* links = input.widget("designer.preview.navigation_edit");
+    auto* start = input.widget("designer.preview.navigation_modal_start");
+    constexpr auto mode = "designer.preview.mode";
+    constexpr auto property = "modal_start_focus";
+    const auto node = [&](std::string_view id) {
+        const auto* layout = preview.snapshot();
+        require(layout != nullptr, "missing modal layout");
+        const auto it = std::ranges::find(layout->nodes, id, &ui::node_layout::id);
+        require(it != layout->nodes.end(), id);
+        return *it;
+    };
+    const auto click_node = [&](std::string_view id, float v = .5f) {
+        const auto item = node(id);
+        const auto board = preview.artboard_rect_px();
+        const auto* layout = preview.snapshot();
+        require(item.visible && board && layout->pixel_width > 0 && layout->pixel_height > 0, id);
+        const auto r = item.visible_px;
+        input.click_at(canvas, glm::round(glm::vec2{
+            board->x + (r.x + r.width / 2) * board->width / layout->pixel_width,
+            board->y + (r.y + v * r.height) * board->height / layout->pixel_height}));
+    };
+    const auto select = [&](std::string_view id, float v = .5f) {
+        click_node(id, v);
+        require(editor.selection() == id, id);
+    };
+    const auto hidden = [&] {
+        require(!vgui_widget_get_visible(start), "modal initial focus is visible outside its Design selection");
+    };
+    const auto control = [&](bool assigned) {
+        require(vgui_widget_get_visible(start) && vgui_widget_get_enabled(start),
+            "modal initial focus button is unavailable for the selected control");
+        const std::string_view label = vgui_widget_get_text(start);
+        // The isolated native smoke settings start in the default zh-CN locale.
+        require(label == (assigned ? "清除弹窗初始焦点" : "设为弹窗初始焦点"),
+            "wrong modal initial focus button label: " + std::string(label));
+    };
+    const auto inspector_is = [&](std::string_view target) {
+        select("dialog", .85f); // Below all descendants.
+        hidden();
+        auto* field = find_widget(vgui_root(shell), "property:modal_start_focus", VGUI_EDIT);
+        require(field && std::string_view(vgui_edit_get_text(field)) == target, "modal initial focus inspector value is stale");
+    };
+
+    input.click(links);
+    select("restored");
+    hidden();
+    select("caption");
+    hidden();
+    select("dialog", .85f);
+    hidden();
+    auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
+    require(search != nullptr, "missing property filter");
+    input.click(search);
+    vgui_edit_select_all(search);
+    SDL_Event text{};
+    text.type = SDL_EVENT_TEXT_INPUT;
+    text.text.windowID = win.id;
+    text.text.text = property;
+    input.push(text);
+    frame();
+
+    select("target");
+    control(false);
+    input.click(links);
+    hidden();
+    input.click(links);
+    const auto edit = [&](bool assigned, std::string_view target, const ui::document& expected) {
+        const auto revision = history.revision();
+        control(assigned);
+        input.click(start);
+        require(history.revision() == revision + 1 && history.current() == expected &&
+            history.committed() == expected && history.dirty() && editor.selection() == target,
+            "the button did not change just the modal's start property in one edit");
+        control(!assigned);
+    };
+    auto expected = doc;
+    auto& props = expected.nodes.at("dialog").props;
+    props[property] = std::string("target");
+    edit(false, "target", expected);
+    keys.activate(keys.open(1), 0); // Edit > Undo
+    require(history.current() == doc, "Undo did not remove the modal initial focus");
+    control(false);
+    keys.activate(keys.open(1), 1); // Edit > Redo
+    require(history.current() == expected, "Redo did not restore the modal initial focus");
+    control(true);
+    inspector_is("target");
+    editor.request(command::save);
+    frame();
+    ui::document saved;
+    require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
+        "the modal initial focus did not survive saving");
+
+    const auto activate = [&](std::string_view expected_action) {
+        keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
+        auto* status = find_widget(vgui_root(shell), "designer.status");
+        require(status && std::string_view(vgui_widget_get_text(status)).ends_with(expected_action), expected_action);
+    };
+    const auto test_run = [&](std::string_view initial_action) {
+        const auto revision = history.revision();
+        input.click(mode);
+        require(preview.running() && !node("dialog").visible, "Run did not start with the modal closed");
+        hidden();
+        click_node("open");
+        require(node("dialog").visible, "the mouse did not open the Run modal");
+        activate(initial_action); // No focus movement after opening.
+        keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+        require(preview.running() && !node("dialog").visible, "Escape did not close the Run modal");
+        activate("modal.restored [restored]");
+        require(history.revision() == revision && history.current() == expected, "running the modal edited the document");
+        input.click(mode);
+        if (!vgui_widget_get_checked(links)) input.click(links);
+    };
+    select("target");
+    test_run("modal.target [target]");
+
+    select("target");
+    props.erase(property);
+    edit(true, "target", expected);
+    inspector_is("");
+    test_run("modal.first [first]");
+
+    select("disabled");
+    props[property] = std::string("disabled");
+    edit(false, "disabled", expected);
+    test_run("modal.first [first]"); // Authored but unavailable in Run.
+}
+
 void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
                          const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -6468,7 +6629,8 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
             } else {
                 exercise_modal_return(*win, shell.get(), editor, advance, picker->sandbox);
                 exercise_modal_open(*win, shell.get(), editor, advance, picker->sandbox);
-                std::puts("ui_designer_modal_return: Design modal open/return picking, clearing, cancellation, undo/redo, and saving; Run opening, closing, and focus restoration passed");
+                exercise_modal_start(*win, shell.get(), editor, advance, picker->sandbox);
+                std::puts("ui_designer_modal_return: Design modal open, return, close, and initial focus editing, undo/redo, and saving; Run opening, initial focus, fallback, closing, and focus restoration passed");
             }
         } catch (...) {
             app.wait_gpu();

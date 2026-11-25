@@ -29,7 +29,7 @@ constexpr sv tooltip_anchors[] = {"pointer", "widget"};
 constexpr sv focus_choices[] = {"default", "yes", "no"};
 constexpr sv anchors[] = {"start", "center", "end", "stretch"};
 constexpr sv node_reference_keys[] = {
-    "nav_start", "nav_up", "nav_down", "nav_left", "nav_right", "open_modal", "modal_return_focus"
+    "nav_start", "nav_up", "nav_down", "nav_left", "nav_right", "open_modal", "modal_start_focus", "modal_return_focus"
 };
 
 bool is_navigation_property(sv key)
@@ -113,6 +113,7 @@ const property_descriptor panel[] = {
     {"pad_bottom", "Bottom padding", value_type::number, 0.0, 0, max_geometry},
     {"nav_start", "Initial focus", value_type::text, std::string{}},
     {"modal", "Modal panel", value_type::boolean, false},
+    {"modal_start_focus", "Focus on open", value_type::text, std::string{}},
     {"modal_return_focus", "Return focus to", value_type::text, std::string{}},
 };
 constexpr sv font_weights[] = {"default", "regular", "medium", "semi_bold", "bold"};
@@ -940,15 +941,19 @@ bool validate(const document& doc, diagnostic* error)
                 const auto& target = std::get<std::string>(val);
                 if (!target.empty() && modal_scope(target) != scope)
                     return fail(error, prop_path(key), "focus links cannot cross between a modal and the page or another modal");
-            } else if (key == "open_modal" || key == "modal_return_focus") {
+            } else if (key == "open_modal" || key == "modal_start_focus" || key == "modal_return_focus") {
                 const auto& target = std::get<std::string>(val);
                 if (target.empty()) continue;
                 const auto path = prop_path(key);
                 if (key == "open_modal" && !scope.empty())
                     return fail(error, path, "a button inside a modal cannot open a modal");
+                if (key == "modal_start_focus" && scope != id)
+                    return fail(error, path, "only a modal panel can set focus on open");
                 if (key == "modal_return_focus" && scope != id)
                     return fail(error, path, "only a modal panel can set return focus");
                 if (!check_node_target(doc, id, key, val, path, error)) return false;
+                if (key == "modal_start_focus" && modal_scope(target) != scope)
+                    return fail(error, path, "focus on open must target a node inside this modal panel");
                 if (key == "modal_return_focus" && !modal_scope(target).empty())
                     return fail(error, path, "return focus must target a node outside all modal panels");
             }

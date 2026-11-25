@@ -523,17 +523,20 @@ void test_authored_modals() {
         "open":{"type":"button","props":{"width":100,"height":25,"open_modal":"dialog","action":"opened"}},
         "return_group":{"type":"panel","props":{"x":175,"y":5,"width":100,"height":30,"bind_enabled":"page.return"},"children":["return"]},
         "return":{"type":"button","props":{"width":100,"height":25}},
-        "dialog":{"type":"panel","props":{"modal":true,"modal_return_focus":"return","x":15,"y":40,"width":220,"height":130,
-            "bind_enabled":"dialog.enabled"},"children":["hidden","edit","near","close","caption","shine"]},
+        "dialog":{"type":"panel","props":{"modal":true,"modal_start_focus":"near","modal_return_focus":"return",
+            "x":15,"y":40,"width":220,"height":130,"bind_enabled":"dialog.enabled"},
+            "children":["hidden","edit","near","close","caption","shine"]},
         "hidden":{"type":"panel","props":{"width":50,"height":30,"visible":false},"children":["hidden_button"]},
         "hidden_button":{"type":"button","props":{"width":50,"height":25}},
         "edit":{"type":"edit","props":{"x":5,"y":5,"width":55,"height":25,"text":"Initial","nav_right":"close"}},
-        "near":{"type":"button","props":{"x":70,"y":5,"width":55,"height":25}},
+        "near":{"type":"button","props":{"x":70,"y":5,"width":55,"height":25,
+            "bind_visible":"dialog.start.visible","bind_enabled":"dialog.start.enabled"}},
         "close":{"type":"button","props":{"x":150,"y":5,"width":60,"height":25,"close_modal":true,"action":"closed"}},
         "caption":{"type":"label","props":{"x":5,"y":40,"width":160,"height":25,"bind_text":"dialog.caption"}},
         "shine":{"type":"gradient","props":{"x":5,"y":70,"width":160,"height":25,
             "gradient_animation":"shine","gradient_animation_duration":2,"gradient_animation_loop":true}},
-        "other":{"type":"panel","props":{"modal":true,"visible":false,"width":100,"height":60},"children":["other_close"]},
+        "other":{"type":"panel","props":{"modal":true,"modal_start_focus":"","visible":false,"width":100,"height":60},
+            "children":["other_close"]},
         "other_close":{"type":"button","props":{"width":80,"height":25,"close_modal":true}}
     }})", doc, &error);
     check(decoded, error.path + ": " + error.message);
@@ -606,11 +609,18 @@ void test_authored_modals() {
         "pointer activation publishes the action but defers modal show until service");
     set_focus("start");
     check(key(VGUI_KEY_ENTER), "queue a competing open command in the same frame");
+    int focus_assignments = 0;
+    vgui_context_set_focus_listener(ctx.get(), [](vgui_context*, vgui_widget*, vgui_widget* focused, void* user) {
+        if (focused) ++*static_cast<int*>(user);
+    }, &focus_assignments);
     rt.service_modals();
+    vgui_context_set_focus_listener(ctx.get(), nullptr, nullptr);
     auto* dialog = rt.widget("dialog");
     auto* edit = rt.widget("edit");
+    auto* modal_start = rt.widget("near");
     auto* closer = rt.widget("close");
-    check(panel() == dialog && focus() == edit, "first command wins; initial focus skips the hidden subtree");
+    check(panel() == dialog && focus() == modal_start && focus_assignments == 1,
+        "first command wins and opening assigns focus directly to the authored non-first target");
     frame = layout();
     const auto& centered = node(frame, "dialog").rect_px;
     check(node(frame, "dialog").visible && near(centered.x, std::floor((frame.pixel_width - centered.width) * .5f)) &&
@@ -650,7 +660,7 @@ void test_authored_modals() {
     check(key(VGUI_KEY_ENTER) && !panel(), "keyboard open is deferred too");
     rt.service_modals();
     frame = layout();
-    check(panel() == dialog && rt.widget("edit") == edit && focus() == edit && frame.revision == 2 &&
+    check(panel() == dialog && rt.widget("edit") == edit && focus() == modal_start && frame.revision == 2 &&
         std::string_view(vgui_edit_get_text(edit)) == "Edited live" &&
         std::string_view(vgui_widget_get_text(rt.widget("caption"))) == "Live caption",
         "reopening keeps widget identity, edited text, data, and mount revision");
@@ -662,16 +672,36 @@ void test_authored_modals() {
     check(!panel() && focus() == rt.widget("open") && vgui_modal_result(ctx.get()) == VGUI_MODAL_RESULT_CONFIRM,
         "close button falls back to the opener when explicit return is disabled");
 
+    const auto open_with_fallback = [&](std::string_view message) {
+        check(key(VGUI_KEY_ENTER) && !panel(), "queue the modal while its start target is unavailable");
+        rt.service_modals();
+        check(panel() == dialog && focus() == edit, message);
+        check(key(VGUI_KEY_ESCAPE) && !panel() && focus() == rt.widget("open"),
+            "closing after initial-focus fallback still restores the opener");
+    };
+    for (const auto* field : {"dialog.start.visible", "dialog.start.enabled"}) {
+        check(rt.set_data(field, ui::value{false}), "make the detached modal's start unavailable");
+        open_with_fallback("a hidden or disabled initial target falls back to the first visible focusable child");
+        check(rt.set_data(field, std::nullopt), "clear the target's live override");
+    }
+    vgui_widget_set_focusable(modal_start, 0);
+    open_with_fallback("a nonfocusable initial target falls back to the first focusable child");
+    vgui_widget_set_focusable(modal_start, 1);
+    vgui_widget_set_pos(modal_start, 225, 5);
+    open_with_fallback("an initial target fully clipped by the modal panel falls back on the first open frame");
+    vgui_widget_set_pos(modal_start, 70, 5);
+
     check(key(' '), "reopen from restored opener");
     rt.service_modals();
-    check(panel() == dialog && rt.set_data("page.opener", ui::value{false}), "hide the opener's ancestor while open");
+    check(panel() == dialog && focus() == modal_start && rt.set_data("page.opener", ui::value{false}),
+        "the initial target is preferred again after it becomes eligible; hide the opener while open");
     vgui_modal_close(ctx.get(), VGUI_MODAL_RESULT_CANCEL);
     check(!panel() && focus() == rt.widget("start"), "programmatic close falls back to page start if opener is hidden");
 
     check(key(VGUI_KEY_ENTER) && !panel(), "a command-only button queues a different modal");
     rt.service_modals();
     check(panel() == rt.widget("other") && focus() == rt.widget("other_close") && node(layout(), "other").visible,
-        "Run shows an opened modal even if Design authored its visibility false");
+        "Run shows a Design-hidden modal and uses first-focusable order when its initial target is blank");
     check(key(' ') && panel() == rt.widget("other"), "a command-only close button defers dismissal");
     rt.service_modals();
     check(!panel() && focus() == rt.widget("start"), "command-only close returns to its opener");

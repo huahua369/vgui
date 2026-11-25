@@ -1734,10 +1734,11 @@ struct designer_workbench::impl {
             for (const auto& desc : descriptors) {
                 const auto key = desc.key;
                 const bool navigation = key.starts_with("nav_");
-                const bool modal_property = key == "modal" || key == "modal_return_focus" || key == "open_modal" || key == "close_modal";
+                const bool modal_focus = key == "modal_start_focus" || key == "modal_return_focus";
+                const bool modal_property = key == "modal" || modal_focus || key == "open_modal" || key == "close_modal";
                 if (navigation && (decorative_gradient || (key == "nav_start" && selected != doc.root))) continue;
                 if ((key == "modal" && (!place || place->first != doc.root)) ||
-                    (key == "modal_return_focus" && !modal_panel) ||
+                    (modal_focus && !modal_panel) ||
                     (key == "open_modal" && inside_modal) || (key == "close_modal" && !inside_modal)) continue;
                 if (desc.type == value_type::data_key) {
                     const auto bindings = data_bindings();
@@ -1809,6 +1810,10 @@ struct designer_workbench::impl {
                 } else if (key == "modal") {
                     row.tooltip = strings.text("workbench.inspector.modal.hint",
                         "Use this panel as a modal in Run. It starts closed and blocks the page while open. Visible only controls this panel in Design.");
+                } else if (key == "modal_start_focus") {
+                    row.placeholder = strings.text("workbench.inspector.navigation.auto", "Auto");
+                    row.tooltip = strings.text("workbench.inspector.modal.start_focus_hint",
+                        "Enter the ID of a control inside this modal to focus on open. Leave blank for Auto. If the target cannot take focus, the modal uses its usual first focusable control.");
                 } else if (key == "modal_return_focus") {
                     row.placeholder = strings.text("workbench.inspector.modal.opener", "Opening button");
                     row.tooltip = strings.text("workbench.inspector.modal.return_focus_hint",

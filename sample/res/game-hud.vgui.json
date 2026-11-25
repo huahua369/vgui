@@ -69,7 +69,7 @@
       "anchor_safe_area": true, "x": 16, "y": 94, "width": 112, "height": 32, "text": "Pause menu",
       "open_modal": "pause_dialog", "nav_down": "skill1", "focus_alpha": 1}},
     "pause_dialog": {"type": "panel", "name": "Pause menu", "props": {
-      "modal": true, "modal_return_focus": "skill1", "anchor_x": "center", "anchor_y": "center",
+      "modal": true, "modal_start_focus": "pause_close", "modal_return_focus": "skill1", "anchor_x": "center", "anchor_y": "center",
       "width": 360, "height": 176, "layout": "column", "align_items": "stretch",
       "pad_left": 20, "pad_top": 17, "pad_right": 20, "pad_bottom": 17, "gap": 10,
       "background": "#263144", "border_color": "#638AB0", "border_width": 1},

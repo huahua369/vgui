@@ -18409,7 +18409,17 @@ extern "C" {
 		stage->focus_trap = 1;
 		ctx->layout_dirty = true;
 
-		vgui_widget* first = keep_focus ? keep_focus : vgui_first_focusable(panel);
+		vgui_widget* first = keep_focus;
+		if (!first)
+		{
+			if (auto* target = vgui_navigation_start_target(ctx, panel, stage))
+			{
+				// Test clipping after laying out the panel in its new stage.
+				vgui_ensure_layout(ctx);
+				if (vgui_navigation_eligible(ctx, target, stage)) first = target;
+			}
+			if (!first) first = vgui_first_focusable(panel);
+		}
 		vgui_set_focus_internal(ctx, first);
 		return 1;
 	}

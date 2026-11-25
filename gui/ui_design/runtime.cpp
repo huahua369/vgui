@@ -1132,8 +1132,11 @@ std::unique_ptr<runtime::mounted_tree> runtime::build_tree(const document& doc, 
         }
     }
     for (auto& [id, modal] : next->modals) {
-        modal.return_focus = target_widget(doc.nodes.at(id), "modal_return_focus");
+        const auto& source = doc.nodes.at(id);
+        modal.return_focus = target_widget(source, "modal_return_focus");
         if (!bindings.show_modal_design) {
+            if (auto* start = target_widget(source, "modal_start_focus"))
+                vgui_navigation_set_start(modal.panel, start);
             vgui_widget_remove(modal.panel);
             // Run visibility is controlled by attachment to the native modal
             // stage, independently of the authored Design visibility.

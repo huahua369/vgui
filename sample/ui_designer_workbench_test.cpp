@@ -2748,23 +2748,55 @@ void exercise_modal_inspector()
         check(vgui_input_text(ctx, text), "modal text field did not consume text");
         workbench.frame();
     };
-    check(!find("modal", VGUI_CHECKBOX), "the page root must not show the modal toggle");
+    const auto* start_key = "modal_start_focus";
+    check(!find("modal", VGUI_CHECKBOX) && !find(start_key, VGUI_EDIT),
+        "the page root must not show the modal toggle or opening focus");
     select("nested");
-    check(!find("modal", VGUI_CHECKBOX), "a nested panel must not show the modal toggle");
+    check(!find("modal", VGUI_CHECKBOX) && !find(start_key, VGUI_EDIT),
+        "a nested panel must not show the modal toggle or opening focus");
     select("dialog");
     auto* modal = workbench.widget("property:modal", VGUI_CHECKBOX);
     check(category().ends_with("Modal") && label("modal", VGUI_CHECKBOX) == "Modal panel" &&
         std::string_view(vgui_widget_get_tooltip(modal)).find("only controls this panel in Design") != std::string_view::npos &&
-        !find("modal_return_focus", VGUI_EDIT), "modal panel toggle must explain Run visibility and reveal return focus only when enabled");
+        !find(start_key, VGUI_EDIT) && !find("modal_return_focus", VGUI_EDIT),
+        "modal panel toggle must explain Run visibility and show opening and return focus only when enabled");
     workbench.click(modal);
     workbench.frame();
     check(ui::is_modal_panel(model.current().nodes.at("dialog")) &&
-        label("modal_return_focus", VGUI_EDIT) == "Return focus to", "checking Modal panel must reveal return focus");
+        label(start_key, VGUI_EDIT) == "Focus on open" && label("modal_return_focus", VGUI_EDIT) == "Return focus to",
+        "checking Modal panel must reveal opening and return focus");
     enter("modal_return_focus", "opener");
     check(workbench.key(VGUI_KEY_ENTER), "return focus edit did not commit");
 
+    const std::string start_hint = vgui_widget_get_tooltip(find(start_key, VGUI_EDIT));
+    check(start_hint.find("inside this modal") != std::string::npos && start_hint.find("Leave blank for Auto") != std::string::npos,
+        "opening focus hint must explain the modal scope and fallback");
+    const auto before_start = model.committed();
+    enter(start_key, "close");
+    const auto start_preview = model.current();
+    check(start_preview.nodes.at("dialog").props.at(start_key) == ui::value{std::string("close")} &&
+        model.committed() == before_start, "opening focus must apply live to a target nested in the modal");
+    enter(start_key, "opener");
+    check(model.current() == start_preview && model.committed() == before_start &&
+        std::string_view(vgui_widget_get_tooltip(find(start_key, VGUI_EDIT))).find("must target a node inside this modal panel") != std::string_view::npos,
+        "opening focus must reject an outside target, surface an error, and retain the last valid live edit");
+    enter(start_key, "close");
+    check(workbench.key(VGUI_KEY_ENTER) && model.committed() == start_preview &&
+        model.undo() && model.current() == before_start && model.redo() && model.current() == start_preview,
+        "opening focus must commit as one undoable edit");
+    workbench.frame();
+    auto* start = find(start_key, VGUI_EDIT);
+    workbench.click(start);
+    check(vgui_get_focus(ctx) == start, "opening focus field did not take focus to clear its value");
+    vgui_edit_select_all(start);
+    check(workbench.key(VGUI_KEY_BACKSPACE) && !model.current().nodes.at("dialog").props.contains(start_key) &&
+        workbench.key(VGUI_KEY_ENTER) && model.committed() == before_start &&
+        model.undo() && model.current() == start_preview, "blank opening focus must remove the override in one undoable edit");
+
+    select("nested");
+    check(!find(start_key, VGUI_EDIT), "opening focus is editable on the modal panel, not its descendant panels");
     select("opener");
-    check(!find("close_modal", VGUI_CHECKBOX) && label("open_modal", VGUI_EDIT) == "Open modal",
+    check(!find(start_key, VGUI_EDIT) && !find("close_modal", VGUI_CHECKBOX) && label("open_modal", VGUI_EDIT) == "Open modal",
         "outside buttons must offer Open modal only");
     const auto before_opener = model.committed();
     enter("open_modal", "dialog");
@@ -2778,7 +2810,7 @@ void exercise_modal_inspector()
     enter("open_modal", "dialog");
     check(workbench.key(VGUI_KEY_ENTER) && model.committed() == preview, "valid modal opener did not commit");
     select("close");
-    check(!find("open_modal", VGUI_EDIT) && label("close_modal", VGUI_CHECKBOX) == "Close modal",
+    check(!find(start_key, VGUI_EDIT) && !find("open_modal", VGUI_EDIT) && label("close_modal", VGUI_CHECKBOX) == "Close modal",
         "buttons anywhere in the modal subtree must offer Close modal only");
     workbench.click(workbench.widget("property:close_modal", VGUI_CHECKBOX));
     workbench.frame();
@@ -2793,8 +2825,10 @@ void exercise_modal_inspector()
     select("opener");
     check(label("open_modal", VGUI_EDIT) == "打开弹窗", "modal opener label must follow the locale");
     select("dialog");
-    check(label("modal", VGUI_CHECKBOX) == "设为模态弹窗" && label("modal_return_focus", VGUI_EDIT) == "关闭后焦点",
-        "modal panel labels must follow the locale");
+    check(label("modal", VGUI_CHECKBOX) == "设为模态弹窗" && label("modal_return_focus", VGUI_EDIT) == "关闭后焦点" &&
+        label(start_key, VGUI_EDIT) == "打开后焦点" &&
+        std::string_view(vgui_widget_get_tooltip(find(start_key, VGUI_EDIT))).find("自动焦点") != std::string_view::npos,
+        "modal panel labels and opening focus hint must follow the locale");
 
     const auto saved = model.committed();
     workbench.strings = ui::designer_strings(ui::designer_language::english);
@@ -2803,8 +2837,9 @@ void exercise_modal_inspector()
     workbench.file("Save As");
     workbench.file("Open Page");
     check(workbench.io_ok && model.current() == saved &&
+        model.current().nodes.at("dialog").props.at(start_key) == ui::value{std::string("close")} &&
         model.current().nodes.at("dialog").props.at("modal_return_focus") == ui::value{std::string("opener")},
-        "the four authored modal properties must survive saving and reopening");
+        "the five authored modal properties must survive saving and reopening");
 }
 
 void exercise_menu_language()

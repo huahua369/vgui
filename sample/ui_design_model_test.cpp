@@ -1374,14 +1374,17 @@ void modal_authoring()
     ui::session s;
     const auto root = s.current().root;
     apply(s, {
-        ui::insert_node{"page", root, {"panel", {}, {{"modal", false}, {"modal_return_focus", ""s}}, {}}},
+        ui::insert_node{"page", root, {"panel", {}, {{"modal", false}, {"modal_start_focus", ""s}, {"modal_return_focus", ""s}}, {}}},
         ui::insert_node{"opener", "page", {"button", {}, {{"open_modal", "dialog"s}, {"close_modal", false}}, {}}},
         ui::insert_node{"return", "page", {"button", {}, {{"enabled", false}}, {}}},
-        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true}, {"visible", false}, {"modal_return_focus", "return"s}}, {}}},
+        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true}, {"visible", false},
+            {"modal_start_focus", "input"s}, {"modal_return_focus", "return"s}}, {}}},
         ui::insert_node{"nested", "dialog", {"panel", {}, {{"modal", false}}, {}}},
         ui::insert_node{"close", "nested", {"button", {}, {{"close_modal", true}, {"open_modal", ""s}, {"nav_up", "input"s}}, {}}},
-        ui::insert_node{"input", "dialog", {"edit", {}, {}, {}}},
+        ui::insert_node{"input", "nested", {"edit", {}, {{"visible", false}, {"enabled", false}, {"focusable", "no"s}}, {}}},
+        ui::insert_node{"art", "dialog", {"gradient", {}, {}, {}}},
         ui::insert_node{"other", root, {"panel", {}, {{"modal", true}, {"bind_visible", ""s}}, {}}},
+        ui::insert_node{"other_input", "other", {"edit", {}, {}, {}}},
         ui::set_property{root, "nav_start", ui::value{"opener"s}},
     });
     const auto doc = s.current();
@@ -1398,6 +1401,14 @@ void modal_authoring()
     reject("dialog", "modal", "true"s);
     reject("dialog", "bind_visible", "showDialog"s);
     reject("dialog", "nav_start", "close"s);
+    reject("page", "modal_start_focus", "opener"s);
+    reject("nested", "modal_start_focus", "input"s);
+    reject("dialog", "modal_start_focus", "opener"s);
+    reject("dialog", "modal_start_focus", "other_input"s);
+    reject("dialog", "modal_start_focus", "missing"s);
+    reject("dialog", "modal_start_focus", "dialog"s);
+    reject("dialog", "modal_start_focus", "art"s);
+    reject("dialog", "modal_start_focus", true);
     reject("page", "modal_return_focus", "opener"s);
     reject("dialog", "modal_return_focus", "dialog"s);
     reject("dialog", "modal_return_focus", "input"s);
@@ -1420,6 +1431,7 @@ void modal_authoring()
     reject_edit(s, {ui::set_property{"dialog", "modal", ui::value{false}}}, "active references prevent demotion");
     apply(s, {ui::set_property{"dialog", "modal_return_focus", ui::value{root}}});
     apply(s, {ui::set_property{"dialog", "modal", ui::value{false}},
+        ui::set_property{"dialog", "modal_start_focus", ui::value{""s}},
         ui::set_property{"dialog", "modal_return_focus", ui::value{""s}},
         ui::set_property{"opener", "open_modal", ui::value{""s}},
         ui::set_property{"close", "close_modal", ui::value{false}}});
@@ -1438,7 +1450,8 @@ void modal_reference_transactions()
         ui::insert_node{"opener", root, {"button", {}, {{"open_modal", "dialog"s}}, {}}},
         ui::insert_node{"group", root, {"panel", {}, {}, {}}},
         ui::insert_node{"return", "group", {"button", {}, {}, {}}},
-        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true}, {"modal_return_focus", "return"s}}, {}}},
+        ui::insert_node{"dialog", root, {"panel", {}, {{"modal", true},
+            {"modal_start_focus", "input"s}, {"modal_return_focus", "return"s}}, {}}},
         ui::insert_node{"close", "dialog", {"button", {}, {{"close_modal", true}, {"nav_up", "input"s}}, {}}},
         ui::insert_node{"input", "dialog", {"edit", {}, {}, {}}},
     });
@@ -1448,18 +1461,26 @@ void modal_reference_transactions()
         ui::copy_subtree{"opener", root, {{"opener", "opener_copy"}}},
     });
     const auto copies = s.current();
-    check(copies.nodes.at("dialog_copy").props == original.nodes.at("dialog").props &&
+    auto expected_panel_props = original.nodes.at("dialog").props;
+    expected_panel_props.at("modal_start_focus") = "input_copy"s;
+    check(copies.nodes.at("dialog") == original.nodes.at("dialog") &&
+        copies.nodes.at("dialog_copy").props == expected_panel_props &&
         copies.nodes.at("opener_copy") == original.nodes.at("opener") &&
         copies.nodes.at("close_copy").props.at("nav_up") == ui::value{"input_copy"s} &&
         copies.nodes.at("close_copy").props.at("close_modal") == ui::value{true},
-        "copy preserves external modal references and remaps directional links within the modal");
-    apply(s, {ui::erase_node{"group"}, ui::erase_node{"dialog"}});
+        "copy preserves external modal references and remaps focus links within the modal");
+    reject_edit(s, {ui::erase_node{"input_copy"}, ui::erase_node{"missing"}},
+        "failed batch preserves the initial target and its incoming references");
+    apply(s, {ui::erase_node{"group"}, ui::erase_node{"dialog"}, ui::erase_node{"input_copy"}});
     const auto deleted = s.current();
+    auto expected_close = copies.nodes.at("close_copy");
+    expected_close.props.erase("nav_up");
     check(!deleted.nodes.at("opener").props.contains("open_modal") &&
         !deleted.nodes.at("opener_copy").props.contains("open_modal") &&
+        !deleted.nodes.at("dialog_copy").props.contains("modal_start_focus") &&
         !deleted.nodes.at("dialog_copy").props.contains("modal_return_focus") &&
-        deleted.nodes.at("close_copy") == copies.nodes.at("close_copy"),
-        "delete clears incoming opener and return-focus references but preserves unrelated roles");
+        deleted.nodes.at("close_copy") == expected_close,
+        "delete clears incoming opener and focus references but preserves unrelated roles");
     check(s.undo() && s.current() == copies && s.undo() && s.current() == original &&
         s.redo() && s.current() == copies && s.redo() && s.current() == deleted,
         "modal copy and delete replay exactly through undo/redo");
