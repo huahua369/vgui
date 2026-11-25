@@ -3632,6 +3632,8 @@ struct designer_preview::impl {
         case SDL_EVENT_KEY_DOWN: case SDL_EVENT_KEY_UP:
         case SDL_EVENT_TEXT_INPUT: case SDL_EVENT_TEXT_EDITING:
             return key_event(e);
+        case SDL_EVENT_GAMEPAD_BUTTON_DOWN:
+            return gamepad_event(static_cast<SDL_GamepadButton>(e.gbutton.button));
         default: break;
         }
 
@@ -3819,6 +3821,32 @@ struct designer_preview::impl {
         default: return false;
         }
         update_ime(run_window);
+        notify_action();
+        return true;
+    }
+
+    bool gamepad_event(SDL_GamepadButton button) {
+        if (!run || !ready || !frame || vgui_get_focus(shell) != canvas || !canvas_visible() ||
+            pressed || pan_button || edit_release) return false;
+        const auto window = SDL_GetWindowID(SDL_GetKeyboardFocus());
+        if (!window || (run_window && run_window != window)) return false;
+
+        switch (button) {
+        case SDL_GAMEPAD_BUTTON_DPAD_UP: vgui_focus_navigate(ui.get(), VGUI_NAV_UP); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_DOWN: vgui_focus_navigate(ui.get(), VGUI_NAV_DOWN); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_LEFT: vgui_focus_navigate(ui.get(), VGUI_NAV_LEFT); break;
+        case SDL_GAMEPAD_BUTTON_DPAD_RIGHT: vgui_focus_navigate(ui.get(), VGUI_NAV_RIGHT); break;
+        case SDL_GAMEPAD_BUTTON_SOUTH: vgui_input_key(ui.get(), VGUI_KEY_ENTER, 1, 0); break;
+        case SDL_GAMEPAD_BUTTON_EAST:
+            if (!vgui_input_key(ui.get(), VGUI_KEY_ESCAPE, 1, 0)) vgui_input_cancel(ui.get());
+            break;
+        default: return false;
+        }
+        // Keep successive presses in the right focus scope even if SDL
+        // delivers them in one batch (e.g. A opens a dialog, then B closes it).
+        mounted->service_modals();
+        run_window = window;
+        update_ime(window);
         notify_action();
         return true;
     }

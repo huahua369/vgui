@@ -85,7 +85,8 @@ public:
     void render(float dt);
     // Raw SDL events in window points, before shell shortcut/input dispatch.
     // Do not forward consumed events. Apply any non-null cursor they request.
-    // DPI is read from the event's SDL window.
+    // DPI is read from the event's SDL window. Route gamepad button presses
+    // only to the active preview for the foreground window.
     bool handle_event(const SDL_Event&, vgui_cursor& cursor);
     // Discard any open preview dialog and drop input ownership without invalidating a cached frame.
     void cancel_interaction();

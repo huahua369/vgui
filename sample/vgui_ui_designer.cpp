@@ -32,6 +32,7 @@
 #include <functional>
 #include <initializer_list>
 #include <iterator>
+#include <map>
 #include <memory>
 #include <optional>
 #include <random>
@@ -3883,6 +3884,82 @@ void exercise_game_data(os_window& win, vgui_context* shell, designer& editor,
     frame();
 }
 
+class native_gamepad_input {
+public:
+    native_gamepad_input(SDL_Window* window, const std::function<void()>& frame, void (*require)(bool, std::string_view))
+        : window_(window), frame_(frame), require_(require) {}
+    native_gamepad_input(const native_gamepad_input&) = delete;
+    native_gamepad_input& operator=(const native_gamepad_input&) = delete;
+    ~native_gamepad_input() { detach(); }
+
+    void plug() {
+        if (SDL_GetKeyboardFocus() != window_) {
+            // CTest may be started by a background launcher on Windows.
+            // Ask SDL to activate the actual test window, not to bypass the
+            // foreground check in the editor's input path.
+            const auto* hint = SDL_GetHint(SDL_HINT_FORCE_RAISEWINDOW);
+            const auto old = hint ? std::optional<std::string>(hint) : std::nullopt;
+            SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, "1");
+            const bool topmost = (SDL_GetWindowFlags(window_) & SDL_WINDOW_ALWAYS_ON_TOP) != 0;
+            if (!topmost) SDL_SetWindowAlwaysOnTop(window_, true);
+            // Some window managers apply the raise asynchronously.
+            for (int i = 0; i < 12 && SDL_GetKeyboardFocus() != window_; ++i) {
+                if (i % 4 == 0) SDL_RaiseWindow(window_);
+                frame_();
+                SDL_Delay(16);
+            }
+            if (!topmost) SDL_SetWindowAlwaysOnTop(window_, false);
+            if (old) SDL_SetHint(SDL_HINT_FORCE_RAISEWINDOW, old->c_str());
+            else SDL_ResetHint(SDL_HINT_FORCE_RAISEWINDOW);
+        }
+        require_(SDL_GetKeyboardFocus() == window_, "the smoke window must have SDL keyboard focus");
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type = SDL_JOYSTICK_TYPE_GAMEPAD;
+        // Identity mapping: the virtual joystick index matches SDL_GamepadButton.
+        desc.nbuttons = SDL_GAMEPAD_BUTTON_COUNT;
+        desc.button_mask = (Uint32{1} << SDL_GAMEPAD_BUTTON_COUNT) - 1;
+        desc.name = "VGUI designer smoke gamepad";
+        id_ = SDL_AttachVirtualJoystick(&desc);
+        require_(id_ && SDL_IsGamepad(id_), "cannot attach a virtual SDL gamepad");
+        joystick_ = SDL_OpenJoystick(id_);
+        require_(joystick_ != nullptr, "cannot open the virtual SDL joystick");
+        frame_();
+        require_(SDL_GetGamepadFromID(id_) != nullptr, "the editor did not open the hot-plugged gamepad");
+    }
+
+    void tap(SDL_GamepadButton button) {
+        require_(SDL_GetKeyboardFocus() == window_, "the smoke window lost SDL keyboard focus");
+        for (const bool down : {true, false}) {
+            require_(SDL_SetJoystickVirtualButton(joystick_, button, down), "cannot set a virtual gamepad button");
+            // Dispatch each real SDL edge before scheduling the next one.
+            SDL_UpdateJoysticks();
+            frame_();
+        }
+    }
+
+    void unplug() {
+        const auto id = id_;
+        require_(detach(), "cannot detach the virtual SDL gamepad");
+        frame_();
+        require_(SDL_GetGamepadFromID(id) == nullptr, "the editor kept the unplugged gamepad open");
+    }
+
+private:
+    bool detach() {
+        if (joystick_) SDL_CloseJoystick(std::exchange(joystick_, nullptr));
+        if (id_ && !SDL_DetachVirtualJoystick(id_)) return false;
+        id_ = 0;
+        return true;
+    }
+
+    SDL_Window* window_;
+    const std::function<void()>& frame_;
+    void (*require_)(bool, std::string_view);
+    SDL_JoystickID id_ = 0;
+    SDL_Joystick* joystick_ = nullptr;
+};
+
 void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_context* shell,
                          designer& editor, const std::function<void()>& frame, const fs::path& sandbox) {
     const auto require = [](bool passed, std::string_view message) {
@@ -3905,10 +3982,15 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     const auto revision = editor.history().revision();
     const native_keyframe_input input{win, shell, preview, frame, require};
     const ui::native_menu_input keys(win, shell, frame);
+    native_gamepad_input pad(win.window, frame, require);
+    const auto status_text = [&] {
+        auto* status = find_widget(vgui_root(shell), "designer.status");
+        require(status != nullptr, "missing action status");
+        return std::string_view(vgui_widget_get_text(status));
+    };
     const auto action = [&](std::string_view id) {
         keys.key(SDLK_RETURN, SDL_SCANCODE_RETURN);
-        auto* status = find_widget(vgui_root(shell), "designer.status");
-        require(status && std::string_view(vgui_widget_get_text(status)).ends_with(id), id);
+        require(status_text().ends_with(id), id);
     };
     constexpr auto mode = "designer.preview.mode";
     constexpr auto debug = "designer.preview.navigation_debug";
@@ -3932,7 +4014,17 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     };
     require(!vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
         "focus debug should be hidden in Design");
-    input.click(mode);
+    pad.plug();
+    auto* mode_button = input.widget(mode);
+    // If A leaks to the shell as Enter, this focused button will enter Run.
+    vgui_set_focus(shell, mode_button);
+    require(vgui_get_focus(shell) == mode_button, "cannot focus the Design mode toggle");
+    const auto design_status = std::string(status_text());
+    pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    require(vgui_get_focus(shell) == mode_button, "D-pad moved shell focus in Design");
+    pad.tap(SDL_GAMEPAD_BUTTON_SOUTH);
+    require(!preview.running() && status_text() == design_status, "gamepad triggered an action in Design");
+    input.click(mode_button);
     auto* canvas = input.widget("designer.preview.canvas");
     require(preview.running() && vgui_get_focus(shell) == canvas,
         "entering Run did not focus the artboard with a configured default");
@@ -4035,13 +4127,13 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     action("nav.start [start]");
     require(preview.snapshot() != nullptr, "missing focused preview snapshot");
     const auto before = preview.snapshot()->serial;
-    keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
+    pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
     require(preview.snapshot() && preview.snapshot()->serial != before, "direction move did not repaint the focus ring");
     require(focus_is("far") && label(".left").contains("start") &&
         label(".left").contains(localized(".explicit", "Explicit")),
-        "moving right did not update the current focus and left target");
-    action("nav.far [far]");
-    auto* mode_button = input.widget(mode);
+        "D-pad Right did not follow the explicit link or update the debug strip");
+    pad.tap(SDL_GAMEPAD_BUTTON_SOUTH);
+    require(status_text().ends_with("nav.far [far]"), "A did not activate the focused far button");
     const auto center = [&](vgui_widget* w) {
         const auto r = input.rect(w);
         return glm::vec2{r.x + r.width / 2, r.y + r.height / 2};
@@ -4059,6 +4151,11 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     action("nav.start [start]");
 
     input.click("designer.preview.simulation");
+    auto* simulation_panel = vgui_modal_panel(shell);
+    require(vgui_modal_active(shell) && simulation_panel, "missing shell simulation modal");
+    pad.tap(SDL_GAMEPAD_BUTTON_EAST);
+    require(vgui_modal_active(shell) && vgui_modal_panel(shell) == simulation_panel,
+        "B dismissed the shell simulation modal");
     const auto modal = [&](const char* id, vgui_widget_kind kind) {
         auto* w = find_widget(vgui_modal_panel(shell), id, kind);
         require(w != nullptr, id);
@@ -4087,8 +4184,8 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     require(fallback_links.far_gap.empty() && !fallback_links.near_gap.authored &&
         fallback_links.near_gap.automatic >= 4,
         "disabling far should clear its lines and paint the automatic fallback to near");
-    keys.key(SDLK_RIGHT, SDL_SCANCODE_RIGHT);
-    require(focus_is("near"), "the current-focus label did not follow the fallback move");
+    pad.tap(SDL_GAMEPAD_BUTTON_DPAD_RIGHT);
+    require(focus_is("near"), "D-pad Right did not follow the automatic fallback in the same Run view");
     action("nav.near [near]");
     input.click(toggle);
     require(!strip_visible() && vgui_widget_get_visible(toggle) && vgui_widget_get_enabled(toggle) &&
@@ -4106,6 +4203,7 @@ void exercise_navigation(vgpu_ctx_t* gpu, ovg_ctx_cb* cb, os_window& win, vgui_c
     input.click(mode);
     require(!preview.running() && !vgui_widget_get_visible(debug_control("", VGUI_BUTTON)) && !strip_visible(),
         "returning to Design must hide an open focus debug strip and its toggle");
+    pad.unplug();
     require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
         "navigating, toggling focus debug, or simulating availability changed the design");
 }
@@ -4133,6 +4231,8 @@ void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor
     const auto revision = editor.history().revision();
     const native_keyframe_input input{win, shell, preview, frame, require};
     const ui::native_menu_input keys(win, shell, frame);
+    native_gamepad_input pad(win.window, frame, require);
+    pad.plug();
     const auto node = [&](std::string_view id) {
         auto* snapshot = preview.snapshot();
         require(snapshot != nullptr, "missing modal layout");
@@ -4170,9 +4270,20 @@ void exercise_modal_return(os_window& win, vgui_context* shell, designer& editor
 
     keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
     action("modal.open [open]");
+    pad.tap(SDL_GAMEPAD_BUTTON_EAST);
+    require(preview.running() && !node("dialog").visible && !node("inside").visible,
+        "B did not dismiss the Run modal");
+    pad.tap(SDL_GAMEPAD_BUTTON_EAST);
+    require(vgui_get_focus(shell) == input.widget("designer.preview.canvas"),
+        "unconsumed B blurred the Run canvas");
+    action("restored [return_to]");
+
+    keys.key(SDLK_LEFT, SDL_SCANCODE_LEFT);
+    action("modal.open [open]");
     input.click(mode);
     require(!preview.running() && node("dialog").visible && node("dialog").rect_px.x == authored.rect_px.x,
         "returning to Design did not restore the authored layout");
+    pad.unplug();
     require(editor.history().revision() == revision && editor.history().current() == doc && !editor.history().dirty(),
         "opening/closing a dialog modified the design");
 }
@@ -5491,7 +5602,35 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         editor.report_bad_settings();
     }
 
+    using gamepad_ptr = std::unique_ptr<SDL_Gamepad, decltype(&SDL_CloseGamepad)>;
+    std::map<SDL_JoystickID, gamepad_ptr> gamepads;
+    const auto open_gamepad = [&](SDL_JoystickID id) {
+        if (gamepads.contains(id)) return;
+        if (gamepad_ptr pad(SDL_OpenGamepad(id), SDL_CloseGamepad); pad) gamepads.emplace(id, std::move(pad));
+    };
+    {
+        int count = 0;
+        std::unique_ptr<SDL_JoystickID[], decltype(&SDL_free)> connected(SDL_GetGamepads(&count), SDL_free);
+        if (connected) for (int i = 0; i < count; ++i) open_gamepad(connected[i]);
+    }
+    const auto preview_input_available = [&] {
+        return !editor.chooser_open() && !vgui_modal_active(shell.get()) &&
+            !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get());
+    };
     const auto dispatch = [&](const SDL_Event& e) {
+        // Controller events carry an instance ID, not a window ID. Never
+        // forward them as shell input (including unused axes and releases).
+        if (e.type >= SDL_EVENT_JOYSTICK_AXIS_MOTION && e.type < SDL_EVENT_FINGER_DOWN) {
+            if (e.type == SDL_EVENT_GAMEPAD_ADDED) open_gamepad(e.gdevice.which);
+            else if (e.type == SDL_EVENT_GAMEPAD_REMOVED) gamepads.erase(e.gdevice.which);
+            else if (e.type == SDL_EVENT_GAMEPAD_BUTTON_DOWN && gamepads.contains(e.gbutton.which) &&
+                     SDL_GetKeyboardFocus() == win->window && preview_input_available() &&
+                     !vgui_context_has_pointer_capture(shell.get())) {
+                vgui_cursor unused = VGUI_CURSOR_NULL;
+                editor.preview_event(e, unused);
+            }
+            return;
+        }
         // Compare widths after input dispatch, never write settings on drag motion.
         if ((e.type == SDL_EVENT_MOUSE_BUTTON_UP && e.button.windowID == win->id && e.button.button == SDL_BUTTON_LEFT) ||
             (e.type == SDL_EVENT_WINDOW_FOCUS_LOST && e.window.windowID == win->id))
@@ -5507,8 +5646,7 @@ int run(native_smoke smoke, fs::path open_path, command native_dialog_exit = com
         const bool focus_lost = e.type == SDL_EVENT_WINDOW_FOCUS_LOST;
         // Shell overlays own input even when the pointer is over the artboard.
         vgui_cursor preview_cursor = VGUI_CURSOR_NULL;
-        if ((focus_lost || (!editor.chooser_open() && !vgui_modal_active(shell.get()) &&
-            !vgui_popup_active(shell.get()) && !vgui_context_get_open_menu(shell.get()))) && editor.preview_event(e, preview_cursor)) {
+        if ((focus_lost || preview_input_available()) && editor.preview_event(e, preview_cursor)) {
             // A consumed preview event skips the SDL backend's usual cursor update.
             if (preview_cursor != VGUI_CURSOR_NULL) app.set_defcursor(static_cast<cursor_st>(preview_cursor));
             return;
