@@ -478,7 +478,8 @@ private:
         const bool initial = change.key == "nav_start";
         const bool return_focus = change.key == "modal_return_focus";
         const bool open_modal = change.key == "open_modal";
-        if ((return_focus || open_modal) && change.id != workbench_.selection()) return;
+        const bool close_modal = change.key == "close_modal";
+        if ((return_focus || open_modal || close_modal) && change.id != workbench_.selection()) return;
         std::string target;
         if (initial) {
             const auto& doc = session_.current();
@@ -506,6 +507,9 @@ private:
         } else if (open_modal) {
             workbench_.status(linked ? std::string(tr("preview.navigation_open.saved", "Opens modal:")) + " " + target :
                 tr("preview.navigation_open.cleared", "Open target cleared"));
+        } else if (close_modal) {
+            workbench_.status(linked ? tr("preview.navigation_close.enabled", "Close modal enabled") :
+                tr("preview.navigation_close.disabled", "Close modal disabled"));
         } else {
             workbench_.status(std::string(linked ? tr("preview.navigation_edit.linked", "Linked") :
                 tr("preview.navigation_edit.cleared", "Cleared")) + " " + link);
@@ -4824,17 +4828,24 @@ void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
     auto* clear = button("designer.preview.navigation_open.clear");
     auto* return_pick = button("designer.preview.navigation_return");
     auto* return_clear = button("designer.preview.navigation_return.clear");
+    auto* close = button("designer.preview.navigation_close");
     auto* bar = vgui_widget_get_parent(pick);
     require(bar && vgui_widget_get_parent(clear) == bar && vgui_widget_get_parent(return_pick) == bar &&
-        vgui_widget_get_parent(return_clear) == bar, "Open and Return must share the contextual toolbar");
-    const auto controls = [&](bool show_pick, bool show_clear, bool picking = false, bool show_return = false) {
+        vgui_widget_get_parent(return_clear) == bar && vgui_widget_get_parent(close) == bar,
+        "Open, Return, and Close must share the contextual toolbar");
+    const auto controls = [&](bool show_pick, bool show_clear, bool picking = false, bool show_return = false,
+                              std::optional<bool> close_checked = std::nullopt) {
         const auto visible = [](vgui_widget* widget) { return vgui_widget_get_visible(widget) != 0; };
-        require(visible(bar) == (show_pick || show_return) && visible(pick) == show_pick &&
-            visible(clear) == show_clear && visible(return_pick) == show_return && visible(return_clear) == show_return,
-            "wrong Open/Return toolbar visibility");
+        require(visible(bar) == (show_pick || show_return || close_checked.has_value()) &&
+            visible(pick) == show_pick && visible(clear) == show_clear &&
+            visible(return_pick) == show_return && visible(return_clear) == show_return &&
+            visible(close) == close_checked.has_value(), "wrong Open/Return/Close toolbar visibility");
         require(!show_pick || (vgui_widget_get_enabled(pick) && (vgui_widget_get_checked(pick) != 0) == picking),
             "Open picker is disabled or has the wrong checked state");
         require(!show_clear || vgui_widget_get_enabled(clear), "cannot clear the explicit opener target");
+        require(!close_checked.has_value() ||
+            (vgui_widget_get_enabled(close) && (vgui_widget_get_checked(close) != 0) == *close_checked),
+            "Close toggle is disabled or has the wrong checked state");
     };
     const auto node = [&](std::string_view id) {
         const auto* layout = preview.snapshot();
@@ -4867,6 +4878,8 @@ void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
     require(vgui_widget_get_checked(links), "could not enable Design navigation");
     controls(true, true);
     select("inside");
+    controls(false, false, false, false, true);
+    select("caption");
     controls(false, false);
     select("first");
     controls(false, false, false, true);
@@ -4874,9 +4887,9 @@ void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
     controls(true, false);
     select("opener");
 
-    const auto state_is = [&](const ui::document& expected, auto expected_revision) {
+    const auto state_is = [&](const ui::document& expected, auto expected_revision, std::string_view selected = "opener") {
         return history.revision() == expected_revision && history.current() == expected &&
-            history.committed() == expected && editor.selection() == "opener";
+            history.committed() == expected && editor.selection() == selected;
     };
     const auto untouched = [&](std::string_view message) {
         require(state_is(doc, revision) && !history.dirty() && !history.can_undo() && !history.can_redo(), message);
@@ -4895,27 +4908,30 @@ void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
     untouched("Escape changed the design or opener selection");
 
     constexpr auto open_property = "open_modal";
-    auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
-    require(search != nullptr, "missing opener property filter");
-    input.click(search);
-    // The property search is shared across pages; replace the prior modal filter.
-    for (bool down : {true, false}) {
-        SDL_Event key{};
-        key.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
-        key.key.windowID = win.id;
-        key.key.key = SDLK_A;
-        key.key.scancode = SDL_SCANCODE_A;
-        key.key.mod = SDL_KMOD_LCTRL;
-        key.key.down = down;
-        input.push(key);
-    }
-    SDL_Event text{};
-    text.type = SDL_EVENT_TEXT_INPUT;
-    text.text.windowID = win.id;
-    text.text.text = open_property;
-    input.push(text);
-    frame();
-    require(std::string_view(vgui_edit_get_text(search)) == open_property, "opener property filter did not replace the modal filter");
+    const auto filter_properties = [&](const char* query) {
+        auto* search = find_widget(vgui_root(shell), "__property_search", VGUI_EDIT);
+        require(search != nullptr, "missing property filter");
+        input.click(search);
+        // The property search is shared across pages and selections; replace the prior query.
+        for (bool down : {true, false}) {
+            SDL_Event key{};
+            key.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+            key.key.windowID = win.id;
+            key.key.key = SDLK_A;
+            key.key.scancode = SDL_SCANCODE_A;
+            key.key.mod = SDL_KMOD_LCTRL;
+            key.key.down = down;
+            input.push(key);
+        }
+        SDL_Event text{};
+        text.type = SDL_EVENT_TEXT_INPUT;
+        text.text.windowID = win.id;
+        text.text.text = query;
+        input.push(text);
+        frame();
+        require(std::string_view(vgui_edit_get_text(search)) == query, "property filter did not replace the prior query");
+    };
+    filter_properties(open_property);
     const auto inspector_is = [&](const ui::document& state) {
         const auto& properties = state.nodes.at("opener").props;
         const auto found = properties.find(open_property);
@@ -4960,20 +4976,73 @@ void exercise_modal_open(os_window& win, vgui_context* shell, designer& editor,
     };
     assign("first", "first"); // Pick the panel body itself.
     assign("second", "caption"); // A visible non-focusable grandchild resolves to its modal ancestor.
-    editor.request(command::save);
-    frame();
-    ui::document saved;
-    require(ui::read_document(file, saved) && saved == expected && !history.dirty(),
-        "the edited opener target did not survive saving");
+    const auto save_is = [&](const ui::document& state, std::string_view message) {
+        editor.request(command::save);
+        frame();
+        ui::document saved;
+        require(ui::read_document(file, saved) && saved == state && !history.dirty(), message);
+    };
+    save_is(expected, "the edited opener target did not survive saving");
 
-    const auto saved_revision = history.revision();
+    const auto test_run_close = [&](const ui::document& state, bool closes) {
+        const auto start_revision = history.revision();
+        const std::string selected(editor.selection());
+        input.click("designer.preview.mode");
+        require(preview.running() && !node("first").visible && !node("second").visible, "Run must start with both dialogs closed");
+        controls(false, false);
+        click_node("opener");
+        require(!node("first").visible && node("second").visible && node("caption").visible,
+            "the opener did not show only the newly bound Run dialog");
+        require(state_is(state, start_revision, selected) && !history.dirty(),
+            "using the opener in Run changed the design or selection");
+        controls(false, false);
+        click_node("inside");
+        require(preview.running() && !node("first").visible &&
+            node("second").visible == !closes && node("inside").visible == !closes,
+            closes ? "clicking inside did not close the Run modal" : "the disabled close action dismissed the Run modal");
+        if (!closes) {
+            keys.key(SDLK_ESCAPE, SDL_SCANCODE_ESCAPE);
+            require(preview.running() && !node("second").visible && !node("inside").visible,
+                "Escape did not dismiss the Run modal after clicking the disabled close action");
+        }
+        require(state_is(state, start_revision, selected) && !history.dirty(),
+            "using the close button in Run changed the design or selection");
+    };
+    test_run_close(expected, true);
     input.click("designer.preview.mode");
-    require(preview.running() && !node("first").visible && !node("second").visible, "Run must start with both dialogs closed");
+    select("inside");
+    controls(false, false, false, false, true);
+    input.click(links);
+    require(!vgui_widget_get_checked(links) && editor.selection() == "inside", "could not disable navigation for the selected close button");
     controls(false, false);
-    click_node("opener");
-    require(!node("first").visible && node("second").visible && node("caption").visible,
-        "the opener did not show only the newly bound Run dialog");
-    require(state_is(expected, saved_revision) && !history.dirty(), "using the opener in Run changed the design or selection");
+    input.click(links);
+
+    constexpr auto close_property = "close_modal";
+    filter_properties(close_property);
+    const auto close_is = [&](const ui::document& state, auto expected_revision, bool checked, std::string_view message) {
+        require(!preview.running() && !vgui_modal_active(shell) && state_is(state, expected_revision, "inside"), message);
+        controls(false, false, false, false, checked);
+        auto* field = find_widget(vgui_root(shell), "property:close_modal", VGUI_CHECKBOX);
+        require(field && (vgui_widget_get_checked(field) != 0) == checked, "close modal inspector value is stale");
+    };
+    auto without_close = expected;
+    without_close.nodes.at("inside").props.erase(close_property);
+    const auto close_revision = history.revision();
+    close_is(expected, close_revision, true, "the authored close action must be enabled");
+    input.click(close);
+    close_is(without_close, close_revision + 1, false, "the toggle must remove only close_modal in one step");
+    keys.activate(keys.open(1), 0); // Edit > Undo
+    close_is(expected, close_revision + 2, true, "one Undo did not restore the close action");
+    keys.activate(keys.open(1), 1); // Edit > Redo
+    close_is(without_close, close_revision + 3, false, "one Redo did not remove the close action");
+    save_is(without_close, "saving a disabled close action did not preserve the absent default property");
+    test_run_close(without_close, false);
+    input.click("designer.preview.mode");
+    close_is(without_close, close_revision + 3, false, "returning to Design changed the close action or selection");
+    input.click(close);
+    close_is(expected, close_revision + 4, true, "the toggle must restore only close_modal in one step");
+    save_is(expected, "the re-enabled close action did not survive saving");
+    test_run_close(expected, true);
 }
 
 void exercise_keyframe_capture(os_window& win, vgui_context* shell, designer& editor,

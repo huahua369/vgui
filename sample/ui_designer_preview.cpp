@@ -1888,6 +1888,7 @@ struct designer_preview::impl {
     vgui_widget *navigation_edit_button = nullptr, *navigation_start_button = nullptr;
     vgui_widget *navigation_modal_bar = nullptr, *navigation_return_button = nullptr, *navigation_return_clear = nullptr;
     vgui_widget *navigation_open_button = nullptr, *navigation_open_clear = nullptr;
+    vgui_widget* navigation_close_button = nullptr;
     bool navigation_edit_open = false;
     bool navigation_modal_picking = false;
     std::string navigation_modal_hover;
@@ -1897,6 +1898,7 @@ struct designer_preview::impl {
         std::string scope;
         std::array<std::string, navigation_properties.size()> links;
         bool focusable;
+        std::optional<bool> closes_modal;
     };
     std::map<std::string, navigation_node, std::less<>> navigation_nodes;
     struct modal_navigation_link {
@@ -2075,7 +2077,7 @@ struct designer_preview::impl {
         navigation_debug_button = button(toolbar, "designer.preview.navigation_debug");
         vgui_widget_set_a11y_role(navigation_debug_button, VGUI_A11Y_ROLE_TOGGLE);
         if (commit_keys) timeline_toggle = button(toolbar, "designer.preview.timeline");
-        // Contextual row: both modal actions stay reachable in a narrow dock.
+        // Contextual row: modal actions stay reachable in a narrow dock.
         navigation_modal_bar = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_layout(navigation_modal_bar, VGUI_LAYOUT_ROW);
         vgui_widget_set_size(navigation_modal_bar, 0, 32);
@@ -2090,6 +2092,8 @@ struct designer_preview::impl {
         navigation_open_button = button(navigation_modal_bar, "designer.preview.navigation_open");
         navigation_open_clear = button(navigation_modal_bar, "designer.preview.navigation_open.clear");
         vgui_widget_set_a11y_role(navigation_open_button, VGUI_A11Y_ROLE_TOGGLE);
+        navigation_close_button = button(navigation_modal_bar, "designer.preview.navigation_close");
+        vgui_widget_set_a11y_role(navigation_close_button, VGUI_A11Y_ROLE_TOGGLE);
         transport = vgui_widget_add(panel, VGUI_PANEL, nullptr);
         vgui_widget_set_id(transport, "designer.preview.animation");
         vgui_widget_set_layout(transport, VGUI_LAYOUT_ROW);
@@ -2245,6 +2249,8 @@ struct designer_preview::impl {
                 message = strings.text("preview.status.hand_controls", "Left-drag: pan  |  Right-click: return to Pointer  |  Wheel: zoom");
             } else if (const auto* link = selected_modal_link()) {
                 message = modal_pick_help(link->opens_modal);
+            } else if (selected_modal_close().has_value()) {
+                message = modal_close_help();
             } else if (!run && navigation_edit_open) {
                 message = viewport_text(strings, "preview.navigation_edit.tooltip",
                     "Select a control, drag a direction handle to link, or right-click it to clear", "选中控件后拖动方向手柄连线，右键清除");
@@ -2354,6 +2360,17 @@ struct designer_preview::impl {
         return link == navigation_modal_links.end() ? nullptr : &link->second;
     }
 
+    std::optional<bool> selected_modal_close() const {
+        if (run || !navigation_edit_open || !is_mounted || remount || !commit_navigation) return std::nullopt;
+        const auto node = navigation_nodes.find(selection);
+        return node == navigation_nodes.end() ? std::nullopt : node->second.closes_modal;
+    }
+
+    const char* modal_close_help() const {
+        return viewport_text(strings, "preview.navigation_close.tooltip",
+            "Toggle whether this button closes its containing modal in Run", "切换此按钮是否在运行时关闭所属弹窗");
+    }
+
     const char* modal_pick_help(bool opens) const {
         if (opens) return navigation_modal_picking ?
             viewport_text(strings, "preview.navigation_open.hint", "Click a modal or one of its controls; Esc cancels",
@@ -2369,12 +2386,24 @@ struct designer_preview::impl {
 
     void update_navigation_modal_buttons() {
         const auto* link = selected_modal_link();
+        const auto closes = selected_modal_close();
         const bool opens = link && link->opens_modal, returns = link && !link->opens_modal;
-        vgui_widget_set_visible(navigation_modal_bar, link != nullptr);
+        vgui_widget_set_visible(navigation_modal_bar, link || closes.has_value());
         vgui_widget_set_visible(navigation_open_button, opens);
         vgui_widget_set_visible(navigation_open_clear, opens && !link->target.empty());
         vgui_widget_set_visible(navigation_return_button, returns);
         vgui_widget_set_visible(navigation_return_clear, returns && !link->target.empty());
+        vgui_widget_set_visible(navigation_close_button, closes.has_value());
+        if (closes.has_value()) {
+            vgui_widget_set_text(navigation_close_button, viewport_text(strings, "preview.navigation_close.button",
+                "Close Current Modal", "关闭当前弹窗"));
+            vgui_widget_set_tooltip(navigation_close_button, modal_close_help());
+            if ((vgui_widget_get_checked(navigation_close_button) != 0) != *closes)
+                vgui_widget_set_checked(navigation_close_button, *closes);
+            const bool light = theme == designer_theme::light;
+            vgui_widget_set_background(navigation_close_button,
+                *closes ? (light ? 0xFFCFE2FAu : 0xFF3A668Eu) : (light ? 0xFFEEF4FCu : 0xFF394454u));
+        }
         if (!link) return;
         const auto tr = [&](std::string_view key, const char* en, const char* zh) { return viewport_text(strings, key, en, zh); };
         auto* pick = opens ? navigation_open_button : navigation_return_button;
@@ -2668,6 +2697,13 @@ struct designer_preview::impl {
             return;
         }
         if (event->type != VGUI_EVENT_CLICK) return;
+        if (w == self.navigation_close_button) {
+            if (const auto closes = self.selected_modal_close(); closes.has_value()) {
+                self.commit_navigation(self.revision, set_property{self.selection, "close_modal",
+                    *closes ? std::nullopt : std::optional<value>{true}});
+            }
+            return;
+        }
         if (w == self.navigation_return_button || w == self.navigation_open_button) {
             if (vgui_widget_get_visible(w)) self.set_navigation_modal_picking(!self.navigation_modal_picking);
             return;
@@ -3481,7 +3517,11 @@ struct designer_preview::impl {
                     link.target = std::get<std::string>(target->second);
                 navigation_modal_links.emplace(id, std::move(link));
             }
-            navigation_node data{std::string(scope), {}, false};
+            navigation_node data{std::string(scope), {}, false, std::nullopt};
+            if (node.type == "button" && !scope.empty()) {
+                const auto closes = node.props.find("close_modal");
+                data.closes_modal = closes != node.props.end() && std::get<bool>(closes->second);
+            }
             if (node.type != "gradient") {
                 data.focusable = vgui_widget_get_focusable(mounted->widget(id)) != 0;
                 for (std::size_t i = 0; i < navigation_properties.size(); ++i)
@@ -3857,6 +3897,22 @@ struct designer_preview::impl {
         fill(cb, vg, {x - .65f * s, y, 1.3f * s, 12.f * s}, to_ovg(0xFFFFCE64u));
     }
 
+    void draw_modal_close_badge(ovg_ctx_cb* cb, rvg_t* vg, pixel_rect node, float ui_scale) const {
+        // Keep the marker inside the upper-right corner, clear of the navigation ports.
+        const float s = std::min({ui_scale, node.width / 38.f, node.height / 22.f});
+        if (s < .35f) return;
+        const float x = node.x + node.width - 18.f * s, y = node.y + 4.f * s;
+        fill(cb, vg, {x, y, 14.f * s, 14.f * s}, 0xFF292520u);
+        cb->set_source_color(vg, to_ovg(0xFFFFAD66u));
+        cb->set_line_width(vg, 2.f * s);
+        cb->new_path(vg);
+        cb->move_to(vg, x + 4.f * s, y + 4.f * s);
+        cb->line_to(vg, x + 10.f * s, y + 10.f * s);
+        cb->move_to(vg, x + 10.f * s, y + 4.f * s);
+        cb->line_to(vg, x + 4.f * s, y + 10.f * s);
+        cb->stroke(vg);
+    }
+
     void draw_navigation_edit(ovg_ctx_cb* cb, rvg_t* vg, const board_transform& t, pixel_rect clip) const {
         if (run || !navigation_edit_open) return;
         const auto* source = navigation_source();
@@ -3866,7 +3922,8 @@ struct designer_preview::impl {
         const auto* modal_to = modal_from ? layout_of(link->target) : nullptr;
         const bool draw_modal = modal_from && modal_to && modal_from->visible && modal_to->visible;
         const auto* hover = navigation_modal_hover.empty() ? nullptr : layout_of(navigation_modal_hover);
-        if (!source && (!start || !start->visible) && !draw_modal && !hover) return;
+        const auto* close = selected_modal_close().value_or(false) ? layout_of(selection) : nullptr;
+        if (!source && (!start || !start->visible) && !draw_modal && !hover && (!close || !close->visible)) return;
         with_navigation_clip(cb, vg, clip, [&](pixel_rect clipped) {
             const float scale = vgui_context_get_ui_scale(shell);
             if (draw_modal) {
@@ -3882,6 +3939,7 @@ struct designer_preview::impl {
             if (hover && hover->visible)
                 outline(cb, vg, t.project(hover->visible_px), clipped, to_ovg(0xFF6EE7A9u), 2.f * scale);
             if (start && start->visible) draw_initial_focus_flag(cb, vg, t.project(start->visible_px), scale);
+            if (close && close->visible) draw_modal_close_badge(cb, vg, t.project(close->visible_px), scale);
             if (!source) return;
             const auto r = t.project(source->visible_px);
             const auto& links = navigation_nodes.at(source->id).links;
